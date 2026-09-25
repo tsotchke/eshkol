@@ -1,0 +1,21 @@
+; A condition that a handler catches prints nothing: the handler decides what
+; the program says. Natively the runtime used to report every raised
+; condition to stderr ("ERROR: Type error in vector-ref: ...") before
+; unwinding to the guard. The ctest wrapper fails if this program writes
+; anything to stderr; an uncaught condition is still reported.
+(define caught 0)
+(define-syntax probe
+  (syntax-rules ()
+    ((_ expr) (guard (e (#t (set! caught (+ caught 1)))) expr))))
+(probe (vector-ref (list 1) 0))
+(probe (car 5))
+(probe (+ 'a 1))
+(probe (error "boom" 1))
+(probe (string->symbol 5))
+(probe (string-length 5))
+(probe (tensor-ref (list 1) 0))
+(probe (read (open-input-string "1/0")))
+(probe (raise 'x))
+(if (= caught 9)
+    (display "PASS: caught conditions are silent\n")
+    (begin (display "FAIL: caught ") (display caught) (newline)))

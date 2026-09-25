@@ -1,8 +1,8 @@
-;; Navier-Stokes blowup construction -- the oscillatory realization on the
+;; Navier-Stokes example -- the oscillatory realization on the
 ;; auxiliary torus.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Section 6 ("Auxiliary torus and separation of oscillatory supports"),
 ;; Section 7 ("Oscillatory realization and correction of the residual
 ;; stress"), and Section 2.2: "We combine two families of pulses with

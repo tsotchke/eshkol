@@ -28,8 +28,8 @@ extern "C" void __asan_unpoison_memory_region(void const volatile* addr, size_t 
 extern "C" void __asan_handle_no_return(void);
 #endif
 
-// Global dynamic-wind handler stack
-eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
+// Dynamic extent belongs to the executing thread, like its exception stack.
+thread_local eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
 
 /* ── Stack-copying re-entrant continuations ──────────────────────────────────
  *

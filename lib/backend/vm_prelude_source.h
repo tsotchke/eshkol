@@ -132,10 +132,10 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (fold-right f init lst) (if (null? lst) init (f (car lst) (fold-right f init (cdr lst)))))\n"
     "(define (foldr f init lst) (fold-right f init lst))\n"
     "(define (__eshkol-for-each1 f xs)\n"
-    "  (if (null? xs) 0\n"
+    "  (if (null? xs) (if #f #f)\n"
     "      (begin (f (car xs)) (__eshkol-for-each1 f (cdr xs)))))\n"
     "(define (__eshkol-for-each2 f xs ys)\n"
-    "  (if (or (null? xs) (null? ys)) 0\n"
+    "  (if (or (null? xs) (null? ys)) (if #f #f)\n"
     "      (begin (f (car xs) (car ys))\n"
     "             (__eshkol-for-each2 f (cdr xs) (cdr ys)))))\n"
     "(define (__eshkol-for-each3 f xs ys zs)\n"
@@ -265,6 +265,20 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (max a . rest) (fold-left _max2 a rest))\n"
     "(define (min a . rest) (fold-left _min2 a rest))\n"
     "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
+    /* SW-241: the R7RS comparison chains as VALUES take two or more
+     * arguments; the call position keeps its own lowering. */
+    "(define (_chain2 f) (lambda (a b . rest) (let loop ((a a) (b b) (rest rest)) (if (f a b) (if (null? rest) #t (loop b (car rest) (cdr rest))) #f))))\n"
+    "(define _cmp2_0 <) (define < (_chain2 _cmp2_0))\n"
+    "(define _cmp2_1 >) (define > (_chain2 _cmp2_1))\n"
+    "(define _cmp2_2 <=) (define <= (_chain2 _cmp2_2))\n"
+    "(define _cmp2_3 >=) (define >= (_chain2 _cmp2_3))\n"
+    "(define _cmp2_4 =) (define = (_chain2 _cmp2_4))\n"
+    "(define _cmp2_5 string=?) (define string=? (_chain2 _cmp2_5))\n"
+    "(define _cmp2_6 string<?) (define string<? (_chain2 _cmp2_6))\n"
+    "(define _cmp2_10 string-ci=?) (define string-ci=? (_chain2 _cmp2_10))\n"
+    "(define _cmp2_15 char=?) (define char=? (_chain2 _cmp2_15))\n"
+    "(define _cmp2_16 char<?) (define char<? (_chain2 _cmp2_16))\n"
+    "(define _cmp2_17 char>?) (define char>? (_chain2 _cmp2_17))\n"
     /* SW-173: `list`, `vector` and `string` are compiled by head symbol in
      * CALL position (vm_compiler.c lowers `(list a b)` to a cons chain and
      * `(vector …)` to OP_VEC_CREATE before it ever looks a binding up), so
@@ -299,6 +313,28 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "  (cond ((null? args) (_write1 value))\n"
     "        ((null? (cdr args)) (_write2 value (car args)))\n"
     "        (else (error \"write: expected one value and at most one port\"))))\n"
+    /* R7RS 6.13.1: the standard ports are parameter objects, so
+     * `parameterize` rebinds them and a write or read that names no port
+     * uses the current one (vm_current_port in vm_native.c). */
+    "(define current-input-port (_std-port-parameter 0))\n"
+    "(define current-output-port (_std-port-parameter 1))\n"
+    "(define current-error-port (_std-port-parameter 2))\n"
+    /* (swish x [beta]) = x * sigmoid(beta * x), a number or a tensor like x,
+     * as the native activation family lowers it (codegenActivationFamily):
+     * the unit-beta tensor case is the SiLU kernel, another beta scales the
+     * tensor by a one-element tensor, and a number goes through sigmoid so
+     * derivatives follow. */
+    "(define (swish x . b)\n"
+    "  (let ((beta (if (null? b) 1.0 (car b))))\n"
+    "    (if (or (vector? x) (tensor? x))\n"
+    "        (if (null? b) (_swish-tensor x)\n"
+    "            (tensor-mul x (sigmoid (tensor-mul x (make-tensor (list 1) beta)))))\n"
+    "        (* x (sigmoid (* beta x))))))\n"
+    "(define _display1 display)\n"
+    "(define (display value . args)\n"
+    "  (cond ((null? args) (_display1 value))\n"
+    "        ((null? (cdr args)) (_display2 value (car args)))\n"
+    "        (else (error \"display: expected one value and at most one port\"))))\n"
     "(define _newline0 newline)\n"
     "(define (newline . args)\n"
     "  (cond ((null? args) (_newline0))\n"

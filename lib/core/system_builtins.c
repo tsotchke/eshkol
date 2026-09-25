@@ -20,6 +20,7 @@
 extern size_t arena_get_used_memory(const void* a);
 #include <errno.h>
 #include "model_io_atomic.h"
+#include "eshkol/eshkol.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -142,6 +143,7 @@ typedef struct {
 #define SYS_TYPE_BOOL    3
 #define SYS_TYPE_CHAR    4
 #define SYS_TYPE_HEAP_PTR 8
+#define SYS_TYPE_CALLABLE 9
 
 /** Construct a tagged null (empty-list / unspecified) value. */
 static eshkol_sysbuiltin_value_t sys_make_null(void) {
@@ -5397,7 +5399,27 @@ void eshkol_builtin_workspace_p(sv_t* out, const sv_t* a) {
     *out = check_heap_subtype(*a, HST_WORKSPACE);
 }
 void eshkol_builtin_tensor_p(sv_t* out, const sv_t* a) {
+    /* Dense reverse-mode tensor results are callable AD nodes while the tape
+     * is active.  Their representation must not change the observable tensor
+     * predicate (SW-188). */
+    if (a->type == SYS_TYPE_CALLABLE && a->data) {
+        const struct ad_node* node = (const struct ad_node*)(uintptr_t)a->data;
+        const eshkol_object_header_t* header = ESHKOL_GET_HEADER((void*)(uintptr_t)a->data);
+        if (eshkol_callable_subtype_is_declared(header->subtype) &&
+            header->subtype == CALLABLE_SUBTYPE_AD_NODE && node->tensor_value) {
+            *out = sys_make_bool(1);
+            return;
+        }
+    }
     *out = check_heap_subtype(*a, HST_TENSOR);
+    /* ADR-0020: a carrier promoted by a non-numeric store is no longer a
+     * numeric tensor -- it is the heterogeneous vector it became, which is
+     * what the bytecode VM answers for the same program. Its dtype (field 4 of
+     * the descriptor, 8 bytes each) records the promotion. */
+    if (out->data) {
+        const uint64_t* descriptor = (const uint64_t*)(uintptr_t)a->data;
+        if (descriptor[4] == 65u /* ESHKOL_TENSOR_DTYPE_BOXED */) out->data = 0;
+    }
 }
 void eshkol_builtin_dual_p(sv_t* out, const sv_t* a) {
     /* Dual numbers have type 6 (ESHKOL_VALUE_DUAL_NUMBER) — they do not

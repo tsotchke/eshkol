@@ -1,0 +1,30 @@
+id: SW-236
+bucket: SILENT-WRONG
+subtag: frontend
+family: macro-hygiene/renamed-binder-spelling
+status: fixed
+closed_at: "bffc9a697"
+title: "type diagnostics and the source form of a procedure showed the expander's _v<n>.<name> binder spelling"
+repro: >-
+  (display (let ((h (lambda (x) x))) h)); a named-let accumulator type
+  warning; a linear-variable clone through a let* alias
+observed: >-
+  (lambda (_v975.x) _v975.x); argument 2 of '_v972.loop'; linear variable
+  '_v973.b' (six typesystem tests failed to match the source name).
+correct: >-
+  (lambda (x) x); argument 2 of 'loop'; linear variable 'b'.
+root_cause: >-
+  ADR-0026 renames every lexical binder; the type checker, the shared
+  diagnostic sink and both S-expression builders printed the implementation
+  name.
+fix: >-
+  syntax_color.h owns the fresh spelling in both directions
+  (ESHKOL_SYNTAX_FRESH_PREFIX, eshkol_syntax_source_spelling,
+  eshkol_syntax_source_text); TypeChecker::emitDiagnostic/addError,
+  eshkol_diagnostic_emit_v1, codegenQuotedAST and HomoiconicCodegen map
+  identifiers to their source spelling.
+evidence: >-
+  ctest renamed_binder_source_form_smoke and
+  renamed_binder_diagnostic_spelling; typesystem suite 126/126.
+caught_by: [release-dry-run]
+missed_by: [vm_parity]

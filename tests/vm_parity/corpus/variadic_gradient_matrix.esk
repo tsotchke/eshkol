@@ -1,0 +1,32 @@
+;; SW-248: gradient of a rest-parameter procedure spreads the point element by
+;; element, however the procedure is written (inline, named, wrapped, rest
+;; with fixed parameters) and whatever the point is (list or vector), on every
+;; engine. Fixed-arity controls must not move.
+(define failures 0)
+(define (show label v want)
+  (display label) (display " ") (display v) (newline)
+  (if (not (equal? (map exact->inexact (vector->list v)) want))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display label) (newline))))
+(define (gw f p) (gradient f p))
+(define (prod . args) (apply * args))
+(define (fixed-rest a b . r) (+ (* a b) (* 3 (car r))))
+(define (two x y) (* x y))
+
+(show "inline list"      (gradient (lambda args (apply * args)) (list 2.0 5.0)) '(5.0 2.0))
+(show "inline vector"    (gradient (lambda args (apply * args)) (vector 2.0 5.0)) '(5.0 2.0))
+(show "named list"       (gradient prod (list 2.0 5.0)) '(5.0 2.0))
+(show "named vector"     (gradient prod (vector 2.0 5.0)) '(5.0 2.0))
+(show "wrapped list"     (gw prod (list 2.0 5.0)) '(5.0 2.0))
+(show "wrapped vector"   (gw (lambda args (apply * args)) (vector 2.0 5.0)) '(5.0 2.0))
+(show "rest+fixed inline list"   (gradient (lambda (a . r) (* a (car r))) (list 2.0 5.0)) '(5.0 2.0))
+(show "rest+fixed inline vector" (gradient (lambda (a . r) (* a (car r))) (vector 2.0 5.0)) '(5.0 2.0))
+(show "rest+fixed named list"    (gradient fixed-rest (list 2.0 5.0 7.0)) '(5.0 2.0 3.0))
+(show "rest+fixed wrapped vector" (gw fixed-rest (vector 2.0 5.0 7.0)) '(5.0 2.0 3.0))
+(show "builtin + list"   (gradient + (list 2.0 5.0)) '(1.0 1.0))
+(show "builtin * vector" (gw * (vector 2.0 5.0)) '(5.0 2.0))
+(show "three args"       (gradient (lambda args (apply * args)) (list 2.0 3.0 4.0)) '(12.0 8.0 6.0))
+;; fixed-arity controls
+(show "fixed inline list"  (gradient (lambda (x y) (* x y)) (list 2.0 5.0)) '(5.0 2.0))
+(show "fixed named vector" (gradient two (vector 2.0 5.0)) '(5.0 2.0))
+(show "fixed wrapped list" (gw two (list 2.0 5.0)) '(5.0 2.0))
+(if (= failures 0) (begin (display "variadic gradient matrix PASS") (newline)))

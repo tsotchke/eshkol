@@ -1130,7 +1130,7 @@ jobs:
   # "Release-blocking readiness".
   release-readiness-gate:
     name: release-readiness-gate
-    timeout-minutes: 360
+    timeout-minutes: 720
     # ICC only exists on the maintainer's self-hosted node (see ICC_BIN
     # below) — a hosted runner can never certify this gate, only report it
     # unavailable. Labels per docs/platform/SELF_HOSTED_RUNNERS.md §2; the
@@ -1145,6 +1145,9 @@ jobs:
       ICC_REPO_REQUESTED: ${{ vars.ICC_REPO || 'eshkol_lang' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Release evidence includes the disclosure scan against origin/master.
+          fetch-depth: 0
 
       # Resolve ICC FIRST so a runner without it decides fast, before spending
       # ~20 min on a build it could never certify. On a real tag push, absence
@@ -1190,9 +1193,10 @@ jobs:
       # runner is a real machine CI has no business mutating, and doing so
       # would require handing it passwordless sudo). This step only
       # resolves what's already there and fails loud+specific if something
-      # is missing. `jq` is an extra requirement this job has beyond the
-      # standard mesh set (it parses ICC's JSON readiness verdict below) —
-      # provision it alongside the rest.
+      # is missing. `jq` (readiness JSON), `sbcl` (the pinned Rosette Wire
+      # oracle), and `prlimit` (Rosette Wire's process sandbox) are extra
+      # requirements this job has beyond the standard mesh set — provision
+      # them alongside the rest.
       - name: Toolchain preflight (self-hosted; provisioned out of band)
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
@@ -1223,6 +1227,8 @@ jobs:
           command -v ninja   >/dev/null 2>&1 || note "ninja is not installed on this runner."
           command -v python3 >/dev/null 2>&1 || note "python3 is not installed on this runner."
           command -v jq      >/dev/null 2>&1 || note "jq is not installed on this runner (needed to parse the ICC readiness verdict)."
+          command -v sbcl    >/dev/null 2>&1 || note "sbcl is not installed on this runner (required by the pinned Rosette Wire release oracle)."
+          command -v prlimit >/dev/null 2>&1 || note "prlimit is not installed on this runner (required by Rosette Wire's isolated worker)."
           # The readiness battery's ledger, oracle and manifest checks parse
           # YAML. A missing PyYAML surfaces deep inside a gate script as
           # "PyYAML is required ..." with the release already built; name it
@@ -1246,6 +1252,21 @@ jobs:
 
           exit $fail
 
+      - name: Prepare isolated Python binding test environment
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_env="$RUNNER_TEMP/eshkol-release-python"
+          python3 -m venv "$python_env"
+          "$python_env/bin/python" -m pip install --disable-pip-version-check pybind11 numpy pyyaml
+          pybind11_dir="$("$python_env/bin/python" -m pybind11 --cmakedir)"
+          test -f "$pybind11_dir/pybind11Config.cmake"
+          {
+            echo "ESHKOL_TEST_PYTHON=$python_env/bin/python"
+            echo "ESHKOL_PYBIND11_DIR=$pybind11_dir"
+          } >> "$GITHUB_ENV"
+
       - name: Configure and build (readiness evidence)
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
@@ -1256,7 +1277,12 @@ jobs:
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
             -DESHKOL_BUILD_TESTS=ON \
-            -DESHKOL_BUILD_AGENT_FFI=ON
+            -DESHKOL_BUILD_AGENT_FFI=ON \
+            -DESHKOL_PYTHON_BINDINGS=ON \
+            -DESHKOL_PYTHON3_EXECUTABLE="$ESHKOL_TEST_PYTHON" \
+            -DPython_EXECUTABLE="$ESHKOL_TEST_PYTHON" \
+            -DPython3_EXECUTABLE="$ESHKOL_TEST_PYTHON" \
+            -Dpybind11_DIR="$ESHKOL_PYBIND11_DIR"
           # Full build: run_vm_parity.sh needs the VM standalone binary, and it
           # is the canonical test_result emitter the dispatch-table invariant
           # consumes — without it architecture-verify false-FAILs.
@@ -1301,36 +1327,41 @@ jobs:
             -DESHKOL_BUILD_AGENT_FFI=ON
           cmake --build build-quantum --parallel 4
 
-      # Regenerate the oracle evidence at the tagged SHA (the readiness recipe's
-      # trace-emitting steps): language-surface coverage, then VM parity.
-      # QUANTUM_BUILD_DIR points run_language_coverage.sh at the quantum tree
-      # built above so its agent.quantum/agent.pqc probe has a real runner
-      # instead of exiting 2 (B3).
-      - name: Emit evidence traces
+      # Each evidence phase has its own step budget. Coverage/full-suite and VM
+      # parity run first; the expensive smoke battery follows against the same
+      # captured build cohort; the remaining focused gates run before final ICC.
+      - name: Release evidence baseline (coverage and VM parity)
         if: env.ICC_AVAILABLE == 'true'
+        timeout-minutes: 360
         shell: bash
         env:
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
           QUANTUM_BUILD_DIR: build-quantum
-        run: |
-          set -euxo pipefail
-          scripts/run_language_coverage.sh
-          scripts/run_vm_parity.sh
+        run: scripts/run_v1_3_readiness.sh --phase baseline
 
-      # Refresh all stores for the alias bound above, then run the incident-class
-      # architecture invariants and emit the architecture_model evidence.
-      - name: ICC architecture-verify
+      - name: Release smoke evidence
         if: env.ICC_AVAILABLE == 'true'
+        timeout-minutes: 360
         shell: bash
-        run: |
-          set -euxo pipefail
-          "$ICC_BIN" reindex --repo "$ICC_REPO" --full
-          "$ICC_BIN" architecture-verify \
-            --repo "$ICC_REPO" \
-            --model .icc/architecture-model.yaml \
-            --trace-dir scripts/icc_traces \
-            --emit-trace
+        env:
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
+          QUANTUM_BUILD_DIR: build-quantum
+        run: scripts/run_v1_3_readiness.sh --phase smoke
 
-      # The gate. run_v1_3_readiness.sh refreshes the smoke trace, asks ICC for
+      - name: Remaining release producers and architecture verification
+        if: env.ICC_AVAILABLE == 'true'
+        timeout-minutes: 360
+        shell: bash
+        env:
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
+          QUANTUM_BUILD_DIR: build-quantum
+        run: scripts/run_v1_3_readiness.sh --phase final-evidence
+
+      # The canonical recipe owns every required producer, refreshes one trace
+      # cohort, reindexes ICC and emits the final architecture verdict before
+      # asking ICC for trace-aware v1.3.5-evolve readiness.
+      #
+      # The gate. run_v1_3_readiness.sh asks ICC for
       # trace-aware v1.3.5-evolve readiness, and exits nonzero unless status ==
       # ready. The explicit re-read then asserts score == 100 so the gate is
       # literally "ready/100"; missing or nonnumeric scores cannot pass.
@@ -1339,7 +1370,11 @@ jobs:
       - name: ICC readiness gate (tag push or strict dry run requires ready/100)
         id: readiness
         if: env.ICC_AVAILABLE == 'true'
+        timeout-minutes: 360
         shell: bash
+        env:
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
+          QUANTUM_BUILD_DIR: build-quantum
         run: |
           set -uxo pipefail
           echo "receipt_created=false" >> "$GITHUB_OUTPUT"
@@ -1365,7 +1400,7 @@ jobs:
             exit 0
           fi
 
-          if ! scripts/run_v1_3_readiness.sh; then
+          if ! scripts/run_v1_3_readiness.sh --phase readiness; then
             verdict "scripts/run_v1_3_readiness.sh reported v1.3.5-evolve is not ready."
             readiness_command_failed=1
           fi
@@ -1425,6 +1460,7 @@ jobs:
             scripts/icc_traces/
             .icc/runtime-traces/
             .icc/runtime-traces-oracle-view/
+            .scratch/v1-3-readiness/SANITIZER_FUZZ_REPORT.md
           if-no-files-found: ignore
 
       - name: Upload bound release-readiness receipt
@@ -1436,16 +1472,19 @@ jobs:
           if-no-files-found: error
 
       # A hosted runner is destroyed after the job; this self-hosted node is
-      # not, and this job leaves three build trees behind (build,
-      # build-quantum, build-fuzz). Reclaim them so a shared node doesn't fill
+      # not, and this job leaves four build trees behind (build,
+      # build-quantum, build-fuzz, build-asan-ubsan) plus two private scratch
+      # build outputs. Reclaim them so a shared node doesn't fill
       # up over successive release attempts — same rationale as mesh-matrix's
-      # "Reclaim build tree" step in ci-mesh.yml.
+      # "Reclaim build tree" step in ci-mesh.yml. The sanitizer and isolated
+      # stdlib checks also use private build trees and are reclaimed here.
       - name: Reclaim build trees
         if: always()
         shell: bash
         run: |
           set -u
-          rm -rf build build-quantum build-fuzz || true
+          rm -rf build build-quantum build-fuzz build-asan-ubsan \
+            .scratch/v1-3-readiness .scratch/icc-stdlib-rebuild || true
 
   publish-release:
     name: publish-release

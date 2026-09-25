@@ -1,0 +1,40 @@
+id: SW-192
+bucket: SILENT-WRONG
+family: macro/definition-site-scope
+status: fixed
+closed_at: "ea7677b6a"
+title: "Macro bindings and template references must preserve lexical definition scope"
+repro: >-
+  Define a macro named when whose false branch explicitly returns #f; use
+  let-syntax and letrec-syntax with an outer macro of the same name; reference
+  and mutate a template's free value beneath a caller binding of that name.
+observed_before: >-
+  Native keyword lowering ignored the when binding. VM scoped bindings were
+  never registered. Both engines resolved template references at the use site.
+  Measured before the fix on fix/v135f-macro (base 62c5b1b32): a template's
+  do, let-values or internal-define binder captured caller code or lost its
+  operand on native; (let ((lambda 3)) ((thunk 8))) and a macro-defining macro
+  failed on native; the VM crashed on template do/let-values binders, expanded
+  a macro whose keyword a caller's local bound, matched no dotted tails, and
+  did not see a macro used above its definition.
+correct: >-
+  Both engines execute the user macro, distinguish let-syntax from letrec-syntax,
+  preserve definition-site free identifiers, and preserve caller pattern syntax.
+evidence: >-
+  Fixed at ea7677b6a (ADR-0026): one syntax-rules engine
+  (inc/eshkol/frontend/syntax_rules_core.h) and one renaming rule
+  (inc/eshkol/frontend/syntax_color.h) on both engines; no refusal or waiver.
+  Re-measured on fix/v135f-macro, Release, arm64 macOS:
+  tests/vm_parity/corpus/92_macro_definition_scope.esk 14/14 on native JIT,
+  AOT and VM (ctest macro_definition_scope);
+  tests/vm_parity/corpus/93_macro_hygiene_matrix.esk 56/56 hand-computed
+  checks on native JIT, AOT and VM (ctest macro_hygiene_matrix) and on vm-eskb;
+  syntax_rules_core_test 14/14 (engine compiled as plain C);
+  scripts/run_vm_parity.sh 373 passed, 0 failed; scripts/run_macros_tests.sh
+  11/11.
+caught_by: [owner-ruling, v135-finish-audit]
+missed_by: [vm_parity, macro_tests]
+notes: >-
+  The refusal guard of f646213d5 (reverted in 01d887d91) is not part of the
+  fix: special-form macro bindings, shadowed special forms and user
+  redefinitions of builtins all keep their meaning in templates.

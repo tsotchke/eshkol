@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/core/sexp_to_ast.h>
+#include <eshkol/frontend/ast_strings.h>
 #include <eshkol/core/introspection.h>
 #include <eshkol/logger.h>
 #include "arena_memory.h"
@@ -176,7 +177,7 @@ eshkol_ast_t* convert_lambda(eshkol_tagged_value_t sexp) {
             const char* param_name = get_symbol_name(param_sexps[i]);
             if (param_name) {
                 params[i].type = ESHKOL_VAR;
-                params[i].variable.id = strdup(param_name);
+                params[i].variable.id = eshkol_ast_strdup(param_name);
                 params[i].variable.data = nullptr;
             } else {
                 eshkol_error("sexp_to_ast: lambda parameter must be a symbol");
@@ -257,7 +258,7 @@ eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
         const char* name = get_symbol_name(second);
         eshkol_tagged_value_t value_sexp = list_ref(sexp, 2);
 
-        ast->operation.define_op.name = strdup(name);
+        ast->operation.define_op.name = eshkol_ast_strdup(name);
         ast->operation.define_op.value = convert_sexp(value_sexp);
         ast->operation.define_op.is_function = 0;
         ast->operation.define_op.parameters = nullptr;
@@ -297,7 +298,7 @@ eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
                 const char* param_name = get_symbol_name(param_sexps[i]);
                 if (param_name) {
                     params[i].type = ESHKOL_VAR;
-                    params[i].variable.id = strdup(param_name);
+                    params[i].variable.id = eshkol_ast_strdup(param_name);
                     params[i].variable.data = nullptr;
                 }
             }
@@ -332,7 +333,7 @@ eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
             body = seq;
         }
 
-        ast->operation.define_op.name = strdup(name);
+        ast->operation.define_op.name = eshkol_ast_strdup(name);
         ast->operation.define_op.value = body;
         ast->operation.define_op.is_function = 1;
         ast->operation.define_op.parameters = params;
@@ -426,7 +427,7 @@ eshkol_ast_t* convert_let(eshkol_tagged_value_t sexp, eshkol_op_t let_type) {
 
             // Variable
             bindings[i * 2].type = ESHKOL_VAR;
-            bindings[i * 2].variable.id = strdup(var_name);
+            bindings[i * 2].variable.id = eshkol_ast_strdup(var_name);
             bindings[i * 2].variable.data = nullptr;
 
             // Value
@@ -554,7 +555,7 @@ eshkol_ast_t* convert_set(eshkol_tagged_value_t sexp) {
     eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
     ast->type = ESHKOL_OP;
     ast->operation.op = ESHKOL_SET_OP;
-    ast->operation.set_op.name = strdup(var_name);
+    ast->operation.set_op.name = eshkol_ast_strdup(var_name);
     ast->operation.set_op.value = convert_sexp(val_sexp);
 
     return ast;
@@ -1018,7 +1019,7 @@ eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
         eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
         ast->type = ESHKOL_STRING;
         size_t len = (size_t)eshkol_string_byte_length(str);
-        ast->str_val.ptr = new char[len + 1];
+        ast->str_val.ptr = eshkol_ast_string_alloc(len + 1);
         memcpy(ast->str_val.ptr, str, len);
         ast->str_val.ptr[len] = 0;
         ast->str_val.size = len + 1;
@@ -1142,7 +1143,7 @@ eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
             eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
             ast->type = ESHKOL_STRING;
             size_t len = (size_t)eshkol_string_byte_length(str);
-            ast->str_val.ptr = new char[len + 1];
+            ast->str_val.ptr = eshkol_ast_string_alloc(len + 1);
             if (ast->str_val.ptr) {
                 memcpy(ast->str_val.ptr, str, len);
                 ast->str_val.ptr[len] = 0;

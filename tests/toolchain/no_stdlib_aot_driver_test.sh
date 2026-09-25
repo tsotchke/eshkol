@@ -6,6 +6,8 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 
 ESHKOL_RUN="${1:-${ESHKOL_RUN:-}}"
 if [[ -z "$ESHKOL_RUN" || ! -x "$ESHKOL_RUN" ]]; then
@@ -28,10 +30,12 @@ fail() {
 }
 
 SOURCE="$WORK/zero.esk"
-cat > "$SOURCE" <<'EOF'
+SOURCE_TMP="$(eshkol_install_tmp "$SOURCE")" || exit $?
+cat > "$SOURCE_TMP" <<'EOF'
 (display 0)
 (newline)
 EOF
+eshkol_install_checked "$SOURCE_TMP" "$SOURCE" || exit $?
 
 if ! env -u ESHKOL_CXX_COMPILER "$ESHKOL_RUN" -n -r "$SOURCE" \
         >"$WORK/jit.out" 2>"$WORK/jit.err"; then

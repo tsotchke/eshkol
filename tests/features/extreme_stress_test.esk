@@ -161,14 +161,20 @@
 
 (check "Z-combinator factorial(6)" 720 ((Z fact-gen) 6))
 
-;; Mutual recursion via Y
+;; Mutual recursion via Z. Z ties the knot through a ONE-argument procedure
+;; (the eta-expanded (x x)), so the recursive handle is called with a
+;; selector. The old form called that handle with no arguments, (self),
+;; and got a pair back only because a missing argument was padded with
+;; null; applying a one-argument procedure to none is an error (R7RS 4.1.3),
+;; and the call protocol now raises it.
 (define (make-mutual-y)
   (let ((even-odd
          (Z (lambda (self)
-              (cons
-               (lambda (n) (if (= n 0) #t ((cdr (self)) (- n 1))))
-               (lambda (n) (if (= n 0) #f ((car (self)) (- n 1)))))))))
-    even-odd))
+              (lambda (which)
+                (if (eq? which 'even)
+                    (lambda (n) (if (= n 0) #t ((self 'odd) (- n 1))))
+                    (lambda (n) (if (= n 0) #f ((self 'even) (- n 1))))))))))
+    (cons (even-odd 'even) (even-odd 'odd))))
 
 (define my-eo (make-mutual-y))
 (check "Y-mutual even(8)" #t ((car my-eo) 8))

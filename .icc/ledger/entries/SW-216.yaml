@@ -1,0 +1,41 @@
+id: SW-216
+bucket: SILENT-WRONG
+family: native/closure-call-arity
+status: fixed
+closed_at: "98d0a9250"
+title: "native closure calls through a procedure value silently drop surplus arguments and pad missing ones"
+repro: >-
+  (define (h2 f a b) (f a b)) (display (h2 (lambda (x) x) 1 2))
+  (define (h1 f a) (f a)) (display (h1 (lambda (x y) x) 1))
+observed_before: >-
+  Native prints 1 and 1, exit 0, no diagnostic: the closure dispatcher padded a
+  short call with null and dropped a surplus argument. A direct
+  ((lambda (x) x) 1 2) only warned at compile time. The VM refused both, but
+  fatally.
+correct: >-
+  A catchable R7RS error: "Arity mismatch: <procedure> expects 1 argument but
+  got 2" (and "expects at least N" for a rest-parameter procedure's fixed
+  part), identical on both engines.
+fix: >-
+  codegenClosureCall checks the recorded arity (exactly fixed_params, or at
+  least fixed_params when variadic) before dispatch and raises through
+  eshkol_procedure_call_error (lib/core/runtime_errors_hosted.cpp), replacing
+  the padding path and the apply-only overflow refusal. Producers that
+  recorded arity 0 now record the real one: first-class math and I/O builtins
+  use emitFunctionAsCallableValue, the curried derivative closure records its
+  parameter, and the make-vector value form takes its fill (as make-string
+  does). The first-class builtin probe for apply was itself a wrong-arity call
+  and is corrected in tests/coverage/builtins_first_class_known_args.json.
+remeasured: >-
+  At 98d0a9250 (fix/v135f-vmrt): procedure_call_protocol.esk is
+  byte-identical on native and VM (surplus, missing, variadic minimum,
+  correct calls); ctest native_procedure_call_protocol_jit and _aot pass;
+  value_position_axis_sweep, first_class_builtins_* and the AD closure
+  suites pass. WASM glue carries eshkol_procedure_call_error
+  (wasm_flat_ad_import_test passes).
+caught_by: [v135f-coordinator-audit]
+missed_by: [vm_parity, value_position_axis_sweep]
+notes: >-
+  Native error objects raised by the runtime satisfy error-object? only once
+  SW-215 (gates lane) is integrated; until then a guard catches the condition
+  but error-object? answers #f natively.

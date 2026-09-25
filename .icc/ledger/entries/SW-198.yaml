@@ -1,0 +1,47 @@
+id: SW-198
+bucket: SILENT-WRONG
+family: vm/parallel-ad-carrier-ownership
+status: fixed
+closed_at: "417fcfd4e"
+needs_decision: false
+title: "VM parallel AD results retain worker-owned exact carrier storage"
+repro: >-
+  Differentiate and Hessian a fold over parallel-map at exact rational points,
+  including a tiny bignum rational, then let the worker VM be destroyed.
+observed: >-
+  Normal builds can print plausible values, but AddressSanitizer reports a
+  heap-use-after-free in vm_rational_arith_exact -> vm_dual_add when the parent
+  consumes exact halves owned by a destroyed worker. Taylor coefficient arrays
+  and their exact rational sidecars have the same ownership defect.
+correct: >-
+  Publishing a worker result deep-copies every dual/Taylor coefficient channel,
+  bignum limb buffer and exact rational sidecar into parent-owned storage; the
+  region evacuator retains every channel it can later expose.
+evidence: >-
+  .scratch/parallel-ad-transfer-asan.log records the original UAF. The local
+  fix deep-clones scalar halves plus all four coefficient/exact channels and
+  extends region retention. Source VM, emitted ESKB and an ASan/UBSan VM run of
+  parallel_ad_carrier_lifetime pass; leak detection was disabled and native
+  runtime libraries were not sanitizer-instrumented.
+caught_by: [address-sanitizer, release-ad-carrier-audit]
+missed_by: [vm_parity, normal-runtime-smoke]
+notes: >-
+  Source is not yet committed to the release cut. Keep open until integrated
+  sanitizer and release qualification complete.
+fix: >-
+  Leaf payloads crossing between VM instances go through one facility,
+  vm_leaf_payload_clone_to() in lib/backend/vm_parallel.c, in both directions
+  (main -> worker snapshot, worker -> main publication). It deep-copies
+  bignum limbs, exact rationals, all four dual/Taylor coefficient and exact
+  channels, and now also the dual parts of a complex value, which the old
+  per-direction arms copied as bare structs. The region evacuator retains
+  complex parts transitively (their blocks are scanned for interior pointers),
+  so no evacuator change was needed.
+remeasured: >-
+  At 417fcfd4e (fix/v135f-vmrt): parallel_ad_carrier_lifetime passes on
+  native, VM source and ESKB (run_vm_parity.sh 373/0) and 50 consecutive runs
+  under an ASan+UBSan VM (detect_leaks=0; native runtime libraries not
+  instrumented) report no finding. Complex results carrying derivatives
+  published from workers pass under ASan; the complex-part copy was found by
+  inspection, since no measured VM program yet produces complex parts with
+  exact or Taylor channels (see SW-199, SW-200).

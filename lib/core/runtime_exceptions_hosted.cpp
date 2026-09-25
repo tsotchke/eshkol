@@ -25,13 +25,13 @@
 // ===== EXCEPTION HANDLING IMPLEMENTATION =====
 // Runtime support for R7RS-compatible exception handling
 
-// Global exception state
-eshkol_exception_t* g_current_exception = nullptr;
-eshkol_exception_handler_t* g_exception_handler_stack = nullptr;
+// A worker must never observe another thread's setjmp destination or condition.
+thread_local eshkol_exception_t* g_current_exception = nullptr;
+thread_local eshkol_exception_handler_t* g_exception_handler_stack = nullptr;
 
 // R7RS: stores the original raised tagged_value for with-exception-handler
-eshkol_tagged_value_t g_raised_tagged_value = {0, 0, 0, {0}};
-static bool g_raised_value_set_by_user = false;
+thread_local eshkol_tagged_value_t g_raised_tagged_value = {0, 0, 0, {0}};
+static thread_local bool g_raised_value_set_by_user = false;
 
 // Promise evaluation is an intrusive, thread-local chain. While a promise is
 // being evaluated its cached-value slot temporarily stores the previous chain
@@ -155,16 +155,15 @@ extern "C" void eshkol_get_raised_value(eshkol_tagged_value_t* out) {
 // Create a new exception object with object header (for consolidated HEAP_PTR type)
 extern "C" eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message) {
     arena_t* arena = __repl_shared_arena.load();
-    if (!arena) {
-        eshkol_error("No arena available for exception allocation");
-        return nullptr;
-    }
 
     size_t data_size = sizeof(eshkol_exception_t);
     size_t total = sizeof(eshkol_object_header_t) + data_size;
     total = (total + 7) & ~7;
 
-    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
+    // Before the process arena exists (a failure during startup) the
+    // condition comes from the C heap; it is never freed, like any condition.
+    uint8_t* mem = arena ? (uint8_t*)arena_allocate_aligned(arena, total, 8)
+                         : (uint8_t*)std::malloc(total);
     if (!mem) {
         eshkol_error("Failed to allocate exception with header");
         return nullptr;
@@ -181,7 +180,7 @@ extern "C" eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exceptio
     exc->type = type;
     if (message) {
         size_t len = strlen(message) + 1;
-        exc->message = (char*)arena_allocate(arena, len);
+        exc->message = arena ? (char*)arena_allocate(arena, len) : (char*)std::malloc(len);
         if (exc->message) {
             memcpy(exc->message, message, len - 1);
             exc->message[len - 1] = '\0';
@@ -198,51 +197,34 @@ extern "C" eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exceptio
     return exc;
 }
 
-// Create a new exception object (legacy - no header)
+// Create a new exception object.
+//
+// There is one exception layout: header-prefixed. eshkol_raise publishes every
+// condition as a HEAP_PTR tagged value, and every reader of a HEAP_PTR --
+// error-object?, display, the region evacuator -- classifies it by the object
+// header eight bytes below the payload. This entry point used to allocate the
+// payload alone, so the header those readers consulted was whatever the arena
+// held before it: a runtime type error such as (car 5) reached a guard handler
+// as something error-object? rejected and display printed as a pair. The
+// header-less form had no reader that needed it, so it is gone rather than
+// kept beside the other.
 extern "C" eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message) {
-    arena_t* arena = __repl_shared_arena.load();
-    if (!arena) {
-        // Allocate from heap if no arena available
-        eshkol_exception_t* exc = (eshkol_exception_t*)malloc(sizeof(eshkol_exception_t));
-        if (!exc) return nullptr;
-
-        exc->type = type;
-        exc->message = message ? strdup(message) : nullptr;
-        exc->irritants = nullptr;
-        exc->num_irritants = 0;
-        exc->line = 0;
-        exc->column = 0;
-        exc->filename = nullptr;
-        return exc;
-    }
-
-    // Allocate from arena
-    eshkol_exception_t* exc = (eshkol_exception_t*)arena_allocate(arena, sizeof(eshkol_exception_t));
-    if (!exc) return nullptr;
-
-    exc->type = type;
-    if (message) {
-        size_t len = strlen(message) + 1;
-        exc->message = (char*)arena_allocate(arena, len);
-        if (exc->message) {
-            memcpy(exc->message, message, len - 1);
-            exc->message[len - 1] = '\0';
-        }
-    } else {
-        exc->message = nullptr;
-    }
-    exc->irritants = nullptr;
-    exc->num_irritants = 0;
-    exc->line = 0;
-    exc->column = 0;
-    exc->filename = nullptr;
-
-    return exc;
+    return eshkol_make_exception_with_header(type, message);
 }
+
+extern "C" void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
+                                                 const void* dst,
+                                                 const eshkol_tagged_value_t* value);
 
 // Add an irritant to an exception
 extern "C" void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant) {
     if (!exc) return;
+
+    // The condition lives in the process arena, so it outlives any region the
+    // irritant was built in, and region exit only walks region-owned objects.
+    // Storing an irritant is a store into a longer-lived object: it goes
+    // through the same region write barrier as every other mutation channel.
+    eshkol_region_write_barrier_into(&irritant, exc, &irritant);
 
     // Grow irritants array
     uint32_t new_count = exc->num_irritants + 1;
@@ -785,6 +767,50 @@ static char* eshkol_find_provider_file(const char* name) {
     return strdup(res.best_path.c_str());
 }
 
+// Restore every piece of thread-local dynamic state a control transfer to
+// @p handler must leave behind: dynamic-wind after-thunks, pending promise
+// evaluations, regions opened since (promoting @p inflight out of them) and
+// reverse-mode AD state. The one facility for eshkol_raise and for a parallel
+// callback's unwind boundary (eshkol_exception_unwind_state_to_depth).
+static void eshkol_restore_state_for_handler(eshkol_exception_handler_t* handler,
+                                             eshkol_tagged_value_t* inflight) {
+        eshkol_unwind_dynamic_wind(handler->wind_mark);
+        eshkol_promise_eval_unwind_to(
+            handler->promise_mark);
+        // #341: close every region opened after the handler was installed — an
+        // open `region-open` handle or a `with-region` body the raise is jumping
+        // out of. The raised value is passed as the in-flight value so it is
+        // deep-promoted out of each region before that region's arena is freed;
+        // without this the handler would receive a pointer into freed memory
+        // (and the allocation slot would still point at the dead arena).
+        // The exception STRUCT itself needs no promotion: exceptions are
+        // allocated from __repl_shared_arena, which region entry never hijacks.
+        eshkol_region_unwind_to(handler->region_mark,
+                                inflight, inflight ? 1 : 0);
+        // Restore the reverse-mode AD state the handler was installed with.
+        // The gradient pass this raise is jumping out of published its tape and
+        // turned AD mode on; its matching "off" store lives on the normal exit
+        // path the longjmp skips. Leaving them set makes every later tensor
+        // operation in the program return an AD-node carrier instead of a
+        // number -- silently, with no diagnostic anywhere.
+        eshkol_ad_state_restore(handler->ad_mode_active,
+                                handler->ad_tape_depth,
+                                handler->ad_tape_current,
+                                handler->ad_seed_node,
+                                handler->ad_mixed_record_count);
+}
+
+// True when a raise now would be caught: a guard (or with-exception-handler)
+// frame with a landing point is installed. The runtime's own error sites ask
+// this before they print a report, so a condition a handler catches prints
+// nothing -- the handler decides what the program says -- while an uncaught
+// one is still reported before eshkol_raise prints "Unhandled exception" and
+// exits. The condition is a program value either way; only the report depends
+// on whether someone is listening.
+extern "C" int eshkol_raise_will_be_handled(void) {
+    return g_exception_handler_stack && g_exception_handler_stack->jmp_buf_ptr ? 1 : 0;
+}
+
 extern "C" void eshkol_raise(eshkol_exception_t* exception) {
     g_current_exception = exception;
 
@@ -802,30 +828,8 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
         // A longjmp skips generated normal-exit code.  Unwind dynamic-wind
         // first so parameterize after-thunks pop their eshkol_param_t stack
         // entries (and ordinary dynamic-wind cleanup retains R7RS ordering).
-        eshkol_unwind_dynamic_wind(g_exception_handler_stack->wind_mark);
-        eshkol_promise_eval_unwind_to(
-            g_exception_handler_stack->promise_mark);
-        // #341: close every region opened after the handler was installed — an
-        // open `region-open` handle or a `with-region` body the raise is jumping
-        // out of. The raised value is passed as the in-flight value so it is
-        // deep-promoted out of each region before that region's arena is freed;
-        // without this the handler would receive a pointer into freed memory
-        // (and the allocation slot would still point at the dead arena).
-        // The exception STRUCT itself needs no promotion: exceptions are
-        // allocated from __repl_shared_arena, which region entry never hijacks.
-        eshkol_region_unwind_to(g_exception_handler_stack->region_mark,
-                                &g_raised_tagged_value, 1);
-        // Restore the reverse-mode AD state the handler was installed with.
-        // The gradient pass this raise is jumping out of published its tape and
-        // turned AD mode on; its matching "off" store lives on the normal exit
-        // path the longjmp skips. Leaving them set makes every later tensor
-        // operation in the program return an AD-node carrier instead of a
-        // number -- silently, with no diagnostic anywhere.
-        eshkol_ad_state_restore(g_exception_handler_stack->ad_mode_active,
-                                g_exception_handler_stack->ad_tape_depth,
-                                g_exception_handler_stack->ad_tape_current,
-                                g_exception_handler_stack->ad_seed_node,
-                                g_exception_handler_stack->ad_mixed_record_count);
+        eshkol_restore_state_for_handler(g_exception_handler_stack,
+                                         &g_raised_tagged_value);
         // Jump to the handler
         longjmp(*(jmp_buf*)g_exception_handler_stack->jmp_buf_ptr, 1);
     } else {
@@ -848,6 +852,94 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
         fprintf(stderr, "\n");
         exit(1);
     }
+}
+
+// #713: the allocation-failure condition.
+//
+// Every other condition is built at raise time from the process arena. An
+// allocation failure is exactly the case where that allocation may fail too --
+// and where, if it succeeded inside an open region, the raise would have to
+// promote the condition out of that region under the same exhaustion. So each
+// thread reserves this one condition ahead of time, in a small private arena
+// that no region, scope rewind or loop reclamation ever touches: raising it
+// allocates nothing, and the region unwind that carries it to the handler finds
+// nothing to copy. The object is built by the canonical header allocator, so it
+// has whatever header layout the object ABI defines.
+//
+// The reservation is made when the thread first enters a region (region_push),
+// which is before any promotion can fail, and retried here if that did not
+// happen. A later failure on the same thread rewrites the message of a
+// condition a handler kept; the object stays valid for the thread's lifetime.
+namespace {
+
+constexpr size_t kAllocationFailureMessageBytes = 256;
+
+struct AllocationFailureReserve {
+    arena_t* arena = nullptr;
+    eshkol_exception_t* condition = nullptr;
+    char* message = nullptr;
+    ~AllocationFailureReserve() {
+        if (arena) arena_destroy(arena);
+    }
+};
+
+AllocationFailureReserve& allocation_failure_reserve() {
+    static thread_local AllocationFailureReserve reserve;
+    return reserve;
+}
+
+} // namespace
+
+extern "C" void eshkol_reserve_allocation_failure_condition(void) {
+    AllocationFailureReserve& r = allocation_failure_reserve();
+    if (r.condition) return;
+    arena_t* arena = arena_create(1024);
+    if (!arena) return;
+    auto* condition = (eshkol_exception_t*)arena_allocate_with_header(
+        arena, sizeof(eshkol_exception_t), HEAP_SUBTYPE_EXCEPTION, 0);
+    auto* message = (char*)arena_allocate(arena, kAllocationFailureMessageBytes);
+    if (!condition || !message) {
+        arena_destroy(arena);
+        return;
+    }
+    std::memset(condition, 0, sizeof(*condition));
+    condition->type = ESHKOL_EXCEPTION_ERROR;
+    message[0] = '\0';
+    condition->message = message;
+    r.arena = arena;
+    r.condition = condition;
+    r.message = message;
+}
+
+extern "C" void eshkol_raise_allocation_failure(const char* operation, size_t bytes) {
+    const char* what = (operation && operation[0]) ? operation : "allocation";
+    char text[kAllocationFailureMessageBytes];
+    if (bytes != 0) {
+        std::snprintf(text, sizeof(text),
+                      "%s: out of memory (could not allocate %zu bytes); nothing was stored",
+                      what, bytes);
+    } else {
+        std::snprintf(text, sizeof(text), "%s: out of memory; nothing was stored", what);
+    }
+
+    eshkol_reserve_allocation_failure_condition();
+    AllocationFailureReserve& r = allocation_failure_reserve();
+    if (!r.condition) {
+        // Not even the reservation could be made: stop here rather than let
+        // the caller continue past a promotion that did not happen.
+        std::fprintf(stderr, "Unhandled exception: %s\n", text);
+        std::exit(1);
+    }
+    std::memcpy(r.message, text, sizeof(text));
+    r.condition->type = ESHKOL_EXCEPTION_ERROR;
+    r.condition->message = r.message;
+    r.condition->irritants = nullptr;
+    r.condition->num_irritants = 0;
+    r.condition->line = 0;
+    r.condition->column = 0;
+    r.condition->filename = nullptr;
+    eshkol_raise(r.condition);
+    std::exit(1);   // eshkol_raise does not return; never continue past it
 }
 
 extern "C" void eshkol_raise_secondary_exception(eshkol_exception_t* original) {
@@ -1152,3 +1244,18 @@ extern "C" void eshkol_display_exception(eshkol_exception_t* exc) {
 }
 
 // ===== END EXCEPTION HANDLING IMPLEMENTATION =====
+
+// Restore the dynamic state recorded by the handler at @p depth (as returned by
+// eshkol_exception_handler_depth() right after it was pushed), without
+// transferring control. Used by a parallel callback's unwind boundary when a
+// continuation captured on another thread is invoked inside the callback: the
+// callback's extent is abandoned on this thread and the transfer is completed
+// on the owning thread after the join.
+extern "C" void eshkol_exception_unwind_state_to_depth(int64_t depth,
+                                                      eshkol_tagged_value_t* inflight) {
+    eshkol_exception_handler_t* handler = g_exception_handler_stack;
+    int64_t d = g_exception_handler_depth;
+    while (handler && d > depth) { handler = handler->prev; d--; }
+    if (!handler || d != depth) return;
+    eshkol_restore_state_for_handler(handler, inflight);
+}

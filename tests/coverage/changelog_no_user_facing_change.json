@@ -1,0 +1,97 @@
+{
+  "schema": "eshkol.changelog-no-user-facing-change.v1",
+  "_comment": "Merged pull requests of the release range that deliberately have no CHANGELOG entry. scripts/check_changelog_completeness.py walks <previous_tag>..HEAD (both tags come from tests/coverage/release_record.json), derives every merged pull request number from the commit subjects, and fails unless each one is either referenced as #N in the changelog section for the release (or in [Unreleased]) or listed here. An entry names the pull request, a class from the gate's closed set (ci, test-only, docs-only, release-machinery, build-internal, merge-integration, reverted-or-superseded) and a specific reason a user cannot observe the change. The gate also fails an entry that is stale (not in the range), redundant (also referenced in the changelog: one home per pull request), duplicated, generically worded or out of order. Keep entries sorted by pull request number. A pull request may add its own entry before it merges: CI names it with --pending-pr, so the entry is not graded stale. The ledger is per release: when the release record's tag moves on, set \"release\" to the new tag and delete the entries the gate then reports as stale.",
+  "release": "v1.3.5-evolve",
+  "entries": [
+    {
+      "pr": 391,
+      "class": "ci",
+      "reason": "Adds an advisory placeholder job to the CI workflow and leaves every required lane unchanged; only .github/workflows/ci.yml is touched."
+    },
+    {
+      "pr": 467,
+      "class": "release-machinery",
+      "reason": "Replaces a placeholder completion-oracle target for a future milestone with per-deliverable criteria and the harness that emits them; oracle configuration and its test only."
+    },
+    {
+      "pr": 477,
+      "class": "ci",
+      "reason": "Removes a duplicate push trigger, makes the docs-only changes gate fall back to running everything when its diff cannot be computed, and adds opt-in self-hosted lanes; workflow files and the contributor CI pages that describe them."
+    },
+    {
+      "pr": 485,
+      "class": "ci",
+      "reason": "Extends the docs-only required-context stub job to every matrix-derived required context, adds the consistency checker that keeps it in step, and retries network setup steps; workflow and gate wiring only."
+    },
+    {
+      "pr": 493,
+      "class": "release-machinery",
+      "reason": "Adds the release's completion-oracle target, builds the quantum tree in the release readiness job, gives the evidence-staleness gate a NO_DATA verdict and derives key-space invariants from source; the documentation edits are line-count citation refreshes."
+    },
+    {
+      "pr": 502,
+      "class": "ci",
+      "reason": "Moves the release readiness job in the release workflow onto a self-hosted runner label with a toolchain preflight step; one workflow file."
+    },
+    {
+      "pr": 537,
+      "class": "build-internal",
+      "reason": "Behaviour-preserving split of the VM dispatch source file into operation, frame, control, limit and lifecycle modules; VM test subsets, parity results and the regenerated prelude cache are unchanged."
+    },
+    {
+      "pr": 568,
+      "class": "test-only",
+      "reason": "Adds a permanent regression fixture that checks an exact Jacobian determinant of a polynomial map through reverse-mode AD on both engines, with its ledger records; the fixes it pins landed in other pull requests."
+    },
+    {
+      "pr": 585,
+      "class": "ci",
+      "reason": "Routes automatic pull-request and push CI to self-hosted capacity, keeps the hosted lanes as a manual fallback and adds the cost-policy check; workflows, CI scripts and their tests."
+    },
+    {
+      "pr": 589,
+      "class": "test-only",
+      "reason": "Makes the dataloader test call the canonical dataloader-has-next? name as well as its alias so the language-surface coverage gate records execution evidence for both; one test file."
+    },
+    {
+      "pr": 594,
+      "class": "test-only",
+      "reason": "Resizes the VM heap-budget watchdog fixture so it crosses the budget again after the closure-capture storage change shrank heap objects; the watchdog itself is unchanged."
+    },
+    {
+      "pr": 612,
+      "class": "merge-integration",
+      "reason": "Integration pull request that lands the release candidate branch on master; it has no change of its own, and the work it carries is accounted for under the individually numbered pull requests of this range and the entries of the release section."
+    },
+    {
+      "pr": 624,
+      "class": "build-internal",
+      "reason": "Removes a merge-conflict marker that an earlier merge in this same release range left in a C source file outside the build's source list; no released build contained it."
+    },
+    {
+      "pr": 660,
+      "class": "test-only",
+      "reason": "Makes the smoke probe for the large-procedure VM regression count the descriptive PASS lines that test prints, so a passing test is no longer reported red; one harness script."
+    },
+    {
+      "pr": 661,
+      "class": "ci",
+      "reason": "Adds the Glorot initializer builtin names, which are public machine-learning vocabulary, to the disclosure gate's allowlist so the gate stops flagging the documented language surface."
+    },
+    {
+      "pr": 662,
+      "class": "test-only",
+      "reason": "Extends the object-header ratchet baseline to the seeded ESKM fuzz probe and rewords a self-test's negative case so the self-verdict scanner does not misread it; evidence hygiene for two gates."
+    },
+    {
+      "pr": 679,
+      "class": "ci",
+      "reason": "Bounds the sanitizer lane's build parallelism and resizes the Windows ARM64 compile-time guards and a fast-pillar budget to the hosted runners' measured capacity; CI budgets only."
+    },
+    {
+      "pr": 718,
+      "class": "test-only",
+      "reason": "The ESKM preflight test runner no longer passes empty compiler arguments; test harness only."
+    }
+  ]
+}

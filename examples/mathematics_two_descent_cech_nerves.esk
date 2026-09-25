@@ -49,8 +49,11 @@
 ;;      would repair it. The order complex of the pseudo-2-sphere is
 ;;      confirmed to have H^2 = Z.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples; inner loop
-;; variables never reuse an outer named-let parameter's name (F12).
+;; NOTE: as in the sibling examples, inner loop variables never reuse an
+;; outer named-let parameter's name; the defect that misreported such a
+;; shadowed parameter as undefined (LE-20, MATHEMATICS_STREAM_COMPILER_NOTES.md
+;; F12) no longer reproduces on this build (probed directly, both engines:
+;; correct result 176).
 
 (require stdlib)
 

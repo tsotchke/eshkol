@@ -1,0 +1,8 @@
+;; Both engines must honor scoped macros, restore the outer binding, and
+;; print 105, 7, 10 instead of silently using the outer macro in the scope.
+(define-syntax scope-op (syntax-rules () ((scope-op x) (* x 2))))
+(let-syntax ((scope-op (syntax-rules () ((scope-op x) (+ x 100)))))
+  (display (scope-op 5)) (newline))
+(letrec-syntax ((local-inc (syntax-rules () ((local-inc x) (+ x 2)))))
+  (display (local-inc 5)) (newline))
+(display (scope-op 5)) (newline)

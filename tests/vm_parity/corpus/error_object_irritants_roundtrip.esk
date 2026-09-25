@@ -1,0 +1,39 @@
+; VM regression: error irritants are a real Scheme list and survive guard.
+; Covers no-irritants, direct and first-class error calls, message/predicate,
+; and a nested re-raise through an enclosing guard.
+(define (assert-irritants actual expected)
+  (if (equal? actual expected) #t
+      (error "error-object irritant regression" actual expected)))
+(assert-irritants (guard (e (#t (error-object-irritants e)))
+                   (error "boom" 1 2)) '(1 2))
+(assert-irritants (guard (e (#t (error-object-irritants e)))
+                   (error "none")) '())
+(define captured-error
+  (guard (e (#t e)) (error "captured" (vector 1 2) (list "x" 7))))
+(assert-irritants (error-object-irritants captured-error)
+                 (list (vector 1 2) (list "x" 7)))
+(display (guard (e (#t (error-object-irritants e))) (error "boom" 1 2))) (newline)
+(display (guard (e (#t (error-object-irritants e))) (error "none"))) (newline)
+(define make-error error)
+(assert-irritants
+  (guard (e (#t (error-object-irritants e))) (make-error "alias" 7 "x"))
+  (list 7 "x"))
+(assert-irritants
+  (guard (e (#t (error-object-irritants e))) (apply make-error (list "apply" 1 2 3)))
+  '(1 2 3))
+(assert-irritants
+  (guard (e (#t (error-object-irritants e))) (make-error "none")) '())
+(define many-irritants
+  (let loop ((n 256) (out '()))
+    (if (= n 0) out (loop (- n 1) (cons n out)))))
+(assert-irritants
+  (guard (e (#t (error-object-irritants e)))
+    (apply make-error (cons "many" many-irritants))) many-irritants)
+(display (guard (e ((error-object? e)
+                   (list (error-object-message e)
+                         (error-object-irritants e))))
+               (make-error "first-class" 7 "x"))) (newline)
+(display (guard (outer ((error-object? outer)
+                        (error-object-irritants outer)))
+               (guard (inner (#t (raise inner)))
+                      (error "reraised" 9)))) (newline)

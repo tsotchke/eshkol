@@ -28,6 +28,16 @@
  *       sexpr  -- Eshkol source call head that selects this unary recurrence
  *       testfn -- C-library reference function for the d=8 analytic self-test
  *       x0     -- test evaluation point
+ *   TAYLOR_ALIAS(alias, name)
+ *       alias  -- another spelling the code generator lowers to row `name`
+ *                 (`fabs` for `abs`, `ceil` for `ceiling`, `trunc` for
+ *                 `truncate`)
+ *
+ * Every unary numeric builtin the code generator lowers through its math
+ * dispatch has a row (or an alias) here. scripts/check_taylor_unary_routes.py
+ * (ctest taylor_unary_route_guard) fails when one does not,
+ * so a builtin can never again reach a Taylor carrier without a recurrence
+ * and answer with its primal (SW-210).
  */
 
 #ifndef TAYLOR_BIN
@@ -36,6 +46,9 @@
 #ifndef TAYLOR_UN
 #define TAYLOR_UN(name, opcode, sexpr, testfn, x0)
 #endif
+#ifndef TAYLOR_ALIAS
+#define TAYLOR_ALIAS(alias, name)
+#endif
 
 /* --- binary recurrences (section 5) --- */
 TAYLOR_BIN(add, 0, "+")   /* s_k = u_k + w_k                                  */
@@ -43,6 +56,7 @@ TAYLOR_BIN(sub, 1, "-")   /* s_k = u_k - w_k   (2+ args; 1 arg -> neg below)  */
 TAYLOR_BIN(mul, 2, "*")   /* s_k = sum_{j=0..k} u_j w_{k-j}   (Cauchy, fma)   */
 TAYLOR_BIN(div, 3, "/")   /* s_k = (u_k - sum_{j>=1} w_j s_{k-j}) / w_0       */
 TAYLOR_BIN(pow, 4, "pow") /* u^r exact for constant r; else exp(w*log u)      */
+TAYLOR_BIN(atan2, 5, "atan2") /* sigma*atan(y/x or x/y) + const; s_0 = atan2   */
 
 /* --- unary recurrences (section 5) + analytic d=8 self-test points --- */
 TAYLOR_UN(neg,  0, "-",    /*none*/, 0.0)  /* unary minus: s_k = -u_k         */
@@ -59,5 +73,30 @@ TAYLOR_UN(tanh, 10, "tanh", tanh,    0.6)  /* sinh/cosh                       */
 TAYLOR_UN(relu, 11, "relu", relu,    0.6)  /* positive branch; zero at kink */
 TAYLOR_UN(sigmoid, 12, "sigmoid", sigmoid, 0.6) /* 1/(1+exp(-u))             */
 
+/* --- the integral family (SW-210): s_0 = f(u_0), s_k = (1/k) sum_{j=1..k}
+ *     j u_j d_{k-j} with d = f'(u) as a series (runtime_taylor.c,
+ *     tr_ext_unary / level_ext_unary) --- */
+TAYLOR_UN(asin,  13, "asin",  asin,  0.3)  /* d =  (1-u^2)^(-1/2)             */
+TAYLOR_UN(acos,  14, "acos",  acos,  0.3)  /* d = -(1-u^2)^(-1/2)             */
+TAYLOR_UN(atan,  15, "atan",  atan,  0.7)  /* d = 1/(1+u^2)                   */
+TAYLOR_UN(asinh, 16, "asinh", asinh, 0.6)  /* d = (1+u^2)^(-1/2)              */
+TAYLOR_UN(acosh, 17, "acosh", acosh, 1.7)  /* d = (u^2-1)^(-1/2)              */
+TAYLOR_UN(atanh, 18, "atanh", atanh, 0.4)  /* d = 1/(1-u^2)                   */
+TAYLOR_UN(log2,  19, "log2",  log2,  1.3)  /* d = 1/(u ln 2)                  */
+TAYLOR_UN(log10, 20, "log10", log10, 1.3)  /* d = 1/(u ln 10)                 */
+TAYLOR_UN(exp2,  21, "exp2",  exp2,  0.5)  /* exp recurrence on u ln 2        */
+TAYLOR_UN(cbrt,  22, "cbrt",  cbrt,  2.0)  /* power recurrence, r = 1/3       */
+/* piecewise constant: s_0 = f(u_0), every higher coefficient 0 */
+TAYLOR_UN(floor,    23, "floor",    floor, 1.3)
+TAYLOR_UN(ceiling,  24, "ceiling",  ceil,  1.3)
+TAYLOR_UN(truncate, 25, "truncate", trunc, 1.3)
+TAYLOR_UN(round,    26, "round",    nearbyint, 1.3)
+
+/* --- lowering spellings of the rows above --- */
+TAYLOR_ALIAS("fabs",  abs)
+TAYLOR_ALIAS("ceil",  ceiling)
+TAYLOR_ALIAS("trunc", truncate)
+
 #undef TAYLOR_BIN
 #undef TAYLOR_UN
+#undef TAYLOR_ALIAS

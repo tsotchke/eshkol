@@ -1,0 +1,22 @@
+; A condition the runtime raises on its own is an error object: guard's
+; handler receives the same kind of value `error` produces, so error-object?
+; answers #t and error-object-message reads the runtime's message. Before the
+; fix, native runtime raises were header-less, so a handler saw a heap pointer
+; whose subtype was whatever preceded the allocation.
+
+(define (probe thunk)
+  (guard (e (#t (if (error-object? e) (error-object-message e) 'not-an-error-object)))
+    (thunk)
+    'no-error))
+
+(define pair-msg (probe (lambda () (car 5))))
+(define arith-msg (probe (lambda () (+ 'a 1))))
+(define user-msg (probe (lambda () (error "boom" 1))))
+
+(display pair-msg) (newline)
+(display arith-msg) (newline)
+(if (and (string? pair-msg) (string=? pair-msg "car: argument is not a pair")
+         (string? arith-msg)
+         (string? user-msg) (string=? user-msg "boom"))
+    (display "PASS: runtime conditions are error objects\n")
+    (display "FAIL: runtime conditions are error objects\n"))

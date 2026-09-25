@@ -26,7 +26,7 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
   - [Communication](#communication)
   - [Priority Areas for Contribution (v1.4+)](#priority-areas-for-contribution-v14)
     - [Immediate Priorities (v1.4-connection)](#immediate-priorities-v14-connection)
-    - [Near-Term (v1.5-intelligence - August 2026)](#near-term-v15-intelligence---august-2026)
+    - [Near-Term (v1.5.0-intelligence - target 2026-12-05)](#near-term-v150-intelligence---target-2026-12-05)
     - [Ongoing](#ongoing)
   - [Recognition](#recognition)
 
@@ -128,7 +128,17 @@ ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test
 
 ### Building the Website
 
-The website is written in Eshkol and compiled to WebAssembly:
+The website is written in Eshkol and compiled to WebAssembly. Its published
+documentation pages come from one manifest, `site/pages.json`, which names each
+Markdown source, its slug and its navigation section. To publish a page, add a
+manifest entry and run `scripts/build-site-content.sh`; the generated sidebars
+pick it up with no change to `site/src/main.esk`. Before opening a pull request,
+run `python3 scripts/build_site_content.py --check` (manifest, fragments and
+navigation agree), `python3 scripts/verify_site_release.py` (release facts match
+`tests/coverage/release_record.json`) and `python3 scripts/site_smoke.py`
+(the pages render in a real browser with no console errors); the Pages deploy
+runs the same three.
+
 
 ```bash
 # Compile the website
@@ -332,6 +342,11 @@ Three of these reject changes that look harmless:
   `README.md`, `docs/FEATURE_MATRIX.md`, `docs/TEST_COVERAGE.md`,
   `.icc/architecture-model.yaml` and every `docs/reference/*/INDEX.md` must
   move with it. `scripts/check_surface_counts.py` is the drift checker.
+- **Release facts.** The release date, the release status and the CTest and
+  VM-parity totals live in `tests/coverage/release_record.json` and nowhere
+  else. Change the record, run `python3 scripts/check_surface_counts.py --sync`
+  and `scripts/build-site-content.sh`, and the same gate confirms that every
+  release-facing document and generated site page agrees.
 
 Two further gates run with ICC rather than in this job:
 `scripts/check_doc_claims_residual.py` requires every ICC `doc-typed-claims`
@@ -343,14 +358,26 @@ directory as a pass.
 **Release-blocking readiness.** Publishing a release is additionally gated by the
 `release-readiness-gate` job in `.github/workflows/release.yml`, which regenerates
 the oracle traces at the tagged SHA and runs `icc architecture-verify` +
-`icc readiness --target v1.3-evolve`. `publish-release` depends on it, so **no
+`icc readiness --target v1.3.5-evolve`. `publish-release` depends on it, so **no
 release asset is published unless readiness is ready/100** at the cut SHA. The gate
 requires ICC to be provisioned on the release runner via the `ICC_BIN` repository
 variable (a path to the ICC binary; optionally `ICC_REPO` for the registered index
 name, default `eshkol_lang`). If ICC is unavailable on a real tag push the gate
 emits a loud error and blocks the release — it never fail-opens to a green publish.
-A non-publishing `workflow_dispatch` dry-run treats the same conditions as advisory
-warnings, since it ships nothing.
+A non-publishing `workflow_dispatch` dry run requires the same evidence when
+`strict_readiness=true`; the default dry run reports readiness as advisory.
+
+The runner also needs SBCL and `prlimit` for the pinned Rosette Wire oracle,
+and Python development headers matching its interpreter. The workflow creates
+an isolated environment containing pybind11, NumPy, and PyYAML and enables the
+Python binding lifetime test. Provision native prerequisites before dispatch;
+the workflow does not install system packages on the shared runner.
+
+The readiness recipe runs baseline coverage and VM parity, smoke probes,
+remaining evidence producers and architecture verification, then the final ICC
+verdict in separate steps. Each step uses the same compiler/runtime artifacts
+and evidence cohort, bound to the commit and workflow run attempt. A failed or
+missing earlier phase cannot be resumed as a completed phase.
 
 ## Development Guidelines
 
@@ -388,6 +415,53 @@ Good documentation is crucial for the project:
 - Keep the README and other high-level documentation up to date.
 - Use Markdown for all documentation files.
 
+The documentation system (page kinds, front matter, evergreen wording, facts
+rendered from sources, executed examples and every documentation gate) is
+described in [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md). In short:
+
+- **A change updates its pages in the same pull request.** A behaviour change
+  updates the reference, guide or tutorial that describes it; a new capability
+  adds its reference entry, a runnable example and a changelog line.
+- **Every pull request has a changelog home.** Reference it as `(#N)` in the
+  release section of `CHANGELOG.md`, or, if no user can observe it, add a
+  reasoned entry to `tests/coverage/changelog_no_user_facing_change.json`.
+  `python3 scripts/check_changelog_completeness.py --pending-pr <N>` checks it.
+- **New and substantially edited pages carry front matter**, and evergreen pages
+  carry no release narrative; `python3 scripts/check_doc_front_matter.py`
+  checks both.
+- **Release facts come from `tests/coverage/release_record.json`.** Edit the
+  record and run `python3 scripts/check_surface_counts.py --sync`; never retype
+  a date, total or status.
+- **Generated artifacts are regenerated, never hand-edited**, and each has a
+  freshness check: `docs/api/` (`scripts/gen_api_docs.py --check`), the
+  language surface (`scripts/gen_language_surface.py --check`), the ledger
+  aggregate (`scripts/gen_silent_wrong_ledger.py --check`), the browser import
+  glue (`scripts/generate_wasm_import_glue.py --check`) and the site pages
+  (`scripts/build-site-content.sh`).
+
+#### Scripts, evidence paths and generated files
+
+A script that reads `TRACE_DIR` or `ICC_TRACE_DIR` makes it absolute with the
+helpers in `scripts/lib/evidence_paths.sh` before first use; a relative value
+means relative to the repository root. A script that writes a generated file at
+a path held in a variable uses `scripts/lib/checked_write.sh`
+(`eshkol_install_tmp` then `eshkol_install_checked`, `eshkol_checked_rm`,
+`eshkol_resolve_trusted_command`), so a reader never sees a partial file.
+
+#### Auditing a change with ICC
+
+The repository's code-index and audit tool (ICC) is how a change is checked
+against the rest of the tree. Register the checkout once
+(`icc init --repo <alias> --path <checkout>`), reindex after committing
+(`icc reindex --repo <alias> --full`), then before opening a pull request run
+`icc impact-analysis --repo <alias> --since <base>` to see what the change
+reaches, `icc pre-commit-check --repo <alias> --architecture-model
+.icc/architecture-model.yaml` for the architecture invariants, and, for a
+documentation change, `icc doc-typed-claims` with
+`python3 scripts/check_doc_claims_residual.py` so no new wrong claim lands.
+A new Architecture Decision Record takes the next free number and is registered
+with `icc adr import-markdown --repo <alias> --dir docs/design/adr`.
+
 #### API Reference (docs/api/)
 
 `docs/api/` is a generated browsable reference for the public C/C++ headers
@@ -410,6 +484,55 @@ CI runs `make api-docs-check` for every pull request. After merge,
 `.github/workflows/regenerate-api-docs.yml` regenerates and commits `docs/api/`
 only when there is a diff, with concurrency protection and no attribution
 trailers. Do not use a `.gitattributes` merge driver for this directory.
+
+#### Examples in the tutorials and gated guides are executed
+
+Every fenced `scheme` block in a gated documentation scope (`docs/tutorials/`,
+the gradual-typing guide and the upgrade page; the list is `GATED_SCOPES` in
+`scripts/doc_audit/extract_examples.py`) is run by
+`scripts/doc_audit/check_doc_examples.py` on the JIT (`eshkol-run -r`, what
+the REPL runs) and as an AOT binary, in CI and in the release evidence run.
+Run it before you push a tutorial change:
+
+```sh
+python3 scripts/doc_audit/check_doc_examples.py --eshkol-run build/eshkol-run \
+    --only docs/tutorials/12_LISTS.md
+```
+
+An example must exit 0 within its time limit without writing an error
+diagnostic, and what it prints must be what the page says:
+
+- `(take '(a b c) 2)  ;; => (a b)` on the same line, or `;; => (a b)` on the
+  line under the form, is compared with the value the build shows. The
+  annotation names a value, so `12.0` matches a printed `12`, `"abc"` matches
+  `abc`, text after the value is commentary, `0.7616...` matches a number that
+  shortens to those digits, and `~2.0` means approximately.
+- A block that starts with `> ` is a REPL transcript: the lines under each
+  input are its expected output.
+- A bare or `text` fence directly under an example is its exact stdout.
+
+A block is tried on its own and then after the page's earlier examples, so a
+later example may use an earlier definition. When an example cannot be checked,
+say so on the line above its fence; the rendered page does not change:
+
+```markdown
+<!-- doc-example: skip platform-specific: needs the browser DOM -->
+<!-- doc-example: run-only nondeterministic: prints the current time -->
+<!-- doc-example: known-defect SW-179: the documented result, and what the build does instead -->
+<!-- doc-example: file mylib.esk: the module the next example requires -->
+<!-- doc-example: output stdout: what the program above prints -->
+```
+
+`skip` and `run-only` take one of `pseudo-code`, `fragment`,
+`platform-specific`, `nondeterministic`, `interactive` or `external-resource`.
+`known-defect` names an open ledger entry: use it when the page states the
+designed behaviour and the implementation is wrong, instead of editing the page
+down to match the bug. The example is still run, and the gate fails the day it
+passes so the marker cannot outlive the defect. The number of marked examples
+per file is ratcheted in `scripts/doc_audit/example_gate_baseline.json`; after
+removing a marker, lower it with `--update-baseline`. The conventions are
+specified in the headers of `scripts/doc_audit/extract_examples.py` and
+`scripts/doc_audit/check_expected.py`.
 
 ### Silent-wrong ledger entries
 
@@ -508,9 +631,8 @@ resident programs, an opt-in differentiable quantum stack, and a
 consumer-hardening correctness wave (automatic per-iteration reclamation,
 race-free `parallel-map`, exact gradients through every callable form, R7RS
 exactness contagion on both engines). We welcome contributions for upcoming
-releases. The v1.3.5-evolve candidate integrates compiler/VM, AD, tensor and
-checkpoint correctness fixes; its final release battery remains pending until
-recorded in `RELEASE_NOTES.md`.
+releases. v1.3.5-evolve integrates compiler/VM, AD, tensor and checkpoint
+correctness work; its release battery is recorded in `RELEASE_NOTES.md`.
 
 ### Immediate Priorities (v1.4-connection)
 1. **TCP/UDP Sockets**: Linear resource types with guaranteed close
@@ -524,7 +646,7 @@ IOCP) shipped in v1.3.4-evolve, `eshkol-doc` shipped in v1.3.2-evolve, and the
 linear-type machinery landed in v1.3.4-evolve as the linear `Qubit` type —
 extending it to handles is what remains.
 
-### Near-Term (v1.5-intelligence - August 2026)
+### Near-Term (v1.5.0-intelligence - target 2026-12-05)
 1. **Neural-Symbolic Search**: Differentiable logic programs (building on v1.1 consciousness engine)
 2. **Symbol Embeddings & Soft Unification**: Differentiable similarity over the knowledge base
 3. **LSTM/GRU Cells**: Standard recurrent neural architectures

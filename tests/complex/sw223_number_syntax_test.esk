@@ -1,0 +1,88 @@
+; SW-223: R7RS number syntax, complex numbers included, is one grammar for
+; every reader. Before the fix the native parser split 1+1i into 1 and +1i,
+; the VM parser read it as a call, (string->number "1+1i") answered #f while
+; (read (open-input-string "1+1i")) returned a symbol, and #i42 was exact.
+; Literals, string->number and read now share inc/eshkol/core/number_syntax.h.
+
+(define failures 0)
+(define (report name ok)
+  (if (not ok)
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define (near? a b) (< (magnitude (- a b)) 1e-12))
+; The parts of a complex number are inexact, so they are compared with =.
+(define (parts= z re im) (and (= (real-part z) re) (= (imag-part z) im)))
+(define (read-text s) (read (open-input-string s)))
+
+; Source literals, rectangular.
+(report "1+1i" (parts= 1+1i 1 1))
+(report "1-2i" (parts= 1-2i 1 -2))
+(report "+i" (parts= +i 0 1))
+(report "-i" (parts= -i 0 -1))
+(report "+2i" (parts= +2i 0 2))
+(report "-2.5i" (parts= -2.5i 0 -2.5))
+(report "1.5e2-2.5i" (parts= 1.5e2-2.5i 150 -2.5))
+(report "1/2+3/4i" (parts= 1/2+3/4i 0.5 0.75))
+(report "complex?" (and (complex? 1+1i) (not (real? 1+1i))))
+(report "+i squared" (near? (* +i +i) -1))
+(report "magnitude 3+4i" (= (magnitude 3+4i) 5))
+
+; An exact zero imaginary part is the real number.
+(report "1+0i is exact 1" (and (real? 1+0i) (exact? 1+0i) (= 1+0i 1)))
+(report "#e1.5+0i" (and (exact? #e1.5+0i) (= #e1.5+0i 3/2)))
+
+; Polar.
+(report "1@0 is 1" (and (exact? 1@0) (= 1@0 1)))
+(report "2@1.5" (near? 2@1.5 (make-polar 2 1.5)))
+
+; Exactness and radix prefixes.
+(report "#e1.5" (and (exact? #e1.5) (= #e1.5 3/2)))
+(report "#e.5" (= #e.5 1/2))
+(report "#e1.5e2" (and (exact? #e1.5e2) (= #e1.5e2 150)))
+(report "#i42" (and (inexact? #i42) (= #i42 42)))
+(report "#i1/4" (and (inexact? #i1/4) (= #i1/4 0.25)))
+(report "#x#e10" (= #x#e10 16))
+(report "#e#x10" (= #e#x10 16))
+(report "#xFF" (= #xFF 255))
+(report "#b-101/11" (= #b-101/11 -5/3))
+(report "#i1/2+1/3i" (near? #i1/2+1/3i (make-rectangular 0.5 (/ 1.0 3))))
+
+; Infinity and NaN parts.
+(define inf-nan +inf.0+nan.0i)
+(report "+inf.0+nan.0i real" (= (real-part inf-nan) +inf.0))
+(report "+inf.0+nan.0i imag" (nan? (imag-part inf-nan)))
+(report "-inf.0i" (= (imag-part -inf.0i) -inf.0))
+
+; string->number accepts the same grammar and answers #f otherwise.
+(report "s->n 1+1i" (parts= (string->number "1+1i") 1 1))
+(report "s->n +i" (parts= (string->number "+i") 0 1))
+(report "s->n 1@0" (eqv? (string->number "1@0") 1))
+(report "s->n #e1.5" (eqv? (string->number "#e1.5") 3/2))
+(report "s->n #i42" (and (inexact? (string->number "#i42")) (= (string->number "#i42") 42)))
+(report "s->n big rational" (= (string->number "100000000000000000000/3")
+                               (/ 100000000000000000000 3)))
+(report "s->n #xff" (eqv? (string->number "#xff") 255))
+(report "s->n 2i" (eq? (string->number "2i") #f))
+(report "s->n 1+" (eq? (string->number "1+") #f))
+(report "s->n 1/0" (eq? (string->number "1/0") #f))
+(report "s->n #e+inf.0" (eq? (string->number "#e+inf.0") #f))
+(report "s->n #e1+2i" (eq? (string->number "#e1+2i") #f))
+(report "s->n abc" (eq? (string->number "abc") #f))
+
+; read agrees with string->number.
+(report "read 1+1i" (parts= (read-text "1+1i") 1 1))
+(report "read -i" (parts= (read-text "-i") 0 -1))
+(report "read #e1.5" (eqv? (read-text "#e1.5") 3/2))
+(report "read 2i is a symbol" (symbol? (read-text "2i")))
+
+; A symbol spelled like a number is written with bars, so it reads back.
+(define plus-i (string->symbol "+i"))
+(report "symbol +i" (and (symbol? plus-i) (not (number? plus-i))))
+(define written (let ((port (open-output-string))) (write plus-i port) (get-output-string port)))
+(report "write +i symbol" (string=? written "|+i|"))
+(report "read back +i symbol" (eq? (read-text written) plus-i))
+
+(if (= failures 0)
+    (display "PASS: SW-223 number syntax\n")
+    (display "FAIL: SW-223 number syntax\n"))

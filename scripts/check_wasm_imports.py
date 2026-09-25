@@ -618,6 +618,18 @@ def selftest_geometry() -> list[str]:
     return failures
 
 
+def selftest_generated_glue() -> list[str]:
+    """Prove generated flat-AD glue and the core-key contract are current."""
+    generator = REPO_ROOT / "scripts" / "generate_wasm_import_glue.py"
+    spec = __import__("importlib.util", fromlist=["spec_from_file_location"])
+    loaded = spec.spec_from_file_location("generate_wasm_import_glue", generator)
+    if loaded is None or loaded.loader is None:
+        return [f"cannot load generated glue checker: {generator}"]
+    module = spec.module_from_spec(loaded)
+    loaded.loader.exec_module(module)
+    return module.selftest()
+
+
 # --------------------------------------------------------------------------- #
 #  Build / compile helpers
 # --------------------------------------------------------------------------- #
@@ -703,7 +715,9 @@ def main() -> int:
     # scanner is broken, every verdict it produces afterwards is worthless —
     # either a phantom red naming a symbol that is present, or a silent green.
     # Failing here is a hard tooling failure (exit 2), not a content failure.
-    selftest_failures = selftest_extractor() + selftest_geometry()
+    selftest_failures = (
+        selftest_extractor() + selftest_geometry() + selftest_generated_glue()
+    )
     if selftest_failures:
         print("error: WASM import/geometry self-test FAILED — refusing to report "
               "a verdict from a broken scanner:", file=sys.stderr)
@@ -712,8 +726,9 @@ def main() -> int:
         return 2
     if args.selftest:
         print(f"OK — WASM import/geometry self-test passed "
-              f"({len(_SELFTEST_FIXTURES)} extractor fixtures; deliberate "
-              "geometry mismatch rejected).")
+              f"({len(_SELFTEST_FIXTURES)} extractor fixtures; generated "
+              "glue freshness, stale-block, missing-key and deliberate "
+              "geometry mismatch checks).")
         return 0
 
     eshkol_run = args.build_dir / "eshkol-run"

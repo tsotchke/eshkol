@@ -1,0 +1,38 @@
+;; SW-205: an escape from a parallel callback to a continuation captured
+;; outside it resumes that continuation in its owning scope, on every engine
+;; and for every scheduler, and nothing after the form is lost. A continuation
+;; captured inside the callback stays local to that callback.
+(define inputs '(1 2 3 4 5 6 7 8))
+
+(display (call-with-current-continuation
+  (lambda (k) (parallel-map (lambda (x) (if (= x 4) (k 'escaped) x)) inputs))))
+(newline)
+;; Short list: the scheduler runs the elements on the calling thread.
+(display (call-with-current-continuation
+  (lambda (k) (parallel-map (lambda (x) (if (= x 2) (k (list 'short x)) x)) '(1 2 3)))))
+(newline)
+(display (call-with-current-continuation
+  (lambda (k) (parallel-execute (lambda () 1) (lambda () (k 'thunk)) (lambda () 3)))))
+(newline)
+(display (call-with-current-continuation
+  (lambda (k) (parallel-filter (lambda (x) (if (= x 7) (k 'filtered) #t)) inputs))))
+(newline)
+;; A continuation captured inside the callback is local to it.
+(display (parallel-map
+  (lambda (x) (call-with-current-continuation (lambda (inner) (if (odd? x) (inner (- x)) x))))
+  inputs))
+(newline)
+;; dynamic-wind inside the callback unwinds on the way out.
+(define trail '())
+(display (call-with-current-continuation
+  (lambda (k)
+    (parallel-map (lambda (x)
+                    (dynamic-wind (lambda () #t)
+                                  (lambda () (if (= x 1) (k 'wound) x))
+                                  (lambda () (if (= x 1) (set! trail (cons 'after trail))))))
+                  '(1)))))
+(newline)
+(display trail)
+(newline)
+(display "parallel continuation escape PASS")
+(newline)

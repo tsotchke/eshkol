@@ -1,6 +1,6 @@
 # ADR 0008 — One semantic tooling core for Eshkol developer experience
 
-- Status: Proposed
+- Status: Accepted — partially implemented: the M0 extraction and the first M1 commands (the LLVM-free `WorkspaceResolver` in `inc/eshkol/frontend/workspace.h`, Diagnostic v1 in `inc/eshkol/frontend/diagnostic.h`, and `eshkol check` and `eshkol doc modules` in `exe/eshkol.cpp`) are in v1.3.5-evolve; remaining milestones Proposed
 - Date: 2026-07-09
 - Deciders: developer-experience/tooling cluster
 - Scope: documentation, diagnostics, workspace analysis, LSP/editor support,

@@ -52,7 +52,47 @@ static size_t align_block_offset(const arena_block_t* block, size_t used, size_t
 }
 
 // Create a new arena block
+// ── Allocation failpoints (see arena_memory.h) ───────────────────────────
+namespace {
+struct AllocFailpoints {
+    int armed_site = -1;
+    uint64_t countdown = 0;
+    uint64_t hits[ESHKOL_ALLOC_FAILPOINT_COUNT] = {};
+};
+thread_local AllocFailpoints t_failpoints;
+}  // namespace
+
+extern "C" void eshkol_alloc_failpoint_arm(int site, uint64_t nth) {
+    t_failpoints = AllocFailpoints{};
+    if (site < 0 || site >= ESHKOL_ALLOC_FAILPOINT_COUNT) return;
+    t_failpoints.armed_site = site;
+    t_failpoints.countdown = nth;
+}
+
+extern "C" void eshkol_alloc_failpoint_disarm(void) {
+    t_failpoints.armed_site = -1;
+}
+
+extern "C" uint64_t eshkol_alloc_failpoint_hits(int site) {
+    if (site < 0 || site >= ESHKOL_ALLOC_FAILPOINT_COUNT) return 0;
+    return t_failpoints.hits[site];
+}
+
+extern "C" int eshkol_alloc_failpoint_fire(int site) {
+    AllocFailpoints& f = t_failpoints;
+    if (f.armed_site < 0) return 0;          // disarmed: the only cost
+    f.hits[site]++;
+    if (site != f.armed_site) return 0;
+    if (f.countdown > 0) { f.countdown--; return 0; }
+    f.armed_site = -1;                       // fire exactly once
+    return 1;
+}
+
 static arena_block_t* create_arena_block(size_t size) {
+    if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_ARENA_BLOCK)) {
+        eshkol_error("Failed to allocate arena block memory of size %zu", size);
+        return nullptr;
+    }
     // SW-10: the process heap ceiling (ESHKOL_MAX_HEAP) is enforced here
     // because this is the ONE place the arena asks the OS for memory — every
     // other allocation is a bump of a pointer inside a block that already
@@ -893,13 +933,18 @@ static void iter_retain(arena_t* arena, bool reopen) {
     }
 }
 
-static void iter_promote_and_rewind(arena_t* arena, arena_scope_t* loop_scope,
+/* Returns false only when the copy BACK out of the staging arena could not be
+ * allocated (#713). vals then name complete copies in the staging arena, which
+ * is left intact, and the caller raises the allocation error: the loop is
+ * abandoned, so nothing reads those values after the raise, and the staging
+ * arena is reset by the next loop that promotes. */
+static bool iter_promote_and_rewind(arena_t* arena, arena_scope_t* loop_scope,
                                     eshkol_tagged_value_t* vals, uint64_t n,
                                     bool reopen) {
     arena_t* staging = iter_staging_arena();
     if (!staging) {
         iter_retain(arena, reopen);
-        return;
+        return true;
     }
 
     /* Stage into a COPY of the out-values. Nothing in the arena has moved yet,
@@ -907,12 +952,15 @@ static void iter_promote_and_rewind(arena_t* arena, arena_scope_t* loop_scope,
      * span must not be moved, a live AD tape node above all) the staged bytes
      * are simply dropped and the caller's values are still the originals. */
     std::vector<eshkol_tagged_value_t> staged(vals, vals + n);
+    /* 1 = staged; 0 = refused; -1 = the staging copy could not be allocated
+     * (#713) -- also a refusal: nothing has moved yet, so retaining the span
+     * is complete recovery. */
     const int ok = eshkol_arena_span_evacuate(staged.data(), n, staging,
                                               arena, loop_scope);
-    if (!ok) {
+    if (ok != 1) {
         arena_reset(staging);
         iter_retain(arena, reopen);
-        return;
+        return true;
     }
 
     /* What landed in the scratch arena IS this loop's live set; remember it so
@@ -933,10 +981,14 @@ static void iter_promote_and_rewind(arena_t* arena, arena_scope_t* loop_scope,
 
     /* Past the point of no return: the span is gone, so this copy back cannot
      * be refused — and cannot need to be. Everything now being copied was
-     * produced by the copy OUT, which already accepted every object in it. */
-    eshkol_arena_span_evacuate(staged.data(), n, arena, staging, nullptr);
+     * produced by the copy OUT, which already accepted every object in it.
+     * It CAN fail to allocate (#713): each value's copy back is a transaction,
+     * so a value whose copy failed still names its complete staging copy. */
+    const int back = eshkol_arena_span_evacuate(staged.data(), n, arena, staging, nullptr);
     for (uint64_t i = 0; i < n; ++i) vals[i] = staged[i];
+    if (back == -1) return false;
     arena_reset(staging);
+    return true;
 }
 
 } // namespace
@@ -1000,7 +1052,9 @@ void eshkol_arena_iter_scope_end(arena_t* arena, eshkol_tagged_value_t* vals, ui
         return;
     }
 
-    iter_promote_and_rewind(arena, loop_scope, vals, n, /*reopen=*/true);
+    if (!iter_promote_and_rewind(arena, loop_scope, vals, n, /*reopen=*/true)) {
+        eshkol_raise_allocation_failure("loop reclamation", 0);
+    }
 }
 
 /* End the FINAL iteration and close the loop: pops both the iteration scope and
@@ -1035,7 +1089,9 @@ void eshkol_arena_iter_scope_finish(arena_t* arena, eshkol_tagged_value_t* vals,
      * into the FINAL iteration, the loop scope still holds whatever earlier
      * back edges promoted into it, and the result is very often one of those.
      * It has to be staged out before the loop scope is rewound. */
-    iter_promote_and_rewind(arena, loop_scope, vals, n, /*reopen=*/false);
+    if (!iter_promote_and_rewind(arena, loop_scope, vals, n, /*reopen=*/false)) {
+        eshkol_raise_allocation_failure("loop reclamation", 0);
+    }
 }
 
 void arena_reset(arena_t* arena) {

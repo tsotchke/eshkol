@@ -491,9 +491,9 @@
   (iterate v0 iterations))
 
 (define (rayleigh-quotient M v)
-  (let ((Mv (mat-vec-mul M v))
-        (dot-Mv-v (fold-right + 0.0 (map (lambda (pair) (* (car pair) (cadr pair))) (zip Mv v))))
-        (dot-v-v (fold-right + 0.0 (map (lambda (x) (* x x)) v))))
+  (let* ((Mv (mat-vec-mul M v))
+         (dot-Mv-v (fold-right + 0.0 (map (lambda (pair) (* (car pair) (cadr pair))) (zip Mv v))))
+         (dot-v-v (fold-right + 0.0 (map (lambda (x) (* x x)) v))))
     (/ dot-Mv-v dot-v-v)))
 
 (define test-matrix '((2 1) (1 2)))

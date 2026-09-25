@@ -1,0 +1,38 @@
+; VM<->native parity: a list holds a differentiated value like any other value.
+;
+; When a lambda passed to `map` captures the differentiated variable, the list
+; it builds holds the derivative carrier. The native backend wrote and read a
+; list cell through a closed list of representations that the carrier was not
+; in, so the derivative through map-then-reduce was 0, and a carrier in a cdr
+; slot crashed `cdr` (SW-183). The VM kept whole values in its cells.
+; `derivative` and `gradient` are vm-supported per PARITY.tsv; every point is
+; inexact.
+
+(define data '(1.0 2.0 3.0))
+
+; sum of a x over the data is 6a
+(display (derivative (lambda (a) (fold-left + 0.0 (map (lambda (x) (* a x)) data))) 2.0)) (newline)
+; 6
+(display (derivative (lambda (a) (fold-right + 0.0 (map (lambda (x) (* a x)) data))) 2.0)) (newline)
+; 6
+(display (derivative (lambda (a) (apply + (map (lambda (x) (* a x)) data))) 2.0)) (newline)
+; 6
+
+; an internal define capturing the variable: sum of a^2 x is 6a^2
+(define (g a)
+  (define (term x) (* a (* a x)))
+  (fold-left + 0.0 (map term data)))
+(display (derivative g 2.0)) (newline)
+; 24
+
+; the carrier in a cdr slot and a cadr slot
+(display (derivative (lambda (a) (cdr (cons 1.0 (* a a)))) 3.0)) (newline)
+; 6
+(display (derivative (lambda (a) (cadr (list 1.0 (* a a)))) 3.0)) (newline)
+; 6
+
+; reverse mode through the same list
+(display (gradient (lambda (v) (fold-left + 0.0 (map (lambda (x) (* (vector-ref v 0) x)) data)))
+                   (vector 2.0)))
+(newline)
+; #(6)

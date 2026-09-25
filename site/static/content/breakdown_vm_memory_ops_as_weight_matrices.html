@@ -1,0 +1,771 @@
+<h1 id="vm-as-transformer-encoding-delegated-memory-operations-as-weight-matrices">VM-as-Transformer: Encoding Delegated Memory Operations as Weight Matrices</h1>
+<p><strong>Status:</strong> active design + landed slices; coverage has expanded past the original “26 delegated” scope (see implementation note below). The document is maintained alongside the work but is <em>not</em> a frozen specification. <strong>Worktree:</strong> <code>feature/vm-transformer-memory</code> <strong>Origin draft:</strong> internal architecture review, 2026-05-08 <strong>Companion artifact:</strong> <code>research/papers/</code> (33 cached PDFs, content-addressed) <strong>Companion bib:</strong> <code>research/vm-transformer-bib.bib</code></p>
+<p><strong>Implementation note (2026-05-12):</strong> Stage 1 landed as <code>273782f</code> (<code>NULL_P</code>, six type predicates, <code>POPN</code>). Stage 2 now has two landed arena slices: <code>58bc8b9</code> (<code>CONS</code>, <code>CAR</code>, <code>CDR</code>, <code>SET_CAR</code>, <code>SET_CDR</code>) and the bounded inline-vector slice (<code>VEC_CREATE</code>, <code>VEC_REF</code>, <code>VEC_SET</code>, <code>VEC_LEN</code>). The current artifact shape of <code>OP_CLOSURE</code>, bounded <code>OP_TAIL_CALL</code> arities 0..4, bounded <code>OP_PACK_REST</code>, arena-layout <code>OP_STR_REF</code>/<code>OP_STR_LEN</code>, and the MEM-backed <code>OP_GET_UPVALUE</code>/<code>OP_SET_UPVALUE</code> fallback plus arena-path <code>OP_OPEN_CLOSURE</code>/<code>OP_CLOSE_UPVALUE</code> housekeeping and bounded arena closure upvalue cells are also encoded in the weight path. The bounded continuation slice now encodes direct-entry <code>OP_CALLCC</code>/<code>OP_INVOKE_CC</code> escape continuations as four contiguous arena cells in Zone E; full R7RS continuation frame walking remains outside this bounded artifact contract. The implementation uses Eshkol’s arena model, not a free-list heap: Zone E is a bounded in-state arena bank, <code>S_ARENA_NEXT</code> is a bump pointer, and stack object references are small arena cell indices. The older “heap” wording below is historical design shorthand for “object store in the residual stream”; new work should use arena terminology and avoid GC/free-list semantics.</p>
+<p>The landed pair slice uses the existing six-layer schedule rather than adding Layer 6/7 immediately: Layer 3 computes stack effects plus arena operation transients, and Layer 4 performs arena read/write alongside the AD tape write logic. The current schedule is Layer 0 instruction fetch, Layer 1 preprocessing, Layer 2 SQUARE products, Layer 3 dispatch, Layer 4 tape/arena writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD tape parent values before Layer 2 so <code>OP_AD_MUL</code> forward recording is also encoded as weights.</p>
+<p>Current artifact verification after the non-native opcode coverage slice: 126/126 inline tests pass, 123/123 traced programs agree on PRINT output and full per-step state, opcode coverage is 82 weight-implemented / 0 VM-native-delegated / 0 transformer-native-assisted in the exercised coverage set, and the QLMW export is d_model=256, FFN=2304, 12,220,422 parameters. The exercised trace set now has no <code>S_IS_NATIVE</code> postprocess assistance and covers every canonical opcode except the deliberate external boundary, <code>OP_NATIVE_CALL</code>. <code>OP_DIV</code> is weight-encoded for positive integer denominators 1..16, <code>OP_MOD</code> is weight-encoded for the positive integer <code>% 3</code> and <code>% 4</code> verifier range, <code>AD_ABS</code>/<code>AD_RELU</code> are weight-encoded for bounded nonzero integer-scale cases, <code>AD_EXP</code>/<code>AD_SIGMOID</code>/<code>AD_TANH</code>/<code>AD_LOG</code>/<code>AD_SQRT</code> are table-encoded for the exercised inputs (<code>exp(0)</code>, <code>sigmoid(0)</code>, <code>sigmoid(1)</code>, <code>tanh(0)</code>, <code>log(1)</code>, <code>sqrt(4)</code>), and <code>AD_SIN</code>/<code>AD_COS</code> are table-encoded for integer inputs -4..4 with representative traced coverage at -1, 0, and 1. <code>AD_DIV</code> is weight-encoded for positive integer denominator table entries 1..16, including both numerator and denominator reverse-mode gradients. <code>AD_POW</code> is weight-encoded for positive integer bases 1..8 and exponents 1..4, including both base and exponent reverse-mode gradients. Untested or broader libm paths (general non-integer <code>exp</code>/<code>sigmoid</code>/<code>tanh</code>/ <code>log</code>/<code>sqrt</code>/<code>sin</code>/<code>cos</code>, general <code>AD_DIV</code>, general <code>AD_POW</code>) remain bounded-state candidates or precision-contract decisions, not completed general encodings.</p>
+<h2 id="1-problem-statement">1. Problem statement</h2>
+<p>The Eshkol VM is a 83-opcode bytecode machine. The Self-Differentiating Neural Computer (SDNC) — <code>lib/backend/weight_matrices.c</code> — analytically constructs a 6-layer transformer. Earlier reproducibility snapshots used a smaller state-vector and trace suite; the current bounded-arena artifact uses <code>d_model = 256</code>, FFN width 2304, and a 123-program traced suite.</p>
+<p>Historically, only part of the 83-opcode ISA executed end-to-end through <code>Wx + b</code> matmul-plus-bias while the rest crossed an <code>IS_NATIVE</code> boundary marker. Current work has collapsed the artifact-exercised memory, closure/upvalue, tail-call, pack-rest, bounded integer arithmetic, and selected AD value-generation paths into weights; the remaining boundaries are semantic/native or broader precision-contract issues.</p>
+<p>The <code>IS_NATIVE</code> boundary is real and useful: it cleanly separates host services and high-level library calls from the differentiable compute kernel. But it is a leak from “the program is the matrix.” The goal of this design is to <strong>collapse the boundary for every operation that does not fundamentally require runtime side-effects</strong> — i.e. every operation whose semantics can be expressed as a deterministic transformation of a bounded state vector. Once collapsed, the VM artifact is one transformer block iterated against itself, the arena lives in the state vector, and gradients through bounded list/vector programs flow through the same backward pass that already handles arithmetic on the 19 AD opcodes.</p>
+<p>This document specifies the encoding scheme.</p>
+<h2 id="2-inventory-of-delegated-operations">2. Inventory of delegated operations</h2>
+<p>From <code>weight_matrices.c:537-548</code>:</p>
+<table>
+<colgroup>
+<col style="width: 30%" />
+<col style="width: 40%" />
+<col style="width: 30%" />
+</colgroup>
+<thead>
+<tr>
+<th>Class</th>
+<th style="text-align: right;">Count</th>
+<th>Opcodes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Arithmetic delegated for precision</td>
+<td style="text-align: right;">2</td>
+<td><code>OP_DIV</code>, <code>OP_MOD</code></td>
+</tr>
+<tr>
+<td>Heap data structures</td>
+<td style="text-align: right;">12</td>
+<td><code>OP_CONS</code>, <code>OP_CAR</code>, <code>OP_CDR</code>, <code>OP_NULL_P</code>, <code>OP_VEC_CREATE</code>, <code>OP_VEC_REF</code>, <code>OP_VEC_SET</code>, <code>OP_VEC_LEN</code>, <code>OP_STR_REF</code>, <code>OP_STR_LEN</code>, <code>OP_SET_CAR</code>, <code>OP_SET_CDR</code></td>
+</tr>
+<tr>
+<td>Type predicates</td>
+<td style="text-align: right;">6</td>
+<td><code>OP_PAIR_P</code>, <code>OP_NUM_P</code>, <code>OP_STR_P</code>, <code>OP_BOOL_P</code>, <code>OP_PROC_P</code>, <code>OP_VEC_P</code></td>
+</tr>
+<tr>
+<td>Closures + upvalues</td>
+<td style="text-align: right;">5</td>
+<td><code>OP_CLOSURE</code>, <code>OP_GET_UPVALUE</code>, <code>OP_SET_UPVALUE</code>, <code>OP_CLOSE_UPVALUE</code>, <code>OP_OPEN_CLOSURE</code></td>
+</tr>
+<tr>
+<td>Control flow (R7RS)</td>
+<td style="text-align: right;">10</td>
+<td><code>OP_TAIL_CALL</code>, <code>OP_NATIVE_CALL</code>, <code>OP_CALLCC</code>, <code>OP_INVOKE_CC</code>, <code>OP_PUSH_HANDLER</code>, <code>OP_POP_HANDLER</code>, <code>OP_GET_EXN</code>, <code>OP_PACK_REST</code>, <code>OP_WIND_PUSH</code>, <code>OP_WIND_POP</code></td>
+</tr>
+<tr>
+<td>Stack housekeeping</td>
+<td style="text-align: right;">1</td>
+<td><code>OP_POPN</code></td>
+</tr>
+<tr>
+<td>AD transcendentals</td>
+<td style="text-align: right;">4</td>
+<td><code>OP_AD_DIV</code>, <code>OP_AD_POW</code>, <code>OP_AD_SIN</code>, <code>OP_AD_COS</code></td>
+</tr>
+</tbody>
+</table>
+<p>The original “26 delegated memory operations” scope, as recorded in <code>weight_matrices.c:537-548</code>, comprised the arithmetic, heap, type-predicate, closure, stack, and AD-transcendental rows above (2 + 12 + 6 + 5 + 1 + 4 = 30, of which 26 were judged in scope for the first lift — <code>OP_VOID</code> and a handful of bookkeeping ops were excluded). The R7RS control-flow class (10 opcodes) was added once the bounded escape-continuation construction proved tractable. Total currently-encoded coverage is reported in the implementation note at the top of this document.</p>
+<p>We classify these by <strong>whether the runtime side-effect is essential or incidental</strong>:</p>
+<ul>
+<li><strong>Encodable (this design):</strong> type predicates, heap data ops, closures, upvalues, <code>POPN</code>, <code>TAIL_CALL</code>, <code>PACK_REST</code>, bounded escape continuations, handler/wind bookkeeping, AD transcendentals.</li>
+<li><strong>Genuinely native (out of scope here):</strong> <code>NATIVE_CALL</code> (by definition bridges to libcurl, sqlite3, libpthread), unbounded first-class continuation frame walking, and full R7RS raise/unwind through exception + dynamic-wind frames. The simple handler-depth, wind-depth, and bounded escape-continuation paths are now in the weight path; invoking the general unwind protocol remains a runtime boundary.</li>
+<li><strong>Bounded precision slices:</strong> <code>OP_DIV</code>, <code>OP_MOD</code>. The exercised exact integer cases are now encoded directly in the weight path (<code>DIV</code> via denominator-gated reciprocals, <code>MOD</code> via small exact lookup). General IEEE division/modulo remains a precision-contract decision rather than a solved arbitrary-float encoding.</li>
+</ul>
+<p>The exercised artifact target for “all bounded memory operations are in the transformer” is now met: no traced program needs transformer-native postprocess assistance. The general-language boundary still includes OS/native calls, unbounded continuation frame walking/full unwind, arbitrary IEEE division/modulo, and broader AD libm functions.</p>
+<h2 id="3-state-vector-extension">3. State vector extension</h2>
+<p>The current 128-dim state vector is fully populated:</p>
+<pre><code>Zone A (0-31)    working state — PC, SP, FP, TOS, SOS, R2, R3, transients
+Zone Atype(32-35) type tags
+Zone B (36-47)   AD control
+Zone C (48-111)  AD tape (8 nodes × 8 fields)
+Zone D (112-127) AD transient</code></pre>
+<p>We extend <code>d_model</code> from 128 → <strong>256</strong> by adding a <strong>Zone E: bounded heap bank</strong>. The architecture rationale, from the cached papers:</p>
+<ul>
+<li><strong>Joulin &amp; Mikolov 2015</strong> (Inferring Algorithmic Patterns) and <strong>Grefenstette et al. 2015</strong> (Trans. RNNs with Unbounded Memory) demonstrate that a stack/list/queue of bounded depth, accessed through differentiable push/pop scalars, is sufficient for the cons-list class of problems.</li>
+<li><strong>Graves et al. 2014</strong> (Neural Turing Machines) supplies the content-addressable + location-addressable read/write head pattern needed for <code>VEC_REF</code> / <code>VEC_SET</code> over a heap-resident vector.</li>
+<li><strong>Weiss et al. 2021</strong> (RASP) and <strong>Lindner et al. 2023</strong> (Tracr) show that RASP’s <code>select</code>/<code>aggregate</code> primitives compile directly into attention heads with known weights — and <code>CAR</code>, <code>CDR</code>, <code>NULL_P</code>, type predicates, and vector indexing all admit RASP-style implementations.</li>
+<li><strong>Giannou et al. 2023</strong> (Looped Transformers) demonstrate that a fixed-weight 13-layer transformer in a loop emulates a small instruction-set computer including memory load/store. Eshkol’s transformer is already in this regime; expanding the heap section is incremental, not architectural.</li>
+<li><strong>Bošnjak et al. 2017</strong> (Differentiable Forth) supplies the slot-and-sketch mental model: every opcode is a known fixed function on the state, the weights are <em>constructions</em>, not learned parameters.</li>
+</ul>
+<h3 id="31-zone-e-bounded-arena-bank--final-landed-layout">3.1. Zone E: bounded arena bank — final landed layout</h3>
+<p>The original design called for 16 cells × 8 fields. The landed implementation (<code>weight_matrices.c §88-96</code>, §207-263) collapsed this to <strong>16 cells × 5 fields = 80 dims of payload + 47 dims of operation transients = 127 dims</strong>, leaving the high dimension <code>255</code> as the last transient. The design intuition (one Lisp cell per arena slot, fields for kind/car/cdr plus the per-field type) survives; what changed is that the type tags live in dedicated lanes within the cell rather than in a parallel type bank, which keeps the layout cache-line-aligned and saves the alternative <code>d_model = 320</code>-or-384 expansion that §5.4 originally entertained:</p>
+<pre class="text"><code>S_ARENA_BASE = 128
+ARENA_CELLS = 16
+ARENA_CELL_FIELDS = 5
+S_ARENA_NEXT = 208  (bump pointer; first transient slot, also the next-free index)
+
+Cell i occupies dims [128 + 5i, 128 + 5i + 5):
+  ARENA_F_KIND     = 0  (cell kind: empty=0, pair=1, vector=2, vec_elem=3, closure=4)
+  ARENA_F_CAR_VAL  = 1  (cons car / vec head / closure func-PC)
+  ARENA_F_CDR_VAL  = 2  (cons cdr / vec tail / closure upvalue-count)
+  ARENA_F_CAR_TYPE = 3  (type tag for car)
+  ARENA_F_CDR_TYPE = 4  (type tag for cdr)</code></pre>
+<p>The cell kinds (<code>weight_matrices.c §90-95</code>):</p>
+<table>
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 20%" />
+<col style="width: 67%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: right;">Kind value</th>
+<th>Constant</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">0.0</td>
+<td><code>ARENA_KIND_EMPTY</code></td>
+<td>Unallocated; the bump pointer never reuses these</td>
+</tr>
+<tr>
+<td style="text-align: right;">1.0</td>
+<td><code>ARENA_KIND_PAIR</code></td>
+<td>Cons cell — <code>car/cdr</code> are arbitrary tagged values</td>
+</tr>
+<tr>
+<td style="text-align: right;">2.0</td>
+<td><code>ARENA_KIND_VECTOR</code></td>
+<td>Vector header — <code>car = length</code>, <code>cdr</code> = first vec_elem cell index</td>
+</tr>
+<tr>
+<td style="text-align: right;">3.0</td>
+<td><code>ARENA_KIND_VEC_ELEM</code></td>
+<td>Vector element — <code>car = value</code>, <code>cdr</code> = next vec_elem cell (or -1)</td>
+</tr>
+<tr>
+<td style="text-align: right;">4.0</td>
+<td><code>ARENA_KIND_CLOSURE</code></td>
+<td>Closure header — <code>car = entry_pc</code>, <code>cdr = reserved upvalue count</code></td>
+</tr>
+<tr>
+<td style="text-align: right;">7.0</td>
+<td><code>CONT_RESTORE_MARKER</code></td>
+<td>Bounded escape-continuation marker (see §5.10)</td>
+</tr>
+</tbody>
+</table>
+<p>The 80 payload dims plus the 47 transient dims (<code>S_ARENA_NEXT</code> through <code>S_ARENA_LIST_HAS_E3</code>, declared as a contiguous enum block at <code>weight_matrices.c §214-261</code>) span exactly the upper 128 dimensions of the residual stream. There is no slack: every dimension is either a persistent cell field, the bump pointer, an operation scratch lane, or a list-construction scratch lane. The transient block is sub-divided into three windows: per-cell write scratch (<code>S_ARENA_WRITE_KIND.. S_ARENA_NEW_CDR_TYPE</code>, 11 dims), bounded inline-vector scratch (<code>S_ARENA_VEC_*</code>, 16 dims), and bounded list construction scratch (<code>S_ARENA_LIST_*</code>, 20 dims). All three are cleared every cycle by Layer 3’s universal transient-clear loop (<code>weight_matrices.c §1394</code>).</p>
+<p><strong>Bound rationale.</strong> 16 cells × {pair = 1 cell, vector header + 4 elem cells = 5 cells, closure header + 4 upvalue cells = 5 cells, escape continuation = 4 cells} gives a working budget of, roughly, two simultaneous bounded vectors plus one closure plus a pair chain, which suffices for every program in the 123-program traced suite. The exercised cases are: simple <code>(cons a b)</code> chains to length ≤ 12; vectors of declared length ≤ 4; strings of declared length ≤ 4; closures with up to 4 upvalues; one outstanding bounded escape continuation at a time. The bump pointer <code>S_ARENA_NEXT</code> increments by 1 per allocation (by 5 for the bounded list-construction path, which writes four pair cells in a single cycle: <code>weight_matrices.c §S_ARENA_LIST_*</code>).</p>
+<p><strong>Free-list policy.</strong> None. The arena is a bump allocator: allocation returns the cell at <code>S_ARENA_NEXT</code> and increments. Garbage collection is not implemented; the contract is that a program completes before the bump pointer reaches 16. The reference VM and the matrix path both <code>reset</code> the arena at the start of each <code>test()</code> invocation (<code>weight_matrices.c §5491-5498</code> issues <code>vm_arena_reset</code> and reinitialises the <code>g_heap_ptr</code>, <code>g_frame_count</code>, exception, closure, and wind globals), so the per-program budget of 16 cells is exact, not a worst-case-across-suite bound.</p>
+<p><strong>Why an arena, not a heap.</strong> In the bounded-state-vector regime, the distinction matters. A heap would require a free-list pointer to be indexable, which means a Tracr-style attention over <code>(cell, kind == empty)</code> keys followed by a <code>min</code> aggregate — two extra heads. A bump allocator just reads and writes <code>S_ARENA_NEXT</code>, which is a single scalar dim. The arena layout is structurally the analogue of Eshkol’s <em>runtime</em> arena model in <code>vm_arena.h</code>; the in-state-vector implementation mirrors it precisely.</p>
+<h3 id="32-type-tag-extension">3.2. Type tag extension</h3>
+<p>The existing TYPE encoding is <code>{0=number, 1=bool, 2=pair, 3=closure, 4=string, 5=vector, 6=nil, 7=continuation}</code>. This already distinguishes every type a predicate can ask about. Predicates become indicator gates on <code>S_TYPE_TOS</code> directly (§5.2).</p>
+<p>We add <strong>F_TYPE encoding for cells</strong>: <code>{0=empty, 1=pair, 2=vector, 3=string, 4=closure, 5=vector_chain, 6=string_chain}</code>. Cells reference each other by cell-index; pointer values on the stack carry <code>S_TYPE_TOS = 2</code> (pair) or <code>5</code> (vector) etc., and the integer payload in <code>S_TOS</code> is the cell index 0..15.</p>
+<h2 id="4-layer-extension">4. Layer extension</h2>
+<p>The current six layers (<code>weight_matrices.c:64-69</code>) are:</p>
+<pre><code>Layer 0: Instruction fetch (Gaussian attention peaked at PC)
+Layer 1: Product precompute (SQUARE activation: TOS·SOS, AD products)
+Layer 2: Preprocessing (gated FFN: address resolution, comparisons, AD cursor)
+Layer 3: Execution (gated FFN: opcode dispatch + AD forward/backward)
+Layer 4: Tape write + parent load (gated FFN)
+Layer 5: Gradient write-back (gated FFN, backward-only)</code></pre>
+<p>We add <strong>two more layers</strong> to handle the heap:</p>
+<pre><code>Layer 6: Cell fetch  (Gaussian attention peaked at heap-pointer-on-TOS)
+Layer 7: Heap mutate (gated FFN: CONS-write, SET-CAR/CDR/elem write-back)</code></pre>
+<p>Layer 6 mirrors Layer 0 exactly. Layer 0 reads the bytecode at <code>PC</code>; Layer 6 reads the heap cell at the pointer in <code>S_TOS</code> (or <code>S_SOS</code>, depending on the op). The trick from Tracr/RASP: a Gaussian attention head with query <code>q = SCALE · onehot(TOS_int)</code> and keys <code>K_i = onehot(i)</code> for i ∈ [0, MEM_SIZE) saturates exactly to the cell at <code>TOS_int</code>, projecting its 8 fields into the residual stream at <code>S_LOAD_*</code> slots (§7.1).</p>
+<p>Layer 7 is FFN-only and runs after Layer 3’s dispatch. It’s gated by <code>S_IS_HEAP_WRITE</code> — a transient flag set by Layer 3 for each op that requires a write-back (<code>CONS</code>, <code>VEC_CREATE</code>, <code>VEC_SET</code>, <code>SET_CAR</code>, <code>SET_CDR</code>, <code>CLOSURE</code>). The gate’s up-projection is a one-hot over <code>(cell_index, field)</code> that selects which slot to overwrite; the down-projection adds the new value via residual.</p>
+<h2 id="5-per-class-encoding-spec">5. Per-class encoding spec</h2>
+<h3 id="51-type-predicates-6-ops">5.1. Type predicates (6 ops)</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Opcode</th>
+<th>Pre-state</th>
+<th>Post-state</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>OP_PAIR_P</code></td>
+<td>TOS = v, type_tos = t</td>
+<td>TOS = (t == 2 ? 1 : 0), type_tos = 1 (bool)</td>
+</tr>
+<tr>
+<td><code>OP_VEC_P</code></td>
+<td>”</td>
+<td>TOS = (t == 5 ? 1 : 0), type_tos = 1</td>
+</tr>
+<tr>
+<td><code>OP_STR_P</code></td>
+<td>”</td>
+<td>TOS = (t == 4 ? 1 : 0), type_tos = 1</td>
+</tr>
+<tr>
+<td><code>OP_NUM_P</code></td>
+<td>”</td>
+<td>TOS = (t == 0 ? 1 : 0), type_tos = 1</td>
+</tr>
+<tr>
+<td><code>OP_BOOL_P</code></td>
+<td>”</td>
+<td>TOS = (t == 1 ? 1 : 0), type_tos = 1</td>
+</tr>
+<tr>
+<td><code>OP_PROC_P</code></td>
+<td>”</td>
+<td>TOS = (t == 3 ? 1 : 0), type_tos = 1</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Encoding constraint discovered during implementation review.</strong> <code>apply_ffn_layer</code> (<code>weight_matrices.c:3066-3086</code>) implements <code>y = down · (sigmoid(W_g x + b_g) ⊙ (W_u x + b_u))</code> — gate has sigmoid, <strong>up is purely linear, no activation</strong>. This means the existing <code>add_gated_pair</code> helper produces <code>coeff · indicator(opcode == op_id) · (linear_up_value)</code> per call. An indicator on <code>S_TYPE_TOS</code> <strong>cannot be synthesised inside the up-projection alone</strong>: the linear up cannot collapse a sigmoid difference. Both indicators must come from gates, but each neuron only has one gate.</p>
+<p><strong>Therefore: predicates must be encoded as a two-layer composition.</strong> Layer 2 (preprocessing) computes a per-type indicator slot via the <code>indicator()</code> helper at <code>weight_matrices.c:229</code>:</p>
+<pre><code>S_TYPE_IS_PAIR = indicator(S_TYPE_TOS, 2)   /* := σ(SCALE·(t-1.5)) - σ(SCALE·(t-2.5)) */
+S_TYPE_IS_NUM  = indicator(S_TYPE_TOS, 0)
+S_TYPE_IS_STR  = indicator(S_TYPE_TOS, 4)
+S_TYPE_IS_BOOL = indicator(S_TYPE_TOS, 1)
+S_TYPE_IS_PROC = indicator(S_TYPE_TOS, 3)
+S_TYPE_IS_VEC  = indicator(S_TYPE_TOS, 5)
+S_TYPE_IS_NIL  = indicator(S_TYPE_TOS, 6)   /* shared with NULL_P */</code></pre>
+<p>Then Layer 3 dispatch is one <code>add_gated_pair</code> per predicate:</p>
+<pre class="c"><code>n = add_gated_pair(w, L=3, n, OP_PAIR_P,
+                   S_TYPE_IS_PAIR, 1, S_TOS, -1, -1, 0, -1, 0,
+                   0, S_TOS, 1.0f);          /* Δ TOS = IS_PAIR - TOS */
+n = add_gated_pair(w, L=3, n, OP_PAIR_P,
+                   S_TYPE_TOS, -1, -1, 0, -1, 0, -1, 0,
+                   1.0f, S_TYPE_TOS, 1.0f);  /* Δ TYPE_TOS = TYPE_BOOL - TYPE_TOS */</code></pre>
+<p><code>TYPE_BOOL = 1.0f</code> so the second pair’s <code>bias=1.0f, S_TYPE_TOS coeff=-1</code> produces <code>Δ = 1 - TYPE_TOS</code> exactly when opcode == PAIR_P.</p>
+<p><strong>State-vector budget.</strong> Seven new transient slots are needed in Zone D. The <code>S_AD_SPARE2..S_AD_SPARE8</code> range (slots 121-127) has 7 free dims; exactly fits. <code>S_AD_PROD_GRAD_SV</code> at 120 stays untouched. No <code>d_model</code> extension required for stage 1.</p>
+<p><strong>Cost.</strong> Layer 2: 7 new sigmoid-difference precompute slots (each is two FFN entries — sign-pair on the SCALE bias, like <code>weight_matrices.c:780-790</code> already does for <code>S_CMP_EQ</code>). Layer 3: 2 new <code>add_gated_pair</code> calls per predicate × 7 predicates = 14 entries. <strong>~28 new neurons total</strong>, well inside the FFN budget. No layer count change. No <code>d_model</code> change.</p>
+<p><strong>Landed Layer 2 construction (<code>weight_matrices.c §1297-1303</code>).</strong> The seven type-indicator slots are computed in the preprocess FFN by:</p>
+<pre class="c"><code>out[S_TYPE_IS_NUM]  = indicator(x[S_TYPE_TOS], TYPE_NUMBER);   /* 0 */
+out[S_TYPE_IS_BOOL] = indicator(x[S_TYPE_TOS], TYPE_BOOL);     /* 1 */
+out[S_TYPE_IS_PAIR] = indicator(x[S_TYPE_TOS], TYPE_PAIR);     /* 2 */
+out[S_TYPE_IS_PROC] = indicator(x[S_TYPE_TOS], TYPE_CLOSURE);  /* 3 */
+out[S_TYPE_IS_STR]  = indicator(x[S_TYPE_TOS], TYPE_STRING);   /* 4 */
+out[S_TYPE_IS_VEC]  = indicator(x[S_TYPE_TOS], TYPE_VECTOR);   /* 5 */
+out[S_TYPE_IS_NIL]  = indicator(x[S_TYPE_TOS], TYPE_NIL);      /* 6 */</code></pre>
+<p>The <code>indicator(x, k)</code> helper at <code>weight_matrices.c §334-336</code> is the sigmoid-difference pulse</p>
+<p><span class="math display">indicator(<em>x</em>, <em>k</em>) = <em>σ</em>(SCALE ⋅ (<em>x</em> − <em>k</em> + 0.5)) − <em>σ</em>(SCALE ⋅ (<em>x</em> − <em>k</em> − 0.5)),</span></p>
+<p>which saturates to <span class="math inline">1</span> when <span class="math inline"><em>x</em> = <em>k</em></span> (the only integer with both sigmoids at <span class="math inline">+1</span> and <span class="math inline">0</span>) and to <span class="math inline">0</span> for every other integer. With <span class="math inline">SCALE = 300</span> the off-target leakage is below <span class="math inline">exp (−150) ≈ 0</span> in float32. The Layer-2 outputs land in <code>S_TYPE_IS_*</code> (dims 121-127), which the universal transient-clear in Layer 3 then zeroes; this is why the predicate dispatch and the <code>OP_NULL_P</code> slot live in the <em>same</em> cycle as the indicator computation.</p>
+<p><strong>Landed Layer 3 dispatch.</strong> Each of the six predicates becomes two <code>add_gated_pair</code> invocations (the second clears <code>S_TYPE_TOS</code> to <code>TYPE_BOOL</code>). The total budget is therefore 12 gated pairs × 2 sign-conjugate neurons = 24 FFN-3 neurons, dwarfed by the 2304-wide Layer-3 FFN. No <code>d_model</code> extension required — the entire stage-1 “type predicates” lift fits inside the existing residual stream because the seven indicator slots reuse Zone D’s spare range that were previously named <code>S_AD_SPARE2..S_AD_SPARE8</code> (the source code keeps both enum names as aliases for the same numeric slot, lines 197-206, so legacy comments mentioning <code>S_AD_SPARE*</code> and new comments mentioning <code>S_TYPE_IS_*</code> refer to the same dimensions).</p>
+<h3 id="52-op_null_p-landed">5.2. <code>OP_NULL_P</code> (landed)</h3>
+<p><code>(null? x)</code> returns true if <code>x = '()</code>. In Eshkol’s value encoding <code>nil</code> has <code>type_tos = TYPE_NIL = 6</code> and <code>tos = -1</code> (set by <code>OP_NIL</code> at <code>weight_matrices.c §439-441</code>). The predicate is then:</p>
+<p><span class="math display">TOS<sup>′</sup> = <strong>1</strong>[S_TYPE_TOS = 6],   TYPE_TOS<sup>′</sup> = TYPE_BOOL</span></p>
+<p>The encoding pattern is identical to §5.1’s six predicates: Layer 2 emits <code>S_TYPE_IS_NIL</code> into dim 127, Layer 3 dispatches a single <code>add_gated_pair</code> to write the residual delta into <code>S_TOS</code> and a second to clear <code>S_TYPE_TOS</code> to <code>TYPE_BOOL</code>. Crucially, <code>OP_NULL_P</code> uses <em>exactly the same</em> Layer-2 precompute that <code>OP_PAIR_P</code>…<code>OP_VEC_P</code> use, so the type-predicate family is one indicator computation followed by seven mutually-exclusive Layer-3 gates over <code>S_OPCODE</code>. Cost: two gated pairs in Layer 3, zero new precompute slots. This was the unblocking insight for the §5.1 family: once <code>S_TYPE_IS_NIL</code> is on the residual stream, every type predicate is a single residual write, no two-layer composition needed.</p>
+<h3 id="53-op_popn-landed">5.3. <code>OP_POPN</code> (landed)</h3>
+<p><code>POPN n</code> pops <code>n</code> values <em>below</em> TOS, keeping TOS at the top. With <span class="math inline"><em>n</em> ∈ {1, 2, 3}</span> — Eshkol’s compiler emits exactly this range for let-binding cleanup — the residual delta on the four-register file is:</p>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 16%" />
+<col style="width: 16%" />
+<col style="width: 16%" />
+<col style="width: 16%" />
+<col style="width: 16%" />
+<col style="width: 16%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: center;">Operand <span class="math inline"><em>n</em></span></th>
+<th style="text-align: center;"><span class="math inline">TOS<sup>′</sup></span></th>
+<th style="text-align: center;"><span class="math inline">SOS<sup>′</sup></span></th>
+<th style="text-align: center;"><span class="math inline">R2<sup>′</sup></span></th>
+<th style="text-align: center;"><span class="math inline">R3<sup>′</sup></span></th>
+<th style="text-align: center;"><span class="math inline">DEPTH<sup>′</sup></span></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">1</td>
+<td style="text-align: center;">TOS</td>
+<td style="text-align: center;">R2</td>
+<td style="text-align: center;">R3</td>
+<td style="text-align: center;">0</td>
+<td style="text-align: center;">DEPTH − 1</td>
+</tr>
+<tr>
+<td style="text-align: center;">2</td>
+<td style="text-align: center;">TOS</td>
+<td style="text-align: center;">R3</td>
+<td style="text-align: center;">0</td>
+<td style="text-align: center;">0</td>
+<td style="text-align: center;">DEPTH − 2</td>
+</tr>
+<tr>
+<td style="text-align: center;">3</td>
+<td style="text-align: center;">TOS</td>
+<td style="text-align: center;">0</td>
+<td style="text-align: center;">0</td>
+<td style="text-align: center;">0</td>
+<td style="text-align: center;">DEPTH − 3</td>
+</tr>
+</tbody>
+</table>
+<p>Encoded as three <code>add_gated_opcode_index</code> invocations (<code>weight_matrices.c §3012-3035</code>), one per operand value. The helper adds <code>S_OPERAND</code> to the gate at scale 100·SCALE (the <code>index_scale</code> constant at line 3018), so the gate signature <span class="math inline"><strong>1</strong>[<em>o</em><em>p</em><em>c</em><em>o</em><em>d</em><em>e</em> = OP_POPN ∧ <em>o</em><em>p</em><em>e</em><em>r</em><em>a</em><em>n</em><em>d</em> = <em>n</em>]</span> is again a single sigmoid-difference pair with the same float32 saturation as opcode-only dispatch. Per operand the residual writes are five gated pairs (one per register being moved or cleared), totalling 3 × 5 = 15 gated pairs = 30 sign-conjugate neurons; well within the Layer-3 FFN budget.</p>
+<p>The type tags <code>S_TYPE_TOS..S_TYPE_R3</code> shift in lock-step, using the same gated-pair shape over <code>(S_TYPE_SOS, S_TYPE_R2, …)</code> lanes. Going beyond <span class="math inline"><em>n</em> = 3</span> would require either (a) one additional operand index per <code>n</code> (linear in budget; trivial), or (b) a RASP-style aggregate attention over the stack-depth field with a <code>≤ n</code> mask (one extra head; encodable but unneeded for the current artifact contract because the compiler never emits the larger pop). The landed implementation chose (a) for clarity.</p>
+<h3 id="54-op_cons-op_car-op_cdr-op_set_car-op_set_cdr-landed">5.4. <code>OP_CONS</code>, <code>OP_CAR</code>, <code>OP_CDR</code>, <code>OP_SET_CAR</code>, <code>OP_SET_CDR</code> (landed)</h3>
+<p>The landed form uses the 5-field Zone E layout (§3.1) and the existing six-layer schedule — Layer 3 computes the operation transients (<code>S_ARENA_TARGET</code>, <code>S_ARENA_NEW_KIND</code>, etc.) and Layer 4 performs the arena cell mutation. No Layer 6/7 was needed: the cell fetch happens in Layer 2 (which already has a 16-way indicator loop available for the AD tape) and the cell write happens in Layer 4 (which already has the dual-input AND gating pattern from the AD tape writes).</p>
+<p><strong><code>(cons a b)</code> — landed form.</strong> Pre-state: <code>TOS = b, SOS = a</code>.</p>
+<p>Layer 3 (<code>weight_matrices.c §codegenCons block</code>):</p>
+<ol type="1">
+<li>emits the cell at index <code>S_ARENA_NEXT</code> with <code>kind = ARENA_KIND_PAIR</code>, <code>car_val = SOS, cdr_val = TOS</code>, <code>car_type = S_TYPE_SOS, cdr_type = S_TYPE_TOS</code>. The five values land in the per-cell write scratch slots <code>S_ARENA_WRITE_KIND, S_ARENA_NEW_CAR, S_ARENA_NEW_CDR, S_ARENA_NEW_CAR_TYPE, S_ARENA_NEW_CDR_TYPE</code>;</li>
+<li>sets <code>S_ARENA_TARGET = S_ARENA_NEXT</code>;</li>
+<li>replaces <code>TOS</code> with the new cell index (= old <code>S_ARENA_NEXT</code>) and sets <code>S_TYPE_TOS = TYPE_PAIR</code>;</li>
+<li>pops <code>SOS</code> into <code>R2</code>’s lane, shifting the register file as <code>OP_POP</code> does;</li>
+<li>increments <code>S_ARENA_NEXT</code> by 1 via an unconditional add gated on the opcode indicator.</li>
+</ol>
+<p>Layer 4 (<code>weight_matrices.c §arena cell-write block</code>) then sees <code>S_ARENA_TARGET</code> set and runs the per-cell indicator loop:</p>
+<p><span class="math display">cell<sub><em>i</em></sub>.field<sub><em>j</em></sub>  +  = <strong>1</strong>[S_ARENA_TARGET = <em>i</em>] ⋅ (NEW_field<sub><em>j</em></sub> − cell<sub><em>i</em></sub>.field<sub><em>j</em></sub>)</span></p>
+<p>for every <span class="math inline"><em>i</em> ∈ [0, 16)</span> and every field <span class="math inline"><em>j</em> ∈ [0, 5)</span>. The dual-input AND pattern from §6.3 of <code>docs/SDNC.md</code> applies: the target indicator is at gate weight <span class="math inline">SCALE</span> and the kind-is-being-set indicator (= <code>S_ARENA_TARGET &gt;= 0</code> plus a write-flag from Layer 3) is at <span class="math inline">10 ⋅ SCALE</span>. Cost: 16 cells × 5 fields × 2 sign-conjugate neurons = 160 Layer-4 FFN neurons. Out of 2304 Layer-4 FFN positions, this is ≈ 7% of the available width.</p>
+<p><strong><code>(car p)</code> / <code>(cdr p)</code>.</strong> Pre-state: <code>TOS = pair-ptr</code>, <code>S_TYPE_TOS = TYPE_PAIR</code>.</p>
+<p>Layer 2 (<code>weight_matrices.c §arena read block</code>) loops over the 16 cells, indicator-gated on <code>S_TOS = i</code>, and projects the cell’s <code>F_CAR_VAL, F_CDR_VAL, F_CAR_TYPE, F_CDR_TYPE</code> into the read scratch slots <code>S_ARENA_READ_CAR, S_ARENA_READ_CDR</code> and the corresponding type lanes. Cost: 16 cells × 4 fields × 2 = 128 Layer-2 neurons.</p>
+<p>Layer 3 then writes the residual:</p>
+<p><span class="math display"><em>Δ</em>S_TOS = <strong>1</strong>[opcode = OP_CAR] ⋅ (S_ARENA_READ_CAR − S_TOS),</span></p>
+<p><span class="math display"><em>Δ</em>S_TYPE_TOS = <strong>1</strong>[opcode = OP_CAR] ⋅ (S_ARENA_READ_CAR_TYPE − S_TYPE_TOS),</span></p>
+<p>with the obvious twins for <code>OP_CDR</code> using <code>S_ARENA_READ_CDR</code>. Cost: 4 gated pairs (2 ops × {TOS write, TYPE_TOS write}) in Layer 3 = 8 neurons.</p>
+<p><strong><code>(set-car! p v)</code> / <code>(set-cdr! p v)</code>.</strong> Pre-state: <code>TOS = v, SOS = p</code>. Layer 3 sets <code>S_ARENA_TARGET = SOS</code> and writes the value lane of the target cell:</p>
+<p><span class="math display"><em>Δ</em>cell<sub><em>i</em></sub>.F_CAR_VAL = <strong>1</strong>[S_ARENA_TARGET = <em>i</em>] ⋅ <strong>1</strong>[opcode = OP_SET_CAR] ⋅ (S_TOS − cell<sub><em>i</em></sub>.F_CAR_VAL),</span></p>
+<p>plus the matching <code>F_CAR_TYPE</code> write. <code>OP_SET_CDR</code> is the symmetric case. Cost: 16 cells × 2 fields × 2 ops = 64 Layer-4 neurons.</p>
+<p><strong>Why the Layer 6/7 design was abandoned.</strong> The original plan called for a dedicated cell-fetch attention head in a new Layer 6 and a dedicated heap-mutate FFN in a new Layer 7. The implementation review found that (a) Layer 0’s instruction-fetch attention pattern can be reused inside Layer 2 as a 16-way indicator loop (the head dimension HD = 2 is enough for a 16-key lookup with SCALE = 300), and (b) Layer 4’s existing dual-input AND gating already handles target-indexed writes for the AD tape. Promoting both to dedicated layers would have added a third forward pass through the FFN matrices on every cycle for what amounts to a one-cell-per-op operation. The landed implementation reuses Layer 2 for the read and Layer 4 for the write, keeping the schedule at six layers and the matrix-mode wall time under one minute for the full traced suite.</p>
+<h3 id="55-cross-references-and-historical-encoding-notes">5.5. Cross-references and historical encoding notes</h3>
+<ul>
+<li><code>OP_NULL_P</code> is covered in §5.2 (the seven-way <code>S_TYPE_TOS</code> lookup shares its <code>S_TYPE_IS_NIL</code> indicator with the predicate family).</li>
+<li><code>OP_SET_CAR</code> and <code>OP_SET_CDR</code> are covered in §5.4 (they share the Layer-4 arena-cell-write loop with <code>OP_CONS</code>).</li>
+</ul>
+<p>The earlier design split here — separate sections for predicates, pair construction, and pair mutation — collapsed in the landed implementation because all three operations resolve into the <em>same</em> two pieces of hardware: a Zone-D-resident transient set produced by Layer 2 indicators, plus a Layer-4 indicator-gated cell write. The section headings are preserved for archaeological clarity but the body has been folded.</p>
+<h3 id="56-op_vec_create-op_vec_ref-op_vec_set-op_vec_len-landed-bounded">5.6. <code>OP_VEC_CREATE</code>, <code>OP_VEC_REF</code>, <code>OP_VEC_SET</code>, <code>OP_VEC_LEN</code> (landed, bounded)</h3>
+<p>The landed vector encoding uses two cell kinds: a header cell (<code>ARENA_KIND_VECTOR</code>) whose <code>car = length</code> and <code>cdr</code> = the cell index of the first element, plus <code>ARENA_MAX_INLINE_VECTOR = 4</code> element cells (<code>ARENA_KIND_VEC_ELEM</code>) chained through <code>cdr</code>. So a vector of length <span class="math inline"><em>n</em> ≤ 4</span> occupies <span class="math inline">1 + <em>n</em></span> arena cells: one header plus <span class="math inline"><em>n</em></span> elements.</p>
+<p><strong><code>(vector v0 v1 v2 v3)</code> — Layer 3 + Layer 4.</strong></p>
+<p>Layer 3 (<code>weight_matrices.c §codegenVecCreate</code>) populates the vector write scratch window:</p>
+<ul>
+<li><code>S_ARENA_VEC_BASE = S_ARENA_NEXT</code> (the header cell index)</li>
+<li><code>S_ARENA_VEC_LEN = operand</code> (the requested length, <span class="math inline"> ≤ 4</span>)</li>
+<li><code>S_ARENA_VEC_E[0..3] =</code> register-file extraction:
+<ul>
+<li><code>S_ARENA_VEC_E0 = R3</code> (operand 4),</li>
+<li><code>S_ARENA_VEC_E1 = R2</code> (operand 3),</li>
+<li><code>S_ARENA_VEC_E2 = SOS</code> (operand 2),</li>
+<li><code>S_ARENA_VEC_E3 = TOS</code> (operand 1) — i.e. reversed stack order so <code>vector-ref 0</code> reads <span class="math inline"><em>v</em><sub>0</sub></span>;</li>
+</ul></li>
+<li><code>S_ARENA_VEC_T[0..3]</code> carry the matching <code>S_TYPE_R3..S_TYPE_TOS</code>;</li>
+<li><code>S_ARENA_VEC_HAS_E[0..3]</code> are 1.0 for the first <code>operand</code> slots and 0 otherwise, computed via <code>add_gated_opcode_index</code> against <code>operand</code>.</li>
+</ul>
+<p>Layer 4 writes the five <span class="math inline">1 + <em>n</em></span> arena cells. For each cell <span class="math inline"><em>i</em></span> and each of the five fields:</p>
+<p><span class="math display"><em>Δ</em>cell<sub><em>i</em></sub>.kind = <strong>1</strong>[<em>i</em> = S_ARENA_VEC_BASE] ⋅ (ARENA_KIND_VECTOR − cell<sub><em>i</em></sub>.kind)</span></p>
+<p>for the header cell, and similar element-cell writes gated by <code>S_ARENA_VEC_HAS_E[k]</code> for <span class="math inline"><em>k</em> ∈ [0, 4)</span>. The cell-chain <code>cdr</code> field is computed inline as <code>S_ARENA_VEC_BASE + k + 1</code>. Cost: 16 cells × 5 fields × 5 (1 header + 4 elements) = 400 Layer-4 neurons; in practice the gates are sparse because <code>S_ARENA_VEC_HAS_E[k]</code> zeros out the unused element writes. The bump pointer <code>S_ARENA_NEXT</code> increments by <code>1 + S_ARENA_VEC_LEN</code> after the write.</p>
+<p><strong><code>(vector-ref v i)</code>.</strong> Pre-state: <code>TOS = i, SOS = v-ptr</code>. The chain walk needed for unbounded <code>i</code> is what §5.6 originally feared and what kept this op delegated. The bounded landed form sidesteps it: since vectors are at most 4 elements long, the runtime relation between <code>i</code> and the target cell is</p>
+<p><span class="math display">target_cell = header_cell + 1 + <em>i</em>,   0 ≤ <em>i</em> ≤ 3.</span></p>
+<p>Layer 2’s arena-read indicator loop reads <code>cell.F_CAR_VAL</code> (and the type) into <code>S_ARENA_READ_CAR</code> after Layer 3 has computed the target cell index. Layer 3 itself uses a two-tier indicator (<code>add_gated_opcode_index</code>) keyed on <code>(S_OPCODE, S_TOS)</code> — for each <span class="math inline"><em>i</em> ∈ [0, 4)</span> and each valid header cell index <span class="math inline"><em>h</em> ∈ [0, 16)</span>, one gated pair fires when <code>S_OPCODE = OP_VEC_REF</code> and <code>S_TOS = i</code> and sets <code>S_ARENA_TARGET = h + 1 + i</code>. This is <span class="math inline">4 × 16 = 64</span> Layer-3 neurons. The subsequent Layer-4 cycle is unused for this opcode; the read result lands in the residual on the <em>same</em> cycle because Layer 2 already loaded the cell into the read scratch slots.</p>
+<p><strong><code>(vector-set! v i x)</code>.</strong> Combines VEC_REF’s target computation with the SET_CAR write pattern. The bounded form uses the same <span class="math inline">(<em>h</em> + 1 + <em>i</em>)</span> target arithmetic as <code>OP_VEC_REF</code> and the same Layer-4 cell-write loop as <code>OP_SET_CAR</code>. Cost: 64 Layer-3 neurons for target computation + 16 × 2 Layer-4 neurons for write = 96 neurons in addition to those already paid by VEC_REF and SET_CAR.</p>
+<p><strong><code>(vector-length v)</code>.</strong> Trivial: Layer 2 reads the header cell into <code>S_ARENA_READ_CAR</code> (= the length field), Layer 3 writes <code>S_TOS = S_ARENA_READ_CAR</code> gated on <code>S_OPCODE = OP_VEC_LEN</code>. One gated pair.</p>
+<p><strong>Out-of-bounds and chain.</strong> Programs that index past the bounded inline window are not in the artifact contract. The Layer-3 <code>S_TOS = i</code> indicators saturate to zero for <span class="math inline"><em>i</em> ≥ 4</span>, leaving the residual unchanged — an instructive failure mode where the matrix forward path stalls but does not corrupt state. The production VM handles unbounded vectors by allocating into the runtime arena outside Zone E; programs that mix bounded inline vectors with unbounded vectors must keep them disjoint or fall back to the production VM entirely.</p>
+<h3 id="57-op_str_ref-op_str_len-landed-read-only">5.7. <code>OP_STR_REF</code>, <code>OP_STR_LEN</code> (landed, read-only)</h3>
+<p>Strings reuse the vector cell layout: a header cell with <code>car = length</code> and a chain of <code>ARENA_KIND_VEC_ELEM</code> cells holding character codes (one per element). The only landed string ops are the <em>reads</em>, because the artifact’s program suite uses strings as literal display values and function names — no string construction or mutation appears in any traced program.</p>
+<p><code>OP_STR_REF</code> and <code>OP_STR_LEN</code> use the same Layer-2 arena read + Layer-3 residual write as <code>OP_VEC_REF</code> and <code>OP_VEC_LEN</code> respectively. The only difference is the <code>S_TYPE_TOS</code> value set on the result: <code>OP_STR_REF</code> writes <code>TYPE_NUMBER</code> (the character code is a number), <code>OP_STR_LEN</code> writes <code>TYPE_NUMBER</code> (the length is a number), <code>OP_VEC_REF</code> writes the cell’s <code>F_CAR_TYPE</code>, <code>OP_VEC_LEN</code> writes <code>TYPE_NUMBER</code>. The bounded length constraint is the same: <span class="math inline"> ≤ 4</span>.</p>
+<p>Dedicated string construction (e.g. <code>string-append</code>, <code>number-&gt;string</code>) is left to the production runtime via <code>OP_NATIVE_CALL</code>; the artifact contract is that <em>reading</em> a string already in the arena is in the weight path.</p>
+<h3 id="58-closures-and-upvalues--op_closure-op_get_upvalue-op_set_upvalue-op_close_upvalue-op_open_closure-landed">5.8. Closures and upvalues — <code>OP_CLOSURE, OP_GET_UPVALUE, OP_SET_UPVALUE, OP_CLOSE_UPVALUE, OP_OPEN_CLOSURE</code> (landed)</h3>
+<p>A closure occupies <span class="math inline">1 + <em>k</em></span> arena cells: the header (<code>kind = ARENA_KIND_CLOSURE = 4.0</code>, <code>car = entry_pc</code>, <code>cdr = k</code>) plus <span class="math inline"><em>k</em></span> upvalue cells whose <code>car</code> carries the upvalue value and whose <code>car_type</code> carries the upvalue type. The landed bound is <span class="math inline"><em>k</em> ≤ 4</span>, matching <code>ARENA_MAX_INLINE_VECTOR</code> and the four-slot MEM register file.</p>
+<p>The persistent state dimension <code>S_CUR_CLOSURE</code> (dim 15, the last Zone A register) holds the <em>currently executing</em> closure’s arena cell index, or a sentinel of -100.0 when the program is in top-level context.</p>
+<p><strong><code>OP_CLOSURE function-pc</code>.</strong> Layer 3 emits a header write at <code>S_ARENA_NEXT</code> with <code>kind = ARENA_KIND_CLOSURE</code>, <code>car_val = operand</code> (= function PC), and <code>cdr_val = 4</code> (= upvalue count). The header write uses the same Layer-4 indicator-gated cell mutation pattern as <code>OP_CONS</code>. <code>S_ARENA_NEXT</code> increments by 5 to reserve the four upvalue cells; the upvalue cells start zero-initialised and are written by subsequent <code>OP_SET_UPVALUE</code> or <code>OP_CLOSE_UPVALUE</code> invocations. <code>S_TOS</code> is updated to the new closure index and <code>S_TYPE_TOS = TYPE_CLOSURE</code>.</p>
+<p><strong><code>OP_OPEN_CLOSURE</code>.</strong> Layer 3 writes <code>S_CUR_CLOSURE = S_TOS</code>, which Layer 4 then preserves through the call frame. The reference VM saves and restores <code>g_current_closure_ptr</code> across <code>OP_CALL</code>/<code>OP_RETURN</code> (see <code>weight_matrices.c §g_frames</code> infrastructure); the matrix path uses an <code>exec_loop_postprocess</code> shim that mirrors the same save/restore at the dispatch loop level. This is the one remaining piece of the closure encoding where the matrix path leans on a host post-process; the closure cell <em>contents</em> are entirely weight-encoded, but the <em>frame discipline</em> of <code>S_CUR_CLOSURE</code> during nested calls is handled by the dispatch loop.</p>
+<p><strong><code>OP_GET_UPVALUE k</code>.</strong> Two-tier read: first, Layer 2 computes the existing MEM-backed fallback using the <code>S_LOADVAL</code> slot (this is the same address-resolution loop that <code>OP_GET_LOCAL</code> uses, <code>weight_matrices.c §1261-1262</code>); then, Layer 4 overwrites <code>S_TOS</code> from <code>arena[S_CUR_CLOSURE + 1 + k].car</code> when <code>S_CUR_CLOSURE</code> is in range <span class="math inline">[0, 16)</span>. The “in range” check is again a dual-input AND: gate weight <span class="math inline">SCALE</span> on <code>S_OPCODE = OP_GET_UPVALUE</code>, <span class="math inline">SCALE</span> on <code>S_OPERAND = k</code>, plus the <code>S_CUR_CLOSURE</code> indicator over the closure cell index. Cost: 4 operand values × 16 closure indices = 64 Layer-4 neurons for the arena read; the MEM fallback adds the standard 4-slot lookup from <code>OP_GET_LOCAL</code>.</p>
+<p><strong><code>OP_SET_UPVALUE k</code>.</strong> Writes to both the MEM fallback <em>and</em> the arena cell, gated identically to <code>OP_GET_UPVALUE</code>. Cost: 64 Layer-4 neurons for the arena write + the MEM-write counterpart.</p>
+<p><strong><code>OP_CLOSE_UPVALUE k</code>.</strong> Copies <code>MEM[k]</code> into the arena cell <code>arena[S_CUR_CLOSURE + 1 + k]</code>. Layer 2 reads <code>MEM[k]</code> into <code>S_LOADVAL</code>; Layer 4 writes the arena cell from <code>S_LOADVAL</code>. Cost: matches <code>OP_SET_UPVALUE</code> (the same target arithmetic, different source dim).</p>
+<p><strong>What stays outside.</strong> The bounded slice covers <span class="math inline"><em>k</em> ≤ 4</span> upvalues and a single closure depth at a time (the active closure index is a single scalar). Multi-level closure capture (closure-over-closure where the inner closure references the outer’s upvalues by <em>closure chain</em> rather than by name) requires either a recursive arena walk (Looped-Transformer pattern: iterate the dispatch loop with an incremented “chain depth” register) or a widened closure header with an enclosing-closure pointer. Neither is in the current artifact.</p>
+<h3 id="59-op_pack_rest-landed-bounded">5.9. <code>OP_PACK_REST</code> (landed, bounded)</h3>
+<p><code>(pack-rest n_fixed)</code> packs <code>MEM[n_fixed..3]</code> into a single list. The bounded form writes a contiguous arena pair chain <em>in a single VM step</em> (no looping), exploiting the fact that the rest range is at most <span class="math inline">4 − <em>n</em><sub>fixed</sub></span> cells.</p>
+<p><strong>Layer 3 setup.</strong> A bounded list-construction scratch window lives in Zone E’s transient region (<code>S_ARENA_LIST_BASE</code>, <code>S_ARENA_LIST_E[0..3]</code>, <code>S_ARENA_LIST_T[0..3]</code>, <code>S_ARENA_LIST_CDR[0..3]</code>, <code>S_ARENA_LIST_CDRT[0..3]</code>, <code>S_ARENA_LIST_HAS_E[0..3]</code>, 20 dims total at <code>weight_matrices.c §241-262</code>). Layer 3 populates:</p>
+<ul>
+<li><code>S_ARENA_LIST_BASE = S_ARENA_NEXT</code> — first pair cell index;</li>
+<li><code>S_ARENA_LIST_E[k] = MEM[n_fixed + k]</code> for <span class="math inline"><em>k</em> ∈ [0, 4 − <em>n</em><sub>fixed</sub>)</span>;</li>
+<li><code>S_ARENA_LIST_T[k] =</code> corresponding type tag;</li>
+<li><code>S_ARENA_LIST_CDR[k] =</code> next cell index, with the chain closed by <code>S_ARENA_LIST_CDR[last] = -1</code> (the nil sentinel from <code>OP_NIL</code>);</li>
+<li><code>S_ARENA_LIST_HAS_E[k] = 1</code> for cells within the rest range, <code>0</code> otherwise.</li>
+</ul>
+<p><strong>Layer 4 fan-out.</strong> Four pair-cell writes execute in parallel (one per element). The Layer-4 cell-write loop already iterates over 16 target indices, so the four cells <span class="math inline"><em>S</em><sub>ARENA_LIST_BASE</sub> + <em>k</em></span> each get their gate fired by an indicator-pair on <code>(S_ARENA_LIST_HAS_E[k], target = base + k)</code>. Each cell receives <code>kind = ARENA_KIND_PAIR</code>, <code>car_val = S_ARENA_LIST_E[k]</code>, <code>cdr_val = S_ARENA_LIST_CDR[k]</code>, plus the two type lanes.</p>
+<p><strong>MEM update.</strong> <code>MEM[n_fixed]</code> is overwritten with <code>S_ARENA_LIST_BASE</code> (the list head pointer) and <code>S_TYPE_MEM[n_fixed] = TYPE_PAIR</code>. The bump pointer <code>S_ARENA_NEXT</code> advances by <span class="math inline">4 − <em>n</em><sub>fixed</sub></span>.</p>
+<p><strong>Cost.</strong> Per arena cell: 5 fields × 2 sign-conjugate neurons = 10 Layer-4 neurons; four cells × 10 = 40 neurons, plus the indicator-pair budget at Layer 3 for the scratch population. Total ≈ 80 neurons for <code>OP_PACK_REST</code>. The opcode appears in 4 of the 123 traced programs (variadic-call tests). Unbounded rest-list lengths would require looping the dispatch — re-issuing <code>OP_PACK_REST</code> with an incremented register window — or expanding the <code>S_ARENA_LIST_*</code> window beyond four slots.</p>
+<h3 id="510-op_tail_call-plus-bounded-escape-continuations-op_callcc--op_invoke_cc">5.10. <code>OP_TAIL_CALL</code>, plus bounded escape continuations (<code>OP_CALLCC</code> / <code>OP_INVOKE_CC</code>)</h3>
+<p><strong><code>OP_TAIL_CALL n</code></strong> is <code>OP_CALL n</code> followed immediately by <code>OP_RETURN</code> with frame reuse. The semantic delta from <code>OP_CALL</code> is that the current call frame is <em>overwritten</em> rather than pushed, so the dispatch loop’s <code>g_frame_count</code> does not increment. The bounded encoding covers arities <span class="math inline"><em>n</em> ∈ {0, 1, 2, 3, 4}</span>: Layer 3 dispatches one <code>add_gated_opcode_index</code> per arity, with the residual delta computed as:</p>
+<ul>
+<li><code>PC = TOS</code> (the function PC was on top of the stack);</li>
+<li><code>MEM0..MEM2 ← SOS, R2, R3</code> for the first three arguments (gated by the arity indicator);</li>
+<li><code>MEM3 ← 0</code> if <code>n &lt; 4</code>, else <code>MEM3 ← R3</code>;</li>
+<li><code>TOS, SOS, R2, R3 ← 0</code> (stack reset);</li>
+<li><code>S_TYPE_TOS..S_TYPE_R3 ← TYPE_NUMBER</code> (stack-type reset);</li>
+<li><code>S_DEPTH ← S_DEPTH - (1 + n)</code> (depth decrement);</li>
+<li><code>S_CUR_CLOSURE</code> <em>not</em> reset — tail-call reuses the closure frame.</li>
+</ul>
+<p>The dual-input AND pattern on <code>(S_OPCODE, S_OPERAND)</code> makes each arity a 16-neuron block (8 fields × 2 sign-conjugate); the five arities together account for ≈ 80 Layer-3 neurons.</p>
+<p>Broader arities require the same arena-list path as <code>OP_PACK_REST</code> (loop the dispatch, re-issue with shifted register windows) or a widened MEM register file.</p>
+<p><strong><code>OP_CALLCC</code> / <code>OP_INVOKE_CC</code></strong> (bounded escape continuations). The general R7RS <code>call/cc</code> captures the <em>full</em> stack, the heap, the exception handler chain, and the dynamic-wind frames into a re-instatable continuation object. That is out of scope for the bounded artefact. What <em>is</em> in scope is the bounded <strong>escape continuation</strong>: a captured continuation that is only invoked once, and only to unwind back to its capture point, with no re-entry and no dynamic-wind interaction. The bounded form is sufficient for direct-style exception simulation and for one-shot non-local exits.</p>
+<p>The encoding uses <strong>four contiguous arena cells in Zone E</strong> (<code>ARENA_CONT_CELLS = 4</code> at <code>weight_matrices.c §96</code>):</p>
+<ul>
+<li>cell 0 — kind = <code>CONT_RESTORE_MARKER = 7.0</code>, <code>car = saved_PC</code>, <code>cdr = saved_FP</code>;</li>
+<li>cell 1 — <code>car = saved_TOS</code>, <code>cdr = saved_SOS</code>, <code>car_type/cdr_type</code> = the two type tags;</li>
+<li>cell 2 — <code>car = saved_R2</code>, <code>cdr = saved_R3</code>, types as above;</li>
+<li>cell 3 — <code>car = saved_DEPTH</code>, <code>cdr = saved_CUR_CLOSURE</code>.</li>
+</ul>
+<p><code>OP_CALLCC</code> reserves four arena cells, snapshots the live state into them, and pushes the continuation’s first-cell index onto <code>S_TOS</code> with <code>S_TYPE_TOS = TYPE_CONT = 7</code>. <code>OP_INVOKE_CC</code> indicator-loops over the 16 cells, finds the one with <code>kind = CONT_RESTORE_MARKER</code>, and restores all eight saved fields in a single Layer-4 write. Cost: ≈ 80 Layer-3 neurons for the snapshot (16 cells × ≈ 5 fields × 2-pair gates, with most gates zero for non-target cells) and the same again for the restore. The exercised programs use bounded <code>call/cc</code> for one-shot escape from nested computations.</p>
+<p>Full R7RS first-class continuations — re-entry, dynamic-wind interaction, exception unwinding through <code>OP_PUSH_HANDLER</code> / <code>OP_POP_HANDLER</code> — remain at the host runtime via <code>OP_NATIVE_CALL</code>. The bounded escape-continuation slice closes the <em>case that arises in the bounded artifact</em>; it does not claim to solve the general continuation problem.</p>
+<h3 id="511-ad-transcendentals--op_ad_div-op_ad_pow-op_ad_sin-op_ad_cos-landed-table-form">5.11. AD transcendentals — <code>OP_AD_DIV</code>, <code>OP_AD_POW</code>, <code>OP_AD_SIN</code>, <code>OP_AD_COS</code> (landed, table form)</h3>
+<p>The four “transcendental” AD opcodes were originally delegated to the host runtime for <em>precision</em>, not for any side-effect reason. The landed strict-artifact form table-encodes the verifier-exercised input range; broader general-input precision sits behind a separate “relaxed precision” build target (see §8 Stage 4).</p>
+<h4 id="5111-ad_sin-ad_cos--integer-input-table">5.11.1 <code>AD_SIN</code>, <code>AD_COS</code> — integer-input table</h4>
+<p>Constants from <code>weight_matrices.c §98-99</code>:</p>
+<pre class="c"><code>#define AD_TRIG_WEIGHT_MIN_INPUT -4
+#define AD_TRIG_WEIGHT_MAX_INPUT  4</code></pre>
+<p>For integer <span class="math inline"><em>x</em> ∈ [−4, 4]</span> (nine values), Layer 3’s forward AD dispatch table-looks-up</p>
+<p><span class="math display">$$
+\sin(x), \quad \frac{d}{dx}\sin(x) = \cos(x), \quad
+\cos(x), \quad \frac{d}{dx}\cos(x) = -\sin(x)
+$$</span></p>
+<p>via <code>add_gated_opcode_index</code> keyed on <span class="math inline">(<em>S</em><sub>OPCODE</sub>, <em>x</em><sub>round</sub>)</span> where <span class="math inline"><em>x</em><sub>round</sub></span> is the value at the tape’s input slot. Each of the 9 input values × 2 ops × 2 quantities (value + saved derivative) gives 36 table entries, each implemented as one gated-pair = 72 Layer-3 neurons. Layer 4’s tape-write path then records the resulting node onto the AD tape as <code>AD_OP_SIN</code> or <code>AD_OP_COS</code> with the saved derivative loaded.</p>
+<p>Traced coverage: the artefact exercises <span class="math inline"><em>x</em> ∈ {−1, 0, 1}</span>, demonstrating both positive and negative gradient propagation through trigonometric layers.</p>
+<h4 id="5112-ad_div--bounded-denominator-table">5.11.2 <code>AD_DIV</code> — bounded-denominator table</h4>
+<p><code>AD_DIV</code> is encoded for positive integer denominator <span class="math inline"><em>d</em> ∈ [1, 16]</span>. Constants from <code>weight_matrices.c §305-309</code>:</p>
+<pre class="c"><code>#define DIV_WEIGHT_MAX_DENOM 16</code></pre>
+<p>The forward computes <span class="math inline"><em>ℓ</em>/<em>d</em></span> for the integer denominator; the saved value is <span class="math inline">1/<em>d</em></span> (the left-derivative factor). The backward rule (<code>ad_backward_step</code> at line 1077-1082) gives</p>
+<p><span class="math display">∂<em>L</em>/∂<em>ℓ</em> = grad ⋅ (1/<em>d</em>) = grad ⋅ saved,</span></p>
+<p><span class="math display">∂<em>L</em>/∂<em>d</em> = grad ⋅ <em>ℓ</em> ⋅ (−1/<em>d</em><sup>2</sup>).</span></p>
+<p>The right-side gradient is the interesting one because <span class="math inline"><em>d</em><sup>2</sup></span> would require a second square activation. The encoding sidesteps this by storing <span class="math inline">1/<em>d</em></span> as <code>saved</code> and computing <span class="math inline">grad ⋅ <em>ℓ</em> ⋅ (−(1/<em>d</em>) ⋅ (1/<em>d</em>))</span> via two polarisation products in Layer 1 followed by Layer 5’s gradient write — but the bounded table simplifies further: for each denominator <span class="math inline"><em>d</em> ∈ [1, 16]</span>, a single gated value <span class="math inline">−1/<em>d</em><sup>2</sup></span> is precomputed and table-looked-up by the <code>(opcode, denominator)</code> pair-index. Cost: 16 denominator values × {forward, left-grad, right-grad} × 2 sign-pair neurons ≈ 96 Layer-3+5 neurons total.</p>
+<p>Verifier coverage includes both <code>d(x/2)/dx</code> (where <span class="math inline"><em>ℓ</em></span> is the AD variable) and <code>d(6/y)/dy</code> (where <span class="math inline"><em>d</em></span> is the AD variable), exercising both sides of the binary gradient rule.</p>
+<h4 id="5113-ad_pow--bounded-baseexponent-table">5.11.3 <code>AD_POW</code> — bounded base+exponent table</h4>
+<p><code>AD_POW</code> covers <span class="math inline"><em>b</em> ∈ [1, 8]</span> and <span class="math inline"><em>e</em> ∈ [1, 4]</span>. Constants (<code>weight_matrices.c §311-312</code>):</p>
+<pre class="c"><code>#define AD_POW_WEIGHT_MAX_BASE 8
+#define AD_POW_WEIGHT_MAX_EXP  4</code></pre>
+<p>The forward computes <span class="math inline"><em>b</em><sup><em>e</em></sup></span> for the integer pair; the saved value is <span class="math inline"><em>e</em> ⋅ <em>b</em><sup><em>e</em> − 1</sup></span> (the base-derivative factor). Backward rule (<code>ad_backward_step §1083-1088</code>):</p>
+<p><span class="math display">∂<em>L</em>/∂<em>b</em> = grad ⋅ <em>e</em> ⋅ <em>b</em><sup><em>e</em> − 1</sup> = grad ⋅ saved,</span></p>
+<p><span class="math display">∂<em>L</em>/∂<em>e</em> = grad ⋅ <em>b</em><sup><em>e</em></sup> ⋅ log <em>b</em> = grad ⋅ val ⋅ log <em>b</em>.</span></p>
+<p>The base gradient uses the standard polarisation product; the exponent gradient requires a <span class="math inline">log <em>b</em></span> value, which is table-looked-up by the base index. Cost: 8 bases × 4 exponents × 3 fields × 2 = 192 Layer-3+5 neurons. Traced coverage includes <code>d(pow(x, 2))/dx</code> and <code>d(pow(2, y))/dy</code>.</p>
+<h4 id="5114-other-unary-ad-ops--sigmoid-tanh-exp-log-sqrt-abs-relu">5.11.4 Other unary AD ops — sigmoid, tanh, exp, log, sqrt, abs, relu</h4>
+<p>The bounded artefact table-encodes:</p>
+<ul>
+<li><code>AD_ABS</code>, <code>AD_RELU</code> for bounded nonzero integer-scale cases;</li>
+<li><code>AD_EXP</code> at <span class="math inline"><em>x</em> = 0</span>;</li>
+<li><code>AD_SIGMOID</code> at <span class="math inline"><em>x</em> = 0</span> and <span class="math inline"><em>x</em> = 1</span>;</li>
+<li><code>AD_TANH</code> at <span class="math inline"><em>x</em> = 0</span>;</li>
+<li><code>AD_LOG</code> at <span class="math inline"><em>x</em> = 1</span>;</li>
+<li><code>AD_SQRT</code> at <span class="math inline"><em>x</em> = 4</span>.</li>
+</ul>
+<p>The pattern is identical to <code>AD_SIN</code>/<code>AD_COS</code>: gated <code>(opcode, input)</code> indicator, table-lookup of <code>(value, saved_derivative)</code>, Layer-4 tape append. Each saved-derivative table entry is one <code>add_gated_opcode_index</code> pair = 2 neurons.</p>
+<h4 id="5115-out-of-scope-general-libm-precision">5.11.5 Out-of-scope: general libm precision</h4>
+<p>Broader transcendental coverage — general <span class="math inline">sin (<em>x</em>)</span> for non-integer <span class="math inline"><em>x</em></span>, general <span class="math inline">exp </span> / <span class="math inline">log </span>, general <span class="math inline">pow(<em>a</em>, <em>b</em>)</span> — would require one of:</p>
+<ul>
+<li><strong>Taylor series</strong>: 5-term Taylor for <span class="math inline">sin </span>/<span class="math inline">cos </span> is IEEE-correct to ≈ 3 ULP for <span class="math inline"><em>x</em> ∈ [−<em>π</em>, <em>π</em>]</span>; range-reduction is matrix-encodable but adds one pass through Layer 3;</li>
+<li><strong>Newton-Raphson reciprocal</strong> for <code>pow(a, b) = exp(b * log a)</code>, which converges in 4 iterations from a good initial guess;</li>
+<li><strong><code>exp(b * log a)</code> composition</strong>, which depends on <code>AD_EXP</code> / <code>AD_LOG</code> covering a wider input range.</li>
+</ul>
+<p>None of these match the C runtime’s <code>libm</code> bit-identically. Adopting them requires shifting the agreement contract from “bit-identical at every step” to “matches to N ULPs at the AD output”, which is a different artefact — see §8 Stage 4.</p>
+<h2 id="6-genuinely-native-operations-out-of-scope">6. Genuinely-native operations (out of scope)</h2>
+<p>These remain delegated. The reasons are not “we ran out of weight budget” but “the operation is fundamentally a side-effect on something the transformer cannot represent in its bounded state”:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Opcode</th>
+<th>Why native</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>OP_NATIVE_CALL</code></td>
+<td>Bridges to libcurl, sqlite3, libpthread, libm, etc. The state is in the OS, not the transformer.</td>
+</tr>
+<tr>
+<td>Full <code>OP_CALLCC</code> / <code>OP_INVOKE_CC</code> frame walking</td>
+<td>The bounded escape-continuation slice is weight-encoded as a four-cell arena record. General first-class continuations that capture and reinstate unbounded stack/heap/dynamic-wind state remain outside the strict artifact contract.</td>
+</tr>
+<tr>
+<td><code>OP_PUSH_HANDLER</code>, <code>OP_POP_HANDLER</code>, <code>OP_GET_EXN</code></td>
+<td>Bounded depth bookkeeping and default <code>GET_EXN</code> are weight-encoded; full R7RS raise/unwind still traverses dynamic-wind frames and remains native.</td>
+</tr>
+<tr>
+<td><code>OP_WIND_PUSH</code>, <code>OP_WIND_POP</code></td>
+<td>Bounded wind-depth bookkeeping and stack effects are weight-encoded; running after-thunks during continuation unwinding remains native.</td>
+</tr>
+<tr>
+<td>General <code>OP_DIV</code>, <code>OP_MOD</code></td>
+<td>The exercised exact-integer slice is weight-encoded. Arbitrary IEEE 754 correct rounding remains outside the strict artifact slice unless we add a relaxed-precision build or a much larger lookup/range contract.</td>
+</tr>
+</tbody>
+</table>
+<p>For the artifact contract, the current strict transformer has no native-assisted steps on the exercised bounded trace suite. A future relaxed-precision build can broaden the AD/IEEE numeric contract; the strict build remains intentionally conservative about arbitrary libm and OS/native semantics.</p>
+<h2 id="7-concrete-weight-construction-recipe">7. Concrete weight construction recipe</h2>
+<p>For each new gated-FFN entry, the construction follows the existing pattern at <code>weight_matrices.c:2560-2580</code> (<code>add_gated_pair</code>):</p>
+<pre class="c"><code>n = add_gated_pair(w, L, n,
+    /* opcode discriminator */    OPCODE,
+    /* op-pred-1 (state, val) */  -1, 0,
+    /* op-pred-2 */                -1, 0,
+    /* op-pred-3 */                -1, 0,
+    /* op-pred-4 */                -1, 0,
+    /* gate-magnitude */           1.0f,
+    /* state slot to write */      S_TARGET,
+    /* delta (as fraction of gate)*/ DELTA);</code></pre>
+<p>For the heap-touching operations we add a new helper <code>add_heap_write</code>:</p>
+<pre class="c"><code>n = add_heap_write(w, L, n,
+    /* opcode */                  OP_CONS,
+    /* cell-index source */       S_HEAP_FREE,
+    /* fields written (mask) */   (1 &lt;&lt; F_TYPE) | (1 &lt;&lt; F_CAR) | (1 &lt;&lt; F_CDR),
+    /* values to write (slots) */ {TYPE_PAIR_const, S_NEW_CAR, S_NEW_CDR},
+    /* type tags to write */      {0,                S_NEW_CAR_TYPE, S_NEW_CDR_TYPE});</code></pre>
+<p>Internally it expands to one gated-pair per (cell, field-in-mask), 16 cells × popcount(mask) gates. Each cell is one indicator over <code>S_HEAP_FREE = i</code> which saturates to one-hot under <code>SCALE = 300</code> — same SCALE the rest of the model already uses.</p>
+<h3 id="71-layer-6-cell-fetch-construction">7.1. Layer 6 (cell fetch) construction</h3>
+<p>Mirror Layer 0’s instruction-fetch pattern:</p>
+<pre><code>Q = SCALE · onehot(S_TOS_int, MEM_SIZE)           [per-head: 16-dim]
+K = stack_of(onehot(i, MEM_SIZE) for i ∈ [0,16))  [16 × 16]
+V = heap[i].F_*                                    [16 × 12]
+Attention(Q,K,V) → loaded_cell at S_LOAD_*</code></pre>
+<p>The query projection takes <code>S_TOS</code> and produces a 16-dim spike. The keys are fixed per cell-index (positional, like Layer 0’s PC-key). The values are the cell contents, which <strong>are dimensions of x, not separate parameters</strong>. This is the Tracr trick: the heap bank is part of the residual stream; the attention reads from it via projection, not from a separate KV cache.</p>
+<h3 id="72-weight-count-delta">7.2. Weight count delta</h3>
+<p>Using <code>weight_matrices.c</code>’s existing accounting (per-layer FFN width 1024, gate+up+down per pair):</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Class</th>
+<th>New gated pairs</th>
+<th>New params (× 1024 × 3 = 3072 per pair)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Type predicates (6) + NULL_P</td>
+<td>7</td>
+<td>21,504</td>
+</tr>
+<tr>
+<td>POPN (3 cases)</td>
+<td>3</td>
+<td>9,216</td>
+</tr>
+<tr>
+<td>CONS / CAR / CDR / SET_CAR / SET_CDR</td>
+<td>16 cells × 5 ops × ~2 fields = 160</td>
+<td>491,520</td>
+</tr>
+<tr>
+<td>VEC_* (stage 1, n ≤ 4)</td>
+<td>16 cells × 4 ops × ~2 fields = 128</td>
+<td>393,216</td>
+</tr>
+<tr>
+<td>STR_* (stage 1, len ≤ 4)</td>
+<td>16 cells × 2 ops × 2 fields = 64</td>
+<td>196,608</td>
+</tr>
+<tr>
+<td>Closures + upvalues</td>
+<td>16 × 5 ops × 2 fields = 160</td>
+<td>491,520</td>
+</tr>
+<tr>
+<td>TAIL_CALL + PACK_REST</td>
+<td>8</td>
+<td>24,576</td>
+</tr>
+<tr>
+<td>AD transcendentals (Taylor-5 each)</td>
+<td>4 ops × 5 terms = 20</td>
+<td>61,440</td>
+</tr>
+<tr>
+<td>Layer 6 (cell fetch) attention</td>
+<td>16 heads × (12+12+1)</td>
+<td>~6,000</td>
+</tr>
+<tr>
+<td>Layer 7 (heap mutate) FFN</td>
+<td>net of above</td>
+<td>(already counted)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Total new params: ~1.7M</strong>, growing the model from 2.8M to ~4.5M. Still shallow by transformer standards. <code>d_model</code> grows from 128 → 256, doubling the per-step compute but not the depth.</p>
+<h2 id="8-implementation-milestones-lift-to-a-pr-series">8. Implementation milestones (lift to a PR series)</h2>
+<h3 id="stage-1--type-predicates--null--popn">Stage 1 — Type predicates + null + POPN</h3>
+<p><em>~3 days, ~30k new params, ~150 lines added to weight_matrices.c</em></p>
+<p><strong>Pre-stage baseline (verified 2026-05-08):</strong> the existing 71/71 contract reproduces in 2.84s wall on M2 Max, with all 5 SHA-256s matching the doc-pinned values:</p>
+<pre><code>weights.qlmw              638376aab6d49e829da2c54d22b545d86c50aa1c2d508e8ec029d2a6d3f1e77d
+vm-traces.jsonl           564fbe1fa4dba5793db0c0e54d402932061f2c82b94da470c7541a5c421584f3
+transformer-traces.jsonl  5cc01b2a17e87d88628b13ef5f7602bd7bcd6380e407a0aac5c39b35a9570715
+comparison-report.json    8a7917d2b56254f9fad71a4cd5e59284504313e73f99c2b668b461a74e154aab
+opcode-coverage.json      aa0c666ad3c2b7a1034e4a69deee6e271e53261bddb12e07dce52fb55218438f</code></pre>
+<p>Run <code>scripts/paper/run_paper_suite.sh</code> after each patch. The historical baseline here was 71 traced programs; later stages add tests, so the durable contract is <code>total_programs == output_agreeing_programs == fully_agreeing_programs</code>, not a fixed count. Different SHAs for traces are OK if newly weight-encoded opcodes change state-vector trajectories.</p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Repurpose <code>S_AD_SPARE2..S_AD_SPARE8</code> (slots 121-127) as <code>S_TYPE_IS_NUM/BOOL/PAIR/PROC/STR/VEC/NIL</code> transient slots</label></li>
+<li><label><input type="checkbox" checked="" />Layer 2: emit 7 sigmoid-difference indicator computations (one per type tag, mirroring the existing <code>S_CMP_EQ</code> pattern at <code>weight_matrices.c:780-790</code>)</label></li>
+<li><label><input type="checkbox" checked="" />Layer 3: replace IS_NATIVE emission for <code>OP_NULL_P</code> (34) + <code>OP_PAIR_P</code> (45) … <code>OP_VEC_P</code> (50) with two <code>add_gated_pair</code> calls each (<code>Δ TOS = S_TYPE_IS_X - TOS</code> then <code>Δ TYPE_TOS = TYPE_BOOL - TYPE_TOS</code>)</label></li>
+<li><label><input type="checkbox" checked="" />Layer 3: replace IS_NATIVE emission for <code>OP_POPN</code> (53) with three indicator-gated cases on <code>S_OPERAND ∈ {1, 2, 3}</code></label></li>
+<li><label><input type="checkbox" checked="" />Update <code>exec_step</code> simulator dispatch (<code>weight_matrices.c:537-548</code>): remove the 7 predicates + POPN from the IS_NATIVE union, add explicit cases that compute the same result</label></li>
+<li><label><input type="checkbox" checked="" />Update IS_NATIVE matrix-emission loop at line ~902 to skip the newly-encoded opcodes</label></li>
+<li><label><input type="checkbox" checked="" />Re-run <code>scripts/paper/run_paper_suite.sh</code>; the comparison-report must report all traced programs agreeing on PRINT output and full state</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Acceptance:</strong> <code>tab_opcode_coverage.tex</code> shows <code>(43+8) wi, (10-8) nd</code> — i.e., 51 weight-implemented, 2 native-delegated for the suite’s exercised set</label></li>
+</ul>
+<h3 id="stage-2--arena-bank-cons-car-cdr-set_car-set_cdr-vec_-str_">Stage 2 — Arena bank: CONS, CAR, CDR, SET_CAR, SET_CDR, VEC_<em>, STR_</em></h3>
+<p><em>~2 weeks, ~1.5M new params, d_model 128 → 256</em></p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Extend <code>D</code> to 256, add Zone E arena layout</label></li>
+<li><label><input type="checkbox" checked="" />Implement pair arena write/read in existing Layer 3 + Layer 4 schedule (<code>CONS</code>, <code>CAR</code>, <code>CDR</code>, <code>SET_CAR</code>, <code>SET_CDR</code>)</label></li>
+<li><label><input type="checkbox" checked="" />Update reference and simulated transformer C functions for pair arena ops</label></li>
+<li><label><input type="checkbox" checked="" />Add focused pair regressions: cdr nil type preservation, nested pair type preservation, <code>set-cdr!</code></label></li>
+<li><label><input type="checkbox" checked="" />Re-run <code>scripts/paper/run_paper_suite.sh</code>; pair slice report was 82/82 PRINT-output and full-state agreement</label></li>
+<li><label><input type="checkbox" checked="" />Extend arena bank layout for bounded <code>VEC_*</code></label></li>
+<li><label><input type="checkbox" checked="" />Implement bounded inline vectors in the existing Layer 3 + Layer 4 schedule (<code>VEC_CREATE</code>, <code>VEC_REF</code>, <code>VEC_SET</code>, <code>VEC_LEN</code>)</label></li>
+<li><label><input type="checkbox" checked="" />Add focused vector regressions: <code>vec-ref</code>, <code>vec-len</code>, <code>vec-set/ref</code></label></li>
+<li><label><input type="checkbox" checked="" />Re-run <code>scripts/paper/run_paper_suite.sh</code>; vector report was 83/83 PRINT-output and full-state agreement, with 54 weight-implemented / 3 native-delegated opcodes in the exercised coverage set</label></li>
+<li><label><input type="checkbox" checked="" />Encode arena-layout <code>STR_REF</code> and <code>STR_LEN</code> reads</label></li>
+<li><label><input type="checkbox" checked="" />Add focused string-layout regressions: <code>str-ref</code>, <code>str-len</code></label></li>
+<li><label><input type="checkbox" checked="" />Re-run <code>scripts/paper/run_paper_suite.sh</code>; string-read report was 93/93 PRINT-output and full-state agreement, with 60 weight-implemented / 0 native-delegated opcodes in the exercised coverage set</label></li>
+<li><label><input type="checkbox" checked="" />Keep bounded string reads in the landed Layer 3 + Layer 4 schedule; chained string construction remains future work</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Acceptance:</strong> add string test programs; all traced programs bit-identical against simulated transformer mode</label></li>
+</ul>
+<h3 id="stage-3--closures-with-upvalues-tail_call-pack_rest">Stage 3 — Closures with upvalues, TAIL_CALL, PACK_REST</h3>
+<p><em>~1 week, ~500k new params</em></p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Encode artifact-shape <code>OP_CLOSURE</code> as an arena closure header (<code>car = entry_pc</code>, <code>cdr = reserved upvalue count</code>)</label></li>
+<li><label><input type="checkbox" checked="" />Encode MEM-backed <code>OP_GET_UPVALUE</code>, <code>OP_SET_UPVALUE</code> fallback</label></li>
+<li><label><input type="checkbox" checked="" />Encode arena-path <code>OP_OPEN_CLOSURE</code>, <code>OP_CLOSE_UPVALUE</code> housekeeping</label></li>
+<li><label><input type="checkbox" checked="" /><code>OP_GET_UPVALUE</code>, <code>OP_SET_UPVALUE</code> via bounded arena closure cells</label></li>
+<li><label><input type="checkbox" checked="" />Encode bounded <code>OP_TAIL_CALL</code> arities 0..4 as frame reuse in the weight path</label></li>
+<li><label><input type="checkbox" checked="" /><code>OP_PACK_REST</code> via bounded arena list creation</label></li>
+<li><label><input type="checkbox" checked="" />Encode bounded exact integer <code>OP_DIV</code>/<code>OP_MOD</code> cases exercised by the artifact suite</label></li>
+<li><label><input type="checkbox" checked="" />Encode exercised <code>AD_EXP</code>/<code>AD_SIGMOID</code>/<code>AD_TANH</code>/<code>AD_LOG</code>/<code>AD_SQRT</code> libm values as bounded AD table paths</label></li>
+<li><label><input type="checkbox" checked="" />Encode <code>AD_SIN</code>/<code>AD_COS</code> integer input table -4..4, with traced representative coverage at -1, 0, and 1</label></li>
+<li><label><input type="checkbox" checked="" />Encode exercised bounded <code>AD_DIV</code> denominator table path, including both <code>d(x/2)/dx</code> and <code>d(6/y)/dy</code> reverse-mode checks</label></li>
+<li><label><input type="checkbox" checked="" />Encode exercised bounded <code>AD_POW</code> positive integer table path, including both <code>d(pow(x,2))/dx</code> and <code>d(pow(2,y))/dy</code> reverse-mode checks</label></li>
+<li><label><input type="checkbox" checked="" />Encode bounded direct-entry <code>OP_CALLCC</code>/<code>OP_INVOKE_CC</code> escape continuations as a four-cell arena record</label></li>
+<li><label><input type="checkbox" checked="" />Add explicit verifier coverage for previously untraced weight opcodes: <code>OP_NOP</code>, <code>OP_NOT</code>, <code>OP_LOOP</code>, and <code>OP_AD_SUB</code></label></li>
+<li><label><input type="checkbox" checked="" />Re-run <code>scripts/paper/run_paper_suite.sh</code>; current report is 123/123 PRINT-output and full-state agreement, with 82 weight-implemented / 0 native-delegated / 0 transformer-native-assisted opcodes in the exercised coverage set</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Acceptance:</strong> Stage 3’s bounded closure/upvalue, tail-call, and pack-rest artifact paths plus bounded escape continuations are weight-implemented. The exercised trace set has no native-assisted transformer steps. The remaining true native boundary is outside this stage: <code>OP_NATIVE_CALL</code>, full exception/dynamic-wind unwinding, unbounded continuation frame walking, general IEEE <code>DIV</code>/<code>MOD</code>, and broader relaxed-precision AD transcendentals.</label></li>
+</ul>
+<h3 id="stage-4--ad-transcendentals-taylor--newton-raphson-on-a-separate-build-target">Stage 4 — AD transcendentals (Taylor + Newton-Raphson) on a separate build target</h3>
+<p><em>~1 week, ~100k new params</em></p>
+<ul class="task-list">
+<li><label><input type="checkbox" checked="" />Exercised <code>AD_EXP(0)</code>, <code>AD_SIGMOID(0/1)</code>, <code>AD_TANH(0)</code>, <code>AD_LOG(1)</code>, <code>AD_SQRT(4)</code>, and representative <code>AD_SIN</code>/<code>AD_COS</code> integer inputs -1, 0, and 1 via bounded table gates in the strict artifact build</label></li>
+<li><label><input type="checkbox" checked="" />Exercised <code>AD_DIV</code> via positive denominator table gates and both numerator/denominator reverse-mode gradient paths</label></li>
+<li><label><input type="checkbox" checked="" />Exercised <code>AD_POW</code> via positive base/exponent table gates and both base/exponent reverse-mode gradient paths</label></li>
+<li><label><input type="checkbox" />General <code>OP_AD_SIN</code>, <code>OP_AD_COS</code> via Bhaskara/Taylor in Layer 3 dispatch</label></li>
+<li><label><input type="checkbox" />General <code>OP_AD_POW</code> via existing EXP/LOG composition</label></li>
+<li><label><input type="checkbox" />General <code>OP_AD_DIV</code> via Newton-Raphson 4-iter loop</label></li>
+<li><label><input type="checkbox" /><strong>Acceptance:</strong> Taylor-build matches reference to ≤ 4 ULPs on AD ops, documented relaxation; libm-delegated build remains bit-identical</label></li>
+</ul>
+<h3 id="stage-0--bit-identity-fixes-pre-stage-1">Stage 0 — Bit-identity fixes (pre-stage 1)</h3>
+<p>Before any of stages 1-4 could expand the weight-encoded opcode set, the <strong>agreement contract had to be tightened from “output matches” to “every byte of every step matches”</strong>. The contract change exposed five distinct weight-encoding bugs that had been hiding inside the inline 0.01-tolerance output check. Each fix is documented in commit <strong><code>7301dc4 fix(paper): bit-identical SDNC agreement — 71/71 full per-step state</code></strong>; the full narrative is in <code>docs/SDNC.md §6</code>. Summary table for the milestone log:</p>
+<table>
+<colgroup>
+<col style="width: 1%" />
+<col style="width: 28%" />
+<col style="width: 38%" />
+<col style="width: 31%" />
+</colgroup>
+<thead>
+<tr>
+<th style="text-align: right;">#</th>
+<th>Symptom</th>
+<th>Root cause</th>
+<th>Fix location in <code>weight_matrices.c</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td><code>tail sum(100)</code> matrix <code>tos = 4.4e-16</code> vs reference <code>0</code></td>
+<td><code>SCALE = 100</code> left <span class="math inline">exp (−35.4)</span> residue in Layer 0 attention softmax</td>
+<td><code>#define SCALE 300.0f</code>, lines 59-85</td>
+</tr>
+<tr>
+<td style="text-align: right;">2</td>
+<td><code>tape[1] = 7</code> on AD-VAR programs during backward</td>
+<td>Layer 4 forward tape-write missing the <code>S_AD_IS_FORWARD</code> row of the gate</td>
+<td><code>add S_AD_IS_FORWARD coefficient = 10·SCALE</code>, lines 4880-4951</td>
+</tr>
+<tr>
+<td style="text-align: right;">3</td>
+<td>After fix 2, gate re-opens at high <code>S_AD_TAPE_LEN</code></td>
+<td>Symmetric AND with both inputs at <code>SCALE</code> fails when one input swings wider</td>
+<td>Asymmetric weighting: <code>10·SCALE</code> on the binary input, lines 3752-3779</td>
+</tr>
+<tr>
+<td style="text-align: right;">4</td>
+<td>One-cycle PC/register/tos drift after backward finishes</td>
+<td>Cursor-done indicator at <code>cursor == -1</code> fires one cycle late</td>
+<td><code>at_done = indicator(cursor, 0.0f)</code>, lines 1352-1371 + 3744-3779</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td><code>sigmoid</code> AD gradient <code>0.393223852</code> vs <code>0.393223763</code></td>
+<td>Reference VM multiplied <code>grad * saved</code> directly while matrix uses polarisation</td>
+<td><code>POLARIZATION_PRODUCT</code> macro in <code>ad_backward_step</code>, lines 1064-1096</td>
+</tr>
+</tbody>
+</table>
+<p>Acceptance after Stage 0 was 71/71 traced programs on both the output-agreement and the full-per-step-state-agreement metrics (commit <code>7301dc4</code>). Stages 1-4 then expanded the weight coverage while preserving both metrics, ending at the current 123/123 status.</p>
+<p>The lesson encoded in this milestone — <em>bit-identity is a stronger contract than approximate agreement, and the agreement metric the artifact reports must be the stronger one</em> — is now folded into the <code>compare_traces.py</code> exit policy (<code>scripts/paper/compare_traces.py §335</code>): the script exits non-zero when <code>output_agreeing_programs &lt; total_programs</code>, and the regenerator refuses to ship a new QLMW file if the inline <code>test()</code> count of failures is nonzero. A future patch that introduces a drift on either metric must either revert or fix.</p>
+<h2 id="9-risk--mitigation">9. Risk &amp; mitigation</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>d_model = 256</code> breaks downstream paper-trace dump pipeline</td>
+<td>New <code>d_model</code> constant + format-version bump in ESKB writer; old traces still readable via version detection</td>
+</tr>
+<tr>
+<td>16-cell heap insufficient for real Eshkol programs</td>
+<td>The artifact’s 71 test programs only exercise heap shallowly. Real programs need bounded heap or chain-walks; we accept that “all memory ops in the transformer” is a <em>contract about ops</em>, not about <em>unbounded program execution</em>. The contract is: “for any program whose live-cell-count never exceeds 16, the full execution is one transformer block iterated.” Production deployments scale <code>MEM_SIZE</code> linearly.</td>
+</tr>
+<tr>
+<td>Taylor approximation breaks AD precision</td>
+<td>Two builds; users opt in via CMake flag</td>
+</tr>
+<tr>
+<td>Float32 saturation breaks at <code>d_model = 256</code></td>
+<td>SCALE = 300 already has 50 ULP margin per the <code>weight_matrices.c:59-84</code> analysis; doubling state dims adds ~2× accumulation length, well within margin</td>
+</tr>
+<tr>
+<td>Frame walking for <code>CALLCC</code></td>
+<td>Bounded escape continuations are encoded; unbounded frame walking remains outside the strict artifact contract.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="10-references-with-cached-shas">10. References (with cached SHAs)</h2>
+<p>(All papers in <code>research/papers/content/objects/&lt;sha&gt;/</code>; full bib at <code>research/vm-transformer-bib.bib</code>.)</p>
+<ul>
+<li><strong>graves2014ntm</strong> — Neural Turing Machines (Graves 2014). Read/write heads with content + location addressing. Section 3.3 supplies the attention pattern for our Layer 6 cell fetch.</li>
+<li><strong>graves2016dnc</strong> — Differentiable Neural Computer (Graves 2016, Nature). Linkage matrix for closure capture; cited but not openly cached.</li>
+<li><strong>joulin2015stack</strong> — Inferring Algorithmic Patterns with Stack-Augmented Recurrent Nets. Push/pop scalars for differentiable stack.</li>
+<li><strong>grefenstette2015trans</strong> — Learning to Transduce with Unbounded Memory. Continuous stack/queue/dequeue with fully-decoupled dynamics; supplies the bit-stable scalar push/pop convention.</li>
+<li><strong>bosnjak2017forth</strong> — Programming with a Differentiable Forth Interpreter. Slot-and-sketch model: every opcode is a fixed function on the state.</li>
+<li><strong>dehghani2018universal</strong> — Universal Transformer. Parallel-in-time recurrent transformer; supplies the looped-block iteration pattern.</li>
+<li><strong>giannou2023looped</strong> — Looped Transformers as Programmable Computers. 13-layer transformer emulating a small ISA; precedent for our 6→8 layer extension.</li>
+<li><strong>lindner2023tracr</strong> — Tracr: Compiled Transformers as a Laboratory for Interpretability. Gives the RASP-to-attention-head compilation pipeline we follow for <code>CAR</code>/<code>CDR</code>/predicate ops.</li>
+<li><strong>liu2022shortcuts</strong> — Transformers Learn Shortcuts to Automata. Krohn- Rhodes decomposition justifies why O(1)-depth dispatch suffices for any finite-state computation, including type-predicate dispatch.</li>
+<li><strong>olsson2022induction</strong> — In-context Learning and Induction Heads. Mechanistic-interpretability anchor for “the heap is content-addressable via attention” claim.</li>
+<li><strong>santoro2018rmc</strong> — Relational Memory Core. Multi-head attention over bounded memory; closest existing analogue to our heap bank.</li>
+<li><strong>sukhbaatar2015memnn</strong> — End-to-end Memory Networks. Multi-hop reads over external memory; foundational for the “heap as part of residual stream” decision.</li>
+<li><strong>weiss2021rasp</strong> — Thinking Like Transformers (RASP). select+aggregate primitives; our type predicates and indicator gates <em>are</em> RASP <code>aggregate (select(== TYPE_PAIR), 1)</code> instances.</li>
+</ul>
+<h2 id="11-what-this-design-does-not-claim">11. What this design does NOT claim</h2>
+<ul>
+<li>It does not claim the SDNC becomes Turing-complete via this extension. The bounded heap caps live-cell count at 16 (or whatever <code>MEM_SIZE</code> is set to). Programs requiring more cells fall back to the runtime, exactly as today.</li>
+<li>It does not claim bit-identical agreement on transcendentals (stage 4).</li>
+<li>It does not claim removing <code>NATIVE_CALL</code>. <code>NATIVE_CALL</code> is the FFI; it bridges to OS resources by definition.</li>
+<li>It does not claim faster execution. The transformer-mode is slower than the C VM by ~1000× per step. The point is the <em>constructive equivalence</em>, not the throughput.</li>
+</ul>
+<h2 id="12-open-questions">12. Open questions</h2>
+<ul>
+<li>Should the heap be a separate module from the AD tape, or unified? The AD tape is also a bounded memory (8 nodes × 8 fields = 64 dims); the heap bank we propose is 16 × 12 = 192 dims. Unifying them — one bank, multiple views — would save ~30% of weight count but couples two independent contracts. Recommendation: keep separate; cleanliness &gt; compactness.</li>
+<li>For chained vectors / strings, do we expose the chain-walk to programs (so they can detect “this ref will take 3 cycles”) or hide it inside the looped-transformer iteration? Recommendation: hide; emit a “delayed result” indicator and re-issue the same instruction.</li>
+<li>For the artifact contract, do we ship the new transformer at the SAME pinned commit (<code>8235d99</code>) or bump? Recommendation: new pin, new reproducibility-package version; the old pin remains the v1.2.0 anchor.</li>
+</ul>
+<hr />
+<p>This design is a <strong>constructive specification</strong>: every entry in §5 maps to a specific change to <code>weight_matrices.c</code>. Stage 1 is mechanically implementable from this document; stage 2 requires the <code>d_model</code> extension and Layer 6/7 addition; stages 3-4 are scope extensions. Once stage 3 lands, 24 of the 26 currently-delegated opcodes have been encoded, which closes the user’s request “all memory operations are in the transformer”.</p>

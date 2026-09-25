@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "artifact_set": "fung-strain-energy-v1",
+  "generation": 7,
+  "sealed": true,
+  "replacement": "Replace the entire WGSL/manifest pair as one generation; never mutate coefficients in place.",
+  "model": {
+    "potential": "(a/b)*(exp(b*e)-1-b*e)",
+    "a_Pa": 2.0,
+    "b_dimensionless": 3.0,
+    "independent": "e",
+    "e_units": "dimensionless strain",
+    "held_fixed": [
+      "a",
+      "b"
+    ],
+    "reference_e": 0.0,
+    "normalization": "t=(e-reference_e)/1",
+    "radius_t": 0.2,
+    "order": 10,
+    "coefficient_order": "ascending powers of t",
+    "value_units": "Pa",
+    "first_units": "Pa/strain",
+    "second_units": "Pa/strain^2",
+    "coefficients": [
+      0.0,
+      0.0,
+      3.0,
+      3.0,
+      2.25,
+      1.3499999999999999,
+      0.6749999999999999,
+      0.28928571428571426,
+      0.10848214285714283,
+      0.03616071428571428,
+      0.010848214285714284
+    ],
+    "first_coefficients": [
+      0.0,
+      6.0,
+      9.0,
+      9.0,
+      6.749999999999999,
+      4.05,
+      2.025,
+      0.8678571428571427,
+      0.3254464285714285,
+      0.10848214285714283
+    ],
+    "second_coefficients": [
+      6.0,
+      18.0,
+      27.0,
+      26.999999999999996,
+      20.25,
+      12.149999999999999,
+      6.074999999999998,
+      2.603571428571428,
+      0.9763392857142855
+    ]
+  },
+  "model_sha256": "0112cd213ebd864b591e1792435a22ce8a418a6b80ea18dbee7158bbcc39e22c",
+  "source_sha256": "4598899b130bc9a1007309ac69007978d8c8ee18a1be8fa0b83b28740e8de1bb",
+  "wgsl_sha256": "2303ea8be6e9b5413635027b044c9da097d25c76c301d6096413e96d1e5c822e",
+  "compiler": {
+    "git_commit": "8fc724a13be90c64f07b91b87ba4ad3b2943e391",
+    "native_binary_sha256": "0530ea99515d250b5b6648442f6efb144dfa66c19df6bc030ebad5d1bfcd0470",
+    "vm_generator_byte_identical": true
+  },
+  "abi": {
+    "precision": "IEEE 754 f32 storage and WGSL arithmetic",
+    "endianness": "little",
+    "workgroup_size": 64,
+    "max_count": 4096,
+    "dispatch": "ceil(count/64), at most 64 workgroups; bounds checked against count and both runtime arrays",
+    "bindings": [
+      {
+        "group": 0,
+        "binding": 0,
+        "name": "params",
+        "access": "read",
+        "bytes": 16,
+        "fields": {
+          "count": "u32@0",
+          "generation": "u32@4",
+          "pad0": "u32@8",
+          "pad1": "u32@12"
+        }
+      },
+      {
+        "group": 0,
+        "binding": 1,
+        "name": "samples",
+        "access": "read",
+        "stride_bytes": 4,
+        "fields": {
+          "strain": "f32@0"
+        }
+      },
+      {
+        "group": 0,
+        "binding": 2,
+        "name": "results",
+        "access": "read_write",
+        "stride_bytes": 32,
+        "fields": {
+          "value": "f32@0",
+          "first": "f32@4",
+          "second": "f32@8",
+          "in_envelope": "u32@12",
+          "status": "u32@16",
+          "generation": "u32@20",
+          "pad0": "u32@24",
+          "pad1": "u32@28"
+        }
+      }
+    ],
+    "status": {
+      "0": "finite result inside envelope",
+      "1": "nonfinite input or outside envelope",
+      "2": "nonfinite evaluation"
+    },
+    "outside_envelope": "zero numeric outputs; status 1; in_envelope 0"
+  },
+  "errors": {
+    "analytic_coefficient_max_absolute": 2.220446049250313e-16,
+    "ad_grid_41_max_absolute": {
+      "value": 6.376787986539512e-11,
+      "first": 3.5238751916466526e-09,
+      "second": 1.7720019584999136e-07
+    },
+    "analytic_taylor_remainder_upper_bound": {
+      "value": 1.1040620097535018e-10,
+      "first": 6.07234105364426e-09,
+      "second": 3.03617052682213e-07
+    },
+    "f32_coefficient_conversion_upper_bound": {
+      "value": 8.462998028806013e-12,
+      "first": 6.734019836800089e-11,
+      "second": 1.3446483673220657e-10
+    },
+    "gpu_rounding": "Demo reports GPU difference from separate-operation f32 Horner; implementation may contract multiply-add.",
+    "acceptance_absolute_tolerance": {
+      "value": 2e-06,
+      "first": 1e-05,
+      "second": 5e-05
+    },
+    "domain": "|e|<=0.2, finite e; a and b held fixed"
+  },
+  "browser_evidence": "demo/evidence.json"
+}

@@ -262,7 +262,9 @@ class EshkolRepl {
         const fn = table && table.get(callbackFuncPtr);
         if (typeof fn !== 'function') throw new Error('missing WASM callback ' + callbackFuncPtr);
         const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
-        const entry = G && typeof G.promisingEntry === 'function'
+        const entry = G && typeof G.promisingTableEntry === 'function'
+            ? G.promisingTableEntry(table, callbackFuncPtr)
+            : G && typeof G.promisingEntry === 'function'
             ? G.promisingEntry(fn) : fn;
         return entry(...args);
     }
@@ -443,6 +445,7 @@ class EshkolRepl {
                 arena_allocate_ad_node_with_header: (arena) => 0,
                 arena_allocate_cons_with_header: (arena) => 0,
                 arena_allocate_string_with_header: (arena, size) => 0,
+                eshkol_make_string_checked: (arena, k, fill) => 0,
                 arena_allocate_closure_with_header: (arena, a, b, c, d) => 0,
                 arena_allocate_tape: (arena, size) => 0,
                 arena_hash_table_create: (arena) => 0,
@@ -563,9 +566,15 @@ class EshkolRepl {
                 eshkol_tensor_result_dtype_binary: (r) => r,
                 eshkol_tensor_result_dtype_unary: (r) => r,
                 eshkol_type_error_with_operand: () => { throw new Error('Eshkol type error (WASM stub)'); },
+                eshkol_procedure_call_error: () => { throw new Error('Eshkol call error: not a procedure or arity mismatch'); },
+                eshkol_continuation_transfer_check: () => {},
+                eshkol_arity_mismatch_error: () => { throw new Error('Eshkol arity mismatch (WASM stub)'); },
                 eshkol_ad_mixed_record: () => 0,
                 eshkol_ad_seed_flag: () => 0,
                 eshkol_tensor_operand_checked: () => 0,
+                // Same lite-glue contract as eshkol_tensor_operand_checked: the
+                // browser glue has no tensor runtime (docs/FEATURE_MATRIX.md).
+                eshkol_tensor_operand_carrier_checked: () => 0,
                 eshkol_tensor_destination_checked: () => 0,
                 eshkol_tensor_matrix_operand_checked: () => 0,
                 eshkol_tensor_counts_checked: () => {},
@@ -787,6 +796,13 @@ class EshkolRepl {
                 fputs: () => 0,
                 fputc: () => 0,
                 strlen: () => 0n,
+                // Compiled tensor code clears buffers with memset (the
+                // tensor_matmul import surface); same semantics as the site
+                // runtime's.
+                memset: (ptr, val, n) => {
+                    if (this.memory) new Uint8Array(this.memory.buffer).fill(Number(val) & 0xFF, Number(ptr), Number(ptr) + Number(n));
+                    return ptr;
+                },
                 drand48: Math.random,
                 srand48: () => {},
                 time: () => BigInt(Math.floor(Date.now() / 1000)),
@@ -1117,21 +1133,22 @@ class EshkolRepl {
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},
                 eshkol_ad_curried_gradient_unsupported: () => {},
-                // ESH-0412 nesting through a CAPTURED carrier (runtime_taylor.c):
-                //   i32 eshkol_ad_tower_carry_result(arena*, tagged*, i32, tagged*)
-                //   i32 eshkol_ad_jet_extract_tower(arena*, tagged*, tagged*)
-                //   void eshkol_ad_nested_capture_unsupported()
-                // Both report "I did not handle this; keep your own extraction"
-                // by returning 0, which is exactly what they return natively for
-                // a pass with no enclosing tower level. The whole tower path is
-                // opaque in the browser build (eshkol_is_taylor_tagged above is
-                // a constant 0), so no result here can ever be a tangent-carrying
-                // tower and 0 is the faithful answer, not a degradation.
-                eshkol_ad_tower_carry_result:   () => 0,
-                eshkol_ad_jet_extract_tower:    () => 0,
-                eshkol_ad_nested_capture_unsupported: () => {},
-                eshkol_ad_tower_enter:          () => {},
-                eshkol_ad_tower_leave:          () => {},
+                // BEGIN GENERATED FLAT-AD IMPORTS
+                // Browser WASM has no Taylor tower lane. Keep the base lane's established
+                // flat behavior: extraction declines the tower and enter/leave do nothing.
+                eshkol_ad_tower_carry_result: () => 0,
+                eshkol_ad_jet_extract_tower: () => 0,
+                // Captured nested differentiation is explicitly unsupported in this lane.
+                // Throwing is required so unsupported semantics cannot silently look valid.
+                eshkol_ad_nested_capture_unsupported: () => {
+                    throw new Error('Nested autodiff through captured values is unsupported in the browser WASM runtime');
+                },
+                eshkol_ad_tower_enter: () => {},
+                eshkol_ad_tower_leave: () => {},
+                // A jet pass's extraction guard (ADR-0027). The lite lane has no Taylor
+                // carrier, so no carrier can reach it.
+                eshkol_ad_jet_result_check: () => {},
+                // END GENERATED FLAT-AD IMPORTS
 
                 // Newly-surfaced runtime env imports the wasm backend can emit
                 // (ESH-0224). Match the repl degradation convention: allocators

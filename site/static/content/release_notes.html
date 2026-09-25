@@ -1,0 +1,763 @@
+<h1 id="eshkol-v135-evolve--release-notes">Eshkol v1.3.5-evolve — Release Notes</h1>
+<p><strong>Release date:</strong> Tuesday, September 22, 2026. <strong>Status:</strong> released. The verification record for the tagged commit is the “Final verification” section below.</p>
+<p>Feed the compiler a source file sixteen thousand parentheses deep, on a thread with an eight-megabyte stack, and it compiles it. That is not a metaphor for robustness. The recursive-descent parser was replaced with an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so <code>await_suspend</code> only records a child and <code>final_suspend</code> only suspends — neither one calls the other. Native stack consumption is therefore independent of grammar nesting, and stays independent in an unoptimized build. Two downstream passes that used to re-introduce the dependency, the type checker’s <code>synthesize</code> and the code generator’s <code>codegenAST → codegenOperation → codegenCall → codegenArithmetic</code> chain, run on the same driver. <strong>16,000.</strong></p>
+<p>The release also joins exact, arbitrarily nested differentiation with a single number grammar and hygienic macros. Dense tensor autodifferentiation records one node per operation, and <code>tensor-apply</code> invokes the callable value it receives. The bytecode VM reclaims memory within <code>with-region</code>, supports multi-shot continuations, and can dispatch tensor work through browser WebGPU. The release record reports <strong>388/388</strong> VM parity differential checks; the manifest classifies <strong>962</strong> rows. The full migration contract is in <a href="/docs#page=upgrading" data-url="/content/upgrading.html">Upgrading</a>.</p>
+<h3 id="language-and-runtime-contracts">Language and runtime contracts</h3>
+<ul>
+<li><strong>Nested derivatives compose at arbitrary depth and order on native JIT and AOT.</strong> Taylor coefficients recursively carry enclosing differentiation levels (ADR-0027). Exact rational coefficients survive exact arithmetic; unary math functions use the shared recurrence, and complex-valued kernels retain complex derivatives. Pole and zero-base cases follow their closed forms where defined.</li>
+<li><strong>One number grammar serves program literals, <code>read</code>, and <code>string-&gt;number</code></strong> on native and VM (ADR-0028). It recognizes rectangular and polar complex numbers, exactness and radix prefixes, rationals, infinities, and NaNs.</li>
+<li><strong><code>syntax-rules</code> expansion uses one hygienic renaming rule</strong> across the supported engines (ADR-0026). Lexical bindings shadow builtins while diagnostics and displayed procedure forms retain source identifier names. A top-level <code>begin</code>, including one produced by a macro, splices definitions into the program on native and VM.</li>
+<li><strong>Calls and conditions have shared contracts.</strong> Wrong arity raises a catchable arity error; supported optional and variadic builtin forms follow the shared call contract on both engines. A handled condition is silent. Standard ports are parameter objects on the VM, and <code>read</code> follows the current input port.</li>
+<li><strong>Containers and records preserve their type boundaries.</strong> Accessors reject the wrong container kind; record predicates distinguish types on the VM; hash tables compare keys by <code>equal?</code> and return the stored value.</li>
+<li><strong>The browser VM shares the GPU dispatch seam with native tensor calls</strong> (ADR-0029). Its WebGPU binary64 kernels use integer-word software floating point; unsupported operations and unavailable adapters remain on the CPU. The browser REPL and runnable documentation blocks return complete answers.</li>
+</ul>
+<p>These contracts are exercised by the release’s native, VM, ESKB, and browser regressions. The exact CTest total is intentionally absent from the release record until a full run at the tagged commit supplies it.</p>
+<h2 id="highlights">Highlights</h2>
+<h3 id="the-parser-has-no-recursion-budget">The parser has no recursion budget</h3>
+<p><code>stack space exhausted during parsing — expression nesting too deep</code> was a real answer the compiler could give to a legal program. Expressions, list special forms, quote and quasiquote, vectors, string interpolation, types, <code>match</code> patterns, <code>syntax-rules</code> patterns, import sets and feature requirements now all suspend into explicit continuations instead of into the native stack. Lambda capture collection became an explicit pending-node vector, and type parsing attaches arena-owned child trees rather than copying subtrees, which removes a quadratic type allocation along the way. Two gates hold the line: one runs 16,000 levels of nesting on an actual 8 MiB pthread stack under an 8 MiB process resource limit, the other fixes both the soft and hard process stack limits at 8 MiB and executes 16,000 nested additions through JIT and AOT. Both run on Linux x64 and macOS ARM64 in CI. The 65,536-byte safety margin is unchanged, and no production stack limit moved.</p>
+<p>The Linux stack guard was also inverted: it measured consumed space where it meant remaining space, and now measures from the low stack bound.</p>
+<p>This is a claim about the parse-and-lower chain, not about every pass in the compiler. Specialized backend helpers outside that chain keep their synchronous entry points.</p>
+<h3 id="dense-tensor-autodiff-executes">Dense tensor autodiff executes</h3>
+<p><code>matmul</code>, <code>tensor-sum</code> and <code>tensor-mean</code> each record exactly <strong>one</strong> dense AD node under differentiation, and that node is what <code>matmul</code> returns. Before, the dense path was unreachable: the reverse pass discriminated on <code>tensor_gradient</code>, which is null at record time, so a tensor node fell into the scalar dispatch and dereferenced the <code>input1</code>/<code>input2</code> pointers a tensor node legitimately leaves null. The reverse pass now discriminates on <code>tensor_value</code> <em>or</em> <code>tensor_gradient</code>; under AD, <code>matmul</code> returns the node tagged as a callable with the AD-node subtype, and outside AD mode returns the plain tensor unchanged. A new registry row bridges scalarized operands by identity scatter — it performs no arithmetic, which is why the scalar and dense lowerings agree exactly rather than closely. Dense elementwise arithmetic goes through the same shape-aware dispatcher and accumulates repeated indices for broadcast operands.</p>
+<p>The gate compares the two lowerings for byte-identical gradients, ratchets the recorded node count, and asserts that the per-op cost of a 6×6 matmul equals that of a 2×2 once the gradient driver’s per-input variable nodes are subtracted. Ledger entry SW-48.</p>
+<h3 id="tensor-apply-calls-the-callable-not-the-name"><code>tensor-apply</code> calls the callable, not the name</h3>
+<p><code>(tensor-apply tensor callable)</code> evaluates both operands once and invokes the resolved callable on each scalar in row-major order. No function-name table and no identity substitution participates any more, so a lexical binding or a user definition that shadows a historical builtin name determines what runs. A non-callable raises, even for an empty tensor. Native code generation routes it through the same <code>codegenClosureCall</code> an ordinary lambda application uses, and the VM routes it through the single <code>vm_enter_call</code> entry shared by threaded <code>OP_CALL</code>, switch <code>OP_CALL</code> and native higher-order invocation. The scalar load is the one tensor indexing already uses, so reverse-mode node pointers and complete forward jets survive the call — gradients, differentiable captures and Hessians work through user procedure forms.</p>
+<p>Gated across four engines — LLVM JIT at O0, LLVM AOT at O2, VM source execution and emitted ESKB — each of which must report all <strong>31</strong> ordered assertions, with JIT caching disabled.</p>
+<h3 id="the-bytecode-vm-reclaims-memory">The bytecode VM reclaims memory</h3>
+<p><code>(with-region ...)</code> used to lower to <code>begin</code> on the VM: the body ran, the value came back, and not one byte was returned — peak RSS was the same to within a tenth of a percent whether the wrapper was there or not. It now reclaims, and the claim is measured rather than asserted. Swept by iteration count on macOS ARM64, peak RSS is <strong>33 MB at 1,000 iterations, 34 MB at 4,000, and 34 MB at 16,000</strong> — sixteen times the work for one megabyte — against <strong>304 MB</strong> for the identical program on the identical binary with the evacuator disabled, and 125 MB for the unwrapped control. The gate requires the flat curve, the on/off separation, <em>and</em> the printed answer to be identical either way.</p>
+<p>The port matches native semantics, not native implementation. Native copies the escaping subgraph; the VM marks from its root set and sweeps at arena-block granularity, because a VM value addresses the heap by a small integer index and a copying evacuator would have to rewrite those indices — a missed rewrite aliases a live object and surfaces as a wrong <em>value</em>, never as invalid memory access. Marking moves nothing, so <code>eq?</code>, shared structure and cycles need no special handling. The subtype table classifies the full 33-wide heap tag space with a compile-time span check, a fatal startup check that every row is filled, and a <code>default:</code> arm that pins rather than guesses. Every uncertain case — an unclassified subtype, a continuation captured inside the region, a failed bookkeeping allocation — pins the region and degrades toward a leak, never toward a dangling index.</p>
+<p>Outside a region the VM still does not reclaim, and the heap-growth watchdog stays for exactly that case. The user-reachable <code>region-open</code> / <code>region-close</code> handle surface remains bookkeeping-only on the VM.</p>
+<h3 id="continuations-are-multi-shot-on-all-three-engines">Continuations are multi-shot on all three engines</h3>
+<p>A captured continuation can be invoked any number of times, from any dynamic extent, including after the procedure that captured it has returned. Generators, coroutines and <code>amb</code>-style backtracking now run correctly on first attempt, where they previously terminated abnormally on native and hung on the VM. Native gives a capture that may outlive its frame a durable copy of the live C stack, restored to the same addresses before the <code>longjmp</code>, so every interior pointer stays valid with no relocation; escape-only captures keep the original zero-overhead path. The VM snapshots its operand stack and call-frame array and excludes top-level bindings — the <em>store</em> — from the <em>control</em> snapshot, so <code>set!</code> and <code>define</code> effects at top level survive re-entry. <code>dynamic-wind</code> reroots on both engines per R7RS 6.10.</p>
+<p>A continuation captured inside <code>with-region</code> now pins that region on native, as it already did on the VM. The failure direction on both engines is a leak, never a dangle.</p>
+<h3 id="one-implementation-of-the-constant-curvature-geometry">One implementation of the constant-curvature geometry</h3>
+<p>The qLLM bridge called its own copies of distance, the exponential and logarithmic maps and geodesic attention; it now calls the shared <code>riemannian_core.h</code> primitives, so there is one implementation and one set of reverse rules. Those rules are derived from the shared scaled forward rather than written independently: the log coincidence limit is exact, spherical forward and reverse share a domain, attention is overflow-safe, and a derivative request beyond <code>f64</code> is refused explicitly instead of answered. Curvature series use a degree-10 branch in <code>q = K r² / 4</code> with cancellation-free derivatives, witnessed against binary128 across a 1,067-binade sweep, and adjoints are exponent-scaled at subnormal curvature.</p>
+<h3 id="model-io-eskm-v1-is-the-validated-default">Model I/O: ESKM v1 is the validated default</h3>
+<p>Public tensor and model saves go through validated ESKM v1 readers and writers on both engines; a single tensor is stored as one record with an empty name. Loading validates its payload and refuses corrupt or missing input rather than materializing whatever the bytes happened to say. Publication writes a complete temporary checkpoint in the destination directory and commits it by same-directory rename, so a handled failure before the commit preserves the old destination. A deterministic, resource-bounded fuzz gate runs malformed checkpoints, a compatibility corpus pins the historical format, and a cross-reader matrix exercises the four producer/consumer engine combinations.</p>
+<p>This is an atomic-replacement contract, not a power-loss durability guarantee. Checkpoint save does not <code>fsync</code> both the file and its parent directory, and abrupt machine loss or <code>SIGKILL</code> cleanup is not promised.</p>
+<h3 id="types-that-follow-the-program">Types that follow the program</h3>
+<p>The optional type checker reads every evaluated position of every control form. A call inside a <code>cond</code> clause, a <code>do</code> step, a <code>guard</code> handler, a quasiquote escape or a <code>dynamic-wind</code> thunk is checked against its callee’s annotations exactly as the same call at top level, and the form’s own type is the join of its branches, so an <code>if</code> and the equivalent <code>cond</code> agree. One module, <code>TypeRelation</code>, owns every judgment the checker makes: subtyping, gradual consistency, joins, casts and the spelling of types in diagnostics. Function types are first-class in it, contravariant in their parameters, and print as arrows: <code>expected (-&gt; Number Number), got (-&gt; Int64 Number)</code>. A named-let loop parameter is typed by what the loop carries, the join of its seed and every value passed back to it, so an accumulator may start as a literal and grow. The standard library compiles with <strong>zero</strong> type warnings.</p>
+<pre class="scheme"><code>(define (area (w : number) (h : number)) (* w h))
+(define (describe flag)
+  (cond (flag (area &quot;wide&quot; 3))   ; argument 1 of &#39;area&#39;: expected Number, got String
+        (else 0)))</code></pre>
+<p>The same discipline reaches procedure values. A direct call to a compiled procedure is a fact tied to the binding that owns it, so a variable reassigned with <code>set!</code> is called as it stands on every path: a direct call, <code>apply</code>, <code>map</code>, <code>reduce</code> and <code>derivative</code> alike. A differentiated closure’s captures are read from the closure itself, wherever the derivative is taken. The user guide is <a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">docs/guide/GRADUAL_TYPING.md</a>; what a v1.3.4 program meets is in <a href="/docs#page=upgrading" data-url="/content/upgrading.html">docs/UPGRADING.md</a>.</p>
+<h3 id="assurance-gates-that-are-measured-against-deliberate-mutations">Assurance gates that are measured against deliberate mutations</h3>
+<p>A gate that has never rejected anything is not evidence. The compiler-assurance runner executes the production closed-enum gate <strong>twelve</strong> times in an isolated source projection — four repeats each with zero, one and two handwritten AD dispatcher case labels removed — and requires that every baseline pass, every treatment be rejected, and the finding counts increase with dose by more than the measured within-dose spread. It has already caught a false green: a registry include had been exempting all manual inline cases from missing-member checks, and only disposition macros that emit case labels now earn generated coverage credit. Alongside it, a public-API linkage gate generates a volatile function-pointer relocation per exported prototype from the umbrella header and requires the result to compile, link and execute; it covers <strong>104</strong> prototypes today. Every run writes an evidence receipt — argv, streams, exit status, timing, source hash, gate hash, git revision.</p>
+<p>That framework is also what produced the routing work above. When it was introduced it reported 32 AST operation switches carrying omissions or <code>default:</code> arms and seven direct callable consumers outside the canonical dispatcher. The routing change answered every one of them, and the release ships the answer: at the release commit the gate discovers <strong>34</strong> AST operation switches, each of them exhaustive with no <code>default:</code> arm, and exactly <strong>one</strong> callable dispatch site, <code>codegenClosureCall</code>, with <strong>zero</strong> findings. The gate has no baseline and no exception list, and CI runs it on every change.</p>
+<p>Elsewhere in the assurance layer: every completion-oracle criterion is bound to a registered test and gated, so a pillar cannot quietly stop being covered; a self-verdict scanner, build fingerprints and adversarial scenarios feed the readiness artifact; the failure-attribution parser has a self-test and the aggregate runner rejects stale bare-<code>FAIL</code> attribution; an external Rosette oracle runs as an advisory P7 differential lane; and the release readiness gate is bound to the exact checkout it graded, so evidence from an earlier branch run cannot certify a later cut.</p>
+<h2 id="also-in-this-release">Also in this release</h2>
+<ul>
+<li><p><strong>Documentation that is executed and accounted for.</strong> Every tutorial example, and the examples of the gradual-typing guide and the upgrade page, runs on the JIT and as an AOT binary in CI, and what it prints is compared with the page. Every merged pull request in the release range is referenced by the changelog or listed, with a reason, in a checked ledger. Release facts (tag, date, status, evidence totals) have one source, <code>tests/coverage/release_record.json</code>, and every release-facing document is graded against it. Pages carry front matter naming their kind, status and sources; the system is described in <a href="/docs#page=documentation" data-url="/content/documentation.html">docs/DOCUMENTATION.md</a> and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0019-evergreen-documentation-architecture.md" target="_blank" rel="noopener noreferrer">ADR 0019</a>. New pages: <a href="/docs#page=upgrading" data-url="/content/upgrading.html">upgrading</a>, <a href="/docs#page=troubleshooting" data-url="/content/troubleshooting.html">troubleshooting</a>, <a href="/docs#page=platform_release_process" data-url="/content/platform_release_process.html">the release process</a> and <a href="/docs#page=glossary" data-url="/content/glossary.html">a glossary</a>.</p></li>
+<li><p><strong>Build.</strong> GCC 13 and Clang/LLVM 21 are the verified host compilers. The Python bindings build on ELF platforms with position-independent archives and the Python development component, and the runtime supplies <code>roundeven</code> where the platform C library does not. Coverage instrumentation records each site once, behind a guard in the generated code.</p></li>
+<li><p><strong>Exact and nested differentiation.</strong> Foreign-epoch perturbations are opaque with respect to the current value recurrence rather than flattened to a constant, so a closure-captured outer tower is preserved rather than erased unreported by an inner pass, and depth and per-level order are now unbounded — every pass owns its own level and a foreign level is a coefficient of the active one. An exact rational point now reaches the derivative carrier at all three scalar operators, a vanishing tangent keeps the seed’s exactness instead of demoting an exact sum to a double, and a comparison or branch inside a differentiand acts on the carrier’s primal rather than its tagged bits. A named-let or <code>do</code>-loop variable captured by an inline <code>derivative</code>/ <code>derivative-n</code>/<code>taylor</code> is read as the value it is, not as a re-wrapped pointer marker. Exact tangent sidecars have a defined layout and survive evacuation. <code>abs</code> and <code>relu</code> apply one whole-series rule on both the native and VM Taylor dispatchers. Curried gradient-of-gradient is exact: with <code>(define g (gradient f))</code>, <code>(jacobian g point)</code> answers the Hessian entry-for-entry.</p></li>
+<li><p><strong>The exact tower closes several remaining gaps.</strong> <code>(sqrt 4/9)</code> answers <code>2/3</code>, and it is <code>exact?</code>: <code>sqrt</code> of a perfect square and <code>expt</code> with an exact rational exponent take the root over the rationals when one exists and fall back to the inexact path only when one does not, so exactness follows the value rather than the operator. <code>expt</code> is exact for a rational base and for a negative exponent — <code>(expt 2/3 -3)</code> is <code>27/8</code>, with the reciprocal taken exactly rather than rebuilt from a float. A flat numeric vector literal keeps an exact rational or bignum element as the value it is instead of reinterpreting it as the bit pattern of a double, and a tensor built from an exact non-integer element converts it once, explicitly, at construction. A quoted bignum or bignum-rational literal — native, quasiquoted, or on the bytecode VM — is the same value as its evaluated form. <code>core.exact_linalg</code> adds exact rational linear algebra and torus averaging (matrix multiply, transpose, fraction-free determinant, solve, inverse, rank, nullspace) over the scalar exact tower, staying exact under R7RS numeric contagion whenever every input does.</p></li>
+<li><p><strong>Exactness under differentiation is a property of the runtime value, not of the shape of the source.</strong> The exact tier used to decide from a static whitelist over the differentiand’s body, so identical arithmetic demoted to a double when the constant arrived through a top-level <code>define</code> rather than an inline literal, when the body was a several-deep composed call, or when the point argument was an expression such as <code>(car ts)</code> whose runtime value was exact all along. A differentiand that branches on a numeric comparison of the differentiation variable now differentiates on the carrier’s primal, and a call expression may be passed directly as the differentiand. The tier reads the carrier’s runtime exactness, so <code>(derivative f 1/3)</code> is exact whenever the arithmetic it performs is. One shape is deliberately held back: two enclosing differentiation levels over an order-2 inner pass raise a diagnostic rather than answer, because the carrier holds exactly one first-order companion. The carrier rewrite that lifts the restriction is v1.4 work, and this release does not claim nested differentiation at arbitrary depth.</p></li>
+<li><p><strong>Exact-rational arithmetic reclaims memory like integer arithmetic.</strong> A running exact-rational loop now grows resident memory with the values it produces rather than with the work an operation does. GCD reduction now runs before multiplication rather than after; a numeric primitive commits a reclamation boundary of its own instead of retaining whatever scratch the arena had until the enclosing scope ended; a loop’s own scope now promotes only the live set across a back edge instead of retaining the whole iteration by default; <code>cond</code> clauses are analyzed structurally instead of falling through the scope-admission test as an unrecognized callee; and exact-tower allocation sites route through the same arena-selection call as every other loop temporary. A crossed heap ceiling is now a fail-closed contract: the runtime reports the breach once, in bytes, and exits nonzero rather than printing per-block and exiting 0.</p></li>
+<li><p><strong>Every callable builtin is a first-class value on both engines.</strong> A builtin usable in call position but not as a value — <code>(map vector-copy ...)</code> raised <code>Undefined variable: vector-copy</code> though <code>(vector-copy v)</code> worked directly — is now resolvable as a value across 586 more names, audited mechanically against the full builtin surface manifest.</p></li>
+<li><p><strong>Element-wise vector/tensor arithmetic dispatches on both operands, and says where.</strong> A scalar against a Scheme vector in the <em>left</em> operand position (<code>(* (vector 1 2) 2)</code>) raises a catchable type error naming the actual source line; both operand positions are classified before either is dereferenced, independent of whichever call site first emitted the shared arithmetic dispatcher. Mismatched element-wise operands are refused at the shape check rather than read past the shorter one (ledger LE-22), an arithmetic runtime error carries the line of the form that raised it rather than the line of the dispatcher (ledger LE-19), and a raw floating-point operand reaching the tagged-value path is boxed before use, so the emitted IR is well-formed for every operand shape.</p></li>
+<li><p><strong>Certified enclosures.</strong> A proof-backed layer under the existing validated interval arithmetic and Taylor models: outward-rounded interval arithmetic and Makino-Berz Taylor models whose remainders are always derived from a proven bound, never sampled, available through an explicit <code>rigorous?</code> flag with the validated modules’ default behavior unchanged. Two runtime primitives, <code>fl-next-up</code> and <code>fl-next-down</code>, carry <code>nextafter</code> into both the native backend and the bytecode VM and are what the outward rounding is built on — one nudge per endpoint, with exact operands staying exact. The new leaf modules are <code>core.ad.rigorous_interval</code> (<code>ia+</code>, <code>ia-</code>, <code>ia*</code>, <code>ia/</code>, <code>ia-sqrt</code>, <code>ia-exp</code>, <code>ia-log</code>, <code>ia-sin</code>, <code>ia-cos</code>, <code>ia-atan</code>, <code>ia-pi</code>) and <code>core.ad.rigorous_taylor_models</code> (<code>tm+</code>, <code>tm*</code>, <code>tm-compose</code>, <code>tm-integrate</code>, <code>tm-deriv</code>, <code>tm-bound</code>, <code>tm-enclose</code>, <code>tm-prove-nonzero</code>, <code>tm-prove-bound</code>, and the transcendentals), re-exported from <code>core.ad.taylor_models</code> beside a <code>tm-rigorous?</code> predicate. <code>docs/reference/stdlib/certified-enclosures.md</code> writes down every remainder derivation.</p></li>
+<li><p><strong>The browser REPL answers, and a gate now watches that it does.</strong> The REPL’s echo of a form’s value is emitted by the session that owns the transcript rather than by the <code>display</code> opcode, so the opcode keeps exactly one meaning and the echo carries its own line terminator — which matters through Emscripten, where stdout reaches the embedder one complete line at a time. <code>(display "hi")</code> in the REPL is a fragment awaiting a <code>(newline)</code>, exactly as it is under <code>eshkol-run -r</code>. The bundle is now built by <code>scripts/build-wasm-repl.sh</code> from a source list shared with the WebAssembly execute-and-diff lane, so the module the site loads and the module CI executes are the same link, and the lane drives <code>repl_eval</code> through a <code>print</code> callback shaped like the site’s, checking the transcript a line-oriented host actually receives against <code>tests/wasm_diff/REPL_TRANSCRIPT.tsv</code>.</p></li>
+<li><p><strong>Forward-mode duals survive the neural primitives</strong> — layer norm, scaled-dot attention and <code>tensor-get</code> — on both engines, and runtime, statically typed and densified tensor activations all route to the same rules.</p></li>
+<li><p><strong>The VM’s own semantics.</strong> <code>letrec</code> and <code>letrec*</code> patch each upvalue from the sibling slot it actually captured, including forward references. A wrong-arity call to a raw builtin or a conversion intrinsic is refused, and the refusal reads the builtin’s real minimum rather than its opcode’s operand count. A handler returning from a non-continuable <code>raise</code> raises a secondary exception on every engine. Character predicates return canonical booleans and classify Unicode identically to native. Exception handlers are released during teardown, and the implicit Riemannian-Adam state pool grows instead of clobbering past sixteen shapes.</p></li>
+<li><p><strong>The VM loads the canonical standard library</strong> on the source, REPL and bytecode paths, and its prelude cache is gated against the dispatch table.</p></li>
+<li><p><strong>One reader grammar.</strong> Tokenizer, VM parser, VM datum reader and hosted datum reader share one string-escape grammar, and the runtime reader handles quasiquote, unquote and unquote-splicing — all four readers agree. R7RS 7.1.1 vertical-line symbols read and write on both engines.</p></li>
+<li><p><strong>One PRNG sequence per seed</strong> across native JIT, native AOT and the VM.</p></li>
+<li><p><strong>Shared limits, decided before allocation.</strong> A strict vector limit of 2^28 is rejected before allocation on every engine, and the hosted compiler’s <code>make-vector</code> uses that same shared limit and diagnostic rather than its own 256-element clamp.</p></li>
+<li><p><strong>Closure capture at scale.</strong> Capture counts are encoded losslessly in a versioned bytecode, dynamic capture storage traverses every capture in evacuation and parallel paths, and parallel dispatch uses the dynamic environment ABI for all capture counts across <code>map</code>, <code>for-each</code>, <code>execute</code> and <code>fold</code>.</p></li>
+<li><p><strong>Tail transfer without an arity bound.</strong> The tail-transfer dispatcher removes the differing-arity and non-AArch64 restrictions.</p></li>
+<li><p><strong>Object ABI v2, stages 1 and 2.</strong> Cache keys carry an ABI fingerprint, <code>--abi-fingerprint</code> reports the object ABI tag directly instead of a <code>strings</code> heuristic, the WASM lane guards its geometry, and a machine-generated header inventory pins the layout with a mixed-link guard and a ratchet over 1,303 scanned sites.</p></li>
+<li><p><strong>Compiles against LLVM 18 through 24.</strong> The intrinsic-signature check, block terminator queries and the loop-vectorize hint each go through the compatibility layer, and AArch64 instruction selection at O0 is no longer quadratic.</p></li>
+<li><p><strong>Toolchain and packaging.</strong> A canonical <code>FindEshkol.cmake</code> and a complete packaged link contract; <code>compile_commands.json</code> exported whenever tests are built, so the ABI ratchet always has its input; a <code>linux-x64-debug</code> required lane that builds with assertions and switch warnings; ephemeral, non-root, least-privilege container runners for the self-hosted mesh; and a shared FetchContent source cache.</p></li>
+<li><p><strong>A machine-consumable REPL protocol.</strong> <code>eshkol-repl --machine</code> keeps its original <code>EREPL READY</code> / <code>EREPL DONE</code> / <code>EREPL FAIL</code> framing and now also speaks EREPL v1: JSON requests on stdin (<code>eval</code>, <code>complete</code>, <code>is_complete</code>, <code>reset</code>, <code>shutdown</code>) answered with <code>EREPL/1 {...}</code> response lines on stderr. A driver can evaluate code, get identifier completions, ask whether an input form is complete, and interrupt a running evaluation without a PTY, without matching prompts by regular expression, and without classifying failures by this project’s error wording — every failure carries a structured <code>error.kind</code> from a small closed set. An <code>eval</code> response reports the form’s own value separately from whatever it printed. <code>tools/erepl_client.py</code> is a stdlib-only Python reference driver with a <code>--self-test</code> covering every request type, wired into CTest.</p></li>
+<li><p><strong>The same binary64 arithmetic on every engine.</strong> Floating-point contraction is a per-target liberty, so leaving it at the compiler default made cross-engine agreement depend on which instructions a back end happens to have: a forward-mode dual quotient rule shared by the native layer-norm kernel and the VM’s dual division became one fused multiply-add on AArch64 and x86-64-with-FMA and a separate multiply and subtract on WebAssembly, differing in the last printed digit. Every translation unit, and the WASM differential’s Emscripten invocation, now compile with contraction off, so both engines evaluate binary64 arithmetic exactly as written; a kernel that wants a fused, singly-rounded product asks for it with an explicit <code>fma()</code>. <code>docs/VM_PARITY.md</code> records the rule as part of the parity contract.</p></li>
+<li><p><strong>A documented optional argument is a legal call on both engines, from a derived fact.</strong> <code>(substring "hello" 1)</code>, <code>(append)</code>, <code>(gcd)</code>, <code>(make-vector 3)</code>, <code>(make-string 3)</code>, <code>(read-line)</code>, <code>(bytevector-append)</code> and <code>(hash-ref table key)</code> answer the same thing under the bytecode VM as under native code. The VM’s minimum arities are now generated from code that runs — the fixed-arity macros the native dispatch expands — rather than transcribed by hand across 739 rows.</p></li>
+<li><p><strong>A variadic builtin used as a value answers what the name answers in operator position.</strong> <code>(map list xs)</code>, <code>(map vector xs ys)</code>, <code>(apply vector (list 1 2 3))</code> and <code>(define f string-append) (f "a" "b" "c")</code> all agree with the call-position lowering. The first-class builtin table declares which rows are variadic and how each computes its answer from a rest list, so a variadic name has one implementation rather than one per call site.</p></li>
+<li><p><strong><code>(exit &lt;computed integer&gt;)</code> is accepted on every engine.</strong> A computed exit argument is unpacked by runtime type tag the way every other polymorphic numeric builtin is: a double is clamped to <code>[0, 255]</code> and truncated, an int64 is truncated, a boolean follows R7RS 6.11, and any other runtime type raises a catchable runtime error rather than feeding an arbitrary bit pattern to the process exit status. A CTest case asserts the exact process status on native JIT, native AOT and the standalone VM.</p></li>
+<li><p><strong>Built-in R7RS libraries resolve from one table on both engines.</strong> <code>(import (scheme base) …)</code> names a library Eshkol provides itself; the set of such libraries now lives in a single header consulted by the native front end and the VM, so adding one is a single row and neither engine can drift from the other’s idea of which libraries exist without a source file. Every R7RS import modifier — <code>only</code>, <code>except</code>, <code>prefix</code>, <code>rename</code> — reaches the VM, and parallel workers keep their captured values.</p></li>
+<li><p><strong>The bytecode VM reports execution coverage for the constructs it lowers inline.</strong> Under the coverage trace, a compiled form emits a marker carrying the same stable head-symbol hash the call marker uses, so reaching it at run time is the construct’s execution evidence, and the marker survives bytecode serialization so the standalone VM and the hosted VM profile report identically. Instrumentation is opt-in and behaviour-neutral: an unarmed run emits no extra instruction, and all corpus programs produce byte-identical VM output armed and unarmed. Both engine-parity floors are now measured ratchets rather than aspirations — each is written from the run’s own measured fraction, and a baseline whose floor exceeds the corpus ceiling it was measured against is rejected as malformed rather than graded. On this cut the differential covers <strong>321 of 1,139 constructs (28.18%)</strong> and <strong>155 of 473 high-risk constructs (32.77%)</strong>, with <strong>five dispositioned divergences and no new one</strong>. The high-risk surface the corpus does not yet reach is filed as a v1.4 corpus-growth item rather than left implicit; <code>docs/VM_PARITY.md</code> carries both measurements and that inventory.</p></li>
+<li><p><strong>Binding scope and recursive call resolution.</strong> A binding form’s names now shadow only inside that form — the free-variable walk carries a per-scope bound set instead of subtracting a form’s names from the whole vector afterwards, so a capture recorded by a preceding initializer survives an inner rebinding of the same name. And a local recursive binding called from a lambda created in its own body calls the binding rather than the enclosing lambda, which is the shape a depth-first walk takes when its inner iteration is <code>for-each</code> or <code>map</code>.</p></li>
+</ul>
+<h2 id="contributors">Contributors</h2>
+<p>Gabriel Kahen led the ESKM model I/O work this cycle: the v1 compatibility corpus, the deterministic fuzz gate and malformed-checkpoint rejection, the four-engine cross-reader matrix, the subsystem handoff record, and the engine-parity realignment against the merged dispatch, with further ESKM hardening carried into this cut.</p>
+<p>Gabriel Kahen also contributed the parameter-binding order correction and the allocation-failpoint approach used to verify atomic region promotion (#714). LJGz corrected the list tutorial’s <code>take</code>, <code>drop</code>, and <code>sort</code> argument order (#694).</p>
+<h2 id="not-claimed-by-this-release">Not claimed by this release</h2>
+<ul>
+<li><strong>No StableHLO, PJRT or TPU execution.</strong> The XLA backend provides a JAX/StableHLO-<em>style</em> API surface and dispatch hierarchy while executing through direct LLVM code generation into eleven C runtime entry points and calibrated BLAS/GPU libraries. The current execution path does not compile through MLIR or StableHLO. Nothing in this release changes that, and no TPU training, multi-device production readiness, or new v1.4 synchronization or networking capability is claimed.</li>
+<li><strong>ESKM v2 is a design decision, not a writer.</strong> ESKM v1 remains the default and the compatibility baseline; no v2 reader or writer is authorized, and the public save APIs continue to emit v1. The proposed VM materialization of rank-0 and empty ESKM tensors is likewise unimplemented: native model loading can materialize them and VM model loading cannot.</li>
+<li><strong>The compiler-architecture routing gate is a structural source policy.</strong> It passes on the release commit with zero findings, as the assurance section above records; it is not a C++ semantic or data-flow proof, and an unusual indirect-call spelling requires extending its recognizer.</li>
+<li><strong>VM reclamation is Stage 1.</strong> An escaping object with an out-of-line payload (a vector’s element array, a bignum’s limbs) keeps the arena block that payload occupies; escaping cons and closure structure is copied out exactly. A continuation captured inside a region pins that region. Objects promoted out of a region live in the enclosing arena for its lifetime, which is OALR’s semantics and equally true natively.</li>
+<li><strong>A VM continuation cannot restore a binding established after capture</strong> on its operand-stack store; the unsupported shape raises a diagnostic (SW-61). Assignment conversion boxes mutated locals so their values remain visible on continuation re-entry (SW-62).</li>
+</ul>
+<h2 id="migration-and-persistence-contracts">Migration and persistence contracts</h2>
+<p><strong>Riemannian Adam requires explicit state on the VM.</strong> The legacy <code>riemannian-adam-step</code> form refuses instead of sharing moments between unrelated parameters of the same shape. Allocate a separate state for each parameter and pass the latest returned point into its next update:</p>
+<pre class="scheme"><code>(define state (make-riemannian-adam-state point))
+(set! point
+  (riemannian-adam-step! state point gradient learning-rate beta1 beta2 curvature))</code></pre>
+<p>Points and gradients must satisfy their manifold/tangent contracts. A refused geometric update leaves optimizer state unchanged. See the <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/geometry.md" target="_blank" rel="noopener noreferrer">geometry reference</a>.</p>
+<p><strong>Public tensor and model saves use validated ESKM v1.</strong> A single tensor is stored as one record with an empty name. Both native and VM paths use the validated readers/writers; this release does not restore the older unchecked ESKT dispatch. Publication writes a complete temporary checkpoint in the destination directory and commits it by rename. Handled failures before that commit preserve the old destination. This is an atomic-replacement contract, not a power-loss durability guarantee: checkpoint save does not synchronize both file and parent directory with <code>fsync</code>. Abrupt machine loss or <code>SIGKILL</code> cleanup is not promised. See the <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/ATOMIC_CHECKPOINT_SAVES.md" target="_blank" rel="noopener noreferrer">checkpoint contract</a>.</p>
+<p><strong><code>tensor-apply</code> resolves its callable lexically.</strong> A program that relied on the old builtin-name whitelist — passing a symbol whose spelling matched a builtin while a local binding of the same name was in scope — will now call the local binding. Pass the procedure you mean.</p>
+<p>The full change record is in <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>. The AD support matrix records native and VM carrier limits explicitly (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md" target="_blank" rel="noopener noreferrer">docs/reference/ad/support-matrix.md</a>), and known limitations are in <a href="/docs#page=known_issues" data-url="/content/known_issues.html">docs/KNOWN_ISSUES.md</a>.</p>
+<h2 id="final-verification">Final verification</h2>
+<p>One workflow verifies an Eshkol release, and it is bound to the commit the tag names. The <a href="https://github.com/tsotchke/eshkol/actions/workflows/release.yml">Release workflow</a> builds and tests every package on its own platform, regenerates the evidence below from that checkout, and publishes nothing unless the ICC readiness gate returns <code>ready</code> at 100 for the same commit. Evidence from any other source state cannot certify the tag.</p>
+<ul>
+<li><strong>Platform matrix.</strong> Fifteen packages across macOS x64 and ARM64, Linux x64 and ARM64, and Windows x64 and ARM64, in the lite, XLA and CUDA configurations. Each is built and tested on its target platform.</li>
+<li><strong>Test suites.</strong> The aggregate suite at <strong>46/46</strong> suites and <strong>1,020/1,020</strong> individual tests, and <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->.</li>
+<li><strong>VM and engine parity.</strong> <!-- release-record:vm-parity -->VM parity differential <strong>388/388</strong><!-- /release-record --> over a 962-row manifest: 620 <code>vm-supported</code>, 46 <code>native-only-justified</code> and 296 <code>gap</code>, every gap row carrying a live reproducer and a disposition. The engine differential holds its recorded floors of 321 of 1,139 constructs and 155 of 473 high-risk constructs, with five dispositioned divergences and no new one, and <strong>2,000</strong> surface-parity probes report no divergence.</li>
+<li><strong>Language-surface coverage.</strong> Execution-backed coverage of <strong>1,116/1,116</strong> declared constructs, with no high-risk construct uncovered in any category, and frontend span coverage at 99.5% against a 99.48% floor.</li>
+<li><strong>Probes and oracles.</strong> Runtime smoke probes <strong>87/87</strong>; Taylor monomorphization equivalence <strong>441/441</strong> under both JIT and AOT; the qLLM geometric gradient oracle <strong>12/12</strong> across six exporters.</li>
+<li><strong>Package and site checks.</strong> Every package is checked against its manifest and run through a cold and a warm <code>eshkol-run -r</code> cache path with no system-wide installation to fall back on. The asset set is validated as 15 platform packages plus <code>SHA256SUMS.txt</code>, and the website is checked against that same matrix.</li>
+<li><strong>ICC readiness, bound to the tagged commit.</strong> The readiness guard requires the checkout <code>HEAD</code> to equal the release SHA with no tracked change, and the ICC repository to resolve to that checkout, before the architecture model and the <code>v1.3.5-evolve</code> readiness target are graded. The verdict must be exactly <code>ready</code> at 100.</li>
+</ul>
+<hr />
+<h1 id="eshkol-v134-evolve--release-notes">Eshkol v1.3.4-evolve — Release Notes</h1>
+<p>A resident-correctness release. Every correctness gap surfaced by long-duration resident workloads, and by downstream users, is closed at the architectural root: automatic memory reclamation matches explicit regions, <code>parallel-map</code> is race-free, gradients are exact through every callable form and every differentiation point, printed floats round-trip, and the strict type checker accepts idiomatic dynamic-but-validated code. <code>gradient</code> now runs at full parity on the bytecode VM as well as native codegen, so exact automatic differentiation is available on every substrate. The high-precision numerics wave — Ozaki-II exact and reduced-precision GEMM tiers on Metal and CUDA, a mixed-precision linear solver, and a native 128-bit integer type — lands alongside a Moonlab v1.2.0 quantum pin, full hosted-VM tensor-matmul parity, and a round-tripping numeric printer, over a hardened toolchain and a broadened assurance surface.</p>
+<p>The second half of the cycle is a consumer-hardening correctness wave, and it has one organising principle: a wrong answer must not be able to look like a right one. The change that made the rest possible is that an emitted compile-time error now prevents artifact emission and execution, where the compiler previously diagnosed a program and then built and ran it anyway. That turned answers that had passed unnoticed into build failures, and the wave that followed corrected them at the root. Exactness is now decided from an operand’s runtime tag rather than from a result’s value shape, both on the native flonum integer-division family and across the bytecode VM’s numeric surface. Automatic differentiation answers exactly at exact points, survives per-iteration nursery reclamation, and no longer returns zeros above gradient arity 16. <code>define-library</code> and <code>import</code> resolve same-unit libraries on all three back ends, including a VM lane that previously knew none of those forms. <code>--shared-lib</code> links a real, C-ABI-correct shared library instead of exiting zero with no artifact. Alongside those corrections the release adds a portable event loop, a fixed-point and <code>i128</code> exact-accumulation engine, the qLLM bridge implementation its documented backward rules had been waiting for, embedding and Fréchet-mean backward passes, and a release gate that finally reads CTest results as evidence.</p>
+<p><strong>Release Date</strong>: July 31, 2026</p>
+<p><strong>Release gates</strong> (all measured on the release cut): aggregate suite 45/45 suites and 770 individual tests; CTest suite as completion-oracle evidence; executable language coverage 1,091/1,091 (100.0%, floor PASS); SICP full-book gate 88/88 probes across all five chapters under both <code>-r</code> and AOT; reference-Scheme differential oracle 34/34 AGREE against chibi-scheme 0.12.0; VM parity differential; qLLM oracle gate 10/10; ICC readiness 100, verdict <code>ready</code>. The VM parity manifest is 956 rows — 581 <code>vm-supported</code>, 44 <code>native-only-justified</code>, 331 <code>gap</code>, of which 17 are verified behavioral divergences with reproducible programs under <code>tests/vm_parity/found/</code>.</p>
+<h2 id="highlights-1">Highlights</h2>
+<h3 id="automatic-memory-reclamation-matches-explicit-regions">Automatic memory reclamation matches explicit regions</h3>
+<ul>
+<li><p><strong>Iter-scope partial reclamation (ESH-0214e) closes the resident-memory series.</strong> A resident tick loop that mutates persistent state on every iteration — a knowledge base, workspace, or growing list — used to get no per-iteration reclamation at all and leaked one iteration’s transient garbage forever (about 3,366 bytes per tick; roughly 355 MB over 100,000 ticks). Such a loop is now lowered with a per-loop nursery region: each iteration’s allocations land in the nursery, the existing structural write barriers promote any persistent-mutation escapee out of the nursery at the store, each tail-call back edge promotes the loop-carried out-values and resets the nursery, and the loop exit escapes the result and tears the nursery down. The same tick loop is now flat at 34 MB — identical to its explicit <code>with-region</code> twin — with every stored value reading back correct on JIT and AOT. Automatic scoping now matches <code>with-region</code> in resident loops, so <code>with-region</code> is no longer required to get flat RSS. A new RSS gate pins the behavior.</p>
+<p>Since v1.3.5, the conditions on that 34 MB figure are stated exactly rather than left to inference. It is a 100 000-tick measurement of a fixture that <em>publishes</em> five freshly consed cells per tick, so what it is flat in is the ~3,366 bytes/tick of transient garbage the nursery removed — not in the 240 bytes/tick the program asks to keep, which grow with tick count on any no-GC allocator. A loop that publishes immediates or pre-allocated objects instead retains exactly zero bytes per tick, indefinitely. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md#what-is-flat-and-what-is-not" target="_blank" rel="noopener noreferrer">docs/reference/runtime/memory-model.md</a> for the full matrix and the open build item.</p></li>
+</ul>
+<h3 id="race-free-parallelism">Race-free parallelism</h3>
+<ul>
+<li><strong><code>parallel-map</code> is safe for collection-valued closures.</strong> A closure mapped in parallel whose body used per-iteration scope reclamation — an internal named-let loop, or a builtin such as <code>memv</code> — could return dangling or overlapping structure once the input crossed the parallel threshold. On a pool worker operating on the shared thread-safe arena, scope reclamation now degrades to commit-only (allocations are retained; the shared scope stack is never rewound), which is the established correctness-over-throughput fallback. Results are now identical to serial <code>map</code>. ThreadSanitizer: 73 arena data races to 0. New deterministic regression and an ICC gate.</li>
+</ul>
+<h3 id="exact-gradients-through-every-callable-form">Exact gradients through every callable form</h3>
+<ul>
+<li><strong><code>gradient</code> recovers callable arity through a function parameter or wrapper.</strong> Indirect <code>(gradient f point)</code> and curried <code>((gradient f) point)</code> forms are now byte-identical to the direct call for scalar multi-argument, vector, and non-polynomial losses, on both JIT and AOT. The operator recovers the callable’s arity from its closure metadata instead of assuming a single tensor argument. There is no finite-difference fallback anywhere in the gradient path — every form is exact reverse-mode AD. A 25-check suite pins the equivalence.</li>
+<li><strong>Custom-VJP transitive captures now contribute their full sensitivity.</strong> A vector-Jacobian-product whose backward closure reaches a captured value through an intermediate closure no longer drops that term unreported.</li>
+<li><strong><code>gradient</code> now runs on the bytecode VM at full parity.</strong> Forward/reverse-mode <code>gradient</code> — direct, through a callable parameter, and curried — is byte-identical to native codegen across the VM’s source and bytecode axes, so Eshkol is self-differentiating on every substrate. <code>op:GRADIENT</code> and <code>op:DERIVATIVE</code> become <code>vm-supported</code> in the parity manifest; higher-order nesting (gradient-of-derivative / Taylor tower) stays native-only. The public low-level reverse-mode AD tape surface (<code>ad-pow</code>, <code>ad-gradient-of</code>, <code>ad-value-of</code>, <code>ad-tape-length</code>) is completed on JIT and AOT at the same time.</li>
+<li><strong>Whole-point tensor-loss gradients are exact.</strong> An arity-1 loss whose body applies elementwise arithmetic to its whole vector/tensor argument now backpropagates from the sole element for a scalar-valued output and raises a clean <code>jacobian</code> diagnostic for a vector-valued one, instead of dropping the tangent or dereferencing a non-AD value.</li>
+<li><strong>Differentiation points are classified by runtime value, not syntax.</strong> A point that is a variable bound to a vector, a general expression, or a <code>(the …)</code> wrapper is now routed exactly like the identical literal — closing an externally reported <code>hessian</code> failure and an externally reported unreported- wrong <code>gradient</code> at cons-routed vector/list points, and the residual <code>hessian</code>/<code>laplacian</code> variable-bound case behind them.</li>
+<li><strong>Reverse-mode training loops stay flat under <code>with-region</code>.</strong> The AD tape’s node-pointer array now grows from the tape’s owning arena, so it is reclaimed with the region at <code>region_pop</code> instead of accreting residual memory each step.</li>
+</ul>
+<h3 id="a-diagnosed-program-no-longer-builds-and-runs">A diagnosed program no longer builds and runs</h3>
+<ul>
+<li><strong>An emitted error diagnostic prevents artifact emission and execution.</strong> A compile-time <code>ERROR: …</code> now stops emission, linking and execution outright, where the compiler previously printed the diagnostic and built and ran the binary anyway. Reporting an error is one call at any of 805 sites; propagating one is a return path through every enclosing frame, and the codegen frames recover by substituting a placeholder and carrying on. All 805 sites funnel through four logging primitives, so an authoritative error state now lives in one place and every path contributes to it. This is the mechanism that surfaced the rest of this release’s corrections: each had already been reported at compile time, and honoring every report converted answers that had gone unremarked into build failures — several of them fixed in this release, which is how they were found.</li>
+</ul>
+<h3 id="differentiation-is-exact-at-exact-points-and-survives-automatic-reclamation">Differentiation is exact at exact points, and survives automatic reclamation</h3>
+<ul>
+<li><strong><code>derivative</code>, <code>gradient</code> and <code>hessian</code> at exact points.</strong> At a rational or bignum point these three used to return garbage — an exact number is HEAP-tagged, so its data field holds a pointer, and every AD entry point reinterpreted that field as a number, differentiating at the object’s address. One authority per question now dispatches on the runtime tag, and refuses a non-numeric point with a catchable type error rather than inventing a number for it. With that resolved, the exactness gap behind it closed too: at an exact point all five operators now run the same Taylor-tower pass <code>derivative-n</code> runs, so <code>(derivative f x)</code> equals <code>(derivative-n f x 1)</code> and <code>(hessian f x)</code> equals <code>(derivative-n f x 2)</code> in value <strong>and</strong> in exactness. <code>(derivative (lambda (x) (* x x x)) 1/3)</code> is <code>1/3</code> with <code>exact?</code> true, where the operators previously either terminated abnormally or, once that was resolved, returned only the nearest <code>double</code>. The tier keeps <code>+ - * /</code> and non-negative-integer <code>expt</code> exact and demotes to f64 at the first transcendental, per R7RS exactness contagion.</li>
+<li><strong>Gradients through loop-filled vectors are correct again.</strong> <code>(gradient f x)</code> now computes the right gradient when <code>f</code> fills a vector with <code>vector-set!</code> inside a loop and then selects a component; before this, the derivative was attributed to the last element written, for every element read. Primal values stayed exact and stderr was empty, so a row-by-row Jacobian — the standard idiom — came out uniform garbage while looking plausible. The per-iteration nursery introduced by the reclamation work above resets its arena on each back edge, and the write barrier that must promote escapees did not recognise a dual number as pointer-carrying, so the tangent was recycled underneath the computation. The barrier, the <code>with-region</code> escape path and the nursery recycle now share one predicate, and tape-retained AD nodes allocate from the tape’s owning arena.</li>
+<li><strong>Gradient arity above 16 works, rather than returning zeros.</strong> A gradient of a closure reached as a value had its argument spread clamped at 16, so a declared arity of 17 to 32 either terminated abnormally, produced an unreported all-zero gradient, or raised a type error. The spread is now computed correctly and emitted once per module out of line, with the arity dispatch done by the closure dispatcher’s own runtime argument-count switch, so the ceiling of 32 is real. The out-of-line form is also smaller than what preceded the widening, which restores compile times on Windows, where the linkage the inline spread used cannot be discarded.</li>
+<li><strong>Embedding and Fréchet-mean backward passes.</strong> Two rules that previously refused outright now compute. The embedding adjoint is a scatter-add; duplicate indices accumulate and unselected rows are bitwise zero, both asserted directly because both have failure modes that stay the right shape and magnitude. The weighted Fréchet (Karcher) mean on the Poincaré ball is differentiated by implicit differentiation of its optimality condition rather than by unrolling the solver.</li>
+</ul>
+<h3 id="exactness-across-the-numeric-tower">Exactness across the numeric tower</h3>
+<ul>
+<li><strong>The bytecode VM kept inexactness.</strong> The VM decided a numeric result’s domain from its <em>value</em> rather than from its operands’ tags, so <code>(/ (- 2.0 1.0) (+ 2.0 1.0))</code> answered the exact <code>1/3</code> where native answered <code>0.3333333333333333</code>: any integral-valued double collapsed to an exact integer, in both the runtime constructor and the constant folder. Independently, the rational natives truncated a flonum operand into an int64 numerator, so <code>(* 0.5493061443340549 1/3)</code> evaluated <code>(* 0 1/3)</code> and answered the exact 0. Exactness is now decided from operand tags throughout, and the folder folds by the parser’s literal exactness flags. Divergent native-vs-VM numeric combinations drop from 79 to 20, and the remainder — bignum-over- bignum rationals the VM’s rational type cannot represent — are answered as a correctly-rounded inexact value and recorded as a justified parity row rather than left unmarked.</li>
+<li><strong>Native flonum integer division follows R7RS 6.2.6.</strong> <code>modulo</code> and <code>remainder</code> had no flonum path, so both operands went through the int64 unpack and the answer was the remainder of two IEEE-754 <em>bit patterns</em> (<code>(modulo 5.5 2.0)</code> returned <code>6192449487634432</code>); <code>remainder</code> also called the C library’s round-to-nearest <code>remainder()</code>, a different function from Scheme’s truncated one. <code>quotient</code>’s double path narrowed to int64 and packed the result exact, so it broke contagion by construction and saturated to a single plausible-looking constant past 2^63 — the same constant it returned for division by <code>0.0</code>. The floor-division family was int64-only, so <code>floor-remainder</code> disagreed with the <code>modulo</code> that R7RS defines it to equal. All of these are fixed, a zero divisor now raises uniformly across the family including the mixed-bignum route, and <code>(/ (expt 2 100) 0.0)</code> is <code>+inf.0</code> rather than <code>0</code>.</li>
+</ul>
+<h3 id="modules">Modules</h3>
+<ul>
+<li><strong><code>define-library</code> and <code>import</code> resolve libraries defined in the same file, on all three back ends.</strong> <code>define-library</code> validated its library name and discarded it, so <code>import</code> had nothing to consult but a filesystem search that can only find a library living in some <em>other</em> file — and reported <code>Module 'smoke.v1_3' not found</code> about a library written one line above. R7RS-small 5.6.1 defines a library by its form and lets the forms that follow import it, so a unit’s own libraries now come first in the resolution order, ahead of precompiled stdlib modules and the search path. A library becomes resolvable by being processed rather than by living in a particular file, so an import placed <em>above</em> its <code>define-library</code> still fails, now with a diagnostic naming the line the library is defined on. The bytecode VM was the real gap: it knew none of <code>define-library</code>, <code>import</code> or <code>export</code>, and compiled such a program into bytecode that warned about undefined variables and then died at run time, while the same file ran on JIT and AOT. Three latent VM gaps closed with it, including a <code>provide</code> that emitted nothing and left a stray <code>OP_POP</code> discarding a live value — shifting every later binding down a slot.</li>
+</ul>
+<h3 id="new-runtime-capability">New runtime capability</h3>
+<ul>
+<li><strong>A portable event loop.</strong> <code>make-event-loop</code>, <code>event-loop-add-fd!</code>, <code>event-loop-remove-fd!</code>, <code>event-loop-poll</code>, <code>event-loop-close</code> and <code>event-loop-backend</code> wrap kqueue on macOS and BSD, epoll on Linux and Android, and IOCP on Windows, with a fail-closed stub on WebAssembly. Exactly one backend is compiled in, and the portable half — handle registry, argument validation, generation-tagged handles, result coalescing — is shared by every backend and by the bytecode VM, so there is no native/VM parity surface to maintain separately. Verified with a pipe round-trip inside its timeout, an idle poll that waits its budget and returns rather than hanging, and 1,000 sequential open/close cycles that never exhaust the descriptor table.</li>
+<li><strong>A fixed-point and <code>i128</code> exact-accumulation engine.</strong> <code>esk_i128</code>, a parametric <code>fixed&lt;W,F&gt;</code> with explicit per-operation rounding, and a block-scaled <code>dot_exact</code> reduction over an i128 accumulator, for reductions that must be bit-exact regardless of summation order. 200 shuffles of 4,096 elements and 50 matmul contraction orders are byte-identical under the exact path, while an f64 control drifts about 1.5e-06 between orderings on the same inputs — and the exact path measured <em>faster</em> than an f64 double-double baseline (13.6 GB/s against 4.3 GB/s), so exactness is not paid for in throughput here. <code>ESHKOL_FIXED_POINT_ENGINE</code> is ON by default and forced OFF on MSVC and ClangCL, which lack the <code>__int128</code> ABI it relies on. The <code>eshkol-fixedpoint</code> shared library is self-contained C11 over libc and libm, so it is consumable without the rest of the toolchain.</li>
+<li><strong>The qLLM bridge is implemented.</strong> Its header declared 17 functions and the generated API documentation reported them all documented, but none was defined anywhere in the tree — while the bridge’s <em>backward</em> half had already shipped, with exact gradient rules for 11 of 13 tensor AD node types compiled into the runtime and unreachable, because nothing ever created a node of those types. All 17 are now implemented and record canonical AD tape nodes, so those rules run. Where a backward rule cannot differentiate a shape exactly the forward refuses rather than recording a node whose gradient would be wrong. <code>ESHKOL_QLLM_ENABLED</code> is opt-in and OFF by default, and turning it on without a discoverable library is a configure-time error rather than a unreported no-op.</li>
+</ul>
+<h3 id="high-precision-numerics">High-precision numerics</h3>
+<ul>
+<li><strong>Ozaki-II exact DGEMM</strong> recovers full-f64 <code>C = A*B</code> from reduced-precision tensor cores, certified against an independent CPU f64 reference and against the native 128-bit integer path. A CUDA INT8 (IMMA) tier and a Metal reduced-precision fully-GPU fast tier are both opt-in and default off; on CUDA the INT8 path is engaged only when a measured crossover and an accuracy-budget selector show it beating native <code>cublasDgemm</code> (externally contributed).</li>
+<li><strong><code>linear-solve</code></strong> is a full-f64 dense solver with a mixed-precision iterative-refinement fast path that certifies a full-f64 residual and falls back to a plain-f64 LU when it cannot — correctness is guaranteed, the speedup is opportunistic.</li>
+<li><strong>Native 128-bit integer type <code>i128</code></strong> — a first-class fixed-width wrapping signed integer off the numeric tower, with a full builtin surface on both the native and VM paths that compute bit-identical results.</li>
+</ul>
+<h3 id="types">Types</h3>
+<ul>
+<li><strong>Checked <code>(the &lt;type&gt; expr)</code> ascription</strong> asserts a type to the checker as a trusted assertion and is a pure runtime no-op (byte-identical IR).</li>
+<li><strong>Predicate-guarded narrowing</strong> across <code>if</code> and <code>and</code> for eight type predicates, cancelled at <code>set!</code>; <strong>sum-type annotations honored on named-let parameters</strong>; a <strong>numeric-tower join</strong> gives recursive accumulators their least-upper-bound numeric type. Nine new type-system tests including negative soundness cases.</li>
+<li><strong>Linear <code>Qubit</code> type</strong> with use-exactly-once enforcement on <code>define</code>d linear parameters, giving quantum registers a no-cloning guarantee at the type level. The linear checker’s scope handling and conditional-branch counting are hardened so that leaving a scope clears its linear bindings and a linear value used in exactly one branch of an <code>if</code>/<code>cond</code> is accepted (externally contributed).</li>
+</ul>
+<h3 id="printer">Printer</h3>
+<ul>
+<li><strong>Shortest-round-trip numeric printing (R7RS 6.2.6).</strong> <code>display</code>, <code>write</code>, and <code>number-&gt;string</code> emit the shortest decimal that reads back as the identical <code>double</code>; integral doubles keep their no-<code>.0</code> form; native and VM output is byte-identical through one shared portable-C routine. <code>(sqrt 2.0)</code> prints <code>1.4142135623730951</code>.</li>
+</ul>
+<h3 id="vm-parity-and-quantum">VM parity and quantum</h3>
+<ul>
+<li><strong>Reverse/forward-mode <code>gradient</code> reaches full VM parity</strong> (see <em>Exact gradients through every callable form</em> above), so the parity manifest gains <code>op:GRADIENT</code> and <code>op:DERIVATIVE</code> as <code>vm-supported</code> and the hosted VM is self-differentiating; higher-order nesting stays native-only.</li>
+<li><strong>Hosted-VM tensor matmul parity</strong> is complete: <code>arange</code> in 1/2/3-argument forms, nested-literal tensor operands, and multi-dimensional <code>tensor-ref</code> / <code>tensor-set!</code>.</li>
+<li><strong>Moonlab pinned to v1.2.0</strong> adds <code>vqe_compute_qgt</code> (quantum geometric tensor / quantum natural gradient) and a smooth first-principles H2/LiH potential-energy surface; the H2 equilibrium oracle at 0.735 Å is updated to <code>-1.142200155381</code> Ha. Differentiable quantum-chemistry examples and an arbitrary-order-AD H2 vibrational-frequency example ship with the release.</li>
+</ul>
+<h3 id="toolchain-and-packaging">Toolchain and packaging</h3>
+<ul>
+<li><strong><code>--shared-lib</code> links a real, C-ABI-correct shared library.</strong> The documented flag raised <code>--compile-only</code>, wrote an object and a bitcode file, and exited zero with no library anywhere. Making it link exposed why it could never have worked as documented: LLVM’s calling convention for a first-class-struct return is not the platform C calling convention for the same struct, so a C caller compiled against the public header read the tagged value’s flags byte as the payload. Library-mode codegen now emits a platform-C-ABI thunk per exported top-level function — <code>[2 x i64]</code> on AArch64, x86-64 SysV, riscv64, ppc64le and loongarch64, <code>sret</code> plus by-pointer on Windows x64, and a diagnostic refusal on 32-bit targets, which neither shape models. The relocatable <code>--shared-lib -c</code> object, which other Eshkol modules call with the internal convention, stays unwrapped. Separately, the runtime archives are now position-independent: a <code>thread_local</code> compiled non-PIC took the local-exec TLS model, so on ELF hosts the library could not be produced at all.</li>
+<li><strong>The browser WASM glue is complete, and the checked-in artifacts are current.</strong> <code>eshkol_write_value</code>, <code>eshkol_write_value_to_port</code> and <code>eshkol_builtin_arena_used</code> had no <code>env</code> import stubs in the browser glue, so programs reaching them failed to instantiate; the gap was verified by compiling a program that reaches those symbols and diffing the module’s real imports against the glue, rather than by trusting the import scanner. Both checked-in artifacts (<code>eshkol-site.wasm</code>, <code>eshkol-vm.wasm</code>) are regenerated from current source through their canonical recipes, closing WASM differential failures against the release tree.</li>
+<li><strong>Transitive FFI-link discovery, with fatal link failures under <code>-r</code>.</strong> Native agent-FFI link requirements now propagate through the full transitive <code>(load …)</code> / <code>(import …)</code> / <code>(require …)</code> source closure, so a dependency reached only indirectly is linked instead of failing the native link with unresolved symbols; and a generated-program link failure under <code>-r</code> is now fatal (nonzero exit) instead of being masked, unreported, by a reduced in-process fallback that exited zero.</li>
+<li><strong>Homebrew-compatible builds.</strong> Every bundled agent-FFI dependency resolves without a live download, so <code>brew install</code> works, while the default developer and release builds stay byte-for-byte unchanged. Pre-existing packaging gaps that left the keg non-functional (missing runtime and agent-FFI archives, misplaced module sources) are closed, and the release auto-bump anchors its substitutions so the new dependency pins survive a version bump.</li>
+</ul>
+<h3 id="assurance">Assurance</h3>
+<ul>
+<li><strong>Dynamic edge coverage for the v1.3.4 surface.</strong> A seeded, bounded, depth-parametric generator and runner reconcile the generative/adversarial harnesses with every new-feature family — nursery iter-scope loops, capturing <code>parallel-map</code>, exact gradient through callable/curried forms, <code>i128</code> boundaries, native tensor/<code>matmul</code>, the round-trip printer, and the low-level AD tape — each probe self-checking against a computed ground truth across JIT, AOT-O0, AOT-O2, and the VM, and gated in ICC.</li>
+<li><strong>Coverage-floor hardening.</strong> The executable language-surface manifest is regenerated for the new VM special forms and the coverage floor is enforced across the new-feature families, so a newly public surface cannot ship without executable evidence. The surface and the floor are both <strong>1,091</strong>, at <strong>1,091/1,091 (100.0%) execution-backed</strong> coverage: a construct earns its row only by dispatching or executing in a passing run, lexical name-presence is a diagnostic that earns no release credit, and the monotonic deficit ledger refuses to record a larger deficit without an explicit override.</li>
+<li><strong>WASM execute-and-diff differential lane.</strong> A new lane builds the VM WebAssembly module from current source, executes the VM-supported corpus under Node, and byte-diffs its output against native <code>eshkol-run -r</code>, so WASM output is now gated against native rather than only checked for a valid binary; divergences are tracked per file (EXCLUDED / XFAIL, with an unexpected match failing the gate).</li>
+<li><strong>CTest results are release-gate evidence.</strong> No completion-oracle criterion consumed a CTest result at all — the test-evidence criteria were index-level (“the tests exist and are runnable”), so a red CTest run could not turn the release gate red, and a pillar could ship with a perfectly good CTest gate that the target judging the cut never looked at. <code>scripts/run_ctest_gate.sh</code> now emits per-test, per-group and whole-suite trace events, and a group whose regex matches no configured test is reported ABSENT and <strong>fails</strong> the gate, so a pillar cannot quietly stop being covered because its tests were renamed or configured out. Eight criteria are wired, covering the fixed-point engine, the exact-input AD identity tier, the runtime-closure arity spread, same-unit <code>define-library</code>, the self-checking VM surface suite, VM parity and the event loop.</li>
+<li><strong>Display-only tests assert.</strong> A recurring test shape — <code>display</code> the computed values, print an unconditional pass banner, and leave the expected values in a comment — meant the harness saw exit 0 and the comparison the comment described was never written. The first wave of that sweep is in this release; each test it turns red exposes a correctness gap that had gone unmeasured.</li>
+<li><strong>Two harness issues that produced false verdicts are corrected.</strong> The toolchain-fingerprint guard tried the BSD <code>stat -f</code> format before the GNU <code>stat -c</code> one; on GNU coreutils <code>-f</code> means <code>--file-system</code>, so the “fingerprint” was free-block and inode counters and every green Linux run was declared <code>INVALID RUN</code> (exit 3). And the stale-directory prune globbed an unmatched pattern into <code>du</code>, which under <code>set -euo pipefail</code> terminated the calling suite unreported — which is what made the language-coverage floor read as a false red when it was in fact green.</li>
+<li><strong>The five-way surface baseline is re-anchored.</strong> The P8 axis-6 ratchet is shrink-only, and current master produces the same disagreement count with a different set — four AD entries resolved, four region-handle entries appeared — which a shrink-only ratchet cannot absorb. The four new entries record a genuine, pre-existing cross-backend naming asymmetry between the VM’s <code>_region-open</code> and the native <code>region-open</code>; it stays open as a tracked build item rather than being resolved by editing the baseline.</li>
+</ul>
+<hr />
+<h1 id="eshkol-v133-evolve--release-notes">Eshkol v1.3.3-evolve — Release Notes</h1>
+<p>Windows ARM64 packages now use a single platform-correct JIT target contract for both live LLJIT compilation and the persistent stdlib object cache. This avoids LLVM 21’s invalid AArch64-COFF Large-model SEH metadata while preserving external call reach through RuntimeDyld stubs and full host-data reach through nearby COFF import-address cells. A co-located per-object arena keeps JIT-owned code, read-only data, and writable data inside Small-model relocation reach; explicit Branch26 and ADRP span guards fail safely if a future object outgrows that contract. This prevents layout-sensitive <code>PAGEBASE_REL21</code> truncation without weakening stack probing, exceptions, or cacheability. Windows packages also publish and explicitly register the Taylor-tower AD state globals required by relocated cache-disabled JIT modules. Generic release stdlib generation now uses the common 128-bit x86-64/AArch64 tensor-vector baseline regardless of the hosted runner’s AVX width; the release validator rejects wider fixed vectors as well as scalable or optional-ISA IR. CUDA-labeled artifacts now fail closed unless the real NVIDIA backend is compiled. Linux x64/ARM64-SBSA and Windows x64 jobs install pinned CUDA 12.4 toolchains and verify that <code>nvcc</code>, cuBLAS, the CUDA runtime, and the CUDA source graph are present. The unsupported Windows ARM64 CUDA label has been removed rather than shipping its CPU fallback under a GPU name. Explicit <code>sm_72/75/80/86/89/90</code> code preserves Xavier through current RTX coverage. CUDA 12 builds on newer GNU hosts now require a compatible compiler for the whole build, avoiding unsafe nvcc-only host overrides that mix libstdc++ ABI and library search paths. Unix workflow configuration uses a scalar toolkit hint so non-CUDA macOS lanes remain compatible with Bash 3.2 under <code>set -u</code>. Generated AOT and persistent-cache links now resolve CUDA runtime/cuBLAS names from the consumer’s explicit toolkit roots, <code>nvcc</code>, and standard multiarch layouts instead of replaying hosted-runner absolute paths. Linux links require the configured CUDA ABI-major sonames, so CUDA 12 artifacts fail closed rather than substituting CUDA 13 unreported. Windows uses native shell-free driver paths instead of MSVC STL generic-path conversion, keeping generated links compatible with consumer Visual C++ import libraries that predate <code>__std_replace_copy_2</code>. Its CUDA 12.4 setup also requests only documented Windows subpackages; <code>nvcc</code> provides its compiler internals without invalid standalone <code>crt</code>/<code>nvvm</code> names. The Windows CUDA lane uses Ninja Multi-Config so Eshkol C/C++ remains LLVM 21 ClangCL while <code>nvcc</code> uses the CUDA-supported v142 MSVC host, avoiding the Visual Studio CUDA-target <code>MSB4023</code> metadata failure without changing the release package layout. Backend validation reads the complete generated multi-config Ninja graph before any CUDA-labeled build proceeds. The v142 host compiler cache entry uses CMake’s forward-slash path form so nvcc receives an intact <code>-ccbin</code> value even when Visual Studio is installed below a path with spaces.</p>
+<p><strong>Release Date</strong>: July 16, 2026</p>
+<p>Eshkol v1.3.3-evolve combines the completed Moonlab quantum stack with a language-wide correctness and evidence campaign. Every declared language surface now has deterministic executable evidence, native and VM behavior is cross-checked, and the release is green across the aggregate, full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC architecture gates. Full technical detail lives in <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>.</p>
+<p><strong>Release gates</strong>: 44/44 suites and 716/716 tests; CTest 76/76; SICP 88/88 JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential 127 programs with zero divergences; VM parity 68/68; VM extended surface 53/53; executable language coverage 1057/1057 (100%); WebAssembly imports 101/101 provided; Taylor monomorphization equivalence 441/441 under both JIT and AOT; ICC architecture model 8/8; ICC readiness 100/100.</p>
+<h2 id="highlights-2">Highlights</h2>
+<h3 id="quantum-computing-differentiation-and-post-quantum-cryptography">Quantum computing, differentiation, and post-quantum cryptography</h3>
+<ul>
+<li><strong>S1 — honest quantum execution.</strong> <code>agent.quantum</code> exposes state creation, gates, measurement, and randomness routed through Moonlab’s Bell-verified QRNG. The Bell smoke is perfectly correlated at 200/200 shots. (#261)</li>
+<li><strong>S2 — VQE.</strong> Hamiltonian construction, exact energy, variational energy, optimization, and native gradients are public builtins. H2 converges to its exact ground-state energy within <code>4.4e-16</code>. (#268)</li>
+<li><strong>S3 — differentiate through circuits.</strong> <code>AD_NODE_CUSTOM</code> adds a general custom vector-Jacobian-product node to Eshkol’s reverse tape. VQE energy is composably differentiable inside ordinary Eshkol functions and agrees with Moonlab’s adjoint and finite differences. (#270)</li>
+<li><strong>S4 — ML-KEM.</strong> FIPS 203 ML-KEM 512/768/1024 key generation, encapsulation, and decapsulation are available through <code>agent.pqc</code>, with Bell-verified QRNG seeding and NIST KAT/round-trip checks. (#272)</li>
+<li><strong>S5 — permanent evidence.</strong> A hosted macOS quantum lane runs the complete quantum suite. A 16K-shot CHSH gate measures <code>S ~= 2.86</code>, beyond the classical bound, and quantum behavior is wired into the AD adversarial oracle, executable coverage manifest, and ICC architecture model. (#273)</li>
+</ul>
+<p>Quantum remains build-gated with <code>-DESHKOL_QUANTUM_ENABLED=ON</code>; the default build remains dependency-light. The pinned Moonlab revision includes the upstream macOS weak-import linker fix and builds without a local override.</p>
+<h3 id="complete-executable-language-coverage">Complete executable language coverage</h3>
+<ul>
+<li>The coverage manifest now has <strong>1,057/1,057 executable rows</strong>. Credit requires a deterministic reachable execution trace; tokens, declarations, and dead code do not count.</li>
+<li>Native and bytecode backends agree on <strong>68/68 parity probes</strong>, including multiple values, vectors, closures, parameters, include forms, numeric boundaries, full datum read/write round trips, and ESKB execution. Unsupported features fail explicitly rather than fabricating values.</li>
+<li>The formerly dormant hosted VM surface is now executed by <strong>53/53 tests</strong>, covering I/O, system, image, polling, process, concurrency, crypto, format, networking, and layout operations.</li>
+<li><code>make-parameter</code>/<code>parameterize</code> now use real dynamic parameter objects on native, VM, and WebAssembly-hosted paths, including converter-once and unwind-safe dynamic extent. (#271)</li>
+</ul>
+<h3 id="correctness-and-production-hardening">Correctness and production hardening</h3>
+<ul>
+<li>Poincare-ball exp/log behavior now uses the correct Riemannian tangent norm at the base point, with off-origin analytic length and round-trip checks.</li>
+<li>Complete R7RS multiple-value semantics now agree across JIT, AOT, and VM.</li>
+<li>Hosted port rebinding/lifecycle, exact 64-bit <code>current-jiffy</code>, proper-list <code>directory-walk</code>, and image-buffer ownership now behave correctly.</li>
+<li>Tail-call library exports can no longer be stripped at O2; rational/bignum region evacuation no longer leaves dangling interior pointers; the Windows lite harness reports compile timeouts honestly. (#265)</li>
+<li>Large-list sort is now a stable bottom-up vector merge sort: the two-million element stress case drops from roughly 32 GB peak RSS to about 362 MiB. (#266)</li>
+<li>The GPU correctness gate now runs on Windows Git Bash/MSYS hosts, where it previously skipped them unreported. It uses the supported official-SDK ClangCL + Ninja compiler path with MSVC as nvcc’s host compiler; a real RTX 3060 dispatched through CUDA cuBLAS and matched 10 CPU-reference probes with maximum relative difference <code>0</code>. PE/COFF hosted-runtime linkage no longer relies on ELF weak functions.</li>
+<li>Release and verification shell entry points now reject unsafe build roots, symlink escapes, and destructive cleanup targets before operating. The same path contract is exercised across Bash, Git Bash, and constrained ARM64 shells. (#278)</li>
+<li>Generated Linux AOT executables now preserve the runtime search paths of every linked dependency, including indirect LLVM, C++ runtime, curl, SQLite, ncurses, OpenSSL, and Nix-store libraries. The linker derives these paths from actual <code>-L</code> and shared-library inputs and from the selected host compiler instead of requiring a custom <code>LD_LIBRARY_PATH</code>. (#279)</li>
+<li>Linux binary archives now carry a hashed, licensed libpng/libjpeg/libwebp/ zlib runtime closure under <code>lib/eshkol/runtime-deps</code>. Both packaged tools and generated run-cache/AOT executables resolve that relocatable closure, so image I/O remains enabled without requiring matching codec development packages—or the release builder’s absolute library paths—on the target host.</li>
+<li>Precompiled <code>stdlib.o</code> and <code>stdlib.bc</code> release artifacts are optimized at O2 for LLVM’s generic architecture baseline instead of the transient runner’s CPU. User and JIT compilation still specialize for the target host, while a release-time LLVM-disassembly gate rejects SVE/SVE2 and other builder-only wide-vector IR before packaging. This keeps ARM64 archives runnable on baseline ARMv8 systems such as Cortex-A72 rather than only on SVE builders.</li>
+<li>Exact numeric and automatic-differentiation corrections cover bignums, rationals, tensors, forward-over-reverse composition, Hessians, and explicit unsupported-op errors instead of unreported zero gradients.</li>
+</ul>
+<h3 id="release-integrity">Release integrity</h3>
+<p>The full suite uses an isolated requested build directory; reference and generative oracles execute portably on macOS; freestanding object checks allow only target intrinsics (never undeclared hosted ABI calls); every required WebAssembly environment import is present in both JavaScript runtimes; and the tag workflow supports a non-publishing manual dry run of the complete release matrix before any immutable release tag is created. Installed package module resolution is also exercised with the persistent cache disabled: agent modules must resolve from the executable-relative source tree, and a missing explicit <code>require</code> is a hard failure rather than a diagnostic followed by execution. Native Windows hosts retain that bounded JIT ABI through the generated PE export table without mixing static LLVM target archives with <code>LLVM-C.dll</code>. Generated Windows AOT/cache links also resolve the selected consumer LLVM 21 toolchain’s architecture-matched compiler-rt builtins archive at runtime, so 128-bit bignum/rational division links on both x64 and ARM64 without embedding the release runner’s absolute SDK path.</p>
+<hr />
+<h1 id="eshkol-v132-evolve--release-notes">Eshkol v1.3.2-evolve — Release Notes</h1>
+<p><strong>Release Date</strong>: July 9, 2026</p>
+<p>Eshkol v1.3.2-evolve is an evolve point release over v1.3.1-evolve. It closes the last resident-memory correctness gap for long-running loops, makes region scoping safe under parallelism, completes the automatic-differentiation <code>input2</code> gradient path, and adds developer tooling and Binary Lambda Calculus depth. Full technical detail lives in <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>; this page is the user-facing summary.</p>
+<p><strong>Release gates</strong>: builds on the v1.3.1-evolve gates with a new poison-hardened region-evacuator coverage gate (<code>tests/memory/region_evac_subtype_coverage_test.sh</code>) that promotes and reads back logic/workspace state over 1,000,000 region-wrapped mutations under <code>ESHKOL_ARENA_POISON=1</code> at flat RSS.</p>
+<h2 id="highlights-3">Highlights</h2>
+<h3 id="resident-memory-correctness">Resident-memory correctness</h3>
+<ul>
+<li><strong>Forever-flat loops that mutate persistent logic/workspace state.</strong> The region escape evacuator now deep-walks the <code>SUBSTITUTION</code>, <code>FACT</code>, <code>KNOWLEDGE_BASE</code>, <code>FACTOR_GRAPH</code>, and <code>WORKSPACE</code> subtypes (ESH-0214d). A resident tick loop can wrap its body in <code>(with-region ...)</code> to reclaim per-iteration transient garbage while its escaping knowledge-base/workspace state is promoted intact — previously those subtypes were shallow-copied and dangled into the freed arena. (#226)</li>
+<li><strong>Region scoping is thread-safe.</strong> <code>parallel-map</code> combined with <code>with-region</code> no longer races on the shared current-arena slot. (#217)</li>
+</ul>
+<h3 id="automatic-differentiation">Automatic differentiation</h3>
+<ul>
+<li><strong><code>input2</code> gradients complete for <code>conv2d</code>/<code>batchnorm</code>/<code>layernorm</code>/ <code>attention</code></strong> — the second operand (kernel / gamma / K / V) now receives gradients. (#212)</li>
+</ul>
+<h3 id="tooling-and-language">Tooling and language</h3>
+<ul>
+<li><strong><code>eshkol-doc</code></strong> generates an API reference from Doxygen comments. (#213)</li>
+<li><strong>Binary Lambda Calculus universal machine</strong>: <code>(blc-U)</code> decodes and runs Tromp’s 232-bit self-interpreter; BLC8 byte I/O and ASCII lambda diagrams round out <code>core.blc</code>. (#218)</li>
+</ul>
+<h3 id="robustness">Robustness</h3>
+<ul>
+<li>Three deferred latent issues triaged and closed: ESH-0223, ESH-0227, ESH-0228. (#215)</li>
+</ul>
+<hr />
+<h1 id="eshkol-v131-evolve--release-notes">Eshkol v1.3.1-evolve — Release Notes</h1>
+<p><strong>Release Date</strong>: July 9, 2026</p>
+<p>Eshkol v1.3.1-evolve is a resident-robustness point release over v1.3.0-evolve: two fixes aimed squarely at long-running/daemon processes and large-persisted-state workloads, plus a comprehensive documentation pass. Full technical detail lives in <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>; this page is the user-facing summary.</p>
+<p><strong>Release gates</strong>: builds on the v1.3.0-evolve release gates (see below) with a new AOT flat-RSS regression gate (<code>tests/memory/define_loop_flat_rss_aot_test.sh</code>) that compiles the guard-wrapped self-tail-recursive <code>define</code>-loop shape ahead-of-time and fails if peak RSS exceeds a generous flat threshold, so a regression in the ESH-0214b fix cannot pass unreported.</p>
+<h2 id="highlights-4">Highlights</h2>
+<h3 id="resident-robustness-fixes">Resident-robustness fixes</h3>
+<ul>
+<li><strong>Long persisted-state files now read safely.</strong> The reader’s list parser (<code>read_list</code>) was rewritten from per-element native recursion to an iterative loop, so reading a long flat list — e.g. a 46K-entry persisted state file — no longer overflows the native stack. Verified: the pre-fix reader raised SIGBUS at 20M elements; post-fix, the same input reads cleanly. (#191)</li>
+<li><strong><code>define</code>-loop daemons now hold flat memory.</strong> Automatic per-iteration arena-scope reclamation — previously limited to named-let loops — now also covers self-tail-recursive top-level <code>define</code> loops, and the escape analysis that gates it accepts a catch-all <code>guard</code> clause instead of rejecting any guarded body outright. This is exactly the shape of a production daemon/resident loop: a top-level <code>define</code> loop wrapped in an error boundary. Verified in AOT mode: a 1,000,000-iteration allocating guard-wrapped <code>define</code> loop holds peak RSS at 27MB with the fix on, versus 2608MB with the fix off. (#192)</li>
+</ul>
+<h3 id="comprehensive-documentation-pass">Comprehensive documentation pass</h3>
+<ul>
+<li>Doxygen doc-comments added across all 64 public headers (<code>inc/eshkol/**</code>) and most implementation files (<code>lib/**</code>).</li>
+<li>A new navigable documentation index (<code>docs/README.md</code>); orphaned (unindexed) docs reduced from 73 to 3.</li>
+<li>Press materials and website content updated to reflect the shipped v1.3 state; roadmap views aligned with what has actually shipped.</li>
+</ul>
+<h3 id="known-issues">Known issues</h3>
+<p>See <a href="/docs#page=known_issues" data-url="/content/known_issues.html">docs/KNOWN_ISSUES.md</a> and the CHANGELOG’s Known Issues section for the current, itemized list (none block ordinary use).</p>
+<hr />
+<h2 id="previous-releases">Previous Releases</h2>
+<h3 id="eshkol-v130-evolve--arbitrary-order-automatic-differentiation">Eshkol v1.3.0-evolve — Arbitrary-Order Automatic Differentiation</h3>
+<p><strong>Release Date</strong>: July 7, 2026</p>
+<p>Eshkol v1.3.0-evolve is the “evolve” release: arbitrary-order automatic differentiation, full R7RS conformance on the portable differential corpus, and a hardening pass across closures, tail calls, and long-running processes.</p>
+<p><strong>Release gates</strong> (all green on the release SHA): ICC readiness oracle <code>v1.3-evolve</code> ready (100/100, trace-verified); CI 14/14 lanes including windows-arm64 lite/CUDA/XLA; SICP full-book gate 88/88 probes across all 5 chapters under both <code>-r</code> and AOT; reference-Scheme differential oracle 34/34 AGREE vs. chibi-scheme.</p>
+<h4 id="highlights-5">Highlights</h4>
+<h5 id="automatic-differentiation-best-in-class-and-beyond">Automatic differentiation, best-in-class and beyond</h5>
+<p>Eshkol’s AD system already did exact forward-mode, reverse-mode, and symbolic differentiation. v1.3.0-evolve adds a second axis on top: <strong>order</strong>. A new Taylor-tower engine (13 phases, P0 through P12 — see the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> and the <a href="/docs#page=changelog&amp;added--automatic-differentiation-taylor-tower-campaign-p0-p12" data-url="/content/changelog.html">CHANGELOG</a> for the full phase-by-phase breakdown) computes <em>every</em> derivative up to an arbitrary order <code>k</code> in a single pass:</p>
+<ul>
+<li><strong>Arbitrary order</strong> — <code>(taylor f x k)</code> and <code>(derivative-n f x k)</code> return the full coefficient series or the <code>k</code>-th derivative for any <code>k</code>, not just first/second order.</li>
+<li><strong>Exact, not approximate</strong> — when the input is an exact number and the function only uses exact-preserving arithmetic, the coefficients come back as exact arbitrary-precision (bignum/rational) values instead of <code>double</code> approximations. Most autodiff systems, JAX included, only ever produce floating-point derivatives; Eshkol can hand you the exact rational derivative when the math supports it.</li>
+<li><strong>Validated</strong> — Taylor models (<code>taylor-model</code>, <code>tm-range</code>, <code>tm-eval</code>) pair the polynomial with a rigorous interval-remainder bound, giving a <em>provable</em> enclosure of a function’s range or value, not just a point estimate. This is a step beyond what mainstream AD/ML frameworks expose to user code at all.</li>
+<li><strong>Multivariate and sparse</strong> — <code>mixed-partial</code>/<code>gradient-n</code> recover arbitrary-order mixed partials via a Griewank-Utke-Walther (GUW) propagation layer; <code>sparse-hessian</code>/<code>sparse-mixed-partials</code> exploit sparsity with graph-coloring so the cost scales with variable-interaction bandwidth, not dimension.</li>
+<li><strong>Composes with everything else</strong> — tensor-valued towers differentiate through <code>matmul</code>/<code>conv2d</code>/<code>sigmoid</code>/<code>tanh</code>; reverse-over-Taylor lets <code>gradient</code> differentiate through a <code>derivative-n</code> call; checkpointed reverse-mode keeps the memory cost of high-order reverse AD sub-linear; towers work correctly through <code>if</code>/<code>cond</code>/named-let/recursion; and tower-based numerics (<code>taylor-ode-solve</code>, <code>taylor-root</code>, <code>taylor-inverse-series</code>) put all of this to work solving ODEs, root-finding, and series inversion.</li>
+</ul>
+<p>See the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> for worked examples and the full API reference.</p>
+<h5 id="full-r7rs-conformance-on-the-portable-corpus">Full R7RS conformance on the portable corpus</h5>
+<p>A new reference-Scheme differential oracle diffs Eshkol’s behavior against chibi-scheme 0.12.0 across a 34-program portable R7RS corpus (numeric, list, vector, string, char, binding, control-flow, equality, and I/O). It started this release cycle at 27/34 (79.4%) and every divergence is now fixed: <strong>34/34 (100%) AGREE</strong> with chibi-scheme on that corpus. Fixed along the way: <code>apply</code> with leading arguments, multi-vector <code>vector-map</code>/<code>vector-for-each</code>, quasiquoted vector literals, <code>cond</code>/<code>case</code> <code>=&gt;</code> arrow clauses, an allocating <code>vector-copy</code> (including on <code>#(...)</code> tensor-backed literals), the <code>error-object?</code>/<code>error-object-message</code>/<code>error-object-irritants</code> condition family, R7RS string-escaping in <code>write</code>, nested ellipsis (<code>x ... ...</code>) in <code>syntax-rules</code>, and the 2-argument form of <code>substring</code>. See the <a href="/docs#page=changelog&amp;fixed--r7rs-conformance" data-url="/content/changelog.html">CHANGELOG</a> for the itemized list.</p>
+<h5 id="robustness-closures-tail-calls-and-long-running-processes">Robustness: closures, tail calls, and long-running processes</h5>
+<p>A cluster of fixes targets programs that run for a long time or recurse deeply — the kind of correctness property that only shows up in production, not in a quick test:</p>
+<ul>
+<li>Mutual tail calls (<code>even?</code>/<code>odd?</code>-style cross-function recursion) are now proper O(1)-stack R7RS tail calls on AArch64.</li>
+<li>Named-let loops are tail-call-optimized in every legal tail position, not just the immediate loop body — including tail calls made through a <code>guard</code> error-boundary wrapper.</li>
+<li>Curried closures can now capture up to 64 variables (up from a ceiling of 16 that corrupted memory unreported past that point).</li>
+<li>A production-triggered class of unbounded RSS growth in long-running loops is closed, and loops that are provably safe now get automatic, zero-annotation per-iteration memory reclamation.</li>
+<li>A graceful-shutdown race that could SIGSEGV after <code>SIGTERM</code> is closed, deep recursion overflow now fails with a diagnostic instead of an unexplained <code>SIGILL</code>, and <code>eshkol-run -r</code>/AOT caching now correctly invalidates when an indirectly loaded/required dependency changes.</li>
+</ul>
+<p>See <a href="/docs#page=changelog&amp;fixed--compiler--runtime-robustness" data-url="/content/changelog.html">CHANGELOG.md</a> for the full list with root causes.</p>
+<h5 id="also-in-this-release-1">Also in this release</h5>
+<ul>
+<li>A new build integration surface: <code>--emit-depfile</code> plus a canonical <code>cmake/EshkolCompile.cmake</code> for consumers embedding the Eshkol compiler in their own CMake build.</li>
+<li>Browser REPL / WASM fixes so every example on <a href="https://eshkol.ai">eshkol.ai</a> runs, including the tensor computing examples.</li>
+<li>A permanent, ICC-wired adversarial-testing infrastructure — differential, edge-matrix, AD-oracle, stress, VM-parity, depth-parametric, and external (reference-Scheme / sanitizer-fuzz / metamorphic) test pillars — so these classes of correctness issue keep getting caught going forward. See <a href="/docs#page=testing" data-url="/content/testing.html">docs/TESTING.md</a>.</li>
+</ul>
+<h5 id="known-issues-1">Known issues</h5>
+<p>See <a href="/docs#page=known_issues" data-url="/content/known_issues.html">docs/KNOWN_ISSUES.md</a> and the CHANGELOG’s Known Issues section for the current, itemized list (none block ordinary use).</p>
+<h3 id="eshkol-v123-scale--platform-artifact-closeout">Eshkol v1.2.3-scale — Platform Artifact Closeout</h3>
+<p><strong>Base Release Date</strong>: May 1, 2026 <strong>Closeout Date</strong>: May 20, 2026 <strong>Platform Artifact Date</strong>: May 25, 2026</p>
+<p>Eshkol v1.2.3-scale is the platform-artifact closeout point release for v1.2.0-scale, the <em>production-readiness</em> release. The v1.1 line proved the math (autodiff, tensors, the consciousness engine); v1.2 makes it shippable: trained models save and load, error messages point at the actual line, the Python FFI is stable and zero-copy, deep recursion doesn’t blow the stack on Darwin, and a long tail of correctness/security issues that surfaced under real workloads is now closed.</p>
+<p>The headline addition isn’t a feature — it’s the edge-case regression suite that catches every fix in this release going forward. The v1.2.0 release shipped with 62 tests; the current v1.2.x Noesis M0 closeout build carries <strong>87 passing edge/security tests</strong>, a clean 37-suite aggregate gate, and a full Noesis aggregate smoke pass.</p>
+<h2 id="v123-platform-artifact-addendum-may-25-2026">v1.2.3 Platform Artifact Addendum (May 25, 2026)</h2>
+<p><code>v1.2.3-scale</code> is a packaging and release-integrity patch over the v1.2.1 language/runtime surface. It supersedes the unpublished <code>v1.2.2-scale</code> tag attempt by adding the hosted Windows x64 COFF linker fix needed for the full artifact matrix:</p>
+<ul>
+<li>the release workflow now treats the 16-package platform set as a checked contract before publishing:
+<ul>
+<li>Linux x64/ARM64 lite/XLA/CUDA tarballs</li>
+<li>macOS arm64/x64 lite/XLA tarballs</li>
+<li>Windows x64/ARM64 lite/XLA/CUDA zips</li>
+</ul></li>
+<li><code>SHA256SUMS.txt</code> is generated from the final merged <code>dist/</code> directory.</li>
+<li>the publish job refuses to append to or overwrite an existing GitHub release.</li>
+<li><code>release_workflow_surface_test</code> pins this behavior in CTest so future release-workflow edits cannot drop platform artifacts unreported.</li>
+<li>generated parallel worker initializer symbols are module-local on native Windows so hosted x64 release packages link cleanly against <code>stdlib.o</code>.</li>
+<li>the Homebrew formula template now targets the public <code>v1.2.3-scale</code> archive; the tap formula still needs its computed SHA256 after the release tarball is published.</li>
+</ul>
+<h2 id="v121-noesis-m0-closeout-addendum-may-20-2026">v1.2.1 Noesis M0 Closeout Addendum (May 20, 2026)</h2>
+<p><code>v1.2.1-scale</code> closed the Noesis M0 audit path:</p>
+<ul>
+<li><code>tests/v1_2_edge_cases</code> passes <strong>87/87</strong>, including shared hash-table mutation under <code>parallel-map</code>, late variadic REPL forward refs, binary I/O, match predicate binding, tensor pixel fill, first-class builtins, channels, threads, object-build CLI contract coverage, bounded HTTP server smoke coverage, and shell-level CLI/linker probes.</li>
+<li><code>scripts/run_all_tests.sh</code> passes <strong>37/37 suites</strong> and <strong>528/528 self-reported individual tests</strong>. The aggregate now counts suites that report <code>Results: N passed, M failed</code>, so the logic and v1.2 edge/security runners are included in the release total.</li>
+<li>Noesis <code>tests/smoke/all.esk</code> passes with <code>NOESIS_ALL_RC=0</code>.</li>
+<li>VM C API checks pass <strong>81/81</strong>, CTest passes <strong>15/15</strong>, and stress tests pass <strong>3/3</strong> on the final release-gate build.</li>
+<li>The previously intermittent dual-neural failure is resolved by serializing runtime hash-table access; the focused Noesis <code>dual_neural</code> smoke passed 8/8 stress repeats on the corrected build.</li>
+<li>LL’s underlying CLI behavior is corrected: <code>--emit-object</code> accepts compatibility flags, writes the requested <code>-o path</code>, and no longer creates the stale <code>.o.o</code> output.</li>
+<li>The Homebrew formula template points at the public <code>v1.2.1-scale</code> release archive; the public tap formula carries the computed SHA256 after tagging.</li>
+<li>The release workflow’s platform asset matrix is now guarded by <code>release_workflow_surface_test</code>: every <code>v*</code> tag must publish the 16 expected Linux/macOS/Windows lite/XLA/CUDA archives, generate <code>SHA256SUMS.txt</code>, and refuse to append assets to an existing release.</li>
+</ul>
+<h2 id="whats-new-in-v120-scale">What’s New in v1.2.0-scale</h2>
+<h3 id="production-deployment">Production Deployment</h3>
+<ul>
+<li><strong>Model serialization</strong> — <code>.eshkol-model</code> is an ESKB-extended binary format that round-trips trained networks (architecture + weights + metadata) so you can save a model on the training box and load it on the inference box.</li>
+<li><strong>Stable C ABI + Python bindings</strong> — <code>inc/eshkol/c_abi.h</code> is the versioned public header; <code>pip install eshkol</code> gives you pybind11 bindings with NumPy zero-copy interop. Gradient computation, structured returns, and error recovery all crossed the FFI cleanly after the v1.2 hardening pass.</li>
+<li><strong>Per-thread arenas</strong> — concurrent code paths (parallel-map workers, thread-pool tasks) now use thread-local arena slots so allocation in one worker never stomps another’s.</li>
+<li><strong>Image I/O</strong> — PNG/JPEG/WebP/BMP read/write/resize for vision pipelines, backed by native platform/system codec APIs (ImageIO/CoreGraphics on macOS, system libpng/libjpeg/libwebp on Linux, GDI+ on Windows).</li>
+<li><strong>Plotting stdlib</strong> — inline matplotlib-style charts via PNG output for notebook-style workflows.</li>
+</ul>
+<h3 id="compiler-diagnostics">Compiler Diagnostics</h3>
+<ul>
+<li><p><strong>Actionable error messages</strong> — compile errors now report the exact source line and column with a caret underline:</p>
+<pre><code>/path/to/file.esk:6:4: error: Unknown function: undefined-fn
+    6 |   (undefined-fn 1 2 3))
+      |    ^</code></pre>
+<p>Previously every error pointed at line 1 because the parser’s comment-stripping reader consumed newlines. The fix preserves newlines from comments and threads a cumulative file-line counter across <code>eshkol_parse_next_ast_from_stream</code> calls.</p></li>
+</ul>
+<h3 id="stdlib--language">Stdlib + Language</h3>
+<ul>
+<li><strong>JSON Schema validation</strong> (Draft 7 subset) — <code>json-schema-valid?</code> and <code>json-schema-validate</code> for experiment-manifest / preregistration enforcement. Supports type, properties, required, additionalProperties, items, min/max length/items, minimum/maximum (with exclusive variants), enum, const, pattern (substring), oneOf / anyOf / allOf / not. Auto-loaded via stdlib.</li>
+<li><strong>R7RS-compliant scoping for stdlib redefines</strong> — user <code>(define (foo …))</code> after <code>(require stdlib)</code> cleanly shadows stdlib’s <code>foo</code> at link time (LinkOnceODR linkage on stdlib functions) and at call-site lowering (variadic-info hygiene clears stale entries on redefine). Previously a user redefine of a variadic stdlib function with a fixed-arity signature compiled with an arity-mismatch warning and terminated abnormally at runtime.</li>
+<li><strong>AD scalar derivative on inline lambdas</strong> — <code>(derivative (lambda (x) …) point)</code> inside a wrapper function now correctly flows through the runtime closure dispatch. Previously it returned -inf / wrong values because the new-style derivative codegen path bailed out without calling the closure for function-parameter operands.</li>
+<li><strong>Reflection</strong> — <code>procedure-arity</code>, <code>record-fields</code>, <code>describe</code> for runtime inspection of user-defined procedures and records.</li>
+<li><strong>Memoization / LRU cache stdlib</strong> — <code>(memoize fn :lru 256)</code>.</li>
+<li><strong>PRNG seeding + deterministic replay</strong> — <code>(seed-prng! …)</code> and per-stream isolation for reproducible experiments.</li>
+<li><strong>Lazy sequences / streams</strong> (SRFI 41).</li>
+<li><strong>Time API</strong> — ISO-8601 parse/format + duration types.</li>
+<li><strong>Regex capture groups</strong> — <code>regex-group</code> / <code>match-groups</code>.</li>
+<li><strong>CLI argument parser</strong> — <code>(parse-args)</code> for noesis CLI entry points.</li>
+<li><strong>call-with-values + URL/base64url encoding</strong> finalised.</li>
+</ul>
+<h3 id="build-link-and-platform">Build, Link, and Platform</h3>
+<ul>
+<li><strong>macOS deep recursion</strong> — every binary now ships with <code>LC_MAIN.stacksize = 512 MB</code> (<code>-Wl,-stack_size,0x20000000</code>) on Darwin. The flag had only been wired into one of the two link paths in <code>eshkol-run</code>; the common compile-and-link path inherited the 8 MB default unreported, and any non-tail-recursive Scheme code hit <code>eshkol_check_recursion_depth + 4</code> with a SIGSEGV on its own frame push.</li>
+<li><strong><code>--wasm</code> is self-contained</strong> — the WASM emit path no longer falls through to native clang++ link. <code>eshkol-run file.esk --wasm -o foo.wasm</code> produces the .wasm via LLVM in-memory codegen and exits cleanly; no spurious “_main referenced from initial-undefines” link errors.</li>
+<li><strong>Stdlib functions are weak-linked</strong> — user code can override a stdlib symbol with their own definition without a “duplicate symbol” link error. The fix mirrors the Windows <code>WeakAnyLinkage</code> path onto macOS/Linux LinkOnceODR.</li>
+<li><strong>AD value-typed captures</strong> — derivatives that close over function-parameter <code>tagged_value</code> Arguments (e.g. <code>loss-fn</code> capturing <code>input</code>/<code>target</code>/<code>b</code> in <code>compute-loss-gradient</code>) no longer fail LLVM IR verification with “PtrToInt source must be pointer”.</li>
+<li><strong>CI</strong>: new <code>linux-x64-asan-ubsan</code> lane runs the v1.2 edge-case suite under <code>-DESHKOL_ENABLE_ASAN=ON -DESHKOL_ENABLE_UBSAN=ON</code>. <code>ESHKOL_ENABLE_TSAN=ON</code> and <code>ESHKOL_ENABLE_MSAN=ON</code> are scaffolded; TSan/MSan-built libstdc++ on apt.llvm.org is a v1.3 prerequisite.</li>
+<li><strong>Tagged release assets</strong>: the release workflow treats the complete 16-package platform set as a checked contract before publishing: Linux x64/ARM64 lite/XLA/CUDA tarballs, macOS arm64/x64 lite/XLA tarballs, Windows x64/ARM64 lite/XLA/CUDA zips, plus <code>SHA256SUMS.txt</code>.</li>
+<li><strong><code>stdlib.o</code> rebuild correctness</strong> — <code>file(GLOB_RECURSE … CONFIGURE_DEPENDS)</code> now watches every <code>lib/{core,math,signal, random,web,tensor,quantum,ml}/*.esk</code> so editing a transitive required module triggers a stdlib rebuild. Previously only edits to <code>lib/stdlib.esk</code> itself did.</li>
+</ul>
+<h3 id="hardening">Hardening</h3>
+<ul>
+<li><strong>CRITICAL</strong>: shell-string injection in <code>agent_subprocess.c</code> — fixed by switching to <code>posix_spawn</code> with <code>argv</code> arrays; the <code>popen("sh -c …")</code> path is gone.</li>
+<li><strong>CRITICAL</strong>: Python FFI derivative-method AST injection in <code>eshkol_module.cpp</code> — fixed by canonicalising via the parser rather than string-substituting into source.</li>
+<li><strong>HIGH</strong> (3 items): integer-overflow guards on arena, KB-load, and image-IO size computations (<code>__builtin_mul_overflow</code>).</li>
+<li><strong>HIGH</strong> (4 items): path-traversal defence with percent-decode + component-check, TOCTOU race fixes on <code>stat → open</code>, and a Windows-subprocess buffer-size off-by-one.</li>
+<li><strong>HIGH</strong>: 36 previously error-swallowing sites across the runtime now either surface the error or are documented as intentional.</li>
+<li><strong>MEDIUM</strong>: ReDoS-resistant regex engine (counted-quantifier backtracker with bounded-state ceiling), SQL-injection guards on the persistence path, URL validator that rejects scheme smuggling.</li>
+</ul>
+<h3 id="testing">Testing</h3>
+<ul>
+<li><strong>87-test v1.2 edge/security suite</strong> at <code>tests/v1_2_edge_cases/</code> covering symbol consistency under gensym, AD tape state across worker threads, parser line tracking, stdlib symbol resolution, the JSON Schema validator, HTTP server smoke behavior, and every real correction in this release. Runs under <code>bash scripts/run_v1_2_edge_cases_tests.sh</code> (also invoked by <code>run_all_tests.sh</code>). Includes shell-style tests for compile-time diagnostics, CLI/linker probes, REPL protocol checks, and server smoke paths that don’t fit the <code>.esk → run → check exit</code> shape.</li>
+<li><strong>Master suite EXIT=0</strong> end-to-end across 37 sub-suites and 528 self-reported tests: features, stdlib, list, memory, modules, types, typesystem, autodiff, ml, neural, json, system, complex, cpp_type, vm, parser, control_flow, logic, bignum, rational, parallel, signal, optimization, examples, xla, gpu, error_handling, macros, repl, web, tco, io, benchmark, migration, codegen, numeric, v1_2_edge_cases.</li>
+</ul>
+<h2 id="carry-forward-to-v13">Carry-forward to v1.3</h2>
+<ul>
+<li><strong>Native media stack</strong> — use ImageIO/CoreGraphics, system libpng/libjpeg/libwebp, and GDI+ on the three host platforms so the active image backend does not rely on vendored third-party media code.</li>
+<li><strong>AD <code>input2</code> plumbing for non-matmul tensor ops</strong> — the backward kernels for conv2d / batchnorm / layernorm / attention / multi-head-attention exist; the forward implementations need to be rewritten to multi-channel / per-feature shape so the Wengert tape can consume them. Matmul (the only AD-supported tensor op exercised by the suite today) is correctly wired.</li>
+<li><strong>TSan / MSan CI lanes</strong> — pending TSan/MSan-built libstdc++.</li>
+<li><strong>Spec-doc generator (<code>eshkol-doc</code>)</strong> — extract type signatures
+<ul>
+<li>docstrings from the indexed module graph.</li>
+</ul></li>
+<li><strong>True module-private internals</strong> — <code>(provide …)</code> is currently informational under both AOT and JIT (item Z); v1.3 reintroduces a proper rename pass while keeping cross-file calls to provided symbols working.</li>
+<li><strong>AD-1 follow-up</strong> — re-extract <code>codegenDerivativeMonolith</code> into the new code path; the v1.2 fix delegates from <code>derivative()</code> to the monolith as a stop-gap.</li>
+</ul>
+<hr />
+<h1 id="eshkol-v1113-accelerate--windows-arm64--release-workflow--vm-closure-fixes">Eshkol v1.1.13-accelerate — Windows ARM64 + Release Workflow + VM Closure Fixes</h1>
+<p><strong>Release Date</strong>: April 9, 2026</p>
+<p>Eshkol v1.1.13-accelerate adds native Windows ARM64 support, rewrites the release workflow into a 16-lane build matrix that produces lite/XLA/CUDA variants for every supported platform, corrects two critical bytecode-VM closure-handling gaps that had affected the browser REPL and gradient descent demos, hardens setjmp/longjmp on Windows for both x64 and ARM64, and overhauls the website for full mobile responsiveness.</p>
+<h2 id="whats-new-in-v1113-accelerate">What’s New in v1.1.13-accelerate</h2>
+<h3 id="windows-arm64-native-support">Windows ARM64 Native Support</h3>
+<ul>
+<li>Full build path for Windows ARM64 via VS 2022 + ClangCL + LLVM 21 aarch64 SDK</li>
+<li>CMake auto-detects <code>clang_rt.builtins-{x86_64|aarch64}.lib</code> based on <code>CMAKE_VS_PLATFORM_NAME</code></li>
+<li>Multi-arch DIA SDK lookup: scans both <code>Program Files</code> and <code>Program Files (x86)</code> for both <code>amd64</code> and <code>arm64</code></li>
+<li>REPL JIT links the architecture-appropriate LLVM target libraries (<code>LLVMAArch64*</code> on ARM64, <code>LLVMX86*</code> on x64)</li>
+<li>16 release artifacts per tag: 6 Windows (x64/arm64 × lite/xla/cuda), 6 Linux, 4 macOS</li>
+</ul>
+<h3 id="setjmplongjmp-cross-platform-hardening">setjmp/longjmp Cross-Platform Hardening</h3>
+<ul>
+<li>Windows ARM64: uses <code>Intrinsic::sponentry</code> as the hidden <code>_setjmpex</code> context (matches Clang lowering)</li>
+<li>Windows x64: switched from <code>Intrinsic::localaddress</code> to <code>Intrinsic::frameaddress(0)</code> for the hidden context — produces stable, correctly-aligned frames</li>
+<li>Removed all compile-time <code>#ifdef _WIN32</code> branches in favor of runtime <code>Triple::isOSWindows()</code> — proper cross-compilation</li>
+<li>Dynamic <code>jmp_buf</code> sizing via <code>eshkol_jmp_buf_size()</code> runtime helper (no more hard-coded 256-byte buffers)</li>
+</ul>
+<h3 id="runtime-symbol-renames">Runtime Symbol Renames</h3>
+<p>POSIX shim functions are now renamed with an <code>eshkol_</code> prefix to disambiguate from MSVC’s deprecated POSIX shims:</p>
+<p><code>fopen → eshkol_fopen</code>, <code>access → eshkol_access</code>, <code>remove → eshkol_remove</code>, <code>rename → eshkol_rename</code>, <code>mkdir → eshkol_mkdir</code>, <code>rmdir → eshkol_rmdir</code>, <code>chdir → eshkol_chdir</code>, <code>stat → eshkol_stat</code>, <code>opendir → eshkol_opendir</code></p>
+<p>Generated programs call <code>eshkol_runtime_init()</code> at start of <code>main()</code> (non-REPL mode).</p>
+<h3 id="codegen-error-handling">Codegen Error Handling</h3>
+<ul>
+<li>New <code>fatal_codegen_error_</code> flag — codegen now fails hard on undefined-function/undefined-variable/private-symbol errors instead of emitting <code>printf</code>/<code>exit</code> runtime stubs unreported</li>
+<li>New <code>declared_functions_by_ast</code> map keyed by AST node identity — fixes function resolution when multiple <code>define</code>s share a name within the same module</li>
+</ul>
+<h3 id="vm-closure-corrections-browser-repl--bytecode-vm">VM Closure Corrections (browser REPL + bytecode VM)</h3>
+<p>Two critical closure-handling gaps in the bytecode VM had disabled correct autodiff results in demos involving captured upvalues; both are now corrected:</p>
+<ul>
+<li><strong>Named-let nested closure PC offset</strong>: When a lambda is created inside a <code>(let loop ...)</code> body, the loop’s bytecode is inlined into the parent function with PC adjustments — but the inner lambda’s <code>OP_CLOSURE</code> constant (its <code>func_pc</code>) was <em>not</em> offset by the loop’s start position. The inner closure ended up jumping to a stale location with the wrong upvalue count, manifesting as “UPVALUE INDEX OUT OF BOUNDS” plus gradient always equal to 1 in named-let gradient descent.</li>
+<li><strong>Native 252 upvalue relay</strong>: When a lambda inside a function captures a variable via the parent’s upvalue (<code>is_local=false</code>), native 252 was reading <code>vm-&gt;stack[vm-&gt;fp + slot]</code> — treating the upvalue index as a stack-frame offset, reading whichever local happened to be at that slot. Fix: read from <code>vm-&gt;stack[vm-&gt;fp - 1]</code> (the parent closure per the calling convention), then index into <code>parent_cl-&gt;closure.upvalues[slot]</code>.</li>
+</ul>
+<p>Together these restore correct gradients for <strong>every</strong> autodiff demo on the website. The “Train a Neural Network” front-page card now converges to ~0.891 over 3 data points, and the named-let gradient descent in <code>/learn</code> chapter 5 converges to <code>y/x</code>.</p>
+<h3 id="ci--release-workflow-overhaul">CI / Release Workflow Overhaul</h3>
+<ul>
+<li>Release workflow rewritten as two matrices: <code>unix-release-matrix</code> (10 jobs) + <code>windows-release-matrix</code> (6 jobs)</li>
+<li>New <code>publish-release</code> job downloads all artifacts, generates <code>SHA256SUMS.txt</code>, and publishes the GitHub release</li>
+<li>Per-architecture LLVM SDK caching on Windows runners (cache key includes <code>${arch}</code> and SDK version)</li>
+<li>CI workflow updated: <code>windows-2022</code> → <code>windows-latest</code>, <code>max-parallel: 2</code> Windows throttling</li>
+<li>Removed Docker-based XLA/CUDA build paths in favor of native CMake builds</li>
+</ul>
+<h3 id="website--mobile-responsiveness">Website — Mobile Responsiveness</h3>
+<ul>
+<li>Hamburger nav menu collapses the 7 top-level nav links on screens ≤720px; opens as a full-width dropdown; auto-closes when a link is clicked</li>
+<li><code>html, body { overflow-x: hidden }</code> plus <code>min-width: 0</code> on flex/grid children — no more horizontal page scroll on any viewport (verified across 5 viewport sizes × 6 routes)</li>
+<li>Code blocks (<code>runnable-code</code> wrappers) now scroll horizontally <em>inside</em> the block instead of pushing the page wider</li>
+<li><code>.docs-layout</code> switched from <code>1fr</code> to <code>minmax(0, 1fr)</code> — fixes the docs page reporting 972px wide on a 375px viewport</li>
+<li><code>.comparison-table</code> becomes scrollable on ≤720px so the comparison table on <code>/downloads</code> doesn’t push the page</li>
+</ul>
+<h3 id="browser-repl-error-display">Browser REPL Error Display</h3>
+<ul>
+<li>REPL now captures stderr (compile warnings, parse errors) into <code>_vmStderr</code> and displays them as <code>error: undefined variable 'foo'</code> instead of re-prompting with no indication anything failed</li>
+<li>Suppresses the trailing <code>()</code> NIL fallback when a compile error fired</li>
+<li>Shows <code>error: could not parse expression</code> when nothing parses</li>
+<li>Same fix applied to runnable code blocks (Run ▶ buttons across the site)</li>
+</ul>
+<h3 id="test-results">Test Results</h3>
+<ul>
+<li>35/35 test suites, 100% pass rate on macOS ARM64, Linux x64, Linux ARM64, Windows x64, Windows ARM64</li>
+<li>32/32 runnable site examples verified end-to-end in headless Chromium across mobile/tablet/desktop viewports</li>
+<li>All 16 release-build lanes green on the v1.1.13-accelerate tag</li>
+</ul>
+<hr />
+<h1 id="eshkol-v1112-accelerate--toolchain-unification--platform-hardening">Eshkol v1.1.12-accelerate — Toolchain Unification + Platform Hardening</h1>
+<p><strong>Release Date</strong>: April 7, 2026</p>
+<p>Eshkol v1.1.12-accelerate unifies the toolchain on LLVM 21 across all platforms, adds a native Windows build path via Visual Studio 2022 + ClangCL, fixes ARM64 and Windows x64 ABI issues in the runtime, adds clean URL routing to the website, and expands CI/CD coverage.</p>
+<h2 id="whats-new-in-v1112-accelerate">What’s New in v1.1.12-accelerate</h2>
+<h3 id="llvm-21-toolchain-unification">LLVM 21 Toolchain Unification</h3>
+<ul>
+<li>Standardized entire build on LLVM 21 across Linux, macOS, and Windows</li>
+<li>New <code>cmake/LLVMToolchain.cmake</code>: authoritative LLVM version discovery and enforcement at configure time</li>
+<li>New <code>scripts/lib/llvm21-env.sh</code>: platform-aware LLVM 21 activation for all shell scripts</li>
+<li>Hard version check: configure fails with a clear error if LLVM major version is not exactly 21</li>
+<li>Removed misleading <code>LLVM 18+</code> compatibility branches from backend codegen</li>
+</ul>
+<h3 id="native-windows-build-visual-studio-2022">Native Windows Build (Visual Studio 2022)</h3>
+<ul>
+<li>Full native build via Visual Studio 2022 + ClangCL + LLVM 21 SDK</li>
+<li>Configures with <code>Visual Studio 17 2022</code> generator and <code>-T ClangCL</code></li>
+<li><code>region_escape_tagged_value_into</code> ABI fix: passes <code>eshkol_tagged_value_t</code> by pointer to satisfy Windows x64 calling convention for 16-byte aggregates</li>
+</ul>
+<h3 id="arm64-abi-fix">ARM64 ABI Fix</h3>
+<ul>
+<li>Fixed <code>call_thunk_closure</code>: ARM64 returns 16-byte structs in register pairs (x0:x1), not via a hidden return buffer</li>
+<li>Resolves dynamic-wind + call/cc thunk invocation on Apple Silicon and Linux ARM64</li>
+</ul>
+<h3 id="mutual-tco-fix">Mutual TCO Fix</h3>
+<ul>
+<li><code>llvm_codegen.cpp</code>: version-gated tail call kind — <code>TCK_MustTail</code> on LLVM &lt; 18, <code>TCK_Tail</code> on LLVM ≥ 18</li>
+<li>Fixes “LLVM ERROR: cannot use musttail” on Linux with LLVM 21</li>
+</ul>
+<h3 id="website--clean-url-routing">Website — Clean URL Routing</h3>
+<ul>
+<li>Navigation now uses <code>/downloads</code>, <code>/learn</code>, <code>/docs</code> etc. instead of <code>/#/downloads</code></li>
+<li>GitHub Pages 404-redirect SPA routing for direct URL access</li>
+<li>History API (<code>pushState</code>/<code>popstate</code>) replaces <code>hashchange</code></li>
+</ul>
+<h3 id="cicd-expansion">CI/CD Expansion</h3>
+<ul>
+<li>New GitLab CI matrix: Linux x64/arm64 × lite/XLA/CUDA + macOS × lite/XLA + Windows</li>
+<li>GitHub CI updated to LLVM 21 baseline across all runners</li>
+<li>Docker parity images (<code>docker/debian/</code>, <code>docker/ubuntu/</code>) updated to LLVM 21</li>
+</ul>
+<h3 id="test-results-1">Test Results</h3>
+<ul>
+<li>35/35 test suites, 438/438 tests, 100% pass rate (macOS ARM64, Linux x64)</li>
+</ul>
+<hr />
+<h1 id="eshkol-v1111-accelerate---performance-acceleration-release">Eshkol v1.1.11-accelerate - Performance Acceleration Release</h1>
+<p><strong>Release Date</strong>: March 27, 2026</p>
+<p>Eshkol v1.1-accelerate builds on the v1.0-foundation with comprehensive performance acceleration. Every v1.1 roadmap item is now complete: XLA backend (5/5), SIMD vectorization (4/4), concurrency (5/5), extended math (5/5), bignum/rational (6/6), consciousness engine (4/4), R7RS extensions (6/6), dual backend (7/7), and Windows platform (5/5) – totaling 47/47 items.</p>
+<h2 id="whats-new-in-v11-accelerate">What’s New in v1.1-accelerate</h2>
+<h3 id="web-platform">Web Platform</h3>
+<p>Eshkol compiles to WebAssembly and runs in the browser. The project website (<a href="https://eshkol.ai">eshkol.ai</a>) is itself written in Eshkol — 1,500+ lines compiled to a 502KB WASM binary.</p>
+<ul>
+<li><strong>Browser REPL</strong>: A 63-opcode bytecode interpreter compiled via Emscripten runs in the browser with 555+ built-in functions. Users can evaluate Eshkol expressions without installing anything.</li>
+<li><strong>Automatic Differentiation in Browser</strong>: Forward-mode AD via dual numbers works through the bytecode VM. Arithmetic opcodes detect dual number operands and dispatch to dual arithmetic (product rule, quotient rule, chain rule). <code>(derivative (lambda (x) (* x x)) 3.0)</code> returns <code>6</code> in the browser.</li>
+<li><strong>Interactive Examples</strong>: Every code example on the website has a Run button with inline output. Examples span AD, neural network training, ODE solving, knowledge base queries, and exact arithmetic.</li>
+<li><strong>59 DOM Bindings</strong>: Create elements, manipulate styles, handle events, draw on canvas, manage routing, access local storage — all from Eshkol compiled to WASM.</li>
+<li><strong>8-Chapter Interactive Textbook</strong>: Progressive tutorial from basics through AD, tensors, scientific computing, and the consciousness engine — every example runnable.</li>
+</ul>
+<h3 id="bytecode-vm--production-complete">Bytecode VM — Production Complete</h3>
+<p>The bytecode VM is a fully production-grade execution engine:</p>
+<ul>
+<li><strong>555+ built-in functions</strong> including character operations, bitwise logic, type predicates, string processing, list utilities, math extensions, complex numbers, and port I/O</li>
+<li><strong>Automatic differentiation in the VM</strong>: Forward-mode AD via dual number propagation through all arithmetic and transcendental operations</li>
+<li><strong>R7RS control flow</strong>: <code>call/cc</code> with continuation capture/restore, <code>guard</code>/<code>raise</code>, <code>dynamic-wind</code>, <code>values</code>/<code>call-with-values</code></li>
+<li><strong>Exact arithmetic</strong>: Rational literals (<code>1/3</code>), bignums, complex numbers, <code>+nan.0</code>/<code>+inf.0</code>/<code>-inf.0</code></li>
+<li><strong>Consciousness engine</strong>: Knowledge base queries with pattern matching, factor graphs, global workspace</li>
+<li><strong>Mutual recursion</strong>: Top-level function defines can reference each other</li>
+<li><strong>System integration</strong>: <code>directory-entries</code>, <code>command-line</code>, thread pool</li>
+<li><strong>176/176 tests passing</strong></li>
+</ul>
+<h3 id="xla-backend-dual-mode-architecture">XLA Backend (Dual-Mode Architecture)</h3>
+<p>Tensor operations now dispatch through a multi-tier acceleration hierarchy: - <strong>StableHLO/MLIR path</strong>: When MLIR is available, emits StableHLO ops for HW-optimized execution - <strong>LLVM-direct path</strong>: Default mode with hand-tuned LLVM IR generation - <strong>Threshold dispatch</strong>: XLA (&gt;=100K elements) -&gt; cBLAS (&gt;=64) -&gt; SIMD (&gt;=64) -&gt; scalar - 6 core operations fully wired: matmul, elementwise, reduce, transpose, broadcast, slice</p>
+<h3 id="simd-vectorization">SIMD Vectorization</h3>
+<p>Tensor loops are now explicitly vectorized with LLVM loop metadata and 64-byte aligned allocation: - CPU feature detection for SSE2, SSE4.1, AVX, AVX2, AVX-512, and NEON - SIMD micro-kernels for all tensor arithmetic and activation functions - Loop vectorization metadata attached to all tensor operation back-edges - Platform-specific tuning via cache-blocked matrix multiplication</p>
+<h3 id="signal-processing-library">Signal Processing Library</h3>
+<p>New <code>signal.filters</code> module with 13 DSP functions: - <strong>Window functions</strong>: Hamming, Hann, Blackman, Kaiser (with inline Bessel I0) - <strong>Convolution</strong>: Direct O(N*M) and FFT-based O(N log N) - <strong>Filters</strong>: FIR filter application, IIR Direct Form I - <strong>Butterworth design</strong>: Lowpass, highpass, bandpass via bilinear transform - <strong>Analysis</strong>: Frequency response (magnitude + phase)</p>
+<h3 id="optimization-algorithms">Optimization Algorithms</h3>
+<p>New <code>ml.optimization</code> module with 4 gradient-based optimizers: - <strong>Gradient descent</strong> with configurable learning rate and convergence tolerance - <strong>Adam</strong> (Adaptive Moment Estimation) with bias correction - <strong>L-BFGS</strong> with two-loop recursion and backtracking Armijo line search - <strong>Conjugate gradient</strong> (Fletcher-Reeves) with automatic restarts</p>
+<p>All optimizers use the builtin <code>gradient</code> function (forward-mode AD with dual numbers).</p>
+<h3 id="parallelism--concurrency">Parallelism &amp; Concurrency</h3>
+<ul>
+<li><code>parallel-map</code>, <code>parallel-fold</code>, <code>parallel-filter</code>, <code>parallel-for-each</code></li>
+<li><code>future</code>/<code>force</code> for asynchronous computation</li>
+<li>Work-stealing thread pool with hardware-aware sizing</li>
+<li>Thread-safe arena memory management</li>
+</ul>
+<h3 id="arbitrary-precision-arithmetic">Arbitrary-Precision Arithmetic</h3>
+<ul>
+<li>Bignum integers with full R7RS compliance (35 codegen gaps fixed)</li>
+<li>Rational numbers (exact fractions)</li>
+<li>Automatic overflow promotion (int64 -&gt; bignum) and demotion</li>
+<li>All arithmetic, comparison, and I/O operations for both types</li>
+</ul>
+<h3 id="consciousness-engine">Consciousness Engine</h3>
+<p>Novel AI primitives integrated at the compiler level: - Logic programming (unification, substitutions, knowledge bases) - Active inference (factor graphs, belief propagation, free energy minimization) - Global workspace theory (modules, softmax competition, content broadcasting) - 22 builtin operations spanning logic, inference, and workspace</p>
+<h3 id="dual-backend-architecture">Dual Backend Architecture</h3>
+<p>Eshkol now ships with a complete bytecode VM alongside the LLVM native compiler: - <strong>Bytecode VM</strong>: 64 opcodes, 250+ native calls, ESKB binary format, invoked via <code>-B</code> flag - <strong>Weight Matrix Transformer</strong>: 126/126 inline programs and 123/123 traced programs passing, 3-way verified, 12.22M analytical parameters - <strong>qLLM Bridge</strong>: Eshkol-to-qLLM tensor conversion for semiclassical inference</p>
+<h3 id="windows-platform-support">Windows Platform Support</h3>
+<p>Native Windows builds are now supported: - <strong>MSYS2/MinGW64 native build</strong> (PR #9 by mattneel) - UTF-8-safe REPL with proper console code page handling - Runtime DLL bundling for standalone distribution - Path normalization for Windows-style backslash paths</p>
+<h3 id="r7rs-compliance">R7RS Compliance</h3>
+<ul>
+<li><code>call/cc</code> and <code>dynamic-wind</code></li>
+<li><code>guard</code>/<code>raise</code> exception handling</li>
+<li>Bytevectors, <code>let-syntax</code>/<code>syntax-rules</code>, symbol operations</li>
+<li>Tail call optimization validation</li>
+<li><code>(load "path")</code> R7RS file loading support</li>
+</ul>
+<h3 id="gpu-backends">GPU Backends</h3>
+<ul>
+<li>Metal backend for Apple Silicon (SF64 software float64 emulation)</li>
+<li>CUDA backend with cuBLAS integration</li>
+<li>5 GPU operations: elementwise, matmul, reduce, softmax, transpose</li>
+</ul>
+<h2 id="test-results-2">Test Results</h2>
+<p>35 test suites passing with 438 test files covering all subsystems.</p>
+<hr />
+<h1 id="eshkol-v100-foundation---production-release">Eshkol v1.0.0-foundation - Production Release</h1>
+<p><strong>Release Date</strong>: December 12, 2025</p>
+<p>v1.0-foundation marks the first production release of Eshkol — a programming language that integrates compiler-level automatic differentiation, deterministic arena memory management, and homoiconic native-code execution as first-class language features rather than library overlays.</p>
+<h2 id="what-is-eshkol">What is Eshkol?</h2>
+<p>Eshkol is a production-grade Scheme dialect built on LLVM infrastructure, designed for gradient-based optimization, neural network development, and scientific computing. It combines functional programming elegance with native performance while eliminating garbage collection entirely.</p>
+<h2 id="v10-foundation-achievements">v1.0-foundation Achievements</h2>
+<h3 id="complete-production-compiler">Complete Production Compiler</h3>
+<p>Eshkol v1.0-foundation delivers a fully functional compiler with:</p>
+<ul>
+<li><strong>Modular LLVM backend</strong> with 21 specialized code generation modules</li>
+<li><strong>HoTT-inspired gradual type system</strong> with bidirectional type checking</li>
+<li><strong>Comprehensive parser</strong> supporting S-expressions, type annotations, pattern matching, and macros</li>
+<li><strong>Ownership and escape analysis</strong> for automatic allocation strategy optimization</li>
+<li><strong>Module system</strong> with dependency resolution and circular dependency detection</li>
+<li><strong>Interactive REPL</strong> with LLVM ORC JIT compilation</li>
+<li><strong>170+ test files</strong> providing comprehensive verification</li>
+</ul>
+<h3 id="compiler-integrated-automatic-differentiation">Compiler-Integrated Automatic Differentiation</h3>
+<p>First-class AD system operating at compiler, runtime, and LLVM IR levels:</p>
+<ul>
+<li><strong>Forward-mode AD</strong> using dual number arithmetic</li>
+<li><strong>Reverse-mode AD</strong> with computational graph and tape stack</li>
+<li><strong>Symbolic AD</strong> through AST transformation</li>
+<li><strong>Nested gradients</strong> up to 32 levels deep</li>
+<li><strong>8 vector calculus operators</strong>: derivative, gradient, jacobian, hessian, divergence, curl, laplacian, directional-derivative</li>
+<li><strong>Polymorphic implementation</strong> supporting int64, double, dual numbers, AD nodes, and tensors</li>
+</ul>
+<h3 id="deterministic-memory-management-oalr">Deterministic Memory Management (OALR)</h3>
+<p>Zero garbage collection with ownership-aware lexical regions:</p>
+<ul>
+<li><strong>Arena allocation</strong> with O(1) bump-pointer allocation</li>
+<li><strong>Escape analysis</strong> automatically determining stack/region/shared allocation</li>
+<li><strong>with-region syntax</strong> for lexical memory scopes<br />
+</li>
+<li><strong>Ownership tracking</strong> preventing use-after-move at compile time</li>
+<li><strong>Fully deterministic</strong> - zero GC pauses for real-time applications</li>
+</ul>
+<h3 id="comprehensive-language-features">Comprehensive Language Features</h3>
+<p><strong>300+ language elements including:</strong> - 39 special forms (define, lambda, let/let*/letrec, if/cond/case/match, etc.) - 60+ list operations with full Scheme compatibility - 30+ string utilities - 25+ tensor operations - 10 hash table operations - Complete I/O system with ports and exception handling - Hygienic macros (syntax-rules) - Pattern matching with 7 pattern types - Multiple return values (values, call-with-values, let-values)</p>
+<h3 id="rich-standard-library">Rich Standard Library</h3>
+<p>Modular library organization with pure Eshkol implementations:</p>
+<ul>
+<li><strong>stdlib.esk</strong> - Central module re-exporting core functionality</li>
+<li><strong>math.esk</strong> - Linear algebra (det, inv, solve), numerical integration, root finding, statistics</li>
+<li><strong>core.functional</strong> - compose, curry, flip combinators</li>
+<li><strong>core.list</strong> - higher-order functions, transformations, queries, sorting</li>
+<li><strong>core.strings</strong> - extended string manipulation</li>
+<li><strong>core.json</strong> - JSON parsing and serialization</li>
+<li><strong>core.data</strong> - CSV processing, Base64 encoding</li>
+</ul>
+<h3 id="production-ready-infrastructure">Production-Ready Infrastructure</h3>
+<ul>
+<li><strong>Cross-platform</strong>: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (MSYS2/MinGW64)</li>
+<li><strong>Docker containers</strong>: Debian and Ubuntu images</li>
+<li><strong>CMake build system</strong>: Modern, maintainable build infrastructure</li>
+<li><strong>Comprehensive documentation</strong>: Language specification, user reference, API docs</li>
+<li><strong>Package generation</strong>: Homebrew formula, Debian packages</li>
+</ul>
+<h2 id="installation">Installation</h2>
+<h3 id="quick-start">Quick Start</h3>
+<pre class="bash"><code>git clone https://github.com/tsotchke/eshkol.git
+cd eshkol
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# Run a program
+build/eshkol-run tests/neural/nn_working.esk
+
+# Start interactive REPL
+build/eshkol-repl</code></pre>
+<h3 id="system-requirements">System Requirements</h3>
+<ul>
+<li><strong>LLVM</strong> 10.0+ (14+ recommended)</li>
+<li><strong>CMake</strong> 3.14+</li>
+<li><strong>C17/C++20 compiler</strong> (GCC 8+, Clang 6+)</li>
+<li><strong>readline</strong> (optional, for REPL enhancements)</li>
+</ul>
+<h2 id="example-neural-network-training">Example: Neural Network Training</h2>
+<pre class="scheme"><code>(require stdlib)
+
+;; Sigmoid activation
+(define (sigmoid x)
+  (/ 1.0 (+ 1.0 (exp (- 0.0 x)))))
+
+;; Mean squared error loss
+(define (mse-loss pred target)
+  (let ((diff (- pred target)))
+    (* 0.5 (* diff diff))))
+
+;; Forward pass
+(define (forward weights bias input)
+  (sigmoid (+ (tensor-dot weights input) bias)))
+
+;; Compute loss gradient for backpropagation
+(define (loss-gradient weights bias input target)
+  (gradient 
+    (lambda (params)
+      (mse-loss 
+        (forward (vref params 0) (vref params 1) input)
+        target))
+    (vector weights bias)))
+
+;; Training works - automatic differentiation handles the calculus</code></pre>
+<h2 id="what-makes-v10-foundation-special">What Makes v1.0-foundation Special</h2>
+<h3 id="1-compiler-integrated-ad---not-a-library">1. Compiler-Integrated AD - Not a Library</h3>
+<p>Unlike JAX, PyTorch, or TensorFlow, Eshkol’s automatic differentiation is built into the <strong>compiler itself</strong>, operating on AST, runtime values, and LLVM IR simultaneously. This enables differentiation of <strong>any</strong> Eshkol function without framework constraints or graph tracing overhead.</p>
+<h3 id="2-homoiconic-native-code">2. Homoiconic Native Code</h3>
+<p>Lambdas compile to LLVM-native code but retain their source S-expressions in closure structures, enabling both <strong>runtime introspection</strong> and <strong>native performance</strong> - a combination no other compiled language achieves.</p>
+<h3 id="3-zero-garbage-collection">3. Zero Garbage Collection</h3>
+<p>Arena-based memory management provides <strong>fully deterministic</strong> performance without GC pauses, making Eshkol suitable for real-time systems, trading algorithms, and control systems where predictable timing is critical.</p>
+<h3 id="4-production-quality-implementation">4. Production-Quality Implementation</h3>
+<p>This isn’t a research prototype - it’s a complete compiler with comprehensive testing, thorough documentation, and a clear architectural foundation for future expansion.</p>
+<h2 id="documentation">Documentation</h2>
+<ul>
+<li><strong><a href="/docs#page=complete_language_specification" data-url="/content/complete_language_specification.html">Language Specification</a></strong> - Complete technical specification</li>
+<li><strong><a href="/docs#page=reference_language" data-url="/content/reference_language.html">Language Reference</a></strong> - User-focused reference with examples</li>
+<li><strong><a href="https://github.com/tsotchke/eshkol/tree/master/docs/vision" target="_blank" rel="noopener noreferrer">Vision Documents</a></strong> - Purpose, competitive analysis, roadmap</li>
+<li><strong><a href="/docs#page=eshkol_v1_architecture" data-url="/content/eshkol_v1_architecture.html">Architecture Guide</a></strong> - Technical architecture overview</li>
+<li><strong><a href="/docs#page=api_reference" data-url="/content/api_reference.html">API Reference</a></strong> - Comprehensive function documentation</li>
+<li><strong><a href="/docs#page=quickstart" data-url="/content/quickstart.html">Quickstart</a></strong> - Hands-on tutorial</li>
+</ul>
+<h2 id="known-limitations">Known Limitations</h2>
+<p>v1.1-accelerate builds on v1.0-foundation. Remaining planned features:</p>
+<ul>
+<li><strong>Distributed computing</strong> - Planned v1.2 (Q2 2026)</li>
+</ul>
+<p>See <a href="/docs#page=roadmap" data-url="/content/roadmap.html">ROADMAP.md</a> and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/vision/FUTURE_ROADMAP.md" target="_blank" rel="noopener noreferrer">docs/vision/FUTURE_ROADMAP.md</a> for detailed development plans.</p>
+<h2 id="next-steps">Next Steps</h2>
+<h3 id="for-users">For Users</h3>
+<ol type="1">
+<li><strong>Explore the REPL</strong>: <code>build/eshkol-repl</code></li>
+<li><strong>Try the examples</strong>: <code>build/eshkol-run tests/autodiff/*.esk</code></li>
+<li><strong>Read the docs</strong>: Start with <a href="/docs#page=eshkol_language_guide" data-url="/content/eshkol_language_guide.html">docs/ESHKOL_LANGUAGE_GUIDE.md</a></li>
+<li><strong>Experiment with AD</strong>: The automatic differentiation system is production-ready</li>
+</ol>
+<h3 id="for-contributors">For Contributors</h3>
+<ol type="1">
+<li><strong>Review architecture</strong>: <a href="/docs#page=eshkol_v1_architecture" data-url="/content/eshkol_v1_architecture.html">docs/ESHKOL_V1_ARCHITECTURE.md</a></li>
+<li><strong>Check the roadmap</strong>: <a href="/docs#page=roadmap" data-url="/content/roadmap.html">ROADMAP.md</a> for v1.1/v1.2 plans</li>
+<li><strong>See contribution guidelines</strong>: <a href="/docs#page=contributing" data-url="/content/contributing.html">CONTRIBUTING.md</a></li>
+<li><strong>Join development</strong>: See open issues on GitHub for contribution areas</li>
+</ol>
+<h3 id="for-researchers">For Researchers</h3>
+<ol type="1">
+<li><strong>Study the AD implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/docs/vision/ADDENDUM_TECHNICAL_WHITE_PAPER_V1.md" target="_blank" rel="noopener noreferrer">docs/vision/ADDENDUM_TECHNICAL_WHITE_PAPER_V1.md</a></li>
+<li><strong>Examine memory architecture</strong>: <a href="/docs#page=breakdown_memory_management" data-url="/content/breakdown_memory_management.html">docs/breakdown/MEMORY_MANAGEMENT.md</a></li>
+<li><strong>Analyze type system</strong>: <a href="/docs#page=breakdown_type_system" data-url="/content/breakdown_type_system.html">docs/breakdown/TYPE_SYSTEM.md</a></li>
+<li><strong>Explore homoiconic closures</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/docs/vision/AI_FOCUS.md" target="_blank" rel="noopener noreferrer">docs/vision/AI_FOCUS.md</a></li>
+</ol>
+<h2 id="acknowledgments">Acknowledgments</h2>
+<p>Eshkol v1.0-foundation represents years of research and implementation, synthesizing ideas from: - <strong>Scheme</strong> for elegant functional programming - <strong>LLVM</strong> for world-class code generation - <strong>Homotopy Type Theory</strong> for rigorous type foundations - <strong>Region-based memory</strong> research for deterministic allocation</p>
+<p>We thank early testers and contributors who provided valuable feedback during development.</p>
+<h2 id="license">License</h2>
+<p>Eshkol is released under the <strong>MIT License</strong> - see <a href="https://github.com/tsotchke/eshkol/blob/master/LICENSE" target="_blank" rel="noopener noreferrer">LICENSE</a> for details.</p>
+<h2 id="contact">Contact</h2>
+<ul>
+<li><strong>GitHub Repository</strong>: https://github.com/tsotchke/eshkol</li>
+<li><strong>Issues</strong>: Reports and feature requests</li>
+<li><strong>Discussions</strong>: Technical questions and community engagement</li>
+</ul>
+<hr />
+<p><strong>Eshkol v1.0-foundation</strong> establishes a new standard for programming languages combining automatic differentiation, deterministic memory, and homoiconic native code. This is not a preview - this is only the beginning. Eshkol has a production-grade compiler ready for gradient-based computing, neural network development, and scientific applications where mathematical correctness and performance are non-negotiable.</p>
+<p><em>Where mathematical elegance meets uncompromising performance.</em></p>

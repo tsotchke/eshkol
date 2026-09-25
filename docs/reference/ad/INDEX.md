@@ -1,7 +1,7 @@
 # Automatic Differentiation — Reference
 
-Complete, machine-verified reference for Eshkol's automatic-differentiation
-operators (v1.3.4-evolve). Every signature, example, and output on these pages
+Reference for Eshkol's automatic-differentiation
+operators. The signatures, examples, and outputs on these pages
 was produced by running the current compiler; open bugs are documented against
 their ledger id, never hidden.
 
@@ -14,9 +14,9 @@ pass, numeric-type boundary) see the breakdown:
 | Page | Contents |
 |------|----------|
 | [operators.md](operators.md) | Every operator — `derivative`, `gradient`, `jacobian`, `hessian`, `laplacian`, `directional-derivative`, `divergence`, `curl`, `diff` — with signature, accepted point types, binding forms, capture rules, and composition/nesting. |
-| [architecture.md](architecture.md) | Forward 4-component Taylor jet, reverse tape, the `__ad_pert_level` runtime perturbation counter, mixed reverse-over-forward mode (v1.3), numeric boundary, measured performance. |
+| [architecture.md](architecture.md) | Forward Taylor jet, reverse tape, recursive Taylor levels, the runtime perturbation counter, mixed reverse-over-forward mode, numeric boundary, measured performance. |
 | [tape.md](tape.md) | Reverse-mode tape lifetime, native mark/release reclamation, and the explicit low-level `ad-*` tape API. |
-| [support-matrix.md](support-matrix.md) | The AD-oracle support matrix (235 probes / 490 checks), the PASS cells, the five cells that were open through v1.3.3 and are now closed (ESH-0072/0078/0095/0096/0097), and how to run `scripts/run_ad_oracle.sh`. |
+| [support-matrix.md](support-matrix.md) | The AD-oracle support matrix (235 probes / 490 checks), the PASS cells, [nesting](support-matrix.md#nesting), and how to run `scripts/run_ad_oracle.sh`. |
 
 ## At a glance
 
@@ -35,20 +35,35 @@ pass, numeric-type boundary) see the breakdown:
 ## Status summary
 
 - Oracle gate **PASS** — 60 PASS / 0 XKNOWN / 0 FAIL/CRASH/HANG (JIT + AOT).
-- **New in v1.3:** mixed reverse-over-forward AD (outer vector `gradient` over
+- **Mixed reverse-over-forward AD:** outer vector `gradient` over
   inner `derivative`, ESH-0093 / #113) — 15/15 in the mixed-mode test.
-- **Closed since v1.3.3:** local-scalar/param captures under reverse mode
+- **Supported:** local-scalar/param captures under reverse mode
   (ESH-0072/0097), second-order operators on `tensor`/`#(…)` points
   (ESH-0095), vector-param gradient-of-gradient (ESH-0096), named
   inner-function gradient (ESH-0078). No cell is XKNOWN on this build. See
   [support-matrix.md](support-matrix.md).
 - **Exact at an exact point:** `derivative`, `gradient` and `hessian` return an
   exact integer or rational when the point is exact and the body is pure tower
-  arithmetic — `(derivative (lambda (x) (* x x)) 1/3)` → `2/3`.
+  arithmetic — `(derivative (lambda (x) (* x x)) 1/3)` → `2/3`. Exactness is
+  decided by the carrier's **runtime** value, not by the shape of the source:
+  the same arithmetic stays exact when the constant comes from a top-level
+  `define`, when the body is a several-deep composed call, and when the point
+  argument is an expression such as `(car ts)` whose value happens to be exact.
+- **Passes nest at any depth and order.** A pass opened inside another live
+  pass runs as a level whose coefficients are numbers of the enclosing levels
+  (ADR-0027), through the evaluation point or a captured variable, exact at an
+  exact point. The table, with verified output for each row, is in
+  [support-matrix.md](support-matrix.md#nesting).
 
 ## See also
 
-- [../../guide/AUTOMATIC_DIFFERENTIATION.md](../../guide/AUTOMATIC_DIFFERENTIATION.md) — the example-driven AD user guide (v1.3 Taylor-tower matrix: arbitrary order, exact, validated, tensor, sparse, checkpointed, control flow, tower numerics)
+- [../stdlib/certified-enclosures.md](../stdlib/certified-enclosures.md) —
+  directed rounding (`fl-next-up` / `fl-next-down`), outward-rounded interval
+  arithmetic and rigorous Taylor models. Where AD answers "what is the
+  derivative", these answer "what interval provably contains it"; `tm-bound`
+  and `tm-prove-bound` turn a Taylor model into a certified enclosure.
+
+- [../../guide/AUTOMATIC_DIFFERENTIATION.md](../../guide/AUTOMATIC_DIFFERENTIATION.md) — the example-driven AD user guide (arbitrary order, exact, validated, tensor, sparse, checkpointed, control flow, tower numerics)
 - [../stdlib/ad_tape.md](../stdlib/ad_tape.md) — the pure-Scheme `core.ad.tape` module (custom ops with hand-written backward closures, vector-valued nodes, `with-tape`), a different system from the `ad-*` builtins in [tape.md](tape.md)
 - [../tensors/INDEX.md](../tensors/INDEX.md) — tensors, ML ops, and the modules AD flows through
 - [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) — AD internals breakdown

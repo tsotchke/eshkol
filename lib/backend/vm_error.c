@@ -19,9 +19,18 @@
 /* ── Error Object ── */
 
 typedef struct {
+    int type;
+    union { int64_t i; double f; int b; int32_t ptr; } as;
+} VmErrorValueMirror;
+
+typedef struct {
     char message[256];
     void* irritants;   /* cons list of irritant values (or NULL) */
     char type[64];     /* error type symbol (e.g., "read-error") */
+    /* ABI-compatible copy of a VM Value, kept here because vm_core.c defines
+     * Value after this unity component. */
+    VmErrorValueMirror value_irritants;
+    int has_value_irritants;
 } VmError;
 
 /* Simple cons cell for irritant list (arena-allocated) */
@@ -62,6 +71,8 @@ VmError* vm_error_make(VmRegionStack* rs, const char* type, const char* message,
                        void** irritants, int n_irritants) {
     VmError* e = (VmError*)vm_alloc_object(rs, VM_SUBTYPE_ERROR, sizeof(VmError));
     if (!e) return NULL;
+    memset(&e->value_irritants, 0, sizeof(e->value_irritants));
+    e->has_value_irritants = 0;
 
     if (message) {
         size_t mlen = strlen(message);
@@ -104,6 +115,16 @@ const char* vm_error_message(const VmError* e) {
 /** @brief Native call 713: `(error-object-irritants e)`. */
 void* vm_error_irritants(const VmError* e) {
     return e ? e->irritants : NULL;
+}
+
+void vm_error_set_value_irritants(VmError* e, const void* value) {
+    if (!e || !value) return;
+    memcpy(&e->value_irritants, value, sizeof(e->value_irritants));
+    e->has_value_irritants = 1;
+}
+
+const void* vm_error_value_irritants(const VmError* e) {
+    return (e && e->has_value_irritants) ? &e->value_irritants : NULL;
 }
 
 /** @brief Native call 714: `(error-object-type e)`. */

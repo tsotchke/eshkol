@@ -1,7 +1,8 @@
 # Automatic Differentiation — Support Matrix
 
 This is the authoritative, machine-verified statement of what Eshkol's AD
-system does and does not do in v1.3.4. It mirrors the **AD composition oracle**
+system does and does not do in v1.3.5-evolve. It mirrors the **AD composition
+oracle**
 ([`tests/ad_oracle/`](../../../tests/ad_oracle/)), which enumerates the whole AD
 surface as a matrix and checks **every cell against in-language central finite
 differences** — ground truth with no hand computation.
@@ -101,6 +102,62 @@ numeric gradients to agree within tolerance, across square and non-square
 shapes, either operand, the PEP-465 1-D contraction, `tensor-sum` and
 `tensor-mean`, nested elementwise and dense→dense chains, transposes, batched
 matmul, and max subgradients — while the 6×6 tape has exactly four nodes.
+
+---
+
+## Nesting
+
+Differentiation passes nest at any depth and any order. A pass opened inside
+another live pass runs as a **level**: a truncated Taylor series in its own
+perturbation whose coefficients are numbers of the enclosing levels, so every
+enclosing perturbation is kept and two perturbations meet only when they belong
+to the same pass ([ADR-0027](../../design/adr/0027-recursive-taylor-level-carrier.md)).
+
+| Shape | Result |
+|---|---|
+| Any depth of first-order passes (`derivative` inside `derivative` inside `derivative`, …) | Exact |
+| Passes of any order at any depth, through the evaluation point or a captured variable | Exact |
+| Exact evaluation points | Exact results, by the numeric tower's contagion |
+| Complex evaluation points (holomorphic derivatives) | Exact, nested with `derivative-n` and `taylor` too |
+| `gradient`, `hessian` and `jacobian` inside a live pass, and any depth of `derivative` | Exact (each is a level of the enclosing passes; a nested `jacobian` is a tensor of tagged numbers) |
+
+Verified on this build:
+
+```scheme
+;; depth-3, all first order: d/dx d/dy d/dz (x*y*z) = 1
+(display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x y z)) 1.0)) 1.0)) 1.0)) (newline)
+;; depth-3, all first order: d/dx d/dy d/dz (x^2 y^2 z^2) at (2,3,4) = 2x*2y*2z
+(display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x x y y z z)) 4.0)) 3.0)) 2.0)) (newline)
+;; one order-2 pass under one first-order pass: d/da [d2/db2 (a^2 b^3)] at b=1/2, a=1/3
+(display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)
+;; both passes of order 2: d2/da2 d2/db2 (a^3 b^3) at a=2, b=3 = 6a * 6b
+(display (derivative-n (lambda (a) (derivative-n (lambda (b) (* a a a b b b)) 3.0 2)) 2.0 2)) (newline)
+;; two enclosing levels over an order-2 pass: d/da d/db d2/dc2 (a b c^2) = 2
+(display (derivative (lambda (a)
+           (derivative (lambda (b)
+             (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)
+;; a nested pass through the evaluation point: g(t) = 12 t (1+t)^2
+(define (h r) (* r r r r))
+(display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)
+```
+```
+1
+192
+2
+216
+2
+(0 12 24)
+```
+
+The acceptance matrices are
+[`tests/ad/nested_towers_matrix_test.esk`](../../../tests/ad/nested_towers_matrix_test.esk)
+(every operator and order pairing at depth 2, the depth-3 order sweep, nesting
+through the point, exact seeds, and the perturbation-confusion controls) and
+[`tests/ad/nested_operator_matrix_test.esk`](../../../tests/ad/nested_operator_matrix_test.esk)
+(the captured-variable matrix) and
+[`tests/ad/nested_operator_levels_test.esk`](../../../tests/ad/nested_operator_levels_test.esk)
+(`gradient`, `hessian`, `jacobian` and deep `derivative` inside live passes),
+on the JIT and AOT lanes.
 
 ---
 

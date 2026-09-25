@@ -1,0 +1,275 @@
+<h1 id="troubleshooting">Troubleshooting</h1>
+<p>Build and run problems the repository already knows the answer to. Each entry is <strong>symptom</strong> (the message as the tool prints it), <strong>cause</strong>, <strong>fix</strong>.</p>
+<p>For language-level limits see <a href="/docs#page=known_issues" data-url="/content/known_issues.html">KNOWN_ISSUES.md</a>; for per-platform build detail see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/BUILD_NOTES.md" target="_blank" rel="noopener noreferrer">platform/BUILD_NOTES.md</a>; for every variable named here see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/environment-variables.md" target="_blank" rel="noopener noreferrer">reference/runtime/environment-variables.md</a>.</p>
+<p>Contents: <a href="/docs#page=troubleshooting&amp;llvm-version-discovery" data-url="/content/troubleshooting.html">LLVM</a> · <a href="/docs#page=troubleshooting&amp;host-compiler" data-url="/content/troubleshooting.html">Host compiler</a> · <a href="/docs#page=troubleshooting&amp;standard-library-and-module-discovery" data-url="/content/troubleshooting.html">Standard library and modules</a> · <a href="/docs#page=troubleshooting&amp;stale-jit-and-module-caches" data-url="/content/troubleshooting.html">Caches</a> · <a href="/docs#page=troubleshooting&amp;stack-size" data-url="/content/troubleshooting.html">Stack</a> · <a href="/docs#page=troubleshooting&amp;native-links" data-url="/content/troubleshooting.html">Links</a> · <a href="/docs#page=troubleshooting&amp;python-bindings" data-url="/content/troubleshooting.html">Python bindings</a> · <a href="/docs#page=troubleshooting&amp;windows" data-url="/content/troubleshooting.html">Windows</a> · <a href="/docs#page=troubleshooting&amp;webassembly" data-url="/content/troubleshooting.html">WebAssembly</a> · <a href="/docs#page=troubleshooting&amp;type-warnings-after-upgrading" data-url="/content/troubleshooting.html">Type warnings</a> · <a href="/docs#page=troubleshooting&amp;release-and-gate-failures-met-locally" data-url="/content/troubleshooting.html">Gates</a></p>
+<h2 id="llvm-version-discovery">LLVM version discovery</h2>
+<p>The build pins <strong>one</strong> LLVM major and aborts on any other. The default pin is LLVM 21, which is what the release packages are built with. The compiler source builds against LLVM 18 through 24.</p>
+<h3 id="llvm-21-llvm-config-not-found"><code>LLVM 21 llvm-config not found</code></h3>
+<p><strong>Symptom</strong></p>
+<pre><code>LLVM 21 llvm-config not found. Install LLVM 21 and set LLVM_CONFIG_EXECUTABLE.</code></pre>
+<p><strong>Cause.</strong> <code>cmake/LLVMToolchain.cmake</code> looks for <code>llvm-config-21</code> and then <code>llvm-config</code>, first in the platform’s conventional prefixes (<code>/opt/homebrew/opt/llvm@21/bin</code> and <code>/usr/local/opt/llvm@21/bin</code> on macOS, <code>/usr/lib/llvm-21/bin</code> and <code>/usr/local/lib/llvm-21/bin</code> on Linux) and then on <code>PATH</code>. None was found.</p>
+<p><strong>Fix.</strong> Install LLVM 21, or point the build at the one you have:</p>
+<pre class="sh"><code>cmake -B build -DCMAKE_BUILD_TYPE=Release \
+  -DLLVM_CONFIG_EXECUTABLE=&quot;$(brew --prefix llvm@21)/bin/llvm-config&quot;   # macOS
+cmake -B build -DCMAKE_BUILD_TYPE=Release \
+  -DLLVM_CONFIG_EXECUTABLE=/usr/lib/llvm-21/bin/llvm-config             # Linux</code></pre>
+<h3 id="expected-llvm-21-got-"><code>Expected LLVM 21, got ...</code></h3>
+<p><strong>Symptom</strong></p>
+<pre><code>Expected LLVM 21, got 18.1.8 from /usr/bin/llvm-config</code></pre>
+<p><strong>Cause.</strong> An <code>llvm-config</code> was found, but its major version is not the pinned one. The check exists so a mixed toolchain cannot be assembled by accident.</p>
+<p><strong>Fix.</strong> Either select the LLVM 21 <code>llvm-config</code> as above, or build against the version you have by changing the pin. Any major from 18 through 24 is accepted by the source:</p>
+<pre class="sh"><code>cmake -B build -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=18</code></pre>
+<p>Reconfigure in a fresh build directory when changing the pin, because the resolved <code>LLVM_CONFIG_EXECUTABLE</code> is cached.</p>
+<h3 id="windows-llvm-21-cmake-package-not-found">Windows: <code>LLVM 21 CMake package not found</code></h3>
+<p>See <a href="/docs#page=troubleshooting&amp;windows" data-url="/content/troubleshooting.html">Windows</a>.</p>
+<h2 id="host-compiler">Host compiler</h2>
+<blockquote>
+<p>Eshkol v1.3.5-evolve is built and verified with <strong>GCC 13</strong> and with <strong>Clang/LLVM 21</strong>. Building the compiler itself with <strong>GCC 15 is not supported in this release</strong>. (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/BUILD_NOTES.md#supported-host-compilers" target="_blank" rel="noopener noreferrer">BUILD_NOTES.md</a>; <a href="/docs#page=known_issues&amp;supported-host-compilers" data-url="/content/known_issues.html">KNOWN_ISSUES.md</a> carries the same statement.)</p>
+</blockquote>
+<h3 id="the-system-default-is-gcc-15">The system default is GCC 15</h3>
+<p><strong>Symptom.</strong> The build uses GCC 15 because it is the distribution default.</p>
+<p><strong>Cause.</strong> GCC 15 is not a supported host compiler in this release.</p>
+<p><strong>Fix.</strong> Select a supported compiler for the whole build tree, C and C++ together, in a fresh build directory:</p>
+<pre class="sh"><code>CC=gcc-13 CXX=g++-13 cmake -B build -DCMAKE_BUILD_TYPE=Release
+# or
+CC=clang-21 CXX=clang++-21 cmake -B build -DCMAKE_BUILD_TYPE=Release</code></pre>
+<p>The host compiler builds Eshkol. It does not generate code for Eshkol programs, which are emitted through LLVM.</p>
+<h3 id="cuda--does-not-support-gnu-"><code>CUDA ... does not support GNU ...</code></h3>
+<p><strong>Symptom</strong></p>
+<pre><code>CUDA 12.4 does not support GNU 14.2.0. Reconfigure the entire build with a
+compatible compiler (for example CC=gcc-13 CXX=g++-13). Selecting only
+CMAKE_CUDA_HOST_COMPILER is unsafe because it can mix libstdc++ ABI/library
+search paths at the final link.</code></pre>
+<p><strong>Cause.</strong> A CUDA toolkit older than 13.0 was found together with GCC 14 or newer.</p>
+<p><strong>Fix.</strong> As the message says: reconfigure the whole tree with <code>CC=gcc-13 CXX=g++-13</code>. To build without CUDA instead, pass <code>-DESHKOL_GPU_ENABLED=OFF</code>.</p>
+<h3 id="a-real-gpu-backend-was-required-but-neither-metal-nor-cuda-was-found"><code>A real GPU backend was required, but neither Metal nor CUDA was found</code></h3>
+<p><strong>Cause.</strong> <code>-DESHKOL_REQUIRE_GPU_BACKEND=ON</code> was set and no GPU SDK was found. The build refuses to compile the CPU stub under a GPU label.</p>
+<p><strong>Fix.</strong> Install the GPU SDK, or drop <code>ESHKOL_REQUIRE_GPU_BACKEND</code>. A default build (<code>ESHKOL_GPU_ENABLED=ON</code>) falls back to the CPU stub on its own.</p>
+<h2 id="standard-library-and-module-discovery">Standard library and module discovery</h2>
+<p>Every install artifact is resolved in one order, highest precedence first: <code>$ESHKOL_LIB_DIR</code> (native artifacts) or <code>$ESHKOL_PATH</code> (module sources); <code>-L</code> or <code>-I</code> directories; the install the running compiler belongs to; the working directory and its <code>build/</code> trees; the system prefixes. The full rule is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/environment-variables.md#resolution-precedence" target="_blank" rel="noopener noreferrer">environment-variables.md</a>.</p>
+<h3 id="module--not-found"><code>Module '...' not found</code></h3>
+<p><strong>Symptom</strong></p>
+<pre><code>ERROR: Module &#39;my.module&#39; not found
+ERROR:   Searched:
+ERROR:     - /path/to/project/my.module.esk
+ERROR:     - /path/to/install/lib/my/module.esk
+ERROR:     - $ESHKOL_PATH entries
+ERROR: Unresolved module dependency; refusing to compile an incomplete program</code></pre>
+<p><strong>Cause.</strong> <code>(require my.module)</code> names a module that is in none of the searched locations. A dotted name maps to a path: <code>my.module</code> is <code>my/module.esk</code>.</p>
+<p><strong>Fix.</strong> Put the module’s root on the search path, with <code>-I</code> or with <code>ESHKOL_PATH</code> (a path list: <code>:</code> separated, <code>;</code> on Windows):</p>
+<pre class="sh"><code>eshkol-run -I /path/to/modules -r main.esk
+ESHKOL_PATH=/path/to/modules eshkol-run -r main.esk</code></pre>
+<p>When running a compiler out of a build tree against a different source checkout, name that checkout’s library tree: <code>ESHKOL_PATH=/path/to/checkout/lib</code>.</p>
+<h3 id="module--not-found-its-define-library-form-is-at-line-n-below-this-import"><code>Module '...' not found: its define-library form is at line N, below this import</code></h3>
+<p><strong>Cause.</strong> The library is defined in the same file, below the <code>import</code>. A library is defined by its <code>define-library</code> form, so importing it earlier is a forward reference, not a search-path problem (R7RS-small 5.6.1).</p>
+<p><strong>Fix.</strong> Move the <code>define-library</code> above the <code>import</code>, or put the library in its own file.</p>
+<h3 id="could-not-find-libeshkol-runtimea-or-legacy-libeshkol-statica"><code>Could not find libeshkol-runtime.a or legacy libeshkol-static.a</code></h3>
+<p><strong>Symptom</strong></p>
+<pre><code>ERROR: Could not find libeshkol-runtime.a or legacy libeshkol-static.a
+ERROR: Searched, in order: $ESHKOL_LIB_DIR, every -L directory, the directory
+       holding this compiler (and its ../lib, ../lib/eshkol), the working
+       directory&#39;s build trees, then the system prefixes</code></pre>
+<p><strong>Cause.</strong> An ahead-of-time link needs the runtime archive and <code>stdlib.o</code>, and the compiler binary was moved away from them, or only <code>eshkol-run</code> was built.</p>
+<p><strong>Fix.</strong> Build the artifacts, or say where they are:</p>
+<pre class="sh"><code>cmake --build build --target stdlib          # in a source build
+ESHKOL_LIB_DIR=/path/to/lib/eshkol eshkol-run program.esk -o program
+eshkol-run -L /path/to/lib/eshkol program.esk -o program</code></pre>
+<p><code>ESHKOL_LIB_DIR</code> has the highest precedence, and its <code>eshkol/</code> subdirectory is searched with it. When an artifact comes from a system location, <code>eshkol-run</code> says so on stderr with the path it used; an archive built from a different Eshkol version produces a warning.</p>
+<h3 id="warning-stdlibbc-not-found--stdlib-symbol-discovery-unavailable"><code>Warning: stdlib.bc not found — stdlib symbol discovery unavailable</code></h3>
+<p><strong>Cause.</strong> The JIT discovers standard-library symbols from <code>stdlib.bc</code>, and it is not beside <code>stdlib.o</code> in any searched location.</p>
+<p><strong>Fix.</strong> Keep <code>stdlib.o</code> and <code>stdlib.bc</code> together; both are produced by the <code>stdlib</code> target and both ship in <code>lib/eshkol/</code> of a package. Point <code>ESHKOL_LIB_DIR</code> at the directory that holds the pair.</p>
+<h2 id="stale-jit-and-module-caches">Stale JIT and module caches</h2>
+<p><code>eshkol-run -r</code> keeps a persistent run cache: the file is compiled once to a native binary, and later runs re-execute it. The key covers the source bytes, the Eshkol and LLVM versions, the <code>eshkol-run</code> binary fingerprint, the relevant flags, the <code>stdlib.bc</code> and <code>stdlib.o</code> fingerprints, and the include, library and linked-library flags, so ordinary edits and rebuilds miss the cache on their own. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/jit-internals.md" target="_blank" rel="noopener noreferrer">JIT internals</a>.</p>
+<table>
+<colgroup>
+<col style="width: 26%" />
+<col style="width: 38%" />
+<col style="width: 34%" />
+</colgroup>
+<thead>
+<tr>
+<th>Cache</th>
+<th>Location</th>
+<th>Control</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Run cache (<code>-r</code>)</td>
+<td><code>$ESHKOL_JIT_CACHE_DIR</code>, else <code>$XDG_CACHE_HOME/eshkol/jit</code>, else <code>$HOME/.cache/eshkol/jit</code>; <code>%LOCALAPPDATA%\eshkol\jit</code> on Windows</td>
+<td><code>ESHKOL_JIT_CACHE=0</code> disables it; <code>ESHKOL_JIT_CACHE_TRACE=1</code> prints the decision</td>
+</tr>
+<tr>
+<td>AOT module cache (<code>-c</code> objects)</td>
+<td><code>$ESHKOL_AOT_MODULE_CACHE_DIR</code>, else <code>$XDG_CACHE_HOME/eshkol/modules</code>, else <code>$HOME/.cache/eshkol/modules</code>; <code>%LOCALAPPDATA%\eshkol\modules</code> on Windows</td>
+<td><code>ESHKOL_AOT_MODULE_CACHE_TRACE=1</code> prints hits and misses</td>
+</tr>
+<tr>
+<td>Stdlib JIT object</td>
+<td>beside <code>stdlib.bc</code>, named <code>stdlib-jit-v4-&lt;hash&gt;-&lt;triple&gt;-&lt;abi&gt;.o</code></td>
+<td>keyed on the <code>stdlib.bc</code> content, the process triple and the object ABI</td>
+</tr>
+</tbody>
+</table>
+<h3 id="a-run-does-not-seem-to-pick-up-a-change">A run does not seem to pick up a change</h3>
+<p><strong>Diagnose.</strong> Ask the cache what it did:</p>
+<pre class="sh"><code>ESHKOL_JIT_CACHE_TRACE=1 eshkol-run -r program.esk</code></pre>
+<pre><code>[jit-cache] hit cca516e3cf10964f830e002a3b0103e3b173d00771b66fde8b59dc6d887515ac</code></pre>
+<p>The trace prints <code>hit</code>, <code>miss</code>, <code>store</code> or <code>bypass &lt;reason&gt;</code>. The cache is bypassed when it is disabled, when the program uses <code>eval</code> or <code>compile</code>, with more than one input file or a debug or dump flag, with <code>-D</code> defines, and while language-coverage tracing is on.</p>
+<p><strong>Fix.</strong> Run once without the cache, and if that differs, clear it:</p>
+<pre class="sh"><code>ESHKOL_JIT_CACHE=0 eshkol-run -r program.esk
+rm -rf &quot;${XDG_CACHE_HOME:-$HOME/.cache}/eshkol/jit&quot;</code></pre>
+<p>Entries older than 30 days are pruned and the cache is held to 1 GiB, so clearing it is always safe. For isolated runs (tests, parallel jobs, a read-only home), give each its own directory with <code>ESHKOL_JIT_CACHE_DIR</code>.</p>
+<h3 id="ignoring-eshkol_aot_module_cache_dir-under-a-forbidden-temp-root"><code>Ignoring ESHKOL_AOT_MODULE_CACHE_DIR under a forbidden temp root</code></h3>
+<p><strong>Cause.</strong> The AOT module cache refuses a directory under <code>/tmp</code> or <code>/private/tmp</code>; the compiler does not create cache artifacts under the system temporary directories.</p>
+<p><strong>Fix.</strong> Name a durable directory, or unset the variable to use the default.</p>
+<h3 id="-r-native-link-of--failed-refusing-to-fall-back-to-a-reduced-in-process-run"><code>-r: native link of '...' failed; refusing to fall back to a reduced in-process run</code></h3>
+<p><strong>Cause.</strong> The cache build links a standalone binary. A link failure under <code>-r</code> is fatal by design: falling back to the in-process JIT would run a program whose missing native symbols happen to resolve inside <code>eshkol-run</code> and would certify a build that never linked.</p>
+<p><strong>Fix.</strong> Read the linker diagnostics printed above the message and see <a href="/docs#page=troubleshooting&amp;native-links" data-url="/content/troubleshooting.html">Native links</a>. <code>ESHKOL_JIT_CACHE=0</code> runs in-process and is a way to keep working while the link is being fixed, not a fix.</p>
+<h2 id="stack-size">Stack size</h2>
+<h3 id="eshkol-stack-overflow-recursion-depth-exceeded-"><code>eshkol: stack overflow: recursion depth exceeded ...</code></h3>
+<p><strong>Symptom</strong></p>
+<pre><code>eshkol: stack overflow: recursion depth exceeded the 512 MiB stack (ESHKOL_STACK_SIZE); use tail recursion, or raise ESHKOL_STACK_SIZE and the OS stack limit to allow deeper recursion</code></pre>
+<p>Exit status 121. The size named is whatever <code>ESHKOL_STACK_SIZE</code> resolved to.</p>
+<p><strong>Cause.</strong> Non-tail recursion reached the native stack guard. Hosted JIT and AOT entry code raise the soft <code>RLIMIT_STACK</code> when the operating system allows it and check headroom at every generated function entry, so deep recursion ends in this diagnostic rather than in a bare signal.</p>
+<p><strong>Fix.</strong> Make the recursion a tail call, which runs in constant stack:</p>
+<pre class="scheme"><code>;; Non-tail: the addition happens after the recursive call returns.
+(define (count-up n)
+  (if (= n 0)
+      0
+      (+ 1 (count-up (- n 1)))))
+
+;; Tail: the recursive call is the last thing the procedure does.
+(define (count-up-tail n acc)
+  (if (= n 0)
+      acc
+      (count-up-tail (- n 1) (+ acc 1))))
+
+(display (count-up-tail 100000 0))
+(newline)
+(display (count-up 100000))
+(newline)</code></pre>
+<p>With <code>ESHKOL_STACK_SIZE=1M</code> the tail form prints <code>100000</code> and the non-tail form ends in the diagnostic above with exit status 121, under both <code>eshkol-run -r</code> and an ahead-of-time binary; with the default ceiling both print <code>100000</code>.</p>
+<p>Or raise the ceiling. <code>ESHKOL_STACK_SIZE</code> accepts <code>K</code>, <code>M</code> and <code>G</code> suffixes and has a 1 MiB floor:</p>
+<pre class="sh"><code>ESHKOL_STACK_SIZE=1G eshkol-run -r program.esk</code></pre>
+<p>On Linux the initial thread’s reachable stack is fixed from the soft <code>ulimit -s</code> at process launch, so raise that in the launching shell too:</p>
+<pre class="sh"><code>ulimit -s 1048576 &amp;&amp; ESHKOL_STACK_SIZE=1G ./program</code></pre>
+<p>Parallel workers have their own stack, sized by <code>ESHKOL_WORKER_STACK_BYTES</code> (default 16 MiB). <code>ESHKOL_MAX_STACK</code> is a separate, optional software recursion-depth ceiling. Which tail positions are proper tail calls is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/tail-calls.md" target="_blank" rel="noopener noreferrer">tail-calls.md</a>.</p>
+<h2 id="native-links">Native links</h2>
+<h3 id="linking-timed-out-after-300-seconds-and-was-aborted"><code>Linking timed out after 300 seconds and was aborted</code></h3>
+<p><strong>Fix.</strong> Raise or disable the limit: <code>ESHKOL_LINK_TIMEOUT_SECONDS=900</code>, or <code>0</code> for no limit. <code>ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS</code> bounds object emission the same way and is unbounded by default.</p>
+<h3 id="the-c-driver-used-for-links-is-not-found-or-is-the-wrong-one">The C++ driver used for links is not found, or is the wrong one</h3>
+<p><strong>Cause.</strong> Ahead-of-time and cache links run a C++ driver: the one recorded at build time when it still exists, otherwise a <code>clang++</code> or <code>c++</code> found on <code>PATH</code>. A package moved to a machine whose LLVM lives elsewhere may find none.</p>
+<p><strong>Fix.</strong> <code>ESHKOL_CXX_COMPILER=/path/to/clang++ eshkol-run program.esk -o program</code></p>
+<h3 id="an-undefined-reference-to-roundeven">An undefined reference to <code>roundeven</code></h3>
+<p><strong>Cause.</strong> Scheme’s <code>round</code> is ties-to-even, which the back end emits as the LLVM <code>roundeven</code> intrinsic. On AArch64 that is one instruction. On x86-64 without SSE4.1 in the baseline it is a call to the C library’s <code>roundeven</code>, a C23 function that some platform C libraries do not provide.</p>
+<p><strong>Fix.</strong> None is needed with the shipped runtime: configuration checks for the symbol and, where the platform lacks it, the runtime archive supplies it from <code>lib/core/runtime_math_compat.c</code>. The configure log says which case applies:</p>
+<pre><code>-- roundeven: provided by the platform C library
+-- roundeven: supplied by lib/core/runtime_math_compat.c</code></pre>
+<p>If the reference is undefined, the link is picking up a runtime archive from a different build. Check which archive <code>eshkol-run</code> reports, and set <code>ESHKOL_LIB_DIR</code> to the one that belongs to the compiler.</p>
+<h3 id="aarch64-linux-links-fail-to-find-ldlld">AArch64 Linux links fail to find <code>ld.lld</code></h3>
+<p><strong>Cause.</strong> AArch64 links use <code>lld</code>, and a versioned package installs only <code>ld.lld-21</code>.</p>
+<p><strong>Fix.</strong> <code>sudo ln -sf "$(command -v ld.lld-21)" /usr/local/bin/ld.lld</code></p>
+<h2 id="python-bindings">Python bindings</h2>
+<p>The bindings are a pybind11 extension, off by default. The API is documented in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/bindings/python.md" target="_blank" rel="noopener noreferrer">reference/bindings/python.md</a> and the build in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/BUILD_NOTES.md#python-bindings" target="_blank" rel="noopener noreferrer">BUILD_NOTES.md</a>.</p>
+<pre class="sh"><code>python3 -m venv .venv &amp;&amp; .venv/bin/python -m pip install pybind11 numpy
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DESHKOL_PYTHON_BINDINGS=ON \
+  -DESHKOL_PYTHON3_EXECUTABLE=&quot;$PWD/.venv/bin/python&quot; \
+  -DPython3_EXECUTABLE=&quot;$PWD/.venv/bin/python&quot; \
+  -Dpybind11_DIR=&quot;$(.venv/bin/python -m pybind11 --cmakedir)&quot;
+cmake --build build --target eshkol_py
+ctest --test-dir build -R python_bindings_capsule_lifetime --output-on-failure</code></pre>
+<h3 id="python-bindings-pybind11-not-found-skipping"><code>Python bindings: pybind11 not found, skipping</code></h3>
+<p><strong>Cause.</strong> <code>ESHKOL_PYTHON_BINDINGS=ON</code> was requested but CMake found no pybind11 package. This is a status line, not an error: the <code>eshkol_py</code> target is simply absent.</p>
+<p><strong>Fix.</strong> Install pybind11 into the interpreter you build against and pass its CMake directory: <code>-Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)"</code>.</p>
+<h3 id="could-not-find-python3-missing--development-"><code>Could NOT find Python3 (missing: ... Development ...)</code></h3>
+<p><strong>Cause.</strong> The bindings request the interpreter <strong>and</strong> the development component (headers and library) with <code>find_package(Python3 REQUIRED COMPONENTS Interpreter Development)</code>. The interpreter is installed without its development files.</p>
+<p><strong>Fix.</strong> Install them (<code>python3-dev</code> on Debian and Ubuntu, <code>python3-devel</code> on Fedora; Homebrew and python.org builds include them), and make both <code>Python3_EXECUTABLE</code> and <code>ESHKOL_PYTHON3_EXECUTABLE</code> name the same interpreter so the module and its test agree.</p>
+<h3 id="a-link-error-asking-to-recompile-with--fpic">A link error asking to <code>recompile with -fPIC</code></h3>
+<p><strong>Cause.</strong> On ELF platforms the extension force-loads the static compiler, REPL, runtime and agent dependency archives into one shared object, so every object in that closure must be position-independent. The build turns on <code>CMAKE_POSITION_INDEPENDENT_CODE</code> for the whole tree when <code>ESHKOL_PYTHON_BINDINGS=ON</code>, before any target or fetched dependency is created. The error appears when the option is switched on in a build directory that already holds non-PIC objects.</p>
+<p><strong>Fix.</strong> Configure with <code>-DESHKOL_PYTHON_BINDINGS=ON</code> in a fresh build directory.</p>
+<h3 id="ffi-jit-runtime-is-not-linked-link-eshkol-repl-lib"><code>FFI JIT runtime is not linked; link eshkol-repl-lib</code></h3>
+<p><strong>Cause.</strong> The FFI context found no JIT bridge. The bridge registers itself from a static constructor in the REPL library, so a link that does not force-load that archive drops it. The <code>eshkol_py</code> target force-loads both <code>eshkol-static</code> and <code>eshkol-repl-lib</code>; the message appears in an embedding of your own that links the FFI without them.</p>
+<p><strong>Fix.</strong> Force-load both archives: <code>-Wl,-force_load,&lt;archive&gt;</code> once per archive on macOS, <code>-Wl,--whole-archive ... -Wl,--no-whole-archive</code> around both on ELF.</p>
+<h3 id="python_bindings_capsule_lifetime-fails-with-skip"><code>python_bindings_capsule_lifetime</code> fails with <code>SKIP:</code></h3>
+<p><strong>Symptom.</strong> The CTest fails and its output contains <code>SKIP: eshkol Python module not built</code> or <code>SKIP: numpy not installed</code>.</p>
+<p><strong>Cause.</strong> The test is registered to fail rather than skip: a skipped lifetime test is not evidence. It prints <code>SKIP:</code> when the module or NumPy cannot be imported by the interpreter CMake recorded.</p>
+<p><strong>Fix.</strong> Build the <code>eshkol_py</code> target, and install NumPy into the interpreter named by <code>ESHKOL_PYTHON3_EXECUTABLE</code>. The test finds the module through <code>ESHKOL_PYTHON_MODULE_DIR</code>, which CTest sets to the target’s output directory; for a manual run set it yourself:</p>
+<pre class="sh"><code>ESHKOL_PYTHON_MODULE_DIR=build python3 tests/bindings/python_capsule_lifetime_test.py</code></pre>
+<h3 id="symbols-resolve-in-eshkol-run-but-not-when-embedded">Symbols resolve in <code>eshkol-run</code> but not when embedded</h3>
+<p><strong>Cause and behaviour.</strong> A Python extension is normally loaded with local symbol visibility, so the runtime symbols it exports are not visible to a process-wide lookup. The REPL JIT therefore searches the image that contains the runtime first, by that image’s own loader handle, and then the process. No <code>RTLD_GLOBAL</code> import flag and no preloading is needed.</p>
+<h2 id="windows">Windows</h2>
+<h3 id="llvm-21-cmake-package-not-found"><code>LLVM 21 CMake package not found</code></h3>
+<p><strong>Symptom</strong></p>
+<pre><code>LLVM 21 CMake package not found. Install the official LLVM 21 Windows SDK and set LLVM_DIR or LLVM_HOME.</code></pre>
+<p><strong>Fix.</strong> Install the LLVM 21 SDK and configure with its CMake package directory. Visual Studio 2022 with the ClangCL toolset is the supported native generator:</p>
+<pre class="powershell"><code>cmake -S . -B build -G &quot;Visual Studio 17 2022&quot; -A x64 -T ClangCL `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DLLVM_DIR=&quot;C:/Program Files/LLVM/lib/cmake/llvm&quot;</code></pre>
+<p>Use <code>-A ARM64</code> on Windows ARM64. Setting the <code>LLVM_HOME</code> environment variable to the SDK root works as well.</p>
+<h3 id="-references-missing-dia-library--install-the-visual-studio-dia-sdk-component"><code>... references missing DIA library ... Install the Visual Studio DIA SDK component</code></h3>
+<p><strong>Cause.</strong> The LLVM SDK’s CMake package names the Debug Interface Access library by an absolute path from the machine that built it.</p>
+<p><strong>Fix.</strong> Install the “DIA SDK” component of Visual Studio. The build then substitutes the <code>diaguids.lib</code> of the active Visual Studio instance for the architecture being built.</p>
+<h3 id="generated-windows-links-require-the-compiler-rt-builtins-archive-"><code>Generated Windows links require the compiler-rt builtins archive ...</code></h3>
+<p><strong>Symptom</strong></p>
+<pre><code>Generated Windows links require the compiler-rt builtins archive from the
+selected C++ driver &#39;...&#39;, but no LLVM 21 clang_rt.builtins-{x86_64|aarch64}.lib
+was found. Set ESHKOL_CXX_COMPILER or LLVM_HOME to a complete matching LLVM toolchain.</code></pre>
+<p><strong>Cause.</strong> Programs compiled by Eshkol link against the compiler-rt builtins of the consumer’s LLVM installation, and the selected driver belongs to an installation without them.</p>
+<p><strong>Fix.</strong> Point <code>ESHKOL_CXX_COMPILER</code> at the <code>clang++</code> of a complete LLVM 21 installation, or set <code>LLVM_HOME</code> to its root.</p>
+<h3 id="other-windows-notes">Other Windows notes</h3>
+<ul>
+<li>The MSYS2 / MinGW64 path and the MSVC path differ in how LLVM is found: MinGW uses <code>llvm-config</code>, the MSVC path uses the LLVM CMake package and the static runtime. Do not mix the two in one build directory.</li>
+<li><code>ESHKOL_PATH</code> and other path lists are <code>;</code> separated.</li>
+<li><code>-DESHKOL_FIXED_POINT_ENGINE=ON</code> needs the <code>__int128</code> ABI and is refused under MSVC and ClangCL.</li>
+<li>PowerShell scripts in the repository are ASCII, or start with a UTF-8 byte order mark, so Windows PowerShell 5.1 and PowerShell 7 decode them the same way. <code>python3 scripts/check_ps1_encoding.py</code> checks a change.</li>
+</ul>
+<h2 id="webassembly">WebAssembly</h2>
+<h3 id="function-import-requires-a-callable-when-the-page-instantiates-the-module"><code>function import requires a callable</code> when the page instantiates the module</h3>
+<p><strong>Cause.</strong> A runtime function that a WebAssembly build imports has no entry in the JavaScript glue. The build picks up a new host helper as an <code>env</code> import on its own; the browser then refuses to instantiate the module.</p>
+<p><strong>Fix.</strong> Add the import to <strong>both</strong> glue files, <code>web/eshkol-repl.js</code> and <code>site/static/eshkol-runtime.js</code>, and to the core-key manifest. The procedure is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/WEB_PLATFORM.md#101-import-glue-is-generated" target="_blank" rel="noopener noreferrer">WEB_PLATFORM.md</a>. Check with:</p>
+<pre class="sh"><code>python3 scripts/check_wasm_imports.py --build-dir build</code></pre>
+<h3 id="generated-flat-ad-block-is-stale-run-generate_wasm_import_gluepy---write"><code>generated flat-AD block is stale; run generate_wasm_import_glue.py --write</code></h3>
+<p><strong>Cause.</strong> The block between <code>// BEGIN GENERATED FLAT-AD IMPORTS</code> and <code>// END GENERATED FLAT-AD IMPORTS</code> in a glue file differs from <code>scripts/wasm_flat_ad_imports.fragment.js</code>. The block is generated; it was edited by hand, or the fragment changed without regenerating.</p>
+<p><strong>Fix.</strong></p>
+<pre class="sh"><code>python3 scripts/generate_wasm_import_glue.py --write
+python3 scripts/generate_wasm_import_glue.py --check</code></pre>
+<h3 id="core-keys-absent-from-contract-or-missing-core-contract-keys"><code>core keys absent from contract</code> or <code>missing core contract keys</code></h3>
+<p><strong>Cause.</strong> The <code>eshkol_*</code> and <code>region_*</code> keys a glue file provides and the list in <code>scripts/wasm_core_import_keys.json</code> disagree.</p>
+<p><strong>Fix.</strong> Add the new key to the manifest (a sorted JSON string array) when the glue gained an import, or add the import to the glue when the manifest is right. Both glue files must provide the same core set.</p>
+<h2 id="type-warnings-after-upgrading">Type warnings after upgrading</h2>
+<p><strong>Symptom.</strong> A program that compiled quietly now prints type warnings.</p>
+<p><strong>Cause.</strong> Eshkol is gradually typed. Annotations are optional, a type finding is a warning by default, and the program still compiles and runs. Each release checks the relations its type system defines, so a newer compiler can report a finding on unchanged code that an older one did not examine. The warning describes the code, not a change in its behaviour. <code>--strict-types</code> makes type errors fatal; <code>--unsafe</code> skips the checks.</p>
+<p><strong>Fix.</strong> Read <a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">guide/GRADUAL_TYPING.md</a>: it explains what each warning means, which are advisory, and how to annotate or restructure the code it points at.</p>
+<h2 id="release-and-gate-failures-met-locally">Release and gate failures met locally</h2>
+<p>How a release is verified is in <a href="/docs#page=platform_release_process" data-url="/content/platform_release_process.html">platform/RELEASE_PROCESS.md</a>.</p>
+<h3 id="a-gate-reports-that-tests-which-passed-did-not-execute">A gate reports that tests which passed did not execute</h3>
+<p><strong>Cause.</strong> An evidence path was relative and two tools resolved it against different directories. The repository fixes the meaning once: a relative <code>TRACE_DIR</code> or <code>ICC_TRACE_DIR</code> is relative to the <strong>repository root</strong>, and the gates make it absolute before any producer uses it (<code>scripts/lib/evidence_paths.sh</code>).</p>
+<p><strong>Fix.</strong> Nothing, when you run the gates as shipped: <code>TRACE_DIR=scripts/icc_traces</code> and <code>TRACE_DIR="$PWD/scripts/icc_traces"</code> mean the same thing. When you write a new gate that reads an evidence location from its environment, source the helper before first use:</p>
+<pre class="sh"><code>. &quot;$REPO_ROOT/scripts/lib/evidence_paths.sh&quot;
+eshkol_evidence_abs_var TRACE_DIR &quot;$REPO_ROOT&quot; || exit $?</code></pre>
+<p><code>python3 tests/toolchain/test_v1_3_release_evidence_recipe.py</code> fails a script that reads <code>TRACE_DIR</code> or <code>ICC_TRACE_DIR</code> without doing so.</p>
+<h3 id="a-harness-tests-the-wrong-compiler">A harness tests the wrong compiler</h3>
+<p><strong>Cause.</strong> The harnesses use <code>build/</code> unless told otherwise.</p>
+<p><strong>Fix.</strong> Name the tree: <code>BUILD_DIR=build-asan scripts/run_all_tests.sh</code>. A relative <code>BUILD_DIR</code> is read against the repository root.</p>
+<h3 id="the-documentation-claims-gate-grades-text-you-already-changed">The documentation-claims gate grades text you already changed</h3>
+<p><strong>Cause.</strong> <code>scripts/check_doc_claims_residual.py</code> grades claims through the ICC index, and the index predates your edit. An unregistered checkout is invisible to ICC altogether.</p>
+<p><strong>Fix.</strong> Refresh the index for the checkout you are editing, then rerun:</p>
+<pre class="sh"><code>icc reindex --repo &lt;alias&gt; --full
+python3 scripts/check_doc_claims_residual.py --icc-bin icc --repo &lt;alias&gt;</code></pre>
+<h3 id="check_changelog_completenesspy-exits-no_data"><code>check_changelog_completeness.py</code> exits <code>NO_DATA</code></h3>
+<p><strong>Cause.</strong> The gate walks <code>previous_tag..HEAD</code> and fails closed when it cannot: the checkout is shallow, or the previous release tag is not present.</p>
+<p><strong>Fix.</strong></p>
+<pre class="sh"><code>git fetch --unshallow --tags     # in a shallow clone
+git fetch --tags                 # otherwise</code></pre>
+<p>In GitHub Actions, check out with <code>fetch-depth: 0</code>. When the gate instead lists an unaccounted pull request, give it one home: a <code>(#N)</code> reference in the changelog section for the release, or an entry with a class and a specific reason in <code>tests/coverage/changelog_no_user_facing_change.json</code>.</p>
+<h3 id="check_surface_countspy-fails-after-a-document-edit"><code>check_surface_counts.py</code> fails after a document edit</h3>
+<p><strong>Cause.</strong> A registered document states a count, a date or a status that disagrees with the manifests under <code>tests/coverage/</code> or with <code>tests/coverage/release_record.json</code>, or a <code>&lt;!-- release-record:KEY --&gt;</code> span was edited by hand.</p>
+<p><strong>Fix.</strong> Do not edit the number. Let the gate rewrite every record-owned claim:</p>
+<pre class="sh"><code>python3 scripts/check_surface_counts.py --sync
+python3 scripts/check_surface_counts.py --no-trace</code></pre>
+<p>If a page under <code>site/static/content/</code> is reported, regenerate it with <code>scripts/build-site-content.sh</code>.</p>
+<h3 id="evidence-is-reported-stale-or-the-trace-directory-is-empty">Evidence is reported stale or the trace directory is empty</h3>
+<p><strong>Cause.</strong> <code>scripts/check_evidence_staleness.py --require-trace-dir</code> refuses to grade an empty trace root, and fails a high-severity criterion whose newest evidence is older than the window (14 days by default; <code>ESHKOL_EVIDENCE_MAX_AGE_DAYS</code> or <code>--max-age-days</code>).</p>
+<p><strong>Fix.</strong> Regenerate the evidence with the producer the criterion names; do not widen the window to pass. Trace files are build products and are not committed.</p>

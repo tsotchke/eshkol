@@ -14,7 +14,7 @@
 (edge-check-g92)
 
 ;; check quote_sym__in__set_bang_lambda_store
-(define (edge-check-g93) (edge-chk "quote_sym__in__set_bang_lambda_store" (let ((swg93 #f)) ((lambda () (set! swg93 'edge-sym))) swg93) (string->symbol "edge-sym")))
+(define (edge-check-g93) (edge-chk "quote_sym__in__set_bang_lambda_store" (let ((slg93 #f)) ((lambda () (set! slg93 'edge-sym))) slg93) (string->symbol "edge-sym")))
 (edge-check-g93)
 
 ;; check quote_sym__in__set_bang_set_twice
@@ -26,7 +26,7 @@
 (edge-check-g95)
 
 ;; check quote_list__in__set_bang_lambda_store
-(define (edge-check-g96) (edge-chk "quote_list__in__set_bang_lambda_store" (let ((swg96 #f)) ((lambda () (set! swg96 '(1 2 3)))) swg96) (list 1 2 3)))
+(define (edge-check-g96) (edge-chk "quote_list__in__set_bang_lambda_store" (let ((slg96 #f)) ((lambda () (set! slg96 '(1 2 3)))) slg96) (list 1 2 3)))
 (edge-check-g96)
 
 ;; check quote_list__in__set_bang_set_twice
@@ -38,7 +38,7 @@
 (edge-check-g98)
 
 ;; check quote_empty__in__set_bang_lambda_store
-(define (edge-check-g99) (edge-chk "quote_empty__in__set_bang_lambda_store" (let ((swg99 #f)) ((lambda () (set! swg99 '()))) swg99) (list)))
+(define (edge-check-g99) (edge-chk "quote_empty__in__set_bang_lambda_store" (let ((slg99 #f)) ((lambda () (set! slg99 '()))) slg99) (list)))
 (edge-check-g99)
 
 ;; check quote_empty__in__set_bang_set_twice
@@ -50,7 +50,7 @@
 (edge-check-g101)
 
 ;; check quote_nested_quote__in__set_bang_lambda_store
-(define (edge-check-g102) (edge-chk "quote_nested_quote__in__set_bang_lambda_store" (let ((swg102 #f)) ((lambda () (set! swg102 (car ''nq)))) swg102) (string->symbol "quote")))
+(define (edge-check-g102) (edge-chk "quote_nested_quote__in__set_bang_lambda_store" (let ((slg102 #f)) ((lambda () (set! slg102 (car ''nq)))) slg102) (string->symbol "quote")))
 (edge-check-g102)
 
 ;; check quote_nested_quote__in__set_bang_set_twice
@@ -62,7 +62,7 @@
 (edge-check-g104)
 
 ;; check quote_veclit_ref__in__set_bang_lambda_store
-(define (edge-check-g105) (edge-chk "quote_veclit_ref__in__set_bang_lambda_store" (let ((swg105 #f)) ((lambda () (set! swg105 (vector-ref #(9 8 7) 2)))) swg105) 7))
+(define (edge-check-g105) (edge-chk "quote_veclit_ref__in__set_bang_lambda_store" (let ((slg105 #f)) ((lambda () (set! slg105 (vector-ref #(9 8 7) 2)))) slg105) 7))
 (edge-check-g105)
 
 ;; check quote_veclit_ref__in__set_bang_set_twice
@@ -74,7 +74,7 @@
 (edge-check-g107)
 
 ;; check quote_qq_sugar__in__set_bang_lambda_store
-(define (edge-check-g108) (edge-chk "quote_qq_sugar__in__set_bang_lambda_store" (let ((swg108 #f)) ((lambda () (set! swg108 `(1 ,(+ 1 1) ,@(list 3 4))))) swg108) (list 1 2 3 4)))
+(define (edge-check-g108) (edge-chk "quote_qq_sugar__in__set_bang_lambda_store" (let ((slg108 #f)) ((lambda () (set! slg108 `(1 ,(+ 1 1) ,@(list 3 4))))) slg108) (list 1 2 3 4)))
 (edge-check-g108)
 
 ;; check quote_qq_sugar__in__set_bang_set_twice
@@ -86,7 +86,7 @@
 (edge-check-g110)
 
 ;; check quote_qq_longform__in__set_bang_lambda_store
-(define (edge-check-g111) (edge-chk "quote_qq_longform__in__set_bang_lambda_store" (let ((swg111 #f)) ((lambda () (set! swg111 (quasiquote (1 (unquote (+ 1 1))))))) swg111) (list 1 2)))
+(define (edge-check-g111) (edge-chk "quote_qq_longform__in__set_bang_lambda_store" (let ((slg111 #f)) ((lambda () (set! slg111 (quasiquote (1 (unquote (+ 1 1))))))) slg111) (list 1 2)))
 (edge-check-g111)
 
 ;; check quote_qq_longform__in__set_bang_set_twice

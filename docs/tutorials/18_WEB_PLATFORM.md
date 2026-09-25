@@ -49,6 +49,7 @@ Type any expression and press Enter:
 When compiling a full web application, Eshkol provides DOM bindings via
 `extern` declarations:
 
+<!-- doc-example: skip platform-specific: calls the browser DOM imports, which exist only in a WASM build running in a page -->
 ```scheme
 ;; Declare external DOM functions
 (extern i32 web-create-element ptr :real web_create_element)
@@ -73,6 +74,7 @@ Eshkol.
 
 ## Event Handling
 
+<!-- doc-example: skip platform-specific: calls the browser DOM imports, which exist only in a WASM build running in a page -->
 ```scheme
 (extern i32 web-add-event-listener i32 ptr ptr :real web_add_event_listener)
 
@@ -93,6 +95,7 @@ Eshkol.
 
 ## Styling
 
+<!-- doc-example: skip platform-specific: calls the browser DOM imports, which exist only in a WASM build running in a page -->
 ```scheme
 ;; Set inline styles via a helper
 (define (style! el prop val)

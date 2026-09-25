@@ -104,7 +104,7 @@ first line of input:
   (see below) and for a driver's own process bookkeeping. Never assume this
   equals the pid the driver's own spawn call returned; on some platforms —
   and always if the driver has gone through a shell — they can differ.
-- `eshkol_version` (string) — `eshkol --version`'s version string, for
+- `eshkol_version` (string) — `eshkol-run --version`'s version string, for
   diagnostics; not part of the compatibility contract (see below).
 
 ### `"op":"eval"` — evaluate one top-level form
@@ -147,10 +147,12 @@ Success response:
   while it runs.)
 - `value` / `value_type` — the form's own value, and its coarse runtime
   type name (`integer`, `real`, `boolean`, `string`, `pair`, `symbol`,
-  `procedure`, `vector`, `null` for an unspecified/no-value result, etc. —
-  the same classification the language exposes as `type-of`). A definition
-  form (`define`, ...) evaluates to an unspecified value, reported as
-  `value_type: "null"`.
+  `procedure`, `vector`, `null` for the empty list, `unspecified` for the
+  unspecified value, etc. — the same classification the language exposes as
+  `type-of`). A form that evaluates to the unspecified value (a definition,
+  `display`, `set!`, a `when` whose test is false, ...) is reported with an
+  empty `value` and `value_type: "unspecified"`
+  ([ADR-0024](../../design/adr/0024-unspecified-value.md)).
 
 Failure response:
 

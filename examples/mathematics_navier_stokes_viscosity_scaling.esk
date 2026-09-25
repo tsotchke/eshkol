@@ -1,7 +1,7 @@
-;; Navier-Stokes blowup construction -- viscosity scaling of the residual.
+;; Navier-Stokes example -- viscosity scaling of the residual.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Section 3 (proof outline) and Section 10.4, equations (10.22)-(10.23).
 ;;
 ;; The residual operator of (3.1), at viscosity nu, is

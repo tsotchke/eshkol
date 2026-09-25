@@ -1,6 +1,6 @@
 # Automatic Differentiation in Eshkol
 
-*A user guide to the v1.3.0-evolve Taylor-tower AD system.*
+*A user guide to Taylor-tower automatic differentiation.*
 
 Eshkol differentiates programs, not just formulas. `derivative`, `gradient`,
 `jacobian` and friends are **compiler primitives** — you write ordinary Scheme
@@ -12,14 +12,18 @@ What makes Eshkol's AD unusual:
 
 - **Arbitrary order.** Not just first and second derivatives — the *n*-th
   derivative for any *n*, computed by truncated-Taylor recurrences that cost
-  O(*n*²), never the 2ⁿ blow-up of nested dual numbers.
+  O(*n*²), never the 2ⁿ growth of nested dual numbers.
 - **Exact when it can be.** Differentiate a polynomial or rational function at
   an exact point and the derivative comes back as an exact `bignum` or
   `rational` — zero floating-point error. No double-only framework (JAX,
   PyTorch, Zygote) offers this.
 - **Validated when you need a guarantee.** Taylor models return a Taylor
-  polynomial *plus a rigorous interval remainder*, so you get a proven
-  enclosure of a function over a whole domain, not just a point estimate.
+  polynomial *plus an interval remainder*, so you get an enclosure of a
+  function over a whole domain, not just a point estimate — and beneath the
+  validated (sampled-remainder) family there is a **proof-backed** one,
+  `core.ad.rigorous_interval` / `core.ad.rigorous_taylor_models`, whose every
+  enclosure is derived rather than sampled. See
+  [certified enclosures](../reference/stdlib/certified-enclosures.md).
 - **A property of the language.** Derivatives flow through `if`/`cond`, loops,
   recursion, closures, and `map`/`fold`; through tensors (matmul/conv2d/
   activations); through the reverse tape; and they nest without perturbation
@@ -376,11 +380,25 @@ tensor sensitivities.
 
 ## 6. Validated AD — Taylor models
 
-A **Taylor model** is a Taylor polynomial plus a rigorous interval remainder
-that provably encloses the truncation error over a whole domain box. Instead of
-"the value at a point," you get a *guaranteed enclosure* of the function over an
-interval — the foundation of validated numerics and verified global
-optimization. Load `core.ad.taylor_models`.
+A **Taylor model** is a Taylor polynomial plus an interval remainder bounding
+the truncation error over a whole domain box. Instead of "the value at a
+point," you get an enclosure of the function over an interval — the foundation
+of validated numerics and verified global optimization. Load
+`core.ad.taylor_models`.
+
+Eshkol ships **two** layers under that one require, and they differ in where
+the remainder comes from:
+
+| Layer | Remainder | Use it for |
+|---|---|---|
+| `core.ad.taylor_models` (`taylor-model`, `tm-range`, `tm-eval`) | epsilon-widened / sampled | validated numerics, error budgets, tightening a search |
+| `core.ad.rigorous_taylor_models` (`tm-var`, `tm+`, `tm*`, `tm-exp`, `tm-bound`, `tm-prove-bound`) | **derived**, with an a-priori bound at every step | a claim you intend to stand on as a proof |
+
+This section is the validated layer. For the proof-backed one — directed
+rounding, outward-rounded interval arithmetic, and Makino-Berz rigorous Taylor
+models — see
+[certified enclosures](../reference/stdlib/certified-enclosures.md), and use
+`tm-rigorous?` to tell which kind of model a value is.
 
 ```scheme
 (require core.ad.taylor_models)
@@ -411,9 +429,37 @@ sound (it contains the true range). `tm-eval` gives a point enclosure that
 provably contains the true value. Enclosures tighten as the order `k` grows and
 as the radius shrinks.
 
-**When to use:** when you need a *proof*, not an estimate — rigorous error
-bounds, verified global optimization, guaranteed ODE enclosures, robust handling
-of catastrophic cancellation.
+**When to use:** when you need an enclosure rather than a point estimate —
+error budgets, verified global optimization, ODE enclosures, robust handling of
+catastrophic cancellation.
+
+When the claim has to be a *proof*, take the same shape through the rigorous
+family instead, where every remainder is derived rather than sampled:
+
+```scheme
+(require core.ad.taylor_models)
+
+(define rtm (tm-exp (tm-var 0 1/4 6) 6))   ; exp on [-1/4, 1/4], order 6
+(display (tm-rigorous? rtm)) (newline)
+(display (tm-bound rtm)) (newline)
+(display (tm-prove-bound rtm 0 2)) (newline)
+(display (tm-prove-bound rtm 0 1)) (newline)
+```
+
+Run with `./build/eshkol-run -r ex.esk -L build`. Output:
+
+```
+#t
+(0.7159745469364677 . 1.2840254530635327)
+#t
+#f
+```
+
+`tm-bound` is the certified enclosure; `tm-prove-bound` answers `#t` only when
+that enclosure *proves* the containment, so the second query — which asks
+whether exp stays inside `[0,1]` on that domain, and it does not — correctly
+refuses. A refusal is never a claim that the bound is false; it is a claim that
+this model does not prove it.
 
 ---
 
@@ -495,9 +541,9 @@ Output:
 
 `g(v)` is the 3rd `t`-derivative of `sin(v·t)`, which analytically is
 `−v³cos(v·t)`; at v=0.6, t=0.4 that is `−0.209809`. Wrapping it in `gradient`
-differentiates *that* with respect to `v`, giving `−1.02851`. Before v1.3 this
-returned a flat 0 (the reverse tape "swallowed" the tower); the seed-tangent
-dual tower fixes it. This is exact, not finite-difference.
+differentiates *that* with respect to `v`, giving `−1.02851`. The seed-tangent
+dual tower retains the dependence through the reverse pass. This is exact,
+not finite-difference.
 
 ### Checkpointed reverse for deep graphs
 
@@ -677,7 +723,7 @@ series inversion / analytic continuation — all reusing the AD kernel.
 
 ## 11. Perturbation safety & how it works
 
-### Nested differentiation is safe
+### Nested differentiation is safe from perturbation confusion
 
 Nested `derivative`/`derivative-n` is the classic *perturbation-confusion* trap
 (Siskind–Pearlmutter): a naive implementation lets an inner differentiation leak
@@ -721,24 +767,51 @@ outer or the inner pass. All nine pairings agree:
 ;; => 1, 1, 1
 ```
 
-Two passes compose by putting the enclosing one on a **first-order companion
-series** that rides alongside the inner pass's value series, so exactly one
-enclosing level can be carried at a time. When more is asked for — an enclosing
-level with second- or higher-order dependence reaching an inner pass through a
-capture, or two distinct enclosing levels at once — Eshkol **raises** rather
-than answering a number:
+Nesting has no ceiling. A pass opened inside another live pass runs as a
+**level**: a truncated Taylor series in its own perturbation whose coefficients
+are numbers of the enclosing levels, so every enclosing perturbation is kept,
+at any depth and any order, through the evaluation point or a captured variable
+([ADR-0027](../design/adr/0027-recursive-taylor-level-carrier.md)):
 
+```scheme
+;; depth 3, all first order: d/dx d/dy d/dz (x^2 y^2 z^2) at (2,3,4)
+(display (derivative (lambda (x) (derivative (lambda (y) (derivative (lambda (z) (* x x y y z z)) 4.0)) 3.0)) 2.0)) (newline)
+;; both passes of order 2: d2/da2 d2/db2 (a^3 b^3) at a=2, b=3
+(display (derivative-n (lambda (a) (derivative-n (lambda (b) (* a a a b b b)) 3.0 2)) 2.0 2)) (newline)
+;; two enclosing levels over an order-2 pass: d/da d/db d2/dc2 (a b c^2)
+(display (derivative (lambda (a)
+           (derivative (lambda (b)
+             (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)) (newline)
+;; nesting through the point: g(t) = d2/dr2 [r^4] at r = 1+t = 12 (1+t)^2
+(define (h r) (* r r r r))
+(display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)
 ```
-unsupported nested differentiation: an enclosing differentiation reaches this
-pass through a CAPTURED variable and carries second- or higher-order dependence
+```
+192
+216
+2
+(0 12 24)
 ```
 
-Rewrite the outer pass as a first-order `derivative`, or take the higher-order
-term with a single `(derivative-n f x k)`. The composition is exact but
-**inexact-valued**: the companion series carries doubles, so an exact seed keeps
-its value through a nested pass and spends its exactness. Gated by
-`tests/ad/nested_operator_matrix_test.esk` (the captured-variable matrix, JIT +
-AOT) and `tests/ad/ad_carrier_nesting_test.esk` (the point matrix).
+Exactness follows the numeric tower through every level: an exact point gives
+an exact answer while every operation is exactness-preserving.
+
+```scheme
+(display (derivative (lambda (x) (derivative   (lambda (y) (* x x y y))   1/2))   1/3)) (newline)
+(display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)
+```
+```
+2/3
+2
+```
+
+Gated by `tests/ad/nested_towers_matrix_test.esk` (every operator and order
+pairing, the depth-3 order sweep, nesting through the point, exact seeds, and
+the perturbation-confusion controls), `tests/ad/nested_operator_matrix_test.esk`
+(the captured-variable matrix) and `tests/ad/ad_carrier_nesting_test.esk`, on
+the JIT and AOT lanes. The table, with the verified output of every row, is in
+[the AD support matrix](../reference/ad/support-matrix.md#nesting).
+
 
 ### How it works (in one paragraph)
 
@@ -748,13 +821,11 @@ primitive operation has a closed recurrence that maps input coefficient arrays t
 output ones — Cauchy convolution for multiplication, coupled recurrences for
 `sin`/`cos`, divided recurrences for `/` and `log`, and so on. Because these
 recurrences are O(K²), high-order AD is *polynomial* in the order, not the 2ᴷ
-blow-up of stacking dual numbers. When the order `K` is a literal at the call
-site (the common case in a compiler), the entire tower is emitted as unrolled,
-stack-allocated, branch-free IR — no heap allocation in the AD hot loop. Each
-active differentiation context carries a distinct **epoch tag** in the tower's
-header so nested derivatives never cross-contaminate. Order ≤ 2 keeps the
-existing fast 4-component jet byte-for-byte; the tower only appears when order
-≥ 3 is requested.
+growth of stacking dual numbers. When the order `K` is a literal at the call
+site (the common case in a compiler), an un-nested tower can be emitted as
+unrolled, stack-allocated IR. A nested pass uses a recursive level carrier;
+each level has its own **epoch tag**, and its coefficients can themselves carry
+enclosing levels. Un-nested first-order passes retain the fast jet path.
 
 For the full design — the recurrence table, the compile-time monomorphization,
 the FP-contraction policy that makes `mono ≡ runtime` bit-exact, the exact and
@@ -834,17 +905,15 @@ top-level constant referenced instead of inlined, a point built from `(car …)`
 differentiand given as a bare lambda, a variable, a function-call expression
 that computes a closure (`(derivative (mk 3) x)`), a let-bound closure, or a
 composition (`(derivative (compose f g) x)`) are all exactly as exact as the
-same computation inlined by hand. The exact route still defers to the
-(unchanged) jet path when the function cannot be resolved to a callable at
-all, or when another differentiation is already live — including a nested
-differentiation. Nesting itself is safe on every operator pairing (section 11),
-but the carrier that composes two passes is a first-order companion series of
-doubles, so an exact seed cannot stay exact *through* a nested pass; the value
-is right, the exactness is spent. A body that only calls other top-level
+same computation inlined by hand. The exact route defers to the unchanged jet
+path when the function cannot be resolved to a callable. When another
+differentiation is live, the nested pass uses a recursive level carrier whose
+coefficients retain enclosing perturbations and exact values. Depth and order
+are limited by available memory. A body that only calls other top-level
 definitions is accepted: `(derivative (lambda (s) (h 1/5 s)) 1/3)` where
 `(define (h a b) (* a b b))` is exactly `2/15`, the same answer
-`(derivative-n … 1)` gives. Vector-point `gradient`/`hessian` and the
-remaining operators need one tower pass per component and are build items. See
+`(derivative-n … 1)` gives. Vector-point operators seed a pass for each
+component. See
 [../reference/ad/operators.md](../reference/ad/operators.md#exact-vs-inexact-seeds)
 for the per-point-form detail, including why `(tensor 1/3)` cannot express an
 exact seed (its storage is homogeneous `double`) while `#(1/3)` now does.

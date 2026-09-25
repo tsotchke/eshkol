@@ -1,0 +1,64 @@
+;;; standard_port_parameters_test.esk
+;;;
+;;; current-input-port, current-output-port and current-error-port are
+;;; parameter objects (R7RS 6.13.1): `parameterize` rebinds them, a read or
+;;; write that names no port uses the port they currently hold, and the old
+;;; port comes back when the body exits, normally or by a raise. Checked on
+;;; the JIT, AOT, the VM from source and the VM from ESKB. On the VM
+;;; current-output-port was an undefined variable (SW-250); natively `read`
+;;; with no port ignored a rebound current-input-port.
+
+(define failures 0)
+(define results '())
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (set! results (cons name results))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: " (current-error-port))
+             (display name (current-error-port))
+             (newline (current-error-port)))))
+
+(define (captured thunk)
+  (let ((p (open-output-string)))
+    (parameterize ((current-output-port p)) (thunk))
+    (get-output-string p)))
+
+(check "display, write, newline, write-char, write-string follow the parameter"
+       "a\"b\"\ncd"
+       (captured (lambda () (display "a") (write "b") (newline)
+                            (write-char #\c) (write-string "d"))))
+(check "the parameter's value is an output port"
+       #t (output-port? (current-output-port)))
+(check "calling the parameter twice gives the same port"
+       #t (eq? (current-output-port) (current-output-port)))
+(check "explicit (current-output-port) inside parameterize"
+       "x" (captured (lambda () (display "x" (current-output-port)))))
+(define outer (open-output-string))
+(define inner (open-output-string))
+(parameterize ((current-output-port outer))
+  (parameterize ((current-output-port inner)) (display "in"))
+  (display "out"))
+(check "nested parameterize restores the outer port"
+       '("out" "in") (list (get-output-string outer) (get-output-string inner)))
+(define lost (open-output-string))
+(guard (e (#t #f))
+  (parameterize ((current-output-port lost)) (display "before") (raise 'boom)))
+(check "a raise restores the port" "before" (get-output-string lost))
+(check "writes after the raise go to the restored port"
+       "after" (captured (lambda () (display "after"))))
+(define err (open-output-string))
+(parameterize ((current-error-port err)) (display "e" (current-error-port)))
+(check "current-error-port is a parameter" "e" (get-output-string err))
+(define in1 (open-input-string "zq"))
+(check "read-char with no port reads the current input port"
+       #\z (parameterize ((current-input-port in1)) (read-char)))
+(check "read-line with no port"
+       "l1" (parameterize ((current-input-port (open-input-string "l1\nl2"))) (read-line)))
+(check "read with no port"
+       '(1 2) (parameterize ((current-input-port (open-input-string "(1 2) x"))) (read)))
+
+(if (= failures 0)
+    (begin (display "PASS: standard ports are parameters -- 0 failures ")
+           (display (length results)) (display " checks") (newline))
+    (begin (display "FAIL: standard ports are parameters -- ")
+           (display failures) (display " failures") (newline)))

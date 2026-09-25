@@ -202,10 +202,10 @@ static const VmEvacSpec vm_evac_subtype_table[VM_EVAC_TYPE_COUNT] = {
     [HEAP_STRING]       = { "string/symbol",VM_EVAC_WALK, "payload only (VmString.data)" },
     [HEAP_VECTOR]       = { "vector",       VM_EVAC_WALK, "VmVector.items[0..len)" },
     [HEAP_MULTI_VALUE]  = { "multi-value",  VM_EVAC_WALK, "VmVector.items[0..len)" },
-    [HEAP_COMPLEX]      = { "complex",      VM_EVAC_WALK, "payload only (two doubles)" },
+    [HEAP_COMPLEX]      = { "complex",      VM_EVAC_WALK, "doubles plus optional part carriers, walked by vm_evac_walk_dual" },
     [HEAP_RATIONAL]     = { "rational",     VM_EVAC_WALK, "payload only (int64 pair or two VmBignum)" },
     [HEAP_BIGNUM]       = { "bignum",       VM_EVAC_WALK, "payload only (VmBignum.limbs)" },
-    [HEAP_DUAL]         = { "dual",         VM_EVAC_WALK, "two doubles + two optional VmRational* exact halves (SW-85), retained by the interior-pointer walk" },
+    [HEAP_DUAL]         = { "dual",         VM_EVAC_WALK, "scalar dual, classic tower or ADR-0027 level carrier; exact halves, coefficient arrays and lcoeff walked recursively (vm_evac_walk_dual)" },
     [HEAP_TENSOR]       = { "tensor",       VM_EVAC_WALK, "payload only (shape/strides/data; views borrow)" },
     [HEAP_LOGIC_VAR]    = { "logic-var",    VM_EVAC_PIN,  "no constructor exists; pin rather than guess a layout" },
     [HEAP_SUBST]        = { "substitution", VM_EVAC_WALK, "VmSubstitution.terms[i] of kind OPAQUE/FACT" },
@@ -217,8 +217,8 @@ static const VmEvacSpec vm_evac_subtype_table[VM_EVAC_TYPE_COUNT] = {
     [HEAP_AD_TAPE]      = { "ad-tape",      VM_EVAC_WALK, "payload only (AdNode array holds no Values)" },
     [HEAP_PROMISE]      = { "promise",      VM_EVAC_WALK, "VmVector.items[0..3): forced flag, thunk, cached" },
     [HEAP_CONTINUATION] = { "continuation", VM_EVAC_WALK, "promise_mark + saved stack/handlers/winds/parameter arrays" },
-    [HEAP_HASH]         = { "hash-table",   VM_EVAC_WALK, "keys/values are raw scalars; marked CONSERVATIVELY" },
-    [HEAP_ERROR]        = { "error-object", VM_EVAC_WALK, "message/type inline; irritants chain must be NULL" },
+    [HEAP_HASH]         = { "hash-table",   VM_EVAC_WALK, "keys/values are boxed Values; traced exactly" },
+    [HEAP_ERROR]        = { "error-object", VM_EVAC_WALK, "message/type inline; Value irritant list head is walked" },
     [HEAP_BYTEVECTOR]   = { "bytevector",   VM_EVAC_WALK, "payload only (VmBytevector.data)" },
     [HEAP_PARAMETER]    = { "parameter",    VM_EVAC_WALK, "current_value, converter, save_stack[0..stack_depth)" },
     [HEAP_HYPER_DUAL]   = { "hyper-dual",   VM_EVAC_WALK, "payload only (four doubles)" },
@@ -441,7 +441,7 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
      * are covered by the conservative block sweep, which is why this arm can
      * be a no-op without being a shallow leaf copy. */
     case HEAP_STRING:                 /* VmString: byte_len/char_len/char* data */
-    case HEAP_COMPLEX:                /* two doubles                            */
+    case HEAP_COMPLEX:                /* doubles plus optional dual carriers   */
     case HEAP_RATIONAL:               /* int64 pair, or two VmBignum*            */
     case HEAP_BIGNUM:                 /* sign/limbs/n_limbs/capacity             */
     /* HEAP_DUAL's exact halves (SW-85) are ARENA pointers, not heap indices,
@@ -541,13 +541,12 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
         VmHashTable* ht = (VmHashTable*)o->opaque.ptr;
         if (!ht) return 1;
         if (ht->capacity < 0 || (ht->capacity > 0 && (!ht->keys || !ht->values))) return 0;
-        /* `hash-set!` stores key.as.i / value.as.i through a void*, discarding
-         * the ValType, so a reference here is indistinguishable from an
-         * integer. Mark both halves conservatively (see
-         * vm_evac_mark_conservative_word). */
+        /* Every live slot holds pointers to boxed Values (native 662), so
+         * both halves are traced exactly. */
         for (int i = 0; i < ht->capacity; i++) {
-            if (!vm_evac_mark_conservative_word(h, (uintptr_t)ht->keys[i]) ||
-                !vm_evac_mark_conservative_word(h, (uintptr_t)ht->values[i])) return 0;
+            if (ht->hashes[i] <= HT_TOMBSTONE) continue;
+            if (ht->keys[i] && !vm_evac_mark_value(h, *(Value*)ht->keys[i])) return 0;
+            if (ht->values[i] && !vm_evac_mark_value(h, *(Value*)ht->values[i])) return 0;
         }
         return 1;
     }
@@ -555,11 +554,13 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
     case HEAP_ERROR: {
         VmError* e = (VmError*)o->opaque.ptr;
         if (!e) return 1;
-        /* `message` and `type` are inline char arrays. `irritants` is a chain
-         * of untyped VmCons cells; every VM constructor passes NULL, and there
-         * is no tag to walk one safely, so a non-NULL chain pins rather than
-         * being skipped. */
-        return e->irritants == NULL;
+        /* `message`/`type` are inline. The VM error path stores its real
+         * Scheme list head as an inline Value-compatible field, so retain it
+         * as an ordinary heap root while the guard region is evacuated. */
+        const void* raw = vm_error_value_irritants(e);
+        Value irritants = NIL_VAL;
+        if (raw) memcpy(&irritants, raw, sizeof(irritants));
+        return e->irritants == NULL && vm_evac_mark_value(h, irritants);
     }
 
     case HEAP_SUBST: {
@@ -714,6 +715,51 @@ static void vm_evac_scan_retained(VmEvacBlocks* bs) {
  * Subtypes whose payload is inline (cons, fact) own no memory at all and cost
  * nothing here. Closure capture arrays are retained explicitly below.
  */
+/* A VmDual owns arena memory by pointer at every depth: the exact halves
+ * (SW-85, each possibly bignum-backed), a classic tower's coefficient arrays
+ * and, for an ADR-0027 level carrier, the lcoeff array of coefficient
+ * VmDuals, each of which is again any kind of carrier. A scan of the struct
+ * alone cannot reach the far end of that chain, so it is walked explicitly
+ * and recursively; the depth bound only guards a corrupted cycle. */
+static void vm_evac_walk_rational(VmEvacBlocks* bs, const VmRational* r) {
+    if (!r) return;
+    vm_evac_retain_ptr(bs, (void*)r);
+    vm_evac_scan_range(bs, (void*)r, sizeof(VmRational));
+    if (!r->is_big) return;
+    if (r->big_num) { vm_evac_retain_ptr(bs, r->big_num);
+                      vm_evac_scan_range(bs, r->big_num, sizeof(VmBignum)); }
+    if (r->big_den) { vm_evac_retain_ptr(bs, r->big_den);
+                      vm_evac_scan_range(bs, r->big_den, sizeof(VmBignum)); }
+}
+
+static void vm_evac_walk_dual(VmEvacBlocks* bs, const VmDual* d, int depth) {
+    if (!d || depth > 4096) return;
+    if (depth > 0) {
+        vm_evac_retain_ptr(bs, (void*)d);
+        vm_evac_scan_range(bs, (void*)d, sizeof(VmDual));
+    }
+    vm_evac_walk_rational(bs, d->eprimal);
+    vm_evac_walk_rational(bs, d->etangent);
+    if (d->kind == VM_DUAL_KIND_TAYLOR) {
+        if (d->coeff) {
+            vm_evac_retain_ptr(bs, d->coeff);
+            vm_evac_scan_range(bs, d->coeff, ((size_t)d->order + 1) * sizeof(double));
+        }
+        if (d->exact_coeff) {
+            vm_evac_retain_ptr(bs, d->exact_coeff);
+            vm_evac_scan_range(bs, d->exact_coeff,
+                               ((size_t)d->order + 1) * sizeof(VmRational*));
+            for (uint32_t i = 0; i <= d->order; i++)
+                vm_evac_walk_rational(bs, d->exact_coeff[i]);
+        }
+    } else if (d->kind == VM_DUAL_KIND_LEVEL && d->lcoeff) {
+        vm_evac_retain_ptr(bs, d->lcoeff);
+        vm_evac_scan_range(bs, d->lcoeff, ((size_t)d->order + 1) * sizeof(VmDual*));
+        for (uint32_t i = 0; i <= d->order; i++)
+            vm_evac_walk_dual(bs, d->lcoeff[i], depth + 1);
+    }
+}
+
 static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
     switch ((int)o->type) {
     case HEAP_CONS: case HEAP_FACT:
@@ -771,6 +817,16 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
      * (old rational -> old bignum -> region-grown limbs) is not reachable by
      * scanning alone. */
     switch ((int)o->type) {
+    case HEAP_COMPLEX: {
+        const VmComplex* z = (const VmComplex*)p;
+        const VmDual* parts[2] = { z->creal, z->cimag };
+        for (int i = 0; i < 2; i++) if (parts[i]) {
+            vm_evac_retain_ptr(bs, (void*)parts[i]);
+            vm_evac_scan_range(bs, (void*)parts[i], sizeof(VmDual));
+            vm_evac_walk_dual(bs, parts[i], 0);
+        }
+        break;
+    }
     case HEAP_RATIONAL: {
         const VmRational* r = (const VmRational*)p;
         if (r->is_big) {
@@ -791,48 +847,7 @@ static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
          * is three deep (dual -> rational -> bignum limbs) and a scan cannot
          * reach the far end on its own, which is exactly why HEAP_RATIONAL
          * above has to walk its own bignums too. */
-        const VmDual* d = (const VmDual*)p;
-        const VmRational* halves[2] = { d->eprimal, d->etangent };
-        for (int i = 0; i < 2; i++) {
-            const VmRational* r = halves[i];
-            if (!r) continue;                     /* inexact half: nothing to retain */
-            vm_evac_retain_ptr(bs, (void*)r);
-            vm_evac_scan_range(bs, (void*)r, sizeof(VmRational));
-            if (!r->is_big) continue;
-            if (r->big_num) { vm_evac_retain_ptr(bs, r->big_num);
-                              vm_evac_scan_range(bs, r->big_num, sizeof(VmBignum)); }
-            if (r->big_den) { vm_evac_retain_ptr(bs, r->big_den);
-                              vm_evac_scan_range(bs, r->big_den, sizeof(VmBignum)); }
-        }
-        if (d->kind == VM_DUAL_KIND_TAYLOR) {
-            if (d->coeff) {
-                vm_evac_retain_ptr(bs, d->coeff);
-                vm_evac_scan_range(bs, d->coeff,
-                                   (size_t)(d->order + 1) * sizeof(double));
-            }
-            if (d->tangent_coeff) {
-                vm_evac_retain_ptr(bs, d->tangent_coeff);
-                vm_evac_scan_range(bs, d->tangent_coeff,
-                                   (size_t)(d->order + 1) * sizeof(double));
-            }
-            if (d->exact_coeff) {
-                vm_evac_retain_ptr(bs, d->exact_coeff);
-                vm_evac_scan_range(bs, d->exact_coeff,
-                                   (size_t)(d->order + 1) * sizeof(VmRational*));
-                for (uint32_t i = 0; i <= d->order; i++) {
-                    const VmRational* er = d->exact_coeff[i];
-                    if (!er) continue;
-                    vm_evac_retain_ptr(bs, er);
-                    vm_evac_scan_range(bs, er, sizeof(VmRational));
-                    if (er->is_big) {
-                        if (er->big_num) { vm_evac_retain_ptr(bs, er->big_num);
-                                           vm_evac_scan_range(bs, er->big_num, sizeof(VmBignum)); }
-                        if (er->big_den) { vm_evac_retain_ptr(bs, er->big_den);
-                                           vm_evac_scan_range(bs, er->big_den, sizeof(VmBignum)); }
-                    }
-                }
-            }
-        }
+        vm_evac_walk_dual(bs, (const VmDual*)p, 0);
         break;
     }
     case HEAP_AD_TAPE: {

@@ -8,6 +8,7 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/core/rational.h"
+#include "../../inc/eshkol/core/bignum.h"
 #include "../../inc/eshkol/core/symbol_syntax.h"
 #include "../../inc/eshkol/core/string_escape.h"
 
@@ -559,6 +560,8 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_string_literal(
 // Leaf: #t / #f / #\char / unknown-#-symbol. NOT #( — that is dispatched
 // directly by read_atom before any of these buffers would be reserved,
 // so the recursive #(-nesting chain never pays for this frame.
+static eshkol_tagged_value_t reader_number_or_symbol(arena_t* arena, const char* buf, int blen);
+
 static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
     arena_t* arena, FILE* fp, int ch) {
     if (ch == 't') {
@@ -636,7 +639,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
         }
         return make_char_tagged(c1); // fallback: first char
     }
-    // Unknown # form — treat as symbol
+    // Any other # form: a prefixed number (#x1F, #e1.5, #i1/2+3i) or a symbol.
     char buf[256];
     buf[0] = '#';
     buf[1] = (char)ch;
@@ -649,6 +652,23 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
         }
         buf[blen++] = (char)c;
     }
+    return reader_number_or_symbol(arena, buf, blen);
+}
+
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+
+// A delimited token is a number exactly when the shared R7RS number-syntax
+// recognizer says so (inc/eshkol/core/number_syntax.h) -- the grammar the
+// source parser, string->number and the bytecode VM use -- and an identifier
+// otherwise. Number syntax with no value (1/0, #e+inf.0) is a read error, not
+// a symbol that happens to be spelled like a number.
+static eshkol_tagged_value_t reader_number_or_symbol(arena_t* arena, const char* buf, int blen) {
+    eshkol_tagged_value_t value;
+    eshkol_numsyn_status_t st = eshkol_number_from_syntax(arena, buf, (size_t)blen, 10, &value);
+    if (st == ESHKOL_NUMSYN_OK) return value;
+    if (st == ESHKOL_NUMSYN_NOT_A_NUMBER) return make_symbol_tagged(arena, buf, blen);
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_READ_ERROR, "read: %.*s: %s", blen, buf,
+                         eshkol_number_syntax_status_message(st));
     return make_symbol_tagged(arena, buf, blen);
 }
 
@@ -668,42 +688,7 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_number_or_symbol(
     }
     buf[blen] = '\0';
 
-    // Try to parse as number
-    char* endp;
-    long long ival = strtoll(buf, &endp, 10);
-    if (endp == buf + blen && blen > 0) {
-        return make_int_tagged(ival);
-    }
-    // Try as double
-    double dval = strtod(buf, &endp);
-    if (endp == buf + blen && blen > 0) {
-        return make_double_tagged(dval);
-    }
-    // Try as rational: num/denom
-    char* slash = strchr(buf, '/');
-    if (slash && slash != buf && slash != buf + blen - 1) {
-        *slash = '\0';
-        char *ep1, *ep2;
-        long long num = strtoll(buf, &ep1, 10);
-        long long den = strtoll(slash + 1, &ep2, 10);
-        if (*ep1 == '\0' && *ep2 == '\0' && den != 0) {
-            void* rat = eshkol_rational_create(arena, num, den);
-            eshkol_tagged_value_t val;
-            memset(&val, 0, sizeof(val));
-            if (((eshkol_rational_t*)rat)->denominator == 1) {
-                val.type = ESHKOL_VALUE_INT64;
-                val.data.int_val = ((eshkol_rational_t*)rat)->numerator;
-            } else {
-                val.type = ESHKOL_VALUE_HEAP_PTR;
-                val.data.int_val = (int64_t)(uintptr_t)rat;
-            }
-            return val;
-        }
-        *slash = '/'; // restore
-    }
-
-    // Symbol
-    return make_symbol_tagged(arena, buf, blen);
+    return reader_number_or_symbol(arena, buf, blen);
 }
 
 // Read an atom (number, symbol, string, #t, #f, #\char, #(vector).

@@ -1,0 +1,25 @@
+;; Type System Test: `if` joins its branches with the rule cond, case, when,
+;; unless, match and guard use, so an `if` and the equivalent `cond` have one
+;; type. A branch the checker types as Value makes the join Value, and branches
+;; with no common supertype join to Value; neither claims the other branch's
+;; type. The checker used to prefer the concrete branch, and to fall back to the
+;; then-branch, so each `if` below warned while its `cond` twin was silent.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type warning
+
+(define (area (w : number) (h : number)) (* w h))
+(define (label (s : string)) (string-length s))
+
+;; One branch is Value: the result is Value, not Int64.
+(define (with-fallback flag x) (label (if flag 42 x)))
+(define (with-fallback-cond flag x) (label (cond (flag 42) (else x))))
+
+;; The branches share no supertype: the result is Value, not the then-branch.
+(define (either-collection flag) (area (if flag (list 1) (vector 1)) 2))
+(define (either-collection-cond flag) (area (cond (flag (list 1)) (else (vector 1))) 2))
+
+(display (with-fallback #f "abc"))
+(newline)
+(display (area 2 3))
+(newline)

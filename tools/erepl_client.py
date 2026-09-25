@@ -353,6 +353,17 @@ def _self_test(binary: str) -> int:
         check(r["error"] is None, "(display (* 6 7)) evaluates without error", repr(r))
         check(r["stdout"] == "42", "explicit display output lands in stdout, exactly",
               repr(r))
+        check(r["value"] == "" and r["value_type"] == "unspecified",
+              "display evaluates to the unspecified value: empty value, value_type unspecified (ADR-0024)",
+              repr(r))
+
+        # -- the unspecified value is not the empty list ------------------
+        r = client.execute("(when #f 1)")
+        check(r["error"] is None and r["value"] == "" and r["value_type"] == "unspecified",
+              "(when #f 1) evaluates to the unspecified value", repr(r))
+        r = client.execute("(quote ())")
+        check(r["error"] is None and r["value"] == "()" and r["value_type"] == "null",
+              "'() is still reported as value=()/null", repr(r))
 
         # -- structured runtime error, classified by kind, not wording ----
         r = client.execute("(car (quote ()))")

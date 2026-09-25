@@ -13,6 +13,7 @@
  */
 
 #include <eshkol/backend/call_apply_codegen.h>
+#include <eshkol/backend/static_callee_binding.h>
 #include <eshkol/eshkol.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -174,23 +175,28 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
     // Check if function is a symbol (built-in or user-defined)
     if (func_arg->type == ESHKOL_VAR) {
         std::string func_name = func_arg->variable.id;
+        const bool top_level_reassigned = is_top_level_callee_reassigned_callback_ &&
+            is_top_level_callee_reassigned_callback_(func_name.c_str(), callback_context_);
+        const bool dynamic_binding = eshkol::staticCalleeTopLevelBindingIsDynamic(
+            symbol_table_, global_symbol_table_,
+            ctx_.builder().GetInsertBlock()->getParent(), func_name, top_level_reassigned);
 
         // Variadic built-in reductions: arithmetic (+ - * /) and min/max.
         // All share the same fold-over-list machinery; applyReduction
         // dispatches on op name internally.
-        if (func_name == "+" || func_name == "-" || func_name == "*" || func_name == "/" ||
-            func_name == "min" || func_name == "max") {
+        if (!dynamic_binding && (func_name == "+" || func_name == "-" || func_name == "*" || func_name == "/" ||
+            func_name == "min" || func_name == "max")) {
             return applyReduction(func_name, list_int);
         }
 
         // Handle list operation
-        if (func_name == "list") {
+        if (!dynamic_binding && func_name == "list") {
             // (apply list '(1 2 3)) returns the list itself
             return arg_list;
         }
 
         // Handle cons
-        if (func_name == "cons") {
+        if (!dynamic_binding && func_name == "cons") {
             return applyCons(list_int);
         }
 
@@ -219,7 +225,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
              func_name == "reshape" || func_name == "transpose" ||
              func_name == "tensor" || func_name == "make-tensor");
 
-        if (is_unsupported_apply_builtin && !ctx_.module().getFunction(func_name)) {
+        if (!dynamic_binding && is_unsupported_apply_builtin && !ctx_.module().getFunction(func_name)) {
             eshkol_error_current(
                 ("apply: `%s` cannot be called through `apply` -- its arguments are not all "
                  "dimensions, and the apply path can only materialise a shape. Call it "
@@ -229,7 +235,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             return nullptr;
         }
 
-        if (apply_builtin_callback_ && is_shape_only_creation) {
+        if (!dynamic_binding && apply_builtin_callback_ && is_shape_only_creation) {
 
             Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
             Function* cons_get_ptr = getTaggedConsGetPtrFunc();
@@ -297,7 +303,21 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         }
 
         // Try to find function by name in the module
-        Function* named_func = ctx_.module().getFunction(func_name);
+        Function* named_func = dynamic_binding ? nullptr : ctx_.module().getFunction(func_name);
+        // SW-230: a function of this name that does not speak the tagged-value
+        // ABI is a raw C declaration (libm `atan`, `atan2`, ...), never the
+        // Scheme procedure: calling it with tagged arguments was invalid IR.
+        // The name is then evaluated as a value -- the first-class builtin --
+        // and applied as a callable.
+        auto raw_c = [&](Function* f) { return f && f->getReturnType() != ctx_.taggedValueType(); };
+        auto apply_as_value = [&]() -> Value* {
+            Value* resolved = codegen_ast_callback_ ? codegen_ast_callback_(func_arg, callback_context_) : nullptr;
+            return resolved ? applyCallable(resolved, list_int) : nullptr;
+        };
+        if (raw_c(named_func)) {
+            if (Value* v = apply_as_value()) return v;
+            named_func = nullptr;
+        }
         if (named_func) {
             return applyUserFunction(named_func, list_int);
         }
@@ -305,7 +325,12 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         // FIRST-CLASS FUNCTION FIX: Check for function pointer stored with _func suffix
         // MUTABLE CAPTURE FIX: Skip this path if function has capture parameters (ptr types)
         // because applyUserFunction doesn't handle captures - use closure path instead
-        if (symbol_table_) {
+        // A local runtime binding of this name hides any static alias of a
+        // same-named binding elsewhere (static_callee_binding.h).
+        const bool alias_hidden = dynamic_binding || eshkol::staticCalleeHiddenByRuntimeBinding(
+            symbol_table_, global_symbol_table_,
+            ctx_.builder().GetInsertBlock()->getParent(), func_name);
+        if (symbol_table_ && !alias_hidden) {
             auto func_it = symbol_table_->find(func_name + "_func");
             if (func_it != symbol_table_->end()) {
                 if (auto* stored_func = dyn_cast<Function>(func_it->second)) {
@@ -371,7 +396,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             if (!isa<Function>(func_value)) {
                 Value* resolved = codegen_ast_callback_(func_arg, callback_context_);
                 if (resolved) {
-                    return applyClosure(resolved, list_int);
+                    return applyCallable(resolved, list_int);
                 }
             }
 
@@ -386,7 +411,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             }
 
             // Treat as a closure/tagged value
-            return applyClosure(func_value, list_int);
+            return applyCallable(func_value, list_int);
         }
 
         // Bug P (2026-04-23): cross-file user defines (e.g. (load
@@ -397,10 +422,13 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         // a different LLVM module loaded via the JIT. Consult
         // function_table_ directly first; direct calls already use
         // this table.
-        if (function_table_) {
+        if (function_table_ && !dynamic_binding) {
             auto ft_it = function_table_->find(func_name);
             if (ft_it != function_table_->end() && ft_it->second) {
                 Function* tf = ft_it->second;
+                if (raw_c(tf)) {                                     // SW-230
+                    if (Value* v = apply_as_value()) return v;
+                }
                 bool has_captures = false;
                 for (auto& arg : tf->args()) {
                     if (arg.getType()->isPointerTy()) { has_captures = true; break; }
@@ -466,7 +494,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         if (codegen_ast_callback_) {
             llvm::Value* resolved = codegen_ast_callback_(func_arg, callback_context_);
             if (resolved) {
-                return applyClosure(resolved, list_int);
+                return applyCallable(resolved, list_int);
             }
         }
 
@@ -481,7 +509,7 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             eshkol_warn("apply: Could not compile lambda");
             return tagged_.packNull();
         }
-        return applyClosure(lambda_val, list_int);
+        return applyCallable(lambda_val, list_int);
     }
 
     // Handle any expression that returns a function/closure (e.g., function calls like (factory-fn))
@@ -491,11 +519,17 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
             eshkol_warn("apply: Could not evaluate function expression");
             return tagged_.packNull();
         }
-        return applyClosure(func_val, list_int);
+        return applyCallable(func_val, list_int);
     }
 
     eshkol_warn("apply: First argument must be a function");
     return tagged_.packNull();
+}
+
+Value* CallApplyCodegen::applyCallable(Value* func_value, Value* list_int) {
+    if (closure_list_callback_)
+        return closure_list_callback_(func_value, list_int, callback_context_);
+    return applyClosure(func_value, list_int);
 }
 
 /**
@@ -604,16 +638,16 @@ Value* CallApplyCodegen::applyReduction(const std::string& op, Value* list_int) 
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
     if (!cons_get_ptr) return tagged_.packNull();
 
-    // Identity elements for ops that have them. min/max have no identity:
-    // applying them to an empty list is a type error in R7RS.
-    const bool has_identity = (op == "+" || op == "-" || op == "*" || op == "/");
+    // R7RS 6.2.6: (+) is 0 and (*) is 1. `-`, `/`, `min` and `max` take at
+    // least one argument, so applying them to an empty list is an error, and
+    // a single argument to `-` or `/` is the additive or multiplicative
+    // inverse -- (- x) is -x, (/ x) is 1/x -- not x.
+    const bool has_identity = (op == "+" || op == "*");
+    const bool unary_inverts = (op == "-" || op == "/");
     Value* identity = nullptr;
     if (has_identity) {
-        if (op == "+" || op == "-") {
-            identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 0), true);
-        } else { // "*" or "/"
-            identity = tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 1), true);
-        }
+        identity = tagged_.packInt64(
+            ConstantInt::get(ctx_.int64Type(), op == "+" ? 0 : 1), true);
     }
 
     Value* is_empty = ctx_.builder().CreateICmpEQ(list_int,
@@ -652,6 +686,19 @@ Value* CallApplyCodegen::applyReduction(const std::string& op, Value* list_int) 
     Value* current_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "apply_current");
     ctx_.builder().CreateStore(rest_list, current_ptr);
 
+    if (unary_inverts) {
+        // One element: the accumulator is its inverse and the (empty) tail
+        // leaves the loop at once.
+        BasicBlock* unary_block = BasicBlock::Create(ctx_.context(), "apply_red_unary", current_func);
+        ctx_.builder().CreateCondBr(
+            ctx_.builder().CreateICmpEQ(rest_list, ConstantInt::get(ctx_.int64Type(), 0)),
+            unary_block, loop_cond);
+        ctx_.builder().SetInsertPoint(unary_block);
+        Value* inverse = (op == "-")
+            ? arith_.sub(tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 0), true), first_elem)
+            : arith_.div(tagged_.packInt64(ConstantInt::get(ctx_.int64Type(), 1), true), first_elem);
+        ctx_.builder().CreateStore(inverse, accum_ptr);
+    }
     ctx_.builder().CreateBr(loop_cond);
 
     ctx_.builder().SetInsertPoint(loop_cond);
@@ -739,6 +786,19 @@ Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
             return applyArithmetic("*", list_int);
         } else if (func_name.find("_/_") != std::string::npos) {
             return applyArithmetic("/", list_int);
+        }
+        // Genuine variadic builtin wrappers consume one tagged rest-list
+        // argument.  They can arrive here as a raw Function* (aliases such as
+        // `(define v vector)`), bypassing closure dispatch; extracting one
+        // element would silently truncate apply to arity one.
+        if (func_name.size() >= 8 && func_name.rfind("_varargs") == func_name.size() - 8) {
+            Value* rest = tagged_.packHeapPtr(list_int);
+            Value* empty = tagged_.packNull();
+            rest = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateICmpEQ(list_int,
+                    ConstantInt::get(ctx_.int64Type(), 0)), empty, rest, "apply_empty_rest");
+            return ctx_.builder().CreateCall(func,
+                {rest});
         }
     }
 

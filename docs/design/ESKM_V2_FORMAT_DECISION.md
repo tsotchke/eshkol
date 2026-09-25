@@ -1,8 +1,9 @@
 # ESKM v2 format decision: an extensible metadata envelope
 
-- **Status:** Proposed; no v2 writer or reader is authorized by this document
+- **Status:** Proposed; an internal test-only preflight prototype is staged below; public v2 reader/writer integration remains gated
 - **Date:** 2026-09-06
 - **Technical review updated:** 2026-09-07
+- **Dependency/dispatch status refreshed:** 2026-09-17; decision remains Proposed
 - **Author:** Gabriel “Gabe” Kahen
 - **Decision owners:** Eshkol model/checkpoint maintainers
 - **Packet:** GK-SER-05
@@ -10,8 +11,13 @@
 - **Implementation prerequisites:** GK-SER-02 fail-closed all-record preflight and GK-SER-04 atomic checkpoint publication
 - **Supersedes:** none; ESKM v1 remains the default and compatibility baseline
 
-The v1 links pin the reviewed dependency while #596 is unmerged. This proposal
-does not incorporate its files or claim its runtime acceptance gates passed.
+The v1 links preserve the original review baseline. #596 has since merged
+(`665e60c0`); the current [v1 reference](../reference/tensors/eskm-v1.md) and
+[immutable corpus](../../tests/core/fixtures/eskm-v1/) include six valid fixtures.
+At `upstream/master` `0901264c`, #555 has carried the #602 preflight work and
+#612 has carried #600 atomic publication. These landed prerequisites do not
+accept this byte-level proposal or prove its implementation gates. V2 has no
+reader or writer in that baseline.
 
 ## Context
 
@@ -28,9 +34,10 @@ is smaller: establish a byte-level v2 envelope that can carry advisory metadata
 and can distinguish skippable extensions from features that change tensor
 meaning.
 
-This is a design decision, not an implementation change. Existing public save
-APIs continue to emit v1. Implementation begins only after this byte layout is
-reviewed.
+This remains a proposed design decision. Existing public save APIs continue to
+emit v1. The test-only preparatory work described below exercises the proposal
+without accepting it; public v2 integration begins only after byte-level review
+and the applicable implementation gates are satisfied.
 
 ## Decision
 
@@ -179,13 +186,12 @@ by those readers. Emitting v2 requires a separately reviewed opt-in API or an
 explicitly approved default-version change.
 
 Here, public save/load means the ESKM model path and ESKM single-tensor entry
-points. Update after #555 merged on 2026-09-08: native and VM language
-`tensor-save`/`tensor-load` now both dispatch to ESKM v1. The ESKT boundary
-references in the original review gates below describe the pre-#555 baseline;
-they do not require restoring legacy ESKT dispatch. This proposal makes no
-further dispatch change and remains Proposed. Test both public tensor paths
-explicitly, preserving their current ESKM v1 output unless a separate API
-decision approves a change.
+points. Since #555 merged on 2026-09-08, native and VM language
+`tensor-save`/`tensor-load` both dispatch to ESKM v1. #620 aligns the public
+tensor parity gate with that contract. This proposal makes no further dispatch
+change and remains Proposed. Test both public tensor paths explicitly,
+preserving their current ESKM v1 output unless a separate API decision approves
+a change.
 
 Public load boundaries must report unsupported versions, unknown mandatory
 features, and malformed extension lengths through a deterministic, nonempty
@@ -268,8 +274,9 @@ count must be at most `file_size - 28` before conversion to a host-sized offset.
 Zero extensions and zero records are allowed independently.
 
 Core tensor limits and aggregate memory accounting remain GK-SER-02
-prerequisites. Before a v2 parser ships, the normative reference must tabulate
-each backend's numeric record/name/rank/dimension/element and peak-memory limits,
+prerequisites. Before a v2 parser enters a public reader, the normative reference
+must tabulate each backend's numeric record/name/rank/dimension/element and
+peak-memory limits,
 including the input buffer, validation scratch, and materialized objects, and
 the parser must enforce them before the corresponding allocation. The file cap
 alone is not a peak-memory bound. This proposal does not invent or expand those
@@ -279,7 +286,9 @@ A file may be wire-valid but rejected as unsupported-resource when it exceeds
 these caps or a backend's documented materialization limits. Cross-engine
 acceptance is required within the common supported profile; resource refusals
 outside it must be explicit. Numeric cap tables and boundary evidence must ship
-with the parser, not be deferred until the final implementation PR.
+with public reader integration, not be deferred until the final implementation
+PR. The preparatory parser below has its own explicit scratch-memory and
+provisional admission limits; it does not satisfy backend admission gates.
 
 CRC-32 detects accidental corruption only. It is not authentication and must
 not be presented as protection against a malicious writer.
@@ -287,20 +296,47 @@ not be presented as protection against a malicious writer.
 ## Decision lifecycle
 
 Maintainer byte-level review advances this document from **Proposed** to
-**Accepted** and authorizes implementation. Acceptance of the decision does not
-claim that v2 exists. The status advances to **Implemented** only after the
+**Accepted** and authorizes the implementation slices below. The limited
+test-only preparation described next does not require or establish that status
+change. Acceptance of the decision does not claim that v2 exists. The status
+advances to **Implemented** only after the
 gates below pass and the normative `docs/reference/tensors/eskm-v2.md` ships.
 
 The decision review must explicitly settle the header offsets and CRC example,
 required-feature/optional-TLV distinction, type-1 grammar and metadata-loss
-policy, proposed admission caps, v1/ESKT compatibility boundary, and the gates
-below. Record the accepting maintainer's review link and the accepted document
+policy, proposed admission caps, v1/public-tensor compatibility boundary, and
+the gates below. Record the accepting maintainer's review link and the accepted document
 commit when changing status. Filing or merging a Proposed document alone is
 not byte-level acceptance. Public opt-in API signatures/native IDs remain a
 separate review prerequisite for the writer slice.
 
 Until then, GK-SER-05 has completed its design slice but not its implementation
 or roadmap acceptance.
+
+### Internal test-only preparation while Proposed
+
+The private C17 preflight validator in `lib/core/eskm_v2_preflight.c` makes the
+proposed grammar executable before maintainer acceptance. It is compiled into
+private test targets only, with no public loading/saving dispatch, installed
+header, tensor construction, or filesystem I/O. Its
+[experimental internal reference](../reference/tensors/eskm-v2.md) describes
+that prototype, not an accepted public v2 contract.
+
+Given an immutable caller-owned buffer, explicit limits, and caller-owned
+workspace, it either validates the entire container and returns ranges/counts,
+or clears the result and returns a deterministic error and byte offset. It
+allocates no heap memory. Annotation-key spans occupy a fixed 16 KiB workspace;
+all other state is fixed-size. The parser applies the provisional caps above,
+which callers may lower but cannot raise. Zero is an actual zero limit.
+
+This preparation covers the wire-level part of GK-SER-05a and supplies bounded
+fixtures and standalone C/C++ tests. It does **not** complete GK-SER-05a,
+authorize public v2 I/O, claim four-engine compatibility, or approve backend
+resource policies. Structural validation cannot establish that a backend can
+materialize a tensor. File admission before buffering, numeric backend caps,
+aggregate peak-memory accounting, and transactional materialization cleanup
+remain prerequisites for public reader integration. Review may still change
+this prototype's wire contract, interface, limits, and fixtures.
 
 ## Required implementation gates
 
@@ -309,7 +345,7 @@ The implementation must prove:
 1. every accepted and rejected v1 golden fixture behaves unchanged;
 2. all available engines accept a canonical one-record v2 fixture through the
    ESKM model entry point, with the native tagged C and VM ESKM single-tensor
-   entry points also checked; native language ESKT dispatch is unchanged. The
+   entry points also checked; public tensor dispatch remains ESKM. The
    empty example above is checked only through an internal status-bearing
    container parser because NULL/NIL cannot distinguish successful emptiness
    from rejection;
@@ -323,7 +359,7 @@ The implementation must prove:
    order, rank, dimensions, dtype, element count, and raw payload bits within
    their common supported profile; any capability restriction is documented;
 7. default ESKM writers still emit byte-identical v1 unless the caller opts into
-   v2, and native language ESKT output remains unchanged;
+   v2, including both public language tensor-save routes;
 8. the normative reference and public API documentation publish the approved
    caps and error contract with the parser; bounded tests check limits just
    below, at, and above each cap, with allocation accounting proving refusals
@@ -351,7 +387,7 @@ needs a bounded valid control.
 | Slice | Focus and prerequisite | Acceptance evidence |
 |---|---|---|
 | GK-SER-05a | Internal v2 preflight parser, known type-1 validation, bounded fixtures, and normative `eskm-v2.md`; requires GK-SER-02 and approved cap tables | Gates 1, 3–5, 8 at the parser boundary; exact empty and one-record bytes/CRC; no public writer |
-| GK-SER-05b | ESKM reader integration on native and VM, annotation validation/discard behavior, and public checkpoint-error diagnostics | Gates 2–6 on the available engine axes; allocation accounting and no partial result; no ESKT dispatch changes |
+| GK-SER-05b | ESKM reader integration on native and VM, annotation validation/discard behavior, and public checkpoint-error diagnostics | Gates 2–6 on the available engine axes; allocation accounting and no partial result; public tensor dispatch remains ESKM |
 | GK-SER-05c | Explicitly reviewed opt-in v2 writer/API using GK-SER-04 publication; default ESKM writer unchanged | Gates 3, 7, 9; canonical sorted annotations, byte-identical repeated saves and v1 output, reader consumption of emitted v2 |
 | GK-SER-05d | End-to-end producer/consumer compatibility matrix | All four engines write/read each other's ESKM output; compare tensor names, order, shapes, dtype, and raw payload bits; annotations follow the approved API contract; agree on bounded rejection classes and diagnostics |
 | GK-SER-05e | Final normative reference, evidence links, and ownership status | All gates recorded PASS for supported targets on identified commits; Accepted → Implemented only with complete evidence |

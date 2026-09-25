@@ -69,7 +69,7 @@
 ;; Shioda's inductive argument (only the excess-intersection numbers and
 ;; Hodge-Riemann are taken from theory). Nothing beyond this variety.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples.
+;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed.
 
 (require stdlib)
 

@@ -1,0 +1,52 @@
+;;; hash_table_equal_keys_test.esk
+;;;
+;;; A hash table made by make-hash-table finds a key by equal?, and gives
+;;; back exactly the value that was stored, whatever its type. Checked on
+;;; the JIT, AOT, the VM from source and the VM from ESKB. The VM table used
+;;; to key on a Value's raw payload (a string's heap slot) and hand every
+;;; value back as an integer (SW-247): (hash-ref h "a" #f) of a freshly
+;;; spelled "a" missed, and a stored record came back as its slot number.
+
+(define failures 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "ok: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " expected ") (write expected)
+             (display " got ") (write actual) (newline))))
+
+(define (fresh-string s) (list->string (string->list s)))
+
+(define h (make-hash-table))
+(hash-set! h "origin" (vector 0 0))
+(hash-set! h 'sym "a string value")
+(hash-set! h 42 'forty-two)
+(hash-set! h 2.5 'two-and-a-half)
+(hash-set! h (list 1 2 3) 'a-list-key)
+(hash-set! h #\c 'a-char)
+
+(check "string key found by content"     (vector 0 0) (hash-ref h (fresh-string "origin") #f))
+(check "symbol key"                      "a string value" (hash-ref h 'sym #f))
+(check "integer key"                     'forty-two (hash-ref h 42 #f))
+(check "float key"                       'two-and-a-half (hash-ref h 2.5 #f))
+(check "list key found by structure"     'a-list-key (hash-ref h (list 1 2 3) #f))
+(check "char key"                        'a-char (hash-ref h #\c #f))
+(check "missing key gives the default"   'none (hash-ref h "absent" 'none))
+(check "stored vector value is a vector" #t (vector? (hash-ref h "origin" #f)))
+(check "stored string value is a string" #t (string? (hash-ref h 'sym #f)))
+
+(hash-set! h (fresh-string "origin") 'replaced)
+(check "set! of an equal key replaces"   'replaced (hash-ref h "origin" #f))
+(check "count after replacing"           6 (hash-count h))
+(check "has-key? by content"             #t (hash-has-key? h (fresh-string "origin")))
+(hash-remove! h (fresh-string "origin"))
+(check "remove! by content"              #f (hash-has-key? h "origin"))
+(check "count after remove"              5 (hash-count h))
+(hash-clear! h)
+(check "clear! empties the table"        0 (hash-count h))
+
+(if (= failures 0)
+    (begin (display "PASS: hash tables compare keys by equal? -- 0 failures") (newline))
+    (begin (display "FAIL: hash tables compare keys by equal? -- ")
+           (display failures) (display " failures") (newline)))

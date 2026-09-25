@@ -38,9 +38,13 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$ROOT/scripts/lib/checked_write.sh"
+
 if [ "$SELF_TEST" -eq 1 ]; then
     FAKE_RUN="$WORK/fake-eshkol-run"
-    cat > "$FAKE_RUN" <<'EOF'
+    FAKE_RUN_TMP="$(eshkol_install_tmp "$FAKE_RUN")" || exit $?
+    cat > "$FAKE_RUN_TMP" <<'EOF'
 #!/usr/bin/env bash
 if [ "${FORWARD_REF_FAKE_MODE:-missing-name}" != "missing-name" ]; then
     case "$2" in
@@ -55,6 +59,7 @@ fi
 echo "synthetic diagnostic without the unresolved function name" >&2
 exit 1
 EOF
+    eshkol_install_checked "$FAKE_RUN_TMP" "$FAKE_RUN" || exit $?
     chmod +x "$FAKE_RUN"
 
     run_negative_control() {

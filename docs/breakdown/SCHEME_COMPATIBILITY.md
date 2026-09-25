@@ -31,9 +31,9 @@ The R7RS-small standard defines 244 standard procedures and ~30 special forms. E
 Most well-formed R7RS Scheme programs compile and run in Eshkol without modification.
 
 **Implementation references:**
-- Parser: [parser.cpp](../../lib/frontend/parser.cpp) (11,563 lines)
-- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (46,007 lines)
-- Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (4,924 lines)
+- Parser: [parser.cpp](../../lib/frontend/parser.cpp) (11,678 lines)
+- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (47,038 lines)
+- Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (6,087 lines)
 
 ---
 
@@ -43,36 +43,36 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 
 | R7RS Section | Feature | Status | Notes |
 |:---|:---|:---:|:---|
-| **4.1** Primitive expressions | `quote`, `lambda`, `if`, `set!`, `include` | ✅ | Full support |
-| **4.2.1** Conditionals | `cond`, `case`, `and`, `or`, `when`, `unless` | ✅ | Including `=>` clause in `cond` |
-| **4.2.2** Binding | `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values` | ✅ | `letrec*` with correct R7RS semantics |
-| **4.2.3** Sequencing | `begin` | ✅ | |
-| **4.2.4** Iteration | `do`, named `let` | ✅ | `do` at [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) |
-| **4.2.5** Delayed evaluation | `delay`, `delay-force`, `force`, `make-promise`, `promise?` | ✅ | Full iterative forcing; see [Promises](#promises) |
-| **4.2.6** Dynamic bindings | `make-parameter`, `parameterize` | ✅ | Macro-transformed at parse time |
-| **4.2.7** Exception handling | `guard`, `raise`, `raise-continuable` | ⚠️ | `guard`/`raise` full; `raise-continuable` missing |
-| **4.2.8** Quasiquotation | `quasiquote`, `unquote`, `unquote-splicing` | ✅ | |
-| **4.2.9** Case-lambda | `case-lambda` | ✅ | Macro-transformed to variadic dispatch |
-| **4.3** Macros | `define-syntax`, `syntax-rules`, `let-syntax`, `letrec-syntax` | ✅ | Hygienic; `syntax-case` not supported |
-| **5.1** Programs | Top-level expressions | ✅ | |
-| **5.2** Import | `import` | ⚠️ | Lowers to `require`; `only`/`except`/`rename`/`prefix` import sets are parsed, with strict hiding still limited |
-| **5.3** Variable definitions | `define`, `define-values` | ✅ | Internal defines → `letrec*` |
-| **5.4** Syntax definitions | `define-syntax` | ✅ | |
-| **5.5** Record type definitions | `define-record-type` | ✅ | See [Records](#records) |
-| **6.1** Equivalence | `eqv?`, `eq?`, `equal?` | ✅ | |
-| **6.2** Numbers | Full numeric tower | ✅ | See [Numeric Tower](#numeric-tower) |
-| **6.3** Booleans | `not`, `boolean?`, `boolean=?` | ✅ | |
-| **6.4** Pairs and lists | `cons` through `assoc`/`member` | ✅ | 20+ procedures |
-| **6.5** Symbols | `symbol?`, `symbol->string`, `string->symbol`, `symbol=?` | ✅ | |
-| **6.6** Characters | 18 character procedures | ✅ | Including `char-upcase`, `char-downcase`, `char-foldcase` |
-| **6.7** Strings | 18+ string procedures | ✅ | Including `string-upcase`, `string-downcase`, `string-for-each`, `string-map` |
-| **6.8** Vectors | 10 vector procedures | ✅ | Including `vector-for-each`, `vector-map`, `vector-fill!` |
-| **6.9** Bytevectors | 9 bytevector procedures | ✅ | See [Bytevectors](#bytevectors) |
-| **6.10** Control | `procedure?`, `apply`, `map`, `for-each`, `call/cc`, `values`, `dynamic-wind` | ✅ | See [Continuation Semantics](#continuation-semantics) |
-| **6.11** Exceptions | `with-exception-handler`, `raise`, `error` | ✅ | `raise-continuable` missing |
-| **6.12** Environments and eval | `eval`, `interaction-environment`, `scheme-report-environment` | ✅ | See [Eval and Environments](#eval-and-environments) |
-| **6.13** I/O | Ports, read, write, display | ✅ | 27+ I/O procedures |
-| **6.14** System interface | `features`, `command-line`, `exit` | ✅ | |
+| **4.1** Primitive expressions | `quote`, `lambda`, `if`, `set!`, `include` | Yes | Full support |
+| **4.2.1** Conditionals | `cond`, `case`, `and`, `or`, `when`, `unless` | Yes | Including `=>` clause in `cond` |
+| **4.2.2** Binding | `let`, `let*`, `letrec`, `letrec*`, `let-values`, `let*-values` | Yes | `letrec*` with correct R7RS semantics |
+| **4.2.3** Sequencing | `begin` | Yes | |
+| **4.2.4** Iteration | `do`, named `let` | Yes | `do` at [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) |
+| **4.2.5** Delayed evaluation | `delay`, `delay-force`, `force`, `make-promise`, `promise?` | Yes | Full iterative forcing; see [Promises](#promises) |
+| **4.2.6** Dynamic bindings | `make-parameter`, `parameterize` | Yes | Macro-transformed at parse time |
+| **4.2.7** Exception handling | `guard`, `raise`, `raise-continuable` | Note | `guard`/`raise` full; `raise-continuable` missing |
+| **4.2.8** Quasiquotation | `quasiquote`, `unquote`, `unquote-splicing` | Yes | |
+| **4.2.9** Case-lambda | `case-lambda` | Yes | Macro-transformed to variadic dispatch |
+| **4.3** Macros | `define-syntax`, `syntax-rules`, `let-syntax`, `letrec-syntax` | Yes | Hygienic; `syntax-case` not supported |
+| **5.1** Programs | Top-level expressions | Yes | |
+| **5.2** Import | `import` | Note | Lowers to `require`; `only`/`except`/`rename`/`prefix` import sets are parsed, with strict hiding still limited |
+| **5.3** Variable definitions | `define`, `define-values` | Yes | Internal defines → `letrec*` |
+| **5.4** Syntax definitions | `define-syntax` | Yes | |
+| **5.5** Record type definitions | `define-record-type` | Yes | See [Records](#records) |
+| **6.1** Equivalence | `eqv?`, `eq?`, `equal?` | Yes | |
+| **6.2** Numbers | Full numeric tower | Yes | See [Numeric Tower](#numeric-tower) |
+| **6.3** Booleans | `not`, `boolean?`, `boolean=?` | Yes | |
+| **6.4** Pairs and lists | `cons` through `assoc`/`member` | Yes | 20+ procedures |
+| **6.5** Symbols | `symbol?`, `symbol->string`, `string->symbol`, `symbol=?` | Yes | |
+| **6.6** Characters | 18 character procedures | Yes | Including `char-upcase`, `char-downcase`, `char-foldcase` |
+| **6.7** Strings | 18+ string procedures | Yes | Including `string-upcase`, `string-downcase`, `string-for-each`, `string-map` |
+| **6.8** Vectors | 10 vector procedures | Yes | Including `vector-for-each`, `vector-map`, `vector-fill!` |
+| **6.9** Bytevectors | 9 bytevector procedures | Yes | See [Bytevectors](#bytevectors) |
+| **6.10** Control | `procedure?`, `apply`, `map`, `for-each`, `call/cc`, `values`, `dynamic-wind` | Yes | See [Continuation Semantics](#continuation-semantics) |
+| **6.11** Exceptions | `with-exception-handler`, `raise`, `error` | Yes | `raise-continuable` missing |
+| **6.12** Environments and eval | `eval`, `interaction-environment`, `scheme-report-environment` | Yes | See [Eval and Environments](#eval-and-environments) |
+| **6.13** I/O | Ports, read, write, display | Yes | 27+ I/O procedures |
+| **6.14** System interface | `features`, `command-line`, `exit` | Yes | |
 
 ### Compliance Statistics
 
@@ -458,7 +458,7 @@ Eshkol implements `call-with-current-continuation` (aliased as `call/cc`) using 
   invoked any number of times, from any dynamic extent, including after the
   procedure that captured it has returned. This is what generators,
   coroutines and `amb`-style backtracking need.
-- The continuation object is a CALLABLE heap value with `HEAP_SUBTYPE_CONTINUATION`.
+- The continuation object is a CALLABLE heap value with `CALLABLE_SUBTYPE_CONTINUATION`.
 - Escape-only continuations keep the zero-overhead `setjmp`/`longjmp` path.
   The compiler recognises a capture whose continuation cannot outlive its
   frame and omits the stack copy entirely, so early return and
@@ -581,7 +581,7 @@ int64 → bignum → rational → double → complex
 
 ### Exactness Semantics
 
-R7RS requires that exact operations on exact arguments produce exact results. Eshkol tracks exactness via the `ESHKOL_FLAG_EXACT` bit in the tagged value's flags field:
+R7RS requires that exact operations on exact arguments produce exact results. Eshkol tracks exactness via the `ESHKOL_VALUE_EXACT_FLAG` bit in the tagged value's flags field:
 
 ```scheme
 ;; Exact + exact = exact
@@ -711,7 +711,7 @@ Module discovery is automatic: `collect_all_submodules()` recursively discovers 
 
 ## Macro System
 
-Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([macro_expander.cpp](../../lib/frontend/macro_expander.cpp), 1,816 lines).
+Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching. The native compiler and the bytecode VM share one engine ([syntax_rules_core.h](../../inc/eshkol/frontend/syntax_rules_core.h)) and one renaming rule ([ADR-0026](../design/adr/0026-syntax-rules-one-engine-one-renaming-rule.md)); the full rules are in the [macro reference](../reference/language/macros.md).
 
 ```scheme
 ;; Pattern-based macros
@@ -737,7 +737,7 @@ Eshkol implements R7RS hygienic macros via `syntax-rules` pattern matching ([mac
     (list x y)))                      ; => (2 1)
 ```
 
-**Hygiene:** The macro expander maintains a symbol table that renames identifiers introduced by macros to avoid capture. This means macros are safe to use in any context without variable name collisions.
+**Hygiene:** Both directions of R7RS 4.3.2 hold. A binding a template introduces can neither capture nor be captured by the caller's code, and an identifier a template uses freely (a special form, a builtin, a global, a definition-site local, another macro) means what it meant where the macro was defined, whatever the use site binds with the same spelling. The pattern language is complete: literals, `_`, custom ellipsis, ellipsis followed by further patterns, dotted tails, vectors, nested ellipses and `(... ...)`.
 
 **Supported forms:**
 - `define-syntax` — top-level macro definition

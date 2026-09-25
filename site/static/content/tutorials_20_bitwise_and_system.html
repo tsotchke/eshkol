@@ -1,0 +1,53 @@
+<h1 id="tutorial-20-bitwise-operations-and-system-interface">Tutorial 20: Bitwise Operations and System Interface</h1>
+<hr />
+<h2 id="bitwise-operations">Bitwise Operations</h2>
+<pre class="scheme"><code>(display (bitwise-and 12 10))     ;; =&gt; 8   (1100 &amp; 1010 = 1000)
+(display (bitwise-or 12 10))      ;; =&gt; 14  (1100 | 1010 = 1110)
+(display (bitwise-xor 12 10))     ;; =&gt; 6   (1100 ^ 1010 = 0110)
+(display (bitwise-not 0))         ;; =&gt; -1  (all bits flipped)
+(display (bit-shift-left 1 8))    ;; =&gt; 256
+(display (bit-shift-right 256 4)) ;; =&gt; 16
+(display (popcount 255))          ;; =&gt; 8   (8 bits set)</code></pre>
+<hr />
+<h2 id="environment-variables">Environment Variables</h2>
+<!-- doc-example: run-only platform-specific: prints the reader's own HOME and PATH -->
+<pre class="scheme"><code>(display (getenv &quot;HOME&quot;))       ;; =&gt; /Users/alice
+(display (getenv &quot;PATH&quot;))       ;; =&gt; /usr/local/bin:...</code></pre>
+<hr />
+<h2 id="time">Time</h2>
+<pre class="scheme"><code>(display (current-time))        ;; Unix timestamp (seconds)</code></pre>
+<hr />
+<h2 id="file-system">File System</h2>
+<pre class="scheme"><code>;; Create a file to work with
+(define out (open-output-file &quot;old.txt&quot;))
+(display &quot;scratch&quot; out)
+(close-port out)
+
+;; Check if file/directory exists
+(display (file-exists? &quot;old.txt&quot;))    ;; =&gt; #t
+(display (file-exists? &quot;new.txt&quot;))    ;; =&gt; #f
+
+;; Rename
+(file-rename &quot;old.txt&quot; &quot;new.txt&quot;)
+(display (file-exists? &quot;new.txt&quot;))    ;; =&gt; #t
+
+;; Remove file
+(file-delete &quot;new.txt&quot;)
+(display (file-exists? &quot;new.txt&quot;))    ;; =&gt; #f</code></pre>
+<hr />
+<h2 id="command-line-arguments">Command Line Arguments</h2>
+<p>Programs compiled with <code>eshkol-run</code> receive <code>argc</code> and <code>argv</code> through the standard main wrapper:</p>
+<pre class="scheme"><code>;; Access is via the runtime — argc/argv are passed to main
+;; and available in the entry function context</code></pre>
+<hr />
+<h2 id="random-numbers">Random Numbers</h2>
+<pre class="scheme"><code>;; Pseudo-random double in [0, 1)
+(display (random))
+
+;; Quantum-seeded RNG (uses hardware entropy when available)
+(display (quantum-random))
+(display (quantum-random-range 1 100))</code></pre>
+<hr />
+<h2 id="process-exit">Process Exit</h2>
+<pre class="scheme"><code>(exit 0)    ;; exit with code 0
+(exit 1)    ;; exit with code 1</code></pre>

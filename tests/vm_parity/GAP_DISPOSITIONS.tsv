@@ -4,21 +4,17 @@
 %make-lazy-promise-force	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	internal codegen helper name leaked into dispatch
 /rational	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 acons	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-acosh	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 adagrad-step	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 adam	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 adam-step	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 adamw-step	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 append-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 apply-window	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
-asinh	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 assq	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	R7RS 6.4: native resolves it from the Scheme stdlib (lib/core/list/search.esk); the VM's prelude does not define it and the VM has no builtin, so `(assq 'a '((a 1)))` prints WARNING: undefined variable and then aborts with 'calling non-function'. Found by scripts/run_surface_parity.py, which probes name resolution on BOTH engines -- vm_parity_audit.py could not see it because its surface is the C++ codegen dispatch table and assq is a Scheme-level define
 assv	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 memv	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 partition	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	SRFI-1: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 string-contains	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	SRFI-13: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
-atan2	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-atanh	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 avg-pool2d	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 batch-norm	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 bce-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
@@ -33,7 +29,6 @@ call-with-input-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	
 call-with-output-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-port	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 causal-mask	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
-cbrt	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 ceil	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 celu	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 char-ci<=?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	extended char ops missing in VM (no char type)
@@ -96,7 +91,6 @@ eval	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	eval/environment
 exact	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 exact-integer?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 exact-rational?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-exp2	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 exponential-decay-lr	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 fabs	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 fast-convolve	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
@@ -125,12 +119,10 @@ hinge-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty
 huber-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 ifft	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
 iir-filter	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
-inexact	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 inject-left	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 inject-right	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 input-port-open?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 interaction-environment	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	eval/environment reflection has no VM binding
-jacobian	behavioral-divergence	tests/vm_parity/found/ad_gradient_wrong.esk	silently wrong values (found/ad_gradient_wrong.esk)
 jiffies-per-second	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	time surface has no VM binding
 kaiming-normal!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 kaiming-uniform!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
@@ -149,8 +141,6 @@ linear-warmup-lr	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml f
 list*	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 list-copy	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 list-set!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-log10	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-log2	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 mae-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 make-dataloader	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 make-directory	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
@@ -170,7 +160,6 @@ null-environment	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	eval
 onnx-export-tensor	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 op:CASE_LAMBDA	behavioral-divergence	tests/vm_parity/found/case_lambda_wrong_clause.esk	wrong clause selected (found/case_lambda_wrong_clause.esk)
 op:COMPOSE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	compose undefined in VM
-op:DEFINE_SYNTAX	behavioral-divergence	tests/vm_parity/resolved/recursive_macro_zero.esk	simple rewrite macros work; recursive and set!-mutating macros diverge (resolved/recursive_macro_zero.esk, resolved/macro_set_top_level.esk)
 op:DIFF	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:DNC_ALLOC_WEIGHTS	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
@@ -183,13 +172,9 @@ op:DNC_READ_GRAD	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core
 op:DNC_WRITE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
 op:DO	behavioral-divergence	tests/vm_parity/resolved/do_composition_broken.esk	flat single do verified; nested do loses iterations, do+when spins forever, consecutive top-level dos leak state, and a do corrupts later top-level defines (resolved/do_composition_broken.esk, resolved/consecutive_do_state_leak.esk, resolved/define_after_do_corrupted.esk)
 op:DYNAMIC_WIND	behavioral-divergence	tests/vm_parity/resolved/dynamic_wind_after_twice.esk	after-thunk runs twice (resolved/dynamic_wind_after_twice.esk)
-op:HESSIAN	behavioral-divergence	tests/vm_parity/found/ad_gradient_wrong.esk	returns 0 (found/ad_gradient_wrong.esk)
-op:JACOBIAN	behavioral-divergence	tests/vm_parity/found/ad_gradient_wrong.esk	returns tensor handle, wrong values (found/ad_gradient_wrong.esk)
 op:KB_QUERY_PREFIX	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	kb-query-prefix has no VM binding
 op:LAPLACIAN	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
-op:LETREC_SYNTAX	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	same as op:LET_SYNTAX
 op:LET_STAR_VALUES	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	same family as op:LET_VALUES silent-wrong divergence
-op:LET_SYNTAX	vm-unsupported-clean-error	generated:scripts/canonicalize_vm_gaps.py	let-syntax not expanded by vm_macro (undefined-variable error)
 op:MAKE_PARAMETER	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	make-parameter undefined in VM
 op:MATCH	vm-unsupported-clean-error	generated:scripts/canonicalize_vm_gaps.py	match unsupported in VM (clean undefined-variable error)
 op:PARAMETERIZE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	depends on make-parameter; fids 702/703 exist but surface incomplete
@@ -241,7 +226,6 @@ smooth-l1-loss	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml fac
 softplus	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 split	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 split-at	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-square	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 squeeze	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 stack	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 step-decay-lr	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
@@ -263,6 +247,7 @@ string>=?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	extended st
 string>?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	extended string surface missing in VM
 sum-tag	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 sum-value	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
+swish	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 symbol=?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 tensor->vector	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-argmax	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM

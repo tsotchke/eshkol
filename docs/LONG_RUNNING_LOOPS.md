@@ -223,6 +223,34 @@ go — e.g. 64MB is a common macOS default hard limit, well under Eshkol's
 allows. Don't rely on this for a process that's supposed to run
 indefinitely; use the canonical pattern above instead.
 
+**As of v1.3.5 the overflow is reported rather than silent** (ESH-0101 /
+ESH-0112, ledger SW-81). A loop that does run the native stack out now prints
+
+```
+eshkol: stack overflow: recursion depth exceeded the 512 MiB stack (ESHKOL_STACK_SIZE); use tail recursion, or raise ESHKOL_STACK_SIZE and the OS stack limit to allow deeper recursion
+```
+
+and exits 121 — on JIT, on AOT and inside `parallel-map` workers, each of which
+installs its own `sigaltstack`. The former failure was the guard-page trap with
+no handler installed, which surfaced as a bare SIGILL with no message at all.
+That makes an unbounded-growth loop diagnosable instead of merely fatal; it
+does not make it flat, and the canonical pattern is still the fix.
+
+## Memory, not just stack
+
+A resident loop has two unbounded resources, and the stack is only one. On the
+**native** engine the per-iteration nursery reclaims a tick's garbage
+automatically, so a loop that threads state through a value keeps a flat
+resident set with no `with-region` annotation (a body containing a `gradient`
+op, a `set!` or a `tensor-set!` is excluded by design — scope those with
+`with-region`). On the **bytecode VM** there is no nursery: `with-region`
+reclaims there as of the Stage-1 region evacuator, but **outside** a region the
+VM heap has no reclamation at all, so a resident VM loop needs an explicit
+`with-region` where a native one does not. Exact-rational and bignum
+temporaries are reclaimed on the same terms as each other, so an exact-arithmetic
+tick loop is flat where the machine-integer version is. See
+[reference/runtime/memory-model.md](reference/runtime/memory-model.md).
+
 ## See also
 
 - `tests/tco/guard_loop_tail_test.esk` — the regression test for this

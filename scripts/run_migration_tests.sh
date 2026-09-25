@@ -21,6 +21,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "migration"
 
 # Colors for output
@@ -55,6 +57,7 @@ for test_file in tests/migration/*.esk; do
 
     eshkol_test_reset_bin
     if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
+        eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
         if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
             # A failure marker anywhere in the output fails the test — the old
             # `^FAIL`-anchored match never saw the indented `  <case>: FAIL`
@@ -97,7 +100,7 @@ if [ $FAIL -gt 0 ]; then
 fi
 
 echo ""
-rm -f "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN"
+eshkol_checked_rm "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN"
 
 if [ $FAIL -eq 0 ]; then
     exit 0

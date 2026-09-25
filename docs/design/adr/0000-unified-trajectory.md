@@ -1,11 +1,11 @@
 # ADR 0000 — Unified architectural trajectory
 
-- Status: Proposed
+- Status: Accepted — partially implemented: Stages 1 and 2 (instrumentation and the identity substrate: `NodeId` in `inc/eshkol/frontend/node_identity.h`; `BindingId`, `NominalTypeId` and `TypeRef` in `inc/eshkol/frontend/semantic_identity.h`; gates `scripts/run_adr0000_stage1_gate.sh` and `scripts/run_adr0000_stage2_gate.sh`) and the Stage 5 `core.dbsp` slice (`lib/core/dbsp.esk`) are in v1.3.5-evolve; remaining stages Proposed
 - Date: 2026-07-09
 - Attainment reviewed: 2026-08-25 (see "0. Attainment" below)
 - Decision owners: Eshkol maintainers
 - Supersedes: none (this document sequences, it does not replace, ADRs 0001-0009)
-- Related: ADRs 0001 (OALR), 0002 (AD, two competing proposals), 0003 (codegen/VM
+- Related: ADRs 0001 (OALR), 0002 and 0016 (AD, two competing proposals; 0016 carried the number 0002 until 2026-09-17), 0003 (codegen/VM
   parity), 0004 (types), 0005 (lambda foundations / programs-as-weights), 0006
   (language/modules), 0007 (performance), 0008 (tooling), 0009 (DBSP/incremental)
 
@@ -103,7 +103,7 @@ implementation scheduled to the far horizon).
 | ADR | Cluster | Verdict | One-line rationale | Lands in |
 |---|---|---|---|---|
 | 0001 | OALR / concurrent resident | ACCEPT-WITH-REVISIONS | Strongest-grounded ADR; the memctx/region/residence split kills the decisive `__global_arena` race; but the header ABI break and resident forever-flat presuppose the type system (0004) and must be split so each half fails alone. | v1.3.2 (Phase A), v1.4.1 (B-D), v1.5.1 + v1.8.0 (E) |
-| 0002 | AD (dense staged kernel #214 + typed static schedule #216) | ACCEPT (near-term reconciled); END-STATE RESOLVED (#214 spine) | Both are one architecture at two altitudes, 90% convergent; adopt #214 as the spine and graft four artifacts from #216 for the near term. The v1.9/v2.0 endpoint is resolved (Section 5): dense resident tape (#214) as spine, typed static reverse (#216) as v2.0 north-star. | v1.3.2 (Phase A), v1.5.0, v1.6.0-v1.6.1, v1.7.0, v2.0 |
+| 0002, 0016 | AD (dense staged kernel #214 = ADR 0002 + typed static schedule #216 = ADR 0016) | ACCEPT (near-term reconciled); END-STATE RESOLVED (#214 spine) | Both are one architecture at two altitudes, 90% convergent; adopt #214 as the spine and graft four artifacts from #216 for the near term. The v1.9/v2.0 endpoint is resolved (Section 5): dense resident tape (#214) as spine, typed static reverse (#216) as v2.0 north-star. | v1.3.2 (Phase A), v1.5.0, v1.6.0-v1.6.1, v1.7.0, v2.0 |
 | 0003 | codegen / VM parity | ACCEPT-WITH-REVISIONS (as data, not architecture) | Not an ADR but a falsifiable VM/LLVM divergence matrix; keep it as the standing parity gate for 0006 + 0002; do not fund it as independent codegen work. | gate threaded across v1.4.0, v1.6.x, v1.9.0 |
 | 0004 | one quantitative dependent type system | ACCEPT-WITH-REVISIONS | "One checker, not seven" is the right long-run architecture; the revision is scope realism — the v1.3.2 semantic spine is the single largest work item and must be decomposed and co-sequenced with 0006 and 0008. | v1.3.3 (spine), v1.4.0, v1.7.0, v1.9.0, v2.0 |
 | 0005 | lambda foundations to programs-as-weights | DEFER (architecture now, implementation late) | Clearest treatment of "programs to weights" with the correct category discipline; but entirely downstream — needs the staged AD kernel, resident sessions, and canonical LCIR that do not yet exist. | v1.7.0, v1.8.0, v1.8.1, v1.9.2 |

@@ -1,6 +1,6 @@
 # Eshkol Quick Reference Card
 
-**v1.3.5** -- 1,052 built-in functions
+**1,056 built-in functions**
 
 ## Basics
 
@@ -12,6 +12,9 @@
 ;; Functions
 (define (square x) (* x x))
 (define (add a b) (+ a b))
+
+;; Top-level begin splices definitions into the program
+(begin (define answer 42) (define doubled (* answer 2)))
 
 ;; Lambdas
 (lambda (x) (* x 2))
@@ -103,6 +106,11 @@
 (string-append s1 s2 ...)        ;; concatenate
 (string->number "999999999999999999999")  ;; -> bignum
 (number->string n)
+;; The source reader, read, and string->number share the R7RS number grammar.
+(string->number "1+2i")        ;; rectangular complex
+(string->number "#e1.5")       ;; -> 3/2
+(string->number "#xFF")        ;; -> 255
+1+0i                            ;; -> exact integer 1
 ```
 
 ## Higher-Order Functions
@@ -125,7 +133,10 @@
 
 ;; apply: leading fixed args before the final list argument
 (apply + '(1 2 3))              ;; -> 6
-(apply + 1 2 '(3 4 5))          ;; -> 15 (leading args consed onto the list)
+(apply + 1 2 '(3 4 5))          ;; -> 15 (leading args precede the final list)
+(apply vector-copy (list (vector 7 8 9)))  ;; -> #(7 8 9)  (builtins are values)
+(define sum +)
+(apply sum '(1 2 3))           ;; -> 6 (variadic builtin used as a value)
 ```
 
 ## Vectors & Tensors
@@ -192,7 +203,7 @@
 (directional-derivative f v dir)
 ```
 
-### Arbitrary-Order AD (Taylor Towers, v1.3.0-evolve)
+### Arbitrary-Order AD (Taylor Towers)
 
 See the [Automatic Differentiation guide](guide/AUTOMATIC_DIFFERENTIATION.md)
 for the full walkthrough.
@@ -203,6 +214,7 @@ for the full walkthrough.
 (derivative-n f x k)              ;; the k-th derivative f^(k)(x), any order
                                    ;; exact (bignum/rational) when x is exact
                                    ;; and f uses only +,-,*,/,non-negative expt
+;; Derivative passes can nest at arbitrary depth, subject to available memory.
 
 (require core.ad.guw)
 (mixed-partial f xs idxs)         ;; e.g. (mixed-partial f xs '(0 1 1)) = d^3f/dx0dx1^2
@@ -251,7 +263,28 @@ for the full walkthrough.
 ;; number->string / string->number with bignums
 (number->string (expt 2 128))
 (string->number "999999999999999999999")  ;; -> bignum
+
+;; Exact roots and exact expt
+(sqrt 4/9)                 ;; -> 2/3   exact
+(sqrt 16)                  ;; -> 4     exact
+(expt 8 1/3)               ;; -> 2     exact rational exponent, exact root
+(expt 2/3 -3)              ;; -> 27/8  rational base, negative exponent
+(expt 1/3 50)              ;; -> 1/717897987691852588770249
+(sqrt 2)                   ;; -> 1.4142135623730951  (no exact root)
+
+;; Exact values survive literals, quotes and vectors
+#(1/2 3 1.5 123456789012345678901234567890)
+'123456789012345678901234567890          ;; exact, quoted or evaluated
+`(x ,(/ 1 3))                            ;; -> (x 1/3)
+(tensor 1/2 2/3)                         ;; -> #(0.5 0.6666666666666666)
+                                         ;;    tensors are dense f64 by
+                                         ;;    construction; #(...) stays exact
+
+;; Exactness through differentiation follows the runtime value
+(derivative (lambda (x) (* x x)) 1/3)    ;; -> 2/3   exact
 ```
+
+Everything above answers identically on the native engine and the bytecode VM.
 
 ## Complex Numbers
 
@@ -270,7 +303,7 @@ for the full walkthrough.
 (+ z1 z2)                 ;; complex addition
 (* z1 z2)                 ;; complex multiplication
 (/ z1 z2)                 ;; complex division (Smith's formula)
-(sqrt (make-rectangular -1.0 0.0))  ;; -> 0+1i
+(sqrt (make-rectangular -1.0 0.0))  ;; -> +i   (zero real part elided)
 (exp (make-rectangular 0.0 pi))     ;; -> -1+0i (Euler's identity)
 
 ;; Predicates
@@ -312,6 +345,17 @@ for the full walkthrough.
 (guard (e (#t (list (error-object-message e) (error-object-irritants e))))
   (error "boom" 1 2))       ;; -> ("boom" (1 2))
 (error-object? e)           ;; -> #t for an (error ...)-raised condition
+
+;; Standard ports are parameters; implicit I/O follows their current binding.
+(define out (open-output-string))
+(parameterize ((current-output-port out)) (display "ok"))
+(get-output-string out)     ;; -> "ok"
+
+;; Record predicates distinguish types and reject ordinary vectors.
+(define-record-type point
+  (make-point x y) point?
+  (x point-x) (y point-y))
+(point? (make-point 1 2))   ;; -> #t
 
 ;; Multiple values
 (values 1 2 3)              ;; return multiple values
@@ -375,8 +419,10 @@ for the full walkthrough.
 
 ;; Knowledge bases
 (define kb (make-kb))
-(kb-assert! kb (make-fact 'parent (list 'alice 'bob)))
-(kb-query kb 'parent)          ;; -> list of matching facts
+(kb-assert! kb (make-fact 'parent 'alice 'bob))
+(kb-query kb (make-fact 'parent 'alice ?child))
+                               ;; -> ({?child -> bob}): one substitution per matching fact
+(walk ?child (car (kb-query kb '(parent alice ?child))))  ;; -> bob
 (kb? kb)                       ;; -> #t
 (fact? f)                      ;; -> #t
 
@@ -458,7 +504,18 @@ sinh cosh tanh asinh acosh atanh
 
 ;; Exponential
 exp log log10 log2 sqrt pow
+
+;; Directed rounding (no AD; both engines)
+fl-next-up fl-next-down
 ```
+
+```scheme
+(fl-next-up 1.0)      ;; -> 1.0000000000000002
+(fl-next-down 1.0)    ;; -> 0.9999999999999999
+```
+The primitive beneath certified enclosures — `ia+`/`ia*`/`ia-sqrt`/... and the
+rigorous Taylor models `tm-var`/`tm+`/`tm*`/`tm-bound`/`tm-prove-bound`, all
+reached with `(require core.ad.taylor_models)`.
 
 ## Type Predicates
 
@@ -611,6 +668,20 @@ eshkol-run [options] file.esk
 -l LIB              Link library
 -L PATH             Library path
 -n, --no-stdlib     Skip stdlib
+-e, --eval EXPR     JIT-evaluate one expression
+-r, --run FILE      JIT-compile and run in memory (no artifact written)
 --shared-lib        Link a shared library (C-ABI exports; add -c for an object)
---wasm       WebAssembly output
+--wasm              WebAssembly output
+--profile NAME      Execution profile: hosted-native, hosted-wasm, hosted-vm,
+                    freestanding-kernel-native, freestanding-mcu-native,
+                    freestanding-vm, embedded-vm
+-B, --emit-eskb P   Emit a bytecode-VM ESKB module to P
+--version           Version string
+--features          This build's compile-time capabilities, as KEY=VALUE lines
+--abi-fingerprint   The object-ABI fingerprint (ADR-0012) this build uses
 ```
+
+Machine-driven use: `eshkol-repl --machine` speaks **EREPL v1**, a versioned
+JSON request/response protocol over the original READY/DONE/FAIL framing, with
+`tools/erepl_client.py` as the reference client. See
+[reference/runtime/eshkol-repl.md](reference/runtime/eshkol-repl.md).

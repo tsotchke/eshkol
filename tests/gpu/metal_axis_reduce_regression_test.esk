@@ -42,7 +42,6 @@
 (if (= gpu-ready 0)
     (begin
       (display "SKIP: no active GPU backend on this host") (newline)
-      (display "PASS: metal_axis_reduce_regression_test (skipped, no GPU backend)") (newline)
       (exit 0))
     0)
 
@@ -52,7 +51,6 @@
     (begin
       (display "SKIP: active GPU backend is not Metal (backend code=")
       (display backend) (display ")") (newline)
-      (display "PASS: metal_axis_reduce_regression_test (skipped, non-Metal backend)") (newline)
       (exit 0))
     0)
 
@@ -65,7 +63,6 @@
     (begin
       (display "SKIP: GPU threshold does not admit these element counts even after lowering it")
       (newline)
-      (display "PASS: metal_axis_reduce_regression_test (skipped, threshold)") (newline)
       (exit 0))
     0)
 

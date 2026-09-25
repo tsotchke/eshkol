@@ -635,6 +635,7 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         autodiff_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
         // Set up lambda resolution callback
         autodiff_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
+        autodiff_->setVariadicLookupCallback(ControlFlowCallbacks::variadicLookupWrapper);
         // Calculus extraction: wire closure call, arity table, captures, closure alloc
         autodiff_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
         autodiff_->setGradientSpreadCallCallback(ControlFlowCallbacks::gradientSpreadCallWrapper);
@@ -661,6 +662,8 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         call_apply_->setVariadicFunctionInfo(&variadic_function_info);
         call_apply_->setFunctionTable(&function_table);
         call_apply_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
+        call_apply_->setTopLevelCalleeReassignedCallback(
+            ControlFlowCallbacks::isReassignedTopLevelNameWrapper);
         call_apply_->setExtractConsCarCallback(ControlFlowCallbacks::extractConsCarWrapper);
         call_apply_->setGetConsAccessorCallback(ControlFlowCallbacks::getConsAccessorWrapper);
         call_apply_->setCreateConsCallback(ControlFlowCallbacks::consCreateWrapper);
@@ -670,6 +673,7 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         call_apply_->setApplyForwardRefCallback(ControlFlowCallbacks::applyForwardRefWrapper);
         call_apply_->setClosureCallbacks(ControlFlowCallbacks::closureCallWithInfoWrapper,
                                          ControlFlowCallbacks::closureSpreadCallWrapper);
+        call_apply_->setClosureListCallback(ControlFlowCallbacks::closureListCallWrapper);
         eshkol_debug("Created CallApplyCodegen with callbacks");
 
         // Initialize MapCodegen - higher-order list mapping operations
@@ -741,6 +745,8 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         binding_->setLambdaTracking(&eshkol::llvm_codegen_detail::lastGeneratedLambdaName(), &function_table);
         binding_->setLetrecExcludedCaptureNames(&letrec_excluded_capture_names);
         binding_->setMutationAnalysisCallback(ControlFlowCallbacks::isVarSetWrapper);
+        binding_->setReassignedTopLevelAnalysisCallback(
+            ControlFlowCallbacks::isReassignedTopLevelNameWrapper);
         binding_->setObservationAnalysisCallback(ControlFlowCallbacks::isVarObservedWrapper);
         binding_->setContinuationEscapeAnalysisCallback(
             ControlFlowCallbacks::continuationEscapeWrapper);

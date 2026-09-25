@@ -1,4 +1,6 @@
+#include "../../inc/eshkol/core/number_syntax.h"
 #include "../core/model_io_atomic.h"
+#include "../core/tensor_observation.h"
 
 /* Dense linear solver (lib/core/linear_solve.cpp): full-f64 Ax=b, row-major
  * f64 buffers, returns 0 on success or a nonzero catchable status code. */
@@ -5030,12 +5032,58 @@ static Value vm_tensor_collection_at(VM* vm, Value v, int index) {
     return NIL_VAL;
 }
 
+/**
+ * @brief The VM half of the tensor slot store boundary for a value that may
+ *        be a derivative carrier (ADR-0020 amendment 2).
+ *
+ * Stores @p v into flat slot @p i of the contiguous tensor @p t. A real number
+ * converts exactly as `inexact` converts it (vm_tensor_slot_value). A forward-
+ * mode carrier -- a VAL_DUAL, which on the VM is both the first-order dual and
+ * the Taylor tower, with any exact halves -- gives the tensor a dual_data
+ * array parallel to data (the representation the vector coercion and the
+ * dual-aware tensor natives already use) and is kept whole there, so an
+ * element read returns the carrier rather than its primal. Every tensor
+ * construction path stores through here: `(tensor a b ...)`, a nested
+ * collection, `make-tensor`'s fill, and a collection coerced to an operand.
+ *
+ * @return 1 on success, 0 when @p v has no tensor representation (nothing is
+ *         written).
+ */
+static int vm_tensor_store_value(VM* vm, VmTensor* t, int64_t i, Value v) {
+    if (!t || !t->data || i < 0 || i >= t->total) return 0;
+    if (v.type == VAL_DUAL) {
+        if (!is_valid_heap_ptr(vm, v.as.ptr) || !vm->heap.objects[v.as.ptr] ||
+            vm->heap.objects[v.as.ptr]->type != HEAP_DUAL ||
+            !vm->heap.objects[v.as.ptr]->opaque.ptr)
+            return 0;
+        if (!t->dual_data) {
+            t->dual_data = (VmDual*)vm_alloc(&vm->heap.regions,
+                                             (size_t)t->total * sizeof(VmDual));
+            if (!t->dual_data) return 0;
+            memset(t->dual_data, 0, (size_t)t->total * sizeof(VmDual));
+            for (int64_t j = 0; j < t->total; j++) t->dual_data[j].primal = t->data[j];
+            t->dtype = VM_TENSOR_DTYPE_DUAL;
+        }
+        t->dual_data[i] = *(VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        t->data[i] = as_number_vm(vm, v);
+        return 1;
+    }
+    double d = 0.0;
+    if (!vm_tensor_slot_value(vm, v, &d)) return 0;
+    t->data[i] = d;
+    if (t->dual_data) {
+        memset(&t->dual_data[i], 0, sizeof(VmDual));
+        t->dual_data[i].primal = d;
+    }
+    return 1;
+}
+
 /** @brief Row-major fill of @p data from nested collection @p v, validating
  *         @p v against @p shape at every level. Returns 0 on success, -1 when
  *         @p v is ragged (a level's length disagrees with the shape) or nests
  *         deeper/shallower than the inferred rank. */
 static int vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int level,
-                                 int rank, double* data, int64_t* pos, int64_t cap) {
+                                 int rank, VmTensor* out, int64_t* pos, int64_t cap) {
     if (level == rank) {
         if (vm_tensor_collection_len(vm, v) >= 0) return -1;  /* deeper than rank */
         /* MS-04 / SW-166: a tensor's elements are homogeneous doubles, so an
@@ -5046,16 +5094,17 @@ static int vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int leve
          * heap payload) rather than either being refused here or, on the
          * native engine's equivalent path, silently reading as 0.0. */
         if (v.type != VAL_INT && v.type != VAL_FLOAT &&
-            v.type != VAL_RATIONAL && v.type != VAL_BIGNUM) return -1;
+            v.type != VAL_RATIONAL && v.type != VAL_BIGNUM && v.type != VAL_DUAL) return -1;
         if (*pos >= cap) return -1;
-        data[(*pos)++] = as_number_vm(vm, v);
+        /* A derivative carrier leaf is kept whole (ADR-0020 amendment 2). */
+        if (!vm_tensor_store_value(vm, out, (*pos)++, v)) return -1;
         return 0;
     }
     int len = vm_tensor_collection_len(vm, v);
     if (len != (int)shape[level]) return -1;                  /* ragged */
     for (int i = 0; i < len; i++) {
         if (vm_tensor_nested_fill(vm, vm_tensor_collection_at(vm, v, i),
-                                  shape, level + 1, rank, data, pos, cap) != 0)
+                                  shape, level + 1, rank, out, pos, cap) != 0)
             return -1;
     }
     return 0;
@@ -5100,7 +5149,7 @@ static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
     VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, rank);
     if (!t) { if (err) *err = "tensor: allocation failed"; return NULL; }
     int64_t pos = 0;
-    if (vm_tensor_nested_fill(vm, v, shape, 0, rank, t->data, &pos, t->total) != 0
+    if (vm_tensor_nested_fill(vm, v, shape, 0, rank, t, &pos, t->total) != 0
         || pos != t->total) {
         if (err) *err = "tensor: nested collection is not rectangular";
         return NULL;
@@ -5219,12 +5268,13 @@ static void vm_raise_error_msg(VM* vm, const char* msg);   /* defined below */
  * WITHOUT pushing: the raise restored the handler's stack pointer and a
  * fabricated push would corrupt it.
  */
-static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
+static VmTensor* vm_tensor_operand_carrier(VM* vm, Value v, const char* op_name) {
     if (v.type == VAL_TENSOR) {
         if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
         VmTensor* tensor = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-        if (!tensor || !eshkol_tensor_metadata_valid(tensor->shape, tensor->n_dims,
-                                                      tensor->data, tensor->total)) {
+        if (!tensor || !eshkol_tensor_operand_metadata_valid(
+                          tensor->shape, tensor->n_dims,
+                          tensor->data, tensor->total, op_name)) {
             char msg[176];
             snprintf(msg, sizeof msg, "%s: invalid tensor metadata",
                      op_name ? op_name : "tensor-op");
@@ -5238,23 +5288,16 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
         VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
         if (!vec) return NULL;
 
-        /* Fast path: a flat homogeneous numeric vector -> a fresh 1-D tensor.
-         * Forward-mode derivative calls use the same vector shape with one or
-         * more VAL_DUAL elements. Preserve those carriers in a parallel
-         * VmDual array instead of rejecting them or retaining only primals. */
+        /* Fast path: a flat numeric vector -> a fresh 1-D tensor. Forward-mode
+         * derivative calls use the same vector shape with VAL_DUAL elements
+         * (a dual or a Taylor tower); the slot store boundary keeps those
+         * carriers whole in dual_data instead of rejecting them or retaining
+         * only primals (ADR-0020 amendment 2). */
         int all_numeric = 1;
-        int has_dual = 0;
         for (int i = 0; i < vec->len; i++) {
-            if (vec->items[i].type == VAL_DUAL) {
-                if (!is_valid_heap_ptr(vm, vec->items[i].as.ptr) ||
-                    !vm->heap.objects[vec->items[i].as.ptr] ||
-                    vm->heap.objects[vec->items[i].as.ptr]->type != HEAP_DUAL ||
-                    !vm->heap.objects[vec->items[i].as.ptr]->opaque.ptr) {
-                    all_numeric = 0;
-                    break;
-                }
-                has_dual = 1;
-            } else if (vec->items[i].type != VAL_INT && vec->items[i].type != VAL_FLOAT) {
+            ValType et = vec->items[i].type;
+            if (et != VAL_INT && et != VAL_FLOAT && et != VAL_RATIONAL &&
+                et != VAL_BIGNUM && et != VAL_DUAL) {
                 all_numeric = 0;
                 break;
             }
@@ -5263,26 +5306,10 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
             int64_t shape1[1] = { vec->len };
             VmTensor* t = vm_tensor_new(&vm->heap.regions, shape1, 1);
             if (!t) return NULL;
-            if (has_dual) {
-                t->dual_data = (VmDual*)vm_alloc(&vm->heap.regions,
-                    (size_t)vec->len * sizeof(VmDual));
-                if (!t->dual_data) return NULL;
-                t->dtype = VM_TENSOR_DTYPE_DUAL;
-            }
-            for (int i = 0; i < vec->len; i++) {
-                if (vec->items[i].type == VAL_DUAL) {
-                    t->dual_data[i] = *(VmDual*)vm->heap.objects[
-                        vec->items[i].as.ptr]->opaque.ptr;
-                    t->data[i] = t->dual_data[i].primal;
-                } else {
-                    t->data[i] = as_number_vm(vm, vec->items[i]);
-                    if (has_dual) {
-                        t->dual_data[i].primal = t->data[i];
-                        t->dual_data[i].tangent = 0.0;
-                    }
-                }
-            }
-            return t;
+            int stored = 1;
+            for (int i = 0; i < vec->len && stored; i++)
+                stored = vm_tensor_store_value(vm, t, i, vec->items[i]);
+            if (stored) return t;
         }
 
         /* #322: a nested numeric vector (#(#(1 2) #(3 4)) ...) coerces to an
@@ -5341,6 +5368,195 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
     return NULL;
 }
 
+/* ── Forward tangents through tensor operations (SW-186) ──
+ *
+ * A tensor may carry a first-order tangent in dual_data, parallel to data.
+ * vm_tensor_operand_carrier (above) returns it with that carrier; only the
+ * natives that propagate it (or read only shape metadata) call it.
+ * vm_tensor_operand is the default for every other native and REFUSES a
+ * tensor that carries a tangent: a derivative is never read as its primal
+ * and answered as 0. The linear operations get their tangent by running the
+ * existing double kernels on tangent tensors (vm_tensor_tangent_of), so
+ * broadcasting and shape rules are the kernels' own. */
+static int vm_tensor_has_tangent(const VmTensor* t) {
+    if (!t || !t->dual_data) return 0;
+    for (int64_t i = 0; i < t->total; i++) {
+        if (t->dual_data[i].tangent != 0.0 || vm_dual_is_series(&t->dual_data[i])) return 1;
+    }
+    return 0;
+}
+
+static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
+    VmTensor* t = vm_tensor_operand_carrier(vm, v, op_name);
+    if (t && vm_tensor_has_tangent(t)) {
+        char msg[240];
+        snprintf(msg, sizeof msg,
+                 "%s: a derivative cannot pass through this tensor operation on the VM "
+                 "(it has no forward-mode rule here); use the native backend",
+                 op_name ? op_name : "tensor operation");
+        vm_raise_error_msg(vm, msg);
+        return NULL;
+    }
+    return t;
+}
+
+/* The tangent of @p t as a plain contiguous tensor of its shape: zeros when
+ * it carries none. NULL (with a raised error) for a higher-order element. */
+static VmTensor* vm_tensor_tangent_of(VM* vm, const VmTensor* t, const char* who) {
+    VmRegionStack* rs = &vm->heap.regions;
+    VmTensor* c = vm_tensor_copy(rs, t);
+    if (!c) return NULL;
+    if (c->dual_data) {
+        for (int64_t i = 0; i < c->total; i++) {
+            if (vm_dual_is_series(&c->dual_data[i])) {
+                char msg[200];
+                snprintf(msg, sizeof msg, "%s: a higher-order derivative cannot pass through a tensor operation on the VM; use the native backend", who);
+                vm_raise_error_msg(vm, msg);
+                return NULL;
+            }
+            c->data[i] = c->dual_data[i].tangent;
+        }
+    } else {
+        for (int64_t i = 0; i < c->total; i++) c->data[i] = 0.0;
+    }
+    c->dual_data = NULL;
+    c->dtype = VM_TENSOR_DTYPE_F64;
+    return c;
+}
+
+/* Make @p out (fresh, contiguous) carry @p tangent (same shape) as its tangent. */
+static int vm_tensor_attach_tangent(VM* vm, VmTensor* out, const VmTensor* tangent) {
+    if (!out || !tangent || tangent->total != out->total) return 0;
+    out->dual_data = (VmDual*)vm_alloc(&vm->heap.regions, (size_t)out->total * sizeof(VmDual));
+    if (!out->dual_data) return 0;
+    memset(out->dual_data, 0, (size_t)out->total * sizeof(VmDual));
+    for (int64_t i = 0; i < out->total; i++) {
+        out->dual_data[i].primal = out->data[i];
+        out->dual_data[i].tangent = tangent->data[i];
+    }
+    out->dtype = VM_TENSOR_DTYPE_DUAL;
+    return 1;
+}
+
+/* First-order tangent for the elementwise tensor family.  Keeping the chain
+ * rule here means every VM unary builtin uses the same carrier boundary and
+ * never falls back to reading a dual tensor's primal (SW-186). */
+static VmTensor* vm_tensor_unary_with_tangent(VM* vm, const VmTensor* t,
+                                              VmTensor* out, int fid,
+                                              const char* who) {
+    if (!out || !vm_tensor_has_tangent(t)) return out;
+    VmRegionStack* rs = &vm->heap.regions;
+    VmTensor* tangent = vm_tensor_new(rs, t->shape, t->n_dims);
+    if (!tangent) return NULL;
+    for (int64_t i = 0; i < t->total; ++i) {
+        double x = t->data[i];
+        double dx = t->dual_data ? t->dual_data[i].tangent : 0.0;
+        double d = 0.0;
+        switch (fid) {
+            case 450: d = -dx; break;                         /* neg */
+            case 451: d = (x > 0.0 ? dx : (x < 0.0 ? -dx : 0.0)); break;
+            case 452: d = dx / (2.0 * sqrt(x)); break;
+            case 453: d = out->data[i] * dx; break;
+            case 454: d = dx / x; break;
+            case 455: d = cos(x) * dx; break;
+            case 461: d = -sin(x) * dx; break;
+            case 462: d = x > 0.0 ? dx : 0.0; break;          /* relu */
+            case 464: d = out->data[i] * (1.0 - out->data[i]) * dx; break;
+            case 465: d = (1.0 - out->data[i] * out->data[i]) * dx; break; /* tanh */
+            case 466: d = (x > 0.0 ? 1.0 : 0.01) * dx; break;
+            case 467: d = x > 0.0 ? dx : exp(x) * dx; break; /* elu */
+            case 468: {                                      /* gelu */
+                const double k = 0.7978845608028654;
+                double u = k * (x + 0.044715 * x * x * x);
+                double du = k * (1.0 + 3.0 * 0.044715 * x * x);
+                d = (0.5 * (1.0 + tanh(u)) + 0.5 * x * (1.0 - tanh(u) * tanh(u)) * du) * dx;
+                break;
+            }
+            case 469: {                                      /* swish */
+                double s = 1.0 / (1.0 + exp(-x));
+                d = (s + x * s * (1.0 - s)) * dx;
+                break;
+            }
+            default:
+                vm_raise_error_msg(vm, who ? who : "tensor unary operation");
+                return NULL;
+        }
+        tangent->data[i] = d;
+    }
+    if (!vm_tensor_attach_tangent(vm, out, tangent)) return NULL;
+    return out;
+}
+
+static VmTensor* vm_tensor_softmax_with_tangent(VM* vm, const VmTensor* t,
+                                                VmTensor* out) {
+    if (!out || !vm_tensor_has_tangent(t)) return out;
+    VmTensor* tangent = vm_tensor_new(&vm->heap.regions, t->shape, t->n_dims);
+    if (!tangent) return NULL;
+    int64_t width = t->n_dims ? t->shape[t->n_dims - 1] : t->total;
+    if (width <= 0) width = 1;
+    for (int64_t base = 0; base < t->total; base += width) {
+        double dot = 0.0;
+        for (int64_t j = 0; j < width && base + j < t->total; ++j) {
+            double dx = t->dual_data ? t->dual_data[base + j].tangent : 0.0;
+            dot += out->data[base + j] * dx;
+        }
+        for (int64_t j = 0; j < width && base + j < t->total; ++j) {
+            double dx = t->dual_data ? t->dual_data[base + j].tangent : 0.0;
+            tangent->data[base + j] = out->data[base + j] * (dx - dot);
+        }
+    }
+    if (!vm_tensor_attach_tangent(vm, out, tangent)) return NULL;
+    return out;
+}
+
+/* Broadcast-aware tangent rules for tensor-pow/max/min.  Ties follow the
+ * existing native rule: maximum/minimum select the second operand when equal. */
+static VmTensor* vm_tensor_binary_special_tangent(VM* vm, const VmTensor* a,
+                                                  const VmTensor* b, VmTensor* out,
+                                                  int fid) {
+    if (!out || (!vm_tensor_has_tangent(a) && !vm_tensor_has_tangent(b))) return out;
+    VmRegionStack* rs = &vm->heap.regions;
+    VmTensor* tangent = vm_tensor_new(rs, out->shape, out->n_dims);
+    int64_t* indices = vm_tensor_dim_scratch(rs, out->n_dims);
+    if (!tangent || !indices) return NULL;
+    for (int64_t i = 0; i < out->total; ++i) {
+        int64_t ai = vm_broadcast_src_index(i, out->shape, out->n_dims,
+                                             a->shape, a->n_dims, a->strides, indices);
+        int64_t bi = vm_broadcast_src_index(i, out->shape, out->n_dims,
+                                             b->shape, b->n_dims, b->strides, indices);
+        double da = a->dual_data ? a->dual_data[ai].tangent : 0.0;
+        double db = b->dual_data ? b->dual_data[bi].tangent : 0.0;
+        double av = a->data[ai], bv = b->data[bi];
+        if (fid == 445) {
+            if (db != 0.0) {
+                if (av <= 0.0) {
+                    vm_raise_error_msg(vm, "tensor-pow: derivative with respect to exponent requires a positive base");
+                    return NULL;
+                }
+                tangent->data[i] = out->data[i] * (db * log(av) + bv * da / av);
+            } else if (av == 0.0) {
+                /* For a constant positive integer exponent, d(0^n)=0. */
+                tangent->data[i] = (bv > 1.0 && floor(bv) == bv) ? 0.0 :
+                    (bv == 1.0 ? da : 0.0);
+            } else if (av < 0.0 && floor(bv) == bv) {
+                /* Integer powers have a real derivative at negative bases. */
+                tangent->data[i] = bv * pow(av, bv - 1.0) * da;
+            } else if (av > 0.0) {
+                tangent->data[i] = bv * pow(av, bv - 1.0) * da;
+            } else {
+                vm_raise_error_msg(vm, "tensor-pow: derivative domain requires a positive base or constant integer exponent");
+                return NULL;
+            }
+        } else if (fid == 446) {
+            tangent->data[i] = av > bv ? da : db;
+        } else {
+            tangent->data[i] = av < bv ? da : db;
+        }
+    }
+    if (!vm_tensor_attach_tangent(vm, out, tangent)) return NULL;
+    return out;
+}
+
 /**
  * @brief SW-26: `(vector-ref t idx)` where `t` is a HEAP_TENSOR, not a
  *         HEAP_VECTOR — e.g. the tensor `fg-marginal` returns. Before this
@@ -5364,8 +5580,29 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
  * (the corrupted-heap-pointer sentinel case) is likewise a silent "return 0,
  * push nothing" per its own documented contract above.
  */
+static Value vm_make_taylor_val(VM* vm, VmDual* tower);   /* defined below */
+
+/** @brief The ONE element reader for a tensor slot (ADR-0020 amendment 2).
+ *
+ * A tensor carrying dual_data holds a whole forward-mode carrier per slot --
+ * a first-order dual or a Taylor tower, with any exact halves. The element is
+ * returned as that carrier, copied so a later store into the slot cannot
+ * change a value already read. Rebuilding it from primal/tangent (as the
+ * tensor-ref native once did) dropped a tower's higher coefficients and its
+ * exactness (SW-197). A plain tensor's slot is its f64. */
+static Value vm_tensor_element_value(VM* vm, const VmTensor* t, int64_t flat) {
+    if (t->dual_data) {
+        VmDual* copy = (VmDual*)vm_alloc(&vm->heap.regions, sizeof(VmDual));
+        if (!copy) { vm->error = 1; return NIL_VAL; }
+        *copy = t->dual_data[flat];
+        return vm_make_taylor_val(vm, copy);
+    }
+    return FLOAT_VAL(t->data[flat]);
+}
+
 static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
-    VmTensor* t = vm_tensor_operand(vm, tensor_val, "vector-ref");
+    /* An element read keeps the element's derivative carrier (SW-186). */
+    VmTensor* t = vm_tensor_operand_carrier(vm, tensor_val, "vector-ref");
     if (!t) return 0;
     int64_t idx = (int64_t)as_number(idx_val);
     if (t->n_dims <= 1) {
@@ -5373,7 +5610,7 @@ static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
             vm_raise_error_msg(vm, "vector-ref: index out of bounds");
             return 0;
         }
-        vm_push(vm, FLOAT_VAL(t->data[idx]));
+        vm_push(vm, vm_tensor_element_value(vm, t, idx));
         return 1;
     }
     if (idx < 0 || idx >= t->shape[0]) {
@@ -5399,7 +5636,9 @@ static int vm_vecref_tensor_path(VM* vm, Value tensor_val, Value idx_val) {
  * Mirrors CollectionCodegen::vectorSet's tensor path: unlike vector-ref,
  * native does NOT special-case N-D row addressing here — `idx` is always
  * bounds-checked against the FLAT total element count regardless of rank,
- * and the value is stored as a double directly into the flat data buffer.
+ * and the value is converted to the slot's double by vm_tensor_slot_value(),
+ * the VM half of the ADR-0020 slot store boundary (a value with no
+ * real-number representation raises instead of being stored as 0.0).
  *
  * Returns 1 on success (caller still pushes the void result, matching the
  * VAL_VECTOR path's convention). On an out-of-range index this RAISES a
@@ -5413,7 +5652,13 @@ static int vm_vecset_tensor_path(VM* vm, Value tensor_val, Value idx_val, Value 
         vm_raise_error_msg(vm, "vector-set!: index out of bounds");
         return 0;
     }
-    t->data[idx] = as_number(val);
+    double slot = 0.0;
+    if (!vm_tensor_slot_value(vm, val, &slot)) {
+        vm_raise_error_msg(vm, "vector-set!: value has no representation in a numeric "
+                               "tensor slot (a tensor-backed vector holds real numbers only)");
+        return 0;
+    }
+    t->data[idx] = slot;
     return 1;
 }
 
@@ -5621,8 +5866,17 @@ int eshkol_vm_host_push_double(VM* vm, double value) {
 /** @brief Invoke a user closure as part of an AD operation and account for
  *         the actual primal evaluation performed by this VM backend. */
 static Value vm_ad_call_closure(VM* vm, Value closure, Value* args, int argc) {
-    if (vm) vm->ad_primal_calls++;
-    return vm_call_closure_from_native(vm, closure, args, argc);
+    if (!vm) return NIL_VAL;
+    vm->ad_primal_calls++;
+    /* Every AD operator calls the differentiated function through here, so
+     * this is the one place the live-pass count (ADR-0027 section 3) is
+     * kept. A raise that escapes the call restores it from the native-escape
+     * snapshot in vm_run. */
+    int live = vm->ad_live_passes;
+    vm->ad_live_passes = live + 1;
+    Value result = vm_call_closure_from_native(vm, closure, args, argc);
+    vm->ad_live_passes = live;
+    return result;
 }
 
 /** @brief Recover a closure's declared fixed-argument arity via the VM's
@@ -5945,6 +6199,32 @@ static double* vm_ad_extract_point(VM* vm, Value x_val, int64_t* out_n,
     return point;
 }
 
+/** @brief The components of a collection point as VM values, carriers kept
+ *         (a tensor's components are its doubles). */
+static Value* vm_ad_point_values(VM* vm, Value x_val, int64_t n) {
+    if (n <= 0 || (uint64_t)n > SIZE_MAX / sizeof(Value)) return NULL;
+    Value* out = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+    if (!out) { vm->error = 1; return NULL; }
+    int64_t i = 0;
+    if (x_val.type == VAL_PAIR) {
+        Value cur = x_val;
+        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr) && i < n) {
+            out[i++] = vm->heap.objects[cur.as.ptr]->cons.car;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+    } else if (x_val.type == VAL_VECTOR && is_valid_heap_ptr(vm, x_val.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+        if (vec) for (; i < n && i < (int64_t)vec->len; i++) out[i] = vec->items[i];
+    } else if (x_val.type == VAL_TENSOR && is_valid_heap_ptr(vm, x_val.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+        if (t && t->data) for (; i < n && i < t->total; i++) out[i] = FLOAT_VAL(t->data[i]);
+    } else {
+        out[i++] = x_val;
+    }
+    for (; i < n; i++) out[i] = FLOAT_VAL(0.0);
+    return out;
+}
+
 /** @brief Arena-allocate @p n argument slots for an AD closure call, sized by
  *         the point's arity rather than a fixed maximum. */
 static Value* vm_ad_arg_slots(VM* vm, int64_t n) {
@@ -5997,6 +6277,436 @@ static Value vm_ad_make_dual_vector(VM* vm, const double* point, int n, int seed
     return (Value){ .type = VAL_VECTOR, .as.ptr = vptr };
 }
 
+static Value vm_complex_value(VM* vm, VmComplex* result);
+
+/* ── Nested differentiation: seed and extraction (ADR-0027) ──
+ *
+ * One rule for every forward operator. A pass runs as a LEVEL carrier when a
+ * forward pass is already live or its point is already a carrier; otherwise
+ * it keeps its un-nested seed (the scalar dual for `derivative`, the classic
+ * tower for `derivative-n`/`taylor`). Extraction reads the result in the
+ * pass's own epoch, so whatever the enclosing levels carried is returned
+ * whole to them. */
+
+/** @brief The point of a pass as a carrier: a dual is itself, a number is a
+ *         scalar constant (exact when the number is). */
+static VmDual* vm_ad_point_carrier(VM* vm, Value v) {
+    if (v.type == VAL_DUAL && v.as.ptr >= 0 && is_valid_heap_ptr(vm, v.as.ptr) &&
+        vm->heap.objects[v.as.ptr]->opaque.ptr)
+        return (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+    return vm_dual_constant(&vm->heap.regions, as_number_vm(vm, v),
+                            vm_exact_rational_of(vm, v));
+}
+
+static int vm_ad_runs_as_level(VM* vm, Value point) {
+    if (vm->ad_live_passes > 0 || point.type == VAL_DUAL) return 1;
+    if (point.type == VAL_COMPLEX && point.as.ptr >= 0 &&
+        is_valid_heap_ptr(vm, point.as.ptr)) {
+        VmComplex* z = (VmComplex*)vm->heap.objects[point.as.ptr]->opaque.ptr;
+        return z && (z->creal || z->cimag);
+    }
+    return 0;
+}
+
+/** @brief A coefficient as a VM value: a scalar constant is its number, any
+ *         other carrier stays a VAL_DUAL for the enclosing pass. */
+static Value vm_ad_coeff_value(VM* vm, VmDual* c) {
+    if (!c) { vm->error = 1; return NIL_VAL; }
+    /* SW-224: with no forward pass live, no perturbation remains that a
+     * carrier could belong to, so whatever a coefficient still carries (a
+     * NaN or infinite tangent a pole left behind, a tower of a finished
+     * pass) is not user-visible: the value is its primal. This is the one
+     * exit every extraction takes, so no result ever surfaces as a dual. */
+    if (vm->ad_live_passes == 0 && !vm_dual_is_constant(c)) {
+        VmRational* e = vm_dual_exact_value(c);
+        if (e) {
+            Value v = vm_exact_rational_val(vm, e);
+            if (v.type != VAL_NIL) return v;
+        }
+        return FLOAT_VAL(c->kind == VM_DUAL_KIND_TAYLOR && c->coeff ? c->coeff[0] : c->primal);
+    }
+    if (vm_dual_is_constant(c)) {
+        if (c->eprimal) {
+            Value v = vm_exact_rational_val(vm, c->eprimal);
+            if (v.type != VAL_NIL) return v;
+        }
+        return FLOAT_VAL(c->primal);
+    }
+    return vm_make_taylor_val(vm, c);
+}
+
+/** @brief Section 4 on one real component: coefficient k (or k! times it) of
+ *         @p part in @p epoch, or, when the part does not depend on this
+ *         level, the part itself at order 0 and a zero otherwise. */
+static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint32_t epoch, uint32_t k,
+                               int derivative, int point_exact) {
+    VmRegionStack* rs = &vm->heap.regions;
+    if (epoch == 0 && part->kind == VM_DUAL_KIND_SCALAR && k <= 1) {
+        /* The un-nested first-order pass: its perturbation is the scalar
+         * dual's tangent. */
+        if (k == 0) return part;
+        return vm_dual_constant(rs, part->tangent, vm_dual_exact_tangent(part));
+    }
+    VmDual* c = epoch == 0 ? NULL
+        : derivative ? vm_dual_level_derivative(rs, part, epoch, k)
+                     : vm_dual_level_coefficient(rs, part, epoch, k);
+    if (c) return c;
+    if (k == 0) return part;
+    return point_exact
+        ? vm_dual_constant(rs, 0.0, vm_rational_from_int(vm_active_arena(rs), 0))
+        : vm_dual_constant(rs, 0.0, NULL);
+}
+
+/** @brief Read the result of the pass of @p epoch (0: the un-nested scalar
+ *         dual pass): coefficient @p k, or k! times it when @p derivative.
+ *         A vector or list result is read element by element, a complex
+ *         result part by part. */
+static Value vm_ad_level_read(VM* vm, Value result, uint32_t epoch, uint32_t k,
+                              int derivative, int point_exact) {
+    VmRegionStack* rs = &vm->heap.regions;
+    if (result.type == VAL_VECTOR && result.as.ptr >= 0 &&
+        is_valid_heap_ptr(vm, result.as.ptr)) {
+        VmVector* v = (VmVector*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+        int n = v ? (int)v->len : 0;
+        Value* items = n > 0 ? (Value*)vm_alloc(rs, (size_t)n * sizeof(Value)) : NULL;
+        if (n > 0 && !items) { vm->error = 1; return NIL_VAL; }
+        for (int i = 0; i < n; i++)
+            items[i] = vm_ad_level_read(vm, v->items[i], epoch, k, derivative, point_exact);
+        return vm_make_value_vector(vm, items, n);
+    }
+    if (result.type == VAL_PAIR && is_valid_heap_ptr(vm, result.as.ptr)) {
+        Value car = vm->heap.objects[result.as.ptr]->cons.car;
+        Value cdr = vm->heap.objects[result.as.ptr]->cons.cdr;
+        Value head = vm_ad_level_read(vm, car, epoch, k, derivative, point_exact);
+        Value tail = cdr.type == VAL_NIL ? cdr
+                   : vm_ad_level_read(vm, cdr, epoch, k, derivative, point_exact);
+        return vm_cons_value(vm, head, tail);
+    }
+    if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
+        is_valid_heap_ptr(vm, result.as.ptr)) {
+        VmDual* r = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+        if (r && vm_dual_carrier_epoch(r) == epoch)
+            return vm_ad_coeff_value(vm, vm_ad_read_part(vm, r, epoch, k,
+                                                         derivative, point_exact));
+    } else if (result.type == VAL_COMPLEX && result.as.ptr >= 0 &&
+               is_valid_heap_ptr(vm, result.as.ptr)) {
+        /* ADR-0025/0027: a complex value stays the outermost structure; each
+         * part is read in this level on its own. */
+        VmComplex* z = (VmComplex*)vm->heap.objects[result.as.ptr]->opaque.ptr;
+        if (z) {
+            VmDual* re = z->creal ? z->creal : vm_dual_constant(rs, z->real, NULL);
+            VmDual* im = z->cimag ? z->cimag : vm_dual_constant(rs, z->imag, NULL);
+            re = vm_ad_read_part(vm, re, epoch, k, derivative, 0);
+            im = vm_ad_read_part(vm, im, epoch, k, derivative, 0);
+            return vm_complex_value(vm, vm_complex_from_parts(rs, re, im));
+        }
+    }
+    /* The result does not depend on this pass: order 0 is the result, and
+     * a higher order is a zero that is exact when both the point and the
+     * result are (the numeric tower's contagion). */
+    if (k == 0) return result;
+    return point_exact && vm_exact_rational_of(vm, result) ? INT_VAL(0) : FLOAT_VAL(0.0);
+}
+
+/** @brief Seed the pass for @p f at @p point with @p order and call it.
+ *         @p epoch_out receives the pass's epoch, @p point_exact whether its
+ *         point is exact. A complex point perturbs its real coordinate (the
+ *         holomorphic dz = 1); the imaginary part is constant in this pass. */
+static Value vm_ad_seed_and_call(VM* vm, Value f, Value point, uint32_t order,
+                                 uint32_t* epoch_out, int* point_exact) {
+    VmRegionStack* rs = &vm->heap.regions;
+    uint32_t epoch = vm_dual_next_taylor_epoch();
+    int level = vm_ad_runs_as_level(vm, point);
+    *epoch_out = epoch;
+    *point_exact = 0;
+    Value arg;
+    if (point.type == VAL_COMPLEX && point.as.ptr >= 0 &&
+        is_valid_heap_ptr(vm, point.as.ptr)) {
+        VmComplex* z = (VmComplex*)vm->heap.objects[point.as.ptr]->opaque.ptr;
+        VmDual* re = z->creal ? z->creal : vm_dual_constant(rs, z->real, NULL);
+        VmDual* seed = level ? vm_dual_level_seed(rs, re, order, epoch)
+                             : vm_dual_make_taylor_seed(rs, NULL, z->real, order, 0, epoch);
+        VmDual* im = z->cimag ? z->cimag : vm_dual_constant(rs, z->imag, NULL);
+        arg = vm_complex_value(vm, vm_complex_from_parts(rs, seed, im));
+    } else {
+        VmDual* p = vm_ad_point_carrier(vm, point);
+        if (!p) { vm->error = 1; return NIL_VAL; }
+        VmRational* exact = vm_dual_exact_value(p);
+        *point_exact = exact != NULL;
+        VmDual* seed = level
+            ? vm_dual_level_seed(rs, p, order, epoch)
+            : vm_dual_make_taylor_seed(rs, exact, p->primal, order, exact != NULL, epoch);
+        arg = vm_make_taylor_val(vm, seed);
+    }
+    if (arg.type == VAL_NIL) { vm->error = 1; return NIL_VAL; }
+    return vm_ad_call_closure(vm, f, &arg, 1);
+}
+
+/** @brief `(derivative-n f x k)` and `(taylor f x k)`: the k-th derivative,
+ *         or the coefficient list (c0 ... ck). Order 0 is evaluation. */
+static Value vm_taylor_pass(VM* vm, Value f, Value point, uint32_t order,
+                            int want_list) {
+    if (f.type != VAL_CLOSURE) {
+        vm_raise_error_msg(vm, "taylor/derivative-n: the first argument must be a callable function");
+        return NIL_VAL;
+    }
+    if (order == 0) {
+        Value evaluated = vm_ad_call_closure(vm, f, &point, 1);
+        return want_list ? vm_cons_value(vm, evaluated, NIL_VAL) : evaluated;
+    }
+    uint32_t epoch = 0;
+    int point_exact = 0;
+    Value result = vm_ad_seed_and_call(vm, f, point, order, &epoch, &point_exact);
+    if (vm->error) return NIL_VAL;
+    if (!want_list)
+        return vm_ad_level_read(vm, result, epoch, order, 1, point_exact);
+    Value out = NIL_VAL;
+    for (uint32_t k = order + 1; k-- > 0;)
+        out = vm_cons_value(vm, vm_ad_level_read(vm, result, epoch, k, 0, point_exact), out);
+    return out;
+}
+
+/** @brief A first-order `derivative` that runs as an order-1 level. */
+static Value vm_derivative_level(VM* vm, Value f, Value x) {
+    uint32_t epoch = 0;
+    int point_exact = 0;
+    Value result = vm_ad_seed_and_call(vm, f, x, 1, &epoch, &point_exact);
+    if (vm->error) return NIL_VAL;
+    return vm_ad_level_read(vm, result, epoch, 1, 1, point_exact);
+}
+
+/* ── Every vector operator reaches the level protocol (ADR-0027 section 3) ──
+ *
+ * jacobian, the vector-point hessian, divergence, curl, laplacian and
+ * directional-derivative are assembled from forward passes. Nested inside a
+ * live pass, or at a point whose components are carriers, each pass is a
+ * level of its own over the components' carriers, and the pieces are combined
+ * in the generic carrier arithmetic, so the enclosing perturbations reach the
+ * answer. Un-nested, the operators keep their scalar-dual fast paths. */
+
+/** @brief Does the point (or direction) carry a carrier in a component? */
+static int vm_ad_values_carry(const Value* comps, int n) {
+    for (int j = 0; comps && j < n; j++) if (comps[j].type == VAL_DUAL) return 1;
+    return 0;
+}
+
+/** @brief Call @p f on the component values, as one vector for an arity-1
+ *         field and spread otherwise. */
+static Value vm_ad_call_components(VM* vm, Value f, Value* args, int n, int arity) {
+    if (arity == 1) {
+        Value v = vm_make_value_vector(vm, args, n);
+        return vm_ad_call_closure(vm, f, &v, 1);
+    }
+    return vm_ad_call_closure(vm, f, args, n);
+}
+
+/** @brief One forward level pass of order @p order over the point
+ *         @p comps: x_j = p_j + dir_j t_E, where dir is the unit vector e_i
+ *         when @p dir is NULL. Returns f(x); @p epoch_out names the level. */
+static Value vm_ad_level_pass(VM* vm, Value f, const Value* comps, int n, int arity,
+                              int i, const Value* dir, uint32_t order,
+                              uint32_t* epoch_out) {
+    VmRegionStack* rs = &vm->heap.regions;
+    uint32_t epoch = vm_dual_next_taylor_epoch();
+    *epoch_out = epoch;
+    Value* args = vm_ad_arg_slots(vm, n);
+    if (!args) return NIL_VAL;
+    VmDual* t = dir ? vm_dual_level_seed(rs, vm_dual_constant(rs, 0.0,
+                          vm_rational_from_int(vm_active_arena(rs), 0)), order, epoch)
+                    : NULL;
+    for (int j = 0; j < n; j++) {
+        if (!dir) {
+            args[j] = j == i ? vm_make_taylor_val(vm, vm_dual_level_seed(
+                                   rs, vm_ad_point_carrier(vm, comps[j]), order, epoch))
+                             : comps[j];
+        } else {
+            VmDual* x = vm_dual_add(rs, vm_ad_point_carrier(vm, comps[j]),
+                                    vm_dual_mul(rs, vm_ad_point_carrier(vm, dir[j]), t));
+            args[j] = vm_make_taylor_val(vm, x);
+        }
+        if (args[j].type == VAL_NIL) { vm->error = 1; return NIL_VAL; }
+    }
+    return vm_ad_call_components(vm, f, args, n, arity);
+}
+
+/** @brief Component @p r of a field value (vector, list, or a scalar for
+ *         r == 0); a missing component is 0. */
+static Value vm_ad_field_part(VM* vm, Value v, int r) {
+    if (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmVector* vv = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return vv && r < (int)vv->len ? vv->items[r] : INT_VAL(0);
+    }
+    if (v.type == VAL_PAIR) {
+        for (int k = 0; k < r && v.type == VAL_PAIR; k++) v = vm->heap.objects[v.as.ptr]->cons.cdr;
+        return v.type == VAL_PAIR ? vm->heap.objects[v.as.ptr]->cons.car : INT_VAL(0);
+    }
+    return r == 0 ? v : INT_VAL(0);
+}
+
+static int vm_ad_field_len(VM* vm, Value v) {
+    if (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmVector* vv = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return vv ? (int)vv->len : 0;
+    }
+    int n = 0;
+    while (v.type == VAL_PAIR) { n++; v = vm->heap.objects[v.as.ptr]->cons.cdr; }
+    return n;
+}
+
+/** @brief a + s*b in the generic carrier arithmetic (s = +1 or -1). */
+static Value vm_ad_value_axpy(VM* vm, Value a, Value b, int s) {
+    VmRegionStack* rs = &vm->heap.regions;
+    VmDual* x = vm_ad_point_carrier(vm, a);
+    VmDual* y = vm_ad_point_carrier(vm, b);
+    VmDual* r = x && y ? (s > 0 ? vm_dual_add(rs, x, y) : vm_dual_sub(rs, x, y)) : NULL;
+    return vm_ad_coeff_value(vm, r);
+}
+
+/** @brief Pack @p e (row-major, of the given shape) as a tensor. A carrier
+ *         entry rides in the parallel dual_data array, so an enclosing pass
+ *         reads it back through tensor-ref/vector-ref. */
+static Value vm_ad_pack_tensor(VM* vm, const Value* e, const int64_t* shape, int rank) {
+    int64_t total = 1;
+    for (int k = 0; k < rank; k++) total *= shape[k];
+    VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, rank);
+    if (!t) { vm->error = 1; return NIL_VAL; }
+    int carriers = 0;
+    for (int64_t i = 0; i < total; i++) carriers |= e[i].type == VAL_DUAL;
+    if (carriers) {
+        t->dual_data = (VmDual*)vm_alloc(&vm->heap.regions, (size_t)total * sizeof(VmDual));
+        if (!t->dual_data) { vm->error = 1; return NIL_VAL; }
+        memset(t->dual_data, 0, (size_t)total * sizeof(VmDual));
+        t->dtype = VM_TENSOR_DTYPE_DUAL;
+    }
+    for (int64_t i = 0; i < total; i++) {
+        t->data[i] = as_number_vm(vm, e[i]);
+        if (!carriers) continue;
+        if (e[i].type == VAL_DUAL) t->dual_data[i] = *vm_ad_point_carrier(vm, e[i]);
+        else { t->dual_data[i].primal = t->data[i]; t->dual_data[i].eprimal = vm_exact_rational_of(vm, e[i]); }
+    }
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return NIL_VAL; }
+    vm->heap.objects[ptr]->type = HEAP_TENSOR;
+    vm->heap.objects[ptr]->opaque.ptr = t;
+    return (Value){.type = VAL_TENSOR, .as.ptr = ptr};
+}
+
+/** @brief The Jacobian as an m x n tensor: column i is the
+ *         derivative of every output along e_i. */
+static Value vm_ad_level_jacobian(VM* vm, Value f, const Value* comps, int n, int arity) {
+    Value* cols = vm_ad_arg_slots(vm, n);
+    if (!cols) return NIL_VAL;
+    int m = -1;
+    for (int i = 0; i < n; i++) {
+        uint32_t epoch = 0;
+        Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 1, &epoch);
+        if (vm->error) return NIL_VAL;
+        if (r.type != VAL_VECTOR && r.type != VAL_PAIR) {
+            vm_raise_error_msg(vm, "jacobian: function returned a non-vector value; jacobian is defined for vector-valued functions (R^n -> R^m). Use gradient for scalar-valued functions.");
+            return NIL_VAL;
+        }
+        cols[i] = vm_ad_level_read(vm, r, epoch, 1, 1, 0);
+        if (m < 0) m = vm_ad_field_len(vm, cols[i]);
+    }
+    if (m < 0) m = 0;
+    Value* e = vm_ad_arg_slots(vm, (int64_t)(m > 0 ? m : 1) * n);
+    if (!e) return NIL_VAL;
+    for (int r = 0; r < m; r++)
+        for (int i = 0; i < n; i++) e[r * n + i] = vm_ad_field_part(vm, cols[i], r);
+    int64_t shape[2] = { m, n };
+    return vm_ad_pack_tensor(vm, e, shape, 2);
+}
+
+/** @brief The vector-point Hessian through two nested order-1 levels per
+ *         entry: x_k = p_k + d_ki t1 + d_kj t2, H_ij = d/dt2 d/dt1 f. */
+static Value vm_ad_level_hessian(VM* vm, Value f, const Value* comps, int n, int arity) {
+    VmRegionStack* rs = &vm->heap.regions;
+    Value* e = vm_ad_arg_slots(vm, (int64_t)n * n);
+    Value* args = vm_ad_arg_slots(vm, n);
+    if (!e || !args) return NIL_VAL;
+    for (int i = 0; i < n; i++) {
+        for (int j = i; j < n; j++) {
+            uint32_t e1 = vm_dual_next_taylor_epoch(), e2 = vm_dual_next_taylor_epoch();
+            for (int k = 0; k < n; k++) {
+                VmDual* x = vm_ad_point_carrier(vm, comps[k]);
+                if (x && k == i) x = vm_dual_level_seed(rs, x, 1, e1);
+                if (x && k == j) x = vm_dual_level_seed(rs, x, 1, e2);
+                args[k] = vm_make_taylor_val(vm, x);
+                if (args[k].type == VAL_NIL) { vm->error = 1; return NIL_VAL; }
+            }
+            Value r = vm_ad_call_components(vm, f, args, n, arity);
+            if (vm->error) return NIL_VAL;
+            Value hij = vm_ad_level_read(vm, vm_ad_level_read(vm, r, e2, 1, 1, 0), e1, 1, 1, 0);
+            e[i * n + j] = hij;
+            e[j * n + i] = hij;
+        }
+    }
+    int64_t shape[2] = { n, n };
+    return vm_ad_pack_tensor(vm, e, shape, 2);
+}
+
+/** @brief div F = sum_i dF_i/dx_i. */
+static Value vm_ad_level_divergence(VM* vm, Value f, const Value* comps, int n, int arity) {
+    Value acc = INT_VAL(0);
+    for (int i = 0; i < n && !vm->error; i++) {
+        uint32_t epoch = 0;
+        Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 1, &epoch);
+        if (vm->error) return NIL_VAL;
+        acc = vm_ad_value_axpy(vm, acc, vm_ad_field_part(vm, vm_ad_level_read(vm, r, epoch, 1, 1, 0), i), 1);
+    }
+    return acc;
+}
+
+/** @brief laplacian f = sum_i d^2 f/dx_i^2, one order-2 level per axis. */
+static Value vm_ad_level_laplacian(VM* vm, Value f, const Value* comps, int n, int arity) {
+    Value acc = INT_VAL(0);
+    for (int i = 0; i < n && !vm->error; i++) {
+        uint32_t epoch = 0;
+        Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 2, &epoch);
+        if (vm->error) return NIL_VAL;
+        acc = vm_ad_value_axpy(vm, acc, vm_ad_level_read(vm, r, epoch, 2, 1, 0), 1);
+    }
+    return acc;
+}
+
+/** @brief curl F from the Jacobian's columns (a 2-D field is embedded with
+ *         F3 = 0 and no z dependence), as a 3-vector tensor. */
+static Value vm_ad_level_curl(VM* vm, Value f, const Value* comps, int n, int arity) {
+    int nc = n < 3 ? n : 3;
+    Value col[3] = { INT_VAL(0), INT_VAL(0), INT_VAL(0) };
+    for (int j = 0; j < nc; j++) {
+        uint32_t epoch = 0;
+        Value r = vm_ad_level_pass(vm, f, comps, nc, arity, j, NULL, 1, &epoch);
+        if (vm->error) return NIL_VAL;
+        col[j] = vm_ad_level_read(vm, r, epoch, 1, 1, 0);
+    }
+#define J(i, j) ((j) < nc ? vm_ad_field_part(vm, col[j], (i)) : INT_VAL(0))
+    Value e[3] = {
+        vm_ad_value_axpy(vm, J(2, 1), J(1, 2), -1),
+        vm_ad_value_axpy(vm, J(0, 2), J(2, 0), -1),
+        vm_ad_value_axpy(vm, J(1, 0), J(0, 1), -1) };
+#undef J
+    int64_t shape[1] = { 3 };
+    return vm_ad_pack_tensor(vm, e, shape, 1);
+}
+
+/** @brief D_v f = d/dt f(x + v t) at t = 0, one level. */
+static Value vm_ad_level_directional(VM* vm, Value f, const Value* comps,
+                                     const Value* dir, int n, int arity) {
+    uint32_t epoch = 0;
+    Value r = vm_ad_level_pass(vm, f, comps, n, arity, -1, dir, 1, &epoch);
+    if (vm->error) return NIL_VAL;
+    return vm_ad_level_read(vm, r, epoch, 1, 1, 0);
+}
+
+/** @brief Should a vector operator take the level route: inside a live pass,
+ *         or with a carrier among its point's components? */
+static int vm_ad_vector_op_nested(VM* vm, const Value* comps, int n) {
+    return vm->ad_live_passes > 0 || vm_ad_values_carry(comps, n);
+}
+
+
+
 /** @brief Exact forward-mode gradient of @p f_val at @p x_val.
  *
  * Arity-resolved to mirror the native codegen path exactly:
@@ -6013,47 +6723,13 @@ static Value vm_ad_make_dual_vector(VM* vm, const double* point, int n, int seed
 static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
     int arity = vm_closure_arity(vm, f_val);
 
-    /* Preserve an enclosing forward carrier before flattening the point to
-     * doubles. A Taylor point rides its own tangent through the inner
-     * gradient; a scalar dual is lifted to a first-order Taylor carrier so
-     * the inner result can return the outer tangent instead of triggering the
-     * old single-perturbation rejection. */
-    if (arity == 1 && x_val.type == VAL_DUAL && x_val.as.ptr >= 0 &&
-        is_valid_heap_ptr(vm, x_val.as.ptr)) {
-        VmDual* outer = (VmDual*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-        if (outer && outer->kind == VM_DUAL_KIND_TAYLOR) {
-            VmDual* seed = vm_dual_make_taylor_ride_seed(&vm->heap.regions, outer);
-            if (seed) {
-                Value seed_val = vm_make_taylor_val(vm, seed);
-                Value result = vm_ad_call_closure(vm, f_val, &seed_val, 1);
-                if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
-                    is_valid_heap_ptr(vm, result.as.ptr)) {
-                    VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                    VmDual* promoted = vm_dual_taylor_promote_tangent(
-                        &vm->heap.regions, rd);
-                    if (promoted) return vm_make_taylor_val(vm, promoted);
-                }
-            }
-            return FLOAT_VAL(0.0);
-        }
-        if (outer && outer->kind == VM_DUAL_KIND_SCALAR) {
-            VmDual* seed = vm_dual_make_taylor_scalar_seed(&vm->heap.regions, outer);
-            if (seed) {
-                Value seed_val = vm_make_taylor_val(vm, seed);
-                Value result = vm_ad_call_closure(vm, f_val, &seed_val, 1);
-                if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
-                    is_valid_heap_ptr(vm, result.as.ptr)) {
-                    VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                    if (rd && rd->kind == VM_DUAL_KIND_TAYLOR && rd->tangent_coeff) {
-                        return vm_make_dual_val(vm,
-                                                rd->order >= 1 ? rd->coeff[1] : 0.0,
-                                                rd->order >= 1 ? rd->tangent_coeff[1] : 0.0);
-                    }
-                }
-            }
-            return FLOAT_VAL(0.0);
-        }
-    }
+    /* ADR-0027: a scalar point inside a live pass, or a point that is
+     * already a carrier, runs as an order-1 level, so the enclosing
+     * perturbations survive the flattening below. */
+    if ((x_val.type == VAL_DUAL || x_val.type == VAL_INT || x_val.type == VAL_FLOAT ||
+         x_val.type == VAL_RATIONAL || x_val.type == VAL_BIGNUM) &&
+        vm_ad_runs_as_level(vm, x_val))
+        return vm_derivative_level(vm, f_val, x_val);
 
     int is_collection = 0;
     int64_t point_n = 0;
@@ -6071,25 +6747,6 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
     if (!is_collection && n == 1) {
         VmRational* xr = vm_exact_rational_of(vm, x_val);
         if (xr) {
-            if (vm_taylor_active_depth > 0 || vm_exact_gradient_readback > 0) {
-                uint32_t epoch = vm_dual_next_taylor_epoch();
-                VmDual* tower_seed = vm_dual_make_taylor_seed(
-                    &vm->heap.regions, xr, vm_rational_to_double(xr), 1, 1,
-                    epoch);
-                if (tower_seed) {
-                    Value tower_arg = vm_make_taylor_val(vm, tower_seed);
-                    Value tower_result = vm_ad_call_closure(
-                        vm, f_val, &tower_arg, 1);
-                    if (tower_result.type == VAL_DUAL && tower_result.as.ptr >= 0 &&
-                        is_valid_heap_ptr(vm, tower_result.as.ptr)) {
-                        VmDual* rd = (VmDual*)vm->heap.objects[
-                            tower_result.as.ptr]->opaque.ptr;
-                        VmDual* projected = vm_dual_taylor_project_epoch(
-                            &vm->heap.regions, rd, epoch, 1);
-                        if (projected) return vm_make_taylor_val(vm, projected);
-                    }
-                }
-            }
             VmDual* ed = vm_dual_make_exact_seed(&vm->heap.regions, xr);
             if (ed) {
                 int32_t dp = heap_alloc(&vm->heap);
@@ -6097,17 +6754,9 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
                     vm->heap.objects[dp]->type = HEAP_DUAL;
                     vm->heap.objects[dp]->opaque.ptr = ed;
                     Value earg = (Value){.type = VAL_DUAL, .as.ptr = dp};
-                    int saved_exact_readback = vm_exact_gradient_readback;
-                    vm_exact_gradient_readback = saved_exact_readback + 1;
                     Value eres = vm_ad_call_closure(vm, f_val, &earg, 1);
-                    vm_exact_gradient_readback = saved_exact_readback;
                     if (eres.type == VAL_DUAL && eres.as.ptr >= 0) {
                         VmDual* rd = (VmDual*)vm->heap.objects[eres.as.ptr]->opaque.ptr;
-                        if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
-                            VmDual* promoted = vm_dual_taylor_promote_tangent(
-                                &vm->heap.regions, rd);
-                            if (promoted) return vm_make_taylor_val(vm, promoted);
-                        }
                         VmRational* et = vm_dual_exact_tangent(rd);
                         if (et) {
                             Value ev = vm_exact_rational_val(vm, et);
@@ -6121,14 +6770,6 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
         }
         Value dual_arg = vm_make_dual_val(vm, point[0], 1.0);
         Value result = vm_ad_call_closure(vm, f_val, &dual_arg, 1);
-        if (result.type == VAL_DUAL && result.as.ptr >= 0) {
-            VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-            if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
-                VmDual* promoted = vm_dual_taylor_promote_tangent(
-                    &vm->heap.regions, rd);
-                if (promoted) return vm_make_taylor_val(vm, promoted);
-            }
-        }
         return FLOAT_VAL(vm_dual_tangent_of(vm, result));
     }
 
@@ -6138,6 +6779,36 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
     if (!grads || !gradient_values) return FLOAT_VAL(0);
     for (int i = 0; i < n; i++) gradient_values[i] = FLOAT_VAL(0.0);
 
+    /* ADR-0027: inside a live pass, or at a point whose components are
+     * carriers, every component pass runs as its own order-1 level over the
+     * component's carrier, so enclosing perturbations are kept. */
+    Value* comps = vm_ad_point_values(vm, x_val, n);
+    int nested = vm->ad_live_passes > 0;
+    for (int j = 0; comps && j < n && !nested; j++) nested = comps[j].type == VAL_DUAL;
+    if (nested && comps) {
+        Value* args = vm_ad_arg_slots(vm, n);
+        if (!args) return FLOAT_VAL(0);
+        for (int i = 0; i < n && !vm->error; i++) {
+            uint32_t epoch = vm_dual_next_taylor_epoch();
+            VmDual* p = vm_ad_point_carrier(vm, comps[i]);
+            Value seed = vm_make_taylor_val(vm, vm_dual_level_seed(&vm->heap.regions, p, 1, epoch));
+            for (int j = 0; j < n; j++) args[j] = j == i ? seed : comps[j];
+            Value result;
+            if (arity == 1) {
+                Value* items = vm_ad_arg_slots(vm, n);
+                if (!items) return FLOAT_VAL(0);
+                memcpy(items, args, (size_t)n * sizeof(Value));
+                result = vm_ad_call_closure(vm, f_val, (Value[]){vm_make_value_vector(vm, items, n)}, 1);
+            } else {
+                result = vm_ad_call_closure(vm, f_val, args, n);
+            }
+            gradient_values[i] = vm_ad_level_read(vm, result, epoch, 1, 1,
+                                                  vm_dual_exact_value(p) != NULL);
+            grads[i] = 0.0;
+        }
+        return vm_make_value_vector(vm, gradient_values, n);
+    }
+
     if (arity == 1) {
         /* Whole-collection loss: pass one vector of dual elements per pass. */
         for (int i = 0; i < n; i++) {
@@ -6145,14 +6816,6 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
             if (vm->error) break;
             Value result = vm_ad_call_closure(vm, f_val, &arg, 1);
             grads[i] = vm_dual_tangent_of(vm, result);
-            if (result.type == VAL_DUAL && result.as.ptr >= 0) {
-                VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
-                    VmDual* promoted = vm_dual_taylor_promote_tangent(
-                        &vm->heap.regions, rd);
-                    if (promoted) gradient_values[i] = vm_make_taylor_val(vm, promoted);
-                }
-            }
         }
     } else {
         /* Spread: f takes N scalar args (arity == n, or unknown). */
@@ -6163,14 +6826,6 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
                 args[j] = vm_make_dual_val(vm, point[j], (j == i) ? 1.0 : 0.0);
             Value result = vm_ad_call_closure(vm, f_val, args, n);
             grads[i] = vm_dual_tangent_of(vm, result);
-            if (result.type == VAL_DUAL && result.as.ptr >= 0) {
-                VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
-                    VmDual* promoted = vm_dual_taylor_promote_tangent(
-                        &vm->heap.regions, rd);
-                    if (promoted) gradient_values[i] = vm_make_taylor_val(vm, promoted);
-                }
-            }
         }
     }
 
@@ -6178,205 +6833,6 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
         if (gradient_values[i].type == VAL_FLOAT && grads[i] != 0.0)
             gradient_values[i] = FLOAT_VAL(grads[i]);
     return vm_make_value_vector(vm, gradient_values, n);
-}
-
-/** @brief Invoke @p f on a VM Taylor seed of order @p order. */
-static Value vm_taylor_apply(VM* vm, Value f, Value point, uint32_t order,
-                             int* nested_result) {
-    if (nested_result) *nested_result = 0;
-    if (f.type != VAL_CLOSURE) {
-        vm_raise_error_msg(vm, "taylor/derivative-n: the first argument must be a callable function");
-        return NIL_VAL;
-    }
-    /* derivative-n/taylor order zero is ordinary evaluation.  Do not wrap the
-     * point in a new tower: the wrapper has no derivative coefficient and can
-     * only discard an enclosing dual/Taylor representation. */
-    if (order == 0) {
-        vm_taylor_active_depth++;
-        Value evaluated = vm_ad_call_closure(vm, f, &point, 1);
-        vm_taylor_active_depth--;
-        if (nested_result) *nested_result = 2; /* direct order-zero evaluation */
-        return evaluated;
-    }
-    VmDual* outer = NULL;
-    if (point.type == VAL_DUAL && point.as.ptr >= 0 &&
-        point.as.ptr < vm->heap.capacity && vm->heap.objects[point.as.ptr])
-        outer = (VmDual*)vm->heap.objects[point.as.ptr]->opaque.ptr;
-
-    VmDual* seed = NULL;
-    int nested_kind = 0; /* 1 = RIDE, 2 = CARRY_TWR */
-    if (outer && vm_dual_is_taylor(outer)) {
-        if (order == 1) {
-            seed = vm_dual_make_taylor_ride_seed(&vm->heap.regions, outer);
-            nested_kind = 1;
-        } else if (outer->order == 1) {
-            seed = vm_dual_make_taylor_carry_seed(&vm->heap.regions, outer, order);
-            nested_kind = 2;
-        } else {
-            vm_raise_error_msg(vm,
-                "unsupported nested Taylor differentiation: both passes "
-                "have order >= 2");
-            return NIL_VAL;
-        }
-    } else {
-        VmRational* exact_point = vm_exact_rational_of(vm, point);
-        seed = vm_dual_make_taylor_seed(
-            &vm->heap.regions, exact_point, as_number_vm(vm, point), order,
-            exact_point != NULL, vm_dual_next_taylor_epoch());
-    }
-    if (!seed) { vm->error = 1; return NIL_VAL; }
-    Value arg = vm_make_taylor_val(vm, seed);
-    if (arg.type == VAL_NIL) return NIL_VAL;
-    vm_taylor_active_depth++;
-    Value result = vm_ad_call_closure(vm, f, &arg, 1);
-    vm_taylor_active_depth--;
-    if (nested_kind == 1) {
-        VmDual* rd = NULL;
-        if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
-            result.as.ptr < vm->heap.capacity && vm->heap.objects[result.as.ptr])
-            rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-        VmDual* promoted = vm_dual_taylor_promote_tangent(&vm->heap.regions, rd);
-        if (nested_result) *nested_result = 1;
-        return promoted ? vm_make_taylor_val(vm, promoted) : FLOAT_VAL(0.0);
-    }
-    if (nested_kind == 2) {
-        VmDual* rd = NULL;
-        if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
-            result.as.ptr < vm->heap.capacity && vm->heap.objects[result.as.ptr])
-            rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-        VmDual* carried = vm_dual_taylor_carry_result(
-            &vm->heap.regions, rd, order, outer->epoch);
-        if (nested_result) *nested_result = 1;
-        return carried ? vm_make_taylor_val(vm, carried) : FLOAT_VAL(0.0);
-    }
-    return result;
-}
-
-/** @brief Convert a Taylor coefficient or derivative to a VM scalar value. */
-static Value vm_taylor_result_value(VM* vm, Value result, uint32_t n,
-                                    int derivative) {
-    if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
-        result.as.ptr < vm->heap.capacity && vm->heap.objects[result.as.ptr]) {
-        VmDual* d = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-        if (d && vm_dual_is_taylor(d)) {
-            if (!derivative && d->tangent_coeff && n <= d->order) {
-                if (d->tangent_epoch != 0 && d->tangent_epoch != d->epoch) {
-                    VmDual* projected = vm_dual_taylor_project_coefficient(
-                        &vm->heap.regions, d, d->epoch, n);
-                    if (projected) {
-                        if (vm_taylor_active_depth == 0) {
-                            if (projected->kind == VM_DUAL_KIND_SCALAR) {
-                                VmRational* ep = vm_dual_exact_primal(projected);
-                                if (ep) return vm_exact_rational_val(vm, ep);
-                                return FLOAT_VAL(projected->primal);
-                            }
-                            VmRational* outermost = vm_dual_taylor_exact_coeff(
-                                projected, 0);
-                            if (outermost) return vm_exact_rational_val(vm, outermost);
-                            return FLOAT_VAL(vm_dual_taylor_coeff(projected, 0));
-                        }
-                        return vm_make_taylor_val(vm, projected);
-                    }
-                }
-                if (d->exact_coeff && d->exact_tangent_coeff &&
-                    d->exact_coeff[n] && d->exact_tangent_coeff[n]) {
-                    VmDual* exact_dual = vm_dual_make_exact_pair(
-                        &vm->heap.regions, d->exact_coeff[n],
-                        d->exact_tangent_coeff[n]);
-                    if (exact_dual) return vm_make_taylor_val(vm, exact_dual);
-                }
-                return vm_make_dual_val(vm, d->coeff[n], d->tangent_coeff[n]);
-            }
-            if (derivative) {
-                if (d->tangent_coeff && d->tangent_epoch != 0 &&
-                    d->tangent_epoch != d->epoch) {
-                    VmDual* projected = vm_dual_taylor_project_epoch(
-                        &vm->heap.regions, d, d->epoch, n);
-                    if (projected) {
-                        if (vm_taylor_active_depth == 0) {
-                            VmRational* outermost = vm_dual_taylor_exact_coeff(
-                                projected, 0);
-                            if (outermost) return vm_exact_rational_val(vm, outermost);
-                            if (projected->kind == VM_DUAL_KIND_SCALAR) {
-                                VmRational* ep = vm_dual_exact_primal(projected);
-                                if (ep) return vm_exact_rational_val(vm, ep);
-                                return FLOAT_VAL(projected->primal);
-                            }
-                            return FLOAT_VAL(vm_dual_taylor_coeff(projected, 0));
-                        }
-                        return vm_make_taylor_val(vm, projected);
-                    }
-                }
-                if (d->exact_coeff && d->exact_tangent_coeff &&
-                    n <= d->order && d->exact_coeff[n] &&
-                    d->exact_tangent_coeff[n] &&
-                    vm_exact_gradient_readback) {
-                    VmRational* factor = vm_rational_from_int(
-                        vm_active_arena(&vm->heap.regions), 1);
-                    for (uint32_t i = 2; i <= n && factor; ++i)
-                        factor = vm_rational_op_exact(
-                            &vm->heap.regions, factor,
-                            vm_rational_from_int(vm_active_arena(&vm->heap.regions), i), '*');
-                    VmRational* value = factor ? vm_rational_op_exact(
-                        &vm->heap.regions, factor, d->exact_coeff[n], '*') : NULL;
-                    VmRational* tangent = factor ? vm_rational_op_exact(
-                        &vm->heap.regions, factor, d->exact_tangent_coeff[n], '*') : NULL;
-                    VmDual* exact_dual = vm_dual_make_exact_pair(
-                        &vm->heap.regions, value, tangent);
-                    if (exact_dual) {
-                        int32_t ptr = heap_alloc(&vm->heap);
-                        if (ptr >= 0) {
-                            vm->heap.objects[ptr]->type = HEAP_DUAL;
-                            vm->heap.objects[ptr]->opaque.ptr = exact_dual;
-                            return (Value){.type = VAL_DUAL, .as.ptr = ptr};
-                        }
-                    }
-                }
-                if (d->tangent_coeff && n <= d->order) {
-                    double fact = 1.0;
-                    for (uint32_t i = 2; i <= n; i++) fact *= (double)i;
-                    return vm_make_dual_val(
-                        vm, fact * vm_dual_taylor_coeff(d, n),
-                        fact * d->tangent_coeff[n]);
-                }
-                VmRational* exact = vm_dual_taylor_exact_derivative(&vm->heap.regions, d, n);
-                if (exact) return vm_exact_rational_val(vm, exact);
-                double fact = 1.0;
-                for (uint32_t i = 2; i <= n; i++) fact *= (double)i;
-                return FLOAT_VAL(fact * vm_dual_taylor_coeff(d, n));
-            }
-            VmRational* exact = vm_dual_taylor_exact_coeff(d, n);
-            if (exact) return vm_exact_rational_val(vm, exact);
-            return FLOAT_VAL(vm_dual_taylor_coeff(d, n));
-        }
-    }
-    if (result.type == VAL_DUAL && result.as.ptr >= 0 &&
-        result.as.ptr < vm->heap.capacity && vm->heap.objects[result.as.ptr]) {
-        VmDual* d = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-        if (d && d->kind == VM_DUAL_KIND_SCALAR) {
-            if (derivative) {
-                VmRational* exact = vm_dual_exact_tangent(d);
-                if (exact) return vm_exact_rational_val(vm, exact);
-                return FLOAT_VAL(d->tangent);
-            }
-            if (n == 0) return result;
-        }
-    }
-    if (n == 0) return result;
-    if (!derivative) return vm_exact_rational_of(vm, result)
-        ? INT_VAL(0) : FLOAT_VAL(0.0);
-    return vm_exact_rational_of(vm, result)
-        ? INT_VAL(0) : FLOAT_VAL(0.0);
-}
-
-/** @brief Build the coefficient list returned by `(taylor f x k)`. */
-static Value vm_taylor_coeff_list(VM* vm, Value result, uint32_t order) {
-    Value out = NIL_VAL;
-    for (uint32_t k = order + 1; k-- > 0;) {
-        Value coeff = vm_taylor_result_value(vm, result, k, 0);
-        out = vm_cons_value(vm, coeff, out);
-    }
-    return out;
 }
 
 /** @brief Peek into a closure's bytecode to find the native function id (fid)
@@ -6699,6 +7155,91 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * Scheme hash-table keys: hashed and compared by `equal?`
+ *
+ * A VM hash table stores pointers to boxed Values (vm_hash_box) and is made
+ * with vm_hash_key_hash / vm_hash_key_equal (native 660). The hash is a
+ * function of exactly what vm_deep_equal compares, so keys that are equal?
+ * always hash alike: a string key is found by its characters, not by the
+ * heap slot that holds it. Compound and exact-number keys hash by a coarse
+ * class (length for sequences) and are told apart by vm_deep_equal.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static uint64_t vm_hash_mix(uint64_t h, uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    return h;
+}
+
+static uint64_t vm_equal_hash(VM* vm, Value v, int depth) {
+    uint64_t h = vm_hash_mix(1469598103934665603ULL, (uint64_t)v.type);
+    switch ((int)v.type) {
+        case VAL_NIL:  return h;
+        case VAL_BOOL: return vm_hash_mix(h, (uint64_t)(v.as.b != 0));
+        case VAL_INT:
+        case VAL_CHAR: return vm_hash_mix(h, (uint64_t)v.as.i);
+        case VAL_FLOAT: {
+            double f = v.as.f == 0.0 ? 0.0 : v.as.f;   /* -0.0 == 0.0 */
+            uint64_t bits;
+            memcpy(&bits, &f, sizeof(bits));
+            return vm_hash_mix(h, bits);
+        }
+        case VAL_STRING:
+        case VAL_SYMBOL: {
+            VmString* str = vm_value_as_string(vm, v);
+            if (!str) return h;
+            for (int64_t i = 0; i < str->byte_len; i++)
+                h = (h ^ (uint8_t)str->data[i]) * 1099511628211ULL;
+            return h;
+        }
+        case VAL_PAIR: {
+            /* The first few elements of the spine, recursively to a small
+             * depth: a pure function of the content vm_deep_equal walks. */
+            int n = 0;
+            while (v.type == VAL_PAIR && n < 8 && depth < 4) {
+                HeapObject* o = vm->heap.objects[v.as.ptr];
+                if (!o || o->type != HEAP_CONS) break;
+                h = vm_hash_mix(h, vm_equal_hash(vm, o->cons.car, depth + 1));
+                v = o->cons.cdr;
+                n++;
+            }
+            return vm_hash_mix(h, (uint64_t)n);
+        }
+        case VAL_VECTOR:
+        case VAL_TENSOR: {
+            /* equal? also relates a vector to a 1-D tensor, so both hash in
+             * one class, by element count. */
+            HeapObject* o = vm->heap.objects[v.as.ptr];
+            int64_t len = -1;
+            if (o && o->opaque.ptr) {
+                if (v.type == VAL_VECTOR) len = ((VmVector*)o->opaque.ptr)->len;
+                else len = ((VmTensor*)o->opaque.ptr)->total;
+            }
+            return vm_hash_mix(vm_hash_mix(1469598103934665603ULL, 0x5e9ULL), (uint64_t)len);
+        }
+        case VAL_BIGNUM:
+        case VAL_RATIONAL:
+        case VAL_I128:
+            return h;
+        default:
+            return vm_hash_mix(h, (uint64_t)(uint32_t)v.as.ptr);   /* identity */
+    }
+}
+
+static uint64_t vm_hash_key_hash(void* ctx, const void* key) {
+    return vm_equal_hash((VM*)ctx, *(const Value*)key, 0);
+}
+
+static int vm_hash_key_equal(void* ctx, const void* a, const void* b) {
+    return vm_deep_equal((VM*)ctx, *(const Value*)a, *(const Value*)b);
+}
+
+/** @brief Box a Value for storage in a VM hash table (keys and values). */
+static Value* vm_hash_box(VM* vm, Value v) {
+    Value* box = (Value*)vm_alloc(&vm->heap.regions, sizeof(Value));
+    if (box) *box = v;
+    return box;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * Bignum-aware arithmetic helpers
  *
  * The base VM's arithmetic/comparison opcodes and native builtins coerced
@@ -6904,6 +7445,9 @@ static const VmRational* vm_taylor_exact_primal(VM* vm, Value v,
                                                 VmRational* scratch) {
     if (dual && vm_dual_taylor_is_exact(dual))
         return vm_dual_taylor_exact_coeff(dual, 0);
+    if (dual && vm_dual_is_level(dual))
+        return vm_dual_exact_value(dual) ? vm_dual_exact_value(dual)
+             : vm_rational_from_double_exact(&vm->heap.regions, dual->primal);
     if (dual && vm_dual_is_taylor(dual))
         return vm_rational_from_double_exact(&vm->heap.regions,
                                              vm_dual_taylor_coeff(dual, 0));
@@ -7315,6 +7859,86 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Standard port parameters (R7RS 6.13.1)
+ *
+ * current-input-port, current-output-port and current-error-port are
+ * parameter objects: `parameterize` rebinds them, and every read or write
+ * that names no port uses the port the parameter currently holds. They are
+ * made once per VM, with the process's standard ports as defaults, and the
+ * prelude binds the three names to them (native 2242).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static VmPort* vm_std_port_default(int which) {
+    return which == 0 ? vm_port_current_input()
+         : which == 2 ? vm_port_current_error()
+         : vm_port_current_output();
+}
+
+static Value vm_std_port_parameter(VM* vm, int which) {
+    if (which < 0 || which > 2) return NIL_VAL;
+    if (is_heap_type(vm, vm->std_port_params[which], HEAP_PARAMETER))
+        return vm->std_port_params[which];
+    int32_t port_slot = heap_alloc(&vm->heap);
+    if (port_slot < 0) { vm->error = 1; return NIL_VAL; }
+    vm->heap.objects[port_slot]->type = HEAP_PORT;
+    vm->heap.objects[port_slot]->opaque.ptr = vm_std_port_default(which);
+    Value port = (Value){.type = VAL_PORT, .as.ptr = port_slot};
+    Value no_converter = NIL_VAL;
+    VmParameter* parameter = vm_param_make(&vm->heap.regions, &port, &no_converter);
+    if (!parameter) { vm->error = 1; return NIL_VAL; }
+    int32_t param_slot = heap_alloc(&vm->heap);
+    if (param_slot < 0) { vm->error = 1; return NIL_VAL; }
+    vm->heap.objects[param_slot]->type = HEAP_PARAMETER;
+    vm->heap.objects[param_slot]->opaque.ptr = parameter;
+    vm->std_port_params[which] = (Value){.type = VAL_PARAMETER_OBJ, .as.ptr = param_slot};
+    return vm->std_port_params[which];
+}
+
+/** @brief The port a read or write that names none uses: the current value
+ *         of the standard port parameter, or the process port before the
+ *         parameter exists. */
+static VmPort* vm_current_port(VM* vm, int which) {
+    if (vm && which >= 0 && which <= 2 &&
+        is_heap_type(vm, vm->std_port_params[which], HEAP_PARAMETER)) {
+        VmParameter* parameter =
+            (VmParameter*)vm->heap.objects[vm->std_port_params[which].as.ptr]->opaque.ptr;
+        Value current = NIL_VAL;
+        if (parameter) vm_param_ref(parameter, &current);
+        VmPort* port = vm_value_as_port(vm, current);
+        if (port) return port;
+    }
+    return vm_std_port_default(which);
+}
+
+static VmPort* vm_current_output(VM* vm) { return vm_current_port(vm, 1); }
+static VmPort* vm_current_input(VM* vm) { return vm_current_port(vm, 0); }
+
+/** @brief `display` / `write` to the current output port. `write` always
+ *         goes through the port writer (it owns R7RS write syntax, e.g. barred
+ *         symbols); `display` to the process's standard output keeps the
+ *         stdout printer, byte for byte, and any other port gets the port
+ *         writer. */
+static void vm_emit_current(VM* vm, Value v, int write_syntax) {
+    VmPort* port = vm_current_output(vm);
+    if (write_syntax || port != vm_port_current_output()) {
+        vm_write_value_port(vm, v, port, write_syntax);
+    } else {
+        print_value_mode(vm, v, 0);
+    }
+    fflush(stdout);
+}
+
+static void vm_newline_current(VM* vm) {
+    VmPort* port = vm_current_output(vm);
+    if (port == vm_port_current_output()) {
+        printf("\n");
+        fflush(stdout);
+    } else {
+        vm_port_write_cstr(port, "\n");
+    }
+}
+
+
 /* ── Runtime datum reader -------------------------------------------------
  *
  * The source VM used to implement `(read)` as a single getchar(), returning
@@ -7328,6 +7952,94 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
 #define VM_READER_MAX_TOKEN ESHKOL_VM_PACKED_STRING_MAX_BYTES
 
 static Value vm_reader_datum(VM* vm, VmPort* port, int depth, int* ok, int* eof);
+static void vm_dispatch_native(VM* vm, int fid);
+
+/* Number text -> VM value, for every VM reader of number text: the
+ * string->number natives and `read` (the source parser, vm_parser.c, builds
+ * the same shapes as literal nodes). The grammar is the shared R7RS
+ * recognizer (inc/eshkol/core/number_syntax.h); the value is built by the
+ * VM's own constructors -- a reduced exact rational by native 330, a complex
+ * number by make-rectangular (native 300) -- so a read or converted number is
+ * the value the same literal evaluates to. On ESHKOL_NUMSYN_OK the number is
+ * pushed; any other status pushes nothing. */
+static eshkol_numsyn_status_t vm_push_number_from_text(VM* vm, const char* text, size_t len,
+                                                       int radix) {
+    eshkol_numsyn_t syn;
+    eshkol_numsyn_status_t st = eshkol_number_syntax_parse(text, len, radix, &syn);
+    if (st != ESHKOL_NUMSYN_OK) return st;
+    for (int p = 0; p < (syn.form == ESHKOL_NUMSYN_REAL ? 1 : 2); ++p) {
+        const eshkol_numsyn_part_t* part = &syn.part[p];
+        if (part->kind == ESHKOL_NUMSYN_INTEGER || part->kind == ESHKOL_NUMSYN_RATIONAL) {
+            const char* slash = strchr(part->text, '/');
+            for (int half = 0; half < (slash ? 2 : 1); ++half) {
+                char digits[512];
+                const char* at = half ? slash + 1 : part->text;
+                size_t n = half ? strlen(at) : (slash ? (size_t)(slash - part->text) : strlen(at));
+                char* heap_digits = n < sizeof(digits) ? digits : (char*)malloc(n + 1);
+                if (!heap_digits) { eshkol_number_syntax_free(&syn); return ESHKOL_NUMSYN_NO_MEMORY; }
+                memcpy(heap_digits, at, n);
+                heap_digits[n] = 0;
+                errno = 0;
+                char* end = NULL;
+                long long v = strtoll(heap_digits, &end, 10);
+                if (errno != ERANGE && end && *end == 0) {
+                    vm_push(vm, INT_VAL((int64_t)v));
+                } else {
+                    VmBignum* bn = bignum_from_string(&vm->heap.regions, heap_digits);
+                    int32_t ptr = bn ? heap_alloc(&vm->heap) : -1;
+                    if (ptr < 0) {
+                        if (heap_digits != digits) free(heap_digits);
+                        eshkol_number_syntax_free(&syn);
+                        return ESHKOL_NUMSYN_NO_MEMORY;
+                    }
+                    vm->heap.objects[ptr]->type = HEAP_BIGNUM;
+                    vm->heap.objects[ptr]->opaque.ptr = bn;
+                    vm_push(vm, (Value){.type = VAL_BIGNUM, .as.ptr = ptr});
+                }
+                if (heap_digits != digits) free(heap_digits);
+            }
+            if (slash) vm_dispatch_native(vm, 330);   /* exact-rational */
+        } else {
+            double v;
+            if (part->kind == ESHKOL_NUMSYN_INFNAN) {
+                v = part->text[1] == 'i' ? HUGE_VAL : (double)NAN;
+                if (part->text[0] == '-') v = -v;
+            } else {
+                v = strtod(part->text, NULL);
+            }
+            vm_push(vm, FLOAT_VAL(v));
+        }
+    }
+    if (syn.form != ESHKOL_NUMSYN_REAL) {
+        if (syn.form == ESHKOL_NUMSYN_POLAR) {
+            Value angle = vm_pop(vm), mag = vm_pop(vm);
+            double m = as_number(mag), a = as_number(angle);
+            vm_push(vm, FLOAT_VAL(m * cos(a)));
+            vm_push(vm, FLOAT_VAL(m * sin(a)));
+        }
+        vm_dispatch_native(vm, 300);                  /* make-rectangular */
+    }
+    eshkol_number_syntax_free(&syn);
+    return ESHKOL_NUMSYN_OK;
+}
+
+/* (string->number s [radix]) on the VM: the number, or #f for text that is
+ * not a number or number syntax without a value. Surrounding blanks are
+ * ignored, as natively (bignum.cpp). */
+static void vm_string_to_number_value(VM* vm, Value s_val, int radix) {
+    VmString* s = (s_val.type == VAL_STRING)
+        ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
+    if (!s || !s->data || (radix != 2 && radix != 8 && radix != 10 && radix != 16)) {
+        vm_push(vm, BOOL_VAL(0));
+        return;
+    }
+    const char* text = s->data;
+    size_t len = (size_t)s->byte_len;
+    while (len > 0 && (*text == ' ' || *text == '\t')) { text++; len--; }
+    while (len > 0 && (text[len - 1] == ' ' || text[len - 1] == '\t')) len--;
+    if (vm_push_number_from_text(vm, text, len, radix) != ESHKOL_NUMSYN_OK)
+        vm_push(vm, BOOL_VAL(0));
+}
 static Value vm_reader_token(VM* vm, VmPort* port, int first, int* ok);
 
 static int vm_reader_delimiter(int ch) {
@@ -7698,73 +8410,20 @@ static Value vm_reader_token(VM* vm, VmPort* port, int first, int* ok) {
         return (Value){.type = VAL_CHAR, .as.i = cp};
     }
 
-    char* end = NULL;
-    errno = 0;
-    long long integer = strtoll(token, &end, 10);
-    if (end && *end == '\0' && end != token && errno != ERANGE) {
-        free(token); return INT_VAL((int64_t)integer);
-    }
-    /* Preserve exactness beyond int64 instead of silently turning a decimal
-     * integer into a symbol.  bignum_from_string is arena-backed and accepts
-     * the same optional leading sign as strtoll. */
-    int decimal_integer = token[0] != '\0';
-    size_t digit_index = (token[0] == '+' || token[0] == '-') ? 1u : 0u;
-    if (token[digit_index] == '\0') decimal_integer = 0;
-    for (size_t i = digit_index; decimal_integer && token[i] != '\0'; ++i)
-        if (!isdigit((unsigned char)token[i])) decimal_integer = 0;
-    if (decimal_integer && errno == ERANGE) {
-        VmBignum* bignum = bignum_from_string(&vm->heap.regions, token);
-        int32_t ptr = bignum ? heap_alloc(&vm->heap) : -1;
-        if (!bignum || ptr < 0) {
-            free(token); *ok = 0; vm->error = 1; return NIL_VAL;
-        }
-        vm->heap.objects[ptr]->type = HEAP_BIGNUM;
-        vm->heap.objects[ptr]->opaque.ptr = bignum;
-        free(token);
-        return (Value){.type = VAL_BIGNUM, .as.ptr = ptr};
-    }
-    /* Exact rationals are normalized by the production numeric tower and
-     * collapse to an integer when the reduced denominator is one. */
-    char* slash = strchr(token, '/');
-    if (slash && slash != token && slash[1] != '\0' && !strchr(slash + 1, '/')) {
-        *slash = '\0';
-        char *num_end = NULL, *den_end = NULL;
-        errno = 0;
-        long long numerator = strtoll(token, &num_end, 10);
-        int numerator_ok = errno != ERANGE && num_end && *num_end == '\0';
-        errno = 0;
-        long long denominator = strtoll(slash + 1, &den_end, 10);
-        int denominator_ok = errno != ERANGE && den_end && *den_end == '\0' &&
-                             denominator != 0;
-        *slash = '/';
-        if (numerator_ok && denominator_ok) {
-            VmRational* rational = vm_rational_make(
-                vm_active_arena(&vm->heap.regions),
-                (int64_t)numerator, (int64_t)denominator);
-            if (!rational) {
-                free(token); *ok = 0; vm->error = 1; return NIL_VAL;
-            }
-            if (rational->denom == 1) {
-                int64_t value = rational->num;
-                free(token);
-                return INT_VAL(value);
-            }
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0) {
-                free(token); *ok = 0; vm->error = 1; return NIL_VAL;
-            }
-            vm->heap.objects[ptr]->type = HEAP_RATIONAL;
-            vm->heap.objects[ptr]->opaque.ptr = rational;
+    /* A number exactly when the shared R7RS recognizer says so; number
+     * syntax with no value (1/0, #e+inf.0) is a read error, not a symbol. */
+    {
+        eshkol_numsyn_status_t st = vm_push_number_from_text(vm, token, len, 10);
+        if (st == ESHKOL_NUMSYN_OK) { free(token); return vm_pop(vm); }
+        if (st != ESHKOL_NUMSYN_NOT_A_NUMBER) {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "read: %.64s: %s", token,
+                     eshkol_number_syntax_status_message(st));
             free(token);
-            return (Value){.type = VAL_RATIONAL, .as.ptr = ptr};
+            vm_raise_error_msg(vm, msg);
+            *ok = 0;
+            return NIL_VAL;
         }
-    }
-    errno = 0;
-    end = NULL;
-    double real = strtod(token, &end);
-    if (end && *end == '\0' && end != token && errno != ERANGE &&
-        (strchr(token, '.') || strchr(token, 'e') || strchr(token, 'E'))) {
-        free(token); return FLOAT_VAL(real);
     }
     Value result = vm_reader_string_value(vm, token, len, 1);
     free(token);
@@ -7918,8 +8577,16 @@ static void vm_promise_eval_unwind_to(VM* vm, Value mark) {
 }
 
 static void vm_escape_native_control(VM* vm) {
-    if (vm->native_call_depth > 0 && vm->native_escape_ready) {
-        longjmp(vm->native_escape_jmp, 1);
+    if (vm->native_call_depth > 0 && vm->native_escape_context) {
+        VmNativeEscape* target = vm->native_escape_context;
+        while (target->previous &&
+               (vm->frame_count < target->frame_floor ||
+                (target->frame_floor > 0 &&
+                 vm->frames[target->frame_floor - 1].generation != target->frame_generation))) {
+            target = target->previous;
+        }
+        vm->native_escape_context = target;
+        longjmp(target->destination, 1);
     }
 }
 
@@ -7976,6 +8643,8 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
         }
         vm->handler_call_pending = 1;
         vm_escape_native_control(vm);
+    } else if (vm->isolated_worker) {
+        vm->error = 1;   /* settled by the caller; see VM.isolated_worker */
     } else {
         /* Report the condition on stderr ONLY, and report what it actually says.
          * print_value() writes to stdout and renders every error object as the
@@ -8084,9 +8753,11 @@ static void vm_raise_secondary_exception(VM* vm) {
  * Pushes nothing: control transfers to the innermost handler, or the
  * unhandled-exception path flags vm->error.  Callers must `break` immediately.
  */
-static void vm_raise_error_msg(VM* vm, const char* msg) {
+static void vm_raise_error_msg_with_irritants(VM* vm, const char* msg,
+                                              Value irritants) {
     vm->error = 0;
     VmError* e = vm_error_make(&vm->heap.regions, "error", msg, NULL, 0);
+    if (e) vm_error_set_value_irritants(e, &irritants);
     Value exn = NIL_VAL;
     if (e) {
         int32_t ep = heap_alloc(&vm->heap);
@@ -8098,6 +8769,46 @@ static void vm_raise_error_msg(VM* vm, const char* msg) {
     }
     vm_dispatch_exception(vm, exn);
 }
+
+static void vm_raise_error_msg(VM* vm, const char* msg) {
+    vm_raise_error_msg_with_irritants(vm, msg, NIL_VAL);
+}
+
+/* Container boundary for the accessor family (SW-221), the VM twin of
+ * TaggedValueCodegen::requireContainer. An accessor reads its operand by the
+ * container's layout, so it must first establish that the operand IS that
+ * container. The accessors used to test for their own type and answer a
+ * fabricated value for anything else: (vector-ref (list 1 2 3) 0) answered
+ * (), (vector-length (list 1 2 3)) 0, (string-ref (list 1 2) 0) the NUL
+ * character. Returns 1 when @p v is one of the @p accepted kinds; otherwise
+ * raises a catchable error "<who>: expected <expected>" and returns 0, and the
+ * caller must return WITHOUT pushing (the raise restored the handler's stack). */
+enum {
+    VM_CONTAINER_VECTOR     = 1u << 0,
+    VM_CONTAINER_TENSOR     = 1u << 1,
+    VM_CONTAINER_STRING     = 1u << 2,
+    VM_CONTAINER_BYTEVECTOR = 1u << 3,
+};
+static int vm_require_container(VM* vm, Value v, unsigned accepted,
+                                const char* who, const char* expected) {
+    int ok = 0;
+    if ((accepted & VM_CONTAINER_VECTOR) && v.type == VAL_VECTOR) ok = 1;
+    if ((accepted & VM_CONTAINER_TENSOR) && v.type == VAL_TENSOR) ok = 1;
+    if ((accepted & VM_CONTAINER_STRING) && v.type == VAL_STRING) ok = 1;
+    if ((accepted & VM_CONTAINER_BYTEVECTOR) && is_heap_type(vm, v, HEAP_BYTEVECTOR)) ok = 1;
+    if (ok) return 1;
+    char msg[160];
+    snprintf(msg, sizeof(msg), "%s: expected %s", who, expected);
+    vm_raise_error_msg(vm, msg);
+    return 0;
+}
+
+/* The accessor implementations shared with the inline opcodes (vm_ops.c). */
+static void vm_exec_vec_ref(VM* vm);
+static void vm_exec_vec_set(VM* vm);
+static void vm_exec_vec_len(VM* vm);
+static void vm_exec_str_ref(VM* vm);
+static void vm_exec_str_len(VM* vm);
 
 /*
  * Shared int64 bit twiddling for arithmetic-shift / bit-shift-left /
@@ -8257,6 +8968,240 @@ static Value vm_force_promise_value(VM* vm, Value initial) {
  * @return 1 when @p a was complex and a result (or a fatal error) has been
  *         pushed/recorded; 0 when the caller must handle @p a itself.
  */
+/* ── The complex/derivative boundary (ADR-0025) ──
+ *
+ * The VM's forward carrier is a first-order dual. A real value entering a
+ * complex operation is lifted here, and only here: a dual becomes a complex
+ * with a tangent in its real part, so the derivative survives. Taylor towers
+ * remain attached to the component carrier; the separate hyper-dual lane is
+ * still rejected rather than being read as its primal. */
+static int vm_real_with_tangent(VM* vm, Value v, double* primal, double* tangent, const char* who) {
+    *tangent = 0.0;
+    if (v.type == VAL_HYPER_DUAL) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "%s: a second-order derivative cannot pass through a complex number on the VM; use the native backend", who);
+        vm_raise_error_msg(vm, msg);
+        return 0;
+    }
+    if (v.type == VAL_DUAL) {
+        VmDual d = vm_dual_operand(vm, v);
+        /* A tower or level carries its perturbations in coefficients a
+         * (primal, tangent) pair cannot hold: reading it here would be a
+         * silently wrong derivative. Callers that can take a carrier take it
+         * before reaching this point. */
+        if (d.kind != VM_DUAL_KIND_SCALAR) {
+            char msg[200];
+            snprintf(msg, sizeof msg, "%s: a higher-order or nested derivative cannot pass through this operation on the VM", who);
+            vm_raise_error_msg(vm, msg);
+            return 0;
+        }
+        *primal = d.primal;
+        *tangent = d.tangent;
+        return 1;
+    }
+    /* SW-199: as_number() knows only the immediate tags and read an exact
+     * rational part as 0. */
+    *primal = as_number_vm(vm, v);
+    return 1;
+}
+
+static int vm_complex_operand(VM* vm, Value v, VmComplex* out, const char* who) {
+    memset(out, 0, sizeof *out);
+    if (v.type == VAL_COMPLEX) {
+        *out = *(VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return 1;
+    }
+    if (v.type == VAL_DUAL && v.as.ptr >= 0 && is_valid_heap_ptr(vm, v.as.ptr)) {
+        /* ADR-0025/0027: a real carrier of any kind becomes the real part,
+         * whole. */
+        VmDual* d = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (d) {
+            out->creal = d;
+            out->real = as_number_vm(vm, v);
+            out->dreal = d->kind == VM_DUAL_KIND_SCALAR ? d->tangent : 0.0;
+            return 1;
+        }
+    }
+    return vm_real_with_tangent(vm, v, &out->real, &out->dreal, who);
+}
+
+/** @brief A real operand as a carrier for the carrier-aware real functions:
+ *         a dual is itself, a number a scalar constant. */
+static VmDual* vm_real_carrier(VM* vm, Value v) {
+    return vm_ad_point_carrier(vm, v);
+}
+
+/* A real result with a tangent is a dual; without one, a plain float. */
+static Value vm_real_result(VM* vm, double value, double tangent) {
+    return tangent != 0.0 ? vm_make_dual_val(vm, value, tangent) : FLOAT_VAL(value);
+}
+
+/* A real elementary function f with derivative fp at x, applied to a real
+ * operand that may carry a first-order tangent: pushes f(x), with tangent
+ * fp(x) dx when one is present. The one rule for every real function the VM
+ * has no dual kernel for, so none of them reads a dual as its primal. */
+static void vm_push_real_unary(VM* vm, Value a, double (*f)(double), double (*fp)(double), const char* who,
+                               VmDual* (*carrier_fn)(VmRegionStack*, const VmDual*, int), int carrier_op) {
+    double x, dx;
+    if (a.type == VAL_DUAL && carrier_fn) {
+        /* Any carrier kind: the function's own carrier rule (ADR-0027). */
+        VmDual* r = carrier_fn(&vm->heap.regions, vm_real_carrier(vm, a), carrier_op);
+        if (!r) { vm_raise_error_msg(vm, "carrier allocation failed"); return; }
+        vm_push(vm, vm_ad_coeff_value(vm, r));
+        return;
+    }
+    if (!vm_real_with_tangent(vm, a, &x, &dx, who)) return;
+    vm_push(vm, vm_real_result(vm, f(x), dx != 0.0 ? fp(x) * dx : 0.0));
+}
+
+
+/* ── asinh acosh atanh log2 log10 exp2 cbrt square (SW-220) ──
+ * First-class VM values, on every number kind. A plain real takes the libm
+ * function, so its value is bit-identical to native; a carrier (dual, tower,
+ * level) or a complex number is composed from the VM's own log / sqrt / exp
+ * and arithmetic, which already carry every derivative order and the complex
+ * principal branches. */
+static void vm_op_arith(VM* vm, char op);
+static void vm_dispatch_native(VM* vm, int fid);
+static Value vm_math_bin(VM* vm, Value a, Value b, char op) {
+    vm_push(vm, a); vm_push(vm, b); vm_op_arith(vm, op);
+    return vm->error ? NIL_VAL : vm_pop(vm);
+}
+static Value vm_math_un(VM* vm, Value a, int fid) {
+    vm_push(vm, a); vm_dispatch_native(vm, fid);
+    return vm->error ? NIL_VAL : vm_pop(vm);
+}
+enum { VM_MX_ASINH, VM_MX_ACOSH, VM_MX_ATANH, VM_MX_LOG2, VM_MX_LOG10,
+       VM_MX_EXP2, VM_MX_CBRT, VM_MX_SQUARE };
+static void vm_math_ext(VM* vm, Value a, int which) {
+    if (which == VM_MX_SQUARE) { vm_push(vm, vm_math_bin(vm, a, a, '*')); return; }
+    int carrier = a.type == VAL_DUAL || a.type == VAL_COMPLEX || a.type == VAL_HYPER_DUAL;
+    if (!carrier) {
+        double x = as_number_vm(vm, a), r = 0.0;
+        VmRational* e = vm_exact_rational_of(vm, a);
+        /* An exact argument whose value is exact stays exact, as on native:
+         * exp2 of an exact integer, log2/log10 of an exact power, cbrt of an
+         * exact cube. */
+        if (e && !e->is_big && e->denom == 1) {
+            int64_t n = e->num;
+            if (which == VM_MX_EXP2 && n >= 0 && n < 63) { vm_push(vm, INT_VAL((int64_t)1 << n)); return; }
+            if (which == VM_MX_EXP2 && n < 0 && n > -63) {
+                Value q = vm_exact_rational_val(vm, vm_rational_make(vm_active_arena(&vm->heap.regions), 1, (int64_t)1 << -n));
+                if (q.type != VAL_NIL) { vm_push(vm, q); return; }
+            }
+            if ((which == VM_MX_LOG2 || which == VM_MX_LOG10) && n > 0) {
+                int64_t b = which == VM_MX_LOG2 ? 2 : 10, m = n, k = 0;
+                while (m % b == 0) { m /= b; k++; }
+                if (m == 1) { vm_push(vm, INT_VAL(k)); return; }
+            }
+        }
+        if (which == VM_MX_CBRT && e) {
+            VmDual* c = vm_dual_cbrt(&vm->heap.regions, vm_ad_point_carrier(vm, a));
+            vm_push(vm, vm_ad_coeff_value(vm, c));
+            return;
+        }
+        switch (which) {
+            case VM_MX_ASINH: r = asinh(x); break;
+            case VM_MX_ACOSH: r = acosh(x); break;
+            case VM_MX_ATANH: r = atanh(x); break;
+            case VM_MX_LOG2:  r = log2(x); break;
+            case VM_MX_LOG10: r = log10(x); break;
+            case VM_MX_EXP2:  r = exp2(x); break;
+            default:          r = cbrt(x); break;
+        }
+        vm_push(vm, FLOAT_VAL(r));
+        return;
+    }
+    if (a.type == VAL_DUAL) {
+        /* A real carrier: the function's own carrier rule. */
+        VmRegionStack* rs = &vm->heap.regions;
+        VmDual* d = vm_ad_point_carrier(vm, a);
+        VmDual* c = NULL;
+        switch (which) {
+            case VM_MX_ASINH: c = vm_dual_inverse_trig(rs, d, 4); break;
+            case VM_MX_ACOSH: c = vm_dual_inverse_trig(rs, d, 5); break;
+            case VM_MX_ATANH: c = vm_dual_inverse_trig(rs, d, 3); break;
+            case VM_MX_CBRT:  c = vm_dual_cbrt(rs, d); break;
+            default: break;
+        }
+        if (c) { vm_push(vm, vm_ad_coeff_value(vm, c)); return; }
+    }
+    Value one = FLOAT_VAL(1.0), r = NIL_VAL;
+    switch (which) {
+    case VM_MX_ASINH:   /* log(x + sqrt(x^2 + 1)) */
+        r = vm_math_un(vm, vm_math_bin(vm, a, vm_math_un(vm,
+                vm_math_bin(vm, vm_math_bin(vm, a, a, '*'), one, '+'), 25), '+'), 24);
+        break;
+    case VM_MX_ACOSH:   /* log(x + sqrt(x - 1) sqrt(x + 1)) */
+        r = vm_math_un(vm, vm_math_bin(vm, a, vm_math_bin(vm,
+                vm_math_un(vm, vm_math_bin(vm, a, one, '-'), 25),
+                vm_math_un(vm, vm_math_bin(vm, a, one, '+'), 25), '*'), '+'), 24);
+        break;
+    case VM_MX_ATANH:   /* (log(1 + x) - log(1 - x)) / 2 */
+        r = vm_math_bin(vm, vm_math_bin(vm,
+                vm_math_un(vm, vm_math_bin(vm, one, a, '+'), 24),
+                vm_math_un(vm, vm_math_bin(vm, one, a, '-'), 24), '-'), FLOAT_VAL(2.0), '/');
+        break;
+    case VM_MX_LOG2:
+        r = vm_math_bin(vm, vm_math_un(vm, a, 24), FLOAT_VAL(log(2.0)), '/');
+        break;
+    case VM_MX_LOG10:
+        r = vm_math_bin(vm, vm_math_un(vm, a, 24), FLOAT_VAL(log(10.0)), '/');
+        break;
+    case VM_MX_EXP2:
+        r = vm_math_un(vm, vm_math_bin(vm, a, FLOAT_VAL(log(2.0)), '*'), 23);
+        break;
+    default:            /* cbrt: exp(log(x) / 3) on a complex; real carriers
+                         * keep the real cube root of a negative value */
+        r = vm_math_un(vm, vm_math_bin(vm, vm_math_un(vm, a, 24), FLOAT_VAL(3.0), '/'), 23);
+        break;
+    }
+    if (!vm->error) vm_push(vm, r);
+}
+
+static double vm_d_atan(double x)  { return 1.0 / (1.0 + x * x); }
+static double vm_d_asin(double x)  { return 1.0 / sqrt(1.0 - x * x); }
+static double vm_d_acos(double x)  { return -1.0 / sqrt(1.0 - x * x); }
+static double vm_d_sinh(double x)  { return cosh(x); }
+static VmDual* vm_dual_hyperbolic(VmRegionStack* rs, const VmDual* a, int sinh_op) {
+    return sinh_op ? vm_dual_sinh(rs, a) : vm_dual_cosh(rs, a);
+}
+static double vm_d_cosh(double x)  { return sinh(x); }
+
+/* Push a complex result, or raise the operation's no-derivative message. */
+static void vm_push_complex_result(VM* vm, VmComplex* result) {
+    if (vm_dual_error) {
+        const char* msg = vm_dual_error;
+        vm_dual_error = NULL;
+        vm_raise_error_msg(vm, msg);
+        return;
+    }
+    if (!result) {
+        if (vm_complex_d_error) {
+            const char* msg = vm_complex_d_error;
+            vm_complex_d_error = NULL;
+            vm_raise_error_msg(vm, msg);
+        } else {
+            vm->error = 1;
+        }
+        return;
+    }
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = result;
+    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+}
+
+static Value vm_complex_value(VM* vm, VmComplex* result) {
+    if (!result) return NIL_VAL;
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return NIL_VAL; }
+    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+    vm->heap.objects[ptr]->opaque.ptr = result;
+    return (Value){.type = VAL_COMPLEX, .as.ptr = ptr};
+}
+
 static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
     VmComplex z;
     VmComplex* result = NULL;
@@ -8278,12 +9223,8 @@ static int vm_math_complex_dispatch(VM* vm, Value a, int fid) {
         case 722: result = vm_complex_tanh(&vm->heap.regions, &z); break;
         default: return 0;
     }
-    if (!result) { vm->error = 1; return 1; }
-    ptr = heap_alloc(&vm->heap);
-    if (ptr < 0) { vm->error = 1; return 1; }
-    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-    vm->heap.objects[ptr]->opaque.ptr = result;
-    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+    (void)ptr;
+    vm_push_complex_result(vm, result);
     return 1;
 }
 
@@ -8566,11 +9507,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (vm_tag_is_exact_number(a) && a.type != VAL_RATIONAL) { vm_push(vm, a); break; }
         if (a.type == VAL_RATIONAL) { vm_push(vm, a); vm_dispatch_native(vm, 344); break; }
         vm_push(vm, number_val_contagious1(a, trunc(as_number_vm(vm,a)))); break; }
-    case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
-    case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
-    case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
+    case 29: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 29)) break; vm_push_real_unary(vm, a, asin, vm_d_asin, "asin", vm_dual_inverse_trig, 0); break; }
+    case 30: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 30)) break; vm_push_real_unary(vm, a, acos, vm_d_acos, "acos", vm_dual_inverse_trig, 1); break; }
+    case 31: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 31)) break; vm_push_real_unary(vm, a, atan, vm_d_atan, "atan", vm_dual_inverse_trig, 2); break; }
     case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,382); break; }
+        if ((a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) &&
+            a.type != VAL_COMPLEX && b.type != VAL_COMPLEX) {
+            VmHyperDual ah = {as_number_vm(vm, a), 0, 0, 0};
+            VmHyperDual bh = {as_number_vm(vm, b), 0, 0, 0};
+            if (a.type == VAL_HYPER_DUAL)
+                ah = *(VmHyperDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            if (b.type == VAL_HYPER_DUAL)
+                bh = *(VmHyperDual*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            VmHyperDual* result = vm_hd_pow_hd(&vm->heap.regions, &ah, &bh);
+            if (!result) { vm_raise_error_msg(vm, "expt: carrier allocation failed"); break; }
+            VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result);
+            break;
+        }
         /* Task #113: a complex base OR exponent promotes both and takes the
          * principal a^b = exp(b log a). Without it as_number() answered 0 for
          * the complex side and (expt z 2) silently became 0^2. */
@@ -8693,8 +9647,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             /* A Taylor tower is a complete coefficient series. Selection
              * operators must select that original carrier, not reconstruct a
              * first-order dual and discard c[2..K]. */
-            if ((ad_ptr && vm_dual_is_taylor(ad_ptr)) ||
-                (bd_ptr && vm_dual_is_taylor(bd_ptr))) {
+            if ((ad_ptr && vm_dual_is_series(ad_ptr)) ||
+                (bd_ptr && vm_dual_is_series(bd_ptr))) {
                 VmRational ascratch, bscratch;
                 const VmRational* ar = vm_taylor_exact_primal(vm, a, ad_ptr, &ascratch);
                 const VmRational* br = vm_taylor_exact_primal(vm, b, bd_ptr, &bscratch);
@@ -8704,10 +9658,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                         &vm->heap.regions, ar, br);
                     pick_left = want_max ? (cmp >= 0) : (cmp <= 0);
                 } else {
-                    double ap = ad_ptr && vm_dual_is_taylor(ad_ptr)
-                        ? vm_dual_taylor_coeff(ad_ptr, 0) : as_number_vm(vm, a);
-                    double bp = bd_ptr && vm_dual_is_taylor(bd_ptr)
-                        ? vm_dual_taylor_coeff(bd_ptr, 0) : as_number_vm(vm, b);
+                    /* as_number_vm reads a carrier's primal, recursively. */
+                    double ap = as_number_vm(vm, a);
+                    double bp = as_number_vm(vm, b);
                     pick_left = want_max ? (ap >= bp) : (ap <= bp);
                 }
                 vm_push(vm, pick_left ? a : b);
@@ -8920,45 +9873,75 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * I/O (60-61)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 60: printf("\n"); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break;
-    case 61: { Value v = vm_pop(vm); print_value(vm, v); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break; }
+    case 60: vm_newline_current(vm); vm_push(vm, (Value){.type = VAL_VOID}); break;
+    case 61: { Value v = vm_pop(vm); vm_emit_current(vm, v, 0); vm_push(vm, (Value){.type = VAL_VOID}); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * List/apply (70-73)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 70: { /* apply */
+    case 70: case VM_NATIVE_APPLY_PACKED: { /* apply */
+        /* Legacy 70 still consumes (procedure, final-list). New variadic
+         * preambles pack after two fixed arguments and supply a third tail
+         * containing any further leading operands and the final list. */
+        Value packed = fid == VM_NATIVE_APPLY_PACKED ? vm_pop(vm) : NIL_VAL;
         Value args_list = vm_pop(vm);
         Value func = vm_pop(vm);
-        if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
         /* Push closure below args (OP_CALL convention: closure at fp-1) */
         vm_push(vm, func);
         int argc = 0;
+        int invalid_prefix = 0;
+        while (packed.type == VAL_PAIR) {
+            if (!is_heap_type(vm, packed, HEAP_CONS) || vm->sp >= STACK_SIZE) {
+                invalid_prefix = 1;
+                break;
+            }
+            vm_push(vm, args_list);
+            argc++;
+            args_list = vm->heap.objects[packed.as.ptr]->cons.car;
+            packed = vm->heap.objects[packed.as.ptr]->cons.cdr;
+        }
+        if (vm->error) break;
+        if (invalid_prefix) {
+            vm_raise_error_msg(vm, "apply: invalid prefix or VM stack capacity exceeded");
+            break;
+        }
+        if (packed.type != VAL_NIL) {
+            vm_raise_error_msg(vm, "apply: invalid packed argument tail");
+            break;
+        }
         Value cur = args_list;
+        int invalid_tail = 0;
         /* `apply` has no language-level sixteen-argument limit.  The old
          * fixed cap silently dropped the tail of a proper argument list, so
          * (apply + (list ...)) returned a plausible partial sum with exit 0.
          * Use the VM stack as the actual finite resource and fail loudly if
          * the caller asks for more arguments than this invocation can hold. */
         while (cur.type == VAL_PAIR && vm->sp < STACK_SIZE) {
+            if (!is_heap_type(vm, cur, HEAP_CONS)) {
+                invalid_tail = 1;
+                break;
+            }
             vm_push(vm, vm->heap.objects[cur.as.ptr]->cons.car);
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
             argc++;
+        }
+        if (vm->error) break;
+        if (invalid_tail) {
+            vm_raise_error_msg(vm, "apply: final argument must be a proper list");
+            break;
         }
         if (cur.type == VAL_PAIR) {
             fprintf(stderr, "ERROR: apply: argument list exceeds VM stack capacity\n");
             vm->error = 1;
             break;
         }
-        HeapObject* cl70 = vm->heap.objects[func.as.ptr];
-        if (vm->frame_count >= MAX_FRAMES) { vm->error = 1; break; }
-        vm->frames[vm->frame_count].return_pc = vm->pc;
-        vm->frames[vm->frame_count].return_fp = vm->fp;
-        vm->frames[vm->frame_count].func_pc = cl70->closure.func_pc;
-        vm->frames[vm->frame_count].generation = vm_new_frame_generation(vm);
-        vm->frames[vm->frame_count].exception_handler_frame = 0;
-        vm->frame_count++;
-        vm->fp = vm->sp - argc;
-        vm->pc = cl70->closure.func_pc;
+        if (cur.type != VAL_NIL) {
+            vm_raise_error_msg(vm, "apply: final argument must be a proper list");
+            break;
+        }
+        /* Parameters, continuations and closures share OP_CALL's exact
+         * admission/arity contract instead of bypassing it here. */
+        (void)vm_enter_call(vm, argc, vm->pc);
         break;
     }
     case 71: { /* length */
@@ -9094,11 +10077,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 140: { /* vector->list: preserve element order */
         Value vec_val = vm_pop(vm);
-        if (vec_val.type != VAL_VECTOR ||
-            !is_valid_heap_ptr(vm, vec_val.as.ptr) ||
+        if (!vm_require_container(vm, vec_val, VM_CONTAINER_VECTOR, "vector->list", "a vector")) break;
+        if (!is_valid_heap_ptr(vm, vec_val.as.ptr) ||
             vm->heap.objects[vec_val.as.ptr]->type != HEAP_VECTOR) {
-            fprintf(stderr, "ERROR: vector->list expects a vector\n");
-            vm->error = 1;
+            vm_raise_error_msg(vm, "vector->list: expected a vector");
             break;
         }
         VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
@@ -9171,43 +10153,80 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 314: case 315: case 316: case 317: case 318: case 319: {
         if (fid == 300) { /* make-rectangular */
             Value imag = vm_pop(vm), real = vm_pop(vm);
-            VmComplex* z = vm_complex_new(&vm->heap.regions, as_number(real), as_number(imag));
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0 || !z) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-            vm->heap.objects[ptr]->opaque.ptr = z;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+            /* ADR-0025/0027: a derivative entering a complex number is kept,
+             * whole: each part is a carrier of any kind. */
+            if (real.type == VAL_DUAL || imag.type == VAL_DUAL) {
+                vm_push_complex_result(vm, vm_complex_from_parts(&vm->heap.regions,
+                    vm_real_carrier(vm, real), vm_real_carrier(vm, imag)));
+                break;
+            }
+            double re, dre, im, dim;
+            if (!vm_real_with_tangent(vm, real, &re, &dre, "make-rectangular") ||
+                !vm_real_with_tangent(vm, imag, &im, &dim, "make-rectangular")) break;
+            vm_push_complex_result(vm, vm_complex_new_d(&vm->heap.regions, re, im, dre, dim));
         } else if (fid == 301) { /* make-polar */
             /* Arguments are pushed left-to-right, so angle is on top.  This
              * must be handled before the unary complex-operation path: that
              * path used to pop angle as the magnitude and then magnitude as
              * the angle, silently constructing the wrong complex number. */
             Value angle = vm_pop(vm), magnitude = vm_pop(vm);
-            VmComplex* z = vm_make_polar(&vm->heap.regions,
-                                          as_number(magnitude),
-                                          as_number(angle));
-            int32_t ptr = heap_alloc(&vm->heap);
-            if (ptr < 0 || !z) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-            vm->heap.objects[ptr]->opaque.ptr = z;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+            if (angle.type == VAL_DUAL || magnitude.type == VAL_DUAL) {
+                VmRegionStack* rs = &vm->heap.regions;
+                VmDual* md = vm_real_carrier(vm, magnitude);
+                VmDual* td = vm_real_carrier(vm, angle);
+                VmDual* re = md && td ? vm_dual_mul(rs, md, vm_dual_cos(rs, td)) : NULL;
+                VmDual* im = md && td ? vm_dual_mul(rs, md, vm_dual_sin(rs, td)) : NULL;
+                vm_push_complex_result(vm, vm_complex_from_parts(rs, re, im));
+                break;
+            }
+            double m, dm, t, dt;
+            if (!vm_real_with_tangent(vm, magnitude, &m, &dm, "make-polar") ||
+                !vm_real_with_tangent(vm, angle, &t, &dt, "make-polar")) break;
+            /* d(m cos t) = dm cos t - m sin t dt;  d(m sin t) = dm sin t + m cos t dt */
+            vm_push_complex_result(vm, vm_complex_new_d(&vm->heap.regions,
+                m * cos(t), m * sin(t),
+                dm * cos(t) - m * sin(t) * dt,
+                dm * sin(t) + m * cos(t) * dt));
         } else if (fid == 302) { /* real-part */
             Value z_val = vm_pop(vm);
             if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(z->real));
-            } else { vm_push(vm, FLOAT_VAL(as_number(z_val))); }
+                /* SW-200: the part's carrier is the part; reading only its
+                 * first-order tangent dropped every higher coefficient. */
+                vm_push(vm, z->creal ? vm_ad_coeff_value(vm, z->creal)
+                                     : vm_real_result(vm, z->real, z->dreal));
+            } else if (z_val.type == VAL_DUAL || z_val.type == VAL_HYPER_DUAL) {
+                vm_push(vm, z_val);   /* a real carrier is its own real part */
+            } else { vm_push(vm, FLOAT_VAL(as_number_vm(vm, z_val))); }
         } else if (fid == 303) { /* imag-part */
             Value z_val = vm_pop(vm);
             if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(z->imag));
+                vm_push(vm, z->cimag ? vm_ad_coeff_value(vm, z->cimag)
+                                     : vm_real_result(vm, z->imag, z->dimag));
             } else { vm_push(vm, FLOAT_VAL(0.0)); }
         } else if (fid == 304) { /* magnitude */
             Value z_val = vm_pop(vm);
-            if (z_val.type == VAL_COMPLEX) {
+            if (z_val.type == VAL_COMPLEX && vm_complex_has_level_parts(
+                    (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr)) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(vm_complex_magnitude(z)));
+                VmRegionStack* rs = &vm->heap.regions;
+                if (z->real == 0.0 && z->imag == 0.0) {
+                    vm_raise_error_msg(vm, "magnitude: not differentiable at 0");
+                    break;
+                }
+                VmDual* re = vm_cpx_component(rs, z, 0);
+                VmDual* im = vm_cpx_component(rs, z, 1);
+                VmDual* r = vm_dual_sqrt(rs, vm_dual_add(rs, vm_dual_mul(rs, re, re),
+                                                         vm_dual_mul(rs, im, im)));
+                vm_push(vm, vm_ad_coeff_value(vm, r));
+            } else if (z_val.type == VAL_COMPLEX) {
+                VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
+                double dm = vm_complex_magnitude_tangent(z);
+                if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                vm_push(vm, vm_real_result(vm, vm_complex_magnitude(z), dm));
+            } else if (z_val.type == VAL_DUAL) {
+                vm_push(vm, z_val); vm_dispatch_native(vm, 35);   /* abs keeps the tangent */
             } else { vm_push(vm, FLOAT_VAL(fabs(as_number(z_val)))); }
         } else if (fid == 317) { /* complex? */
             Value v = vm_pop(vm);
@@ -9217,9 +10236,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int is_binary = (fid >= 307 && fid <= 310) || fid == 318 || fid == 319;
             if (is_binary) {
                 Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-                VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-                if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-                if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+                VmComplex a_z, b_z;
+                if (!vm_complex_operand(vm, a_val, &a_z, "complex arithmetic") ||
+                    !vm_complex_operand(vm, b_val, &b_z, "complex arithmetic")) break;
                 VmComplex* result = NULL;
                 switch (fid) {
                     case 307: result = vm_complex_add(&vm->heap.regions, &a_z, &b_z); break;
@@ -9229,21 +10248,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     case 318: result = vm_complex_expt(&vm->heap.regions, &a_z, &b_z); break;
                     case 319: vm_push(vm, BOOL_VAL(a_z.real == b_z.real && a_z.imag == b_z.imag)); break;
                 }
-                if (fid != 319) {
-                    if (!result) { vm->error = 1; break; }
-                    int32_t ptr = heap_alloc(&vm->heap);
-                    if (ptr < 0) { vm->error = 1; break; }
-                    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-                    vm->heap.objects[ptr]->opaque.ptr = result;
-                    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
-                }
+                if (fid != 319) vm_push_complex_result(vm, result);
             } else {
                 Value a_val = vm_pop(vm);
-                VmComplex a_z = {as_number(a_val), 0};
-                if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
+                if (fid == 306 && (a_val.type == VAL_DUAL || a_val.type == VAL_HYPER_DUAL)) {
+                    vm_push(vm, a_val);   /* the conjugate of a real carrier is itself */
+                    break;
+                }
+                VmComplex a_z;
+                if (!vm_complex_operand(vm, a_val, &a_z, "complex operation")) break;
                 VmComplex* result = NULL;
                 switch (fid) {
-                    case 305: vm_push(vm, FLOAT_VAL(vm_complex_angle(&a_z))); break;
+                    case 305: {
+                        if (vm_complex_has_level_parts(&a_z)) {
+                            VmRegionStack* rs = &vm->heap.regions;
+                            if (a_z.real == 0.0 && a_z.imag == 0.0) {
+                                vm_raise_error_msg(vm, "angle: not differentiable at 0");
+                                break;
+                            }
+                            VmDual* r = vm_dual_atan2(rs, vm_cpx_component(rs, &a_z, 1),
+                                                      vm_cpx_component(rs, &a_z, 0));
+                            vm_push(vm, vm_ad_coeff_value(vm, r));
+                            break;
+                        }
+                        double da = vm_complex_angle_tangent(&a_z);
+                        if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                        vm_push(vm, vm_real_result(vm, vm_complex_angle(&a_z), da));
+                        break;
+                    }
                     case 306: result = vm_complex_conjugate(&vm->heap.regions, &a_z); break;
                     case 311: result = vm_complex_sqrt(&vm->heap.regions, &a_z); break;
                     case 312: result = vm_complex_exp(&vm->heap.regions, &a_z); break;
@@ -9252,14 +10284,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     case 315: result = vm_complex_cos(&vm->heap.regions, &a_z); break;
                     case 316: result = vm_complex_tan(&vm->heap.regions, &a_z); break;
                 }
-                if (fid != 305) {
-                    if (!result) { vm->error = 1; break; }
-                    int32_t ptr = heap_alloc(&vm->heap);
-                    if (ptr < 0) { vm->error = 1; break; }
-                    vm->heap.objects[ptr]->type = HEAP_COMPLEX;
-                    vm->heap.objects[ptr]->opaque.ptr = result;
-                    vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
-                }
+                if (fid != 305) vm_push_complex_result(vm, result);
             }
         }
         break;
@@ -9726,6 +10751,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 377: case 378: case 379: case 380: case 381: case 382: case 383:
     case 384: case 385: case 386: case 387: case 388: case 389: {
         VmRegionStack* dual_rs = &vm->heap.regions;
+        vm_dual_error = NULL;
         switch (fid) {
         case 370: { Value tangent = vm_pop(vm), primal = vm_pop(vm);
             VmDual* d = vm_dual_make(dual_rs, as_number_vm(vm, primal), as_number_vm(vm, tangent));   /* ESH-0410 */
@@ -9757,6 +10783,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         case 377: case 378: case 379: case 380: case 381:
         case 383: case 384: case 385: case 386: case 387: {
             Value v = vm_pop(vm);
+            /* First-class transcendental closures use the dual entry IDs
+             * (377..), but a nested complex derivative must stay on the
+             * complex carrier path instead of vm_dual_operand's scalar
+             * coercion.  Inline opcode dispatch already handles this case;
+             * mirror it here for the first-class/native closure route. */
+            if (v.type == VAL_COMPLEX) {
+                VmComplex z = *(VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                VmComplex* cz = NULL;
+                switch (fid) {
+                    case 377: cz = vm_complex_sin(&vm->heap.regions, &z); break;
+                    case 378: cz = vm_complex_cos(&vm->heap.regions, &z); break;
+                    case 379: cz = vm_complex_exp(&vm->heap.regions, &z); break;
+                    case 380: cz = vm_complex_log(&vm->heap.regions, &z); break;
+                    case 381: cz = vm_complex_sqrt(&vm->heap.regions, &z); break;
+                    default: break;
+                }
+                vm_push_complex_result(vm, cz);
+                break;
+            }
             VmDual a_d = vm_dual_operand(vm, v);   /* ESH-0410: heap-aware */
             VmDual* result = NULL;
             switch (fid) { case 377: result=vm_dual_sin(dual_rs,&a_d); break; case 378: result=vm_dual_cos(dual_rs,&a_d); break;
@@ -9768,8 +10813,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         case 382: { Value exp_val = vm_pop(vm), base_val = vm_pop(vm);
             VmDual a_d = vm_dual_operand(vm, base_val);   /* ESH-0410 */
-            VmDual* result = vm_dual_pow(dual_rs, &a_d, as_number_vm(vm, exp_val));
-            if (!result) { vm_push(vm, NIL_VAL); break; }
+            VmDual b_d = vm_dual_operand(vm, exp_val);
+            VmDual* result = vm_dual_pow_active(dual_rs, &a_d, &b_d);
+            if (!result) { vm_raise_error_msg(vm, "expt: carrier allocation failed"); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         case 388: { Value v = vm_pop(vm);
             VmDual* d = vm_dual_from_double(dual_rs, as_number_vm(vm, v));   /* ESH-0410 */
@@ -9782,6 +10828,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_DUAL, VAL_DUAL, result); break; }
         default: vm_push(vm, NIL_VAL); break;
+        }
+        /* SW-219: an operation with no value (exact division by exact zero,
+         * at any depth of a carrier) raises; its placeholder result is
+         * discarded. */
+        if (vm_dual_error) {
+            const char* msg = vm_dual_error;
+            vm_dual_error = NULL;
+            (void)vm_pop(vm);
+            vm_raise_error_msg(vm, msg);
         }
         break;
     }
@@ -9849,9 +10904,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
         case 1915: { /* pow(base, exp) */
             Value exp_val = vm_pop(vm), base_val = vm_pop(vm);
-            VmHyperDual a_h = {as_number(base_val), 0, 0, 0};
+            VmHyperDual a_h = {as_number_vm(vm, base_val), 0, 0, 0};
             if (base_val.type == VAL_HYPER_DUAL) a_h = *(VmHyperDual*)vm->heap.objects[base_val.as.ptr]->opaque.ptr;
-            VmHyperDual* result = vm_hd_pow(hd_rs, &a_h, as_number(exp_val));
+            VmHyperDual* result;
+            if (exp_val.type == VAL_HYPER_DUAL) {
+                VmHyperDual b_h = *(VmHyperDual*)vm->heap.objects[exp_val.as.ptr]->opaque.ptr;
+                result = vm_hd_pow_hd(hd_rs, &a_h, &b_h);
+            } else {
+                result = vm_hd_pow(hd_rs, &a_h, as_number_vm(vm, exp_val));
+            }
             if (!result) { vm_push(vm, NIL_VAL); break; }
             VM_PUSH_HEAP_OPAQUE(vm, HEAP_HYPER_DUAL, VAL_HYPER_DUAL, result); break; }
         case 1920: { /* from-double */
@@ -9954,25 +11015,30 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 "(diff '(* x x) 'x)) is not yet implemented on the VM");
             break;
         }
-        /* ESH-0369: the VM's forward-mode carrier is a FLAT VmDual {value,
-         * tangent} — one perturbation, no nesting level. A point that is
-         * ALREADY a dual therefore means an enclosing differentiation is live
-         * (a nested `(derivative (lambda (x) (derivative f x)) x0)`, or a
-         * curried `(derivative (derivative f))`), and the flat carrier cannot
-         * represent the two independent perturbations that needs: as_number()
-         * would flatten the incoming dual to its value, the inner pass would
-         * return a plain float, and the outer pass would read "non-dual result
-         * = constant function" and push 0. That is a silently WRONG second
-         * derivative, which is exactly what the native jet (e1/e2/ep slots,
-         * lib/backend/autodiff_codegen.cpp seedForwardAndPush) exists to get
-         * right. Raise instead — a catchable error the caller can see, not a
-         * fabricated zero. Higher-order AD on the VM is tracked as a
-         * native-only row in tests/vm_parity/PARITY.tsv. */
-        if (x_val.type == VAL_DUAL) {
-            vm_raise_error_msg(vm,
-                "derivative: higher-order/nested derivative is not supported on the VM "
-                "(the VM's forward-mode dual carries a single perturbation); "
-                "use the native backend");
+        /* ADR-0027: inside a live pass, or at a point that is already a
+         * carrier (a curried `(derivative (derivative f))`, a nested
+         * holomorphic derivative), the pass runs as an order-1 level. This
+         * replaces the refusal ESH-0369 had to raise for a flat carrier. */
+        if (vm_ad_runs_as_level(vm, x_val)) {
+            Value d = vm_derivative_level(vm, f_val, x_val);
+            if (!vm->error) vm_push(vm, d);
+            break;
+        }
+        /* SW-191: seed a complex evaluation point with the holomorphic unit
+         * tangent dz=1, then return the complex tangent of the result. */
+        if (x_val.type == VAL_COMPLEX) {
+            VmComplex *z = (VmComplex*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            VmComplex *seed = vm_complex_new_d(&vm->heap.regions,
+                                               z->real, z->imag, 1.0, 0.0);
+            if (!seed) { vm_push(vm, NIL_VAL); break; }
+            Value complex_arg = vm_complex_value(vm, seed);
+            Value result = vm_ad_call_closure(vm, f_val, &complex_arg, 1);
+            if (result.type != VAL_COMPLEX || result.as.ptr < 0) {
+                vm_raise_error_msg(vm, "derivative: complex function did not return a complex value");
+                break;
+            }
+            Value dz = vm_ad_level_read(vm, result, 0, 1, 1, 0);
+            if (!vm->error) vm_push(vm, dz);
             break;
         }
         /* Create dual number: x + 1ε
@@ -10009,27 +11075,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * the moment any transcendental ran, the exact halves are gone and
          * this falls back to the double — R7RS contagion, decided by the
          * carrier rather than re-derived here. */
-        if (result.type == VAL_DUAL && result.as.ptr >= 0) {
-            VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-            /* When the body combined the inner scalar dual with a captured
-             * outer Taylor carrier, the derivative lives in the dual-tower's
-             * orthogonal tangent series.  Returning only rd->tangent reads
-             * the outer tower's first value coefficient and discards its
-             * remaining perturbations.  Promote the full tangent series so
-             * the enclosing pass can consume it at its own epoch. */
-            if (rd && vm_dual_is_taylor(rd) && rd->tangent_coeff) {
-                VmDual* promoted = vm_dual_taylor_promote_tangent(
-                    &vm->heap.regions, rd);
-                if (promoted) {
-                    vm_push(vm, vm_make_taylor_val(vm, promoted));
-                    break;
-                }
-            }
-            VmRational* et = vm_dual_exact_tangent(rd);
-            if (!et || !vm_push_exact_rational(vm, et))
-                vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
-        } else {
-            vm_push(vm, FLOAT_VAL(0)); /* non-dual result = constant function */
+        {
+            Value dv = vm_ad_level_read(vm, result, 0, 1, 1, xr != NULL);
+            if (!vm->error) vm_push(vm, dv);
         }
         break;
     }
@@ -10217,8 +11265,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, n_dims);
         if (!t) { vm_push(vm, NIL_VAL); break; }
-        for (int64_t i = 0; i < t->total; i++)
-            t->data[i] = as_number_vm(vm, args[first_value + i]);
+        /* Every element goes through the slot store boundary: a derivative
+         * carrier is kept whole instead of being read as its primal (SW-197),
+         * and a value that is not a number is refused rather than stored as
+         * the 0.0 as_number_vm answers for it. */
+        int stored = 1;
+        for (int64_t i = 0; i < t->total && stored; i++)
+            stored = vm_tensor_store_value(vm, t, i, args[first_value + i]);
+        if (!stored) {
+            vm_raise_error_msg(vm, "tensor: value has no representation in a numeric tensor slot");
+            break;
+        }
         VM_PUSH_TENSOR(vm, t);
         break;
     }
@@ -10248,7 +11305,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             callable.type != VAL_CONTINUATION) {
             vm_raise_error_msg(vm, "tensor-apply: expected a callable"); break;
         }
-        VmTensor* source = vm_tensor_operand(vm, input, "tensor-apply");
+        VmTensor* source = vm_tensor_operand_carrier(vm, input, "tensor-apply");
         if (!source) break;
         VmTensor* output = vm_tensor_new(&vm->heap.regions, source->shape, source->n_dims);
         if (!output) { vm_raise_error_msg(vm, "tensor-apply: allocation failed"); break; }
@@ -10277,7 +11334,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 411: { /* tensor-ref(tensor, indices) — flat or multi-dim access */
         Value idx_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-ref");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-ref");
         if (!t) break;   /* raised: push nothing */
         /* Single int/float index: flat access; list: multi-dim */
         if (idx_val.type == VAL_INT || idx_val.type == VAL_FLOAT) {
@@ -10288,12 +11345,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_raise_error_msg(vm, "tensor-ref: index out of bounds");
                 break;
             }
-            if (t->dual_data) {
-                VmDual d = t->dual_data[flat];
-                vm_push(vm, vm_make_dual_val(vm, d.primal, d.tangent));
-            } else {
-                vm_push(vm, FLOAT_VAL(t->data[flat]));
-            }
+            vm_push(vm, vm_tensor_element_value(vm, t, flat));
         } else if (idx_val.type == VAL_PAIR || idx_val.type == VAL_VECTOR) {
             /* Multi-dim index, given as a list or a vector.  Same bounds
              * contract as the flat path above: vm_tensor_ref() answers 0.0 for
@@ -10308,12 +11360,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             int64_t flat = vm_tensor_flat_offset(t, indices, nd);
-            if (t->dual_data) {
-                VmDual d = t->dual_data[flat];
-                vm_push(vm, vm_make_dual_val(vm, d.primal, d.tangent));
-            } else {
-                vm_push(vm, FLOAT_VAL(vm_tensor_ref(t, indices, nd)));
-            }
+            vm_push(vm, vm_tensor_element_value(vm, t, flat));
         } else {
             /* Anything else is not an index — fabricating 0.0 hid the mistake. */
             vm_raise_error_msg(vm, "tensor-ref: index must be an integer, list or vector");
@@ -10339,6 +11386,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-set!: index must be an integer, list or vector");
             break;
         }
+        /* ADR-0020 slot store boundary: MS-04 / SW-166 made an exact rational
+         * or bignum convert to its correctly-rounded double here; a value with
+         * no real-number representation is now refused rather than stored as
+         * the 0.0 as_number_vm() answers for it. */
+        double slot = 0.0;
+        if (!vm_tensor_slot_value(vm, val, &slot)) {
+            vm_raise_error_msg(vm, "tensor-set!: value has no representation in a numeric "
+                                   "tensor slot (a tensor-backed vector holds real numbers only)");
+            break;
+        }
         /* Bounds contract (#356): an out-of-range write is a catchable error on
          * every substrate.  vm_tensor_set() returns silently instead, so an
          * out-of-range tensor-set! was a NO-OP the program could not detect. */
@@ -10349,10 +11406,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
                 break;
             }
-            /* MS-04 / SW-166: as_number_vm so an exact rational/bignum value
-             * (e.g. (tensor-set! t 0 1/2)) converts to its correctly-rounded
-             * double instead of silently writing 0.0. */
-            t->data[indices[0]] = as_number_vm(vm, val);
+            t->data[indices[0]] = slot;
             vm_push(vm, NIL_VAL);
             break;
         }
@@ -10360,13 +11414,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
             break;
         }
-        vm_tensor_set(t, indices, n, as_number_vm(vm, val));
+        vm_tensor_set(t, indices, n, slot);
         vm_push(vm, NIL_VAL);
         break;
     }
     case 413: { /* tensor-shape → list */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-shape");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-shape");
         if (!t) break;   /* raised: push nothing */
         Value result = NIL_VAL;
         for (int i = t->n_dims - 1; i >= 0; i--) {
@@ -10382,7 +11436,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 414: { /* tensor-data → flat list (for small tensors) */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-data");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-data");
         if (!t) break;   /* raised: push nothing */
         /* A VECTOR of the elements, matching native — this used to build a
          * LIST, so (tensor-data t) printed (1 2 3 4) against native's
@@ -10398,7 +11452,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vec->items = (Value*)vm_alloc(&vm->heap.regions,
                                       (size_t)(count > 0 ? count : 1) * sizeof(Value));
         if (!vec->items) { vm->error = 1; break; }
-        for (int64_t i = 0; i < count; i++) vec->items[i] = FLOAT_VAL(t->data[i]);
+        for (int64_t i = 0; i < count; i++)
+            vec->items[i] = t->dual_data ? vm_make_taylor_val(vm, &t->dual_data[i])
+                                         : FLOAT_VAL(t->data[i]);
         vm->heap.objects[vp]->type = HEAP_VECTOR;
         vm->heap.objects[vp]->opaque.ptr = vec;
         vm_push(vm, (Value){.type = VAL_VECTOR, .as.ptr = vp});
@@ -10406,7 +11462,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 415: { /* reshape(tensor, new_shape) */
         Value shape_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "reshape");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "reshape");
         if (!t) break;   /* raised: push nothing */
         int n = 0;
         int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n);
@@ -10517,24 +11573,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * ══════════════════════════════════════════════════════════════════════ */
     case 440: { /* matmul — GPU dispatch if tensor is large enough */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = vm_tensor_operand(vm, a_val, "matmul");
+        VmTensor* a = vm_tensor_operand_carrier(vm, a_val, "matmul");
         if (!a) break;   /* raised: push nothing */
-        VmTensor* b = vm_tensor_operand(vm, b_val, "matmul");
+        VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "matmul");
         if (!b) break;   /* raised: push nothing */
+        const int mm_tangent = vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b);
         /* Try GPU first, fall through to CPU */
         VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
         if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
         if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); break; }
         out->dtype = vm_tensor_promote_dtype(a, b);
+        if (mm_tangent) {
+            /* d(AB) = dA B + A dB */
+            VmRegionStack* rs = &vm->heap.regions;
+            VmTensor* ta = vm_tensor_tangent_of(vm, a, "matmul");
+            VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "matmul") : NULL;
+            if (!ta || !tb) break;
+            VmTensor* l = vm_tensor_matmul(rs, ta, b);
+            VmTensor* r = vm_tensor_matmul(rs, a, tb);
+            VmTensor* tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
+            if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
+                vm_raise_error_msg(vm, "matmul: could not propagate the derivative");
+                break;
+            }
+        }
         VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 441: case 442: case 443: case 444: case 445: case 446: case 447: { /* tensor binary: +,-,*,/,pow,max,min */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = vm_tensor_operand(vm, a_val, "tensor-binary-op");
+        VmTensor* a = vm_tensor_operand_carrier(vm, a_val, "tensor-binary-op");
         if (!a) break;   /* raised: push nothing */
-        VmTensor* b = vm_tensor_operand(vm, b_val, "tensor-binary-op");
+        VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "tensor-binary-op");
         if (!b) break;   /* raised: push nothing */
+        const int bin_tangent = vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b);
         int64_t broadcast_shape[16];
         int64_t broadcast_rank = 0;
         int64_t broadcast_total = 0;
@@ -10562,6 +11634,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); break; }
         out->dtype = vm_tensor_promote_dtype(a, b);
+        if (bin_tangent && fid <= 444) {
+            /* d(a+b) = da+db, d(a-b) = da-db, d(ab) = da b + a db,
+             * d(a/b) = (da b - a db) / b^2, on the same broadcasting kernels. */
+            VmRegionStack* rs = &vm->heap.regions;
+            VmTensor* ta = vm_tensor_tangent_of(vm, a, "tensor-binary-op");
+            VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "tensor-binary-op") : NULL;
+            if (!ta || !tb) break;
+            VmTensor* tout = NULL;
+            switch (fid) {
+                case 441: tout = vm_tensor_add(rs, ta, tb); break;
+                case 442: tout = vm_tensor_sub(rs, ta, tb); break;
+                case 443: {
+                    VmTensor* l = vm_tensor_mul(rs, ta, b);
+                    VmTensor* r = vm_tensor_mul(rs, a, tb);
+                    tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
+                    break;
+                }
+                case 444: {
+                    VmTensor* l = vm_tensor_mul(rs, ta, b);
+                    VmTensor* r = vm_tensor_mul(rs, a, tb);
+                    VmTensor* num = (l && r) ? vm_tensor_sub(rs, l, r) : NULL;
+                    VmTensor* den = vm_tensor_mul(rs, b, b);
+                    tout = (num && den) ? vm_tensor_div(rs, num, den) : NULL;
+                    break;
+                }
+            }
+            if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
+                vm_raise_error_msg(vm, "tensor-binary-op: could not propagate the derivative");
+                break;
+            }
+        } else if (bin_tangent && fid >= 445) {
+            out = vm_tensor_binary_special_tangent(vm, a, b, out, fid);
+            if (!out) break;
+        }
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -10578,16 +11684,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 449: { /* dot */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = vm_tensor_operand(vm, a_val, "tensor-dot");
+        VmTensor* a = vm_tensor_operand_carrier(vm, a_val, "tensor-dot");
         if (!a) break;   /* raised: push nothing */
-        VmTensor* b = vm_tensor_operand(vm, b_val, "tensor-dot");
+        VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "tensor-dot");
         if (!b) break;   /* raised: push nothing */
-        vm_push(vm, FLOAT_VAL(vm_tensor_dot(a, b)));
+        double dot_value = vm_tensor_dot(a, b);
+        if (vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b)) {
+            /* d(a . b) = da . b + a . db */
+            VmTensor* ta = vm_tensor_tangent_of(vm, a, "tensor-dot");
+            VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "tensor-dot") : NULL;
+            if (!ta || !tb) break;
+            vm_push(vm, vm_real_result(vm, dot_value, vm_tensor_dot(ta, b) + vm_tensor_dot(a, tb)));
+        } else {
+            vm_push(vm, FLOAT_VAL(dot_value));
+        }
         break;
     }
     case 450: case 451: case 452: case 453: case 454: case 455: { /* tensor unary: neg,abs,sqrt,exp,log,sin,cos */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-unary-op");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-unary-op");
         if (!t) break;   /* raised: push nothing */
         VmTensor* out = NULL;
         switch (fid) {
@@ -10599,21 +11714,38 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case 455: out = vm_tensor_sin_op(&vm->heap.regions, t); break;
         }
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        out = vm_tensor_unary_with_tangent(vm, t, out, fid, "tensor-unary-op: could not propagate the derivative");
+        if (!out) break;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 456: { /* scale(tensor, scalar) */
         Value scalar = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-scale");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-scale");
         if (!t) break;   /* raised: push nothing */
-        VmTensor* out = vm_tensor_scale(&vm->heap.regions, t, as_number(scalar));
+        double sv, dsv;
+        if (!vm_real_with_tangent(vm, scalar, &sv, &dsv, "tensor-scale")) break;
+        VmTensor* out = vm_tensor_scale(&vm->heap.regions, t, sv);
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (dsv != 0.0 || vm_tensor_has_tangent(t)) {
+            /* d(s t) = s dt + ds t */
+            VmRegionStack* rs = &vm->heap.regions;
+            VmTensor* tt = vm_tensor_tangent_of(vm, t, "tensor-scale");
+            if (!tt) break;
+            VmTensor* l = vm_tensor_scale(rs, tt, sv);
+            VmTensor* r = vm_tensor_scale(rs, t, dsv);
+            VmTensor* tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
+            if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
+                vm_raise_error_msg(vm, "tensor-scale: could not propagate the derivative");
+                break;
+            }
+        }
         VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis) */
         Value axis_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-reduce");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-reduce");
         if (!t) break;   /* raised: push nothing */
         /* SW-202: no axis (the prelude passes #f) is a FULL reduction to a
          * number, as on native; an explicit axis, negative ones counted from
@@ -10625,6 +11757,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (!full && axis < 0) axis += t->n_dims;
         if (!full && (axis < 0 || axis >= t->n_dims)) {
             vm_raise_error_msg(vm, "tensor-reduce: axis out of range");
+            break;
+        }
+        if (vm_tensor_has_tangent(t) && !(full && (fid == 457 || fid == 458))) {
+            vm_raise_error_msg(vm, "tensor-reduce: a derivative can pass through a full tensor-sum or tensor-mean only on the VM; use the native backend");
             break;
         }
         /* Higher-order mapping can produce dual tensor elements even from a
@@ -10687,10 +11823,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 461: { /* cos tensor */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-cos");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-cos");
         if (!t) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_cos_op(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        out = vm_tensor_unary_with_tangent(vm, t, out, fid, "tensor-cos: could not propagate the derivative");
+        if (!out) break;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -10722,7 +11860,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
         if (!is_tensor_or_vector) { vm_push(vm, NIL_VAL); break; }
-        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-activation");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-activation");
         if (!t) break;   /* raised: push nothing */
         VmTensor* out = NULL;
         /* GPU dispatch for softmax */
@@ -10737,16 +11875,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case 468: out = vm_tensor_gelu(&vm->heap.regions, t); break;
         }
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (fid == 463)
+            out = vm_tensor_softmax_with_tangent(vm, t, out);
+        else
+            out = vm_tensor_unary_with_tangent(vm, t, out, fid, "tensor-activation: could not propagate the derivative");
+        if (!out) break;
         out->dtype = t->dtype;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
     case 469: { /* swish */
         Value t_val = vm_pop(vm);
-        VmTensor* t = vm_tensor_operand(vm, t_val, "swish");
+        VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "swish");
         if (!t) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_swish(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
+        out = vm_tensor_unary_with_tangent(vm, t, out, fid, "swish: could not propagate the derivative");
+        if (!out) break;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -10778,7 +11923,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         if (target < 0) { vm_push(vm, NIL_VAL); break; }
         vm_push(vm, t);
-        vm_push(vm, INT_VAL(-1));
+        vm_push(vm, BOOL_VAL(0));   /* no axis: a full reduction (SW-202) */
         vm_dispatch_native(vm, target);
         break;
     }
@@ -10786,8 +11931,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 475: { /* layer-norm(tensor, gamma, beta, epsilon) */
         Value eps_val = vm_pop(vm), beta_val = vm_pop(vm), gamma_val = vm_pop(vm);
         Value input_val = vm_pop(vm);
-        VmTensor* input = vm_tensor_operand(vm, input_val, "layer-norm");
+        VmTensor* input = vm_tensor_operand_carrier(vm, input_val, "layer-norm");
         if (!input) break;
+        /* The kernel carries the input's tangent; a derivative in the scalar
+         * parameters has no rule here and is refused, not read as its primal. */
+        if (gamma_val.type == VAL_DUAL || beta_val.type == VAL_DUAL || eps_val.type == VAL_DUAL ||
+            gamma_val.type == VAL_HYPER_DUAL || beta_val.type == VAL_HYPER_DUAL || eps_val.type == VAL_HYPER_DUAL) {
+            vm_raise_error_msg(vm, "layer-norm: a derivative with respect to gamma, beta or epsilon cannot pass through layer-norm on the VM; use the native backend");
+            break;
+        }
         VmTensor* out = vm_tensor_layer_norm_scalar(&vm->heap.regions, input,
             as_number_vm(vm, gamma_val), as_number_vm(vm, beta_val),
             as_number_vm(vm, eps_val));
@@ -10798,11 +11950,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 477: { /* scaled-dot-attention(Q, K, V) */
         Value v_val = vm_pop(vm), k_val = vm_pop(vm), q_val = vm_pop(vm);
-        VmTensor* q = vm_tensor_operand(vm, q_val, "scaled-dot-attention");
+        VmTensor* q = vm_tensor_operand_carrier(vm, q_val, "scaled-dot-attention");
         if (!q) break;
-        VmTensor* k = vm_tensor_operand(vm, k_val, "scaled-dot-attention");
+        VmTensor* k = vm_tensor_operand_carrier(vm, k_val, "scaled-dot-attention");
         if (!k) break;
-        VmTensor* v = vm_tensor_operand(vm, v_val, "scaled-dot-attention");
+        VmTensor* v = vm_tensor_operand_carrier(vm, v_val, "scaled-dot-attention");
         if (!v) break;
         VmTensor* out = vm_tensor_scaled_dot_attention(&vm->heap.regions,
                                                        q, k, v, NULL);
@@ -11522,33 +12674,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * String Operations (550-570) — real VmString dispatch
      * ══════════════════════════════════════════════════════════════════════ */
-    case 550: { /* string-length */
-        Value s_val = vm_pop(vm);
-        if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            vm_push(vm, INT_VAL(vm_string_length(s)));
-        } else vm_push(vm, INT_VAL(0));
-        break;
-    }
-    case 551: { /* string-ref(str, idx) */
-        Value idx = vm_pop(vm), s_val = vm_pop(vm);
-        if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            int k = (int)as_number(idx);
-            /* R7RS 6.7 + parity contract: out of range is a catchable error
-             * (the native codegen has always raised here; the VM used to
-             * fabricate codepoint 0). */
-            if (!s || k < 0 || k >= s->char_len) {
-                vm_raise_error_msg(vm, "string-ref: index out of bounds");
-                break;
-            }
-            int cp = vm_string_ref(s, k);
-            vm_push(vm, (Value){.type = VAL_CHAR, .as.i = cp >= 0 ? cp : 0});
-        } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
-        break;
-    }
+    case 550: vm_exec_str_len(vm); break; /* string-length */
+    case 551: vm_exec_str_ref(vm); break; /* string-ref(str, idx) */
     case 552: { /* string-set!(str, idx, char) → new string */
         Value ch = vm_pop(vm), idx = vm_pop(vm), s_val = vm_pop(vm);
+        if (!vm_require_container(vm, s_val, VM_CONTAINER_STRING, "string-set!", "a string")) break;
         if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
             VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
             VmString* result = vm_string_set(&vm->heap.regions, s, (int)as_number(idx), (int)as_number(ch));
@@ -11640,11 +12770,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 563: case 564: { /* string->number / number->string */
         if (fid == 563) { /* string->number */
-            Value s_val = vm_pop(vm);
-            VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
-            double d = vm_string_to_number(s);
-            if (isnan(d)) vm_push(vm, BOOL_VAL(0)); /* #f on parse failure */
-            else vm_push(vm, number_val(d));
+            vm_string_to_number_value(vm, vm_pop(vm), 10);
         } else { /* number->string */
             Value n = vm_pop(vm);
             VmString* r = vm_number_value_to_string(vm, n);
@@ -11707,11 +12833,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     case 568: { /* string->number (alt ID) */
-        Value s_val = vm_pop(vm);
-        VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
-        double d = vm_string_to_number(s);
-        if (isnan(d)) vm_push(vm, BOOL_VAL(0));
-        else vm_push(vm, number_val(d));
+        vm_string_to_number_value(vm, vm_pop(vm), 10);
         break;
     }
     case 569: { /* number->string (alt ID) */
@@ -11785,7 +12907,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 583: { /* read-char(port) */
         Value port_val = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_val);
-        if (!port) port = vm_port_current_input();
+        if (!port) port = vm_current_input(vm);
         int ch = vm_port_read_char(port);
         vm_push(vm, ch == EOF ? (Value){.type = VAL_EOF} :
                               (Value){.type = VAL_CHAR, .as.i = ch});
@@ -11794,7 +12916,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 584: { /* write-char(char, port) */
         Value port_value = vm_pop(vm), ch = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_value);
-        if (!port) port = vm_port_current_output();
+        if (!port) port = vm_current_output(vm);
         vm_port_write_char(port, (int)as_number(ch));
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
@@ -11804,7 +12926,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* `(read-line)` reads the current input port, as R7RS specifies and as
          * the native lowering does; only a port argument that is PRESENT and
          * wrong is an error. */
-        VmPort* port = vm_native_absent(port_val) ? vm_port_current_input()
+        VmPort* port = vm_native_absent(port_val) ? vm_current_input(vm)
                                                   : vm_value_as_port(vm, port_val);
         if ((!vm_native_absent(port_val) && port_val.type != VAL_PORT) ||
             !port || !port->is_open || port->dir != VM_PORT_INPUT) {
@@ -11823,7 +12945,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 586: { /* write-char(char, port) — write to stdout if no port */
         Value ch = vm_pop(vm);
-        vm_port_write_char(vm_port_current_output(), (int)as_number(ch));
+        vm_port_write_char(vm_current_output(vm), (int)as_number(ch));
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
@@ -11836,13 +12958,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             ? (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr
             : NULL;
         VmPort* port = vm_value_as_port(vm, port_val);
-        if (!port) port = vm_port_current_output();
+        if (!port) port = vm_current_output(vm);
         vm_port_write_string(port, str);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 588: { /* _read0 — complete datum reader over current input */
-        vm_push(vm, vm_reader_from_port(vm, vm_port_current_input()));
+        vm_push(vm, vm_reader_from_port(vm, vm_current_input(vm)));
         break;
     }
     case 619: { /* _read1(port) — complete datum reader over explicit port */
@@ -11859,18 +12981,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 589: { /* write(datum) */
         Value v = vm_pop(vm);
-        vm_write_value_port(vm, v, vm_port_current_output(), 1);
+        vm_emit_current(vm, v, 1);
         vm_push(vm, NIL_VAL);
         break;
     }
     case 590: { /* display(datum) — print without quoting (same as write in this VM) */
         Value v = vm_pop(vm);
-        print_value(vm, v);
+        vm_emit_current(vm, v, 0);
         vm_push(vm, NIL_VAL);
         break;
     }
     case 591: { /* newline */
-        printf("\n"); vm_push(vm, NIL_VAL); break;
+        vm_newline_current(vm); vm_push(vm, NIL_VAL); break;
     }
     case 592: { /* eof-object? */
         Value v = vm_pop(vm);
@@ -13871,7 +14993,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2070: { /* read-u8([port]) → byte or eof */
         Value port_val = vm_pop(vm);
-        VmPort* p = vm_native_absent(port_val) ? vm_port_current_input()
+        VmPort* p = vm_native_absent(port_val) ? vm_current_input(vm)
                                                : vm_value_as_port(vm, port_val);
         int b = vm_port_read_u8(p);
         /* END OF INPUT IS THE EOF OBJECT, not the empty list. `read-char`
@@ -13884,7 +15006,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2071: { /* write-u8(byte [, port]) → void */
         Value port_val = vm_pop(vm), byte_val = vm_pop(vm);
-        VmPort* p = vm_native_absent(port_val) ? vm_port_current_output()
+        VmPort* p = vm_native_absent(port_val) ? vm_current_output(vm)
                                                : vm_value_as_port(vm, port_val);
         vm_port_write_u8(p, (int)as_number(byte_val));
         vm_push(vm, NIL_VAL);
@@ -13892,7 +15014,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2072: { /* read-bytevector(k [, port]) → bytevector or eof */
         Value port_val = vm_pop(vm), k_val = vm_pop(vm);
-        VmPort* p = vm_native_absent(port_val) ? vm_port_current_input()
+        VmPort* p = vm_native_absent(port_val) ? vm_current_input(vm)
                                                : vm_value_as_port(vm, port_val);
         int k = (int)as_number(k_val);
         if (!p || k < 0) { vm_push(vm, NIL_VAL); break; }
@@ -13913,15 +15035,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2073: { /* write-bytevector(bv [, port]) → void */
         Value port_val = vm_pop(vm), bv_val = vm_pop(vm);
-        VmPort* p = vm_native_absent(port_val) ? vm_port_current_output()
+        VmPort* p = vm_native_absent(port_val) ? vm_current_output(vm)
                                                : vm_value_as_port(vm, port_val);
         VmBytevector* bv = vm_value_as_bytevector(vm, bv_val);
         if (p && bv) vm_port_write_bytevector(p, (const char*)bv->data, bv->len);
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 2014: { /* json-get-in(obj, path, default) → value */
+    case 2014: { /* json-get-in(obj, path [, default]) → value; default #f */
         Value default_val = vm_pop(vm), path_val = vm_pop(vm), obj_val = vm_pop(vm);
+        if (vm_native_absent(default_val)) default_val = BOOL_VAL(0);
         vm_push(vm, vm_json_get_in_value(vm, obj_val, path_val, default_val));
         break;
     }
@@ -14031,7 +15154,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * WASM target has no pthread → vm_parallel.c is excluded; always sequential. */
 #ifndef ESHKOL_VM_WASM
         VmThreadPool* pool = vm_parallel_ensure_pool();
-        if (pool && n >= 4) {
+        if (pool && n >= 4 && vm_closure_is_worker_safe(vm, fn)) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
             if (tasks) {
@@ -14040,14 +15163,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     tasks[i].closure = fn;
                     tasks[i].input = elems[i];
                     tasks[i].output = NIL_VAL;
+                    tasks[i].failed = 0;
                 }
                 for (int i = 0; i < n; i++) {
-                    vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL);
+                    if (vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL) != 0)
+                        tasks[i].failed = 1;
                 }
                 vm_pool_wait_all(pool);
-                for (int i = 0; i < n; i++) {
-                    results[i] = tasks[i].output;
-                }
+                if (!vm_parmap_settle_failed(vm, tasks, n)) break;
+                for (int i = 0; i < n; i++) results[i] = tasks[i].output;
             } else {
                 /* Fallback: sequential */
                 for (int i = 0; i < n; i++) {
@@ -14097,17 +15221,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Evaluate predicates (parallel via pool if available; WASM is sequential). */
 #ifndef ESHKOL_VM_WASM
         VmThreadPool* pool = vm_parallel_ensure_pool();
-        if (pool && n >= 4) {
+        if (pool && n >= 4 && vm_closure_is_worker_safe(vm, pred)) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
             if (tasks) {
                 for (int i = 0; i < n; i++) {
                     tasks[i].main_vm = vm; tasks[i].closure = pred;
                     tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
+                    tasks[i].failed = 0;
                 }
                 for (int i = 0; i < n; i++)
-                    vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL);
+                    if (vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL) != 0)
+                        tasks[i].failed = 1;
                 vm_pool_wait_all(pool);
+                if (!vm_parmap_settle_failed(vm, tasks, n)) break;
                 for (int i = 0; i < n; i++) preds[i] = tasks[i].output;
             } else {
                 for (int i = 0; i < n; i++)
@@ -14167,17 +15294,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* parallel-for-each: parallel via pool if available; WASM is sequential. */
 #ifndef ESHKOL_VM_WASM
         VmThreadPool* pool = vm_parallel_ensure_pool();
-        if (pool && n >= 4) {
+        if (pool && n >= 4 && vm_closure_is_worker_safe(vm, fn)) {
             VmParMapTask* tasks = (VmParMapTask*)vm_alloc(&vm->heap.regions,
                                       (size_t)n * sizeof(VmParMapTask));
             if (tasks) {
                 for (int i = 0; i < n; i++) {
                     tasks[i].main_vm = vm; tasks[i].closure = fn;
                     tasks[i].input = elems[i]; tasks[i].output = NIL_VAL;
+                    tasks[i].failed = 0;
                 }
                 for (int i = 0; i < n; i++)
-                    vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL);
+                    if (vm_pool_submit(pool, vm_parmap_task_fn, &tasks[i], NULL) != 0)
+                        tasks[i].failed = 1;
                 vm_pool_wait_all(pool);
+                if (!vm_parmap_settle_failed(vm, tasks, n)) break;
             } else {
                 for (int i = 0; i < n; i++)
                     vm_call_closure_from_native(vm, fn, &elems[i], 1);
@@ -14221,7 +15351,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
 #ifndef ESHKOL_VM_WASM
         VmThreadPool* pool = vm_parallel_ensure_pool();
-        if (pool && n >= 2) {
+        int all_worker_safe = 1;
+        for (int i = 0; i < n; i++)
+            if (!vm_closure_is_worker_safe(vm, closures[i])) { all_worker_safe = 0; break; }
+        if (pool && n >= 2 && all_worker_safe) {
             VmParThunkTask* tasks = (VmParThunkTask*)vm_alloc(&vm->heap.regions,
                                         (size_t)n * sizeof(VmParThunkTask));
             if (tasks) {
@@ -14229,10 +15362,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     tasks[i].main_vm = vm;
                     tasks[i].closure = closures[i];
                     tasks[i].output = NIL_VAL;
+                    tasks[i].failed = 0;
                 }
                 for (int i = 0; i < n; i++)
-                    vm_pool_submit(pool, vm_parthunk_task_fn, &tasks[i], NULL);
+                    if (vm_pool_submit(pool, vm_parthunk_task_fn, &tasks[i], NULL) != 0)
+                        tasks[i].failed = 1;
                 vm_pool_wait_all(pool);
+                if (!vm_parthunk_settle_failed(vm, tasks, n)) break;
                 for (int i = 0; i < n; i++) results[i] = tasks[i].output;
             } else {
                 for (int i = 0; i < n; i++)
@@ -14275,6 +15411,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
             VmThreadPool* pool = vm_parallel_ensure_pool();
             if (pool && thunk_or_value.type == VAL_CLOSURE &&
+                vm_closure_is_worker_safe(vm, thunk_or_value) &&
                 vm_pool_submit(pool, vm_future_task_fn, fut, NULL) == 0) {
                 vm_push(vm, fut_value);
                 break;
@@ -14282,7 +15419,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             Value result = thunk_or_value;
             if (thunk_or_value.type == VAL_CLOSURE)
                 result = vm_call_closure_from_native(vm, thunk_or_value, NULL, 0);
-            vm_future_mark_ready(fut, result);
+            vm_future_mark_ready(fut, result, 0);
             vm_push(vm, fut_value);
             break;
         }
@@ -14298,7 +15435,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (fut.type == VAL_FUTURE && fut.as.ptr >= 0 && fut.as.ptr < vm->heap.next_free &&
             vm->heap.objects[fut.as.ptr]->type == HEAP_FUTURE) {
             VmFuture* handle = (VmFuture*)vm->heap.objects[fut.as.ptr]->opaque.ptr;
-            vm_push(vm, vm_future_force(handle));
+            Value result;
+            if (vm_future_force_on_caller(vm, handle, &result)) vm_push(vm, result);
             break;
         }
 #endif
@@ -14453,8 +15591,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Hash Table Operations (660-670)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 660: { /* make-hash-table */
-        VmHashTable* ht = vm_ht_make(&vm->heap.regions);
+    case 660: { /* make-hash-table: keys compared by equal? */
+        VmHashTable* ht = vm_ht_make_keyed(&vm->heap.regions, vm_hash_key_hash,
+                                           vm_hash_key_equal, vm);
         if (!ht) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_HASH, VAL_HASH, ht);
         break;
@@ -14463,8 +15602,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value dflt = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            void* result = vm_ht_ref(ht, (void*)(uintptr_t)key.as.i, (void*)(uintptr_t)dflt.as.i);
-            vm_push(vm, INT_VAL((int64_t)(intptr_t)result));
+            Value* result = (Value*)vm_ht_ref(ht, &key, NULL);
+            vm_push(vm, result ? *result : dflt);
         } else vm_push(vm, dflt);
         break;
     }
@@ -14472,7 +15611,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value val = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            vm_ht_set(&vm->heap.regions, ht, (void*)(uintptr_t)key.as.i, (void*)(uintptr_t)val.as.i);
+            Value* stored = (Value*)vm_ht_ref(ht, &key, NULL);
+            if (stored) {
+                *stored = val;   /* same key: replace the value in place */
+            } else {
+                Value* kbox = vm_hash_box(vm, key);
+                Value* vbox = vm_hash_box(vm, val);
+                if (kbox && vbox) vm_ht_set(&vm->heap.regions, ht, kbox, vbox);
+            }
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -14481,7 +15627,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value key = vm_pop(vm), ht_val = vm_pop(vm);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            vm_ht_remove(ht, (void*)(uintptr_t)key.as.i);
+            vm_ht_remove(ht, &key);
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -14490,7 +15636,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value key = vm_pop(vm), ht_val = vm_pop(vm);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            vm_push(vm, BOOL_VAL(vm_ht_has_key(ht, (void*)(uintptr_t)key.as.i)));
+            vm_push(vm, BOOL_VAL(vm_ht_has_key(ht, &key)));
         } else vm_push(vm, BOOL_VAL(0));
         break;
     }
@@ -14553,21 +15699,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else vm_push(vm, INT_VAL(0));
         break;
     }
-    case 668: { /* hash-table-copy(ht) — shallow copy of hash table */
-        Value ht_val = vm_pop(vm);
-        if (is_heap_type(vm, ht_val, HEAP_HASH)) {
-            VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
-            if (ht) {
-                VmHashTable* copy = vm_ht_make(&vm->heap.regions);
-                if (copy) {
-                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_HASH, VAL_HASH, copy);
-                    break;
-                }
-            }
-        }
-        vm_push(vm, NIL_VAL);
-        break;
-    }
     case 669: { /* hash-clear! */
         Value ht_val = vm_pop(vm);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
@@ -14596,6 +15727,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 681: { /* bytevector-length */
         Value bv_val = vm_pop(vm);
+        if (!vm_require_container(vm, bv_val, VM_CONTAINER_BYTEVECTOR, "bytevector-length", "a bytevector")) break;
         if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             vm_push(vm, INT_VAL(vm_bv_length(bv)));
@@ -14604,6 +15736,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 682: { /* bytevector-u8-ref(bv, k) */
         Value k = vm_pop(vm), bv_val = vm_pop(vm);
+        if (!vm_require_container(vm, bv_val, VM_CONTAINER_BYTEVECTOR, "bytevector-u8-ref", "a bytevector")) break;
         if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             int idx = (int)as_number(k);
@@ -14618,6 +15751,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 683: { /* bytevector-u8-set!(bv, k, byte) */
         Value byte = vm_pop(vm), k = vm_pop(vm), bv_val = vm_pop(vm);
+        if (!vm_require_container(vm, bv_val, VM_CONTAINER_BYTEVECTOR, "bytevector-u8-set!", "a bytevector")) break;
         if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
             int idx = (int)as_number(k);
@@ -14906,8 +16040,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 713: { /* error-irritants — returns nil (no irritant list support in Value system) */
-        Value e_val = vm_pop(vm); (void)e_val;
+    case 713: { /* error-irritants */
+        Value e_val = vm_pop(vm);
+        if (is_heap_type(vm, e_val, HEAP_ERROR)) {
+            VmError* e = (VmError*)vm->heap.objects[e_val.as.ptr]->opaque.ptr;
+            const void* raw = vm_error_value_irritants(e);
+            if (raw) {
+                Value irritants;
+                memcpy(&irritants, raw, sizeof(irritants));
+                vm_push(vm, irritants);
+                break;
+            }
+        }
         vm_push(vm, NIL_VAL);
         break;
     }
@@ -14971,96 +16115,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 751: { /* jacobian(f, point) → matrix of partial derivatives
-                 * For f: R^n → R^m, returns m×n tensor J[i][j] = ∂fi/∂xj
-                 * Scalar→scalar: returns f'(x)
-                 * Multi-var→scalar: returns gradient (1×n)
-                 * Multi-var→vector: returns m×n Jacobian matrix */
+    case 751: { /* jacobian(f, point) -> #(#(dF0/dx0 ...) ...), m rows of n.
+                 * ADR-0027: every column is a forward pass of its own (seed
+                 * one coordinate, read the derivative of every output), a
+                 * level over the components' carriers, so the operator nests
+                 * inside and around every other pass and returns the same
+                 * row-vector matrix as native. A scalar-valued function is an
+                 * error, as on native (use gradient). */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
-
-        /* Extract point */
-        /* Point extraction is sized by the point (see vm_ad_extract_point):
-         * list, vector, tensor of any rank or scalar, with no arity ceiling. */
         int64_t point_n = 0;
-        double* point = vm_ad_extract_point(vm, x_val, &point_n, NULL);
-        int n = point ? (int)point_n : 0;
-
-        if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
-
-        /* First pass with variable 0 seeded to determine output dimension m */
-        Value* probe_args = vm_ad_arg_slots(vm, n);
-        if (!probe_args) { vm_push(vm, FLOAT_VAL(0)); break; }
-        for (int j = 0; j < n; j++) {
-            VM_AD_MAKE_DUAL(vm, point[j], (j == 0) ? 1.0 : 0.0, probe_args[j]);
-        }
-        Value probe_result = vm_ad_call_closure(vm, f_val, probe_args, n);
-
-        /* Determine output dimension: scalar (m=1) or tensor (m = tensor size) */
-        int m = 1;
-        if (probe_result.type == VAL_TENSOR && probe_result.as.ptr >= 0) {
-            VmTensor* rt = (VmTensor*)vm->heap.objects[probe_result.as.ptr]->opaque.ptr;
-            if (rt) m = (int)rt->total;
-        }
-
-        if (n == 1 && m == 1) {
-            /* Scalar → scalar: just the derivative */
-            if (probe_result.type == VAL_DUAL && probe_result.as.ptr >= 0) {
-                VmDual* rd = (VmDual*)vm->heap.objects[probe_result.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
-            } else {
-                vm_push(vm, FLOAT_VAL(0));
-            }
-        } else {
-            /* Build m×n Jacobian matrix */
-            double* jac_data = (double*)vm_alloc(&vm->heap.regions,
-                                                  (size_t)(m * n) * sizeof(double));
-            if (!jac_data) { vm_push(vm, NIL_VAL); break; }
-            memset(jac_data, 0, (size_t)(m * n) * sizeof(double));
-
-            Value* args = vm_ad_arg_slots(vm, n);
-            if (!args) { vm_push(vm, NIL_VAL); break; }
-            for (int i = 0; i < n; i++) {
-                for (int j = 0; j < n; j++) {
-                    VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
-                }
-                Value result = vm_ad_call_closure(vm, f_val, args, n);
-
-                if (m == 1) {
-                    /* Scalar output */
-                    if (result.type == VAL_DUAL && result.as.ptr >= 0) {
-                        VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                        jac_data[i] = rd ? rd->tangent : 0; /* row 0, col i */
-                    }
-                } else if (result.type == VAL_TENSOR && result.as.ptr >= 0) {
-                    /* Vector output: each element is a dual or scalar */
-                    VmTensor* rt = (VmTensor*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                    if (rt && rt->data) {
-                        /* Tensor of doubles — tangents already extracted by AD */
-                        for (int k = 0; k < m && k < (int)rt->total; k++) {
-                            jac_data[k * n + i] = rt->data[k]; /* J[k][i] */
-                        }
-                    }
-                } else if (result.type == VAL_DUAL && result.as.ptr >= 0) {
-                    /* Single dual result for m=1 case */
-                    VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                    jac_data[i] = rd ? rd->tangent : 0;
-                }
-            }
-
-            if (m == 1) {
-                /* 1×n → return as 1D tensor (gradient) */
-                int64_t shape[1] = { n };
-                VmTensor* t = vm_tensor_from_data(&vm->heap.regions, jac_data, shape, 1);
-                if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
-                else { vm_push(vm, NIL_VAL); }
-            } else {
-                /* m×n Jacobian matrix */
-                int64_t shape[2] = { m, n };
-                VmTensor* t = vm_tensor_from_data(&vm->heap.regions, jac_data, shape, 2);
-                if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); }
-                else { vm_push(vm, NIL_VAL); }
-            }
-        }
+        int is_collection = 0;
+        (void)vm_ad_extract_point(vm, x_val, &point_n, &is_collection);
+        int n = (int)point_n;
+        if (n <= 0) { vm_push(vm, FLOAT_VAL(0)); break; }
+        Value* comps = vm_ad_point_values(vm, x_val, n);
+        if (!comps) break;
+        int arity = is_collection ? vm_closure_arity(vm, f_val) : -1;
+        Value J = vm_ad_level_jacobian(vm, f_val, comps, n, arity);
+        if (!vm->error) vm_push(vm, J);
         break;
     }
 
@@ -15089,16 +16161,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
 
         if (!is_collection) {
-            /* Scalar hessian via hyper-dual: seed (x, 1, 1, 0) → f₁₂ = f''(x) */
-            Value hd_arg;
-            VM_HD_MAKE(vm, point[0], 1.0, 1.0, 0.0, hd_arg);
-            Value result = vm_ad_call_closure(vm, f_val, &hd_arg, 1);
-            if (result.type == VAL_HYPER_DUAL && result.as.ptr >= 0) {
-                VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(rh ? rh->f12 : 0.0));
-            } else {
-                vm_push(vm, FLOAT_VAL(0.0));
-            }
+            /* Scalar Hessian is the shared order-two Taylor derivative.
+             * Preserve the original exact seed and any outer carrier. */
+            Value result = vm_taylor_pass(vm, f_val, x_val, 2, 0);
+            if (!vm->error) vm_push(vm, result);
+        } else if (vm_ad_vector_op_nested(vm, vm_ad_point_values(vm, x_val, n), n)) {
+            /* ADR-0027: nested, every entry is a pair of levels. */
+            Value H = vm_ad_level_hessian(vm, f_val, vm_ad_point_values(vm, x_val, n), n,
+                                          vm_closure_arity(vm, f_val));
+            if (!vm->error) vm_push(vm, H);
         } else {
             /* Multi-variable Hessian via hyper-dual: H[i][j] = ∂²f/∂xᵢ∂xⱼ
              * Seed xₖ = (point[k], δₖᵢ, δₖⱼ, 0) → result.f12 = H[i][j] */
@@ -15111,23 +16182,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
             for (int i = 0; i < n; i++) {
                 for (int j = i; j < n; j++) {
                     Value r;
+                    uint32_t hess_e1 = 0, hess_e2 = 0;
                     if (vm_closure_arity(vm, f_val) == 1) {
                         /* A unary collection loss receives one vector, just
-                         * like gradient. Use the existing Taylor/dual carrier
-                         * so tensor element access and mapping retain both
-                         * perturbations; coeff[e1*e2] is the exact Hessian. */
-                        uint32_t epoch = vm_dual_next_taylor_epoch();
+                         * like gradient. Two nested order-1 levels carry the
+                         * two directions (ADR-0027): x_k = p_k + d_ki t1 +
+                         * d_kj t2, and H_ij is the t2-coefficient of the
+                         * t1-coefficient of the result. */
+                        uint32_t e1 = vm_dual_next_taylor_epoch();
+                        uint32_t e2 = vm_dual_next_taylor_epoch();
                         for (int k = 0; k < n; k++) {
-                            VmDual outer = {0};
-                            outer.primal = point[k];
-                            outer.tangent = k == j ? 1.0 : 0.0;
-                            VmDual* seed = vm_dual_make_taylor_scalar_seed(&vm->heap.regions, &outer);
-                            if (!seed) { vm_raise_error_msg(vm, "hessian: allocation failed"); break; }
-                            seed->epoch = epoch;
-                            seed->primal = point[k];
-                            seed->coeff[1] = k == i ? 1.0 : 0.0;
-                            args[k] = vm_make_taylor_val(vm, seed);
+                            VmDual* x = vm_dual_constant(&vm->heap.regions, point[k], NULL);
+                            if (x && k == i) x = vm_dual_level_seed(&vm->heap.regions, x, 1, e1);
+                            if (x && k == j) x = vm_dual_level_seed(&vm->heap.regions, x, 1, e2);
+                            if (!x) { vm_raise_error_msg(vm, "hessian: allocation failed"); break; }
+                            args[k] = vm_make_taylor_val(vm, x);
                         }
+                        hess_e1 = e1; hess_e2 = e2;
                         VmVector* vector = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
                         int32_t slot = heap_alloc(&vm->heap);
                         if (!vector || slot < 0) { vm_raise_error_msg(vm, "hessian: allocation failed"); break; }
@@ -15147,10 +16218,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
                         VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
                         if (rh) h_ij = rh->f12;
                     }
-                    if (r.type == VAL_DUAL && r.as.ptr >= 0) {
+                    if (r.type == VAL_DUAL && r.as.ptr >= 0 && hess_e2) {
                         VmDual* rd = (VmDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
-                        if (rd && vm_dual_is_taylor(rd) && rd->order >= 1 && rd->tangent_coeff)
-                            h_ij = rd->tangent_coeff[1];
+                        VmDual* c2 = vm_dual_level_coefficient(&vm->heap.regions, rd, hess_e2, 1);
+                        VmDual* c12 = c2 ? vm_dual_level_coefficient(&vm->heap.regions, c2, hess_e1, 1) : NULL;
+                        if (c12) h_ij = c12->primal;
                     }
                     hess_data[i * n + j] = h_ij;
                     hess_data[j * n + i] = h_ij;
@@ -15170,6 +16242,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
                  * div(F) = ∂F1/∂x1 + ∂F2/∂x2 + ... + ∂Fn/∂xn
                  * F: R^n → R^n (vector field), point: list or tensor */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+        {
+            int64_t np = 0; int coll = 0;
+            (void)vm_ad_extract_point(vm, x_val, &np, &coll);
+            Value* comps = np > 0 ? vm_ad_point_values(vm, x_val, np) : NULL;
+            if (comps && vm_ad_vector_op_nested(vm, comps, (int)np)) {
+                Value d = vm_ad_level_divergence(vm, f_val, comps, (int)np,
+                                                 coll ? vm_closure_arity(vm, f_val) : -1);
+                if (!vm->error) vm_push(vm, d);
+                break;
+            }
+        }
 
         /* Point extraction is sized by the point (see vm_ad_extract_point):
          * list, vector, tensor of any rank or scalar, with no arity ceiling. */
@@ -15219,6 +16302,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
                  * curl(F) = (∂F3/∂y - ∂F2/∂z, ∂F1/∂z - ∂F3/∂x, ∂F2/∂x - ∂F1/∂y)
                  * F: R^3 → R^3, point must have exactly 3 components */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+        {
+            int64_t np = 0; int coll = 0;
+            (void)vm_ad_extract_point(vm, x_val, &np, &coll);
+            Value* comps = np >= 2 ? vm_ad_point_values(vm, x_val, np) : NULL;
+            if (comps && vm_ad_vector_op_nested(vm, comps, (int)np)) {
+                Value c = vm_ad_level_curl(vm, f_val, comps, (int)np, vm_closure_arity(vm, f_val));
+                if (!vm->error) vm_push(vm, c);
+                break;
+            }
+        }
 
         /* LE-12: use the SHARED point extractor every sibling operator uses.
          * Curl had its own inline block that recognized only VAL_PAIR and
@@ -15332,6 +16425,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
     (out) = (Value){.type = VAL_HYPER_DUAL, .as.ptr = _hp}; \
 } while(0)
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+        {
+            int64_t np = 0; int coll = 0;
+            (void)vm_ad_extract_point(vm, x_val, &np, &coll);
+            Value* comps = np > 0 ? vm_ad_point_values(vm, x_val, np) : NULL;
+            if (comps && vm_ad_vector_op_nested(vm, comps, (int)np)) {
+                Value l = vm_ad_level_laplacian(vm, f_val, comps, (int)np,
+                                                coll ? vm_closure_arity(vm, f_val) : -1);
+                if (!vm->error) vm_push(vm, l);
+                break;
+            }
+        }
 
         /* Point extraction is sized by the point (see vm_ad_extract_point):
          * list, vector, tensor of any rank or scalar, with no arity ceiling. */
@@ -15352,7 +16456,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
                              0.0,
                              args[k]);
             }
-            Value r = vm_ad_call_closure(vm, f_val, args, n);
+            /* LE-12: an arity-1 field receives the point as one vector. */
+            Value r = vm_ad_call_components(vm, f_val, args, n,
+                                            vm_closure_arity(vm, f_val) == 1 &&
+                                            (x_val.type == VAL_VECTOR || x_val.type == VAL_PAIR ||
+                                             x_val.type == VAL_TENSOR) ? 1 : -1);
             if (r.type == VAL_HYPER_DUAL && r.as.ptr >= 0) {
                 VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
                 if (rh) laplacian += rh->f12;
@@ -15368,6 +16476,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
                  * D_v(f) = ∇f · v = Σ (∂f/∂xi * vi)
                  * Uses a single forward pass with tangent = direction vector */
         Value dir_val = vm_pop(vm), x_val = vm_pop(vm), f_val = vm_pop(vm);
+        {
+            int64_t np = 0, nd = 0; int coll = 0;
+            (void)vm_ad_extract_point(vm, x_val, &np, &coll);
+            (void)vm_ad_extract_point(vm, dir_val, &nd, NULL);
+            Value* comps = np > 0 && nd == np ? vm_ad_point_values(vm, x_val, np) : NULL;
+            Value* dirs = comps ? vm_ad_point_values(vm, dir_val, nd) : NULL;
+            if (comps && dirs && (vm_ad_vector_op_nested(vm, comps, (int)np) ||
+                                  vm_ad_values_carry(dirs, (int)nd))) {
+                Value d = vm_ad_level_directional(vm, f_val, comps, dirs, (int)np,
+                                                  coll ? vm_closure_arity(vm, f_val) : -1);
+                if (!vm->error) vm_push(vm, d);
+                break;
+            }
+        }
 
         /* Both the point and the direction are extracted at their true
          * lengths (see vm_ad_extract_point); a mismatch is still rejected
@@ -15410,21 +16532,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
         uint32_t order = (uint32_t)order_d;
-        int nested_result = 0;
-        Value result = vm_taylor_apply(vm, f_val, point_val, order,
-                                       &nested_result);
-        if (vm->error) break;
-        if (nested_result == 2) {
-            if (fid == 758)
-                vm_push(vm, result);
-            else
-                vm_push(vm, vm_cons_value(vm, result, NIL_VAL));
-        } else if (nested_result)
-            vm_push(vm, result);
-        else if (fid == 758)
-            vm_push(vm, vm_taylor_result_value(vm, result, order, 1));
-        else
-            vm_push(vm, vm_taylor_coeff_list(vm, result, order));
+        Value result = vm_taylor_pass(vm, f_val, point_val, order, fid == 757);
+        if (!vm->error) vm_push(vm, result);
         break;
     }
 
@@ -15580,101 +16689,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 142: { /* add2 — complex- and rational-aware */
-        /* The variadic prelude folds with these, so they must dispatch over
-         * exactly the same tag set as the OP_ADD/OP_SUB/OP_MUL opcodes.  A
-         * rational operand had NO branch here and fell through to the double
-         * path, where as_number() reads its heap pointer as 0.0 — so
-         * `(apply + (list 1/3 1.5))` answered 1.5, silently dropping a term. */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_add(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 331);
-        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'+'); }
-        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
-            int64_t r; if (__builtin_add_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'+'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) + as_number_vm(vm,b_val))); }
-        break; }
-    case 143: { /* sub2 — complex-aware */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_sub(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 332);
-        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'-'); }
-        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
-            int64_t r; if (__builtin_sub_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'-'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) - as_number_vm(vm,b_val))); }
-        break; }
-    case 144: { /* mul2 — complex-aware */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_mul(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL) {
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 333);
-        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'*'); }
-        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
-            int64_t r; if (__builtin_mul_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'*'); else vm_push(vm, INT_VAL(r));
-        } else { vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) * as_number_vm(vm,b_val))); }
-        break; }
-    case 145: { /* div2 — complex- and rational-aware.
-                 * The prelude's variadic `/` folds with div2, so this is the
-                 * real path for (/ 1 3). Exact/exact division yields an exact
-                 * rational (or an integer when it divides), matching the native
-                 * path; previously it always produced an inexact float. */
-        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
-            VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
-            if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-            if (b_val.type == VAL_COMPLEX) b_z = *(VmComplex*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
-            VmComplex* r = vm_complex_div(&vm->heap.regions, &a_z, &b_z);
-            if (!r) { vm->error = 1; break; }
-            int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
-        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL ||
-                   (a_val.type == VAL_INT && b_val.type == VAL_INT)) {
-            if ((a_val.type == VAL_INT && b_val.type == VAL_INT && b_val.as.i == 0)) {
-                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
-            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 334); /* rational div: reduces, collapses denom==1 to int */
-        } else if (vm_either_bignum(a_val, b_val)) {
-            /* as_number() answers 0.0 for a heap-boxed bignum, so without this
-             * branch the plain double fallback below silently produced 0 for
-             * every bignum division routed through the variadic `/`. */
-            vm_bignum_arith(vm, a_val, b_val, '/');
-        } else {
-            /* At least one operand is INEXACT here, so a zero divisor is
-             * IEEE-754: ±inf.0 / +nan.0, exactly as native computes it. */
-            vm_push(vm, number_val_contagious(a_val, b_val, as_number_vm(vm,a_val) / as_number_vm(vm,b_val)));
-        }
-        break; }
-    /* Comparison operators as first-class functions (for sort, map, fold, etc.)
-     * SW-158: the AD-carrier arm must run before vm_either_exact_wide() —
-     * see vm_either_ad_carrier() in vm_ops.c for the full rationale (the
-     * bytecode OP_LT/GT/LE/GE/EQ opcodes carry the identical fix via
-     * vm_exec_lt() et al.; this is the separate first-class-closure copy). */
+    /* The first-class procedures + - * / (and the variadic prelude folds over
+     * them). They run the opcode implementation itself, so a first-class `+`
+     * and an inline `+` cannot disagree about any operand type (SW-183). */
+    case 142: vm_op_arith(vm, '+'); break; /* add2 */
+    case 143: vm_op_arith(vm, '-'); break; /* sub2 */
+    case 144: vm_op_arith(vm, '*'); break; /* mul2 */
+    case 145: vm_op_arith(vm, '/'); break; /* div2 */
+
     case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <  as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) < as_number_vm(vm,b))); break; }  /* < */
     case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) >  as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) > as_number_vm(vm,b))); break; }  /* > */
     case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_ad_carrier(a,b)) { vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } if (vm_either_exact_wide(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number_vm(vm,a) <= as_number_vm(vm,b))); break; } /* <= */
@@ -15701,10 +16723,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 208: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_BOOL)); break; }   /* boolean? */
     case 209: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CLOSURE)); break; }/* procedure? */
     case 210: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_VECTOR)); break; } /* vector? */
-    case 211: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break; } /* display */
+    case 211: { Value a = vm_pop(vm); vm_emit_current(vm, a, 0); vm_push(vm, (Value){.type = VAL_VOID}); break; } /* display */
     case 212: { /* _write1(value) */
         Value a = vm_pop(vm);
-        vm_write_value_port(vm, a, vm_port_current_output(), 1);
+        vm_emit_current(vm, a, 1);
         fflush(stdout);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
@@ -15714,11 +16736,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value value = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_value);
         if (!port || port->dir != VM_PORT_OUTPUT) {
-            fprintf(stderr, "ERROR: write requires an open output port\n");
-            vm->error = 1;
-        } else {
-            vm_write_value_port(vm, value, port, 1);
+            /* Catchable, and the same condition native codegen raises
+             * (StringIOCodegen::portFile). */
+            vm_raise_error_msg(vm, "Type error in write: expected output port");
+            break;
         }
+        vm_write_value_port(vm, value, port, 1);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
@@ -15737,22 +16760,35 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value value = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_value);
         if (!port || port->dir != VM_PORT_OUTPUT) {
-            fprintf(stderr, "ERROR: display requires an open output port\n");
-            vm->error = 1;
-        } else {
-            vm_write_value_port(vm, value, port, 0);
+            /* Catchable, and the same condition native codegen raises
+             * (StringIOCodegen::portFile). */
+            vm_raise_error_msg(vm, "Type error in display: expected output port");
+            break;
         }
+        vm_write_value_port(vm, value, port, 0);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 2230: { /* newline(port) */
         Value port_value = vm_pop(vm);
         VmPort* port = vm_value_as_port(vm, port_value);
-        vm_port_newline(port ? port : vm_port_current_output());
+        if (!port || port->dir != VM_PORT_OUTPUT) {
+            /* An argument that is not an output port is an error, as on the
+             * native backend -- never a silent fallback to stdout. */
+            vm_raise_error_msg(vm, "Type error in newline: expected output port");
+            break;
+        }
+        vm_port_newline(port);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
-    case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number_vm(vm, a))); break; }  /* exact->inexact */
+    case 213: { Value a = vm_pop(vm);   /* exact->inexact, inexact */
+        /* A carrier stays a carrier: multiplying by an inexact 1.0 demotes
+         * every exact coefficient (contagion) instead of dropping the
+         * derivative, which reading its primal did. */
+        if (a.type == VAL_DUAL) { vm_push(vm, vm_math_bin(vm, a, FLOAT_VAL(1.0), '*')); break; }
+        if (a.type == VAL_COMPLEX || a.type == VAL_HYPER_DUAL) { vm_push(vm, a); break; }
+        vm_push(vm, FLOAT_VAL(as_number_vm(vm, a))); break; }
     case 214: { /* inexact->exact */
         Value a = vm_pop(vm);
         /* Already exact tags pass through unchanged — truncating them to an
@@ -15806,104 +16842,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push_rational_norm(vm, i2e_r);
         }
         break; }
-    case 215: { /* string->number — handles #x/#b/#o/#d prefixes */
-        Value a = vm_pop(vm);
-        if (a.type != VAL_STRING) { vm_push(vm, BOOL_VAL(0)); break; }
-        VmString* s215 = (VmString*)vm->heap.objects[a.as.ptr]->opaque.ptr;
-        if (!s215 || !s215->data || s215->data[0] == '\0') { vm_push(vm, BOOL_VAL(0)); break; }
-        const char* p215 = s215->data;
-        int radix215 = 10;
-        if (p215[0] == '#') {
-            char pfx = (char)(p215[1] | 32); /* lowercase */
-            if      (pfx == 'x') { radix215 = 16; p215 += 2; }
-            else if (pfx == 'b') { radix215 = 2;  p215 += 2; }
-            else if (pfx == 'o') { radix215 = 8;  p215 += 2; }
-            else if (pfx == 'd') { radix215 = 10; p215 += 2; }
-            else { vm_push(vm, BOOL_VAL(0)); break; }
-        }
-        /* R7RS 7.1.1 <infnan>: exactly +inf.0 / -inf.0 / +nan.0 / -nan.0, in
-         * every radix.  Must be matched explicitly — strtod() below also
-         * accepts "inf", "infinity" and "nan", none of which are Scheme
-         * numeric literals, and it stops before the mandatory ".0" so the real
-         * spellings were REJECTED while the bogus ones were accepted.  Kept
-         * byte-identical with eshkol_s2n_infnan() in lib/core/bignum.cpp so a
-         * printed infinity reads back the same on both substrates. */
-        {
-            double infnan215 = 0.0; int matched215 = 0;
-            if (p215[0] == '+' || p215[0] == '-') {
-                double mag215 = 0.0; int have215 = 0;
-                if      (strncmp(p215 + 1, "inf.0", 5) == 0) { mag215 = HUGE_VAL; have215 = 1; }
-                else if (strncmp(p215 + 1, "nan.0", 5) == 0) { mag215 = (double)NAN; have215 = 1; }
-                if (have215) {
-                    const char* rest215 = p215 + 6;
-                    while (*rest215 == ' ' || *rest215 == '\t') rest215++;
-                    if (*rest215 == '\0') {
-                        infnan215 = (p215[0] == '-') ? -mag215 : mag215;
-                        matched215 = 1;
-                    }
-                }
-            }
-            if (matched215) { vm_push(vm, FLOAT_VAL(infnan215)); break; }
-        }
-        char* end215 = NULL;
-        if (radix215 == 10) {
-            /* A decimal number must begin with a digit or '.' after an
-             * optional sign (mirrors eshkol_s2n_decimal()'s guard).  Without
-             * it strtod() accepted the C-only spellings "inf" / "infinity" /
-             * "nan", which native correctly rejects. */
-            {
-                const char* d215 = p215;
-                while (*d215 == ' ' || *d215 == '\t') d215++;
-                if (*d215 == '+' || *d215 == '-') d215++;
-                if (!(*d215 >= '0' && *d215 <= '9') && *d215 != '.') {
-                    vm_push(vm, BOOL_VAL(0)); break;
-                }
-            }
-            /* Exact rational "num/denom" (R7RS 7.1.1 <ratio>), as native's
-             * eshkol_s2n_decimal() reads it.  The VM had no rational branch, so
-             * (number->string 1/2) printed "1/2" and string->number then
-             * answered #f — the same failure to read back a printed value as
-             * the <infnan> case above. */
-            {
-                const char* slash215 = strchr(p215, '/');
-                if (slash215 && !strpbrk(p215, ".eE")) {
-                    char* nend215 = NULL;
-                    errno = 0;
-                    long long num215 = strtoll(p215, &nend215, 10);
-                    if (nend215 == slash215 && errno != ERANGE) {
-                        char* dend215 = NULL;
-                        errno = 0;
-                        long long den215 = strtoll(slash215 + 1, &dend215, 10);
-                        if (*dend215 == '\0' && dend215 != slash215 + 1
-                            && errno != ERANGE && den215 != 0) {
-                            VmRational* rat215 = vm_rational_make(
-                                vm_active_arena(&vm->heap.regions),
-                                (int64_t)num215, (int64_t)den215);
-                            if (rat215) {
-                                if (rat215->denom == 1) {
-                                    vm_push(vm, INT_VAL(rat215->num));
-                                } else {
-                                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_RATIONAL,
-                                                        VAL_RATIONAL, rat215);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (slash215) { vm_push(vm, BOOL_VAL(0)); break; }
-            }
-            /* Try integer first; fall back to float */
-            long long iv = strtoll(p215, &end215, 10);
-            if (*end215 == '\0' && end215 != p215) { vm_push(vm, INT_VAL((int64_t)iv)); break; }
-            double dv = strtod(p215, &end215);
-            if (*end215 == '\0' && end215 != p215) { vm_push(vm, FLOAT_VAL(dv)); break; }
-            vm_push(vm, BOOL_VAL(0));
-        } else {
-            long long iv = strtoll(p215, &end215, radix215);
-            if (*end215 == '\0' && end215 != p215) { vm_push(vm, INT_VAL((int64_t)iv)); break; }
-            vm_push(vm, BOOL_VAL(0));
-        }
+    case 215: { /* string->number */
+        vm_string_to_number_value(vm, vm_pop(vm), 10);
         break; }
     case 216: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* char->integer */
     case 217: { Value a = vm_pop(vm); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (int64_t)as_number(a)}); break; } /* integer->char */
@@ -15927,47 +16867,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         for (int i = 0; i < sz; i++) v->items[i] = fill;
         vm->heap.objects[p]->opaque.ptr = v;
         vm_push(vm, (Value){VAL_VECTOR, {.ptr = p}}); break; }
-    case 219: { /* vector-ref */
-        Value idx_v = vm_pop(vm), vec_v = vm_pop(vm);
-        if (vec_v.type == VAL_VECTOR) {
-            VmVector* v = (VmVector*)vm->heap.objects[vec_v.as.ptr]->opaque.ptr;
-            int idx = (int)as_number(idx_v);
-            /* R7RS 6.8 + parity contract: out of range is a catchable error
-             * (the native codegen has always raised here; the VM used to
-             * fabricate '()). */
-            if (!v || idx < 0 || idx >= v->len) {
-                vm_raise_error_msg(vm, "vector-ref: index out of bounds");
-                break;
-            }
-            vm_push(vm, v->items[idx]);
-        } else if (vec_v.type == VAL_TENSOR) {
-            /* SW-26: e.g. (vector-ref (fg-marginal fg 0) 0). */
-            vm_vecref_tensor_path(vm, vec_v, idx_v);
-        } else vm_push(vm, NIL_VAL); break; }
-    case 220: { /* vector-set! */
-        Value val = vm_pop(vm), idx_v = vm_pop(vm), vec_v = vm_pop(vm);
-        if (vec_v.type == VAL_VECTOR) {
-            VmVector* v = (VmVector*)vm->heap.objects[vec_v.as.ptr]->opaque.ptr;
-            int idx = (int)as_number(idx_v);
-            if (!v || idx < 0 || idx >= v->len) {
-                vm_raise_error_msg(vm, "vector-set!: index out of bounds");
-                break;
-            }
-            v->items[idx] = val;
-        } else if (vec_v.type == VAL_TENSOR) {
-            /* SW-26 sibling gap. */
-            if (!vm_vecset_tensor_path(vm, vec_v, idx_v, val)) break;
-        }
-        vm_push(vm, NIL_VAL); break; }
-    case 221: { /* vector-length */
-        Value v = vm_pop(vm);
-        if (v.type == VAL_VECTOR) {
-            VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-            vm_push(vm, INT_VAL(vec ? vec->len : 0));
-        } else if (v.type == VAL_TENSOR) {
-            /* SW-26 sibling gap. */
-            vm_push(vm, INT_VAL(vm_veclen_tensor_path(vm, v)));
-        } else vm_push(vm, INT_VAL(0)); break; }
+    /* vector-ref / vector-set! / vector-length as first-class natives run the
+     * same implementation as the inline opcodes, container boundary included. */
+    case 219: vm_exec_vec_ref(vm); break; /* vector-ref */
+    case 220: vm_exec_vec_set(vm); break; /* vector-set! */
+    case 221: vm_exec_vec_len(vm); break; /* vector-length */
     case 222: { /* string->list */
         Value s_val = vm_pop(vm);
         Value result = NIL_VAL;
@@ -16021,16 +16925,41 @@ static void vm_dispatch_native(VM* vm, int fid) {
         while (h != 0) { int64_t t = h; h = g % h; g = t; }
         vm_push(vm, INT_VAL(x / g * y)); break;
     }
-    case 226: { /* make-string(n, char) */
+    case 226: { /* make-string(k [char]) -- the rules and messages of the
+                 * native runtime (eshkol_make_string_checked): k an exact
+                 * non-negative integer, the fill a character written as
+                 * UTF-8, a space when absent. */
         Value ch = vm_pop(vm), n = vm_pop(vm);
-        int sz = (int)as_number(n), c = (int)as_number(ch);
-        if (sz < 0) sz = 0; if (sz > 65536) sz = 65536;
-        char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(sz + 1));
-        if (buf) { memset(buf, c > 0 && c < 128 ? c : ' ', sz); buf[sz] = 0;
-            VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
-            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
+        if (n.type != VAL_INT || n.as.i < 0) {
+            vm_raise_error_msg(vm, "Type error in make-string: expected non-negative exact integer");
+            break;
         }
-        vm_push(vm, NIL_VAL); break;
+        int cp = ' ';
+        if (!vm_native_absent(ch)) {
+            if (ch.type != VAL_CHAR || ch.as.i < 0 || ch.as.i > 0x10FFFF ||
+                (ch.as.i >= 0xD800 && ch.as.i <= 0xDFFF)) {
+                vm_raise_error_msg(vm, "Type error in make-string: expected character");
+                break;
+            }
+            cp = (int)ch.as.i;
+        }
+        char enc[4];
+        int width = vm_utf8_encode(cp, enc);
+        if (width <= 0) { width = 1; enc[0] = ' '; }
+        if ((uint64_t)n.as.i > (UINT32_MAX - 1u) / (uint64_t)width) {
+            vm_raise_error_msg(vm, "make-string: length is too large for a string");
+            break;
+        }
+        size_t bytes = (size_t)n.as.i * (size_t)width;
+        char* buf = (char*)malloc(bytes + 1);
+        if (!buf) { vm_raise_error_msg(vm, "make-string: cannot allocate the string"); break; }
+        for (size_t i = 0; i < (size_t)n.as.i; i++) memcpy(buf + i * (size_t)width, enc, (size_t)width);
+        buf[bytes] = 0;
+        VmString* s = vm_string_new(&vm->heap.regions, buf, (int)bytes);
+        free(buf);
+        if (!s) { vm_raise_error_msg(vm, "make-string: cannot allocate the string"); break; }
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s);
+        break;
     }
 
     case 152: { /* close a closure's open upvalue slots.
@@ -16070,8 +16999,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int slot = (int)as_number(slot_v);
             int absolute_slot = vm->fp + slot;
             if (uv_idx >= 0 && uv_idx < cl->closure.n_upvalues &&
-                absolute_slot >= 0 && absolute_slot < vm->sp)
+                absolute_slot >= 0 && absolute_slot < vm->sp) {
                 cl->closure.open_slots[uv_idx] = absolute_slot;
+                vm_register_open_upvalue(vm, cl_val.as.ptr, uv_idx, absolute_slot);
+            }
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -16090,7 +17021,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             promise.as.ptr < vm->heap.next_free &&
             vm->heap.objects[promise.as.ptr]->type == HEAP_FUTURE) {
             VmFuture* handle = (VmFuture*)vm->heap.objects[promise.as.ptr]->opaque.ptr;
-            vm_push(vm, vm_future_force(handle));
+            Value result;
+            if (vm_future_force_on_caller(vm, handle, &result)) vm_push(vm, result);
             break;
         }
 #endif
@@ -16177,19 +17109,41 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 240: { /* display (native) */
         Value v = vm_pop(vm);
-        print_value(vm, v);
+        vm_emit_current(vm, v, 0);
         vm_push(vm, NIL_VAL);
         break;
     }
     case 241: { /* write (native) */
         Value v = vm_pop(vm);
-        vm_write_value_port(vm, v, vm_port_current_output(), 1);
+        vm_emit_current(vm, v, 1);
         vm_push(vm, NIL_VAL);
         break;
     }
     case 250: { /* atan2 */
         Value x = vm_pop(vm), y = vm_pop(vm);
-        vm_push(vm, FLOAT_VAL(atan2(as_number(y), as_number(x))));
+        if ((x.type == VAL_DUAL || y.type == VAL_DUAL) &&
+            as_number_vm(vm, x) == 0.0 && as_number_vm(vm, y) == 0.0) {
+            vm_raise_error_msg(vm, "atan2: not differentiable at (0, 0)");
+            break;
+        }
+        if ((x.type == VAL_DUAL || y.type == VAL_DUAL)) {
+            VmDual* r = vm_dual_atan2(&vm->heap.regions, vm_real_carrier(vm, y),
+                                      vm_real_carrier(vm, x));
+            if (!r) { vm_raise_error_msg(vm, "atan2: carrier allocation failed"); break; }
+            vm_push(vm, vm_ad_coeff_value(vm, r));
+            break;
+        }
+        /* d atan2(y, x) = (x dy - y dx) / (x^2 + y^2) */
+        double xv, dx, yv, dy;
+        if (!vm_real_with_tangent(vm, y, &yv, &dy, "atan2") ||
+            !vm_real_with_tangent(vm, x, &xv, &dx, "atan2")) break;
+        double r2 = xv * xv + yv * yv;
+        if ((dx != 0.0 || dy != 0.0) && r2 == 0.0) {
+            vm_raise_error_msg(vm, "atan2: not differentiable at (0, 0)");
+            break;
+        }
+        vm_push(vm, vm_real_result(vm, atan2(yv, xv),
+                                   (dx != 0.0 || dy != 0.0) ? (xv * dy - yv * dx) / r2 : 0.0));
         break;
     }
     /* Directed rounding (certified enclosures, docs/reference/stdlib/
@@ -16270,12 +17224,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 237: { /* error */
+    case 237: case VM_NATIVE_ERROR_WITH_IRRITANTS: { /* error */
         /* Raise it as a catchable condition, like (error msg) on every other
          * substrate, and keep the text on STDERR. It used to print through
          * print_value(), which writes to stdout, so a failing run appended its
          * error text to the PROGRAM's output — and it set vm->error directly,
          * so no `guard` could intercept `(error ...)` at all. */
+        Value irritants = fid == VM_NATIVE_ERROR_WITH_IRRITANTS ? vm_pop(vm) : NIL_VAL;
         Value msg = vm_pop(vm);
         const char* text = NULL;
         if ((msg.type == VAL_STRING || msg.type == VAL_SYMBOL)
@@ -16283,7 +17238,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmString* s = (VmString*)vm->heap.objects[msg.as.ptr]->opaque.ptr;
             if (s && s->data) text = s->data;
         }
-        vm_raise_error_msg(vm, text ? text : "error");
+        vm_raise_error_msg_with_irritants(vm, text ? text : "error", irritants);
         break;
     }
     case 238: { /* void */
@@ -16319,8 +17274,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 185: { /* string->symbol: preserve immutable spelling, change Scheme tag */
         Value a = vm_pop(vm);
-        if (a.type == VAL_STRING && vm_value_as_string(vm, a)) a.type = VAL_SYMBOL;
-        else a = BOOL_VAL(0);
+        /* A non-string operand is refused, as natively; it used to answer
+         * #f, which a caller cannot tell from a symbol-producing call. */
+        if (!vm_require_container(vm, a, VM_CONTAINER_STRING, "string->symbol", "a string")) break;
+        a.type = VAL_SYMBOL;
         vm_push(vm, a);
         break;
     }
@@ -16443,8 +17400,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math extensions (720-746)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 720: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 720)) break; vm_push(vm, FLOAT_VAL(cosh(as_number(a)))); break; }
-    case 721: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 721)) break; vm_push(vm, FLOAT_VAL(sinh(as_number(a)))); break; }
+    case 731: case 732: case 733: case 734: case 735: case 736: case 737: case 738: {
+        Value a = vm_pop(vm);
+        vm_math_ext(vm, a, fid - 731);
+        break;
+    }
+    case 720: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 720)) break; vm_push_real_unary(vm, a, cosh, vm_d_cosh, "cosh", vm_dual_hyperbolic, 0); break; }
+    case 721: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 721)) break; vm_push_real_unary(vm, a, sinh, vm_d_sinh, "sinh", vm_dual_hyperbolic, 1); break; }
     case 722: { Value a = vm_pop(vm); if (vm_math_complex_dispatch(vm, a, 722)) break;
         if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 387); break; }
         vm_push(vm, FLOAT_VAL(tanh(as_number(a)))); break; }
@@ -16894,6 +17856,18 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)name_v;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 2242: { /* _std-port-parameter(which): the standard port parameter
+                  * object -- 0 input, 1 output, 2 error (R7RS 6.13.1) */
+        Value which = vm_pop(vm);
+        Value parameter = vm_std_port_parameter(vm, which.type == VAL_INT ? (int)which.as.i : -1);
+        if (parameter.type != VAL_PARAMETER_OBJ) {
+            vm_raise_error_msg(vm, "_std-port-parameter: expected 0, 1 or 2");
+            break;
+        }
+        vm_push(vm, parameter);
         break;
     }
 

@@ -1,0 +1,33 @@
+;;; SW-212: a carrier of a nested differentiation level (ADR-0027) survives a
+;;; tensor. The level carrier is a Taylor tower whose coefficients are numbers
+;;; of the enclosing levels; a tensor literal keeps it whole in a jet tensor
+;;; (ADR-0020 amendment 2), tensor-ref reads it back whole, and tensor-sum folds
+;;; it with the language's own `+`. Before, the tensor literal stored it as 0.
+;;; Runs on the native JIT, an AOT binary, the VM and the VM from ESKB.
+
+(define failures 0)
+(define (check label got want)
+  (if (and (number? got) (= got want))
+      (begin (display "ok ") (display label) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display label) (display ": got ") (write got)
+             (display " want ") (write want) (newline))))
+
+(check "d1 (dn2 tensor-ref)"
+  (derivative (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (* a b b) 5.0) 0)) 1.0 2)) 2.0) 2)
+(check "dn2 (dn2 tensor-ref)"
+  (derivative-n (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (* a a b b) 5.0) 0)) 1.0 2)) 2.0 2) 4)
+(check "d1 (d1 (dn2 tensor-ref))"
+  (derivative (lambda (a) (derivative (lambda (c) (derivative-n (lambda (b) (tensor-ref (tensor (* a c b b)) 0)) 1.0 2)) 1.0)) 1.0) 2)
+(check "d1 (d1 tensor-sum)"
+  (derivative (lambda (a) (derivative (lambda (b) (tensor-sum (tensor (* a b b) 5.0))) 1.0)) 2.0) 2)
+(check "d1 (dn2 tensor-sum)"
+  (derivative (lambda (a) (derivative-n (lambda (b) (tensor-sum (tensor (* a b b) 5.0))) 1.0 2)) 2.0) 2)
+(check "dn2 (dn2 tensor from list)"
+  (derivative-n (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (list (* a a b b) 5.0)) 0)) 1.0 2)) 2.0 2) 4)
+(let ((r (derivative (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (* a b b) 5) 0)) 1 2)) 2)))
+  (check "d1 (dn2 tensor-ref) exact" (if (exact? r) r 'inexact) 2))
+
+(if (= failures 0)
+    (begin (display "PASS: nested level carrier through tensors") (newline))
+    (begin (display "FAIL: ") (display failures) (display " case(s)") (newline)))

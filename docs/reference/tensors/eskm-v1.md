@@ -95,6 +95,15 @@ materialization limit and could not materialize rank-zero or zero-extent
 tensors; those were backend restrictions, not alternate wire rules. The rank-8
 fixture deliberately marks the historical VM boundary.
 
+Current native and VM model and single-tensor loaders preserve scalar rank 0
+(count 1) and empty shapes such as `[0, 3]` (count 0). The VM uses an I/O-local
+adapter with checked row-major strides and existing region ownership; its
+private empty storage slot is not an element and does not appear on the wire.
+Loaded scalars support `tensor-shape`, `tensor-data`, and dtype inspection,
+plus native `tensor->vector` and `tensor-length` inspection. This observation
+contract does not extend the general tensor construction or arithmetic rules.
+See the [materialization design](../../design/ESKM_V1_VM_MATERIALIZATION.md).
+
 Before allocating from advertised lengths, readers should establish that the
 record count, name length, rank, dimension array, and element payload can fit
 in the checksummed bytes. A file is valid only when parsing the declared record
@@ -134,3 +143,16 @@ The self-test copies the corpus to a temporary directory, changes a scalar
 payload bit, recomputes its CRC-32 and manifest SHA-256, and requires the normal
 checker to reject the changed bit pattern. It never modifies the committed
 fixtures.
+
+The registered `eskm_v1_model_load_engine_parity` gate checks each of these six
+valid fixtures across four producers and four consumers (96 fixture pairs),
+including byte-identical rewrites. It also checks all five single-record
+fixtures through the public tensor APIs and verifies scalar/empty model values
+after function and region exit. Its companion self-test changes only expected
+metadata/payload or replaces a test input with an existing valid fixture, so a
+passing report depends on the checks actually executing.
+
+```bash
+ctest --test-dir build --output-on-failure \
+  -R '^eskm_v1_model_load_engine_parity(_selftest)?$'
+```

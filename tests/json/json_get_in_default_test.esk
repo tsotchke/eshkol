@@ -1,0 +1,40 @@
+;;
+;; json-get-in: the documented two-argument call and the optional default.
+;;
+;; docs/reference/stdlib/json.md documents (json-get-in obj keys [default]):
+;; the value at the path, or `default` when a step fails, or #f without one.
+;; The standalone VM's builtin always took the default as a third operand
+;; (tests/vm/json_surface_regression.esk), while lib/core/json.esk accepted
+;; only two arguments, so the same call compiled on one engine and was refused
+;; with an arity error on the other.
+;;
+
+(require stdlib)
+
+(define failures 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL ") (display name)
+             (display ": expected ") (write expected)
+             (display ", got ") (write actual) (newline))))
+
+(define doc (json-parse "{\"a\":{\"b\":[1,2,3]},\"name\":\"eshkol\"}"))
+
+;; The documented two-argument form.
+(check "two-arg nested index" 3 (json-get-in doc '("a" "b" 2)))
+(check "two-arg top-level key" "eshkol" (json-get-in doc '("name")))
+(check "two-arg missing key is #f" #f (json-get-in doc '("a" "missing")))
+(check "two-arg index past end is #f" #f (json-get-in doc '("a" "b" 9)))
+(check "two-arg empty path is the object" #t (hash-table? (json-get-in doc '())))
+
+;; The optional default.
+(check "default unused when found" 2 (json-get-in doc '("a" "b" 1) 0))
+(check "default on missing key" 0 (json-get-in doc '("a" "missing") 0))
+(check "default on missing index" "none" (json-get-in doc '("a" "b" 9) "none"))
+(check "default on wrong kind of step" 'absent (json-get-in doc '("name" "x") 'absent))
+
+(if (= failures 0)
+    (begin (display "ALL TESTS PASSED!") (newline))
+    (begin (display "SOME TESTS FAILED!") (newline) (exit 1)))

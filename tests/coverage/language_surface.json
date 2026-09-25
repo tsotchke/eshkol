@@ -15,11 +15,11 @@
     }
   },
   "counts": {
-    "builtins_total": 1052,
+    "builtins_total": 1056,
     "builtins_in_native_closure_table": 435,
-    "builtins_in_vm_table": 741,
-    "builtins_in_llvm_aot_dispatch": 796,
-    "builtins_aot_only": 271,
+    "builtins_in_vm_table": 789,
+    "builtins_in_llvm_aot_dispatch": 797,
+    "builtins_aot_only": 240,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -34,7 +34,7 @@
     "list_pair": 53,
     "io_port": 52,
     "string_char": 42,
-    "misc": 37,
+    "misc": 41,
     "consciousness": 37,
     "vector": 23,
     "hash": 22,
@@ -206,6 +206,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -216,6 +217,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -226,6 +228,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -236,6 +239,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -368,6 +372,19 @@
         "vm"
       ],
       "category": "numeric"
+    },
+    {
+      "name": "_display2",
+      "ids": [
+        2226
+      ],
+      "arity": 2,
+      "min_arity": 2,
+      "backends": [
+        "vm"
+      ],
+      "category": "misc",
+      "mirrors": "display"
     },
     {
       "name": "_emit-event",
@@ -518,6 +535,19 @@
       "category": "memory_region"
     },
     {
+      "name": "_std-port-parameter",
+      "ids": [
+        2242
+      ],
+      "arity": 1,
+      "min_arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "misc",
+      "mirrors": "current-output-port"
+    },
+    {
       "name": "_string-append-2",
       "ids": [
         554
@@ -528,6 +558,19 @@
         "vm"
       ],
       "category": "string_char"
+    },
+    {
+      "name": "_swish-tensor",
+      "ids": [
+        469
+      ],
+      "arity": 1,
+      "min_arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "misc",
+      "mirrors": "swish"
     },
     {
       "name": "_tensor-reduce-max",
@@ -641,10 +684,13 @@
     },
     {
       "name": "acosh",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        732
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -1309,10 +1355,13 @@
     },
     {
       "name": "asinh",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        731
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -1352,26 +1401,33 @@
       "min_arity": 1,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
     },
     {
       "name": "atan2",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        250
+      ],
+      "arity": 2,
+      "min_arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
     },
     {
       "name": "atanh",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        733
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -2047,10 +2103,13 @@
     },
     {
       "name": "cbrt",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        737
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -3048,6 +3107,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "io_port"
@@ -3068,6 +3128,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "io_port"
@@ -4210,10 +4271,13 @@
     },
     {
       "name": "exp2",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        736
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -4830,6 +4894,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "io_port"
@@ -5303,7 +5368,8 @@
     {
       "name": "hash-clear!",
       "ids": [
-        668
+        668,
+        669
       ],
       "arity": 1,
       "min_arity": 1,
@@ -5423,7 +5489,7 @@
     {
       "name": "hash-table-clear!",
       "ids": [
-        668
+        669
       ],
       "arity": 1,
       "min_arity": 1,
@@ -6122,12 +6188,14 @@
     {
       "name": "inexact",
       "ids": [
-        192
+        192,
+        213
       ],
       "arity": 1,
       "min_arity": 1,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -6365,7 +6433,7 @@
         2014
       ],
       "arity": 3,
-      "min_arity": 3,
+      "min_arity": 2,
       "backends": [
         "native",
         "vm"
@@ -6731,6 +6799,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "list_pair"
@@ -6845,20 +6914,26 @@
     },
     {
       "name": "log10",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        735
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
     },
     {
       "name": "log2",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        734
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -7118,7 +7193,8 @@
       "arity": 1,
       "min_arity": 1,
       "backends": [
-        "native"
+        "native",
+        "vm"
       ],
       "category": "consciousness"
     },
@@ -7130,7 +7206,8 @@
       "arity": 2,
       "min_arity": 2,
       "backends": [
-        "native"
+        "native",
+        "vm"
       ],
       "category": "consciousness"
     },
@@ -7550,6 +7627,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "higher_order"
@@ -7587,6 +7665,7 @@
       "min_arity": 2,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -7657,6 +7736,7 @@
       "min_arity": 2,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -7973,6 +8053,7 @@
       "min_arity": 1,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -9048,6 +9129,7 @@
       "min_arity": 0,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "io_port"
@@ -9176,6 +9258,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "higher_order"
@@ -9270,6 +9353,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "memory_region"
@@ -9280,6 +9364,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "memory_region"
@@ -9685,6 +9770,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "ffi_system"
@@ -10035,7 +10121,8 @@
       "arity": 2,
       "min_arity": 2,
       "backends": [
-        "native"
+        "native",
+        "vm"
       ],
       "category": "higher_order"
     },
@@ -10135,10 +10222,13 @@
     },
     {
       "name": "square",
-      "ids": [],
-      "arity": null,
-      "min_arity": null,
+      "ids": [
+        738
+      ],
+      "arity": 1,
+      "min_arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "numeric"
@@ -10192,6 +10282,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -10275,6 +10366,7 @@
       "min_arity": 2,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
@@ -10797,6 +10889,17 @@
       "category": "string_char"
     },
     {
+      "name": "swish",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
       "name": "symbol->string",
       "ids": [
         184
@@ -11253,6 +11356,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -11279,6 +11383,7 @@
       "min_arity": 1,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -11289,6 +11394,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -11546,6 +11652,7 @@
       "min_arity": 1,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -12334,6 +12441,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "vector"
@@ -12368,6 +12476,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "vector"
@@ -12378,6 +12487,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "vector"
@@ -12388,6 +12498,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "vector"
@@ -12408,6 +12519,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "higher_order"
@@ -12431,6 +12543,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "higher_order"
@@ -12717,6 +12830,7 @@
       "min_arity": 1,
       "backends": [
         "native",
+        "vm",
         "native_llvm"
       ],
       "category": "io_port"

@@ -118,7 +118,12 @@ def _render_status(tasks, claims, events):
         out.append(f"- latest event: `{ev_ts}` `{ev_type}` by `{ev_actor}`")
     else:
         out.append(f"- latest event: *(none)*")
-    states_str = " ".join(f"{k}={v}" for k, v in counts.items() if v > 0)
+    # Known states in their lifecycle order, then any state a task file names
+    # that this script does not know yet.
+    known = [("pending", counts["pending"]), ("active", counts["active"]),
+             ("done", counts["done"]), ("blocked", counts["blocked"])]
+    extra = [(k, v) for k, v in counts.items() if k not in {"pending", "active", "done", "blocked"}]
+    states_str = " ".join(f"{k}={v}" for k, v in known + extra if v > 0)
     out.append(f"- task states: `{states_str if states_str else 'all pending'}`")
     out.append("")
 

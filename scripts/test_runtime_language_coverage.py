@@ -208,8 +208,19 @@ class RuntimeInstrumentationTest(unittest.TestCase):
                 for raw in trace_path.read_text(encoding="utf-8").splitlines():
                     fields = raw.split("\t")
                     if fields[0] == "C" and fields[4] == "abs":
-                        abs_sources.add(pathlib.Path(fields[1]).resolve())
-            self.assertEqual(abs_sources, {imported.resolve()})
+                        abs_sources.add(fields[1])
+            # A recorded path is a DISPLAY path (ADR-0021): relative to the
+            # working directory when the file lies under it (a TMPDIR inside
+            # the checkout, as the lane rules require), otherwise the file
+            # name alone -- never an absolute host path. The imported
+            # module's site must carry the imported file's own path, not the
+            # caller's.
+            try:
+                expected = str(imported.resolve().relative_to(pathlib.Path(REPO).resolve()))
+            except ValueError:
+                expected = imported.name
+            self.assertEqual(abs_sources, {expected})
+            self.assertNotEqual(imported.name, caller.name)
 
     ONE_LINE_PROGRAM = '(display (+ 1 2))\n'
 

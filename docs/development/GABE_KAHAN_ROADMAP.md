@@ -4,7 +4,7 @@
 - **Maintainer sponsor:** Eshkol maintainers
 - **Time budget:** about 10 hours per week
 - **Cadence:** one milestone pull request every two to four weeks
-- **Last reviewed:** 2026-08-31
+- **Last reviewed:** 2026-09-23 (status refresh; acceptance remains explicit)
 - **Review again:** after 12 weeks, or whenever the maintainer changes the active work packet
 
 This is a rolling contributor plan, not a release plan. The canonical project
@@ -217,9 +217,22 @@ are acceptable when the reproducer and ownership boundary are agreed first.
 Update this table in the same pull request that starts or finishes a packet.
 Keep completed rows so the file serves as a durable handoff log.
 
-| Status | Packet | Concrete scope | Acceptance command | PR |
+| Status | Packet | Concrete scope | Acceptance gate | PR |
 |---|---|---|---|---|
-| next | GK-SER-01 | Recover the v1.2 ESKM contract and propose the golden compatibility corpus; coordinate with active issue #549 / PR #555 before touching overlapping loader code | `model_io_test` plus native/VM fixture matrix recorded in the task PR | — |
+| review | GK-SER-01 / GK-SER-03 | Corpus and matrix are on master; scalar/empty adapter is included in the pending release | Fresh integrated Linux matrix and controls pass; verify final merged release SHA | #596/#597/#620 landed; #698 carried by #628 |
+| review | GK-SER-02 / GK-SER-06 | Loader preflight and bounded campaign landed through #555; integrated Linux checks and fresh sanitizer campaign recorded | Preserve exact tested SHAs and distinguish bounded from sanitizer runs; v2 backend limits remain separate | #555 carried #602/#601 |
+| review | GK-SER-04 | Atomic replacement landed through #612; retain process-level contract and identify remaining platform evidence | Existing atomic-save gates on identified commits; macOS/Windows and stronger durability tracked separately | #600 carried by #612 |
+| in progress | GK-SER-05 | Private validator included in the pending release; experimental reader/writer integration prepared for review | Byte-level/cap/API acceptance plus gates 1–9 before supported public v2 use | #613 remains Proposed; #699 carried by #628 |
+
+Status refresh baseline: master `c3372a49` and pending release `2bed1aa9`.
+#698 and #699 were closed as included in #628, which has not yet merged.
+The default v2 runner fix is #718; a missing C++ include found during fresh
+validation is #719. The separate constructor/handler allocation follow-up
+retains the release's promotion design and does not reopen #714 wholesale.
+See the [current handoff](ESKM_HANDOFF.md#current-checkpoint--2026-09-23) for
+exact integrated Linux evidence and the remaining platform/design limits.
+Packet acceptance is broader than inclusion in a pending release; these rows
+do not assert that v2's wire contract or public API has been accepted.
 
 Allowed status values are `next`, `in progress`, `review`, `done`, and
 `blocked`. A `blocked` row includes one sentence naming the decision or resource

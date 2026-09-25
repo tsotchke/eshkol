@@ -1,0 +1,44 @@
+id: SW-204
+bucket: SILENT-WRONG
+family: native/closure-call-non-procedure
+owner: v135f-vmrt (VM runtime lane)
+status: fixed
+closed_at: "98d0a9250"
+needs_decision: false
+title: "native: calling a non-procedure held by a closure-captured local answers #f with exit 0"
+repro: >-
+  (display (let ((f #f)) ((lambda () (f 1 2)))))
+observed: >-
+  Native JIT prints #f and exits 0. The same call without the closure,
+  (let ((f #f)) (f 1 2)), and a top-level (define g #f) (g 1 2) both fail loudly
+  ("variable ... is not a procedure"). The VM reports a fatal runtime error.
+correct: >-
+  An error: applying #f, which is not a procedure (R7RS 4.1.3). Both engines
+  must refuse the application instead of answering a value.
+evidence: >-
+  Found by the v135f-macro lane while re-deriving
+  tests/edge_matrix/generated/pair139_macros__set_bang.esk, whose generator
+  named a context variable like the swap macro under test (sw{ID}), so the
+  check called a let-bound #f. Correct lexical scoping of macro keywords made
+  the collision observable; the generator now names that variable sl{ID}.
+  Measured on fix/v135f-macro, Release build, arm64 macOS.
+caught_by: [v135f-macro-hygiene-audit]
+missed_by: [edge_matrix, vm_parity]
+notes: >-
+  Out of the macro lane's scope (closure call lowering in native codegen);
+  filed for the owner of native call dispatch.
+fix: >-
+  One call protocol at the closure call boundary (codegenClosureCall in
+  lib/backend/llvm_codegen.cpp): a value that is not a CALLABLE is never
+  "called" into a result; it raises a catchable type error through
+  eshkol_procedure_call_error. The integer operand, which was called as a raw
+  function pointer and faulted at its own value, takes the same path. The VM's
+  non-procedure refusal (vm_callable_closure, tail calls in vm_run.c), which
+  was fatal, now raises the same catchable condition. Same change as SW-216.
+remeasured: >-
+  At 98d0a9250 (fix/v135f-vmrt): the repro under a guard prints caught on
+  native JIT and the VM; tests/vm_parity/corpus/procedure_call_protocol.esk
+  ((mk 5) and (mk "s") through a captured local) is byte-identical on native
+  and VM; ctest native_procedure_call_protocol_jit / _aot and
+  vm_closure_arity_catchable_regression pass. Full ctest: the only failures
+  are the pre-existing gates also failing at the integration base.

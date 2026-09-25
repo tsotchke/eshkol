@@ -37,8 +37,8 @@
 #      fails the coverage check.
 
 schema: eshkol.ad_carrier_manifest.v1
-generated_at: "2026-08-25"
-measured_at_sha: "e65cb5b5"
+generated_at: "2026-09-23"
+measured_at_sha: "e36c9537a"
 measured_with: "build/eshkol-run + build/eshkol-vm-standalone-test (RelWithDebInfo, LLVM 21, arm64-apple-darwin24.1.0)"
 
 # ── Carrier vocabulary ────────────────────────────────────────────────────
@@ -89,9 +89,14 @@ carriers:
       VmDual {primal, tangent, epoch, coeff} (lib/backend/vm_numeric.h, ops in
       lib/backend/vm_dual.c). Scalar duals carry one perturbation; Taylor
       carriers distinguish nested value epochs and may carry a tangent series.
-      VM ONLY — see fork_debt.
+      Since ADR-0027 every VM AD operator runs as a LEVEL of this carrier: a
+      pass seeds its point with vm_dual_level_seed at a fresh epoch
+      (vm_ad_level_pass / vm_ad_seed_and_call in lib/backend/vm_native.c) and
+      reads the result back with vm_ad_level_read, so passes nest inside and
+      around one another. VM ONLY — see fork_debt.
     witnesses:
       - '\bVM_AD_MAKE_DUAL\s*\('
+      - '\bvm_dual_level_seed\s*\('
       - '\bvm_make_dual_val\s*\('
       - '\bvm_dual_tangent_of\s*\('
       - '\bvm_dual_make_taylor_seed\s*\('
@@ -131,9 +136,10 @@ fork_debt:
   blocked_on: >-
     The VM has no dual-carrying tensor. VmTensor::data is a bare double*, so a
     vector field that packs its components into a tensor drops every tangent at
-    construction. That single gap is why the VM's jacobian writes primals into
-    the derivative matrix for tensor-returning fields, and why divergence and
-    curl reached for a difference quotient in the first place. Closing it is a
+    construction. That single gap is why the VM's jacobian refuses a
+    tensor-returning field (ADR-0027 made it a loud error; it once wrote
+    primals into the derivative matrix), and why divergence and curl reached
+    for a difference quotient in the first place. Closing it is a
     tangent-carrying VmTensor plus the AD_CUSTOM tape extension sketched in
     docs/reference/ad/architecture.md; until then the budget caps the fork at
     its current size and this gate refuses to let it grow.
@@ -196,11 +202,15 @@ operators:
     vm:
       file: lib/backend/vm_native.c
       native_call_id: 751
+      helpers: [vm_ad_level_jacobian, vm_ad_level_pass]
       carrier: vm-dual-forward
     notes: >-
-      Exact for scalar-valued f. For a tensor-returning vector field the VM
-      writes F_k(x) where dF_k/dx_i belongs, because VmTensor cannot carry a
-      tangent — booked as a gap on the PARITY row and as fork_debt.blocked_on.
+      ADR-0027: one order-1 level pass per column (vm_ad_level_pass seeds one
+      coordinate with vm_dual_level_seed), read back with vm_ad_level_read and
+      packed as the m x n matrix native returns. A vector- or list-valued field
+      is exact. A TENSOR-valued field is refused with a catchable error, where
+      native computes it; the refusal is loud, never a primal written as a
+      derivative.
 
   - op: hessian
     parity_rows: ["op:HESSIAN"]
@@ -284,12 +294,17 @@ operators:
     vm:
       file: lib/backend/vm_native.c
       native_call_id: 757
-      helpers: [vm_taylor_apply, vm_taylor_result_value, vm_taylor_coeff_list]
+      helpers: [vm_taylor_pass, vm_ad_seed_and_call]
       carrier: vm-dual-forward
     notes: >-
-      Arbitrary-order Taylor-tower AD. The native and VM implementations use
-      their respective exact Taylor carriers, with epoch-gated nested
-      perturbations and exact rational/bignum coefficients where applicable.
+      Arbitrary-order Taylor-tower AD. vm_taylor_pass seeds an order-K level
+      (vm_ad_seed_and_call: vm_dual_make_taylor_seed / vm_dual_level_seed at a
+      fresh epoch, exact when the point is exact) and reads k! c_k with
+      vm_ad_level_read. The native side is the classic tower and the ADR-0027
+      level carrier in lib/core/runtime_taylor.c. The helpers named here are
+      the functions case 757/758 actually calls; the earlier names
+      (vm_taylor_apply, vm_taylor_result_value, vm_taylor_coeff_list) were
+      never defined.
 
 # ── Finite-difference scan ────────────────────────────────────────────────
 #

@@ -2091,6 +2091,27 @@ llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
     return result;
 }
 
+llvm::Value* TensorCodegen::scalarParameterAsDouble(llvm::Value* tagged_val, const char* op_name) {
+    if (!tagged_val) return nullptr;
+    if (tagged_val->getType() == ctx_.taggedValueType()) {
+        auto& b = ctx_.builder();
+        llvm::Value* base = tagged_.getBaseType(tagged_.getType(tagged_val));
+        llvm::Value* carries = b.CreateOr(
+            b.CreateICmpEQ(base, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER)),
+            b.CreateICmpEQ(base, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE)));
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        llvm::BasicBlock* refuse = llvm::BasicBlock::Create(ctx_.context(), "tensor_param_carrier", fn);
+        llvm::BasicBlock* ok = llvm::BasicBlock::Create(ctx_.context(), "tensor_param_plain", fn);
+        b.CreateCondBr(carries, refuse, ok);
+        b.SetInsertPoint(refuse);
+        ctx_.emitRaise((std::string(op_name ? op_name : "tensor operation") +
+            ": a derivative cannot pass through this scalar parameter (the tensor kernel has no "
+            "rule to carry it); multiply the tensor by the scalar elementwise instead").c_str());
+        b.SetInsertPoint(ok);
+    }
+    return extractAsDouble(tagged_val);
+}
+
 } // namespace eshkol
 
 #endif // ESHKOL_LLVM_BACKEND_ENABLED

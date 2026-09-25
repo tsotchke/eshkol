@@ -7,6 +7,8 @@
 #include "repl_jit.h"
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
+#include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/source_paths.h>
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
@@ -65,6 +67,8 @@
 #include <cstdint>
 #ifdef _WIN32
 #include <malloc.h>           // _aligned_malloc / _aligned_free
+#elif defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>            // dladdr / dlopen for module-scoped JIT symbols
 #endif
 #include <filesystem>
 #include <set>
@@ -142,19 +146,6 @@ static void configure_jit_target_machine_builder(
 }
 
 /**
- * @brief Heap-allocates a NUL-terminated copy of @p value for embedding into a synthesized eshkol_ast_t.
- *
- * The caller (and ultimately the AST it is attached to) owns the returned buffer.
- */
-static char* repl_copy_ast_cstr(const std::string& value) {
-    char* out = new char[value.size() + 1];
-    if (out) {
-        memcpy(out, value.c_str(), value.size() + 1);
-    }
-    return out;
-}
-
-/**
  * @brief Appends synthesized `(define prefixed-name original-name)` AST nodes for an R7RS `(prefix ...)` import clause.
  *
  * For the module at @p module_index within @p require_ast, if an import
@@ -219,8 +210,7 @@ static void rewrite_repl_import_bindings(
     if (ast->type == ESHKOL_VAR && ast->variable.id) {
         auto it = bindings.find(ast->variable.id);
         if (it != bindings.end()) {
-            delete[] ast->variable.id;
-            ast->variable.id = repl_copy_ast_cstr(it->second);
+            ast->variable.id = eshkol_ast_string_copy(it->second);
         }
         return;
     }
@@ -240,8 +230,7 @@ static void rewrite_repl_import_bindings(
         if (ast->operation.set_op.name) {
             auto it = bindings.find(ast->operation.set_op.name);
             if (it != bindings.end()) {
-                delete[] ast->operation.set_op.name;
-                ast->operation.set_op.name = repl_copy_ast_cstr(it->second);
+                ast->operation.set_op.name = eshkol_ast_string_copy(it->second);
             }
         }
         rewrite_repl_import_bindings(ast->operation.set_op.value, bindings);
@@ -726,6 +715,58 @@ using namespace llvm::orc;
 
 namespace eshkol {
 
+#if defined(__unix__) || defined(__APPLE__)
+// This translation-unit-local object identifies the exact image containing
+// the JIT resolver, even when an embedding host exports an identically named
+// runtime global that could interpose `__repl_shared_arena`.
+static const unsigned char repl_runtime_image_anchor = 0xE5;
+
+/**
+ * Return a handle to the image that owns the REPL runtime anchor, if that
+ * image is already loaded as a dynamic library. In Python, the extension is
+ * commonly loaded RTLD_LOCAL, so ORC's current-process search cannot see its
+ * exported runtime symbols. Keep this lookup scoped to the owning image.
+ *
+ * The permanent handle is initialized once per image, rather than once per
+ * ReplJITContext, so repeated contexts do not accumulate dlopen references.
+ * Executables are not necessarily dlopen-able; failure is expected there and
+ * leaves the existing current-process resolver as the fallback.
+ */
+static sys::DynamicLibrary get_repl_runtime_image_library() {
+    static sys::DynamicLibrary library = [] {
+        Dl_info image{};
+        if (dladdr(static_cast<const void*>(&repl_runtime_image_anchor), &image) == 0 ||
+            !image.dli_fname || !*image.dli_fname) {
+            return sys::DynamicLibrary();
+        }
+
+        int flags = RTLD_LAZY | RTLD_LOCAL;
+#ifdef RTLD_NOLOAD
+        // The extension is already executing this code. Avoid loading a
+        // second image if its loader path cannot be matched exactly.
+        flags |= RTLD_NOLOAD;
+#endif
+        // Do not let a previous loader error affect diagnostics, and consume
+        // the expected failure for non-dlopen-able executable images.
+        (void)dlerror();
+        void* handle = dlopen(image.dli_fname, flags);
+        if (!handle) {
+            (void)dlerror();
+            return sys::DynamicLibrary();
+        }
+
+        std::string error;
+        auto loaded = sys::DynamicLibrary::addPermanentLibrary(handle, &error);
+        if (!loaded.isValid()) {
+            dlclose(handle);
+            return sys::DynamicLibrary();
+        }
+        return loaded;
+    }();
+    return library;
+}
+#endif
+
 // Forward declarations for static helper functions
 static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& content);
 // base_dir defaults to the directory of the file currently being compiled —
@@ -749,6 +790,12 @@ static std::string resolveModulePath(const std::string& module_name,
  * attributes source text therefore also roots the search path, and no site
  * can do one without the other.
  */
+/** True when the ambient source context is not @p expected (a display path). */
+static bool source_path_context_differs(const char* expected) {
+    const char* actual = eshkol_get_source_context_path();
+    return !actual || std::strcmp(actual, expected) != 0;
+}
+
 class ScopedSourceContext {
 public:
     ScopedSourceContext(const std::string& path, const std::string& text)
@@ -1003,9 +1050,23 @@ void ReplJITContext::initializeJIT() {
     // Enable REPL mode in the compiler for cross-evaluation symbol persistence
     eshkol_repl_enable();
 
-    // Add symbol resolver for current process
-    // This allows JIT code to call runtime functions from eshkol-static
+    // Add symbol resolvers. A Python extension is commonly dlopen'ed
+    // RTLD_LOCAL, so its exported eshkol-static runtime symbols are not in
+    // RTLD_DEFAULT even though they are present in the extension's dynsym.
+    // Search the image containing the runtime first, by its own loader handle,
+    // without promoting it into process-global scope. Ordinary executables
+    // cannot always be dlopen'ed; in that case the existing process resolver
+    // below continues to serve their exported host symbols.
     auto& main_dylib = jit_->getMainJITDylib();
+#if defined(__unix__) || defined(__APPLE__)
+    auto runtime_image = get_repl_runtime_image_library();
+    if (runtime_image.isValid()) {
+        main_dylib.addGenerator(
+            std::make_unique<orc::DynamicLibrarySearchGenerator>(
+                runtime_image, jit_->getDataLayout().getGlobalPrefix()));
+    }
+#endif
+
     auto generator = orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
         jit_->getDataLayout().getGlobalPrefix());
 
@@ -3325,6 +3386,19 @@ void ReplJITContext::rememberPersistentMacros(const std::vector<eshkol_ast_t>& a
     }
 }
 
+void ReplJITContext::seedParserMacroNames(std::istream& stream) const {
+    std::set<std::string> names;
+    for (const auto& ast_item : persistent_macro_asts_) {
+        if (ast_item.type == ESHKOL_OP &&
+            ast_item.operation.op == ESHKOL_DEFINE_SYNTAX_OP &&
+            ast_item.operation.define_syntax_op.macro &&
+            ast_item.operation.define_syntax_op.macro->name) {
+            names.insert(ast_item.operation.define_syntax_op.macro->name);
+        }
+    }
+    eshkol_parser_seed_macro_names(stream, names);
+}
+
 /**
  * @brief Parses every top-level form in @p content into a vector of ASTs, skipping blank lines and `;`-comments.
  *
@@ -3451,7 +3525,11 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     if (!source_path.empty()) {
         explicit_source_context = std::make_unique<ScopedSourceContext>(
             source_path, source_text);
-        if (source_path != eshkol_get_source_context_path()) {
+        // The ambient context holds the DISPLAY spelling of the path
+        // (ADR-0021), so compare like with like rather than against the host
+        // path this caller happens to hold.
+        const char* expected = eshkol_source_path_display(source_path.c_str());
+        if (!expected || source_path_context_differs(expected)) {
             throw std::runtime_error(
                 "failed to establish explicit JIT batch source context");
         }
@@ -3782,6 +3860,16 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         throw std::runtime_error("Cannot execute null AST");
     }
 
+    // Interactive evaluations compile one AST at a time (unlike module
+    // batches), so retain a define-syntax form here as well.  This makes the
+    // persisted macro-name set available when the next fresh input stream is
+    // seeded before parsing.
+    if (ast->type == ESHKOL_OP &&
+        ast->operation.op == ESHKOL_DEFINE_SYNTAX_OP) {
+        std::vector<eshkol_ast_t> macro_form{*ast};
+        rememberPersistentMacros(macro_form);
+    }
+
     // TOP-LEVEL SEQUENCE FLATTENING (Noesis#3 / v1.2.1-hardened)
     //
     // define-record-type, make-parameter, and other macro-style parser
@@ -4008,8 +4096,21 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // Generate LLVM IR using the existing Eshkol compiler
     std::string module_name = "__repl_module_" + std::to_string(eval_id);
 
-    // Call the existing compiler to generate LLVM IR from AST
-    LLVMModuleRef c_module = eshkol_generate_llvm_ir(ast, 1, module_name.c_str());
+    // Carry persistent macro definitions into single-form interactive
+    // compilations as well as executeBatch().  Without this, stream seeding
+    // lets the parser preserve a later keyword call, but the expander has no
+    // definition to apply to that AST.
+    std::vector<eshkol_ast_t> codegen_asts;
+    if (!persistent_macro_asts_.empty()) {
+        codegen_asts.reserve(persistent_macro_asts_.size() + 1);
+        codegen_asts.insert(codegen_asts.end(), persistent_macro_asts_.begin(),
+                            persistent_macro_asts_.end());
+    }
+    codegen_asts.push_back(*ast);
+    // Call the existing compiler to generate LLVM IR from the complete
+    // interactive macro environment plus the current form.
+    LLVMModuleRef c_module = eshkol_generate_llvm_ir(
+        codegen_asts.data(), codegen_asts.size(), module_name.c_str());
 
     if (!c_module) {
         throw std::runtime_error("Failed to generate LLVM IR from AST");

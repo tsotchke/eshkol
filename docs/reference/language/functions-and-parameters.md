@@ -13,6 +13,29 @@ covers parameter list features and application.
 7
 ```
 
+## Wrong argument counts and non-procedures
+
+Every call enters a procedure only with an argument count its declaration
+accepts: exactly its parameter count, or at least its fixed parameters for a
+rest-parameter procedure. Anything else raises a catchable error on both
+engines, whether the procedure is called by name or reached as a value through
+a variable, a parameter or a closure. Applying a value that is not a procedure
+raises too. Nothing is padded, dropped or answered in its place.
+
+```scheme
+(define (h f a b) (f a b))
+(display (guard (e (#t 'refused)) (h (lambda (x) x) 1 2))) (newline)
+(display (guard (e (#t 'refused)) (let ((f #f)) ((lambda () (f 1 2)))))) (newline)
+```
+```
+refused
+refused
+```
+
+The message carries the shared class marker, for example
+`Arity mismatch: <procedure> expects 1 argument but got 2`, or
+`expects at least 2 arguments` for a rest-parameter procedure.
+
 ## Variadic (rest) parameters
 
 A dotted tail parameter collects any extra arguments into a list.
@@ -48,10 +71,39 @@ Calls `proc` with the leading args followed by the elements of the final list.
 
 ```scheme
 (display (apply + 1 2 (list 3 4 5))) (newline)
+(display (apply + (list 1 2 3))) (newline)
 ```
 ```
 15
+6
 ```
+
+`proc` may be **any** callable value, including a builtin reached as a
+first-class value rather than in operator position:
+
+```scheme
+(display (apply vector-copy (list (vector 7 8 9)))) (newline)
+(display (apply vector (list 1 2 3))) (newline)
+```
+```
+#(7 8 9)
+#(1 2 3)
+```
+
+`apply` resolves its operator through the same first-class-value route `map`
+and a user higher-order call use, so a builtin gains a value representation
+exactly once and every call site agrees with it by construction. A name that is
+genuinely undefined fails compilation with a real diagnostic; it never
+silently answers `()`.
+
+The spread list must fit the procedure. Spreading more elements than a
+fixed-arity procedure accepts is an arity error, never a call with the surplus
+dropped: `(apply (lambda (x) x) (list 1 2 3))` raises
+`Arity mismatch: <procedure> expects 1 argument but got 3`, a condition
+`guard` catches on both engines.
+
+`apply` also takes leading arguments before the list on both engines:
+`(apply + 1 2 (list 3 4 5))` answers `15`.
 
 ## Builtins are first-class values
 
@@ -86,12 +138,113 @@ procedure with unusual behavior.
 (display if)   ; error: Undefined variable: if
 ```
 
+### A variadic builtin stays variadic as a value
+
+A builtin whose operator-position form takes any number of arguments answers
+the same way when it is reached as a value. It is not frozen at the arity of
+the call site that first materialized it, and its rest list is not silently
+truncated or terminated with the wrong tail.
+
+```scheme
+(display (map list (list 1 2 3))) (newline)
+(display (map vector (list 1 2) (list 3 4))) (newline)
+(define f string-append)
+(display (f "a" "b" "c")) (newline)
+(define g min)
+(display (g 5 2 9)) (newline)
+```
+```
+((1) (2) (3))
+(#(1 3) #(2 4))
+abc
+2
+```
+
+Identical under the bytecode VM. The first-class builtin table declares which
+rows are variadic and how each computes its answer from a rest list — identity
+for `list` and `values`, a unary builtin for `vector` (`list->vector`) and
+`string` (`list->string`), and a left fold over the binary form for
+`string-append`, `min`, `max`, `gcd`, `lcm`, `vector-append` and
+`bytevector-append` — so a variadic builtin has one answer rather than one per
+call site.
+
+The arithmetic operators are variadic values as well: `+`, `-`, `*` and `/`
+passed as values compute `(apply <op> args)` with the same reduction `apply`
+uses, so `(+)` is `0`, `(*)` is `1`, a single argument to `-` or `/` is its
+inverse, and `-` or `/` with no argument is an error. The output procedures
+`display`, `write` and `newline` keep their optional port argument as values,
+and an argument in the port position that is not an output port raises a
+type error that `guard` can catch.
+
+Math procedures use the same call protocol when stored or passed as values.
+For example, `(apply atan2 '(1 1))` and `(let ((f atan)) (f 1 1))` dispatch
+through callable values; `atan` and `round` select their one- or two-argument
+form from the actual argument count. `procedure-arity` reports the fixed
+parameter count, so `(procedure-arity +)` is `0` for the variadic `+`.
+
+The three standard ports, `current-input-port`, `current-output-port`, and
+`current-error-port`, are parameter objects. `parameterize` binds them for its
+dynamic extent; a read or write without an explicit port uses the current
+binding. The prior binding is restored on normal return or after a caught
+raise. An explicit port argument must be a port of the required direction:
+
+```scheme
+(define out (open-output-string))
+(parameterize ((current-output-port out)) (write 'answer))
+(get-output-string out)  ; => "answer"
+(parameterize ((current-input-port (open-input-string "(1 2)")))
+  (read))                 ; => (1 2)
+```
+
+These behaviors are checked by
+`tests/core/standard_port_parameters_test.esk` on native and VM execution.
+
+```scheme
+(define (apply-to f args) (apply f args))
+(display (apply-to + (list 1 2 3 4))) (newline)
+(display (apply-to - (list 5))) (newline)
+(display (apply-to / (list 2))) (newline)
+(define p (open-output-string))
+(for-each display '(a b c) (list p p p))
+(display (get-output-string p)) (newline)
+```
+```
+10
+-5
+1/2
+abc
+```
+
 Every builtin's value-position behavior is asserted mechanically —
 generated from the language-surface manifest, not hand-picked — in
 `tests/core/builtins_first_class_test_*.esk`; special forms' refusal is
 pinned by `tests/core/special_form_value_refusal_test.esk`. See LE-16 in
 `.icc/ledger/entries/LE-16.yaml` for how this was closed for the builtins
-that were still call-position-only.
+that were still call-position-only, including the 28 names left open there as
+documented gaps rather than guessed, because resolving them safely would have
+required executing an FFI/GPU/atomics side effect.
+
+## Omitting a documented optional argument
+
+A builtin's documented optional argument is a legal call on **both** engines.
+The minimum arities the VM enforces are derived from the code that runs — the
+fixed-arity macros the native dispatch expands first — rather than transcribed
+into a table, so the two engines cannot drift apart on which calls are legal.
+
+```scheme
+(display (substring "hello" 1)) (newline)
+(display (append)) (newline)
+(display (gcd)) (newline)
+(display (make-vector 3)) (newline)
+(display (string-length (make-string 3))) (newline)
+```
+```
+ello
+()
+0
+#(0 0 0)
+3
+```
 
 ## Keyword arguments (`#:name`)
 

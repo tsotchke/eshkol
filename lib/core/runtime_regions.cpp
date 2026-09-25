@@ -20,6 +20,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <new>
 #include <unordered_map>
 #include <vector>
 #include <utility>
@@ -559,6 +560,11 @@ void region_push(eshkol_region_t* region) {
 
     region->parent = (__region_stack_depth > 0) ?
         __region_stack[__region_stack_depth - 1] : nullptr;
+
+    // #713: a promotion out of this region can fail only while a region is
+    // open, so the thread's allocation-failure condition is reserved now,
+    // while memory is available (a no-op after the first region).
+    eshkol_reserve_allocation_failure_condition();
 
     // ESH-0214c: capture the arena that outlives this region NOW, before the
     // with-region codegen overwrites the __global_arena allocation slot with
@@ -1155,6 +1161,69 @@ struct EvacState {
 
     void refuse() { if (span_arena) refused = true; }
 
+    // #713: an evacuation is a TRANSACTION (ADR-0001 required semantics 8,
+    // "all-or-nothing promotion"). It either promotes every object the roots
+    // reach, or it leaves no trace: nothing is published, the forwarding
+    // relation is exactly what it was, every byte outside the fresh copies is
+    // exactly what it was, and the destination arena's bump pointer is rewound
+    // when this thread owns it. A failed allocation used to log and hand back
+    // the ORIGINAL pointer, which the barrier then stored -- so a root, or a
+    // parent copied before its child failed, carried an edge into the region
+    // about to be freed.
+    //
+    // Three records make the rollback exact:
+    //   * `inserted` -- every forwarding key this transaction added. The map is
+    //     the region's persistent one, so a stale entry would make a LATER
+    //     escape reuse a half-built copy.
+    //   * `saved`/`saved_bytes` -- the prior contents of every byte range the
+    //     walk rewrites that is NOT one of this transaction's own copies
+    //     (buffers a copied object shares with its original, a parameter's
+    //     malloc-owned binding stack). Fresh copies need no record: they are
+    //     unreachable once the transaction aborts.
+    //   * `failed`/`failed_bytes` -- set by the first allocation that fails.
+    //     From then on every copy primitive is the identity, so the rest of
+    //     the walk writes back exactly the values it read and cannot publish
+    //     anything new.
+    std::vector<const void*> inserted;
+    struct SavedRange { void* addr; size_t size; size_t offset; };
+    std::vector<SavedRange> saved;
+    std::vector<uint8_t> saved_bytes;
+    bool failed = false;
+    size_t failed_bytes = 0;
+
+    void fail(size_t bytes) {
+        if (!failed) {
+            failed = true;
+            failed_bytes = bytes;
+        }
+    }
+
+    // Remember @p n bytes at @p p before the walk rewrites them in place.
+    // Only for memory that existed before this transaction began.
+    void preserve(void* p, size_t n) {
+        if (failed || !p || n == 0) return;
+        if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_SAVED)) throw std::bad_alloc();
+        const size_t off = saved_bytes.size();
+        saved_bytes.insert(saved_bytes.end(), (const uint8_t*)p, (const uint8_t*)p + n);
+        saved.push_back({p, n, off});
+    }
+
+    void* lookup(const void* old) const {
+        auto it = fwd->find(old);
+        return it == fwd->end() ? nullptr : it->second;
+    }
+
+    // The key is recorded BEFORE it enters the map: if the record cannot
+    // grow, the map is untouched; if the map cannot grow, erasing a recorded
+    // key that never went in is harmless. The other order left a map entry
+    // pointing into the rewound destination with nothing to remove it.
+    void record(const void* old, void* copy) {
+        if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_INSERTED)) throw std::bad_alloc();
+        inserted.push_back(old);
+        if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_FORWARD)) throw std::bad_alloc();
+        (*fwd)[old] = copy;
+    }
+
     bool owns(const void* p) const {
         if (span_arena) return arena_scope_span_contains(span_arena, span_scope, p) != 0;
         return region_index_owning(p) > boundary_idx;
@@ -1165,6 +1234,10 @@ struct EvacState {
 
 // Free a region's persistent deep-escape forwarding map (declared above
 // region_destroy; the map type is only visible from here down).
+extern "C" size_t eshkol_region_forwarding_size(const eshkol_region_t* region) {
+    return (region && region->fwd_map) ? ((const EvacFwdMap*)region->fwd_map)->size() : 0;
+}
+
 static void region_free_fwd_map(eshkol_region_t* region) {
     if (region && region->fwd_map) {
         delete (EvacFwdMap*)region->fwd_map;
@@ -1401,13 +1474,19 @@ static EvacKind evac_kind_for(EvacState& st, const eshkol_tagged_value_t& v, con
 // C strings) into the target arena, with forwarding so shared/aliased buffers
 // are copied once.
 static void* evac_raw(EvacState& st, const void* old, size_t size) {
-    if (!old || size == 0) return (void*)old;
-    auto it = st.fwd->find(old);
-    if (it != st.fwd->end()) return it->second;
-    void* raw = arena_allocate_aligned(st.target, size, 16);
-    if (!raw) return (void*)old;
+    if (!old || size == 0 || st.failed) return (void*)old;
+    if (void* fwd = st.lookup(old)) return fwd;
+    void* raw = eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_COPY)
+                    ? nullptr : arena_allocate_aligned(st.target, size, 16);
+    if (!raw) {
+        // #713: the transaction is now doomed; the caller aborts it. The old
+        // pointer is returned only so the rest of the walk is the identity --
+        // it is never published.
+        st.fail(size);
+        return (void*)old;
+    }
     std::memcpy(raw, old, size);
-    (*st.fwd)[old] = raw;
+    st.record(old, raw);
     st.copies++;
     return raw;
 }
@@ -1415,8 +1494,8 @@ static void* evac_raw(EvacState& st, const void* old, size_t size) {
 // Copy a header-prefixed object into the target arena (contiguous header+payload),
 // register forwarding, and enqueue it for interior traversal if non-leaf.
 static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_value_t& v) {
-    auto it = st.fwd->find(old_data);
-    if (it != st.fwd->end()) return it->second;
+    if (st.failed) return old_data;
+    if (void* fwd = st.lookup(old_data)) return fwd;
 
     auto* h = (eshkol_object_header_t*)((uint8_t*)old_data - sizeof(eshkol_object_header_t));
     const size_t total = sizeof(eshkol_object_header_t) + h->size;
@@ -1436,14 +1515,15 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
         return old_data;
     }
 
-    void* raw = arena_allocate_aligned(st.target, total, 16);
+    void* raw = eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_EVAC_COPY)
+                    ? nullptr : arena_allocate_aligned(st.target, total, 16);
     if (!raw) {
-        eshkol_error("region evacuate: failed to allocate %zu bytes", total);
+        st.fail(total);   // #713: abort the whole transaction, see EvacState
         return old_data;
     }
     std::memcpy(raw, h, total);
     void* new_data = (uint8_t*)raw + sizeof(eshkol_object_header_t);
-    (*st.fwd)[old_data] = new_data;
+    st.record(old_data, new_data);
     st.copies++;
 
     EvacKind k = evac_kind_for(st, v, old_data);
@@ -1517,6 +1597,7 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
 // than the boundary), evacuate the pointed-to object and repoint; otherwise
 // leave it untouched.
 static eshkol_tagged_value_t evac_value(EvacState& st, eshkol_tagged_value_t v) {
+    if (st.failed) return v;   // #713: an aborted transaction rewrites nothing
     const uint8_t type = v.type;
     if (!region_value_carries_pointer(type)) return v;
 
@@ -1528,6 +1609,22 @@ static eshkol_tagged_value_t evac_value(EvacState& st, eshkol_tagged_value_t v) 
     // whole object. evac_raw forwards, so two tagged values sharing one payload
     // still share it after promotion.
     if (const size_t raw_size = region_headerless_payload_size(type)) {
+        // A carrier complex (ADR-0025) is the plain pair plus two tagged
+        // components, and those components are pointers (jets, tape nodes), so
+        // it is copied at its own size and its components are escaped with it.
+        const bool carrier_complex =
+            (type & (uint8_t)~(ESHKOL_VALUE_EXACT_FLAG | ESHKOL_VALUE_INEXACT_FLAG)) == ESHKOL_VALUE_COMPLEX &&
+            (v.flags & ESHKOL_COMPLEX_CARRIER_FLAG) != 0;
+        if (carrier_complex) {
+            auto* copy = (eshkol_complex_carrier_t*)evac_raw(
+                st, p, eshkol_ad_payload_size(ESHKOL_AD_PAYLOAD_COMPLEX_CARRIER));
+            if (copy) {
+                copy->real = evac_value(st, copy->real);
+                copy->imag = evac_value(st, copy->imag);
+            }
+            v.data.ptr_val = (uint64_t)(uintptr_t)copy;
+            return v;
+        }
         v.data.ptr_val = (uint64_t)(uintptr_t)evac_raw(st, p, raw_size);
         return v;
     }
@@ -1540,7 +1637,13 @@ static eshkol_tagged_value_t evac_value(EvacState& st, eshkol_tagged_value_t v) 
 static void evac_parameter_value(eshkol_tagged_value_t* value, void* context) {
     if (!value || !context) return;
     EvacState* st = (EvacState*)context;
-    *value = evac_value(*st, *value);
+    // The binding stack is malloc-owned and shared with the original
+    // parameter object, so it is not one of this transaction's copies.
+    const eshkol_tagged_value_t next = evac_value(*st, *value);
+    if (std::memcmp(&next, value, sizeof(next)) != 0) {
+        st->preserve(value, sizeof(*value));
+        *value = next;
+    }
 }
 
 // Evacuate a header-prefixed object referenced only by a RAW data pointer (no
@@ -1550,7 +1653,7 @@ static void evac_parameter_value(eshkol_tagged_value_t* value, void* context) {
 // cycles, shared structure all preserved). Objects already at/outside the
 // boundary are returned unchanged.
 static void* evac_object_ptr(EvacState& st, void* data_ptr) {
-    if (!data_ptr) return data_ptr;
+    if (!data_ptr || st.failed) return data_ptr;
     if (!st.owns(data_ptr)) return data_ptr;
     eshkol_tagged_value_t synth;
     std::memset(&synth, 0, sizeof(synth));
@@ -1561,12 +1664,104 @@ static void* evac_object_ptr(EvacState& st, void* data_ptr) {
 
 static void evac_drain(EvacState& st);
 
-// Drive the deep evacuation of @p val into @p target, copying everything
-// reachable that lives in an active region strictly inner than @p boundary_idx.
-static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
-                                                   arena_t* target,
-                                                   int boundary_idx) {
-    if (!target) return val;
+// ───────────────────────────────────────────────────────────────────────────
+// #713: THE PROMOTION TRANSACTION
+//
+// Every driver (write barrier, with-region result escape, region unwind, nursery
+// recycle, arena-span loop reclamation) promotes through evac_transaction(). It
+// evacuates a batch of roots into one destination with one forwarding relation,
+// and it is all-or-nothing (ADR-0001, "All-or-nothing promotion"):
+//
+//   COMMIT  every root and everything it reaches that must move has a complete
+//           copy in the destination; the roots are rewritten; the forwarding
+//           entries become part of the region's persistent relation.
+//   ABORT   an allocation failed (a bounded destination at capacity, the OS
+//           refusing a new arena block, or the evacuator's own bookkeeping
+//           failing to grow). The roots are left exactly as passed in, every
+//           shared byte the walk rewrote is restored, the forwarding keys this
+//           transaction added are removed, and the destination's bump pointer is
+//           rewound when this thread may rewind it. Nothing is published.
+//
+// The caller decides what an abort means. A region-mode caller raises a
+// catchable allocation error (eshkol_raise_allocation_failure) -- after this
+// function has returned, so no C++ frame is ever unwound by longjmp. The
+// arena-span caller treats it as a refusal and retains the span.
+// ───────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+struct EvacOutcome {
+    bool ok = true;
+    size_t failed_bytes = 0;
+};
+
+// Promotion failures are reported by allocation size so the raised condition
+// names what could not be allocated. Thread-local: set by the transaction that
+// aborted, read by the raise that follows it on the same thread.
+static thread_local size_t t_promotion_failed_bytes = 0;
+
+} // namespace
+
+/* Run one transaction over @p n roots in place. @p st must be configured
+ * (target, ownership predicate, forwarding map) and otherwise empty. */
+static EvacOutcome evac_transaction(EvacState& st, eshkol_tagged_value_t* roots,
+                                    uint64_t n) {
+    EvacOutcome out;
+    arena_t* target = st.target;
+
+    // Mark the destination so an abort can rewind it. arena_push_scope is a
+    // no-op where scope operations are commit-only (a concurrent pool worker
+    // on the shared arena) and when its own record cannot be allocated; in
+    // both cases no mark is taken and an abort leaves the aborted copies as
+    // unreachable bytes in the destination -- never published, never reused.
+    arena_scope_t* const before = target->current_scope;
+    arena_push_scope(target);
+    arena_scope_t* const mark =
+        (target->current_scope != before) ? target->current_scope : nullptr;
+
+    // Results are staged so the roots themselves change only on commit.
+    eshkol_tagged_value_t one;
+    eshkol_tagged_value_t* staged = &one;
+    std::vector<eshkol_tagged_value_t> many;
+    try {
+        if (n > 1) {
+            many.resize((size_t)n);
+            staged = many.data();
+        }
+        for (uint64_t i = 0; i < n && !st.failed; ++i) staged[i] = evac_value(st, roots[i]);
+        evac_drain(st);
+    } catch (const std::bad_alloc&) {
+        // The worklist, the forwarding map or a preserve record could not grow.
+        st.fail(0);
+    }
+
+    if (!st.failed) {
+        if (mark) arena_commit_scope(target);
+        for (uint64_t i = 0; i < n; ++i) roots[i] = staged[i];
+        return out;
+    }
+
+    // ABORT, newest first so overlapping saved ranges restore to the oldest
+    // contents.
+    for (size_t i = st.saved.size(); i-- > 0;) {
+        const EvacState::SavedRange& r = st.saved[i];
+        std::memcpy(r.addr, st.saved_bytes.data() + r.offset, r.size);
+    }
+    for (const void* key : st.inserted) st.fwd->erase(key);
+    if (mark) arena_pop_scope(target);
+    out.ok = false;
+    out.failed_bytes = st.failed_bytes;
+    return out;
+}
+
+// Deep-evacuate @p n roots in place into @p target, copying everything reachable
+// that lives in an active region strictly inner than @p boundary_idx. Returns
+// false -- with the roots, the region and its forwarding relation unchanged --
+// when the promotion could not be completed; the caller must then raise rather
+// than store anything.
+static bool region_evacuate_values(eshkol_tagged_value_t* roots, uint64_t n,
+                                   arena_t* target, int boundary_idx) {
+    if (!target || n == 0) return true;
     EvacState st;
     st.target = target;
     st.boundary_idx = boundary_idx;
@@ -1577,29 +1772,35 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
     // it after promotion). The map's keys reference memory in this region or an
     // enclosing one -- the innermost region is the first of those to die, and
     // region_destroy frees the map with it, so no entry can ever go stale. The
-    // map is only valid for one promotion target; if a nested escape targets a
-    // different arena (rare: barrier into an intermediate region), reset it.
+    // map is only valid for one promotion target; when this escape targets a
+    // different arena (rare: barrier into an intermediate region) it runs
+    // against a fresh relation that REPLACES the old one on commit, so an
+    // aborted retarget leaves the old relation intact.
     EvacFwdMap local_fwd;
     eshkol_region_t* owner = region_current();
+    EvacFwdMap* persistent = nullptr;
+    bool retarget = false;
     if (owner) {
         if (!owner->fwd_map) {
             owner->fwd_map = new (std::nothrow) EvacFwdMap();
             owner->fwd_target = target;
-        } else if (owner->fwd_target != target) {
-            ((EvacFwdMap*)owner->fwd_map)->clear();
-            owner->fwd_target = target;
         }
-        st.fwd = owner->fwd_map ? (EvacFwdMap*)owner->fwd_map : &local_fwd;
-    } else {
-        st.fwd = &local_fwd;
+        persistent = (EvacFwdMap*)owner->fwd_map;
+        retarget = persistent && owner->fwd_target != target;
     }
+    st.fwd = (persistent && !retarget) ? persistent : &local_fwd;
 
-    eshkol_tagged_value_t root = evac_value(st, val);
-    evac_drain(st);
-
-    eshkol_region_t* cur = region_current();
-    if (cur) cur->escape_count += st.copies;
-    return root;
+    const EvacOutcome res = evac_transaction(st, roots, n);
+    if (!res.ok) {
+        t_promotion_failed_bytes = res.failed_bytes;
+        return false;
+    }
+    if (retarget) {
+        persistent->swap(local_fwd);
+        owner->fwd_target = target;
+    }
+    if (owner) owner->escape_count += st.copies;
+    return true;
 }
 
 // SW-164: the breadth-first interior walk, shared by every driver. Split out of
@@ -1608,7 +1809,7 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
 // ESH-0214d lesson (a subtype dropped to a leaf in one evacuator and not the
 // other) applies with double force once there are two entry points.
 static void evac_drain(EvacState& st) {
-    while (!st.worklist.empty()) {
+    while (!st.worklist.empty() && !st.failed) {
         std::pair<void*, EvacKind> item = st.worklist.back();
         st.worklist.pop_back();
         void* nd = item.first;
@@ -1642,6 +1843,10 @@ static void evac_drain(EvacState& st) {
                     st.owns(ex->irritants)) {
                     ex->irritants = (eshkol_tagged_value_t*)evac_raw(
                         st, ex->irritants, (size_t)ex->num_irritants * sizeof(eshkol_tagged_value_t));
+                } else if (ex->irritants && ex->num_irritants) {
+                    // Shared with the original exception: rewritten in place.
+                    st.preserve(ex->irritants,
+                                (size_t)ex->num_irritants * sizeof(eshkol_tagged_value_t));
                 }
                 if (ex->irritants) {
                     for (uint32_t i = 0; i < ex->num_irritants; ++i)
@@ -1654,6 +1859,25 @@ static void evac_drain(EvacState& st) {
                 if (t->dimensions && st.owns(t->dimensions))
                     t->dimensions = (uint64_t*)evac_raw(
                         st, t->dimensions, (size_t)t->num_dimensions * sizeof(uint64_t));
+                // A tagged-element carrier (a dual tensor, or a vector
+                // promoted by a non-numeric store -- ADR-0020) holds 16-byte
+                // tagged values that can point into the dying region, so its
+                // buffer is wider and each slot is walked.
+                if (eshkol_tensor_dtype_is_tagged(t->dtype)) {
+                    if (t->elements && st.owns(t->elements))
+                        t->elements = (int64_t*)evac_raw(
+                            st, t->elements,
+                            (size_t)t->total_elements * sizeof(eshkol_tagged_value_t));
+                    else if (t->elements)
+                        st.preserve(t->elements,
+                                    (size_t)t->total_elements * sizeof(eshkol_tagged_value_t));
+                    if (t->elements) {
+                        auto* slots = (eshkol_tagged_value_t*)t->elements;
+                        for (uint64_t i = 0; i < t->total_elements; ++i)
+                            slots[i] = evac_value(st, slots[i]);
+                    }
+                    break;
+                }
                 if (t->elements && st.owns(t->elements))
                     t->elements = (int64_t*)evac_raw(
                         st, t->elements, (size_t)t->total_elements * sizeof(int64_t));
@@ -1665,9 +1889,13 @@ static void evac_drain(EvacState& st) {
                 if (tbl->keys && st.owns(tbl->keys))
                     tbl->keys = (eshkol_tagged_value_t*)evac_raw(
                         st, tbl->keys, cap * sizeof(eshkol_tagged_value_t));
+                else if (tbl->keys)
+                    st.preserve(tbl->keys, cap * sizeof(eshkol_tagged_value_t));
                 if (tbl->values && st.owns(tbl->values))
                     tbl->values = (eshkol_tagged_value_t*)evac_raw(
                         st, tbl->values, cap * sizeof(eshkol_tagged_value_t));
+                else if (tbl->values)
+                    st.preserve(tbl->values, cap * sizeof(eshkol_tagged_value_t));
                 if (tbl->status && st.owns(tbl->status))
                     tbl->status = (uint8_t*)evac_raw(st, tbl->status, cap * sizeof(uint8_t));
                 if (tbl->keys && tbl->values && tbl->status) {
@@ -1746,6 +1974,8 @@ static void evac_drain(EvacState& st) {
                     if (region_index_owning(n->exact_value) > st.boundary_idx)
                         n->exact_value = (eshkol_tagged_value_t*)evac_raw(
                             st, n->exact_value, sizeof(eshkol_tagged_value_t));
+                    else
+                        st.preserve(n->exact_value, sizeof(eshkol_tagged_value_t));
                     /* The sidecar slot may live in the outer/tape arena while
                      * its tagged bignum/rational payload lives in the region
                      * being popped. Walk the payload regardless of whether the
@@ -1756,6 +1986,8 @@ static void evac_drain(EvacState& st) {
                     if (region_index_owning(n->exact_gradient) > st.boundary_idx)
                         n->exact_gradient = (eshkol_tagged_value_t*)evac_raw(
                             st, n->exact_gradient, sizeof(eshkol_tagged_value_t));
+                    else
+                        st.preserve(n->exact_gradient, sizeof(eshkol_tagged_value_t));
                     *n->exact_gradient = evac_value(st, *n->exact_gradient);
                 }
                 auto evacuate_input = [&](ad_node_t*& input) {
@@ -1845,6 +2077,8 @@ static void evac_drain(EvacState& st) {
                 if (kb->facts && st.owns(kb->facts))
                     kb->facts = (eshkol_fact_t**)evac_raw(
                         st, kb->facts, (size_t)kb->capacity * sizeof(eshkol_fact_t*));
+                else if (kb->facts)
+                    st.preserve(kb->facts, (size_t)kb->num_facts * sizeof(eshkol_fact_t*));
                 if (kb->facts) {
                     for (uint32_t i = 0; i < kb->num_facts; ++i)
                         kb->facts[i] = (eshkol_fact_t*)evac_object_ptr(st, kb->facts[i]);
@@ -1934,28 +2168,17 @@ static void evac_drain(EvacState& st) {
                 const size_t ncoeff = (size_t)t->order_k + 1;
                 if (ESH_TAYLOR_HAS_TANGENT(t->flags) &&
                     ESH_TAYLOR_TANGENT_IS_EXACT(t->flags)) {
-                    t->exact_c = (eshkol_tagged_value_t*)(void*)
-                        (t->c + (ESH_TAYLOR_HAS_TANGENT2(t->flags)
-                            ? 4u * ncoeff : 2u * ncoeff));
-                    const size_t arrays = ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags)
-                        ? 4u : 2u;
-                    for (size_t i = 0; i < arrays * ncoeff; ++i)
+                    t->exact_c = (eshkol_tagged_value_t*)(void*)(t->c + 2u * ncoeff);
+                    for (size_t i = 0; i < 2u * ncoeff; ++i)
                         t->exact_c[i] = evac_value(st, t->exact_c[i]);
-                } else if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL) {
+                } else if ((t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL ||
+                           (t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_CARRIER) {
+                    /* A level carrier (ADR-0027) stores tagged coefficients
+                     * the same way; each may itself be a jet, a bignum or
+                     * rational, or an enclosing level's carrier. */
                     t->exact_c = (eshkol_tagged_value_t*)(void*)t->c;
                     auto* c = t->exact_c;
                     for (size_t i = 0; i < ncoeff; ++i) c[i] = evac_value(st, c[i]);
-                } else if (t->exact_c) {
-                    /* Exact value/tangent sidecars follow the raw double
-                     * halves in a mixed Taylor carrier. Rebase the pointer
-                     * into the copied object before walking both arrays. */
-                    t->exact_c = (eshkol_tagged_value_t*)(void*)
-                        (t->c + (ESH_TAYLOR_HAS_TANGENT2(t->flags)
-                            ? 4u * ncoeff : 2u * ncoeff));
-                    const size_t arrays = ESH_TAYLOR_TANGENT2_IS_EXACT(t->flags)
-                        ? 4u : (ESH_TAYLOR_TANGENT_IS_EXACT(t->flags) ? 2u : 1u);
-                    for (size_t i = 0; i < arrays * ncoeff; ++i)
-                        t->exact_c[i] = evac_value(st, t->exact_c[i]);
                 }
                 break;
             }
@@ -1972,6 +2195,8 @@ static void evac_drain(EvacState& st) {
                 if (fg->beliefs && st.owns(fg->beliefs))
                     fg->beliefs = (double**)evac_raw(
                         st, fg->beliefs, (size_t)nvars * sizeof(double*));
+                else if (fg->beliefs)
+                    st.preserve(fg->beliefs, (size_t)nvars * sizeof(double*));
                 if (fg->beliefs && fg->var_dims) {
                     for (uint32_t i = 0; i < nvars; ++i) {
                         if (fg->beliefs[i] &&
@@ -1989,6 +2214,8 @@ static void evac_drain(EvacState& st) {
                 if (fg->factors && st.owns(fg->factors))
                     fg->factors = (eshkol_factor_t**)evac_raw(
                         st, fg->factors, (size_t)fg->max_factors * sizeof(eshkol_factor_t*));
+                else if (fg->factors)
+                    st.preserve(fg->factors, (size_t)fg->num_factors * sizeof(eshkol_factor_t*));
                 if (fg->factors) {
                     for (uint32_t fi = 0; fi < fg->num_factors; ++fi) {
                         eshkol_factor_t* f = fg->factors[fi];
@@ -1998,6 +2225,8 @@ static void evac_drain(EvacState& st) {
                                                (size_t)f->num_vars * sizeof(uint32_t);
                             f = (eshkol_factor_t*)evac_raw(st, f, fsz);
                             fg->factors[fi] = f;
+                        } else {
+                            st.preserve(f, sizeof(eshkol_factor_t));
                         }
                         if (f->cpt && st.owns(f->cpt))
                             f->cpt = (double*)evac_raw(
@@ -2016,6 +2245,8 @@ static void evac_drain(EvacState& st) {
                     if (st.owns(arr))
                         arr = (double**)evac_raw(
                             st, arr, (size_t)fg->total_messages * sizeof(double*));
+                    else
+                        st.preserve(arr, (size_t)fg->total_messages * sizeof(double*));
                     uint32_t k = 0;
                     for (uint32_t fi = 0;
                          fi < fg->num_factors && k < fg->total_messages; ++fi) {
@@ -2068,7 +2299,8 @@ static eshkol_tagged_value_t arena_span_evacuate_value(eshkol_tagged_value_t val
                                                        const arena_t* span_arena,
                                                        const arena_scope_t* span_scope,
                                                        EvacFwdMap* fwd,
-                                                       bool* refused) {
+                                                       bool* refused,
+                                                       bool* failed) {
     if (!target || !span_arena) return val;
     EvacState st;
     st.target = target;
@@ -2077,10 +2309,14 @@ static eshkol_tagged_value_t arena_span_evacuate_value(eshkol_tagged_value_t val
     st.span_scope = span_scope;
     st.fwd = fwd;
     st.refused = false;
-    eshkol_tagged_value_t root = evac_value(st, val);
-    evac_drain(st);
-    if (refused) *refused = st.refused;
-    return root;
+    // #713: an aborted promotion is a refusal. The value comes back unchanged,
+    // so the caller retains the span rather than rewinding it -- reclamation
+    // is given up, correctness is not.
+    const EvacOutcome res = evac_transaction(st, &val, 1);
+    if (!res.ok) t_promotion_failed_bytes = res.failed_bytes;
+    if (refused) *refused = st.refused || !res.ok;
+    if (failed && !res.ok) *failed = true;
+    return val;
 }
 
 /**
@@ -2172,11 +2408,44 @@ extern "C" int eshkol_arena_span_evacuate(eshkol_tagged_value_t* vals, uint64_t 
     bool refused = false;
     for (uint64_t i = 0; i < n; ++i) {
         bool one = false;
+        bool failed = false;
         vals[i] = arena_span_evacuate_value(vals[i], target, span_arena,
-                                            span_scope, &fwd, &one);
+                                            span_scope, &fwd, &one, &failed);
+        // #713: an allocation failure leaves vals[i] as it was; earlier values
+        // are complete copies. -1 lets a caller past its point of no return
+        // tell "could not allocate" from "must not move".
+        if (failed) return -1;
         if (one) refused = true;
     }
     return refused ? 0 : 1;
+}
+
+/* #713: raise the catchable allocation error for a promotion that aborted.
+ * Called only after the aborted transaction has returned, so the longjmp inside
+ * eshkol_raise never unwinds a C++ frame. The condition object is preallocated
+ * (see eshkol_raise_allocation_failure): building it cannot fail under the same
+ * exhaustion that caused the abort. */
+static void region_raise_promotion_failure(void) {
+    eshkol_raise_allocation_failure("region promotion", t_promotion_failed_bytes);
+}
+
+/* The arena a value escaping `current` is promoted into, and the boundary
+ * index for that escape: everything in a region strictly inner than
+ * current's parent (stack index depth-2) moves. */
+static bool region_escape_values_in_place(eshkol_tagged_value_t* vals, uint64_t n) {
+    eshkol_region_t* current = region_current();
+    if (!current || !vals || n == 0) return true;
+    bool any = false;
+    for (uint64_t i = 0; i < n && !any; ++i) {
+        any = region_value_carries_pointer(vals[i].type) && vals[i].data.ptr_val != 0;
+    }
+    if (!any) return true;
+    // Escaping FROM `current` (stack index depth-1) into its parent (or the
+    // global arena). Everything living in `current`'s arena must be copied;
+    // anything already in an ancestor region or the global arena is stable.
+    arena_t* target = region_escape_target(current);
+    const int boundary = (int)__region_stack_depth - 2;
+    return region_evacuate_values(vals, n, target, boundary);
 }
 
 /**
@@ -2186,32 +2455,21 @@ extern "C" int eshkol_arena_span_evacuate(eshkol_tagged_value_t* vals, uint64_t 
  * Non-heap values (ints, doubles, etc.) are returned unchanged, as are heap
  * values that are NULL. Otherwise the value's reachable subgraph that lives in
  * the current (about-to-be-destroyed) region's arena is deep-copied into
- * region_escape_target()'s arena via region_evacuate_value(): shared structure
+ * region_escape_target()'s arena in one promotion transaction: shared structure
  * and cycles are preserved by a forwarding map, and objects already living in an
  * enclosing region or the global arena are left in place. If no region is
- * currently active, the value is returned unchanged. Shared implementation
- * behind the two `region_escape_tagged_value*` extern "C" entry points.
+ * currently active, the value is returned unchanged. When the promotion cannot
+ * be completed nothing is published: a catchable allocation error is raised with
+ * the region unchanged (#713). Shared implementation behind the two
+ * `region_escape_tagged_value*` extern "C" entry points.
  *
  * @param val Tagged value to escape (passed and returned by value).
  * @return    Escaped value (with an updated heap pointer if a copy was
- *            made), or @p val unchanged if escaping wasn't needed/possible.
+ *            made), or @p val unchanged if escaping wasn't needed.
  */
 static eshkol_tagged_value_t region_escape_tagged_value_impl(eshkol_tagged_value_t val) {
-    if (!region_value_carries_pointer(val.type)) return val;
-
-    eshkol_region_t* current = region_current();
-    if (!current) return val;
-
-    void* ptr = (void*)(uintptr_t)val.data.ptr_val;
-    if (!ptr) return val;
-
-    // Escaping FROM `current` (stack index depth-1) into its parent (or the
-    // global arena). Everything living in `current`'s arena must be copied;
-    // anything already in an ancestor region or the global arena is stable.
-    // boundary = index of current's parent = depth-2.
-    arena_t* target = region_escape_target(current);
-    const int boundary = (int)__region_stack_depth - 2;
-    return region_evacuate_value(val, target, boundary);
+    if (!region_escape_values_in_place(&val, 1)) region_raise_promotion_failure();
+    return val;
 }
 
 /**
@@ -2229,7 +2487,8 @@ extern "C" eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_
  *
  * Output-pointer form of region_escape_tagged_value(), used where an sret
  * ABI is preferred over a returned struct. If @p val is NULL, writes an
- * all-zero (NULL-typed) tagged value to *out.
+ * all-zero (NULL-typed) tagged value to *out. On a failed promotion *out is
+ * not written (the call raises).
  *
  * @param out Destination for the escaped value (no-op if NULL).
  * @param val Tagged value to escape (may be NULL).
@@ -2242,6 +2501,44 @@ extern "C" void region_escape_tagged_value_into(eshkol_tagged_value_t* out,
         return;
     }
     *out = region_escape_tagged_value_impl(*val);
+}
+
+/* #713: promote @p n staged values in place for a store into @p dst. The one
+ * rule every store channel shares: a value is promoted BEFORE it is stored, all
+ * values of one store are promoted in one transaction, and a store whose
+ * promotion fails stores nothing. Returns false (values unchanged) on failure. */
+static bool region_promote_for_store(const void* dst, eshkol_tagged_value_t* vals,
+                                     uint64_t n) {
+    // FAST PATH: no active region -> nothing can dangle.
+    if (__region_stack_depth == 0 || !vals || n == 0) return true;
+
+    // Locate the values first and the destination only if some value lives in
+    // a region. Both probes walk region arenas block by block, and most stores
+    // (every integer or float written into a vector inside a loop's nursery)
+    // carry no pointer at all: probing dst unconditionally made each of them
+    // pay a full arena walk (a 25x slowdown of a vector-heavy example).
+    int youngest = -1;   // innermost region owning any stored value
+    for (uint64_t i = 0; i < n; ++i) {
+        const eshkol_tagged_value_t& v = vals[i];
+        if (!region_value_carries_pointer(v.type) || v.data.ptr_val == 0) continue;
+        const int idx = region_index_owning((const void*)(uintptr_t)v.data.ptr_val);
+        if (idx > youngest) youngest = idx;
+    }
+    if (youngest < 0) return true;                  // every value outer/global
+    const int dst_idx = region_index_owning(dst);   // -1 when dst is outer/global
+    // A value that lives at least as long as dst (same or an enclosing region,
+    // or outside every region) is stored unchanged.
+    if (youngest <= dst_idx) return true;
+
+    // Where the promoted subgraph lands: the destination's own region arena
+    // when dst lives in an active region, otherwise the TRUE global arena. The
+    // outermost region's escape_base is that true global (captured before the
+    // __global_arena slot was hijacked by with-region codegen), so use it rather
+    // than get_global_arena(), which is hijacked during a region body.
+    arena_t* target = (dst_idx >= 0) ? __region_stack[dst_idx]->arena
+                                     : __region_stack[0]->escape_base;
+    if (!target) target = get_global_arena();
+    return region_evacuate_values(vals, n, target, dst_idx);
 }
 
 /**
@@ -2261,6 +2558,10 @@ extern "C" void region_escape_tagged_value_into(eshkol_tagged_value_t* out,
  * unchanged. The evacuation preserves shared structure and cycles via a
  * forwarding map, so this is safe to apply on every store.
  *
+ * The promotion is all-or-nothing (#713, ADR-0001): if any object the value
+ * reaches cannot be copied, *out is left untouched and a catchable allocation
+ * error is raised, so the caller's store never runs.
+ *
  * @param out   Destination for the (possibly promoted) value to actually store.
  * @param dst   Address of the container/slot being written (used only to locate
  *              which region owns the destination); NULL is treated as
@@ -2276,54 +2577,31 @@ extern "C" void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
         return;
     }
     eshkol_tagged_value_t v = *value;
-
-    // FAST PATH: no active region -> nothing can dangle.
-    if (__region_stack_depth == 0) { *out = v; return; }
-
-    if (!region_value_carries_pointer(v.type)) { *out = v; return; }
-
-    void* vptr = (void*)(uintptr_t)v.data.ptr_val;
-    if (!vptr) { *out = v; return; }
-
-    const int val_idx = region_index_owning(vptr);
-    if (val_idx < 0) { *out = v; return; }          // value already outer/global
-
-    const int dst_idx = region_index_owning(dst);   // -1 when dst is outer/global
-    if (val_idx <= dst_idx) { *out = v; return; }    // value outlives-or-coeval with dst
-
-    // Where the promoted subgraph lands: the destination's own region arena
-    // when dst lives in an active region, otherwise the TRUE global arena. The
-    // outermost region's escape_base is that true global (captured before the
-    // __global_arena slot was hijacked by with-region codegen), so use it rather
-    // than get_global_arena(), which is hijacked during a region body.
-    arena_t* target = (dst_idx >= 0) ? __region_stack[dst_idx]->arena
-                                     : __region_stack[0]->escape_base;
-    if (!target) target = get_global_arena();
-    *out = region_evacuate_value(v, target, dst_idx);
+    if (!region_promote_for_store(dst, &v, 1)) region_raise_promotion_failure();
+    *out = v;
 }
 
 /**
- * @brief Range form of the region write barrier: fix up @p n tagged slots at
- *        @p slots after a bulk copy (vector-copy!) into destination @p dst.
+ * @brief Range form of the region write barrier: promote @p n STAGED values in
+ *        place before they are stored into destination @p dst.
  *
- * Called by codegen after the memmove of `(vector-copy! to at from ...)`. The
- * fast path (no active region) is a single thread-local load + branch. When a
- * region is active, each copied slot that points into a region strictly inner
- * than @p dst's owning region is deep-promoted in place (same semantics as
- * eshkol_region_write_barrier_into, applied slot-by-slot; the per-region
- * forwarding map keeps shared structure shared across the whole range).
+ * Used by the runtime's bulk stores (vector-copy!, vector-fill!, tensor slot
+ * stores). The caller stages the values, calls this, and only then copies them
+ * into the destination: a store must never publish a value before its promotion
+ * has completed, because a failed promotion would leave a young pointer in the
+ * destination (#713). All @p n values are promoted in ONE transaction with one
+ * forwarding relation, so structure shared between them stays shared. On
+ * failure @p slots is unchanged and a catchable allocation error is raised.
+ * The fast path (no region) is a single thread-local load + branch.
  *
  * @param dst   Address of the destination container (region-ownership probe).
- * @param slots First copied slot (already holding the copied values).
- * @param n     Number of copied slots.
+ * @param slots The staged values; rewritten in place to the promoted values.
+ * @param n     Number of values.
  */
 extern "C" void eshkol_region_write_barrier_range(const void* dst,
                                                   eshkol_tagged_value_t* slots,
                                                   uint64_t n) {
-    if (__region_stack_depth == 0 || !slots) return;
-    for (uint64_t i = 0; i < n; ++i) {
-        eshkol_region_write_barrier_into(&slots[i], dst, &slots[i]);
-    }
+    if (!region_promote_for_store(dst, slots, n)) region_raise_promotion_failure();
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2411,11 +2689,10 @@ extern "C" void eshkol_iter_nursery_recycle(eshkol_region_t* region,
     //    already living outside the nursery (immediates, or pointers into the
     //    enclosing/global arena) are returned unchanged and cost only a region
     //    ownership probe.
-    if (vals) {
-        for (uint64_t i = 0; i < n; ++i) {
-            vals[i] = region_escape_tagged_value_impl(vals[i]);
-        }
-    }
+    //    All out-values are promoted in one transaction. If it aborts, nothing
+    //    has moved and the nursery is NOT reset: the raise below unwinds the
+    //    nursery region like any other region a raise crosses (#713).
+    if (vals && !region_escape_values_in_place(vals, n)) region_raise_promotion_failure();
 
     // 2. Under the poison allocator, stamp the bytes about to be recycled with
     //    0xCB so any interior pointer we FAILED to promote out (a missed escape
@@ -2588,10 +2865,13 @@ extern "C" void eshkol_region_unwind_to(uint64_t mark,
         //    multi-level cascade lands each object in the arena that genuinely
         //    outlives it, and so shared structure stays shared via each
         //    region's own forwarding map.
-        if (vals) {
-            for (uint64_t i = 0; i < n; ++i) {
-                vals[i] = region_escape_tagged_value_impl(vals[i]);
-            }
+        //    All kept values move in one transaction (one forwarding relation).
+        //    If it aborts, this region and every one below it are still intact
+        //    and the kept values unchanged; the raise closes them through this
+        //    same function, carrying the preallocated allocation condition,
+        //    which needs no promotion (#713).
+        if (vals && !region_escape_values_in_place(vals, n)) {
+            region_raise_promotion_failure();
         }
 
         // 2. Restore the allocation slot BEFORE the arena dies. If this is

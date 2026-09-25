@@ -6,8 +6,8 @@
 (if test consequent)             ; one-armed
 (if test consequent alternate)   ; two-armed
 ```
-Every value except `#f` is truthy. A one-armed `if` whose test is false returns an
-unspecified value.
+Every value except `#f` is truthy. A one-armed `if` whose test is false returns
+[the unspecified value](#the-unspecified-value).
 
 ```scheme
 (if (> 3 2) (display "one-armed-if\n"))
@@ -125,3 +125,33 @@ Both short-circuit.
 5
 #t #f
 ```
+
+## Static types of the control forms
+
+The optional type checker examines the tests, keys and every branch body of
+these forms, exactly as it examines a call at top level, and gives each form
+the join of its branch types (plus `#f` for a `cond`, `case`, `when` or
+`unless` that may run no branch). An `if` and the equivalent `cond` have the
+same type. The rules, with runnable examples, are in
+[the gradual typing guide](../../guide/GRADUAL_TYPING.md#3-what-is-checked-and-where).
+
+## The unspecified value
+
+Every form R7RS leaves unspecified evaluates to one value, the unspecified
+value: a one-armed `if` whose test is false, `when` and `unless` when they do
+not run their body, `set!`, `display`, `newline`, `write`, `for-each`,
+`vector-set!`, `vector-fill!`, `vector-copy!`, `set-car!`, `set-cdr!`,
+`hash-table-set!` and `(void)`. It is its own value, not the empty list:
+
+```scheme
+(display (null? (when #f 1))) (newline)     ;; => #f
+(display (eq? (when #f 1) '())) (newline)   ;; => #f
+(define x 0)
+(display (list 'a (if #f 1) 'b)) (newline)  ;; => (a  b)
+(display (eq? (set! x 1) (void))) (newline)  ;; => #t
+```
+
+`display` prints nothing for it, so a list holding one shows a gap, and the
+REPL shows nothing after a form that evaluates to it. The bytecode VM's own
+void value is the same value: a program prints the same text on every engine.
+This is [ADR-0024](../../design/adr/0024-unspecified-value.md).

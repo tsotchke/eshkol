@@ -1,0 +1,348 @@
+<h1 id="release-process">Release Process</h1>
+<p>What stands behind an Eshkol tag: the workflow that builds and publishes a release, the evidence it regenerates, the gate that binds that evidence to the tagged commit, and the short list of things a maintainer does by hand.</p>
+<p>One rule organises everything on this page. <strong>A release is certified by evidence produced from the commit the tag names, and by nothing else.</strong> Evidence from another commit cannot certify a cut, and evidence that is still pending blocks publication.</p>
+<p>The design rationale is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0010-closed-loop-assurance.md" target="_blank" rel="noopener noreferrer">ADR-0010 (closed-loop assurance)</a> and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0014-release-invariant-contracts.md" target="_blank" rel="noopener noreferrer">ADR-0014 (release invariant contracts)</a>. The measured figures for the current release are in the “Final verification” section of <a href="/docs#page=release_notes&amp;final-verification" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>.</p>
+<h2 id="the-release-workflow">The Release workflow</h2>
+<p><code>.github/workflows/release.yml</code> has two triggers:</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 30%" />
+<col style="width: 44%" />
+</colgroup>
+<thead>
+<tr>
+<th>Trigger</th>
+<th>Publishes</th>
+<th>Readiness gate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Push of a tag matching <code>v*</code></td>
+<td>Yes</td>
+<td>Blocking</td>
+</tr>
+<tr>
+<td><code>workflow_dispatch</code> with <code>candidate_tag</code> (and optionally <code>strict_readiness</code>)</td>
+<td>Never</td>
+<td>Advisory, or blocking with <code>strict_readiness=true</code></td>
+</tr>
+</tbody>
+</table>
+<p>A manual dispatch is always non-publishing. Its <code>candidate_tag</code> input is only a label, so the dry-run archives carry the exact names the tag run will use. Runs for one ref are serialised and never cancel each other.</p>
+<p>The jobs, in dependency order:</p>
+<ol type="1">
+<li><strong><code>unix-release-matrix</code></strong> builds ten packages: Linux x86-64 and ARM64 in the lite, XLA and CUDA configurations, and macOS ARM64 and x86-64 in the lite and XLA configurations. Each job validates the tag label, configures and builds, verifies that <code>stdlib.bc</code> targets a generic CPU (<code>scripts/verify_portable_stdlib.py</code>), checks the WebAssembly import glue on the lite configuration (<code>scripts/check_wasm_imports.py</code>), runs the configuration’s test command plus the agent HTTP, SSE and capability tests, and then packages.</li>
+<li><strong><code>prefetch-windows-llvm-archives</code></strong> downloads the pinned LLVM SDK archives once, on Linux, into a cross-OS cache that the Windows jobs restore.</li>
+<li><strong><code>windows-release-matrix</code></strong> builds five packages: Windows x86-64 and ARM64 in lite and XLA, and Windows x86-64 CUDA. In addition to the steps above it verifies the exports the cache-disabled JIT path needs (<code>scripts/verify_windows_runtime_exports.py</code>).</li>
+<li><strong><code>release-readiness-gate</code></strong> runs on a self-hosted Linux x86-64 runner that has the ICC oracle provisioned. It is described in the next section.</li>
+<li><strong><code>publish-release</code></strong> needs both asset matrices and the readiness gate. It downloads the packaged assets, validates that exactly the fifteen expected archives are present and non-empty, writes <code>SHA256SUMS.txt</code>, extracts the current release’s section of <code>RELEASE_NOTES.md</code>, and on a tag push creates the GitHub release. On a dispatch it uploads the validated set as a <code>release-dry-run-&lt;sha&gt;</code> artifact instead.</li>
+<li><strong><code>bump-homebrew-tap</code></strong> runs only on a tag push, after publication.</li>
+</ol>
+<h3 id="packaging-per-platform-job">Packaging, per platform job</h3>
+<p>Packaging is where a release can lose a file without any test noticing, so each asset job checks its own staged directory before archiving it:</p>
+<ul>
+<li><code>scripts/stage_linux_runtime_dependencies.py</code> (Linux) and <code>scripts/stage_third_party_licenses.py</code> stage the runtime dependencies and the licences of the bundled libraries.</li>
+<li><code>scripts/check_package_manifest.py --package-dir &lt;dir&gt; --platform &lt;linux|macos|windows&gt;</code> compares the staged directory with the single declared package surface, <code>.icc/package-manifest.yaml</code>: binaries, stdlib artifacts, static libraries with the platform-correct prefix and extension, the full <code>lib/**/*.esk</code> module tree as a path-set mirror, documents, and the CMake integration modules. A missing file is reported as a manifest violation naming the file.</li>
+<li><code>scripts/verify_release_package.py</code> runs a smoke program and an agent smoke program from the staged package through both a cold and a warm <code>eshkol-run -r</code> cache path, with no system-wide installation to fall back on, rejects the in-process JIT fallback, and checks the reported version against the tag.</li>
+</ul>
+<p>Both archive-producing paths (the Unix <code>tar.gz</code> path and the Windows <code>zip</code> path) run the manifest check and the package verifier.</p>
+<h3 id="publication">Publication</h3>
+<p><code>publish-release</code> refuses to overwrite: if a release for the tag already exists the job fails rather than appending assets. The release is created as a draft, assets are uploaded, and then it is published, so an interrupted upload never leaves a public partial release. A tag containing <code>alpha</code>, <code>beta</code> or <code>rc</code> is published as a prerelease.</p>
+<p>The release notes are produced by <code>scripts/release_readiness_guard.py notes</code>. It takes everything above the first horizontal rule in <code>RELEASE_NOTES.md</code>, requires the heading to be <code># Eshkol &lt;tag&gt; — Release Notes</code>, and fails when the text still contains the marker <code>RELEASE_EVIDENCE_PENDING</code>. Only a dispatch passes <code>--allow-pending</code>, so a dry run can be rehearsed before the evidence is final while a tag push cannot publish notes that still promise evidence.</p>
+<h3 id="homebrew-tap-bump">Homebrew tap bump</h3>
+<p><code>bump-homebrew-tap</code> fetches the source archive GitHub generates for the tag, hashes it, and rewrites the top-level <code>url</code> and <code>sha256</code> lines of the formula in the tap repository. The <code>resource</code> blocks that pin the bundled agent-FFI dependencies keep their own checksums. The job needs a tap token secret with write access to the tap; without one it skips with a notice. Prerelease tags do not bump the tap, and a formula already at the tag is left untouched.</p>
+<h2 id="the-readiness-gate">The readiness gate</h2>
+<p><code>release-readiness-gate</code> turns “the oracle said ready” from a statement about a workstation into a property of the released commit. <code>publish-release</code> depends on it, so no asset is published unless it passes.</p>
+<h3 id="bound-to-the-exact-commit">Bound to the exact commit</h3>
+<p><code>scripts/release_readiness_guard.py</code> enforces identity in two places.</p>
+<ul>
+<li><code>bind</code>, before any evidence is produced, requires that the checkout <code>HEAD</code> equals the full 40-character release SHA, that the checkout has no tracked source change, and that the ICC repository resolves to that checkout. When the configured repository name points elsewhere it registers a dedicated alias derived from the SHA and the workspace path; it never rebinds a maintainer’s configured repository.</li>
+<li><code>check</code>, before and after the verdict, repeats the identity test and then requires the verdict to be <code>status == "ready"</code> with a numeric score of exactly 100. A missing or non-numeric score is not a pass.</li>
+</ul>
+<p>On a tag push, an unavailable oracle is a blocked release. The gate never falls open to a green publish. On a default dispatch the same condition is a warning; with <code>strict_readiness=true</code> it blocks exactly as a tag push does.</p>
+<p>When every check passes, the job writes a receipt, <code>release-readiness-receipt-&lt;sha&gt;</code>, with the schema <code>eshkol.release-readiness.v1</code>: the commit SHA, the workflow run id and run attempt, the target <code>v1.3.5-evolve</code>, <code>status: ready</code> and <code>score: 100</code>. A receipt is only ever written for the commit and the run attempt that produced it.</p>
+<p><code>tests/toolchain/test_release_readiness_guard.py</code> runs first in the job as the negative controls for this logic: a mismatched SHA, a dirty checkout, a score that is missing, non-numeric or below 100, and release notes with a planted pending-evidence marker must each be refused, and a repository name that resolves to a different checkout must get a separate verified alias rather than a rebind.</p>
+<h3 id="what-the-gate-builds">What the gate builds</h3>
+<p>The gate configures with the pinned LLVM major and builds, with at most four parallel jobs:</p>
+<ul>
+<li><code>build</code>: <code>RelWithDebInfo</code>, tests on, agent FFI on, and the Python bindings on against an isolated virtual environment that the job creates with pybind11, NumPy and PyYAML;</li>
+<li><code>build-fuzz</code>: only the bounded ESKM model-loader fuzz probe;</li>
+<li><code>build-quantum</code>: the quantum-enabled tree that complete language coverage requires;</li>
+<li><code>build-asan-ubsan</code>: built later by the sanitizer producer, in its own tree, so the main build and its fingerprint stay untouched.</li>
+</ul>
+<p>The toolchain is provisioned on the runner ahead of time. The workflow installs no system packages there; its preflight step only resolves what is present and fails with a specific message when something is missing. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/SELF_HOSTED_RUNNERS.md" target="_blank" rel="noopener noreferrer">SELF_HOSTED_RUNNERS.md</a>.</p>
+<h2 id="the-evidence-recipe">The evidence recipe</h2>
+<p><code>scripts/run_v1_3_readiness.sh</code> is the one recipe, and the workflow delegates to it in four phases, each a separate step with its own time budget:</p>
+<pre><code>scripts/run_v1_3_readiness.sh --phase baseline
+scripts/run_v1_3_readiness.sh --phase smoke
+scripts/run_v1_3_readiness.sh --phase final-evidence
+scripts/run_v1_3_readiness.sh --phase readiness</code></pre>
+<p>Run without <code>--phase</code>, it executes all four in order.</p>
+<table>
+<colgroup>
+<col style="width: 28%" />
+<col style="width: 72%" />
+</colgroup>
+<thead>
+<tr>
+<th>Phase</th>
+<th>What it produces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>baseline</code></td>
+<td>Archives any earlier trace cohort outside the active trace root, captures the build cohort manifest, then runs <code>scripts/run_language_coverage.sh</code> (which runs the complete suite once and records exactly one <code>core_suite</code> PASS) and <code>scripts/run_vm_parity.sh</code>.</td>
+</tr>
+<tr>
+<td><code>smoke</code></td>
+<td>The Taylor monomorphization equivalence gate, the ESKM model-loader fuzz smoke, and the runtime smoke battery <code>scripts/run_icc_smoke.sh</code>, which includes the release invariant probes.</td>
+</tr>
+<tr>
+<td><code>final-evidence</code></td>
+<td>Refreshes the ICC index, runs <code>scripts/run_v1_3_release_producers.sh</code>, verifies the build cohort is unchanged, checks the evidence set with <code>scripts/verify_v1_3_release_evidence.py</code>, and only then asks ICC for the architecture grade (<code>icc architecture-verify</code> against <code>.icc/architecture-model.yaml</code>).</td>
+</tr>
+<tr>
+<td><code>readiness</code></td>
+<td>Re-verifies the evidence set and asks ICC for trace-aware readiness of the <code>v1.3.5-evolve</code> target.</td>
+</tr>
+</tbody>
+</table>
+<p>Three mechanisms keep the phases honest:</p>
+<ul>
+<li><strong>One cohort.</strong> <code>scripts/check_release_build_cohort.py</code> fingerprints the compiler and runtime artifacts at the start and checks them before each later phase. Evidence from a rebuilt or mutated tree is refused.</li>
+<li><strong>Ordered phases.</strong> <code>scripts/release_phase_state.py</code> records each completed phase against a phase id derived from the workflow run id and attempt. A phase requires its predecessor under the same id, so a failed or missing earlier phase cannot be resumed as a completed one.</li>
+<li><strong>Phase receipts.</strong> <code>scripts/check_release_phase_receipts.py</code> confirms that the receipts a phase owes exist before the next phase starts.</li>
+</ul>
+<p><code>scripts/run_v1_3_release_producers.sh</code> owns the criteria the general smoke battery does not: the node-identity gate, the nested-expression compile-time budget, the dense tensor AD gate, the self-verdict scanner self-test, the test coverage inventory, the recipe’s own self-test, five named CTests recorded through JUnit (<code>qubit_linearity_engine_parity_gate</code>, <code>closure_upvalue_capacity_overflow_gate</code>, <code>abi_layout_pin_test</code>, <code>v1_3_quoted_datum_kinds_runtime_smoke</code>, <code>python_bindings_capsule_lifetime</code>), an ASan+UBSan build and a bounded sanitizer corpus run with leak detection, the pinned Rosette Wire oracle, every tutorial example under both the JIT and AOT, and the build-free checks (ledger integrity, oracle schema, false-green audit, PowerShell encoding, public API documentation, generated API docs, disclosure, required-context consistency, documentation-claims residual). The evidence staleness gate runs last, over the fresh cohort.</p>
+<p><code>tests/toolchain/test_v1_3_release_evidence_recipe.py</code> tests the recipe itself: producer ordering before grading, exact CTest cardinality, archive isolation of a prior cohort, phase state bound to head, run and order, and fingerprint fault injection.</p>
+<h3 id="evidence-paths-are-absolute">Evidence paths are absolute</h3>
+<p><code>scripts/lib/evidence_paths.sh</code> fixes the meaning of a relative evidence path in one place: <strong>a relative <code>TRACE_DIR</code> or <code>ICC_TRACE_DIR</code> is relative to the repository root</strong>, and it is made absolute before any producer uses it.</p>
+<p>The reason is that producers change directory as a matter of course. <code>ctest --test-dir build --output-junit P</code> resolves a relative <code>P</code> inside <code>build/</code>, and a harness that enters a scratch tree resolves it there, so a relative path would name one file for the tool that writes the evidence and another for the recorder that reads it. Every script that accepts an evidence location from its environment sources the helper and calls <code>eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT"</code> before first use; the Release workflow passes an absolute <code>TRACE_DIR</code>. The path does not have to exist yet, and symlinks are not resolved. The recipe test asserts all three properties: every environment-reading script normalises before use, the helper’s contract, and a relative <code>TRACE_DIR</code> reaching <code>ctest</code> as an absolute JUnit path.</p>
+<p><code>BUILD_DIR</code> selects the build tree the harnesses use (default <code>build</code>), and <code>QUANTUM_BUILD_DIR</code> the quantum tree (default <code>build-quantum</code>). Both accept a relative path, read against the repository root. The full list is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/environment-variables.md#test-gate-and-release-harness-variables" target="_blank" rel="noopener noreferrer">environment-variables.md</a>.</p>
+<h3 id="receipts-before-the-architecture-grade">Receipts before the architecture grade</h3>
+<p>An invariant grade is release evidence only after its concrete probe has run on the release build. Four typed <code>test_result</code> receipts are therefore emitted <strong>before</strong> ICC grades the architecture model (<code>scripts/lib/release_invariant_probes.sh</code>, shared by the smoke battery and by <code>scripts/run_release_invariant_probes.sh</code>):</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 66%" />
+</colgroup>
+<thead>
+<tr>
+<th>Receipt</th>
+<th>What is measured</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>abi_layout_pin</code></td>
+<td>The object header layout and its guard symbol, by running the built <code>abi_layout_pin_test</code>.</td>
+</tr>
+<tr>
+<td><code>abi_object_header_ratchet</code></td>
+<td>No new dependence on the object-header layout: <code>scripts/abi_header_inventory.py check</code> against the recorded baseline.</td>
+</tr>
+<tr>
+<td><code>closed_enum_dispatch_exhaustive</code></td>
+<td>Closed-enum dispatch is exhaustive and the gate is armed: <code>scripts/gate_exhaustive_dispatch.py</code>.</td>
+</tr>
+<tr>
+<td><code>ad_exactness_gate</code></td>
+<td>The live AD counter. A <strong>positive case</strong>: exact gradients report zero finite-difference evaluations. A <strong>negative control</strong>: a real finite-difference backward reports exactly its perturbations and turns the shipped assertion false, on both engines. Matmul AD tape node counts stay within their ratchet with exact gradients.</td>
+</tr>
+</tbody>
+</table>
+<p>VM parity supplies its own aggregate receipt, <code>vm_parity_gate</code>, from <code>scripts/run_vm_parity.sh</code> in the baseline phase.</p>
+<p>A probe distinguishes a measured outcome from an infrastructure failure. Only a measured <code>PASS</code> or <code>FAIL</code> emits a typed receipt; a harness that could not obtain a result emits none, so a tooling failure is never promoted to a product verdict in either direction. The standalone probe script clears its trace file first and requires exactly four probes with no failure and no infrastructure failure, so a missing build cannot leave an earlier success standing. <code>tests/toolchain/test_release_invariant_contracts.py</code> and <code>tests/toolchain/test_release_probe_receipts.py</code> are registered in CTest and assert these contracts, including the order of the recipe.</p>
+<p>Compiler-assurance executions (the closed-enum mutation corpus and the compiler-capability runs) are described in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/COMPILER_ASSURANCE.md" target="_blank" rel="noopener noreferrer">COMPILER_ASSURANCE.md</a>.</p>
+<h3 id="the-readiness-target">The readiness target</h3>
+<p>The <code>v1.3.5-evolve</code> target in <code>.icc/completion-oracles.yaml</code> lists 35 required criteria: 20 runtime events, 14 test-evidence criteria and one no-stubbed-paths criterion. Each is bound to a committed gate, script or CTest name and states the command that produces its evidence. Examples: the node-identity substrate and its span-coverage floor, the VM region evacuator’s flat-RSS and subtype-coverage gates, linear <code>Qubit</code> cloning as a compile-time error, the nested-expression compile-time budget, the AD exactness gate, the AD carrier manifest, the ABI layout pin, the sanitizer failure path, ESKM model-loader fuzzing and engine parity, the ledger, oracle-schema, false-green and staleness audits, public API and generated API documentation, the tutorial example gate, the disclosure scan, required-context consistency, engine semantic parity thresholds, and the Rosette Wire oracle.</p>
+<p><code>scripts/verify_v1_3_release_evidence.py</code> maps every test-evidence criterion to its receipt name and requires exactly one passing <code>test_result</code> for each: missing, duplicated, failed and unmapped evidence are all refused. A <code>FAIL</code> trace is zero evidence by design.</p>
+<h2 id="the-release-record-and-the-consistency-gate">The release record and the consistency gate</h2>
+<p><code>tests/coverage/release_record.json</code> is the single source for the release facts that many documents restate and no generated manifest carries:</p>
+<table>
+<colgroup>
+<col style="width: 35%" />
+<col style="width: 64%" />
+</colgroup>
+<thead>
+<tr>
+<th>Key</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tag</code></td>
+<td>The release tag.</td>
+</tr>
+<tr>
+<td><code>previous_tag</code></td>
+<td>The preceding release tag; the base of the changelog range.</td>
+</tr>
+<tr>
+<td><code>release_date</code></td>
+<td>The release date, ISO format.</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>The status label, for example <code>SHIPPED</code>.</td>
+</tr>
+<tr>
+<td><code>ctest_total</code></td>
+<td>The <code>N</code> of CTest’s own “100% tests passed … out of N” line from the full run at the release commit. <code>null</code> until recorded.</td>
+</tr>
+<tr>
+<td><code>vm_parity_total</code></td>
+<td>The total of the <code>scripts/run_vm_parity.sh</code> summary line at the release commit.</td>
+</tr>
+</tbody>
+</table>
+<p><code>scripts/check_surface_counts.py</code> grades the registered documents, the release-facing documents and the generated site pages against the record and against the surface manifests under <code>tests/coverage/</code>:</p>
+<ul>
+<li>every statement of the release date is extracted and compared, and a stated weekday is checked against the calendar;</li>
+<li>the roadmap heading and ladder rows for the tag carry the record’s status and date;</li>
+<li>pre-release wording is refused once the status is <code>SHIPPED</code>;</li>
+<li>anchor documents must state the date at all, so a claim cannot be deleted to pass;</li>
+<li><code>site/static/content/*.html</code> is graded as text, so a mirror that lags its Markdown source fails;</li>
+<li>a record-owned span must equal the record’s rendering.</li>
+</ul>
+<p>A record-owned span looks like this in Markdown:</p>
+<pre><code>&lt;!-- release-record:vm-parity --&gt;VM parity differential **340/340**&lt;!-- /release-record --&gt;</code></pre>
+<p>The keys are <code>ctest</code>, <code>ctest-cell</code>, <code>vm-parity</code> and <code>vm-parity-figure</code>. While a total is <code>null</code> the span renders the claim without a number (“the full CTest suite”, “every registered test”), which reads correctly as it stands.</p>
+<table>
+<colgroup>
+<col style="width: 52%" />
+<col style="width: 47%" />
+</colgroup>
+<thead>
+<tr>
+<th>Command</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>python3 scripts/check_surface_counts.py --no-trace</code></td>
+<td>Grade only; write no trace.</td>
+</tr>
+<tr>
+<td><code>python3 scripts/check_surface_counts.py --sync</code></td>
+<td>Rewrite every graded release-record claim (date, status label, record-owned spans, CTest and VM-parity totals) from the record, then grade.</td>
+</tr>
+<tr>
+<td><code>python3 scripts/check_surface_counts.py --require-complete</code></td>
+<td>Also fail while the record still has a <code>null</code> total.</td>
+</tr>
+<tr>
+<td><code>python3 scripts/check_surface_counts.py --self-test</code></td>
+<td>Run the built-in red and green fixtures.</td>
+</tr>
+</tbody>
+</table>
+<p><code>--ctest-log</code> and <code>--parity-log</code> grade the documented totals against the captured output of a real run.</p>
+<h2 id="standing-gates">Standing gates</h2>
+<p>The gates a release-facing change meets, all runnable locally from the repository root:</p>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 79%" />
+</colgroup>
+<thead>
+<tr>
+<th>Gate</th>
+<th>One-sentence contract</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>scripts/check_surface_counts.py</code></td>
+<td>Every registered document’s surface counts and every release-record claim agree with the manifests and the release record.</td>
+</tr>
+<tr>
+<td><code>scripts/check_changelog_completeness.py</code></td>
+<td>Every pull request merged in the range <code>previous_tag..HEAD</code> is referenced by the changelog release section or listed in <code>tests/coverage/changelog_no_user_facing_change.json</code>.</td>
+</tr>
+<tr>
+<td><code>scripts/check_package_manifest.py</code></td>
+<td>A staged package directory contains everything <code>.icc/package-manifest.yaml</code> declares.</td>
+</tr>
+<tr>
+<td><code>scripts/verify_release_package.py</code></td>
+<td>A staged package is self-contained and runs through the cold and warm <code>-r</code> cache paths.</td>
+</tr>
+<tr>
+<td><code>scripts/verify_site_release.py</code></td>
+<td>The website matches the release matrix.</td>
+</tr>
+<tr>
+<td><code>scripts/check_disclosure.py</code></td>
+<td>No commit message, pull-request text or added line discloses a private infrastructure identifier.</td>
+</tr>
+<tr>
+<td><code>scripts/check_test_coverage.py</code></td>
+<td>The documented test inventory matches the complete-suite runner.</td>
+</tr>
+<tr>
+<td><code>scripts/check_public_api_docs.py</code>, <code>scripts/gen_api_docs.py --check</code></td>
+<td>Public API documentation is complete and the generated pages are current.</td>
+</tr>
+<tr>
+<td><code>scripts/check_doc_claims_residual.py</code></td>
+<td>Every wrong typed documentation claim is allowlisted with a reason or tracked as open documentation debt.</td>
+</tr>
+<tr>
+<td><code>scripts/check_evidence_staleness.py --require-trace-dir</code></td>
+<td>No high-severity criterion’s newest evidence is older than the configured window, and an empty trace root is not graded.</td>
+</tr>
+<tr>
+<td><code>scripts/check_wasm_imports.py</code></td>
+<td>Both browser glue files provide every <code>env</code> import the WebAssembly build asks for, and the generated flat-AD block is current.</td>
+</tr>
+</tbody>
+</table>
+<p>The changelog gate derives the pull-request numbers from commit subjects, with no network access, and fails closed: it needs the full history and the previous release tag, so a shallow checkout, an unresolvable tag or a range that yields no pull request is reported as <code>NO_DATA</code> rather than passing over an empty list. Its ledger accepts only a closed set of classes (<code>build-internal</code>, <code>ci</code>, <code>docs-only</code>, <code>merge-integration</code>, <code>release-machinery</code>, <code>reverted-or-superseded</code>, <code>test-only</code>), each with a specific reason.</p>
+<h3 id="site-checks">Site checks</h3>
+<p><code>scripts/verify_site_release.py</code> reads the expected asset array straight from the Release workflow and requires the site source to list every package in it, to mark the one unsupported matrix cell as unsupported, and to describe the payload as fifteen packages plus the checksum file. It also checks the generated announcement page against its Markdown source and inspects the committed <code>site/static/eshkol-site.wasm</code>: the module must export a zero-argument <code>scheme_main</code>, the size statistics stated in <code>site/src/main.esk</code> must match the committed WebAssembly artifacts, and the release strings must be present in the compiled module.</p>
+<p>The Pages deployment publishes the committed site artifacts; it does not rebuild them. Regenerate <code>site/static/content/*.html</code> with <code>scripts/build-site-content.sh</code> whenever a mirrored Markdown source changes, and rebuild the site module with <code>scripts/build-site.sh</code> only when <code>site/src/main.esk</code> changes.</p>
+<h2 id="the-strict-dry-run">The strict dry run</h2>
+<p>Before tagging, dispatch the Release workflow on the candidate commit with <code>candidate_tag</code> set to the intended tag and <code>strict_readiness=true</code>.</p>
+<p>A strict dry run exercises what pull-request CI does not:</p>
+<ul>
+<li><strong>Packaging.</strong> Every staging step, on every platform, including the dependency and licence staging that exists only in the asset jobs.</li>
+<li><strong>Manifests.</strong> The package manifest check and the package verifier against the real staged directory, and the asset-set validation with checksums.</li>
+<li><strong>Platform links.</strong> The ahead-of-time links and cold-cache <code>-r</code> runs inside each package on its own platform, which is where a missing platform symbol or archive ordering problem appears.</li>
+<li><strong>The full evidence recipe</strong> at the exact commit, ending in a bound <code>ready</code>/100 receipt.</li>
+</ul>
+<p>It publishes nothing: <code>publish-release</code> uploads the validated set as an artifact and stops, and the tap is not touched.</p>
+<h2 id="what-the-maintainer-does-by-hand">What the maintainer does by hand</h2>
+<p>The tag. Everything else is either a gate or a generated artifact. The checklist, in order:</p>
+<ol type="1">
+<li><p><strong>Record the totals.</strong> Put the full-suite CTest total and the VM parity total from the run at the release commit into <code>tests/coverage/release_record.json</code>, and confirm <code>tag</code>, <code>previous_tag</code>, <code>release_date</code> and <code>status</code>.</p></li>
+<li><p><strong>Sync the documents.</strong> <code>python3 scripts/check_surface_counts.py --sync</code></p></li>
+<li><p><strong>Regenerate the site content.</strong> <code>scripts/build-site-content.sh</code></p></li>
+<li><p><strong>Run the gates.</strong></p>
+<pre><code>python3 scripts/check_surface_counts.py --no-trace --require-complete
+python3 scripts/check_changelog_completeness.py --no-trace
+python3 scripts/verify_site_release.py
+python3 scripts/check_test_coverage.py
+python3 scripts/gen_api_docs.py --check
+python3 scripts/check_disclosure.py --base origin/master --head HEAD
+python3 scripts/release_readiness_guard.py notes --notes RELEASE_NOTES.md \
+    --tag &lt;tag&gt; --output &lt;scratch&gt;/release-notes.md</code></pre>
+<p>The last command succeeds without <code>--allow-pending</code> only when the release notes carry no pending-evidence marker. Then dispatch the strict dry run on the merged commit and wait for the bound receipt.</p></li>
+<li><p><strong>Tag.</strong> Create the annotated tag on the commit the receipt names and push it. The tag push runs the same workflow with the gate blocking, publishes the release, and bumps the tap.</p></li>
+</ol>
+<p>If the workflow fails after the tag is pushed, fix forward. Tags are never moved or replaced, and an existing release is never overwritten.</p>
+<h3 id="the-release-controller">The release controller</h3>
+<p><code>scripts/release_autopilot.py</code> is an optional, restartable controller for the same sequence. Each invocation performs one bounded step and then waits: it previews by default and acts only with <code>--execute</code>, inside an explicitly configured publication window. It requires every required branch check to be green, refuses a receipt that does not match the exact commit, run id and run attempt, refuses an incomplete asset set, verifies the tap formula against the published source archive checksum, and honours a <code>PAUSE</code> file in its state directory. It performs no administrator merges and no force pushes, weakens no check, and never moves or overwrites a tag.</p>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="/docs#page=contributing" data-url="/content/contributing.html">CONTRIBUTING.md</a>, “Release-blocking readiness”</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/CI_LANES.md" target="_blank" rel="noopener noreferrer">CI_LANES.md</a> and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/SELF_HOSTED_RUNNERS.md" target="_blank" rel="noopener noreferrer">SELF_HOSTED_RUNNERS.md</a></li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/COMPILER_ASSURANCE.md" target="_blank" rel="noopener noreferrer">COMPILER_ASSURANCE.md</a></li>
+<li><a href="/docs#page=testing" data-url="/content/testing.html">TESTING.md</a> and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/TEST_COVERAGE.md" target="_blank" rel="noopener noreferrer">TEST_COVERAGE.md</a></li>
+<li><a href="/docs#page=troubleshooting" data-url="/content/troubleshooting.html">TROUBLESHOOTING.md</a>, “Release and gate failures met locally”</li>
+</ul>

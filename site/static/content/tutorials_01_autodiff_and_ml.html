@@ -1,0 +1,235 @@
+<h1 id="tutorial-1-automatic-differentiation-and-machine-learning">Tutorial 1: Automatic Differentiation and Machine Learning</h1>
+<p>Learn to use Eshkol’s compiler-native automatic differentiation to build gradient-based machine learning from scratch. No libraries, no frameworks — the compiler itself computes derivatives.</p>
+<p><strong>Prerequisites:</strong> Eshkol installed (<code>brew install tsotchke/eshkol/eshkol</code> or from source).</p>
+<hr />
+<h2 id="part-1-your-first-derivative">Part 1: Your First Derivative</h2>
+<p>Eshkol computes derivatives at the compiler level. The <code>derivative</code> builtin takes a function and a point, and returns the derivative at that point.</p>
+<pre class="scheme"><code>;; f(x) = x^2
+(define (square x) (* x x))
+
+;; f&#39;(2) = 2x = 4
+(display (derivative square 2.0))
+(newline)
+;; =&gt; 4.0</code></pre>
+<p>Save as <code>deriv.esk</code> and run:</p>
+<pre class="bash"><code>$ eshkol-run deriv.esk -o deriv &amp;&amp; ./deriv
+4.0</code></pre>
+<p>This isn’t numerical (no epsilon, no finite differences). Eshkol uses <strong>forward-mode AD with dual numbers</strong>: the compiler transforms arithmetic to propagate both the value and its derivative simultaneously.</p>
+<hr />
+<h2 id="part-2-gradients-of-multivariate-functions">Part 2: Gradients of Multivariate Functions</h2>
+<p>For functions of multiple variables, <code>gradient</code> returns a vector of partial derivatives.</p>
+<pre class="scheme"><code>;; f takes a vector v = (x, y) and returns x^2 + x*y + y^2.
+;; `gradient` is `(gradient function vector)` — the function consumes
+;; one vector argument; partial derivatives are with respect to each component.
+(define (f v)
+  (let ((x (vector-ref v 0))
+        (y (vector-ref v 1)))
+    (+ (* x x) (* x y) (* y y))))
+
+;; grad f at (1, 2) = (df/dx, df/dy) = (2x+y, x+2y) = (4, 5)
+(display (gradient f #(1.0 2.0)))
+(newline)
+;; =&gt; #(4.0 5.0)</code></pre>
+<p>The gradient is returned as a tensor (vector). Each component is the partial derivative with respect to the corresponding argument.</p>
+<hr />
+<h2 id="part-3-higher-order-derivatives">Part 3: Higher-Order Derivatives</h2>
+<p>Eshkol supports nested differentiation at arbitrary depth, limited by available memory. You can differentiate a derivative to get second derivatives:</p>
+<pre class="scheme"><code>;; f(x) = x^3
+(define (cube x) (* x x x))
+
+;; f&#39;(x) = 3x^2 =&gt; f&#39;(2) = 12
+(display (derivative cube 2.0))
+(newline)
+;; =&gt; 12.0
+
+;; f&#39;&#39;(x) = 6x =&gt; f&#39;&#39;(2) = 12
+(define (cube-prime x) (derivative cube x))
+(display (derivative cube-prime 2.0))
+(newline)
+;; =&gt; 12.0</code></pre>
+<p>Or use <code>hessian</code> directly for the matrix of second partial derivatives:</p>
+<pre class="scheme"><code>;; g(v) = x^2 * y + y^3, with v = (x, y).
+(define (g v)
+  (let ((x (vector-ref v 0))
+        (y (vector-ref v 1)))
+    (+ (* x x y) (* y y y))))
+
+;; Hessian at (1, 2):
+;; [[d2g/dxdx, d2g/dxdy], [d2g/dydx, d2g/dydy]]
+;; = [[2y, 2x], [2x, 6y]]
+;; = [[4, 2], [2, 12]]
+(display (hessian g #(1.0 2.0)))
+(newline)</code></pre>
+<hr />
+<h2 id="part-4-vector-calculus">Part 4: Vector Calculus</h2>
+<p>Eight vector calculus operators are built in:</p>
+<pre class="scheme"><code>;; Divergence of a vector field F(x,y,z) = (x^2, y^2, z^2)
+;; div F = 2x + 2y + 2z
+;; The field is ONE function returning all three components, and the operator
+;; takes exactly two arguments: the field and the point.
+(define (F v)
+  (vector (* (vref v 0) (vref v 0))
+          (* (vref v 1) (vref v 1))
+          (* (vref v 2) (vref v 2))))
+
+(display (divergence F (vector 1.0 2.0 3.0)))
+(newline)
+;; =&gt; 12  (2*1 + 2*2 + 2*3)
+
+;; Curl of the rotational field R(x,y,z) = (-y, x, 0). curl R = (0, 0, 2).
+(define (R v) (vector (- 0.0 (vref v 1)) (vref v 0) 0.0))
+
+(display (curl R (vector 1.0 1.0 0.0)))
+(newline)
+;; =&gt; #(0 0 2)</code></pre>
+<p>The field may equally be written with one parameter per coordinate — <code>(lambda (x y z) (vector (* x x) (* y y) (* z z)))</code> — and may return a <code>(list …)</code> instead of a <code>(vector …)</code>; see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/operators.md" target="_blank" rel="noopener noreferrer">the operator reference</a> for the full rule.</p>
+<p>Available operators: <code>derivative</code>, <code>gradient</code>, <code>jacobian</code>, <code>hessian</code>, <code>divergence</code>, <code>curl</code>, <code>laplacian</code>, <code>directional-derivative</code>.</p>
+<hr />
+<h2 id="part-5-gradient-descent-from-scratch">Part 5: Gradient Descent from Scratch</h2>
+<p>Now let’s use autodiff to train a model. We’ll fit a linear function <code>y = w*x</code> to data by minimizing squared error.</p>
+<pre class="scheme"><code>;; Loss function: (w*x - y)^2
+(define (loss w x y)
+  (let ((error (- (* w x) y)))
+    (* error error)))
+
+;; One gradient descent step
+(define (step w lr x y)
+  (let ((grad (derivative (lambda (w) (loss w x y)) w)))
+    (- w (* lr grad))))
+
+;; Train over a dataset
+(define (train w lr data)
+  (if (null? data)
+      w
+      (let ((x (car (car data)))
+            (y (car (cdr (car data)))))
+        (train (step w lr x y) lr (cdr data)))))
+
+;; Dataset: y = 2x
+(define data &#39;((1 2) (2 4) (3 6) (4 8) (5 10)))
+
+;; Start with random weight, learn rate 0.01
+(define w0 0.5)
+
+;; Train for 100 epochs
+(define (train-epochs w lr data epochs)
+  (if (= epochs 0) w
+      (train-epochs (train w lr data) lr data (- epochs 1))))
+
+(define w-final (train-epochs w0 0.01 data 100))
+(display &quot;Learned weight: &quot;)
+(display w-final)
+(newline)
+;; =&gt; ~2.0 (converges to the true slope)</code></pre>
+<p>The key insight: <code>(derivative (lambda (w) (loss w x y)) w)</code> computes the exact gradient of the loss with respect to <code>w</code>, automatically. No manual backprop, no computation graph — the compiler handles it.</p>
+<hr />
+<h2 id="part-6-multi-parameter-models">Part 6: Multi-Parameter Models</h2>
+<p>For models with multiple parameters, use <code>gradient</code>:</p>
+<pre class="scheme"><code>;; Linear model: y = w1*x + w0 (slope + intercept)
+(define (predict w0 w1 x) (+ (* w1 x) w0))
+
+;; Mean squared error over dataset
+(define (mse w0 w1 data)
+  (if (null? data)
+      0.0
+      (let* ((x (car (car data)))
+             (y (car (cdr (car data))))
+             (pred (predict w0 w1 x))
+             (err (- pred y)))
+        (+ (* err err) (mse w0 w1 (cdr data))))))
+
+;; Compute gradient with respect to (w0, w1)
+;; and update both parameters simultaneously.
+;; gradient takes a single-vector-argument function, so we pack
+;; the two weights into a vector and unpack inside the wrapper.
+(define (step-2d w0 w1 lr data)
+  (let* ((loss (lambda (w)
+                 (mse (vector-ref w 0) (vector-ref w 1) data)))
+         (grad (gradient loss (vector w0 w1))))
+    (let ((dw0 (vector-ref grad 0))
+          (dw1 (vector-ref grad 1)))
+      (list (- w0 (* lr dw0))
+            (- w1 (* lr dw1))))))</code></pre>
+<hr />
+<h2 id="part-7-using-ml-builtins">Part 7: Using ML Builtins</h2>
+<p>Eshkol includes 555+ builtins for ML. Here are the most useful:</p>
+<h3 id="activation-functions">Activation Functions</h3>
+<pre class="scheme"><code>;; All take and return doubles or tensors
+(sigmoid 0.0)           ;; =&gt; 0.5
+(tanh 1.0)              ;; =&gt; 0.7616...
+(relu -0.5)             ;; =&gt; 0.0
+(relu 0.5)              ;; =&gt; 0.5
+(softplus 0.0)          ;; =&gt; 0.6931... (ln(2))
+(leaky-relu -0.5)       ;; =&gt; -0.005 (alpha=0.01)
+(elu -1.0)              ;; =&gt; -0.6321...
+(gelu 0.5)              ;; =&gt; 0.3457...
+(swish 1.0)             ;; =&gt; 0.7311...</code></pre>
+<p>The same names take a tensor and return a tensor, elementwise:</p>
+<pre class="scheme"><code>(softplus #(0.0 1.0))   ;; =&gt; #(0.6931... 1.3132...)
+(gelu #(0.5))           ;; =&gt; #(0.3457...)
+(silu #(1.0))           ;; =&gt; #(0.7311...)   ; silu is swish with beta = 1</code></pre>
+<p>Several take an optional second argument — <code>softplus</code>’s beta, <code>leaky-relu</code>’s and <code>elu</code>’s and <code>celu</code>’s alpha, <code>swish</code>’s beta — and it applies to a number and to a tensor alike:</p>
+<pre class="scheme"><code>(leaky-relu -2.0 0.1)   ;; =&gt; -0.2
+(elu -1.0 2.0)          ;; =&gt; -1.2642...
+(swish 1.0 2.0)         ;; =&gt; 0.8807...</code></pre>
+<h3 id="loss-functions">Loss Functions</h3>
+<pre class="scheme"><code>;; Losses take a prediction tensor and a target tensor and return a number
+(define predicted #(1.0 2.0 3.0))
+(define actual    #(1.5 2.0 2.0))
+
+;; Mean squared error
+(mse-loss predicted actual)            ;; =&gt; 0.4166...
+
+;; Huber loss (robust to outliers); the optional third argument is delta
+(huber-loss predicted actual)          ;; =&gt; 0.2083...
+(huber-loss predicted actual 0.5)      ;; =&gt; 0.1666...
+
+;; Cross-entropy (for classification): logits and a one-hot target
+(cross-entropy-loss #(2.0 1.0 0.1) #(1.0 0.0 0.0))  ;; =&gt; 0.4170...</code></pre>
+<h3 id="optimizers">Optimizers</h3>
+<pre class="scheme"><code>;; The optimizers live in ml.optimization. Each takes the function to
+;; minimise and a starting point, and returns the point it converged to.
+(require ml.optimization)
+
+;; f(x, y) = x^2 + y^2, minimum at the origin
+(define (quad v)
+  (+ (* (vref v 0) (vref v 0)) (* (vref v 1) (vref v 1))))
+
+;; Gradient descent: f, start, learning rate, max iterations, tolerance
+(gradient-descent quad #(5.0 5.0) 0.1 1000 1e-8)   ;; =&gt; ~#(0.0 0.0)
+
+;; Adam: f, start, learning rate
+(adam quad #(5.0 5.0) 0.1)                         ;; =&gt; ~#(0.0 0.0)
+
+;; L-BFGS for second-order optimization
+(l-bfgs quad #(5.0 5.0))                           ;; =&gt; #(0 0)</code></pre>
+<p>These all compose with autodiff — you can differentiate through any of them.</p>
+<hr />
+<h2 id="part-8-dot-product-and-linear-algebra">Part 8: Dot Product and Linear Algebra</h2>
+<pre class="scheme"><code>(require core.list.higher_order)
+
+;; Dot product using fold-left + map
+(define (dot a b)
+  (fold-left + 0 (map * a b)))
+
+(display (dot &#39;(1 2 3) &#39;(4 5 6)))
+(newline)
+;; =&gt; 32
+
+;; Matrix-vector multiply (list of rows)
+(define (matvec matrix vec)
+  (map (lambda (row) (dot row vec)) matrix))
+
+(define M &#39;((1 2) (3 4)))
+(display (matvec M &#39;(5 6)))
+(newline)
+;; =&gt; (17 39)</code></pre>
+<hr />
+<h2 id="whats-next">What’s Next</h2>
+<ul>
+<li><strong>Tutorial 2: The Bytecode VM</strong> — compile to portable bytecode, inspect, run on any platform</li>
+<li><strong>Tutorial 3: Weight Matrix Transformer</strong> — compile Eshkol programs into neural network weight matrices</li>
+<li><strong>Tutorial 4: Consciousness Engine</strong> — logic programming, active inference, and global workspace theory</li>
+</ul>
+<hr />
+<p><em>All examples in this tutorial can be run with <code>eshkol-run file.esk -o out &amp;&amp; ./out</code> or pasted into the browser REPL at <a href="https://eshkol.ai">eshkol.ai</a>.</em></p>

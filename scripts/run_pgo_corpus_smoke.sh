@@ -61,6 +61,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "pgo-corpus-smoke"
 trap eshkol_test_isolation_cleanup EXIT
 
@@ -106,6 +108,7 @@ for f in "${CORPUS_FILES[@]}"; do
     # on-disk JIT cache suppresses them on a recompile-free rerun). Folding
     # them into stdout via 2>&1 made the JIT/AOT parity check below flag a
     # false divergence on every cold-cache run. Only stdout is compared.
+    eshkol_require_output_file_path "$JIT_OUT"
     if "$RUN" -r "$f" > "$JIT_OUT" 2>"$ESHKOL_TEST_TMPDIR/jit_stderr.log"; then
         if [ ! -s "$JIT_OUT" ]; then
             echo "$name: FAIL (JIT produced no output)"
@@ -124,6 +127,7 @@ for f in "${CORPUS_FILES[@]}"; do
         # diagnostics to stderr (interleaved with the program's own
         # `display` output when merged), so only stdout is compared for
         # parity.
+        eshkol_require_output_file_path "$AOT_OUT"
         if "$AOT_BIN" > "$AOT_OUT" 2>"$ESHKOL_TEST_TMPDIR/aot_run_stderr.log"; then
             if [ ! -s "$AOT_OUT" ]; then
                 echo "$name: FAIL (AOT produced no output)"

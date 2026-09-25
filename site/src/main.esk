@@ -58,6 +58,49 @@
 (extern i32 web-set-timeout i32 i32 :real web_set_timeout)
 
 ;; ═══════════════════════════════════════════════════════════
+;; RELEASE FACTS
+;; ═══════════════════════════════════════════════════════════
+;;
+;; release-tag is the one place this file names a release. Every heading,
+;; download URL, install snippet and status line below is derived from it, so
+;; cutting a release changes one line here.
+;;
+;; tests/coverage/release_record.json is the source of truth for the tag.
+;; scripts/verify_site_release.py evaluates this block and fails when the tag
+;; differs from the record, when a derived URL names an asset the release
+;; workflow does not publish, or when a release tag or download URL is written
+;; anywhere else in this file. Keep the block to (define name "literal") and
+;; (define name (string-append ...)) over names defined above it: that is the
+;; subset the verifier evaluates.
+
+;; BEGIN RELEASE FACTS
+(define release-tag "v1.3.5-evolve")
+(define release-download-base
+  (string-append "https://github.com/tsotchke/eshkol/releases/download/" release-tag "/"))
+(define release-linux-asset
+  (string-append "eshkol-" release-tag "-linux-x64-lite.tar.gz"))
+(define release-checksums-asset "SHA256SUMS.txt")
+(define release-whats-new-heading
+  (string-append "What's new in " release-tag))
+(define release-publication-heading
+  (string-append release-tag " Publication"))
+(define release-downloads-summary
+  (string-append "Install Eshkol on macOS, Linux, Windows, or build from source. " release-tag " provides 15 platform packages plus SHA256SUMS.txt in a 16-file release payload."))
+(define release-linux-install-html
+  (string-append
+    "<code style='color:#606078'># " release-tag ", Linux x64 Lite</code>\n"
+    "<code style='color:#22c55e'>$</code> curl -LO " release-download-base release-linux-asset "\n"
+    "<code style='color:#22c55e'>$</code> curl -LO " release-download-base release-checksums-asset "\n"
+    "<code style='color:#22c55e'>$</code> sha256sum -c " release-checksums-asset " --ignore-missing\n"
+    "<code style='color:#22c55e'>$</code> tar xzf " release-linux-asset))
+(define release-vm-banner-html
+  (string-append
+    "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>" release-tag "</span>\n"
+    "<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n"
+    "<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+;; END RELEASE FACTS
+
+;; ═══════════════════════════════════════════════════════════
 ;; COMPONENT LIBRARY
 ;; ═══════════════════════════════════════════════════════════
 
@@ -402,11 +445,11 @@
         (let ((title (create-text "h1" "The derivative is a compiler primitive." left)))
           (web-add-class title "hero-title"))
 
-        (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM 21. Gradient, Jacobian and Hessian lower to machine instructions the same way + does. They stay exact through closures, recursion and control flow. There is no tracing library in between. The same gradient runs byte-identically on the bytecode VM." left)))
+        (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM. Gradient, Jacobian and Hessian are compiler primitives. Native JIT and AOT compose exact derivatives at arbitrary nesting depth and order. The bytecode VM shares the language's hygienic macros, number grammar, and catchable call errors." left)))
           (web-add-class sub "hero-sub"))
 
-        ;; Proof strip: four release-gate numbers, one canonical form each
-        (let ((proof (create-text "p" "1,091 / 1,091 executable language surface   ·   8 differential operators   ·   zero GC   ·   956 parity rows, published" left)))
+        ;; Generated surface and ledger counts; runtime behavior is measured by release gates.
+        (let ((proof (create-text "p" "1,116 declared language constructs   ·   8 differential operators   ·   zero GC   ·   962 parity rows" left)))
           (style! proof "color" "#a78bfa")
           (style! proof "fontSize" "0.82rem")
           (style! proof "fontFamily" "JetBrains Mono,monospace")
@@ -497,7 +540,7 @@
 
     (body-html section "<strong style='color:#a78bfa'>Autonomous Agents.</strong> Build systems that reason about their own uncertainty. The consciousness engine gives you knowledge bases with Prolog-style unification, factor graphs with belief propagation, and global workspace theory for competing cognitive modules.")
 
-    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to a native executable, or target WebAssembly for the browser. This whole website is one Eshkol source file compiled to WASM. It uses 97 browser-host bindings: DOM, events, canvas, timers, fetch, localStorage, and window. Hash-based routing and a live bytecode REPL come from that same file -- all one language.")
+    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to a native executable, or target WebAssembly for the browser. This whole website is one Eshkol source file compiled to WASM. The web platform provides 97 browser-host bindings: DOM, events, canvas, timers, fetch, localStorage, and window. Pathname routing and a live bytecode REPL come from that same file -- all one language.")
 
     section))
 
@@ -599,19 +642,78 @@
 
     section))
 
-(define (render-v12-features parent)
+(define (render-whats-new parent)
   (let ((section (create-section parent)))
-    (section-heading section "What's new in v1.3.4-evolve")
-    (body-html section "<strong style='color:#a78bfa'>Resident correctness.</strong> Run an Eshkol daemon for 100,000 ticks and its memory stays flat. Every defect that long-duration resident workloads surfaced is fixed at the architectural root: automatic per-iteration reclamation, race-free parallel-map, exact gradients through every callable form, and floats that round-trip to the identical double. High-precision numerics, a Moonlab v1.2.0 quantum pin, and a linear Qubit type land alongside them.")
+    (section-heading section release-whats-new-heading)
+    (body-html section "<strong style='color:#a78bfa'>Sixteen thousand levels deep.</strong> Parsing, type synthesis, and lowering use explicit continuations through JIT and AOT under an 8 MiB stack limit. The gate compiles 16,000 levels. Recursive Taylor levels compose exact derivatives at arbitrary nesting depth and order. Hygienic macros, one R7RS number grammar, dense tensor gradients, multi-shot continuations, and VM region reclamation complete the language contract.")
+
+    (let ((grid (create-grid-3 section)))
+      (render-feature-card grid
+        "A parser with no recursion budget"
+        "A child parse suspends into a heap-allocated coroutine frame and resumes through a linked continuation stack. Expressions, quasiquote, match and syntax-rules patterns, types, and import sets nest as far as memory allows. Two gates hold the line under an 8 MiB stack limit, through JIT and AOT, on Linux x64 and macOS ARM64. 16,000 levels.")
+
+      (render-feature-card grid
+        "Dense tensor autodiff"
+        "matmul, tensor-sum, and tensor-mean each record exactly one dense node under differentiation. A registry row bridges scalarized operands by identity scatter and performs no arithmetic, so the scalar and dense lowerings return byte-identical gradients. A 6x6 matmul costs the same per operation as a 2x2.")
+
+      (render-feature-card grid
+        "The bytecode VM reclaims memory"
+        "with-region reclaims on the VM by marking from the root set and sweeping at arena-block granularity. Nothing moves, so eq?, shared structure, and cycles hold. Peak RSS is 33 MB at 1,000 iterations and 34 MB at 16,000, against 304 MB with the evacuator disabled. Sixteen times the work for one megabyte."))
+
+    (let ((grid2 (create-grid-3 section)))
+      (render-feature-card grid2
+        "Multi-shot continuations, three engines"
+        "Invoke a captured continuation any number of times, from any dynamic extent, after the procedure that captured it has returned. Native code keeps a durable copy of the live stack and restores it to the same addresses. The VM snapshots control and leaves the store alone. Generators, coroutines, and amb-style backtracking run on the JIT, AOT, and the VM, and dynamic-wind reroots per R7RS 6.10.")
+
+      (render-feature-card grid2
+        "Exactness follows the value"
+        "(sqrt 4/9) answers 2/3, and it is exact?. (expt 2/3 -3) is 27/8. (derivative (lambda (x) (* x x)) 1/3) returns 2/3 on the VM as on native code. Roots are taken over the rationals when one exists, and the derivative carrier reads the runtime exactness of its point, not the shape of the source.")
+
+      (render-feature-card grid2
+        "tensor-apply calls the callable you passed"
+        "Both operands evaluate once, and the resolved callable runs on each scalar in row-major order through the same dispatcher as an ordinary lambda application. Gradients, differentiable captures, and Hessians flow through user procedures. LLVM JIT, LLVM AOT, VM source execution, and emitted bytecode each report all 31 ordered assertions."))
+
+    (let ((grid3 (create-grid-3 section)))
+      (render-feature-card grid3
+        "Enclosures that are proved, not sampled"
+        "A rigorous layer sits under the validated interval arithmetic and Taylor models, behind an explicit rigorous? flag. fl-next-up and fl-next-down carry nextafter into native code and the VM alike. Exact operands stay exact, every Taylor-model remainder comes from a proven derivative bound, and interval endpoints round outward by exactly one step.")
+
+      (render-feature-card grid3
+        "One constant-curvature geometry"
+        "Distance, the exponential and logarithmic maps, and geodesic attention share one implementation and one set of reverse rules. Curvature series use a degree-10 branch with cancellation-free derivatives, witnessed against binary128 across a 1,067-binade sweep. Antipode detection is exact over a 4.16-million-case rational sweep, with no tolerance band anywhere in it.")
+
+      (render-feature-card grid3
+        "Gates measured against deliberate mutations"
+        "The assurance runner executes the closed-enum gate twelve times in an isolated source projection, with zero, one, and two dispatcher case labels removed. Every baseline passes and every treatment is rejected. At the release commit the gate finds 34 exhaustive AST operation switches, one callable dispatch site, and zero findings."))
+
+    (let ((grid4 (create-grid-3 section)))
+      (render-feature-card grid4
+        "Nested exact differentiation"
+        "Recursive Taylor levels carry enclosing derivative coefficients, so native JIT and AOT compose derivative and derivative-n at arbitrary depth and order. Exact rational coefficients remain exact through exact arithmetic; complex kernels retain their derivative values.")
+
+      (render-feature-card grid4
+        "One language grammar"
+        "Program literals, read, and string->number share the R7RS number recognizer, including complex rectangular and polar forms. Hygienic syntax-rules, top-level begin splicing, and catchable arity errors follow the same contracts on native and VM.")
+
+      (render-feature-card grid4
+        "Browser tensor dispatch"
+        "The browser VM uses the shared tensor GPU seam through WebGPU. Integer-word software floating point preserves the exact tier, and an unavailable adapter or unsupported kernel falls back to CPU execution."))
+
+    section))
+
+(define (render-foundation parent)
+  (let ((section (create-section parent)))
+    (section-heading section "The foundation it runs on")
+    (body-html section "<strong style='color:#a78bfa'>Resident correctness.</strong> Run an Eshkol daemon for 100,000 ticks and its memory stays flat. Automatic per-iteration reclamation, race-free parallel-map, exact gradients through every callable form, and floats that round-trip to the identical double carry every release since they landed.")
 
     (let ((grid (create-grid-3 section)))
       (render-feature-card grid
         "Memory that stays flat"
-        "A tick loop that mutates persistent state used to leak about 3,366 bytes per iteration, roughly 355 MB over 100,000 ticks. A per-loop nursery region now reclaims it. The same loop sits flat at 34 MB, byte-for-byte identical to its explicit with-region twin.")
+        "A per-loop nursery region reclaims every iteration of a tick loop that mutates persistent state. Over 100,000 ticks the loop sits flat at 34 MB, byte-for-byte identical to its explicit with-region twin.")
 
       (render-feature-card grid
-        "Complete executable evidence"
-        "1,091 of 1,091 declared constructs, each proven because it dispatched or executed in a passing run. Lexical name-presence earns no credit. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and the floor is fixed at 1,091, so the count can only grow.")
+        "Declared language surface"
+        "The generated language-surface manifest declares 1,116 constructs. Every one earned its row by running: execution-backed coverage is 1,116/1,116 declared constructs on the exact release commit.")
 
       (render-feature-card grid
         "Portable release packages"
@@ -624,7 +726,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "956 parity rows, published: 581 VM-supported, 44 native-only by design, 331 gaps. Verified behavioral divergences stay explicit gap rows, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native differential passes 184/184 across native LLVM, VM source, and emitted ESKB.")
+        "962 parity rows: 620 vm-supported, 46 native-only-justified, 296 gap. The VM parity differential runs 388/388, and differential gates compare each release with its reference engines.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
@@ -633,7 +735,7 @@
     (let ((grid3 (create-grid-3 section)))
       (render-feature-card grid3
         "Race-free parallel-map"
-        "A closure that allocates and returns a collection used to hand back dangling structure past the parallel threshold. On a pool worker, scope reclamation now degrades to commit-only. ThreadSanitizer reports zero arena data races where it previously reported dozens.")
+        "A closure that allocates and returns a collection is safe past the parallel threshold. On a pool worker, scope reclamation degrades to commit-only, so nothing a worker hands back outlives its arena. ThreadSanitizer reports zero arena data races.")
 
       (render-feature-card grid3
         "Floats that round-trip"
@@ -641,7 +743,7 @@
 
       (render-feature-card grid3
         "Permanent release oracles"
-        "Nothing here is a one-off check. CTest at 183 tests, the 45-suite aggregate at 770 tests, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100 all run as repeatable release gates."))
+        "Nothing here is a one-off check. CTest, the aggregate suite, reference and generative differentials, WebAssembly import equality, Taylor JIT+AOT equivalence, and architecture invariants run as repeatable release gates. Readiness is evaluated only from fresh evidence on the exact release commit."))
 
     section))
 
@@ -750,7 +852,8 @@
   (render-hero content)
   (render-app-cards content)
   (render-pillars content)
-  (render-v12-features content)
+  (render-whats-new content)
+  (render-foundation content)
   (render-sdnc content)
   (render-code-showcase content)
   (render-what-you-can-build content)
@@ -775,7 +878,7 @@
 
 (define (render-learn-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Learn Eshkol" "From hello world to automatic differentiation — interactive code examples you can run in the browser.")
+    (create-page-header page "Learn Eshkol" "Run R7RS examples in the browser, from exact arithmetic and hygienic macros to tensors and automatic differentiation.")
 
     ;; Prerequisites note
     (let ((note (create-div page)))
@@ -784,7 +887,7 @@
       (let ((h (create-text "h3" "Before You Start" note)))
         (style! h "fontSize" "1.1rem")
         (style! h "marginBottom" "8px"))
-      (body-text note "All code examples below are runnable in the browser VM. Click the Run button to execute them. For native compilation with GPU acceleration and automatic differentiation, install Eshkol locally.")
+      (body-text note "The browser VM runs the examples below. It shares the R7RS number grammar, top-level definitions, and catchable conditions with native execution. Browser tensor calls use WebGPU when available. For nested Taylor differentiation at arbitrary depth and order, install Eshkol and use native JIT or AOT.")
       (let ((a (create-text "a" "Install Eshkol" note)))
         (web-add-class a "btn")
         (web-add-class a "btn-primary")
@@ -992,7 +1095,7 @@
 
 (define (render-examples-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Examples" "Curated code examples showing what Eshkol can do. Click Run to execute in the browser VM. The repository ships 14 runnable examples in examples/ — see the [examples README](https://github.com/tsotchke/eshkol/tree/master/examples) for the full list including gradient descent, Newton's method, parallel Monte Carlo, neural-network XOR, Bayesian diagnosis, and differentiable physics. The selection below is the subset that fits inside a browser tab.")
+    (create-page-header page "Examples" "Curated code examples showing what Eshkol can do. Click Run to execute in the browser VM. The repository ships 66 examples in examples/: 20 general-purpose programs (gradient descent, Newton's method, parallel Monte Carlo, neural-network XOR, Bayesian diagnosis, differentiable physics, and more — see the [examples README](https://github.com/tsotchke/eshkol/tree/master/examples) for the full list) and 46 advanced mathematics programs, grouped and linked below. The 10 cards below are the general-purpose subset that fits inside a browser tab.")
 
     (let ((grid (create-grid-2 page)))
 
@@ -1066,25 +1169,37 @@
         ""
         "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; The actual code powering this page</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(render-hero parent)</span>\n  <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>hero</span> <span style='color:#c084fc'>(create-section</span> parent<span style='color:#c084fc'>)))</span>\n    <span style='color:#c084fc'>(style!</span> hero <span style='color:#00ff88'>\"paddingTop\"</span> <span style='color:#00ff88'>\"120px\"</span><span style='color:#c084fc'>)</span>\n    <span style='color:#606078'>;; ... 1500+ lines of pure Eshkol</span>\n    hero<span style='color:#c084fc'>))</span></pre>"))
 
+    ;; ── Advanced mathematics: the 46 examples/mathematics_*.esk programs ──
+    ;; Too large to run in the browser VM (deep recursion, exact-rational
+    ;; bignum arithmetic, minutes of native compute); linked to GitHub
+    ;; instead, grouped by topic. Every description is grounded in the
+    ;; file's own header comment and its actual PASS/FAIL output.
+    (let ((math-section (create-section page)))
+      (section-heading math-section "Advanced mathematics")
+      (body-text math-section "46 longer-running programs, not embedded in the browser VM. Each computes an exact or numerically-verified mathematical result — cohomology rings, residuals of the Navier-Stokes equations, published combinatorial witnesses, matrix-multiplication tensor ranks — checked with negative controls and, where the underlying quantities are rational, exact rational arithmetic rather than floating point. All 46 currently pass every check on both the native compiler and the bytecode VM. Source and README: [examples/](https://github.com/tsotchke/eshkol/tree/master/examples).")
+
+      (section-subheading math-section "Navier-Stokes residual and scaling computations")
+      (body-html math-section "Twelve programs that compute residuals, similarity-coordinate scaling laws, and stress/energy identities for the three-dimensional Navier-Stokes equations against an external reference construction, described in full in <a href='https://github.com/tsotchke/eshkol/blob/master/docs/NAVIER_STOKES_EXAMPLES.md' target='_blank' rel='noopener noreferrer' style='color:#a78bfa'>docs/NAVIER_STOKES_EXAMPLES.md</a>. Every derivative is taken by Eshkol's automatic differentiation, never hand-computed and quoted, and exact rational arithmetic is used wherever the underlying quantities are rational.")
+      (body-html math-section "<ul style='list-style:none;padding:0;margin:0 0 8px 0'><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_viscosity_scaling.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_viscosity_scaling.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Assembles the momentum residual R(u,p) = d_t u + (u . grad)u - nu Lap u + grad p from automatic-differentiation partials of an explicit divergence-free polynomial velocity field, then applies the viscosity-rescaling map to both the field and the residual. Uses derivative for every partial and exact rational arithmetic throughout, with two negative controls that omit one rescaling factor. Verifies the rescaling identity as an exact equality at four rational viscosities and the discrete energy/dissipation scaling by nu^(5/2), 9 checks in all.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_similarity_scales.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_similarity_scales.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Installs a concrete axisymmetric velocity/pressure field in similarity coordinates and differentiates it through its own implicit coordinate solve. Uses derivative and gradient on exact-rational and double-precision samples, plus a fixed-point iteration for the implicit solve and a log-log fit for the scale exponents. Verifies incompressibility and the pressure balance at every sample point, the nine similarity-scale exponents, and the residual's self-similar growth rate, 23 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_first_principles.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_first_principles.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Derives the similarity-coordinate scale exponents as the solution of a linear system (rather than asserting them), then derives the leading profile series from the balance operator by exact polynomial interpolation and a linear solve. Uses exact rational linear algebra and derivative-n/taylor to evaluate the operator on a monomial basis. Verifies the derived exponents, the admissible range of the free parameter h, and that the derived profile series annihilates its operator below the truncation order, with a negative (perturbed) control, 21 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_pulse_stress.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_pulse_stress.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Builds two families of oscillatory ring pulses with zero angular mean but nonzero averaged momentum-flux products, and solves the 2x2 covariance system that reproduces a target stress as a positive combination of the two families. Uses derivative for the cylindrical divergence and exact rational linear algebra for the covariance solve. Verifies the zero-mean and flux-product identities, transversality, and the Craik-Criminale growth-then-decay curve of one mode, 20 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_stress_cone.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_stress_cone.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Decides Lemma 4.5's cone-membership equivalence by exact rational sign tests on a quadratic, never a square root, then integrates the base flow's own radial equation and places the constructed stress inside the admissible cone. Uses derivative, exact rational quadrature (Simpson's rule, exact for these polynomial profiles), and exact sign analysis of a quadratic's root structure. Verifies the cone equivalence, the radial equation (4.9) exactly, and that the constructed stress is homogeneous and admissible at every sampled radius, 21 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_residual_order_n.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_residual_order_n.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Mechanizes the algebraic skeleton of an order-by-order correction recursion on a scalar model: a fixed linear operator solved against a forcing sequence at each order, substituted into a truncated formal expansion. Uses derivative-n and taylor (the exact-coefficient Taylor tower) to read off each order's coefficient at the exact point tau = 0. Verifies that orders below the truncation vanish exactly and the leftover at the truncation order equals the exact background residual, with three negative controls, 8 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_heat_exterior.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_heat_exterior.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Solves the curvature-corrected radial heat equation for a purely azimuthal exterior field by an explicit odd-polynomial ansatz with time-dependent coefficients, and separately certifies a distinct-power-weight moment-matrix invertibility lemma on a small exact case. Uses derivative and derivative-n for the residual and a negative control that perturbs one coefficient. Verifies the heat equation is solved to an exact rational zero at four sampled (r,t) points, the moment matrix's invertibility, and that the exterior stays finite as t -> 1 against a deliberately divergent candidate, 8 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_oscillatory_realization.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_oscillatory_realization.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Realizes two pulse families as exact trigonometric polynomials on a 4-point auxiliary torus, where every sine and cosine value is a lookup-table integer, and solves for the positive combination of both families that reproduces a prescribed target stress. Uses core.exact_linalg's exact-solve, exact-rank and torus-average on exact rational vectors, with no AD and no floating point. Verifies each family's zero angular mean, the quadratic flux products against their exact closed form, and that the 2x2 flux system is invertible with a positive solution, 11 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_pulse_growth.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_pulse_growth.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Makes the Craik-Criminale wavevector law and a representative amplitude growth-then-decay model exact for a wave on a simple-shear background. Uses derivative for the wavevector law and the log-amplitude antiderivative, exact rational bisection for the amplification/damping crossover, and an independent RK4 numerical integration as a cross-check. Verifies the wavevector law, the crossover bracket, and that the AD-derived log-amplitude agrees with the RK4-integrated curve to 1e-3 relative, 16 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_residual_ladder.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_residual_ladder.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Models the residual-order-improvement recursion as an exponent ladder (closed-form arithmetic progression) and a coefficient ladder, where each rung's correction coefficient is solved for by probing the residual's Taylor coefficient at two trial values and interpolating the root, rather than being asserted. Uses taylor exclusively, always at the exact integer seed q = 0, plus exact rational affine-root solving. Verifies the exponent recurrence, and that each rung's correction drives its target Taylor coefficient to exactly zero without disturbing earlier orders, 19 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_localization.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_localization.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Checks four independent facts about compact forcing and periodization: a smooth cutoff keeps a pole-carrying field smooth through the cutoff point, a cutoff force is compactly supported by construction, a compactly supported field periodizes unambiguously onto a 3-torus, and a discrete energy identity holds by construction. Uses taylor for the smoothness claim and derivative for the discrete-grid energy identity, both on unguarded polynomial cores. Verifies all four facts exactly, each with its own negative control, 15 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_mean_corrections.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_navier_stokes_mean_corrections.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Builds a compactly supported, divergence-free vector-field correction from a scalar potential and verifies the incompressibility identity by AD rather than assuming it, then ties the correction's covariance to a target via an exact Vandermonde solve. Uses derivative-n (never nested), exact rational vectors built with the vector procedure, and core.exact_linalg's exact-det/exact-solve. Verifies the divergence-free identity, the compact-support cutoff, and the covariance-matching solve, 22 checks.</p></li></ul>")
+
+      (section-subheading math-section "Algebraic topology, cohomology and Hodge theory")
+      (body-html math-section "Twenty-nine programs on finite/simplicial models of classifying spaces, sheaf and group cohomology, descent, Postnikov and Kan-complex theory, Dijkgraaf-Witten and Yetter invariants, and Hodge classes on Fermat varieties — all exact, finite computations checked against the published classification results and formulas they mechanize.")
+      (body-html math-section "<ul style='list-style:none;padding:0;margin:0 0 8px 0'><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_abelian_sheaves_finite_site.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_abelian_sheaves_finite_site.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes sheafification by the plus construction on a finite site and checks it against restriction-to-points followed by limits, then computes sheaf cohomology of the space three independent ways (derived limit over points, Cech cohomology of two different covers) and checks all three agree. Uses exact rational linear algebra for the cosimplicial and Cech complexes. Verifies the sheafification isomorphism, exactness of sheafification, and the three-way cohomology agreement, 8 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_classifying_space_dijkgraaf_witten.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_classifying_space_dijkgraaf_witten.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Builds classifying spaces of finite groups as simplicial complexes, computes their integral homology, identifies the 3-cocycles that classify Dijkgraaf-Witten theories, and computes exact state sums on triangulated 3-manifolds. Uses exact integer/rational homology computation (Smith normal form) and simplicial cochain arithmetic. Verifies the homology groups, cocycle conditions, and state-sum invariance, 40 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_cohomology_rings_cup_products.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_cohomology_rings_cup_products.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes cohomology rings of classifying spaces via cup products on the normalized bar complex, identifies the Bockstein, and classifies the Dijkgraaf-Witten twists of (Z/2)^3 as cubic monomials. Uses exact mod-2 simplicial cochain arithmetic and the Alexander-Whitney diagonal approximation. Verifies the ring relations against the known cohomology of RP^infinity and K(Z/p,1), and the twist classification, 30 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_cohomology_rings_nonabelian.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_cohomology_rings_nonabelian.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes the mod-2 cohomology rings of the two non-abelian groups of order eight, D_4 and Q_8, and shows the ring structure (not just the graded dimensions) separates them. Uses exact mod-2 bar-complex cochain arithmetic. Verifies the presented ring relations against the published Poincare series and structure constants for both groups, 16 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_cp2_symmetric_square_connected_sums.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_cp2_symmetric_square_connected_sums.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Realizes CP^2 as the symmetric square of S^2, builds connected sums of 4-manifolds, and separates S^2 x S^2 from CP^2 # CP^2 — two simply connected 4-manifolds with the same homology and 2-type — by their cup square through the second k-invariant. Uses exact simplicial cohomology and cup-product computation on Delta-complexes. Verifies the homology/2-type agreement and the k-invariant distinction, 9 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_descent_hypercohomology.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_descent_hypercohomology.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Exhibits a non-Leray cover on a finite space where ordinary Cech cohomology fails to compute the right answer, and computes the correct value via the cohomological descent double complex and its spectral sequence. Uses exact rational chain-complex arithmetic for both the Cech complex and the descent double complex. Verifies the Cech failure, the descent double complex's agreement with sheaf cohomology, and the spectral sequence convergence, 13 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_finite_categories_kan_extensions.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_finite_categories_kan_extensions.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Builds finite categories from generators and relations, checks functors and natural transformations rather than assuming them, computes limits/colimits over finite diagrams, verifies Kan extensions by their triangle identities, and recovers sheaf cohomology as right-derived limit functors. Uses exact combinatorial category-theoretic computation (finite hom-sets, commuting-square checks). Verifies functoriality, the universal properties of the extensions, and the cohomology recovery, 19 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_finite_model_three_torus_gauge_theory.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_finite_model_three_torus_gauge_theory.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes Dijkgraaf-Witten invariants of the 3-torus from its 64-point finite topological model (McCord's finite-model construction) rather than a triangulation, and checks the result against the one-vertex triangulation's state sum. Uses exact simplicial/order-complex homology and cocycle evaluation on the finite model. Verifies the finite-model invariant matches the triangulated state sum, 17 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_finite_site_sheafification.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_finite_site_sheafification.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Verifies the sheaf condition and the plus construction over an entire finite site: F^+ is separated, F^{++} is a sheaf, and F^+ is already a sheaf when F is separated. Uses exact rational functor evaluation on the site's open-set lattice. Verifies all three plus-construction properties directly on the finite site rather than by appeal to the general theorem, 17 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_finite_spaces_sheaf_cohomology.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_finite_spaces_sheaf_cohomology.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes sheaf cohomology on finite topological spaces as derived limits over the underlying poset, builds local systems, and checks Cech descent against the minimal open cover. Uses exact rational chain-complex and limit computation over posets. Verifies the derived-limit and Cech computations agree, and the local-system construction, 23 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_four_manifolds_second_k_invariant.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_four_manifolds_second_k_invariant.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes the second Postnikov k-invariant of a 3-type — the obstruction that is the intersection form — two ways (a twisted-cochain state sum and the Postnikov fibration formula) on S^4, RP^4 and S^2 x S^2. Uses exact simplicial cohomology and cup-square computation on Delta-complexes. Verifies the two computations of the k-invariant agree on all three manifolds, 8 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_group_cohomology_order_eight.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_group_cohomology_order_eight.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes group cohomology of every group of order eight, classifies their Dijkgraaf-Witten twists, and constructs the first non-abelian twisted quantum double D^omega(G). Uses exact mod-2 bar-resolution cochain arithmetic and exact cocycle classification. Verifies the cohomology computations against the published classification and the twisted quantum double's defining relations, 26 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_group_cohomology_sweep.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_group_cohomology_sweep.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>A parametrized sweep program: computes integral homology of a finite group's classifying space (cyclic, product, dihedral, quaternion, symmetric or alternating, selected by environment variable) up to a chosen degree and writes one JSON receipt per run. Uses exact integer homology computation (Smith normal form) driven by a campaign runner across hosts. Verifies the computed homology groups and writes them to a machine-checkable receipt.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_hodge_classes_fermat_quartic_fourfold.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes the space of rational Hodge classes on the Fermat quartic fourfold two independent ways (Griffiths' Jacobian ring and Shioda's character decomposition), enumerates its 960 planes, and shows the planes' intersection matrix has rank equal to the Hodge-class dimension. Uses exact modular-arithmetic rank computation and combinatorial intersection-number formulas. Verifies the two Hodge-class computations agree and that every Hodge class is a rational combination of planes, 10 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_homotopy_colimits_grothendieck.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_homotopy_colimits_grothendieck.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes homotopy colimits (suspensions, pushouts, homotopy quotients by group actions) as nerves of Grothendieck constructions on finite spaces. Uses exact simplicial nerve construction and homology computation. Verifies the nerve-of-Grothendieck-construction formula against directly computed homotopy colimits, 12 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_kan_complexes_horns.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_kan_complexes_horns.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes horn fillers in simplicial sets, checks the quasi-category vs. Kan-complex distinction, and computes Kan's original combinatorial homotopy groups from the nerves of 2-groups. Uses exact simplicial-set horn-filling search and combinatorial homotopy-group extraction. Verifies horn-filling existence/uniqueness patterns and that the combinatorial homotopy groups match the 2-groups' own invariants, 9 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_lens_spaces_reidemeister_torsion.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_lens_spaces_reidemeister_torsion.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes the Reidemeister torsion of lens spaces over the cyclotomic field Q(zeta_p) and shows it separates L(7,1) from L(7,2), which are homotopy equivalent but not simple-homotopy equivalent. Uses exact cyclotomic-field arithmetic and simplicial chain-complex torsion computation. Verifies the torsion invariant distinguishes the two lens spaces, 7 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_lens_spaces_yetter.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_lens_spaces_yetter.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Builds lens spaces as Delta-complexes, computes their cohomology and the square class of the linking pairing, and computes Yetter's 2-group invariants including a k-invariant of order three. Uses exact simplicial cohomology and cocycle evaluation. Verifies the linking-pairing square class and the Yetter invariant computation, 14 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_presheaf_topos_internal_logic.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_presheaf_topos_internal_logic.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Constructs the internal logic of a presheaf topos Set^(C^op) for finite categories C: the subobject classifier of sieves, exponentials as natural transformations out of representables, an internal Heyting algebra, and the bijection between Lawvere-Tierney topologies and Grothendieck topologies. Uses exact finite combinatorial construction and counting arguments. Verifies each universal property by exhibiting the bijection or checking both sides' cardinalities, 9 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_sheafification_descent_kan.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_sheafification_descent_kan.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Verifies the Grothendieck axioms for the canonical topology on finite spaces, computes the plus construction by its finite-site formula, applies it twice to sheafify, and identifies the matching-family limit as a right Kan extension. Uses exact rational functor evaluation on finite sites. Verifies the topology axioms, the plus-construction's universal property by counting, and the Kan-extension identification, 10 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_stacks_nonabelian_descent.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_stacks_nonabelian_descent.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes G-torsors on finite spaces as homotopy limits over a poset, verifies nonabelian Cech descent on the maximal-open cover, and builds a finite model of the Klein bottle as a twisted product. Uses exact combinatorial torsor and cocycle computation. Verifies the torsor/descent-data correspondence and the Klein-bottle model's twisted-product structure, 23 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_turaev_viro_cyclotomic.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_turaev_viro_cyclotomic.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes Turaev-Viro invariants exactly in cyclotomic fields using Kauffman-Lins recoupling data at a root of unity, as state sums over Delta-complexes, and checks invariance under both re-triangulation and homeomorphism; identifies the level-one theory with the twisted Z/2 Dijkgraaf-Witten sum. Uses exact cyclotomic-field arithmetic throughout, no floating point. Verifies triangulation- and homeomorphism-invariance and the level-one identification, 9 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_two_descent_cech_nerves.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_two_descent_cech_nerves.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Builds the Cech nerve of a cover as a simplicial set, computes mapping spaces into a 2-group on both the nerve and the underlying space, and exhibits a cover whose descent failure is invisible to ordinary (1-type) invariants but visible once 2-types are tracked. Uses exact simplicial-set and 2-group nerve computation. Verifies the 1-type/2-type distinction on the constructed cover, 12 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_two_groups_postnikov.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_two_groups_postnikov.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Builds strict 2-groups as crossed modules, computes their classifying-space nerves, and detects the Postnikov k-invariant by cohomology, distinguishing two 2-types that share the same homotopy groups. Uses exact crossed-module and cocycle computation. Verifies the two 2-types are genuinely distinguished by the k-invariant despite matching homotopy groups, 18 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_yetter_three_torus_finite_model.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_yetter_three_torus_finite_model.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Recomputes Yetter's 2-group invariants of the 3-torus on its 64-point finite topological model (sixty times larger than the one-vertex triangulation) and checks the invariant is unchanged. Uses exact simplicial/order-complex computation on the finite model. Verifies the finite-model invariant matches the one-vertex triangulation's value, 11 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_yetter_two_group_invariants.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_yetter_two_group_invariants.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes Yetter's 2-group invariants of 3-manifolds two ways: as state sums on Delta-complexes, and through the Postnikov fibration of the mapping space Map(X, BG) where the 2-group's k-invariant enters as an obstruction. Uses exact simplicial state-sum and cocycle-obstruction computation. Verifies the two computations of the invariant agree, 13 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_aoki_cycles_fermat_sextic.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_aoki_cycles_fermat_sextic.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Computes the character supports of algebraic cycles on the Fermat sextic surface from Villaflor's period formula for complete-intersection curves, and checks the span of the known algebraic cycles against the surface's Hodge classes. Uses exact modular-arithmetic character and rank computation. Verifies the character-support formula and the span computation against the Hodge-class dimension, 8 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_aoki_cycles_fermat_surfaces_sweep.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_aoki_cycles_fermat_surfaces_sweep.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>A parametrized sweep: for Fermat surfaces of composite degree m, computes the character supports of lines and of Aoki's p=2/p=3 cycles from the Jacobian determinant of the period formula, and writes the count of uncovered Hodge characters to a JSON receipt. Uses exact modular-arithmetic Jacobian and character computation across a degree sweep. Verifies the character-support computation and reports coverage of the Neron-Severi group as data, not an asserted claim.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_fermat_hodge_classes_sweep.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_fermat_hodge_classes_sweep.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>A parametrized sweep: computes the space of rational Hodge classes on Fermat varieties X_m^n against their linear cycles, one JSON receipt per (degree, dimension) pair, driven by environment variables for cross-host campaigns. Uses exact modular-arithmetic rank computation (Griffiths and Shioda methods) across the sweep. Verifies the two Hodge-class computations agree at every swept (degree, dimension) and reports the result as a machine-checkable receipt.</p></li></ul>")
+
+      (section-subheading math-section "Combinatorics and search")
+      (body-html math-section "One program that checks a published combinatorial search result against its explicit witness.")
+      (body-html math-section "<ul style='list-style:none;padding:0;margin:0 0 8px 0'><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_funsearch_cap_set.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_funsearch_cap_set.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Verifies the explicit 512-point cap set in AG(8,3) that DeepMind's FunSearch discovered by program search, taken directly from the accompanying public witness file. Uses exact integer arithmetic for an exhaustive no-three-collinear check over all point triples. Verifies the checked-in witness is a genuine cap set (no three points collinear), 3 checks.</p></li></ul>")
+
+      (section-subheading math-section "Tensor rank")
+      (body-html math-section "Two programs that verify published low-rank matrix-multiplication factorizations over F_2 by exact bitset tensor contraction against every matrix-unit pair.")
+      (body-html math-section "<ul style='list-style:none;padding:0;margin:0 0 8px 0'><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_alphatensor_3x3_gf2.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_alphatensor_3x3_gf2.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Verifies DeepMind's public rank-23 factorization for 3x3 matrix multiplication over F_2, taken from the published AlphaTensor result. Uses exact bitset arithmetic over F_2 for the tensor contraction. Verifies the factorization's exact expansion against all 9x9 pairs of matrix units, 2 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_alphatensor_gf2.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_alphatensor_gf2.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Verifies DeepMind's public rank-47 factorization for 4x4 matrix multiplication over F_2. Uses exact integer bitset arithmetic for the tensor contraction, with bilinearity giving a rigorous expansion check. Verifies the factorization against all 16x16 pairs of matrix units, 3 checks.</p></li></ul>")
+
+      (section-subheading math-section "Other")
+      (body-html math-section "Two programs that do not fit the groups above: an exact Jacobian-determinant verification, and a porous-media velocity-expansion residual computation.")
+      (body-html math-section "<ul style='list-style:none;padding:0;margin:0 0 8px 0'><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_jacobian_counterexample.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_jacobian_counterexample.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Exact rational verification of a polynomial Keller map: computes its Jacobian determinant via gradient through a closure factory, including directly on exact-rational vectors, and checks its cubic-fiber description and discriminant fiber counts. Uses gradient (through comp-grad) as the primary computation, with hand-written partial derivatives kept as an independent check and to drive an exact-rational grid identity. Verifies the Jacobian determinant, the fiber description, and the discriminant counts, 12 checks.</p></li><li style='padding:14px 0;border-bottom:1px solid #27272a'><a href='https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_ipm_velocity_expansion.esk' target='_blank' rel='noopener noreferrer' style='color:#a78bfa;font-family:JetBrains Mono,monospace;font-size:0.87rem;text-decoration:none'>mathematics_ipm_velocity_expansion.esk</a><p style='color:#a0a0b8;font-size:0.85rem;line-height:1.65;margin:6px 0 0 0'>Derives the constants of a local velocity-field expansion for the two-dimensional incompressible porous media (IPM) equation and closes its residual to every order the expansion reaches. Uses derivative and derivative-n to compute the expansion's coefficients and residual terms in exact rational arithmetic. Verifies each derived constant and that the residual vanishes at every order checked, 24 checks.</p></li></ul>")
+
+      )
     (render-footer page)))
-
-;; ═══════════════════════════════════════════════════════════
-;; PAGE: DOCS
-;; ═══════════════════════════════════════════════════════════
-
-(define (render-sidebar-group parent title)
-  (let ((group (create-div parent)))
-    (web-add-class group "docs-sidebar-group")
-    (let ((t (create-text "div" title group)))
-      (web-add-class t "docs-sidebar-group-title"))
-    group))
-
-(define (render-sidebar-item parent label url)
-  (let ((item (create-text "a" label parent)))
-    (web-add-class item "docs-sidebar-item")
-    (web-set-attribute item "href" url)
-    (web-set-attribute item "data-url" url)
-    item))
 
 ;; ═══════════════════════════════════════════════════════════
 ;; PAGE: TUTORIALS
@@ -1101,51 +1216,16 @@
       (let ((sidebar (create-div layout)))
         (web-add-class sidebar "docs-sidebar")
 
-        ;; Getting Started
-        (let ((g1 (render-sidebar-group sidebar "GETTING STARTED")))
-          (render-sidebar-item g1 "First 5 Minutes" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/00_FIRST_5_MINUTES.md")
-          (render-sidebar-item g1 "Why Eshkol?" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/WHY_ESHKOL.md")
-          (render-sidebar-item g1 "Cookbook" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/COOKBOOK.md"))
-
-        ;; Feature Tutorials
-        (let ((gt (render-sidebar-group sidebar "FEATURE TUTORIALS")))
-          (render-sidebar-item gt "Autodiff & ML" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/01_AUTODIFF_AND_ML.md")
-          (render-sidebar-item gt "Bytecode VM" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/02_BYTECODE_VM.md")
-          (render-sidebar-item gt "Weight Transformer" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md")
-          (render-sidebar-item gt "Consciousness Engine" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/04_CONSCIOUSNESS_ENGINE.md")
-          (render-sidebar-item gt "Signal Processing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/05_SIGNAL_PROCESSING.md")
-          (render-sidebar-item gt "Exact Arithmetic" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/06_EXACT_ARITHMETIC.md")
-          (render-sidebar-item gt "Parallel Computing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/07_PARALLEL_COMPUTING.md")
-          (render-sidebar-item gt "Continuations" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/08_CONTINUATIONS_AND_EXCEPTIONS.md")
-          (render-sidebar-item gt "Module System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/09_MODULE_SYSTEM.md")
-          (render-sidebar-item gt "Macros" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/10_MACROS.md")
-          (render-sidebar-item gt "Tensors" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md")
-          (render-sidebar-item gt "Lists" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/12_LISTS.md")
-          (render-sidebar-item gt "Strings & I/O" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/13_STRINGS_AND_IO.md")
-          (render-sidebar-item gt "Data Formats" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/14_DATA_FORMATS.md")
-          (render-sidebar-item gt "Pattern Matching" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/15_PATTERN_MATCHING.md")
-          (render-sidebar-item gt "Hash Tables" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/16_HASH_TABLES.md")
-          (render-sidebar-item gt "Functional Programming" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/17_FUNCTIONAL_PROGRAMMING.md")
-          (render-sidebar-item gt "Web Platform" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/18_WEB_PLATFORM.md")
-          (render-sidebar-item gt "GPU Acceleration" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/19_GPU_ACCELERATION.md")
-          (render-sidebar-item gt "Bitwise & System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/20_BITWISE_AND_SYSTEM.md"))
-
-        ;; Project Tutorials
-        (let ((gp (render-sidebar-group sidebar "PROJECT TUTORIALS")))
-          (render-sidebar-item gp "Neural Network" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/21_PROJECT_NEURAL_NETWORK.md")
-          (render-sidebar-item gp "Expert System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/22_PROJECT_EXPERT_SYSTEM.md")
-          (render-sidebar-item gp "Data Pipeline" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/23_PROJECT_DATA_PIPELINE.md")
-          (render-sidebar-item gp "Optimisation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/24_PROJECT_OPTIMISATION.md")
-          (render-sidebar-item gp "Interpreter" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/25_PROJECT_INTERPRETER.md")
-          (render-sidebar-item gp "Self-Improving" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/26_PROJECT_SELF_IMPROVING.md")))
+        ;; Generated from site/pages.json by scripts/build-site-content.sh.
+        (web-load-content "/content/nav-tutorials.html" sidebar))
 
       ;; Content area
       (let ((doc-area (create-div layout)))
         (web-add-class doc-area "doc-content")
         (web-set-attribute doc-area "id" "tutorial-content-area")
 
-        ;; Load First 5 Minutes by default
-        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/tutorials/00_FIRST_5_MINUTES.md" doc-area)))))
+        ;; The view's default page; "#page=<slug>" in the address selects another.
+        (web-load-content "/content/tutorials_00_first_5_minutes.html" doc-area)))))
 
 ;; ═══════════════════════════════════════════════════════════
 ;; PAGE: DOCS
@@ -1154,6 +1234,7 @@
 (define (render-docs-page content)
   (let ((page (create-div content)))
     (style! page "paddingTop" "32px")
+    (body-text page "Start with the language guide, then use the sidebar for upgrading behavior, feature status, and design contracts for macros, nested differentiation, number syntax, and browser WebGPU.")
 
     ;; Docs layout: sidebar + content
     (let ((layout (create-div page)))
@@ -1163,56 +1244,8 @@
       (let ((sidebar (create-div layout)))
         (web-add-class sidebar "docs-sidebar")
 
-        ;; Language
-        (let ((g2 (render-sidebar-group sidebar "LANGUAGE")))
-          (render-sidebar-item g2 "Language Guide" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_LANGUAGE_GUIDE.md")
-          (render-sidebar-item g2 "Automatic Differentiation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/guide/AUTOMATIC_DIFFERENTIATION.md")
-          (render-sidebar-item g2 "Language Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/reference/language/INDEX.md")
-          (render-sidebar-item g2 "Language Specification" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/COMPLETE_LANGUAGE_SPECIFICATION.md"))
-
-        ;; Reference
-        (let ((g3 (render-sidebar-group sidebar "REFERENCE")))
-          (render-sidebar-item g3 "API Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/API_REFERENCE.md")
-          (render-sidebar-item g3 "Standard Library API" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/STDLIB_V1_2_API.md")
-          (render-sidebar-item g3 "Feature Matrix" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FEATURE_MATRIX.md")
-          (render-sidebar-item g3 "Quick Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_QUICK_REFERENCE.md")
-          (render-sidebar-item g3 "Known Issues" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/KNOWN_ISSUES.md")
-          (render-sidebar-item g3 "FAQ" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FAQ.md"))
-
-        ;; Architecture
-        (let ((g4 (render-sidebar-group sidebar "ARCHITECTURE")))
-          (render-sidebar-item g4 "Architecture Overview" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_V1_ARCHITECTURE.md")
-          (render-sidebar-item g4 "Compiler Architecture" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/COMPILER_ARCHITECTURE.md")
-          (render-sidebar-item g4 "Memory Management" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/MEMORY_MANAGEMENT.md")
-          (render-sidebar-item g4 "Type System" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/TYPE_SYSTEM.md"))
-
-        ;; Topics
-        (let ((g5 (render-sidebar-group sidebar "TOPICS")))
-          (render-sidebar-item g5 "Automatic Differentiation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/AUTODIFF.md")
-          (render-sidebar-item g5 "Vector Operations" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/VECTOR_OPERATIONS.md")
-          (render-sidebar-item g5 "Machine Learning" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/MACHINE_LEARNING.md")
-          (render-sidebar-item g5 "GPU Acceleration" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/GPU_ACCELERATION.md")
-          (render-sidebar-item g5 "Consciousness Engine" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/CONSCIOUSNESS_ENGINE.md")
-          (render-sidebar-item g5 "Bytecode VM" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/BYTECODE_VM.md")
-          (render-sidebar-item g5 "Agent FFI" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/AGENT_FFI.md")
-          (render-sidebar-item g5 "Parallel Computing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/PARALLEL_COMPUTING.md")
-          (render-sidebar-item g5 "Scheme Compatibility" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/SCHEME_COMPATIBILITY.md"))
-
-        ;; Paper Artefact
-        (let ((gs (render-sidebar-group sidebar "PAPER ARTEFACT")))
-          (render-sidebar-item gs "SDNC Paper" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/SDNC.md")
-          (render-sidebar-item gs "Computable Transformer" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/COMPUTABLE_TRANSFORMER.md")
-          (render-sidebar-item gs "VM as Weight Matrices" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md"))
-
-        ;; Announcements
-        (let ((ga (render-sidebar-group sidebar "ANNOUNCEMENTS")))
-          (render-sidebar-item ga "v1.3.0-evolve: Arbitrary-Order AD" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ANNOUNCEMENT.md"))
-
-        ;; Project
-        (let ((g6 (render-sidebar-group sidebar "PROJECT")))
-          (render-sidebar-item g6 "Roadmap" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ROADMAP.md")
-          (render-sidebar-item g6 "Changelog" "https://raw.githubusercontent.com/tsotchke/eshkol/master/CHANGELOG.md")
-          (render-sidebar-item g6 "Contributing" "https://raw.githubusercontent.com/tsotchke/eshkol/master/CONTRIBUTING.md")))
+        ;; Generated from site/pages.json by scripts/build-site-content.sh.
+        (web-load-content "/content/nav-docs.html" sidebar))
 
       ;; Content area
       (let ((doc-area (create-div layout)))
@@ -1220,12 +1253,8 @@
         (web-set-attribute doc-area "id" "doc-content-area")
         (style! doc-area "minHeight" "600px")
 
-        ;; Load Language Guide by default
-        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_LANGUAGE_GUIDE.md" doc-area)
-
-        (let ((hint (create-text "p" "Select a document from the sidebar to load it." doc-area)))
-          (style! hint "color" "#71717a")
-          (style! hint "fontStyle" "italic"))))))
+        ;; The view's default page; "#page=<slug>" in the address selects another.
+        (web-load-content "/content/eshkol_language_guide.html" doc-area)))))
 
 ;; ═══════════════════════════════════════════════════════════
 ;; PAGE: DOWNLOADS
@@ -1233,11 +1262,11 @@
 
 (define (render-downloads-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. v1.3.4-evolve publishes 15 platform packages plus SHA256SUMS.txt: one verified 16-file release payload.")
+    (create-page-header page "Downloads" release-downloads-summary)
 
     ;; ── Publication status ──────────────────────────────────────
-    (section-subheading page "v1.3.4-evolve Publication")
-    (let ((status (create-text "p" "Release-ready on verified master. The immutable tag and its packages appear here once publication is authorized." page)))
+    (section-subheading page release-publication-heading)
+    (let ((status (create-text "p" "Checking release status and available downloads." page)))
       (web-set-attribute status "id" "release-status")
       (style! status "color" "#a1a1aa"))
     (let ((releases (create-div page)))
@@ -1254,8 +1283,7 @@
     ;; ── Linux ──────────────────────────────────────────────────
     (section-subheading page "Linux")
     (body-text page "Choose the x64 or ARM64 archive and the Lite, XLA, or CUDA 12.4 tier. Verify it against SHA256SUMS.txt before extraction.")
-    (create-code-block page
-      "<code style='color:#606078'># Valid after the v1.3.4-evolve tag is published</code>\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.4-evolve/eshkol-v1.3.4-evolve-linux-x64-lite.tar.gz\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.4-evolve/SHA256SUMS.txt\n<code style='color:#22c55e'>$</code> sha256sum -c SHA256SUMS.txt --ignore-missing\n<code style='color:#22c55e'>$</code> tar xzf eshkol-v1.3.4-evolve-linux-x64-lite.tar.gz")
+    (create-code-block page release-linux-install-html)
 
     ;; ── Windows ────────────────────────────────────────────────
     (section-subheading page "Windows")
@@ -1388,8 +1416,7 @@
         (style! output "whiteSpace" "pre-wrap")
 
         ;; Welcome message
-        (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.4-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+        (web-set-inner-html output release-vm-banner-html))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))
@@ -1442,12 +1469,12 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "312KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "347KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))
         (web-add-class s2 "text-center")
-        (let ((v (create-text "div" "1329KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "1335KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "VM WASM" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-card stats)))

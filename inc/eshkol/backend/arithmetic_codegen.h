@@ -105,6 +105,40 @@ public:
      */
     llvm::Value* neg(llvm::Value* operand);
 
+    // === Complex values that carry a derivative (ADR-0025) ===
+
+    /** i1: @p tagged is a real derivative carrier (jet, tape node or Taylor tower). */
+    llvm::Value* isDerivativeCarrier(llvm::Value* tagged);
+
+    /**
+     * The one constructor of a complex value from two real components. A
+     * component that is a derivative carrier is kept (the result is a carrier
+     * complex); otherwise the result is the plain pair of doubles.
+     */
+    llvm::Value* makeRectangular(llvm::Value* real, llvm::Value* imag);
+
+    /** A component of @p value as a tagged real: of a COMPLEX value its
+     *  component, of a real value the value itself or an exact-zero imaginary part. */
+    llvm::Value* complexComponent(llvm::Value* value, bool imag);
+
+    /**
+     * Wraps a binary operator's dispatch. When either operand is complex and
+     * a derivative is in play (a carrier complex, or a real carrier meeting a
+     * complex), the result is the operator's component formula evaluated by
+     * this class's own add/sub/mul/div, so every carrier flows through;
+     * otherwise @p body runs unchanged.
+     */
+    llvm::Value* withComplexCarrierDispatch(llvm::Value* left, llvm::Value* right, char op,
+                                            const std::function<llvm::Value*()>& body);
+
+    /**
+     * The component formula of complex `expt` on carriers (SW-211): installed
+     * by the code generator, which owns the value-level math functions that
+     * exp(b log a) needs. withComplexCarrierDispatch() calls it for op '^'.
+     */
+    using ComplexCarrierPowFn = std::function<llvm::Value*(llvm::Value*, llvm::Value*)>;
+    void setComplexCarrierPow(ComplexCarrierPowFn fn) { complex_carrier_pow_ = std::move(fn); }
+
     /**
      * Polymorphic absolute value: |a|
      * @param operand Operand (tagged_value)
@@ -435,6 +469,8 @@ public:
     llvm::Value* convertToDual(llvm::Value* operand, llvm::Value* is_dual, llvm::Value* is_double);
 
 private:
+    ComplexCarrierPowFn complex_carrier_pow_;
+
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
     TensorCodegen& tensor_;

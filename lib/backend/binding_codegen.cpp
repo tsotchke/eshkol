@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/backend/binding_codegen.h>
+#include <eshkol/backend/static_callee_binding.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/llvm_backend.h>      // for eshkol_repl_mark_user_variable
 
@@ -377,59 +378,44 @@ Value* BindingCodegen::storeBinding(
 }
 
 /**
- * @brief Register a `<var>_func` alias so direct calls can resolve a bound lambda by name.
+ * @brief Record, or refuse, the `<var>_func` alias of a lambda binding.
  *
- * Looks up @p lambda_name in the function table and, if found, records it
- * under the key `<var_name>_func`. When generating inside a function (a
- * nested define), the entry is stored under a function-scoped key
- * (`<current_func>.` + `<var_name>_func`) in both the local and global
- * symbol tables — the unscoped key is deliberately NOT added to the global
- * table so same-named nested helpers in different enclosing functions don't
- * clobber each other. At top level, both the local and global symbol tables
- * get the unscoped key.
+ * Looks up @p lambda_name in the function table and hands it to
+ * bindStaticCallee() (static_callee_binding.h) together with the binding's
+ * current storage. Inside a function the alias is stored under both the
+ * unscoped key and a function-scoped key (`<current_func>.<var_name>_func`);
+ * only the scoped key goes to the global table, so same-named nested helpers
+ * in different enclosing functions don't clobber each other. At top level,
+ * both tables get the unscoped key.
+ *
+ * A reassigned binding (the target of a set! in its scope, or a redefined
+ * top-level name) gets no alias: the lambda it was created with is not what
+ * the name denotes after the assignment, so every static fast path must
+ * dispatch on the runtime value instead.
  *
  * @param var_name Scheme variable name the lambda is bound to.
  * @param lambda_name LLVM function name of the already-generated lambda.
+ * @param reassigned Whether the binding is reassigned in its scope.
  */
-void BindingCodegen::registerLambdaBinding(const std::string& var_name, const std::string& lambda_name) {
+void BindingCodegen::registerLambdaBinding(const std::string& var_name, const std::string& lambda_name,
+                                           bool reassigned) {
     if (!function_table_) return;
 
     auto it = function_table_->find(lambda_name);
-    if (it == function_table_->end()) return;
-
-    Function* lambda_func = it->second;
-    std::string func_key = var_name + "_func";
+    Function* lambda_func = it == function_table_->end() ? nullptr : it->second;
     Function* current = getCurrentFunction(current_function_);
 
-    // NESTED DEFINE SCOPING FIX: For nested defines (inside a function), only store
-    // in local symbol_table with scoped key. Do NOT add unscoped key to global_symbol_table
-    // because it would be overwritten by other functions with same-named nested helpers.
-    if (current) {
-        // Inside a function - this is a nested define
-        std::string scoped_key = current->getName().str() + "." + func_key;
-
-        // Add to local symbol table with both scoped and unscoped keys
-        // The unscoped key is for direct calls within the same function
-        if (symbol_table_) {
-            (*symbol_table_)[func_key] = lambda_func;
-            (*symbol_table_)[scoped_key] = lambda_func;
-        }
-
-        // Only add SCOPED key to global - the unscoped would conflict with other functions
-        if (global_symbol_table_) {
-            (*global_symbol_table_)[scoped_key] = lambda_func;
-        }
-
-        eshkol_debug("BindingCodegen: registered nested lambda %s (scoped: %s) -> %s",
-                     func_key.c_str(), scoped_key.c_str(), lambda_name.c_str());
-    } else {
-        // Top-level define - add to both tables
-        if (symbol_table_) (*symbol_table_)[func_key] = lambda_func;
-        if (global_symbol_table_) (*global_symbol_table_)[func_key] = lambda_func;
-
-        eshkol_debug("BindingCodegen: registered top-level lambda %s -> %s",
-                     func_key.c_str(), lambda_name.c_str());
+    Value* storage = nullptr;
+    if (symbol_table_) {
+        auto storage_it = symbol_table_->find(var_name);
+        if (storage_it != symbol_table_->end()) storage = storage_it->second;
     }
+
+    if (!lambda_func && !reassigned) return;
+    const bool recorded = eshkol::bindStaticCallee(symbol_table_, global_symbol_table_, current,
+                                                   var_name, lambda_func, storage, reassigned);
+    eshkol_debug("BindingCodegen: %s static alias for %s -> %s", recorded ? "recorded" : "refused",
+                 var_name.c_str(), lambda_name.c_str());
 }
 
 /**
@@ -505,6 +491,12 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     // Top-level defines in main should always be global, not local
     bool use_global = !current || is_global_init || is_lib_init || is_repl ||
                       is_main || is_outlined_top_level_init;
+    // A top-level binding's scope is the whole compilation unit, which the
+    // codegen has already scanned for set! targets and redefinitions. A
+    // define nested elsewhere has no scope this function can inspect, so its
+    // lambda is never given a static alias (static_callee_binding.h).
+    const bool binding_reassigned =
+        use_global ? isReassignedTopLevelName(var_name) : true;
 
     if (is_lambda) {
         if (use_global) {
@@ -602,7 +594,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     // 1. The value is a runtime closure, not a compile-time function pointer
     // 2. The actual function to call depends on the closure's captured environment
     // 3. Calls to such variables must go through codegenClosureCall at runtime
-    if (is_lambda && is_func_value && register_func_binding_callback_) {
+    if (is_lambda && is_func_value && !binding_reassigned && register_func_binding_callback_) {
         register_func_binding_callback_(var_name, typed_ptr, callback_context_);
     }
 
@@ -687,7 +679,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
 
     // Register lambda if applicable
     if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
-        registerLambdaBinding(var_name, *last_generated_lambda_name_);
+        registerLambdaBinding(var_name, *last_generated_lambda_name_, binding_reassigned);
     }
 
     return tagged_val;
@@ -828,7 +820,7 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
 
         // Register lambda if applicable
         if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
-            registerLambdaBinding(var_name, *last_generated_lambda_name_);
+            registerLambdaBinding(var_name, *last_generated_lambda_name_, assignment_converted);
         }
 
         eshkol_debug("let: bound %s", var_name.c_str());
@@ -1170,7 +1162,7 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     for (size_t j = 0; j < lambda_indices.size(); j++) {
         size_t i = lambda_indices[j];
         if (!use_local_storage && !lambda_names[j].empty()) {
-            registerLambdaBinding(var_names[i], lambda_names[j]);
+            registerLambdaBinding(var_names[i], lambda_names[j], assignment_converted[i]);
             eshkol_debug("letrec: registered lambda binding %s -> %s", var_names[i].c_str(), lambda_names[j].c_str());
         }
     }
@@ -1395,7 +1387,7 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
 
         // Register lambda if applicable
         if (is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
-            registerLambdaBinding(var_name, *last_generated_lambda_name_);
+            registerLambdaBinding(var_name, *last_generated_lambda_name_, assignment_converted);
         }
 
         eshkol_debug("let*: bound %s", var_name.c_str());
@@ -1647,7 +1639,7 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
         // bindings can use them. Local letrec* closures must stay indirect
         // through their activation-local storage cell.
         if (!use_local_storage && is_lambda && last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
-            registerLambdaBinding(var_name, *last_generated_lambda_name_);
+            registerLambdaBinding(var_name, *last_generated_lambda_name_, assignment_converted[i]);
             eshkol_debug("letrec*: registered lambda binding %s -> %s", var_name.c_str(), last_generated_lambda_name_->c_str());
         }
     }

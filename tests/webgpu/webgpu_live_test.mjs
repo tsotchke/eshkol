@@ -90,10 +90,20 @@ try {
                 assert(Object.is(gpu[i], cpu[i]),
                        `GEMM mismatch at ${i}: ${gpu[i]} !== ${cpu[i]}`);
             }
-            return backend.dispatchHistory.slice(before);
+            return {
+                dispatches: backend.dispatchHistory.slice(before),
+                output: Array.from(gpu),
+                marker: backend.executionMarker,
+                dispatchCount: backend.dispatchCount
+            };
         }
 
         const small = await gemm(8, 8, 8, () => 1, () => 1);
+        assert.equal(small.output.filter((value) => value !== 0).length, 64);
+        assert(small.output.every((value) => Object.is(value, 8)),
+               '8x8 all-ones GEMM was not exactly 8 in every output cell');
+        assert.equal(small.marker, 1);
+        assert.equal(small.dispatchCount, 1);
         /* Non-integer operands: only a true f64 path is bit-identical. */
         const nonsquare = await gemm(3, 5, 7, (i) => ((i % 5) - 2) / 3,
                                      (i) => ((i % 7) - 3) / 7 + 1e-9);
@@ -117,7 +127,8 @@ try {
         assert.equal(overLimit.length, 2);
         assert.equal(overLimit[0].x, limit);
         assert.equal(overLimit[1].x, 1);
-        for (const dispatch of [...small, ...nonsquare, ...atLimit, ...overLimit]) {
+        for (const dispatch of [...small.dispatches, ...nonsquare.dispatches,
+                                ...atLimit, ...overLimit]) {
             assert(dispatch.x <= limit && dispatch.y <= limit && dispatch.z <= limit,
                    `oversized dispatch: ${JSON.stringify(dispatch)}`);
         }
@@ -139,14 +150,16 @@ try {
         ]);
         const imported = new WebAssembly.Suspending(async () => 7);
         const instance = await WebAssembly.instantiate(wasm, { env: { suspend: imported } });
-        const callback = G.promisingEntry(instance.instance.exports.table.get(0));
+        const callback = G.promisingTableEntry(instance.instance.exports.table, 0);
         assert.equal(await callback(), 7);
 
         return {
             limit,
             tier: backend.precision,
-            smallDispatches: small.length,
-            nonsquareDispatches: nonsquare.length,
+            smallDispatches: small.dispatches.length,
+            nonsquareDispatches: nonsquare.dispatches.length,
+            smallMarker: small.marker,
+            smallNonzero: small.output.filter((value) => value !== 0).length,
             boundaryDispatches: `${atLimit.length}/${overLimit.length}`,
             callback: 7,
             dispatchCount: backend.dispatchCount,
@@ -156,6 +169,8 @@ try {
     console.log('LIVE WebGPU initialization complete tier=' + result.tier +
                 ' maxComputeWorkgroupsPerDimension=' + result.limit);
     console.log('LIVE GEMM 8x8 exact CPU reference dispatches=' + result.smallDispatches);
+    console.log('LIVE GEMM 8x8 marker=' + result.smallMarker +
+                ' nonzero=' + result.smallNonzero + '/64');
     console.log('LIVE GEMM 3x5*5x7 fractional, bit-identical to CPU reference dispatches=' + result.nonsquareDispatches);
     console.log('LIVE dispatch boundary 65535/65536 workgroups=' + result.boundaryDispatches);
     console.log('LIVE JSPI table callback suspension result=' + result.callback);

@@ -33,7 +33,9 @@ is at (1, 1) but the valley is narrow and curved — hard for optimisers.
 (display "=== Rosenbrock Optimisation ===") (newline)
 (display "Starting at (0, 0):") (newline)
 (optimise-gd 0.0 0.0 0.001 10000)
-;; Should converge near (1, 1) with f ~ 0
+;; => Minimum at: (0.994..., 0.988...)
+;; => f(x,y) = 3.1...e-05
+;; Converges towards (1, 1) with f ~ 0
 ```
 
 ---
@@ -77,9 +79,9 @@ Newton steps: x_new = x - H^(-1) * grad.
 (define (mse a b c)
   (fold-left + 0.0
     (map (lambda (point)
-           (let ((x (car point))
-                 (y (cadr point))
-                 (pred (model a b c x)))
+           (let* ((x (car point))
+                  (y (cadr point))
+                  (pred (model a b c x)))
              (* (- pred y) (- pred y))))
          data)))
 
@@ -98,7 +100,9 @@ Newton steps: x_new = x - H^(-1) * grad.
 
 (display "=== Quadratic Fit ===") (newline)
 (fit 0.0 0.0 0.0 0.0001 5000)
-;; Should converge near a=1, b=1, c=1 (y = x^2 + x + 1)
+;; => Fitted: 0.828...x^2 + 0.899...x + 1.025...
+;; => MSE: 0.0183...
+;; Heading towards a=1, b=1, c=1 (y = x^2 + x + 1)
 ```
 
 ---

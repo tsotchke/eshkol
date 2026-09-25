@@ -1,0 +1,10 @@
+;; swish on both engines: (swish x [beta]) = x * sigmoid(beta * x), a number
+;; or a tensor like x, with derivatives through the number case.
+(display (swish 1.0)) (newline)
+(display (swish -1.5)) (newline)
+(display (swish 1.0 2.0)) (newline)
+(display (swish 2)) (newline)
+(display (swish #(0.0 1.0))) (newline)
+(display (swish #(0.0 1.0) 2.0)) (newline)
+(display (derivative swish 1.0)) (newline)
+(display (derivative (lambda (x) (swish x 2.0)) 0.5)) (newline)

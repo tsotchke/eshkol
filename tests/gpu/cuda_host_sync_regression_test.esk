@@ -7,9 +7,6 @@
 
 (extern i32 gpu-init :real eshkol_gpu_init)
 (define gpu-ready (gpu-init))
-(when (= gpu-ready 0)
-  (display "SKIP: no active GPU backend; validating CPU fallback only")
-  (newline))
 
 (define N 8)
 (define size (* N N))
@@ -48,5 +45,7 @@
 (newline)
 
 (if ok
-    (begin (display "PASS: cuda_host_sync_regression_test") (newline) (exit 0))
+    (if (= gpu-ready 0)
+        (begin (display "SKIP: no active GPU backend; CPU fallback checked") (newline) (exit 0))
+        (begin (display "PASS: cuda_host_sync_regression_test") (newline) (exit 0)))
     (begin (display "FAIL: cuda_host_sync_regression_test") (newline) (exit 1)))

@@ -351,6 +351,33 @@ void eshkol_type_error_with_operand(const char* proc_name,
                                     const eshkol_tagged_value_t* actual);
 
 /**
+ * @brief Raise a runtime arity-contract violation (ESHKOL_EXCEPTION_ARITY_ERROR).
+ *
+ * The runtime counterpart of the compile-time arity guards: used where the
+ * argument count is only known at run time (a list spread by `apply` into a
+ * fixed-arity closure). The message is rendered by the canonical formatter in
+ * <eshkol/core/arity_contract.h>, so it carries the "Arity mismatch: " class
+ * marker both engines share and a `guard` sees an arity error, not a type
+ * error. Does not return.
+ *
+ * @param proc_name Public name of the callee, or NULL when the callee is an
+ *        anonymous procedure value (rendered as "<procedure>").
+ * @param expected  Number of arguments the callee requires.
+ * @param got       Number of arguments the call supplied.
+ */
+void eshkol_arity_mismatch_error(const char* proc_name, int64_t expected, int64_t got);
+
+/**
+ * @brief True when a condition raised now would be caught by an installed
+ *        handler (`guard` / `with-exception-handler`).
+ *
+ * Runtime error sites report to stderr only when this is false: a caught
+ * condition prints nothing, an uncaught one is reported before the process
+ * exits.
+ */
+int eshkol_raise_will_be_handled(void);
+
+/**
  * @brief Raise a shape error for an element-wise binary operation whose two
  * operands cannot be broadcast against one another.
  *

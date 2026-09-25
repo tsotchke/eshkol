@@ -14,7 +14,7 @@
 (edge-check-g1459)
 
 ;; check parallel_map_squares__in__set_bang_lambda_store
-(define (edge-check-g1460) (edge-chk "parallel_map_squares__in__set_bang_lambda_store" (let ((swg1460 #f)) ((lambda () (set! swg1460 (parallel-map (lambda (pm) (* pm pm)) (list 1 2 3))))) swg1460) (list 1 4 9)))
+(define (edge-check-g1460) (edge-chk "parallel_map_squares__in__set_bang_lambda_store" (let ((slg1460 #f)) ((lambda () (set! slg1460 (parallel-map (lambda (pm) (* pm pm)) (list 1 2 3))))) slg1460) (list 1 4 9)))
 (edge-check-g1460)
 
 ;; check parallel_map_squares__in__set_bang_set_twice

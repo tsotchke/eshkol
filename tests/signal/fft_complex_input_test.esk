@@ -1,0 +1,73 @@
+;;; signal.fft_complex_input -- SW-184: every transform of a complex input.
+;;;
+;;; lib/signal/fft.esk wrapped a length-1 base case as (make-rectangular x 0.0)
+;;; whenever `(number? x)`. A complex value is a number, so a complex element
+;;; became the real part of a new complex number, which is 0; every transform
+;;; of a complex input -- the second half of `ifft`, and so `fast-convolve` --
+;;; came out all zeros. The module is what the bytecode VM, the precompiled
+;;; stdlib and an uncached `eshkol-run -r` that requires signal.fft all run, so
+;;; the round trip and fast-convolve were zeros there while the native builtin
+;;; (used by AOT and the cached run path) was right.
+
+(require signal.fft)
+(require signal.filters)
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+(define tol 1e-9)
+(define (near? a b) (< (magnitude (- a b)) tol))
+(define (all-near? v expected)
+  (let loop ((i 0) (ok (= (vector-length v) (length expected))) (e expected))
+    (if (or (not ok) (null? e))
+        ok
+        (loop (+ i 1) (near? (vref v i) (car e)) (cdr e)))))
+
+;; the reported program
+(define rt (ifft (fft #(1.0 2.0 3.0 4.0))))
+(check "ifft (fft #(1 2 3 4)) recovers 1 2 3 4" (all-near? rt (list 1 2 3 4)))
+
+;; the spectrum itself (a real input)
+(check "fft #(1 2 3 4) is #(10 -2+2i -2 -2-2i)"
+       (all-near? (fft #(1.0 2.0 3.0 4.0))
+                  (list 10 (make-rectangular -2 2) -2 (make-rectangular -2 -2))))
+
+;; a complex input: fft of fft is N times the index-reversed signal
+(define spec (fft (vector 1.0 2.0 3.0 4.0)))
+(check "fft of a complex vector is 4 * x[-n]"
+       (all-near? (fft spec) (list 4 16 12 8)))
+(check "fft of a two-element complex vector"
+       (all-near? (fft (vector (make-rectangular 1.0 1.0) (make-rectangular 2.0 0.0)))
+                  (list (make-rectangular 3 1) (make-rectangular -1 1))))
+(check "fft of a one-element complex vector keeps it"
+       (all-near? (fft (vector (make-rectangular 1.5 -2.5))) (list (make-rectangular 1.5 -2.5))))
+
+;; round trips at length 8, real and complex
+(define x8 (vector 0.5 1.5 2.5 3.5 4.5 3.5 2.5 1.5))
+(check "length-8 real round trip"
+       (all-near? (ifft (fft x8)) (list 0.5 1.5 2.5 3.5 4.5 3.5 2.5 1.5)))
+(define z4 (vector (make-rectangular 1 2) (make-rectangular -3 0.5) 2.0 (make-rectangular 0 -1)))
+(check "length-4 complex round trip"
+       (all-near? (ifft (fft z4))
+                  (list (make-rectangular 1 2) (make-rectangular -3 0.5) 2 (make-rectangular 0 -1))))
+
+;; the round trip inside a user function (the documented form)
+(define (roundtrip a) (ifft (fft a)))
+(check "round trip through a user function" (all-near? (roundtrip #(1.0 2.0 3.0 4.0)) (list 1 2 3 4)))
+
+;; fast-convolve (precompiled stdlib) agrees with the direct convolve
+(check "fast-convolve #(1 2 3 4 5) #(1 1 1) = #(1 3 6 9 12 9 5)"
+       (all-near? (fast-convolve #(1.0 2.0 3.0 4.0 5.0) #(1.0 1.0 1.0)) (list 1 3 6 9 12 9 5)))
+(check "fast-convolve #(1 2 3) #(1 1) = #(1 3 5 3)"
+       (all-near? (fast-convolve #(1.0 2.0 3.0) #(1.0 1.0)) (list 1 3 5 3)))
+(define a8 (vector 1.0 -2.0 3.0 0.5 4.0 -1.0 2.0 0.0))
+(define b3 (vector 0.25 0.5 0.25))
+(check "fast-convolve equals convolve on a length-8 signal"
+       (all-near? (fast-convolve a8 b3) (vector->list (convolve a8 b3))))
+
+(newline)
+(display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)

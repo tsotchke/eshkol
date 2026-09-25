@@ -62,7 +62,7 @@
 ;;      the torus does not (22 and 22). S_3 has a rigid torsor on the Klein
 ;;      bottle.
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples (with-region per
+;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed (with-region per
 ;; unit of work; integer keys; no vector-scalar arithmetic).
 
 (require stdlib)

@@ -76,11 +76,11 @@ control jumps via continuations:
 ;; Raise and catch an exception
 (guard (exn
         (#t (display "Caught: ")
-            (display (condition-message exn))
+            (display (error-object-message exn))
             (newline)))
   (display "Before error")
   (newline)
-  (raise (make-exception 'error "something went wrong"))
+  (error "something went wrong")
   (display "This never runs")
   (newline))
 
@@ -92,18 +92,19 @@ control jumps via continuations:
 ### Custom Exception Types
 
 ```scheme
-;; Define domain-specific exceptions
+;; `raise` accepts any value, so a symbol is enough to name a
+;; domain-specific exception
 (define (divide a b)
   (if (= b 0)
-      (raise (make-exception 'divide-by-zero "division by zero"))
+      (raise 'divide-by-zero)
       (/ a b)))
 
 (guard (exn
-        ((eq? (condition-type exn) 'divide-by-zero)
+        ((eq? exn 'divide-by-zero)
          (display "Cannot divide by zero!")
          (newline)
          0))
-  (display (divide 10 3))  ;; => 3.333...
+  (display (divide 10 3))  ;; => 10/3 (exact: see Tutorial 6)
   (newline)
   (display (divide 10 0))  ;; raises, caught by guard
   (newline))
@@ -115,9 +116,9 @@ control jumps via continuations:
 (guard (outer-exn
         (#t (display "Outer caught it")))
   (guard (inner-exn
-          ((eq? (condition-type inner-exn) 'recoverable)
+          ((eq? inner-exn 'recoverable)
            (display "Inner recovered")))
-    (raise (make-exception 'fatal "boom"))))
+    (raise 'fatal)))
 ;; => Outer caught it
 ;; (inner guard didn't match 'fatal, so it re-raised to outer)
 ```

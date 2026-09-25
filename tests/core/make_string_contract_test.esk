@@ -1,0 +1,33 @@
+;;; make_string_contract_test.esk
+;;;
+;;; (make-string k [char]) (R7RS 6.7) on every engine: k copies of the fill,
+;;; a space when it is omitted, a non-ASCII fill repeated whole; k must be an
+;;; exact non-negative integer and the fill a character, or the call raises
+;;; a catchable error. Native used to read a string length as a machine word
+;;; (a fault) and truncate the fill to a byte; the VM answered "" or spaces.
+
+(define failures 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "ok: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " expected ") (write expected)
+             (display " got ") (write actual) (newline))))
+(define-syntax raises?
+  (syntax-rules () ((_ e) (guard (c (#t 'raised)) e 'no-raise))))
+
+(check "fill"                 "xxx" (make-string 3 #\x))
+(check "default fill"         "   " (make-string 3))
+(check "empty"                ""    (make-string 0 #\x))
+(check "non-ASCII fill"       2     (string-length (make-string 2 #\λ)))
+(check "non-ASCII fill bytes" "λλ" (make-string 2 #\λ))
+(check "string length raises"   'raised (raises? (make-string "xyz")))
+(check "negative length raises" 'raised (raises? (make-string -1)))
+(check "inexact length raises"  'raised (raises? (make-string 2.0 #\a)))
+(check "string fill raises"     'raised (raises? (make-string 2 "ab")))
+(check "number fill raises"     'raised (raises? (make-string 2 65)))
+
+(if (= failures 0)
+    (begin (display "PASS: make-string contract -- 0 failures") (newline))
+    (begin (display "FAIL: make-string contract -- ") (display failures) (newline)))

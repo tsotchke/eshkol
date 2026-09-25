@@ -1,13 +1,153 @@
 # ESKM subsystem status and week 12 handoff
 
-**Tensor-dispatch update, 2026-09-09:** #555 has merged to master, carrying
-#601/#602 and unifying public native/VM tensor I/O on ESKM. The ESKT results
-below describe #615's pre-#555 baseline, not current-master compatibility.
-The replacement gate is `eskm_tensor_engine_parity` in
-`scripts/run_eskm_tensor_engine_parity.py`: the same three valid shapes and
-16 pairs, now checked against the normative ESKM single-record layout and
-CRC. Historical fixture comparisons independently check its byte oracle.
-This update does not accept the v2 or scalar/empty VM proposals.
+## Current checkpoint — 2026-09-23
+
+The public master baseline is `c3372a49`; the pending v1.3.5 release candidate
+is `2bed1aa9` in [#628](https://github.com/tsotchke/eshkol/pull/628). Inclusion
+in that candidate is not a claim that a change has reached master or shipped.
+
+| Work | Current disposition | Next action |
+|---|---|---|
+| V1 specification, corpus, loader preflight, fuzz campaign | On master through #596 and #555 (carrying #601/#602) | Keep the corpus immutable and retain integrated validation |
+| Model parity, atomic saves, isolated forward-reference runner | On master through #612 (carrying #597/#600/#598) | Maintain cross-engine and platform evidence |
+| Public tensor parity | On master through #620, superseding #617 | Keep testing the public ESKM dispatch |
+| Scalar/empty VM materialization | #698 closed as included in pending #628 | Verify the final merged release SHA; no replacement PR is needed |
+| Private v2 validator | #699 closed as included in pending #628 | Public v2 remains experimental and the format decision remains Proposed |
+| Default v2 preflight runner | Integration regression repaired in [#718](https://github.com/tsotchke/eshkol/pull/718) | Land the small runner fix |
+| Fresh release build | Missing `<cstring>` prerequisite repaired in [#719](https://github.com/tsotchke/eshkol/pull/719) | Land the include fix |
+
+The immediate contributor work is experimental v2 reader/writer integration,
+explicit admission and cleanup evidence, and a separate constructor/handler
+allocation-hardening follow-up. The latter preserves the release's promotion
+transaction: #714's parameter publication fix and failpoint approach were
+incorporated, while its alternative transaction was not. The maintainer
+explicitly invited the remaining allocation checks as a separate post-release
+PR. Do not reintroduce the superseded transaction when porting those checks.
+
+### Integrated Linux verification
+
+Fresh build source: release `2bed1aa9` plus runner fix `5af6cdc4` and parser
+include fix `7e989f35`. Linux x86-64, Clang 22.1.6 and LLVM 21.1.8; Release
+configuration, optional BLAS/GPU/quantum/agent FFI disabled. These results are
+separate from the September 17 evidence and from experimental v2 changes.
+
+- PASS: native model I/O, VM fail-closed/scalar/empty tests, atomic file helper,
+  private v2 C/C++ tests and fixture oracle, public tensor parity and its oracle.
+- PASS: v1 six-fixture four-engine model matrix and negative controls, including
+  scalar/empty rewrites, single-tensor routes, and lifetime cases.
+- PASS: atomic-save replacement, failure, symlink and concurrent-writer checks
+  across native JIT/AOT and VM source/bytecode. The full focused selection was
+  11/11 CTests (261 seconds including initial standard-library compilation).
+- PASS: standalone v2 runner with GCC defaults and Clang ASan/UBSan; 504 C
+  assertions, C++ consumer, three exact-byte goldens and negative controls.
+- PASS: fresh ASan/UBSan runtime fuzz campaign with leak detection, seed
+  `0x5eed5eed`, 700 inputs plus harness self-tests; zero failures and no failure
+  artifacts. ASan's virtual-address requirements mean this run has no address-
+  space cap and is not substituted for the separate bounded campaign.
+- PASS: a separate unsanitized 700-input campaign with the same seed and harness
+  self-tests, a 256 MiB address-space cap per probe, and zero failures/artifacts.
+  Both campaigns used isolated trace paths and did not overwrite release evidence.
+
+Reproduction commands, from that source checkout:
+
+```sh
+ctest --test-dir build --output-on-failure -j2 -R '^(model_io_test|vm_model_io_fail_closed_test|atomic_checkpoint_file_test|eskm_v2_preflight_test|eskm_v2_preflight_cpp_test|eskm_v2_fixture_oracle_test|eskm_tensor_engine_parity|eskm_tensor_oracle_self_test|eskm_v1_model_load_engine_parity|eskm_v1_model_load_engine_parity_selftest|atomic_checkpoint_save_test)$'
+CC=gcc CXX=g++ bash scripts/run_eskm_v2_preflight_tests.sh
+CC=clang CXX=clang++ ESKM_V2_SANITIZE=1 bash scripts/run_eskm_v2_preflight_tests.sh
+python3 scripts/run_eskm_model_fuzz.py --full --self-test --seed 0x5eed5eed --memory-mb 256 --probe build-fuzz/tests/fuzz/eskm_model_fuzz_probe --trace-file build-fuzz/eskm-fuzz-trace.jsonl
+ASAN_OPTIONS=detect_leaks=1 python3 scripts/run_eskm_model_fuzz.py --full --self-test --seed 0x5eed5eed --memory-mb 0 --probe build-fuzz-asan/tests/fuzz/eskm_model_fuzz_probe --trace-file build-fuzz-asan/eskm-fuzz-trace.jsonl
+```
+
+The fuzz builds use `ESHKOL_ENABLE_FUZZ=ON`; the sanitizer build additionally
+uses `ESHKOL_FUZZ_ASAN=ON`. Fixture-integrity self-tests, the coverage inventory,
+shell syntax and whitespace checks also pass.
+
+Native macOS/Windows execution, power-loss durability, browser checkpoint I/O,
+and the full repository test suite are not established by these Linux checks.
+The existing atomic-save guarantee remains process-level replacement.
+
+## Historical checkpoint — 2026-09-17
+
+Source baseline: `upstream/master` at `0901264c`. This status update separates
+landed code from remaining packet acceptance; it does not rerun or relabel the
+historical evidence below.
+
+| Packet / follow-up | Landed disposition | Remaining work |
+|---|---|---|
+| GK-SER-01 | [#596](https://github.com/tsotchke/eshkol/pull/596) merged (`665e60c0`): normative v1 contract and immutable corpus | Local six-fixture matrix passes with the prepared scalar/empty adapter; maintainer acceptance pending |
+| GK-SER-02 / GK-SER-06 | [#555](https://github.com/tsotchke/eshkol/pull/555) merged (`ce747881`), carrying #602 preflight and #601 bounded campaign | Current integrated evidence and explicit backend resource limits remain separate from the archived reports |
+| GK-SER-03 / GK-SER-04 | #597/#600 closed as carried into [#612](https://github.com/tsotchke/eshkol/pull/612), merged 2026-09-14 UTC (`0c0436d5`) | Scalar/empty parity now verified locally; platform evidence and any stronger durability contract remain |
+| Public tensor parity | #615 merged; [#620](https://github.com/tsotchke/eshkol/pull/620) (`a1157d42`) adapts the gate to ESKM dispatch and supersedes #617 | Prepared adapter adds all five single-record fixtures through each engine |
+| GK-SER-05 | #613 merged as a **Proposed** v2 decision (`26bd0c0a`) | Byte-level/cap acceptance, then implementation and compatibility evidence |
+| Scalar/empty VM adapter | #614 merged as a **Proposed** design (`c78d73c6`) | Implementation and local evidence prepared for review; maintainer acceptance pending |
+| Handoff | #616 merged (`57c84092`); its September 8 evidence is preserved below | Keep current results distinct from historical packet-head results |
+
+Both native and VM public `tensor-save`/`tensor-load` use ESKM v1 after #555.
+The current public gate is `eskm_tensor_engine_parity`; the old ESKT reports
+below describe the pre-#555 baseline. The model parity runner also invokes
+`check_eskm_v1_fixtures.py`, so historical fixture integrity is already checked
+through the registered parity gate.
+
+The prepared implementation is the serialization-local scalar/empty VM
+adapter, coordinated with whole-file preflight and narrow native/VM observation
+guards. Its review must accept the representation/lifetime contract in
+[`ESKM_V1_VM_MATERIALIZATION.md`](../design/ESKM_V1_VM_MATERIALIZATION.md).
+The target is all six valid model fixtures across four engines, all 16
+producer/consumer pairs, public single-tensor routes and positive lifetime
+checks. V2 stays Proposed and is not part of that slice.
+
+### Local implementation evidence
+
+Linux x86-64, Clang 22.1.6, LLVM 21.1.8, fresh Release build from `0901264c`
+plus this change; optional BLAS, GPU, quantum and agent FFI disabled. LLVM 21
+was unpacked in the ignored build tree without changing the system toolchain.
+The original contributor checkout and its uncommitted draft were preserved.
+
+- **PASS:** the expanded model gate: six valid historical fixtures × four
+  producers × four consumers (96 pairs), plus the existing constructed-model
+  matrix. Every output is compared byte-for-byte to its golden fixture.
+- **PASS:** 20 public single-tensor cases and 16 scalar/empty function/region
+  lifetime cases across JIT, AOT, VM source and VM bytecode.
+- **PASS:** 16 negative controls, including wrong expected scalar shape and
+  payload. These alter test expectations or reuse existing valid fixtures;
+  the immutable corpus remains unchanged.
+- **PASS:** focused C representation/region tests, including rank-9 empty
+  dimensions, exact rewrites, and preservation of scalar arithmetic refusal.
+- **PASS:** focused CTest selection, 8/8: model I/O, VM preflight/representation,
+  atomic checkpoint helper, tensor operand classification, generated-artifact
+  validators, current VM prelude cache, public tensor parity and its oracle.
+- **PASS:** fixture integrity and payload-drift self-test, generated API docs,
+  public API documentation, coverage inventory, shell syntax and whitespace.
+- **Regression control:** an independently compiled VM translation unit from
+  unchanged `0901264c`, linked against the same runtime build, fails the new
+  positive producer test at both scalar and empty model loading (exit 1).
+  The changed VM passes that same test.
+
+Reproduce the primary gate and its controls:
+
+```bash
+bash scripts/run_eskm_v1_model_load_parity.sh build/eshkol-run build/eshkol-vm-standalone-test
+bash scripts/run_eskm_v1_model_load_parity.sh --self-test build/eshkol-run build/eshkol-vm-standalone-test
+```
+
+Review follow-up: native `tensor-length` assertions are restored in the
+four-engine fixture gate and both matrix runs pass. The browser VM bundle was
+regenerated with the repository-pinned Emscripten 4.0.22 recipe; its 9/9 REPL
+transcript cases, 3/3 math/AD/tensor smoke cases, and site-release verifier pass.
+The attempted browser checkpoint-I/O probe reaches the documented unsupported
+`eshkol_capability_require` stub, so this supplies no WASM checkpoint parity
+claim. The published bundle-size statistic matches the regenerated artifact.
+
+Native macOS/Windows, the full repository test suite and fresh sanitizer/resource
+campaigns are **NOT RUN**. No packet or design is marked
+maintainer-accepted merely because local tests pass.
+
+## Historical handoff — 2026-09-08
+
+All remaining sections describe the pinned September 8 snapshot, including its
+then-open PRs, blockers, ESKT dispatch and proposed sequence. The current
+checkpoint above supersedes those statuses; historical test reports and hashes
+are retained unchanged and do not establish results on `0901264c`.
 
 Snapshot: 2026-09-08 UTC. Owner: [Gabriel-Kahen](https://github.com/Gabriel-Kahen).
 This consolidates the personal serialization assignment from
@@ -267,6 +407,8 @@ changes, recompile and record the new SHA; do not relabel these results.
 
 ## Open risks and unmet roadmap acceptance
 
+Historical September 8 risks; see the current checkpoint above for disposition.
+
 1. **Review/integration:** #555 and every packet PR remain open, with inherited
    generated-document conflicts on the #555/#601/#602 stack. Independent
    passing reports do not show that a combined master build passes. Record
@@ -300,6 +442,8 @@ changes, recompile and record the new SHA; do not relabel these results.
    evidence and the next approved implementation milestone remain outstanding.
 
 ## Prioritized next six months
+
+Historical September 8 sequence; the current next slice is recorded above.
 
 Sequence around the roadmap's approximately 10-hour week and review latency;
 these are proposed priorities, not delivery promises or release assignments.

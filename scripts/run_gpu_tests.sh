@@ -3,55 +3,11 @@
 # Eshkol GPU Test Suite
 # Runs all GPU and softfloat tests
 #
-# ─────────────────────────────────────────────────────────────────────────
-# VERDICT CONTRACT — read this before touching the marker regexes below or
-# in scripts/lib/test_isolation.sh.
-#
-#   1. EXIT CODE IS THE VERDICT, PRIMARY. Every tests/gpu/*.esk program must
-#      exit non-zero if any check inside it failed, and 0 only if every
-#      check passed. A non-zero exit is always graded RUNTIME FAIL here,
-#      full stop, regardless of what the program printed.
-#
-#   2. Per-check marker grammar — diagnostic, and a backstop, not the
-#      verdict channel: after stripping leading whitespace, a line of the
-#      form
-#          PASS: <description>
-#          FAIL: <description> [... extra detail]
-#      Every tests/gpu/*.esk file emits this so a human (or this script's
-#      own summary) can see WHICH check inside a multi-check file failed.
-#      Matching is intentionally unanchored (grep -E, not `^`-anchored) —
-#      an earlier version of this script anchored `^FAIL:` at column 0 and
-#      missed every indented `  <case>: FAIL` marker; see
-#      scripts/lib/test_isolation.sh's "Honest failure detection" section
-#      for the shared regex and its own history (it also had to stop
-#      requiring a trailing colon, because tests/gpu/sf64_primitives_test.esk
-#      used to print a colonless `FAIL (got ...`). It is also NOT a bare
-#      `grep -i error` — this suite's own large fixtures print benign
-#      "ERROR: Heap limit exceeded" runtime warnings on multi-hundred-MB
-#      tensors that are not failures, and a substring match on "error"
-#      would flag every one of them, which is its own way of becoming a
-#      vacuous gate: a judge nobody can trust cries wolf until nobody reads
-#      the output.
-#
-#   3. NO VERDICT IS A FAIL, NOT A PASS. A test that exits 0 but never
-#      printed a single recognized PASS/FAIL-shaped line — see
-#      eshkol_test_output_has_verdict() in test_isolation.sh — is graded
-#      FAIL, reason "NO VERDICT". Absence of evidence that any check ran is
-#      not evidence the checks passed. This is what closes the historical
-#      gap in tests/gpu/gpu_correctness_gate.esk: that file used to print
-#      only unlabelled `RESULT <label> <value>` lines and exit 0
-#      unconditionally, so this harness reported a hollow PASS every run no
-#      matter what the numbers actually were — the file could not fail.
-#
-#   4. THE CANARY. tests/gpu/gate_canary_must_fail.esk is a deliberate,
-#      permanent failure. This script runs it on every invocation, before
-#      the real suite, and requires it to fail (non-zero exit AND a FAIL:
-#      marker). If it ever passes, the verdict pipeline itself is broken —
-#      wrong binary under test, a stubbed-out check, a judge that stopped
-#      reading exit codes — and this script fails HARD regardless of every
-#      other result: a real regression could be hiding behind exactly the
-#      same kind of silence that let the canary through.
-# ─────────────────────────────────────────────────────────────────────────
+# GPU verdict contract: exit 0 and a terminal "PASS: <test name>" are
+# required. A FAIL token anywhere (including bare or indented FAIL) fails.
+# A terminal SKIP: is counted separately. The correctness payload is run by
+# gpu_correctness_gate.sh, which compares GPU execution with a CPU reference.
+# The must-fail canary and --self-test exercise both failure paths.
 
 set -e
 
@@ -71,7 +27,55 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
+ESHKOL_TEST_TMP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.scratch"
+mkdir -p "$ESHKOL_TEST_TMP_ROOT"
+export ESHKOL_TEST_TMP_ROOT
 eshkol_test_isolation_init "gpu"
+
+# One parser grades both GPU programs and the differential shell gate. Its
+# return codes are 0=PASS, 1=FAIL, 2=SKIP. A success line from an earlier
+# check cannot certify a program that stopped before its final verdict.
+gpu_verdict() { # output-file, required pass line
+    local file="$1" expected="$2"
+    [ -f "$file" ] || return 1
+    LC_ALL=C awk -v expected="PASS: $expected" '
+        /[^[:space:]]/ { last=$0; sub(/^[[:space:]]+/, "", last); sub(/[[:space:]]+$/, "", last) }
+        /(^|[^[:alnum:]_])FAIL(:|[[:space:]]|$)/ { failed=1 }
+        /^[[:space:]]*SKIP:/ { skipped=1 }
+        END {
+            if (failed) exit 1
+            if (last ~ /^SKIP: /) exit 2
+            if (skipped) exit 1
+            if (last == expected) exit 0
+            exit 1
+        }
+    ' "$file"
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+    probe="$ESHKOL_TEST_TMPDIR/verdict-probe.txt"
+    gpu_probe() { # label, expected return code, output, optional pass name
+        local label="$1" want="$2" output="$3" name="${4:-gpu_probe}" got=0
+        printf '%s\n' "$output" > "$probe"
+        gpu_verdict "$probe" "$name" || got=$?
+        if [ "$got" -ne "$want" ]; then
+            echo "FAIL: $label (got $got, expected $want)"
+            exit 1
+        fi
+        echo "ok: $label"
+    }
+    gpu_probe "terminal pass" 0 'PASS: gpu_probe'
+    gpu_probe "bare FAIL after an earlier pass" 1 $'PASS: gpu_probe\nFAIL'
+    gpu_probe "indented FAIL marker" 1 $'PASS: gpu_probe\n  check: FAIL\nPASS: gpu_probe'
+    gpu_probe "missing terminal pass" 1 $'PASS: gpu_probe\nRESULT checksum 1'
+    gpu_probe "single-run payload cannot certify differential" 1 'PASS: gpu_correctness_gate self-checks' 'gpu_correctness_gate.sh'
+    gpu_probe "differential failure overrides pass" 1 $'FAIL: GPU-vs-CPU mismatch\nPASS: gpu_correctness_gate.sh' 'gpu_correctness_gate.sh'
+    gpu_probe "absent GPU is skipped" 2 'SKIP: no GPU device'
+    echo 'PASS: run_gpu_tests.sh --self-test'
+    exit 0
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -82,6 +86,7 @@ NC='\033[0m' # No Color
 # Counters
 PASS=0
 FAIL=0
+SKIP=0
 COMPILE_FAIL=0
 
 # Results array
@@ -147,6 +152,7 @@ run_ozaki_certification() {
         echo -e "${YELLOW}  >>> reason: $GPU_SKIP_REASON${NC}"
         echo -e "${YELLOW}  >>> the exact-GEMM/Ozaki-II claim has NO evidence from this host${NC}"
         CERT_STATUS="NOT RUN — $GPU_SKIP_REASON"
+        ((SKIP++)) || true
         return 0
     fi
     local cert_bin
@@ -154,13 +160,17 @@ run_ozaki_certification() {
         /*) cert_bin="$BUILD_DIR/eshkol-run" ;;
         *)  cert_bin="$PWD/$BUILD_DIR/eshkol-run" ;;
     esac
-    if ESHKOL_RUN="$cert_bin" \
-            ./tests/gpu/ozaki_certification_gate.sh > "$CERT_LOG" 2>&1; then
-        if grep -q '^SKIP:' "$CERT_LOG"; then
+    local cert_rc=0 cert_verdict=0
+    ESHKOL_RUN="$cert_bin" TMPDIR="$ESHKOL_TEST_REPO_ROOT/.scratch" \
+        ./tests/gpu/ozaki_certification_gate.sh > "$CERT_LOG" 2>&1 || cert_rc=$?
+    gpu_verdict "$CERT_LOG" "ozaki_certification_gate.sh" || cert_verdict=$?
+    if [ "$cert_rc" -eq 0 ] && [ "$cert_verdict" -ne 1 ]; then
+        if [ "$cert_verdict" -eq 2 ]; then
             echo -e "${YELLOW}SKIPPED${NC}"
             echo -e "${YELLOW}  >>> EXACT-OZAKI CERTIFICATION NOT VERIFIED BY THIS RUN${NC}"
             grep '^SKIP:' "$CERT_LOG" | sed 's/^/  >>> /'
             CERT_STATUS="NOT RUN — $(grep -m1 '^SKIP:' "$CERT_LOG")"
+            ((SKIP++)) || true
         else
             echo -e "${GREEN}PASS${NC}"
             grep '^PASS:' "$CERT_LOG" | sed 's/^/    /'
@@ -203,6 +213,7 @@ run_gate_canary() {
     fi
 
     local canary_rc=0
+    eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
     "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1 || canary_rc=$?
 
     if [ "$canary_rc" -eq 0 ]; then
@@ -230,7 +241,7 @@ run_gate_canary() {
 # that silence is what lets the oracle read a GPU-less host as "no evidence
 # yet" instead of a false PASS. Its `--self-test` mode asserts that contract
 # directly (skip() writes nothing; fail()/a PASS record are distinguishable),
-# with no build and no GPU required, so a future edit that makes SKIP look
+# and tests a planted numeric mismatch, with no build and no GPU required, so a future edit that makes SKIP look
 # like PASS is caught here rather than by an oracle silently regressing.
 run_gate_self_test() {
     printf "Canary  %-50s " "gpu_correctness_gate.sh --self-test"
@@ -239,6 +250,7 @@ run_gate_self_test() {
         CANARY_HARD_FAIL=1
         return 0
     fi
+    eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
     if tests/gpu/gpu_correctness_gate.sh --self-test > "$ESHKOL_TEST_OUT" 2>&1; then
         echo -e "${GREEN}PASS${NC}"
     else
@@ -285,6 +297,9 @@ for test_file in tests/gpu/*.esk; do
     if [ "$test_name" = "$CANARY_NAME" ]; then
         continue  # handled by run_gate_canary above, not graded here
     fi
+    if [ "$test_name" = "gpu_correctness_gate.esk" ]; then
+        continue  # payload is graded by the CPU-vs-GPU differential below
+    fi
     if [ "$test_name" = "ozaki_certification_test.esk" ]; then
         run_ozaki_certification
         continue
@@ -304,42 +319,26 @@ for test_file in tests/gpu/*.esk; do
     # Try to compile
     if ./"$BUILD_DIR"/eshkol-run "$test_file" -L./"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
         # Compilation succeeded, try to run
-        if [ "$test_name" = "cuda_host_sync_regression_test.esk" ]; then
+        if [ "$test_name" = "cuda_ozaki_correctness_test.esk" ]; then
+            runtime_cmd=(env ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1 ESHKOL_CUDA_F64_KERNEL=ozaki-int8 "$ESHKOL_TEST_BIN")
+        elif [ "$test_name" = "cuda_host_sync_regression_test.esk" ]; then
             runtime_cmd=(env ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1 "$ESHKOL_TEST_BIN")
         else
             runtime_cmd=("$ESHKOL_TEST_BIN")
         fi
 
+        eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
         if "${runtime_cmd[@]}" > "$ESHKOL_TEST_OUT" 2>&1; then
-            # Check for FAIL markers in output
-            # A failure marker anywhere in the output fails the test — the old
-            # `^FAIL`-anchored match never saw the indented `  <case>: FAIL`
-            # form that most test programs actually print.
-            if eshkol_test_output_has_failure "$ESHKOL_TEST_OUT"; then
-                echo -e "${YELLOW}FAIL MARKER${NC}"
-                eshkol_test_output_failures "$ESHKOL_TEST_OUT" "" 12 | sed 's/^/    /'
-                RUNTIME_ERRORS+=("$test_name")
-                ((FAIL++)) || true
-            elif eshkol_test_output_is_silent "$ESHKOL_TEST_OUT"; then
-                # These tests all print their own verdicts; producing nothing
-                # means the program died before saying anything. Not a pass.
-                echo -e "${RED}NO OUTPUT${NC}"
-                FAILED_TESTS+=("$test_name")
-                ((FAIL++)) || true
-            elif ! eshkol_test_output_has_success_marker "$ESHKOL_TEST_OUT"; then
-                # Contract item 3: no verdict is a fail, not a pass. Exited 0
-                # and printed something, but never a single PASS/PASSED/OK
-                # marker — e.g. the pre-fix gpu_correctness_gate.esk, which
-                # printed only unlabelled RESULT lines. Absence of evidence
-                # that any check ran is not evidence the checks passed.
-                echo -e "${RED}NO VERDICT${NC}"
-                echo -e "${RED}  >>> exited 0 with output, but no PASS:/FAIL:-shaped line was printed${NC}"
-                FAILED_TESTS+=("$test_name (no verdict)")
-                ((FAIL++)) || true
-            else
-                echo -e "${GREEN}PASS${NC}"
-                ((PASS++)) || true
-            fi
+            verdict=0
+            gpu_verdict "$ESHKOL_TEST_OUT" "${test_name%.esk}" || verdict=$?
+            case "$verdict" in
+                0) echo -e "${GREEN}PASS${NC}"; ((PASS++)) || true ;;
+                2) echo -e "${YELLOW}SKIPPED${NC}"; tail -1 "$ESHKOL_TEST_OUT" | sed 's/^/    /'; ((SKIP++)) || true ;;
+                *) echo -e "${RED}FAIL/NO TERMINAL VERDICT${NC}"
+                   tail -12 "$ESHKOL_TEST_OUT" | sed 's/^/    /'
+                   FAILED_TESTS+=("$test_name")
+                   ((FAIL++)) || true ;;
+            esac
         else
             echo -e "${RED}RUNTIME FAIL${NC}"
             FAILED_TESTS+=("$test_name")
@@ -353,13 +352,52 @@ for test_file in tests/gpu/*.esk; do
     fi
 done
 
+printf "Testing %-50s " "gpu_correctness_gate.sh (GPU vs CPU)"
+diff_rc=0
+diff_gpu_dir="$ESHKOL_TEST_TMPDIR/gpu-enabled"
+diff_cpu_dir="$ESHKOL_TEST_TMPDIR/gpu-cpuref"
+diff_reuse=0
+# The supplied build is a valid reference for its configured backend. Reuse
+# it on that side of the differential; configure only the opposite backend.
+if grep -q '^ESHKOL_GPU_ENABLED:BOOL=OFF$' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
+    diff_cpu_dir="$BUILD_DIR"
+    diff_reuse=1
+elif grep -q '^ESHKOL_GPU_ENABLED:BOOL=ON$' "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
+    diff_gpu_dir="$BUILD_DIR"
+    diff_reuse=1
+fi
+case "$BUILD_DIR" in
+    /*) diff_deps_dir="$BUILD_DIR/_deps" ;;
+    *)  diff_deps_dir="$ESHKOL_TEST_REPO_ROOT/$BUILD_DIR/_deps" ;;
+esac
+BUILD_DIR_GPU="$diff_gpu_dir" BUILD_DIR_CPU="$diff_cpu_dir" REUSE_BUILDS="$diff_reuse" \
+    GPU_GATE_SOURCE_DEPS_ROOT="$diff_deps_dir" \
+    ESHKOL_TEST_TMP_ROOT="$ESHKOL_TEST_REPO_ROOT/.scratch" \
+    ./tests/gpu/gpu_correctness_gate.sh > "$ESHKOL_TEST_OUT" 2>&1 || diff_rc=$?
+diff_verdict=0
+gpu_verdict "$ESHKOL_TEST_OUT" "gpu_correctness_gate.sh" || diff_verdict=$?
+if [ "$diff_rc" -ne 0 ] || [ "$diff_verdict" -eq 1 ]; then
+    echo -e "${RED}FAIL${NC}"
+    tail -20 "$ESHKOL_TEST_OUT" | sed 's/^/    /'
+    FAILED_TESTS+=("gpu_correctness_gate.sh")
+    ((FAIL++)) || true
+elif [ "$diff_verdict" -eq 2 ]; then
+    echo -e "${YELLOW}SKIPPED — GPU execution not certified${NC}"
+    tail -1 "$ESHKOL_TEST_OUT" | sed 's/^/    /'
+    ((SKIP++)) || true
+else
+    echo -e "${GREEN}PASS${NC}"
+    ((PASS++)) || true
+fi
+
 echo ""
 echo "========================================="
 echo "  Test Results Summary"
 echo "========================================="
-TOTAL=$(( PASS + FAIL ))
+TOTAL=$(( PASS + FAIL + SKIP ))
 echo -e "Total Tests:        $TOTAL"
 echo -e "${GREEN}Passed:             $PASS${NC}"
+echo -e "${YELLOW}Skipped:            $SKIP${NC}"
 echo -e "${RED}Failed:             $FAIL${NC}"
 echo -e "  Compile Failures: $COMPILE_FAIL"
 echo -e "  Runtime Errors:   ${#RUNTIME_ERRORS[@]}"
@@ -407,7 +445,7 @@ echo ""
 # Clean up
 # CERT_LOG now lives inside $ESHKOL_TEST_TMPDIR, which the isolation trap
 # removes wholesale, so it needs no separate unlink here.
-rm -f "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN" "$ESHKOL_TEST_BIN.tmp.o"
+eshkol_checked_rm "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN" "$ESHKOL_TEST_BIN.tmp.o"
 
 # Exit with appropriate code. The canary is checked independently of FAIL: a
 # harness that cannot prove it can fail must not report success regardless of

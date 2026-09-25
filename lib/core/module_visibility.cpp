@@ -1,6 +1,9 @@
 #include <eshkol/module_visibility.h>
+#include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/syntax_datum.h>
 
-#include <cstring>
+#include <memory>
+
 
 namespace eshkol {
 namespace {
@@ -8,12 +11,12 @@ namespace {
 using RenameMap = std::map<std::string, std::string>;
 using BoundNames = std::set<std::string>;
 
+// The old spelling stays with the AST string owner (ast_strings.h), which
+// releases every AST string at the compilation's teardown; a rename only
+// repoints the slot.
 static void replace_name(char*& slot, const std::string& name) {
     if (!slot) return;
-    char* replacement = new char[name.size() + 1];
-    std::memcpy(replacement, name.c_str(), name.size() + 1);
-    delete[] slot;
-    slot = replacement;
+    slot = eshkol_ast_string_copy(name);
 }
 
 static std::string private_name(const std::string& module_name,
@@ -68,15 +71,42 @@ static void rename_quasiquote(eshkol_ast_t* ast, const RenameMap& names,
     }
 }
 
+static void collect_symbols(const SyntaxDatum& datum, std::set<std::string>& out) {
+    if (datum.isSymbol()) out.insert(datum.text);
+    for (const auto& item : datum.items) collect_symbols(item, out);
+}
+
+// A syntax-rules template is reader syntax (ADR-0026): qualify every
+// reference to a private name in it, except pattern variables (caller
+// syntax) and quoted data.
 static void rename_macro_templates(eshkol_macro_def_t* macro,
                                    const RenameMap& names,
                                    const BoundNames& bound) {
-    if (!macro) return;
-    for (uint64_t r = 0; r < macro->num_rules; ++r) {
-        eshkol_macro_template_t* template_ = macro->rules[r].template_;
-        if (template_ && template_->literal)
-            rename_ast(template_->literal, names, bound);
+    if (!macro || names.empty()) return;
+    auto syntax = syntax_macro(macro);
+    if (!syntax) return;
+    MacroSyntax renamed = *syntax;
+    for (auto& rule : renamed.rules) {
+        std::set<std::string> pattern_names;
+        collect_symbols(rule.first, pattern_names);
+        syntax_rename_identifiers(rule.second, [&](std::string& name) {
+            if (pattern_names.count(name) || bound.count(name)) return;
+            auto it = names.find(name);
+            if (it != names.end()) name = it->second;
+        });
     }
+    syntax_replace_macro(macro, std::move(renamed));
+}
+
+// The operands of a call that turns out to be a macro use are read again
+// from its reader syntax, so the same qualification is recorded for them.
+static void rename_call_syntax(const eshkol_ast_t* ast, const RenameMap& names,
+                               const BoundNames& bound) {
+    if (names.empty() || ast->node_id == ESHKOL_NODE_ID_NONE) return;
+    auto effective = std::make_shared<RenameMap>();
+    for (const auto& item : names)
+        if (!bound.count(item.first)) effective->emplace(item.first, item.second);
+    syntax_add_use_renames(ast->node_id, std::move(effective));
 }
 
 static std::string ast_name(const eshkol_ast_t* ast) {
@@ -162,6 +192,7 @@ static void rename_call_operands(eshkol_ast_t* ast, const RenameMap& names,
     rename_ast(ast->operation.call_op.func, names, bound);
     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; ++i)
         rename_ast(&ast->operation.call_op.variables[i], names, bound);
+    if (ast->operation.op == ESHKOL_CALL_OP) rename_call_syntax(ast, names, bound);
 }
 
 static void rename_ast(eshkol_ast_t* ast, const RenameMap& names,

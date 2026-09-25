@@ -108,6 +108,25 @@ to miss.
   floor in `ENGINE_PARITY_BASELINE.json` hold, with no new divergence and no
   regression of a program previously observed on both engines. A passing
   name-resolution or one-engine coverage run cannot satisfy this criterion.
+- **Floors are exact integer counts (since v1.3.5).** Each floor in
+  `tests/vm_parity/ENGINE_PARITY_BASELINE.json` is stored as the counts it
+  was measured from — `differential_floor_numerator` (credited constructs) /
+  `differential_floor_denominator` (surface constructs), and the
+  `high_risk_differential_floor_` pair — beside the unrounded float they
+  divide to. `scripts/check_engine_parity_threshold.py` defines
+  `exact_fraction()` and `record_fraction()`, `run_engine_parity_coverage.py`
+  imports them, and the baseline writer, the trace payload and the gate share
+  that one definition; the trace carries counts the same way for the
+  measurement, the floor and the high-risk ceiling. Every comparison is a
+  `fractions.Fraction` comparison (integer cross-multiplication, no epsilon),
+  so a floor can never exceed the measurement it was recorded from. A float
+  that disagrees with its own counts is rejected as malformed rather than
+  graded on whichever field a reader prefers; an older baseline or trace
+  with only floats is read at the float's exact binary value. Failure
+  messages print counts, for example `154/473 (32.56%)`.
+  `check_engine_parity_threshold.py --self-test` covers the boundary: 155/473
+  passes against a floor recorded from 155/473, and 154/473 and 320/1139 (against
+  321/1139) fail. The recorded floors are 321/1139 and 155/473.
 - **Per-form VM evidence (D-03 (i)).** The VM used to record coverage only
   from builtin dispatch, so every construct it lowers inline — the arithmetic
   and comparison opcodes, and `if`/`let`/`cond`/`do`/`lambda` — earned no
@@ -117,8 +136,8 @@ to miss.
   `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR` is set, carrying the same stable
   31-bit head-symbol hash the call marker uses, and the marker survives ESKB
   serialization so the standalone VM binary and the `--profile hosted-vm`
-  route report identically. Differential coverage measured 303/1137 (26.65%)
-  and high-risk 152/473 (32.14%) on `integration/astra-v135`.
+  route report identically. When the marker landed, differential coverage
+  measured 303/1137 (26.65%) and high-risk 152/473 (32.14%).
 - **The high-risk floor is a measured ratchet, not a literal (PR-13).**
   `ENGINE_PARITY_BASELINE.json`'s `high_risk_differential_floor` used to be a
   hardcoded `1.0` (100%), written by `--update-baseline` as a literal rather
@@ -139,13 +158,16 @@ to miss.
   ceiling, reporting it as a malformed baseline rather than a failed run
   (`scripts/check_engine_parity_threshold.py --self-test` proves this: a
   floor above the ceiling is rejected as malformed, a run below the recorded
-  floor fails, a run at or above it passes). The current measured values on
-  `integration/astra-v135`: differential coverage 312/1137 (27.44%,
-  ceiling 426/1137 or 37.47%), high-risk 153/473 (32.35%, ceiling 171/473 or
-  36.15%).
+  floor fails, a run at or above it passes). Measured on the v1.3.5-evolve
+  release cut (287 corpus programs, 215 clean on both engines, 5 dispositioned
+  divergences, none new, none regressed): differential coverage 321/1139
+  (28.18%, ceiling 433/1139 or 38.02%), high-risk 155/473 (32.77%, ceiling
+  173/473 or 36.58%). The ratchet was introduced at 312/1137 (27.44%) and
+  153/473 (32.35%).
 - **Raising the high-risk floor is corpus growth, not VM work (DD-15,
-  build item, target v1.4).** The 320 high-risk constructs no corpus program
-  under native currently mentions at all, broken down by surface category:
+  build item, target v1.4).** When DD-15 was filed, the 320 high-risk
+  constructs without differential evidence broke down by surface category as
+  follows (318 remain on the release cut):
   194 `tensor_ad`, 56 `geometry`, 38 `numeric`, 14 `consciousness`, 7
   `control_flow`, 6 `memory_region`, 5 `macro_syntax`. None of these can gain
   differential evidence until a `tests/vm_parity/corpus/*.esk` program
@@ -165,24 +187,7 @@ to miss.
   and its default probe files live under `.scratch` rather than a system
   temporary directory.
 
-### v1.3.5-evolve parity changes (in progress)
-
-- **Bignum and bignum-rational literals read, serialize (ESKB) and print
-  exactly on the VM (ledger SW-155, SW-156, SW-157).** The VM's own source
-  reader (`lib/backend/vm_parser.c`) previously read an int64-overflowing
-  integer literal as an inexact double, clamped a `/`-syntax rational
-  literal's overflowing numerator or denominator to `atoll()`'s overflow
-  result, and its `number->string` native path silently answered `"0"`
-  for a bignum-backed rational — three independent gaps native codegen
-  did not share. All three now build the exact value through the VM's own
-  bignum/rational runtime (which already mirrors
-  `lib/core/bignum.cpp`/`rational.cpp`) rather than a parser-private
-  double fallback; see `CHANGELOG.md` for the full root-cause breakdown.
-  `tests/vm_parity/corpus/79_bignum_rational_literals.esk` is the
-  differential pin (native `-r` vs `eshkol-vm-standalone-test`, source and
-  ESKB axes).
-
-### v1.3.5-evolve parity changes (in progress)
+### v1.3.5-evolve parity changes
 
 - **Bignum and bignum-rational literals read, serialize (ESKB) and print
   exactly on the VM (ledger SW-155, SW-156, SW-157).** The VM's own source
@@ -230,10 +235,23 @@ to miss.
   parameter, and curried — byte-identical to native codegen across the `native`,
   `vm-src`, and `vm-eskb` axes (`corpus/32_gradient_reverse.esk`,
   `gradient_callable_arity_test.esk` 25/25 on the VM). `op:GRADIENT` and
-  `op:DERIVATIVE` move from `gap` to `vm-supported`; higher-order nesting
-  (gradient-of-derivative / Taylor tower, `op:DERIVATIVE_N`) stays native-only.
+  `op:DERIVATIVE` move from `gap` to `vm-supported`. Nesting (gradient-of-
+  derivative, Taylor towers, `op:DERIVATIVE_N`) runs on the level carrier of
+  ADR-0027.
   The public low-level AD tape surface (`ad-pow`, `ad-gradient-of`,
   `ad-value-of`, `ad-tape-length`) is also complete on JIT and AOT.
+- **A derivative through a tensor or a complex value on the VM (SW-186, SW-180).**
+  The VM's forward carrier rides a tensor as a parallel tangent array. The
+  linear operations propagate it on their own kernels (`+ - * /`,
+  `tensor-scale`, `tensor-dot`, `matmul`), full `tensor-sum` and `tensor-mean`
+  reduce it, and `tensor-ref`, `tensor-get`, `vector-ref`, `tensor-data`,
+  `reshape`, `tensor-apply` and attention keep it. Every other tensor operation
+  refuses a differentiated tensor with a message naming itself; it used to read
+  the primal and answer a gradient of `#(0 0 0)`. A complex value carries the
+  dual's first-order tangent through every complex operation
+  ([ADR-0025](design/adr/0025-complex-values-carry-derivatives.md)); corpus
+  programs `89_complex_value_derivative` and `90_tensor_forward_tangent` hold
+  the engines to the same answers.
 - **`(the <type> expr)` is `native-only-justified`.** The checked type
   ascription is a compile-time construct on the native type checker with no VM
   surface; it is a runtime no-op, so a VM program that omits it computes the
@@ -261,9 +279,9 @@ present and non-empty everywhere, which is what the ledger schema enforces
 today.
 
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
-probe runs on `eshkol-vm-standalone-test` vs native `-r`: **956 rows — 582
-`vm-supported`, 44 `native-only-justified`, 330 `gap`** (counted from
-`tests/vm_parity/PARITY.tsv`). The separate gap-evidence sidecar is checked by
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **961 rows — 604
+`vm-supported`, 46 `native-only-justified`, 311 `gap`** (counted from
+`tests/vm_parity/PARITY.tsv` on the v1.3.5-evolve release cut). The separate gap-evidence sidecar is checked by
 `scripts/canonicalize_vm_gaps.py` before the runtime stages. The three most
 recent promotions are
 `op:LOGIC_VAR`, `op:WALK` and `walk`, retired to `vm-supported` when the
@@ -289,7 +307,7 @@ explicit disposition and a live generated probe in
 2026-08-25, conformity audit item g6, cross-referenced from FEATURE_MATRIX.md
 d9 and KNOWN_ISSUES.md e6). The historical 323-name baseline was fully
 retested in PR-02: no native-resolved name remained absent from the desktop VM,
-and the file now contains zero entries. The 956-row `PARITY.tsv` accounting
+and the file now contains zero entries. The 961-row `PARITY.tsv` accounting
 therefore no longer has an untracked surface backlog, although its 330
 behavioral `gap` rows remain a separate contract.
 
@@ -341,11 +359,19 @@ g4):
 4. **FATAL** (stage 4) — programs whose first failing form is fatal must fail
    closed (nonzero exit) on both substrates.
 
-Any divergence outside the manifest, at any stage, is a failure. Last
-remeasured 2026-08-25 against `4bf871a0`: **188 passed, 0 failed**, exit 0.
-The corpus has grown since that commit (83 to 84 files, `found/` 36 to 39), so
-this figure must be regenerated by `BUILD_DIR=build scripts/run_vm_parity.sh`
-on the v1.3.5-evolve release cut before it is quoted as a release gate
+Any divergence outside the manifest, at any stage, is a failure. At the
+v1.3.5-evolve release commit the gate passes **340**, with 0 failed and 0
+infrastructure failures (the `vm_parity_total` of
+`tests/coverage/release_record.json`, which the release-facing documents
+render through a `release-record` span). A probe that could not run (a
+timeout or a signal from the environment) is reported as `INFRA`, "no verdict
+obtained", and never counted as a parity pass or defect.
+
+Superseded, dated measurement: on 2026-08-25 against `4bf871a0` the gate
+reported **188 passed, 0 failed**, exit 0. The corpus grew after that commit
+(83 to 84 files, `found/` 36 to 39), so that figure was regenerated by
+`BUILD_DIR=build scripts/run_vm_parity.sh`
+on the v1.3.5-evolve release cut before being quoted as a release gate
 (`evidence/audit/06_vm_parity.log` in this resolution's evidence root;
 corrects the stale "140/140" figure carried in `docs/KNOWN_ISSUES.md`
 before this pass, conformity audit item e3).

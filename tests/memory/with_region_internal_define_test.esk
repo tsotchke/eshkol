@@ -1,0 +1,20 @@
+; A definition inside a with-region body within a procedure is a local of that
+; body. The bytecode VM compiled the body as bare expressions: the definition
+; built its box and dropped it, so later references read an unrelated slot
+; ((vector-ref <slot> 0) answered () and the body ran on it silently).
+
+(define (f)
+  (with-region 'r
+    (define (sq x) (* x x))
+    (define u (sq 3))
+    (+ u 1)))
+
+(define (g n)
+  (with-region ('r 512)
+    (define v (make-vector 3 n))
+    (vector-set! v 1 (* n 2))
+    (vector->list v)))
+
+(if (and (= (f) 10) (equal? (g 4) '(4 8 4)))
+    (display "PASS: with-region internal define\n")
+    (display "FAIL: with-region internal define\n"))

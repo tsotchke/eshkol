@@ -1,0 +1,35 @@
+id: SW-229
+bucket: SILENT-WRONG
+subtag: autodiff
+family: autodiff/dynamic-state-unwind
+status: fixed
+closed_at: "7c9ceca04"
+title: "a raise or escape out of a derivative left the forward pass level raised: later derivatives lost exactness and exact division by 0 answered -inf.0"
+repro: >-
+  (guard (e (#t 'raised)) (derivative (lambda (b) (/ 1 b)) 0)) followed by
+  (guard (e (#t 'raised)) (let ((r (derivative (lambda (b) (/ 1 b)) 0))) r))
+  and (derivative (lambda (b) (* b b)) 3).
+observed: >-
+  raised, then -inf.0 (no raise), then 6 inexact. Which form raised depended
+  only on whether an earlier derivative had been exited by a raise.
+correct: >-
+  raised, raised, exact 6.
+root_cause: >-
+  A derivative/derivative-n pass raises __ad_pert_level (and the Taylor
+  context __ad_tower_active/__ad_tower_order) on entry and lowers it on its
+  normal exit; a longjmp from a raise or an escaping continuation skipped the
+  exit. The runtime unwinder's eshkol_ad_state_restore cannot reach them:
+  they are module globals, internal to an AOT module. Every later pass
+  believed it was nested, declined the exact tier and used the inexact jet.
+fix: >-
+  lib/backend/llvm_codegen.cpp: snapshotAdForwardState/restoreAdForwardStateAt;
+  guard, with-exception-handler and call/cc (every setjmp site) save the three
+  globals before setjmp and store them back first on the landing block.
+evidence: >-
+  tests/ad/ad_state_after_raise_test.esk (12 checks: guard, a let under guard,
+  with-exception-handler, escaping continuations from a derivative and a
+  Taylor pass, exactness afterwards) passes on JIT and AOT;
+  tests/ad/vm_exact_division_by_zero_test.esk is registered natively as
+  vm_exact_division_by_zero_jit and _aot and passes.
+caught_by: [vm-taylor-lane-mirror]
+missed_by: [vm_exact_division_by_zero_vm]

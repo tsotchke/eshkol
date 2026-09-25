@@ -1,7 +1,5 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** v1.3.5
-**Generated:** 2026-09-07
 **Status:** Comprehensive implementation documentation from source code
 
 ---
@@ -33,8 +31,8 @@
 23. [Complete Language Capabilities Summary](#23-complete-language-capabilities-summary)
 24. [Compiler Capabilities](#24-compiler-capabilities)
 25. [Implementation Details](#25-implementation-details)
-26. [Version Information](#26-version-information)
-27. [File Organization](#27-file-organization)
+26. [File Organization](#26-file-organization)
+27. [Bytecode VM and ESKB Format](#27-bytecode-vm-and-eskb-format)
 
 ---
 
@@ -104,7 +102,7 @@ These types store data directly in the `eshkol_tagged_value_t` struct (no heap a
 
 #### 2.1.6 `SYMBOL` (Interned Symbol)
 - **Type Tag:** `ESHKOL_VALUE_SYMBOL` (5)
-- **Syntax:** `'foo`, `'hello-world`, `'+`, and as of v1.3.5 (#462) the R7RS
+- **Syntax:** `'foo`, `'hello-world`, `'+`, and the R7RS
   7.1.1 third `<identifier>` production, `<vertical line> <symbol
   element>* <vertical line>` — `'|weird sym|`, `'||` (the empty symbol),
   `'|\x48;i|` (inline hex escape, reads as `Hi`)
@@ -216,13 +214,14 @@ struct {
 
 ##### TENSOR
 - **Subtype:** `HEAP_SUBTYPE_TENSOR` (3)
-- **Structure:** `eshkol_tensor_t` (32 bytes)
+- **Structure:** `eshkol_tensor_t` (40 bytes; 8-byte aligned)
   ```c
   struct {
       uint64_t* dimensions;      // Dimension sizes array
       uint64_t  num_dimensions;  // Rank (number of dimensions)
       int64_t*  elements;        // Element data (doubles as int64 bits)
       uint64_t  total_elements;  // Product of all dimensions
+      uint64_t  dtype;           // Tensor dtype tag (default f64)
   }
   ```
 - **Syntax:** 
@@ -474,6 +473,18 @@ preserved exactly (an exact rational element stays exact; `exact?` on it is
 `#t`) and `vector-length` reports the literal's own element count, never a
 flattened tensor count (SW-153). This is why `#(1 "two" #t)`, above, is a
 vector and not an attempted tensor.
+
+Both kinds of literal are mutable through the vector API, and both obey one
+store rule: a value stored into a slot is a value of the slot's declared
+representation. A vector slot holds any value. A tensor slot holds a real
+number, so `(vector-set! v 0 99)` on `(define v #(10 20 30))` stores 99 and
+`(vector-set! v 0 1/2)` stores `0.5` — the same conversion tensor construction
+applies to each element — while a value with no real-number representation (a
+string, boolean, character, symbol, pair, vector or procedure) raises a
+catchable error and leaves the tensor unchanged. `vector-fill!`, `vector-copy!`
+and `tensor-set!` follow the same rule. A heterogeneous mutable vector is built
+with `vector`, `make-vector` or `list->vector`
+([ADR-0020](design/adr/0020-container-slot-store-boundary.md)).
 
 ### 3.3 Variable Definition and Binding
 
@@ -775,7 +786,7 @@ passed to a unary receiver procedure:
 `(1 ,@(list 2 3) 4)  ; => (1 2 3 4)
 ```
 
-**Quasiquoted vector literals** (v1.3.0-evolve): `unquote`/`unquote-splicing`
+**Quasiquoted vector literals**: `unquote`/`unquote-splicing`
 also work inside a `#(...)` vector literal under quasiquote:
 ```scheme
 `#(1 ,(+ 1 1) 3)        ; => #(1 2 3)
@@ -916,6 +927,49 @@ Additionally: **sum-type annotations are honored on `named-let` parameters**, an
 a **numeric-tower join** gives a recursive accumulator the least-upper-bound of
 the numeric types that flow into it (so an integer accumulator that later takes a
 rational or real value is accepted rather than rejected).
+
+#### 3.6.7.1 Where Checking Applies, and How Types Fit
+
+The rules below are normative for the checker; the
+[gradual typing guide](guide/GRADUAL_TYPING.md) presents them with runnable
+examples, and [ADR 0013](design/adr/0013-gradual-type-relation.md) records the
+decision.
+
+1. **Every evaluated subexpression is checked.** A call is
+   checked against the callee's annotations wherever it is written: in every
+   expression of a `begin` or body; in the tests, keys, scrutinee and branch
+   bodies of `if`, `cond`, `case`, `match`, `when` and `unless`; in every
+   operand of `and` and `or`; in the initialisers, steps, test, result and body
+   of `do`; in a `guard` body and handler, a `raise` operand, a `set!` value, a
+   quasiquote escape, the procedure of `call/cc`, the thunks of `dynamic-wind`
+   (and so a `parameterize` body), the operands of `values`, the producer and
+   consumer of `call-with-values`, a `let-values` producer and body, a
+   `with-region` body, a computed callee, and the function, point, direction and
+   order of a calculus operator. Quoted data is not evaluated and not checked.
+2. **One fitting rule.** An argument, a return-annotated body and an annotated
+   binding are accepted when the derived type is a *consistent subtype* of the
+   expected type: a static subtype, in which every component the checker does
+   not know (`Value`) is acceptable. A body of type `Value` therefore satisfies
+   any return annotation, as a `Value` argument satisfies any parameter; a
+   concrete contradiction (`String` where `Number` is expected) is reported.
+   Members of the numeric tower are mutually acceptable at a call.
+3. **Function types** `(-> A ... R)` are contravariant in their parameters and
+   covariant in their result, and a different number of parameters never fits.
+   `procedure` is the top of the function types. Diagnostics print a signature
+   as its arrow, for example `(-> Number Int64)`, and a variadic one as
+   `(-> String ... Value)`.
+4. **Branch results join.** The type of a multi-branch form is the join of its
+   branch types, plus `#f` for a `cond`, `case`, `when` or `unless` that may run
+   no branch. `if` and the equivalent `cond` have the same type. Branches with
+   nothing more specific in common have type `Value`.
+5. **Loop parameters are typed by what the loop carries.** An
+   unannotated named-`let` parameter has the join of its initial value and of
+   every argument the loop passes back to it, found by iterating the body to a
+   fixpoint. A join that reaches `Value` is not adopted: the parameter keeps its
+   type and the argument is reported. A parameter seeded with `#f` widens to
+   `Value`. An annotated or linear parameter is never widened. A `do` variable
+   is the join of its initialiser and its step, and adopts every join. A
+   recursive procedure's result is the least fixpoint over its own calls.
 
 #### 3.6.8 Linear Types — `Qubit`
 `Qubit` is a first-class **linear** type: its values must be used exactly once.
@@ -1222,7 +1276,7 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
      (if test (begin expr ...)))))
 ```
 
-**Nested ellipsis** (v1.3.0-evolve): a pattern variable bound at ellipsis
+**Nested ellipsis**: a pattern variable bound at ellipsis
 depth N is followed by N ellipses in the template to flatten one level per
 extra ellipsis. Pattern matching tracks ellipsis depth explicitly, so
 `(x ... ...)`-style templates over a list-of-lists now expand correctly:
@@ -1415,6 +1469,39 @@ All math functions support dual numbers and AD nodes for automatic differentiati
 - `(truncate x)` - Round toward zero
 - `(round x)` - Round to nearest integer
 
+#### Directed Rounding
+
+Two unary `double -> double` builtins, wired into **both** execution engines
+(native codegen and the bytecode VM), with no `(require …)`:
+
+- `(fl-next-up x)` - the next representable double strictly greater than `x`
+- `(fl-next-down x)` - the next representable double strictly less than `x`
+
+Both wrap C99 `nextafter`, so the step is the true local ulp — correct across
+power-of-two boundaries and into the subnormals, unlike a hand-rolled
+`x * (1 ± epsilon)`. Unlike every other function in this section they take part
+in **no** automatic differentiation: directed rounding has no sound derivative,
+so they deliberately bypass the generic math dispatcher and reject complex,
+dual, AD-node and tensor operands with a typed error rather than misreading the
+payload as a double. They are also not vector-mapped.
+
+```scheme
+(display (fl-next-up 1.0)) (newline)
+(display (fl-next-down 1.0)) (newline)
+(display (= (fl-next-down (fl-next-up 0.1)) 0.1)) (newline)
+```
+```
+1.0000000000000002
+0.9999999999999999
+#t
+```
+
+They are the primitive beneath **certified enclosures** — outward-rounded
+interval arithmetic and rigorous Taylor models, where every result endpoint is
+built from exactly one such nudge so the soundness argument holds through a
+whole computation. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
+
 ### 4.3 Comparison Operators
 
 All comparison operators return booleans and support numeric type promotion.
@@ -1575,9 +1662,20 @@ and `foldl` are exact synonyms. See
 
 **Example:**
 ```scheme
-(apply + '(1 2 3))  ; => 6
+(apply + '(1 2 3))    ; => 6
 (apply + 1 2 '(3 4))  ; => 10
+(apply vector-copy (list (vector 7 8 9)))   ; => #(7 8 9)
 ```
+
+`proc` may be any callable value, including a builtin reached as a first-class
+value rather than in operator position: `apply` resolves its operator through
+the same route `map` and a user higher-order call use, so a builtin gains a
+value representation exactly once. A genuinely undefined name fails compilation
+with a diagnostic, never a silent `()`.
+
+> Both native and bytecode engines support leading arguments before the final
+> list operand. The full-list and prefix forms are covered by
+> `tests/vm_parity/corpus/apply_variadic_full_list.esk`.
 
 ### 4.7 String Operations
 
@@ -1588,7 +1686,7 @@ and `foldl` are exact synonyms. See
 
 #### 4.7.2 String Access
 - `(string-length str)` - Codepoint (character) count
-- `(string-byte-length str)` - UTF-8 byte count (v1.3.0-evolve; differs from
+- `(string-byte-length str)` - UTF-8 byte count (differs from
   `string-length` for any multibyte-UTF-8 string)
 - `(string-ref str k)` - Get character at index k
 - `(string-set! str k char)` - Set character at index k
@@ -1646,7 +1744,7 @@ and `foldl` are exact synonyms. See
 - `(vector-copy vec)` / `(vector-copy vec start)` / `(vector-copy vec start end)` -
   Fresh (shallow) copy of `vec`, or of the `[start,end)` slice. Also accepts
   a tensor-backed `#(...)` vector literal, not just `(vector ...)`-allocated
-  vectors (v1.3.0-evolve).
+  vectors.
 - `(vector-copy! to at from)` / `(vector-copy! to at from start end)` -
   In-place copy into `to` starting at index `at`
 
@@ -1764,8 +1862,15 @@ and `foldl` are exact synonyms. See
 - `(open-output-file filename)` - Open file for writing
 - `(close-port port)` - Close port
 - `(flush-output-port port)` - Flush output buffer
-- `(current-input-port)` - Get stdin
-- `(current-output-port)` - Get stdout
+- `(current-input-port)`, `(current-output-port)`, `(current-error-port)` - Parameter
+  objects (R7RS 6.13.1) holding the current standard ports; `parameterize` rebinds them,
+  and every read or write that names no port uses the port they hold, on native and the VM:
+
+  ```scheme
+  (define p (open-output-string))
+  (parameterize ((current-output-port p)) (display "hi") (newline))
+  (get-output-string p)   ; => "hi\n"
+  ```
 
 #### 4.13.4 File Operations
 - `(read-file filename)` - Read entire file as string
@@ -2479,7 +2584,10 @@ struct ad_tape {
 #### 8.2.2 Tape Stack (for nested gradients)
 - **Global:** `__ad_tape_stack[32]` - Stack of tapes
 - **Depth:** `__ad_tape_depth` - Current nesting level
-- **Max Nesting:** 32 levels
+- **Tape Nesting:** The reverse-mode tape stack has 32 slots. Forward
+  differentiation passes use recursive Taylor level carriers and can nest to
+  arbitrary depth, subject to available memory. See
+  [ADR-0027](design/adr/0027-recursive-taylor-level-carrier.md).
 
 #### 8.2.3 `gradient` - Compute Gradient
 **Syntax:**
@@ -2615,7 +2723,8 @@ struct ad_tape {
 - `__current_ad_tape` - Current tape for graph recording
 
 #### Nested Gradients
-Supports arbitrary nesting depth via tape stack:
+Nested differentiation uses recursive Taylor levels, with depth limited by
+available memory. The reverse-mode tape stack has 32 slots:
 ```scheme
 (gradient 
   (lambda (x)
@@ -2626,7 +2735,7 @@ Supports arbitrary nesting depth via tape stack:
 ; Computes ∂/∂x[∂/∂y(xy²)]
 ```
 
-### 8.5 Arbitrary-Order AD: Taylor Towers (v1.3.0-evolve)
+### 8.5 Arbitrary-Order AD: Taylor Towers
 
 A second, orthogonal AD engine computes every derivative up to an arbitrary
 order `k` in a single pass. Full detail: the
@@ -2775,7 +2884,35 @@ Symbols in `provide` keep their original names and are visible to importers.
 #### Topological Sorting
 Modules loaded in dependency order (dependencies before dependents)
 
-### 9.4 Pre-compiled Modules
+### 9.4 Built-in R7RS Libraries
+
+Some R7RS library names have no source file on the load path because Eshkol
+provides them itself. Those names are mapped through **one** table,
+`inc/eshkol/builtin_libraries.h`, consulted by the native front end's
+`join_r7rs_library_name()` and by the bytecode VM's
+`vm_library_name_from_datum()` — neither engine can drift from the other's idea
+of which libraries exist, and adding one is a single row.
+
+| Library name | Provided by |
+|---|---|
+| `(scheme base)` | the built-in standard library |
+
+Any other library name resolves as a source file like every other module, and a
+name that resolves to nothing is refused rather than silently ignored. Because
+the mapping happens where the library-name datum is joined, every R7RS import
+modifier reaches it — `only`, `except`, `prefix`, `rename` — on both engines.
+
+```scheme
+(import (scheme base))
+(import (only (scheme base) car))
+(import (except (scheme base) vector-fill!))
+(display (list (car (list 1 2)) (cdr (list 1 2)))) (newline)
+```
+```
+(1 (2))
+```
+
+### 9.5 Pre-compiled Modules
 
 Modules can be pre-compiled to `.o` files for faster loading:
 - `stdlib.o` - Pre-compiled standard library
@@ -2922,6 +3059,41 @@ eshkol_tagged_value func(param1, param2, ..., capture1, capture2, ...)
 - Function names registered in global REPL context
 - Previous definitions injectable as external declarations
 - Cross-evaluation function calls supported
+
+### 11.3 Machine mode — the EREPL v1 protocol
+
+`eshkol-repl --machine` turns the REPL into a long-running, JIT-warm worker for
+a driver program (a kernel, a language-server backend, a sister project's test
+harness): it loads the standard library and warms the JIT once, then evaluates
+forms sent on stdin without paying the cold-start cost again.
+
+Two layers, and both are always present:
+
+- **Bare-line framing** (the original protocol, unchanged). `EREPL READY` once,
+  after warm-up; `EREPL DONE` / `EREPL FAIL` once per evaluated top-level form.
+  A driver that watches only those three lines and reads stdout between them
+  keeps working exactly as before.
+- **EREPL v1**, a versioned JSON request/response layer on top of it. A stdin
+  line whose first non-whitespace character is `{` is a request (no Eshkol form
+  can start with `{`, so the two can never collide); a response is one stderr
+  line beginning `EREPL/1 ` followed by a single-line JSON object, echoing the
+  request's `"id"`. A `ready` frame carries `protocol_version`, `pid` and
+  `eshkol_version`.
+
+**stdout carries only what an evaluated program itself wrote.** Framing never
+appears there, and a JSON `"op":"eval"` request does not auto-display the form's
+value either: the value comes back in the response frame's `value` field with a
+coarse `value_type`, and the bytes the form printed come back in `stdout` in the
+same frame. That is the property the protocol exists to guarantee — stdout and
+stderr are independent OS pipes, so a driver that had to correlate them by
+arrival order would be racing on every platform. Errors are reported as a
+structured `error` object with a `kind`, so a driver never classifies a failure
+by matching this project's message wording.
+
+`tools/erepl_client.py` is a complete, stdlib-only Python reference client and
+the executable form of this contract. The full frame grammar and the per-`op`
+schemas are in
+[reference/runtime/eshkol-repl.md](reference/runtime/eshkol-repl.md).
 
 ---
 
@@ -3428,8 +3600,10 @@ result_imag = (b - a * r) / denom
 
 The math builtins extend to the complex domain on the principal branch, with
 the branch cuts of C99 Annex G (signed zero selects the branch, so
-`(sqrt (make-rectangular -1.0 0.0))` is `0.0+1.0i` and
-`(sqrt (make-rectangular -1.0 -0.0))` is `0.0-1.0i`):
+`(sqrt (make-rectangular -1.0 0.0))` prints `+i` and
+`(sqrt (make-rectangular -1.0 -0.0))` prints `-i` — a zero real part is
+elided and an imaginary part of +/-1 prints as `+i`/`-i`, per 2.x's display
+convention):
 
 `sqrt`, `exp`, `log`, `exp2`, `log2`, `log10`, `sin`, `cos`, `tan`, `asin`,
 `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, and `expt`
@@ -4232,13 +4406,27 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Vector Calculus:**
 `divergence`, `curl`, `laplacian`, `directional-derivative`
 
-**Arbitrary-Order Taylor Towers (v1.3.0-evolve, see 8.5):**
+**Arbitrary-Order Taylor Towers (see 8.5):**
 `taylor`, `derivative-n` (core, no `require` needed); `taylor-propagate`,
 `mixed-partial`, `gradient-n` (`core.ad.guw`); `taylor-model`, `tm-range`,
 `tm-eval`, `tm-add`, `tm-mul` and accessors (`core.ad.taylor_models`);
 `sparse-hessian`, `sparse-hessian-pat`, `sparse-mixed-partials` and
 accessors (`core.ad.sparse_guw`); `taylor-ode-solve`, `taylor-root`,
 `taylor-inverse-series` (`core.ad.taylor_numerics`)
+
+**Certified enclosures (directed rounding, see 4.2):**
+`fl-next-up`, `fl-next-down` (core builtins on both engines, no `require`
+needed); outward-rounded interval arithmetic `ia+ ia- ia* ia/ ia-neg ia-ipow
+ia-scale ia-sqrt ia-exp ia-log ia-sin ia-cos ia-atan (ia-pi)`
+(`core.ad.rigorous_interval`); rigorous Taylor models `tm-const tm-var tm+ tm*
+tm-compose tm-integrate tm-deriv tm-bound tm-enclose tm-rigorous?
+tm-prove-nonzero tm-prove-bound` plus `tm-exp tm-sin tm-cos tm-log tm-sqrt
+tm-atan tm-recip` (`core.ad.rigorous_taylor_models`). Both are re-exported from
+`(require core.ad.taylor_models)`. These are the **proof-backed** layer beneath
+the validated `core.ad.interval` / `core.ad.taylor_models` family above, whose
+remainders are epsilon-widened or sampled; `tm-rigorous?` distinguishes the two
+kinds of model at run time. See
+[reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
 
 ### 22.8 All Type Predicates (20+)
 
@@ -4412,60 +4600,7 @@ Keep original name (exported via `provide`)
 
 ---
 
-## 26. Version Information
-
-**Current Version:** v1.3.5
-
-**Version History:**
-- v1.3.5-evolve - Compiler/VM semantics, nested and exact AD, validated ESKM persistence, and release-assurance integration. Final release verification is pending.
-- v1.3.4-evolve - Consumer-hardening correctness wave: automatic per-iteration
-  memory reclamation on the native engine that matches explicit `with-region`,
-  race-free
-  `parallel-map`, exact gradients through every callable form and at exact
-  (rational/bignum) points, R7RS-correct exactness contagion on both the native
-  and bytecode-VM numeric paths, same-unit `define-library`/`import` resolution
-  on all three back ends, an emitted error diagnostic that prevents artifact
-  emission, a portable event-loop primitive, a fixed-point/i128
-  exact-accumulation engine, and the high-precision numerics wave (Ozaki-II
-  exact and reduced-precision GEMM tiers, mixed-precision `linear-solve`,
-  native `i128`). See [CHANGELOG.md](../CHANGELOG.md).
-- v1.3.3-evolve - Opt-in differentiable quantum computing (Moonlab VQE/CHSH),
-  ML-KEM post-quantum cryptography, `core.dbsp` incremental dataflow, real
-  `make-parameter`/`parameterize` dynamic parameters, and bignum-capable exact
-  rationals. See [CHANGELOG.md](../CHANGELOG.md).
-- v1.3.2-evolve - Thread-safe regions and deeper region-escape evacuation
-  (ESH-0214d subtype coverage), plus the nine-cluster architectural research
-  ADRs. See [CHANGELOG.md](../CHANGELOG.md).
-- v1.3.1 - Robustness for long-running, resident programs: per-iteration
-  arena reclamation for define-loops guarded by a catch-all handler, an
-  iterative reader so large persisted structures load without native stack
-  overflow, and comprehensive C-API documentation. See
-  [CHANGELOG.md](../CHANGELOG.md).
-- v1.3.0-evolve - Arbitrary-order automatic differentiation (Taylor towers,
-  phases P0-P12: exact bignum/rational coefficients, no-heap
-  monomorphization, GUW multivariate mixed partials, reverse-over-Taylor,
-  tensor towers, validated Taylor models, sparse high-order tensors,
-  differentiable control flow, checkpointed reverse-mode, tower-based
-  numerics), full R7RS conformance on the portable differential corpus
-  (34/34 vs. chibi-scheme), closure/TCO/memory robustness hardening
-  (mutual tail calls, named-let TCO in every position, 16->64 capture
-  ceiling, bounded-RSS long-running loops), and a permanent multi-pillar
-  adversarial-testing infrastructure. See [CHANGELOG.md](../CHANGELOG.md).
-- v1.2.0-scale - Production readiness: model serialization, stable C ABI + Python bindings, per-thread arenas, 512 MB main-thread stack on Darwin, image I/O, plotting stdlib, actionable error messages with file:line:col + caret, JSON Schema validator (Draft 7 subset), R7RS-compliant scoping for stdlib redefines, --wasm self-contained emit, AD scalar derivative on inline lambdas, value-typed-capture LLVM verification, variadic-info hygiene on user redefines, 62-test edge-case suite + ASan/UBSan CI lane, 7 hardening fixes (subprocess injection, FFI AST injection, integer overflows, path traversal, ReDoS).
-- v1.1.13-accelerate - Windows ARM64 native support, 16-lane release matrix, two VM closure bug fixes (named-let nested closure PC + native 252 upvalue relay), Windows setjmp hardening for x64 and ARM64, mobile-responsive website, REPL error display
-- v1.1.12-accelerate - LLVM 21 toolchain unification, Windows VS 2022/ClangCL, ARM64 ABI fix, clean URL routing
-- v1.1.11-accelerate - Exact arithmetic, continuations, consciousness engine, parallelism, GPU dispatch, signal processing
-- v1.0.0-foundation - Initial stable release
-  - Core Scheme compatibility
-  - Automatic differentiation system
-  - HoTT type system foundation
-  - Arena memory management
-  - Module system
-  - REPL with JIT
-
----
-
-## 27. File Organization
+## 26. File Organization
 
 ### Source Code Structure
 ```
@@ -4501,7 +4636,7 @@ tests/                   # Test suites
 
 ---
 
-## 28. Bytecode VM and ESKB Format
+## 27. Bytecode VM and ESKB Format
 
 Eshkol provides a dual backend architecture: the primary LLVM compilation path and a complementary bytecode VM for the qLLM/transformer weight pipeline and portable execution.
 
@@ -4558,13 +4693,13 @@ Dynamic binding of parameter objects. Parameters created with `make-parameter` a
 
 ## Conclusion
 
-This document provides a **complete** specification of the Eshkol programming language version v1.3.5-evolve, documenting **every** feature, function, operator, and capability found in the implementation.
+This document provides a **complete** specification of the Eshkol programming language, documenting **every** feature, function, operator, and capability found in the implementation.
 
 **Total Coverage:** (counts from `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`, the machine sources the coverage gate reads)
 - All 116 special forms and 113 parser AST operations
-- All 1,052 built-in functions (1,108 declared constructs in total)
-- 250+ VM native call IDs
-- 63-opcode bytecode VM with ESKB binary format
+- All 1,056 built-in functions (1,115 declared constructs in total)
+- 743 VM native-call IDs
+- 72-opcode bytecode VM with ESKB binary format
 - Complete type system (15+ types with 18+ heap subtypes)
 - Full memory management system (OALR arenas)
 - Entire standard library (40 modules)
@@ -4575,7 +4710,7 @@ This document provides a **complete** specification of the Eshkol programming la
 - REPL JIT with precompiled stdlib
 - Quantum RNG (8-qubit circuit simulation)
 - GPU dispatch (Metal SF64 + CUDA, forward and backward)
-- Compilation pipeline (LLVM 21 required)
+- Compilation pipeline (LLVM 18-24; major pinned per build, default 21)
 - Runtime architecture
 - Exact arithmetic (bignum, rational, numeric tower)
 - Complex number type with overflow-safe division

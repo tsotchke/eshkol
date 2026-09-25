@@ -2,7 +2,7 @@ id: SW-202
 bucket: SILENT-WRONG
 family: vm/tensor-reduction-shape
 status: fixed
-closed_at: "72a41917f"
+closed_at: "7c036631d"
 needs_decision: false
 title: "VM tensor-sum without an axis returns a one-element tensor, or per-row partial results, instead of a number"
 repro: >-
@@ -20,13 +20,15 @@ correct: >-
   does; an explicit axis, negative ones counted from the last, reduces that
   axis.
 evidence: >-
-  Fixed on master by porting the integration-branch fix (7c036631d): the
-  prelude passes #f for "no axis" and the dispatcher treats a non-number axis
-  as a full reduction; gpu-reduce lowers to #f too. Gate:
+  Fixed by the VM Taylor lane in 7c036631d: the prelude passes #f for "no
+  axis" and the dispatcher treats a non-number axis as a full reduction.
+  gpu-reduce, which lowered with -1 as well, was fixed on master in 72a41917f
+  and arrives here with the master sync. Gate:
   tests/tensor/tensor_full_reduction_test.esk on the native JIT, the bytecode
   VM and the browser VM bundle (ctest tensor_full_reduction_{jit,vm,browser_vm}).
 caught_by: [sw197-exact-collection-matrix]
 missed_by: [vm_parity]
 notes: >-
   Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch
-  in 7c036631d and ported to master by the WebGPU VM lane in 72a41917f.
+  in 7c036631d and ported to master by the WebGPU VM lane in 72a41917f, which
+  also fixed the gpu-reduce lowering.

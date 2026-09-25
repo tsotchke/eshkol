@@ -32,6 +32,8 @@ if [ ! -r "$ESHKOL_TEST_LIB" ]; then
     exit 2
 fi
 source "$ESHKOL_TEST_LIB"
+# shellcheck source=lib/checked_write.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
 eshkol_test_isolation_init "memory"
 
 # Colors for output
@@ -88,6 +90,7 @@ for test_file in tests/memory/*.esk; do
 
     if [ -n "$expected_runtime_error" ]; then
         if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
+            eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
             if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
                 echo -e "${RED}❌ SHOULD HAVE FAILED${NC}"
                 FAILED_TESTS+=("$test_name (expected a runtime error; exited 0)")
@@ -124,6 +127,7 @@ for test_file in tests/memory/*.esk; do
         # Normal test - should compile and run successfully
         if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
             # Compilation succeeded, try to run
+            eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
             if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
                 # Check if there were any errors in output
                 # `error:` alone is a compiler diagnostic, not a verdict: these
@@ -188,7 +192,7 @@ fi
 echo ""
 
 # Clean up
-rm -f "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN"
+eshkol_checked_rm "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN"
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then

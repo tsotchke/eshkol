@@ -1,11 +1,53 @@
 # ESKM v1 scalar and empty-tensor VM materialization
 
-- **Status:** Proposed; requires maintainer review before implementation.
+- **Status:** Implementation prepared for review; maintainer acceptance pending.
 - **Decision owners:** ESKM maintainers and VM memory/runtime maintainers.
 - **Scope:** A serialization-local adapter supporting the remaining scalar/empty
   compatibility gate in GK-SER-01 and GK-SER-03.
-- **Implementation and acceptance:** Not started; this document supplies no
-  runtime acceptance evidence and does not complete either work packet.
+- **Implementation:** The local change implements the D1–D5 representation
+  below. Verification is recorded in the current
+  [subsystem handoff](../development/ESKM_HANDOFF.md). This does not claim
+  maintainer acceptance or change the separate v2 proposal.
+
+## Current implementation — 2026-09-17
+
+The implementation starts from upstream `0901264c`, after #555/#602 loader
+validation and #612 atomic publication landed. The remainder of this document
+records the original design and its review criteria; its pinned-source diagnosis
+is historical, not a claim about the current general tensor constructors.
+
+In that upstream revision `vm_tensor_new` already allocates positive-rank empty
+tensors, but the ESKM reader still refuses rank zero and zero element counts.
+The I/O-local adapter now admits those records only after whole-file validation:
+
+- Rank-zero tensors retain rank 0, count 1, zeroed inline shape/stride storage,
+  and one owned binary64 element with the original bits.
+- Empty tensors retain every dimension, count 0, checked row-major strides
+  (`[0, 3]` has `[3, 1]`), and one initialized, owned storage slot. The slot is
+  never an element and is never serialized.
+- Dimension and stride representability are checked before materialization,
+  including dimensions following a zero. Existing rank and element limits apply.
+- A private shared native/VM operand guard admits canonical rank-zero scalars
+  for `tensor-shape`, `tensor-data`, and the native `tensor->vector` and
+  `tensor-length` spellings. The general metadata validator and arithmetic or
+  destination checks remain unchanged.
+- Tensor objects and their storage use the existing region allocator and
+  evacuation path. The general constructors, object layout, public signatures,
+  and v1 wire format are unchanged.
+
+The lifetime guarantee covers ordinary function and region exit. Transferring
+rank-zero tensors across VM worker heaps is outside this slice: the existing
+worker-copy path still relies on the positive-rank tensor constructor.
+
+The focused C test checks representation and exact rewrites after actual VM
+region evacuation, including rank-9 empty dimensions stored outside the inline
+arrays. The registered model parity gate covers all six historical valid
+fixtures through 96 producer/consumer cells, five public single-tensor fixtures
+per engine, and scalar/empty values returned from function and region scopes.
+Its negative controls change expected scalar metadata/payload without changing
+the valid input files. See the handoff for executed results and platform limits.
+
+## Original design and acceptance criteria
 
 ## Problem and intended behavior
 

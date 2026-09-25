@@ -1,0 +1,25 @@
+id: SW-203
+bucket: SILENT-WRONG
+subtag: complex
+family: vm/complex-boundary
+status: fixed
+closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+title: "VM unary (- z) of a complex answered -0.0 and (abs z) answered 0"
+repro: >-
+  (display (- (make-rectangular 1.0 2.0))) and (abs (make-rectangular 3.0 4.0))
+  on eshkol-vm-standalone-test.
+observed_before: >-
+  -0.0 and 0 with exit status 0; native prints -1-2i and raises for abs.
+observed_after: >-
+  -1-2i, and abs raises "abs: argument is a complex number ..." on the VM and
+  the browser VM, as on native.
+root_cause: >-
+  lib/backend/vm_run.c lbl_NEG/lbl_ABS and their switch-dispatch twins had no
+  complex arm and read the heap pointer as 0.0; the switch twin of NEG also
+  lacked the dual arms.
+fixed_by: "one shared carrier arm, vm_unary_sign_carrier (lib/backend/vm_ops.c), used by both loops"
+evidence: >-
+  tests/complex/complex_negate_abs_test.esk (ctest complex_negate_abs_vm,
+  complex_negate_abs_browser_vm, complex_negate_abs_jit).
+caught_by: [v135f-vmtaylor-lane]
+missed_by: [run_vm_parity]

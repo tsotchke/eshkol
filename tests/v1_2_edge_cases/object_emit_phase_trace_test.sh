@@ -20,10 +20,14 @@ LOG="$WORK/object_emit_phase_trace.log"
 : "${SRC:?SRC not set}"
 : "${LOG:?LOG not set}"
 
-cat > "$SRC" <<'ESK'
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$ROOT/scripts/lib/checked_write.sh"
+SRC_TMP="$(eshkol_install_tmp "$SRC")" || exit $?
+cat > "$SRC_TMP" <<'ESK'
 (define (square x) (* x x))
 (square 7)
 ESK
+eshkol_install_checked "$SRC_TMP" "$SRC" || exit $?
 
 if ! env LC_ALL=C LANG=C \
     ESHKOL_AOT_PHASE_TRACE=1 \

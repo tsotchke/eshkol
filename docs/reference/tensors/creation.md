@@ -1,6 +1,6 @@
 # Tensors — Creation, dtypes, and the vector/tensor distinction
 
-Everything below is verified by running it on the v1.3.4 compiler; outputs are
+Everything below is verified by running it on the v1.3.5-evolve compiler; outputs are
 pasted as printed.
 
 ---
@@ -51,7 +51,7 @@ t                               ;; => #(1 2 3)
 `shape`-dimensional. Reshape a flat tensor into higher rank with
 `tensor-reshape` (see [operations.md](operations.md)).
 
-Shape construction is checked on both engines. Every dimension is a positive
+Shape construction is checked on both engines. Every dimension is a nonnegative
 integer (zero extents produce an empty tensor), the product is overflow-checked before allocation, and the resulting
 descriptor records exactly that product. Invalid dimensions and resource-size
 requests raise a catchable condition; they are never converted into a wrapped
@@ -98,9 +98,48 @@ to zero for a nonzero value:
 (make-tensor (list 2 2) 1/2) ;; every element is the double 0.5
 ```
 
+A derivative carrier is the one element that is not converted. Inside a
+differentiated body, an element that is a forward-mode carrier (a dual number,
+or the Taylor tower an exact point and `derivative-n` use) makes the tensor a
+jet tensor and is stored whole; `tensor-ref` returns it whole, so the
+derivative passes through the tensor:
+
+```scheme
+(derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 0.5)   ;; => 1.0
+(derivative (lambda (x) (tensor-ref (tensor x (* x x)) 1)) 1/3)   ;; => 2/3
+```
+
+Every construction path applies this one rule: the literal, `(tensor X)` over
+a collection, `make-tensor`'s fill, and a collection passed where a tensor is
+expected.
+
 This rule applies uniformly at every chokepoint that builds or mutates a
 tensor from a Scheme value: `tensor`, `make-tensor`, `tensor-set!`, and
 `vector->tensor`, on both the native and VM engines.
+
+### Storing into a tensor through the vector API
+
+A tensor answers `vector?`, so `vector-set!`, `vector-fill!` and `vector-copy!`
+accept one — including a numeric `#(…)` literal. They share a single store
+boundary with `tensor-set!`
+([ADR-0020](../../design/adr/0020-container-slot-store-boundary.md)): the value
+is converted to the slot's representation, or the store is refused.
+
+```scheme
+(define v #(10 20 30))
+(vector-set! v 0 99)          ;; v => #(99 20 30)
+(vector-set! v 1 1/2)         ;; v => #(99 0.5 30)     exact -> nearest double
+(vector-fill! v 7)            ;; v => #(7 7 7)
+(vector-copy! v 0 (vector 1 2)) ;; v => #(1 2 7)
+(guard (e (#t 'refused))
+  (vector-set! v 0 "x"))      ;; => refused; v is unchanged
+```
+
+A value that is not a real number has no representation in a numeric slot, so
+the store raises a catchable error before the tensor is modified — for
+`vector-copy!`, before the first element is written. `tensor-set!` on a Scheme
+vector is likewise an error rather than an update to a coerced copy. Reach for
+`vector` / `make-vector` when the container must hold anything else.
 
 ## Creating vectors
 

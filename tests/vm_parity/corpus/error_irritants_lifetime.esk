@@ -1,0 +1,24 @@
+;; Typed irritants must outlive their creating region and worker heap.
+(define (check a b)
+  (if (equal? a b) #t (error "error irritants lifetime mismatch" a b)))
+(define escaped
+  (with-region ('error-test 65536)
+    (guard (e (#t e)) (error "escaped" (vector 1 2) (list "x" 7)))))
+(define expected (list (vector 1 2) (list "x" 7)))
+(check (error-object-irritants escaped) expected)
+(display "error region escape PASS") (newline)
+(define inputs
+  (let loop ((n 32) (out '()))
+    (if (= n 0) out (loop (- n 1) (cons n out)))))
+;; A pure GET_UPVALUE callback is worker-safe: clone the captured error graph.
+(define captured (parallel-map (lambda (n) escaped) inputs))
+(for-each (lambda (e) (check (error-object-irritants e) expected)) captured)
+(display "error worker capture PASS") (newline)
+;; Guarded callbacks retain their native control scope on the calling thread.
+(define published
+  (parallel-map
+    (lambda (n) (guard (e (#t e)) (error "worker" n (vector n (+ n 1))))) inputs))
+(for-each (lambda (e) (check (error-object-message e) "worker")) published)
+(check (map (lambda (e) (error-object-irritants e)) published)
+       (map (lambda (n) (list n (vector n (+ n 1)))) inputs))
+(display "error irritants lifetime PASS") (newline)

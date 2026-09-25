@@ -1,0 +1,27 @@
+<h1 id="adr-0028-one-number-syntax-recognizer-for-every-reader">ADR-0028: One number-syntax recognizer for every reader</h1>
+<p><strong>Status:</strong> Accepted <strong>Ledger:</strong> SW-223 <strong>Scope:</strong> The native source parser, the native runtime reader (<code>read</code>) and <code>string-&gt;number</code>, and the bytecode VM’s parser, reader and <code>string-&gt;number</code> (native and WebAssembly builds of the VM).</p>
+<h2 id="context">Context</h2>
+<p>Six places turned text into numbers, and each carried its own partial idea of the R7RS 7.1.1 <code>&lt;number&gt;</code> grammar. They disagreed with the standard and with each other: the native parser split <code>1+1i</code> into <code>1</code> and <code>+1i</code>; the VM parser read it as a call; <code>string-&gt;number</code> answered <code>#f</code> for <code>1+1i</code> while <code>read</code> returned the symbol <code>1+1i</code>; <code>#i42</code> was the exact integer 42; <code>#e1.5</code> was not a number; <code>read</code> of <code>99999999999999999999</code> clamped to <code>INT64_MAX</code>; and the VM’s <code>string-&gt;number</code> had three implementations, two of which answered <code>#f</code> for <code>+nan.0</code>.</p>
+<h2 id="decision">Decision</h2>
+<p><code>inc/eshkol/core/number_syntax.h</code> is the grammar, and every reader asks it. It is header-only C, like <code>symbol_syntax.h</code> and <code>dtoa_shortest.h</code>, so the VM unity build (native and WebAssembly), the C++ runtime and the parser each compile a private copy with no link dependency.</p>
+<p>The recognizer never builds a value, because each engine has its own representation. It returns the form (real, rectangular, polar) and each part in a canonical spelling that every engine’s existing constructors read:</p>
+<ul>
+<li><strong>INTEGER</strong>: exact decimal digits, converted from radix 2, 8 or 16 here, bignum-sized values included.</li>
+<li><strong>RATIONAL</strong>: exact <code>n/d</code>, reduced by the consumer’s rational constructor.</li>
+<li><strong>DECIMAL</strong>: inexact, a decimal spelling whose correctly rounded double is the value.</li>
+<li><strong>INFNAN</strong>: one of <code>+inf.0</code>, <code>-inf.0</code>, <code>+nan.0</code>, <code>-nan.0</code>.</li>
+</ul>
+<p>Exactness is resolved in the recognizer, so no consumer converts between exact and inexact itself. <code>#e</code> turns a decimal into the integer or rational it spells. <code>#i</code> turns an exact part into the DECIMAL spelling of its correctly rounded double: a rational is expanded to 800 significant digits with a trailing sticky digit when the division is inexact, which no double rounding boundary can separate from the true quotient.</p>
+<p>Two representation decisions are made once, here:</p>
+<ol type="1">
+<li><strong>An exact zero imaginary part, or an exact zero angle, is the real number.</strong> <code>1+0i</code> is the exact integer 1, as R7RS defines it, on every engine. It is not a complex number whose printing depends on the engine.</li>
+<li><strong>Complex parts are inexact.</strong> Eshkol stores a complex number as two doubles (numeric-tower.md), so the parts of a non-real result are always DECIMAL or INFNAN, and <code>#e</code> on a non-real complex number has no value. The same applies to <code>#e</code> on an infinity or NaN, and to a zero denominator.</li>
+</ol>
+<p>A token the recognizer rejects is an identifier. Number syntax with no value is an error: a compile error for a program literal, a read error for <code>read</code>, and <code>#f</code> for <code>string-&gt;number</code>. The symbol writer consults the same predicate, so a symbol named <code>+i</code> is written <code>|+i|</code> and reads back as that symbol.</p>
+<p>The parser represents a complex literal as <code>(make-rectangular &lt;double&gt; &lt;double&gt;)</code>, the same desugar pattern the rational literal uses with <code>make-rational</code>. Quote, and a <code>#(...)</code> literal’s tensor-safety check, recognise the desugar’s exact shape (two DOUBLE literal operands), so a quoted complex literal is the number, not list data.</p>
+<h2 id="consequences">Consequences</h2>
+<ul>
+<li><code>string-&gt;number</code> accepts the radices 2, 8, 10 and 16, which are the R7RS set. The earlier native acceptance of radices up to 36 is gone. The VM’s <code>string-&gt;number</code> still takes no radix argument, because a first-class VM builtin with an optional argument cannot yet be called with fewer arguments; a radix prefix works on both engines.</li>
+<li>An exact <code>#e</code> exponent is bounded at 4096 digits, so a short token cannot demand an unbounded allocation.</li>
+<li>A new number spelling is added to the grammar in one file, and every reader gains it together.</li>
+</ul>

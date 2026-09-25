@@ -1,0 +1,16 @@
+;; Type System Test: a body whose static type is concrete and not a subtype of
+;; the return annotation is still reported, for a function define, a lambda,
+;; and a signature-valued result whose parameters are incompatible.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN]
+;; EXPECT-STDERR: Function 'bad-number' body type String doesn't match return annotation Number
+;; EXPECT-STDERR: Lambda body type String doesn't match return annotation Number
+;; EXPECT-STDERR: Function 'bad-arrow' body type (-> String String) doesn't match return annotation (-> Number Number)
+
+(define (bad-number (x : number)) : number "oops")
+(define bad-lambda (lambda ((x : number)) : number "oops"))
+(define (bad-arrow) : (-> number number) (lambda ((s : string)) : string s))
+
+(display 1)
+(newline)

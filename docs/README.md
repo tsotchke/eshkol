@@ -18,6 +18,9 @@ pages and lets them fan out to their siblings.
 - [Examples](../examples/README.md) — the runnable example collection (AD, parallelism, consciousness engine, streaming, simulation, quantum chemistry, and exact mathematics)
 - [AI-driven mathematics examples](AI_MATHEMATICS_EXAMPLES.md) — exact and AD-verified public witnesses, including the Jacobian counterexample, AlphaTensor factorizations, and a FunSearch cap set
 - [FAQ](FAQ.md) — installation, troubleshooting, common questions
+- [Upgrading to v1.3.5-evolve](UPGRADING.md) — what a program, a build or a contributor workflow written against v1.3.4 meets on v1.3.5
+- [Troubleshooting](TROUBLESHOOTING.md) — build and run problems with known causes: LLVM discovery, host compilers, `ESHKOL_PATH`, caches, stack size, Python bindings, Windows, WebAssembly
+- [Glossary](GLOSSARY.md) — the terms the documentation uses, each linked to its home page
 - [Getting Started (breakdown)](breakdown/GETTING_STARTED.md) — installation and first programs, implementation-level detail
 - [Overview](breakdown/OVERVIEW.md) — design philosophy and competitive positioning, start here for "why Eshkol"
 
@@ -26,9 +29,11 @@ pages and lets them fan out to their siblings.
 - [Language Guide](ESHKOL_LANGUAGE_GUIDE.md) — tutorial-style introduction to the language
 - [Language Reference index](reference/language/INDEX.md) — complete, example-verified function and syntax reference (binding/mutation, control flow, error handling, pattern matching, modules, continuations, and more)
 - [Complete Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md) — full technical specification, v1.3.5-evolve
-- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,025-builtin surface
+- [Quick Reference](ESHKOL_QUICK_REFERENCE.md) — one-page cheat sheet over the 1,053-builtin surface
 - [API Reference](API_REFERENCE.md) — comprehensive function documentation
-- [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (61 modules)
+- [Gradual typing guide](guide/GRADUAL_TYPING.md) — annotations, what is checked where, function types, branch joins, loop typing, reading a diagnostic
+- [WGSL artifact guide](guide/WGSL_ARTIFACT.md) — derive a bounded polynomial with AD and compose its standalone evaluator with browser WebGPU kernels
+- [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (63 modules)
 - [Standard Library API (v1.2 surface notes)](STDLIB_V1_2_API.md) — stdlib module surfaces, including infrastructure modules
 - [Design Document](DESIGN.md) — architecture and design rationale (last revised for v1.3.0-evolve)
 - [Feature Matrix](FEATURE_MATRIX.md) — implementation status table
@@ -59,9 +64,9 @@ pages and lets them fan out to their siblings.
   - [memory-model.md](reference/runtime/memory-model.md) — tagged values, arena allocator, `with-region` semantics
   - [parallelism.md](reference/runtime/parallelism.md) — `parallel-map`/`-fold`/`-filter`/`-execute`, work-stealing pool
   - [jit-internals.md](reference/runtime/jit-internals.md) — run cache, stdlib object cache, large code model
-- [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 64-opcode core interpreter, ESKB format, WebAssembly execution
+- [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 72-opcode core interpreter, ESKB format, WebAssembly execution
 - [REPL JIT (breakdown)](breakdown/REPL_JIT.md) — LLVM OrcJIT, opt-level matching, stdlib preloading, hot reload
-- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 956 rows (581 `vm-supported`, 44 `native-only-justified`, 331 `gap`), differential 184/184
+- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 961 rows (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), differential <!-- release-record:vm-parity-figure -->**388/388**<!-- /release-record -->
 - [VM Memory Ops as Weight Matrices](breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) — lifting VM opcodes into transformer weight constructions
 - [Computable Transformer](breakdown/COMPUTABLE_TRANSFORMER.md) — programs as neural network weight matrices, 6-layer transformer VM encoding
 - [Command-Line Reference](breakdown/COMMAND_LINE_REFERENCE.md) — complete flag reference for `eshkol-run` and `eshkol-repl`
@@ -137,13 +142,16 @@ pages and lets them fan out to their siblings.
 - [Platform program index](platform/README.md) — freestanding/kernel/embedded platform program, fans out to program overview, architecture, roadmap alignment, governance, workstreams, milestones, decisions
 - [Build-system integration](BUILD_INTEGRATION.md) — compiling `.esk` sources from a CMake project (e.g. embedding Eshkol in a larger C/C++ project)
 - [Build notes](platform/BUILD_NOTES.md)
+- [Release process](platform/RELEASE_PROCESS.md) — how a release is verified and published: the release workflow, the readiness gate, the evidence recipe, the release record and what the maintainer does by hand
 - [CI lanes](platform/CI_LANES.md) — required vs. non-required CI lanes and what each covers
 - [Self-hosted runners](platform/SELF_HOSTED_RUNNERS.md) — attaching the maintainer's own machines as GitHub Actions runners: label taxonomy, provisioning, registration, why no mesh lane is a required check
 - [ICC contract surface](platform/ICC_CONTRACT_SURFACE.md)
+- [Compiler assurance executions](platform/COMPILER_ASSURANCE.md) — the mutation-dosed closed-enum gate, the public-API linkage gate, and the evidence receipt each run writes
 - Windows x86 under KVM — internal runbook, not published
 - [Target Support Matrix](platform/TARGET_SUPPORT_MATRIX.md)
 - [Architecture documentation index](architecture/README.md) — master architecture doc, component architecture, active platform architecture
 - [Development documentation index](development/README.md) — build from source, running tests, code structure, contribution workflow
+- [Subsystem ownership roadmap](development/GABE_KAHAN_ROADMAP.md) — the model-I/O subsystem handoff record and its ownership boundaries
 - [Docker (breakdown)](breakdown/DOCKER.md) — CUDA, Debian, Ubuntu, and XLA Docker images
 - [CI/CD Pipelines (breakdown)](breakdown/CI_CD.md) — GitHub Actions workflows, build matrix, release artifacts
 - [VS Code Extension (breakdown)](breakdown/VSCODE_EXTENSION.md)
@@ -152,7 +160,7 @@ pages and lets them fan out to their siblings.
 
 ## Design and Internals
 
-- [Architecture deep-dives index](breakdown/README.md) — per-subsystem technical breakdowns (36 docs): compiler architecture, type system, memory management, closures, AD, consciousness engine, ML, signal processing, GPU, parallel computing, exact arithmetic, continuations, XLA, bytecode VM, module system, REPL JIT, web platform, package manager, developer tools, and more
+- [Architecture deep-dives index](breakdown/README.md) — per-subsystem technical breakdowns (36 subsystem docs plus the index): compiler architecture, type system, memory management, closures, AD, consciousness engine, ML, signal processing, GPU, parallel computing, exact arithmetic, continuations, XLA, bytecode VM, module system, REPL JIT, web platform, package manager, developer tools, and more
 - [Components documentation index](components/README.md) — component-level implementation pointers (parser, macro expander, type checker, and more)
 - [Master Architecture](ESHKOL_V1_ARCHITECTURE.md) — comprehensive technical architecture from the full codebase analysis
 - [Compiler Architecture (breakdown)](breakdown/COMPILER_ARCHITECTURE.md) — LLVM backend, 21 specialized codegen modules, JIT system
@@ -172,29 +180,50 @@ pages and lets them fan out to their siblings.
 - [Flaw-detection capability roadmap](design/FLAW_DETECTION_ROADMAP.md) — the detector inventory behind the v1.3.5 and v1.4 assurance work, and the scripts that enforce it
 - [Pillar-harness CI inventory](design/PILLAR_CI_INVENTORY.md) — which adversarial pillar harnesses run in which CI lane, and which readiness targets are trace-blocked rather than code-blocked
 - [ESKM v2 format decision](design/ESKM_V2_FORMAT_DECISION.md) — proposed extensible metadata envelope, compatibility rules, and implementation gates
+- [ESKM v1 scalar and empty-tensor VM materialization](design/ESKM_V1_VM_MATERIALIZATION.md) — the rank-0 / empty-tensor case native model loading materializes and VM model loading does not, and what closing it requires
+- [Tensor application shares ordinary callable dispatch](design/TENSOR_APPLY_CALLABLE_DISPATCH.md) — how `tensor-apply` was routed onto `codegenClosureCall` and `vm_enter_call`, and the four-engine gate that holds it there
+- [Navier-Stokes computations: evidence ledger](design/NAVIER_STOKES_EVIDENCE_LEDGER.md) — per-step record of what is exact, what is validated by enclosure, and what is analytic-only in the mechanization design note
+- [Incompressible porous media: local velocity expansion, evidence ledger](design/IPM_LOCAL_EXPANSION_LEDGER.md) — the companion ledger for the local velocity expansion
 
-Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented (see each doc's own `Status:` line):
+Architecture Decision Records (`docs/design/adr/`) — design proposals and decisions, not all yet implemented. The [ADR index](design/adr/README.md) holds the full table (status, date, where each decision is implemented), the numbering rule, the status vocabulary and the registration steps. Every record has exactly one number; the status word on each line summarises the record's own `Status:` line:
 
-- [ADR 0000 — Unified architectural trajectory](design/adr/0000-unified-trajectory.md)
-- [ADR 0001 — Concurrent, resident-grade OALR](design/adr/0001-oalr-concurrent-resident.md)
-- [ADR 0002 — Staged dense-tensor reverse-mode AD and `value_and_grad`](design/adr/0002-ad-alt-architect.md)
-- [ADR 0002 — Dense tensor AD nodes and a staged value-and-grad kernel](design/adr/0002-ad-staged-dense-kernels.md)
-- [VM/LLVM parity conformance matrix + modularization notes](design/adr/0003-codegen-vm-parity.md)
-- [ADR 0004 — One quantitative dependent type system for Eshkol](design/adr/0004-type-system-trajectory.md)
-- [ADR 0005 — Lambda foundations to resident programs-as-weights](design/adr/0005-lambda-foundations-programs-to-weights.md)
-- [ADR 0006 — Binding-resolved libraries and proper tail invocation](design/adr/0006-language-conformance-modules.md)
-- [ADR 0007 — PGO, whole-program optimization, and staged training throughput](design/adr/0007-performance-pgo-wpo.md)
-- [ADR 0008 — One semantic tooling core for Eshkol developer experience](design/adr/0008-dev-experience-tooling.md)
-- [ADR 0009 — Native DBSP-style incremental dataflow](design/adr/0009-incremental-dataflow-dbsp.md) — see also [reference/stdlib/dbsp.md](reference/stdlib/dbsp.md) for the implemented subset
-- [ADR 0010 — Closed-loop assurance architecture](design/adr/0010-closed-loop-assurance.md)
-- [ADR 0011 — Hosted guest collectors over OALR regions](design/adr/0011-guest-collector-adapter.md) — how a garbage-collected guest language (Python, Common Lisp) is hosted in a region without Eshkol ever tracing; includes a runnable falsifier in [`0011-gc-adapter-falsifier/`](design/adr/0011-gc-adapter-falsifier/)
-- [ADR 0012 — Object ABI: discrimination, enforcement, and the staged migration](design/adr/0012-object-abi-staged-migration.md) — how a heap object is discriminated, where the invariant is enforced, and the staged path from the 8-byte v1 header to the 32-byte v2 header; the site inventory it migrates is [`design/ABI_V2_MIGRATION_INVENTORY.md`](design/ABI_V2_MIGRATION_INVENTORY.md)
+- [ADR 0000 — Unified architectural trajectory](design/adr/0000-unified-trajectory.md) — Partially implemented
+- [ADR 0001 — Concurrent, resident-grade OALR](design/adr/0001-oalr-concurrent-resident.md) — Partially implemented
+- [ADR 0002 — Dense tensor AD nodes and a staged value-and-grad kernel](design/adr/0002-ad-staged-dense-kernels.md) — Partially implemented
+- [VM/LLVM parity conformance matrix + modularization notes](design/adr/0003-codegen-vm-parity.md) — Superseded
+- [ADR 0004 — One quantitative dependent type system for Eshkol](design/adr/0004-type-system-trajectory.md) — Partially implemented
+- [ADR 0005 — Lambda foundations to resident programs-as-weights](design/adr/0005-lambda-foundations-programs-to-weights.md) — Proposed
+- [ADR 0006 — Binding-resolved libraries and proper tail invocation](design/adr/0006-language-conformance-modules.md) — Partially implemented
+- [ADR 0007 — PGO, whole-program optimization, and staged training throughput](design/adr/0007-performance-pgo-wpo.md) — Partially implemented
+- [ADR 0008 — One semantic tooling core for Eshkol developer experience](design/adr/0008-dev-experience-tooling.md) — Partially implemented
+- [ADR 0009 — Native DBSP-style incremental dataflow](design/adr/0009-incremental-dataflow-dbsp.md) — Partially implemented — see also [reference/stdlib/dbsp.md](reference/stdlib/dbsp.md) for the implemented subset
+- [ADR 0010 — Closed-loop assurance architecture](design/adr/0010-closed-loop-assurance.md) — Partially implemented
+- [ADR 0011 — Hosted guest collectors over OALR regions](design/adr/0011-guest-collector-adapter.md) — Proposed — how a garbage-collected guest language (Python, Common Lisp) is hosted in a region without Eshkol ever tracing; includes a runnable falsifier in [`0011-gc-adapter-falsifier/`](design/adr/0011-gc-adapter-falsifier/)
+- [ADR 0012 — Object ABI: discrimination, enforcement, and the staged migration](design/adr/0012-object-abi-staged-migration.md) — Partially implemented — how a heap object is discriminated, where the invariant is enforced, and the staged path from the 8-byte v1 header to the 32-byte v2 header; the site inventory it migrates is [`design/ABI_V2_MIGRATION_INVENTORY.md`](design/ABI_V2_MIGRATION_INVENTORY.md)
+- [ADR 0013 — One gradual type relation](design/adr/0013-gradual-type-relation.md) — Accepted — centralizes static subtyping, gradual consistency, flow evidence, joins, casts, and type presentation
+- [ADR 0014 — Release invariant contracts are measured before grading](design/adr/0014-release-invariant-contracts.md) — Accepted — release invariants are executable, fail-closed contracts at each boundary, and the release workflow emits the ABI/layout, closed-enum, AD-counter and VM-parity receipts before the architecture grade is taken
+- [ADR 0015 — Static callee binding identity](design/adr/0015-static-callee-binding-identity.md) — Accepted — makes direct-call aliases depend on the binding storage that still owns them
+- [ADR 0016 — Staged dense-tensor reverse-mode AD and `value_and_grad`](design/adr/0016-ad-alt-architect.md) — Proposed — the typed static reverse schedule, the companion proposal to ADR 0002 (carried the number 0002 until 2026-09-17)
+- [ADR 0017 — Stochastic Binary Lambda Calculus](design/adr/0017-stochastic-binary-lambda-calculus.md) — Proposed — `core.sblc`, the self-delimiting binary program grammar, exact rational distribution semantics under a step bound (first slice targets v1.4.0); carried the number 0011 until 2026-09-17
+- [ADR 0018 — Signed-curvature stereographic geometry](design/adr/0018-signed-curvature-stereographic-geometry.md) — Accepted — one κ-stereographic chart for all curvature signs, analytic through `K = 0`, and the execution contract it implies (targets v1.4.0); carried the number 0012 until 2026-09-17
+- [ADR 0019 — Evergreen documentation architecture](design/adr/0019-evergreen-documentation-architecture.md) — Partially implemented
+- [ADR 0020 — One store boundary for every container slot](design/adr/0020-container-slot-store-boundary.md) — Implemented — a value stored into a vector or tensor slot is always a value of the slot's declared representation.
+- [ADR 0021 — One owner for AST string payloads, one spelling for recorded paths](design/adr/0021-ast-string-owner.md) — every AST identifier, literal and synthesized name comes from one rooted arena released at teardown; recorded source paths are normalized at one place so no artifact carries a build-host path; sanitizer builds run leak-clean under one policy
+- [ADR 0022 — One boundary for each place a value crosses a representation](design/adr/0022-ad-value-boundaries.md) — Accepted — a gradient point written as separate scalars is parsed as the vector literal it stands for, and a cons slot is read and written whole, so a derivative carrier survives both
+- [ADR 0023 — A dense tensor AD node is read as a tensor through one resolver](design/adr/0023-dense-tensor-node-as-operand.md) — Accepted — a matmul result under differentiation is resolved once into a tensor of element-projection nodes, so every tensor and collection consumer accepts it and the reverse sweep reaches it
+- [ADR 0024 — One unspecified value](design/adr/0024-unspecified-value.md) — Implemented — every form R7RS leaves unspecified evaluates to one value, distinct from the empty list, printed as nothing, shared with the VM
+- [ADR 0025 — A complex value carries the derivative of its components](design/adr/0025-complex-values-carry-derivatives.md) — Accepted — a derivative with respect to a real parameter passes through every complex operation on both engines; no derivative at the origin raises
+- [ADR 0026 — One macro expansion and renaming rule](design/adr/0026-syntax-rules-one-engine-one-renaming-rule.md) — hygienic lexical binding and consistent source names
+- [ADR 0027 — Recursive Taylor level carrier](design/adr/0027-recursive-taylor-level-carrier.md) — nested differentiation carries enclosing levels in its coefficients
+- [ADR 0028 — One number syntax recognizer](design/adr/0028-one-number-syntax-recognizer.md) — program literals and datum readers share the R7RS grammar
+- [ADR 0029 — Browser VM WebGPU dispatch](design/adr/0029-browser-vm-webgpu-dispatch.md) — browser tensor operations use the shared GPU dispatch seam
 
 ## Testing and Quality Gates
 
-- [Public Benchmarks reference index](reference/benchmarks/INDEX.md) — reproducible, one-command benchmark suite on the four axes Eshkol claims superiority (exact-AD cost curves, Ozaki-II CRT GEMM, flat-RSS, differentiable quantum kernels); see [`bench/README.md`](../bench/README.md) for the full reproduction guide
+- [Writing documentation](DOCUMENTATION.md) — page kinds, front matter, evergreen wording, facts rendered from sources, executed examples and every documentation gate
+- [Public Benchmarks reference index](reference/benchmarks/INDEX.md) — reproducible, one-command benchmark suite on the four axes Eshkol claims superiority (exact-AD cost curves, Ozaki-II CRT GEMM, flat-RSS, differentiable quantum kernels); see [`bench/README.md`](../bench/README.md) for the full reproduction guide and [`bench/reference-run/results.md`](../bench/reference-run/results.md) for the published reference run
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
-- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies: 45/45 suites, 770 tests, CTest 183/183
+- [Test Coverage](TEST_COVERAGE.md) — what the suite gate verifies on the v1.3.5-evolve release: 46/46 suites, <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->, <!-- release-record:vm-parity -->VM parity differential **388/388**<!-- /release-record -->
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
 
 Adversarial-campaign pillar harnesses (`tests/`):
@@ -206,6 +235,14 @@ Adversarial-campaign pillar harnesses (`tests/`):
 - [P6a Depth-parametric AD oracle](../tests/ad_depth/README.md)
 - [P7 Sanitizer/libFuzzer harnesses](../tests/fuzz/README.md)
 - [P7c Metamorphic/property oracle](../tests/metamorphic/README.md)
+- [P3b AD adversarial harness](../tests/ad_adversarial/README.md) (and its [findings notes](../tests/ad_adversarial/found/NOTES.md))
+- [P2b Escape matrix](../tests/escape_matrix/README.md) (and its [found reproducers](../tests/escape_matrix/found/README.md))
+- [P7b Generative differential](../tests/generative-diff/README.md)
+- [Edge coverage (v1.3.4 wave)](../tests/edge_coverage_v134/README.md)
+- [guard/raise coverage](../tests/error_handling/guard_coverage/README.md)
+- [Tail calls in guard tail context](../tests/tco/guard_tail_context/README.md)
+- [qLLM oracle gate](../tests/qllm_oracle/README.md)
+- [Mathematics acceptance battery](../tests/math_acceptance/README.md)
 - [Stress tests](../tests/stress/README.md)
 
 Engineering reports (`docs/reports/`) — see the [reports directory index](reports/README.md) for scope; individual reports:
@@ -223,6 +260,10 @@ Engineering reports (`docs/reports/`) — see the [reports directory index](repo
 - [Metaprogramming Depth Report](reports/METAPROG_DEPTH_REPORT.md) — P6e metaprogramming + module depth sweep
 - [Tensor/Collection Depth Report](reports/TENSOR_COLLECTION_DEPTH_REPORT.md) — P6f tensor/collection/string depth sweep
 - [ICC Complete Review (2026-07-01)](reports/ESHKOL_ICC_COMPLETE_REVIEW_2026-07-01.md) — full ICC-led campaign review
+- [Parser continuation stack](reports/PARSER_EXPLICIT_STACK_20260908.md) — how recursive descent became an explicit continuation stack, and what each suspension point cost
+- [Native compilation on an actual 8 MiB stack](reports/PARSER_JIT_STACK_20260908.md) — the 16,000-level JIT and AOT measurement under a fixed process stack limit
+- [Continuation operands and synchronous LLVM emission](reports/CONTINUATION_IR_OPERANDS_20260908.md) — why `await_suspend` only records a child and `final_suspend` only suspends
+- [AST and callable routing consolidation](reports/AST_ROUTING_CONSOLIDATION.md) — the single exhaustive operation dispatcher and the single callable dispatcher, and the assurance findings that drove them
 
 ## Vision and Roadmap
 
@@ -255,6 +296,7 @@ are not part of the primary documentation path.
 
 - Release Readiness Report — internal runbook, not published
 - Eshkol V1 Language Reference (internal) — internal runbook, not published
+- [Third-party notices](../THIRD_PARTY_NOTICES.md) — the licences of every vendored and fetched dependency
 - [icc_extras tooling](../tools/icc_extras/README.md) — Eshkol-specific tooling on top of `infinite_context_coder`
 - [LLVM verifier coverage audit](../tools/icc_extras/verifier_coverage.md)
 

@@ -1,0 +1,14 @@
+;; SW-226: map with a procedure that does not take one argument per list
+;; compiles and raises the catchable arity error at run time, as the VM does.
+(define (try thunk) (guard (e (#t 'caught)) (thunk)))
+(define (two x y) x)
+(display (try (lambda () (map (lambda (x y) x) '(1 2))))) (newline)
+(display (try (lambda () (map two '(1 2))))) (newline)
+(display (try (lambda () (map (lambda (x) x) '(1 2) '(3 4))))) (newline)
+(display (try (lambda () (for-each (lambda (x y) x) '(1 2))))) (newline)
+;; Procedures that accept the count are unaffected, including rest parameters.
+(display (map (lambda (x) (* x x)) '(1 2 3))) (newline)
+(display (map two '(1 2) '(3 4))) (newline)
+(display (map (lambda args args) '(1 2) '(3 4))) (newline)
+(display (map (lambda (a . r) (cons a r)) '(1 2) '(3 4) '(5 6))) (newline)
+(display "map arity protocol PASS") (newline)

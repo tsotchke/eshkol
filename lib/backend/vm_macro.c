@@ -1,17 +1,13 @@
 /**
  * @file vm_macro.c
- * @brief Hygienic macro expansion for the Eshkol bytecode compiler.
+ * @brief `syntax-rules` for the Eshkol bytecode compiler.
  *
- * Implements R7RS syntax-rules pattern matching and template instantiation.
- * Operates at compile time: the bytecode compiler calls vm_macro_expand()
- * on each top-level form before code generation.
- *
- * Features:
- *   - syntax-rules pattern matching with literals
- *   - Ellipsis (...) for zero-or-more repetition
- *   - Hygienic renaming via gensym
- *   - Nested pattern/template support
- *   - Multiple rules tried in order (first match wins)
+ * The transformer registry and the adapter between the VM reader's nodes and
+ * the one `syntax-rules` engine both engines share
+ * (inc/eshkol/frontend/syntax_rules_core.h, ADR-0026). The compiler expands
+ * each form it reaches, in that form's own scope; identifiers a template
+ * introduces arrive colored (inc/eshkol/frontend/syntax_color.h) and
+ * vm_compiler.c resolves them by the shared renaming rule.
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
@@ -47,6 +43,17 @@ typedef struct MacroNode {
     struct MacroNode** children;
     int              n_children;
     int              _cap;       /* allocation capacity for children */
+    int              is_char;
+    int              is_inexact;
+    int              is_int;
+    int              is_verbatim;
+    int              is_vector;
+    long long        ival;
+    int              is_bignum;
+    int              macro_scope_limit;
+    int              macro_value_owner;
+    int              macro_value_slot;
+    int              macro_value_context;
 } MacroNode;
 
 #endif /* VM_MACRO_NODE_DEFINED */
@@ -153,862 +160,352 @@ static MacroNode* macro_make_bool(int val) {
 }
 
 /*******************************************************************************
- * Pattern Variable Bindings
+ * Macro Definition and Registry
+ *
+ * A transformer keeps its rules as reader nodes (deep copies owned by the
+ * registry) and, alongside, the same rules converted once to the neutral
+ * syntax of the shared engine (eshkol/frontend/syntax_rules_core.h).
  ******************************************************************************/
 
-typedef struct {
-    char         name[64];
-    MacroNode*   value;         /* single binding (non-ellipsis) */
-    int          is_ellipsis;   /* 1 if bound via ... */
-    MacroNode**  list;          /* for ellipsis: array of MacroNode* */
-    int          list_len;
-    int          list_cap;
-} MacroBinding;
-
-#define MAX_BINDINGS 64
-
-typedef struct {
-    MacroBinding bindings[MAX_BINDINGS];
-    int          n_bindings;
-} MacroBindings;
-
-/** @brief Reset a MacroBindings set to empty. */
-static void macro_bindings_init(MacroBindings* b) {
-    b->n_bindings = 0;
-}
-
-/** @brief Free the per-binding ellipsis item arrays (but not the
- *         MacroNodes they point to, which are owned by the input AST) and
- *         reset @p b to empty. */
-static void macro_bindings_cleanup(MacroBindings* b) {
-    for (int i = 0; i < b->n_bindings; i++) {
-        if (b->bindings[i].is_ellipsis) {
-            /* Don't free the nodes — they're owned by the input AST */
-            free(b->bindings[i].list);
-        }
-    }
-    b->n_bindings = 0;
-}
-
-/** @brief Record a single (non-ellipsis) pattern-variable binding
- *         (@p name -> @p value).
- * @return 1 on success, 0 if MAX_BINDINGS is exceeded.
- */
-static int macro_bindings_add(MacroBindings* b, const char* name, MacroNode* value) {
-    if (b->n_bindings >= MAX_BINDINGS) return 0;
-    MacroBinding* bind = &b->bindings[b->n_bindings];
-    strncpy(bind->name, name, 63);
-    bind->name[63] = '\0';
-    bind->value = value;
-    bind->is_ellipsis = 0;
-    bind->list = NULL;
-    bind->list_len = 0;
-    bind->list_cap = 0;
-    b->n_bindings++;
-    return 1;
-}
-
-/** @brief Record an ellipsis (`...`) pattern-variable binding: copies
- *         @p items (length @p count) into a fresh owned array associated
- *         with @p name.
- * @return 1 on success, 0 if MAX_BINDINGS is exceeded or allocation fails.
- */
-static int macro_bindings_add_ellipsis(MacroBindings* b, const char* name,
-                                       MacroNode** items, int count) {
-    if (b->n_bindings >= MAX_BINDINGS) return 0;
-    MacroBinding* bind = &b->bindings[b->n_bindings];
-    strncpy(bind->name, name, 63);
-    bind->name[63] = '\0';
-    bind->value = NULL;
-    bind->is_ellipsis = 1;
-    bind->list_len = count;
-    bind->list_cap = count;
-    bind->list = NULL;
-    if (count > 0) {
-        bind->list = (MacroNode**)malloc(count * sizeof(MacroNode*));
-        if (!bind->list) return 0;
-        memcpy(bind->list, items, count * sizeof(MacroNode*));
-    }
-    b->n_bindings++;
-    return 1;
-}
-
-/** @brief Linear-scan lookup of a pattern variable's binding by name;
- *         NULL if unbound. */
-static MacroBinding* macro_bindings_lookup(const MacroBindings* b, const char* name) {
-    for (int i = 0; i < b->n_bindings; i++) {
-        if (strcmp(b->bindings[i].name, name) == 0) {
-            return (MacroBinding*)&b->bindings[i];
-        }
-    }
-    return NULL;
-}
-
-/*******************************************************************************
- * Macro Definition
- ******************************************************************************/
+#include "eshkol/frontend/syntax_rules_core.h"
 
 typedef struct {
     MacroNode* pattern;         /* list pattern (e.g., (_ x y)) */
     MacroNode* template_node;   /* template (e.g., (+ x y)) */
 } MacroRule;
 
-#define MAX_RULES    16
-#define MAX_LITERALS 32
-
 typedef struct {
-    char        name[128];
-    MacroRule   rules[MAX_RULES];
-    int         n_rules;
-    char        literals[MAX_LITERALS][64];
-    int         n_literals;
+    char         name[128];
+    char         ellipsis[128];      /* R7RS 4.3.2: `...` unless a custom one is named */
+    MacroRule*   rules;
+    int          n_rules;
+    char**       literals;
+    int          n_literals;
+    eshkol_syn** syn_patterns;       /* engine view of rules[i].pattern */
+    eshkol_syn** syn_templates;      /* engine view of rules[i].template_node */
+    int          definition_limit;
+    unsigned     serial;             /* binding order; see vm_macro_shadowed() */
 } VmMacro;
 
-/*******************************************************************************
- * Macro Registry
- ******************************************************************************/
+static VmMacro* g_macros = NULL;
+static int      g_n_macros = 0;
+static int      g_macro_cap = 0;
+static int      g_macro_global_limit = 0;
+static int      g_macro_scope_depth = 0;
+static int      g_macro_value_context_serial = 0;
+/* One counter orders every binding the compiler creates -- lexical locals
+ * (add_local) and macro keywords -- so the innermost binding of a name is
+ * the one created last among those in scope. */
+static unsigned g_vm_binding_serial = 0;
+/* Colors of expansions (eshkol/frontend/syntax_color.h). */
+static unsigned g_macro_color_counter = 0;
 
-#define MAX_MACROS 64
-
-static VmMacro g_macros[MAX_MACROS];
-static int     g_n_macros = 0;
-static int     g_gensym_counter = 0;
-
-/** @brief Generate a fresh, globally-unique symbol name (`_prefix_N` or
- *         `_g_N` if @p prefix is null) for hygienic macro expansion. */
-static const char* vm_macro_gensym(const char* prefix) {
-    static char buf[128];
-    snprintf(buf, sizeof(buf), "_%s_%d", prefix ? prefix : "g", g_gensym_counter++);
-    return buf;
+static void vm_macro_stamp_definition_scope(MacroNode* node, int limit) {
+    if (!node) return;
+    node->macro_scope_limit = limit;
+    for (int i = 0; i < node->n_children; ++i)
+        vm_macro_stamp_definition_scope(node->children[i], limit);
 }
 
-/** @brief Register a macro definition (name, literal identifiers, and
- *         syntax-rules pattern/template pairs) in the global macro
- *         registry, so later vm_macro_expand() calls can find it. */
-static int vm_macro_register(const char* name,
-                             char literals[][64], int n_literals,
-                             MacroRule* rules, int n_rules) {
-    if (!name || g_n_macros >= MAX_MACROS) return 0;
-    if (n_rules > MAX_RULES) n_rules = MAX_RULES;
-    if (n_literals > MAX_LITERALS) n_literals = MAX_LITERALS;
+/* ── Reader nodes <-> engine syntax ─────────────────────────────────────── */
 
-    VmMacro* m = &g_macros[g_n_macros];
-    strncpy(m->name, name, 127);
-    m->name[127] = '\0';
-    m->n_rules = n_rules;
-    m->n_literals = n_literals;
+static int vm_macro_is_dot(const MacroNode* n) {
+    return n && n->type == N_SYMBOL && !n->is_verbatim && strcmp(n->symbol, ".") == 0;
+}
 
-    for (int i = 0; i < n_literals; i++) {
-        strncpy(m->literals[i], literals[i], 63);
-        m->literals[i][63] = '\0';
+/** Equality key of a literal datum: two atoms match a literal pattern iff
+ *  their keys are equal (type, exactness and value). */
+static char* vm_macro_atom_key(const MacroNode* n) {
+    char head[96];
+    const char* tail = "";
+    size_t tail_len = 0;
+    switch (n->type) {
+        case N_STRING:
+            snprintf(head, sizeof(head), "s%zu:", n->string_len);
+            tail = n->string_data ? n->string_data : "";
+            tail_len = n->string_len;
+            break;
+        case N_BOOL:
+            snprintf(head, sizeof(head), "b:%d", n->numval != 0);
+            break;
+        case N_NUMBER:
+            if (n->is_bignum && n->string_data) {
+                snprintf(head, sizeof(head), "n:big:");
+                tail = n->string_data;
+                tail_len = n->string_len;
+            } else if (n->is_char) {
+                snprintf(head, sizeof(head), "c:%lld", (long long)n->numval);
+            } else if (n->is_int) {
+                snprintf(head, sizeof(head), "i:%lld", (long long)n->ival);
+            } else {
+                snprintf(head, sizeof(head), "n:%d:%.17g", n->is_inexact, n->numval);
+            }
+            break;
+        default:
+            snprintf(head, sizeof(head), "?:%d", (int)n->type);
+            break;
     }
+    size_t head_len = strlen(head);
+    char* key = (char*)malloc(head_len + tail_len + 1);
+    if (!key) return NULL;
+    memcpy(key, head, head_len);
+    /* Embedded NULs would end the key early; they never matter for equality
+     * of the literal patterns programs write, but keep the length exact. */
+    for (size_t i = 0; i < tail_len; ++i) key[head_len + i] = tail[i] ? tail[i] : '\x01';
+    key[head_len + tail_len] = '\0';
+    return key;
+}
+
+static eshkol_syn* vm_macro_to_syn(const MacroNode* n) {
+    if (!n) return NULL;
+    if (n->type == N_SYMBOL) return eshkol_syn_new(ESHKOL_SYN_SYMBOL, n->symbol, n);
+    if (n->type != N_LIST) {
+        char* key = vm_macro_atom_key(n);
+        eshkol_syn* atom = key ? eshkol_syn_new(ESHKOL_SYN_ATOM, key, n) : NULL;
+        free(key);
+        return atom;
+    }
+    if (n->is_vector) {
+        /* The reader spells #(a b) as the call (vector a b); its datum is the
+         * vector of the elements. */
+        eshkol_syn* vec = eshkol_syn_new(ESHKOL_SYN_VECTOR, "#(", n);
+        for (int i = 1; vec && i < n->n_children; ++i)
+            if (!eshkol_syn_push(vec, vm_macro_to_syn(n->children[i]))) {
+                eshkol_syn_free(vec);
+                return NULL;
+            }
+        return vec;
+    }
+    eshkol_syn* list = eshkol_syn_new(ESHKOL_SYN_LIST, "(", n);
+    if (!list) return NULL;
+    const int count = n->n_children;
+    const int dotted = count >= 3 && vm_macro_is_dot(n->children[count - 2]);
+    for (int i = 0; i < count; ++i) {
+        if (dotted && i == count - 2) continue;
+        if (!eshkol_syn_push(list, vm_macro_to_syn(n->children[i]))) {
+            eshkol_syn_free(list);
+            return NULL;
+        }
+    }
+    list->dotted = dotted;
+    return list;
+}
+
+static MacroNode* vm_macro_from_syn(const eshkol_syn* s) {
+    const MacroNode* origin = (const MacroNode*)s->origin;
+    switch (s->kind) {
+        case ESHKOL_SYN_SYMBOL: {
+            if (strlen(s->text) >= sizeof(((MacroNode*)0)->symbol)) {
+                fprintf(stderr, "ERROR: macro expansion produced an identifier longer than %zu bytes\n",
+                        sizeof(((MacroNode*)0)->symbol) - 1);
+                return NULL;
+            }
+            /* Copy the source identifier first so its definition-site
+             * annotations (scope limit, captured value) travel with it. */
+            MacroNode* sym = (origin && origin->type == N_SYMBOL)
+                ? macro_node_deep_copy(origin) : macro_make_symbol("");
+            if (!sym) return NULL;
+            snprintf(sym->symbol, sizeof(sym->symbol), "%s", s->text);
+            return sym;
+        }
+        case ESHKOL_SYN_ATOM:
+            return macro_node_deep_copy(origin);
+        case ESHKOL_SYN_PREFIX: {
+            /* The VM reader desugars prefixes; one only arises from matching. */
+            const char* name = eshkol_syn_prefix_name(s->text);
+            MacroNode* list = macro_make_list();
+            if (!list) return NULL;
+            macro_node_add_child(list, macro_make_symbol(name ? name : "quote"));
+            if (s->n_items > 0) macro_node_add_child(list, vm_macro_from_syn(s->items[0]));
+            return list;
+        }
+        case ESHKOL_SYN_LIST:
+        case ESHKOL_SYN_VECTOR: {
+            MacroNode* list = macro_make_list();
+            if (!list) return NULL;
+            if (s->kind == ESHKOL_SYN_VECTOR) {
+                list->is_vector = 1;
+                macro_node_add_child(list, macro_make_symbol("vector"));
+            }
+            for (int i = 0; i < s->n_items; ++i) {
+                if (s->dotted && i == s->n_items - 1)
+                    macro_node_add_child(list, macro_make_symbol("."));
+                MacroNode* child = vm_macro_from_syn(s->items[i]);
+                if (!child) { macro_node_free(list); return NULL; }
+                macro_node_add_child(list, child);
+            }
+            return list;
+        }
+    }
+    return NULL;
+}
+
+/* ── Registry ───────────────────────────────────────────────────────────── */
+
+static void vm_macro_release(VmMacro* m) {
+    for (int j = 0; j < m->n_rules; j++) {
+        eshkol_syn_free(m->syn_patterns[j]);
+        eshkol_syn_free(m->syn_templates[j]);
+        macro_node_free(m->rules[j].pattern);
+        macro_node_free(m->rules[j].template_node);
+    }
+    for (int j = 0; j < m->n_literals; j++) free(m->literals[j]);
+    free(m->rules);
+    free(m->literals);
+    free(m->syn_patterns);
+    free(m->syn_templates);
+    memset(m, 0, sizeof(*m));
+}
+
+/** @brief Register a transformer (name, ellipsis, literals, rules). The
+ *         registry copies everything it keeps. */
+static int vm_macro_register(const char* name, const char* ellipsis,
+                             const char* const* literals, int n_literals,
+                             const MacroRule* rules, int n_rules) {
+    if (!name || strlen(name) >= sizeof(((VmMacro*)0)->name)) return 0;
+    if (g_n_macros == g_macro_cap) {
+        int cap = g_macro_cap ? g_macro_cap * 2 : 64;
+        VmMacro* grown = (VmMacro*)realloc(g_macros, (size_t)cap * sizeof(VmMacro));
+        if (!grown) return 0;
+        g_macros = grown;
+        g_macro_cap = cap;
+    }
+    VmMacro* m = &g_macros[g_n_macros];
+    memset(m, 0, sizeof(*m));
+    snprintf(m->name, sizeof(m->name), "%s", name);
+    snprintf(m->ellipsis, sizeof(m->ellipsis), "%s", ellipsis ? ellipsis : "...");
+    m->rules = (MacroRule*)calloc(n_rules > 0 ? (size_t)n_rules : 1u, sizeof(MacroRule));
+    m->syn_patterns = (eshkol_syn**)calloc(n_rules > 0 ? (size_t)n_rules : 1u, sizeof(eshkol_syn*));
+    m->syn_templates = (eshkol_syn**)calloc(n_rules > 0 ? (size_t)n_rules : 1u, sizeof(eshkol_syn*));
+    m->literals = (char**)calloc(n_literals > 0 ? (size_t)n_literals : 1u, sizeof(char*));
+    if (!m->rules || !m->syn_patterns || !m->syn_templates || !m->literals) {
+        vm_macro_release(m);
+        return 0;
+    }
+    for (int i = 0; i < n_literals; i++) m->literals[i] = eshkol_syn_strdup(literals[i]);
+    m->n_literals = n_literals;
+    g_n_macros++;
+    m->definition_limit = g_macro_scope_depth ? g_n_macros + 1 : -1;
+    if (!g_macro_scope_depth) g_macro_global_limit = g_n_macros;
     for (int i = 0; i < n_rules; i++) {
         m->rules[i].pattern = macro_node_deep_copy(rules[i].pattern);
         m->rules[i].template_node = macro_node_deep_copy(rules[i].template_node);
+        m->n_rules = i + 1;
     }
-
-    g_n_macros++;
+    /* The definition scope and engine view are fixed by vm_macro_seal()
+     * once the compiler has settled the scope (a letrec-syntax group) and
+     * annotated the templates' free values (vm_macro_capture_definition). */
+    m->serial = ++g_vm_binding_serial;
     return 1;
 }
 
-/** @brief Linear-scan lookup of a registered macro by name; NULL if not
- *         found. */
-static VmMacro* vm_macro_lookup(const char* name) {
-    if (!name) return NULL;
-    for (int i = 0; i < g_n_macros; i++) {
-        if (strcmp(g_macros[i].name, name) == 0) {
-            return &g_macros[i];
-        }
+/** @brief Build the engine view of @p m's rules. Called once its template
+ *         nodes carry their final annotations; the view's origins point
+ *         into the registry's own nodes. */
+static void vm_macro_seal(VmMacro* m) {
+    for (int i = 0; i < m->n_rules; i++) {
+        /* A template's own macro keywords resolve where it was defined. */
+        vm_macro_stamp_definition_scope(m->rules[i].template_node, m->definition_limit);
+        eshkol_syn_free(m->syn_patterns[i]);
+        eshkol_syn_free(m->syn_templates[i]);
+        m->syn_patterns[i] = vm_macro_to_syn(m->rules[i].pattern);
+        m->syn_templates[i] = vm_macro_to_syn(m->rules[i].template_node);
     }
+}
+
+/** @brief Innermost registered transformer spelled exactly @p name within
+ *         the first @p limit registrations. */
+static VmMacro* vm_macro_find(const char* name, int limit) {
+    if (limit > g_n_macros) limit = g_n_macros;
+    for (int i = limit - 1; i >= 0; --i)
+        if (strcmp(g_macros[i].name, name) == 0) return &g_macros[i];
     return NULL;
 }
 
-/** @brief Free every registered macro's rule ASTs and reset the global
- *         macro registry and gensym counter (used between test runs). */
-static void vm_macro_reset(void) {
-    for (int i = 0; i < g_n_macros; i++) {
-        VmMacro* m = &g_macros[i];
-        for (int j = 0; j < m->n_rules; j++) {
-            macro_node_free(m->rules[j].pattern);
-            macro_node_free(m->rules[j].template_node);
-        }
+/* The transformer a keyword identifier denotes. An identifier a template
+ * introduced resolves where its template was defined (its scope limit), one
+ * color at a time (ADR-0026); substituted caller identifiers keep the
+ * caller's scope. A live global boundary preserves forward references
+ * without admitting a later local shadow. */
+static VmMacro* vm_macro_lookup_node(const MacroNode* identifier) {
+    if (!identifier || identifier->type != N_SYMBOL) return NULL;
+    int limit = identifier->macro_scope_limit;
+    limit = limit < 0 ? g_macro_global_limit : (limit ? limit - 1 : g_n_macros);
+    char name[sizeof(((MacroNode*)0)->symbol)];
+    snprintf(name, sizeof(name), "%s", identifier->symbol);
+    for (;;) {
+        VmMacro* found = vm_macro_find(name, limit);
+        if (found) return found;
+        size_t prefix = 0;
+        if (!eshkol_syntax_last_color(name, &prefix)) return NULL;
+        name[prefix] = '\0';
     }
-    g_n_macros = 0;
-    g_gensym_counter = 0;
+}
+
+/** @brief Free every registered macro from index @p saved onward. */
+static void vm_macro_restore(int saved) {
+    for (int i = saved; i < g_n_macros; i++) vm_macro_release(&g_macros[i]);
+    g_n_macros = saved;
 }
 
 /*******************************************************************************
- * Pattern Matching
- *
- * Matches an input AST node against a syntax-rules pattern.
- * Pattern variables (non-literal symbols) are bound in `bindings`.
- * Underscore (_) matches anything without binding.
- * Ellipsis (...) after a pattern collects zero-or-more repetitions.
+ * Expansion
  ******************************************************************************/
 
-/** @brief Whether @p name is one of a syntax-rules form's declared
- *         literal identifiers (which must match exactly rather than bind
- *         as a pattern variable). */
-static int is_literal(const char* name, char literals[][64], int n_literals) {
-    for (int i = 0; i < n_literals; i++) {
-        if (strcmp(name, literals[i]) == 0) return 1;
+/** @brief Expand one use of the macro @p macro. On a use no rule matches, or
+ *         a malformed template, reports and returns NULL.
+ * @return The expansion (caller frees), or NULL. */
+static MacroNode* vm_macro_expand_use(VmMacro* macro, const MacroNode* node) {
+    eshkol_syn* use = vm_macro_to_syn(node);
+    if (!use) return NULL;
+    eshkol_syn* result = NULL;
+    char error[256] = {0};
+    eshkol_syn_outcome outcome = eshkol_syntax_rules_apply(
+        macro->ellipsis, (const char* const*)macro->literals, macro->n_literals,
+        macro->syn_patterns, macro->syn_templates, macro->n_rules,
+        use, ++g_macro_color_counter, NULL, NULL, &result, error, sizeof(error));
+    eshkol_syn_free(use);
+    if (outcome == ESHKOL_SYN_NO_MATCH) {
+        fprintf(stderr, "ERROR: syntax error: no matching pattern for macro '%s'\n", macro->name);
+        return NULL;
     }
-    return 0;
-}
-
-/** @brief Whether @p n is the literal `...` ellipsis symbol. */
-static int is_ellipsis(const MacroNode* n) {
-    return n && n->type == N_SYMBOL && strcmp(n->symbol, "...") == 0;
-}
-
-/** @brief Whether @p name is the `_` wildcard pattern identifier. */
-static int is_underscore(const char* name) {
-    return strcmp(name, "_") == 0;
-}
-
-/**
- * @brief Match @p input against a syntax-rules @p pattern, recording
- *        pattern-variable bindings into @p bindings. Handles symbol
- *        patterns (underscore wildcard, literal keywords requiring exact
- *        match, or a variable binding to the whole matched subtree),
- *        atom patterns (numbers/strings/booleans compared by value), and
- *        list patterns (element-wise, with an ellipsis-suffixed
- *        sub-pattern greedily consuming zero or more input elements and
- *        recording each captured variable as an ellipsis binding).
- * @return 1 if the whole pattern matches, 0 otherwise.
- */
-static int vm_macro_match(const MacroNode* pattern, const MacroNode* input,
-                          MacroBindings* bindings,
-                          char literals[][64], int n_literals) {
-    if (!pattern) return input == NULL;
-    if (!input) return 0;
-
-    /* ── Symbol pattern ── */
-    if (pattern->type == N_SYMBOL) {
-        /* Underscore: wildcard, matches anything */
-        if (is_underscore(pattern->symbol)) {
-            return 1;
-        }
-        /* Literal keyword: must match exact symbol */
-        if (is_literal(pattern->symbol, literals, n_literals)) {
-            return input->type == N_SYMBOL &&
-                   strcmp(input->symbol, pattern->symbol) == 0;
-        }
-        /* Pattern variable: bind to input */
-        return macro_bindings_add(bindings, pattern->symbol, (MacroNode*)input);
+    if (outcome == ESHKOL_SYN_ERROR) {
+        fprintf(stderr, "ERROR: macro '%s': %s\n", macro->name, error);
+        return NULL;
     }
-
-    /* ── Number literal: must match exactly ── */
-    if (pattern->type == N_NUMBER) {
-        return input->type == N_NUMBER && pattern->numval == input->numval;
-    }
-
-    /* ── String literal: must match exactly ── */
-    if (pattern->type == N_STRING) {
-        return input->type == N_STRING &&
-               pattern->string_len == input->string_len &&
-               memcmp(pattern->string_data, input->string_data,
-                      pattern->string_len) == 0;
-    }
-
-    /* ── Boolean literal ── */
-    if (pattern->type == N_BOOL) {
-        return input->type == N_BOOL && pattern->numval == input->numval;
-    }
-
-    /* ── List pattern ── */
-    if (pattern->type == N_LIST) {
-        if (input->type != N_LIST) return 0;
-
-        /* Find the ellipsis position (if any) */
-        int ellipsis_pos = -1;
-        for (int i = 0; i < pattern->n_children; i++) {
-            if (is_ellipsis(pattern->children[i])) {
-                ellipsis_pos = i;
-                break;
-            }
-        }
-
-        if (ellipsis_pos < 0) {
-            /* ── No ellipsis: exact length match ── */
-            if (pattern->n_children != input->n_children) return 0;
-            for (int i = 0; i < pattern->n_children; i++) {
-                if (!vm_macro_match(pattern->children[i], input->children[i],
-                                    bindings, literals, n_literals))
-                    return 0;
-            }
-            return 1;
-        }
-
-        /* ── With ellipsis ── */
-        /* Pattern: (p0 p1 ... p_{e-2} p_{e-1} ... p_{e+1} ... p_{n-1})
-         *   Elements before ellipsis_pos-1: match exactly
-         *   Element at ellipsis_pos-1: the repeated pattern
-         *   Elements after ellipsis_pos: match exactly from the end
-         */
-        if (ellipsis_pos == 0) {
-            /* Ellipsis at position 0 is invalid (no pattern before it) */
-            return 0;
-        }
-
-        int prefix_len = ellipsis_pos - 1;  /* elements before the repeated pattern */
-        int suffix_len = pattern->n_children - ellipsis_pos - 1; /* after ... */
-        int min_input = prefix_len + suffix_len;
-
-        if (input->n_children < min_input) return 0;
-
-        /* Match prefix elements */
-        for (int i = 0; i < prefix_len; i++) {
-            if (!vm_macro_match(pattern->children[i], input->children[i],
-                                bindings, literals, n_literals))
-                return 0;
-        }
-
-        /* Match suffix elements (from end of input) */
-        for (int i = 0; i < suffix_len; i++) {
-            int pat_idx = ellipsis_pos + 1 + i;
-            int inp_idx = input->n_children - suffix_len + i;
-            if (!vm_macro_match(pattern->children[pat_idx], input->children[inp_idx],
-                                bindings, literals, n_literals))
-                return 0;
-        }
-
-        /* Collect the repeated elements */
-        int repeat_count = input->n_children - min_input;
-        const MacroNode* repeat_pattern = pattern->children[ellipsis_pos - 1];
-
-        if (repeat_pattern->type == N_SYMBOL && !is_literal(repeat_pattern->symbol, literals, n_literals)
-            && !is_underscore(repeat_pattern->symbol)) {
-            /* Simple pattern variable with ellipsis: bind list of inputs */
-            MacroNode** items = NULL;
-            if (repeat_count > 0) {
-                items = (MacroNode**)malloc(repeat_count * sizeof(MacroNode*));
-                if (!items) return 0;
-                for (int i = 0; i < repeat_count; i++) {
-                    items[i] = input->children[prefix_len + i];
-                }
-            }
-            int ok = macro_bindings_add_ellipsis(bindings, repeat_pattern->symbol,
-                                                  items, repeat_count);
-            free(items);
-            return ok;
-        } else if (repeat_pattern->type == N_LIST) {
-            /* Structured repeated pattern: match each repetition individually.
-             * For each sub-pattern variable, collect across all repetitions. */
-            /* For now, iterate and match; each call adds bindings individually.
-             * This handles the common case where the repeated pattern is just
-             * a variable, and the structured case will at least not crash. */
-            for (int i = 0; i < repeat_count; i++) {
-                if (!vm_macro_match(repeat_pattern, input->children[prefix_len + i],
-                                    bindings, literals, n_literals))
-                    return 0;
-            }
-            return 1;
-        } else {
-            /* Literal repeated pattern (number/string): each must match */
-            for (int i = 0; i < repeat_count; i++) {
-                MacroBindings trial_bindings;
-                macro_bindings_init(&trial_bindings);
-                if (!vm_macro_match(repeat_pattern, input->children[prefix_len + i],
-                                    &trial_bindings, literals, n_literals)) {
-                    macro_bindings_cleanup(&trial_bindings);
-                    return 0;
-                }
-                macro_bindings_cleanup(&trial_bindings);
-            }
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-/*******************************************************************************
- * Template Instantiation
- *
- * Walks the template AST, replacing pattern variables with their bindings.
- * Ellipsis in templates expands the preceding sub-template once per element
- * in the bound list.
- ******************************************************************************/
-
-/*******************************************************************************
- * Hygiene: alpha-renaming of template-introduced binders (R7RS 4.3.2)
- *
- * A `syntax-rules` template may introduce its own bindings, as in
- *
- *     (define-syntax hyg (syntax-rules () ((_ e) (let ((tmp 100)) (+ tmp e)))))
- *
- * R7RS requires `tmp` here to be a FRESH identifier: it may not capture a
- * `tmp` the caller passes in through the pattern variable `e`, and the
- * caller's `tmp` may not capture the template's.  Without renaming,
- * (hyg tmp) expands to (let ((tmp 100)) (+ tmp tmp)) and evaluates to 200
- * instead of the required 107 — the classic capture failure, filed as SW-30.
- *
- * This pass runs on the template ALONE, before vm_macro_instantiate()
- * substitutes any user code into it.  That ordering is what makes it safe:
- * at this point every symbol in the tree came from the macro definition, so
- * renaming cannot touch a caller's identifier.  Symbols that ARE pattern
- * variables are left alone precisely because they will be replaced by user
- * code, which must keep its own names.
- *
- * Scope is tracked properly rather than renaming the whole template: a name
- * is renamed only within the extent of the binding form that introduced it,
- * so a template that also references the same name FREELY (meaning the
- * macro-definition environment) keeps that reference intact.
- *
- * NOT covered (see the SW-30 ledger entry): referential transparency for
- * free identifiers in templates.  A template's free identifier is still
- * resolved at the USE site, not the definition site, because neither engine
- * captures a macro-definition environment.  This pass closes the capture
- * half of hygiene only.
- ******************************************************************************/
-
-#define MAX_RENAMES 64
-
-typedef struct {
-    char from[64];
-    char to[64];
-} MacroRename;
-
-typedef struct {
-    MacroRename r[MAX_RENAMES];
-    int         n;
-    /* 1 while walking QUOTED DATA, where symbols are data rather than
-     * identifiers and must keep their literal names.  Carried in the rename
-     * environment so it scopes exactly like one: (quasiquote ...) sets it,
-     * (unquote ...) / (unquote-splicing ...) clear it again. */
-    int         datum;
-} MacroRenames;
-
-/** @brief Innermost-wins lookup of a renamed template identifier.  Returns
- *         NULL inside quoted data, where symbols are not identifiers. */
-static const char* macro_renames_lookup(const MacroRenames* rn, const char* name) {
-    if (!rn || rn->datum) return NULL;
-    for (int i = rn->n - 1; i >= 0; i--) {
-        if (strcmp(rn->r[i].from, name) == 0) return rn->r[i].to;
-    }
-    return NULL;
-}
-
-/** @brief Bind @p from to a fresh name for the current scope.  The counter
- *         is global and monotonic, so two invocations of the same macro get
- *         distinct names — which is required: their bindings are distinct. */
-static void macro_renames_push(MacroRenames* rn, const char* from) {
-    if (!rn || rn->n >= MAX_RENAMES) return;   /* over budget: leave unrenamed */
-    snprintf(rn->r[rn->n].from, sizeof(rn->r[rn->n].from), "%s", from);
-    snprintf(rn->r[rn->n].to, sizeof(rn->r[rn->n].to), "_h%d.%.40s",
-             g_gensym_counter++, from);
-    rn->n++;
-}
-
-/** @brief True if @p n is a template symbol eligible for renaming: a plain
- *         symbol that is NOT a pattern variable (those carry user code),
- *         not the ellipsis marker and not the `_` wildcard.
- *
- * The bare `.` exclusion is the dotted-formals delimiter, never a binder;
- * `is_verbatim` keeps the R7RS 7.1.1 vertical-line spelling `|.|` -- an
- * ordinary symbol NAMED "." -- out of that exclusion, so a template that
- * actually binds `|.|` still gets hygienically renamed like any other name. */
-static int macro_is_template_binder(const MacroNode* n, const MacroBindings* bindings) {
-    return n && n->type == N_SYMBOL &&
-           !is_ellipsis(n) &&
-           strcmp(n->symbol, "_") != 0 &&
-           (n->is_verbatim || strcmp(n->symbol, ".") != 0) &&
-           macro_bindings_lookup(bindings, n->symbol) == NULL;
-}
-
-static MacroNode* vm_macro_alpha_rename(const MacroNode* t,
-                                        const MacroBindings* bindings,
-                                        const MacroRenames* rn);
-
-/** @brief Add every template-introduced name in a lambda formals list (a
- *         symbol rest-arg, or a possibly dotted list) to @p out. */
-static void macro_renames_add_formals(MacroRenames* out, const MacroNode* formals,
-                                      const MacroBindings* bindings) {
-    if (!formals) return;
-    if (formals->type == N_SYMBOL) {
-        if (macro_is_template_binder(formals, bindings))
-            macro_renames_push(out, formals->symbol);
-        return;
-    }
-    if (formals->type != N_LIST) return;
-    for (int i = 0; i < formals->n_children; i++) {
-        if (macro_is_template_binder(formals->children[i], bindings))
-            macro_renames_push(out, formals->children[i]->symbol);
-    }
-}
-
-/** @brief Rename the children of @p t from index @p start, appending to @p out. */
-static void macro_rename_rest(MacroNode* out, const MacroNode* t, int start,
-                              const MacroBindings* bindings, const MacroRenames* rn) {
-    for (int i = start; i < t->n_children; i++)
-        macro_node_add_child(out, vm_macro_alpha_rename(t->children[i], bindings, rn));
-}
-
-/**
- * @brief Rewrite a template so that every identifier it BINDS itself is a
- *        fresh name, consistently at the binder and at every reference
- *        within that binder's scope.
- * @return A newly-allocated template tree (caller frees).
- */
-static MacroNode* vm_macro_alpha_rename(const MacroNode* t,
-                                        const MacroBindings* bindings,
-                                        const MacroRenames* rn) {
-    if (!t) return NULL;
-
-    if (t->type == N_SYMBOL) {
-        MacroNode* c = macro_node_deep_copy(t);
-        const char* to = macro_renames_lookup(rn, t->symbol);
-        /* Copy first, then overwrite only the name, so every other field
-         * (exactness/char tags — see the SW-13 deep-copy fix) survives. */
-        if (c && to) snprintf(c->symbol, sizeof(c->symbol), "%s", to);
-        return c;
-    }
-
-    if (t->type != N_LIST) return macro_node_deep_copy(t);
-
-    const MacroNode* head = t->n_children > 0 ? t->children[0] : NULL;
-    const char* h = (head && head->type == N_SYMBOL) ? head->symbol : NULL;
-
-    /* Quoted data: symbols are DATA, not identifiers, and keep their literal
-     * names — otherwise a template's own gensym leaks into the program's
-     * OUTPUT, e.g. (let ((tmp 5)) (list 'tmp tmp)) printing (_h0.tmp 5).
-     * Pattern variables inside quoted data are still substituted, because
-     * vm_macro_instantiate() walks this subtree afterwards. */
-    if (h && (strcmp(h, "quote") == 0 || strcmp(h, "quasiquote") == 0)) {
-        MacroRenames d = *rn;
-        d.datum = 1;
-        MacroNode* out = macro_make_list();
-        if (!out) return NULL;
-        macro_node_add_child(out, macro_node_deep_copy(head));
-        macro_rename_rest(out, t, 1, bindings, &d);
-        return out;
-    }
-    /* (unquote e) / (unquote-splicing e) escape back to identifier position. */
-    if (h && (strcmp(h, "unquote") == 0 || strcmp(h, "unquote-splicing") == 0)) {
-        MacroRenames d = *rn;
-        d.datum = 0;
-        MacroNode* out = macro_make_list();
-        if (!out) return NULL;
-        macro_node_add_child(out, macro_node_deep_copy(head));
-        macro_rename_rest(out, t, 1, bindings, &d);
-        return out;
-    }
-
-    /* Inside quoted data nothing binds — a list is just a list. */
-    if (rn && rn->datum) {
-        MacroNode* out = macro_make_list();
-        if (!out) return NULL;
-        macro_rename_rest(out, t, 0, bindings, rn);
-        return out;
-    }
-
-    /* (lambda <formals> body ...) */
-    if (h && strcmp(h, "lambda") == 0 && t->n_children >= 2) {
-        MacroRenames inner = *rn;
-        macro_renames_add_formals(&inner, t->children[1], bindings);
-        MacroNode* out = macro_make_list();
-        if (!out) return NULL;
-        macro_node_add_child(out, macro_node_deep_copy(head));
-        macro_node_add_child(out, vm_macro_alpha_rename(t->children[1], bindings, &inner));
-        macro_rename_rest(out, t, 2, bindings, &inner);
-        return out;
-    }
-
-    /* (let ((v e) ...) body ...), (let name ((v e) ...) body ...),
-     * (let* ...), (letrec ...), (letrec* ...) */
-    if (h && (strcmp(h, "let") == 0 || strcmp(h, "let*") == 0 ||
-              strcmp(h, "letrec") == 0 || strcmp(h, "letrec*") == 0)) {
-        int named = (strcmp(h, "let") == 0) && t->n_children >= 3 &&
-                    t->children[1]->type == N_SYMBOL;
-        int bidx  = named ? 2 : 1;
-        int seq   = (strcmp(h, "let*") == 0);
-        int rec   = (strcmp(h, "letrec") == 0 || strcmp(h, "letrec*") == 0);
-
-        if (t->n_children > bidx && t->children[bidx]->type == N_LIST) {
-            const MacroNode* blist = t->children[bidx];
-            MacroRenames inner = *rn;
-
-            /* letrec/letrec*: every binder is visible in every init. */
-            if (rec) {
-                for (int i = 0; i < blist->n_children; i++) {
-                    const MacroNode* b = blist->children[i];
-                    if (b->type == N_LIST && b->n_children >= 1 &&
-                        macro_is_template_binder(b->children[0], bindings))
-                        macro_renames_push(&inner, b->children[0]->symbol);
-                }
-            }
-            /* A named let's loop variable is bound in the body. */
-            if (named && macro_is_template_binder(t->children[1], bindings))
-                macro_renames_push(&inner, t->children[1]->symbol);
-
-            MacroNode* out = macro_make_list();
-            if (!out) return NULL;
-            macro_node_add_child(out, macro_node_deep_copy(head));
-            if (named)
-                macro_node_add_child(out, vm_macro_alpha_rename(t->children[1], bindings, &inner));
-
-            MacroNode* nb = macro_make_list();
-            for (int i = 0; nb && i < blist->n_children; i++) {
-                const MacroNode* b = blist->children[i];
-                if (b->type != N_LIST || b->n_children < 1) {
-                    macro_node_add_child(nb, vm_macro_alpha_rename(b, bindings, &inner));
-                    continue;
-                }
-                /* An init is evaluated OUTSIDE its own binder for let, in the
-                 * bindings so far for let*, and in the full group for letrec. */
-                const MacroRenames* init_env = (rec || seq) ? &inner : rn;
-                MacroNode* nbind = macro_make_list();
-                if (!nbind) break;
-                MacroNode* inits[8];
-                int ni = 0;
-                for (int j = 1; j < b->n_children && ni < 8; j++)
-                    inits[ni++] = vm_macro_alpha_rename(b->children[j], bindings, init_env);
-
-                if (!rec && macro_is_template_binder(b->children[0], bindings))
-                    macro_renames_push(&inner, b->children[0]->symbol);
-
-                macro_node_add_child(nbind,
-                    vm_macro_alpha_rename(b->children[0], bindings, &inner));
-                for (int j = 0; j < ni; j++) macro_node_add_child(nbind, inits[j]);
-                macro_node_add_child(nb, nbind);
-            }
-            macro_node_add_child(out, nb);
-            macro_rename_rest(out, t, bidx + 1, bindings, &inner);
-            return out;
-        }
-    }
-
-    /* `do` is deliberately NOT renamed here.  The native expander stores a
-     * do-loop in the generic call_op layout, where the loop variables are
-     * untyped nested lists rather than an addressable binding array, so a
-     * scope-correct rename is not reachable there.  Renaming on this engine
-     * alone would make the two engines disagree on a shape neither fully
-     * supports — the opposite of what SW-30 asks for.  A template-introduced
-     * `do` variable therefore still captures, identically on both engines,
-     * and is recorded as the residual in the SW-30 ledger entry. */
-
-    /* Any other list: structure-preserving map. */
-    MacroNode* out = macro_make_list();
-    if (!out) return NULL;
-    macro_rename_rest(out, t, 0, bindings, rn);
-    return out;
-}
-
-/**
- * @brief Walk a syntax-rules template AST, replacing pattern-variable
- *        symbols with their matched @p bindings. An ellipsis in the
- *        template expands the preceding sub-template once per element in
- *        the corresponding ellipsis binding's captured list.
- * @return A newly-allocated instantiated AST tree.
- */
-static MacroNode* vm_macro_instantiate(const MacroNode* tmpl,
-                                       const MacroBindings* bindings) {
-    if (!tmpl) return NULL;
-
-    /* ── Symbol: substitute if bound ── */
-    if (tmpl->type == N_SYMBOL) {
-        MacroBinding* b = macro_bindings_lookup(bindings, tmpl->symbol);
-        if (b && !b->is_ellipsis) {
-            return macro_node_deep_copy(b->value);
-        }
-        /* Not a bound variable: copy as-is (may be a keyword or free variable) */
-        return macro_node_deep_copy(tmpl);
-    }
-
-    /* ── Non-list atoms: copy ── */
-    if (tmpl->type != N_LIST) {
-        return macro_node_deep_copy(tmpl);
-    }
-
-    /* ── List template ── */
-    MacroNode* result = macro_make_list();
-    if (!result) return NULL;
-
-    int i = 0;
-    while (i < tmpl->n_children) {
-        /* Check if next element is ... (ellipsis) */
-        int next_is_ellipsis = (i + 1 < tmpl->n_children) &&
-                               is_ellipsis(tmpl->children[i + 1]);
-
-        if (next_is_ellipsis) {
-            /* Expand the preceding sub-template for each element in the bound list */
-            const MacroNode* sub = tmpl->children[i];
-
-            /* Find the ellipsis-bound variable in this sub-template */
-            MacroBinding* ellipsis_binding = NULL;
-            if (sub->type == N_SYMBOL) {
-                ellipsis_binding = macro_bindings_lookup(bindings, sub->symbol);
-            } else if (sub->type == N_LIST) {
-                /* Search for any ellipsis-bound variable in sub-template */
-                for (int j = 0; j < sub->n_children; j++) {
-                    if (sub->children[j]->type == N_SYMBOL) {
-                        MacroBinding* b = macro_bindings_lookup(bindings, sub->children[j]->symbol);
-                        if (b && b->is_ellipsis) {
-                            ellipsis_binding = b;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (ellipsis_binding && ellipsis_binding->is_ellipsis) {
-                if (sub->type == N_SYMBOL) {
-                    /* Simple variable ... → splice all bound elements */
-                    for (int k = 0; k < ellipsis_binding->list_len; k++) {
-                        macro_node_add_child(result,
-                            macro_node_deep_copy(ellipsis_binding->list[k]));
-                    }
-                } else {
-                    /* Structured sub-template ... → instantiate once per element */
-                    for (int k = 0; k < ellipsis_binding->list_len; k++) {
-                        /* Create temporary bindings with the k-th element */
-                        MacroBindings temp;
-                        memcpy(&temp, bindings, sizeof(MacroBindings));
-                        /* Replace the ellipsis binding with a single-value binding */
-                        for (int b = 0; b < temp.n_bindings; b++) {
-                            if (strcmp(temp.bindings[b].name, ellipsis_binding->name) == 0
-                                && temp.bindings[b].is_ellipsis) {
-                                temp.bindings[b].is_ellipsis = 0;
-                                temp.bindings[b].value = ellipsis_binding->list[k];
-                                break;
-                            }
-                        }
-                        macro_node_add_child(result, vm_macro_instantiate(sub, &temp));
-                    }
-                }
-            }
-            /* Skip the sub-template and the ... */
-            i += 2;
-        } else {
-            /* Normal element: recurse */
-            macro_node_add_child(result, vm_macro_instantiate(tmpl->children[i], bindings));
-            i++;
-        }
-    }
-
-    return result;
-}
-
-/*******************************************************************************
- * Top-Level Macro Expansion
- ******************************************************************************/
-
-/** @brief Expand a single node one level: if it's a call to a registered
- *         macro, try each rule's pattern in order (vm_macro_match()) and
- *         instantiate the first matching rule's template
- *         (vm_macro_instantiate()).
- * @return The expanded node (newly allocated), or a deep copy of @p node
- *         if it isn't a macro call or no rule matched.
- */
-static MacroNode* vm_macro_expand_once(const MacroNode* node) {
-    if (!node) return NULL;
-
-    /* Only list forms can be macro calls */
-    if (node->type != N_LIST || node->n_children == 0) {
-        return macro_node_deep_copy(node);
-    }
-
-    /* First element must be a symbol to look up */
-    if (node->children[0]->type != N_SYMBOL) {
-        return macro_node_deep_copy(node);
-    }
-
-    VmMacro* macro = vm_macro_lookup(node->children[0]->symbol);
-    if (!macro) {
-        return macro_node_deep_copy(node);
-    }
-
-    /* Try each rule in order */
-    for (int r = 0; r < macro->n_rules; r++) {
-        MacroBindings bindings;
-        macro_bindings_init(&bindings);
-
-        if (vm_macro_match(macro->rules[r].pattern, node,
-                           &bindings, macro->literals, macro->n_literals)) {
-            /* Hygiene (R7RS 4.3.2): give every identifier the template BINDS
-             * itself a fresh name before any user code is substituted in, so
-             * a template binder can neither capture nor be captured by an
-             * operand.  Done on the template alone — at this point no user
-             * code is present, so nothing of the caller's can be renamed. */
-            MacroRenames renames;
-            renames.n = 0;
-            renames.datum = 0;
-            MacroNode* hygienic = vm_macro_alpha_rename(macro->rules[r].template_node,
-                                                        &bindings, &renames);
-            MacroNode* expanded = vm_macro_instantiate(
-                hygienic ? hygienic : macro->rules[r].template_node, &bindings);
-            /* instantiate() deep-copies everything it keeps, so the renamed
-             * template is ours to free. */
-            if (hygienic) macro_node_free(hygienic);
-            macro_bindings_cleanup(&bindings);
-            return expanded;
-        }
-        macro_bindings_cleanup(&bindings);
-    }
-
-    /* No rule matched — return original */
-    return macro_node_deep_copy(node);
-}
-
-/** @brief Fully expand a node to a fixed point: repeatedly
- *         vm_macro_expand_once() the top-level form until it stops
- *         changing, then recursively expand its children the same way.
- *         This is the compiler's entry point, called on every top-level
- *         form before code generation. */
-static MacroNode* vm_macro_expand(const MacroNode* node) {
-    if (!node) return NULL;
-
-    /* First, try to expand the top-level form */
-    MacroNode* expanded = vm_macro_expand_once(node);
-    if (!expanded) return NULL;
-
-    /* Check if expansion changed anything (compare names for macro re-expansion) */
-    if (expanded->type == N_LIST && expanded->n_children > 0 &&
-        expanded->children[0]->type == N_SYMBOL) {
-        VmMacro* m = vm_macro_lookup(expanded->children[0]->symbol);
-        if (m) {
-            /* The expansion is itself a macro call — expand again (up to a limit) */
-            int max_iterations = 100;
-            while (max_iterations-- > 0) {
-                MacroNode* re = vm_macro_expand_once(expanded);
-                if (!re) break;
-                /* If nothing changed, stop */
-                int changed = 0;
-                if (re->type != expanded->type) changed = 1;
-                else if (re->type == N_LIST && re->n_children != expanded->n_children) changed = 1;
-                else if (re->type == N_SYMBOL && strcmp(re->symbol, expanded->symbol) != 0) changed = 1;
-
-                if (!changed && re->type == N_LIST && re->n_children > 0 &&
-                    re->children[0]->type == N_SYMBOL &&
-                    expanded->children[0]->type == N_SYMBOL &&
-                    strcmp(re->children[0]->symbol, expanded->children[0]->symbol) != 0) {
-                    changed = 1;
-                }
-
-                macro_node_free(expanded);
-                expanded = re;
-
-                if (!changed) break;
-                if (expanded->type != N_LIST || expanded->n_children == 0) break;
-                if (expanded->children[0]->type != N_SYMBOL) break;
-                if (!vm_macro_lookup(expanded->children[0]->symbol)) break;
-            }
-        }
-    }
-
-    /* Recursively expand children */
-    if (expanded->type == N_LIST) {
-        for (int i = 0; i < expanded->n_children; i++) {
-            MacroNode* child = vm_macro_expand(expanded->children[i]);
-            if (child) {
-                macro_node_free(expanded->children[i]);
-                expanded->children[i] = child;
-            }
-        }
-    }
-
+    MacroNode* expanded = vm_macro_from_syn(result);
+    eshkol_syn_free(result);
     return expanded;
+}
+
+/** @brief Expand the use @p node of @p macro, and every macro use its
+ *         expansion immediately is, to the first form that is not a macro
+ *         use. Operands are left to the compiler, which expands each form
+ *         it reaches in its own scope.
+ * @return The expansion (caller frees), or NULL after reporting. */
+static MacroNode* vm_macro_expand(VmMacro* macro, const MacroNode* node) {
+    MacroNode* expanded = vm_macro_expand_use(macro, node);
+    /* Continuation-passing transformers rewrite a use into another use of
+     * themselves once per element; only a chain that never reaches an
+     * ordinary form is an error. */
+    for (int steps = 0; expanded && steps < 100000; ++steps) {
+        if (expanded->type != N_LIST || expanded->n_children == 0 ||
+            expanded->children[0]->type != N_SYMBOL)
+            return expanded;
+        VmMacro* next = vm_macro_lookup_node(expanded->children[0]);
+        if (!next) return expanded;
+        /* The compiler decides lexical shadowing of a keyword; only a head
+         * the template itself colored (and did not bind) is expanded here. */
+        if (!eshkol_syntax_is_colored(expanded->children[0]->symbol)) return expanded;
+        MacroNode* again = vm_macro_expand_use(next, expanded);
+        macro_node_free(expanded);
+        expanded = again;
+    }
+    if (expanded) {
+        fprintf(stderr, "ERROR: macro expansion of '%s' did not terminate\n", macro->name);
+        macro_node_free(expanded);
+    }
+    return NULL;
 }
 
 /*******************************************************************************
@@ -1016,55 +513,57 @@ static MacroNode* vm_macro_expand(const MacroNode* node) {
  *
  * Expected form:
  *   (define-syntax name
- *     (syntax-rules (literal ...)
- *       (pattern template)
- *       ...))
+ *     (syntax-rules [ellipsis] (literal ...) (pattern template) ...))
  ******************************************************************************/
 
-/**
- * @brief Parse a `(define-syntax name (syntax-rules (literal ...) (pattern
- *        template) ...))` form and vm_macro_register() it.
- * @return 1 on success, 0 if @p form doesn't match the expected shape.
- */
-static int vm_macro_define_syntax(const MacroNode* form) {
-    if (!form || form->type != N_LIST || form->n_children < 3) return 0;
-    if (form->children[0]->type != N_SYMBOL ||
-        strcmp(form->children[0]->symbol, "define-syntax") != 0) return 0;
-    if (form->children[1]->type != N_SYMBOL) return 0;
-
-    const char* name = form->children[1]->symbol;
-    const MacroNode* syntax_rules = form->children[2];
-
+static int vm_macro_define_binding(const MacroNode* identifier,
+                                   const MacroNode* syntax_rules) {
+    if (!identifier || identifier->type != N_SYMBOL || !syntax_rules) return 0;
     if (syntax_rules->type != N_LIST || syntax_rules->n_children < 2) return 0;
     if (syntax_rules->children[0]->type != N_SYMBOL ||
-        strcmp(syntax_rules->children[0]->symbol, "syntax-rules") != 0) return 0;
+        !eshkol_syntax_base_is(syntax_rules->children[0]->symbol, "syntax-rules")) return 0;
 
-    /* Parse literals list */
-    const MacroNode* lit_list = syntax_rules->children[1];
-    char lits[MAX_LITERALS][64];
-    int n_lits = 0;
-    if (lit_list->type == N_LIST) {
-        for (int i = 0; i < lit_list->n_children && n_lits < MAX_LITERALS; i++) {
-            if (lit_list->children[i]->type == N_SYMBOL) {
-                strncpy(lits[n_lits], lit_list->children[i]->symbol, 63);
-                lits[n_lits][63] = '\0';
-                n_lits++;
-            }
-        }
+    int next = 1;
+    const char* ellipsis = "...";
+    if (syntax_rules->children[next]->type == N_SYMBOL) {
+        ellipsis = syntax_rules->children[next]->symbol;   /* R7RS 4.3.2 */
+        ++next;
     }
-
-    /* Parse rules: each is a list (pattern template) */
-    MacroRule rules[MAX_RULES];
-    int n_rules = 0;
-    for (int i = 2; i < syntax_rules->n_children && n_rules < MAX_RULES; i++) {
+    if (next >= syntax_rules->n_children) return 0;
+    const MacroNode* lit_list = syntax_rules->children[next++];
+    if (lit_list->type != N_LIST) return 0;
+    const char** lits = (const char**)calloc(lit_list->n_children > 0 ? (size_t)lit_list->n_children : 1u,
+                                             sizeof(char*));
+    MacroRule* rules = (MacroRule*)calloc(syntax_rules->n_children > 0 ? (size_t)syntax_rules->n_children : 1u,
+                                          sizeof(MacroRule));
+    if (!lits || !rules) { free((void*)lits); free(rules); return 0; }
+    int n_lits = 0, n_rules = 0, ok = 1;
+    for (int i = 0; i < lit_list->n_children; i++) {
+        if (lit_list->children[i]->type != N_SYMBOL) { ok = 0; break; }
+        lits[n_lits++] = lit_list->children[i]->symbol;
+    }
+    for (int i = next; ok && i < syntax_rules->n_children; i++) {
         const MacroNode* rule = syntax_rules->children[i];
-        if (rule->type != N_LIST || rule->n_children < 2) continue;
+        if (rule->type != N_LIST || rule->n_children != 2 ||
+            rule->children[0]->type != N_LIST || rule->children[0]->n_children == 0) {
+            ok = 0;
+            break;
+        }
         rules[n_rules].pattern = (MacroNode*)rule->children[0];
         rules[n_rules].template_node = (MacroNode*)rule->children[1];
         n_rules++;
     }
+    if (ok) ok = vm_macro_register(identifier->symbol, ellipsis, lits, n_lits, rules, n_rules);
+    free((void*)lits);
+    free(rules);
+    return ok;
+}
 
-    return vm_macro_register(name, lits, n_lits, rules, n_rules);
+static int vm_macro_define_syntax(const MacroNode* form) {
+    if (!form || form->type != N_LIST || form->n_children != 3) return 0;
+    if (form->children[0]->type != N_SYMBOL ||
+        !eshkol_syntax_base_is(form->children[0]->symbol, "define-syntax")) return 0;
+    return vm_macro_define_binding(form->children[1], form->children[2]);
 }
 
 /*******************************************************************************
@@ -1103,565 +602,3 @@ static void macro_node_print(const MacroNode* n, int depth) {
 
 #endif /* VM_MACRO_C_INCLUDED */
 
-/*******************************************************************************
- * Self-Test
- ******************************************************************************/
-
-#ifdef VM_MACRO_TEST
-
-#include <assert.h>
-
-/* ── Helper: build AST nodes quickly ── */
-
-/** @brief Self-test shorthand for macro_make_symbol(). */
-static MacroNode* sym(const char* s) { return macro_make_symbol(s); }
-/** @brief Self-test shorthand for macro_make_number(). */
-static MacroNode* num(double v)      { return macro_make_number(v); }
-
-/** @brief Self-test helper: build a 1-element list node. */
-static MacroNode* list1(MacroNode* a) {
-    MacroNode* l = macro_make_list();
-    macro_node_add_child(l, a);
-    return l;
-}
-/** @brief Self-test helper: build a 2-element list node. */
-static MacroNode* list2(MacroNode* a, MacroNode* b) {
-    MacroNode* l = macro_make_list();
-    macro_node_add_child(l, a);
-    macro_node_add_child(l, b);
-    return l;
-}
-/** @brief Self-test helper: build a 3-element list node. */
-static MacroNode* list3(MacroNode* a, MacroNode* b, MacroNode* c) {
-    MacroNode* l = macro_make_list();
-    macro_node_add_child(l, a);
-    macro_node_add_child(l, b);
-    macro_node_add_child(l, c);
-    return l;
-}
-/** @brief Self-test helper: build a 4-element list node. */
-static MacroNode* list4(MacroNode* a, MacroNode* b, MacroNode* c, MacroNode* d) {
-    MacroNode* l = macro_make_list();
-    macro_node_add_child(l, a);
-    macro_node_add_child(l, b);
-    macro_node_add_child(l, c);
-    macro_node_add_child(l, d);
-    return l;
-}
-/** @brief Self-test helper: build a 5-element list node. */
-static MacroNode* list5(MacroNode* a, MacroNode* b, MacroNode* c, MacroNode* d, MacroNode* e) {
-    MacroNode* l = macro_make_list();
-    macro_node_add_child(l, a);
-    macro_node_add_child(l, b);
-    macro_node_add_child(l, c);
-    macro_node_add_child(l, d);
-    macro_node_add_child(l, e);
-    return l;
-}
-
-/* ── Tests ── */
-
-/** @brief Self-test: vm_macro_gensym() produces unique, counter-suffixed
- *         names, including for a NULL base name. */
-static void test_gensym(void) {
-    printf("  test_gensym... ");
-    g_gensym_counter = 0;
-    const char* s1 = vm_macro_gensym("tmp");
-    assert(strcmp(s1, "_tmp_0") == 0);
-    const char* s2 = vm_macro_gensym("tmp");
-    assert(strcmp(s2, "_tmp_1") == 0);
-    const char* s3 = vm_macro_gensym(NULL);
-    assert(strcmp(s3, "_g_2") == 0);
-    printf("OK\n");
-}
-
-/** @brief Self-test: macro_node_deep_copy() produces an independent,
- *         structurally-equal tree. */
-static void test_node_deep_copy(void) {
-    printf("  test_node_deep_copy... ");
-    MacroNode* orig = list3(sym("define"), sym("x"), num(42));
-    MacroNode* copy = macro_node_deep_copy(orig);
-    assert(copy != NULL);
-    assert(copy->type == N_LIST);
-    assert(copy->n_children == 3);
-    assert(copy->children[0]->type == N_SYMBOL);
-    assert(strcmp(copy->children[0]->symbol, "define") == 0);
-    assert(copy->children[2]->type == N_NUMBER);
-    assert(copy->children[2]->numval == 42.0);
-    /* Mutation of copy doesn't affect original */
-    copy->children[2]->numval = 99.0;
-    assert(orig->children[2]->numval == 42.0);
-    macro_node_free(orig);
-    macro_node_free(copy);
-    printf("OK\n");
-}
-
-/** @brief Self-test: vm_macro_match() binds pattern variables for a basic
- *         non-ellipsis pattern. */
-static void test_simple_pattern_match(void) {
-    printf("  test_simple_pattern_match... ");
-    /* Pattern: (_ x y)   Input: (my-macro 10 20) */
-    MacroNode* pattern = list3(sym("_"), sym("x"), sym("y"));
-    MacroNode* input   = list3(sym("my-macro"), num(10), num(20));
-
-    char lits[1][64];
-    MacroBindings bindings;
-    macro_bindings_init(&bindings);
-
-    int ok = vm_macro_match(pattern, input, &bindings, lits, 0);
-    assert(ok == 1);
-    assert(bindings.n_bindings == 2);
-
-    MacroBinding* bx = macro_bindings_lookup(&bindings, "x");
-    assert(bx != NULL);
-    assert(bx->value->type == N_NUMBER);
-    assert(bx->value->numval == 10.0);
-
-    MacroBinding* by = macro_bindings_lookup(&bindings, "y");
-    assert(by != NULL);
-    assert(by->value->type == N_NUMBER);
-    assert(by->value->numval == 20.0);
-
-    macro_bindings_cleanup(&bindings);
-    macro_node_free(pattern);
-    macro_node_free(input);
-    printf("OK\n");
-}
-
-/** @brief Self-test: literal keyword identifiers require an exact match
- *         rather than binding as a pattern variable. */
-static void test_literal_match(void) {
-    printf("  test_literal_match... ");
-    /* Pattern: (_ else x)  with "else" as literal */
-    MacroNode* pattern = list3(sym("_"), sym("else"), sym("x"));
-    MacroNode* input1  = list3(sym("cond"), sym("else"), num(5));
-    MacroNode* input2  = list3(sym("cond"), sym("other"), num(5));
-
-    char lits[1][64];
-    strncpy(lits[0], "else", 63);
-
-    MacroBindings b1, b2;
-    macro_bindings_init(&b1);
-    macro_bindings_init(&b2);
-
-    assert(vm_macro_match(pattern, input1, &b1, lits, 1) == 1);
-    assert(vm_macro_match(pattern, input2, &b2, lits, 1) == 0);
-
-    macro_bindings_cleanup(&b1);
-    macro_bindings_cleanup(&b2);
-    macro_node_free(pattern);
-    macro_node_free(input1);
-    macro_node_free(input2);
-    printf("OK\n");
-}
-
-/** @brief Self-test: an ellipsis pattern captures multiple input elements
- *         as an ellipsis binding. */
-static void test_ellipsis_match(void) {
-    printf("  test_ellipsis_match... ");
-    /* Pattern: (_ x ...)   Input: (my-macro 1 2 3) */
-    MacroNode* pattern = list3(sym("_"), sym("x"), sym("..."));
-    MacroNode* input   = list4(sym("my-macro"), num(1), num(2), num(3));
-
-    char lits[1][64];
-    MacroBindings bindings;
-    macro_bindings_init(&bindings);
-
-    int ok = vm_macro_match(pattern, input, &bindings, lits, 0);
-    assert(ok == 1);
-
-    MacroBinding* bx = macro_bindings_lookup(&bindings, "x");
-    assert(bx != NULL);
-    assert(bx->is_ellipsis == 1);
-    assert(bx->list_len == 3);
-    assert(bx->list[0]->type == N_NUMBER && bx->list[0]->numval == 1.0);
-    assert(bx->list[1]->type == N_NUMBER && bx->list[1]->numval == 2.0);
-    assert(bx->list[2]->type == N_NUMBER && bx->list[2]->numval == 3.0);
-
-    macro_bindings_cleanup(&bindings);
-    macro_node_free(pattern);
-    macro_node_free(input);
-    printf("OK\n");
-}
-
-/** @brief Self-test: an ellipsis pattern matches zero repetitions
- *         correctly. */
-static void test_ellipsis_empty(void) {
-    printf("  test_ellipsis_empty... ");
-    /* Pattern: (_ x ...)   Input: (my-macro)  → x binds to empty list */
-    MacroNode* pattern = list3(sym("_"), sym("x"), sym("..."));
-    MacroNode* input   = list1(sym("my-macro"));
-
-    char lits[1][64];
-    MacroBindings bindings;
-    macro_bindings_init(&bindings);
-
-    int ok = vm_macro_match(pattern, input, &bindings, lits, 0);
-    assert(ok == 1);
-
-    MacroBinding* bx = macro_bindings_lookup(&bindings, "x");
-    assert(bx != NULL);
-    assert(bx->is_ellipsis == 1);
-    assert(bx->list_len == 0);
-
-    macro_bindings_cleanup(&bindings);
-    macro_node_free(pattern);
-    macro_node_free(input);
-    printf("OK\n");
-}
-
-/** @brief Self-test: template instantiation substitutes bound pattern
- *         variables. */
-static void test_simple_instantiation(void) {
-    printf("  test_simple_instantiation... ");
-    /* Template: (+ x y), bindings: x=10, y=20  → (+ 10 20) */
-    MacroNode* tmpl = list3(sym("+"), sym("x"), sym("y"));
-
-    MacroBindings bindings;
-    macro_bindings_init(&bindings);
-    macro_bindings_add(&bindings, "x", num(10));
-    macro_bindings_add(&bindings, "y", num(20));
-
-    /* We need the bound values to persist — allocate them separately */
-    MacroNode* vx = bindings.bindings[0].value;
-    MacroNode* vy = bindings.bindings[1].value;
-
-    MacroNode* result = vm_macro_instantiate(tmpl, &bindings);
-    assert(result != NULL);
-    assert(result->type == N_LIST);
-    assert(result->n_children == 3);
-    assert(result->children[0]->type == N_SYMBOL);
-    assert(strcmp(result->children[0]->symbol, "+") == 0);
-    assert(result->children[1]->type == N_NUMBER);
-    assert(result->children[1]->numval == 10.0);
-    assert(result->children[2]->type == N_NUMBER);
-    assert(result->children[2]->numval == 20.0);
-
-    macro_node_free(result);
-    macro_node_free(tmpl);
-    macro_node_free(vx);
-    macro_node_free(vy);
-    printf("OK\n");
-}
-
-/** @brief Self-test: template instantiation expands an ellipsis-bound
- *         variable into repeated output. */
-static void test_ellipsis_instantiation(void) {
-    printf("  test_ellipsis_instantiation... ");
-    /* Template: (begin x ...)
-     * Bindings: x = [1, 2, 3] (ellipsis)
-     * Expected: (begin 1 2 3)
-     */
-    MacroNode* tmpl = list3(sym("begin"), sym("x"), sym("..."));
-
-    MacroNode* items[3];
-    items[0] = num(1);
-    items[1] = num(2);
-    items[2] = num(3);
-
-    MacroBindings bindings;
-    macro_bindings_init(&bindings);
-    macro_bindings_add_ellipsis(&bindings, "x", items, 3);
-
-    MacroNode* result = vm_macro_instantiate(tmpl, &bindings);
-    assert(result != NULL);
-    assert(result->type == N_LIST);
-    assert(result->n_children == 4); /* begin + 3 elements */
-    assert(strcmp(result->children[0]->symbol, "begin") == 0);
-    assert(result->children[1]->numval == 1.0);
-    assert(result->children[2]->numval == 2.0);
-    assert(result->children[3]->numval == 3.0);
-
-    macro_node_free(result);
-    macro_node_free(tmpl);
-    for (int i = 0; i < 3; i++) macro_node_free(items[i]);
-    macro_bindings_cleanup(&bindings);
-    printf("OK\n");
-}
-
-/** @brief Self-test: end-to-end vm_macro_expand() on a registered
- *         define-syntax macro. */
-static void test_full_macro_expansion(void) {
-    printf("  test_full_macro_expansion... ");
-    vm_macro_reset();
-
-    /* Register macro: (my-add x y) → (+ x y) */
-    MacroNode* pattern  = list3(sym("_"), sym("x"), sym("y"));
-    MacroNode* template = list3(sym("+"), sym("x"), sym("y"));
-
-    MacroRule rule;
-    rule.pattern = pattern;
-    rule.template_node = template;
-
-    char lits[1][64];
-    vm_macro_register("my-add", lits, 0, &rule, 1);
-
-    /* Expand: (my-add 3 4) → (+ 3 4) */
-    MacroNode* input = list3(sym("my-add"), num(3), num(4));
-    MacroNode* result = vm_macro_expand(input);
-
-    assert(result != NULL);
-    assert(result->type == N_LIST);
-    assert(result->n_children == 3);
-    assert(strcmp(result->children[0]->symbol, "+") == 0);
-    assert(result->children[1]->numval == 3.0);
-    assert(result->children[2]->numval == 4.0);
-
-    macro_node_free(result);
-    macro_node_free(input);
-    macro_node_free(pattern);
-    macro_node_free(template);
-    vm_macro_reset();
-    printf("OK\n");
-}
-
-/** @brief Self-test: a macro with multiple syntax-rules clauses tries
- *         them in order and uses the first match. */
-static void test_multi_rule_macro(void) {
-    printf("  test_multi_rule_macro... ");
-    vm_macro_reset();
-
-    /* Macro with two rules:
-     *   (my-if test then)       → (if test then #f)
-     *   (my-if test then else)  → (if test then else)
-     */
-    MacroNode* pat1 = list3(sym("_"), sym("test"), sym("then"));
-    MacroNode* tmpl1 = list4(sym("if"), sym("test"), sym("then"), macro_make_bool(0));
-
-    MacroNode* pat2 = list4(sym("_"), sym("test"), sym("then"), sym("alt"));
-    MacroNode* tmpl2 = list4(sym("if"), sym("test"), sym("then"), sym("alt"));
-
-    MacroRule rules[2];
-    rules[0].pattern = pat1;
-    rules[0].template_node = tmpl1;
-    rules[1].pattern = pat2;
-    rules[1].template_node = tmpl2;
-
-    char lits[1][64];
-    vm_macro_register("my-if", lits, 0, rules, 2);
-
-    /* Test 2-arg form: (my-if #t 42) → (if #t 42 #f) */
-    MacroNode* in1 = list3(sym("my-if"), macro_make_bool(1), num(42));
-    MacroNode* r1 = vm_macro_expand(in1);
-    assert(r1 && r1->type == N_LIST && r1->n_children == 4);
-    assert(strcmp(r1->children[0]->symbol, "if") == 0);
-    assert(r1->children[3]->type == N_BOOL && r1->children[3]->numval == 0.0);
-
-    /* Test 3-arg form: (my-if #t 42 99) → (if #t 42 99) */
-    MacroNode* in2 = list4(sym("my-if"), macro_make_bool(1), num(42), num(99));
-    MacroNode* r2 = vm_macro_expand(in2);
-    assert(r2 && r2->type == N_LIST && r2->n_children == 4);
-    assert(strcmp(r2->children[0]->symbol, "if") == 0);
-    assert(r2->children[3]->numval == 99.0);
-
-    macro_node_free(r1);
-    macro_node_free(r2);
-    macro_node_free(in1);
-    macro_node_free(in2);
-    macro_node_free(pat1);
-    macro_node_free(tmpl1);
-    macro_node_free(pat2);
-    macro_node_free(tmpl2);
-    vm_macro_reset();
-    printf("OK\n");
-}
-
-/** @brief Self-test: parsing a `define-syntax`/`syntax-rules` form
- *         registers the macro correctly. */
-static void test_define_syntax_parsing(void) {
-    printf("  test_define_syntax_parsing... ");
-    vm_macro_reset();
-
-    /* Build AST for:
-     * (define-syntax swap!
-     *   (syntax-rules ()
-     *     ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))))
-     */
-    MacroNode* rule_pattern = list3(sym("_"), sym("a"), sym("b"));
-    MacroNode* let_binding = list2(sym("tmp"), sym("a"));
-    MacroNode* let_bindings = list1(let_binding);
-    MacroNode* set_a = list3(sym("set!"), sym("a"), sym("b"));
-    MacroNode* set_b = list3(sym("set!"), sym("b"), sym("tmp"));
-    MacroNode* rule_template = list4(sym("let"), let_bindings, set_a, set_b);
-    MacroNode* rule_node = list2(rule_pattern, rule_template);
-    MacroNode* empty_lits = macro_make_list();
-    MacroNode* syntax_rules_form = list3(sym("syntax-rules"), empty_lits, rule_node);
-    MacroNode* define_syntax = list3(sym("define-syntax"), sym("swap!"), syntax_rules_form);
-
-    int ok = vm_macro_define_syntax(define_syntax);
-    assert(ok == 1);
-
-    VmMacro* m = vm_macro_lookup("swap!");
-    assert(m != NULL);
-    assert(m->n_rules == 1);
-    assert(m->n_literals == 0);
-
-    /* Expand (swap! x y) */
-    MacroNode* call = list3(sym("swap!"), sym("x"), sym("y"));
-    MacroNode* expanded = vm_macro_expand(call);
-    assert(expanded != NULL);
-    assert(expanded->type == N_LIST);
-    assert(expanded->n_children == 4);
-    assert(strcmp(expanded->children[0]->symbol, "let") == 0);
-
-    macro_node_free(expanded);
-    macro_node_free(call);
-    macro_node_free(define_syntax);
-    vm_macro_reset();
-    printf("OK\n");
-}
-
-/** @brief Self-test: a macro expansion that itself contains a macro call
- *         is recursively re-expanded. */
-static void test_recursive_expansion(void) {
-    printf("  test_recursive_expansion... ");
-    vm_macro_reset();
-
-    /* Nested macro expansion:
-     *   (define-syntax square (syntax-rules () ((_ x) (* x x))))
-     *   (define-syntax cube   (syntax-rules () ((_ x) (* x (square x)))))
-     * Expand: (cube 3) → (* 3 (square 3)) → (* 3 (* 3 3))
-     */
-    MacroNode* sq_pat = list2(sym("_"), sym("x"));
-    MacroNode* sq_tmpl = list3(sym("*"), sym("x"), sym("x"));
-    MacroRule sq_rule = { sq_pat, sq_tmpl };
-    char no_lits[1][64];
-    vm_macro_register("square", no_lits, 0, &sq_rule, 1);
-
-    MacroNode* cu_pat = list2(sym("_"), sym("x"));
-    MacroNode* sq_call = list2(sym("square"), sym("x"));
-    MacroNode* cu_tmpl = list3(sym("*"), sym("x"), sq_call);
-    MacroRule cu_rule = { cu_pat, cu_tmpl };
-    vm_macro_register("cube", no_lits, 0, &cu_rule, 1);
-
-    MacroNode* input = list2(sym("cube"), num(3));
-    MacroNode* result = vm_macro_expand(input);
-
-    assert(result != NULL);
-    assert(result->type == N_LIST);
-    assert(result->n_children == 3);
-    assert(strcmp(result->children[0]->symbol, "*") == 0);
-    assert(result->children[1]->numval == 3.0);
-    /* children[2] should be (* 3 3) */
-    MacroNode* inner = result->children[2];
-    assert(inner->type == N_LIST && inner->n_children == 3);
-    assert(strcmp(inner->children[0]->symbol, "*") == 0);
-    assert(inner->children[1]->numval == 3.0);
-    assert(inner->children[2]->numval == 3.0);
-
-    macro_node_free(result);
-    macro_node_free(input);
-    macro_node_free(sq_pat);
-    macro_node_free(sq_tmpl);
-    macro_node_free(cu_pat);
-    macro_node_free(cu_tmpl);
-    vm_macro_reset();
-    printf("OK\n");
-}
-
-/** @brief Self-test: a form whose head isn't a registered macro passes
- *         through vm_macro_expand() unchanged. */
-static void test_non_macro_passthrough(void) {
-    printf("  test_non_macro_passthrough... ");
-    vm_macro_reset();
-
-    MacroNode* input = list3(sym("+"), num(1), num(2));
-    MacroNode* result = vm_macro_expand(input);
-    assert(result != NULL);
-    assert(result->type == N_LIST);
-    assert(result->n_children == 3);
-    assert(strcmp(result->children[0]->symbol, "+") == 0);
-
-    macro_node_free(result);
-    macro_node_free(input);
-    printf("OK\n");
-}
-
-/** @brief Self-test: a pattern with the wrong number of (non-ellipsis)
- *         elements fails to match. */
-static void test_length_mismatch(void) {
-    printf("  test_length_mismatch... ");
-    /* Pattern: (_ x y)   Input: (foo 1)  — should not match (too few args) */
-    MacroNode* pattern = list3(sym("_"), sym("x"), sym("y"));
-    MacroNode* input   = list2(sym("foo"), num(1));
-
-    char lits[1][64];
-    MacroBindings bindings;
-    macro_bindings_init(&bindings);
-
-    int ok = vm_macro_match(pattern, input, &bindings, lits, 0);
-    assert(ok == 0);
-
-    macro_bindings_cleanup(&bindings);
-    macro_node_free(pattern);
-    macro_node_free(input);
-    printf("OK\n");
-}
-
-/** @brief Self-test: an ellipsis pattern followed by fixed trailing
- *         elements matches correctly. */
-static void test_ellipsis_with_suffix(void) {
-    printf("  test_ellipsis_with_suffix... ");
-    /* Pattern: (_ x ... y)   Input: (foo 1 2 3 last) */
-    /* x... should bind [1, 2, 3], y should bind last */
-    MacroNode* pattern = list4(sym("_"), sym("x"), sym("..."), sym("y"));
-    MacroNode* input   = list5(sym("foo"), num(1), num(2), num(3), sym("last"));
-
-    char lits[1][64];
-    MacroBindings bindings;
-    macro_bindings_init(&bindings);
-
-    int ok = vm_macro_match(pattern, input, &bindings, lits, 0);
-    assert(ok == 1);
-
-    MacroBinding* bx = macro_bindings_lookup(&bindings, "x");
-    assert(bx != NULL);
-    assert(bx->is_ellipsis == 1);
-    assert(bx->list_len == 3);
-    assert(bx->list[0]->numval == 1.0);
-    assert(bx->list[1]->numval == 2.0);
-    assert(bx->list[2]->numval == 3.0);
-
-    MacroBinding* by = macro_bindings_lookup(&bindings, "y");
-    assert(by != NULL);
-    assert(!by->is_ellipsis);
-    assert(by->value->type == N_SYMBOL);
-    assert(strcmp(by->value->symbol, "last") == 0);
-
-    macro_bindings_cleanup(&bindings);
-    macro_node_free(pattern);
-    macro_node_free(input);
-    printf("OK\n");
-}
-
-/** @brief Standalone self-test (built when VM_MACRO_TEST is defined): runs
- *         all test_* functions above, covering gensym, node copying,
- *         pattern matching (literals/ellipsis/length mismatches), template
- *         instantiation, and full macro expansion (including recursive
- *         and multi-rule cases). */
-int main(void) {
-    printf("vm_macro self-test\n");
-    printf("==================\n");
-
-    test_gensym();
-    test_node_deep_copy();
-    test_simple_pattern_match();
-    test_literal_match();
-    test_ellipsis_match();
-    test_ellipsis_empty();
-    test_simple_instantiation();
-    test_ellipsis_instantiation();
-    test_full_macro_expansion();
-    test_multi_rule_macro();
-    test_define_syntax_parsing();
-    test_recursive_expansion();
-    test_non_macro_passthrough();
-    test_length_mismatch();
-    test_ellipsis_with_suffix();
-
-    printf("==================\n");
-    printf("All 15 tests passed.\n");
-    return 0;
-}
-
-#endif /* VM_MACRO_TEST */

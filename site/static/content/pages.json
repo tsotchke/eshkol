@@ -1,0 +1,674 @@
+{
+  "schema": "eshkol.site-published-pages.v1",
+  "generated_by": "scripts/build_site_content.py",
+  "views": {
+    "docs": {
+      "route": "/docs",
+      "default": "eshkol_language_guide",
+      "nav": "/content/nav-docs.html"
+    },
+    "tutorials": {
+      "route": "/tutorials",
+      "default": "tutorials_00_first_5_minutes",
+      "nav": "/content/nav-tutorials.html"
+    }
+  },
+  "pages": [
+    {
+      "slug": "quickstart",
+      "title": "Quickstart",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/QUICKSTART.md",
+      "url": "/content/quickstart.html"
+    },
+    {
+      "slug": "troubleshooting",
+      "title": "Troubleshooting",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/TROUBLESHOOTING.md",
+      "url": "/content/troubleshooting.html"
+    },
+    {
+      "slug": "upgrading",
+      "title": "Upgrading",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/UPGRADING.md",
+      "url": "/content/upgrading.html"
+    },
+    {
+      "slug": "faq",
+      "title": "FAQ",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/FAQ.md",
+      "url": "/content/faq.html"
+    },
+    {
+      "slug": "glossary",
+      "title": "Glossary",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/GLOSSARY.md",
+      "url": "/content/glossary.html"
+    },
+    {
+      "slug": "documentation",
+      "title": "About the Documentation",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/DOCUMENTATION.md",
+      "url": "/content/documentation.html"
+    },
+    {
+      "slug": "eshkol_language_guide",
+      "title": "Language Guide",
+      "view": "docs",
+      "section": "LANGUAGE",
+      "source": "docs/ESHKOL_LANGUAGE_GUIDE.md",
+      "url": "/content/eshkol_language_guide.html"
+    },
+    {
+      "slug": "guide_automatic_differentiation",
+      "title": "Automatic Differentiation",
+      "view": "docs",
+      "section": "LANGUAGE",
+      "source": "docs/guide/AUTOMATIC_DIFFERENTIATION.md",
+      "url": "/content/guide_automatic_differentiation.html"
+    },
+    {
+      "slug": "guide_gradual_typing",
+      "title": "Gradual Typing",
+      "view": "docs",
+      "section": "LANGUAGE",
+      "source": "docs/guide/GRADUAL_TYPING.md",
+      "url": "/content/guide_gradual_typing.html"
+    },
+    {
+      "slug": "complete_language_specification",
+      "title": "Language Specification",
+      "view": "docs",
+      "section": "LANGUAGE",
+      "source": "docs/COMPLETE_LANGUAGE_SPECIFICATION.md",
+      "url": "/content/complete_language_specification.html"
+    },
+    {
+      "slug": "eshkol_quick_reference",
+      "title": "Quick Reference",
+      "view": "docs",
+      "section": "LANGUAGE",
+      "source": "docs/ESHKOL_QUICK_REFERENCE.md",
+      "url": "/content/eshkol_quick_reference.html"
+    },
+    {
+      "slug": "api_reference",
+      "title": "API Reference",
+      "view": "docs",
+      "section": "REFERENCE",
+      "source": "docs/API_REFERENCE.md",
+      "url": "/content/api_reference.html"
+    },
+    {
+      "slug": "stdlib_v1_2_api",
+      "title": "Standard Library API",
+      "view": "docs",
+      "section": "REFERENCE",
+      "source": "docs/STDLIB_V1_2_API.md",
+      "url": "/content/stdlib_v1_2_api.html"
+    },
+    {
+      "slug": "reference_language",
+      "title": "Language Core",
+      "view": "docs",
+      "section": "REFERENCE INDEXES",
+      "source": "docs/reference/language/INDEX.md",
+      "url": "/content/reference_language.html"
+    },
+    {
+      "slug": "reference_stdlib",
+      "title": "Standard Library Index",
+      "view": "docs",
+      "section": "REFERENCE INDEXES",
+      "source": "docs/reference/stdlib/INDEX.md",
+      "url": "/content/reference_stdlib.html"
+    },
+    {
+      "slug": "reference_ad",
+      "title": "Automatic Differentiation",
+      "view": "docs",
+      "section": "REFERENCE INDEXES",
+      "source": "docs/reference/ad/INDEX.md",
+      "url": "/content/reference_ad.html"
+    },
+    {
+      "slug": "reference_tensors",
+      "title": "Tensors and ML",
+      "view": "docs",
+      "section": "REFERENCE INDEXES",
+      "source": "docs/reference/tensors/INDEX.md",
+      "url": "/content/reference_tensors.html"
+    },
+    {
+      "slug": "reference_runtime",
+      "title": "Runtime",
+      "view": "docs",
+      "section": "REFERENCE INDEXES",
+      "source": "docs/reference/runtime/INDEX.md",
+      "url": "/content/reference_runtime.html"
+    },
+    {
+      "slug": "reference_agent",
+      "title": "Agent and FFI",
+      "view": "docs",
+      "section": "REFERENCE INDEXES",
+      "source": "docs/reference/agent/INDEX.md",
+      "url": "/content/reference_agent.html"
+    },
+    {
+      "slug": "reference_bindings",
+      "title": "Language Bindings",
+      "view": "docs",
+      "section": "REFERENCE INDEXES",
+      "source": "docs/reference/bindings/INDEX.md",
+      "url": "/content/reference_bindings.html"
+    },
+    {
+      "slug": "reference_benchmarks",
+      "title": "Benchmarks",
+      "view": "docs",
+      "section": "REFERENCE INDEXES",
+      "source": "docs/reference/benchmarks/INDEX.md",
+      "url": "/content/reference_benchmarks.html"
+    },
+    {
+      "slug": "feature_matrix",
+      "title": "Feature Matrix",
+      "view": "docs",
+      "section": "STATUS",
+      "source": "docs/FEATURE_MATRIX.md",
+      "url": "/content/feature_matrix.html"
+    },
+    {
+      "slug": "known_issues",
+      "title": "Known Issues",
+      "view": "docs",
+      "section": "STATUS",
+      "source": "docs/KNOWN_ISSUES.md",
+      "url": "/content/known_issues.html"
+    },
+    {
+      "slug": "adr_0026_macro_hygiene",
+      "title": "Macro Hygiene",
+      "view": "docs",
+      "section": "DESIGN CONTRACTS",
+      "source": "docs/design/adr/0026-syntax-rules-one-engine-one-renaming-rule.md",
+      "url": "/content/adr_0026_macro_hygiene.html"
+    },
+    {
+      "slug": "adr_0027_recursive_taylor",
+      "title": "Nested Differentiation",
+      "view": "docs",
+      "section": "DESIGN CONTRACTS",
+      "source": "docs/design/adr/0027-recursive-taylor-level-carrier.md",
+      "url": "/content/adr_0027_recursive_taylor.html"
+    },
+    {
+      "slug": "adr_0028_number_syntax",
+      "title": "Number Syntax",
+      "view": "docs",
+      "section": "DESIGN CONTRACTS",
+      "source": "docs/design/adr/0028-one-number-syntax-recognizer.md",
+      "url": "/content/adr_0028_number_syntax.html"
+    },
+    {
+      "slug": "adr_0029_browser_webgpu",
+      "title": "Browser WebGPU",
+      "view": "docs",
+      "section": "DESIGN CONTRACTS",
+      "source": "docs/design/adr/0029-browser-vm-webgpu-dispatch.md",
+      "url": "/content/adr_0029_browser_webgpu.html"
+    },
+    {
+      "slug": "vm_parity",
+      "title": "VM Parity",
+      "view": "docs",
+      "section": "STATUS",
+      "source": "docs/VM_PARITY.md",
+      "url": "/content/vm_parity.html"
+    },
+    {
+      "slug": "testing",
+      "title": "Testing",
+      "view": "docs",
+      "section": "STATUS",
+      "source": "docs/TESTING.md",
+      "url": "/content/testing.html"
+    },
+    {
+      "slug": "eshkol_v1_architecture",
+      "title": "Architecture Overview",
+      "view": "docs",
+      "section": "ARCHITECTURE",
+      "source": "docs/ESHKOL_V1_ARCHITECTURE.md",
+      "url": "/content/eshkol_v1_architecture.html"
+    },
+    {
+      "slug": "breakdown_compiler_architecture",
+      "title": "Compiler Architecture",
+      "view": "docs",
+      "section": "ARCHITECTURE",
+      "source": "docs/breakdown/COMPILER_ARCHITECTURE.md",
+      "url": "/content/breakdown_compiler_architecture.html"
+    },
+    {
+      "slug": "breakdown_memory_management",
+      "title": "Memory Management",
+      "view": "docs",
+      "section": "ARCHITECTURE",
+      "source": "docs/breakdown/MEMORY_MANAGEMENT.md",
+      "url": "/content/breakdown_memory_management.html"
+    },
+    {
+      "slug": "breakdown_type_system",
+      "title": "Type System",
+      "view": "docs",
+      "section": "ARCHITECTURE",
+      "source": "docs/breakdown/TYPE_SYSTEM.md",
+      "url": "/content/breakdown_type_system.html"
+    },
+    {
+      "slug": "design_adr_index",
+      "title": "Architecture Decisions",
+      "view": "docs",
+      "section": "ARCHITECTURE",
+      "source": "docs/design/adr/README.md",
+      "url": "/content/design_adr_index.html"
+    },
+    {
+      "slug": "breakdown_autodiff",
+      "title": "Automatic Differentiation",
+      "view": "docs",
+      "section": "TOPICS",
+      "source": "docs/breakdown/AUTODIFF.md",
+      "url": "/content/breakdown_autodiff.html"
+    },
+    {
+      "slug": "breakdown_vector_operations",
+      "title": "Vector Operations",
+      "view": "docs",
+      "section": "TOPICS",
+      "source": "docs/breakdown/VECTOR_OPERATIONS.md",
+      "url": "/content/breakdown_vector_operations.html"
+    },
+    {
+      "slug": "breakdown_machine_learning",
+      "title": "Machine Learning",
+      "view": "docs",
+      "section": "TOPICS",
+      "source": "docs/breakdown/MACHINE_LEARNING.md",
+      "url": "/content/breakdown_machine_learning.html"
+    },
+    {
+      "slug": "breakdown_gpu_acceleration",
+      "title": "GPU Acceleration",
+      "view": "docs",
+      "section": "TOPICS",
+      "source": "docs/breakdown/GPU_ACCELERATION.md",
+      "url": "/content/breakdown_gpu_acceleration.html"
+    },
+    {
+      "slug": "breakdown_consciousness_engine",
+      "title": "Consciousness Engine",
+      "view": "docs",
+      "section": "TOPICS",
+      "source": "docs/breakdown/CONSCIOUSNESS_ENGINE.md",
+      "url": "/content/breakdown_consciousness_engine.html"
+    },
+    {
+      "slug": "breakdown_bytecode_vm",
+      "title": "Bytecode VM",
+      "view": "docs",
+      "section": "TOPICS",
+      "source": "docs/breakdown/BYTECODE_VM.md",
+      "url": "/content/breakdown_bytecode_vm.html"
+    },
+    {
+      "slug": "breakdown_agent_ffi",
+      "title": "Agent FFI",
+      "view": "docs",
+      "section": "TOPICS",
+      "source": "docs/breakdown/AGENT_FFI.md",
+      "url": "/content/breakdown_agent_ffi.html"
+    },
+    {
+      "slug": "breakdown_parallel_computing",
+      "title": "Parallel Computing",
+      "view": "docs",
+      "section": "TOPICS",
+      "source": "docs/breakdown/PARALLEL_COMPUTING.md",
+      "url": "/content/breakdown_parallel_computing.html"
+    },
+    {
+      "slug": "breakdown_scheme_compatibility",
+      "title": "Scheme Compatibility",
+      "view": "docs",
+      "section": "TOPICS",
+      "source": "docs/breakdown/SCHEME_COMPATIBILITY.md",
+      "url": "/content/breakdown_scheme_compatibility.html"
+    },
+    {
+      "slug": "sdnc",
+      "title": "SDNC Paper",
+      "view": "docs",
+      "section": "PAPER ARTEFACT",
+      "source": "docs/SDNC.md",
+      "url": "/content/sdnc.html"
+    },
+    {
+      "slug": "breakdown_computable_transformer",
+      "title": "Computable Transformer",
+      "view": "docs",
+      "section": "PAPER ARTEFACT",
+      "source": "docs/breakdown/COMPUTABLE_TRANSFORMER.md",
+      "url": "/content/breakdown_computable_transformer.html"
+    },
+    {
+      "slug": "breakdown_vm_memory_ops_as_weight_matrices",
+      "title": "VM as Weight Matrices",
+      "view": "docs",
+      "section": "PAPER ARTEFACT",
+      "source": "docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md",
+      "url": "/content/breakdown_vm_memory_ops_as_weight_matrices.html"
+    },
+    {
+      "slug": "announcement",
+      "title": "Announcement",
+      "view": "docs",
+      "section": "RELEASE",
+      "source": "ANNOUNCEMENT.md",
+      "url": "/content/announcement.html"
+    },
+    {
+      "slug": "release_notes",
+      "title": "Release Notes",
+      "view": "docs",
+      "section": "RELEASE",
+      "source": "RELEASE_NOTES.md",
+      "url": "/content/release_notes.html"
+    },
+    {
+      "slug": "changelog",
+      "title": "Changelog",
+      "view": "docs",
+      "section": "RELEASE",
+      "source": "CHANGELOG.md",
+      "url": "/content/changelog.html"
+    },
+    {
+      "slug": "platform_release_process",
+      "title": "Release Process",
+      "view": "docs",
+      "section": "RELEASE",
+      "source": "docs/platform/RELEASE_PROCESS.md",
+      "url": "/content/platform_release_process.html"
+    },
+    {
+      "slug": "roadmap",
+      "title": "Roadmap",
+      "view": "docs",
+      "section": "PROJECT",
+      "source": "ROADMAP.md",
+      "url": "/content/roadmap.html"
+    },
+    {
+      "slug": "contributing",
+      "title": "Contributing",
+      "view": "docs",
+      "section": "PROJECT",
+      "source": "CONTRIBUTING.md",
+      "url": "/content/contributing.html"
+    },
+    {
+      "slug": "tutorials_index",
+      "title": "Tutorials Index",
+      "view": "tutorials",
+      "section": "GETTING STARTED",
+      "source": "docs/tutorials/README.md",
+      "url": "/content/tutorials_index.html"
+    },
+    {
+      "slug": "tutorials_00_first_5_minutes",
+      "title": "First 5 Minutes",
+      "view": "tutorials",
+      "section": "GETTING STARTED",
+      "source": "docs/tutorials/00_FIRST_5_MINUTES.md",
+      "url": "/content/tutorials_00_first_5_minutes.html"
+    },
+    {
+      "slug": "tutorials_why_eshkol",
+      "title": "Why Eshkol?",
+      "view": "tutorials",
+      "section": "GETTING STARTED",
+      "source": "docs/tutorials/WHY_ESHKOL.md",
+      "url": "/content/tutorials_why_eshkol.html"
+    },
+    {
+      "slug": "tutorials_cookbook",
+      "title": "Cookbook",
+      "view": "tutorials",
+      "section": "GETTING STARTED",
+      "source": "docs/tutorials/COOKBOOK.md",
+      "url": "/content/tutorials_cookbook.html"
+    },
+    {
+      "slug": "tutorials_01_autodiff_and_ml",
+      "title": "Autodiff & ML",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/01_AUTODIFF_AND_ML.md",
+      "url": "/content/tutorials_01_autodiff_and_ml.html"
+    },
+    {
+      "slug": "tutorials_02_bytecode_vm",
+      "title": "Bytecode VM",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/02_BYTECODE_VM.md",
+      "url": "/content/tutorials_02_bytecode_vm.html"
+    },
+    {
+      "slug": "tutorials_03_weight_matrix_transformer",
+      "title": "Weight Transformer",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md",
+      "url": "/content/tutorials_03_weight_matrix_transformer.html"
+    },
+    {
+      "slug": "tutorials_04_consciousness_engine",
+      "title": "Consciousness Engine",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/04_CONSCIOUSNESS_ENGINE.md",
+      "url": "/content/tutorials_04_consciousness_engine.html"
+    },
+    {
+      "slug": "tutorials_05_signal_processing",
+      "title": "Signal Processing",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/05_SIGNAL_PROCESSING.md",
+      "url": "/content/tutorials_05_signal_processing.html"
+    },
+    {
+      "slug": "tutorials_06_exact_arithmetic",
+      "title": "Exact Arithmetic",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/06_EXACT_ARITHMETIC.md",
+      "url": "/content/tutorials_06_exact_arithmetic.html"
+    },
+    {
+      "slug": "tutorials_07_parallel_computing",
+      "title": "Parallel Computing",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/07_PARALLEL_COMPUTING.md",
+      "url": "/content/tutorials_07_parallel_computing.html"
+    },
+    {
+      "slug": "tutorials_08_continuations_and_exceptions",
+      "title": "Continuations",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/08_CONTINUATIONS_AND_EXCEPTIONS.md",
+      "url": "/content/tutorials_08_continuations_and_exceptions.html"
+    },
+    {
+      "slug": "tutorials_09_module_system",
+      "title": "Module System",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/09_MODULE_SYSTEM.md",
+      "url": "/content/tutorials_09_module_system.html"
+    },
+    {
+      "slug": "tutorials_10_macros",
+      "title": "Macros",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/10_MACROS.md",
+      "url": "/content/tutorials_10_macros.html"
+    },
+    {
+      "slug": "tutorials_11_tensors_and_linear_algebra",
+      "title": "Tensors",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md",
+      "url": "/content/tutorials_11_tensors_and_linear_algebra.html"
+    },
+    {
+      "slug": "tutorials_12_lists",
+      "title": "Lists",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/12_LISTS.md",
+      "url": "/content/tutorials_12_lists.html"
+    },
+    {
+      "slug": "tutorials_13_strings_and_io",
+      "title": "Strings & I/O",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/13_STRINGS_AND_IO.md",
+      "url": "/content/tutorials_13_strings_and_io.html"
+    },
+    {
+      "slug": "tutorials_14_data_formats",
+      "title": "Data Formats",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/14_DATA_FORMATS.md",
+      "url": "/content/tutorials_14_data_formats.html"
+    },
+    {
+      "slug": "tutorials_15_pattern_matching",
+      "title": "Pattern Matching",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/15_PATTERN_MATCHING.md",
+      "url": "/content/tutorials_15_pattern_matching.html"
+    },
+    {
+      "slug": "tutorials_16_hash_tables",
+      "title": "Hash Tables",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/16_HASH_TABLES.md",
+      "url": "/content/tutorials_16_hash_tables.html"
+    },
+    {
+      "slug": "tutorials_17_functional_programming",
+      "title": "Functional Programming",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/17_FUNCTIONAL_PROGRAMMING.md",
+      "url": "/content/tutorials_17_functional_programming.html"
+    },
+    {
+      "slug": "tutorials_18_web_platform",
+      "title": "Web Platform",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/18_WEB_PLATFORM.md",
+      "url": "/content/tutorials_18_web_platform.html"
+    },
+    {
+      "slug": "tutorials_19_gpu_acceleration",
+      "title": "GPU Acceleration",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/19_GPU_ACCELERATION.md",
+      "url": "/content/tutorials_19_gpu_acceleration.html"
+    },
+    {
+      "slug": "tutorials_20_bitwise_and_system",
+      "title": "Bitwise & System",
+      "view": "tutorials",
+      "section": "FEATURE TUTORIALS",
+      "source": "docs/tutorials/20_BITWISE_AND_SYSTEM.md",
+      "url": "/content/tutorials_20_bitwise_and_system.html"
+    },
+    {
+      "slug": "tutorials_21_project_neural_network",
+      "title": "Neural Network",
+      "view": "tutorials",
+      "section": "PROJECT TUTORIALS",
+      "source": "docs/tutorials/21_PROJECT_NEURAL_NETWORK.md",
+      "url": "/content/tutorials_21_project_neural_network.html"
+    },
+    {
+      "slug": "tutorials_22_project_expert_system",
+      "title": "Expert System",
+      "view": "tutorials",
+      "section": "PROJECT TUTORIALS",
+      "source": "docs/tutorials/22_PROJECT_EXPERT_SYSTEM.md",
+      "url": "/content/tutorials_22_project_expert_system.html"
+    },
+    {
+      "slug": "tutorials_23_project_data_pipeline",
+      "title": "Data Pipeline",
+      "view": "tutorials",
+      "section": "PROJECT TUTORIALS",
+      "source": "docs/tutorials/23_PROJECT_DATA_PIPELINE.md",
+      "url": "/content/tutorials_23_project_data_pipeline.html"
+    },
+    {
+      "slug": "tutorials_24_project_optimisation",
+      "title": "Optimisation",
+      "view": "tutorials",
+      "section": "PROJECT TUTORIALS",
+      "source": "docs/tutorials/24_PROJECT_OPTIMISATION.md",
+      "url": "/content/tutorials_24_project_optimisation.html"
+    },
+    {
+      "slug": "tutorials_25_project_interpreter",
+      "title": "Interpreter",
+      "view": "tutorials",
+      "section": "PROJECT TUTORIALS",
+      "source": "docs/tutorials/25_PROJECT_INTERPRETER.md",
+      "url": "/content/tutorials_25_project_interpreter.html"
+    },
+    {
+      "slug": "tutorials_26_project_self_improving",
+      "title": "Self-Improving",
+      "view": "tutorials",
+      "section": "PROJECT TUTORIALS",
+      "source": "docs/tutorials/26_PROJECT_SELF_IMPROVING.md",
+      "url": "/content/tutorials_26_project_self_improving.html"
+    }
+  ]
+}

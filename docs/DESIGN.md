@@ -19,19 +19,24 @@ Source (.esk)
  Macro Expansion        syntax-rules, hygienic renaming, ellipsis patterns
      |                  case-lambda, parameterize, cond-expand, define-record-type
      v
- S-Expression Parsing   Recursive descent, 94 operation types
+ S-Expression Parsing   Explicit continuation stack, 113 operation types
      |                  Internal define -> letrec* transformation
      v                  HoTT type annotation attachment, line/column tracking
+                        (a child parse suspends into a heap coroutine frame, so
+                        native stack use is independent of grammar nesting)
  Annotated AST
      |
      v
  HoTT Type Checking     Bidirectional inference (synthesis + checking)
      |                  Constraint generation, Robinson unification
-     v                  Gradual: warnings not errors, non-blocking
+     v                  Gradual: a type mismatch warns and does not block.
+                        Linearity is the exception - a `Qubit` violation is a
+                        compile-time error on both engines, and any emitted
+                        error diagnostic prevents emission and execution
  Typed AST
      |
      v
- LLVM IR Generation     34 specialized codegen modules (~108,400 lines)
+ LLVM IR Generation     39 specialized codegen modules (118,470 lines)
      |                  Tagged value lowering, closure compilation, AD dispatch
      v
  LLVM Optimization      Inlining, LICM, GVN, loop unrolling, auto-vectorization
@@ -61,7 +66,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 | collection_codegen.cpp | 3,173 | Vector, list, hash table operations |
 | parallel_llvm_codegen.cpp | 2,626 | Work-stealing parallelism codegen |
 | system_codegen.cpp | 2,039 | System, environment, time, process |
-| tensor_codegen.cpp | 1,867 | Tensor ops dispatch shell (post v1.2 split) |
+| tensor_codegen.cpp | 2,012 | Tensor ops dispatch shell (post v1.2 split) |
 | binding_codegen.cpp | 1,662 | let/let\*/letrec/letrec\* with TCO |
 | thread_pool.cpp | 1,524 | Work-stealing thread pool |
 | tensor_backward.cpp | 1,572 | Backward-mode AD gradients |
@@ -76,7 +81,7 @@ The LLVM backend delegates to roughly thirty specialized modules via `std::funct
 | hash_codegen.cpp | 734 | Hash operations |
 | complex_codegen.cpp | 640 | Complex number ops (Smith's formula) |
 
-The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 22,355 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
+The original `tensor_codegen.cpp` was split in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 23,389 lines and re-exported through the original `tensor_codegen.cpp` dispatcher.
 
 Additional backends (XLA/StableHLO, Metal, CUDA, the bytecode VM and weight-matrix transformer artefacts) live alongside these modules in `lib/backend/`; the directory totals approximately 220,211 lines indexed.
 
@@ -201,7 +206,7 @@ R7RS-compliant numeric tower with automatic precision promotion:
 - **double**: IEEE 754 64-bit floats (inexact)
 - **complex**: Heap-allocated `{real:f64, imag:f64}` with Smith's formula division
 
-Exactness tracked via `ESHKOL_FLAG_EXACT` in the tagged value flags byte. R7RS semantics: exact + exact = exact, exact + inexact = inexact.
+Exactness tracked via `ESHKOL_VALUE_EXACT_FLAG` in the tagged value flags byte. R7RS semantics: exact + exact = exact, exact + inexact = inexact.
 
 ### Signal Processing
 
@@ -237,7 +242,7 @@ Provides DOM manipulation, event handling, Canvas 2D drawing, Fetch API, LocalSt
 
 ### REPL JIT
 
-Interactive development via LLVM OrcJIT (4,354 lines). Preloads 237 stdlib functions and 305 globals from precompiled `.o` + `.bc` metadata. Optimization level matched to precompiled objects to avoid ABI mismatches on struct argument passing.
+Interactive development via LLVM OrcJIT (4,679 lines). Preloads 237 stdlib functions and 305 globals from precompiled `.o` + `.bc` metadata. Optimization level matched to precompiled objects to avoid ABI mismatches on struct argument passing.
 
 ### Package Manager
 
@@ -247,9 +252,9 @@ Interactive development via LLVM OrcJIT (4,354 lines). Preloads 237 stdlib funct
 
 Eshkol has two production execution backends serving different purposes:
 
-**LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 36 specialized codegen modules. This is the default path for `eshkol-run`.
+**LLVM Backend** (primary): Compiles to native ARM64/x86 binaries via LLVM IR. Uses 16-byte tagged values with 39 specialized codegen modules totaling 118,470 lines. This is the default path for `eshkol-run`.
 
-**Bytecode VM** (complementary): 63-opcode register+stack interpreter (`eshkol_vm.c`, 2,753 lines; roughly 51,092 lines across the full `eshkol_vm.c` + `vm_*.c` module family) with 250+ native call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`.
+**Bytecode VM** (complementary): 72-opcode register+stack interpreter (`eshkol_vm.c`, 2,905 lines) with 743 native-call IDs covering the full language — arithmetic, closures, continuations, exception handling, tensors, complex/rational/bignum numbers, logic/inference/workspace, hash tables, bytevectors, parameters, and I/O. Compiles to ESKB binary format (section-based with LEB128 encoding, CRC32 checksums). Invoked via `eshkol-run input.esk -B output.eskb`. The component-size table below includes the full VM module family.
 
 **Weight Matrix Transformer**: Programs encoded as neural network weights (`weight_matrices.c`, ~7,400 lines). Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters. 82 canonical opcodes in weights; `OP_NATIVE_CALL` remains the external dispatch boundary. 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass (126/126 inline, 123/123 traced). Exports QLMW binary format for qLLM loading.
 
@@ -277,8 +282,8 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 | Component | Lines | Files |
 |:---|---:|---:|
-| LLVM backend (main + modules) | ~87,300 | 21 |
-| Bytecode VM + runtime libs | ~51,092 | 33 |
+| LLVM backend (main + modules) | ~118,470 | 39 |
+| Bytecode VM + runtime libs | ~57,650 | 39 |
 | XLA/StableHLO backend | ~3,960 | 6 |
 | GPU/Metal backend | ~11,800 | 5 |
 | Frontend (parser, macro, types) | ~18,000 | 3 |
@@ -306,4 +311,4 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 ---
 
-*Eshkol v1.3.5-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with 1,042 built-in functions across a 1,108-construct declared language surface, an ASan/UBSan CI lane with a proved-armed leak detector, and 46 test sub-suites passing end-to-end.*
+*Eshkol v1.3.5-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with 1,056 built-in functions across a 1,115-construct declared language surface, an ASan/UBSan CI lane with a proved-armed leak detector, and 46 test sub-suites passing end-to-end.*

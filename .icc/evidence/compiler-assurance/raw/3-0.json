@@ -1,0 +1,28 @@
+{
+  "schema": "eshkol.compiler_assurance.observation.v1",
+  "execution_id": "8cf914d5-3b9e-495c-a1eb-0bf682a3a2db",
+  "git_sha": "2049d84b4e7dc1530806a2e143ed532dcab70a29",
+  "gate_sha256": "2905ed7d8bff9b84c144b04ca1e00d6817f7047320952d45b9e3f637f4bf0ca0",
+  "source_sha256": "a63bd0bc3bee253670e6abfaedb5f6bb0f50d89f15f5c46e1557218806fc7204",
+  "dose": 0,
+  "execution": {
+    "argv": [
+      "/opt/homebrew/Caskroom/miniconda/base/bin/python3",
+      "/Users/tyr/Desktop/eshkol/.worktrees/v135-ad-carriers/.scratch/tmp/eshkol-assurance-crao_2rv/scripts/gate_exhaustive_dispatch.py",
+      "--format",
+      "json",
+      "--no-trace"
+    ],
+    "exit_code": 0,
+    "stdout": "{\n  \"status\": \"PASS\",\n  \"results\": [\n    {\n      \"site\": \"lib/backend/tensor_backward.cpp:eshkol_tensor_backward_dispatch\",\n      \"enum\": \"ad_node_type_t\",\n      \"members\": 95,\n      \"generated_arms\": true,\n      \"findings\": []\n    },\n    {\n      \"site\": \"lib/backend/tensor_backward.cpp:eshkol_ad_node_type_name\",\n      \"enum\": \"ad_node_type_t\",\n      \"members\": 95,\n      \"generated_arms\": true,\n      \"findings\": []\n    },\n    {\n      \"site\": \"lib/backend/tensor_backward.cpp:eshkol_ad_node_type_is_tensor\",\n      \"enum\": \"ad_node_type_t\",\n      \"members\": 95,\n      \"generated_arms\": true,\n      \"findings\": []\n    },\n    {\n      \"site\": \"lib/core/runtime_regions.cpp:evac_kind_for\",\n      \"enum\": \"heap_subtype_t\",\n      \"members\": 25,\n      \"generated_arms\": false,\n      \"findings\": []\n    },\n    {\n      \"site\": \"inc/eshkol/eshkol.h:eshkol_heap_subtype_is_declared\",\n      \"enum\": \"heap_subtype_t\",\n      \"members\": 25,\n      \"generated_arms\": false,\n      \"findings\": []\n    },\n    {\n      \"site\": \"inc/eshkol/eshkol.h:eshkol_callable_subtype_is_declared\",\n      \"enum\": \"callable_subtype_t\",\n      \"members\": 5,\n      \"generated_arms\": false,\n      \"findings\": []\n    },\n    {\n      \"site\": \"lib/core/runtime_regions.cpp:evac_object\",\n      \"enum\": \"heap_subtype_t\",\n      \"members\": 25,\n      \"generated_arms\": false,\n      \"findings\": []\n    },\n    {\n      \"site\": \"lib/core/runtime_errors_hosted.cpp:eshkol_format_value_type_tag\",\n      \"enum\": \"heap_subtype_t\",\n      \"members\": 25,\n      \"generated_arms\": false,\n      \"findings\": []\n    },\n    {\n      \"site\": \"inc/eshkol/ad_node_registry.def\",\n      \"rows\": 95,\n      \"by_disposition\": {\n        \"LEAF\": 2,\n        \"SCALAR_ADJOINT\": 44,\n        \"INLINE\": 25,\n        \"BRIDGE\": 19,\n        \"UNREGISTERED\": 4,\n        \"CUSTOM_VJP\": 1\n      },\n      \"findings\": []\n    }\n  ],\n  \"error\": null,\n  \"summary\": \"8 registered dispatch sites are exhaustive over their closed enums and carry no default\"\n}\n",
+    "stderr": "",
+    "started_at": 1789700448.002939,
+    "elapsed_s": 0.05593681335449219
+  },
+  "mutation": "remove-closed-enum-case",
+  "score": 0,
+  "frame": {
+    "python_hash_seed": 3,
+    "interpreter": "/opt/homebrew/Caskroom/miniconda/base/bin/python3"
+  }
+}

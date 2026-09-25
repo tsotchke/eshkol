@@ -75,6 +75,10 @@ driver's floating-point optimizations. Operands are uploaded as raw f64 bits.
 | `high` | sf64 (same kernels) | Meets the `high` contract with the exact kernels |
 | `fast` | f32 | Only with an explicit `precision: "fast"` and `gateTolerance >= 1e-6`; otherwise refused |
 
+The backend reports a refused fast tier in `diagnostics` with the required
+minimum tolerance. The same admission check controls GPU dispatch, so a
+refused tier does not report an active fast opt-in.
+
 `eshkol_gpu_has_fp64()` reports 1 on the `exact`/`high` tiers (as on Metal,
 whose f64 is also emulated) and `eshkol_gpu_supports_f64()` reports 0 (no
 hardware f64).
@@ -93,6 +97,12 @@ serve increments `backend.fallbackCount` and records the reason in
 `backend.diagnostics`; every call it does serve increments
 `backend.dispatchCount` and sets `backend.lastPath` (for example
 `webgpu:gemm_sf64`).
+
+A backend can be attached to multiple browser VMs. Each compute call retains
+the initiating VM's memory through asynchronous readback, so concurrent calls
+write to their own destination. Dispatch counters, history and diagnostics
+describe the shared backend across those calls. Inexact tensor division has
+IEEE 754 zero-divisor behavior on both CPU fallback and sf64 GPU dispatch.
 
 **Correctness gate.** `scripts/lib/webgpu_diff_runner.mjs` drives Chrome
 (Playwright, `channel: 'chrome'`) and compares every kernel with the CPU
@@ -154,6 +164,9 @@ module is instantiated:
   (with `gateTolerance`).
 - After a run, `runtime.webgpuBackend` exposes `dispatchCount`,
   `fallbackCount`, `lastPath` and `diagnostics`.
+- Browser callbacks obtained from a WASM function table enter through
+  `promisingTableEntry`, which applies the same JSPI wrapper as exported
+  entry points before a callback can reach a suspending GPU import.
 - `EshkolRepl` in `web/eshkol-repl.js` has the same `initWebGPU()`; its
   `instantiate()` calls it automatically when `eshkol-webgpu.js` is loaded.
 
@@ -555,6 +568,21 @@ bit 0 prevents deallocation of externally-owned memory.
 ---
 
 ## 8. Configuration
+
+### CUDA architectures
+
+`ESHKOL_CUDA_ARCHITECTURES` (default `72;75;80;86;89;90`) is the portable list
+of GPU generations a CUDA build targets. Configure resolves it against the
+installed toolkit (`cmake/EshkolCudaArchitectures.cmake`): it asks
+`nvcc --list-gpu-arch` which architectures the compiler accepts and, when nvcc
+cannot answer, uses the documented range of the toolkit version. Entries the
+toolkit does not support are dropped with a status message. CUDA 13 compiles
+only for compute capability 7.5 and newer, so a CUDA 13 build targets
+`75;80;86;89;90`; CUDA 12 and older keep SM72. If none of the entries is
+supported, configure stops and says so. An explicit
+`-DCMAKE_CUDA_ARCHITECTURES=...` is used exactly as given and never filtered.
+The toolkit's supported set is recorded as `ESHKOL_CUDA_SUPPORTED_ARCHITECTURES`,
+and `scripts/verify_gpu_backend.py` checks the configured list against it.
 
 ### Environment Variables
 

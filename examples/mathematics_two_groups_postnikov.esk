@@ -50,8 +50,10 @@
 ;; 1-simplices per vertex label, so degree 1 cannot tell them apart.
 ;;
 ;; DEFECT NOTES (routed around): all tables computed before loops, no
-;; allocation inside closures inside loops (LE-17); phases integral;
-;; regions around large eliminations (SW-164).
+;; allocation inside closures inside loops (LE-17); phases integral.
+;; Exact-rational loop growth (SW-164) is closed; regions around large
+;; eliminations below are kept as a deliberate memory scope, not a defect
+;; workaround.
 
 (require stdlib)
 

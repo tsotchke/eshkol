@@ -22,6 +22,12 @@ class EshkolRuntime {
         this.memory = null;
     }
 
+    // A header-prefixed string buffer of `len` bytes plus the terminator;
+    // the one place the JS string allocation knows the header's size.
+    _allocString(len) {
+        return this._bump(len + 9) + 8;
+    }
+
     // Bump allocator for arena stubs
     _bump(size) {
         if (!this._bumpPtr) this._bumpPtr = 131072; // Start at 128KB
@@ -49,7 +55,9 @@ class EshkolRuntime {
         const fn = table && table.get(callbackFuncPtr);
         if (typeof fn !== 'function') throw new Error('missing WASM callback ' + callbackFuncPtr);
         const G = (typeof globalThis !== 'undefined') && globalThis.EshkolWebGPU;
-        const entry = G && typeof G.promisingEntry === 'function'
+        const entry = G && typeof G.promisingTableEntry === 'function'
+            ? G.promisingTableEntry(table, callbackFuncPtr)
+            : G && typeof G.promisingEntry === 'function'
             ? G.promisingEntry(fn) : fn;
         return entry(...args);
     }
@@ -239,6 +247,64 @@ class EshkolRuntime {
             i++;
         }
         return out;
+    }
+
+    // ── Documentation pages ────────────────────────────────────────
+    // Published pages are HTML fragments under /content/, generated from the
+    // docs tree by scripts/build-site-content.sh (site/pages.json is the
+    // declared list). A view names its page in the URL fragment as
+    // "#page=<slug>" or "#page=<slug>&<heading-id>", so every page has a
+    // shareable address while the pathname router keeps seeing "/docs" or
+    // "/tutorials". Any other fragment is a heading id in the default page.
+    static contentRequest(hash) {
+        const match = /^#page=([a-z0-9][a-z0-9_]*)(?:&(.*))?$/.exec(hash || '');
+        if (!match) return { url: null, anchor: decodeURIComponent((hash || '').slice(1)) };
+        return { url: '/content/' + match[1] + '.html', anchor: decodeURIComponent(match[2] || '') };
+    }
+
+    // Load `url` into `target`. `.html` URLs are generated fragments and are
+    // inserted as they are (Scheme code blocks are highlighted here, because
+    // the fragments are rendered without a highlighter); anything else is
+    // fetched as Markdown and rendered client-side. When `url` is a view's
+    // default page and the address names another page, that page is loaded.
+    loadContent(url, target, options) {
+        const isDefault = !(options && options.explicit);
+        const isNav = /\/nav-[a-z0-9_]+\.html$/.test(url);
+        const request = EshkolRuntime.contentRequest(window.location.hash);
+        if (isDefault && !isNav && request.url) url = request.url;
+        if (!isNav) this._contentUrl = url;
+        const markActive = () => {
+            document.querySelectorAll('.docs-sidebar-item[data-url]').forEach((el) => {
+                el.classList.toggle('active', el.getAttribute('data-url') === this._contentUrl);
+            });
+        };
+        target.innerHTML = '<p style="color:#606078;font-style:italic">Loading...</p>';
+        return fetch(url).then((r) => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.text();
+        }).then((text) => {
+            if (!isNav && this._contentUrl !== url) return;  // superseded by a later click
+            if (/\.html$/.test(url)) {
+                target.innerHTML = text;
+                const SCHEME_LANGS = ['scheme', 'eshkol', 'lisp', 'scm'];
+                target.querySelectorAll('pre > code').forEach((code) => {
+                    const classes = (code.parentElement.className + ' ' + code.className).split(/\s+/);
+                    if (classes.some((name) => SCHEME_LANGS.includes(name))) {
+                        code.innerHTML = EshkolRuntime.highlightScheme(code.textContent);
+                    }
+                });
+            } else {
+                target.innerHTML = this.renderMarkdown(text);
+            }
+            markActive();
+            if (isNav) return;
+            // The anchor only exists after this async load, so scroll now.
+            const anchor = request.anchor ? document.getElementById(request.anchor) : null;
+            if (anchor) anchor.scrollIntoView();
+            else if (!isDefault) window.scrollTo(0, 0);
+        }).catch((e) => {
+            target.innerHTML = '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>';
+        });
     }
 
     renderMarkdown(md) {
@@ -531,7 +597,34 @@ class EshkolRuntime {
                 arena_tape_reset: () => {},
                 arena_tape_get_node: () => 0,
                 arena_tape_get_node_count: () => 0,
-                arena_allocate_string_with_header: (arena, len) => rt._bump(Number(len) + 9) + 8,
+                arena_allocate_string_with_header: (arena, len) => rt._allocString(Number(len)),
+                // (make-string k [char]): the rules of the native runtime's
+                // eshkol_make_string_checked -- k an exact non-negative
+                // integer (tag 1), the fill a character (tag 4) written as
+                // UTF-8, a space when the fill pointer is null.
+                eshkol_make_string_checked: (arena, kPtr, fillPtr) => {
+                    const dv = new DataView(rt.memory.buffer);
+                    const base = (t) => (t >= 8 ? t : (t & 0x0F));
+                    const kType = base(dv.getUint8(Number(kPtr)));
+                    const k = dv.getBigInt64(Number(kPtr) + 8, true);
+                    if (kType !== 1 || k < 0n) throw new Error('Type error in make-string: expected non-negative exact integer');
+                    let cp = 32;
+                    if (Number(fillPtr) !== 0) {
+                        const fType = base(dv.getUint8(Number(fillPtr)));
+                        const c = Number(dv.getBigInt64(Number(fillPtr) + 8, true));
+                        if (fType !== 4 || c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF))
+                            throw new Error('Type error in make-string: expected character');
+                        cp = c;
+                    }
+                    const enc = new TextEncoder().encode(String.fromCodePoint(cp));
+                    const count = Number(k);
+                    const len = count * enc.length;
+                    const buf = rt._allocString(len);
+                    const mem = new Uint8Array(rt.memory.buffer);
+                    for (let i = 0; i < count; i++) mem.set(enc, Number(buf) + i * enc.length);
+                    mem[Number(buf) + len] = 0;
+                    return buf;
+                },
                 arena_allocate_closure_with_header: () => rt._bump(64),
                 arena_tagged_cons_get_int64: () => 0n,
                 arena_tagged_cons_get_double: () => 0.0,
@@ -589,14 +682,18 @@ class EshkolRuntime {
                 eshkol_deep_equal: () => 0,
                 eshkol_type_error: () => { throw new Error('Eshkol type error (WASM stub)'); },
                 eshkol_shape_error: () => { throw new Error('Eshkol shape error (WASM stub)'); },
-                eshkol_procedure_call_error: () => { throw new Error('Eshkol call error: not a procedure or arity mismatch'); },
-                eshkol_continuation_transfer_check: () => {},
                 eshkol_tensor_result_dtype_binary: (r) => r,
                 eshkol_tensor_result_dtype_unary: (r) => r,
                 eshkol_type_error_with_operand: () => { throw new Error('Eshkol type error (WASM stub)'); },
+                eshkol_procedure_call_error: () => { throw new Error('Eshkol call error: not a procedure or arity mismatch'); },
+                eshkol_continuation_transfer_check: () => {},
+                eshkol_arity_mismatch_error: () => { throw new Error('Eshkol arity mismatch (WASM stub)'); },
                 eshkol_ad_mixed_record: () => 0,
                 eshkol_ad_seed_flag: () => 0,
                 eshkol_tensor_operand_checked: () => 0,
+                // Same lite-glue contract as eshkol_tensor_operand_checked: the
+                // browser glue has no tensor runtime (docs/FEATURE_MATRIX.md).
+                eshkol_tensor_operand_carrier_checked: () => 0,
                 eshkol_tensor_destination_checked: () => 0,
                 eshkol_tensor_matrix_operand_checked: () => 0,
                 eshkol_tensor_counts_checked: () => {},
@@ -707,7 +804,12 @@ class EshkolRuntime {
                 eshkol_is_i128_tagged: (v) => {
                     // Match lib/core/i128_runtime.cpp: a HEAP_PTR (8) with
                     // HEAP_SUBTYPE_I128 (25) in its eight-byte object header.
-                    // Generic arithmetic asks this of ordinary values too.
+                    // Generic arithmetic asks this of ordinary values too, so
+                    // unlike the two operators above (only ever reached once
+                    // this predicate has already said "yes"), this one MUST
+                    // answer for real rather than throw: a throwing stub here
+                    // would abort ordinary generic arithmetic on any heap
+                    // operand, not just genuine i128 values.
                     const dv = this.memory ? new DataView(this.memory.buffer) : null;
                     if (!dv || !v) return 0;
                     if ((dv.getUint8(Number(v)) & 0x0F) !== 8) return 0;
@@ -1121,18 +1223,30 @@ class EshkolRuntime {
                 eshkol_taylor_extract_tangent:  () => 0.0,
                 eshkol_taylor_lift_ad_node:     () => {},
                 eshkol_taylor_project_forward_tangent: () => 0,
-                // ESH-0402 nested-AD carrier composition (runtime_taylor.c):
-                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i32, tagged*)
-                //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, tagged*)
+                // ADR-0027 nested levels (runtime_taylor.c):
+                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i64, tagged*)
+                //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, i32, tagged*)
                 //   void eshkol_ad_nested_unsupported(i32)
                 //   void eshkol_ad_curried_gradient_unsupported()
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
                 // non-nested seeding, exactly as the sibling stubs degrade.
                 eshkol_ad_nested_seed:          () => 0,
-                // ESH-0413 tower-context depth mirror (runtime_taylor.c): the
-                // browser build has no tower path at all, so both are no-ops.
-                eshkol_ad_tower_enter:          () => {},
-                eshkol_ad_tower_leave:          () => {},
+                // BEGIN GENERATED FLAT-AD IMPORTS
+                // Browser WASM has no Taylor tower lane. Keep the base lane's established
+                // flat behavior: extraction declines the tower and enter/leave do nothing.
+                eshkol_ad_tower_carry_result: () => 0,
+                eshkol_ad_jet_extract_tower: () => 0,
+                // Captured nested differentiation is explicitly unsupported in this lane.
+                // Throwing is required so unsupported semantics cannot silently look valid.
+                eshkol_ad_nested_capture_unsupported: () => {
+                    throw new Error('Nested autodiff through captured values is unsupported in the browser WASM runtime');
+                },
+                eshkol_ad_tower_enter: () => {},
+                eshkol_ad_tower_leave: () => {},
+                // A jet pass's extraction guard (ADR-0027). The lite lane has no Taylor
+                // carrier, so no carrier can reach it.
+                eshkol_ad_jet_result_check: () => {},
+                // END GENERATED FLAT-AD IMPORTS
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},
                 eshkol_ad_curried_gradient_unsupported: () => {},
@@ -1145,11 +1259,6 @@ class EshkolRuntime {
                 // a constant 0), so no result here can ever be a tangent-carrying
                 // tower and 0 is the faithful answer, not a degradation.
                 eshkol_ad_jet_extract_tower:    () => 0,
-                // Same contract as web/eshkol-repl.js: no enclosing tower level
-                // in the browser, so carrying a result reports 0 (not handled)
-                // and the nested-capture diagnostic is a no-op.
-                eshkol_ad_tower_carry_result:   () => 0,
-                eshkol_ad_nested_capture_unsupported: () => {},
 
                 // Newly-surfaced runtime env imports the wasm backend can emit
                 // (ESH-0224). Degrade like the sibling stubs above: allocators
@@ -1621,29 +1730,11 @@ class EshkolRuntime {
                     return 0;
                 },
 
-                // Content loading (fetch URL, render as markdown into target element)
+                // Content loading (fetch URL into target element). The work
+                // is in loadContent so the sidebar click handler shares it.
                 web_load_content: (urlPtr, targetHandle) => {
-                    const url = rt.readString(urlPtr);
                     const target = rt.handles.get(targetHandle);
-                    if (target) {
-                        target.innerHTML = '<p style="color:#606078;font-style:italic">Loading...</p>';
-                        fetch(url).then(r => {
-                            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                            return r.text();
-                        }).then(text => {
-                            // Render markdown to HTML with syntax highlighting
-                            target.innerHTML = rt.renderMarkdown(text);
-                            // Deep links (/docs#section): the anchor only
-                            // exists after this async load, so scroll now.
-                            const fragment = decodeURIComponent(window.location.hash.slice(1));
-                            if (fragment) {
-                                const anchor = document.getElementById(fragment);
-                                if (anchor) anchor.scrollIntoView();
-                            }
-                        }).catch(e => {
-                            target.innerHTML = '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>';
-                        });
-                    }
+                    if (target) rt.loadContent(rt.readString(urlPtr), target);
                     return 0;
                 },
 

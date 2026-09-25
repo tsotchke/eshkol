@@ -1,6 +1,11 @@
 #include "eshkol/backend/vm_limits.h"
 #include <limits.h>
 
+/* Private packed-tail error ABI. Native 237 keeps its historical one-message
+ * argument contract so existing ESKB modules cannot consume an unrelated slot. */
+#define VM_NATIVE_ERROR_WITH_IRRITANTS 2231
+#define VM_NATIVE_APPLY_PACKED 2232
+
 /* Pack a function's declared fixed arity into bits 32..40 of its func-PC
  * constant. The low 32 bits remain the code offset, so the metadata survives
  * ESKB serialization and code relocation. A value of 255 denotes variadic;
@@ -177,6 +182,15 @@ typedef struct {
         int32_t ptr;     /* heap pointer (index into heap array) */
     } as;
 } Value;
+
+/* vm_error.c precedes Value in the unity build; its byte-copy carrier must
+ * remain layout-compatible. No access through an aliased Value pointer. */
+typedef char VmErrorValueSizeCheck[
+    sizeof(((VmError*)0)->value_irritants) == sizeof(Value) ? 1 : -1];
+typedef char VmErrorValuePayloadOffsetCheck[
+    offsetof(Value, as) == offsetof(VmErrorValueMirror, as) ? 1 : -1];
+typedef char VmErrorValueTagSizeCheck[
+    sizeof(((Value*)0)->type) == sizeof(((VmErrorValueMirror*)0)->type) ? 1 : -1];
 
 #define NIL_VAL    ((Value){.type = VAL_NIL})
 #define INT_VAL(v) ((Value){.type = VAL_INT, .as.i = (v)})
@@ -746,6 +760,19 @@ typedef struct {
  * VM State
  ******************************************************************************/
 
+/* One native escape destination per active interpreter invocation. A nested
+ * callback's local handler must resume that callback, not unwind the caller's
+ * native operation. Frame generations distinguish re-entered continuations
+ * from a different activation at the same stack depth. */
+typedef struct VmNativeEscape {
+    jmp_buf destination;
+    struct VmNativeEscape* previous;
+    int frame_floor;
+    uint64_t frame_generation;
+    int native_depth;
+    int ad_live_passes;   /* forward passes live at the escape point (ADR-0027) */
+} VmNativeEscape;
+
 typedef struct VM {
     /* Program */
     Instr* code;
@@ -766,7 +793,8 @@ typedef struct VM {
     int32_t sp;           /* stack pointer (next free slot) */
 
     /* Call frames */
-    CallFrame frames[MAX_FRAMES];
+    CallFrame* frames;
+    int frame_cap;
     int32_t fp;           /* frame pointer (base of current frame's locals) */
     int frame_count;
     uint64_t next_frame_generation;
@@ -815,6 +843,12 @@ typedef struct VM {
     Value parameter_bindings[64];
     int n_parameter_bindings;
 
+    /* The standard port parameter objects current-input-port (0),
+     * current-output-port (1) and current-error-port (2), made on first use
+     * by vm_std_port_parameter(). Every read or write that names no port
+     * goes to the port the matching parameter currently holds. */
+    Value std_port_params[3];
+
     /* `with-region` brackets currently open, innermost last. Each entry is the
      * heap region depth the matching push established, or -1 for a bracket
      * whose push was refused (region-stack overflow) and which must therefore
@@ -839,8 +873,14 @@ typedef struct VM {
      * C helper frame and resume the owning interpreter loop at the restored
      * VM state, rather than letting the nested loop consume the handler. */
     int native_call_depth;
-    int native_escape_ready;
-    jmp_buf native_escape_jmp;
+    VmNativeEscape* native_escape_context;
+
+    /* Set on the isolated VM a pool worker runs a callback in (vm_parallel.c).
+     * Such a VM has no handlers of its own: an unhandled raise there is not the
+     * program's failure but a task failure the caller settles by re-running the
+     * callback on its own interpreter, which reports it if it is truly
+     * unhandled. The worker therefore stays silent about it. */
+    int isolated_worker;
 
     uint32_t language_coverage_call_hash;
     int32_t language_coverage_call_pc;
@@ -856,6 +896,10 @@ typedef struct VM {
     /* Backend-local AD instrumentation.  These mirror the public native
      * `(ad-*-counters)` contract, but count the VM's own exact/finite-
      * difference work instead of reporting the LLVM runtime's globals. */
+    /* ADR-0027 section 3: forward differentiation passes currently live
+     * (derivative, derivative-n, taylor and every operator built on them).
+     * A pass that opens while one is live runs as a level carrier. */
+    int ad_live_passes;
     uint64_t ad_primal_calls;
     uint64_t ad_reverse_passes;
     uint64_t ad_tape_allocations;
@@ -1008,24 +1052,56 @@ typedef struct VM {
     struct {
         int active;
     } ts_queries[32];
+    /* Open upvalues (SW-190). Every (closure, upvalue) that native 151 pointed
+     * at a top-level stack slot, so the scope that retires the slot (OP_POPN,
+     * OP_TAIL_CALL_POPN) can CLOSE the capture -- copy the slot's last value
+     * into the closure -- instead of leaving it pointing at a slot the next
+     * top-level define reuses. */
+    struct VmOpenUpvalue { int32_t obj; int32_t uv; int32_t slot; }* open_uvs;
+    int n_open_uvs;
+    int cap_open_uvs;
 } VM;
+
+/* Record that upvalue @p uv of closure object @p obj reads stack slot @p slot. */
+static void vm_register_open_upvalue(VM* vm, int32_t obj, int32_t uv, int32_t slot) {
+    for (int i = 0; i < vm->n_open_uvs; i++) {
+        if (vm->open_uvs[i].obj == obj && vm->open_uvs[i].uv == uv) {
+            vm->open_uvs[i].slot = slot;
+            return;
+        }
+    }
+    if (vm->n_open_uvs == vm->cap_open_uvs) {
+        int cap = vm->cap_open_uvs ? vm->cap_open_uvs * 2 : 64;
+        struct VmOpenUpvalue* grown = (struct VmOpenUpvalue*)realloc(
+            vm->open_uvs, (size_t)cap * sizeof(struct VmOpenUpvalue));
+        if (!grown) return;  /* the capture stays open; the old behaviour */
+        vm->open_uvs = grown;
+        vm->cap_open_uvs = cap;
+    }
+    vm->open_uvs[vm->n_open_uvs++] = (struct VmOpenUpvalue){obj, uv, slot};
+}
+
+/* Close every open upvalue whose slot is at or above @p first_dead_slot: the
+ * slot is about to be retired, so the closure keeps its last value. */
+static void vm_close_open_upvalues_from(VM* vm, int first_dead_slot) {
+    for (int i = 0; i < vm->n_open_uvs;) {
+        struct VmOpenUpvalue e = vm->open_uvs[i];
+        if (e.slot < first_dead_slot) { i++; continue; }
+        HeapObject* cl = (e.obj >= 0 && e.obj < vm->heap.next_free) ? vm->heap.objects[e.obj] : NULL;
+        if (cl && cl->type == HEAP_CLOSURE && e.uv >= 0 && e.uv < cl->closure.n_upvalues &&
+            cl->closure.open_slots && cl->closure.open_slots[e.uv] == e.slot) {
+            if (e.slot >= 0 && e.slot < vm->sp) cl->closure.upvalues[e.uv] = vm->stack[e.slot];
+            cl->closure.open_slots[e.uv] = -1;
+        }
+        vm->open_uvs[i] = vm->open_uvs[--vm->n_open_uvs];
+    }
+}
 
 /* Validate fixed-arity closure calls at the common dispatch boundary. Native
  * builtin closures are ordinary VM closures, so checking only user lambdas
  * would leave the exact bug this contract covers: `(car)` and `(car 1 2)`
  * would still enter a one-argument builtin body and silently discard stack
  * values. Unknown and variadic closures deliberately remain unchecked. */
-static int vm_validate_closure_arity(VM* vm, const HeapObject* closure,
-                                     int argc) {
-    if (!closure || closure->type != HEAP_CLOSURE) return 0;
-    const int expected = closure->closure.arity;
-    if (expected < 0 || expected == 255 || expected == argc) return 1;
-    fprintf(stderr,
-            "ERROR: Arity mismatch: expected %d arguments but got %d\n",
-            expected, argc);
-    if (vm) vm->error = 1;
-    return 0;
-}
 
 /* Command-line arguments (set in main, read by native 602) */
 static int g_vm_argc = 0;
@@ -1233,6 +1309,9 @@ static void vm_init(VM* vm) {
     vm->constants = NULL;
     vm->const_cap = 0;
     (void)vm_ensure_const_cap(vm, MAX_CONSTS);
+    vm->frame_cap = MAX_FRAMES;
+    vm->frames = (CallFrame*)calloc((size_t)vm->frame_cap, sizeof(CallFrame));
+    if (!vm->frames) vm->frame_cap = 0;
     vm->handler_cap = VM_INITIAL_HANDLER_CAP;
     vm->handler_stack = (VmExceptionHandler*)calloc(
         (size_t)vm->handler_cap, sizeof(*vm->handler_stack));
@@ -1240,6 +1319,39 @@ static void vm_init(VM* vm) {
     vm->native_policy = ESHKOL_VM_NATIVE_POLICY_DESKTOP;
     vm->active_tape = NULL;
     memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
+}
+
+/* All frame pushes and continuation restores use this single capacity gate.
+ * Frame indices remain stable when the allocation moves. */
+static int vm_ensure_frame_capacity(VM* vm, int need) {
+    if (!vm || need < 0) return 0;
+    if (need <= vm->frame_cap) return 1;
+    if (need > ESHKOL_VM_MAX_FRAMES_CEILING) {
+        fprintf(stderr, "FRAME OVERFLOW: frame ceiling %d reached\n",
+                (int)ESHKOL_VM_MAX_FRAMES_CEILING);
+        vm->error = 1;
+        return 0;
+    }
+    int cap = vm->frame_cap > 0 ? vm->frame_cap : MAX_FRAMES;
+    while (cap < need) {
+        if (cap > ESHKOL_VM_MAX_FRAMES_CEILING / 2) {
+            cap = ESHKOL_VM_MAX_FRAMES_CEILING;
+            break;
+        }
+        cap *= 2;
+    }
+    CallFrame* grown = (CallFrame*)realloc(vm->frames,
+                                           (size_t)cap * sizeof(CallFrame));
+    if (!grown) {
+        fprintf(stderr, "ERROR: call frame growth to %d entries failed\n", cap);
+        vm->error = 1;
+        return 0;
+    }
+    memset(grown + vm->frame_cap, 0,
+           (size_t)(cap - vm->frame_cap) * sizeof(CallFrame));
+    vm->frames = grown;
+    vm->frame_cap = cap;
+    return 1;
 }
 
 /** @brief Bounds-check a heap object index against the live-object range
@@ -1287,6 +1399,28 @@ static double as_number_vm(VM* vm, Value v) {
         if (hd) return hd->f;
     }
     return 0.0;
+}
+
+/** @brief The VM half of the container slot store boundary (ADR-0020).
+ *
+ * A tensor slot holds a real number. Every VM mutator that writes a Scheme
+ * value into a tensor -- vector-set! on a tensor operand and both tensor-set!
+ * forms -- obtains the slot's double here. A value with no real-number
+ * representation is refused: the caller raises a catchable error instead of
+ * storing the 0.0 that as_number_vm() answers for an unknown tag. Characters
+ * are refused too; as_number_vm() reads one as its code point, which is an
+ * index convenience, not a numeric value.
+ *
+ * @return 1 and the slot value in @p out, or 0 when the value is refused. */
+static int vm_tensor_slot_value(VM* vm, Value v, double* out) {
+    switch (v.type) {
+    case VAL_INT: case VAL_FLOAT: case VAL_RATIONAL: case VAL_BIGNUM:
+    case VAL_DUAL: case VAL_HYPER_DUAL:
+        *out = as_number_vm(vm, v);
+        return 1;
+    default:
+        return 0;
+    }
 }
 
 /** @brief Validate that @p v's heap pointer is in range AND its object
@@ -1593,17 +1727,28 @@ static void print_value(VM* vm, Value v) {
  ******************************************************************************/
 
 static void vm_run(VM* vm);
+/* The one implementation of + - * / (vm_ops.c); the first-class natives call it. */
+static void vm_op_arith(VM* vm, char op);
 
 /* Validate fixed-arity closures at the call boundary, before their body can
  * read argument locals. Unknown metadata remains permissive for legacy
  * anonymous closures; 255 is the compiler's variadic sentinel. */
+static void vm_raise_error_msg(VM* vm, const char* msg);   /* vm_native.c */
+
+/* The one closure admission rule for argument count (SW-217): a closure is
+ * entered only with exactly its declared arity (255 = variadic, checked by its
+ * own rest-packing prologue). A mismatch raises a catchable condition with the
+ * shared "Arity mismatch: " wording (arity_contract.h), the same one native
+ * raises at its closure call boundary; with no handler it is fatal as before.
+ * Returns 0 on a mismatch: the caller does not enter the closure, and resumes
+ * dispatch at the handler when one took the condition (vm->error stays 0). */
 static int vm_check_closure_arity(VM* vm, const HeapObject* cl, int argc) {
     if (!cl || cl->type != HEAP_CLOSURE) return 0;
     const int expected = cl->closure.arity;
     if (expected >= 0 && expected != 255 && expected != argc) {
-        fprintf(stderr, "ERROR: arity mismatch: expected %d argument%s, got %d\n",
-                expected, expected == 1 ? "" : "s", argc);
-        if (vm) vm->error = 1;
+        char msg[192];
+        eshkol_format_arity_mismatch(msg, sizeof(msg), "<procedure>", expected, argc);
+        if (vm) vm_raise_error_msg(vm, msg);
         return 0;
     }
     return 1;
@@ -1623,7 +1768,13 @@ static int vm_check_closure_arity(VM* vm, const HeapObject* cl, int argc) {
 /* One closure admission contract for bytecode OP_CALL and higher-order natives.
  * Builtin references are compiler-created closures and use this same path. */
 static HeapObject* vm_callable_closure(VM* vm, Value callable, int argc) {
-    if (callable.type != VAL_CLOSURE || callable.as.ptr < 0 ||
+    if (callable.type != VAL_CLOSURE) {
+        /* Applying a non-procedure is a catchable error, as native raises it
+         * at its closure call boundary (SW-204). */
+        vm_raise_error_msg(vm, "Type error in apply: expected procedure");
+        return NULL;
+    }
+    if (callable.as.ptr < 0 ||
         callable.as.ptr >= vm->heap.capacity || !vm->heap.objects[callable.as.ptr]) {
         fprintf(stderr, "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
                 vm->pc - 1, argc, (int)callable.type);
@@ -1631,8 +1782,7 @@ static HeapObject* vm_callable_closure(VM* vm, Value callable, int argc) {
         return NULL;
     }
     HeapObject* closure = vm->heap.objects[callable.as.ptr];
-    if (!vm_check_closure_arity(vm, closure, argc) ||
-        !vm_validate_closure_arity(vm, closure, argc)) return NULL;
+    if (!vm_check_closure_arity(vm, closure, argc)) return NULL;
     return closure;
 }
 

@@ -14,6 +14,9 @@ if eshkol_durable_enabled; then
 else
     TRACE_DIR=${ICC_TRACE_DIR:-"$REPO_ROOT/scripts/icc_traces"}
 fi
+# Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 TRACE_FILE=${LANGUAGE_COVERAGE_TRACE:-"$TRACE_DIR/language_surface_coverage.jsonl"}
 # Informational only — never read by language_coverage.py, never gates the
 # floor computation below. Records whether the full-suite/quantum-probe
@@ -261,7 +264,8 @@ python3 scripts/test_language_coverage_hook_guard.py \
 # and no record naming a position outside its source file.
 python3 scripts/test_language_coverage_determinism.py \
     --eshkol-run "$ESHKOL_RUN" \
-    --lib-dir "$BUILD_DIR_PATH"
+    --lib-dir "$BUILD_DIR_PATH" \
+    --work-dir "$REPO_ROOT/.scratch/language-coverage-determinism"
 rc=0
 python3 scripts/language_coverage.py \
     "${RUNTIME_ARGS[@]}" \

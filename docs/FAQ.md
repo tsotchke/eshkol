@@ -4,7 +4,8 @@
 
 ### What are the prerequisites?
 
-- **LLVM 21** (required for lite/native builds)
+- **LLVM 21** (the default pinned major for lite/native builds; the source
+  compiles against LLVM **18 through 24** — see below)
 - **CMake 3.14+** (build system)
 - **C++20 compiler** (GCC 12+, Clang 15+, or MSVC 2022)
 - **Ninja** (recommended, but Make works too)
@@ -52,9 +53,20 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-### Can I use an older LLVM release?
+### Can I use a different LLVM release?
 
-Lite/native builds are pinned to LLVM 21. Older or intermediate LLVM releases are unsupported. The only expected exception is a separately documented bundled XLA/StableHLO toolchain when that path carries its own LLVM/MLIR stack.
+Yes, within a range. The build **pins one major** so a mixed toolchain cannot
+be assembled by accident, and that major defaults to **21**; the compiler source
+itself builds against **LLVM 18 through 24**, with the version shims in
+`inc/eshkol/backend/llvm_compat.h`. Select a different one at configure time:
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DESHKOL_REQUIRED_LLVM_MAJOR=24
+```
+
+A major outside 18-24 is unsupported. The separately documented bundled
+XLA/StableHLO toolchain is its own case: that path carries its own LLVM/MLIR
+stack.
 
 ### Do I need to install anything to try Eshkol?
 
@@ -76,7 +88,7 @@ Yes, Eshkol implements a substantial subset of R7RS Scheme including: `lambda`, 
 
 Some R7RS features are extended: `define-library` and R7RS `import` forms lower through Eshkol's existing module system, including `only`, `except`, `rename`, and `prefix` import sets. The type system adds HoTT-based gradual typing beyond what R7RS specifies.
 
-R7RS 7.1.1's third `<identifier>` production — vertical-line symbols like `'|weird sym|` and the empty symbol `'||` — is supported as of v1.3.5 (#462), on both the native and bytecode-VM readers/writers. See [Complete Language Specification §2.1.6](COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
+R7RS 7.1.1's third `<identifier>` production — vertical-line symbols like `'|weird sym|` and the empty symbol `'||` — is supported by both the native and bytecode-VM readers and writers. See [Complete Language Specification §2.1.6](COMPLETE_LANGUAGE_SPECIFICATION.md#216-symbol-interned-symbol).
 
 ### What does "homoiconic" mean?
 
@@ -149,4 +161,4 @@ eshkol-run program.esk -o program
 
 ### Can Eshkol run in the browser?
 
-Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,650+ lines compiled to a 226,764-byte (about 221 KiB) WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation.
+Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is written in Eshkol. Its browser bytecode VM evaluates the REPL and runnable documentation blocks, and tensor operations use WebGPU when a suitable adapter is available. A REPL answer is emitted as a complete line; `(display "hi")` alone remains a fragment until `(newline)`.

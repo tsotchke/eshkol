@@ -1,0 +1,36 @@
+id: SW-208
+bucket: SILENT-WRONG
+subtag: autodiff
+family: runtime-taylor/perturbation-nesting
+status: fixed
+closed_at: "0a4782007"
+title: "`jacobian` nested inside a live differentiation pass answered 0, and crashed under `derivative-n`"
+repro: >-
+  (derivative (lambda (t) (vector-ref (vector-ref (jacobian (lambda (v) (vector
+  (* t (vector-ref v 0) (vector-ref v 0)))) (vector 2.0)) 0) 0)) 1.0)
+observed: >-
+  0 under `derivative`; SIGSEGV under `derivative-n` (a tagged 4.0 dereferenced
+  as a pointer).
+correct: >-
+  4: J00 = 4t.
+root_cause: >-
+  jacobian is a reverse-tape operator whose nodes carry one raw double, so an
+  enclosing perturbation reaching the field had nowhere to live, and its f64
+  result tensor could not hold a carrier. Separately, a row view of a tagged-
+  element tensor was built with 8-byte slots and dtype 0.
+fix: >-
+  lib/backend/autodiff_codegen.cpp: while a forward pass is live, or when the
+  point carries a carrier, jacobian computes each column as a forward pass of
+  its own through the one seed/extract protocol and assembles a tagged-element
+  (dual) tensor (lib/core/runtime_taylor.c eshkol_ad_point_* and
+  eshkol_ad_jacobian_store_column). lib/backend/collection_codegen.cpp: a row
+  view of a tagged tensor uses 16-byte slots and keeps the dtype.
+evidence: >-
+  tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+  and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+  and AOT at 0a4782007.
+caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+notes: >-
+  Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+  carrier.md.

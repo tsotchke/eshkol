@@ -46,6 +46,22 @@ are *consecutive* at the start of the body.
   Avoid libc names for top-level globals. See
   [binding-mutation-and-scope.md](binding-mutation-and-scope.md).
 
+## `define-record-type`
+
+```scheme
+(define-record-type point
+  (make-point x y) point?
+  (x point-x) (y point-y))
+```
+
+The constructor stores fields in its declared argument order. The predicate
+recognizes this record type and rejects records of other types and ordinary
+vectors. An accessor or mutator applied to a value that fails the predicate
+raises a catchable error. Records use a vector representation with a type
+symbol in element zero, so a vector built by hand with that tag can pass the
+predicate. `tests/core/record_type_identity_test.esk` checks constructor order,
+type identity, and accessor and mutator errors on native and VM execution.
+
 ## `lambda`
 
 ```
@@ -78,6 +94,23 @@ Evaluates each `expr` in order and returns the value of the last.
 ```
 ```
 ab
+```
+
+At the top level of a program a `begin` splices its forms into the top level
+(R7RS 5.1): a definition inside it is a top-level definition, visible to the
+rest of the program. This holds for nested `begin`s, for a `begin` in the body
+of a top-level `with-region`, and for a macro that expands to a `begin` of
+definitions, on the native compiler and the bytecode VM alike.
+
+```scheme
+(begin (define a 5) (begin (define b 6)))
+(define-syntax define-pair
+  (syntax-rules () ((_ x y vx vy) (begin (define x vx) (define y vy)))))
+(define-pair c d 7 8)
+(display (list a b c d)) (newline)
+```
+```
+(5 6 7 8)
 ```
 
 ## `let`
@@ -172,3 +205,10 @@ with the `init` values. Tail-recursive calls to `name` are fully optimized (see
 
 Named-let captures are passed as per-call arguments, which makes the loop
 thread-safe and correct across parallel execution.
+
+**Typing.** An unannotated loop parameter is typed by what the loop carries: the
+join of its initial value and of every argument passed back to it. An
+accumulator seeded with `'()` or `(cons 0.0 0)` and fed larger values is
+accepted; an argument with nothing in common with the seed (a string passed to
+a parameter seeded with `0`) is reported by the type checker. See
+[the gradual typing guide](../../guide/GRADUAL_TYPING.md#7-loops-are-typed-by-what-they-carry).

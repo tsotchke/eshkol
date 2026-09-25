@@ -1720,6 +1720,56 @@ oracles:
         label: 'Generated docs/api/ pages match the tracked inc/eshkol headers they were harvested from (scripts/gen_api_docs.py --check)'
         action: python3 scripts/gen_api_docs.py --check
 
+      # PR #694 (an outside contributor): docs/tutorials/12_LISTS.md shipped
+      # `(take 3 lst)` and `(sort < lst)`, both of which raise when typed into
+      # the REPL. The documentation audit scripts could have found it, but
+      # they were a hand-run sweep over a file list that left the tutorials
+      # out. This probe executes every fenced example under the gated scopes
+      # (scripts/doc_audit/extract_examples.py GATED_SCOPES) on the JIT and as
+      # an AOT binary and compares each `;; =>` annotation and pasted output
+      # block with what the build printed. An example that cannot run carries
+      # an explicit marker in the markdown, and the marked count is ratcheted
+      # in scripts/doc_audit/example_gate_baseline.json.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["doc_examples_tutorials_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every example in docs/tutorials runs on the JIT and as an AOT binary within its time limit and prints what the page says; exclusions are explicit, named and ratcheted (scripts/doc_audit/check_doc_examples.py)'
+        action: python3 scripts/doc_audit/check_doc_examples.py --scope tutorials --eshkol-run build/eshkol-run
+
+      # v1.3.5-evolve: the release's documentation sweep ran on 2026-09-11 and
+      # dozens of pull requests merged after it; the changelog described few
+      # of them and nothing noticed, because no gate connected "a pull request
+      # merged" with "the release section accounts for it". This probe walks
+      # <previous_tag>..HEAD from tests/coverage/release_record.json and
+      # requires every merged pull request to be referenced in the release's
+      # changelog section or listed, with a class and a reason, in
+      # tests/coverage/changelog_no_user_facing_change.json. It needs the full
+      # history and tags, and fails closed (NO_DATA) without them.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["changelog_accounts_for_every_pr"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every pull request merged since the previous release is referenced in the release changelog section or ledgered with a class and a reason as having no user-facing change (scripts/check_changelog_completeness.py)'
+        action: python3 scripts/check_changelog_completeness.py
+
+      # ADR 0019 (evergreen documentation): a page declares its kind and status
+      # in a front-matter block, and a block nobody checks decays like the
+      # prose it replaced. This probe validates every block, refuses release
+      # narrative in current tutorial/guide/reference/explanation pages,
+      # refuses an unlabelled link from a current page to a historical or
+      # superseded one, and ratchets the count of pages without front matter
+      # in tests/coverage/doc_front_matter_baseline.json. Build-free.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["doc_front_matter_valid"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Every documentation page with front matter declares a valid kind, status, owner area, release and existing sources; current evergreen pages carry no release narrative and label links to dated pages; the unmarked-page count only goes down (scripts/check_doc_front_matter.py)'
+        action: python3 scripts/check_doc_front_matter.py
+
       # 2026-08-28: the second squash-merge-body infrastructure-hostname leak
       # in one week. GitHub assembles a squash-merge commit body out of the
       # PR's individual commit messages, so a hostname mentioned in passing
@@ -2456,22 +2506,22 @@ oracles:
         action: ./scripts/run_icc_smoke.sh
 
   # ─────────────────────────────────────────────────────────────────
-  # Navier-Stokes blowup mechanization — docs/design/
-  # NAVIER_STOKES_BLOWUP_MECHANIZATION.md Section 4.2's proposed oracle.
-  # Registered here (created by the "wave 2" proof-ledger lane; not present
+  # Navier-Stokes residual mechanization — docs/design/
+  # NAVIER_STOKES_RESIDUAL_MECHANIZATION.md Section 4.2's proposed oracle.
+  # Registered here (created by the "wave 2" evidence-ledger lane; not present
   # on origin at the time this branch was cut) with the criteria that have
   # real, currently-wired evidence: the ns_* CTest entries the mechanization
-  # doc's Section 3.2 example-program family and the proof-ledger's EXACT
-  # rows actually run, plus the proof-ledger self-consistency criterion
+  # doc's Section 3.2 example-program family and the evidence-ledger's EXACT
+  # rows actually run, plus the evidence-ledger self-consistency criterion
   # itself. Criteria for BUILD ITEM rows (ANALYTIC-ONLY in the ledger) are
   # deliberately NOT listed here — an oracle criterion with no script in the
   # tree is exactly the false-evidence pattern Section 4.2 warns against.
-  # docs/design/NAVIER_STOKES_PROOF_LEDGER.md is the authority on what is and
+  # docs/design/NAVIER_STOKES_EVIDENCE_LEDGER.md is the authority on what is and
   # is not mechanized; this oracle only asserts what that ledger claims
   # EXACT, plus its own internal consistency.
   # ─────────────────────────────────────────────────────────────────
   - name: navier-stokes-mechanization
-    aliases: [navier-stokes, ns-blowup, ns-mechanization]
+    aliases: [navier-stokes, ns-residual, ns-mechanization]
     requires:
       - test_evidence: true
         severity: high
@@ -2520,11 +2570,11 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
-          event_names: ["navier_stokes_proof_ledger_consistent"]
+          event_names: ["navier_stokes_evidence_ledger_consistent"]
           event_values: ["PASS"]
         severity: high
-        label: The proof ledger is internally consistent with the CTest surface and the mechanization doc's row table
-        action: ./scripts/check_ns_proof_ledger.py
+        label: The evidence ledger is internally consistent with the CTest surface and the mechanization doc's row table
+        action: ./scripts/check_ns_evidence_ledger.py
 
   # ─────────────────────────────────────────────────────────────────
   # No-regression gate — used after a refactor or codegen change to
@@ -3926,8 +3976,8 @@ oracles:
         label: WASM execute-and-diff gate (Eshkol-compiled WASM output byte-matches native `eshkol-run -r` on the VM-supported subset; out-of-subset programs fail cleanly / are excluded with reasons)
         action: ./scripts/run_wasm_differential.sh
   # ─────────────────────────────────────────────────────────────────
-  # Navier-Stokes blowup mechanization family
-  # (examples/mathematics_navier_stokes_*.esk, docs/NAVIER_STOKES_BLOWUP_EXAMPLES.md).
+  # Navier-Stokes residual mechanization family
+  # (examples/mathematics_navier_stokes_*.esk, docs/AI_MATHEMATICS_EXAMPLES.md).
   # Each program below is its own compile-and-run executable check with an
   # internal pass/fail ledger over many individually named verdicts and
   # negative controls; the criterion here is one explicit id per PROGRAM
@@ -3938,7 +3988,7 @@ oracles:
   # line on both engines for regular CI.
   # ─────────────────────────────────────────────────────────────────
   - name: navier-stokes-mechanization
-    aliases: [navier-stokes, ns-blowup, ns-mechanization]
+    aliases: [navier-stokes, ns-residual, ns-mechanization]
     requires:
       - runtime_event:
           event_kinds: [eshkol_smoke]

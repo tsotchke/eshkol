@@ -203,6 +203,8 @@ static llvm::Function* getOrDeclareFputc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareFgetc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareUngetc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx);
+static llvm::Value* portFileOrRaise(CodegenContext& ctx, llvm::Value* port_tagged,
+                                   uint8_t direction, const char* proc_name);
 static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx);
 static llvm::Function* getOrDeclareStdinStream(CodegenContext& ctx);
 
@@ -222,8 +224,7 @@ llvm::Value* StringIOCodegen::newline(const eshkol_operations_t* op) {
         if (port_tv) {
             llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
             if (port_tagged) {
-                llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
-                file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+                file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "newline");
             } else {
                 file_ptr = getStdout(ctx_);
             }
@@ -238,7 +239,7 @@ llvm::Value* StringIOCodegen::newline(const eshkol_operations_t* op) {
     ctx_.builder().CreateCall(fputc_func, {
         llvm::ConstantInt::get(ctx_.int32Type(), '\n'), file_ptr
     });
-    return tagged_.packNull();
+    return tagged_.packUnspecified();  // ADR-0024
 }
 
 // Note: The following implementations are complex and depend on:
@@ -269,6 +270,7 @@ llvm::Value* StringIOCodegen::stringLength(const eshkol_operations_t* op) {
     // Generate code for argument
     llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!arg) return nullptr;
+    tagged_.requireContainer(arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-length", "string");  // SW-221
 
     // Extract string pointer from tagged value
     llvm::Value* ptr_int = tagged_.unpackInt64(arg);
@@ -309,6 +311,7 @@ llvm::Value* StringIOCodegen::stringByteLength(const eshkol_operations_t* op) {
     // Generate code for argument
     llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!arg) return nullptr;
+    tagged_.requireContainer(arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-byte-length", "string");  // SW-221
 
     // Extract string pointer from tagged value
     llvm::Value* ptr_int = tagged_.unpackInt64(arg);
@@ -351,6 +354,7 @@ llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     // Get string argument
     llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!str_arg) return nullptr;
+    tagged_.requireContainer(str_arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-ref", "string");  // SW-221
 
     // Get index via typed AST
     void* idx_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
@@ -1127,99 +1131,40 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
  * `char` (default space) via memset, and NUL-terminates it.
  */
 llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
-    if (!codegen_typed_ast_callback_ || !codegen_ast_callback_) {
+    if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::makeString - callbacks not set");
         return tagged_.packNull();
     }
 
     if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
-        eshkol_warn("make-string requires 1 or 2 arguments");
+        eshkol_arity_error_current("make-string requires 1 or 2 arguments");
         return nullptr;
     }
 
-    // Get length via typed AST
-    void* len_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
-    if (!len_tv_ptr) return nullptr;
-
-    llvm::Value* len = *reinterpret_cast<llvm::Value**>(len_tv_ptr);
-    if (!len) return nullptr;
-
-    // Ensure length is i64 — may arrive as tagged value struct or raw int
-    if (len->getType() == ctx_.taggedValueType()) {
-        // Extract int64 data field from tagged value
-        len = tagged_.unpackInt64(len);
-    } else if (!len->getType()->isIntegerTy(64)) {
-        len = ctx_.builder().CreateZExt(len, ctx_.int64Type());
-    }
-
-    // Guard against a negative length. `len` flows into memset as a size_t;
-    // a negative value wraps to an enormous unsigned count, hanging/OOMing the
-    // process (make-string requires a non-negative k in R7RS). Raise instead.
-    {
-        llvm::Value* neg_len = ctx_.builder().CreateICmpSLT(len,
-            llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Function* ms_func = ctx_.builder().GetInsertBlock()->getParent();
-        llvm::BasicBlock* ms_ok = llvm::BasicBlock::Create(ctx_.context(), "mkstr_len_ok", ms_func);
-        llvm::BasicBlock* ms_fail = llvm::BasicBlock::Create(ctx_.context(), "mkstr_len_fail", ms_func);
-        ctx_.builder().CreateCondBr(neg_len, ms_fail, ms_ok);
-
-        ctx_.builder().SetInsertPoint(ms_fail);
-        {
-            llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
-            if (!raise_func) {
-                llvm::FunctionType* raise_type = llvm::FunctionType::get(
-                    ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
-                raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
-                    "eshkol_raise", &ctx_.module());
-                raise_func->setDoesNotReturn();
-            }
-            llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
-            if (!make_exc_func) {
-                llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
-                    {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
-                make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
-                    "eshkol_make_exception_with_header", &ctx_.module());
-            }
-            llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
-                "make-string: length must be non-negative");
-            llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
-            llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
-            ctx_.builder().CreateCall(raise_func, {exception});
-            ctx_.builder().CreateUnreachable();
-        }
-
-        ctx_.builder().SetInsertPoint(ms_ok);
-    }
-
-    // Get the fill character (default to space, ASCII 32)
-    llvm::Value* fill_char;
+    // The length and fill are checked, and the string built, by the one
+    // runtime implementation (eshkol_make_string_checked, runtime_string.cpp):
+    // an inexact, negative or non-numeric length and a non-character fill raise
+    // a catchable type error, and a non-ASCII fill is repeated as UTF-8.
+    auto tagged_arg = [&](const eshkol_ast_t* ast) -> llvm::Value* {
+        void* tv = codegen_typed_ast_callback_(ast, callback_context_);
+        return tv ? typed_to_tagged_callback_(tv, callback_context_) : nullptr;
+    };
+    llvm::Value* k = tagged_arg(&op->call_op.variables[0]);
+    if (!k) return nullptr;
+    llvm::Value* fill_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    llvm::Value* k_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "mkstr_k");
+    ctx_.builder().CreateStore(k, k_slot);
     if (op->call_op.num_vars == 2) {
-        llvm::Value* char_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-        if (!char_arg) return nullptr;
-        fill_char = tagged_.unpackInt64(char_arg);
-        fill_char = ctx_.builder().CreateTrunc(fill_char, ctx_.int8Type());
-    } else {
-        fill_char = llvm::ConstantInt::get(ctx_.int8Type(), ' ');
+        llvm::Value* fill = tagged_arg(&op->call_op.variables[1]);
+        if (!fill) return nullptr;
+        fill_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "mkstr_fill");
+        ctx_.builder().CreateStore(fill, fill_ptr);
     }
-
-    // Allocate buffer with header. `arena_allocate_string_with_header`
-    // already reserves an extra byte for the NUL terminator (data_size
-    // = length + 1), so we must pass the caller-visible character
-    // count `len`, NOT `len + 1` — the previous code double-counted,
-    // yielding header->size = len + 2 and a string-length of len + 1.
-    llvm::Value* arena_ptr = ctx_.currentArena();
-    llvm::Value* buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, len});
-
-    // Fill with the character using memset
-    llvm::Function* memset_func = ctx_.funcs().getMemset();
-    llvm::Value* fill_char_i32 = ctx_.builder().CreateZExt(fill_char, ctx_.int32Type());
-    ctx_.builder().CreateCall(memset_func, {buf, fill_char_i32, len});
-
-    // Add null terminator
-    llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), buf, len);
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_ptr);
-
+    llvm::FunctionCallee make = ctx_.module().getOrInsertFunction(
+        "eshkol_make_string_checked",
+        llvm::FunctionType::get(ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
+    llvm::Value* buf = ctx_.builder().CreateCall(make, {ctx_.currentArena(), k_slot, fill_ptr});
     return tagged_.packHeapPtr(buf);
 }
 
@@ -1243,6 +1188,7 @@ llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
     // Get string argument
     llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!str_arg) return nullptr;
+    tagged_.requireContainer(str_arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-set!", "string");  // SW-221
 
     // Get index via typed AST
     void* idx_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
@@ -2144,8 +2090,7 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
         if (port_tv) {
             llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
             if (port_tagged) {
-                llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
-                port_file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+                port_file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "display");
             }
         }
     }
@@ -2241,7 +2186,7 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
             ctx_.builder().CreateBr(display_done);
 
             ctx_.builder().SetInsertPoint(display_done);
-            return llvm::ConstantInt::get(ctx_.int32Type(), 0);
+            return tagged_.packUnspecified();  // ADR-0024
         }
     }
 
@@ -2262,7 +2207,7 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
         ctx_.builder().CreateCall(display_value_func_, {display_ptr});
     }
 
-    return llvm::ConstantInt::get(ctx_.int32Type(), 0);
+    return tagged_.packUnspecified();  // ADR-0024
 }
 
 // === File I/O Operations ===
@@ -2371,6 +2316,56 @@ static llvm::Value* getStdin(CodegenContext& ctx) {
 // `parameterize ((current-output-port p)) (display x)` actually writes into
 // `p` instead of stdout. The runtime falls back to real stdout if the cell
 // is unset, so behaviour is unchanged when the user doesn't parameterize.
+llvm::Value* StringIOCodegen::portFile(llvm::Value* port_tagged, uint8_t direction,
+                                      const char* proc_name) {
+    return portFileOrRaise(ctx_, port_tagged, direction, proc_name);
+}
+
+/**
+ * @brief The FILE* behind a port argument, or a raised type error.
+ *
+ * Every optional-port argument of the textual and binary I/O builtins reaches
+ * its FILE* here. A value is a port of @p direction when its type byte is
+ * HEAP_PTR with that direction bit set (the binary bit may accompany it).
+ * Anything else raises "Type error in <proc>: expected <direction> port",
+ * which `guard` can catch; before this check a non-port argument was
+ * dereferenced as a FILE* (`(newline 1)` faulted at address 0x69).
+ */
+static llvm::Value* portFileOrRaise(CodegenContext& ctx, llvm::Value* port_tagged,
+                                   uint8_t direction, const char* proc_name) {
+    auto& b = ctx.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::Value* type_byte = b.CreateExtractValue(port_tagged, {0});
+    llvm::Value* without_binary = b.CreateAnd(type_byte,
+        llvm::ConstantInt::get(ctx.int8Type(), (uint8_t)~ESHKOL_PORT_BINARY_FLAG));
+    llvm::Value* is_port = b.CreateICmpEQ(without_binary,
+        llvm::ConstantInt::get(ctx.int8Type(), ESHKOL_VALUE_HEAP_PTR | direction));
+    llvm::BasicBlock* bad = llvm::BasicBlock::Create(ctx.context(), "port_arg_bad", fn);
+    llvm::BasicBlock* ok = llvm::BasicBlock::Create(ctx.context(), "port_arg_ok", fn);
+    b.CreateCondBr(is_port, ok, bad);
+
+    b.SetInsertPoint(bad);
+    llvm::Module& m = ctx.module();
+    llvm::Function* raise = m.getFunction("eshkol_type_error_with_operand");
+    if (!raise) {
+        raise = llvm::Function::Create(
+            llvm::FunctionType::get(b.getVoidTy(),
+                {b.getPtrTy(), b.getPtrTy(), b.getPtrTy()}, false),
+            llvm::Function::ExternalLinkage, "eshkol_type_error_with_operand", &m);
+        raise->setDoesNotReturn();
+    }
+    llvm::Value* slot = b.CreateAlloca(ctx.taggedValueType(), nullptr, "port_arg");
+    b.CreateStore(port_tagged, slot);
+    b.CreateCall(raise, {
+        b.CreateGlobalString(proc_name),
+        b.CreateGlobalString(direction == ESHKOL_PORT_INPUT_FLAG ? "input port" : "output port"),
+        slot});
+    b.CreateUnreachable();
+
+    b.SetInsertPoint(ok);
+    return b.CreateIntToPtr(b.CreateExtractValue(port_tagged, {4}), ctx.ptrType());
+}
+
 static llvm::Value* getStdout(CodegenContext& ctx) {
     auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
     auto callee = ctx.module().getOrInsertFunction(
@@ -2823,8 +2818,7 @@ llvm::Value* StringIOCodegen::readString(const eshkol_operations_t* op) {
         if (!port_tv) return nullptr;
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
         if (!port_tagged) return nullptr;
-        llvm::Value* port_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
-        file_ptr = ctx_.builder().CreateIntToPtr(port_int, ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_INPUT_FLAG, "read-string");
     } else {
         file_ptr = getStdin(ctx_);
     }
@@ -3009,8 +3003,7 @@ llvm::Value* StringIOCodegen::writeString(const eshkol_operations_t* op) {
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
         if (!port_tagged) return nullptr;
 
-        llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(port_tagged, {4});
-        file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "write-string");
     } else {
         // Write to stdout
         file_ptr = getStdout(ctx_);
@@ -3062,9 +3055,7 @@ llvm::Value* StringIOCodegen::writeLine(const eshkol_operations_t* op) {
         llvm::Value* tagged_port = typed_to_tagged_callback_(port_tv_ptr, callback_context_);
         if (!tagged_port) return nullptr;
 
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            tagged_.unpackInt64(tagged_port),
-            ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, tagged_port, ESHKOL_PORT_OUTPUT_FLAG, "write-line");
     } else {
         // Write to stdout
         file_ptr = getStdout(ctx_);
@@ -3126,9 +3117,7 @@ llvm::Value* StringIOCodegen::writeChar(const eshkol_operations_t* op) {
         llvm::Value* tagged_port = typed_to_tagged_callback_(port_tv_ptr, callback_context_);
         if (!tagged_port) return nullptr;
 
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            tagged_.unpackInt64(tagged_port),
-            ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, tagged_port, ESHKOL_PORT_OUTPUT_FLAG, "write-char");
     } else {
         // Write to stdout
         file_ptr = getStdout(ctx_);
@@ -3725,8 +3714,7 @@ llvm::Value* StringIOCodegen::writeU8(const eshkol_operations_t* op) {
         if (!port_ptr) return nullptr;
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_ptr, callback_context_);
         if (!port_tagged) return nullptr;
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            ctx_.builder().CreateExtractValue(port_tagged, {4}), ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "write-u8");
     } else {
         file_ptr = getStdout(ctx_);
     }
@@ -3769,8 +3757,7 @@ llvm::Value* StringIOCodegen::readBytevector(const eshkol_operations_t* op) {
         if (!port_ptr) return nullptr;
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_ptr, callback_context_);
         if (!port_tagged) return nullptr;
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            ctx_.builder().CreateExtractValue(port_tagged, {4}), ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_INPUT_FLAG, "read-bytevector");
     } else {
         file_ptr = getStdin(ctx_);
     }
@@ -3885,8 +3872,7 @@ llvm::Value* StringIOCodegen::writeBytevector(const eshkol_operations_t* op) {
         if (!port_tv) return nullptr;
         llvm::Value* port_tagged = typed_to_tagged_callback_(port_tv, callback_context_);
         if (!port_tagged) return nullptr;
-        file_ptr = ctx_.builder().CreateIntToPtr(
-            ctx_.builder().CreateExtractValue(port_tagged, {4}), ctx_.ptrType());
+        file_ptr = portFileOrRaise(ctx_, port_tagged, ESHKOL_PORT_OUTPUT_FLAG, "write-bytevector");
     } else {
         file_ptr = getStdout(ctx_);
     }

@@ -1,0 +1,46 @@
+;; SW-196 (VM): a callback admitted to an isolated worker VM that faults is
+;; re-evaluated on the caller's interpreter after the join, so the caller's
+;; handler receives the callback's own condition -- never a generic scheduler
+;; error -- and an escape resumes the scope that owns it.
+(define (check label got want)
+  (if (equal? got want)
+      #t
+      (begin (display "FAIL: ") (display label) (display " got ")
+             (write got) (newline) (error "parallel worker settle mismatch" label))))
+(define (message-of thunk)
+  (guard (e ((error-object? e) (error-object-message e))) (thunk)))
+(define inputs '(1 2 3 4 5 6 7 8))
+
+;; Pure (worker-admitted) callbacks: car of a non-pair on one element.
+(check "map" (message-of (lambda () (parallel-map (lambda (x) (car x)) inputs)))
+       "car: argument is not a pair")
+(check "map one element"
+       (message-of (lambda () (parallel-map (lambda (x) (car x)) '((1) (2) 3 (4) (5)))))
+       "car: argument is not a pair")
+(check "filter" (message-of (lambda () (parallel-filter (lambda (x) (car x)) inputs)))
+       "car: argument is not a pair")
+(check "for-each" (message-of (lambda () (parallel-for-each (lambda (x) (car x)) inputs)))
+       "car: argument is not a pair")
+(check "execute"
+       (message-of (lambda () (parallel-execute (lambda () 1) (lambda () (car 2)) (lambda () 3))))
+       "car: argument is not a pair")
+
+;; Futures: the failure is delivered when forced, on the forcing interpreter,
+;; and a later force evaluates the thunk again.
+(define failing (future (lambda () (car 3))))
+(check "force-future" (message-of (lambda () (force-future failing)))
+       "car: argument is not a pair")
+(check "force-future again" (message-of (lambda () (force-future failing)))
+       "car: argument is not a pair")
+(check "future value" (force-future (future (lambda () (* 6 7)))) 42)
+
+;; Successful workers still publish every result.
+(check "map values" (parallel-map (lambda (x) (* x 3)) inputs) '(3 6 9 12 15 18 21 24))
+
+;; An escape to an outer continuation resumes its owning scope.
+(check "escape"
+       (call-with-current-continuation
+         (lambda (k) (parallel-map (lambda (x) (if (= x 4) (k 'escaped) x)) inputs)))
+       'escaped)
+(display "parallel worker settle PASS")
+(newline)

@@ -10,7 +10,7 @@ Ha shift from the earlier PES). Differentiable quantum-chemistry examples and an
 arbitrary-order-AD H2 vibrational-frequency example ship with the release. The RFC
 text below is retained for the design rationale.
 
-Target Eshkol version: v1.3.4-evolve (`inc/eshkol/eshkol.h`)
+Target Eshkol version: v1.3.5-evolve (`inc/eshkol/eshkol.h`)
 Scope: wire the Moonlab quantum simulator into Eshkol as quantum-computing
 builtins, and replace Eshkol's placeholder `quantum-random` with a real,
 Bell-verified entropy source.
@@ -450,7 +450,7 @@ seam.
 - The backward path calls **only** `vqe_compute_gradient` (exact adjoint /
   parameter-shift). It must **never** finite-difference `vqe_compute_energy` on
   the default path. This is Eshkol's stated doctrine, not a new rule:
-  `docs/design/adr/0002-ad-alt-architect.md:24-25` — "The default SciML/PINN
+  `docs/design/adr/0016-ad-alt-architect.md:26-27` — "The default SciML/PINN
   path must be exact AD or an explicit unsupported-op error. Hidden finite
   differences are disallowed."; `docs/design/adr/0002-ad-staged-dense-kernels.md:236-239`
   — derivative operators are "exact AD or an explicit unsupported error ...

@@ -440,13 +440,34 @@ There is no timeout on `future_get`. For timed waits, `future_wait` (line 760) a
 
 ### 11.5 Eshkol Runtime Errors
 
-Eshkol's runtime `raise` function (used for Scheme-level errors like division by zero, type mismatches, or bounds violations) calls `longjmp` or `exit` depending on context. If a parallel worker triggers such an error, the behavior depends on the error path:
+The exception-handler chain is thread-local, so a raise can only be handled on
+the thread that raised it. Every parallel primitive therefore runs each
+callback under an unwind boundary (`run_in_boundary` in
+`lib/backend/parallel_codegen.cpp`): a handler pushed on the thread that runs
+the callback, on a pool worker and on the calling thread alike. A raise the
+callback does not handle itself lands on that boundary with its dynamic-wind,
+region and AD state already unwound, and is recorded with its raised object.
 
-- `eshkol_error` (logging): Writes to stderr and returns. The worker continues; the task result is whatever was computed before the error.
-- `exit()` or `abort()`: Terminates the entire process, including all worker threads.
-- `longjmp` to an error handler: Undefined behavior if the jump target is on a different thread's stack. The parallel primitives do not install per-worker error handlers.
+After the join, the entry point returns from its implementation (so no C++
+frame is skipped by a `longjmp`) and re-raises the first recorded condition in
+element order on the calling thread, where the caller's own `guard` sees the
+original object. An asynchronous future records the condition in the same way
+and re-raises it from `force`, leaving the future unforced. A refused pool
+submission runs that element on the calling thread instead of dropping it.
 
-This means that Scheme-level errors within parallel-mapped closures that call `error` or `raise` may terminate the process rather than gracefully reporting per-task failures.
+Continuation escapes follow the same rule. Every native continuation
+invocation first calls `eshkol_continuation_transfer_check`. Inside a boundary,
+a continuation whose capture point is not in the callback's own live extent on
+that thread (it belongs to the caller or to another thread) is not resumed
+there: the callback's dynamic state is unwound to the boundary and the transfer
+is recorded, and the calling thread performs it after the join, in element
+order with any recorded raise.
+
+The bytecode VM applies the same rule differently: an isolated worker VM never
+transfers control. A failed worker run is re-evaluated on the calling
+interpreter after the join (`vm_parmap_settle_failed` and friends in
+`lib/backend/vm_parallel.c`), which reproduces the callback's own condition in
+the caller's handler chain.
 
 ---
 
@@ -454,7 +475,7 @@ This means that Scheme-level errors within parallel-mapped closures that call `e
 
 ### 12.1 Per-Thread Tape Stack
 
-The AD (automatic differentiation) tape state uses `thread_local` storage in `arena_memory.cpp` (lines 88--104):
+The AD (automatic differentiation) tape state uses `thread_local` storage in `lib/core/runtime_autodiff.cpp` (lines 102--103):
 
 ```c
 #define MAX_TAPE_DEPTH 32
@@ -481,7 +502,7 @@ When a closure passed to `parallel-map` contains a `gradient` call, each worker 
 
 ### 12.3 The `__ad_mode_active` Global Flag Issue
 
-The tape stack is thread-local, but two critical AD state variables are **not** thread-local -- they are plain global variables in `arena_memory.cpp` (lines 37, 41):
+The tape stack is thread-local, but two critical AD state variables are **not** thread-local -- they are plain global variables in `lib/core/runtime_autodiff.cpp` (lines 26, 30):
 
 ```c
 ad_tape_t* __current_ad_tape = nullptr;   // line 37
@@ -543,7 +564,7 @@ project memory and confirmed against current source, was:
    compile contention, but actually a symptom of the next layer.
 
 The root cause was at the C/LLVM task-boundary in `parallel_codegen.cpp`
-§`llvm_parallel_map_task` and the matching reconstruction in
+§`eshkol_parallel_map_task` and the matching reconstruction in
 `parallel_llvm_codegen.cpp` §`generateMapWorker`. The C-side struct decomposes
 each tagged value into i64 fields, so no aggregate crosses the C/LLVM
 boundary. The old code packed only the `type` byte (low 8 bits of `item_type
@@ -587,7 +608,7 @@ item = ctx_.builder().CreateInsertValue(item, item_data, {4});      // data
 
 The same `{type, flags}` packing is now used for `parallel_fold_task`
 (`arg1_type`, `arg2_type` — see `parallel_llvm_codegen.cpp` §`generateFoldWorker`
-lines 978–1000) and `parallel_filter_task` (lines 1097–1107).
+lines 621–738) and the filter worker, which reuses the map-task layout (§`generateFilterWorker`, lines 745–841).
 
 With the flags-byte issue fixed, the default at the codegen gate was flipped
 from opt-in to default-on. The current gate in

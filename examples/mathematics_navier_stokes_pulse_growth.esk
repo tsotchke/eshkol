@@ -1,8 +1,8 @@
-;; Navier-Stokes blowup construction -- Craik-Criminale pulse growth on an
+;; Navier-Stokes example -- Craik-Criminale pulse growth on an
 ;; affine background.
 ;;
-;; Source: "Finite Time Blowup for Navier-Stokes" (OpenAI, 2026),
-;; https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
+;; Source: an external reference construction for the three-dimensional
+;; Navier-Stokes equations (2026), https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf
 ;; Introduction (Craik and Criminale [9], "exact finite-amplitude waves on
 ;; affine background flows") and Section 2.2's physical description of the
 ;; pulses: "the background shear supplies [each pulse's] subsequent growth
@@ -39,13 +39,13 @@
 ;; exact antiderivative by AD, cross-checked against an independently
 ;; numerically integrated amplitude curve.
 ;;
-;; AD surface note.  `derivative` silently drops exactness on a
-;; differentiand that references a top-level `define`d constant instead of
-;; an inline literal (see examples/mathematics_navier_stokes_stress_cone.esk's
-;; AD surface note and its repro); k2-of, rate-of and P-of below use inline
-;; literals throughout for exactly this reason, even though the named
-;; constants S, k-theta, k-r0, G0, lam, nu are also defined, for exposition
-;; and for the negative control (which needs the S = 0 variants literally).
+;; AD surface note.  `derivative` used to silently drop exactness on a
+;; differentiand that referenced a top-level `define`d constant instead of an
+;; inline literal, and on a loop-derived point argument (see
+;; examples/mathematics_navier_stokes_stress_cone.esk's AD surface note); both
+;; are fixed, so k2-of, rate-of and P-of below use the named constants S,
+;; k-theta, k-r0, G0, lam, nu directly, and loop-derived points are passed to
+;; `derivative` without a let-binding.
 
 (define pass-count 0)
 (define fail-count 0)
@@ -70,7 +70,7 @@
 (define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
 
 ;; ---------------------------------------------------------------------------
-;; Parameters (named, for exposition only -- see AD surface note).
+;; Parameters.
 ;;   S = 1          shear rate
 ;;   k-theta = 1    constant angular wavenumber
 ;;   k-r0 = -1/2    initial radial wavenumber
@@ -86,20 +86,20 @@
 (define lam 1/4)
 (define nu 1/10)
 
-;; k_r(t) = k_r(0) - S k_theta t, literals inlined (AD surface note).
-(define (k2-of t) (- -1/2 (* 1 1 t)))
-(define (k2sq-of t) (+ (* 1 1) (* (k2-of t) (k2-of t))))
+;; k_r(t) = k_r(0) - S k_theta t.
+(define (k2-of t) (- k-r0 (* S k-theta t)))
+(define (k2sq-of t) (+ (* k-theta k-theta) (* (k2-of t) (k2-of t))))
 
-;; rate(t) = G0 - lam t - nu |k(t)|^2, literals inlined.
-(define (rate-of t) (- (- 1 (* 1/4 t)) (* 1/10 (k2sq-of t))))
+;; rate(t) = G0 - lam t - nu |k(t)|^2.
+(define (rate-of t) (- (- G0 (* lam t)) (* nu (k2sq-of t))))
 
 ;; P(t) = G0 t - lam t^2/2 - nu (k_theta^2 t + k_r0^2 t - S k_theta k_r0 t^2
-;;                                + S^2 k_theta^2 t^3/3), literals inlined.
+;;                                + S^2 k_theta^2 t^3/3).
 (define (P-of t)
-  (- (* 1 t)
-     (+ (* 1/4 t t 1/2)
-        (* 1/10 (+ (* 1 1 t) (* -1/2 -1/2 t) (- (* 1 1 -1/2 t t))
-                   (* 1 1 1 1 t t t 1/3))))))
+  (- (* G0 t)
+     (+ (* lam t t 1/2)
+        (* nu (+ (* k-theta k-theta t) (* k-r0 k-r0 t) (- (* S k-theta k-r0 t t))
+                 (* S S k-theta k-theta t t t 1/3))))))
 
 ;; The S = 0 (no shear) variants, for the negative control -- G0 and lam are
 ;; both proportional to S in the model, so they vanish with it.
@@ -118,16 +118,13 @@
                ((exact? (k2-of (car ts))) (loop (cdr ts)))
                (else #f))))
 
-;; NOTE (route-around): passing a loop-derived expression like `(car ts)`
-;; directly as `derivative`'s POINT argument loses exactness (repro in
-;; .scratch/ns_derivative_loopvar_point_argument_repro.esk) even though the
-;; differentiand itself never references the loop -- distinct from SW-151,
-;; which is about the differentiand capturing the loop variable. Route
-;; around it by let-binding the point first, here and everywhere below.
+;; A loop-derived point argument like `(car ts)` passed directly as
+;; `derivative`'s point (rather than let-bound first) is exact -- the defect
+;; that used to lose exactness there is fixed.
 (check "the wavevector law solves the Craik-Criminale equation exactly: dk_r/dt = -S k_theta"
        (let loop ((ts sample-ts))
          (cond ((null? ts) #t)
-               ((let* ((pt (car ts)) (d (derivative k2-of pt)))
+               ((let ((d (derivative k2-of (car ts))))
                   (and (exact? d) (= d -1)))
                 (loop (cdr ts)))
                (else #f))))

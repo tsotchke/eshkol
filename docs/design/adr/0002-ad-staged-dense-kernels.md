@@ -1,6 +1,6 @@
 # ADR 0002 — Dense tensor AD nodes and a staged value-and-grad kernel
 
-- Status: Proposed
+- Status: Accepted — partially implemented: Phase A (AD counters and the one-pass `eshkol_value_and_grad` core in `lib/core/runtime_autodiff.cpp`) and the Phase C dense tensor AD nodes (`recordADNodeTensor` in `lib/backend/autodiff_codegen.cpp`, called from the matmul, reduction and elementwise lowerings; gate `scripts/run_dense_tensor_ad_gate.sh`) are in v1.3.5-evolve; remaining phases, including the Phase G staged kernel ABI, Proposed
 - Date: 2026-07-09
 - Deciders: AD/compiler cluster
 - Supersedes: none
@@ -52,7 +52,7 @@ compiler. What runs instead is the `M×N×K` scalarizing loop at
 `conv2d`, elementwise tensor arithmetic (which additionally reuses
 **scalar** op IDs for tensor ops, in violation of §3.1 below), and
 reductions scalarize identically. This is the single thing both AD
-proposals (this document and `0002-ad-alt-architect.md`) agree is the
+proposals (this document and `0016-ad-alt-architect.md`) agree is the
 whole point — unchanged seven weeks after being identified in ADR-0000
 §5. **BUILD ITEM, #1 priority:** restructure `llvm_codegen.cpp:32226` so
 the dense `recordADNodeTensor` path is the AD path and the scalarizing
@@ -513,7 +513,7 @@ Out of scope for PR 1: matmul dense routing (C.1), the ABI, any FD removal
   variable gradients" but the tape does not track variables today. If Phase A
   ships the one-pass loop without populating `variables`/`num_variables`, it will
   read garbage. This is called out as an explicit PR-1 prerequisite.
-- **Shape-specialization blowup.** One compiled kernel per
+- **Shape-specialization growth.** One compiled kernel per
   (dtype,rank,dims,strides,…) key is combinatorial across batch sizes.
   Mitigation: cache with a bounded size; bucket/pad batch dimensions; document
   that an unbucketed dynamic batch triggers recompile until a dynamic-shape path

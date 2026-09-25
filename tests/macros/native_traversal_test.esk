@@ -1,0 +1,32 @@
+; Regression coverage for macro traversal through non-call AST payloads.
+(define outer 7)
+(define-syntax passthrough
+  (syntax-rules () ((passthrough e) e)))
+
+; call-with-values producer/consumer and let-values producer/body
+(display (passthrough
+          (call-with-values (lambda () (values outer 3))
+                            (lambda (a b) (+ a b)))))
+(newline)
+
+; AD and memory bodies must retain a surrounding local value.
+(display (let ((a 2.0)) (derivative (lambda (x) (* a x)) 3.0)))
+(newline)
+(display (let ((a 7)) (with-region (+ a 3))))
+(newline)
+
+; All simultaneous groups remain visible, and sequential producers see prior groups.
+(display (let ((outer 7))
+  (let-values (((a) (values outer)) ((b) (values (+ outer 1)))) (+ a b))))
+(newline)
+(display (let ((outer 7))
+  (let*-values (((a) (values outer)) ((b) (values (+ a 1)))) (+ a b))))
+(newline)
+(display (passthrough
+          (let-values (((a b) (values outer 5))) (+ a b))))
+(newline)
+
+; case-lambda clause bodies must retain the surrounding value binding.
+(display (let ((k outer))
+           ((case-lambda ((x) (+ x k)) ((x y) (+ x y k))) 2)))
+(newline)

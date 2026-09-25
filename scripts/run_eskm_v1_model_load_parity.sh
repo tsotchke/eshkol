@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate the literal ESKM v1 4-producer x 4-consumer engine matrix.
+# Gate all six historical fixtures through the ESKM v1 4 x 4 engine matrix.
 
 set -u
 
@@ -9,6 +9,7 @@ export LC_ALL=C LC_CTYPE=C LANG=C
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build}"
 SELF_TEST=0
+CONTROL=""
 if [ "${1:-}" = "--self-test" ]; then SELF_TEST=1; shift; fi
 ESHKOL_RUN="${1:-$BUILD_DIR/eshkol-run}"
 VM="${2:-$BUILD_DIR/eshkol-vm-standalone-test}"
@@ -16,6 +17,8 @@ SOURCE="$ROOT_DIR/tests/core/eskm_v1_model_load_parity.esk"
 FIXTURES="$ROOT_DIR/tests/core/fixtures/eskm-v1"
 TIMEOUT_SECONDS="${ESKM_PARITY_TIMEOUT:-120}"
 ENGINES=(jit aot vm-source vm-bytecode)
+VALID_FIXTURES=(scalar empty-0x3 ordinary-2x3 rank8 multi-tensor large-32x32)
+SINGLE_FIXTURES=(scalar empty-0x3 ordinary-2x3 rank8 large-32x32)
 
 absolute_path() {
     case "$1" in
@@ -127,6 +130,7 @@ run_engine() {
         cd "$axis_dir" || exit 125
         export ESKM_PARITY_MODE="$mode"
         export ESKM_PARITY_ENGINE="$engine"
+        export ESKM_PARITY_CONTROL="${CONTROL:-}"
         export ESHKOL_VM_NO_DISASM=1
         case "$engine" in
             jit)
@@ -174,6 +178,7 @@ INFRA=0
 for producer in "${ENGINES[@]}"; do
     axis_dir="$WORK_DIR/produce-$producer"
     mkdir "$axis_dir" || exit 125
+    cp "$FIXTURES"/*.eskm "$axis_dir/" || exit 125
     if run_captured "$producer" "$axis_dir" produce; then rc=0; else rc=$?; fi
     output="$axis_dir/producer.eskm"
     if [ "$rc" -eq 0 ] &&
@@ -181,7 +186,16 @@ for producer in "${ENGINES[@]}"; do
        [ -s "$output" ] &&
        cmp -s "$FIXTURES/multi-tensor.eskm" "$output"; then
         cp "$output" "$PRODUCERS/producer-$producer.eskm" || exit 125
-        echo "PASS: $producer produced canonical ESKM v1 bytes"
+        for fixture in "${VALID_FIXTURES[@]}"; do
+            output="$axis_dir/produce-$fixture.eskm"
+            if cmp -s "$FIXTURES/$fixture.eskm" "$output"; then
+                cp "$output" "$PRODUCERS/producer-$producer-$fixture.eskm" || exit 125
+            else
+                report_failure 0 "$producer $fixture producer byte oracle failed"
+                record_failure 0
+            fi
+        done
+        echo "PASS: $producer producer metadata checks completed"
     else
         report_failure "$rc" "$producer producer oracle failed"
         show_output "$axis_dir"
@@ -192,22 +206,32 @@ done
 exit_if_incomplete
 
 prepare_consumer() {
-    local axis_dir="$1" producer
+    local axis_dir="$1"
     mkdir "$axis_dir" || return 1
     cp "$FIXTURES"/*.eskm "$axis_dir/" || return 1
-    for producer in "${ENGINES[@]}"; do
-        cp "$PRODUCERS/producer-$producer.eskm" "$axis_dir/" || return 1
-    done
+    cp "$PRODUCERS"/*.eskm "$axis_dir/" || return 1
 }
 
 check_rewrites() {
-    local axis_dir="$1" producer
-    cmp -s "$FIXTURES/ordinary-2x3.eskm" \
-        "$axis_dir/rewrite-ordinary-2x3.eskm" || return 1
-    cmp -s "$FIXTURES/rank8.eskm" \
-        "$axis_dir/rewrite-rank8.eskm" || return 1
-    cmp -s "$FIXTURES/multi-tensor.eskm" \
-        "$axis_dir/rewrite-multi-tensor.eskm" || return 1
+    local axis_dir="$1" producer fixture scope
+    for fixture in "${VALID_FIXTURES[@]}"; do
+        cmp -s "$FIXTURES/$fixture.eskm" \
+            "$axis_dir/rewrite-$fixture.eskm" || return 1
+        for producer in "${ENGINES[@]}"; do
+            cmp -s "$FIXTURES/$fixture.eskm" \
+                "$axis_dir/rewrite-producer-$producer-$fixture.eskm" || return 1
+        done
+    done
+    for fixture in "${SINGLE_FIXTURES[@]}"; do
+        cmp -s "$FIXTURES/$fixture.eskm" \
+            "$axis_dir/tensor-rewrite-$fixture.eskm" || return 1
+    done
+    for scope in function region; do
+        for fixture in scalar empty-0x3; do
+            cmp -s "$FIXTURES/$fixture.eskm" \
+                "$axis_dir/$scope-rewrite-$fixture.eskm" || return 1
+        done
+    done
     for producer in "${ENGINES[@]}"; do
         cmp -s "$PRODUCERS/producer-$producer.eskm" \
             "$axis_dir/rewrite-producer-$producer.eskm" || return 1
@@ -215,13 +239,17 @@ check_rewrites() {
 }
 
 run_negative_control() {
-    local consumer="$1" kind="$2" expected="$3" axis_dir rc
+    local consumer="$1" kind="$2" expected="$3" axis_dir rc CONTROL=""
     axis_dir="$WORK_DIR/self-test-$kind-$consumer"
     prepare_consumer "$axis_dir" || return 125
     case "$kind" in
         producer)
             cp "$FIXTURES/ordinary-2x3.eskm" \
                 "$axis_dir/producer-vm-bytecode.eskm" || return 125
+            ;;
+        metadata|payload)
+            # Change the expectation only: all input fixtures stay valid and unchanged.
+            CONTROL="$kind"
             ;;
         malformed)
             cp "$FIXTURES/ordinary-2x3.eskm" \
@@ -249,6 +277,14 @@ if [ "$SELF_TEST" -eq 1 ]; then
             rc=$?
             record_failure "$rc"
         fi
+        if run_negative_control "$consumer" metadata "scalar rank/dimensions"; then :; else
+            rc=$?
+            record_failure "$rc"
+        fi
+        if run_negative_control "$consumer" payload "scalar payload values"; then :; else
+            rc=$?
+            record_failure "$rc"
+        fi
         if run_negative_control "$consumer" malformed \
                 "reject bad-magic.eskm"; then :; else
             rc=$?
@@ -256,7 +292,7 @@ if [ "$SELF_TEST" -eq 1 ]; then
         fi
     done
     exit_if_incomplete
-    echo "PASS: ESKM v1 matrix negative controls (model metadata and malformed rejection)"
+    echo "PASS: ESKM v1 matrix negative controls (16 checks: model structure, scalar metadata/payload, malformed rejection)"
     exit 0
 fi
 
@@ -267,7 +303,7 @@ for consumer in "${ENGINES[@]}"; do
     if [ "$rc" -eq 0 ] &&
        has_exact_success "$axis_dir" "ESKM-V1-CONSUME:PASS" &&
        check_rewrites "$axis_dir"; then
-        echo "PASS: $consumer loaded and exactly rewrote all four producer outputs"
+        echo "PASS: $consumer rewrote six goldens and all 24 producer fixtures, five public tensors, four lifetime cases"
     else
         report_failure "$rc" "$consumer compatibility oracle failed"
         show_output "$axis_dir"
@@ -276,4 +312,4 @@ for consumer in "${ENGINES[@]}"; do
 done
 
 exit_if_incomplete
-echo "PASS: ESKM v1 model-load parity (4 producers x 4 consumers; 16 cells)"
+echo "PASS: ESKM v1 model-load parity (6 fixtures x 4 producers x 4 consumers; 96 cells; 20 public tensor and 16 lifetime cases)"

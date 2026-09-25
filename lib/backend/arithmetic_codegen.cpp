@@ -13,6 +13,7 @@
  */
 
 #include <eshkol/backend/arithmetic_codegen.h>
+#include "../core/taylor_opcodes.h"
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/backend/libm_codegen.h>
 #include <eshkol/eshkol.h>
@@ -433,6 +434,171 @@ llvm::Value* ArithmeticCodegen::isADNode(llvm::Value* operand, llvm::Value* base
 }
 
 // === Central AD Dispatch Handlers ===
+
+// === Complex values that carry a derivative (ADR-0025) ===
+
+llvm::Value* ArithmeticCodegen::isDerivativeCarrier(llvm::Value* tagged) {
+    auto& b = ctx_.builder();
+    llvm::Value* base = tagged_.getBaseType(tagged_.getType(tagged));
+    llvm::Value* is_dual = b.CreateICmpEQ(base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* is_node = b.CreateICmpEQ(base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    return b.CreateOr(b.CreateOr(is_dual, is_node), emitIsTaylorSingle(tagged), "is_derivative_carrier");
+}
+
+llvm::Value* ArithmeticCodegen::makeRectangular(llvm::Value* real, llvm::Value* imag) {
+    auto& b = ctx_.builder();
+    auto as_tagged = [&](llvm::Value* v) -> llvm::Value* {
+        if (v->getType() == ctx_.taggedValueType()) return v;
+        if (v->getType()->isDoubleTy()) return tagged_.packDouble(v);
+        if (v->getType()->isIntegerTy(64)) return tagged_.packInt64(v, true);
+        return tagged_.packDouble(extractAsDouble(v));
+    };
+    real = as_tagged(real);
+    imag = as_tagged(imag);
+
+    llvm::Value* real_carries = isDerivativeCarrier(real);
+    llvm::Value* imag_carries = isDerivativeCarrier(imag);
+    llvm::Value* real_primal = extractAsDouble(real);
+    llvm::Value* imag_primal = extractAsDouble(imag);
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* carrier_bb = llvm::BasicBlock::Create(ctx_.context(), "mkrect_carrier", fn);
+    llvm::BasicBlock* plain_bb = llvm::BasicBlock::Create(ctx_.context(), "mkrect_plain", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "mkrect_join", fn);
+    b.CreateCondBr(b.CreateOr(real_carries, imag_carries), carrier_bb, plain_bb);
+
+    // A component that carries nothing is stored as the plain double it is, so
+    // a reader of the carrier never meets an exact integer or a rational here.
+    b.SetInsertPoint(carrier_bb);
+    llvm::Value* real_comp = b.CreateSelect(real_carries, real, tagged_.packDouble(real_primal));
+    llvm::Value* imag_comp = b.CreateSelect(imag_carries, imag, tagged_.packDouble(imag_primal));
+    llvm::Value* carrier = complex_.packCarrierComplex(real_primal, imag_primal, real_comp, imag_comp);
+    llvm::BasicBlock* carrier_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(plain_bb);
+    llvm::Value* plain = complex_.packComplexToTagged(complex_.createComplex(real_primal, imag_primal));
+    llvm::BasicBlock* plain_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, "mkrect");
+    out->addIncoming(carrier, carrier_exit);
+    out->addIncoming(plain, plain_exit);
+    return out;
+}
+
+llvm::Value* ArithmeticCodegen::complexComponent(llvm::Value* value, bool imag) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "comp_of_complex", fn);
+    llvm::BasicBlock* real_bb = llvm::BasicBlock::Create(ctx_.context(), "comp_of_real", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "comp_join", fn);
+    llvm::Value* is_complex = b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(value)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    b.CreateCondBr(is_complex, complex_bb, real_bb);
+
+    b.SetInsertPoint(complex_bb);
+    llvm::Value* from_complex = complex_.componentTagged(value, imag);
+    llvm::BasicBlock* complex_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(real_bb);
+    llvm::Value* from_real = imag
+        ? tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0))
+        : value;
+    llvm::BasicBlock* real_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, imag ? "comp_imag" : "comp_real");
+    out->addIncoming(from_complex, complex_exit);
+    out->addIncoming(from_real, real_exit);
+    return out;
+}
+
+llvm::Value* ArithmeticCodegen::withComplexCarrierDispatch(
+    llvm::Value* left, llvm::Value* right, char op,
+    const std::function<llvm::Value*()>& body) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    auto is_complex = [&](llvm::Value* v) {
+        return b.CreateICmpEQ(tagged_.getBaseType(tagged_.getType(v)),
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_COMPLEX));
+    };
+    llvm::BasicBlock* probe_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_carrier_probe", fn);
+    llvm::BasicBlock* carrier_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_carrier_op", fn);
+    llvm::BasicBlock* normal_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_carrier_none", fn);
+    llvm::BasicBlock* join_bb = llvm::BasicBlock::Create(ctx_.context(), "cplx_carrier_join", fn);
+
+    // One cheap test on the ordinary path: is either operand complex at all?
+    b.CreateCondBr(b.CreateOr(is_complex(left), is_complex(right)), probe_bb, normal_bb);
+
+    b.SetInsertPoint(probe_bb);
+    llvm::Value* in_play = b.CreateOr(
+        b.CreateOr(complex_.isCarrierComplex(left), complex_.isCarrierComplex(right)),
+        b.CreateOr(isDerivativeCarrier(left), isDerivativeCarrier(right)));
+    b.CreateCondBr(in_play, carrier_bb, normal_bb);
+
+    // (a + bi) op (c + di), each of a, b, c, d an ordinary numeric-tower value.
+    b.SetInsertPoint(carrier_bb);
+    if (op == '^') {
+        // expt: the code generator's formula (exact integer powers by repeated
+        // multiplication, otherwise exp(b log a)); see setComplexCarrierPow().
+        if (!complex_carrier_pow_) {
+            eshkol_error("arithmetic: complex carrier expt has no formula installed");
+            return nullptr;
+        }
+        llvm::Value* pow_result = complex_carrier_pow_(left, right);
+        llvm::BasicBlock* pow_exit = b.GetInsertBlock();
+        b.CreateBr(join_bb);
+        b.SetInsertPoint(normal_bb);
+        llvm::Value* normal_result = body();
+        llvm::BasicBlock* normal_exit = b.GetInsertBlock();
+        b.CreateBr(join_bb);
+        b.SetInsertPoint(join_bb);
+        llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, "cplx_carrier_pow");
+        out->addIncoming(pow_result, pow_exit);
+        out->addIncoming(normal_result, normal_exit);
+        return out;
+    }
+    llvm::Value* a = complexComponent(left, false);
+    llvm::Value* bi = complexComponent(left, true);
+    llvm::Value* c = complexComponent(right, false);
+    llvm::Value* d = complexComponent(right, true);
+    llvm::Value* re = nullptr;
+    llvm::Value* im = nullptr;
+    switch (op) {
+        case '+': re = add(a, c); im = add(bi, d); break;
+        case '-': re = sub(a, c); im = sub(bi, d); break;
+        case '*': re = sub(mul(a, c), mul(bi, d)); im = add(mul(a, d), mul(bi, c)); break;
+        case '/': {
+            llvm::Value* den = add(mul(c, c), mul(d, d));
+            re = div(add(mul(a, c), mul(bi, d)), den);
+            im = div(sub(mul(bi, c), mul(a, d)), den);
+            break;
+        }
+        default:
+            eshkol_error("arithmetic: unknown complex carrier operator '%c'", op);
+            return nullptr;
+    }
+    llvm::Value* carrier_result = makeRectangular(re, im);
+    llvm::BasicBlock* carrier_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(normal_bb);
+    llvm::Value* normal_result = body();
+    llvm::BasicBlock* normal_exit = b.GetInsertBlock();
+    b.CreateBr(join_bb);
+
+    b.SetInsertPoint(join_bb);
+    llvm::PHINode* out = b.CreatePHI(ctx_.taggedValueType(), 2, "cplx_carrier_result");
+    out->addIncoming(carrier_result, carrier_exit);
+    out->addIncoming(normal_result, normal_exit);
+    return out;
+}
 
 /**
  * @brief Central dispatch wrapper for binary arithmetic ops that may involve reverse-mode AD nodes.
@@ -1525,6 +1691,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
     left = autodiff_.maybeJetLiftTapeOperand(left);
     right = autodiff_.maybeJetLiftTapeOperand(right);
+    return withComplexCarrierDispatch(left, right, '+', [&]() -> llvm::Value* {
     return withADBinaryDispatch(left, right, 2 /*AD_NODE_ADD*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -1565,7 +1732,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), add_taylor_path, add_after_taylor);
         ctx_.builder().SetInsertPoint(add_taylor_path);
-        llvm::Value* add_twr = emitTaylorBinaryCall(left, right, 0);
+        llvm::Value* add_twr = emitTaylorBinaryCall(left, right, eshkol_taylor_binary_opcode("+"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* add_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(add_after_taylor);
@@ -1717,6 +1884,7 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     }, "add");
+    });
         });
     std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
     return ctx_.builder().CreateCall(outline,
@@ -1750,6 +1918,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
     left = autodiff_.maybeJetLiftTapeOperand(left);
     right = autodiff_.maybeJetLiftTapeOperand(right);
+    return withComplexCarrierDispatch(left, right, '-', [&]() -> llvm::Value* {
     return withADBinaryDispatch(left, right, 3 /*AD_NODE_SUB*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -1790,7 +1959,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), sub_taylor_path, sub_after_taylor);
         ctx_.builder().SetInsertPoint(sub_taylor_path);
-        llvm::Value* sub_twr = emitTaylorBinaryCall(left, right, 1);
+        llvm::Value* sub_twr = emitTaylorBinaryCall(left, right, eshkol_taylor_binary_opcode("-"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* sub_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(sub_after_taylor);
@@ -1942,6 +2111,7 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     }, "sub");
+    });
         });
     std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
     return ctx_.builder().CreateCall(outline,
@@ -1975,6 +2145,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
     left = autodiff_.maybeJetLiftTapeOperand(left);
     right = autodiff_.maybeJetLiftTapeOperand(right);
+    return withComplexCarrierDispatch(left, right, '*', [&]() -> llvm::Value* {
     return withADBinaryDispatch(left, right, 4 /*AD_NODE_MUL*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -2015,7 +2186,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), mul_taylor_path, mul_after_taylor);
         ctx_.builder().SetInsertPoint(mul_taylor_path);
-        llvm::Value* mul_twr = emitTaylorBinaryCall(left, right, 2);
+        llvm::Value* mul_twr = emitTaylorBinaryCall(left, right, eshkol_taylor_binary_opcode("*"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* mul_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(mul_after_taylor);
@@ -2167,6 +2338,7 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     }, "mul");
+    });
         });
     std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
     return ctx_.builder().CreateCall(outline,
@@ -2204,6 +2376,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
     left = autodiff_.maybeJetLiftTapeOperand(left);
     right = autodiff_.maybeJetLiftTapeOperand(right);
+    return withComplexCarrierDispatch(left, right, '/', [&]() -> llvm::Value* {
     return withADBinaryDispatch(left, right, 5 /*AD_NODE_DIV*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -2244,7 +2417,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         ctx_.builder().SetInsertPoint(check_taylor);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), div_taylor_path, div_after_taylor);
         ctx_.builder().SetInsertPoint(div_taylor_path);
-        llvm::Value* div_twr = emitTaylorBinaryCall(left, right, 3);
+        llvm::Value* div_twr = emitTaylorBinaryCall(left, right, eshkol_taylor_binary_opcode("/"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* div_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(div_after_taylor);
@@ -2441,6 +2614,7 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     }, "div");
+    });
         });
     std::array<llvm::Value*, 3> src_loc = currentSourceLocationArgs();
     return ctx_.builder().CreateCall(outline,
@@ -2705,6 +2879,24 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
     // forward-mode AD.
     operand = autodiff_.maybeJetLiftTapeOperand(operand);
     return withADUnaryDispatch(operand, 42 /*AD_NODE_ABS*/, [&]() -> llvm::Value* {
+      // SW-212: a forward jet or a Taylor carrier takes the kernel's abs rule
+      // (|x| with sign(x) on every higher coefficient). The arms below read a
+      // number's payload: a jet fell to the int64 arm and a tower to the
+      // bignum arm, so `magnitude` of a real carrier answered 0.
+      llvm::Function* abs_fn = ctx_.builder().GetInsertBlock()->getParent();
+      llvm::BasicBlock* abs_carrier = llvm::BasicBlock::Create(ctx_.context(), "abs_carrier", abs_fn);
+      llvm::BasicBlock* abs_number = llvm::BasicBlock::Create(ctx_.context(), "abs_number", abs_fn);
+      llvm::BasicBlock* abs_join = llvm::BasicBlock::Create(ctx_.context(), "abs_join", abs_fn);
+      llvm::Value* abs_is_jet = ctx_.builder().CreateICmpEQ(tagged_.getBaseType(tagged_.getType(operand)),
+          llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+      ctx_.builder().CreateCondBr(ctx_.builder().CreateOr(abs_is_jet, emitIsTaylorSingle(operand)),
+                                  abs_carrier, abs_number);
+      ctx_.builder().SetInsertPoint(abs_carrier);
+      llvm::Value* abs_carrier_result = emitTaylorUnaryCall(operand, eshkol_taylor_unary_opcode("abs"));
+      llvm::BasicBlock* abs_carrier_exit = ctx_.builder().GetInsertBlock();
+      ctx_.builder().CreateBr(abs_join);
+      ctx_.builder().SetInsertPoint(abs_number);
+      llvm::Value* abs_number_result = [&]() -> llvm::Value* {
         llvm::Value* type_tag = tagged_.getType(operand);
         llvm::Value* base_type = tagged_.getBaseType(type_tag);
 
@@ -2851,6 +3043,14 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
         phi->addIncoming(int_phi, int_exit);
 
         return phi;
+      }();
+      llvm::BasicBlock* abs_number_exit = ctx_.builder().GetInsertBlock();
+      ctx_.builder().CreateBr(abs_join);
+      ctx_.builder().SetInsertPoint(abs_join);
+      llvm::PHINode* abs_out = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "abs_value");
+      abs_out->addIncoming(abs_carrier_result, abs_carrier_exit);
+      abs_out->addIncoming(abs_number_result, abs_number_exit);
+      return abs_out;
     });
 }
 
@@ -3427,6 +3627,10 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
     base = autodiff_.maybeJetLiftTapeOperand(base);
     exponent = autodiff_.maybeJetLiftTapeOperand(exponent);
     return withADBinaryDispatch(base, exponent, 10 /*AD_NODE_POW*/, [&]() -> llvm::Value* {
+      // SW-211: a complex operand with a derivative in play takes the complex
+      // carrier formula, the same facility complex + - * / use; the plain
+      // kernel below reads the primals and would drop the derivative.
+      return withComplexCarrierDispatch(base, exponent, '^', [&]() -> llvm::Value* {
         // Re-extract types inside lambda
         llvm::Value* base_type = tagged_.getType(base);
         llvm::Value* exp_type = tagged_.getType(exponent);
@@ -3445,7 +3649,7 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         llvm::BasicBlock* pow_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "pow_after_taylor", func);
         ctx_.builder().CreateCondBr(emitIsTaylorCheck(base, exponent), pow_taylor, pow_after_taylor);
         ctx_.builder().SetInsertPoint(pow_taylor);
-        llvm::Value* pow_twr = emitTaylorBinaryCall(base, exponent, 4);
+        llvm::Value* pow_twr = emitTaylorBinaryCall(base, exponent, eshkol_taylor_binary_opcode("pow"));
         ctx_.builder().CreateBr(merge);
         llvm::BasicBlock* pow_twr_exit = ctx_.builder().GetInsertBlock();
         ctx_.builder().SetInsertPoint(pow_after_taylor);
@@ -3619,6 +3823,7 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         phi->addIncoming(regular_tagged, regular_exit);
 
         return phi;
+      });
     });
 }
 

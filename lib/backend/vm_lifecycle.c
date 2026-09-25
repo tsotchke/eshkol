@@ -40,6 +40,7 @@ VM* vm_create(void) {
     VM* vm = (VM*)calloc(1, sizeof(VM));
     if (!vm) return NULL;
     vm_init(vm);
+    if (!vm->frames) { vm_free(vm); return NULL; }
     vm->code = (Instr*)calloc(4096, sizeof(Instr));
     if (!vm->code) { vm_free(vm); return NULL; }
     return vm;
@@ -48,6 +49,11 @@ VM* vm_create(void) {
  *         dlopen'd libraries, the heap's arena, and the code buffer) and
  *         free @p vm itself. */
 void vm_free(VM* vm) {
+    if (vm && vm->open_uvs) {  /* SW-190 open-upvalue table */
+        free(vm->open_uvs);
+        vm->open_uvs = NULL;
+        vm->n_open_uvs = vm->cap_open_uvs = 0;
+    }
     if (!vm) return;
     vm_regex_free_all(vm);
     vm_dlopen_close_all(vm);
@@ -60,6 +66,7 @@ void vm_free(VM* vm) {
     heap_destroy(&vm->heap);
     free(vm->code);
     free(vm->constants);
+    free(vm->frames);
     vm->constants = NULL;
     vm->const_cap = 0;
     /* The pooled Adam states themselves are VM-lifetime global-arena

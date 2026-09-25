@@ -878,21 +878,103 @@ void eshkol_iter_nursery_recycle(eshkol_region_t* region,
 void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
                                       const void* dst,
                                       const eshkol_tagged_value_t* value);
-// Range form for bulk copies (vector-copy!): promotes each copied slot in
-// place. Fast path (no region) is a single thread-local load + branch.
+// Range form for bulk stores (vector-copy!, vector-fill!, tensor slots):
+// promotes n STAGED values in place, in one transaction, BEFORE the caller
+// stores them. Fast path (no region) is a single thread-local load + branch.
+//
+// Both forms are all-or-nothing (#713, ADR-0001 "All-or-nothing promotion"):
+// when any object the values reach cannot be copied, the outputs are left
+// untouched and a catchable allocation error is raised, so no store ever
+// publishes a pointer into a region that is about to be freed.
 void eshkol_region_write_barrier_range(const void* dst,
                                        eshkol_tagged_value_t* slots,
                                        uint64_t n);
 
-// Representation-aware vector mutation. Eshkol exposes both Scheme vectors
-// (inline tagged slots) and numeric tensor-backed #(...) literals through the
-// R7RS vector API; vector-copy! must therefore bridge both layouts safely.
-typedef enum eshkol_vector_copy_status {
-    ESHKOL_VECTOR_COPY_OK = 0,
-    ESHKOL_VECTOR_COPY_NULL = 1,
-    ESHKOL_VECTOR_COPY_BOUNDS = 2,
-    ESHKOL_VECTOR_COPY_TYPE = 3
-} eshkol_vector_copy_status_t;
+// Raise the runtime's catchable allocation-failure condition for @p operation,
+// which could not allocate @p bytes (0 when the size is not known). The
+// condition object is reserved per thread ahead of time
+// (eshkol_reserve_allocation_failure_condition, called on region entry) in a
+// private arena outside every region, so raising cannot itself fail under the
+// exhaustion being reported and a raise that crosses open regions needs no
+// promotion to carry it. Does not return: control transfers to the innermost
+// handler, or the process exits with the message when there is none.
+void eshkol_raise_allocation_failure(const char* operation, size_t bytes);
+void eshkol_reserve_allocation_failure_condition(void);
+
+// Allocation failpoints: deterministic, test-driven allocation failure at the
+// sites a region promotion depends on, so every abort path of the promotion
+// transaction can be exercised on purpose rather than by exhausting memory.
+// Disarmed (the default) each site costs one thread-local load. Arming makes
+// the nth (0-based) occurrence of one site on the calling thread fail -- an
+// allocator NULL for the two allocator sites, std::bad_alloc for the three
+// bookkeeping sites -- exactly once. Runtime-internal: not part of the
+// installed ABI.
+typedef enum {
+    ESHKOL_ALLOC_FAILPOINT_EVAC_COPY = 0,   // destination copy of an object or buffer
+    ESHKOL_ALLOC_FAILPOINT_ARENA_BLOCK,     // the OS providing a new arena block
+    ESHKOL_ALLOC_FAILPOINT_EVAC_FORWARD,    // forwarding-map insert
+    ESHKOL_ALLOC_FAILPOINT_EVAC_SAVED,      // saved-bytes record of a shared buffer
+    ESHKOL_ALLOC_FAILPOINT_EVAC_INSERTED,   // inserted-forwarding-keys record
+    ESHKOL_ALLOC_FAILPOINT_COUNT
+} eshkol_alloc_failpoint_t;
+void eshkol_alloc_failpoint_arm(int site, uint64_t nth);
+void eshkol_alloc_failpoint_disarm(void);
+uint64_t eshkol_alloc_failpoint_hits(int site);
+int eshkol_alloc_failpoint_fire(int site);   // 1 = this occurrence must fail
+
+// Number of entries in @p region's persistent promotion forwarding relation.
+size_t eshkol_region_forwarding_size(const eshkol_region_t* region);
+
+// The container slot store boundary (docs/design/adr/0020-container-slot-store-boundary.md).
+//
+// Eshkol exposes two sequence representations through the R7RS vector API: a
+// Scheme vector (inline 16-byte tagged slots, any value) and a tensor (a dense
+// numeric carrier; a numeric #(...) literal is one). Invariant: a value stored
+// into a slot is a value of the slot's declared representation. A Scheme vector
+// slot takes the tagged value unchanged. A tensor slot takes a real number of
+// any exactness, converted exactly as `inexact` converts it and reduced to the
+// tensor's dtype; a differentiation carrier keeps its established in-tensor
+// encoding; any other value is refused with ESHKOL_SLOT_STORE_VALUE before the
+// destination is modified. Payload bits are never reinterpreted.
+//
+// Every mutator reaches a tensor slot through these entry points. Compiled code
+// may store inline only on the two paths where the representation is already
+// proven: a tagged value into a Scheme vector slot, and a DOUBLE into an f64
+// tensor slot.
+typedef enum eshkol_slot_store_status {
+    ESHKOL_SLOT_STORE_OK = 0,
+    ESHKOL_SLOT_STORE_NULL = 1,
+    ESHKOL_SLOT_STORE_BOUNDS = 2,
+    ESHKOL_SLOT_STORE_CONTAINER = 3,  // operand is neither a vector nor a tensor
+    ESHKOL_SLOT_STORE_VALUE = 4       // value has no representation in the slot
+} eshkol_slot_store_status_t;
+// Store one value at a linear index of a vector or tensor operand.
+int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* sequence,
+                                   int64_t index,
+                                   const eshkol_tagged_value_t* value);
+// Store one value at a linear index of a tensor object (payload pointer).
+int32_t eshkol_tensor_slot_store(void* tensor, int64_t index,
+                                 const eshkol_tagged_value_t* value);
+// Same, for the vector API: a value the numeric carrier cannot hold promotes
+// the carrier to the boxed representation instead of being refused.
+int32_t eshkol_vector_slot_store(void* tensor, int64_t index,
+                                 const eshkol_tagged_value_t* value);
+// Construction fill for the tensor API (`make-tensor shape fill`): store one
+// value into every slot of a tensor object. A forward-mode derivative carrier
+// widens it to a jet tensor; a value that is not a number is refused.
+int32_t eshkol_tensor_fill_slots(void* tensor, const eshkol_tagged_value_t* value);
+// Construction: store values[k] into slot indices[k] of a tensor object, each
+// through the slot encoder (a forward-mode carrier widens it to a jet tensor).
+int32_t eshkol_tensor_store_indexed(void* tensor, const int64_t* indices,
+                                    const eshkol_tagged_value_t* values, int64_t n);
+// Is this value a real number of any exactness or a forward-mode derivative
+// carrier -- something a numeric tensor slot can hold? 1 or 0.
+int32_t eshkol_tensor_leaf_is_storable(const eshkol_tagged_value_t* value);
+// Store one value into every slot of a vector or tensor operand.
+int32_t eshkol_sequence_fill(const eshkol_tagged_value_t* sequence,
+                             const eshkol_tagged_value_t* value);
+// Copy src[start, end) into dst at `at`; end == -1 means the source length.
+// Overlap-safe; validates every value before the destination is modified.
 int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
                                     const void* src, int64_t start, int64_t end);
 
@@ -981,8 +1063,23 @@ typedef enum eshkol_tensor_dtype {
     // during the Hessian's forward-over-forward sweep and consumed by the
     // dual-aware matmul/tensor-sum paths so second-order terms are not dropped.
     // Well above the real precision codes so no numeric kernel misreads it.
-    ESHKOL_TENSOR_DTYPE_DUAL = 64  // elements are tagged DUAL_NUMBER values
+    ESHKOL_TENSOR_DTYPE_DUAL = 64, // elements are tagged DUAL_NUMBER values
+    // ADR-0020: a numeric `#(...)` literal materialises as a tensor, and R7RS
+    // vectors are heterogeneous, so storing a non-numeric value through the
+    // vector API promotes the carrier in place: `elements` becomes an array of
+    // 16-byte tagged values and the dtype records that. The descriptor keeps
+    // its address, so every alias sees the promotion. A promoted carrier is no
+    // longer a numeric tensor: `tensor?` answers #f for it and every tensor
+    // kernel refuses it through the operand check.
+    ESHKOL_TENSOR_DTYPE_BOXED = 65
 } eshkol_tensor_dtype_t;
+
+// True when `elements` holds 16-byte tagged values rather than f64 bit
+// patterns. Both tagged dtypes are laid out the same way; they differ only in
+// what the values are allowed to be.
+static inline int eshkol_tensor_dtype_is_tagged(uint64_t dtype) {
+    return dtype == ESHKOL_TENSOR_DTYPE_DUAL || dtype == ESHKOL_TENSOR_DTYPE_BOXED;
+}
 
 // Tensor structure for multi-dimensional arrays
 // Must match LLVM TypeSystem tensor_type layout:

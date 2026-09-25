@@ -101,11 +101,11 @@ static VmTensor* vm_tensor_binary_op(VmRegionStack* rs, const VmTensor* a,
     return out;
 }
 
-/* Scalar binary op helpers (division by zero yields 0.0 rather than inf/nan) */
+/* Scalar binary op helpers. Inexact division follows IEEE 754, as native fdiv does. */
 static double vm_op_add(double a, double b) { return a + b; }
 static double vm_op_sub(double a, double b) { return a - b; }
 static double vm_op_mul(double a, double b) { return a * b; }
-static double vm_op_div(double a, double b) { return b != 0.0 ? a / b : 0.0; }
+static double vm_op_div(double a, double b) { return a / b; }
 static double vm_op_pow(double a, double b) { return pow(a, b); }
 static double vm_op_max(double a, double b) { return a > b ? a : b; }
 static double vm_op_min(double a, double b) { return a < b ? a : b; }
@@ -124,8 +124,7 @@ static VmTensor* vm_tensor_sub(VmRegionStack* rs, const VmTensor* a, const VmTen
 static VmTensor* vm_tensor_mul(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     return vm_tensor_binary_op(rs, a, b, vm_op_mul);
 }
-/** @brief Broadcasting element-wise tensor division (0.0 where the
- *         divisor is 0). */
+/** @brief Broadcasting element-wise tensor division with IEEE 754 semantics. */
 static VmTensor* vm_tensor_div(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     return vm_tensor_binary_op(rs, a, b, vm_op_div);
 }

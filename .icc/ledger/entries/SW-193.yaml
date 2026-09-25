@@ -1,0 +1,34 @@
+id: SW-193
+bucket: SILENT-WRONG
+family: ad/complex-carrier
+status: fixed
+needs_decision: false
+title: "nested holomorphic complex derivatives discard the enclosing carrier and answer 0+0i instead of the second derivative"
+repro: >-
+  (display (derivative (lambda (z)
+    (derivative (lambda (w) (* w (* w w))) z))
+    (make-rectangular 1.0 1.0)))
+observed: >-
+  Native answers 0+0i on the current complex evaluation-point implementation;
+  the analytic result d²(z³)/dz² at z=1+i is 6+6i. The inner complex seed
+  does not preserve the enclosing perturbation carrier.
+correct: >-
+  6+6i, with the enclosing complex derivative carrier retained through the
+  nested pass.
+caught_by: [ad-integration-review]
+missed_by: [run_ad_oracle, run_ad_exactness_gate]
+notes: >-
+  Closed on every engine: the VM and browser VM at 7c036631
+  (fix/v135f-vmtaylor), native JIT and AOT at 1dad8eff6 (fix/v135f-taylor),
+  where tests/ad/complex_nested_carrier_test.esk (30 checks, including nested
+  derivative-n, taylor and captured complex variables) is registered as
+  complex_nested_carrier_runtime_smoke and _aot_smoke.
+closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+fixed_by: "ADR-0027 level carrier: VM half fix/v135f-vmtaylor (7c036631), native half fix/v135f-taylor (1dad8eff6)"
+observed_after: >-
+  (derivative (lambda (z) (derivative (lambda (w) (* w (* w w))) z))
+  (make-rectangular 1.0 1.0)) is 6+6i on the VM, the browser VM and native;
+  nested derivative-n and taylor at complex points agree too.
+evidence: >-
+  tests/ad/vm_nested_holomorphic_test.esk (ctest vm_nested_holomorphic_vm,
+  vm_nested_holomorphic_browser_vm, vm_nested_holomorphic_jit).

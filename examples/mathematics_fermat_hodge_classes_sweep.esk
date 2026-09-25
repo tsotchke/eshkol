@@ -28,7 +28,7 @@
 ;; Sources: as in the sibling example on the Fermat quartic fourfold
 ;; (Griffiths 1969; Shioda 1979; Aoki-Shioda 1983; Fulton 6.3).
 ;;
-;; DEFECT NOTES (routed around): as in the sibling examples.
+;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed.
 
 (require stdlib)
 

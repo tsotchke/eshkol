@@ -35,11 +35,11 @@
 ;;
 ;; DEFECT NOTES (routed around, not fixed): `#(...)` literals promote to f64
 ;; tensors (all vectors built with `vector`/`make-vector`); integer powers by
-;; repeated multiplication; `make-vector` with a vector fill shares the fill;
-;; arithmetic on exact rationals allocates without reclamation (SW-164), so
-;; every phase below is an INTEGER numerator over the common denominator 2
+;; repeated multiplication; `make-vector` with a vector fill shares the fill.
+;; Every phase below is an INTEGER numerator over the common denominator 2
 ;; (a value k stands for k/2 in Q/Z) and the only rational operations are the
-;; final divisions by |G|^V.
+;; final divisions by |G|^V -- a representation choice, independent of the
+;; exact-rational loop growth defect (SW-164), which is closed.
 
 (require stdlib)
 

@@ -1770,7 +1770,8 @@ entries:
 
   - id: SW-42
     bucket: DOCUMENTED-LIMITATION
-    status: open
+    status: fixed
+    closed_at: "ea7677b6a"
     needs_decision: false
     renumbered_from: >-
       SW-33, then SW-35 (collision). Filed as SW-33 on the pre-rebase stack; renumbered to SW-35
@@ -1904,6 +1905,17 @@ entries:
       expansion detected". The same program with the macro renamed works. That is a
       reserved-name collision in the native frontend, is LOUD (exit 1) rather than silent,
       and is out of scope for this entry.
+    resolution: >-
+      Fixed at ea7677b6a (ADR-0026), without syntax objects: each expansion colors
+      the identifiers its template introduces (inc/eshkol/frontend/syntax_color.h),
+      and a colored identifier no binder of its expansion binds resolves in the
+      macro's definition environment on both engines. The close condition is met
+      by measurement: this entry's repro prints 50 on native JIT, AOT and the VM
+      (tests/vm_parity/corpus/93_macro_hygiene_matrix.esk, check
+      "SW-42 free template identifier", ctest macro_hygiene_matrix), and the
+      18-cell SW-30 matrix corpus/68_syntax_rules_hygiene.esk still passes in the
+      VM parity harness. The SW-30 residuals are closed by the same rule: a
+      template's do-loop variable and internal define no longer capture.
 
   - id: SW-31
     bucket: SILENT-WRONG
@@ -3119,12 +3131,12 @@ entries:
     subtag: structural
     status: closed
     closed_at: "3ffbb24f"
-    closed_by: "origin/master 3ffbb24f; regression reverified in tests/vm_parity/frame_overflow_exit_status_test.py"
+    closed_by: "origin/master 3ffbb24f; ceiling regression reverified in tests/vm_parity/frame_ceiling_exit_status_test.py"
     title: "VM frame overflow was not reflected in the process exit status"
-    evidence: "lib/backend/eshkol_vm.c:258-262 reports fatal VM state and main propagates nonzero; tests/vm_parity/frame_overflow_exit_status_test.py verifies FRAME OVERFLOW and nonzero status with tests/vm_parity/found/frame_overflow_exit_zero.esk"
+    evidence: "lib/backend/eshkol_vm.c reports fatal VM state and main propagates nonzero; tests/vm_parity/frame_ceiling_exit_status_test.py verifies FRAME OVERFLOW, nonzero status, and empty stdout at the configured ceiling"
     caught_by: [parity-baselines]
     missed_by: [icc-correctness-chain, icc-smoke, icc-readiness]
-    notes: "Loud on stderr and now nonzero; the remaining VM tail-position depth limit is tracked separately as LE-13."
+    notes: "Loud on stderr and nonzero at the configurable frame ceiling. LE-13's tail-position transfer defect is separately closed."
   - id: LE-08
     bucket: LOUD-ERROR
     subtag: structural
@@ -10886,10 +10898,9 @@ entries:
     bucket: SILENT-WRONG
     subtag: autodiff
     family: runtime-taylor/perturbation-nesting
-    status: guarded
-    guarded_by: "the exact tier refuses nested differentiation through a captured carrier with a diagnostic (unsupported nested differentiation ... through a captured carrier); pinned repro tests/ad/nested_towers_matrix_test.esk, kept unregistered until the carrier rewrite lands"
-    guarded_at: "v1.3.5 candidate (integration/astra-v135)"
-    full_fix_branch: "fix/ad-nested-taylor-towers (ESH-0413 jet-over-jet carrier), targeted v1.4: it replaces the carrier the exact-coefficient sidecar shipped in v1.3.5 is built on, so the two cannot both be in force"
+    status: fixed
+    closed_at: '1dad8eff61d0257dd04e6d8fde00efa9ce0dea8b'
+    vm_closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
     title: "Two enclosing differentiation levels over an order-2 inner pass answered 0 silently, and both-passes-order->=2 raised, because the carrier had room for exactly one first-order companion"
     repro: >-
       .scratch/nested_ad_repro2.esk, and the full sweep in
@@ -10926,57 +10937,44 @@ entries:
       any coefficient above index 1, which is the both-passes-order->=2 refusal.
       The ceiling was the REPRESENTATION, not the mathematics.
     fix: >-
-      Give every differentiation pass a LEVEL and let a level's coefficients be
-      carriers of the enclosing levels -- the "jet over jet" the design always named
-      (docs/design/AD_TAYLOR_TOWER.md section 5c):
-      (1) inc/eshkol/eshkol.h adds ESH_TAYLOR_COEFF_CARRIER: a tower whose c[] is
-      eshkol_tagged_value_t, each entry any tagged number INCLUDING another tower
-      whose epoch names a strictly enclosing level.
-      (2) lib/core/runtime_taylor.c adds the level-polymorphic coefficient algebra
-      (coeff_add/sub/mul/div/unary/pow, which recurse into the tower kernel when a
-      coefficient is itself a carrier) and the trc_* recurrences -- the same algebra
-      as the tr_* kernels, written over "whatever the coefficients are".
-      (3) `normalise_operand_carrier` makes a foreign level a COEFFICIENT-VALUED
-      CONSTANT of the active level: the whole tower, structure and level tag intact,
-      in c[0]. Nothing is flattened, so nothing is lost, so nothing has to raise.
-      (4) `eshkol_taylor_seed_tagged` opens a level over whatever the point already
-      is, and `eshkol_taylor_extract_tagged`/`eshkol_taylor_coeffs_list` return
-      k!*c[k] as a tagged value -- a carrier of the enclosing level.
-      (5) `eshkol_ad_nested_seed` keeps one job: a pass that would seed an 8-jet but
-      meets a tower level runs as an order-1 level instead. A SINGLE enclosing 8-jet
-      direction still rides the ESH-0412 first-order companion (that is exactly what
-      one companion holds, and it allocates nothing per coefficient operation);
-      TWO enclosing directions -- where a companion runs out -- become levels of
-      their own through pseudo-epochs registered by the outermost tower pass, whose
-      extraction restates the answer as an 8-jet.
-      (6) lib/backend/autodiff_codegen.cpp mirrors the tower-context depth into the
-      runtime (eshkol_ad_tower_enter/leave -- its own __ad_tower_active has INTERNAL
-      linkage in the AOT build, so the runtime could never read it) and passes
-      whether a reverse tape is live, so the ESH-0093 mixed-mode protocol keeps the
-      jet slots it owns.
-      esh_taylor_t.carry_epoch, eshkol_ad_tower_carry_result and
-      eshkol_ad_nested_capture_unsupported are retired: with levels there is no
-      companion to carry and no shape to refuse.
+      ADR-0027 (docs/design/adr/0027-recursive-taylor-level-carrier.md). A pass
+      opened inside another live pass runs as a LEVEL: a truncated series in its
+      own perturbation whose coefficients are any numbers of the enclosing levels
+      (scalars, 8-jets, classic towers, or level carriers of smaller epochs;
+      ESH_TAYLOR_COEFF_CARRIER). Arithmetic takes the largest epoch as the active
+      level and reads every other operand whole as a constant of it; each
+      coefficient operation recurses through the same arithmetic
+      (lib/core/runtime_taylor.c, level_binary/level_unary and the 8-jet
+      coefficient algebra). eshkol_ad_nested_seed decides the level from the
+      forward level, the open tower depth and the point; eshkol_ad_nested_extract
+      reads k!*c[k] / the taylor list / a vector elementwise.
+      lib/backend/autodiff_codegen.cpp keys each seed site's route by its level
+      value (a nested pass emitted inside the body used to overwrite the enclosing
+      pass's route) and routes the exact scalar gradient through the same
+      protocol. The companion-lane special cases (carry_epoch, the hyper-dual
+      second companion, the RIDE/CARRY routes, the epoch projections) are retired.
+      Native: 1dad8eff6 (level carrier), a506faeb1 (retirement), 592cf7f9f (docs,
+      ns-residual any-order tau-series).
     evidence: >-
-      tests/ad/nested_towers_matrix_test.esk -- 155 checks: the depth-2 operator x
-      order matrix (`derivative`/`derivative-n`/`taylor` as outer and inner, orders
-      1..3 on each side), the depth-3 operator cube, the full 1..3 order sweep with
-      three live levels, nesting through the evaluation point, exact seeds, and the
-      Siskind-Pearlmutter perturbation-confusion negative controls (which answer 1,
-      not 2). tests/ad/nested_operator_matrix_test.esk extended with the
-      both-passes-order->=2 cells that used to raise. JIT and AOT lanes
-      (nested_towers_matrix_runtime_smoke, nested_towers_matrix_aot_smoke).
-      tests/ad/ad_carrier_nesting_test.esk, tests/ad/reverse_over_taylor_test.esk and
-      tests/ad/taylor_tower_test.esk all still green, which is what pins that the
-      level discipline REPLACED the companion rather than disturbing the P5
-      reverse-over-Taylor channel that still uses it.
+      Native JIT and AOT, re-measured on fix/v135f-taylor at 592cf7f9f:
+      tests/ad/nested_towers_matrix_test.esk 165/165 checks
+      (nested_towers_matrix_runtime_smoke, nested_towers_matrix_aot_smoke, now
+      registered), tests/ad/nested_operator_matrix_test.esk including the
+      both-passes-order->=2 cells (nested_operator_matrix_runtime_smoke/_aot_smoke).
+      The repro now prints 24; `(taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)`
+      prints (0 12 24). Every native AD ctest is green;
+      tests/stdlib/ns_residual_test.esk 24/24 with exact order-2 and order-3
+      tau-series.
     caught_by: [examples/mathematics_navier_stokes_* authoring, 2026-09-09]
     missed_by: [ctest, icc-smoke, icc-readiness, gate_no_silent_wrong.py]
     notes: >-
-      The bytecode VM has no tower at all and already RAISES on a nested `derivative`
-      (lib/backend/vm_native.c case 393, ESH-0369), so this defect has no VM twin and
-      the VM's documented raise is unchanged. Direct successor of SW-150, which
-      closed the one-companion half of the same family.
+      Closed on every engine. Native (JIT and AOT) at 1dad8eff6 on
+      fix/v135f-taylor; the bytecode VM and the browser VM at 7c036631 on
+      fix/v135f-vmtaylor, where tests/ad/nested_towers_matrix_test.esk and
+      tests/ad/nested_operator_matrix_test.esk pass with zero silent zeros on
+      eshkol-vm-standalone-test and the browser VM (ctest nested_towers_matrix_vm,
+      nested_towers_matrix_browser_vm, nested_operator_matrix_vm,
+      nested_operator_matrix_browser_vm). Direct successor of SW-150.
   - id: SW-163
     bucket: SILENT-WRONG
     status: closed
@@ -11689,7 +11687,7 @@ entries:
       ESH-0103 out-lines the whole numeric-tower dispatch into one
       `__eshkol_arith_{add,sub,mul,div}` helper per module, emitted at the first
       site of the operator and CALLED by every other, to avoid an O(n^2)
-      single-function blow-up. Its error branches recorded the location with
+      single-function growth. Its error branches recorded the location with
       `eshkol_set_error_location(file, line, col)` — from
       ArithmeticCodegen::emitSetErrorLocation and from
       TensorCodegen::unpackTensorOperandChecked — using
@@ -12642,129 +12640,6 @@ entries:
       because it travelled with SW-177 in the same file. The shape helpers
       are native-only -- the bytecode VM implements neither `unsqueeze` nor
       `squeeze` nor `slice` -- which is why their gate has no VM leg.
-  - id: SW-202
-    bucket: SILENT-WRONG
-    family: vm/tensor-reduction-shape
-    status: fixed
-    closed_at: "72a41917f"
-    needs_decision: false
-    title: "VM tensor-sum without an axis returns a one-element tensor, or per-row partial results, instead of a number"
-    repro: >-
-      (display (tensor-sum (tensor 0.5 0.25))),
-      (display (number? (tensor-sum (tensor 0.5 0.25)))) and
-      (display (tensor-sum (reshape (tensor 1.0 2.0 3.0 4.0) 2 2))) on the bytecode
-      VM (eshkol-vm-standalone-test) and the browser VM, against the native JIT.
-    observed: >-
-      The VM printed #(0.75), #f and #(3 7); native prints 0.75, #t and 10.
-      Arithmetic on the VM result, (+ 1 (tensor-sum (tensor 0.5 0.25))), was a
-      fatal runtime error. The prelude passed -1 for "no axis", and -1 also names
-      the last axis. (gpu-reduce + M) lowered the same way.
-    correct: >-
-      A full reduction (no axis) returns the scalar on every engine, as native
-      does; an explicit axis, negative ones counted from the last, reduces that
-      axis.
-    evidence: >-
-      Fixed on master by porting the integration-branch fix (7c036631d): the
-      prelude passes #f for "no axis" and the dispatcher treats a non-number axis
-      as a full reduction; gpu-reduce lowers to #f too. Gate:
-      tests/tensor/tensor_full_reduction_test.esk on the native JIT, the bytecode
-      VM and the browser VM bundle (ctest tensor_full_reduction_{jit,vm,browser_vm}).
-    caught_by: [sw197-exact-collection-matrix]
-    missed_by: [vm_parity]
-    notes: >-
-      Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch
-      in 7c036631d and ported to master by the WebGPU VM lane in 72a41917f.
-  - id: SW-243
-    bucket: SILENT-WRONG
-    family: vm/gpu-dispatch
-    status: fixed
-    closed_at: "2faf99cd4"
-    needs_decision: false
-    title: "VM GPU reduction treated axis -1 as all axes while the CPU path reads it as the last axis"
-    repro: >-
-      (define M (reshape (fill 262144 ...) 512 512)) then (tensor-sum M) on the
-      bytecode VM with a GPU backend, run once with ESHKOL_GPU_THRESHOLD=1 and
-      once with the threshold above the tensor size (tests/gpu/gpu_correctness_gate.esk
-      payload on the native VM with Metal).
-    observed: >-
-      Above the GPU threshold the VM returned the grand total (#(135255870.36...));
-      below it, the per-row sums (a 512-element tensor). The answer depended on
-      the tensor's size. vm_native.c sent axis < 0 to vm_gpu_try_reduce as a full
-      reduction, while vm_tensor_reduce reads -1 as the last axis.
-    correct: >-
-      The GPU is used only when it computes the same reduction as the CPU path:
-      a full reduction (no axis, SW-202), or an explicit axis whose other extents
-      are all 1, returned with the CPU result's shape.
-    evidence: >-
-      Fixed in 2faf99cd4, refined in 72a41917f. After the fix the native VM gate
-      payload agrees between Metal and CPU: reduce-sum-A 263348.73874376056 vs
-      263348.7387437591, reduce-max-A identical. Gate: tests/webgpu/webgpu_vm_test.mjs
-      (reductions within GPU_GATE_TOL, attached vs unattached browser VM) and
-      tests/tensor/tensor_full_reduction_test.esk.
-    caught_by: [webgpu-vm-lane-gate-payload-diff]
-    missed_by: [vm_parity, gpu_correctness_gate]
-    notes: >-
-      Latent on every GPU backend the VM links (Metal, CUDA); surfaced when the
-      browser VM gained WebGPU dispatch (ADR-0029). gpu_correctness_gate.sh
-      compares native GPU and CPU builds, never the VM's own two paths.
-  - id: SW-245
-    bucket: SILENT-WRONG
-    family: vm/gpu-dispatch
-    status: fixed
-    closed_at: "32738038f"
-    needs_decision: false
-    title: "VM GPU elementwise path checked only element counts, not shapes"
-    repro: >-
-      On the bytecode VM with a GPU backend and ESHKOL_GPU_THRESHOLD=1:
-      (tensor-add (tensor 1.0 2.0 3.0 4.0 5.0 6.0)
-                  (reshape (tensor 1.0 2.0 3.0 4.0 5.0 6.0) 1 6)).
-    observed: >-
-      vm_gpu_try_binary accepted the operands because their totals matched and
-      built the result with the first operand's shape, [6], where broadcasting
-      gives [1,6]; the CPU path returns [1,6]. The result's shape depended on
-      whether the GPU was used.
-    correct: >-
-      The GPU elementwise path runs only for operands of identical shape;
-      everything else takes the broadcasting CPU path.
-    evidence: >-
-      Fixed in 32738038f (vm_gpu_dispatch.h). Gate: tests/webgpu/webgpu_vm_test.mjs
-      (elementwise output bit-identical to the unattached VM).
-    caught_by: [webgpu-vm-lane-review]
-    missed_by: [vm_parity]
-    notes: >-
-      Latent on every GPU backend the VM links; found while wiring the browser VM
-      to WebGPU (ADR-0029).
-  - id: SW-246
-    bucket: SILENT-WRONG
-    family: vm/tensor-reduction-identity
-    status: fixed
-    closed_at: "72a41917f"
-    needs_decision: false
-    title: "VM max/min reductions started from -DBL_MAX/DBL_MAX, so an all-infinite tensor reduced to a finite number"
-    repro: >-
-      (display (tensor-max (tensor -inf.0 -inf.0))) and
-      (display (tensor-min (tensor +inf.0))) on the bytecode VM
-      (eshkol-vm-standalone-test) and the browser VM, against the native JIT.
-    observed: >-
-      The VM printed -1.7976931348623157e+308 and 1.7976931348623157e+308;
-      native prints -inf.0 and +inf.0, and so does the VM's WebGPU reduction
-      path, so the VM's answer also changed at the GPU threshold. Both the full
-      reduction (vm_tensor_reduce_all) and the axis reduction (vm_tensor_reduce)
-      seeded max/min with the largest finite double.
-    correct: >-
-      Max starts from -infinity and min from +infinity, so a reduction over
-      infinite elements returns the infinity, on every engine and on both sides
-      of the GPU threshold.
-    evidence: >-
-      Fixed in 72a41917f (lib/backend/vm_tensor_ops.c). Gate:
-      tests/tensor/tensor_full_reduction_test.esk ("tensor-max of -inf",
-      "tensor-min of +inf", "tensor-max axis of -inf") on the native JIT, the
-      bytecode VM and the browser VM bundle.
-    caught_by: [webgpu-vm-lane-review]
-    missed_by: [vm_parity]
-    notes: >-
-      Found while porting SW-202 to master for the browser-VM WebGPU lane. Still
-      present on the release integration branch.
   - id: LE-24
     bucket: LOUD-ERROR
     subtag: wrong-code
@@ -13247,3 +13122,3103 @@ entries:
       (`(remove p (list 1.0 2.0 3.0))` with a parameter predicate prints
       (4607182418800017408)), so a capturing predicate is left on its loud
       failure rather than routed there.
+  - id: LE-28
+    bucket: SILENT-WRONG
+    subtag: semantic
+    status: closed
+    closed_at: "2ab7562be"
+    family: static-callee-binding-identity
+    title: >-
+      A static `<name>_func` alias outlived the binding that created it, so
+      reassignment, redefinition and same-name shadowing could call the wrong
+      differentiand or higher-order procedure; dynamic `remove` also lost tags
+    repro: >-
+      `(let ((H (lambda (Z) (* Z Z)))) (set! H (lambda (Z) (* Z Z Z)))
+      (derivative H 2.0))` must return 12. A static resolver used the first
+      lambda and returned 4. The same stale alias affected direct calls, `apply`,
+      `map`, `reduce`, `vector-map` and every differentiation operator. A sibling
+      `let` or parameter named `H` could inherit another binding's alias. For
+      dynamic `(remove p (list 1.0 2.0 3.0))`, a predicate that keeps values above
+      one returned raw floating-point bits rather than `(1.0)`.
+    observed_before: >-
+      The differentiand's direct call observed the reassigned lambda, but
+      `derivative` still lowered the name to its original LLVM Function. Named
+      high-order paths similarly bypassed the current runtime value. Dynamic
+      removal extracted untagged payload bits for item comparison and tested a
+      predicate result as an integer rather than a tagged Scheme value.
+    correct: >-
+      Every call and differentiation operation observes the procedure currently
+      stored in the binding. Sibling and parameter bindings resolve only aliases
+      owned by their own storage. A runtime remove predicate retains exactly the
+      elements for which it returns #f, and item removal preserves full tagged
+      values under equal?, eqv? and eq?.
+    root_cause: >-
+      Static callee resolution was keyed by spelling and LLVM function table
+      presence, not by the mutable storage location that the name denotes at the
+      use site. Binding registration did not retain the binding's storage owner;
+      direct-call, apply, map and AD fast paths consequently accepted stale or
+      shadowed aliases. The dynamic remove path unpacked predicate results and
+      list cars without retaining their type tags. During the fix, reassignment
+      analysis also exposed that ESHKOL_EXTERN_OP carries a distinct extern
+      signature layout, not the generic call_op child layout.
+    fix: >-
+      `inc/eshkol/backend/static_callee_binding.h` is the common static-callee
+      binding abstraction. It records the alias owner storage, refuses aliases
+      for reassigned bindings, and rejects same-name runtime storage unless the
+      alias owner is that binding. Top-level callable mutation facts are cached
+      before code generation with the existing lexical mutation analysis. Direct
+      calls, apply, map, reduce, remove and AD resolvers consult the same facts;
+      dynamic procedures dispatch through the closure value. Remove uses tagged
+      truthiness, tagged equality arguments and type-preserving list-cell copies.
+      The mutation walker routes ESHKOL_EXTERN_OP to its no-AST-children case.
+      `scripts/gate_compiler_architecture.py` now compares the duplicated
+      EshkolLLVMCodeGen member layout and member types across code-generation
+      translation units.
+    observed_after: >-
+      The combined reassigned-callee fixture passes 60/60 JIT checks. The focused
+      reassigned-callee HOF fixture passes 12/12 JIT checks, including captured
+      closures emitted before a later set!, tagged inexact remove results, and
+      comparator behavior. CTest passes all six focused AD/HOF JIT and AOT cases.
+      The standard library object and bitcode build successfully. The AD suite
+      passes 61/61; the list suite passes 129/129.
+    evidence: >-
+      tests/closures/reassigned_callee_identity_test.esk and
+      tests/closures/reassigned_callee_hof_test.esk, registered as cached JIT and
+      AOT CTest cases. The passing recorded ICC execution is
+      `reassigned_callee_full_jit_aot_final`; logs and build evidence are in
+      `.scratch/hardening-resume-20260914/callee-identity/logs/`.
+    caught_by: [user-reported]
+    missed_by: [existing-ad-regressions, existing-list-suite]
+    notes: >-
+      The compiler member-layout mismatch and extern AST child-route defect were
+      independently exposed while building the mandatory regressions. The
+      duplicated class layouts are now checked by the compiler architecture gate.
+  - id: LE-29
+    bucket: LOUD-ERROR
+    subtag: structural
+    status: closed
+    closed_at: "cc10ab81"
+    closed_by: "branch fix/v135-typecheck-precision"
+    family: type-system/precision
+    title: "type checker: if claimed a concrete type over a Value branch unlike cond, recursive calls turned branch joins into Value, function signatures printed as unknown and were related to nothing, return annotations rejected Value bodies, and json-get-in had a different arity on each engine"
+    repro: >-
+      (1) `(define (f flag x) (label (if flag 42 x)))` warned "expected String,
+      got Int64" while `(label (cond (flag 42) (else x)))` was silent.
+      (2) `(define (label (s : string)) (string-length s))`,
+      `(define (to-int (x : number)) : integer 42)`, then `(label to-int)`
+      warned "expected String, got unknown"; passing a (-> Number Number)
+      function to a `(p : procedure)` parameter warned "expected ->, got unknown".
+      (3) `(define (first-number (xs : list)) : number (car xs))` warned "body
+      type Value doesn't match return annotation Number".
+      (4) `(json-get-in obj keys)`, the documented call, failed to compile for
+      the VM ("Arity mismatch: json-get-in expects 3 arguments but got 2"), and
+      `(json-get-in obj keys default)` failed natively ("expects 2 arguments but
+      got 3").
+    observed_before: >-
+      synthesizeIfTask() returned the concrete branch when the other was Value
+      and the then-branch when the branches shared no supertype, where cond,
+      case, when, unless, match and guard join. A function signature had no
+      node in the supertype graph: TypeEnvironment::getTypeName() printed it as
+      "unknown", isSubtype() related it to nothing but itself, so every
+      higher-order call with a declared arrow or procedure parameter warned
+      "expected unknown, got unknown". Return annotations, call arguments inside
+      signatures and checking mode used plain subtyping, so a Value body or a
+      (-> Value Value) lambda was reported. lib/core/json.esk defined
+      json-get-in with two parameters while the VM builtin required three, and
+      tests/vm/json_surface_regression.esk, a VM-only probe that also uses the
+      VM-only json-merge and json-stringify-pretty, exits 1 under the native
+      compile on both base and fix while passing 5/5 on its runner.
+    correct: >-
+      An if and its cond twin have one type. A function signature prints as
+      its arrow, is a subtype of the procedure and Closure types, and relates
+      to another signature contravariantly in the parameters and covariantly in
+      the result. Value is consistent with any annotation, at the top level and
+      inside a signature, while a concrete mismatch is still reported.
+      json-get-in takes an optional default on both engines, as
+      docs/reference/stdlib/json.md now documents.
+    root_cause: >-
+      lib/types/type_checker.cpp synthesizeIfTask() predated the shared
+      joinBranchTypes() rule. lib/types/hott_types.cpp kept function signatures
+      in function_type_cache_ only, outside getTypeName(), isSubtypeUncached()
+      and getSupertypeChain(). The return-annotation, argument and checkTask()
+      checks called isSubtype(), which has no notion of the dynamic type. The
+      if rule's preference for the concrete branch had been standing in for the
+      missing inference of a recursive procedure's own result, which was bound
+      as Value while its body was checked. json-get-in gained its default on
+      the VM (96ffd56e) without the stdlib or the documentation following.
+    fix: >-
+      (1) synthesizeIfTask() joins its branches with joinBranchTypes(). So that
+      a recursive branch does not turn that join into Value, a recursive
+      procedure's result is inferred as the least fixpoint over its own calls,
+      for a named let, a function define without a return annotation and a
+      letrec or letrec* lambda: the procedure is bound with result Never, a new
+      empty builtin type that is below every type, the identity of a join and
+      absorbing in arithmetic, and a pass that referred to the procedure is
+      repeated, speculatively and with LE-25's rollback, against the join of
+      the guess and the body type until the body adds nothing. A procedure no
+      path returns from, or one that exceeds eight passes, gets Value.
+      (2) TypeRelation owns static subtyping and arrow variance, structural
+      consistency, consistent subtyping, compatibility evidence, join/meet,
+      castability, narrowing, widening, pair projection, and printing.
+      TypeEnvironment's legacy static-subtype, join, and print entry points are
+      facades over that module; they no longer carry separate type-form rules.
+      (3) The checker routes branch and procedure-result joins, named-let and do
+      widening, occurrence narrowing, call-argument checks, return annotations,
+      checking mode, and `the` ascriptions through TypeRelation. InferenceSlot and
+      AdoptTop make the existing loop policy explicit in the relation. Concrete
+      mismatches still report, while Value/Invalid remain gradual.
+      (4) lib/core/json.esk defines (json-get-in obj keys . default) with
+      default #f; scripts/gen_builtin_min_arity.py derives the VM row's minimum
+      2 from that definition, the VM op maps an absent default to #f, and
+      tests/coverage/language_surface.json is regenerated.
+      scripts/run_vm_surface_tests.sh now fails a probe whose compile exits
+      nonzero instead of discarding the status with `|| true`.
+    observed_after: >-
+      All four probe shapes behave as stated in `correct`. Standard-library
+      compile: 0 [WARN] before and after.
+    evidence: >-
+      Measured through ICC alias eshkol-v135-typecheck-precision. Receipts:
+      type-relation-final-build PASS; cpp-type-relation-final PASS (3/3 test
+      programs, including the direct relation contract and 64/64 checker cases);
+      typesystem-final PASS (126/126 fixtures); stdlib-suite PASS (26/26);
+      vm-surface-regression-suite PASS (65/65, including json_get_in_default and
+      json_surface_regression); vm-parity-suite PASS (340/340); relevant-ctest-vm-
+      stdlib PASS (1/1); compiler-assurance-ctest PASS (7/7); api-doc-sync and
+      api-public-doc-coverage PASS (68/68 header symbols and 59/59 Eshkol exports).
+      The first type-system rerun exposed the tracked Pair<Value, Value> diagnostic
+      spelling; canonical Pair printing was restored and its direct relation test
+      added before the passing 126/126 rerun.
+    caught_by: [direct-measurement]
+    missed_by: [run_typesystem_tests, ctest]
+    notes: >-
+      Filed LOUD-ERROR by the SW-63, LE-25 and LE-26 precedent: type-checker
+      verdicts on stderr and a compile-time arity refusal, never a wrong value.
+      These are LE-26's four open findings. Making if join like cond removed the
+      diagnostic for `(label (count-up 3))` over
+      `(let loop ((i 0)) (if (< i n) (loop (+ i 1)) i))`, which the if rule had
+      reported by accident; the recursion result fixpoint restores it and
+      extends it to the cond form, which LE-26 had already left silent. The
+      The original native compile exit for json_surface_regression.esk did not
+      represent a failed VM-runner case: the fixture uses json-merge and
+      json-stringify-pretty, which exist only on the VM. run_vm_surface_tests.sh
+      compiles that fixture with --profile hosted-vm and checks the compile exit;
+      both json_surface_regression and json_get_in_default_surface_regression
+      passed on that runner. run_typesystem_tests.sh checks EXPECT-COMPILE plus
+      diagnostic patterns; its later full rerun passed all 126 fixtures. The C++
+      runner had declared a TypeRelation test path but omitted executing it; this
+      change adds that execution, and the relation contract passed. The prior
+      standalone native error therefore came from invoking the wrong substrate,
+      not a swallowed failing test.
+  - id: SW-179
+    bucket: SILENT-WRONG
+    family: native/vector-set-numeric-store
+    status: fixed
+    closed_at: "0da5a050"
+    title: "native: vector-set! of an exact integer into a `#(...)` literal stores the integer's bit pattern as a double, and reading the slot back with vector-ref crashes"
+    repro: >-
+      (1) (define v #(10 20 30))
+          (vector-set! v 0 99)
+          (display v)
+      (2) (define z #(1.5 2.5))
+          (vector-set! z 1 7)
+          (display (vector-ref z 1))
+    observed: >-
+      (1) prints `#(4.9e-322 20 30)` under `eshkol-run -r` and from an AOT binary,
+      exit 0, no diagnostic. 4.9e-322 is the 64-bit integer 99 read as an IEEE
+      double. (2) prints nothing and dies with "fatal signal: SIGSEGV
+      (segmentation fault) at address 0xffffffffffffffff" on both native engines.
+      Storing an inexact value is correct: `(vector-set! w 0 99.0)` prints
+      `#(99 20 30)`. A vector built with `(vector 10 20 30)` is correct for both.
+      The bytecode VM prints `#(99 20 30)` for (1).
+    correct: >-
+      `#(99 20 30)` and `7`. docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md,
+      "Element Access and Mutation", documents exactly program (1) with the result
+      `#(99 20 30 40 50)`, and R7RS vector-set! stores the object it is given.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py: the
+      tutorial example fails with MISMATCH expected '#(99 20 30 40 50)' got
+      '#(4.9e-322 20 30 40 50)' on both engines.
+    root_cause: >-
+      A numeric `#(...)` literal is a tensor (f64 slots in a separate element
+      buffer). CollectionCodegen::vectorSet dispatched on the heap subtype but
+      stored `unpackDouble(value)`, which bit-casts the tagged payload: an exact
+      integer, a string pointer or a boolean was written as if it were a double.
+      vectorRef then decoded a small integer payload as a differentiation-node
+      pointer, which is the crash in program (2). The defect was one instance of
+      a missing facility: every mutator carried its own copy of the store.
+      vector-fill! had no tensor path and read the tensor descriptor as a length
+      (SIGSEGV even for a double); tensor-set! converted numbers but stored 0 for
+      a non-number and, taking its operand in coercing mode, updated a throwaway
+      copy of a Scheme vector; vector-copy!'s conversion did not know exact
+      rationals or bignums; the VM's vector-set! tensor path stored 0 for an exact
+      rational and every VM tensor writer stored 0 for a non-number.
+    fix: >-
+      ADR-0020, one store boundary. Invariant: a value stored into a container
+      slot is a value of the slot's declared representation. encode_tensor_slot()
+      in lib/core/runtime_vector_mutation.cpp is the only code that writes a
+      Scheme value into a tensor slot: a real number of any exactness becomes the
+      dtype-reduced f64, a differentiation node keeps its in-tensor carrier, and
+      any other value is refused with a catchable error before the destination is
+      modified. vector-set!, vector-fill!, vector-copy! and tensor-set! lower
+      through three CodegenContext emitters and one failure block; tensor-set!
+      takes its operand in RequireTensor mode; the VM's writers share
+      vm_tensor_slot_value(). The literal stays a tensor, as the language
+      specification defines it.
+    evidence: >-
+      tests/core/container_slot_store_test.esk stores every value kind through
+      every mutator on both representations: 90 checks, 0 failures on the cached
+      run path, the in-process JIT and AOT (ctest container_slot_store_
+      {runtime,jit,aot}_smoke); the base build crashes in it.
+      tests/vm/tensor_slot_store_test.esk: 23 checks on the VM (14 fail on the
+      base build). tests/vm_parity/corpus/85_container_slot_store.esk agrees
+      across native and VM. The tutorial example runs unmarked in
+      scripts/doc_audit/check_doc_examples.py.
+    caught_by: [doc-example-gate]
+    missed_by: [run_all_tests, vm_parity, doc_audit]
+    notes: >-
+      Found by executing the tutorials. Storing a value with no real-number
+      representation into a tensor-backed literal is a catchable error natively;
+      the VM materialises `#(...)` as a Scheme vector and accepts it. That is the
+      literal-representation difference already recorded in
+      tests/vm_parity/found/tensor_predicate_on_literal.esk, and it is loud.
+  - id: SW-180
+    bucket: SILENT-WRONG
+    family: ad/complex-carrier
+    status: fixed
+    closed_at: "bbe5e31e"
+    title: "a derivative taken through a complex value is silently 0: the tangent is dropped when a differentiated number enters make-rectangular or complex arithmetic"
+    repro: >-
+      (1) (display (derivative (lambda (x) (real-part (make-rectangular (* x x) 0.0))) 3.0))
+      (2) (display (derivative (lambda (x) (magnitude (make-rectangular x 4.0))) 3.0))
+      (3) (require signal.filters)
+          (define (b0 c) (vector-ref (car (butterworth-lowpass 2 c)) 0))
+          (display (derivative b0 0.2))
+    observed_before: >-
+      All three print `0`, exit 0, no diagnostic, under `eshkol-run -r`, from an
+      AOT binary and on the bytecode VM ((1) measured on the VM). For (3) the
+      central difference (b0(0.2001) - b0(0.1999)) / 0.0002 is 0.5665767907.
+      butterworth-lowpass computes its poles in complex arithmetic, so every
+      derivative with respect to a filter cutoff is 0. Derivatives through the
+      real-valued parts of the same library are correct: fir-filter and
+      apply-window give 5 and 13 where those are the exact answers.
+    correct: >-
+      (1) 6, (2) 0.6, (3) 0.5665767907... Alternatively a diagnostic at the point
+      where a differentiated value enters a complex number, until a complex
+      carrier exists.
+    root_cause: >-
+      make-rectangular and make-polar took the primal of each argument
+      (extractDoubleFromTagged natively, as_number on the VM), so a derivative
+      entering a complex number was dropped at construction. Every later complex
+      operation then worked on plain doubles. On the VM, vm_op_arith also checked
+      the dual carrier before complex, so a dual meeting a complex value was read
+      as a real, and real-part of a real dual flattened it to its primal.
+    fix: >-
+      The ruling is to build the capability (tutorials 05 and 06 describe it).
+      Native: a complex value whose component carries a derivative keeps the
+      plain pair first and the two components after it as tagged values
+      (eshkol_complex_carrier_t, ESHKOL_COMPLEX_CARRIER_FLAG); every complex
+      operation on it is its component formula evaluated by the generic
+      arithmetic, so jets, tape nodes and Taylor towers flow through with their
+      existing rules (ArithmeticCodegen::makeRectangular and
+      withComplexCarrierDispatch, one helper per builtin kind in llvm_codegen).
+      VM: VmComplex carries the tangent of the VM's first-order dual and every
+      VM complex operation propagates it by its own rule; vm_real_with_tangent is
+      the one boundary. No derivative exists at the origin for magnitude, angle,
+      log and sqrt, and a derivative there raises. The docs that said complex
+      values carry no derivative are corrected. ADR-0025.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS. docs/tutorials/05_SIGNAL_PROCESSING.md Part 5 differentiates
+      filtered signal power with respect to the Butterworth cutoff;
+      scripts/doc_audit/check_doc_examples.py reports MISMATCH expected '73.81...'
+      got '0' on JIT and AOT (73.815 is the central difference).
+      Fixed on fix/v135-ad-complex-and-dense-identity, Release build, arm64 macOS:
+      tests/ad/complex_value_derivative_test.esk (25 analytic checks, including
+      the Butterworth cutoff derivative 0.566576801842721, whose central
+      difference is 0.5665767907) fails 22 of 25 on the base build and passes
+      25/25 on the fix, JIT cached and uncached, AOT and the bytecode VM. Corpus
+      program 89 gives identical output on both engines. Tutorial 05's example
+      runs with its marker removed.
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, run_ad_exactness_gate, doc_audit]
+    notes: >-
+      The documentation disagrees with itself, which is why this needs a ruling
+      rather than an edit. docs/reference/ad/architecture.md ("Numeric boundary")
+      and docs/breakdown/AUTODIFF.md state that complex values have no derivative
+      carrier. docs/tutorials/05_SIGNAL_PROCESSING.md says every signal-processing
+      function composes with autodiff, docs/tutorials/06_EXACT_ARITHMETIC.md says
+      complex numbers integrate with autodiff, and docs/KNOWN_ISSUES.md lists
+      complex numbers as a first-class type with AD support. The tutorials were
+      left as the statement of intent and the example carries
+      `doc-example: known-defect SW-180`. Filed SILENT-WRONG because a wrong
+      derivative with exit 0 and no diagnostic is that bucket's definition; a
+      refusal at the boundary would make it a loud limitation.
+  - id: SW-181
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: ad/dense-tensor-operands
+    status: fixed
+    closed_at: "a3ec9f69"
+    title: "native: tensor-dot refuses the differentiated result of matmul, so gradient of a quadratic form x . (A x) raises a type error"
+    repro: >-
+      (display (gradient (lambda (x) (tensor-dot x (matmul (eye 3) x)))
+                         #(1.0 2.0 3.0)))
+    observed_before: >-
+      "Type error in tensor-dot: expected tensor, got ad-node", exit 1, under
+      `eshkol-run -r` and from an AOT binary. Each half works alone:
+      (gradient (lambda (x) (tensor-dot x x)) ...) is #(2 4 6),
+      (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) ...) is #(1 1 1), and
+      (gradient (lambda (x) (tensor-dot x (tensor-scale x 2.0))) ...) is #(4 8 12).
+    correct: >-
+      #(2 4 6): the gradient of x . (I x) is 2x.
+      docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md, "Integration with
+      Autodiff", documents this program as the example of differentiable tensor
+      operations.
+    root_cause: >-
+      The dense reverse path (ADR-0002 Position A) publishes a matmul or
+      elementwise result as ONE CALLABLE AD node whose tensor_value is an f64
+      buffer. Operators with a dense rule (tensor-sum, tensor-mean, tensor-add,
+      tensor-mul, matmul) recognise that node before reading it; every other
+      consumer reads its operand through eshkol_tensor_operand_checked, which
+      classified HEAP_PTR tensors and numeric collections and raised for anything
+      else, or classified the value by hand. tensor-dot, reshape, tensor-scale,
+      relu, tensor-exp, tensor-sqrt, softmax and tensor-get raised; the two-argument
+      tensor-ref returned the node itself; vector-length, vector-ref and
+      vector->list read it as a Scheme vector, which is how the stdlib's tensor-norm
+      (sqrt of a vref loop) answered 0 through a matmul.
+    fix: >-
+      One projection, eshkol_ad_dense_node_elements (lib/core/runtime_autodiff.cpp):
+      a dense node becomes the tensor of its shape whose element i is an
+      AD_NODE_DENSE_ELEM node (registry row 95) projecting element i, appended to
+      the tape, so every scalarising rule applies unchanged and the reverse sweep
+      scatters each element's adjoint into the dense node's gradient (identity, no
+      arithmetic; the inverse of TENSOR_PACK). The tensor boundary and the
+      collection builtins (TaggedValueCodegen::resolveDenseTensorNode) route a
+      CALLABLE dense node to it; the two-argument tensor-ref indexes the
+      projection. eshkol_ad_node_probe's node-type bound is the registry count
+      instead of the literal 63. Operators with dense rules are untouched. ADR-0023.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS, JIT and AOT, by scripts/doc_audit/check_doc_examples.py (EXIT 1
+      with the diagnostic above on both engines).
+      Fixed on fix/v135-ad-tensor-operands, Release build, arm64 macOS:
+      tests/ad/dense_tensor_operand_boundary_test.esk (24 checks: the ledger row
+      in both operand orders, reshape, tensor-scale, relu, tensor-exp,
+      tensor-sqrt, softmax, tensor-get, tensor-ref, vector-length, vector-ref,
+      vector->list, a chain through both representations, the stdlib tensor-norm,
+      and the dense-rule operators as controls) raises the ledger error on the
+      base build and passes 24/24 on the fix, cached and uncached JIT and AOT.
+      Tutorial 11's example runs with its marker removed and matches on JIT and
+      AOT.
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+    notes: >-
+      Loud on the native engines, so LOUD-ERROR. The example carries
+      `doc-example: known-defect SW-181`. tensor-dot accepts a dense AD node for
+      its first operand and for a tensor-scale result, so the missing case looks
+      like the matmul result's carrier kind rather than tensor-dot as a whole.
+  - id: SW-182
+    bucket: SILENT-WRONG
+    family: ad/gradient-scalar-point-arguments
+    status: fixed
+    closed_at: "a41ac3f5"
+    title: "native: (gradient f a b ...) with the point given as separate scalar arguments differentiates at 0 unless every argument is a literal, so a gradient-descent loop written that way never moves off its first gradient"
+    repro: >-
+      (define (loss a b) (+ (* (- a 3.0) (- a 3.0)) (* (- b 1.0) (- b 1.0))))
+      (define p 0.6) (define q 0.2)
+      (display (gradient loss 0.6 0.2))
+      (display (gradient loss p q))
+      (display (gradient loss (+ p 0.0) (+ q 0.0)))
+      (display (gradient loss (list p q)))
+    observed_before: >-
+      `#(-4.8 -1.6)`, `#(-6 -2)`, `#(-6 -2)`, `#(-4.8 -1.6)` under `eshkol-run -r`
+      and from an AOT binary, exit 0, no diagnostic. #(-6 -2) is the gradient at
+      (0, 0): a point argument that is a variable, a parameter or any other
+      non-literal expression is read as 0. The literal form and the documented
+      `(list ...)` point form are correct. The bytecode VM answers #(-4.8 -1.6)
+      for all four.
+      In a loop the defect compounds: 100 steps of
+      (train (- a (* lr (vector-ref g 0))) (- b (* lr (vector-ref g 1))) ...)
+      from (0, 0) with lr 0.1 end at (60.0 20.0) natively, 100 times the first
+      step, and at (3.0 1.0) on the VM.
+    correct: >-
+      #(-4.8 -1.6) for every form, or a compile-time refusal of the scalar-argument
+      form if only literals are meant to be accepted.
+    root_cause: >-
+      The parser rewrote the separate-scalar form `(gradient f a b ...)` into a
+      vector point by assembling its own node, of the bare ESHKOL_TENSOR kind, in
+      place of the ESHKOL_TENSOR_OP node a written `#(...)` produces. Nothing else
+      produces that kind. Its lowering (codegenTensor in lib/backend/
+      llvm_codegen.cpp) handles an element that evaluates to a raw integer or
+      double and stored the constant 0 for anything else, so a variable, a
+      parameter, a loop variable or a call (all of which evaluate to a tagged
+      value) became 0. The VM compiles the form through its ordinary vector path,
+      which is why it was right. Every other operator (hessian, jacobian,
+      laplacian, divergence, curl, directional-derivative, derivative) takes a
+      single point expression and was already evaluated correctly; the vector,
+      list and `#(...)` point forms of gradient were too.
+    fix: >-
+      The ruling is to support the form, since tutorial 24 teaches it by name.
+      The parser now seeds parse_vector_body with the first point argument, so
+      `(gradient f a b ...)` is parsed as the literal `#(a b ...)` it stands for,
+      by the same rules and through the same element evaluator every vector
+      literal uses. The bare-node lowering no longer invents a value: an element
+      it cannot store is a compile-time error. docs/reference/ad/operators.md
+      lists the separate-scalar point form.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS, JIT and AOT. Three tutorial programs are written this way and
+      none of them works natively:
+      docs/tutorials/21_PROJECT_NEURAL_NETWORK.md trains XOR for 5000 epochs and
+      prints 0.5485 / 0.5653 / 0.5265 / 0.5448 with a final loss of
+      1.0108004956021113, which is exactly the loss at the initial weights; the
+      VM prints 0.0079 / 0.9909 / 0.9924 / 0.0070 and a loss of 0.000252.
+      docs/tutorials/24_PROJECT_OPTIMISATION.md problem 1 reports the Rosenbrock
+      minimum at (19.99, 0) with f = 16000360.99 against (0.9944, 0.9888) and
+      f = 3.14e-05 on the VM; problem 3 is written the same way.
+      scripts/doc_audit/check_doc_examples.py reports all three.
+      Fixed on fix/v135-ad-carriers, Release build, arm64 macOS:
+      tests/ad/gradient_scalar_point_arguments_test.esk (29 checks: the four
+      ledger rows, globals, calls, mixed literal and variable, parameters,
+      let-bound, named-let loop variables, three arguments, a 100-step descent
+      loop, and every other operator's point as a control) fails 13 of 29 on the
+      base build and passes 29/29 on the fix, cached and uncached JIT and AOT.
+      scripts/doc_audit/check_doc_examples.py runs the three tutorial programs
+      with their markers removed and they match on JIT and AOT.
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, run_ad_exactness_gate, run_dense_tensor_ad_gate, doc_audit]
+    notes: >-
+      docs/reference/ad/operators.md ("Accepted point types") lists vector, tensor,
+      `#(...)`, scalar and `(list ...)` points and does not list separate scalar
+      arguments, but the compiler accepts them and is right for literals, and
+      docs/tutorials/24_PROJECT_OPTIMISATION.md teaches the form by name
+      ("In Eshkol: `(gradient f x y)` -- that's it"). The three examples carry
+      `doc-example: known-defect SW-182`. Tutorial 24 problem 3 also reaches
+      SW-183.
+  - id: SW-183
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: ad/closure-capture-through-map
+    status: fixed
+    closed_at: "d6ecd4fe"
+    title: "a derivative through `map` with a lambda that captures the differentiated variable is 0, with `Invalid type for int64 storage value: 6` on stderr and exit status 0"
+    repro: >-
+      (define (f a) (fold-left + 0.0 (map (lambda (x) (* a x)) '(1.0 2.0 3.0))))
+      (display (derivative f 2.0))
+    observed_before: >-
+      Prints `0` after three lines of "ERROR: Invalid type for int64 storage
+      value: 6" on stderr, exit 0, under `eshkol-run -r` and from an AOT binary.
+      The same sum written as a named-let loop over the list prints 6, and
+      (fold-left + 0.0 (list (* a 1.0) (* a 2.0))) prints 3, so the loss is in the
+      list `map` builds from the capturing lambda, not in fold-left.
+    correct: >-
+      6.
+    root_cause: >-
+      A cons slot is a tagged value, but emitted code never moved it as one.
+      codegenTaggedArenaConsCellFromTaggedValue branched at run time over storage
+      classes (null, double, pointer, else int64), and seven readers
+      (extractCarAsTaggedValue, extractCdrAsTaggedValue,
+      extractConsCarAsTaggedValue, CollectionCodegen::car and ::cdr, and two
+      copies inside codegenCompoundCarCdr) each branched over their own closed
+      list of representations and rebuilt the value through a typed runtime
+      accessor. A forward-mode dual number (type 6) and a complex number were in
+      none of the lists: arena_tagged_cons_set_int64 rejected the store with
+      "Invalid type for int64 storage value: 6" and left the slot empty, and
+      arena_tagged_cons_get_int64 answered 0. The lists had been extended one type
+      at a time as types were found missing (bool, char, logic variables) and had
+      drifted: the cdr reader never received the char arm, so
+      `(apply cdr (list (cons #\a #\b)))` answered 98, and the cdr builtin crashed
+      on a dual number in its slot.
+    fix: >-
+      TaggedValueCodegen::loadConsSlot and storeConsSlot are now the only way
+      emitted code reads or writes a cons element, and they move the tagged value
+      whole (type, flags and payload). The builder and all seven readers delegate
+      to them, so the set of value types a list can hold is open and no future
+      type needs a case. About 900 lines of emitted dispatch are gone.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (base 8bc74d7d),
+      arm64 macOS. Two tutorial programs compute their loss with this
+      map-then-fold shape. docs/tutorials/26_PROJECT_SELF_IMPROVING.md maps an
+      internal `define` that captures the three coefficients: under
+      `eshkol-run -r` it writes the diagnostic on every step, reports
+      "Learned coefficients: 1 0 0" and leaves the loss at 13.16, while the AOT
+      binary of the same file is correct (loss 0.0112), so that capture shape
+      fails on the JIT only. docs/tutorials/24_PROJECT_OPTIMISATION.md problem 3
+      maps a lambda over its data: natively it writes 75000 of these diagnostics in
+      5000 steps, reports "Fitted: 0x^2 + 0x + 0" with MSE 491.11 and exits 0,
+      where an independent gradient-descent computation gives
+      0.828x^2 + 0.900x + 1.026 with MSE 0.0183.
+      Fixed on fix/v135-ad-carriers, Release build, arm64 macOS:
+      tests/ad/differentiated_values_in_list_cells_test.esk (25 checks: the ledger
+      row, fold-right, reduce, apply, for-each, filter, two-list map, an internal
+      define, nested map, cons/car, cons/cdr, cadr, append/reverse/list-ref,
+      reverse mode, second order, least squares at scalar variables, a complex
+      number and a character kept by a list, and value-semantics controls) fails
+      on the base build (four derivatives 0, then a crash) and passes 25/25 on the
+      fix, cached and uncached JIT and AOT, with no diagnostic on stderr.
+      Tutorial 26 runs with its marker removed and matches on JIT and AOT.
+    caught_by: [doc-example-gate]
+    missed_by: [run_ad_oracle, doc_audit]
+    notes: >-
+      Filed LOUD-ERROR because a diagnostic is printed, although the exit status
+      is 0 and the value is wrong; scripts/doc_audit/check_doc_examples.py fails
+      an example that writes an error diagnostic for that reason. Tutorial 26
+      carries `doc-example: known-defect SW-183`; tutorial 24 problem 3 carries
+      SW-182, the first defect it reaches.
+  - id: LE-30
+    bucket: LOUD-ERROR
+    subtag: wrong-diagnostic-on-legal-code
+    status: open
+    title: "set! of a procedure bound by the (define (f ...) ...) shorthand is rejected as an undefined variable on the JIT and AOT"
+    repro: >-
+      (define (f x) x)
+      (set! f (lambda (x) (* 2 x)))
+      (display (f 21))
+      compiled with `eshkol-run -r` or `eshkol-run file.esk -o bin`.
+    observed: >-
+      Both engines refuse to compile: "ERROR: set!: undefined variable 'f'"
+      followed by "compilation reported 1 error(s); no artifact was written".
+      The same program with `(define f (lambda (x) x))` compiles and prints 42.
+    correct: >-
+      R7RS 5.3: `(define (f x) ...)` binds the variable f exactly as
+      `(define f (lambda (x) ...))` does, and `set!` may assign any bound
+      variable. The program prints 42. ADR-0015 (static callee binding identity)
+      already specifies how a reassigned procedure binding is called.
+    root_cause: >-
+      Not yet diagnosed. The set! lowering does not find a storage location for
+      a top-level binding introduced by the procedure-define shorthand, which
+      codegen emits as a function rather than as a variable holding a closure.
+    impact: >-
+      A legal program is refused at compile time. No wrong value is produced.
+      Found while documenting ADR-0015's reassignment rule for v1.3.5; the
+      documentation examples use the lambda spelling.
+    fix_requires: >-
+      A procedure-define shorthand gets the same assignable global storage as a
+      lambda-valued define when the lexical mutation analysis reports a set! of
+      it, so ADR-0015's binding facts apply unchanged.
+    evidence: >-
+      Reproduced on the v1.3.5 release cut d1295a42 with the JIT and AOT
+      drivers, 2026-09-17.
+    caught_by: [direct-measurement]
+    missed_by: [ctest]
+    notes: >-
+      Recorded only; no fix in this change.
+  - id: SW-184
+    bucket: SILENT-WRONG
+    family: stdlib/signal-fft-complex-base-case
+    status: fixed
+    closed_at: "ef302f8c"
+    title: "signal.fft: every transform of a complex input is all zeros, so (ifft (fft x)) and fast-convolve return zeros on the VM, the precompiled stdlib and an uncached -r"
+    repro: >-
+      (require signal.fft) (display (ifft (fft #(1.0 2.0 3.0 4.0))))
+      under ESHKOL_JIT_CACHE=0 eshkol-run -r, and on the bytecode VM.
+      (require signal.filters) (display (fast-convolve #(1.0 2.0 3.0 4.0 5.0) #(1.0 1.0 1.0)))
+      on every engine.
+    observed_before: >-
+      The round trip printed #(0 0 0 0) on the uncached JIT and
+      #(+0i +0i +0i +0i) on the VM, exit 0, no diagnostic; the cached run path
+      and AOT printed the right answer. fast-convolve printed #(0 0 0 0 0 0 0)
+      on every engine.
+    correct: >-
+      #(1 2+5.72e-18i 3 4-5.72e-18i) (the original signal up to rounding) and
+      #(1 3 6 9 12 9 5), as docs/reference/stdlib/signal_fft.md and the direct
+      convolve state.
+    root_cause: >-
+      lib/signal/fft.esk's length-1 base case wrapped its element as
+      (make-rectangular x 0.0) whenever (number? x). A complex value is a
+      number, and make-rectangular of a complex real part yields 0, so every
+      transform of a complex input was zeros: ifft conjugates its input into
+      complex values before calling fft, and fast-convolve multiplies complex
+      spectra before calling ifft. Two FFT implementations coexist -- the native
+      builtin (codegenFFT) and this module -- and which one a call binds to
+      depends on the engine: AOT and the cached run path reach the builtin, while
+      the VM, the precompiled stdlib (hence fast-convolve everywhere) and an
+      uncached -r that requires the module reach the module. That is why the
+      engines disagreed, and why the fast-convolve zeros were attributed to
+      shared-library code generation (ESH-0115) rather than to the library.
+    fix: >-
+      The base case wraps only a real element ((real? x)) and passes a complex
+      element through. The module stays the implementation for the VM, which has
+      no FFT builtin.
+    evidence: >-
+      tests/signal/fft_complex_input_test.esk: 11 checks (round trips at length 4
+      and 8, real and complex inputs, fft of a complex vector, fast-convolve
+      against convolve) with a 1e-9 tolerance. Base build: 8/11 on the cached
+      run path and AOT, 1/11 on the uncached JIT and the VM. Fix: 11/11 on all
+      four (ctest fft_complex_input_{runtime,jit,aot,vm}_smoke).
+    caught_by: [direct-measurement]
+    missed_by: [tests/signal/fft_comprehensive_test.esk (has the round trip but is
+      not registered in ctest; scripts/run_signal_tests.sh runs it by hand),
+      run_all_tests, vm_parity (fft is a recorded VM gap)]
+    notes: >-
+      The two implementations remain. Retiring either needs an FFT on the VM
+      that is not this module, or a native path that no longer prefers the
+      builtin; both are larger than this fix, and the round-trip test now pins
+      the engines to one answer.
+  - id: SW-185
+    bucket: PARITY-RATCHET
+    family: native/vector-literal-non-numeric-store
+    status: fixed
+    closed_at: "523371f1"
+    title: "a non-numeric store into a `#(...)` literal raised on the native engines and stored on the VM, because the native literal is a numeric tensor and the VM's is a heterogeneous vector"
+    repro: >-
+      (define v #(10 20 30)) (vector-set! v 0 "x") (display v)
+    observed_before: >-
+      The native engines raised `vector-set!: value has no representation in a
+      numeric tensor slot` (SW-179's store boundary, which refused what it could
+      not convert); the bytecode VM printed `#(x 20 30)`. Loud on the side that
+      differed, so not a silent wrong answer, but the two engines disagreed about
+      a program R7RS defines: a vector holds any object.
+    correct: >-
+      `#(x 20 30)` on every engine.
+    root_cause: >-
+      A numeric `#(...)` literal materialises as a tensor natively (the language
+      specification makes it the tensor-literal syntax) and as a Scheme vector on
+      the VM. The store boundary converted a value to the slot's representation or
+      refused it; for a tensor slot the only representable values are real numbers.
+    fix: >-
+      ADR-0020 amendment 1: the vector API promotes the carrier in place instead of
+      refusing. promote_tensor_to_boxed() gives the descriptor a tagged-value
+      element buffer under the new ESHKOL_TENSOR_DTYPE_BOXED dtype -- the shape the
+      dual-tensor carrier already used -- so every alias sees the promotion. The
+      tensor API still refuses, a promoted carrier answers `tensor?` with #f, and
+      every tensor kernel refuses it at the one operand check. Every reader of
+      tensor slots learned the dtype, including region evacuation, which walks the
+      tagged slots.
+    evidence: >-
+      tests/vm_parity/corpus/85_container_slot_store.esk: native and VM agree,
+      element for element, for a string, boolean, pair, character, symbol and
+      nested vector, and through vector-ref, vector->list, vector-copy,
+      vector-append, vector-map, vector-for-each and vector-copy!.
+      tests/core/container_slot_store_test.esk: 102 checks on the cached run path,
+      the in-process JIT and AOT.
+    caught_by: [engine-differential-review]
+    missed_by: [vm_parity corpus as it stood (the case was not in it), run_all_tests]
+    notes: >-
+      A constructed `(tensor 1.0 2.0)` promotes natively through the vector API but
+      raises on the VM, which has no promotion path for its tensors; that residual
+      difference is loud and is checked per engine rather than in the corpus.
+  - id: SW-186
+    bucket: SILENT-WRONG
+    family: ad/vm-tensor-carrier
+    status: fixed
+    closed_at: "eb1862425"
+    needs_decision: false
+    title: "VM: a gradient through any tensor operator (tensor-dot, tensor-mul, matmul, tensor-sum) is silently #(0 0 ...) although PARITY.tsv marks every one of them vm-supported"
+    repro: >-
+      (1) (display (gradient (lambda (x) (tensor-dot x x)) #(1.0 2.0 3.0)))
+      (2) (display (gradient (lambda (x) (tensor-sum (tensor-mul x x))) #(1.0 2.0 3.0)))
+      (3) (display (gradient (lambda (x) (tensor-sum (matmul (eye 3) x))) #(1.0 2.0 3.0)))
+    observed: >-
+      All three print #(0 0 0) on eshkol-vm-standalone-test, exit 0, no
+      diagnostic. Native prints #(2 4 6), #(2 4 6), #(1 1 1). The VM's scalar
+      gradient path (84_named_closure_derivative_capture.esk, vector-ref over a
+      vector point) is correct, so the loss is specific to the tensor operators:
+      the VM tensor natives do not carry the forward dual through tensor
+      operations, and the reverse tape does not record them.
+    correct: >-
+      #(2 4 6), #(2 4 6), #(1 1 1), or PARITY.tsv rows for the tensor operators
+      under differentiation marked as a gap so the parity manifest is truthful.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
+      arm64 macOS, while sweeping SW-181. tensor-dot, matmul, tensor-sum, eye and
+      gradient are all `vm-supported` in tests/vm_parity/PARITY.tsv; the AD
+      carrier manifest names the VM gradient carrier vm-dual-forward.
+    caught_by: [coordinator-sweep]
+    missed_by: [run_vm_parity, run_engine_parity_coverage, gate_ad_shared_node_model]
+    notes: >-
+      Found while closing SW-181 (native). Not a corpus program for SW-181 for
+      this reason: the native fix cannot be held to a VM that answers zero. Needs
+      a ruling: either the VM tensor natives gain the dual carrier (the manifest's
+      own end state), or the parity rows are demoted until they do. Filed
+      SILENT-WRONG because exit 0 with a wrong derivative is that bucket's
+      definition.
+  - id: SW-187
+    bucket: LOUD-ERROR
+    subtag: structural
+    family: ad/dense-tensor-operands
+    status: fixed
+    closed_at: "2c0eb81f5"
+    needs_decision: false
+    title: "native: jacobian of a function returning a dense tensor AD node (a matmul result) is a SIGSEGV, and hessian of a function using matmul on a 1-D point raises a dual-tensor rank error"
+    repro: >-
+      (1) (display (jacobian (lambda (v) (matmul (eye 2) v)) #(1.0 2.0)))
+      (2) (display (hessian (lambda (v) (tensor-dot v (matmul (eye 2) v))) #(1.0 2.0)))
+    observed: >-
+      (1) fatal signal SIGSEGV at address 0, exit 139, under `eshkol-run -r`.
+      (2) "matmul: dual-tensor (autodiff) matmul requires 2-D operands with
+      A.cols == B.rows", exit 1. Both on the base and after the SW-181 fix, which
+      covers operands of tensor builtins, not the function-result classification
+      of jacobian (autodiff_codegen.cpp, output_is_callable is accepted as a
+      vector type and then read as one) or the forward-dual matmul used by hessian.
+    correct: >-
+      (1) #((1 0) (0 1)); (2) #((2 0) (0 2)); or a precise error naming the
+      unsupported combination for (2).
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
+      arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: jacobian resolves
+      dense AD tensor results before shape/element dispatch; the SIGSEGV repro now
+      returns #((1 0) (0 1)), and the dense boundary test passes cached, uncached,
+      and AOT.
+    caught_by: [coordinator-sweep]
+    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate]
+    notes: >-
+      The same class as SW-181 one level up: a dense node reaching a slot that
+      assumes a tensor, here the function-result slot of jacobian. The SW-181
+      projection (eshkol_ad_dense_node_elements) is the facility to apply there.
+  - id: SW-188
+    bucket: SILENT-WRONG
+    family: ad/dense-tensor-operands
+    status: fixed
+    closed_at: "2c0eb81f5"
+    needs_decision: false
+    title: "native: inside a differentiated function a matmul result answers #f to tensor? and vector? and displays as #<ad-node>, because the dense AD node is a CALLABLE rather than a tensor"
+    repro: >-
+      (gradient (lambda (x) (let ((d (matmul (eye 3) x)))
+                              (display (tensor? d)) (display (vector? d)) (display d)
+                              (tensor-sum d)))
+                #(1.0 2.0 3.0))
+    observed: >-
+      Prints #f #f #<ad-node>, exit 0. Outside differentiation the same value
+      prints #t #t #(1 2 3).
+    correct: >-
+      #t #t #(1 2 3): a value's type does not depend on whether it is being
+      differentiated.
+    evidence: >-
+      Measured on a Release build of the v1.3.5 release-cut branch (4fd4e23d),
+      arm64 macOS, while sweeping SW-181. Fixed at 2c0eb81f5: tensor?/vector?
+      and hosted display recognize dense AD tensor results; the repro now returns
+      #t #t #(1 2 3), and the dense boundary test passes cached, uncached, and AOT.
+    caught_by: [coordinator-sweep]
+    missed_by: [run_ad_oracle, run_dense_tensor_ad_gate, doc_audit]
+    notes: >-
+      SW-181 resolves a dense node wherever a tensor is READ. Type predicates and
+      the printer ask what the value IS, which is a representation-identity
+      question: the end state ADR-0023 names is a dense AD tensor that is a
+      HEAP_SUBTYPE_TENSOR object carrying its node, so no consumer needs a case.
+      Needs a ruling on that end state before the predicates are changed.
+  - id: SW-189
+    bucket: SILENT-WRONG
+    family: vm/operand-stack-tracking
+    status: fixed
+    closed_at: "90f0b37c"
+    title: "VM: a let (or any binder) as an operand of list, vector or apply evaluated to (), because the binder's locals were allocated over the operands already pushed"
+    repro: >-
+      (display (list 'a (let ((v (vector 1 2))) (vector-set! v 0 9) v)))
+      (display (list 'a (let ((v 5)) v)))
+      (display (vector 'a (let ((v 5)) v)))
+      (display (apply + (list 1 (let ((v 2)) v))))
+    observed_before: >-
+      On eshkol-vm-standalone-test: (a ()), (a ()), #(a a), and "+: expected
+      numeric operands"; exit 0 and no diagnostic for the first three. Natively
+      (a #(9 2)), (a 5), #(a 5), 3. The mutation was a red herring: (list 'a
+      (let ((v 5)) v)) fails the same way.
+    correct: >-
+      The native answers.
+    root_cause: >-
+      The VM compiler tracks compile-time stack depth in c->n_locals, and a
+      binder allocates its variables at that depth. Every operand pushed and held
+      on the stack while another operand compiles must therefore be registered as
+      a local (the __operand__ slots compile_operands_tracked() creates).
+      `list` built its result as a running cons chain whose accumulator was never
+      registered; `vector` pushed its elements unregistered; `apply` pushed the
+      procedure unregistered; twelve more native-call lowerings pushed runs of
+      operands the same way. A let inside such an operand allocated its variable
+      over the pushed value: the accumulator became the let's local, so the list
+      came back as (), and a vector's earlier element was replaced by the later
+      binder's value.
+    fix: >-
+      One rule applied at every site: the list accumulator occupies a tracked
+      slot, `vector` uses compile_operands_tracked(), and every run of
+      consecutive operand pushes in vm_compiler.c registers each pushed operand
+      before compiling the next (apply, tensor-ref, tensor-set!, reshape,
+      arange, bytevector-copy!, string->utf8, make-tensor, display to a port,
+      write-char, call-with-values, exact-rational, make-parameter, gpu ops).
+    evidence: >-
+      tests/vm_parity/corpus/86_binder_in_operand_and_void.esk: native and VM
+      agree on a binder in every operand position (list, vector, apply, a user
+      call, string-append, nested list/vector, named let, letrec, do, let*, case,
+      cond, and, if) and on a vector escaping a let through list, cons, return,
+      a nested let, vector-set! into another vector and closure capture.
+    caught_by: [engine-differential-review]
+    missed_by: [vm_parity corpus as it stood, run_all_tests]
+    notes: >-
+      hash-table-ref and three-argument apply are recorded VM gaps and are kept
+      out of the corpus program.
+  - id: SW-190
+    bucket: SILENT-WRONG
+    family: vm/closure-capture-of-let-local
+    status: fixed
+    closed_at: "90f0b37c"
+    title: "VM: a closure created inside a top-level let held an open reference to the let's local, which the let retired and the next define reused, so (f) answered f itself"
+    repro: >-
+      (define f (let ((v 1)) (lambda () v))) (display (f))
+      (define f3 (let ((v 1)) (lambda (x) (+ v x)))) (display (f3 1))
+    observed_before: >-
+      On the VM: <closure@...> for (f), and "+: expected numeric operands" for
+      (f3 1); natively 1 and 2. Found by the SW-189 escape sweep (a vector
+      escaping a let through closure capture).
+    correct: >-
+      1 and 2.
+    root_cause: >-
+      At top level (c->enclosing == NULL) the VM compiler converts a closure's
+      local captures into open stack-slot references (native 151) so a closure
+      sees later redefinitions of a top-level binding. It applied that to every
+      local, including a `let`'s: the let's OP_POPN retired the slot when the
+      scope ended, the next define reused it, and the closure read the new
+      occupant.
+    fix: >-
+      The open reference is kept -- letrec siblings, forward references and
+      redefinition visibility all depend on it -- and CLOSED when the slot dies.
+      Native 151 registers every (closure, upvalue, slot) it opens in the VM's
+      open-upvalue table (VM.open_uvs); OP_POPN, the instruction that retires a
+      scope's locals, first calls vm_close_open_upvalues_from() on the slots it
+      is about to drop, which copies each slot's last value into the closure and
+      marks the capture closed. A top-level tail call retires its scope by
+      resetting the whole frame at program end, where nothing can observe the
+      slot. (A first attempt that captured let-scoped locals by value at closure
+      creation broke letrec: a sibling captured before it is assigned must be
+      read through the slot.)
+    evidence: >-
+      tests/vm_parity/corpus/86_binder_in_operand_and_void.esk: (f), (f3 1), a
+      vector escaping through a closure, and a counter closure over a let-local
+      all agree with native.
+    caught_by: [engine-differential-review]
+    missed_by: [vm_parity corpus as it stood, run_all_tests]
+  - id: SW-191
+    bucket: LOUD-LIMITATION
+    family: ad/complex-carrier
+    status: fixed
+    closed_at: "aaf90512e"
+    needs_decision: false
+    title: "derivative at a complex evaluation point is refused on both engines; docs/tutorials/06_EXACT_ARITHMETIC.md describes differentiating functions of complex arguments"
+    repro: >-
+      (display (derivative (lambda (z) (* z z)) (make-rectangular 1.0 1.0)))
+    observed: >-
+      Native: "derivative: evaluation point is not a number (tagged type 7)".
+      VM: "derivative: evaluation point is not a real number (a complex point)".
+      Before this change the VM answered 0 with exit status 0.
+    correct: >-
+      2+2i: for a holomorphic function the complex derivative, which forward mode
+      computes by seeding the point with a complex tangent of 1 and reading the
+      complex tangent of the result. For a non-holomorphic function the answer
+      is not a single complex number (the Wirtinger pair), so the operator has to
+      state what it returns.
+    evidence: >-
+      Measured on fix/v135-ad-complex-and-dense-identity while closing SW-180,
+      Release build, arm64 macOS. The complex carrier (ADR-0025) already
+      propagates a complex tangent on both engines; what was missing was seeding a
+      complex point and returning a complex derivative. Fixed at aaf90512e: native
+      and VM seed dz=1 and return the holomorphic complex tangent; JIT, uncached JIT,
+      AOT, and VM pass z*z, exp, sin, and identity cases (8/8 each).
+    caught_by: [coordinator-sweep]
+    missed_by: [run_ad_oracle, doc_audit]
+    notes: >-
+      The contract is the holomorphic complex derivative (dz=1); non-holomorphic
+      functions do not have a single complex derivative and are outside this
+      operator's contract.
+  - id: SW-192
+    bucket: SILENT-WRONG
+    family: macro/definition-site-scope
+    status: fixed
+    closed_at: "ea7677b6a"
+    title: "Macro bindings and template references must preserve lexical definition scope"
+    repro: >-
+      Define a macro named when whose false branch explicitly returns #f; use
+      let-syntax and letrec-syntax with an outer macro of the same name; reference
+      and mutate a template's free value beneath a caller binding of that name.
+    observed_before: >-
+      Native keyword lowering ignored the when binding. VM scoped bindings were
+      never registered. Both engines resolved template references at the use site.
+      Measured before the fix on fix/v135f-macro (base 62c5b1b32): a template's
+      do, let-values or internal-define binder captured caller code or lost its
+      operand on native; (let ((lambda 3)) ((thunk 8))) and a macro-defining macro
+      failed on native; the VM crashed on template do/let-values binders, expanded
+      a macro whose keyword a caller's local bound, matched no dotted tails, and
+      did not see a macro used above its definition.
+    correct: >-
+      Both engines execute the user macro, distinguish let-syntax from letrec-syntax,
+      preserve definition-site free identifiers, and preserve caller pattern syntax.
+    evidence: >-
+      Fixed at ea7677b6a (ADR-0026): one syntax-rules engine
+      (inc/eshkol/frontend/syntax_rules_core.h) and one renaming rule
+      (inc/eshkol/frontend/syntax_color.h) on both engines; no refusal or waiver.
+      Re-measured on fix/v135f-macro, Release, arm64 macOS:
+      tests/vm_parity/corpus/92_macro_definition_scope.esk 14/14 on native JIT,
+      AOT and VM (ctest macro_definition_scope);
+      tests/vm_parity/corpus/93_macro_hygiene_matrix.esk 56/56 hand-computed
+      checks on native JIT, AOT and VM (ctest macro_hygiene_matrix) and on vm-eskb;
+      syntax_rules_core_test 14/14 (engine compiled as plain C);
+      scripts/run_vm_parity.sh 373 passed, 0 failed; scripts/run_macros_tests.sh
+      11/11.
+    caught_by: [owner-ruling, v135-finish-audit]
+    missed_by: [vm_parity, macro_tests]
+    notes: >-
+      The refusal guard of f646213d5 (reverted in 01d887d91) is not part of the
+      fix: special-form macro bindings, shadowed special forms and user
+      redefinitions of builtins all keep their meaning in templates.
+  - id: SW-194
+    bucket: SILENT-WRONG
+    family: ad/scalar-hessian
+    status: fixed
+    needs_decision: false
+    title: "browser VM scalar Hessian drops the second derivative of expt"
+    repro: >-
+      (display (hessian (lambda (x) (expt x 4)) 1/3))
+    observed: >-
+      The public browser VM prints 0 without diagnostics, instead of exact 4/3.
+    correct: >-
+      4/3, exact, agreeing with derivative-n of order two; an inexact point
+      produces the corresponding inexact result.
+    evidence: >-
+      Direct public-WASM probe on 2026-09-20. The local fix routes scalar
+      Hessians through the shared Taylor application/extraction path with the
+      original seed. site_scalar_hessian_jit, site_scalar_hessian_aot and
+      site_scalar_hessian_vm pass in both the AD and integration worktrees.
+    caught_by: [published-site-browser-oracle-audit]
+    missed_by: [site_smoke, doc_audit]
+    notes: >-
+      Integrated into the v1.3.5 release candidate with the ADR-0027 carrier.
+      Release qualification and publication of the browser artifact remain
+      separate from this source-level fix.
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    fixed_by: "ADR-0027 level carrier, VM half; site/static/eshkol-vm.{js,wasm} rebuilt with scripts/build-wasm-repl.sh"
+    observed_after: >-
+      (hessian (lambda (x) (expt x 4)) 1/3) is exact 4/3 on the rebuilt browser VM
+      bundle, the bytecode VM, JIT and AOT.
+    evidence: >-
+      tests/ad/site_scalar_hessian_test.esk (ctest site_scalar_hessian_browser_vm,
+      site_scalar_hessian_vm, site_scalar_hessian_jit, site_scalar_hessian_aot).
+  - id: SW-195
+    bucket: SILENT-WRONG
+    family: conditions/error-irritants
+    status: fixed
+    closed_at: "a4279eb76"
+    needs_decision: false
+    title: "VM error objects drop their irritant list"
+    repro: >-
+      (display (guard (e (#t (error-object-irritants e))) (error "boom" 1 2)))
+    observed: >-
+      The public browser VM prints () without diagnostics instead of (1 2).
+    correct: >-
+      Preserve and return the supplied Scheme values in order, including after
+      region escape, first-class error calls, and re-raising.
+    evidence: >-
+      Published-site browser audit on 2026-09-20; uninstrumented direct probe
+      confirmed the loss. Local source VM and new ESKB regressions pass after
+      storing a typed Value-compatible head and tracing/cloning its graph.
+      Private native 2231 carries the packed list; legacy native 237 retains its
+      original single-argument ABI. An older ESKB fixture retains its original
+      message/stack behavior, rather than consuming unrelated stack values.
+    caught_by: [published-site-browser-oracle-audit]
+    missed_by: [site_smoke, doc_audit]
+    notes: >-
+      Source is not yet committed/integrated or deployed. Lifetime and callback
+      tests exposed SW-196, which is separately tracked. No waiver or refusal
+      counts as a fix.
+    fix: >-
+      The source VM already stored a typed Value-compatible irritant head
+      (9d47e16a4). The browser VM does not compile the builtin preamble: it boots
+      from the checked-in bytecode image lib/backend/vm_prelude_cache.h, which
+      predated the packed-tail error ABI, so its `error` closure still called the
+      legacy single-argument native 237 and every caught error object answered
+      (). The image is regenerated from current sources (a4279eb76); the existing
+      vm_prelude_cache_is_current gate, which was failing on the base, passes.
+    remeasured: >-
+      At a4279eb76 (fix/v135f-vmrt): a native REPL-session driver over the same
+      bootstrap as the browser printed () before regeneration and (1 2) after.
+      scripts/build-wasm-repl.sh bundle driven through scripts/lib/wasm_repl_runner.js:
+      (guard (e (#t (error-object-irritants e))) (error "boom" 1 2)) -> (1 2);
+      error-object-message -> boom. scripts/run_wasm_differential.sh: 176 passed,
+      0 failed (transcript rows added for SW-195/196). run_vm_parity.sh: 373
+      passed, 0 failed, including error_object_irritants_roundtrip and
+      error_irritants_lifetime on native, VM source and ESKB. ctest
+      vm_error_irritants_lifetime and vm_parallel_callbacks_repeat50 pass; 50
+      consecutive runs of the lifetime programs under an ASan+UBSan VM report no
+      finding. The published site bundle (site/static/eshkol-vm.*) is a release
+      artifact regenerated at the source freeze.
+  - id: SW-196
+    bucket: SILENT-WRONG
+    family: vm/native-callback-control
+    status: fixed
+    closed_at: "417fcfd4e"
+    needs_decision: false
+    title: "VM worker callbacks can unwind through the caller thread's interpreter context"
+    repro: >-
+      Run tests/vm_parity/corpus/error_irritants_lifetime.esk: a parallel-map
+      callback catches an error and returns its condition object.
+    observed: >-
+      The parent interpreter exits early, then a worker reads the freed parent
+      VM. AddressSanitizer reports heap-use-after-free in vm_worker_call_closure.
+      The current browser bundle, where parallel-map runs sequentially, also
+      returns early without any diagnostic: mapping a locally guarded callback
+      over (1 2 3) prints only 1 and discards the remaining program, instead of
+      printing (1 2 3) and the following "after" sentinel. repl_eval reports success.
+    correct: >-
+      Callback-local handlers resume the callback. Transfers to an outer handler
+      or continuation resume its owning interpreter scope. Workers never execute
+      the caller VM; unsafe shared-state callbacks remain on the caller thread.
+    evidence: >-
+      .scratch/error-irritants-lifetime-asan.log records the original use-after-free.
+      The local fix provides one escape destination per interpreter invocation,
+      matched by frame depth and generation; schedulers admit only isolated-safe
+      worker closures and propagate failures after joining. Source/ESKB callback
+      checks and focused ASan/UBSan lifetime checks now pass.
+    caught_by: [error-irritants-lifetime-review, address-sanitizer]
+    missed_by: [vm_parity, site_smoke]
+    notes: >-
+      Broader VM parity and final release qualification remain outstanding.
+      Do not close until the final integrated source and artifacts are qualified.
+    fix: >-
+      Workers never execute the caller VM and never transfer control. Every VM
+      scheduler (parallel-map, -filter, -for-each, -execute, future, force)
+      records a failed isolated run and, after the join, re-evaluates each failed
+      task on the caller's own interpreter in element order
+      (vm_parmap_settle_failed / vm_parthunk_settle_failed /
+      vm_future_force_on_caller in lib/backend/vm_parallel.c). Admitted callbacks
+      are pure, so this is the sequential semantics: the callback's own condition
+      object reaches the caller's handler chain, and an outer guard or
+      continuation resumes its owning scope through vm_run's per-invocation native
+      escape. Before, a faulting worker callback surfaced as the generic
+      "parallel-map: worker closure failed" and a refused submit fabricated one.
+      The isolated VM no longer reports the raise it hands back on stderr.
+    remeasured: >-
+      At 417fcfd4e/5895adefb (fix/v135f-vmrt): tests/vm/parallel_worker_settle_regression.esk
+      prints "parallel worker settle PASS"; the base VM prints
+      'FAIL: map got "parallel-map: worker closure failed"'.
+      tests/vm_parity/corpus/parallel_callback_raise.esk is byte-identical on
+      native, VM source and ESKB. Browser VM transcript rows: guarded callback over
+      (1 2 3) -> (-1 2 -3), caller-handled raise -> two, evaluation continues.
+      ctest vm_parallel_callbacks_repeat50 (50 consecutive runs of four programs)
+      passes; the same 50x loop under an ASan+UBSan VM reports no finding.
+  - id: SW-197
+    bucket: SILENT-WRONG
+    family: ad/native-exact-tier
+    status: fixed
+    closed_at: "d3d088e0a"
+    needs_decision: false
+    title: "native derivative loses exactness when a scalar body uses collection intermediates"
+    repro: >-
+      Differentiate a scalar fold over map or parallel-map at 1/3, for example
+      d/dx fold-left(+, 0, map(y -> y*y, [x x x x])).
+    observed: >-
+      Native JIT and AOT return the inexact double 2.6666666666666665 with exit 0
+      instead of exact 8/3; a sufficiently tiny exact input underflows and fails
+      equality with the analytic exact derivative. Direct scalar arithmetic and
+      derivative-n remain exact.
+    correct: >-
+      An exact point stays on the exact Taylor tier when the differentiand's final
+      value is numeric, even if list/vector values are built and consumed only as
+      intermediate operands. A genuinely collection-valued result retains the
+      existing R-to-R^n derivative semantics.
+    evidence: >-
+      .scratch/NATIVE-PARALLEL-AD-EXACTNESS.md and the isolation logs reproduce
+      the loss in both serial and parallel collection paths. The local fix makes
+      the safety scan follow value-producing positions instead of every operand.
+      Four exact-point/exact-rational native CTests and the four-engine
+      parallel_ad_carrier_lifetime corpus case pass.
+    caught_by: [release-ad-carrier-audit]
+    missed_by: [vm_parity, exact_rational_derivative_runtime_smoke]
+    notes: >-
+      The list/vector/map/fold/parallel-map half closed with the value-producing
+      eligibility scan (9d47e16a4). Re-measured at d3d088e0a (cherry-pick of cc978a57a onto the ADR-0027 base) on the native JIT, an
+      AOT binary, the VM from source and the VM from ESKB: every list, vector and
+      map/fold case is exact (d/dx fold-left(+, 0, map(sq, [x x x x])) at 1/3 is
+      8/3; the 2^-2000 rational agrees exactly). The residual was TENSOR
+      intermediates: the native exact tier stored its Taylor tower in a tensor
+      literal as 0, the jet tier refused a dual, and the VM kept only the primal.
+      d3d088e0a routes every tensor construction path through the ADR-0020 slot
+      store boundary (amendment 2): a forward carrier widens the tensor to a jet
+      tensor and tensor-ref reads it back whole, so d/dx tensor-ref(tensor(x, x*x), 1)
+      at 1/3 is exact 2/3 on all four routes. A body that applies a tensor kernel
+      answers inexactly by design (a tensor holds doubles). Gate:
+      tests/ad/exact_collection_intermediates_test.esk (CTest
+      exact_collection_intermediates_{runtime,aot,vm,vm_eskb}_smoke) and parity
+      corpus 94_derivative_through_tensor_carrier.esk.
+  - id: SW-198
+    bucket: SILENT-WRONG
+    family: vm/parallel-ad-carrier-ownership
+    status: fixed
+    closed_at: "417fcfd4e"
+    needs_decision: false
+    title: "VM parallel AD results retain worker-owned exact carrier storage"
+    repro: >-
+      Differentiate and Hessian a fold over parallel-map at exact rational points,
+      including a tiny bignum rational, then let the worker VM be destroyed.
+    observed: >-
+      Normal builds can print plausible values, but AddressSanitizer reports a
+      heap-use-after-free in vm_rational_arith_exact -> vm_dual_add when the parent
+      consumes exact halves owned by a destroyed worker. Taylor coefficient arrays
+      and their exact rational sidecars have the same ownership defect.
+    correct: >-
+      Publishing a worker result deep-copies every dual/Taylor coefficient channel,
+      bignum limb buffer and exact rational sidecar into parent-owned storage; the
+      region evacuator retains every channel it can later expose.
+    evidence: >-
+      .scratch/parallel-ad-transfer-asan.log records the original UAF. The local
+      fix deep-clones scalar halves plus all four coefficient/exact channels and
+      extends region retention. Source VM, emitted ESKB and an ASan/UBSan VM run of
+      parallel_ad_carrier_lifetime pass; leak detection was disabled and native
+      runtime libraries were not sanitizer-instrumented.
+    caught_by: [address-sanitizer, release-ad-carrier-audit]
+    missed_by: [vm_parity, normal-runtime-smoke]
+    notes: >-
+      Source is not yet committed to the release cut. Keep open until integrated
+      sanitizer and release qualification complete.
+    fix: >-
+      Leaf payloads crossing between VM instances go through one facility,
+      vm_leaf_payload_clone_to() in lib/backend/vm_parallel.c, in both directions
+      (main -> worker snapshot, worker -> main publication). It deep-copies
+      bignum limbs, exact rationals, all four dual/Taylor coefficient and exact
+      channels, and now also the dual parts of a complex value, which the old
+      per-direction arms copied as bare structs. The region evacuator retains
+      complex parts transitively (their blocks are scanned for interior pointers),
+      so no evacuator change was needed.
+    remeasured: >-
+      At 417fcfd4e (fix/v135f-vmrt): parallel_ad_carrier_lifetime passes on
+      native, VM source and ESKB (run_vm_parity.sh 373/0) and 50 consecutive runs
+      under an ASan+UBSan VM (detect_leaks=0; native runtime libraries not
+      instrumented) report no finding. Complex results carrying derivatives
+      published from workers pass under ASan; the complex-part copy was found by
+      inspection, since no measured VM program yet produces complex parts with
+      exact or Taylor channels (see SW-199, SW-200).
+  - id: SW-193
+    bucket: SILENT-WRONG
+    family: ad/complex-carrier
+    status: fixed
+    needs_decision: false
+    title: "nested holomorphic complex derivatives discard the enclosing carrier and answer 0+0i instead of the second derivative"
+    repro: >-
+      (display (derivative (lambda (z)
+        (derivative (lambda (w) (* w (* w w))) z))
+        (make-rectangular 1.0 1.0)))
+    observed: >-
+      Native answers 0+0i on the current complex evaluation-point implementation;
+      the analytic result d²(z³)/dz² at z=1+i is 6+6i. The inner complex seed
+      does not preserve the enclosing perturbation carrier.
+    correct: >-
+      6+6i, with the enclosing complex derivative carrier retained through the
+      nested pass.
+    caught_by: [ad-integration-review]
+    missed_by: [run_ad_oracle, run_ad_exactness_gate]
+    notes: >-
+      Closed on every engine: the VM and browser VM at 7c036631
+      (fix/v135f-vmtaylor), native JIT and AOT at 1dad8eff6 (fix/v135f-taylor),
+      where tests/ad/complex_nested_carrier_test.esk (30 checks, including nested
+      derivative-n, taylor and captured complex variables) is registered as
+      complex_nested_carrier_runtime_smoke and _aot_smoke.
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    fixed_by: "ADR-0027 level carrier: VM half fix/v135f-vmtaylor (7c036631), native half fix/v135f-taylor (1dad8eff6)"
+    observed_after: >-
+      (derivative (lambda (z) (derivative (lambda (w) (* w (* w w))) z))
+      (make-rectangular 1.0 1.0)) is 6+6i on the VM, the browser VM and native;
+      nested derivative-n and taylor at complex points agree too.
+    evidence: >-
+      tests/ad/vm_nested_holomorphic_test.esk (ctest vm_nested_holomorphic_vm,
+      vm_nested_holomorphic_browser_vm, vm_nested_holomorphic_jit).
+  - id: SW-201
+    bucket: LOUD-ERROR
+    family: native/parallel-callback-control
+    status: fixed
+    closed_at: "5895adefb"
+    title: "native parallel callbacks that raise exit the process instead of reaching the caller's handler"
+    repro: >-
+      (display (guard (e ((symbol? e) (list 'caught e)))
+        (parallel-map (lambda (x) (if (= x 6) (raise 'six) x)) '(1 2 3 4 5 6 7 8))))
+    observed_before: >-
+      eshkol-run -r prints "Unhandled exception: user exception" and exits 1;
+      nothing after the form runs. The exception-handler chain is thread-local, so
+      a raise on a pool worker found no handler; a raise on the calling thread
+      (small lists, the JIT warm-up element) longjmp'd through the scheduler's
+      C++ frames. docs/breakdown/PARALLEL_COMPUTING.md 11.5 described the process
+      exit as the behaviour. The VM answered (caught six).
+    correct: >-
+      (caught six): the callback's own raised object reaches the caller's
+      handler; a guard inside the callback resumes that callback.
+    fix: >-
+      One unwind boundary (run_in_boundary in lib/backend/parallel_codegen.cpp)
+      runs every callback of parallel-map, -filter, -for-each, -execute and async
+      futures under a handler on the thread that runs it. After the join the entry
+      point returns from its implementation and re-raises the first recorded
+      condition in element order on the calling thread. A future that raised
+      stays unforced and re-raises from force; a refused submission runs its
+      element on the calling thread.
+    remeasured: >-
+      At 5895adefb (fix/v135f-vmrt): tests/vm_parity/corpus/parallel_callback_raise.esk
+      is byte-identical on native JIT, VM source and ESKB (run_vm_parity.sh
+      373/0); ctest native_parallel_callback_raise_jit and
+      native_parallel_callback_raise_aot_repeat50 (50 consecutive AOT runs) pass.
+    caught_by: [v135f-vmrt-parity-probe]
+    missed_by: [vm_parity]
+  - id: SW-205
+    bucket: LOUD-ERROR
+    family: native/parallel-callback-control
+    status: fixed
+    closed_at: "747b6964d"
+    needs_decision: false
+    title: "native continuation escape from a parallel-map worker crashes the process"
+    repro: >-
+      (display (call-with-current-continuation
+        (lambda (k) (parallel-map (lambda (x) (if (= x 4) (k 'escaped) x))
+                                  '(1 2 3 4 5 6 7 8)))))
+    observed: >-
+      eshkol-run -r: "[Eshkol] fatal signal: SIGBUS" and exit 138. The invoke
+      sequence reroots dynamic-wind, promise and region state against marks that
+      belong to the capturing thread and then longjmps to a jmp_buf on that
+      thread's stack from a pool worker. The VM prints escaped.
+    correct: >-
+      escaped: the escape resumes the continuation's owning scope on its own
+      thread, as the VM does, e.g. by recording the foreign continuation at the
+      worker's unwind boundary and resuming it on the caller after the join.
+    evidence: >-
+      Found by the v135f-vmrt lane on 2026-09-22 after SW-201. Not silent: the
+      process dies with a signal.
+    caught_by: [v135f-vmrt-probe]
+    missed_by: [vm_parity]
+    notes: >-
+      Needs the invoke sequence in llvm_codegen (continuation_invoke_bb) to
+      detect a continuation captured on another thread before it touches
+      thread-local state; beyond the VM runtime lane's scope.
+    fix: >-
+      Every native continuation invocation calls eshkol_continuation_transfer_check
+      (lib/backend/parallel_codegen.cpp) after storing its value. Inside a parallel
+      callback's unwind boundary, a continuation whose capture point is not in the
+      callback's own live extent on that thread is not resumed there: the
+      callback's dynamic-wind, promise, region and AD state is unwound to the
+      boundary through the facility eshkol_raise uses
+      (eshkol_restore_state_for_handler, now shared), and the transfer is
+      recorded. The caller performs it after the join, in element order with any
+      recorded raise, on its own thread; an enclosing boundary defers it again.
+    remeasured: >-
+      At 747b6964d (fix/v135f-vmrt): the repro prints escaped and the program
+      continues, on native JIT and AOT. tests/vm_parity/corpus/parallel_continuation_escape.esk
+      (worker and calling-thread elements, parallel-execute, parallel-filter,
+      local continuations, dynamic-wind after-thunk) is byte-identical on native
+      and VM; native_parallel_continuation_escape_aot_repeat50 passes.
+  - id: SW-206
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "A fourth nested `derivative` answered 0: the 8-jet has two forward slots and the reverse-seed slot, and the third live jet level aliased onto it"
+    repro: >-
+      (derivative (lambda (a) (derivative (lambda (b) (derivative (lambda (c)
+      (derivative (lambda (dd) (* a b c dd)) 1.0)) 1.0)) 1.0)) 1.0)
+    observed: >-
+      0, with exit status 0, on the JIT and AOT lanes (independent review of
+      fix/v135f-taylor at 1dad8eff6).
+    correct: >-
+      1.
+    root_cause: >-
+      eshkol_ad_nested_seed ran a first-order `derivative` pass as a level only when
+      a tower was open or the point was a tower. A jet pass seeded slot e1 at
+      forward level 0, e2 at level 1 and the reverse-seed slot ep at level 2 and
+      above, so the fourth level shared ep with the third.
+    fix: >-
+      lib/core/runtime_taylor.c eshkol_ad_nested_seed: a jet pass also runs as a
+      level when two jet levels are already live (pert_level >= 2), so the 8-jet
+      only ever holds e1 and e2 and ep stays the reverse seed. ADR-0027 section 3.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+      and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+      and AOT at 0a4782007.
+    caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+      carrier.md.
+  - id: SW-207
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "`hessian` nested inside a live differentiation pass answered 0"
+    repro: >-
+      (derivative (lambda (q) (hessian (lambda (t) (* q t t t)) 2.0)) 3.0)
+    observed: >-
+      0 (JIT and AOT); the same inside `derivative-n` and at exact points.
+    correct: >-
+      12: hessian_t (q t^3) at 2 is 12 q.
+    root_cause: >-
+      hessianJetPath never reached eshkol_ad_nested_seed, and the exact tier, which
+      does, declined at run time whenever a pass was live and at compile time
+      whenever an enclosing tower-API call's mode leaked into the operator's
+      emission.
+    fix: >-
+      lib/backend/autodiff_codegen.cpp: every AD operator clears the enclosing
+      pass's tower mode for its own emission (PassModeScope), and a scalar hessian
+      met while a forward pass is live, or at a carrier point, runs as the order-2
+      tower pass (tryExactTowerRoute route_nested), which is a level of the
+      enclosing passes.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+      and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+      and AOT at 0a4782007.
+    caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+      carrier.md.
+  - id: SW-208
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "`jacobian` nested inside a live differentiation pass answered 0, and crashed under `derivative-n`"
+    repro: >-
+      (derivative (lambda (t) (vector-ref (vector-ref (jacobian (lambda (v) (vector
+      (* t (vector-ref v 0) (vector-ref v 0)))) (vector 2.0)) 0) 0)) 1.0)
+    observed: >-
+      0 under `derivative`; SIGSEGV under `derivative-n` (a tagged 4.0 dereferenced
+      as a pointer).
+    correct: >-
+      4: J00 = 4t.
+    root_cause: >-
+      jacobian is a reverse-tape operator whose nodes carry one raw double, so an
+      enclosing perturbation reaching the field had nowhere to live, and its f64
+      result tensor could not hold a carrier. Separately, a row view of a tagged-
+      element tensor was built with 8-byte slots and dtype 0.
+    fix: >-
+      lib/backend/autodiff_codegen.cpp: while a forward pass is live, or when the
+      point carries a carrier, jacobian computes each column as a forward pass of
+      its own through the one seed/extract protocol and assembles a tagged-element
+      (dual) tensor (lib/core/runtime_taylor.c eshkol_ad_point_* and
+      eshkol_ad_jacobian_store_column). lib/backend/collection_codegen.cpp: a row
+      view of a tagged tensor uses 16-byte slots and keeps the dtype.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+      and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+      and AOT at 0a4782007.
+    caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+      carrier.md.
+  - id: SW-209
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "`gradient` at an exact scalar point under an enclosing `derivative` answered 0"
+    repro: >-
+      (derivative (lambda (t) (* t (gradient (lambda (u) (* u u)) 3))) 2.0)
+    observed: >-
+      0 (JIT and AOT).
+    correct: >-
+      6.
+    root_cause: >-
+      gradientJetPath admitted its forward arm for an exact scalar only when a tower
+      or a tape was live; with only a jet live the point went to the reverse tape,
+      whose raw double drops the enclosing jet.
+    fix: >-
+      lib/backend/autodiff_codegen.cpp: an exact scalar point always takes the
+      order-1 tower pass through the one seed/extract protocol, exact when un-nested
+      and a level of the enclosing passes when nested.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk (nested_operator_levels_runtime_smoke
+      and _aot_smoke): the review probes as regression cells, 36 checks, pass on JIT
+      and AOT at 0a4782007.
+    caught_by: [independent review of fix/v135f-taylor (Fable), 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). ADR-0027: docs/design/adr/0027-recursive-taylor-level-
+      carrier.md.
+  - id: SW-213
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/perturbation-nesting
+    status: fixed
+    closed_at: "0a4782007"
+    title: "divergence, laplacian, curl, directional-derivative and the vector-point hessian nested inside a live pass answered 0"
+    repro: >-
+      (derivative (lambda (t) (divergence (lambda (v) (vector (* t (vector-ref v 0)
+      (vector-ref v 0)) (* t (vector-ref v 1)))) (vector 2.0 5.0))) 1.0)
+    observed: >-
+      0 (JIT and AOT), and likewise for laplacian, curl, directional-derivative and
+      a vector-point hessian under an enclosing pass.
+    correct: >-
+      5 (divergence 5t). laplacian of t(x^2+y^2) gives 4, the curl z component of (t
+      v1, 0, 0) gives -1, the directional derivative of t x^2 at 3 gives 6, and H00
+      of t x^2 y at (1,2) gives 4.
+    root_cause: >-
+      The composed operators read their Jacobian, Hessian or gradient as raw
+      doubles, and the vector-point hessian seeded e1/e2 itself, which an enclosing
+      pass owns.
+    fix: >-
+      lib/backend/autodiff_codegen.cpp: the vector-point hessian nested in a live
+      pass is nested forward passes through the one protocol (emitNestedHessian);
+      divergence, laplacian, curl and directional-derivative finish in the runtime's
+      generic arithmetic when the sub-result holds carriers
+      (emitCarrierCombinatorFork -> eshkol_ad_generic_trace / _curl / _dot in
+      lib/core/runtime_taylor.c). ADR-0027 section 3.
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk section SW-213
+      (nested_operator_levels_runtime_smoke and _aot_smoke) passes on JIT and AOT at
+      0a4782007.
+    caught_by: [v135f-taylor lane follow-up to the SW-206..209 review, 2026-09-22]
+    missed_by: [tests/ad/nested_towers_matrix_test.esk, tests/ad/nested_operator_matrix_test.esk]
+    notes: >-
+      Native (JIT and AOT). The VM carries the same operators; that half belongs to
+      the v135f VM lane.
+  - id: SW-199
+    bucket: SILENT-WRONG
+    subtag: complex
+    family: vm/complex-boundary
+    status: fixed
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    title: "VM (make-rectangular 1/2 1/3) printed +0i: exact rational parts of a complex were read as 0"
+    repro: >-
+      (display (make-rectangular 1/2 1/3)) on eshkol-vm-standalone-test; also
+      (atan 1/2 1), (asin 1/2), (make-polar 2 1/2).
+    observed_before: >-
+      +0i with exit status 0; native prints 0.5+0.3333333333333333i. Every real
+      function sharing the real/complex boundary saw 0 for a rational argument.
+    observed_after: >-
+      0.5+0.3333333333333333i, and the rational arguments read correctly, on the
+      VM, the browser VM and native.
+    root_cause: >-
+      lib/backend/vm_native.c vm_real_with_tangent read a non-dual part with
+      as_number(), which knows only the immediate tags, instead of the heap-aware
+      as_number_vm().
+    fixed_by: "vm_real_with_tangent uses as_number_vm; carriers pass the boundary whole (ADR-0027)"
+    evidence: >-
+      tests/complex/complex_exact_parts_test.esk (ctest complex_exact_parts_vm,
+      complex_exact_parts_browser_vm, complex_exact_parts_jit).
+    caught_by: [v135f-vmrt-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-200
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: vm/complex-carrier
+    status: fixed
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    title: "VM derivative-n and hessian through a complex intermediate returned the wrong derivative order"
+    repro: >-
+      (derivative-n (lambda (x) (real-part (* x x x (make-rectangular 1 2)))) 1/3 2)
+      and (hessian (lambda (x) (imag-part (* x x (make-rectangular 1 2)))) x0).
+    observed_before: >-
+      0.333 on the VM where native answers 2; the hessian answered 12 where native
+      answers 4. Exit status 0.
+    observed_after: >-
+      2 and 4 on the VM and the browser VM, matching native; higher orders, taylor
+      coefficients, make-rectangular/make-polar of carriers and magnitude/angle of
+      a complex intermediate carry every order.
+    root_cause: >-
+      real-part and imag-part returned the part's first-order (value, tangent)
+      pair and dropped the Taylor tower the part carried; make-rectangular and
+      make-polar flattened carrier arguments the same way.
+    fixed_by: "complex parts are carriers of any kind and are returned whole (ADR-0025, ADR-0027)"
+    evidence: >-
+      tests/ad/vm_complex_intermediate_taylor_test.esk (ctest
+      vm_complex_intermediate_taylor_vm, vm_complex_intermediate_taylor_browser_vm).
+      Native answers the SW-200 cells correctly; native second derivatives of
+      angle answer 0 and are reported to the native lane.
+    caught_by: [v135f-vmrt-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-203
+    bucket: SILENT-WRONG
+    subtag: complex
+    family: vm/complex-boundary
+    status: fixed
+    closed_at: '7c036631df1e8a74a5c0ebe909b33287074e5034'
+    title: "VM unary (- z) of a complex answered -0.0 and (abs z) answered 0"
+    repro: >-
+      (display (- (make-rectangular 1.0 2.0))) and (abs (make-rectangular 3.0 4.0))
+      on eshkol-vm-standalone-test.
+    observed_before: >-
+      -0.0 and 0 with exit status 0; native prints -1-2i and raises for abs.
+    observed_after: >-
+      -1-2i, and abs raises "abs: argument is a complex number ..." on the VM and
+      the browser VM, as on native.
+    root_cause: >-
+      lib/backend/vm_run.c lbl_NEG/lbl_ABS and their switch-dispatch twins had no
+      complex arm and read the heap pointer as 0.0; the switch twin of NEG also
+      lacked the dual arms.
+    fixed_by: "one shared carrier arm, vm_unary_sign_carrier (lib/backend/vm_ops.c), used by both loops"
+    evidence: >-
+      tests/complex/complex_negate_abs_test.esk (ctest complex_negate_abs_vm,
+      complex_negate_abs_browser_vm, complex_negate_abs_jit).
+    caught_by: [v135f-vmtaylor-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-204
+    bucket: SILENT-WRONG
+    family: native/closure-call-non-procedure
+    owner: v135f-vmrt (VM runtime lane)
+    status: fixed
+    closed_at: "98d0a9250"
+    needs_decision: false
+    title: "native: calling a non-procedure held by a closure-captured local answers #f with exit 0"
+    repro: >-
+      (display (let ((f #f)) ((lambda () (f 1 2)))))
+    observed: >-
+      Native JIT prints #f and exits 0. The same call without the closure,
+      (let ((f #f)) (f 1 2)), and a top-level (define g #f) (g 1 2) both fail loudly
+      ("variable ... is not a procedure"). The VM reports a fatal runtime error.
+    correct: >-
+      An error: applying #f, which is not a procedure (R7RS 4.1.3). Both engines
+      must refuse the application instead of answering a value.
+    evidence: >-
+      Found by the v135f-macro lane while re-deriving
+      tests/edge_matrix/generated/pair139_macros__set_bang.esk, whose generator
+      named a context variable like the swap macro under test (sw{ID}), so the
+      check called a let-bound #f. Correct lexical scoping of macro keywords made
+      the collision observable; the generator now names that variable sl{ID}.
+      Measured on fix/v135f-macro, Release build, arm64 macOS.
+    caught_by: [v135f-macro-hygiene-audit]
+    missed_by: [edge_matrix, vm_parity]
+    notes: >-
+      Out of the macro lane's scope (closure call lowering in native codegen);
+      filed for the owner of native call dispatch.
+    fix: >-
+      One call protocol at the closure call boundary (codegenClosureCall in
+      lib/backend/llvm_codegen.cpp): a value that is not a CALLABLE is never
+      "called" into a result; it raises a catchable type error through
+      eshkol_procedure_call_error. The integer operand, which was called as a raw
+      function pointer and faulted at its own value, takes the same path. The VM's
+      non-procedure refusal (vm_callable_closure, tail calls in vm_run.c), which
+      was fatal, now raises the same catchable condition. Same change as SW-216.
+    remeasured: >-
+      At 98d0a9250 (fix/v135f-vmrt): the repro under a guard prints caught on
+      native JIT and the VM; tests/vm_parity/corpus/procedure_call_protocol.esk
+      ((mk 5) and (mk "s") through a captured local) is byte-identical on native
+      and VM; ctest native_procedure_call_protocol_jit / _aot and
+      vm_closure_arity_catchable_regression pass. Full ctest: the only failures
+      are the pre-existing gates also failing at the integration base.
+  - id: SW-210
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/unary-route-coverage
+    status: fixed
+    closed_at: "edf532399"
+    title: "asin, acos, atan, asinh, acosh, atanh, log2, log10, exp2, cbrt, atan2 and the rounding functions returned the primal on a Taylor tower or level"
+    repro: >-
+      (derivative-n atan 1.0 2); (derivative-n (lambda (x) (atan x)) 0.5 3);
+      (derivative-n (lambda (a) (* a (derivative atan 1.0))) 2.0 1);
+      (derivative (lambda (a) (derivative-n (lambda (x) (atan (* a x))) 0.5 2)) 1.5)
+    observed: >-
+      0, 0, 0 and 0 on native JIT and AOT (the VM gave -0.256 for the second).
+      The third regressed when a nested first-order derivative began to run as an
+      order-1 level. Nested jets through atan2 answered 0 as well:
+      (derivative (lambda (a) (derivative (lambda (x) (atan x a)) 0.5)) 1.5).
+    correct: >-
+      -0.5, -0.256, 0.5, -1.437696 (exactly -22464/15625 at the exact point 1/2,
+      3/2), and -0.32 for the atan2 case.
+    root_cause: >-
+      The tower route table in codegenMathFunctionOnTagged listed ten builtins by
+      hand; the rest skipped it, and the scalar path read the tower as its primal.
+      lib/core/runtime_taylor.c had no recurrence for them, its unary dispatchers
+      copied the input on an unknown op-code, and its binary dispatchers treated
+      an unknown op-code as addition. The first-order dual branch of atan2 read one
+      tangent of an 8-jet.
+    fix: >-
+      lib/core/taylor_recurrences.def gains the fourteen unary rows, atan2 and
+      TAYLOR_ALIAS lowering spellings; lib/core/taylor_opcodes.h maps a spelling to
+      its op-code and the code generator routes every math builtin through it.
+      runtime_taylor.c carries the integral family as one recurrence, s_0 = f(u_0),
+      s_k = (1/k) sum j u_j d_{k-j} with d = f'(u), in the double (tr_ext_unary),
+      seed-tangent (ddual_ext), tagged-coefficient (level_ext_unary, also for exact
+      towers, which stay exact when every coefficient is rational) and 8-jet tiers,
+      and atan2 as sigma*atan(quotient) + const; unknown op-codes are a fatal
+      error. Forward jets meeting atan2 take the kernel's 8-jet rule.
+    evidence: >-
+      tests/ad/taylor_integral_family_test.esk: 305 checks against sympy closed
+      forms, orders 1-5 of every function through the classic tower, the level
+      under and around a first-order derivative, the Taylor list, atan2 in both
+      arguments and both quotient routes, the review's four cases, exactness at
+      exact points and the rounding functions. ctest taylor_integral_family_jit and
+      taylor_integral_family_aot pass; the pre-fix binary fails 278 of 305.
+      scripts/check_taylor_unary_routes.py (ctest taylor_unary_route_guard and its
+      selftest) reports 28 missing routes on the pre-fix tree and none now.
+    caught_by: [independent-review]
+    missed_by: [taylor-tower-self-test, vm_parity]
+    notes: >-
+      The VM's derivative-n of asin, acos and atan returns the first derivative at
+      every order; reported to the VM Taylor lane on the ICC bus.
+  - id: SW-211
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: complex/carrier-formulas
+    status: fixed
+    closed_at: "edf532399"
+    title: "complex expt, log, angle and the inverse functions lost the derivative a complex value carries"
+    repro: >-
+      (derivative (lambda (w) (expt w 3)) (make-rectangular 1 1));
+      (derivative-n log (make-rectangular 1 1) 1)
+    observed: >-
+      0 and 0.5 (the imaginary part missing) on native JIT and AOT; exp2, log2,
+      log10, the hyperbolic functions and the inverse functions of a carrier
+      complex raised "no derivative rule".
+    correct: >-
+      +6i and 0.5-0.5i.
+    root_cause: >-
+      ArithmeticCodegen::pow sent every complex operand to eshkol_complex_pow,
+      which computes exp(b log a) on the primal doubles. The angle in complex log
+      is atan2 of the components, and atan2 of a Taylor carrier had no route
+      (SW-210). complexCarrierMath had formulas for six procedures only.
+    fix: >-
+      pow is wrapped by withComplexCarrierDispatch, whose '^' formula (installed
+      by the code generator) raises to an exact integer power by repeated complex
+      multiplication and otherwise computes exp(b log a) on the components.
+      complexCarrierMath is rewritten over component pairs and covers every
+      procedure with a plain complex kernel, formula for formula with
+      <eshkol/core/complex_math.h>. angle reaches the tower atan2 of SW-210.
+    evidence: >-
+      tests/ad/complex_carrier_math_test.esk: 118 checks against sympy closed
+      forms for exp, exp2, log, log2, log10, sqrt, the circular and hyperbolic
+      functions and their inverses at orders 1-3, as a jet and as nested jets, and
+      expt with integer, negative, zero, real and complex exponents and a real
+      base. ctest complex_carrier_math_jit and complex_carrier_math_aot pass; the
+      pre-fix binary raises on the first procedure without a formula.
+      check_taylor_unary_routes.py fails when a complex kernel has no formula.
+    caught_by: [independent-review]
+    missed_by: [complex_value_derivative]
+  - id: SW-212
+    bucket: SILENT-WRONG
+    family: ad/native-exact-tier
+    status: fixed
+    closed_at: "a9747c2bb"
+    needs_decision: false
+    title: "a Taylor carrier stored in a (tensor ...) literal under a tower or level pass answers 0"
+    repro: >-
+      (derivative (lambda (a) (derivative-n (lambda (b) (tensor-ref (tensor (* a b b)
+      5.0) 0)) 1.0 2)) 2.0), and the same body with tensor-sum in place of
+      tensor-ref.
+    observed: >-
+      0 with exit status 0 on the native JIT and AOT: the literal lowering read the
+      inner pass's Taylor carrier (a level carrier under ADR-0027) as a number, and
+      a jet tensor's tensor-sum read tower slots as doubles. The jet path refused a
+      dual in the same shape.
+    correct: >-
+      2. A forward-mode carrier of any kind -- dual jet, classic tower or nested
+      level carrier -- is kept whole by the tensor slot store boundary (ADR-0020
+      amendment 2), read back whole by tensor-ref, and summed as itself by
+      tensor-sum.
+    evidence: >-
+      d3d088e0a routes every tensor construction path through the slot store
+      boundary; a9747c2bb folds a jet tensor's tensor-sum with the generic Taylor
+      entry (eshkol_jet_tensor_sum). Re-measured at a9747c2bb on the ADR-0027 base
+      (fix/v135f-exact-level): tests/ad/nested_level_through_tensor_test.esk passes
+      on JIT and AOT (d1 of dn2, dn2 of dn2, d1 of d1 of dn2, tensor-sum under a
+      level, the tensor-from-list form, exact at an exact point), and
+      tests/ad/exact_collection_intermediates_test.esk passes on JIT, AOT, VM source
+      and VM ESKB.
+    caught_by: [integrator-release-review]
+    missed_by: [exact_point_ad_test, vm_parity]
+    notes: >-
+      Re-measured after merging integration 74ab39152 (VM level carrier from
+      fix/v135f-vmtaylor): nested_level_through_tensor passes on the native JIT,
+      AOT, the VM from source and the VM from ESKB (CTest
+      nested_level_through_tensor_{runtime,aot,vm,vm_eskb}_smoke). The VM
+      tensor-kernel guard treats every non-scalar VmDual kind, LEVEL included, as a
+      derivative.
+  - id: SW-214
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/unary-route-coverage
+    status: fixed
+    closed_at: "edf532399"
+    title: "square, exact->inexact/inexact and magnitude of a real carrier dropped the derivative; square of a rational or complex printed pointer bits"
+    repro: >-
+      (derivative (lambda (x) (square x)) 1.3); (derivative-n (lambda (x)
+      (square x)) 1.3 2); (derivative (lambda (x) (inexact x)) 1.3);
+      (derivative magnitude -1.3); (square 1/2); (square (make-rectangular 1.0 2.0))
+    observed: >-
+      0, 0, 0, 0, 4657922831851813440 and 2379617646309622784 on native JIT.
+    correct: >-
+      2.6, 2, 1, -1, 1/4 and -3+4i.
+    root_cause: >-
+      square multiplied the payload bits inline on a flonum or fixnum arm, so a
+      jet, a tower, a rational and a complex were multiplied as pointers.
+      exact->inexact read any non-flonum as a double. ArithmeticCodegen::abs,
+      which magnitude uses for a real carrier, had no jet or tower arm.
+    fix: >-
+      square is the polymorphic product arith->mul(x, x) below its tape
+      dispatch; inexact of a carrier or a complex is its product with an inexact
+      1, so each carrier applies its own contagion; ArithmeticCodegen::abs sends a
+      jet or a tower to the kernel's abs rule, and the kernel's unary entry takes a
+      lone jet through its 8-jet algebra.
+    evidence: >-
+      tests/ad/unary_numeric_builtin_carriers_test.esk: 24 checks (jet, tower,
+      level, nested jets, gradient, exact tower, rational, bignum and complex
+      operands). ctest unary_numeric_builtin_carriers_jit and _aot pass; the
+      pre-fix binary fails 22 of 24.
+    caught_by: [direct-measurement]
+    missed_by: [independent-review]
+  - id: SW-215
+    bucket: SILENT-WRONG
+    subtag: exceptions
+    family: native/exception-object-layout
+    status: fixed
+    closed_at: '175891e7dcaa3700074245ab0ac590171dd0ea0d'
+    title: "Native runtime-raised conditions were header-less, so guard saw garbage: (guard (e (#t (error-object? e))) (car 5)) answered #f"
+    repro: >-
+      (display (guard (e (#t (list (error-object? e) e))) (car 5))) on eshkol-run -r
+      and an AOT binary.
+    observed_before: >-
+      (#f (4967685776)) with exit status 0: error-object? answered #f and the
+      condition displayed as a list of addresses; the bytecode VM answered #t with
+      the message. Messages raised with no recorded location also began with stray
+      stack bytes.
+    observed_after: >-
+      (#t car: argument is not a pair) on JIT, AOT and the VM; the message has no
+      stray prefix.
+    root_cause: >-
+      eshkol_make_exception (used by eshkol_runtime_fatal, bignum/rational
+      division by zero, i128 overflow, forward-reference stubs, Taylor refusals)
+      allocated no object header, while eshkol_raise hands every exception to a
+      handler as a HEAP_PTR classified by its header subtype;
+      eshkol_format_error_location_prefix left its buffer uninitialized when no
+      location was set.
+    fixed_by: >-
+      one initializer builds every exception object with its header
+      (lib/core/runtime_exceptions_hosted.cpp); the prefix formatter always
+      terminates its buffer.
+    evidence: >-
+      tests/error_handling/runtime_condition_error_object_test.esk (ctest
+      runtime_condition_error_object_jit_smoke, _aot_o0_smoke, _vm_src_smoke).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-216
+    bucket: SILENT-WRONG
+    family: native/closure-call-arity
+    status: fixed
+    closed_at: "98d0a9250"
+    title: "native closure calls through a procedure value silently drop surplus arguments and pad missing ones"
+    repro: >-
+      (define (h2 f a b) (f a b)) (display (h2 (lambda (x) x) 1 2))
+      (define (h1 f a) (f a)) (display (h1 (lambda (x y) x) 1))
+    observed_before: >-
+      Native prints 1 and 1, exit 0, no diagnostic: the closure dispatcher padded a
+      short call with null and dropped a surplus argument. A direct
+      ((lambda (x) x) 1 2) only warned at compile time. The VM refused both, but
+      fatally.
+    correct: >-
+      A catchable R7RS error: "Arity mismatch: <procedure> expects 1 argument but
+      got 2" (and "expects at least N" for a rest-parameter procedure's fixed
+      part), identical on both engines.
+    fix: >-
+      codegenClosureCall checks the recorded arity (exactly fixed_params, or at
+      least fixed_params when variadic) before dispatch and raises through
+      eshkol_procedure_call_error (lib/core/runtime_errors_hosted.cpp), replacing
+      the padding path and the apply-only overflow refusal. Producers that
+      recorded arity 0 now record the real one: first-class math and I/O builtins
+      use emitFunctionAsCallableValue, the curried derivative closure records its
+      parameter, and the make-vector value form takes its fill (as make-string
+      does). The first-class builtin probe for apply was itself a wrong-arity call
+      and is corrected in tests/coverage/builtins_first_class_known_args.json.
+    remeasured: >-
+      At 98d0a9250 (fix/v135f-vmrt): procedure_call_protocol.esk is
+      byte-identical on native and VM (surplus, missing, variadic minimum,
+      correct calls); ctest native_procedure_call_protocol_jit and _aot pass;
+      value_position_axis_sweep, first_class_builtins_* and the AD closure
+      suites pass. WASM glue carries eshkol_procedure_call_error
+      (wasm_flat_ad_import_test passes).
+    caught_by: [v135f-coordinator-audit]
+    missed_by: [vm_parity, value_position_axis_sweep]
+    notes: >-
+      Native error objects raised by the runtime satisfy error-object? only once
+      SW-215 (gates lane) is integrated; until then a guard catches the condition
+      but error-object? answers #f natively.
+  - id: SW-217
+    bucket: LOUD-ERROR
+    family: vm/closure-call-arity
+    status: fixed
+    closed_at: "98d0a9250"
+    title: "VM closure arity mismatch is fatal, cannot be caught by guard, and says \"arity mismatch:\" instead of the canonical \"Arity mismatch: \""
+    repro: >-
+      (display (guard (e (#t 'caught)) ((lambda (x) x) 1 2)))
+    observed_before: >-
+      eshkol-vm-standalone-test: "ERROR: arity mismatch: expected 1 argument, got
+      2" and a fatal exit; the guard never runs. Two duplicate checks
+      (vm_check_closure_arity, vm_validate_closure_arity) printed two wordings.
+    correct: >-
+      caught; the condition's message is "Arity mismatch: <procedure> expects 1
+      argument but got 2", as native raises it.
+    fix: >-
+      One admission check, vm_check_closure_arity (lib/backend/vm_core.c), raises
+      a catchable condition with the shared arity_contract.h wording; callers
+      resume dispatch at the handler. vm_validate_closure_arity is retired. A
+      rest-parameter procedure's minimum is enforced in its PACK_REST prologue.
+    remeasured: >-
+      At 98d0a9250 (fix/v135f-vmrt): tests/vm/closure_arity_catchable_regression.esk
+      prints "closure arity catchable PASS" (surplus, missing, direct, variadic
+      minimum, tail position, non-procedure); vm_first_class_builtin_arity_smoke
+      (updated to the canonical marker) passes; run_vm_parity.sh clean.
+    caught_by: [v135f-coordinator-audit]
+    missed_by: [vm_parity]
+  - id: SW-221
+    bucket: SILENT-WRONG
+    subtag: containers
+    family: cross-engine/container-accessor-boundary
+    status: fixed
+    closed_at: 'f01071dd29bfce422ffab0c0359848262c89025a'
+    title: "Container accessors read the wrong kind of container as their own: (vector-ref (list 1 2 3) 0) answered 8 natively and () on the VM"
+    repro: >-
+      (display (vector-ref (list 1 2 3) 0)), (vector-length (list 1 2 3)) and
+      (string-ref (list 1 2) 0) on eshkol-run -r, an -O0/-O2 AOT binary and
+      eshkol-vm-standalone-test.
+    observed_before: >-
+      Native: 8, 4097 and a control character, exit status 0; (string-ref 5 0),
+      (vector-ref 5 0) and (tensor-ref (list 1 2) 0) faulted with SIGSEGV;
+      bytevector-u8-ref and bytevector-length of a vector answered 1 and 4097.
+      VM: (), 0 and the NUL character; vector->list of a list was a fatal,
+      uncatchable refusal. The VM's threaded string-ref/string-length indexed
+      bytes, so (string-ref "héllo" 1) answered 195.
+    observed_after: >-
+      Every listed accessor raises a catchable error naming itself on native JIT,
+      AOT (-O0, -O2) and the VM, directly and as a first-class value; vectors,
+      tensors, strings, bytevectors and records still answer; the VM string
+      accessors index characters under both dispatch loops.
+    root_cause: >-
+      Each accessor classified its operand by hand and treated anything it did not
+      recognise as its own container (collection_codegen.cpp "assume legacy
+      vector"; vm_ops.c / vm_native.c pushing (), 0 or NUL), and the VM string
+      accessors had divergent threaded and switch copies.
+    fixed_by: >-
+      One container check per engine: TaggedValueCodegen::requireContainer and
+      resolveSequenceOperand natively, vm_require_container in the VM with the
+      vector and string accessors each one implementation shared by opcodes,
+      both dispatch loops and the first-class natives.
+    evidence: >-
+      tests/error_handling/sw221_container_type_boundary_test.esk (ctest
+      sw221_container_type_boundary_jit_smoke, _aot_o0_smoke, _aot_o2_smoke,
+      _vm_src_smoke).
+    caught_by: [v135f-coordinator]
+    missed_by: [builtins_first_class_audit, run_vm_parity]
+  - id: SW-222
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/pole-propagation
+    status: fixed
+    closed_at: "6adb2890f"
+    title: "a derivative through a simple pole of a quotient answered NaN natively (VM -inf); cbrt at 0 answered NaN"
+    repro: >-
+      (derivative (lambda (x) (/ 1.0 x)) 0.0); (derivative-n (lambda (x) (/ 1.0 x))
+      0.0 2); (derivative (lambda (x) (/ 1.0 x)) -0.0); (derivative-n cbrt 0 1)
+    observed: >-
+      +nan.0, +nan.0, +nan.0 and +nan.0 on native JIT and AOT; the VM answered
+      -inf.0 for the first, so the engines disagreed.
+    correct: >-
+      -inf.0, +inf.0, -inf.0 and +inf.0 (IEEE values of the closed forms -1/x^2,
+      2/x^3 and (1/3) x^(-2/3)).
+    root_cause: >-
+      Native jet division was a * (1/b) with the reciprocal built by the chain
+      rule from g'(b0) = -inf, g''(b0) = +inf, so every structurally absent
+      (zero) coefficient multiplied an infinity into NaN, which the product rule
+      then spread into the tangent. The tower recurrences did the same from order
+      2 on (0 * inf in the Cauchy sums), and cbrt's power recurrence on s divided
+      s_k by u_0, 0/0 at 0.
+    fix: >-
+      A zero perturbation coefficient contributes nothing to a product (zfma and
+      zfma_ij in lib/core/runtime_taylor.c, pertMul in autodiff_codegen.cpp's
+      jet4Mul, fma3/fmaIJ in the compile-time-K emitter, which stays bit-equal to
+      the runtime); a zero primal keeps IEEE semantics. Jet division, native
+      (dualDiv) and runtime (jet_div_raw), is the series division recurrence
+      q_S = (a_S - sum b_T q_{S\T}) / b_0 instead of a reciprocal chain, and the
+      chain rule itself stays IEEE, so poles enter only through a division: a
+      simple pole is the closed form, a higher-order pole or x * (1/x) ends in 0/0
+      and stays NaN. cbrt carries d = (1/3) u^(-2/3) from d_0 = 1/(3 cbrt(u_0)^2)
+      and integrates it.
+    evidence: >-
+      tests/ad/division_pole_test.esk passes on native JIT and AOT and on the
+      bytecode and browser VMs (ctest division_pole_jit, _aot, _vm, _browser_vm).
+      tests/ad/taylor_integral_family_test.esk adds the higher orders, nested
+      jets, the double pole and cbrt at 0 on JIT and AOT. ctest -R
+      'nested|taylor|complex|compiler_architecture': 65 of 67 pass, the two
+      failures being nested_towers_matrix_vm/_browser_vm (VM exact division by
+      exact zero, no VM file touched here).
+    caught_by: [coordinator-review]
+    missed_by: [vm_parity]
+    notes: >-
+      The VM's (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) prints <dual>; reported
+      to the VM lane.
+    vm_evidence: >-
+      VM mirror at 4689ba7e2a739d825c8c83a1038ea3ebe39417e4 (branch fix/v135f-vmtaylor2): tests/ad/division_pole_test.esk and
+      tests/ad/taylor_integral_family_test.esk pass on eshkol-vm-standalone-test and the browser VM.
+  - id: SW-223
+    bucket: SILENT-WRONG
+    subtag: numeric-syntax
+    family: cross-engine/number-syntax
+    status: fixed
+    closed_at: 'e607df22a815967b6ef903689423739bae50af0c'
+    title: "Complex number syntax: string->number \"1+1i\" answered #f while read returned a symbol; the parser and VM misread 1+1i"
+    repro: >-
+      (display 1+1i), (string->number "1+1i") and (read (open-input-string "1+1i"))
+      on eshkol-run -r, AOT and eshkol-vm-standalone-test; also #i42, #e1.5.
+    observed_before: >-
+      Native parser: "expected closing parenthesis"/undefined +1i. VM: fatal
+      "display requires an open output port". string->number answered #f while read
+      returned a symbol; #i42 was exact; #e1.5 was not a number; native read of an
+      integer past int64 clamped to INT64_MAX.
+    observed_after: >-
+      1+i on every reader and engine; the full R7RS 7.1.1 grammar (a+bi, a-bi, +i,
+      -i, +bi, m@a, #e/#i and radix prefixes, rational and inf/nan parts) is read
+      identically by literals, read and string->number on JIT, AOT and the VM.
+    root_cause: >-
+      six readers each carried a partial copy of the number grammar.
+    fixed_by: >-
+      inc/eshkol/core/number_syntax.h, one recognizer used by the parser, the
+      runtime reader, string->number and the VM parser/reader/natives (ADR-0028).
+    evidence: >-
+      tests/complex/sw223_number_syntax_test.esk (ctest
+      sw223_number_syntax_jit_smoke, _aot_o0_smoke, _aot_o2_smoke, _vm_src_smoke).
+    caught_by: [v135f-coordinator]
+    missed_by: [run_vm_parity, builtins_first_class_audit]
+  - id: SW-225
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/pole-propagation
+    status: fixed
+    closed_at: "db05575c7"
+    title: "the Taylor power step answered NaN at a zero base: sqrt, expt with a constant exponent and the inverse functions' poles"
+    repro: >-
+      (derivative-n sqrt 0.0 1); (derivative-n sqrt 0.0 2);
+      (derivative-n (lambda (x) (expt x 2.0)) 0.0 2);
+      (derivative-n (lambda (x) (expt x 1.5)) 0.0 1); (derivative-n asin 1.0 2)
+    observed: >-
+      +nan.0 for every one on native JIT and AOT (runtime tower and the
+      compile-time-K tier alike).
+    correct: >-
+      +inf.0, -inf.0, 2, 0 and +inf.0: the IEEE values of the closed forms.
+    root_cause: >-
+      The constant-exponent power recurrence s_k = (1/(k u_0)) sum (j r - (k-j))
+      u_j s_{k-j} divides by u_0; at u_0 = 0 every coefficient past s_0 is 0/0.
+      sqrt, expt with a constant exponent (including integers on the inexact
+      path), the dual and level towers and the inverse functions' derivative
+      series all use it.
+    fix: >-
+      tr_pow_const (lib/core/runtime_taylor.c) answers a zero base by
+      tr_pow_at_zero: an integer exponent is exact algebra (repeated Cauchy
+      products, and 1/u^|p| by the division recurrence of SW-222); any other r
+      gives s_k = 0 for k < m r and, for m = 1, the signed infinity of
+      r (r-1) ... (r-k+1) u_1^k; m > 1 is NaN (0 * inf in the closed form). The
+      compile-time-K emitter mirrors it as straight-line SSA selected on u_0 == 0;
+      the seed tangent uses u^(r-1) by the same step; the level tier routes a
+      plain-number zero base to it.
+    evidence: >-
+      tests/ad/taylor_integral_family_test.esk section SW-225: 32 checks through
+      the bare procedure (runtime tower) and a lambda (compile-time-K tier), plus
+      under an enclosing jet and in the Taylor list; ctest taylor_integral_family
+      _jit and _aot pass. The same expressions on the pre-change build printed
+      +nan.0. Broad AD ctest subset 172 of 174 (the two failures are the VM
+      nested_towers_matrix pair, unchanged, no VM file touched).
+    caught_by: [coordinator-review]
+    missed_by: [taylor-tower-self-test]
+    notes: >-
+      The VM does not agree yet: derivative-n of sqrt at 0.0 beyond order 1 prints
+      <dual>, and (expt x 1.5) gives NaN; reported to the VM lane, so no VM test.
+    vm_evidence: >-
+      VM mirror at 4689ba7e2a739d825c8c83a1038ea3ebe39417e4 (branch fix/v135f-vmtaylor2): tests/ad/division_pole_test.esk and
+      tests/ad/taylor_integral_family_test.esk pass on eshkol-vm-standalone-test and the browser VM.
+  - id: SW-218
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: vm/integral-family
+    status: fixed
+    closed_at: 'ea25399476bb56bb0c7ac42e7530b3f771234250'
+    title: "VM higher-order inverse trig answered the first derivative"
+    repro: >-
+      (derivative-n asin 0.3 2), acos, (derivative-n atan 0.7 2) on eshkol-vm-standalone-test.
+    observed_before: >-
+      1.048 for asin where the second derivative is 0.3456; acos likewise; atan returned its first derivative.
+    observed_after: >-
+      0.3455884077105225, -0.3455884077105225 and -0.6306022251249943 (= -2x/(1+x^2)^2 at 0.7) on the VM and the browser VM; every order and nesting; atan d3 at exact 0 is exact -2.
+    root_cause: >-
+      asin/acos/atan read a carrier through a first-order (value, tangent) rule.
+    fixed_by: "each is the integral of g(u) u' in the carrier arithmetic, s_k = (1/k) sum j u_j g_{k-j}, with an exact unit (lib/backend/vm_dual.c vm_dual_inverse_trig), mirroring native tr_ext_unary"
+    evidence: >-
+      tests/ad/vm_inverse_trig_orders_test.esk (ctest vm_inverse_trig_orders_vm/_browser_vm); tests/ad/taylor_integral_family_test.esk 347/347 on the VM and the browser VM.
+    caught_by: [v135f-coordinator-review]
+    missed_by: [run_vm_parity]
+  - id: SW-219
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: vm/exact-division
+    status: fixed
+    closed_at: 'ea25399476bb56bb0c7ac42e7530b3f771234250'
+    title: "VM exact division by exact zero inside a derivative answered an infinity instead of raising"
+    repro: >-
+      (derivative-n (lambda (b) (/ 1 b)) 0 1); the nested cell of tests/ad/nested_towers_matrix_test.esk.
+    observed_before: >-
+      -inf.0 and +nan.0 with exit status 0; native raises rational division by zero.
+    observed_after: >-
+      raises "rational division by zero" at any depth, on the VM and the browser VM; an inexact operand keeps IEEE semantics.
+    root_cause: >-
+      the exact arm of the dual/tower division fell through to the double arm on an exact zero divisor.
+    fixed_by: "the carrier records vm_dual_error and the dual native dispatcher raises it (lib/backend/vm_dual.c, vm_native.c)"
+    evidence: >-
+      tests/ad/vm_exact_division_by_zero_test.esk (ctest vm_exact_division_by_zero_vm/_browser_vm); nested_towers_matrix_vm.
+    caught_by: [v135f-coordinator-review]
+    missed_by: [run_vm_parity]
+  - id: SW-220
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: vm/operator-levels
+    status: fixed
+    closed_at: 'ea25399476bb56bb0c7ac42e7530b3f771234250'
+    title: "VM AD operators outside the level protocol: jacobian, vector hessian, divergence, curl, laplacian, directional-derivative nested in a live pass; missing first-class math builtins"
+    repro: >-
+      tests/ad/nested_operator_levels_test.esk on eshkol-vm-standalone-test; (asinh 0.5) on the VM.
+    observed_before: >-
+      "*: expected numeric operands" at the first jacobian cell; un-nested jacobian of a vector field answered #(0 0); asinh, acosh, atanh, log2, log10, exp2, cbrt, square, inexact and atan2 were undefined.
+    observed_after: >-
+      nested_operator_levels 36/36 on the VM and the browser VM; jacobian returns the matrix native returns; the ten names are first-class VM builtins on every number kind.
+    root_cause: >-
+      the operators seeded flat scalar duals or hyper-duals regardless of an enclosing pass, and jacobian read only tensor results.
+    fixed_by: "ADR-0027 section 3 on the VM: forward level passes per column/axis finished in the generic carrier arithmetic (lib/backend/vm_native.c vm_ad_level_*)"
+    evidence: >-
+      tests/ad/nested_operator_levels_test.esk, tests/ad/vm_math_first_class_test.esk (ctest *_vm and *_browser_vm); scripts/run_vm_parity.sh 372/0.
+    caught_by: [v135f-coordinator-review]
+    missed_by: [run_vm_parity]
+  - id: SW-224
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: vm/carrier-leak
+    status: fixed
+    closed_at: '4689ba7e2a739d825c8c83a1038ea3ebe39417e4'
+    title: "VM derivative through a pole printed a carrier (<dual>) instead of the IEEE value"
+    repro: >-
+      (derivative-n (lambda (x) (/ 1.0 x)) 0.0 2) on eshkol-vm-standalone-test.
+    observed_before: >-
+      printed #<value:13> (a dual) instead of +inf.0.
+    observed_after: >-
+      +inf.0; no extraction result is a carrier anywhere in the nested matrices' shapes or at poles.
+    root_cause: >-
+      0 * inf in the extracted coefficient's tangent left a non-constant scalar dual, returned as a VAL_DUAL with no pass live.
+    fixed_by: "the SW-222 pole rule on every VM kernel, and vm_ad_coeff_value, the one extraction exit, answers the primal when no forward pass is live"
+    evidence: >-
+      tests/ad/vm_no_leaked_carrier_test.esk (ctest vm_no_leaked_carrier_vm/_browser_vm); tests/ad/division_pole_test.esk on the VM.
+    caught_by: [v135f-coordinator-review]
+    missed_by: [run_vm_parity]
+  - id: SW-202
+    bucket: SILENT-WRONG
+    family: vm/tensor-reduction-shape
+    status: fixed
+    closed_at: "7c036631d"
+    needs_decision: false
+    title: "VM tensor-sum without an axis returns a one-element tensor, or per-row partial results, instead of a number"
+    repro: >-
+      (display (tensor-sum (tensor 0.5 0.25))),
+      (display (number? (tensor-sum (tensor 0.5 0.25)))) and
+      (display (tensor-sum (reshape (tensor 1.0 2.0 3.0 4.0) 2 2))) on the bytecode
+      VM (eshkol-vm-standalone-test) and the browser VM, against the native JIT.
+    observed: >-
+      The VM printed #(0.75), #f and #(3 7); native prints 0.75, #t and 10.
+      Arithmetic on the VM result, (+ 1 (tensor-sum (tensor 0.5 0.25))), was a
+      fatal runtime error. The prelude passed -1 for "no axis", and -1 also names
+      the last axis. (gpu-reduce + M) lowered the same way.
+    correct: >-
+      A full reduction (no axis) returns the scalar on every engine, as native
+      does; an explicit axis, negative ones counted from the last, reduces that
+      axis.
+    evidence: >-
+      Fixed by the VM Taylor lane in 7c036631d: the prelude passes #f for "no
+      axis" and the dispatcher treats a non-number axis as a full reduction.
+      gpu-reduce, which lowered with -1 as well, was fixed on master in 72a41917f
+      and arrives here with the master sync. Gate:
+      tests/tensor/tensor_full_reduction_test.esk on the native JIT, the bytecode
+      VM and the browser VM bundle (ctest tensor_full_reduction_{jit,vm,browser_vm}).
+    caught_by: [sw197-exact-collection-matrix]
+    missed_by: [vm_parity]
+    notes: >-
+      Filed by the v1.3.5 exact-derivative lane; fixed on the integration branch
+      in 7c036631d and ported to master by the WebGPU VM lane in 72a41917f, which
+      also fixed the gpu-reduce lowering.
+  - id: SW-226
+    bucket: LOUD-ERROR
+    family: native/map-arity
+    status: fixed
+    closed_at: "747b6964d"
+    title: "native (map (lambda (x y) x) '(1 2)) fails to compile with a module verification error"
+    repro: >-
+      (display (guard (e (#t 'caught)) (map (lambda (x y) x) '(1 2))))
+    observed_before: >-
+      eshkol-run -r: "Map: capture 'y' not found ... using null pointer" and
+      "LLVM module verification failed: Call parameter type does not match
+      function signature". The same for a named two-parameter procedure and for a
+      one-parameter procedure over two lists. The VM raises the catchable arity
+      error.
+    correct: >-
+      caught: the program compiles and the call raises "Arity mismatch:
+      <procedure> expects 2 arguments but got 1" at run time.
+    fix: >-
+      map's static fast path (lib/backend/map_codegen.cpp) is used only when the
+      procedure is known to take exactly one argument per list (an inline
+      non-variadic lambda with that many parameters, or a named procedure whose
+      declared parameters number that many). Every other procedure goes through
+      the runtime closure dispatcher, where the call protocol of SW-216 applies.
+    remeasured: >-
+      At 747b6964d (fix/v135f-vmrt): tests/vm_parity/corpus/map_arity_protocol.esk
+      (inline, named, surplus-list and for-each mismatches; unaffected exact and
+      rest-parameter maps) is byte-identical on native and VM;
+      native_map_arity_protocol_jit and _aot pass.
+    caught_by: [v135f-vmrt-probe]
+    missed_by: [vm_parity]
+  - id: SW-227
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: runtime-taylor/unary-route-coverage
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "(derivative (lambda (x) (inexact x)) 1/3) answered 0 natively (VM 1)"
+    repro: >-
+      (derivative (lambda (x) (inexact x)) 1/3), and the same through a passed,
+      stored, mapped or applied inexact / exact->inexact.
+    observed: >-
+      0 natively, as the VM Taylor lane measured it; exact->inexact read a
+      derivative carrier as a double and dropped the derivative.
+    correct: >-
+      1.0 on every path.
+    root_cause: >-
+      The carrier rule for inexact/exact->inexact was missing: a jet or a tower,
+      exact-point towers included, went to extractAsDouble.
+    fix: >-
+      edf532399 (SW-214) gives inexact of a carrier or a complex its product with
+      an inexact 1, so each carrier applies its own contagion. The first-class
+      wrappers re-enter the same call-position lowering, and 7c9ceca04 makes every value
+      route (passed, stored, mapped, applied) go through that wrapper; on the
+      integration head 1e468f279 every path measured 1.0 on JIT and AOT.
+    evidence: >-
+      tests/ad/unary_numeric_builtin_carriers_test.esk section SW-227/SW-228:
+      inexact and exact->inexact at the exact point 1/3 in call position,
+      passed, stored, mapped, applied, at order 2 and for exactness of the
+      result; ctest unary_numeric_builtin_carriers_jit and _aot pass (42 checks).
+    caught_by: [vm-taylor-lane-mirror]
+    missed_by: [value_position_axis_sweep]
+  - id: SW-228
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: builtins/first-class-parity
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "native square printed pointer bits for complex and rational arguments on value paths"
+    repro: >-
+      (map square (list 1/2 (make-rectangular 1.0 2.0))); (apply square (list
+      1/3)); ((lambda (f) (f 2/3)) square); square in AOT.
+    observed: >-
+      Pointer bits such as 4657922831851813440 for a rational and
+      2379617646309622784 for a complex, as the VM Taylor lane measured it.
+    correct: >-
+      1/4, -3+4i, 1/9, 4/9.
+    root_cause: >-
+      square multiplied payload bits inline on a flonum or fixnum arm, in the one
+      lowering every route shares.
+    fix: >-
+      edf532399 (SW-214) makes square the polymorphic product at that one
+      lowering; the first-class wrappers are generated from it, and 7c9ceca04 routes
+      every value position through the generic wrapper. On 1e468f279 every path
+      measured correct on JIT and AOT.
+    evidence: >-
+      tests/ad/unary_numeric_builtin_carriers_test.esk section SW-227/SW-228:
+      square passed, stored, applied, mapped and vector-mapped over rationals and
+      complex numbers, and under derivative and a complex carrier; JIT and AOT;
+      tests/ad/first_class_math_builtins_test.esk covers square among every math
+      builtin.
+    caught_by: [vm-taylor-lane-mirror]
+    missed_by: [value_position_axis_sweep]
+  - id: SW-229
+    bucket: SILENT-WRONG
+    subtag: autodiff
+    family: autodiff/dynamic-state-unwind
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "a raise or escape out of a derivative left the forward pass level raised: later derivatives lost exactness and exact division by 0 answered -inf.0"
+    repro: >-
+      (guard (e (#t 'raised)) (derivative (lambda (b) (/ 1 b)) 0)) followed by
+      (guard (e (#t 'raised)) (let ((r (derivative (lambda (b) (/ 1 b)) 0))) r))
+      and (derivative (lambda (b) (* b b)) 3).
+    observed: >-
+      raised, then -inf.0 (no raise), then 6 inexact. Which form raised depended
+      only on whether an earlier derivative had been exited by a raise.
+    correct: >-
+      raised, raised, exact 6.
+    root_cause: >-
+      A derivative/derivative-n pass raises __ad_pert_level (and the Taylor
+      context __ad_tower_active/__ad_tower_order) on entry and lowers it on its
+      normal exit; a longjmp from a raise or an escaping continuation skipped the
+      exit. The runtime unwinder's eshkol_ad_state_restore cannot reach them:
+      they are module globals, internal to an AOT module. Every later pass
+      believed it was nested, declined the exact tier and used the inexact jet.
+    fix: >-
+      lib/backend/llvm_codegen.cpp: snapshotAdForwardState/restoreAdForwardStateAt;
+      guard, with-exception-handler and call/cc (every setjmp site) save the three
+      globals before setjmp and store them back first on the landing block.
+    evidence: >-
+      tests/ad/ad_state_after_raise_test.esk (12 checks: guard, a let under guard,
+      with-exception-handler, escaping continuations from a derivative and a
+      Taylor pass, exactness afterwards) passes on JIT and AOT;
+      tests/ad/vm_exact_division_by_zero_test.esk is registered natively as
+      vm_exact_division_by_zero_jit and _aot and passes.
+    caught_by: [vm-taylor-lane-mirror]
+    missed_by: [vm_exact_division_by_zero_vm]
+  - id: SW-230
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: builtins/first-class-parity
+    status: fixed
+    closed_at: "7c9ceca04"
+    title: "atan2 was not a first-class value natively (raw libm function); first-class atan and round dropped a second argument"
+    repro: >-
+      (define f atan2) (f 1.0 2.0); (apply atan2 (list 1.0 2.0));
+      ((lambda (f) (f 1.0 2.0)) atan); (map atan ys xs)
+    observed: >-
+      SIGSEGV (the raw double(double,double) C function called through the
+      tagged closure ABI); invalid IR under apply; atan(1.0) = 0.785 instead of
+      atan2(1, 2) = 0.4636. value_position_axis_sweep: builtins/atan2::passed|
+      stored|returned::jit.
+    correct: >-
+      0.4636476090008061 on every path.
+    root_cause: >-
+      Two hand-kept name sets decided which math builtins got a first-class
+      wrapper; atan2 was in neither and fell to the function_table's raw libm
+      declaration, and apply called any same-named module function. atan and
+      round materialised at a fixed arity 1.
+    fix: >-
+      isFirstClassMathBuiltin (the math dispatch's Taylor table plus a first-class
+      table row) replaces both sets in codegenVariable and resolveLambdaFunction;
+      the table gains the math rows, with atan and round as VariadicRest::ByCount
+      (a variadic closure dispatching on the argument count to the wrapper at that
+      arity, an arity error otherwise). apply evaluates a name whose module
+      function is a raw C declaration as a value. The type checker types the
+      same names as procedures.
+    evidence: >-
+      tests/ad/first_class_math_builtins_test.esk (133 checks, every math builtin
+      passed, mapped, applied and differentiated through a value; atan2 passed,
+      stored, returned, mapped, applied; atan and round with two arguments; the
+      arity error) passes on JIT and AOT; value_position_axis_sweep passes with
+      its baseline untouched.
+    caught_by: [value_position_axis_sweep, vm-taylor-lane-mirror]
+    missed_by: [builtins_first_class_audit]
+  - id: SW-231
+    bucket: SILENT-WRONG
+    subtag: codegen
+    family: first-class-builtins/apply-arity
+    status: fixed
+    closed_at: "dd2ed8f3e"
+    title: "a builtin used as a value declared an arity it does not have, so a list apply through a variable refused or mis-called it"
+    repro: >-
+      (define g +) (apply g (list 1 2 3)); (define (partial f . a) (lambda b
+      (apply f (append a b)))) ((partial + 1 2 3) 4 5); (for-each display '(a b
+      c)); (apply display (list 'x))
+    observed: >-
+      'Type error in apply: expected fixed-arity procedure, got procedure' for
+      each (sweep_a_regressions_test, pointer_consolidation_comprehensive_test,
+      first_class_io_test on every lite release lane). + - * / values were 2-ary
+      closures whose surplus arguments only the direct-call dispatcher recovered
+      by a function-pointer compare; display/write/newline values had arity 0.
+    correct: >-
+      6, 15, abc, x: a builtin value accepts the argument counts its call form
+      accepts (R7RS 6.2.6, 6.13.3).
+    root_cause: >-
+      9d47e16a4 made the list apply trust a closure's declared arity (fixed-arity
+      overflow check in codegenClosureListCall); the hand-built builtin value
+      closures declared arities that were not the procedures' own.
+    fix: >-
+      The arithmetic operators are variadic closures (kept on the integration
+      route, makeVariadicOperatorClosureValue, SW-241); display, write and newline
+      are ByCount rows of the first-class builtin table with their optional port
+      (dd2ed8f3e, merged onto SW-230's ByCount); every port argument is checked by
+      StringIOCodegen::portFile.
+    evidence: >-
+      tests/core/first_class_builtin_arity_test.esk on JIT, AOT, VM and VM ESKB
+      (ctest first_class_builtin_arity_*); the three lite-lane programs pass.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-232
+    bucket: SILENT-WRONG
+    subtag: memory-safety
+    family: runtime-regions/promotion-atomicity
+    status: fixed
+    closed_at: "5e5868cc1"
+    title: "region promotion published young pointers after an allocation failure (#713)"
+    repro: >-
+      tests/core/region_promotion_failure_test.cpp, reporter_case: a region-young
+      string stored through eshkol_region_write_barrier_into while the destination
+      arena is bounded at capacity. partial_graph_case: a young vector whose
+      32-byte copy fits and whose string child does not.
+    observed: >-
+      The barrier logged "region evacuate: failed to allocate", returned, and its
+      output held the original pointer into the region; the caller stored it. In
+      the partial case the published root was the older-arena copy of the vector
+      with its slot still pointing into the young region, and the half-built copy
+      stayed in the region's forwarding map, so the next successful promotion of
+      the same value reused it and still carried the young edge. The destination
+      arena kept the aborted bytes.
+    correct: >-
+      Either the whole reachable graph is promoted, or nothing is stored, the
+      region, its forwarding relation and the destination arena are unchanged,
+      and a catchable allocation error is raised.
+    root_cause: >-
+      evac_raw and evac_object handled an allocator NULL by returning the old
+      pointer, with no aggregate failure status, and every driver published its
+      result unconditionally. Parents enter the forwarding map before their
+      children are walked, and the range barrier fixed slots up after the bulk
+      copy had already stored the young values.
+    fix: >-
+      evac_transaction (lib/core/runtime_regions.cpp) runs every promotion as one
+      transaction: a scope mark on the destination, a journal of added forwarding
+      keys and of shared bytes rewritten in place, and on the first failed
+      allocation (bounded capacity, OS block refusal, bookkeeping bad_alloc) an
+      abort that restores all three and leaves the roots unchanged. Region-mode
+      drivers then raise eshkol_raise_allocation_failure, whose condition is
+      preallocated outside every arena; arena-span reclamation retains the span.
+      Vector and tensor stores stage, promote, then store. ADR-0001 amended.
+    evidence: >-
+      region_promotion_failure_test passes (release build and an
+      ESHKOL_ENABLE_ASAN=ON build); the same test linked against the pre-fix
+      runtime reports 15 failures across all five cases. Memory suite 37/37,
+      region/arena/vector ctest subset 39/39.
+    caught_by: [external-report]
+    missed_by: [ctest, icc-smoke, icc-readiness]
+    notes: >-
+      Reported as issue #713 with a deterministic bounded-arena reproducer. The VM
+      evacuator is a separate implementation and is not covered by this entry.
+  - id: SW-234
+    bucket: SILENT-WRONG
+    subtag: containers
+    family: cross-engine/container-accessor-boundary
+    status: fixed
+    closed_at: 'f01071dd29bfce422ffab0c0359848262c89025a'
+    title: "Native (string-length 5) inside guard faulted instead of raising a catchable type error"
+    repro: >-
+      (guard (e (#t 'caught)) (string-length 5)) on eshkol-run -r and AOT.
+    observed_before: >-
+      SIGSEGV at 0xfffffffffffffffd; guard never ran. string-ref, vector-ref and
+      vector-length of a literal scalar faulted the same way.
+    observed_after: >-
+      A catchable "Type error in string-length: expected string, got integer" on
+      JIT and AOT; the VM raises "string-length: expected a string".
+    root_cause: >-
+      the accessors read their operand by container layout without checking its
+      kind (the SW-221 family); a literal scalar reached the lowering as a raw
+      constant rather than a tagged value.
+    fixed_by: >-
+      TaggedValueCodegen::requireContainer (SW-221), which also checks a literal
+      scalar operand.
+    evidence: >-
+      tests/error_handling/sw221_container_type_boundary_test.esk SW-234 cases
+      (ctest sw221_container_type_boundary_{jit,aot_o0,aot_o2,vm_src}_smoke).
+    caught_by: [v135f-coordinator]
+    missed_by: [builtins_first_class_audit]
+  - id: SW-235
+    bucket: SILENT-WRONG
+    subtag: frontend
+    family: macro-hygiene/renamed-binder-shadow
+    status: fixed
+    closed_at: "bffc9a697"
+    title: "a local binding of walk, unify, make-fact or another parser-lowered builtin did not shadow it after binder renaming"
+    repro: >-
+      (define (f) (define (make-fact . r) 'inner) (make-fact 1 2)) (f); (define
+      (g) (letrec ((unify (lambda (a b) 'mine))) (unify 1 1))) (g)
+    observed: >-
+      (1 2) and the builtin unify result: the builtin ran inside the local
+      binding's scope (builtin_shadow_test, named_let_capture_test,
+      shadowable_op_letrec_test).
+    correct: >-
+      inner and mine: R7RS 5.3.1, a use in a binder's scope calls that binding.
+    root_cause: >-
+      The parser lowers these names to their own operation nodes and codegen found
+      a user shadow by the binder name (hasUserShadow). ADR-0026 made the expander
+      rename every lexical binder to _v<n>.<name> (9d47e16a4, ea7677b6a), so the
+      name codegen looked up no longer existed.
+    fix: >-
+      The expander, which owns lexical scope, rewrites such a node into a call of
+      the local binding when a binder of that name is in scope
+      (macro_expander.cpp); codegen keeps only the top-level and REPL-batch
+      redirect. Both read one table, inc/eshkol/frontend/shadowable_ops.h.
+    evidence: >-
+      tests/core/first_class_builtin_arity_test.esk (inner define walk, let make-
+      fact, letrec unify) on JIT, AOT, VM and VM ESKB; v1_2_edge_cases
+      builtin_shadow_test, named_let_capture_test, shadowable_op_letrec_test pass.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-236
+    bucket: SILENT-WRONG
+    subtag: frontend
+    family: macro-hygiene/renamed-binder-spelling
+    status: fixed
+    closed_at: "bffc9a697"
+    title: "type diagnostics and the source form of a procedure showed the expander's _v<n>.<name> binder spelling"
+    repro: >-
+      (display (let ((h (lambda (x) x))) h)); a named-let accumulator type
+      warning; a linear-variable clone through a let* alias
+    observed: >-
+      (lambda (_v975.x) _v975.x); argument 2 of '_v972.loop'; linear variable
+      '_v973.b' (six typesystem tests failed to match the source name).
+    correct: >-
+      (lambda (x) x); argument 2 of 'loop'; linear variable 'b'.
+    root_cause: >-
+      ADR-0026 renames every lexical binder; the type checker, the shared
+      diagnostic sink and both S-expression builders printed the implementation
+      name.
+    fix: >-
+      syntax_color.h owns the fresh spelling in both directions
+      (ESHKOL_SYNTAX_FRESH_PREFIX, eshkol_syntax_source_spelling,
+      eshkol_syntax_source_text); TypeChecker::emitDiagnostic/addError,
+      eshkol_diagnostic_emit_v1, codegenQuotedAST and HomoiconicCodegen map
+      identifiers to their source spelling.
+    evidence: >-
+      ctest renamed_binder_source_form_smoke and
+      renamed_binder_diagnostic_spelling; typesystem suite 126/126.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-237
+    bucket: SILENT-WRONG
+    subtag: numeric
+    family: apply/arithmetic-reduction
+    status: fixed
+    closed_at: "dd2ed8f3e"
+    title: "(apply - '(5)) answered 5 and (apply / '(2)) answered 2; (apply - '()) answered 0"
+    repro: >-
+      (apply - (list 5)); (apply / (list 2)); (apply - '())
+    observed: >-
+      5, 2 and 0.
+    correct: >-
+      -5, 1/2 and an error: R7RS 6.2.6, one argument to - or / is its inverse and
+      - and / need at least one argument.
+    root_cause: >-
+      CallApplyCodegen::applyReduction folded from the first element for - and /
+      and gave them identities 0 and 1.
+    fix: >-
+      A single element is inverted (0 - x, 1 / x); only + and * have identities; -
+      and / of an empty list raise. The first-class + - * / values are variadic
+      closures over the same reduction.
+    evidence: >-
+      tests/core/first_class_builtin_arity_test.esk on JIT, AOT, VM and VM ESKB.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-238
+    bucket: SILENT-WRONG
+    subtag: io
+    family: first-class-io/optional-port
+    status: fixed
+    closed_at: "dd2ed8f3e"
+    title: "display and write used as values ignored their port argument; the VM newline wrote a non-port argument's newline to stdout"
+    repro: >-
+      (let ((d display) (p (open-output-string))) (d "x" p) (get-output-string
+      p)); VM (newline 1)
+    observed: >-
+      "" (the text went to the current output port); the VM printed a newline to
+      stdout.
+    correct: >-
+      "x"; a type error for a non-port (R7RS 6.13.3: the optional argument is an
+      output port).
+    root_cause: >-
+      The value form of display/write/newline was a hand-built arity-0 wrapper
+      that took one argument and never a port; the VM newline native fell back to
+      stdout for a non-port.
+    fix: >-
+      display, write and newline are ByCount rows of the first-class builtin table
+      (each count lowered by codegenCall); StringIOCodegen::portFile checks the
+      direction bit of every port argument and raises a catchable type error; the
+      VM prelude joins display into one optional-port procedure and its port
+      natives raise the same condition.
+    evidence: >-
+      tests/core/first_class_builtin_arity_test.esk and
+      tests/v1_2_edge_cases/first_class_io_test.esk on JIT, AOT, VM and VM ESKB.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-239
+    bucket: SILENT-WRONG
+    subtag: vm-scope
+    family: vm/with-region-body-scope
+    status: fixed
+    closed_at: '7e73845c510d6b888619bb59945f6575cac0bfa5'
+    title: "VM: a define inside with-region within a procedure was dropped; later references read an unrelated slot"
+    repro: >-
+      (define (f) (with-region 'r (define (sq x) (* x x)) (define u (sq 3)) (+ u 1)))
+      (display (f)) on eshkol-vm-standalone-test.
+    observed_before: >-
+      Wrong or fatal answers depending on the stray slot; in
+      tests/vm/factor_graph_infer_unobserved_surface_regression.esk
+      (vector-ref <slot> 0) answered () and fg-add-factor! ran on () with exit 0.
+      Native answers 10.
+    observed_after: >-
+      10 on the VM, the browser VM and native JIT.
+    root_cause: >-
+      compile_form_with_region compiled a body inside a procedure as bare
+      expressions, so an internal definition built its box and dropped it.
+    fixed_by: >-
+      the body compiles through vm_compile_scope_body, the helper let's body uses
+      (lib/backend/vm_compiler.c).
+    evidence: >-
+      tests/memory/with_region_internal_define_test.esk (ctest
+      with_region_internal_define_{vm,browser_vm,jit}).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-240
+    bucket: SILENT-WRONG
+    subtag: vm-scope
+    family: vm/with-region-body-scope
+    status: fixed
+    closed_at: '15d760034bb6d86858104405d39dbb32cac81b00'
+    title: "VM: a top-level with-region or begin body popped the slot its definition had bound; the name then read another value"
+    repro: >-
+      (with-region 'r (define tt 5) 1) (display tt), and (begin (define tt 5) 1)
+      (display tt), on eshkol-vm-standalone-test.
+    observed_before: >-
+      1 (and nothing at all for (with-region 'r (define tt 5) (display tt))
+      followed by (display tt)), exit 0; native prints 5.
+    observed_after: >-
+      5 on the VM and the browser VM; native JIT agrees for with-region.
+    root_cause: >-
+      the top-level body compile popped every non-last form, definitions
+      included, and a top-level definition's value IS its slot.
+    fixed_by: >-
+      vm_compile_toplevel_sequence / vm_end_toplevel_sequence in
+      lib/backend/vm_compiler.c, the one top-level body rule for with-region and
+      begin.
+    evidence: >-
+      tests/memory/with_region_toplevel_define_test.esk (ctest
+      with_region_toplevel_define_{vm,browser_vm,jit}) and
+      tests/vm/toplevel_begin_define_test.esk (ctest toplevel_begin_define_vm).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-241
+    bucket: SILENT-WRONG
+    family: native/closure-call-arity
+    status: fixed
+    closed_at: "c2db2b26e"
+    title: "native first-class + (and the other variadic operators) is the 2-argument builtin, so a curried + applied to three arguments raises an arity mismatch"
+    repro: >-
+      (define curry (lambda (f . a) (lambda m (apply f (append a m)))))
+      (display ((curry + 1) 2 3))
+    observed_before: >-
+      eshkol-run -r: "Arity mismatch: <procedure> expects 2 arguments but got 3".
+      Before the call protocol (SW-216) the surplus argument was dropped silently.
+      The VM prints 6. The same held for - * / and the numeric, string and char
+      comparison chains reached as values.
+    correct: >-
+      6. A variadic builtin passed as a value is the variadic R7RS procedure:
+      (+) 0, (*) 1, (- x) negation, (/ x) reciprocal, comparisons over every
+      adjacent pair with two or more arguments.
+    fix: >-
+      The value of + - * / and < > <= >= = is built by
+      makeVariadicOperatorClosureValue (lib/backend/llvm_codegen.cpp): a rest-list
+      closure over the same polymorphic operations as the call position, folded
+      by emitVariadicBuiltinLeftFold (now with optional one- and zero-argument
+      forms) or checked pairwise by emitVariadicBuiltinChain. The string and char
+      comparison rows of the SW-230 first-class table are VariadicRest::Chain. The
+      VM's comparison values gain the same chains in its prelude (call positions
+      still lower to the opcodes).
+    remeasured: >-
+      At c2db2b26e (fix/v135f-vmrt): tests/vm_parity/corpus/variadic_builtin_values.esk
+      is byte-identical on native and VM (curried + and *, zero/one-argument
+      arithmetic, comparison chains, the one-argument chain refusal, map over
+      three lists); native_variadic_builtin_values_jit and _aot pass.
+    caught_by: [v135f-coordinator-probe]
+    missed_by: [vm_parity, value_position_axis_sweep]
+  - id: SW-242
+    bucket: SILENT-WRONG
+    subtag: containers
+    family: cross-engine/container-accessor-boundary
+    status: fixed
+    closed_at: '0bcbc36d1a8d1b6ec8526ea5ec81e30d34a5e63b'
+    title: "VM (string->symbol 5) answered #f silently; native faulted"
+    repro: >-
+      (display (guard (e (#t 'caught)) (string->symbol 5))) on
+      eshkol-vm-standalone-test and eshkol-run -r.
+    observed_before: >-
+      VM: #f with exit 0 (indistinguishable from a returned value). Native:
+      SIGSEGV.
+    observed_after: >-
+      caught on both engines: a catchable "string->symbol: expected a string"
+      (VM) / "Type error in string->symbol: expected string, got integer"
+      (native).
+    root_cause: >-
+      the VM native 185 answered #f for a non-string operand; the native lowering
+      read the operand's bytes without checking its kind.
+    fixed_by: >-
+      both go through the SW-221 container boundary (vm_require_container /
+      TaggedValueCodegen::requireContainer).
+    evidence: >-
+      tests/error_handling/sw221_container_type_boundary_test.esk string->symbol
+      cases (ctest sw221_container_type_boundary_{jit,aot_o0,aot_o2,vm_src}_smoke)
+      and tests/error_handling/caught_condition_silent_test.esk.
+    caught_by: [v135f-gates-lane]
+    missed_by: [builtins_first_class_audit, run_vm_parity]
+  - id: SW-243
+    bucket: SILENT-WRONG
+    family: vm/gpu-dispatch
+    status: fixed
+    closed_at: "2faf99cd4"
+    needs_decision: false
+    title: "VM GPU reduction treated axis -1 as all axes while the CPU path reads it as the last axis"
+    repro: >-
+      (define M (reshape (fill 262144 ...) 512 512)) then (tensor-sum M) on the
+      bytecode VM with a GPU backend, run once with ESHKOL_GPU_THRESHOLD=1 and
+      once with the threshold above the tensor size (tests/gpu/gpu_correctness_gate.esk
+      payload on the native VM with Metal).
+    observed: >-
+      Above the GPU threshold the VM returned the grand total (#(135255870.36...));
+      below it, the per-row sums (a 512-element tensor). The answer depended on
+      the tensor's size. vm_native.c sent axis < 0 to vm_gpu_try_reduce as a full
+      reduction, while vm_tensor_reduce reads -1 as the last axis.
+    correct: >-
+      The GPU is used only when it computes the same reduction as the CPU path:
+      a full reduction (no axis, SW-202), or an explicit axis whose other extents
+      are all 1, returned with the CPU result's shape.
+    evidence: >-
+      Fixed in 2faf99cd4, refined in 72a41917f. After the fix the native VM gate
+      payload agrees between Metal and CPU: reduce-sum-A 263348.73874376056 vs
+      263348.7387437591, reduce-max-A identical. Gate: tests/webgpu/webgpu_vm_test.mjs
+      (reductions within GPU_GATE_TOL, attached vs unattached browser VM) and
+      tests/tensor/tensor_full_reduction_test.esk.
+    caught_by: [webgpu-vm-lane-gate-payload-diff]
+    missed_by: [vm_parity, gpu_correctness_gate]
+    notes: >-
+      Latent on every GPU backend the VM links (Metal, CUDA); surfaced when the
+      browser VM gained WebGPU dispatch (ADR-0029). gpu_correctness_gate.sh
+      compares native GPU and CPU builds, never the VM's own two paths.
+  - id: SW-244
+    bucket: LOUD-ERROR
+    subtag: toplevel-begin
+    family: cross-engine/toplevel-begin-splice
+    status: fixed
+    closed_at: 'f7b237ae972ad4ce1dce374e6c3310d7e48cbb07'
+    title: "Native: a top-level (begin (define tt 5) 1) did not define tt (\"Undefined variable\"); R7RS 5.1 splices it"
+    repro: >-
+      (begin (define tt 5) 1) (display tt) on eshkol-run -r and AOT.
+    observed_before: >-
+      Compile error "Undefined variable: tt". Nested begins and a macro expanding
+      to (begin (define ...)) failed the same way. On the VM a nested begin
+      inside a top-level begin or with-region left its binding as ().
+    observed_after: >-
+      5 on native JIT, AOT -O0/-O2, the VM and the browser VM, for nested begins,
+      a begin in a top-level with-region body, and macro expansions to begin.
+    root_cause: >-
+      the parser rewrote every begin holding a definition into a scoped letrec,
+      the driver and codegen flattened only one level of top-level sequence, and
+      the VM classified a top-level form as a definition by spelling.
+    fixed_by: >-
+      ToplevelFormParseScope + eshkol::splice_toplevel_forms (parser, driver,
+      codegen), MacroExpander::expandToplevelForm, and slot-based classification
+      in vm_compile_toplevel_sequence.
+    evidence: >-
+      tests/bindings/toplevel_begin_splice_test.esk (ctest
+      toplevel_begin_splice_{jit,vm,browser_vm,aot_O0,aot_O2}) and
+      tests/vm/toplevel_begin_define_test.esk (toplevel_begin_define_{jit,vm,browser_vm}).
+    caught_by: [v135f-gates-lane]
+    missed_by: [run_vm_parity]
+  - id: SW-245
+    bucket: SILENT-WRONG
+    family: vm/gpu-dispatch
+    status: fixed
+    closed_at: "32738038f"
+    needs_decision: false
+    title: "VM GPU elementwise path checked only element counts, not shapes"
+    repro: >-
+      On the bytecode VM with a GPU backend and ESHKOL_GPU_THRESHOLD=1:
+      (tensor-add (tensor 1.0 2.0 3.0 4.0 5.0 6.0)
+                  (reshape (tensor 1.0 2.0 3.0 4.0 5.0 6.0) 1 6)).
+    observed: >-
+      vm_gpu_try_binary accepted the operands because their totals matched and
+      built the result with the first operand's shape, [6], where broadcasting
+      gives [1,6]; the CPU path returns [1,6]. The result's shape depended on
+      whether the GPU was used.
+    correct: >-
+      The GPU elementwise path runs only for operands of identical shape;
+      everything else takes the broadcasting CPU path.
+    evidence: >-
+      Fixed in 32738038f (vm_gpu_dispatch.h). Gate: tests/webgpu/webgpu_vm_test.mjs
+      (elementwise output bit-identical to the unattached VM).
+    caught_by: [webgpu-vm-lane-review]
+    missed_by: [vm_parity]
+    notes: >-
+      Latent on every GPU backend the VM links; found while wiring the browser VM
+      to WebGPU (ADR-0029).
+  - id: SW-246
+    bucket: SILENT-WRONG
+    family: vm/tensor-reduction-identity
+    status: fixed
+    closed_at: "72a41917f"
+    needs_decision: false
+    title: "VM max/min reductions started from -DBL_MAX/DBL_MAX, so an all-infinite tensor reduced to a finite number"
+    repro: >-
+      (display (tensor-max (tensor -inf.0 -inf.0))) and
+      (display (tensor-min (tensor +inf.0))) on the bytecode VM
+      (eshkol-vm-standalone-test) and the browser VM, against the native JIT.
+    observed: >-
+      The VM printed -1.7976931348623157e+308 and 1.7976931348623157e+308;
+      native prints -inf.0 and +inf.0, and so does the VM's WebGPU reduction
+      path, so the VM's answer also changed at the GPU threshold. Both the full
+      reduction (vm_tensor_reduce_all) and the axis reduction (vm_tensor_reduce)
+      seeded max/min with the largest finite double.
+    correct: >-
+      Max starts from -infinity and min from +infinity, so a reduction over
+      infinite elements returns the infinity, on every engine and on both sides
+      of the GPU threshold.
+    evidence: >-
+      Fixed in 72a41917f (lib/backend/vm_tensor_ops.c). Gate:
+      tests/tensor/tensor_full_reduction_test.esk ("tensor-max of -inf",
+      "tensor-min of +inf", "tensor-max axis of -inf") on the native JIT, the
+      bytecode VM and the browser VM bundle.
+    caught_by: [webgpu-vm-lane-review]
+    missed_by: [vm_parity]
+    notes: >-
+      Found while porting SW-202 to master for the browser-VM WebGPU lane. Still
+      present on the release integration branch.
+  - id: SW-247
+    bucket: SILENT-WRONG
+    subtag: vm
+    family: vm-hash/equal-keys
+    status: fixed
+    closed_at: "23bac9091"
+    title: "VM hash tables matched keys by raw payload and returned every value as an integer; hash-clear! did not clear"
+    repro: >-
+      (define h (make-hash-table)) (hash-set! h "origin" (vector 0 0)) (hash-ref h
+      (list->string (string->list "origin")) #f); (hash-set! h 'k "s") (hash-ref h
+      'k #f)
+    observed: >-
+      #f, then an integer; define_record_type_test aborted on the VM with vector-
+      ref: expected a vector or tensor.
+    correct: >-
+      #(0 0) and "s" (equal? keys; the stored value unchanged), as on native.
+    root_cause: >-
+      vm_native 660-664 stored key.as.i/value.as.i through void* (since 08d5d0db1)
+      and 661 pushed INT_VAL of the hit; hash-clear! mapped to the copy native
+      668. The abort appeared when f01071dd2 (SW-221) made vector-ref refuse a
+      non-vector.
+    fix: >-
+      vm_hashtable.c takes hash and equality from the table; native 660 makes
+      tables of boxed Values hashed by vm_equal_hash and compared by
+      vm_deep_equal; region evacuation traces them exactly; hash-clear! maps to
+      669.
+    evidence: >-
+      tests/core/hash_table_equal_keys_test.esk on JIT, AOT, VM and VM ESKB (ctest
+      hash_table_equal_keys_*); VM parity 374/374.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-248
+    bucket: SILENT-WRONG
+    family: native/ad-variadic-differentiand
+    status: fixed
+    closed_at: "bdbb1cb2f"
+    title: "native gradient of an inline rest-parameter lambda returns #(0 0) with a cons-cell error"
+    repro: >-
+      (display (gradient (lambda args (apply * args)) (list 2.0 5.0)))
+    observed_before: >-
+      eshkol-run -r prints "Attempted to get pointer from non-pointer cell" on
+      stderr and #(0 0) on stdout. (lambda (a . r) (* a (car r))) failed LLVM
+      module verification instead. The VM prints #(5 2); the same procedure
+      reached through a wrapper was already correct natively.
+    correct: >-
+      #(5 2): a rest-parameter procedure takes one argument per point element.
+    fix: >-
+      A differentiand known to take a rest list (an inline variadic lambda, or a
+      name recorded by the variadic registry) always takes the runtime-closure
+      gradient and its spread rule, skipping the exact-tower and static
+      per-parameter routes that treated the rest parameter as a capture
+      (AutodiffCodegen::differentiandIsVariadic in lib/backend/autodiff_codegen.cpp).
+    remeasured: >-
+      At bdbb1cb2f (fix/v135f-vmrt2): tests/vm_parity/corpus/variadic_gradient_matrix.esk
+      (inline, named, wrapped, rest-with-fixed; list and vector points; builtins;
+      fixed-arity controls) passes on JIT, AOT and the VM (ctest
+      variadic_gradient_matrix_jit/_aot/_vm) and native-vs-VM source and ESKB in
+      run_vm_parity.sh (386/0). Exact points agree: (list 2 5) gives #(5 2) and
+      (list 1/2 3) gives #(3 0.5) on both engines.
+    caught_by: [v135f-vmrt-probe]
+    missed_by: [vm_parity]
+  - id: SW-249
+    bucket: SILENT-WRONG
+    subtag: vm
+    family: vm-records/type-identity
+    status: fixed
+    closed_at: "523d4766d"
+    title: "the VM record predicate was vector?, so a plain vector or another record type passed it; VM accessors read fields by declaration order"
+    repro: >-
+      (define-record-type cat (make-cat name) cat? (name cat-name))
+      (define-record-type dog (make-dog name) dog? (name dog-name))
+      (cat? (make-dog "rex")) (cat? (vector 1 2 3))
+    observed: >-
+      #t and #t on the VM (define_record_type_test: 3 FAILs); native #f and #f.
+    correct: >-
+      #f and #f.
+    root_cause: >-
+      vm_compiler.c compiled define-record-type by hand with a string tag, a
+      predicate that emitted only OP_VEC_P, and accessor indices in field
+      declaration order instead of constructor order.
+    fix: >-
+      The VM compiles the native lowering (type-symbol tag, tag-checking
+      predicate, constructor-position indices) through the ordinary define path;
+      on both engines accessors and mutators raise for a value that fails the
+      predicate.
+    evidence: >-
+      tests/core/record_type_identity_test.esk on JIT, AOT, VM and VM ESKB (ctest
+      record_type_identity_*); define_record_type_test 26/26 on JIT and VM.
+    notes: >-
+      Records remain tagged vectors on both engines: vector? is #t for a record
+      and a hand-built vector carrying the tag symbol passes the predicate.
+    caught_by: [coordinator-review]
+    missed_by: [vm_parity]
+  - id: SW-250
+    bucket: SILENT-WRONG
+    subtag: vm
+    family: vm-io/standard-port-parameters
+    status: fixed
+    closed_at: "d5dc2cb54"
+    title: "the VM had no current-output-port or current-input-port parameter, so parameterize of a standard port failed; native read with no port ignored a rebound current-input-port"
+    repro: >-
+      (define p (open-output-string)) (parameterize ((current-output-port p))
+      (display "hi")) (get-output-string p); natively (parameterize
+      ((current-input-port (open-input-string "(1 2)"))) (read))
+    observed: >-
+      VM: "undefined variable 'current-output-port'" and a fatal runtime error.
+      Native: read blocked on, or read from, the process's stdin.
+    correct: >-
+      "hi" on both engines, and (1 2).
+    root_cause: >-
+      The VM had one fixed stdout port that every port-less output site wrote to
+      with printf, and no parameter objects for the standard ports. Native read
+      passed a null FILE*, meaning stdin, when no port was given.
+    fix: >-
+      vm_std_port_parameter makes a parameter object per standard port per VM;
+      the prelude binds current-input-port, current-output-port and
+      current-error-port to them; every port-less read and write goes through
+      vm_current_port. Native read with no port calls
+      eshkol_runtime_current_input_fp.
+    evidence: >-
+      tests/core/standard_port_parameters_test.esk (11 checks) on JIT, AOT, VM
+      and VM ESKB (ctest standard_port_parameters_*); VM parity 386/386.
+    caught_by: [release-dry-run]
+    missed_by: [vm_parity]
+  - id: SW-251
+    bucket: SILENT-WRONG
+    subtag: documentation
+    family: navier-stokes/evidence-scope
+    status: fixed
+    title: "Navier-Stokes documentation framed partial residual checks as a complete result"
+    repro: >-
+      Read the public Navier-Stokes design note, release changelog, and ICC oracle
+      labels while comparing them with the per-row evidence ledger.
+    observed: >-
+      Public names and prose described a singular outcome and a complete
+      mechanization trajectory, while the ledger recorded 25 exact rows and 59
+      analytic-only rows among 84 total rows. This made the scope of executable
+      evidence easy to misread.
+    correct: >-
+      Public wording describes residuals, similarity profiles, scaling identities,
+      and energy estimates. The ledger and checker identify which rows have
+      executable evidence and which remain analytic-only.
+    root_cause: >-
+      The document title, ledger name, checker name, ICC labels, release text, and
+      site copies shared outcome-oriented language. The consistency checker
+      verified row wiring but did not constrain public wording.
+    fix: >-
+      Rename the design note, evidence ledger, and checker; update all references
+      and ICC criterion IDs; retain every computational row, status, numerical
+      value, and test. Regenerate the aggregate ledger and site content.
+    evidence: >-
+      The evidence-ledger checker passes on 84 rows (25 EXACT, 0 VALIDATED,
+      59 ANALYTIC-ONLY); the repository wording scan leaves only unrelated AD
+      code-generation terminology; the release and ICC gates are run on this branch.
+    caught_by: [release-review]
+    missed_by: [documentation-review, icc-readiness]
+  - id: SW-252
+    bucket: LOUD-ERROR
+    family: assurance/language-coverage-source-location
+    status: fixed
+    title: "the release language-coverage determinism gate inspected no readable source locations"
+    repro: >-
+      Run scripts/test_language_coverage_determinism.py with its corpus under an
+      ambient temporary directory outside the checkout, or under a nested project
+      root, then inspect both JIT and AOT assertions.
+    observed_before: >-
+      Coverage records existed, but their display paths were basenames relative
+      to the temporary source root. The gate resolved those names under the
+      checkout, skipped every unreadable path, and reported zero checked records.
+    correct: >-
+      Both execution modes record deterministic source locations that the gate
+      can reopen and check for valid line and column ranges.
+    root_cause: >-
+      The coverage runner omitted the determinism harness work directory, so the
+      harness chose the ambient temporary directory. CTest used a build-relative
+      root that could also lie outside the checkout. The display-path policy
+      correctly removes host directory prefixes, leaving no checkout-relative
+      name for those temporary source files.
+    fix: >-
+      Direct runs, the coverage runner, and CTest use an in-checkout scratch
+      parent for the corpus. Fresh per-run subdirectories remain isolated and
+      the source-location assertions are unchanged.
+    evidence: >-
+      scripts/test_language_coverage_determinism.py passes both JIT and AOT with
+      TMPDIR pointed at a nested project root; ctest language_coverage_determinism_test
+      and the coverage and language CTest selection pass.
+    caught_by: [release-dry-run]
+    missed_by: [language_coverage_determinism_test]
+  - id: SW-253
+    bucket: SILENT-WRONG
+    family: memory/region-escape-condition-irritants
+    status: fixed
+    title: "error irritants built inside a region dangled after the region exited"
+    repro: >-
+      (define e (with-region ('r 65536) (guard (x (#t x)) (error "m" (vector 1 2)))))
+      then allocate in another region and display (error-object-irritants e).
+    observed_before: >-
+      The irritant list printed reused memory, for example (#(0 0 0 0) #<bytevector>)
+      or #<heap:200> in place of #(1 2). Linux native builds showed it on every run;
+      macOS showed it once the region memory was reused.
+    correct: >-
+      (#(1 2)), unchanged by later allocation in any region.
+    root_cause: >-
+      Conditions are allocated in the process arena, which outlives every region,
+      but eshkol_exception_add_irritant stored the irritant without the region
+      write barrier. Region exit promotes only region-owned objects, so the
+      condition's irritant slots kept pointers into the reclaimed region.
+    fix: >-
+      eshkol_exception_add_irritant stores through eshkol_region_write_barrier_into,
+      the barrier every other store into a longer-lived object already uses, so an
+      irritant's in-region subgraph is promoted before the condition references it.
+    evidence: >-
+      tests/memory/error_irritant_region_escape_test.esk fails without the fix and
+      passes with it on native and the VM; tests/vm_parity/corpus/error_irritants_lifetime.esk
+      passes on Linux x86_64 and macOS arm64.
+    caught_by: [release-dry-run]
+    missed_by: [vm-parity-macos]
+  - id: SW-256
+    bucket: SILENT-WRONG
+    subtag: webgpu-artifact
+    family: wgsl-artifact/envelope-and-generation
+    status: fixed
+    title: "an unbounded polynomial evaluator could return plausible values outside its fitted envelope or after a coefficient refit"
+    repro: >-
+      Evaluate the prototype Taylor polynomial at strain 0.3, beyond its declared
+      radius 0.2, or reuse an output from a prior coefficient generation.
+    observed: >-
+      The prototype exposed a scalar WGSL function and a comment describing the
+      envelope, but no batch output status or generation field for consumers.
+    correct: >-
+      A bounded evaluator returns a status and generation with each sample;
+      outside-envelope samples have no usable numerical output.
+    root_cause: >-
+      The prototype generated only expression functions. It did not define a
+      storage-buffer ABI that can carry domain validity and coefficient generation
+      through ordinary resident WebGPU kernels.
+    fix: >-
+      The generated WGSL batch kernel checks finite input and radius, bounds each
+      invocation by count and both buffer lengths, returns status and generation,
+      and embeds immutable coefficients in a sealed artifact set.
+    evidence: >-
+      examples/wgsl_artifact/build_artifact.py requires byte-identical native and
+      VM output and the demo/run.mjs Chrome producer-evaluator-consumer chain checks
+      envelope, generation, convexity, deployed errors and final-only readback.
+    caught_by: [track-a-acceptance]
+    missed_by: [prototype-only-validation]
+  - id: SW-257
+    bucket: SILENT-WRONG
+    subtag: gpu
+    family: gpu-test-gate/verdict-and-differential
+    status: fixed
+    title: "GPU suite could report PASS from a one-sided workload or a missed failure marker"
+    observed: >-
+      The suite accepted a zero exit with a generic success token, while an
+      indented or bare FAIL could escape a colon-anchored check. It ran the
+      correctness payload once and could report PASS without comparing GPU and
+      CPU results. Some GPU-specific skips also printed PASS.
+    correct: >-
+      Each GPU test must exit zero and end with its named PASS, with any FAIL
+      marker taking precedence. Missing hardware must be SKIP, and GPU
+      correctness requires the live GPU-versus-CPU differential.
+    root_cause: >-
+      Verdict recognition accepted intermediate success markers as final results,
+      and the suite treated the differential payload as a standalone test instead
+      of running its driver. Skip guards emitted success markers for work they
+      did not execute; the CUDA Ozaki probe also ran on CPU fallback.
+    fix: >-
+      scripts/run_gpu_tests.sh uses one terminal verdict parser for compiled tests
+      and the differential driver. GPU-only programs emit terminal SKIP without a
+      PASS marker when the backend is unavailable; the CUDA Ozaki probe requires a
+      live CUDA backend and the suite selects the Ozaki kernel. The differential validates
+      both payload verdicts and numeric RESULT streams.
+    evidence: >-
+      scripts/run_gpu_tests.sh --self-test plants bare and indented FAIL,
+      incomplete output, misleading single-run output, a differential failure,
+      and an absent-GPU SKIP; tests/gpu/gpu_correctness_gate.sh --self-test
+      verifies trace, dispatch, a planted numeric mismatch, and missing probes.
+    caught_by: [icc-bus-report]
+    missed_by: [gpu-suite, gpu-correctness-gate]
+  - id: SW-270
+    bucket: SILENT-WRONG
+    subtag: webgpu
+    family: browser-webgpu/shared-backend-concurrency
+    status: fixed
+    title: "concurrent browser VMs sharing a WebGPU backend could write results into the wrong VM memory"
+    repro: >-
+      Attach two browser VMs to one WebGPU backend and evaluate 1x1 or 8x8
+      matmuls concurrently with Promise.all.
+    observed: >-
+      The first VM printed zero instead of 6 or 48; the second printed 20 or 160.
+    correct: >-
+      Each VM receives its own matmul result: 6 and 20, or 48 and 160.
+    root_cause: >-
+      attachVm replaced a shared backend.memory field, while asynchronous
+      readback decoded through that field after another VM had attached.
+    fix: >-
+      Each operation captures its destination memory across asynchronous work;
+      backend diagnostics and dispatch accounting remain shared and coherent.
+    evidence: >-
+      tests/webgpu/shared_backend_race_test.mjs checks concurrent 1x1 and 8x8
+      matmuls on a shared backend against serial and separate-backend controls.
+    caught_by: [hardware-reproduction]
+    missed_by: [webgpu_vm_test]
+  - id: SW-271
+    bucket: SILENT-WRONG
+    subtag: vm
+    family: numeric/inexact-tensor-division
+    status: fixed
+    title: "VM tensor division and native broadcasting returned zero for zero denominators"
+    repro: >-
+      Divide inexact tensors containing 1.0 and 0.0 by tensors containing
+      positive or negative zero, with and without WebGPU dispatch.
+    observed: >-
+      The unattached browser VM returned zero for 1.0/0.0 and 0.0/0.0;
+      native broadcasting also returned zero, while WebGPU and native same-shape
+      codegen returned positive infinity and NaN.
+    correct: >-
+      Inexact division returns signed infinity for a nonzero numerator over
+      signed zero and NaN for zero over zero; exact rational division by exact
+      zero continues to raise.
+    root_cause: >-
+      vm_op_div and the native broadcast helper replaced every zero-denominator
+      result with 0.0, unlike native fdiv and WebGPU sf64 division.
+    fix: >-
+      vm_op_div and the native broadcast helper perform ordinary floating-point
+      division for every tensor element.
+    evidence: >-
+      tests/numeric/tensor_division_parity_test.py on native and VM, and
+      tests/webgpu/division_parity_test.mjs on CPU and WebGPU browser VMs
+      across dispatch thresholds.
+    caught_by: [hardware-reproduction]
+    missed_by: [webgpu_vm_test]
+  - id: SW-272
+    bucket: SILENT-WRONG
+    subtag: webgpu
+    family: gpu/precision-admission-diagnostic
+    status: fixed
+    title: "WebGPU fast-tier diagnostic claimed opt-in when dispatch was refused"
+    repro: >-
+      Construct a browser WebGPU backend with precision fast and the default
+      1e-9 gate tolerance, then compare its diagnostics with shouldUse(1) and
+      supportsOperation(matmul).
+    observed: >-
+      Dispatch was correctly refused, but diagnostics claimed an explicit
+      reduced-precision opt-in without explaining the required tolerance.
+    correct: >-
+      A refused fast tier reports that gateTolerance must be at least 1e-6;
+      exact and high continue to use the sf64 path.
+    root_cause: >-
+      The constructor emitted an opt-in message based only on the tier name,
+      while the dispatch predicate separately checked the tolerance.
+    fix: >-
+      A shared gpuPrecisionReason admission function drives both the constructor
+      diagnostic and the dispatch predicate.
+    evidence: >-
+      tests/webgpu/webgpu_regressions_test.mjs checks refusal and admission
+      messages and the corresponding dispatch predicates.
+    caught_by: [regression-test]
+    missed_by: [webgpu_live_test]

@@ -8,6 +8,7 @@
 
 #include <eshkol/backend/map_codegen.h>
 #include <eshkol/backend/closure_capture_scope.h>
+#include <eshkol/backend/static_callee_binding.h>
 #include <eshkol/backend/llvm_compat.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -142,27 +143,12 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
     // runtime-closure fallbacks below dispatch on the local value, which is
     // the binding lexical scope selects. resolveLambdaFunction applies the
     // same guard, so the two static paths agree.
-    bool proc_locally_shadowed = false;
-    if (op->call_op.variables[0].type == ESHKOL_VAR && symbol_table_ &&
-        current_function_ && *current_function_) {
-        auto shadow_it = symbol_table_->find(op->call_op.variables[0].variable.id);
-        if (shadow_it != symbol_table_->end() && shadow_it->second) {
-            Value* shadow_v = shadow_it->second;
-            bool is_param = isa<Argument>(shadow_v) &&
-                cast<Argument>(shadow_v)->getParent() == *current_function_;
-            bool is_local_alloca = isa<AllocaInst>(shadow_v) &&
-                cast<AllocaInst>(shadow_v)->getFunction() == *current_function_;
-            if (is_param || is_local_alloca) {
-                std::string shadow_scoped_key =
-                    (*current_function_)->getName().str() + "." +
-                    std::string(op->call_op.variables[0].variable.id) + "_func";
-                proc_locally_shadowed =
-                    symbol_table_->find(shadow_scoped_key) == symbol_table_->end() &&
-                    (!global_symbol_table_ ||
-                     global_symbol_table_->find(shadow_scoped_key) == global_symbol_table_->end());
-            }
-        }
-    }
+    const bool proc_locally_shadowed =
+        op->call_op.variables[0].type == ESHKOL_VAR &&
+        op->call_op.variables[0].variable.id && current_function_ &&
+        eshkol::staticCalleeHiddenByRuntimeBinding(
+            symbol_table_, global_symbol_table_, *current_function_,
+            op->call_op.variables[0].variable.id);
 
     if (!proc_locally_shadowed &&
         op->call_op.variables[0].type == ESHKOL_VAR && global_symbol_table_ && nested_function_captures_) {
@@ -225,6 +211,37 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
                     }
                 }
             }
+        }
+    }
+
+    // SW-226: the static fast path calls the procedure's LLVM function with
+    // one argument per list. It is sound only when the procedure is known to
+    // take exactly that many; otherwise the call goes through the runtime
+    // closure dispatcher, whose call protocol refuses a wrong count with the
+    // catchable arity error (as on the VM) instead of miscompiling.
+    auto mapThroughClosure = [&]() -> Value* {
+        if (!codegen_ast_callback_) return nullptr;
+        Value* closure_val = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!closure_val) return nullptr;
+        if (closure_val->getType()->isPointerTy() && !isa<Function>(closure_val)) {
+            closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), closure_val, "map_proc_value");
+        }
+        std::vector<Value*> lists;
+        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+            Value* list = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+            if (!list) return nullptr;
+            lists.push_back(list);
+        }
+        return lists.empty() ? nullptr : mapWithClosureN(closure_val, lists);
+    };
+    {
+        const eshkol_ast_t& proc_ast = op->call_op.variables[0];
+        if (proc_ast.type == ESHKOL_OP && proc_ast.operation.op == ESHKOL_LAMBDA_OP &&
+            (proc_ast.operation.lambda_op.is_variadic ||
+             proc_ast.operation.lambda_op.num_params != num_lists)) {
+            Value* result = mapThroughClosure();
+            if (pop_function_context_) pop_function_context_(callback_context_);
+            return result;
         }
     }
 
@@ -339,6 +356,24 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
         eshkol_error("map procedure must be a function");
         if (pop_function_context_) pop_function_context_(callback_context_);
         return nullptr;
+    }
+
+    // SW-226, named procedures: count the parameters the procedure declares
+    // (its LLVM parameters minus capture pointers and the indirect-call slot).
+    if (op->call_op.variables[0].type == ESHKOL_VAR &&
+        !proc_func->getName().starts_with("indirect_call_")) {
+        size_t declared = 0;
+        for (const Argument& arg : proc_func->args()) {
+            StringRef n = arg.getName();
+            if (n.starts_with("captured_") || n.ends_with("_cap")) continue;
+            if (arg.getType() != ctx_.taggedValueType()) continue;
+            declared++;
+        }
+        if (declared != num_lists) {
+            Value* result = mapThroughClosure();
+            if (pop_function_context_) pop_function_context_(callback_context_);
+            return result;
+        }
     }
 
     // A NAMED procedure that closes over variables: its captures are the

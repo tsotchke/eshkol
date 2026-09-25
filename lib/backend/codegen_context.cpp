@@ -9,6 +9,7 @@
 #include <eshkol/backend/codegen_context.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/eshkol.h>  // HEAP_SUBTYPE_SYMBOL, etc.
+#include "../core/arena_memory.h"  // eshkol_slot_store_status_t, tensor dtypes
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -63,6 +64,129 @@ llvm::Value* CodegenContext::emitRegionWriteBarrier(llvm::Value* dst_ptr,
 
     builder_.CreateCall(wb, {out_slot, dst_cast, val_slot});
     return builder_.CreateLoad(tv_ty, out_slot, "wb_result");
+}
+
+// === Container Slot Store Boundary (ADR-0020) ===
+
+llvm::Value* CodegenContext::spillTaggedToEntrySlot(llvm::Value* tagged_value,
+                                                    const char* name) {
+    // Entry-block alloca: a store sits inside loop bodies, and an alloca there
+    // re-adjusts the stack pointer on every iteration.
+    llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilderBase::InsertPoint saved_ip = builder_.saveIP();
+    if (fn && !fn->empty()) {
+        llvm::BasicBlock& entry = fn->getEntryBlock();
+        builder_.SetInsertPoint(&entry, entry.begin());
+    }
+    llvm::AllocaInst* slot = builder_.CreateAlloca(taggedValueType(), nullptr, name);
+    builder_.restoreIP(saved_ip);
+    builder_.CreateStore(tagged_value, slot);
+    return slot;
+}
+
+void CodegenContext::emitSlotStoreStatusCheck(llvm::Value* status, const char* who) {
+    llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(context_, "slot_store_ok", fn);
+    llvm::BasicBlock* fail_bb = llvm::BasicBlock::Create(context_, "slot_store_fail", fn);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(status,
+            llvm::ConstantInt::get(int32Type(), ESHKOL_SLOT_STORE_OK)),
+        ok_bb, fail_bb);
+
+    builder_.SetInsertPoint(fail_bb);
+    const std::string name = who ? who : "vector-set!";
+    llvm::Value* bounds_msg = builder_.CreateGlobalString(name + ": index out of bounds");
+    llvm::Value* value_msg = builder_.CreateGlobalString(
+        name + ": value has no representation in a numeric tensor slot "
+               "(a tensor-backed vector holds real numbers only)");
+    llvm::Value* container_msg = builder_.CreateGlobalString(
+        name + ": operand is not a vector or tensor");
+    llvm::Value* is_bounds = builder_.CreateICmpEQ(status,
+        llvm::ConstantInt::get(int32Type(), ESHKOL_SLOT_STORE_BOUNDS));
+    llvm::Value* is_value = builder_.CreateICmpEQ(status,
+        llvm::ConstantInt::get(int32Type(), ESHKOL_SLOT_STORE_VALUE));
+    llvm::Value* message = builder_.CreateSelect(is_bounds, bounds_msg,
+        builder_.CreateSelect(is_value, value_msg, container_msg));
+    emitRaiseWithMessagePtr(message);
+
+    builder_.SetInsertPoint(ok_bb);
+}
+
+void CodegenContext::emitSequenceSlotStore(llvm::Value* sequence_tagged,
+                                           llvm::Value* index,
+                                           llvm::Value* tagged_value,
+                                           const char* who) {
+    llvm::Value* seq_slot = spillTaggedToEntrySlot(sequence_tagged, "slot_store_seq");
+    llvm::Value* val_slot = spillTaggedToEntrySlot(tagged_value, "slot_store_val");
+    llvm::FunctionCallee store = module_.getOrInsertFunction(
+        "eshkol_sequence_slot_store",
+        llvm::FunctionType::get(int32Type(), {ptrType(), int64Type(), ptrType()}, false));
+    llvm::Value* status = builder_.CreateCall(store, {seq_slot, index, val_slot},
+                                              "slot_store_status");
+    emitSlotStoreStatusCheck(status, who);
+}
+
+void CodegenContext::emitTensorFill(llvm::Value* tensor_ptr, llvm::Value* tagged_value,
+                                    const char* who) {
+    llvm::Value* val_slot = spillTaggedToEntrySlot(tagged_value, "tfill_val");
+    llvm::FunctionCallee fill = module_.getOrInsertFunction(
+        "eshkol_tensor_fill_slots",
+        llvm::FunctionType::get(int32Type(), {ptrType(), ptrType()}, false));
+    emitSlotStoreStatusCheck(builder_.CreateCall(fill, {tensor_ptr, val_slot}, "tfill_status"), who);
+}
+
+void CodegenContext::emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* index,
+                                         llvm::Value* tagged_value, const char* who,
+                                         bool promote_on_non_numeric) {
+    llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+    llvm::BasicBlock* inline_bb = llvm::BasicBlock::Create(context_, "tslot_inline", fn);
+    llvm::BasicBlock* runtime_bb = llvm::BasicBlock::Create(context_, "tslot_runtime", fn);
+    llvm::BasicBlock* done_bb = llvm::BasicBlock::Create(context_, "tslot_done", fn);
+
+    // Proven representation: a DOUBLE going into an f64 slot. Only the exact
+    // DOUBLE type byte qualifies; every other spelling of a number is decided
+    // by the runtime encoder, which applies the full base-type rule.
+    llvm::Value* type_byte = builder_.CreateExtractValue(tagged_value, {0});
+    llvm::Value* is_double = builder_.CreateICmpEQ(
+        type_byte, llvm::ConstantInt::get(int8Type(), ESHKOL_VALUE_DOUBLE));
+    llvm::Value* dtype = builder_.CreateLoad(int64Type(),
+        builder_.CreateStructGEP(tensorType(), tensor_ptr, 4), "tslot_dtype");
+    llvm::Value* is_f64 = builder_.CreateICmpEQ(dtype,
+        llvm::ConstantInt::get(int64Type(), ESHKOL_TENSOR_DTYPE_F64));
+    builder_.CreateCondBr(builder_.CreateAnd(is_double, is_f64), inline_bb, runtime_bb);
+
+    builder_.SetInsertPoint(inline_bb);
+    llvm::Value* elements = builder_.CreateLoad(ptrType(),
+        builder_.CreateStructGEP(tensorType(), tensor_ptr, 2), "tslot_elements");
+    llvm::Value* payload = builder_.CreateExtractValue(tagged_value, {4});
+    builder_.CreateStore(payload, builder_.CreateGEP(int64Type(), elements, index));
+    builder_.CreateBr(done_bb);
+
+    builder_.SetInsertPoint(runtime_bb);
+    llvm::Value* val_slot = spillTaggedToEntrySlot(tagged_value, "tslot_val");
+    // The vector API promotes the carrier for a value it cannot hold; the
+    // tensor API keeps the carrier numeric and refuses (ADR-0020).
+    llvm::FunctionCallee store = module_.getOrInsertFunction(
+        promote_on_non_numeric ? "eshkol_vector_slot_store" : "eshkol_tensor_slot_store",
+        llvm::FunctionType::get(int32Type(), {ptrType(), int64Type(), ptrType()}, false));
+    llvm::Value* status = builder_.CreateCall(store, {tensor_ptr, index, val_slot},
+                                              "tslot_status");
+    emitSlotStoreStatusCheck(status, who);
+    builder_.CreateBr(done_bb);
+
+    builder_.SetInsertPoint(done_bb);
+}
+
+void CodegenContext::emitSequenceFill(llvm::Value* sequence_tagged,
+                                      llvm::Value* tagged_value, const char* who) {
+    llvm::Value* seq_slot = spillTaggedToEntrySlot(sequence_tagged, "slot_fill_seq");
+    llvm::Value* val_slot = spillTaggedToEntrySlot(tagged_value, "slot_fill_val");
+    llvm::FunctionCallee fill = module_.getOrInsertFunction(
+        "eshkol_sequence_fill",
+        llvm::FunctionType::get(int32Type(), {ptrType(), ptrType()}, false));
+    llvm::Value* status = builder_.CreateCall(fill, {seq_slot, val_slot},
+                                              "slot_fill_status");
+    emitSlotStoreStatusCheck(status, who);
 }
 
 // === Runtime Guard Failure ===

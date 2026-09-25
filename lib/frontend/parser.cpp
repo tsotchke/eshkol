@@ -8,20 +8,27 @@
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/core/logic.h>
+#include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/symbol_syntax.h>
+#include <eshkol/core/number_syntax.h>
 #include <eshkol/core/string_escape.h>
 #include <eshkol/logger.h>
 #include <eshkol/types/hott_types.h>
 #include <eshkol/frontend/binding_forms.h>
+#include <eshkol/frontend/syntax_color.h>
+#include <eshkol/frontend/syntax_datum.h>
 #include "parser_task.h"
 
 #include <string.h>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <sstream>
@@ -41,6 +48,54 @@ static thread_local std::string g_parse_filename = "<unknown>";
  * file happened to be the ambient source context at codegen time. */
 static thread_local uint32_t g_parse_filename_id = 0;
 static thread_local const char* g_parse_source = NULL;
+static thread_local std::set<std::string>* g_parser_macro_names = nullptr;
+
+namespace {
+int parser_macro_names_slot() {
+    static const int slot = std::ios_base::xalloc();
+    return slot;
+}
+void parser_macro_names_event(std::ios_base::event event, std::ios_base& stream, int slot) {
+    auto*& stored = stream.pword(slot);
+    if (event == std::ios_base::erase_event) {
+        delete static_cast<std::set<std::string>*>(stored);
+        stored = nullptr;
+    } else if (event == std::ios_base::copyfmt_event && stored) {
+        stored = new std::set<std::string>(*static_cast<std::set<std::string>*>(stored));
+    }
+}
+class ParserMacroStreamBinding {
+    std::set<std::string>* previous_;
+public:
+    explicit ParserMacroStreamBinding(std::istream& stream)
+        : previous_(g_parser_macro_names) {
+        const int slot = parser_macro_names_slot();
+        auto*& stored = stream.pword(slot);
+        if (!stored) {
+            stored = new std::set<std::string>;
+            stream.register_callback(parser_macro_names_event, slot);
+        }
+        g_parser_macro_names = static_cast<std::set<std::string>*>(stored);
+    }
+    ~ParserMacroStreamBinding() { g_parser_macro_names = previous_; }
+};
+}
+
+// C++-only hook for long-lived clients (the REPL) that parse each input in a
+// fresh stream but retain macro definitions across evaluations.  The names are
+// stored in the same stream-owned pword set used by ParserMacroStreamBinding,
+// so ordinary file/import streams remain isolated.
+void eshkol_parser_seed_macro_names(std::istream& stream,
+                                    const std::set<std::string>& names) {
+    const int slot = parser_macro_names_slot();
+    auto*& stored = stream.pword(slot);
+    if (!stored) {
+        stored = new std::set<std::string>;
+        stream.register_callback(parser_macro_names_event, slot);
+    }
+    auto* seeded = static_cast<std::set<std::string>*>(stored);
+    seeded->insert(names.begin(), names.end());
+}
 /* Cumulative file line across successive eshkol_parse_next_ast_from_stream
  * calls.  Each call advances the counter by however many newlines it
  * consumed (form text + skipped leading whitespace + comment lines). The
@@ -255,6 +310,10 @@ struct Token {
     // place the spelling still matters is `.`: bare `.` is the dotted-pair
     // delimiter, whereas `|.|` is an ordinary symbol whose name is ".".
     bool verbatim = false;
+    // Position of this token in its tokenizer's tape (see SchemeTokenizer):
+    // the order in which it was read. A list's opening `(` sits at the
+    // index just before its head token.
+    uint32_t index = 0;
 };
 
 /**
@@ -318,13 +377,65 @@ private:
     size_t line_start_;  // Position of current line start for column calculation
     std::vector<Token> pushback_buffer;  // Buffer for pushed back tokens
     bool fold_case_symbols_;
+    std::vector<std::set<std::string>> macro_names_;
+    // Every token this tokenizer has read, in reading order (ADR-0026). A
+    // call keeps a reference into the tape, so the reader syntax of any
+    // call can be recovered if the expander later finds its head is a
+    // macro keyword (a forward reference, a macro another module or another
+    // expansion defined). A copy (a lookahead) gets its own tape.
+    std::shared_ptr<std::vector<Token>> tape_;
 
 public:
     SchemeTokenizer(const std::string& text, uint32_t start_line = 1,
                     uint32_t start_column = 1, bool fold_case_symbols = false)
         : input(text), pos(0), length(text.length()),
           line_(start_line), column_(start_column),
-          line_start_(0), fold_case_symbols_(fold_case_symbols) {}
+          line_start_(0), fold_case_symbols_(fold_case_symbols),
+          macro_names_{g_parser_macro_names ? *g_parser_macro_names : std::set<std::string>{}},
+          tape_(std::make_shared<std::vector<Token>>()) {}
+
+    /** Replay @p tokens (an expansion) instead of lexing text. */
+    explicit SchemeTokenizer(std::vector<Token> tokens)
+        : SchemeTokenizer(std::string(), tokens.empty() ? 1 : tokens.front().line,
+                          tokens.empty() ? 1 : tokens.front().column) {
+        for (size_t i = 0; i < tokens.size(); ++i)
+            tokens[i].index = static_cast<uint32_t>(i);
+        *tape_ = tokens;
+        for (auto it = tokens.rbegin(); it != tokens.rend(); ++it)
+            pushback_buffer.push_back(*it);
+    }
+
+    SchemeTokenizer(const SchemeTokenizer& other)
+        : input(other.input), pos(other.pos), length(other.length),
+          line_(other.line_), column_(other.column_), line_start_(other.line_start_),
+          pushback_buffer(other.pushback_buffer),
+          fold_case_symbols_(other.fold_case_symbols_),
+          macro_names_(other.macro_names_),
+          tape_(std::make_shared<std::vector<Token>>(*other.tape_)) {}
+    SchemeTokenizer& operator=(const SchemeTokenizer&) = delete;
+
+    const std::shared_ptr<std::vector<Token>>& tape() const { return tape_; }
+
+    bool isMacroName(const std::string& name) const {
+        for (auto scope = macro_names_.rbegin(); scope != macro_names_.rend(); ++scope)
+            if (scope->count(name)) return true;
+        return false;
+    }
+    void declareMacroName(const std::string& name) {
+        macro_names_.back().insert(name);
+        if (macro_names_.size() == 1 && g_parser_macro_names)
+            g_parser_macro_names->insert(name);
+    }
+    class MacroScope {
+        SchemeTokenizer& tokenizer_;
+        bool enabled_;
+    public:
+        MacroScope(SchemeTokenizer& tokenizer, bool enabled)
+            : tokenizer_(tokenizer), enabled_(enabled) {
+            if (enabled_) tokenizer_.macro_names_.emplace_back();
+        }
+        ~MacroScope() { if (enabled_) tokenizer_.macro_names_.pop_back(); }
+    };
 
     // Push a token back to be returned by the next nextToken() call
     void pushBack(const Token& token) {
@@ -345,7 +456,14 @@ public:
             pushback_buffer.pop_back();
             return t;
         }
+        Token t = lexToken();
+        t.index = static_cast<uint32_t>(tape_->size());
+        tape_->push_back(t);
+        return t;
+    }
 
+private:
+    Token lexToken() {
         skipWhitespace();
 
         if (pos >= length) {
@@ -442,6 +560,13 @@ public:
                 // One token, whatever it contains — spaces, escapes, the lot.
                 return readVerticalLineSymbol();
             default:
+                // R7RS 7.1.1: a delimited token is a number exactly when the
+                // shared number-syntax recognizer says so (1+2i, +i, 1@2, .5,
+                // 1/3, -inf.0, ...), whatever character it starts with.
+                if (std::isdigit((unsigned char)ch) || ch == '+' || ch == '-' || ch == '.') {
+                    Token num;
+                    if (tryReadNumberToken(pos, tok_line, tok_col, &num)) return num;
+                }
                 // A standalone `->` is the function-type separator.  Symbols
                 // may legitimately begin with the same characters (`->foo`),
                 // so require a token boundary after the arrow instead of
@@ -485,6 +610,40 @@ public:
     }
     
 private:
+    // A number token ends where an identifier would: at whitespace, a
+    // parenthesis, a string or comment start, or a quotation character.
+    static bool isNumberTokenDelimiter(char c) {
+        return std::isspace((unsigned char)c) || c == '(' || c == ')' || c == '[' ||
+               c == ']' || c == '{' || c == '}' || c == '"' || c == ';' ||
+               c == '\'' || c == '`' || c == ',' || c == '|';
+    }
+
+    // Read the delimited token at `at` as a TOKEN_NUMBER when it is R7RS
+    // number syntax (inc/eshkol/core/number_syntax.h); leave the position
+    // untouched and return false otherwise. An exact integer is handed on as
+    // its decimal digits (`#xFF` -> "255"), the spelling the integer-only
+    // consumers of TOKEN_NUMBER (declaration modifiers, sizes) read; every
+    // other number keeps its source spelling for parse_atom.
+    bool tryReadNumberToken(size_t at, uint32_t tok_line, uint32_t tok_col, Token* out) {
+        size_t end = at;
+        while (end < length && !isNumberTokenDelimiter(input[end])) end++;
+        if (end == at) return false;
+        eshkol_numsyn_t syn;
+        eshkol_numsyn_status_t st =
+            eshkol_number_syntax_parse(input.data() + at, end - at, 10, &syn);
+        if (st == ESHKOL_NUMSYN_NOT_A_NUMBER) return false;
+        std::string value = input.substr(at, end - at);
+        if (st == ESHKOL_NUMSYN_OK) {
+            if (syn.form == ESHKOL_NUMSYN_REAL && syn.part[0].kind == ESHKOL_NUMSYN_INTEGER)
+                value = syn.part[0].text;
+            eshkol_number_syntax_free(&syn);
+        }
+        column_ += static_cast<uint32_t>(end - at);
+        pos = end;
+        *out = {TOKEN_NUMBER, value, at, tok_line, tok_col};
+        return true;
+    }
+
     void skipWhitespace() {
         while (pos < length) {
             // Skip whitespace
@@ -969,111 +1128,15 @@ private:
             }
         }
 
-        // R7RS §7.1.1 radix + exactness literals:
-        //   #b / #o / #d / #x   — binary / octal / decimal / hex
-        //   #e / #i             — exact / inexact (integer radix is already
-        //                         exact, so these are pass-throughs)
-        //   Prefixes may chain: #e#xFF, #x#e10, #i#b1010.
-        //   A sign (+/-) may follow the prefix block.
-        // Convert to a decimal TOKEN_NUMBER so the rest of the parser
-        // treats it like any integer literal.
+        // R7RS 7.1.1 prefixed numbers: #b #o #d #x #e #i, alone or chained
+        // (#e#xFF, #x#e10), before any real or complex body -- decided by the
+        // shared number-syntax recognizer like every other number token.
         {
-            // Snapshot so we can bail cleanly if we don't find valid digits.
-            size_t snap_pos = pos;
-            uint32_t snap_col = column_;
-            int radix = 10;
-            bool seen_radix = false;
-            bool seen_exact = false;
-
-            auto consume_prefix = [&]() -> bool {
-                if (pos >= length) return false;
-                char c = input[pos];
-                if ((c == 'b' || c == 'B') && !seen_radix) { radix = 2;  seen_radix = true; pos++; column_++; return true; }
-                if ((c == 'o' || c == 'O') && !seen_radix) { radix = 8;  seen_radix = true; pos++; column_++; return true; }
-                if ((c == 'd' || c == 'D') && !seen_radix) { radix = 10; seen_radix = true; pos++; column_++; return true; }
-                if ((c == 'x' || c == 'X') && !seen_radix) { radix = 16; seen_radix = true; pos++; column_++; return true; }
-                if ((c == 'e' || c == 'E') && !seen_exact) { seen_exact = true; pos++; column_++; return true; }
-                if ((c == 'i' || c == 'I') && !seen_exact) { seen_exact = true; pos++; column_++; return true; }
-                return false;
-            };
-
-            if (consume_prefix()) {
-                // Optional second prefix (the other of radix/exactness), prefixed by '#'.
-                if (pos < length && input[pos] == '#') {
-                    pos++; column_++;
-                    if (!consume_prefix()) {
-                        // Second '#' with no valid prefix character — bail.
-                        pos = snap_pos; column_ = snap_col;
-                        goto not_radix;
-                    }
-                }
-
-                if (!seen_radix) {
-                    // Only exactness seen (e.g. `#e42` — still a decimal); continue.
-                    radix = 10;
-                }
-
-                // Optional sign.
-                size_t digit_start = pos;
-                if (pos < length && (input[pos] == '+' || input[pos] == '-')) {
-                    pos++; column_++;
-                }
-                size_t first_digit = pos;
-                auto is_radix_digit = [&](char c) {
-                    if (radix == 2)  return c == '0' || c == '1';
-                    if (radix == 8)  return c >= '0' && c <= '7';
-                    if (radix == 10) return c >= '0' && c <= '9';
-                    if (radix == 16) return (c >= '0' && c <= '9') ||
-                                            (c >= 'a' && c <= 'f') ||
-                                            (c >= 'A' && c <= 'F');
-                    return false;
-                };
-                while (pos < length && is_radix_digit(input[pos])) {
-                    pos++; column_++;
-                }
-
-                if (pos == first_digit) {
-                    // No digits after prefix — not a valid radix literal.
-                    pos = snap_pos; column_ = snap_col;
-                    goto not_radix;
-                }
-
-                std::string raw = input.substr(digit_start, pos - digit_start);
-                errno = 0;
-                char* endptr = nullptr;
-                long long val = std::strtoll(raw.c_str(), &endptr, radix);
-                std::string value;
-                if (errno == ERANGE) {
-                    // P1-22: the literal overflows int64. strtoll would silently
-                    // clamp to INT64_MAX; instead convert the radix digits to an
-                    // exact decimal string (string-bigint: dec = dec*radix + d) so
-                    // the downstream ESHKOL_BIGNUM_LITERAL path builds a correct
-                    // arbitrary-precision integer.
-                    bool neg = !raw.empty() && raw[0] == '-';
-                    size_t di = (!raw.empty() && (raw[0] == '-' || raw[0] == '+')) ? 1 : 0;
-                    std::vector<uint8_t> dec(1, 0);  // decimal digits, least-significant first
-                    for (; di < raw.size(); di++) {
-                        char c = raw[di];
-                        int dv;
-                        if (c >= '0' && c <= '9') dv = c - '0';
-                        else if (c >= 'a' && c <= 'f') dv = c - 'a' + 10;
-                        else if (c >= 'A' && c <= 'F') dv = c - 'A' + 10;
-                        else break;
-                        int carry = dv;
-                        for (size_t k = 0; k < dec.size(); k++) {
-                            int p = dec[k] * radix + carry;
-                            dec[k] = (uint8_t)(p % 10);
-                            carry = p / 10;
-                        }
-                        while (carry) { dec.push_back((uint8_t)(carry % 10)); carry /= 10; }
-                    }
-                    if (neg) value.push_back('-');
-                    for (size_t k = dec.size(); k-- > 0;) value.push_back((char)('0' + dec[k]));
-                } else {
-                    value = std::to_string((int64_t)val);
-                }
-                return {TOKEN_NUMBER, value, start, tok_line, tok_col};
-            }
+            Token num;
+            pos = start;
+            column_ = tok_col;
+            if (tryReadNumberToken(start, tok_line, tok_col, &num)) return num;
+            goto not_radix;
         }
     not_radix:
 
@@ -1238,7 +1301,7 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer);
 /**
  * @brief Builds an eshkol_ast_t string-literal node from a C++ string.
  *
- * Heap-allocates a NUL-terminated copy of @p value and wires it into the
+ * Copies @p value into the AST string owner (ast_strings.h) and wires it into the
  * AST via eshkol_ast_make_string(), stamping the node with the given
  * source @p line and @p column for diagnostics.
  */
@@ -1247,20 +1310,14 @@ static eshkol_ast_t make_parser_string_ast(const std::string& value,
                                            uint32_t column) {
     eshkol_ast_t ast = {};
     stamp_node(ast, line, column);
-    size_t len = value.length();
-    char* ptr = new char[len + 1];
-    if (ptr) {
-        for (size_t i = 0; i < len; i++) ptr[i] = value[i];
-        ptr[len] = 0;
-    }
-    eshkol_ast_make_string(&ast, ptr, len + 1);
+    eshkol_ast_make_string(&ast, eshkol_ast_string_copy(value), value.length() + 1);
     return ast;
 }
 
 /**
  * @brief Builds an ESHKOL_VAR AST node referencing the symbol @p name.
  *
- * Heap-allocates a NUL-terminated copy of @p name for ast.variable.id and
+ * Copies @p name into the AST string owner for ast.variable.id and
  * stamps the node with @p line / @p column.
  */
 static eshkol_ast_t make_parser_var_ast(const char* name,
@@ -1269,9 +1326,7 @@ static eshkol_ast_t make_parser_var_ast(const char* name,
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_VAR;
     stamp_node(ast, line, column);
-    size_t len = strlen(name);
-    ast.variable.id = new char[len + 1];
-    if (ast.variable.id) memcpy(ast.variable.id, name, len + 1);
+    ast.variable.id = eshkol_ast_strdup(name);
     ast.variable.data = nullptr;
     return ast;
 }
@@ -1308,24 +1363,203 @@ static eshkol_ast_t make_parser_call_ast(const char* name,
     return ast;
 }
 
+/* ───────────────────────── Reader syntax for macros (ADR-0026) ─────────────
+ *
+ * A macro use and a syntax-rules transformer are kept as the datum the reader
+ * produced (inc/eshkol/frontend/syntax_datum.h). Macro expansion rewrites
+ * datums and re-parses the result through this same parser, so an expansion
+ * means what the same text means anywhere else. */
+
+/** @brief True if symbol @p token is spelled @p keyword, ignoring any syntax
+ *         color (ADR-0026): keyword grammar inside a form recognises the
+ *         spelling a template wrote, like head dispatch does. */
+static bool token_is_keyword(const Token& token, const char* keyword) {
+    return token.type == TOKEN_SYMBOL && eshkol_syntax_base_is(token.value.c_str(), keyword);
+}
+
+/** @brief Uncolored spelling of @p token's value. */
+static std::string token_base(const Token& token) {
+    return token.value.substr(0, eshkol_syntax_base_length(token.value.c_str()));
+}
+
+/** @brief Remove every syntax color from a symbol token (quoted data). */
+static void decolor_symbol_token(Token& token) {
+    if (token.type != TOKEN_SYMBOL) return;
+    const size_t base = eshkol_syntax_base_length(token.value.c_str());
+    if (base < token.value.size()) token.value.resize(base);
+}
+
+static eshkol::SyntaxDatum syntax_atom_from_token(const Token& token) {
+    eshkol::SyntaxDatum datum;
+    datum.kind = token.type == TOKEN_SYMBOL ? eshkol::SyntaxDatum::Kind::Symbol
+                                            : eshkol::SyntaxDatum::Kind::Atom;
+    datum.token_type = static_cast<int>(token.type);
+    datum.text = token.value;
+    datum.verbatim = token.verbatim;
+    datum.line = token.line;
+    datum.column = token.column;
+    return datum;
+}
+
+/**
+ * @brief Read one datum whose first token is @p first; @p next yields the
+ *        following tokens (a live tokenizer, or a recorded tape).
+ * @return false (after reporting) on a malformed datum.
+ */
+template <typename NextToken>
+static bool read_syntax_datum_from(NextToken& next, const Token& first,
+                                   eshkol::SyntaxDatum& out) {
+    using Kind = eshkol::SyntaxDatum::Kind;
+    if (!check_stack_space()) {
+        PARSE_ERROR_AT(first, "macro syntax nested too deeply");
+        return false;
+    }
+    switch (first.type) {
+        case TOKEN_EOF:
+            PARSE_ERROR_AT(first, "unexpected end of input in macro syntax");
+            return false;
+        case TOKEN_RPAREN:
+            PARSE_ERROR_AT(first, "unexpected ) in macro syntax");
+            return false;
+        case TOKEN_QUOTE:
+        case TOKEN_BACKQUOTE:
+        case TOKEN_COMMA:
+        case TOKEN_COMMA_AT: {
+            out = syntax_atom_from_token(first);
+            out.kind = Kind::Prefix;
+            out.items.emplace_back();
+            return read_syntax_datum_from(next, next(), out.items.back());
+        }
+        case TOKEN_LPAREN:
+        case TOKEN_VECTOR_START: {
+            out = syntax_atom_from_token(first);
+            out.kind = first.type == TOKEN_LPAREN ? Kind::List : Kind::Vector;
+            while (true) {
+                Token token = next();
+                if (token.type == TOKEN_RPAREN) return true;
+                if (out.kind == Kind::List && token_is_dot_delimiter(token) &&
+                    !out.items.empty()) {
+                    out.items.emplace_back();
+                    if (!read_syntax_datum_from(next, next(), out.items.back()))
+                        return false;
+                    out.dotted = true;
+                    Token close = next();
+                    if (close.type != TOKEN_RPAREN) {
+                        PARSE_ERROR_AT(close, "expected ) after dotted tail in macro syntax");
+                        return false;
+                    }
+                    return true;
+                }
+                out.items.emplace_back();
+                if (!read_syntax_datum_from(next, token, out.items.back())) return false;
+            }
+        }
+        default:
+            out = syntax_atom_from_token(first);
+            return true;
+    }
+}
+
+static bool read_syntax_datum(SchemeTokenizer& tokenizer, const Token& first,
+                              eshkol::SyntaxDatum& out) {
+    auto next = [&tokenizer]() { return tokenizer.nextToken(); };
+    return read_syntax_datum_from(next, first, out);
+}
+
+/** @brief Append the tokens that spell @p datum to @p out, in reading order. */
+static void emit_syntax_tokens(const eshkol::SyntaxDatum& datum, std::vector<Token>& out) {
+    using Kind = eshkol::SyntaxDatum::Kind;
+    Token token{static_cast<TokenType>(datum.token_type), datum.text, 0,
+                datum.line, datum.column};
+    token.verbatim = datum.verbatim;
+    switch (datum.kind) {
+        case Kind::Symbol:
+            token.type = TOKEN_SYMBOL;
+            out.push_back(token);
+            return;
+        case Kind::Atom:
+            out.push_back(token);
+            return;
+        case Kind::Prefix:
+            out.push_back(token);
+            for (const auto& item : datum.items) emit_syntax_tokens(item, out);
+            return;
+        case Kind::List:
+        case Kind::Vector: {
+            if (datum.kind == Kind::List) {
+                token.type = TOKEN_LPAREN;
+                token.value = "(";
+            }
+            out.push_back(token);
+            for (size_t i = 0; i < datum.items.size(); ++i) {
+                if (datum.dotted && i + 1 == datum.items.size()) {
+                    Token dot{TOKEN_SYMBOL, ".", 0, datum.items[i].line, datum.items[i].column};
+                    out.push_back(dot);
+                }
+                emit_syntax_tokens(datum.items[i], out);
+            }
+            out.push_back(Token{TOKEN_RPAREN, ")", 0, datum.line, datum.column});
+            return;
+        }
+    }
+}
+
+/** @brief Read a `(syntax-rules [ellipsis] (literal ...) (pattern template) ...)`
+ *         transformer whose opening `(` has been consumed. */
+static bool read_syntax_rules(SchemeTokenizer& tokenizer, const Token& open,
+                              eshkol_macro_def_t* macro, eshkol::MacroSyntax& syntax) {
+    eshkol::SyntaxDatum spec;
+    if (!read_syntax_datum(tokenizer, open, spec)) return false;
+    if (spec.items.empty() || !spec.items[0].isSymbol() ||
+        !eshkol_syntax_base_is(spec.items[0].text.c_str(), "syntax-rules")) {
+        PARSE_ERROR_AT(open, "only syntax-rules transformers are supported");
+        return false;
+    }
+    size_t next = 1;
+    if (next < spec.items.size() && spec.items[next].isSymbol()) {
+        syntax.ellipsis = spec.items[next].text;   // R7RS 4.3.2 custom ellipsis
+        ++next;
+    }
+    if (next >= spec.items.size() || !spec.items[next].isList() || spec.items[next].dotted) {
+        PARSE_ERROR_AT(open, "syntax-rules requires a literals list");
+        return false;
+    }
+    for (const auto& literal : spec.items[next].items) {
+        if (!literal.isSymbol()) {
+            PARSE_ERROR_AT(open, "syntax-rules literals must be identifiers");
+            return false;
+        }
+        syntax.literals.push_back(literal.text);
+    }
+    for (++next; next < spec.items.size(); ++next) {
+        auto& rule = spec.items[next];
+        if (!rule.isList() || rule.dotted || rule.items.size() != 2 ||
+            !rule.items[0].isList() || rule.items[0].items.empty()) {
+            PARSE_ERROR_AT(open, "syntax-rules rule must be ((keyword pattern ...) template)");
+            return false;
+        }
+        syntax.rules.emplace_back(std::move(rule.items[0]), std::move(rule.items[1]));
+    }
+    macro->literals = nullptr;
+    macro->num_literals = syntax.literals.size();
+    if (!syntax.literals.empty()) {
+        macro->literals = new char*[syntax.literals.size()];
+        for (size_t i = 0; i < syntax.literals.size(); ++i)
+            macro->literals[i] = eshkol_ast_strdup(syntax.literals[i].c_str());
+    }
+    // The rules live in the syntax table (syntax_macro()), as reader syntax;
+    // the public record carries the keyword and literals only.
+    macro->rules = nullptr;
+    macro->num_rules = 0;
+    return true;
+}
+
 struct KeywordFormal {
     std::string keyword;
     std::string parameter;
     uint32_t line;
     uint32_t column;
 };
-
-/**
- * @brief Heap-allocates a NUL-terminated copy of @p value.
- *
- * @return Newly allocated buffer owned by the caller, or nullptr on
- *         allocation failure.
- */
-static char* copy_parser_string(const std::string& value) {
-    char* out = new char[value.size() + 1];
-    if (out) memcpy(out, value.c_str(), value.size() + 1);
-    return out;
-}
 
 /**
  * @brief Generates a unique synthetic parameter name for the "rest" argument
@@ -1657,112 +1891,94 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
         }
 
         case TOKEN_NUMBER: {
-            // R7RS special float literals
-            if (token.value == "+inf.0") {
-                eshkol_ast_make_double(&ast, std::numeric_limits<double>::infinity());
-                break;
-            }
-            if (token.value == "-inf.0") {
-                eshkol_ast_make_double(&ast, -std::numeric_limits<double>::infinity());
-                break;
-            }
-            if (token.value == "+nan.0" || token.value == "-nan.0") {
-                eshkol_ast_make_double(&ast, std::numeric_limits<double>::quiet_NaN());
+            // The token is R7RS number syntax; the shared recognizer
+            // (inc/eshkol/core/number_syntax.h) splits it into canonical
+            // parts -- the same decision `read`, string->number and the VM
+            // make. An exact integer becomes an int64 literal (or an
+            // ESHKOL_BIGNUM_LITERAL string, constructed at codegen, ESH-0123);
+            // an exact rational the `(make-rational n d)` desugar; an inexact
+            // real a double; a complex number the
+            // `(make-rectangular <double> <double>)` desugar, whose parts are
+            // always inexact.
+            eshkol_numsyn_t syn;
+            eshkol_numsyn_status_t st = eshkol_number_syntax_parse(
+                token.value.data(), token.value.size(), 10, &syn);
+            if (st != ESHKOL_NUMSYN_OK) {
+                PARSE_ERROR_AT(token, "invalid numeric literal %s: %s", token.value.c_str(),
+                               eshkol_number_syntax_status_message(st));
                 break;
             }
 
-            // Check if it's a rational literal (e.g., 1/3, 22/7, and
-            // bignum-magnitude forms like 100000000000000000000/3). Each side
-            // is emitted as an int64 literal when it fits, or an
-            // ESHKOL_BIGNUM_LITERAL (string payload, constructed at codegen)
-            // when it exceeds int64 range — ESH-0123.
-            if (token.value.find('/') != std::string::npos) {
-                size_t slash_pos = token.value.find('/');
-                std::string num_str = token.value.substr(0, slash_pos);
-                std::string den_str = token.value.substr(slash_pos + 1);
-
-                // Emit one operand node from a signed decimal-integer string.
-                // Returns false if the string is not a valid integer literal;
-                // sets *is_zero when the value is exactly 0 (int64 range only).
-                auto build_int_operand = [&](const std::string& s,
-                                             eshkol_ast_t* node,
-                                             bool* is_zero) -> bool {
-                    size_t i = 0;
-                    if (i < s.size() && (s[i] == '+' || s[i] == '-')) i++;
-                    if (i >= s.size()) return false;
-                    for (size_t j = i; j < s.size(); j++) {
-                        if (s[j] < '0' || s[j] > '9') return false;
-                    }
-                    *node = eshkol_ast_t{};
-                    stamp_node(*node, token.line, token.column);
-                    *is_zero = false;
-                    try {
-                        int64_t v = std::stoll(s);
-                        eshkol_ast_make_int64(node, v);
-                        if (v == 0) *is_zero = true;
-                    } catch (const std::out_of_range&) {
-                        // Too large for int64 — defer to bignum construction.
-                        node->type = ESHKOL_BIGNUM_LITERAL;
-                        size_t len = s.size();
-                        char* ptr = new char[len + 1];
-                        memcpy(ptr, s.c_str(), len + 1);
-                        node->str_val.ptr = ptr;
-                        node->str_val.size = len + 1;
-                    } catch (...) {
-                        return false;
-                    }
-                    return true;
-                };
-
-                eshkol_ast_t* variables = new eshkol_ast_t[2];
-                bool num_zero = false, den_zero = false;
-                if (!build_int_operand(num_str, &variables[0], &num_zero) ||
-                    !build_int_operand(den_str, &variables[1], &den_zero)) {
-                    delete[] variables;
-                    PARSE_ERROR_AT(token, "invalid rational literal: %s", token.value.c_str());
-                    break;
+            // A signed decimal integer as an int64 or bignum literal node.
+            auto build_int = [&](const char* text, eshkol_ast_t* node) {
+                *node = eshkol_ast_t{};
+                stamp_node(*node, token.line, token.column);
+                errno = 0;
+                char* endptr = nullptr;
+                long long v = std::strtoll(text, &endptr, 10);
+                if (errno != ERANGE && endptr && *endptr == '\0') {
+                    eshkol_ast_make_int64(node, (int64_t)v);
+                    return;
                 }
-                if (den_zero) {
-                    delete[] variables;
-                    PARSE_ERROR_AT(token, "division by zero in rational literal");
-                    break;
+                node->type = ESHKOL_BIGNUM_LITERAL;
+                size_t len = std::strlen(text);
+                char* ptr = eshkol_ast_string_alloc(len + 1);
+                memcpy(ptr, text, len + 1);
+                node->str_val.ptr = ptr;
+                node->str_val.size = len + 1;
+            };
+            auto inexact_value = [](const eshkol_numsyn_part_t& p) -> double {
+                if (p.kind == ESHKOL_NUMSYN_INFNAN) {
+                    double v = p.text[1] == 'i' ? std::numeric_limits<double>::infinity()
+                                                : std::numeric_limits<double>::quiet_NaN();
+                    return p.text[0] == '-' ? -v : v;
                 }
-                // Create (make-rational num den) call AST
+                return std::strtod(p.text, nullptr);
+            };
+            auto make_call = [&](const char* callee, eshkol_ast_t* operands) {
                 ast.type = ESHKOL_OP;
                 ast.operation.op = ESHKOL_CALL_OP;
                 ast.operation.call_op.func = new eshkol_ast_t;
+                *ast.operation.call_op.func = eshkol_ast_t{};
                 ast.operation.call_op.func->type = ESHKOL_VAR;
-                ast.operation.call_op.func->variable.id = new char[sizeof("make-rational")];
-                memcpy(ast.operation.call_op.func->variable.id, "make-rational", sizeof("make-rational"));
+                ast.operation.call_op.func->variable.id = eshkol_ast_strdup(callee);
                 ast.operation.call_op.func->variable.data = nullptr;
                 ast.operation.call_op.num_vars = 2;
-                ast.operation.call_op.variables = variables;
-                break;
-            }
-            // Check if it's a floating-point number (has '.' or scientific notation 'e'/'E')
-            if (token.value.find('.') != std::string::npos ||
-                token.value.find('e') != std::string::npos ||
-                token.value.find('E') != std::string::npos) {
-                char* endptr = nullptr;
-                double dval = strtod(token.value.c_str(), &endptr);
-                if (endptr == token.value.c_str()) {
-                    PARSE_ERROR_AT(token, "invalid numeric literal: %s", token.value.c_str());
-                    break;
+                ast.operation.call_op.variables = operands;
+            };
+
+            if (syn.form == ESHKOL_NUMSYN_REAL) {
+                const eshkol_numsyn_part_t& part = syn.part[0];
+                if (part.kind == ESHKOL_NUMSYN_INTEGER) {
+                    build_int(part.text, &ast);
+                } else if (part.kind == ESHKOL_NUMSYN_RATIONAL) {
+                    std::string text(part.text);
+                    size_t slash = text.find('/');
+                    eshkol_ast_t* operands = new eshkol_ast_t[2];
+                    build_int(text.substr(0, slash).c_str(), &operands[0]);
+                    build_int(text.substr(slash + 1).c_str(), &operands[1]);
+                    make_call("make-rational", operands);
+                } else {
+                    eshkol_ast_make_double(&ast, inexact_value(part));
                 }
-                eshkol_ast_make_double(&ast, dval);
             } else {
-                try {
-                    eshkol_ast_make_int64(&ast, std::stoll(token.value));
-                } catch (const std::out_of_range&) {
-                    // Integer literal too large for int64 — store as string for bignum construction at codegen
-                    ast.type = ESHKOL_BIGNUM_LITERAL;
-                    size_t _len = token.value.length();
-                    char* ptr = new char[_len + 1];
-                    if (ptr) memcpy(ptr, token.value.c_str(), _len + 1);
-                    ast.str_val.ptr = ptr;
-                    ast.str_val.size = _len + 1;
+                double x = inexact_value(syn.part[0]);
+                double y = inexact_value(syn.part[1]);
+                if (syn.form == ESHKOL_NUMSYN_POLAR) {
+                    double m = x, a = y;
+                    x = m * std::cos(a);
+                    y = m * std::sin(a);
                 }
+                eshkol_ast_t* operands = new eshkol_ast_t[2];
+                operands[0] = eshkol_ast_t{};
+                operands[1] = eshkol_ast_t{};
+                stamp_node(operands[0], token.line, token.column);
+                stamp_node(operands[1], token.line, token.column);
+                eshkol_ast_make_double(&operands[0], x);
+                eshkol_ast_make_double(&operands[1], y);
+                make_call("make-rectangular", operands);
             }
+            eshkol_number_syntax_free(&syn);
             break;
         }
 
@@ -1779,7 +1995,7 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
             eshkol_ast_t sym_var = {};
             sym_var.type = ESHKOL_VAR;
             size_t _len = token.value.length();
-            sym_var.variable.id = new char[_len + 1];
+            sym_var.variable.id = eshkol_ast_string_alloc(_len + 1);
             memcpy(sym_var.variable.id, token.value.c_str(), _len + 1);
             sym_var.variable.data = nullptr;
 
@@ -1823,17 +2039,18 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
             if (!token.value.empty() && token.value[0] == '?' && token.value.length() > 1) {
                 ast.type = ESHKOL_OP;
                 ast.operation.op = ESHKOL_LOGIC_VAR_OP;
-                uint64_t var_id = eshkol_make_logic_var(token.value.c_str());
+                // A logic variable is named data, never a lexical binding.
+                uint64_t var_id = eshkol_make_logic_var(token_base(token).c_str());
                 ast.operation.logic_var_op.var_id = var_id;
                 size_t _len = token.value.length();
-                ast.operation.logic_var_op.name = new char[_len + 1];
+                ast.operation.logic_var_op.name = eshkol_ast_string_alloc(_len + 1);
                 if (ast.operation.logic_var_op.name) {
                     memcpy(const_cast<char*>(ast.operation.logic_var_op.name), token.value.c_str(), _len + 1);
                 }
             } else {
                 ast.type = ESHKOL_VAR;
                 size_t _len = token.value.length();
-                ast.variable.id = new char[_len + 1];
+                ast.variable.id = eshkol_ast_string_alloc(_len + 1);
                 if (ast.variable.id) {
                     memcpy(ast.variable.id, token.value.c_str(), _len + 1);
                 }
@@ -2033,20 +2250,6 @@ static ParserTask<eshkol_ast_t> parse_quoted_list_internal(SchemeTokenizer& toke
 static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokenizer);
 
 /**
- * @brief Heap-allocates a NUL-terminated copy of @p value.
- *
- * Equivalent helper to copy_parser_string(), used for token text elsewhere
- * in the parser.
- */
-static char* copy_token_text(const std::string& value) {
-    char* ptr = new char[value.length() + 1];
-    if (ptr) {
-        memcpy(ptr, value.c_str(), value.length() + 1);
-    }
-    return ptr;
-}
-
-/**
  * @brief Parses @p token as an unsigned 64-bit decimal integer literal.
  *
  * Rejects negative signs, decimal points, fractions ('/'), and exponent
@@ -2166,7 +2369,7 @@ static bool parse_define_modifier_tail(SchemeTokenizer& tokenizer,
                 PARSE_ERROR_AT(modifier_start, "define :link-section may only appear once");
                 return false;
             }
-            ast->operation.define_op.link_section = copy_token_text(value.value);
+            ast->operation.define_op.link_section = eshkol_ast_string_copy(value.value);
         } else if (modifier == "align") {
             Token value = tokenizer.nextToken();
             uint64_t alignment = 0;
@@ -2205,7 +2408,7 @@ static bool parse_define_modifier_tail(SchemeTokenizer& tokenizer,
             Token next = tokenizer.nextToken();
             if (next.type == TOKEN_STRING ||
                 (next.type == TOKEN_SYMBOL && !is_declaration_modifier_start(next))) {
-                ast->operation.define_op.export_name = copy_token_text(next.value);
+                ast->operation.define_op.export_name = eshkol_ast_string_copy(next.value);
                 next = tokenizer.nextToken();
             }
             if (next.type == TOKEN_RPAREN) {
@@ -2283,7 +2486,7 @@ static bool parse_extern_modifier_tail(SchemeTokenizer& tokenizer,
                 PARSE_ERROR_AT(modifier_start, "extern symbol name modifier may only appear once");
                 return false;
             }
-            ast->operation.extern_op.real_name = copy_token_text(value.value);
+            ast->operation.extern_op.real_name = eshkol_ast_string_copy(value.value);
         } else if (modifier == "weak") {
             if (ast->operation.extern_op.is_weak) {
                 PARSE_ERROR_AT(modifier_start, "extern :weak may only appear once");
@@ -2352,7 +2555,7 @@ static bool parse_extern_var_modifier_tail(SchemeTokenizer& tokenizer,
                 PARSE_ERROR_AT(modifier_start, "extern-var symbol name modifier may only appear once");
                 return false;
             }
-            ast->operation.extern_var_op.real_name = copy_token_text(value.value);
+            ast->operation.extern_var_op.real_name = eshkol_ast_string_copy(value.value);
         } else {
             PARSE_ERROR_AT(modifier_start, "unsupported extern-var declaration modifier '%s'",
                            modifier.c_str());
@@ -2387,7 +2590,9 @@ static bool parse_extern_var_modifier_tail(SchemeTokenizer& tokenizer,
 //
 // Anything not in the registry is a type variable (the `a` in
 // `(forall (a) (-> a a))`), unchanged.
-static hott_type_expr_t* parsePrimitiveType(const std::string& name) {
+static hott_type_expr_t* parsePrimitiveType(const std::string& spelled) {
+    // Type names are not lexical bindings a template can capture.
+    const std::string name = spelled.substr(0, eshkol_syntax_base_length(spelled.c_str()));
     const eshkol::hott::BuiltinTypeSpelling* spelling =
         eshkol::hott::lookupBuiltinTypeSpelling(name);
 
@@ -2405,6 +2610,7 @@ static hott_type_expr_t* parsePrimitiveType(const std::string& name) {
 // a deeply nested type. Parsed children never have another mutable owner.
 static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
+    decolor_symbol_token(token);
 
     if (token.type == TOKEN_SYMBOL) {
         // Simple type name or type variable
@@ -2421,6 +2627,7 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
     if (token.type == TOKEN_LPAREN) {
         // Compound type expression
         Token first = tokenizer.nextToken();
+        decolor_symbol_token(first);
 
         if (first.type == TOKEN_RPAREN) {
             // Empty parens () - treat as null/unit type
@@ -2589,32 +2796,34 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
                     co_return nullptr;
                 }
 
-                std::vector<char*> type_vars;
+                // Scratch spellings only: hott_make_forall_type() copies each
+                // name into the AST string owner, so the vector owns these.
+                std::vector<std::string> type_var_names;
                 while (true) {
                     Token var = tokenizer.nextToken();
+                    decolor_symbol_token(var);
                     if (var.type == TOKEN_RPAREN) break;
                     if (var.type != TOKEN_SYMBOL) {
                         PARSE_ERROR_AT(token, "expected type variable name in forall");
-                        for (auto* v : type_vars) free(v);
                         co_return nullptr;
                     }
-                    type_vars.push_back(strdup(var.value.c_str()));
+                    type_var_names.push_back(var.value);
                 }
 
                 hott_type_expr_t* body = (co_await parseTypeExpression(tokenizer));
                 Token rparen = tokenizer.nextToken();
                 if (rparen.type != TOKEN_RPAREN) {
                     PARSE_ERROR_AT(token, "expected ) after forall body");
-                    for (auto* v : type_vars) free(v);
                     hott_free_type_expr(body);
                     co_return nullptr;
                 }
 
+                std::vector<char*> type_vars;
+                type_vars.reserve(type_var_names.size());
+                for (auto& name : type_var_names) type_vars.push_back(name.data());
                 hott_type_expr_t* result = hott_make_forall_type(
                     type_vars.data(), type_vars.size(), nullptr);
                 result->forall.body = body;
-
-                for (auto* v : type_vars) free(v);
                 co_return result;
             }
 
@@ -2658,8 +2867,7 @@ static eshkol_ast_t make_cons_call(eshkol_ast_t car_ast, eshkol_ast_t cdr_ast) {
     ast.operation.op = ESHKOL_CALL_OP;
     ast.operation.call_op.func = new eshkol_ast_t;
     ast.operation.call_op.func->type = ESHKOL_VAR;
-    ast.operation.call_op.func->variable.id = new char[5];
-    memcpy(ast.operation.call_op.func->variable.id, "cons", 5);
+    ast.operation.call_op.func->variable.id = eshkol_ast_strdup("cons");
     ast.operation.call_op.func->variable.data = nullptr;
     ast.operation.call_op.num_vars = 2;
     ast.operation.call_op.variables = new eshkol_ast_t[2];
@@ -2771,7 +2979,9 @@ static ParserTask<eshkol_ast_t> parse_quoted_data_with_token(SchemeTokenizer& to
         ast.operation.call_op.variables[0] = inner;
         co_return ast;
     } else {
-        // Atom
+        // Atom. A symbol in data never carries a syntax color (ADR-0026):
+        // quoted operands may be caller syntax an outer template colored.
+        decolor_symbol_token(token);
         co_return (co_await parse_atom(token));
     }
 }
@@ -2840,8 +3050,7 @@ static ParserTask<eshkol_ast_t> parse_quoted_list_internal(SchemeTokenizer& toke
     ast.operation.op = ESHKOL_CALL_OP;
     ast.operation.call_op.func = new eshkol_ast_t;
     ast.operation.call_op.func->type = ESHKOL_VAR;
-    ast.operation.call_op.func->variable.id = new char[sizeof("list")];
-    memcpy(ast.operation.call_op.func->variable.id, "list", sizeof("list"));
+    ast.operation.call_op.func->variable.id = eshkol_ast_strdup("list");
     ast.operation.call_op.func->variable.data = nullptr;
     ast.operation.call_op.num_vars = elements.size();
     if (elements.size() > 0) {
@@ -2983,7 +3192,9 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_data_with_token(SchemeTokenize
         ast.operation.call_op.variables[0] = inner;
         co_return ast;
     } else {
-        // Atom
+        // Atom. A symbol in data never carries a syntax color (ADR-0026):
+        // quoted operands may be caller syntax an outer template colored.
+        decolor_symbol_token(token);
         co_return (co_await parse_atom(token));
     }
 }
@@ -3018,29 +3229,29 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_list_internal(SchemeTokenizer&
     {
         Token head = tokenizer.nextToken();
         if (head.type == TOKEN_SYMBOL &&
-            (head.value == "unquote" || head.value == "unquote-splicing" ||
-             head.value == "quasiquote" || head.value == "quote")) {
+            (token_is_keyword(head, "unquote") || token_is_keyword(head, "unquote-splicing") ||
+             token_is_keyword(head, "quasiquote") || token_is_keyword(head, "quote"))) {
             eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
             stamp_node(ast, head.line, head.column);
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
             ast.operation.call_op.variables = new eshkol_ast_t[1];
-            if (head.value == "unquote") {
+            if (token_is_keyword(head, "unquote")) {
                 // Active unquote — its body is evaluated (same as ,expr).
                 ast.operation.op = ESHKOL_UNQUOTE_OP;
                 trace_parser_dispatch(
                     head.line, head.column,
                     static_cast<uint32_t>(ESHKOL_UNQUOTE_OP), "unquote");
                 ast.operation.call_op.variables[0] = (co_await parse_expression(tokenizer));
-            } else if (head.value == "unquote-splicing") {
+            } else if (token_is_keyword(head, "unquote-splicing")) {
                 ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
                 trace_parser_dispatch(
                     head.line, head.column,
                     static_cast<uint32_t>(ESHKOL_UNQUOTE_SPLICING_OP),
                     "unquote-splicing");
                 ast.operation.call_op.variables[0] = (co_await parse_expression(tokenizer));
-            } else if (head.value == "quasiquote") {
+            } else if (token_is_keyword(head, "quasiquote")) {
                 // Nested quasiquote — keep parsing as quasiquoted data (same
                 // as the `expr sugar); codegen renders it as literal data.
                 ast.operation.op = ESHKOL_QUASIQUOTE_OP;
@@ -3108,8 +3319,7 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_list_internal(SchemeTokenizer&
     ast.operation.op = ESHKOL_CALL_OP;
     ast.operation.call_op.func = new eshkol_ast_t;
     ast.operation.call_op.func->type = ESHKOL_VAR;
-    ast.operation.call_op.func->variable.id = new char[sizeof("list")];
-    memcpy(ast.operation.call_op.func->variable.id, "list", sizeof("list"));
+    ast.operation.call_op.func->variable.id = eshkol_ast_strdup("list");
     ast.operation.call_op.func->variable.data = nullptr;
     ast.operation.call_op.num_vars = elements.size();
     if (elements.size() > 0) {
@@ -3547,9 +3757,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
 
         // Create variable node for binding
         eshkol_ast_t var_ast = {.type = ESHKOL_VAR};
-        { size_t _len = strlen(def.operation.define_op.name);
-        var_ast.variable.id = new char[_len + 1];
-        memcpy(var_ast.variable.id, def.operation.define_op.name, _len + 1); }
+        var_ast.variable.id = eshkol_ast_strdup(def.operation.define_op.name);
         var_ast.variable.data = nullptr;
 
         // Get value - if it's a function define, wrap in lambda
@@ -3574,9 +3782,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
             val_ast.operation.lambda_op.num_captured = 0;
             val_ast.operation.lambda_op.is_variadic = def.operation.define_op.is_variadic;
             if (def.operation.define_op.rest_param) {
-                { size_t _len = strlen(def.operation.define_op.rest_param);
-                val_ast.operation.lambda_op.rest_param = new char[_len + 1];
-                memcpy(val_ast.operation.lambda_op.rest_param, def.operation.define_op.rest_param, _len + 1); }
+                val_ast.operation.lambda_op.rest_param = eshkol_ast_strdup(def.operation.define_op.rest_param);
             } else {
                 val_ast.operation.lambda_op.rest_param = nullptr;
             }
@@ -3717,7 +3923,8 @@ static std::vector<std::string> analyzeLambdaCaptures(
 
 static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer);
 static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer);
-static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer);
+static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer,
+                                                  std::vector<eshkol_ast_t> leading = {});
 static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer);
 
 /**
@@ -3767,9 +3974,7 @@ static ParserTask<eshkol_ast_t> parse_function_signature(
     }
 
     // Set function name
-    { size_t _len = token.value.length();
-    signature.eshkol_func.id = new char[_len + 1];
-    memcpy(signature.eshkol_func.id, token.value.c_str(), _len + 1); }
+    signature.eshkol_func.id = eshkol_ast_string_copy(token.value);
     signature.eshkol_func.is_lambda = 0;
 
     const uint32_t signature_line = token.line;
@@ -3820,9 +4025,7 @@ static ParserTask<eshkol_ast_t> parse_function_signature(
                 co_return signature;
             }
             signature.eshkol_func.is_variadic = 1;
-            { size_t _len = token.value.length();
-            signature.eshkol_func.rest_param = new char[_len + 1];
-            memcpy(signature.eshkol_func.rest_param, token.value.c_str(), _len + 1); }
+            signature.eshkol_func.rest_param = eshkol_ast_string_copy(token.value);
 
             // Expect closing paren
             token = tokenizer.nextToken();
@@ -3846,9 +4049,7 @@ static ParserTask<eshkol_ast_t> parse_function_signature(
 
             // Create parameter AST
             eshkol_ast_t param = {.type = ESHKOL_VAR};
-            { size_t _len = param_token.value.length();
-            param.variable.id = new char[_len + 1];
-            memcpy(param.variable.id, param_token.value.c_str(), _len + 1); }
+            param.variable.id = eshkol_ast_string_copy(param_token.value);
             param.variable.data = nullptr;
 
             // Expect colon
@@ -3885,9 +4086,7 @@ static ParserTask<eshkol_ast_t> parse_function_signature(
 
         if (token.type == TOKEN_SYMBOL) {
             eshkol_ast_t param = {.type = ESHKOL_VAR};
-            { size_t _len = token.value.length();
-            param.variable.id = new char[_len + 1];
-            memcpy(param.variable.id, token.value.c_str(), _len + 1); }
+            param.variable.id = eshkol_ast_string_copy(token.value);
             param.variable.data = nullptr;
             params.push_back(param);
             param_types.push_back(nullptr);  // No type annotation
@@ -3903,7 +4102,7 @@ static ParserTask<eshkol_ast_t> parse_function_signature(
         std::string generated_rest =
             make_keyword_rest_name(signature_line, signature_column);
         signature.eshkol_func.is_variadic = 1;
-        signature.eshkol_func.rest_param = copy_parser_string(generated_rest);
+        signature.eshkol_func.rest_param = eshkol_ast_string_copy(generated_rest);
         if (generated_keyword_rest) *generated_keyword_rest = true;
     }
 
@@ -3950,13 +4149,11 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
 
     if (token.type == TOKEN_SYMBOL) {
         // Symbol: wildcard (_) or variable binding
-        if (token.value == "_") {
+        if (token_is_keyword(token, "_")) {
             pattern->type = PATTERN_WILDCARD;
         } else {
             pattern->type = PATTERN_VARIABLE;
-            { size_t _len = token.value.length();
-            pattern->variable.name = new char[_len + 1];
-            memcpy(pattern->variable.name, token.value.c_str(), _len + 1); }
+            pattern->variable.name = eshkol_ast_string_copy(token.value);
         }
     } else if (token.type == TOKEN_NUMBER || token.type == TOKEN_STRING ||
                token.type == TOKEN_BOOLEAN || token.type == TOKEN_CHAR) {
@@ -3986,7 +4183,7 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
         Token peek = tokenizer.nextToken();
 
         if (peek.type == TOKEN_SYMBOL) {
-            if (peek.value == "cons") {
+            if (token_is_keyword(peek, "cons")) {
                 // Cons pattern: (cons car-pat cdr-pat)
                 pattern->type = PATTERN_CONS;
                 // Recursively parse car and cdr patterns
@@ -3998,7 +4195,7 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
                     PARSE_ERROR_AT(token, "expected closing paren after cons pattern");
                     pattern->type = PATTERN_INVALID;
                 }
-            } else if (peek.value == "list") {
+            } else if (token_is_keyword(peek, "list")) {
                 // List pattern: (list p1 p2 ...)
                 pattern->type = PATTERN_LIST;
                 std::vector<eshkol_pattern_t*> list_pats;
@@ -4018,7 +4215,7 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
                 for (size_t i = 0; i < list_pats.size(); i++) {
                     pattern->list.patterns[i] = list_pats[i];
                 }
-            } else if (peek.value == "?") {
+            } else if (token_is_keyword(peek, "?")) {
                 // Predicate pattern: (? pred) or (? pred name)
                 // Bare form: (? number?) ─ matches when (number? val) is truthy.
                 // Bound form: (? number? n) ─ same, plus binds val to `n` in
@@ -4036,14 +4233,14 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
                 // Look at the next token: SYMBOL ⇒ binding name, RPAREN ⇒ done.
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_SYMBOL) {
-                    pattern->predicate.binding_name = strdup(token.value.c_str());
+                    pattern->predicate.binding_name = eshkol_ast_strdup(token.value.c_str());
                     token = tokenizer.nextToken();
                 }
                 if (token.type != TOKEN_RPAREN) {
                     PARSE_ERROR_AT(token, "expected closing paren after predicate pattern");
                     pattern->type = PATTERN_INVALID;
                 }
-            } else if (peek.value == "or") {
+            } else if (token_is_keyword(peek, "or")) {
                 // Or pattern: (or p1 p2 ...)
                 pattern->type = PATTERN_OR;
                 std::vector<eshkol_pattern_t*> or_pats;
@@ -4067,9 +4264,7 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
                 pattern->type = PATTERN_LITERAL;
                 pattern->literal.value = new eshkol_ast_t;
                 eshkol_ast_t list_ast = {.type = ESHKOL_VAR};
-                { size_t _len = peek.value.length();
-                list_ast.variable.id = new char[_len + 1];
-                memcpy(list_ast.variable.id, peek.value.c_str(), _len + 1); }
+                list_ast.variable.id = eshkol_ast_string_copy(peek.value);
                 *pattern->literal.value = list_ast;
                 // Skip to end of this list
                 int depth = 1;
@@ -4162,16 +4357,6 @@ static eshkol_ast_t make_sequence_or_null_ast(const std::vector<eshkol_ast_t>& e
 }
 
 /**
- * @brief Heap-allocates a NUL-terminated copy of @p value for storage in a C-style AST field.
- * @return A newly `new[]`-allocated `char*` owned by the caller, or null on allocation failure.
- */
-static char* parser_copy_cstr(const std::string& value) {
-    char* out = new char[value.size() + 1];
-    if (out) memcpy(out, value.c_str(), value.size() + 1);
-    return out;
-}
-
-/**
  * @brief Joins an R7RS library-name's symbol @p parts (e.g. `(foo bar baz)`) into an internal module-name string.
  *
  * Parts are joined with `.` (e.g. `(foo bar baz)` becomes `"foo.bar.baz"`),
@@ -4233,7 +4418,7 @@ static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
     ast.operation.require_op.import_rename_to = new char**[modules.size()];
     ast.operation.require_op.num_import_renames = new uint64_t[modules.size()];
     for (size_t i = 0; i < modules.size(); i++) {
-        ast.operation.require_op.module_names[i] = parser_copy_cstr(modules[i]);
+        ast.operation.require_op.module_names[i] = eshkol_ast_string_copy(modules[i]);
         ast.operation.require_op.import_prefixes[i] = nullptr;
         ast.operation.require_op.import_except_names[i] = nullptr;
         ast.operation.require_op.num_import_except_names[i] = 0;
@@ -4265,28 +4450,28 @@ static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& spe
     eshkol_ast_t ast = make_require_ast(modules, line, column);
     for (size_t i = 0; i < specs.size(); i++) {
         const auto& spec = specs[i];
-        ast.operation.require_op.import_prefixes[i] = parser_copy_cstr(spec.prefix);
+        ast.operation.require_op.import_prefixes[i] = eshkol_ast_string_copy(spec.prefix);
         if (!spec.except.empty()) {
             ast.operation.require_op.num_import_except_names[i] = spec.except.size();
             ast.operation.require_op.import_except_names[i] = new char*[spec.except.size()];
             for (size_t j = 0; j < spec.except.size(); j++) {
                 ast.operation.require_op.import_except_names[i][j] =
-                    parser_copy_cstr(spec.except[j]);
+                    eshkol_ast_string_copy(spec.except[j]);
             }
         }
         if (!spec.only.empty()) {
             ast.operation.require_op.num_import_only_names[i] = spec.only.size();
             ast.operation.require_op.import_only_names[i] = new char*[spec.only.size()];
             for (size_t j = 0; j < spec.only.size(); ++j)
-                ast.operation.require_op.import_only_names[i][j] = parser_copy_cstr(spec.only[j]);
+                ast.operation.require_op.import_only_names[i][j] = eshkol_ast_string_copy(spec.only[j]);
         }
         if (!spec.renames.empty()) {
             ast.operation.require_op.num_import_renames[i] = spec.renames.size();
             ast.operation.require_op.import_rename_from[i] = new char*[spec.renames.size()];
             ast.operation.require_op.import_rename_to[i] = new char*[spec.renames.size()];
             for (size_t j = 0; j < spec.renames.size(); ++j) {
-                ast.operation.require_op.import_rename_from[i][j] = parser_copy_cstr(spec.renames[j].from);
-                ast.operation.require_op.import_rename_to[i][j] = parser_copy_cstr(spec.renames[j].to);
+                ast.operation.require_op.import_rename_from[i][j] = eshkol_ast_string_copy(spec.renames[j].from);
+                ast.operation.require_op.import_rename_to[i][j] = eshkol_ast_string_copy(spec.renames[j].to);
             }
         }
     }
@@ -4302,7 +4487,7 @@ static eshkol_ast_t make_parser_define_value_ast(const std::string& name,
     ast.type = ESHKOL_OP;
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_DEFINE_OP;
-    ast.operation.define_op.name = copy_parser_string(name);
+    ast.operation.define_op.name = eshkol_ast_string_copy(name);
     ast.operation.define_op.value = new eshkol_ast_t(value);
     ast.operation.define_op.is_function = 0;
     ast.operation.define_op.parameters = nullptr;
@@ -4324,7 +4509,7 @@ static eshkol_ast_t make_parser_set_ast(const std::string& name,
     ast.type = ESHKOL_OP;
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_SET_OP;
-    ast.operation.set_op.name = copy_parser_string(name);
+    ast.operation.set_op.name = eshkol_ast_string_copy(name);
     ast.operation.set_op.value = new eshkol_ast_t(value);
     return ast;
 }
@@ -4351,7 +4536,7 @@ static eshkol_ast_t make_parser_lambda_ast(const std::vector<std::string>& param
     ast.operation.lambda_op.num_captured = 0;
     ast.operation.lambda_op.is_variadic = rest_param ? 1 : 0;
     ast.operation.lambda_op.rest_param = rest_param
-        ? copy_parser_string(*rest_param) : nullptr;
+        ? eshkol_ast_string_copy(*rest_param) : nullptr;
     ast.operation.lambda_op.return_type = nullptr;
     ast.operation.lambda_op.param_types = nullptr;
     return ast;
@@ -4374,7 +4559,7 @@ static eshkol_ast_t make_provide_ast(const std::vector<std::string>& exports,
     ast.operation.provide_op.export_names = new char*[exports.size()];
     ast.operation.provide_op.library_name = nullptr;
     for (size_t i = 0; i < exports.size(); i++) {
-        ast.operation.provide_op.export_names[i] = parser_copy_cstr(exports[i]);
+        ast.operation.provide_op.export_names[i] = eshkol_ast_string_copy(exports[i]);
     }
     return ast;
 }
@@ -4400,7 +4585,7 @@ static eshkol_ast_t make_library_definition_ast(const std::string& library_name,
                                                 uint32_t line,
                                                 uint32_t column) {
     eshkol_ast_t ast = make_provide_ast(exports, line, column);
-    ast.operation.provide_op.library_name = parser_copy_cstr(library_name);
+    ast.operation.provide_op.library_name = eshkol_ast_string_copy(library_name);
     return ast;
 }
 
@@ -4456,7 +4641,8 @@ static bool parse_r7rs_library_name(SchemeTokenizer& tokenizer,
 /**
  * @brief Checks whether @p value names one of the R7RS import-set modifiers: `only`, `except`, `prefix`, or `rename`.
  */
-static bool is_r7rs_import_modifier(const std::string& value) {
+static bool is_r7rs_import_modifier(const std::string& spelled) {
+    const std::string value = spelled.substr(0, eshkol_syntax_base_length(spelled.c_str()));
     return value == "only" || value == "except" ||
            value == "prefix" || value == "rename";
 }
@@ -4540,7 +4726,7 @@ static ParserTask<bool> parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
             co_return false;
         }
 
-        if (first.value == "only") {
+        if (token_is_keyword(first, "only")) {
             std::vector<std::string> names;
             if (!parse_r7rs_symbol_list_until_rparen(tokenizer, first,
                                                      "R7RS only import",
@@ -4552,7 +4738,7 @@ static ParserTask<bool> parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
             co_return true;
         }
 
-        if (first.value == "except") {
+        if (token_is_keyword(first, "except")) {
             std::vector<std::string> names;
             if (!parse_r7rs_symbol_list_until_rparen(tokenizer, first,
                                                      "R7RS except import",
@@ -4564,7 +4750,7 @@ static ParserTask<bool> parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
             co_return true;
         }
 
-        if (first.value == "prefix") {
+        if (token_is_keyword(first, "prefix")) {
             Token prefix = tokenizer.nextToken();
             if (prefix.type != TOKEN_SYMBOL) {
                 PARSE_ERROR_AT(prefix, "R7RS prefix import expects a prefix symbol");
@@ -4759,7 +4945,7 @@ static ParserTask<eshkol_ast_t> parse_define_library_form(SchemeTokenizer& token
             co_return {.type = ESHKOL_INVALID};
         }
 
-        if (clause_name.value == "export") {
+        if (token_is_keyword(clause_name, "export")) {
             std::vector<std::string> exports;
             while (true) {
                 Token token = tokenizer.nextToken();
@@ -4787,14 +4973,14 @@ static ParserTask<eshkol_ast_t> parse_define_library_form(SchemeTokenizer& token
             // union, which the single trailing marker carries.
             library_exports.insert(library_exports.end(),
                                    exports.begin(), exports.end());
-        } else if (clause_name.value == "import") {
+        } else if (token_is_keyword(clause_name, "import")) {
             std::vector<R7rsImportSpec> specs;
             if (!(co_await parse_r7rs_import_sets(tokenizer, clause_name, &specs))) {
                 co_return {.type = ESHKOL_INVALID};
             }
             append_r7rs_import_forms(specs, &lowered_forms, clause_name.line,
                                      clause_name.column);
-        } else if (clause_name.value == "begin") {
+        } else if (token_is_keyword(clause_name, "begin")) {
             while (true) {
                 Token token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
@@ -5006,8 +5192,43 @@ static ParserTask<eshkol_ast_t> parse_let_match_form(SchemeTokenizer& tokenizer,
  * treated as the callee expression and the remaining elements are parsed as
  * argument expressions, producing an ESHKOL_CALL_OP AST node.
  */
+// R7RS 5.1: a `begin` at the top level of a program splices its forms into
+// that top level, so its definitions are top-level definitions. The parser
+// learns a list is a top-level form from this flag, which the top-level entry
+// points set immediately before parsing a form and parse_list consumes on
+// entry, so it never reaches a nested list. A top-level `begin` and a
+// top-level `with-region` pass it on to their own forms, which is what makes
+// nested splices and a `begin` in a top-level region top-level too.
+static thread_local bool g_parse_toplevel_form = false;
+
+namespace eshkol {
+ToplevelFormParseScope::ToplevelFormParseScope() : previous_(g_parse_toplevel_form) {
+    g_parse_toplevel_form = true;
+}
+ToplevelFormParseScope::~ToplevelFormParseScope() { g_parse_toplevel_form = previous_; }
+
+static void splice_toplevel_form(const eshkol_ast_t& form, std::vector<eshkol_ast_t>& out) {
+    if (form.type == ESHKOL_OP && form.operation.op == ESHKOL_SEQUENCE_OP) {
+        for (uint64_t i = 0; i < form.operation.sequence_op.num_expressions; ++i)
+            splice_toplevel_form(form.operation.sequence_op.expressions[i], out);
+        return;
+    }
+    out.push_back(form);
+}
+
+void splice_toplevel_forms(std::vector<eshkol_ast_t>& forms) {
+    std::vector<eshkol_ast_t> spliced;
+    spliced.reserve(forms.size());
+    for (const auto& form : forms) splice_toplevel_form(form, spliced);
+    forms = std::move(spliced);
+}
+} // namespace eshkol
+
 static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
+    // Consume the top-level-form flag before anything nested is parsed.
+    const bool toplevel_form = g_parse_toplevel_form;
+    g_parse_toplevel_form = false;
     ast.type = ESHKOL_OP;
     std::vector<eshkol_ast_t> elements;
 
@@ -5019,6 +5240,50 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
     // body sequences, named-let/do/case/record-type expansions, ...) are
     // born with the form's own location, the same one stamped above.
     EshkolAstBirthLocationScope birth_location(token.line, token.column);
+
+    // Resolve explicit syntax bindings before lowering keyword grammar. Keep
+    // unrelated streams (stdlib, imports, user program) separate: a user macro
+    // must not retroactively reinterpret a previously parsed library form.
+    //
+    // A macro use is kept as reader syntax (ADR-0026): its operands are not
+    // code until the transformer has rewritten them, so they are read as
+    // datums, never parsed as expressions here.
+    if (token.type == TOKEN_SYMBOL && tokenizer.isMacroName(token.value)) {
+        eshkol::SyntaxDatum use;
+        tokenizer.pushBack(token);
+        Token open = head_token;
+        open.type = TOKEN_LPAREN;
+        open.value = "(";
+        if (!read_syntax_datum(tokenizer, open, use)) {
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        eshkol_ast_t call = make_parser_call_ast(use.items[0].text.c_str(), {},
+                                                 token.line, token.column);
+        if (call.node_id == ESHKOL_NODE_ID_NONE) {
+            PARSE_ERROR_AT(token, "node identity space exhausted recording a macro use");
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        eshkol::syntax_record_use(call.node_id, std::move(use));
+        co_return call;
+    }
+    // A head that a macro expansion colored names whatever its spelling meant
+    // where the macro was defined (ADR-0026). Keyword grammar dispatches on the
+    // spelling; an ordinary call keeps the colored identifier so the expander
+    // can resolve it in the definition environment. It is never a use-site
+    // macro: a definition-site macro keyword was already emitted as an alias.
+    std::string colored_head;
+    if (token.type == TOKEN_SYMBOL && eshkol_syntax_is_colored(token.value.c_str())) {
+        colored_head = token.value;
+        decolor_symbol_token(token);
+    }
+    const bool syntax_scope = token.type == TOKEN_SYMBOL &&
+        (token.value == "lambda" || token.value == "let" || token.value == "let*" ||
+         token.value == "letrec" || token.value == "letrec*" ||
+         token.value == "let-syntax" || token.value == "letrec-syntax" ||
+         (token.value == "define" && tokenizer.peekToken().type == TOKEN_LPAREN));
+    SchemeTokenizer::MacroScope macro_scope(tokenizer, syntax_scope);
     
     // Empty list (ESH-0217).
     //
@@ -5140,9 +5405,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
         // Set up type annotation operation
         ast.operation.op = ESHKOL_TYPE_ANNOTATION_OP;
-        { size_t _len = name_token.value.length();
-        ast.operation.type_annotation_op.name = new char[_len + 1];
-        memcpy(ast.operation.type_annotation_op.name, name_token.value.c_str(), _len + 1); }
+        ast.operation.type_annotation_op.name = eshkol_ast_string_copy(name_token.value);
         ast.operation.type_annotation_op.type_expr = type_expr;
 
         eshkol_debug("Parsed type annotation for '%s'", name_token.value.c_str());
@@ -5174,7 +5437,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
         Token t2 = tokenizer.peekToken();  // non-destructive (pushes back)
         bool looks_like_ascription =
             (t2.type == TOKEN_LPAREN) ||
-            (t2.type == TOKEN_SYMBOL && eshkol::hott::isBuiltinTypeName(t2.value));
+            (t2.type == TOKEN_SYMBOL && eshkol::hott::isBuiltinTypeName(token_base(t2)));
         if (looks_like_ascription) {
             hott_type_expr_t* type_expr = (co_await parseTypeExpression(tokenizer));
             if (!type_expr) {
@@ -5384,9 +5647,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.op = ESHKOL_CALL_OP;
             ast.operation.call_op.func = new eshkol_ast_t();
             ast.operation.call_op.func->type = ESHKOL_VAR;
-            { size_t _len = strlen(func_id);
-            ast.operation.call_op.func->variable.id = new char[_len + 1];
-            memcpy(ast.operation.call_op.func->variable.id, func_id, _len + 1); }
+            ast.operation.call_op.func->variable.id = eshkol_ast_strdup(func_id);
             ast.operation.call_op.num_vars = 1;
             ast.operation.call_op.variables = new eshkol_ast_t[1];
             ast.operation.call_op.variables[0] = lambda_ast;
@@ -5475,9 +5736,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
                 
                 // Set up define operation for function
-                { size_t _len = strlen(func_signature.eshkol_func.id);
-                ast.operation.define_op.name = new char[_len + 1];
-                memcpy(ast.operation.define_op.name, func_signature.eshkol_func.id, _len + 1); }
+                ast.operation.define_op.name = eshkol_ast_strdup(func_signature.eshkol_func.id);
                 
                 ast.operation.define_op.is_function = 1;
                 ast.operation.define_op.num_params = func_signature.eshkol_func.num_variables;
@@ -5497,9 +5756,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // Copy variadic information from function signature
                 ast.operation.define_op.is_variadic = func_signature.eshkol_func.is_variadic;
                 if (func_signature.eshkol_func.rest_param) {
-                    { size_t _len = strlen(func_signature.eshkol_func.rest_param);
-                    ast.operation.define_op.rest_param = new char[_len + 1];
-                    memcpy(ast.operation.define_op.rest_param, func_signature.eshkol_func.rest_param, _len + 1); }
+                    ast.operation.define_op.rest_param = eshkol_ast_strdup(func_signature.eshkol_func.rest_param);
                 } else {
                     ast.operation.define_op.rest_param = nullptr;
                 }
@@ -5541,9 +5798,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
                 
                 // Set up define operation for variable
-                { size_t _len = strlen(name_ast.variable.id);
-                ast.operation.define_op.name = new char[_len + 1];
-                memcpy(ast.operation.define_op.name, name_ast.variable.id, _len + 1); }
+                ast.operation.define_op.name = eshkol_ast_strdup(name_ast.variable.id);
                 
                 ast.operation.define_op.value = new eshkol_ast_t;
                 *ast.operation.define_op.value = value;
@@ -5584,9 +5839,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             // Store variable name
-            { size_t _len = token.value.length();
-            ast.operation.set_op.name = new char[_len + 1];
-            memcpy(ast.operation.set_op.name, token.value.c_str(), _len + 1); }
+            ast.operation.set_op.name = eshkol_ast_string_copy(token.value);
 
             // Parse value
             token = tokenizer.nextToken();
@@ -5677,18 +5930,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             // Set up define-type operation
-            { size_t _len = type_name.length();
-            ast.operation.define_type_op.name = new char[_len + 1];
-            memcpy(ast.operation.define_type_op.name, type_name.c_str(), _len + 1); }
+            ast.operation.define_type_op.name = eshkol_ast_string_copy(type_name);
             ast.operation.define_type_op.type_expr = type_expr;
             ast.operation.define_type_op.num_type_params = type_params.size();
 
             if (!type_params.empty()) {
                 ast.operation.define_type_op.type_params = new char*[type_params.size()];
                 for (size_t i = 0; i < type_params.size(); i++) {
-                    { size_t _len = type_params[i].length();
-                    ast.operation.define_type_op.type_params[i] = new char[_len + 1];
-                    memcpy(ast.operation.define_type_op.type_params[i], type_params[i].c_str(), _len + 1); }
+                    ast.operation.define_type_op.type_params[i] = eshkol_ast_string_copy(type_params[i]);
                 }
             } else {
                 ast.operation.define_type_op.type_params = nullptr;
@@ -5727,8 +5976,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             bool has_else = false;
 
             if (token.type == TOKEN_RPAREN) {
-                // No else clause - use null as default (Scheme unspecified value)
-                eshkol_ast_make_null(&else_expr);
+                // No else clause: the form evaluates to the unspecified value
+                // (ADR-0024), spelled as a call to `void`, not to '().
+                else_expr = *eshkol_alloc_symbolic_ast();
+                else_expr.type = ESHKOL_OP;
+                else_expr.operation.op = ESHKOL_CALL_OP;
+                else_expr.operation.call_op.func = eshkol_make_var_ast("void");
+                else_expr.operation.call_op.num_vars = 0;
+                else_expr.operation.call_op.variables = nullptr;
                 has_else = false;
             } else if (token.type == TOKEN_EOF) {
                 PARSE_ERROR_AT(token, "unexpected end of input in if expression");
@@ -5763,15 +6018,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
             }
             
-            // Store the if operation as a call to builtin "if" with 3 arguments.
-            // The codegen recognizes "if" calls and emits proper conditional branches.
-            ast.operation.op = ESHKOL_CALL_OP;
+            // Preserve the resolved builtin binding. IF_OP uses the same
+            // three call_op operands but cannot be captured by a later macro.
+            ast.operation.op = ESHKOL_IF_OP;
             
             // Create function name AST node for "if"
             ast.operation.call_op.func = new eshkol_ast_t;
             ast.operation.call_op.func->type = ESHKOL_VAR;
-            ast.operation.call_op.func->variable.id = new char[sizeof("if")];
-            memcpy(ast.operation.call_op.func->variable.id, "if", sizeof("if"));
+            ast.operation.call_op.func->variable.id = eshkol_ast_strdup("if");
             ast.operation.call_op.func->variable.data = nullptr;
             
             // Set up arguments: condition, then-expr, else-expr
@@ -5809,9 +6063,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // Variadic lambda: (lambda args body)
                 // All arguments are captured as a single list parameter
                 ast.operation.lambda_op.is_variadic = 1;
-                { size_t _len = token.value.length();
-                ast.operation.lambda_op.rest_param = new char[_len + 1];
-                memcpy(ast.operation.lambda_op.rest_param, token.value.c_str(), _len + 1); }
+                ast.operation.lambda_op.rest_param = eshkol_ast_string_copy(token.value);
                 // No fixed parameters
             } else if (token.type == TOKEN_LPAREN) {
                 // Regular parameter list or mixed with rest parameter
@@ -5854,9 +6106,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                             co_return ast;
                         }
                         ast.operation.lambda_op.is_variadic = 1;
-                        { size_t _len = token.value.length();
-                        ast.operation.lambda_op.rest_param = new char[_len + 1];
-                        memcpy(ast.operation.lambda_op.rest_param, token.value.c_str(), _len + 1); }
+                        ast.operation.lambda_op.rest_param = eshkol_ast_string_copy(token.value);
 
                         // Expect closing paren
                         token = tokenizer.nextToken();
@@ -5878,9 +6128,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                         }
 
                         eshkol_ast_t param = {.type = ESHKOL_VAR};
-                        { size_t _len = param_token.value.length();
-                        param.variable.id = new char[_len + 1];
-                        memcpy(param.variable.id, param_token.value.c_str(), _len + 1); }
+                        param.variable.id = eshkol_ast_string_copy(param_token.value);
                         param.variable.data = nullptr;
 
                         Token colon = tokenizer.nextToken();
@@ -5912,9 +6160,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                     if (token.type == TOKEN_SYMBOL) {
                         eshkol_ast_t param = {.type = ESHKOL_VAR};
-                        { size_t _len = token.value.length();
-                        param.variable.id = new char[_len + 1];
-                        memcpy(param.variable.id, token.value.c_str(), _len + 1); }
+                        param.variable.id = eshkol_ast_string_copy(token.value);
                         param.variable.data = nullptr;
                         params.push_back(param);
                         param_types.push_back(nullptr);  // No type annotation
@@ -5934,7 +6180,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 std::string generated_rest =
                     make_keyword_rest_name(ast.line, ast.column);
                 ast.operation.lambda_op.is_variadic = 1;
-                ast.operation.lambda_op.rest_param = copy_parser_string(generated_rest);
+                ast.operation.lambda_op.rest_param = eshkol_ast_string_copy(generated_rest);
                 generated_keyword_rest = true;
             }
 
@@ -6021,7 +6267,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     ast.operation.lambda_op.captured_vars[i].type = ESHKOL_VAR;
                     { size_t _len = captures[i].length();
                     ast.operation.lambda_op.captured_vars[i].variable.id =
-                        new char[_len + 1];
+                        eshkol_ast_string_alloc(_len + 1);
                     memcpy(ast.operation.lambda_op.captured_vars[i].variable.id,
                            captures[i].c_str(), _len + 1); }
                     ast.operation.lambda_op.captured_vars[i].variable.data = nullptr;
@@ -6095,9 +6341,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
 
                 eshkol_ast_t var_ast = {.type = ESHKOL_VAR};
-                { size_t _len = token.value.length();
-                var_ast.variable.id = new char[_len + 1];
-                memcpy(var_ast.variable.id, token.value.c_str(), _len + 1); }
+                var_ast.variable.id = eshkol_ast_string_copy(token.value);
                 var_ast.variable.data = nullptr;
 
                 // Check for optional type annotation: (var : type value)
@@ -6199,9 +6443,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             // Set named let name (NULL for regular let)
             if (!named_let_name.empty()) {
-                { size_t _len = named_let_name.length();
-                ast.operation.let_op.name = new char[_len + 1];
-                memcpy(ast.operation.let_op.name, named_let_name.c_str(), _len + 1); }
+                ast.operation.let_op.name = eshkol_ast_string_copy(named_let_name);
                 eshkol_debug("Created named let '%s' with %zu bindings",
                             named_let_name.c_str(), bindings.size());
             } else {
@@ -6443,9 +6685,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     ast.operation.let_values_op.binding_var_counts[i] = all_vars[i].size();
                     ast.operation.let_values_op.binding_vars[i] = new char*[all_vars[i].size()];
                     for (size_t j = 0; j < all_vars[i].size(); j++) {
-                        { size_t _len = all_vars[i][j].length();
-                        ast.operation.let_values_op.binding_vars[i][j] = new char[_len + 1];
-                        memcpy(ast.operation.let_values_op.binding_vars[i][j], all_vars[i][j].c_str(), _len + 1); }
+                        ast.operation.let_values_op.binding_vars[i][j] = eshkol_ast_string_copy(all_vars[i][j]);
                     }
                     ast.operation.let_values_op.producers[i] = producers[i];
                 }
@@ -6484,9 +6724,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             // Store variable name
-            { size_t _len = token.value.length();
-            ast.operation.guard_op.var_name = new char[_len + 1];
-            memcpy(ast.operation.guard_op.var_name, token.value.c_str(), _len + 1); }
+            ast.operation.guard_op.var_name = eshkol_ast_string_copy(token.value);
 
             // Parse clauses: ((test expr ...) ...)
             std::vector<eshkol_ast_t> clauses;
@@ -6697,11 +6935,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t clause;
                 clause.type = ESHKOL_CONS;
 
-                if (token.type == TOKEN_SYMBOL && token.value == "else") {
+                if (token_is_keyword(token, "else")) {
                     // else clause - create special marker for datums
                     eshkol_ast_t else_marker = {.type = ESHKOL_VAR};
-                    else_marker.variable.id = new char[sizeof("else")];
-                    memcpy(else_marker.variable.id, "else", sizeof("else"));
+                    else_marker.variable.id = eshkol_ast_strdup("else");
                     else_marker.variable.data = nullptr;
 
                     clause.cons_cell.car = new eshkol_ast_t;
@@ -6965,7 +7202,6 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
         // Special handling for define-syntax - macro definition
         // define-syntax: (define-syntax name (syntax-rules (literals...) ((pattern) template) ...))
         if (ast.operation.op == ESHKOL_DEFINE_SYNTAX_OP) {
-            // Parse macro name
             token = tokenizer.nextToken();
             if (token.type != TOKEN_SYMBOL) {
                 PARSE_ERROR_AT(token, "define-syntax requires a name");
@@ -6974,208 +7210,28 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             eshkol_macro_def_t *macro = new eshkol_macro_def_t;
-            macro->name = strdup(token.value.c_str());
+            macro->name = eshkol_ast_strdup(token.value.c_str());
             macro->literals = nullptr;
             macro->num_literals = 0;
             macro->rules = nullptr;
             macro->num_rules = 0;
+            // Declared before the transformer is read, so a recursive use in
+            // the transformer's own templates is recorded as a macro use.
+            tokenizer.declareMacroName(token.value);
 
-            // Expect (syntax-rules ...)
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
                 PARSE_ERROR_AT(token, "define-syntax requires (syntax-rules ...) as second argument");
                 ast.type = ESHKOL_INVALID;
                 co_return ast;
             }
-
-            // Verify "syntax-rules"
-            token = tokenizer.nextToken();
-            if (token.type != TOKEN_SYMBOL || token.value != "syntax-rules") {
-                PARSE_ERROR_AT(token, "define-syntax currently only supports syntax-rules");
+            eshkol::MacroSyntax syntax;
+            if (!read_syntax_rules(tokenizer, token, macro, syntax)) {
                 ast.type = ESHKOL_INVALID;
                 co_return ast;
             }
+            eshkol::syntax_record_macro(macro, std::move(syntax));
 
-            // Parse literals list: (literal1 literal2 ...)
-            token = tokenizer.nextToken();
-            if (token.type != TOKEN_LPAREN) {
-                PARSE_ERROR_AT(token, "syntax-rules requires literals list");
-                ast.type = ESHKOL_INVALID;
-                co_return ast;
-            }
-
-            std::vector<std::string> literals;
-            while (true) {
-                token = tokenizer.nextToken();
-                if (token.type == TOKEN_RPAREN) break;
-                if (token.type == TOKEN_EOF) {
-                    PARSE_ERROR_AT(token, "unexpected end of input in syntax-rules literals");
-                    ast.type = ESHKOL_INVALID;
-                    co_return ast;
-                }
-                if (token.type == TOKEN_SYMBOL) {
-                    literals.push_back(token.value);
-                }
-            }
-
-            if (literals.size() > 0) {
-                macro->literals = new char*[literals.size()];
-                macro->num_literals = literals.size();
-                for (size_t i = 0; i < literals.size(); i++) {
-                    macro->literals[i] = strdup(literals[i].c_str());
-                }
-            }
-
-            // Parse rules: ((pattern) template) ...
-            std::vector<eshkol_macro_rule_t> rules;
-
-            while (true) {
-                token = tokenizer.nextToken();
-                if (token.type == TOKEN_RPAREN) break;  // End of syntax-rules
-                if (token.type == TOKEN_EOF) {
-                    PARSE_ERROR_AT(token, "unexpected end of input in syntax-rules");
-                    ast.type = ESHKOL_INVALID;
-                    co_return ast;
-                }
-
-                if (token.type != TOKEN_LPAREN) {
-                    PARSE_ERROR_AT(token, "syntax-rules rule must be a list ((pattern) template)");
-                    ast.type = ESHKOL_INVALID;
-                    co_return ast;
-                }
-
-                eshkol_macro_rule_t rule;
-                rule.pattern = nullptr;
-                rule.template_ = nullptr;
-
-                // Parse pattern (which is itself a list)
-                token = tokenizer.nextToken();
-                if (token.type != TOKEN_LPAREN) {
-                    PARSE_ERROR_AT(token, "syntax-rules pattern must be a list");
-                    ast.type = ESHKOL_INVALID;
-                    co_return ast;
-                }
-
-                // For now, store the pattern as a simple list structure
-                // We'll parse it into eshkol_macro_pattern_t in the macro expander
-                // This allows us to store the raw S-expression pattern
-                rule.pattern = new eshkol_macro_pattern_t;
-                rule.pattern->type = MACRO_PAT_LIST;
-                rule.pattern->followed_by_ellipsis = 0;
-
-                // Recursive pattern parser (handles arbitrary nesting depth)
-                std::function<ParserTask<bool>(std::vector<eshkol_macro_pattern_t*>&)> parsePatternElements;
-                parsePatternElements = [&](std::vector<eshkol_macro_pattern_t*>& elements) -> ParserTask<bool> {
-                    while (true) {
-                        token = tokenizer.nextToken();
-                        if (token.type == TOKEN_RPAREN) break;
-                        if (token.type == TOKEN_EOF) {
-                            PARSE_ERROR_AT(token, "unexpected end of input in macro pattern");
-                            break;
-                        }
-                        auto* elem = new eshkol_macro_pattern_t;
-                        elem->followed_by_ellipsis = 0;
-                        if (token.type == TOKEN_SYMBOL) {
-                            if (token.value == "...") {
-                                if (!elements.empty())
-                                    elements.back()->followed_by_ellipsis = 1;
-                                delete elem;
-                                continue;
-                            }
-                            bool is_lit = false;
-                            for (const auto& lit : literals) {
-                                if (lit == token.value) { is_lit = true; break; }
-                            }
-                            elem->type = is_lit ? MACRO_PAT_LITERAL : MACRO_PAT_VARIABLE;
-                            elem->identifier = strdup(token.value.c_str());
-                        } else if (token.type == TOKEN_LPAREN) {
-                            elem->type = MACRO_PAT_LIST;
-                            elem->list.rest = nullptr;
-                            std::vector<eshkol_macro_pattern_t*> nested;
-                            co_await parsePatternElements(nested);  // Recurse
-                            if (!nested.empty()) {
-                                elem->list.elements = new eshkol_macro_pattern_t*[nested.size()];
-                                elem->list.num_elements = nested.size();
-                                for (size_t j = 0; j < nested.size(); j++)
-                                    elem->list.elements[j] = nested[j];
-                            } else {
-                                elem->list.elements = nullptr;
-                                elem->list.num_elements = 0;
-                            }
-                        } else {
-                            elem->type = MACRO_PAT_LITERAL;
-                            elem->identifier = strdup(token.value.c_str());
-                        }
-                        elements.push_back(elem);
-                    }
-                    co_return true;
-                };
-
-                // Parse pattern elements
-                std::vector<eshkol_macro_pattern_t*> pat_elements;
-                co_await parsePatternElements(pat_elements);
-
-                if (pat_elements.size() > 0) {
-                    rule.pattern->list.elements = new eshkol_macro_pattern_t*[pat_elements.size()];
-                    rule.pattern->list.num_elements = pat_elements.size();
-                    for (size_t i = 0; i < pat_elements.size(); i++) {
-                        rule.pattern->list.elements[i] = pat_elements[i];
-                    }
-                } else {
-                    rule.pattern->list.elements = nullptr;
-                    rule.pattern->list.num_elements = 0;
-                }
-                rule.pattern->list.rest = nullptr;
-
-                // Parse template - store as AST for now.
-                // ESH-0126: a whole-template reader shorthand — 'x / `x / ,x /
-                // ,@x / #(...) — was routed to parse_atom(token), which returns
-                // a degenerate AST without consuming the following datum, so the
-                // datum was mistaken for the rule's closing paren ("expected
-                // closing paren after macro rule template"). This blocks the
-                // idiomatic recursive-macro base case ((_) '()). pushBack +
-                // parse_expression handles every shorthand uniformly (same fix
-                // ESH-0094 applied to the match subject).
-                token = tokenizer.nextToken();
-                eshkol_ast_t template_ast;
-                if (token.type == TOKEN_LPAREN) {
-                    template_ast = (co_await parse_list(tokenizer));
-                } else if (token.type == TOKEN_QUOTE || token.type == TOKEN_BACKQUOTE ||
-                           token.type == TOKEN_COMMA || token.type == TOKEN_COMMA_AT ||
-                           token.type == TOKEN_VECTOR_START) {
-                    tokenizer.pushBack(token);
-                    template_ast = (co_await parse_expression(tokenizer));
-                } else {
-                    template_ast = (co_await parse_atom(token));
-                }
-
-                // Convert AST to template structure (simplified)
-                rule.template_ = new eshkol_macro_template_t;
-                rule.template_->type = MACRO_TPL_LITERAL;
-                rule.template_->literal = new eshkol_ast_t;
-                *rule.template_->literal = template_ast;
-                rule.template_->followed_by_ellipsis = 0;
-
-                // Consume closing paren of rule
-                token = tokenizer.nextToken();
-                if (token.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected closing paren after macro rule template");
-                    ast.type = ESHKOL_INVALID;
-                    co_return ast;
-                }
-
-                rules.push_back(rule);
-            }
-
-            if (rules.size() > 0) {
-                macro->rules = new eshkol_macro_rule_t[rules.size()];
-                macro->num_rules = rules.size();
-                for (size_t i = 0; i < rules.size(); i++) {
-                    macro->rules[i] = rules[i];
-                }
-            }
-
-            // Consume closing paren of define-syntax
             token = tokenizer.nextToken();
             if (token.type != TOKEN_RPAREN) {
                 PARSE_ERROR_AT(token, "expected closing paren after define-syntax");
@@ -7202,6 +7258,28 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             std::vector<eshkol_macro_def_t*> macro_defs;
 
+            if (ast.operation.op == ESHKOL_LETREC_SYNTAX_OP) {
+                // All names are in scope in every transformer of the group.
+                auto lookahead = tokenizer;
+                int depth = 0;
+                bool binding_head = false;
+                while (true) {
+                    const Token next = lookahead.nextToken();
+                    if (next.type == TOKEN_EOF) break;
+                    if (next.type == TOKEN_LPAREN) {
+                        ++depth;
+                        binding_head = depth == 1;
+                    } else if (next.type == TOKEN_RPAREN) {
+                        if (depth == 0) break;
+                        --depth;
+                        binding_head = false;
+                    } else if (binding_head) {
+                        if (next.type == TOKEN_SYMBOL) tokenizer.declareMacroName(next.value);
+                        binding_head = false;
+                    }
+                }
+            }
+
             while (true) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;  // End of bindings list
@@ -7216,7 +7294,6 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     co_return ast;
                 }
 
-                // Parse macro name
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_SYMBOL) {
                     PARSE_ERROR_AT(token, "let-syntax binding requires a name");
@@ -7225,194 +7302,24 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
 
                 eshkol_macro_def_t* macro = new eshkol_macro_def_t;
-                macro->name = strdup(token.value.c_str());
+                macro->name = eshkol_ast_strdup(token.value.c_str());
                 macro->literals = nullptr;
                 macro->num_literals = 0;
                 macro->rules = nullptr;
                 macro->num_rules = 0;
 
-                // Expect (syntax-rules ...)
                 token = tokenizer.nextToken();
                 if (token.type != TOKEN_LPAREN) {
                     PARSE_ERROR_AT(token, "let-syntax binding value must be (syntax-rules ...)");
                     ast.type = ESHKOL_INVALID;
                     co_return ast;
                 }
-
-                token = tokenizer.nextToken();
-                if (token.type != TOKEN_SYMBOL || token.value != "syntax-rules") {
-                    PARSE_ERROR_AT(token, "let-syntax currently only supports syntax-rules transformers");
+                eshkol::MacroSyntax syntax;
+                if (!read_syntax_rules(tokenizer, token, macro, syntax)) {
                     ast.type = ESHKOL_INVALID;
                     co_return ast;
                 }
-
-                // Parse literals list
-                token = tokenizer.nextToken();
-                if (token.type != TOKEN_LPAREN) {
-                    PARSE_ERROR_AT(token, "syntax-rules requires literals list");
-                    ast.type = ESHKOL_INVALID;
-                    co_return ast;
-                }
-
-                std::vector<std::string> literals;
-                while (true) {
-                    token = tokenizer.nextToken();
-                    if (token.type == TOKEN_RPAREN) break;
-                    if (token.type == TOKEN_EOF) {
-                        PARSE_ERROR_AT(token, "unexpected end of input in syntax-rules literals");
-                        ast.type = ESHKOL_INVALID;
-                        co_return ast;
-                    }
-                    if (token.type == TOKEN_SYMBOL) {
-                        literals.push_back(token.value);
-                    }
-                }
-
-                if (literals.size() > 0) {
-                    macro->literals = new char*[literals.size()];
-                    macro->num_literals = literals.size();
-                    for (size_t i = 0; i < literals.size(); i++) {
-                        macro->literals[i] = strdup(literals[i].c_str());
-                    }
-                }
-
-                // Parse rules: ((pattern) template) ...
-                std::vector<eshkol_macro_rule_t> rules;
-
-                while (true) {
-                    token = tokenizer.nextToken();
-                    if (token.type == TOKEN_RPAREN) break;  // End of syntax-rules
-                    if (token.type == TOKEN_EOF) {
-                        PARSE_ERROR_AT(token, "unexpected end of input in syntax-rules");
-                        ast.type = ESHKOL_INVALID;
-                        co_return ast;
-                    }
-
-                    if (token.type != TOKEN_LPAREN) {
-                        PARSE_ERROR_AT(token, "syntax-rules rule must be a list");
-                        ast.type = ESHKOL_INVALID;
-                        co_return ast;
-                    }
-
-                    eshkol_macro_rule_t rule;
-                    rule.pattern = nullptr;
-                    rule.template_ = nullptr;
-
-                    // Parse pattern
-                    token = tokenizer.nextToken();
-                    if (token.type != TOKEN_LPAREN) {
-                        PARSE_ERROR_AT(token, "syntax-rules pattern must be a list");
-                        ast.type = ESHKOL_INVALID;
-                        co_return ast;
-                    }
-
-                    rule.pattern = new eshkol_macro_pattern_t;
-                    rule.pattern->type = MACRO_PAT_LIST;
-                    rule.pattern->followed_by_ellipsis = 0;
-
-                    // Recursive pattern parser (handles arbitrary nesting depth)
-                    std::function<ParserTask<bool>(std::vector<eshkol_macro_pattern_t*>&)> parsePatElems;
-                    parsePatElems = [&](std::vector<eshkol_macro_pattern_t*>& elements) -> ParserTask<bool> {
-                        while (true) {
-                            token = tokenizer.nextToken();
-                            if (token.type == TOKEN_RPAREN) break;
-                            if (token.type == TOKEN_EOF) {
-                                PARSE_ERROR_AT(token, "unexpected end of input in macro pattern");
-                                break;
-                            }
-                            auto* elem = new eshkol_macro_pattern_t;
-                            elem->followed_by_ellipsis = 0;
-                            if (token.type == TOKEN_SYMBOL) {
-                                if (token.value == "...") {
-                                    if (!elements.empty())
-                                        elements.back()->followed_by_ellipsis = 1;
-                                    delete elem;
-                                    continue;
-                                }
-                                bool is_lit = false;
-                                for (const auto& lit : literals) {
-                                    if (lit == token.value) { is_lit = true; break; }
-                                }
-                                elem->type = is_lit ? MACRO_PAT_LITERAL : MACRO_PAT_VARIABLE;
-                                elem->identifier = strdup(token.value.c_str());
-                            } else if (token.type == TOKEN_LPAREN) {
-                                elem->type = MACRO_PAT_LIST;
-                                elem->list.rest = nullptr;
-                                std::vector<eshkol_macro_pattern_t*> nested;
-                                co_await parsePatElems(nested);  // Recurse
-                                if (!nested.empty()) {
-                                    elem->list.elements = new eshkol_macro_pattern_t*[nested.size()];
-                                    elem->list.num_elements = nested.size();
-                                    for (size_t j = 0; j < nested.size(); j++)
-                                        elem->list.elements[j] = nested[j];
-                                } else {
-                                    elem->list.elements = nullptr;
-                                    elem->list.num_elements = 0;
-                                }
-                            } else {
-                                elem->type = MACRO_PAT_LITERAL;
-                                elem->identifier = strdup(token.value.c_str());
-                            }
-                            elements.push_back(elem);
-                        }
-                        co_return true;
-                    };
-
-                    std::vector<eshkol_macro_pattern_t*> pat_elements;
-                    co_await parsePatElems(pat_elements);
-
-                    if (pat_elements.size() > 0) {
-                        rule.pattern->list.elements = new eshkol_macro_pattern_t*[pat_elements.size()];
-                        rule.pattern->list.num_elements = pat_elements.size();
-                        for (size_t i = 0; i < pat_elements.size(); i++) {
-                            rule.pattern->list.elements[i] = pat_elements[i];
-                        }
-                    } else {
-                        rule.pattern->list.elements = nullptr;
-                        rule.pattern->list.num_elements = 0;
-                    }
-                    rule.pattern->list.rest = nullptr;
-
-                    // Parse template (ESH-0126: accept whole-template reader
-                    // shorthands 'x / `x / ,x / ,@x / #(...) via pushBack +
-                    // parse_expression, not parse_atom which drops the datum).
-                    token = tokenizer.nextToken();
-                    eshkol_ast_t template_ast;
-                    if (token.type == TOKEN_LPAREN) {
-                        template_ast = (co_await parse_list(tokenizer));
-                    } else if (token.type == TOKEN_QUOTE || token.type == TOKEN_BACKQUOTE ||
-                               token.type == TOKEN_COMMA || token.type == TOKEN_COMMA_AT ||
-                               token.type == TOKEN_VECTOR_START) {
-                        tokenizer.pushBack(token);
-                        template_ast = (co_await parse_expression(tokenizer));
-                    } else {
-                        template_ast = (co_await parse_atom(token));
-                    }
-
-                    rule.template_ = new eshkol_macro_template_t;
-                    rule.template_->type = MACRO_TPL_LITERAL;
-                    rule.template_->literal = new eshkol_ast_t;
-                    *rule.template_->literal = template_ast;
-                    rule.template_->followed_by_ellipsis = 0;
-
-                    // Consume closing paren of rule
-                    token = tokenizer.nextToken();
-                    if (token.type != TOKEN_RPAREN) {
-                        PARSE_ERROR_AT(token, "expected closing paren after macro rule template");
-                        ast.type = ESHKOL_INVALID;
-                        co_return ast;
-                    }
-
-                    rules.push_back(rule);
-                }
-
-                if (rules.size() > 0) {
-                    macro->rules = new eshkol_macro_rule_t[rules.size()];
-                    macro->num_rules = rules.size();
-                    for (size_t i = 0; i < rules.size(); i++) {
-                        macro->rules[i] = rules[i];
-                    }
-                }
+                eshkol::syntax_record_macro(macro, std::move(syntax));
 
                 // Consume closing paren of this binding: (name (syntax-rules ...))
                 token = tokenizer.nextToken();
@@ -7424,6 +7331,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                 macro_defs.push_back(macro);
             }
+
+            for (const auto* macro : macro_defs)
+                if (macro && macro->name) tokenizer.declareMacroName(macro->name);
 
             // Parse body expressions
             std::vector<eshkol_ast_t> body_exprs;
@@ -7608,8 +7518,8 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             std::function<ParserTask<bool>()> parse_feature_requirement = [&]() -> ParserTask<bool> {
                 Token head = tokenizer.nextToken();
                 if (head.type == TOKEN_SYMBOL) {
-                    if (head.value == "and" || head.value == "or") {
-                        bool result = head.value == "and";
+                    if (token_is_keyword(head, "and") || token_is_keyword(head, "or")) {
+                        bool result = token_is_keyword(head, "and");
                         bool saw_operand = false;
                         while (true) {
                             Token operand = tokenizer.nextToken();
@@ -7619,20 +7529,20 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                             if (operand.type == TOKEN_LPAREN) {
                                 value = co_await parse_feature_requirement();
                             } else if (operand.type == TOKEN_SYMBOL) {
-                                value = hasFeature(operand.value);
+                                value = hasFeature(token_base(operand));
                             }
-                            if (head.value == "and") result = result && value;
+                            if (token_is_keyword(head, "and")) result = result && value;
                             else result = result || value;
                         }
                         co_return saw_operand && result;
                     }
-                    if (head.value == "not") {
+                    if (token_is_keyword(head, "not")) {
                         Token operand = tokenizer.nextToken();
                         bool value = false;
                         if (operand.type == TOKEN_LPAREN) {
                             value = co_await parse_feature_requirement();
                         } else if (operand.type == TOKEN_SYMBOL) {
-                            value = hasFeature(operand.value);
+                            value = hasFeature(token_base(operand));
                         }
                         Token close = tokenizer.nextToken();
                         if (close.type != TOKEN_RPAREN) {
@@ -7684,10 +7594,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 bool clause_matches = false;
 
-                if (token.type == TOKEN_SYMBOL && token.value == "else") {
+                if (token_is_keyword(token, "else")) {
                     clause_matches = !matched;
                 } else if (token.type == TOKEN_SYMBOL) {
-                    clause_matches = !matched && hasFeature(token.value);
+                    clause_matches = !matched && hasFeature(token_base(token));
                 } else if (token.type == TOKEN_LPAREN) {
                     clause_matches = !matched && (co_await parse_feature_requirement());
                 }
@@ -7850,7 +7760,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t v = {};
                 v.type = ESHKOL_VAR;
                 size_t _len = strlen(name);
-                v.variable.id = new char[_len + 1];
+                v.variable.id = eshkol_ast_string_alloc(_len + 1);
                 memcpy(v.variable.id, name, _len + 1);
                 v.variable.data = nullptr;
                 return v;
@@ -8066,8 +7976,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.type = ESHKOL_OP;
             ast.operation.op = ESHKOL_LAMBDA_OP;
             ast.operation.lambda_op.is_variadic = 1;
-            ast.operation.lambda_op.rest_param = new char[sizeof("__cl_args")];
-            memcpy(ast.operation.lambda_op.rest_param, "__cl_args", sizeof("__cl_args"));
+            ast.operation.lambda_op.rest_param = eshkol_ast_strdup("__cl_args");
             ast.operation.lambda_op.num_params = 0;
             ast.operation.lambda_op.parameters = nullptr;
             ast.operation.lambda_op.param_types = nullptr;
@@ -8090,7 +7999,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.type = ESHKOL_INVALID;
                 co_return ast;
             }
-            std::string type_name = token.value;
+            // define-record-type defines names, and a definition a template
+            // introduces defines the name as written (ADR-0026).
+            std::string type_name = token_base(token);
             // Strip angle brackets if present: <point> -> point
             if (type_name.front() == '<' && type_name.back() == '>') {
                 type_name = type_name.substr(1, type_name.size() - 2);
@@ -8104,19 +8015,19 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
             token = tokenizer.nextToken();
-            std::string ctor_name = token.value;
+            std::string ctor_name = token_base(token);
             std::vector<std::string> ctor_fields;
             while (true) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_SYMBOL) {
-                    ctor_fields.push_back(token.value);
+                    ctor_fields.push_back(token_base(token));
                 }
             }
 
             // Parse predicate name
             token = tokenizer.nextToken();
-            std::string pred_name = (token.type == TOKEN_SYMBOL) ? token.value : "";
+            std::string pred_name = (token.type == TOKEN_SYMBOL) ? token_base(token) : "";
 
             // Parse field specifications: (field-name accessor [mutator]) ...
             struct FieldSpec {
@@ -8139,14 +8050,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 if (token.type == TOKEN_LPAREN) {
                     FieldSpec fs;
                     token = tokenizer.nextToken();
-                    fs.name = token.value;
+                    fs.name = token_base(token);
                     fs.index = (int)fields.size();
                     token = tokenizer.nextToken();
-                    fs.accessor = (token.type == TOKEN_SYMBOL) ? token.value : "";
+                    fs.accessor = (token.type == TOKEN_SYMBOL) ? token_base(token) : "";
                     Token peek = tokenizer.peekToken();
                     if (peek.type == TOKEN_SYMBOL) {
                         token = tokenizer.nextToken();
-                        fs.mutator = token.value;
+                        fs.mutator = token_base(token);
                     }
                     token = tokenizer.nextToken(); // consume rparen
                     fields.push_back(fs);
@@ -8170,9 +8081,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t def = {};
                 def.type = ESHKOL_OP;
                 def.operation.op = ESHKOL_DEFINE_OP;
-                { size_t _len = ctor_name.length();
-                def.operation.define_op.name = new char[_len + 1];
-                memcpy(def.operation.define_op.name, ctor_name.c_str(), _len + 1); }
+                def.operation.define_op.name = eshkol_ast_string_copy(ctor_name);
                 def.operation.define_op.is_function = 1;
                 def.operation.define_op.is_variadic = 0;
                 def.operation.define_op.rest_param = nullptr;
@@ -8183,9 +8092,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 def.operation.define_op.parameters = new eshkol_ast_t[ctor_fields.size()];
                 for (size_t i = 0; i < ctor_fields.size(); i++) {
                     def.operation.define_op.parameters[i].type = ESHKOL_VAR;
-                    { size_t _len = ctor_fields[i].length();
-                    def.operation.define_op.parameters[i].variable.id = new char[_len + 1];
-                    memcpy(def.operation.define_op.parameters[i].variable.id, ctor_fields[i].c_str(), _len + 1); }
+                    def.operation.define_op.parameters[i].variable.id = eshkol_ast_string_copy(ctor_fields[i]);
                     def.operation.define_op.parameters[i].variable.data = nullptr;
                 }
 
@@ -8196,8 +8103,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 body->operation.op = ESHKOL_CALL_OP;
                 body->operation.call_op.func = new eshkol_ast_t;
                 body->operation.call_op.func->type = ESHKOL_VAR;
-                body->operation.call_op.func->variable.id = new char[sizeof("vector")];
-                memcpy(body->operation.call_op.func->variable.id, "vector", sizeof("vector"));
+                body->operation.call_op.func->variable.id = eshkol_ast_strdup("vector");
                 body->operation.call_op.func->variable.data = nullptr;
                 body->operation.call_op.num_vars = 1 + ctor_fields.size(); // type-tag + fields
                 body->operation.call_op.variables = new eshkol_ast_t[body->operation.call_op.num_vars];
@@ -8209,17 +8115,13 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 body->operation.call_op.variables[0].operation.call_op.num_vars = 1;
                 body->operation.call_op.variables[0].operation.call_op.variables = new eshkol_ast_t[1];
                 body->operation.call_op.variables[0].operation.call_op.variables[0].type = ESHKOL_VAR;
-                { size_t _len = type_name.length();
-                body->operation.call_op.variables[0].operation.call_op.variables[0].variable.id = new char[_len + 1];
-                memcpy(body->operation.call_op.variables[0].operation.call_op.variables[0].variable.id, type_name.c_str(), _len + 1); }
+                body->operation.call_op.variables[0].operation.call_op.variables[0].variable.id = eshkol_ast_string_copy(type_name);
                 body->operation.call_op.variables[0].operation.call_op.variables[0].variable.data = nullptr;
 
                 // Remaining elements: field references
                 for (size_t i = 0; i < ctor_fields.size(); i++) {
                     body->operation.call_op.variables[1 + i].type = ESHKOL_VAR;
-                    { size_t _len = ctor_fields[i].length();
-                    body->operation.call_op.variables[1 + i].variable.id = new char[_len + 1];
-                    memcpy(body->operation.call_op.variables[1 + i].variable.id, ctor_fields[i].c_str(), _len + 1); }
+                    body->operation.call_op.variables[1 + i].variable.id = eshkol_ast_string_copy(ctor_fields[i]);
                     body->operation.call_op.variables[1 + i].variable.data = nullptr;
                 }
 
@@ -8245,7 +8147,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     eshkol_ast_t v = {};
                     v.type = ESHKOL_VAR;
                     size_t _len = strlen(name);
-                    v.variable.id = new char[_len + 1];
+                    v.variable.id = eshkol_ast_string_alloc(_len + 1);
                     memcpy(v.variable.id, name, _len + 1);
                     v.variable.data = nullptr;
                     return v;
@@ -8295,8 +8197,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 auto drMakeQuotedSymbol = [](const std::string& name) -> eshkol_ast_t {
                     eshkol_ast_t sym_var = {};
                     sym_var.type = ESHKOL_VAR;
-                    sym_var.variable.id = new char[name.length() + 1];
-                    memcpy(sym_var.variable.id, name.c_str(), name.length() + 1);
+                    sym_var.variable.id = eshkol_ast_string_copy(name);
                     sym_var.variable.data = nullptr;
                     eshkol_ast_t quoted = {};
                     quoted.type = ESHKOL_OP;
@@ -8311,9 +8212,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t def = {};
                 def.type = ESHKOL_OP;
                 def.operation.op = ESHKOL_DEFINE_OP;
-                { size_t _len = pred_name.length();
-                def.operation.define_op.name = new char[_len + 1];
-                memcpy(def.operation.define_op.name, pred_name.c_str(), _len + 1); }
+                def.operation.define_op.name = eshkol_ast_string_copy(pred_name);
                 def.operation.define_op.is_function = 1;
                 def.operation.define_op.is_variadic = 0;
                 def.operation.define_op.rest_param = nullptr;
@@ -8354,6 +8253,45 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 defines.push_back(def);
             }
 
+            // An accessor or mutator applied to anything but a record of this
+            // type raises, on both engines (SW-249): the body becomes
+            //   (if (pred? obj) <body> (error "<name>: not a <type> record" obj))
+            // A record is a tagged vector, so without the check a plain vector
+            // or another record type was read silently.
+            auto guardWithPredicate = [&](eshkol_ast_t* body, const std::string& proc) -> eshkol_ast_t* {
+                if (pred_name.empty()) return body;
+                auto var = [](const char* name) {
+                    eshkol_ast_t v = {};
+                    v.type = ESHKOL_VAR;
+                    v.variable.id = eshkol_ast_strdup(name);
+                    v.variable.data = nullptr;
+                    return v;
+                };
+                auto call = [](eshkol_ast_t func, std::vector<eshkol_ast_t> args) {
+                    eshkol_ast_t c = {};
+                    c.type = ESHKOL_OP;
+                    c.operation.op = ESHKOL_CALL_OP;
+                    c.operation.call_op.func = new eshkol_ast_t(func);
+                    c.operation.call_op.num_vars = args.size();
+                    c.operation.call_op.variables = new eshkol_ast_t[args.size()];
+                    for (size_t i = 0; i < args.size(); i++) c.operation.call_op.variables[i] = args[i];
+                    return c;
+                };
+                eshkol_ast_t message = {};
+                const std::string text = proc + ": not a " + type_name + " record";
+                eshkol_ast_make_string(&message, eshkol_ast_string_copy(text), text.size() + 1);
+                eshkol_ast_t* guarded = new eshkol_ast_t{};
+                guarded->type = ESHKOL_OP;
+                guarded->operation.op = ESHKOL_IF_OP;
+                guarded->operation.call_op.func = nullptr;
+                guarded->operation.call_op.num_vars = 3;
+                guarded->operation.call_op.variables = new eshkol_ast_t[3];
+                guarded->operation.call_op.variables[0] = call(var(pred_name.c_str()), {var("obj")});
+                guarded->operation.call_op.variables[1] = *body;
+                guarded->operation.call_op.variables[2] = call(var("error"), {message, var("obj")});
+                return guarded;
+            };
+
             // Build accessor defines
             for (const auto& fs : fields) {
                 if (fs.accessor.empty()) continue;
@@ -8372,9 +8310,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t def = {};
                 def.type = ESHKOL_OP;
                 def.operation.op = ESHKOL_DEFINE_OP;
-                { size_t _len = fs.accessor.length();
-                def.operation.define_op.name = new char[_len + 1];
-                memcpy(def.operation.define_op.name, fs.accessor.c_str(), _len + 1); }
+                def.operation.define_op.name = eshkol_ast_string_copy(fs.accessor);
                 def.operation.define_op.is_function = 1;
                 def.operation.define_op.is_variadic = 0;
                 def.operation.define_op.rest_param = nullptr;
@@ -8384,8 +8320,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 def.operation.define_op.num_params = 1;
                 def.operation.define_op.parameters = new eshkol_ast_t[1];
                 def.operation.define_op.parameters[0].type = ESHKOL_VAR;
-                def.operation.define_op.parameters[0].variable.id = new char[sizeof("obj")];
-                memcpy(def.operation.define_op.parameters[0].variable.id, "obj", sizeof("obj"));
+                def.operation.define_op.parameters[0].variable.id = eshkol_ast_strdup("obj");
                 def.operation.define_op.parameters[0].variable.data = nullptr;
 
                 eshkol_ast_t* body = new eshkol_ast_t;
@@ -8393,18 +8328,16 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 body->operation.op = ESHKOL_CALL_OP;
                 body->operation.call_op.func = new eshkol_ast_t;
                 body->operation.call_op.func->type = ESHKOL_VAR;
-                body->operation.call_op.func->variable.id = new char[sizeof("vector-ref")];
-                memcpy(body->operation.call_op.func->variable.id, "vector-ref", sizeof("vector-ref"));
+                body->operation.call_op.func->variable.id = eshkol_ast_strdup("vector-ref");
                 body->operation.call_op.func->variable.data = nullptr;
                 body->operation.call_op.num_vars = 2;
                 body->operation.call_op.variables = new eshkol_ast_t[2];
                 body->operation.call_op.variables[0].type = ESHKOL_VAR;
-                body->operation.call_op.variables[0].variable.id = new char[sizeof("obj")];
-                memcpy(body->operation.call_op.variables[0].variable.id, "obj", sizeof("obj"));
+                body->operation.call_op.variables[0].variable.id = eshkol_ast_strdup("obj");
                 body->operation.call_op.variables[0].variable.data = nullptr;
                 eshkol_ast_make_int64(&body->operation.call_op.variables[1], actual_index);
 
-                def.operation.define_op.value = body;
+                def.operation.define_op.value = guardWithPredicate(body, fs.accessor);
                 defines.push_back(def);
 
                 // Build mutator if present
@@ -8413,9 +8346,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     eshkol_ast_t mut_def = {};
                     mut_def.type = ESHKOL_OP;
                     mut_def.operation.op = ESHKOL_DEFINE_OP;
-                    { size_t _len = fs.mutator.length();
-                    mut_def.operation.define_op.name = new char[_len + 1];
-                    memcpy(mut_def.operation.define_op.name, fs.mutator.c_str(), _len + 1); }
+                    mut_def.operation.define_op.name = eshkol_ast_string_copy(fs.mutator);
                     mut_def.operation.define_op.is_function = 1;
                     mut_def.operation.define_op.is_variadic = 0;
                     mut_def.operation.define_op.rest_param = nullptr;
@@ -8425,12 +8356,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     mut_def.operation.define_op.num_params = 2;
                     mut_def.operation.define_op.parameters = new eshkol_ast_t[2];
                     mut_def.operation.define_op.parameters[0].type = ESHKOL_VAR;
-                    mut_def.operation.define_op.parameters[0].variable.id = new char[sizeof("obj")];
-                    memcpy(mut_def.operation.define_op.parameters[0].variable.id, "obj", sizeof("obj"));
+                    mut_def.operation.define_op.parameters[0].variable.id = eshkol_ast_strdup("obj");
                     mut_def.operation.define_op.parameters[0].variable.data = nullptr;
                     mut_def.operation.define_op.parameters[1].type = ESHKOL_VAR;
-                    mut_def.operation.define_op.parameters[1].variable.id = new char[sizeof("val")];
-                    memcpy(mut_def.operation.define_op.parameters[1].variable.id, "val", sizeof("val"));
+                    mut_def.operation.define_op.parameters[1].variable.id = eshkol_ast_strdup("val");
                     mut_def.operation.define_op.parameters[1].variable.data = nullptr;
 
                     eshkol_ast_t* mut_body = new eshkol_ast_t;
@@ -8438,22 +8367,19 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     mut_body->operation.op = ESHKOL_CALL_OP;
                     mut_body->operation.call_op.func = new eshkol_ast_t;
                     mut_body->operation.call_op.func->type = ESHKOL_VAR;
-                    mut_body->operation.call_op.func->variable.id = new char[sizeof("vector-set!")];
-                    memcpy(mut_body->operation.call_op.func->variable.id, "vector-set!", sizeof("vector-set!"));
+                    mut_body->operation.call_op.func->variable.id = eshkol_ast_strdup("vector-set!");
                     mut_body->operation.call_op.func->variable.data = nullptr;
                     mut_body->operation.call_op.num_vars = 3;
                     mut_body->operation.call_op.variables = new eshkol_ast_t[3];
                     mut_body->operation.call_op.variables[0].type = ESHKOL_VAR;
-                    mut_body->operation.call_op.variables[0].variable.id = new char[sizeof("obj")];
-                    memcpy(mut_body->operation.call_op.variables[0].variable.id, "obj", sizeof("obj"));
+                    mut_body->operation.call_op.variables[0].variable.id = eshkol_ast_strdup("obj");
                     mut_body->operation.call_op.variables[0].variable.data = nullptr;
                     eshkol_ast_make_int64(&mut_body->operation.call_op.variables[1], actual_index);
                     mut_body->operation.call_op.variables[2].type = ESHKOL_VAR;
-                    mut_body->operation.call_op.variables[2].variable.id = new char[sizeof("val")];
-                    memcpy(mut_body->operation.call_op.variables[2].variable.id, "val", sizeof("val"));
+                    mut_body->operation.call_op.variables[2].variable.id = eshkol_ast_strdup("val");
                     mut_body->operation.call_op.variables[2].variable.data = nullptr;
 
-                    mut_def.operation.define_op.value = mut_body;
+                    mut_def.operation.define_op.value = guardWithPredicate(mut_body, fs.mutator);
                     defines.push_back(mut_def);
                 }
             }
@@ -8605,7 +8531,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t v = {};
                 v.type = ESHKOL_VAR;
                 size_t _len = strlen(name);
-                v.variable.id = new char[_len + 1];
+                v.variable.id = eshkol_ast_string_alloc(_len + 1);
                 memcpy(v.variable.id, name, _len + 1);
                 v.variable.data = nullptr;
                 return v;
@@ -8791,9 +8717,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
 
                 eshkol_ast_t var_ast = {.type = ESHKOL_VAR};
-                { size_t _len = token.value.length();
-                var_ast.variable.id = new char[_len + 1];
-                memcpy(var_ast.variable.id, token.value.c_str(), _len + 1); }
+                var_ast.variable.id = eshkol_ast_string_copy(token.value);
                 var_ast.variable.data = nullptr;
 
                 // Parse init expression
@@ -9410,9 +9334,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.diff_op.expression = new eshkol_ast_t;
             *ast.operation.diff_op.expression = expression;
             
-            { size_t _len = token.value.length();
-            ast.operation.diff_op.variable = new char[_len + 1];
-            memcpy(ast.operation.diff_op.variable, token.value.c_str(), _len + 1); }
+            ast.operation.diff_op.variable = eshkol_ast_string_copy(token.value);
             
             co_return ast;
         }
@@ -9604,54 +9526,34 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             // Check for closing paren or additional point arguments
             // Supports: (gradient f x), (gradient f x y), (gradient f x y z ...)
-            // Multiple args are packed into #(x y z ...) tensor for the codegen.
+            //
+            // The separate-scalar form is defined as sugar for the vector point
+            // `(gradient f #(x y z ...))`, so it is parsed AS that literal: the
+            // first point argument seeds parse_vector_body, which reads the rest
+            // with parse_expression and builds the ordinary ESHKOL_TENSOR_OP node.
+            // Every point argument may therefore be any expression (a variable, a
+            // parameter, a call, a loop variable), and is evaluated by the one
+            // element evaluator every vector literal uses.
+            //
+            // SW-182: this site used to assemble a bare ESHKOL_TENSOR node by
+            // hand. That node kind has a literal-only lowering which stored 0 for
+            // any element that was not a raw number, so `(gradient f p q)`
+            // differentiated at the origin with no diagnostic.
             Token close_token = tokenizer.nextToken();
             if (close_token.type != TOKEN_RPAREN) {
-                // Multi-argument gradient: (gradient f x y ...) → (gradient f #(x y ...))
-                // Collect all remaining arguments
-                std::vector<eshkol_ast_t> point_args;
-                point_args.push_back(point);  // First point arg already parsed
-
-                // Parse the current token and any remaining args
-                eshkol_ast_t next_arg;
-                if (close_token.type == TOKEN_LPAREN) {
-                    next_arg = (co_await parse_list(tokenizer));
-                } else {
-                    next_arg = (co_await parse_atom(close_token));
+                if (close_token.type == TOKEN_EOF) {
+                    PARSE_ERROR_AT(token, "unterminated gradient expression");
+                    ast.type = ESHKOL_INVALID;
+                    co_return ast;
                 }
-                point_args.push_back(next_arg);
-
-                while (true) {
-                    Token t = tokenizer.nextToken();
-                    if (t.type == TOKEN_RPAREN) break;
-                    if (t.type == TOKEN_EOF) {
-                        PARSE_ERROR_AT(token, "unterminated gradient expression");
-                        ast.type = ESHKOL_INVALID;
-                        co_return ast;
-                    }
-                    eshkol_ast_t arg;
-                    if (t.type == TOKEN_LPAREN) {
-                        arg = (co_await parse_list(tokenizer));
-                    } else {
-                        arg = (co_await parse_atom(t));
-                    }
-                    point_args.push_back(arg);
+                tokenizer.pushBack(close_token);
+                std::vector<eshkol_ast_t> leading_point_args;
+                leading_point_args.push_back(point);
+                point = (co_await parse_vector_body(tokenizer, std::move(leading_point_args)));
+                if (point.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    co_return ast;
                 }
-
-                // Build tensor literal #(x y z ...) from the collected args.
-                // The gradient codegen detects tensor inputs and uses forward-mode AD
-                // with proper multi-parameter function call unpacking.
-                eshkol_ast_t tensor_point;
-                tensor_point.type = ESHKOL_TENSOR;
-                tensor_point.tensor_val.total_elements = point_args.size();
-                tensor_point.tensor_val.num_dimensions = 1;
-                tensor_point.tensor_val.dimensions = new uint64_t[1];
-                tensor_point.tensor_val.dimensions[0] = point_args.size();
-                tensor_point.tensor_val.elements = new eshkol_ast_t[point_args.size()];
-                for (size_t i = 0; i < point_args.size(); i++) {
-                    tensor_point.tensor_val.elements[i] = point_args[i];
-                }
-                point = tensor_point;
             }
 
             // Set up gradient operation (2-argument form, point may be packed tensor)
@@ -10049,9 +9951,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
-            { size_t _len = token.value.length();
-            ast.operation.extern_var_op.type = new char[_len + 1];
-            memcpy(ast.operation.extern_var_op.type, token.value.c_str(), _len + 1); }
+            ast.operation.extern_var_op.type = eshkol_ast_string_copy(token.value);
 
             // Parse variable name
             token = tokenizer.nextToken();
@@ -10061,9 +9961,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
-            { size_t _len = token.value.length();
-            ast.operation.extern_var_op.name = new char[_len + 1];
-            memcpy(ast.operation.extern_var_op.name, token.value.c_str(), _len + 1); }
+            ast.operation.extern_var_op.name = eshkol_ast_string_copy(token.value);
             ast.operation.extern_var_op.real_name = nullptr;
 
             token = tokenizer.nextToken();
@@ -10092,9 +9990,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
             
-            { size_t _len = token.value.length();
-            ast.operation.extern_op.return_type = new char[_len + 1];
-            memcpy(ast.operation.extern_op.return_type, token.value.c_str(), _len + 1); }
+            ast.operation.extern_op.return_type = eshkol_ast_string_copy(token.value);
             
             // Parse function name
             token = tokenizer.nextToken();
@@ -10104,9 +10000,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
             
-            { size_t _len = token.value.length();
-            ast.operation.extern_op.name = new char[_len + 1];
-            memcpy(ast.operation.extern_op.name, token.value.c_str(), _len + 1); }
+            ast.operation.extern_op.name = eshkol_ast_string_copy(token.value);
             
             // Initialize declaration modifiers
             ast.operation.extern_op.real_name = nullptr;
@@ -10142,7 +10036,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t param_type = {};
                 {
                     size_t len = token.value.length();
-                    char* ptr = new char[len + 1];
+                    char* ptr = eshkol_ast_string_alloc(len + 1);
                     memcpy(ptr, token.value.c_str(), len + 1);
                     eshkol_ast_make_string(&param_type, ptr, len + 1);
                 }
@@ -10232,9 +10126,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
-            { size_t _len = token.value.length();
-            ast.operation.import_op.path = new char[_len + 1];
-            memcpy(ast.operation.import_op.path, token.value.c_str(), _len + 1); }
+            ast.operation.import_op.path = eshkol_ast_string_copy(token.value);
 
             // Expect closing paren
             token = tokenizer.nextToken();
@@ -10299,9 +10191,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.require_op.import_rename_to = new char**[modules.size()];
             ast.operation.require_op.num_import_renames = new uint64_t[modules.size()];
             for (size_t i = 0; i < modules.size(); i++) {
-                { size_t _len = modules[i].length();
-                ast.operation.require_op.module_names[i] = new char[_len + 1];
-                memcpy(ast.operation.require_op.module_names[i], modules[i].c_str(), _len + 1); }
+                ast.operation.require_op.module_names[i] = eshkol_ast_string_copy(modules[i]);
                 ast.operation.require_op.import_prefixes[i] = nullptr;
                 ast.operation.require_op.import_except_names[i] = nullptr;
                 ast.operation.require_op.num_import_except_names[i] = 0;
@@ -10344,9 +10234,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.provide_op.num_exports = exports.size();
             ast.operation.provide_op.export_names = new char*[exports.size()];
             for (size_t i = 0; i < exports.size(); i++) {
-                { size_t _len = exports[i].length();
-                ast.operation.provide_op.export_names[i] = new char[_len + 1];
-                memcpy(ast.operation.provide_op.export_names[i], exports[i].c_str(), _len + 1); }
+                ast.operation.provide_op.export_names[i] = eshkol_ast_string_copy(exports[i]);
             }
 
             co_return ast;
@@ -10368,7 +10256,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     ast.type = ESHKOL_INVALID;
                     co_return ast;
                 }
-                ast.operation.with_region_op.name = strdup(name_token.value.c_str());
+                ast.operation.with_region_op.name = eshkol_ast_strdup(name_token.value.c_str());
                 token = tokenizer.nextToken();
             } else if (token.type == TOKEN_LPAREN) {
                 // Could be ('name size) or a body expression
@@ -10381,7 +10269,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                         ast.type = ESHKOL_INVALID;
                         co_return ast;
                     }
-                    ast.operation.with_region_op.name = strdup(name_token.value.c_str());
+                    ast.operation.with_region_op.name = eshkol_ast_strdup(name_token.value.c_str());
 
                     Token size_token = tokenizer.nextToken();
                     if (size_token.type == TOKEN_NUMBER) {
@@ -10417,6 +10305,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     // for every operator type (lambda, let, letrec, etc.) by
                     // way of zero-init + parse_expression.
                     tokenizer.pushBack(peek);
+                    g_parse_toplevel_form = toplevel_form;
                     eshkol_ast_t first_body = (co_await parse_list(tokenizer));
                     if (first_body.type == ESHKOL_INVALID) {
                         ast.type = ESHKOL_INVALID;
@@ -10439,7 +10328,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                         // quasiquote and #(...) vector tokens that the manual
                         // LPAREN/atom dispatch dropped (same family as #110/#229).
                         tokenizer.pushBack(token);
+                        g_parse_toplevel_form = toplevel_form;   // a top-level region's forms are top-level
                         eshkol_ast_t body_expr = (co_await parse_expression(tokenizer));
+                        g_parse_toplevel_form = false;
                         body_elements.push_back(body_expr);
                     }
 
@@ -10464,7 +10355,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // quasiquote and #(...) vector tokens that the manual
                 // LPAREN/atom dispatch dropped (same family as #110/#229).
                 tokenizer.pushBack(token);
+                g_parse_toplevel_form = toplevel_form;   // a top-level region's forms are top-level
                 eshkol_ast_t body_expr = (co_await parse_expression(tokenizer));
+                g_parse_toplevel_form = false;
                 body_exprs.push_back(body_expr);
                 token = tokenizer.nextToken();
             }
@@ -10656,7 +10549,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // quasiquote and #(...) vector tokens uniformly (the bolt-on
                 // TOKEN_QUOTE branch only covered ' and missed `/,/#(...)).
                 tokenizer.pushBack(token);
+                // A top-level begin's forms are top-level forms (R7RS 5.1).
+                g_parse_toplevel_form = toplevel_form;
                 eshkol_ast_t expr = (co_await parse_expression(tokenizer));
+                g_parse_toplevel_form = false;
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -10680,12 +10576,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
             }
 
-            if (has_defines) {
+            if (has_defines && !toplevel_form) {
                 // Transform internal defines to letrec - this handles nested function defines correctly
                 eshkol_debug("Transforming begin with internal defines to letrec");
                 co_return transformInternalDefinesToLetrec(begin_expressions);
             } else {
-                // No defines - create a simple sequence
+                // No defines, or a top-level begin: a sequence. At top level
+                // the sequence is spliced into the program, definitions
+                // included (eshkol_splice_toplevel_forms).
                 if (begin_expressions.size() == 1) {
                     co_return begin_expressions[0];
                 }
@@ -10799,10 +10697,21 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Create function name AST node
             ast.operation.call_op.func = new eshkol_ast_t;
             ast.operation.call_op.func->type = ESHKOL_VAR;
-            { size_t _len = first_symbol.length();
-            ast.operation.call_op.func->variable.id = new char[_len + 1];
-            memcpy(ast.operation.call_op.func->variable.id, first_symbol.c_str(), _len + 1); }
+            ast.operation.call_op.func->variable.id =
+                eshkol_ast_string_copy(colored_head.empty() ? first_symbol : colored_head);
             ast.operation.call_op.func->variable.data = nullptr;
+            // Keep a reference to this call's reader syntax (ADR-0026): if
+            // the expander finds the head is a macro keyword the parser did
+            // not know about, it re-reads the call from the tape.
+            {
+                const auto& tape = tokenizer.tape();
+                const uint32_t open_index = head_token.index;
+                if (open_index > 0 && open_index < tape->size() &&
+                    (*tape)[open_index - 1].type == TOKEN_LPAREN &&
+                    (*tape)[open_index].type == TOKEN_SYMBOL &&
+                    ast.node_id != ESHKOL_NODE_ID_NONE)
+                    eshkol::syntax_record_use_tape(ast.node_id, tape, open_index - 1);
+            }
 
             // For function calls, allocate variables array for arguments
             ast.operation.call_op.num_vars = elements.size();
@@ -10973,10 +10882,13 @@ static bool is_tensor_unsafe_literal_element(const eshkol_ast_t& elem) {
     // branch above): a genuine exact rational, never safe to bit-coerce to
     // a tensor's f64 storage without silently losing exactness (or, before
     // this fix, reinterpreting the heap pointer as raw double bits).
+    // The complex-literal desugar (`1+2i` -> `(make-rectangular 1.0 2.0)`)
+    // has no f64 slot representation either.
     if (elem.type == ESHKOL_OP && elem.operation.op == ESHKOL_CALL_OP &&
         elem.operation.call_op.func && elem.operation.call_op.func->type == ESHKOL_VAR &&
         elem.operation.call_op.func->variable.id &&
-        strcmp(elem.operation.call_op.func->variable.id, "make-rational") == 0) {
+        (strcmp(elem.operation.call_op.func->variable.id, "make-rational") == 0 ||
+         strcmp(elem.operation.call_op.func->variable.id, "make-rectangular") == 0)) {
         return true;
     }
     return false;
@@ -10999,12 +10911,17 @@ static bool is_tensor_unsafe_literal_element(const eshkol_ast_t& elem) {
  * existing any_sub_tensor/sub_shapes_match check just below already demotes
  * THIS level too, the same way it already handles a ragged nest.
  */
-static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer) {
+static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer,
+                                                  std::vector<eshkol_ast_t> leading) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
     ast.operation.op = ESHKOL_TENSOR_OP;
 
-    std::vector<eshkol_ast_t> elements;
+    // `leading` holds elements a caller has already parsed. A form that is
+    // defined as sugar for a vector literal (the separate-scalar point form
+    // of `gradient`) continues here, so it builds the SAME node through the
+    // SAME rules as a written `#(...)` instead of assembling its own.
+    std::vector<eshkol_ast_t> elements = std::move(leading);
 
     while (true) {
         Token elem_token = tokenizer.nextToken();
@@ -11361,9 +11278,46 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer) {
  * @return The parsed eshkol_ast_t for the next top-level form, or an
  * ESHKOL_INVALID node at end of stream or on a parse error.
  */
+namespace eshkol {
+
+SyntaxDatum syntax_read_tape(const void* opaque, uint32_t start) {
+    const auto& tape = *static_cast<const std::vector<Token>*>(opaque);
+    size_t cursor = start;
+    auto next = [&]() -> Token {
+        if (cursor < tape.size()) return tape[cursor++];
+        Token eof{TOKEN_EOF, "", 0, 0, 0};
+        return eof;
+    };
+    SyntaxDatum datum;
+    read_syntax_datum_from(next, next(), datum);
+    return datum;
+}
+
+eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
+                                const std::set<std::string>& macro_names) {
+    std::vector<Token> tokens;
+    emit_syntax_tokens(datum, tokens);
+    std::set<std::string> names = macro_names;
+    auto* const previous_names = g_parser_macro_names;
+    const char* const previous_source = g_parse_source;
+    g_parser_macro_names = &names;
+    g_parse_source = NULL;   // positions name the original text, not this replay
+    eshkol_ast_t result;
+    {
+        SchemeTokenizer tokenizer(std::move(tokens));
+        result = parse_expression(tokenizer).run();
+    }
+    g_parse_source = previous_source;
+    g_parser_macro_names = previous_names;
+    return result;
+}
+
+} // namespace eshkol
+
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 {
     StreamPositionBinding stream_position(in_stream);
+    ParserMacroStreamBinding macro_stream(in_stream);
     std::string input;
     bool in_quote = false;
     bool in_bar_symbol = false;  // inside an R7RS 7.1.1 |...| vertical-line symbol
@@ -11527,7 +11481,11 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 
             g_parse_source = form_text.c_str();
             SchemeTokenizer tokenizer(form_text, form_line, form_column);
-            eshkol_ast_t result = parse_expression(tokenizer).run();
+            eshkol_ast_t result;
+            {
+                eshkol::ToplevelFormParseScope toplevel;
+                result = parse_expression(tokenizer).run();
+            }
             g_parse_source = NULL;
 
             /* Stamp the form's originating FILE. This is the one choke point
@@ -11619,13 +11577,27 @@ extern "C" void eshkol_reset_parse_line_counter(void) {
 
 /* Interned source-file table backing eshkol_ast_t::source_file_id.
  *
- * A deque of strings (never reallocates its elements) plus a name->id map. Ids
+ * Two columns per entry, because a compiler does two different things with a
+ * path (ADR-0021): it READS the file by its host path, and it RECORDS where
+ * code came from. Recording an absolute host path carries the build machine's
+ * directory layout into diagnostics and into the string constants the backend
+ * embeds in shipped objects and WebAssembly modules, and makes those artifacts
+ * differ between two builds of the same source. So `display` -- computed once,
+ * by the one normalizer in inc/eshkol/frontend/source_paths.h -- is what every
+ * recording site uses, and `host` is kept only so the diagnostic printer can
+ * open the file to render a caret line.
+ *
+ * A deque of entries (never reallocates its elements) plus a name->id map. Ids
  * are 1-based so 0 stays the "unknown" sentinel, and the table is process-
  * lifetime so an id stamped during parsing resolves correctly at codegen time,
  * long after the loader's own path string has died. */
+struct SourceFileEntry {
+    std::string display;
+    std::string host;
+};
 static std::mutex g_source_file_table_mutex;
-static std::deque<std::string>& source_file_table() {
-    static std::deque<std::string> table;
+static std::deque<SourceFileEntry>& source_file_table() {
+    static std::deque<SourceFileEntry> table;
     return table;
 }
 static std::unordered_map<std::string, uint32_t>& source_file_ids() {
@@ -11635,12 +11607,15 @@ static std::unordered_map<std::string, uint32_t>& source_file_ids() {
 
 extern "C" uint32_t eshkol_intern_source_file(const char* path) {
     if (!path || !*path) return 0;
+    /* Key on the path as given: two different files may normalize to the same
+     * display spelling, and they must stay two ids. */
+    const char* display = eshkol_source_path_display(path);
     std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
     auto& ids = source_file_ids();
     auto it = ids.find(path);
     if (it != ids.end()) return it->second;
     auto& table = source_file_table();
-    table.emplace_back(path);
+    table.push_back(SourceFileEntry{display ? display : path, path});
     uint32_t id = (uint32_t)table.size();  // 1-based
     ids.emplace(path, id);
     return id;
@@ -11651,12 +11626,24 @@ extern "C" const char* eshkol_source_file_name(uint32_t id) {
     std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
     auto& table = source_file_table();
     if (id > table.size()) return NULL;  // unset/garbage id reads as unknown
-    return table[id - 1].c_str();
+    return table[id - 1].display.c_str();
+}
+
+extern "C" const char* eshkol_source_file_host_path(uint32_t id) {
+    if (id == 0) return NULL;
+    std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
+    auto& table = source_file_table();
+    if (id > table.size()) return NULL;
+    return table[id - 1].host.c_str();
 }
 
 extern "C" void eshkol_set_parse_source_context(const char* source_name) {
-    g_parse_filename = (source_name && *source_name) ? source_name : "<unknown>";
-    g_parse_filename_id = eshkol_intern_source_file(g_parse_filename.c_str());
+    /* The parse context is a RECORDING site: it is what diagnostics print and
+     * what the backend inherits as its ambient location. */
+    const char* named = (source_name && *source_name) ? source_name : "<unknown>";
+    g_parse_filename_id = eshkol_intern_source_file(named);
+    const char* display = eshkol_source_file_name(g_parse_filename_id);
+    g_parse_filename = display ? display : named;
 }
 
 extern "C" const char* eshkol_get_parse_source_context(void) {

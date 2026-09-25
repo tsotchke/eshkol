@@ -165,6 +165,102 @@ public:
      * @return A tagged_value struct with NULL type
      */
     llvm::Value* packNull();
+    /** Pack the unspecified value (ADR-0024): the result of every form R7RS
+     *  leaves unspecified. Distinct from packNull(), which is the empty list. */
+    llvm::Value* packUnspecified();
+
+    // === Cons slots ===
+    //
+    // A cons cell is two tagged values, {car, cdr} (arena_tagged_cons_cell_t).
+    // These two functions are the ONLY way emitted code moves an element value
+    // into or out of a cell, and they move it whole: type, flags and payload.
+    //
+    // They replace a family of readers and writers that each branched over a
+    // closed list of representations (null, double, heap pointer, callable,
+    // bool, char, else int64) and went through a typed runtime accessor. A
+    // value type outside the list was rejected on the way in and read back as
+    // the exact integer 0, with exit status 0. Types were added to individual
+    // copies as they were found missing, so the copies disagreed. Because a
+    // slot is moved whole here, the set of value types a list can hold is open:
+    // a forward-mode dual number, a complex number and any future value type
+    // need no case.
+    //
+    // A typed runtime accessor remains correct for a slot whose type is known
+    // statically, such as the cdr link followed when walking a proper list.
+
+    /**
+     * Load one slot of a cons cell as a tagged value.
+     * @param cell   The cell, as a pointer or as its i64 address.
+     * @param is_cdr false for the car slot, true for the cdr slot.
+     * @return The slot's tagged value; the empty list when @p cell is null, so
+     *         the load is total.
+     */
+    llvm::Value* loadConsSlot(llvm::Value* cell, bool is_cdr);
+
+    /**
+     * Store a tagged value into one slot of a cons cell.
+     * @param cell   The cell, as a pointer or as its i64 address. Must be a
+     *               live cell: callers store into a cell they just allocated
+     *               or have already checked.
+     * @param is_cdr false for the car slot, true for the cdr slot.
+     * @param tagged The tagged value to store. Returns false, having emitted
+     *               nothing, when it is not a tagged value.
+     */
+    bool storeConsSlot(llvm::Value* cell, bool is_cdr, llvm::Value* tagged);
+
+    // === Dense tensor AD nodes ===
+    //
+    // The dense reverse path (ADR-0002 Position A) publishes a tensor result as
+    // ONE CALLABLE AD node whose tensor_value is an f64 buffer. A consumer that
+    // reads a tensor by its elements (a collection builtin, an indexer) has no
+    // rule for that representation and used to misread the node as a Scheme
+    // vector. This resolves the value once: a dense AD node becomes the tensor
+    // of its shape whose elements project it (eshkol_ad_dense_node_elements,
+    // ADR-0023); anything else is returned unchanged. Tensor operators reach
+    // the same projection through eshkol_tensor_operand_checked.
+
+    /**
+     * Resolve a possible dense tensor AD node to the tensor it denotes.
+     * @param tagged A tagged value (a non-tagged value is returned as is).
+     * @return A HEAP_PTR tensor for a dense AD node, else @p tagged.
+     */
+    llvm::Value* resolveDenseTensorNode(llvm::Value* tagged);
+
+    // === Container boundary (SW-221) ===
+    //
+    // An accessor that reads a container by its layout (vector-ref reads a
+    // length word and a slot array, string-ref a UTF-8 payload) must first
+    // establish that the operand IS that container. Each accessor used to
+    // classify its operand by hand and send everything it did not recognise
+    // down its default path: (vector-ref (list 1 2 3) 0) read a cons cell as a
+    // vector and answered 8, (vector-length (list 1 2 3)) answered 4097, and
+    // (string-ref 5 0) faulted. This is the one check they all use: the value
+    // must be a non-null HEAP_PTR whose header subtype is in @p accepted, or a
+    // catchable type error naming the accessor is raised
+    // (eshkol_type_error_with_operand, the same sink every other operand
+    // type check uses).
+
+    /** Bit for @p subtype in an accepted-container mask. */
+    static constexpr uint32_t containerBit(uint8_t subtype) { return 1u << subtype; }
+
+    /**
+     * Require @p tagged to be a heap object of one of the accepted subtypes.
+     * @param tagged   The operand (a non-tagged value is returned unchecked).
+     * @param accepted Mask of containerBit(HEAP_SUBTYPE_*) values.
+     * @param who      Public accessor name for the diagnostic.
+     * @param expected Human-readable accepted kinds ("vector or tensor").
+     * @return The operand's i8 header subtype, valid on the continuing path;
+     *         nullptr when @p tagged is not a tagged value.
+     */
+    llvm::Value* requireContainer(llvm::Value* tagged, uint32_t accepted,
+                                  const char* who, const char* expected);
+
+    /**
+     * The operand boundary of the vector accessor family: resolve a dense
+     * tensor AD node (ADR-0023), then require a Scheme vector or a tensor.
+     * @return The resolved operand.
+     */
+    llvm::Value* resolveSequenceOperand(llvm::Value* tagged, const char* who);
 
     /**
      * Pack a character (Unicode codepoint) into a tagged value.

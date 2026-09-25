@@ -73,44 +73,83 @@ def _emit_results_validation_trace(results_path, mode):
         print("run_examples.py: could not emit results-validation trace: %r" % (exc,), file=sys.stderr)
 
 
-def run_one(rec, eshkol_run, mode, workroot, repo):
+def run_one(rec, eshkol_run, mode, workroot, repo, timeout=None, variant=""):
+    """Run one example record on one engine and return its result record.
+
+    `timeout` is the per-example limit in seconds (default TIMEOUT); it applies
+    to the compile and, for AOT, again to the produced binary. `variant` keeps
+    two runs of the same example (another engine, an instrumented copy) in
+    separate work directories so they can run side by side.
+    """
+    limit = TIMEOUT if timeout is None else timeout
     idx = "%s_%d" % (os.path.basename(rec["file"]).replace(".", "_"), rec["start_line"])
+    if variant:
+        idx = "%s_%s" % (idx, variant)
     d = os.path.join(workroot, idx)
     os.makedirs(d, exist_ok=True)
     src = os.path.join(d, "ex.esk")
     with open(src, "w", encoding="utf-8") as fh:
         fh.write(rec["code"])
         fh.write("\n")
+    # Files the page told the reader to create before this example.
+    for name, content in (rec.get("support_files") or {}).items():
+        with open(os.path.join(d, os.path.basename(name)), "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.write("\n")
     # Every example gets a cold compiler path. A persistent cache can retain a
     # result from an earlier source tree and make the documentation audit
     # validate an artifact rather than the example it just wrote.
     env = dict(os.environ)
     env["ESHKOL_JIT_CACHE"] = "0"
+    # `(require ...)` in an example resolves against this tree's modules, not
+    # against whatever an installed compiler left on the machine.
+    lib_dir = os.path.join(os.path.abspath(repo), "lib")
+    if "ESHKOL_PATH" not in env and os.path.isdir(lib_dir):
+        env["ESHKOL_PATH"] = lib_dir
     if mode == "jit":
         cmd = [eshkol_run, "-r", src]
     elif mode == "vm":
-        cmd = [eshkol_run, "--vm", src]
-    else:
+        module = os.path.join(d, "ex.eskb")
+        cmd = [eshkol_run, "--profile", "hosted-vm", "--emit-eskb", module, src]
+    elif mode == "aot":
         out = os.path.join(d, "ex.out")
         cmd = [eshkol_run, "-o", out, src]
+    else:
+        raise ValueError("unsupported example engine: " + mode)
     t0 = time.time()
     try:
         p = subprocess.run(
-            cmd, cwd=d, env=env, capture_output=True, text=True, timeout=TIMEOUT
+            cmd, cwd=d, env=env, capture_output=True, text=True, timeout=limit,
+            stdin=subprocess.DEVNULL,
         )
         rc, so, se = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired as e:
         rc, so, se = -9, (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), "TIMEOUT"
     except Exception as e:  # noqa: BLE001
         rc, so, se = -99, "", "HARNESS-ERROR: %r" % (e,)
-    if mode == "aot" and rc == 0:
-        exe = os.path.join(d, "ex.out")
-        if os.path.exists(exe):
+    if mode in ("aot", "vm") and rc == 0:
+        if mode == "aot":
+            exe = os.path.join(d, "ex.out")
+            artifact = exe
+            run_cmd = [exe]
+        else:
+            artifact = os.path.join(d, "ex.eskb")
+            build_dir = os.path.dirname(os.path.abspath(eshkol_run))
+            candidates = [os.path.join(build_dir, name) for name in
+                          ("eshkol-vm-standalone-test", "eshkol-vm-standalone")]
+            exe = next((p for p in candidates if os.path.isfile(p)), candidates[0])
+            run_cmd = [exe, artifact]
+        if not os.path.isfile(artifact) or not os.path.isfile(exe):
+            rc, se = -99, se + "HARNESS-ERROR: compiled artifact or engine missing\n"
+        else:
             try:
-                p2 = subprocess.run([exe], cwd=d, env=env, capture_output=True, text=True, timeout=TIMEOUT)
+                p2 = subprocess.run(run_cmd, cwd=d, env=env, capture_output=True, text=True,
+                                    timeout=limit, stdin=subprocess.DEVNULL)
                 rc, so, se = p2.returncode, p2.stdout, se + p2.stderr
             except subprocess.TimeoutExpired:
                 rc, se = -9, se + "TIMEOUT(run)"
+            except OSError as exc:
+                rc, se = -99, se + "HARNESS-ERROR: %r" % (exc,)
     return {
         "file": rec["file"],
         "start_line": rec["start_line"],

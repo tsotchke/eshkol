@@ -1,0 +1,308 @@
+<h1 id="the-self-differentiating-neural-computer">The Self-Differentiating Neural Computer</h1>
+<blockquote>
+<p>Canonical reference for the paper artefact in this repository. For the architectural specification, see <code>docs/breakdown/COMPUTABLE_TRANSFORMER.md</code>. For the per-opcode-class implementation log, see <code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md</code>.</p>
+</blockquote>
+<p><strong>Paper.</strong> <em>“The Self-Differentiating Neural Computer: Computable Transformers via Analytical Weight Construction”</em> (tsotchke, 2026). The companion Noesis repository contains the LaTeX source at <code>docs/paper-computable-transformers/</code>. This Eshkol repository is the production-code artefact.</p>
+<p><strong>Headline.</strong> A six-layer transformer with <span class="math inline"><em>d</em><sub>model</sub> = 256</span>, <span class="math inline">FFN = 2304</span>, <span class="math inline"><em>H</em> = 16</span> attention heads of width <span class="math inline">HD = 2</span>, and <strong>12,220,422</strong> analytically-constructed parameters reproduces, bit-identically in float32, an 83-instruction bytecode VM that includes reverse-mode automatic differentiation as part of its ISA. No training. No optimiser. The weights are the deterministic closed-form solution to the linear/piecewise-linear constraints implied by the small-step semantics. This is the SDNC weight-matrix layer; §0 sets out how it and the production bytecode VM are two execution layers of one system, corresponding opcode-for-capability.</p>
+<p><strong>Status.</strong> The current artefact regenerates the weight matrices and verifies <strong>127/127 inline programs</strong> (three-way self-test, <code>ctest -R sdnc_paper_weight_tests</code>) and <strong>124/124 traced programs</strong>. The matrix forward path agrees with the reference C interpreter on every byte of every step of every traced program. The artefact weight-implements <strong>every opcode but one</strong> — 82 of the paper’s 83, and 83 of the 84 the enum now carries with the later <code>OP_SWAP=83</code> — the single exception being <code>OP_NATIVE_CALL</code>, the deliberate external boundary for host services.</p>
+<blockquote>
+<p><strong>Numbers track the release.</strong> The counts, line references, and IDs in this document are re-verified against the release branch; the SDNC <em>paper</em> freezes them at a tagged verification SHA (per the companion framing). Where this doc and the frozen paper disagree on a count, the doc is the moving reference and the paper is the historical pin. This revision is re-verified on the v1.3.5-evolve release branch: <code>ctest --test-dir build -R '^sdnc_paper_weight_tests$'</code> passes there.</p>
+</blockquote>
+<hr />
+<h2 id="0-two-execution-layers-of-one-system">0. Two execution layers of one system</h2>
+<p>The SDNC runs on <strong>two execution layers</strong>, and both are built, run, and verified today. Numbers in circulation belong to one layer or the other; the two are complementary substrates for the same architecture, and they correspond opcode-for-capability.</p>
+<ol type="1">
+<li><p><strong>The SDNC weight-matrix layer</strong> (<code>lib/backend/weight_matrices.c</code>). A six-layer transformer whose 12,220,422 analytically-constructed weights <em>are</em> an <strong>83-opcode ISA</strong>: <code>OP_NOP=0 … OP_VOID=63</code> (64 base) + <code>OP_AD_VAR=64 … OP_AD_COS=82</code> (<strong>19 reverse-mode AD opcodes</strong>), with a later base stack op <code>OP_SWAP=83</code> bringing <code>OP_COUNT</code> to 84. Reverse-mode automatic differentiation is a <strong>first-class part of this ISA</strong>: differentiating a program is one extra dispatch state, computed through the same weight matrices as the forward pass. The layer is verified three ways (reference C / simulated transformer / matrix forward) at <strong>127/127 inline</strong> and <strong>124/124 traced</strong> programs, bit-identically on the full per-step state, and it weight-implements <strong>83 opcodes</strong> — every opcode but <code>OP_NATIVE_CALL=37</code>, the deliberate host boundary.</p></li>
+<li><p><strong>The production bytecode VM</strong> (<code>lib/backend/vm_core.c</code>, <code>eshkol_vm.c</code>, <code>vm_native.c</code>). The compiler/runtime’s executable ISA: a 72-value opcode enum (<code>OP_NOP=0 … OP_VOID=63</code>, plus <code>OP_LANGUAGE_COVERAGE</code> 64/65 and <code>OP_LANGUAGE_COVERAGE_FORM</code> 71 instrumentation, <code>OP_GLOBAL_MARK</code> 66, the v2 closure encoding 67/68, <code>OP_RAISE_SECONDARY</code> 69 and <code>OP_TAIL_CALL_POPN</code> 70; <code>OP_COUNT=72</code>) plus <strong>743 native-call IDs spanning 0–2230</strong> — measured on the v1.3.5-evolve cut as the distinct <code>case N:</code> labels in <code>lib/backend/vm_native.c</code>’s dispatch — reached through <code>OP_NATIVE_CALL</code>. Here the same capabilities run as native calls: reverse-mode AD at <strong>390–409</strong> (+1841–1844), tensors 410–461, the consciousness engine 509–547, i128 2100–2118 (§12).</p></li>
+</ol>
+<p><strong>The correspondence.</strong> The two layers implement the same semantics on different substrates. The weight-matrix layer’s AD opcodes <code>OP_AD_VAR=64 … OP_AD_COS=82</code> are the weight-encoded form of the production VM’s AD native calls <code>390–409</code> — the same reverse-mode tape and rules, one expressed as transformer weights and one as C dispatch. The base opcodes <code>0–63</code> are shared verbatim. <code>OP_NATIVE_CALL=37</code> is the seam where the weight-matrix layer hands off to the production VM’s native surface. When a source says “83-opcode ISA” it means layer 1; when an ID map cites “390” it means layer 2. §5 onward specifies layer 1; §12 specifies layer 2’s native surface.</p>
+<hr />
+<h2 id="1-motivation">1. Motivation</h2>
+<p>Two facts about transformers have grown more curious as the mechanistic-interpretability literature has matured. First, trained transformers exhibit, in their attention patterns and FFN neurons, structures that <em>look</em> programmatic: induction heads (Olsson et al. 2022), arithmetic micro-circuits (Nanda et al. 2023), copy-and-paste subroutines that can be ablated as units. Second, deliberately-constructed transformers from the Tracr (Lindner et al. 2023) and Looped-Transformers (Giannou et al. 2023) lines are <em>provably</em> programmatic: they execute a fixed semantics for arbitrary inputs, given the right weight assignment, with no training.</p>
+<p>The natural question is whether the two facts share a common shape. If a trained transformer ends up encoding programs in its weights, what would it look like to start with a program and derive the weights <em>directly</em>, with no intervening fit? The Self-Differentiating Neural Computer is one answer. The construction is exhaustive enough to cover an actual bytecode (the Eshkol VM ISA, used by the production C compiler), specific enough that every parameter is named and accounted for, and verified strongly enough that any divergence counts as a bug — the artifact pins the per-step state vectors of two independent runners against each other and refuses to release a weight file until they agree.</p>
+<p>A second motivation is differentiable programming. If a program <em>is</em> a sequence of matmul layers, then <span class="math inline">∂program/∂input</span> and <span class="math inline">∂program/∂weights</span> are both well-defined, available, and standard. The SDNC takes this seriously enough to put the AD tape <em>inside</em> the state vector that the transformer evolves: the reverse-mode walk runs through the same weight matrices as the forward pass, with no separate engine, because the tape lives in 64 of the 256 state dimensions. A program is a tensor; running it is matmul; differentiating it is the backward pass through the network whose weights <em>are</em> the interpreter.</p>
+<h2 id="2-what-is-the-sdnc">2. What is the SDNC?</h2>
+<p>The Self-Differentiating Neural Computer is a fixed-weight neural network that <strong>executes programs and computes their gradients</strong> through its own forward passes — the AD tape lives in the state vector and the backward pass runs through the same weight matrices that implement the forward semantics.</p>
+<p>Concretely (constants from <code>lib/backend/weight_matrices.c §53-86</code>):</p>
+<ul>
+<li><strong>Six-layer transformer</strong>, <span class="math inline"><em>d</em><sub>model</sub> = 256</span>, FFN width 2304, <span class="math inline"><em>H</em> = 16</span> attention heads with <span class="math inline">HD = 2</span> each, 12,220,422 parameters. Layer activations: one Gaussian-attention block, one square-activation FFN, four gated-sigmoid FFNs.</li>
+<li><strong>83-instruction ISA</strong> (<code>weight_matrices.c §103-136</code>): 64 base opcodes (<code>OP_NOP=0</code> through <code>OP_VOID=63</code>) plus 19 reverse-mode AD opcodes (<code>OP_AD_VAR=64</code> through <code>OP_AD_COS=82</code>), with a later base stack op <code>OP_SWAP=83</code> bringing <code>OP_COUNT</code> to <strong>84</strong>. This is the SDNC weight-matrix layer’s ISA; the production bytecode VM realises the same semantics as a 72-opcode enum plus 743 native calls (AD at 390–409), and the two layers correspond opcode-for-capability (§0).</li>
+<li><strong>83 opcodes weight-implemented</strong>: arithmetic, comparison, control flow, type predicates, stack housekeeping (incl. <code>OP_SWAP</code>), bounded pair/vector/string ops, bounded closures and upvalues, bounded escape continuations, bounded integer division/modulus, the forward AD tape (record + saved-derivative table), and the full reverse-mode walk.</li>
+<li><strong>1 deliberate external boundary</strong>: <code>OP_NATIVE_CALL</code> (opcode 37) carries a host-runtime ID and bridges to OS services and library calls. The transformer correctly threads it through PC, operand, and dispatch flags; the <em>callee</em> lives in C.</li>
+<li><strong>Self-differentiating.</strong> The AD tape is 8 nodes × 8 fields = 64 dimensions of the state vector (<code>weight_matrices.c §175-177</code>, Zone C). <code>OP_AD_BACKWARD</code> flips <code>S_AD_IS_BACKWARD=1</code>; the dispatch loop then runs <code>backward_with_weights</code> instead of <code>forward_with_weights</code>. Layer 1 (cursor load), Layer 4 (parent load), Layer 2 (polarisation products), and Layer 5 (gradient rule
+<ul>
+<li>write-back, run twice) compute the reverse pass.</li>
+</ul></li>
+</ul>
+<p>The paper’s framing is a <strong>constructive — not statistical — proof</strong> that a transformer can <em>be</em> an interpreter when its weights come from the ISA spec rather than from gradient descent. The artifact in this repository is the empirical confirmation: the production C VM, the C simulator of the layer functions, and the actual <code>W \cdot x + b</code> matrix forward pass agree on every byte.</p>
+<h2 id="3-the-constructive-proof-framing">3. The constructive-proof framing</h2>
+<p>Most claims that a neural architecture is “Turing complete” are existence proofs. The universal approximation theorem (Cybenko 1989) proves <em>that</em> weights exist; it does not say what they are. The Turing-completeness of recurrent and transformer networks (Siegelmann &amp; Sontag 1995; Pérez et al. 2021; Wei et al. 2022) proves the same thing one level up, with the weights still existentially quantified. Such proofs do not let you take a program and produce the weights.</p>
+<p>The SDNC follows a different lineage:</p>
+<ul>
+<li><strong>Differentiable Forth</strong> (Bošnjak et al. 2017): a Forth interpreter whose primitive opcodes are differentiable subprograms with <em>sketch</em> parameters that may be learned. The construction is modular; the holes are still trained.</li>
+<li><strong>RASP</strong> (Weiss et al. 2021): a domain-specific language whose <code>select</code>/<code>aggregate</code> primitives compile to attention heads. RASP programs are guaranteed transformer-executable, but the compiler emits an architecture, not weights.</li>
+<li><strong>Tracr</strong> (Lindner et al. 2023): the RASP-to-weights compiler. Programs in a subset of RASP become explicit weight tensors, bit- identical in float32. This is the direct technical ancestor of the SDNC: it proved that there exists a pipeline from program semantics to concrete weights with no optimiser anywhere.</li>
+<li><strong>Looped Transformers</strong> (Giannou et al. 2023): a 13-layer fixed-weight transformer that emulates a small ISA when iterated against itself. About 5 opcodes, 4-bit operands.</li>
+</ul>
+<p>The SDNC extends this lineage in three respects: it targets a <em>production</em> 83-opcode ISA (not a DSL chosen to make the compilation easy), it includes reverse-mode AD as an in-ISA capability (differentiating programs is one extra dispatch state, not a separate engine), and it pins <strong>bit-identical</strong> agreement on the <em>full per-step state vector</em> — not just on output. Any divergence is a regression to be fixed; the artefact will not ship if a single byte diverges (see the bug history in §6).</p>
+<h2 id="4-the-artefact-contract">4. The artefact contract</h2>
+<p>The verification harness ships with three independent runners (<code>lib/backend/weight_matrices.c</code>):</p>
+<ol type="1">
+<li><strong>Reference C interpreter</strong> — <code>execute_step</code> at line 441 and <code>run_reference</code> near line 1252. A direct C <code>switch</code> over the 83 opcodes; the ground truth.</li>
+<li><strong>Simulated transformer</strong> — <code>layer0_attention</code>, <code>layer1_ffn</code>, <code>layer2_ffn</code>, <code>layer3_ffn</code>, <code>layer4_ffn</code>, plus the backward <code>ad_backward_step</code>. C functions that mirror what each weight matrix computes, but implement the operations as plain arithmetic. Lets us isolate a logic bug in the layer functions from an encoding bug in the matrix form.</li>
+<li><strong>Matrix-based forward pass</strong> — <code>forward_with_weights</code> (line 5514). The actual <code>W \cdot x + b</code> matrix multiplication through the <code>InterpreterWeights</code> struct. Six layers, plus the second Layer-5 pass for backward.</li>
+</ol>
+<p>Agreement across all three modes is the verification chain. Mode 1 is the spec by construction; mode 2 confirms the analytical layer functions match the spec; mode 3 confirms the weight matrices reproduce the layer functions when applied through standard matmul.</p>
+<p>For every program in the <strong>124-program traced suite</strong>, every step, every field of the 256-dimensional state vector is compared bit-identically. The agreement report (<code>artifacts/paper/outputs/comparison-report.json</code>) looks like:</p>
+<pre class="json"><code>{
+  &quot;status&quot;: &quot;ok&quot;,
+  &quot;total_programs&quot;:          124,
+  &quot;output_agreeing_programs&quot;: 124,
+  &quot;fully_agreeing_programs&quot;:  124
+}</code></pre>
+<p><code>output_agreeing_programs</code> = the final <code>OP_PRINT</code> output matches. <code>fully_agreeing_programs</code> = every intermediate step’s state vector matches bit-identically (PC, SP, TOS, SOS, registers, arena cells, tape, flags). <strong>124/124 on both metrics is the contract</strong>: no traced program disagrees on its result, no traced program disagrees at any step. The inline test count is <strong>127/127</strong> (the three extra inline programs are diagnostics that don’t produce traceable sequences).</p>
+<p>Per-opcode coverage from <code>artifacts/paper/outputs/opcode-coverage.json</code>:</p>
+<pre class="text"><code>weight_implemented   : 83 opcodes (all of 0..83 except 37)
+native_delegated     :  0 opcodes
+transformer_native_assisted : 0 opcodes</code></pre>
+<p>That is, the only opcode in the canonical 0–82 range <em>not</em> covered by the strict weight artefact is <code>OP_NATIVE_CALL</code> (37), the deliberate host-runtime boundary.</p>
+<h2 id="5-architecture-summary">5. Architecture summary</h2>
+<p>A condensed sketch; the full architectural spec is <code>docs/breakdown/COMPUTABLE_TRANSFORMER.md</code>.</p>
+<table style="width:100%;">
+<colgroup>
+<col style="width: 7%" />
+<col style="width: 27%" />
+<col style="width: 65%" />
+</colgroup>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Activation</th>
+<th>Function</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Gaussian self-attention</td>
+<td>Instruction fetch: peaked at PC, values carry <span class="math inline">(<em>o</em><em>p</em>, <em>o</em><em>p</em><em>e</em><em>r</em><em>a</em><em>n</em><em>d</em>)</span>.</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Square FFN</td>
+<td>Polarisation products: <span class="math inline"><em>T</em><em>O</em><em>S</em> ⋅ <em>S</em><em>O</em><em>S</em></span> and four AD cross-products.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Gated sigmoid FFN</td>
+<td>Preprocess: address resolution, comparisons, type indicators, AD parent loads, cursor load.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Gated sigmoid FFN</td>
+<td>Dispatch: per-opcode gate × value, arithmetic, control flow, arena, forward AD.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Gated sigmoid FFN</td>
+<td>Writeback: tape append, arena-cell mutation, backward parent load.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Gated sigmoid FFN (×2)</td>
+<td>Gradient rule + indexed write-back, backward only.</td>
+</tr>
+</tbody>
+</table>
+<p>Layer 5 is unusual: the matrix-mode driver calls <code>apply_ffn_layer(w, 5, x)</code> <em>twice</em> per backward cycle (<code>weight_matrices.c §5343-5344</code>) because the gradient rule and the parent-tape write cannot share the same weight matrix (the write depends on the rule’s result). This is the looped-Transformer pattern applied to a single layer.</p>
+<p>The <strong>256-dimensional state vector</strong> maps onto the VM’s bounded runtime state (<code>weight_matrices.c §136-264</code>):</p>
+<pre class="text"><code>0-15    persistent registers   (PC, TOS, SOS, R2, R3, DEPTH, MEM0..3, …)
+16-31   per-cycle transients   (OPCODE, OPERAND, PRODUCT, LOADVAL, comparison flags, …)
+32-35   type tags              (TYPE_TOS, TYPE_SOS, TYPE_R2, TYPE_R3)
+36-47   AD control             (TAPE_LEN, CURSOR, MODE, current-node fields, parent values)
+48-111  AD tape                (8 nodes × 8 fields = 64 dims)
+112-127 AD/type-pred transient (forward/backward flags, gradient accumulators, type indicators)
+128-207 Zone E arena bank      (16 cells × 5 fields = 80 dims)
+208-255 arena op transients    (pair/vector/list write windows)</code></pre>
+<p>The <strong>bounds</strong> that the artifact contract operates within:</p>
+<ul>
+<li>arena live-cell count ≤ 16, vectors/strings inline ≤ 4 elements, closure upvalues ≤ 4, bounded escape continuations = 4 arena cells;</li>
+<li>AD tape length ≤ 8 nodes; AD transcendentals (<code>AD_SIN</code>, <code>AD_COS</code>) tabulated for integer input in [-4, 4]; <code>AD_DIV</code> for positive integer denominator in [1, 16]; <code>AD_POW</code> for base in [1, 8] and exponent in [1, 4]; bounded <code>AD_EXP</code>/<code>AD_SIGMOID</code>/<code>AD_TANH</code>/ <code>AD_LOG</code>/<code>AD_SQRT</code> for the verifier-exercised inputs;</li>
+<li>integer division denominator ≤ 16; modulus ∈ {3, 4} for the verifier;</li>
+<li>MEM register file size = 4; bytecode buffer = 64 entries in the simulator and a 256-entry buffer in the matrix forward path.</li>
+</ul>
+<p>These bounds are the <em>contract</em>; programs that stay inside them execute end-to-end through matrix multiplication, with every step agreeing bit-identically with the reference. Programs outside them fall back to the production Eshkol VM (which has no such bounds). The bounds are <em>not</em> fundamental to the architecture: they are the slice that the current 12.22 M-parameter, 256-dim model covers; a larger state vector and FFN width scale them linearly.</p>
+<h2 id="6-the-five-bit-identity-bugs">6. The five bit-identity bugs</h2>
+<p>The artefact agreement metric used to be <strong>52/71</strong> on full per-step state and <strong>71/71</strong> on output agreement: every program’s final <code>OP_PRINT</code> value was within the inline 0.01 tolerance, but 19 programs disagreed somewhere in the middle, on intermediate state the inline tests didn’t catch. The drift was documented as “acceptable within the paper’s bit-identical-output claim.” A round of per-step trace inspection (the <code>--trace-vm</code>/<code>--trace-transformer</code> flags were added for exactly this) showed that the 19 disagreements were five distinct bugs, all weight-encoding errors. Fixing them moved the contract to <strong>71/71 on full per-step state agreement</strong> and made the SHA-256 of the resulting trace files stable across IEEE-754 float32 platforms.</p>
+<p>The five fixes are recorded in commit <strong><code>7301dc4 fix(paper): bit-identical SDNC agreement — 71/71 full per-step state</code></strong>. Each one is documented inline in <code>lib/backend/weight_matrices.c</code> near the lines it touched. The subsequent expansion to 124 traced programs (the bounded VM-as- transformer memory-ops series) reused the same diagnostic methodology and preserved the bit-identical contract.</p>
+<h3 id="61-bug-1--softmax-temperature-was-too-low">6.1 Bug #1 — Softmax temperature was too low</h3>
+<p><strong>Symptom.</strong> <code>tail sum(100)</code> diverged: matrix forward path had <code>tos = 4.4e-16</code> at step 1206; reference VM had exactly <code>0</code>. The discrepancy propagated indefinitely through state accumulation but stayed below the inline 0.01 tolerance, so the inline test passed while the per-step trace caught it.</p>
+<p><strong>Diagnosis.</strong> With <span class="math inline">SCALE = 100</span>, Layer 0’s attention softmax has a peak-to-adjacent score gap of <span class="math inline">$\mathrm{SCALE}/(2\sqrt{2}) \approx 35.4$</span>. <span class="math inline">exp (−35.4) ≈ 4.6 × 10<sup>−16</sup></span> is perfectly representable in float32 — denormals do not kick in until <span class="math inline">exp (−87)</span> — so every “off-peak” position contributed a residue to the value sum. The contribution was tiny but real and accumulated step by step.</p>
+<p><strong>Fix.</strong> Raise <span class="math inline">SCALE</span> to 300. The peak-to-adjacent gap becomes <span class="math inline"> ≈ 106 &gt; 87</span>, so <span class="math inline">exp (−gap)</span> underflows to <em>literal float32 zero</em>. Documented at <code>weight_matrices.c §59-84</code>. The analytic bound for full saturation is <span class="math inline">SCALE &gt; 246</span>; 300 leaves a ~50-ULP margin per step, sufficient for the 6-layer accumulation chain.</p>
+<h3 id="62-bug-2--layer-4-forward-tape-write-missing-the-is_forward-gate">6.2 Bug #2 — Layer 4 forward tape-write missing the IS_FORWARD gate</h3>
+<p><strong>Symptom.</strong> For programs containing a single <code>OP_AD_VAR</code> followed later by <code>OP_AD_BACKWARD</code>, the matrix path showed <code>tape[1] = 7</code> (i.e. the <code>AD_CUR_VALUE</code> of node 0 scribbled into tape slot 1) while the reference had <code>tape[1] = 0</code>. Visible in the trace for the “AD edge: grad of var = 1” program.</p>
+<p><strong>Diagnosis.</strong> Layer 4 writes the tape on forward (<code>OP_AD_VAR/CONST/ ADD/MUL/…</code>). The intended gate is <code>(S_AD_TAPE_LEN == slot) AND (S_AD_IS_FORWARD == 1)</code>. The generator’s loop had only the <code>S_AD_TAPE_LEN</code> coefficient wired; the comment promised the <code>S_AD_IS_FORWARD</code> coefficient but the source did not set it. So during <em>backward</em>, when <code>S_AD_IS_FORWARD = 0</code> but <code>S_AD_TAPE_LEN</code> took whatever value it had been left at, the gate fired and the forward-write neuron pair scribbled <code>S_AD_CUR_VALUE</code> into the matching tape slot.</p>
+<p><strong>Fix.</strong> Add the <code>S_AD_IS_FORWARD</code> row of every forward-write gate in Layer 4 (<code>weight_matrices.c §4882-4951</code>). See bug 3 for the weighting choice.</p>
+<h3 id="63-bug-3--dual-input-and-in-a-sigmoid-gate-needs-an-asymmetric-weight">6.3 Bug #3 — Dual-input AND in a sigmoid gate needs an asymmetric weight</h3>
+<p><strong>Symptom.</strong> Bug #2’s first fix attempt wrote both gate inputs at weight <code>SCALE</code>. The single-AD-VAR program now wrote correctly during forward but <em>reopened</em> the gate during backward on programs with high <code>S_AD_TAPE_LEN</code>.</p>
+<p><strong>Diagnosis.</strong> The gate’s bias is <span class="math inline">SCALE(−slot + 0.5) − SCALE</span>, so the gate input under matching tape length and <code>IS_FORWARD = 0</code> is <span class="math inline">SCALE ⋅ (0 ± 0.5) − SCALE ≈ −SCALE/2</span> — sigmoid-closed. But if <code>S_AD_TAPE_LEN</code> happens to equal 7 (which it does during the latter half of a long forward sequence), the gate input is <span class="math inline">SCALE ⋅ 7 + SCALE ⋅ 0 + bias = SCALE ⋅ 6</span> <em>before</em> the IS_FORWARD term — far past saturation. The intended AND truth table never held: it became “either input opens the gate”.</p>
+<p><strong>Fix.</strong> Multiply the <code>S_AD_IS_FORWARD</code> coefficient by 10. The binary condition now contributes <span class="math inline">10 ⋅ SCALE</span> when present and 0 when absent, swinging the sigmoid argument harder than any plausible integer in <code>S_AD_TAPE_LEN</code> (max 7). The same pattern was then applied to the cursor-completion gate in Layer 5 (<code>weight_matrices.c §3752-3779</code>). The lesson is that dual-input ANDs in a sigmoid-gated FFN must use <em>asymmetric</em> weights when the two inputs have different dynamic ranges.</p>
+<h3 id="64-bug-4--backward-cursor-termination-off-by-one">6.4 Bug #4 — Backward cursor termination off by one</h3>
+<p><strong>Symptom.</strong> 17 of the 19 originally-disagreeing AD programs showed a one-step PC, register, and <code>tos</code> drift in the cycle <em>after</em> the backward pass finished.</p>
+<p><strong>Diagnosis.</strong> Both the simulated <code>layer2_ffn</code> and the matrix Layer-2 weights had the completion gate as <code>at_done = indicator(cursor, -1.0)</code>. That indicator fires when <code>cursor == -1</code> post-decrement, i.e. on the cycle <em>after</em> the last live node has been processed. So the matrix path ran one <em>extra</em> backward cycle with <code>S_AD_IS_BACKWARD = 0</code> but stale tape state, while the reference VM (<code>ad_backward_step</code> at line 1027) clears <code>S_AD_IS_BACKWARD</code> in the <em>same</em> cycle that makes the cursor go negative.</p>
+<p><strong>Fix.</strong> Change the completion indicator to <code>indicator(cursor, 0.0)</code>: fires when the <em>pre-decrement</em> cursor is the last node (which becomes -1 after the same cycle’s decrement). Now the matrix path and the reference VM clear backward mode on the same step. The indicator is documented inline at <code>weight_matrices.c §1352-1371</code> (simulator) and §3744-3779 (weight matrix).</p>
+<h3 id="65-bug-5--polarisation-arithmetic-in-the-reference-vm">6.5 Bug #5 — Polarisation arithmetic in the reference VM</h3>
+<p><strong>Symptom.</strong> A single remaining divergence in <code>MLP: df/dw sigmoid(...)</code>: matrix path final <code>tos = 0.393223852</code>, reference VM <code>0.393223763</code>. A 1-ULP difference in the gradient output, <em>but</em> the inline test passed because both values rounded to the same expectation under 0.01 tolerance.</p>
+<p><strong>Diagnosis.</strong> Layer 1 is a SQUARE-activation FFN. To compute <span class="math inline"><em>a</em> ⋅ <em>b</em></span> from <span class="math inline"><em>a</em></span> and <span class="math inline"><em>b</em></span>, it must use the <em>polarisation identity</em></p>
+<p><span class="math display">$$a \cdot b = \tfrac{1}{2}(a+b)^2 - \tfrac{1}{2}a^2 - \tfrac{1}{2}b^2.$$</span></p>
+<p>The reference C interpreter, by contrast, was happily computing <code>grad * saved</code> directly. Polarisation and direct multiplication are <em>mathematically</em> equal but produce different float32 results: the polarisation form has three squarings, three multiplications by 0.5, and two subtractions, whereas direct is one multiplication. In float32 the operation order shifts the result by 1-13 ULPs.</p>
+<p><strong>Fix.</strong> Rewrite <code>ad_backward_step</code> to use the polarisation identity for the unary <code>grad * saved</code> product and the binary <code>grad * value</code> products. The macro <code>POLARIZATION_PRODUCT(a, b)</code> at <code>weight_matrices.c §1064-1066</code> codifies the substitution. <em>All</em> float32 multiplications in the reference’s backward pass now follow the same operation order as the matrix path’s Layer 1. The 1-ULP gradient divergence disappeared.</p>
+<p>This is the most philosophically interesting of the five fixes. Bit-identity required <em>the reference VM to match the matrix architecture’s arithmetic</em>, not the other way around. The square- activation FFN cannot do direct multiplication architecturally; the polarisation identity is what it can compute; the reference implementation has to follow suit if it wants to be a spec for “what the transformer is allowed to compute.” Documented at <code>weight_matrices.c §1055-1063</code>.</p>
+<h3 id="66-the-aftermath">6.6 The aftermath</h3>
+<p>After these five fixes, the agreement was 71/71 inline plus 71/71 on full per-step state (commit <code>7301dc4</code>). The subsequent bounded- arena memory-ops series (state vector extended from 128 to 256, arena bank added, pair/vector/string/closure/escape-continuation opcodes encoded; see <code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §8</code>) expanded the suite to 124 traced programs and to 83 weight-encoded opcodes without weakening the bit-identity contract. Each new opcode goes through the same three-way verification harness; any per-step divergence is treated as a regression to fix, not as documentable drift.</p>
+<h2 id="7-reproducibility">7. Reproducibility</h2>
+<h3 id="71-the-reproducibility-package">7.1 The reproducibility package</h3>
+<pre class="text"><code>artifacts/paper/
+├── README.md
+└── outputs/
+    ├── weights.qlmw                 # regenerated weight matrices (~48 MB)
+    ├── vm-traces.jsonl              # per-step reference-VM traces
+    ├── transformer-traces.jsonl     # per-step matrix-forward traces
+    ├── comparison-report.json       # 124/124 fieldwise agreement
+    ├── opcode-coverage.json         # 82-opcode coverage per program
+    └── tables/                      # LaTeX tables (params, verification, coverage)</code></pre>
+<h3 id="72-one-command-rerun">7.2 One-command rerun</h3>
+<pre class="bash"><code>scripts/paper/run_paper_suite.sh</code></pre>
+<p>Expected wall time on a 2023 M2 Max: <strong>under five minutes</strong>. The script orchestrates four phases (<code>scripts/paper/run_paper_suite.sh §30-69</code>):</p>
+<ol type="1">
+<li><strong>Build + regenerate weights.</strong> <code>export_weights.sh</code> configures CMake against <code>build-paper/</code> (hermetic; does not touch the user’s normal build), builds the <code>weight_matrices</code> tool, runs it with the verification suite, and exits non-zero if any of the 127 inline tests fails. <code>ESHKOL_WEIGHTS_OUT</code> is honoured to put the QLMW file where the suite expects it.</li>
+<li><strong>Dump both traces in one run.</strong> A single <code>weight_matrices --trace-vm &lt;path&gt; --trace-transformer &lt;path&gt;</code> invocation runs the suite once and emits both JSONL files. The two trace files are <em>identical except for <code>is_native</code> flagging on the boundary opcode</em>; the matrix forward path duplicates the reference state at every weight-implemented step, so the same binary can dump both.</li>
+<li><strong>Compare.</strong> <code>compare_traces.py</code> groups the two JSONL files by <code>(program_id, program, step)</code>, compares the eight tracked fields (<code>pc, sp, tos, sos, registers, memory, tape, flags</code>) bit- identically for weight-implemented opcodes and boundary-only for native opcodes, and writes <code>comparison-report.json</code> and <code>opcode-coverage.json</code>. Exits non-zero only if <code>output_agreeing_programs &lt; total_programs</code>.</li>
+<li><strong>Regenerate tables.</strong> <code>gen_paper_tables.py</code> reads the QLMW header (<code>§read_qlmw_header</code> line 27) and the comparison report to emit <code>tab_params.tex</code>, <code>tab_verification.tex</code>, and <code>tab_opcode_coverage.tex</code> ready for paper insertion.</li>
+</ol>
+<h3 id="73-sha-256-checksums-re-pinned-at-commit-401808ef">7.3 SHA-256 checksums (re-pinned at commit <code>401808ef</code>)</h3>
+<pre class="text"><code>SHA-256  weights.qlmw              77388ac0ae297b1b1276e1a5bdb8d24dccacd964b5adf93b41298a1320e80e7b
+SHA-256  vm-traces.jsonl           49cb2143f4286950362776138958c16920bea904cca15aab56ebae0eb9f07e44
+SHA-256  transformer-traces.jsonl  49cb2143f4286950362776138958c16920bea904cca15aab56ebae0eb9f07e44
+SHA-256  comparison-report.json    22e28236f192240ed25004d133b34bac0b9b608f4077e8baacdf01f868e1fd70
+SHA-256  opcode-coverage.json      8b1ae62fd9e81f976c75b221924f42f67dabd4487dee42d7550e48cdd48a6812</code></pre>
+<p>These are the current checksums produced by <code>scripts/paper/run_paper_suite.sh</code> on <code>master</code> (commit <code>401808ef</code>): the QLMW export is <strong>48,881,716 bytes</strong> = 28-byte header + <code>12,220,422 × 4</code>, matching the parameter headline byte-exactly, and the suite reports <strong>124/124</strong> programs agreeing on both output and full per-step state. Re-pin these values whenever the suite grows, and freeze them at the verification SHA when cutting a paper release (the <em>paper</em> pins its own frozen set).</p>
+<p>The <code>vm-traces.jsonl</code> and <code>transformer-traces.jsonl</code> files are expected to be bit-identical (same SHA-256) because the matrix path <em>is</em> bit-identical to the reference on the full per-step state. Platform divergence is a bug; please file an issue with the platform details (CPU, libc, FP environment).</p>
+<h3 id="74-pinned-historical-artifact">7.4 Pinned historical artifact</h3>
+<p>The first published artefact pinning is <code>artifacts/paper/README.md §7-13</code>:</p>
+<ul>
+<li>Commit: <code>8235d9987d70086e6e62083d120f3cf51fac9e48</code></li>
+<li>Tag: <code>v1.1.13-accelerate-166-g8235d99</code></li>
+<li>Build env: Ubuntu 22.04, clang-21, LLVM 21, CMake 3.14+</li>
+</ul>
+<p>The Docker file in <code>docker/Dockerfile.paper</code> rebuilds that exact environment:</p>
+<pre class="bash"><code>docker build -f docker/Dockerfile.paper -t eshkol-paper .
+docker run --rm -v &quot;$(pwd):/work&quot; -w /work eshkol-paper \
+    scripts/paper/run_paper_suite.sh</code></pre>
+<p>Later commits expanded the bounded arena memory-ops; the SHA-256 values above are the <em>current</em> artifact, not the pinned historical one. Both are valid: the pin demonstrates the SDNC at its first published frozen state; the current artifact demonstrates that the contract has held while the weight coverage grew from 57 to 83 opcodes.</p>
+<h3 id="75-the-qlmw-binary-format">7.5 The QLMW binary format</h3>
+<p>The weight container is a 28-byte header followed by the raw <code>InterpreterWeights</code> struct (written by <code>export_weights_binary</code>, <code>weight_matrices.c §5642</code>; triggered by <code>ESHKOL_WEIGHTS_OUT</code>):</p>
+<pre class="text"><code>offset  bytes  field
+  0       4   magic     = 0x514C4D57    (&quot;QLMW&quot; little-endian)
+  4       4   version   = 3
+  8       4   d_model   = 256
+ 12       4   n_layers  = 6
+ 16       4   ffn_dim   = 2304
+ 20       4   n_heads   = 16
+ 24       4   head_dim  = 2
+ 28       …   InterpreterWeights raw struct (12,220,422 floats + 6 ints)</code></pre>
+<p>QLMW v3 is the inference format used by the paper artefact, and it is what the <code>eshkol-qllm-run</code> tool loads (§13). QLMW v4 is the training-mode checkpoint format: <code>qllm_backward.c</code> defines its header (<code>QlmwHeaderV4</code>, magic <code>0x514C4D57</code>, version 4, plus optimiser-step and flags fields) that the training loop uses to checkpoint weights <em>and</em> optimiser state. The reverse-mode backward pass the training loop runs is built and gradient-checked to relative error &lt; 1e-6 (§13); the AdamW optimiser step and v4 checkpoint I/O that consume the format are on the build path. The <code>gen_paper_tables.py</code> table generator verifies the magic and derives the parameter count from <code>stat.st_size - 28</code> divided by 4 (<code>scripts/paper/gen_paper_tables.py §38-67</code>).</p>
+<h3 id="76-interpreting-the-agreement-metrics">7.6 Interpreting the agreement metrics</h3>
+<p><code>compare_traces.py</code> reports two metrics (<code>scripts/paper/compare_traces.py §285-291</code>):</p>
+<ul>
+<li><strong><code>output_agreeing_programs</code></strong> — the paper’s §4.4 claim. The first <code>OP_PRINT</code> of every program matches between the two runners.</li>
+<li><strong><code>fully_agreeing_programs</code></strong> — the stricter check. Every byte of every step’s state vector matches. The matrix path has <em>no architectural way to compute direct multiplication</em> (Layer 1 is a SQUARE FFN), so the reference VM’s backward path must use the polarisation identity to match (see bug #5 above).</li>
+</ul>
+<p>Both metrics currently equal <code>total_programs = 124</code>. If a future patch ever causes the second to fall, the patch must be reverted or the second metric must be raised back: the contract is bit-identity on the full state, not just on output.</p>
+<h2 id="8-per-opcode-coverage">8. Per-opcode coverage</h2>
+<p><code>opcode-coverage.json</code> records, for every opcode in the canonical 0–83 ISA, which test programs exercise it. The current strict artifact weight-covers <strong>83 opcodes</strong> (every opcode but <code>OP_NATIVE_CALL=37</code>):</p>
+<pre class="text"><code>weight_implemented   : 0,1,2,…,36, 38,39,…,83   (83 opcodes, incl. OP_SWAP=83)
+native_delegated     : (empty)
+transformer_native_assisted : (empty)</code></pre>
+<p><code>OP_NATIVE_CALL = 37</code> is intentionally outside; the canonical ISA’s <em>only</em> host-runtime boundary remains the only artefact-uncovered opcode. The exercised trace set has <em>no</em> native-assisted transformer steps and <em>no</em> IS_NATIVE postprocess assistance; the bounded artefact ran end-to-end through matmul for every opcode it touched.</p>
+<p>The per-opcode test-program list is regenerated by <code>compare_traces.py</code> during the suite run and surfaced in the <code>tab_opcode_coverage.tex</code> table.</p>
+<h2 id="9-float32-saturation-margin">9. Float32 saturation margin</h2>
+<p>The paper’s analytic bound for full softmax saturation is <span class="math inline"><em>S</em> &gt; 2 ⋅ log (2 ⋅ exp (33.2)) ≈ 33.2 + log 2</span>, i.e. roughly <span class="math inline"><em>S</em> = 100</span> suffices for the sigmoid-difference indicators. The repository’s weight generator (<code>lib/backend/weight_matrices.c §59-84</code>) ships with <span class="math inline">SCALE = 300</span>, not 100. Two reasons:</p>
+<ol type="1">
+<li><strong>Empirical accumulation.</strong> At <span class="math inline"><em>S</em> = 100</span> the softmax score gap between the peak position and its adjacent positions is <span class="math inline"> ≈ 35.4</span>, so the off-peak residue is <span class="math inline">exp (−35.4) ≈ 4.6 × 10<sup>−16</sup></span> — perfectly representable in float32, and observed to propagate as <code>tos = 4.4e-16</code> in <code>tail sum(100)</code> at step 1206 versus exactly <code>0</code> in the reference (bug #1 above).</li>
+<li><strong>Underflow margin.</strong> <span class="math inline"><em>S</em> = 300</span> pushes the gap to <span class="math inline"> ≈ 106 &gt; 87</span>, so <span class="math inline">exp (−gap)</span> underflows to literal float32 zero (denormals start at <span class="math inline">exp (−87)</span>). The proof’s bound is tight only for the indicator gates; full bit-identical agreement at the attention-softmax level requires the larger margin.</li>
+</ol>
+<p>The comment block at <code>weight_matrices.c §59-84</code> is the canonical justification.</p>
+<h2 id="10-citation">10. Citation</h2>
+<p>If you cite the artefact or the construction:</p>
+<blockquote>
+<p>tsotchke. <em>The Self-Differentiating Neural Computer: Computable Transformers via Analytical Weight Construction.</em> Tsotchke Corporation, 2026. Companion artefact: <code>https://github.com/tsotchke/eshkol</code>, <code>scripts/paper/</code>.</p>
+</blockquote>
+<p>The paper LaTeX is at <code>docs/paper-computable-transformers/</code> in the Noesis companion repository.</p>
+<h2 id="11-see-also">11. See also</h2>
+<ul>
+<li><code>docs/breakdown/COMPUTABLE_TRANSFORMER.md</code> — the architectural specification (six-layer schedule, attention as one-hot fetch, polarisation arithmetic, QLMW format, bibliography).</li>
+<li><code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md</code> — the per- opcode-class implementation log; how each of the 82 weight-encoded opcodes maps onto the gated-FFN structure.</li>
+<li><code>docs/breakdown/BYTECODE_VM.md</code> — the ISA reference for the underlying 83-opcode bytecode.</li>
+<li><code>docs/breakdown/AUTODIFF.md</code> — reverse-mode AD specification.</li>
+<li><code>docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md</code> — shorter, user-facing exposition.</li>
+<li><code>lib/backend/weight_matrices.c</code> — the analytical weight constructor and verifier (7,544 lines).</li>
+<li><code>lib/backend/vm_core.c</code> — the production bytecode VM opcode enum (72 values; layer 2, see §0), plus the 743-ID native-call surface.</li>
+<li><code>lib/backend/weight_matrices.c §103-136</code> — the SDNC weight-matrix layer’s 83-opcode ISA enum (<code>OP_COUNT=84</code> incl. <code>OP_SWAP=83</code>).</li>
+<li><code>lib/backend/qllm_backward.c</code> + <code>inc/eshkol/backend/qllm_backward.h</code> — the weight-matrix backward pass and its public surface (§13).</li>
+<li><code>lib/backend/qllm_interpreter.c</code> — the <code>eshkol-qllm-run</code> tool that executes bytecode through a loaded QLMW file (§13).</li>
+<li><code>scripts/paper/</code> — the trace-dump, comparison, and table-generation pipeline.</li>
+<li><code>artifacts/paper/</code> — the reproducibility package and outputs.</li>
+</ul>
+<hr />
+<h2 id="12-the-production-vm-native-call-surface-layer-2">12. The production VM native-call surface (layer 2)</h2>
+<p>The production bytecode VM (layer 2, §0) reaches beyond its 72 opcodes through <code>OP_NATIVE_CALL</code>. On the v1.3.5-evolve cut it dispatches <strong>743 distinct native-call IDs, spanning 0–2230</strong> (<code>lib/backend/vm_native.c</code>, driven by the builtin table in <code>eshkol_vm.c</code>). These are host-runtime IDs threaded through the single <code>OP_NATIVE_CALL</code> boundary. The map below verifies the principal capability ranges — earlier docs’ narrower ranges (e.g. “AD 370–409”, “consciousness 500–549”) understate them — and the complete ID set is the <code>case</code> labels of that dispatch.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Native-call IDs (current)</th>
+<th>Verified behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Reverse-mode AD tape (21 ops)</td>
+<td>core <strong>390–409</strong>, plus <code>ad-tape-release=1841</code>, <code>ad-node-value=1842</code>, <code>ad-tape-length=1843</code>, <code>ad-pow=1844</code>, counters 2082–2087</td>
+<td><code>ad-var/ad-mul/ad-backward/ad-gradient</code> give <code>∂(x·y)/∂x=4</code>, <code>∂(x·y)/∂y=3</code>; <code>d/dx sin(2)=-0.416147</code>. The tape is arena-backed and <strong>dynamically grown</strong> — the 8-node cap is the <em>artefact</em> model’s <code>AD_MAX_TAPE</code>, not the VM’s.</td>
+</tr>
+<tr>
+<td>Tensor ops</td>
+<td><strong>410–461</strong> (<code>matmul/tensor-matmul/gpu-matmul=440</code>, elementwise 441–461, make/reshape 410–416), plus 802–803, 1820–1821</td>
+<td><code>matmul [[1,2],[3,4]]·[[5,6],[7,8]] = [[19,22],[43,50]]</code>; <code>tensor-add</code> correct.</td>
+</tr>
+<tr>
+<td>Consciousness engine (logic / inference / workspace)</td>
+<td><strong>509–547</strong> (<code>make-kb=509</code>, <code>kb-assert!=511</code>, <code>kb-query=512</code>, <code>fg-infer!=523</code>, <code>ws-step!=543</code>), spilling into 1800–1822</td>
+<td><code>kb-assert!</code>+<code>kb-query</code> → <code>((parent alice bob))</code>; <code>fg-infer!</code> prints free energy; <code>ws-step!</code> → <code>#(1 0 0 0)</code>. All three faculties run through the bytecode VM.</td>
+</tr>
+<tr>
+<td>High-level <code>gradient</code></td>
+<td><code>750</code></td>
+<td><code>(gradient f x)</code> works on the VM (arity-2 form, verified). Curried application <code>((gradient f) x)</code> is on the build path.</td>
+</tr>
+<tr>
+<td>128-bit integers (i128)</td>
+<td><strong>2100–2118</strong> (all 19 IDs: <code>i128</code>, add/sub/mul/quotient, …)</td>
+<td>Present and dispatched; <strong>previously undocumented</strong> in this file.</td>
+</tr>
+</tbody>
+</table>
+<p>These are layer 2’s realisation of the system’s capabilities as native calls. They correspond to layer 1’s weight-encoded ISA: the AD native calls <code>390–409</code> are the production-VM form of the weight-matrix AD opcodes <code>OP_AD_VAR=64 … OP_AD_COS=82</code> (§0) — the same reverse-mode tape, one as C dispatch and one as transformer weights. Regenerate the full map from <code>eshkol_vm.c</code>’s builtin table when it drifts.</p>
+<hr />
+<h2 id="13-wired-tooling-eshkol-qllm-run-and-the-backward-gradient-check">13. Wired tooling: <code>eshkol-qllm-run</code> and the backward gradient check</h2>
+<p>Two SDNC source files that were previously source-only (compiled by nothing, covered by nothing) are now wired into the build:</p>
+<p><strong><code>eshkol-qllm-run</code></strong> (<code>lib/backend/qllm_interpreter.c</code>). A standalone tool that loads a QLMW v3 weight file (default <code>/tmp/interpreter_weights.bin</code>, produced by the <code>weight_matrices</code> tool via <code>ESHKOL_WEIGHTS_OUT</code>) and executes Eshkol bytecode by running the six-layer transformer forward pass — the weights <em>are</em> the interpreter. It runs a built-in program battery (<code>3+5</code>, <code>(3+5)*2</code>, recursive <code>fact(5)=120</code>, <code>car(cons 3 4)</code>, …) and can load external <code>.eskb</code>/<code>.bc</code> files. The default build uses the portable C reference matmul (no external dependency); <code>-DUSE_QLLM</code> additionally links the qLLM NEON/Metal tensor backend for an accelerated benchmark. Verified: loads the 48,881,716-byte QLMW v3 export and passes 9/9 built-in programs.</p>
+<p><strong><code>eshkol-qllm-backward</code></strong> (<code>lib/backend/qllm_backward.c</code> + <code>inc/eshkol/backend/qllm_backward.h</code>). The reverse-mode backward pass through the same six-layer weight matrices — the training-mode companion to the analytical forward constructor. The two FFN backward passes (SQUARE-activation and gated-sigmoid) are now a public surface, compiled into a static library by the normal build. The math is precision-generic (<code>qllm_real</code>, default <code>float</code> so the QLMW/<code>InterpreterWeights</code> layout is byte-identical).</p>
+<p><em>Gradient-check contract.</em> <code>tests/backend/qllm_backward_gradcheck_test.c</code> (ctest <code>qllm_backward_gradcheck</code>) validates the analytical gradients against a central finite-difference reference using the aggregate L2 relative-error statistic <span class="math inline">‖num − ana‖<sub>2</sub>/(‖num‖<sub>2</sub> + ‖ana‖<sub>2</sub>)</span> over sampled parameter and input coordinates. Because a single-precision finite-difference check bottoms out near <code>1e-3</code>, the test recompiles the backward source with <code>-DQLLM_REAL=double</code>; the finite-difference floor then drops far below the <strong><code>1e-6</code></strong> bar. Achieved on <code>master</code>: <strong>SQUARE <code>3.7e-9</code>, gated <code>2.3e-9</code></strong> — both roughly 250× inside tolerance. The production (float) instantiation is unchanged by the test.</p>
+<p><em>Training path.</em> <code>qllm_backward.c</code> defines the QLMW v4 checkpoint header (weights + optimiser state) that the training loop checkpoints to. The reverse-mode backward pass the loop runs is built and certified by the gradient check above; the AdamW optimiser step and v4 checkpoint I/O that complete the loop are the next items on the build path.</p>

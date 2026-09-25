@@ -1,0 +1,54 @@
+id: SW-196
+bucket: SILENT-WRONG
+family: vm/native-callback-control
+status: fixed
+closed_at: "417fcfd4e"
+needs_decision: false
+title: "VM worker callbacks can unwind through the caller thread's interpreter context"
+repro: >-
+  Run tests/vm_parity/corpus/error_irritants_lifetime.esk: a parallel-map
+  callback catches an error and returns its condition object.
+observed: >-
+  The parent interpreter exits early, then a worker reads the freed parent
+  VM. AddressSanitizer reports heap-use-after-free in vm_worker_call_closure.
+  The current browser bundle, where parallel-map runs sequentially, also
+  returns early without any diagnostic: mapping a locally guarded callback
+  over (1 2 3) prints only 1 and discards the remaining program, instead of
+  printing (1 2 3) and the following "after" sentinel. repl_eval reports success.
+correct: >-
+  Callback-local handlers resume the callback. Transfers to an outer handler
+  or continuation resume its owning interpreter scope. Workers never execute
+  the caller VM; unsafe shared-state callbacks remain on the caller thread.
+evidence: >-
+  .scratch/error-irritants-lifetime-asan.log records the original use-after-free.
+  The local fix provides one escape destination per interpreter invocation,
+  matched by frame depth and generation; schedulers admit only isolated-safe
+  worker closures and propagate failures after joining. Source/ESKB callback
+  checks and focused ASan/UBSan lifetime checks now pass.
+caught_by: [error-irritants-lifetime-review, address-sanitizer]
+missed_by: [vm_parity, site_smoke]
+notes: >-
+  Broader VM parity and final release qualification remain outstanding.
+  Do not close until the final integrated source and artifacts are qualified.
+fix: >-
+  Workers never execute the caller VM and never transfer control. Every VM
+  scheduler (parallel-map, -filter, -for-each, -execute, future, force)
+  records a failed isolated run and, after the join, re-evaluates each failed
+  task on the caller's own interpreter in element order
+  (vm_parmap_settle_failed / vm_parthunk_settle_failed /
+  vm_future_force_on_caller in lib/backend/vm_parallel.c). Admitted callbacks
+  are pure, so this is the sequential semantics: the callback's own condition
+  object reaches the caller's handler chain, and an outer guard or
+  continuation resumes its owning scope through vm_run's per-invocation native
+  escape. Before, a faulting worker callback surfaced as the generic
+  "parallel-map: worker closure failed" and a refused submit fabricated one.
+  The isolated VM no longer reports the raise it hands back on stderr.
+remeasured: >-
+  At 417fcfd4e/5895adefb (fix/v135f-vmrt): tests/vm/parallel_worker_settle_regression.esk
+  prints "parallel worker settle PASS"; the base VM prints
+  'FAIL: map got "parallel-map: worker closure failed"'.
+  tests/vm_parity/corpus/parallel_callback_raise.esk is byte-identical on
+  native, VM source and ESKB. Browser VM transcript rows: guarded callback over
+  (1 2 3) -> (-1 2 -3), caller-handled raise -> two, evaluation continues.
+  ctest vm_parallel_callbacks_repeat50 (50 consecutive runs of four programs)
+  passes; the same 50x loop under an ASan+UBSan VM reports no finding.

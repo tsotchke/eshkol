@@ -36,6 +36,8 @@ it is called out explicitly.
 | 14 | Numeric tower: exact/inexact/rational/bignum/complex | [numeric-tower.md](numeric-tower.md) |
 | 15 | Capability policy (`core.capabilities`) | [capabilities.md](capabilities.md) |
 | 16 | Native 128-bit integers (`i128`): distinct wrapping fixed-width type | [i128.md](i128.md) |
+| 17 | Type annotations and the gradual checker: what is checked where, function types, branch joins, loop typing, diagnostics | [../../guide/GRADUAL_TYPING.md](../../guide/GRADUAL_TYPING.md) |
+| 18 | Macros: `define-syntax`, `let-syntax`, `letrec-syntax`, `syntax-rules`, hygiene | [macros.md](macros.md) |
 
 ## Known-issue conventions
 
@@ -49,7 +51,7 @@ Consolidated list of language-core known issues referenced here:
 | Ledger | Summary |
 |--------|---------|
 | ESH-0090 | A user `(define (raise …) …)` cannot shadow the builtin `raise`. |
-| ESH-0101 | Recursion-depth guard coverage: codegen does not emit the depth guard at the entry of every top-level `define`d function, so a deep non-tail recursion dies with no diagnostic. **Not** a `guard`/exception defect — earlier revisions of [error-handling.md](error-handling.md) misattributed the (since-closed) differential `guard` findings to this id. |
+| — | `(apply f a … arg-list)` — apply's **leading-args** form — is native-only. The bytecode VM rejects it for any operator; see [functions-and-parameters.md](functions-and-parameters.md#apply). |
 | ESH-0109 (part) | Curried `define` sugar `(define ((f x) y) …)` is a parse error, and `raise-continuable` is **unimplemented on every substrate** — the native path and the bytecode VM alike (the earlier "it exists in the bytecode VM" claim here was never true of any build; corrected under `SW-80b`). The `cond`/`case`/`guard` `=>` and `define-values` parts of that ledger entry are done — `=>` inside `guard`, and `=>` on the VM at all, landed with the guard coverage gate (`SW-78`). |
 | — | Mutual tail recursion IS optimized, in every tail spelling (`if`, `cond`, `case`, `when`, `unless`, `and`/`or`), at any pair of arities, and on every target, to 100,000,000 hops in constant stack (ESH-0102, ESH-0102b, ESH-0102c). Two lowerings carry it: LLVM `musttail` where the target can express it, and the tail-transfer dispatcher everywhere else. Bounded exceptions — indirect tail calls through a procedure value, mutual tail calls between `letrec`-bound lambdas or from inside a named `let` loop, sites forwarding a pointer into the caller's frame, and mutual tail calls in the body of `guard` (which R7RS does not make a tail context) — are listed in [tail-calls.md](tail-calls.md). |
 
@@ -58,6 +60,8 @@ each is now covered by an example in the page that used to carry the warning:
 
 | Ledger | Was | Now |
 |--------|-----|-----|
+| ESH-0101 / ESH-0112 (ledger SW-81) | A deep non-tail recursion ran the native stack into its guard page and died with a bare SIGILL and no message. | Exhausting the stack prints `eshkol: stack overflow: recursion depth exceeded the N MiB stack (ESHKOL_STACK_SIZE); …`, names the limit and exits 121 — on JIT, on AOT and inside `parallel-map` workers, each of which gets its own `sigaltstack`. A larger `ESHKOL_STACK_SIZE` completes the same program. See [../runtime/environment-variables.md](../runtime/environment-variables.md#native-stack-guard). |
+| ESH-0103 | Deeply nested non-macro expressions took superlinear frontend time and memory, and grammar nesting consumed native stack. | Recursive descent is replaced by an explicit continuation stack, so parse-and-lower stack consumption is independent of grammar nesting, and JIT/AOT compile time and RSS scale near-linearly at 1,000 / 4,000 / 16,000 levels. |
 | ESH-0092 / ESH-0103 | A top-level global named after a libc symbol (`free`, `log`, …) corrupted it: SIGBUS at teardown, or a `set!` silently lost. | Ordinary bindings on JIT and AOT — see [binding-mutation-and-scope.md](binding-mutation-and-scope.md). |
 | ESH-0104 | Long forms `(quasiquote …)`/`(unquote …)`/`(unquote-splicing …)` were inert data. | Identical to the reader sugar — see [quote-and-quasiquote.md](quote-and-quasiquote.md). |
 | ESH-0105 | Exact rational arithmetic degraded to `double` (or `0`) once a bignum operand appeared. | Stays exact: `(+ 1/3 (expt 2 70))` → `3541774862152233910273/3`, `exact?` → `#t`. |
@@ -65,3 +69,16 @@ each is now covered by an example in the page that used to carry the warning:
 | ESH-0107 | Nested `quasiquote` (level ≥ 2) collapsed to `()`. | Follows the R7RS level rule — see [quote-and-quasiquote.md](quote-and-quasiquote.md). |
 | ESH-0108 | stdlib `length`/`filter` crashed (SIGILL) on very large lists. | `(length (iota 1000000))` → `1000000`; `(filter even? (iota 1000000))` → 500,000 elements. |
 | ESH-0109 (`=>` and `define-values`) | `=>` was parsed as a variable reference; `define-values` was unsupported. | R7RS `=>` clauses work in `cond` and `case` — see [control-flow.md](control-flow.md); `(define-values (a b) (values 1 2))` binds both. |
+| SW-154 | Two enclosing differentiation levels over a pass of order ≥ 2 answered `0`, and two passes both of order ≥ 2 raised. | Passes nest at any depth and order: `(derivative (lambda (a) (derivative (lambda (b) (derivative-n (lambda (c) (* a b c c)) 1.0 2)) 1.0)) 1.0)` → `2`. See [../ad/support-matrix.md](../ad/support-matrix.md#nesting). |
+
+## See also
+
+- [Automatic differentiation reference](../ad/INDEX.md) — the AD operators, the
+  exactness tier, and [nesting](../ad/support-matrix.md#nesting).
+- [Certified enclosures](../stdlib/certified-enclosures.md) — `fl-next-up` /
+  `fl-next-down` and the proof-backed interval and Taylor-model layer above them.
+- [Runtime reference](../runtime/INDEX.md) — `eshkol-run` and `eshkol-repl`
+  (including the **EREPL v1** machine protocol), environment variables and the
+  resource-limit contracts, the memory model, and the bytecode VM.
+- [Tensors](../tensors/INDEX.md) — the tensor carrier, element-wise dispatch and
+  `tensor-scale`, and where a tensor differs from a Scheme vector.

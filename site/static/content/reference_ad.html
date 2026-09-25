@@ -1,0 +1,123 @@
+<h1 id="automatic-differentiation--reference">Automatic Differentiation — Reference</h1>
+<p>Reference for Eshkol’s automatic-differentiation operators. The signatures, examples, and outputs on these pages was produced by running the current compiler; open bugs are documented against their ledger id, never hidden.</p>
+<p>For conceptual background (the three AD modes, node opcodes, tensor backward pass, numeric-type boundary) see the breakdown: <a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">../../breakdown/AUTODIFF.md</a>.</p>
+<h2 id="pages">Pages</h2>
+<table>
+<colgroup>
+<col style="width: 37%" />
+<col style="width: 62%" />
+</colgroup>
+<thead>
+<tr>
+<th>Page</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/operators.md" target="_blank" rel="noopener noreferrer">operators.md</a></td>
+<td>Every operator — <code>derivative</code>, <code>gradient</code>, <code>jacobian</code>, <code>hessian</code>, <code>laplacian</code>, <code>directional-derivative</code>, <code>divergence</code>, <code>curl</code>, <code>diff</code> — with signature, accepted point types, binding forms, capture rules, and composition/nesting.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/architecture.md" target="_blank" rel="noopener noreferrer">architecture.md</a></td>
+<td>Forward Taylor jet, reverse tape, recursive Taylor levels, the runtime perturbation counter, mixed reverse-over-forward mode, numeric boundary, measured performance.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/tape.md" target="_blank" rel="noopener noreferrer">tape.md</a></td>
+<td>Reverse-mode tape lifetime, native mark/release reclamation, and the explicit low-level <code>ad-*</code> tape API.</td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md" target="_blank" rel="noopener noreferrer">support-matrix.md</a></td>
+<td>The AD-oracle support matrix (235 probes / 490 checks), the PASS cells, <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting" target="_blank" rel="noopener noreferrer">nesting</a>, and how to run <code>scripts/run_ad_oracle.sh</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="at-a-glance">At a glance</h2>
+<table>
+<colgroup>
+<col style="width: 20%" />
+<col style="width: 14%" />
+<col style="width: 22%" />
+<col style="width: 44%" />
+</colgroup>
+<thead>
+<tr>
+<th>Operator</th>
+<th>Field</th>
+<th>Signature</th>
+<th>Result on this build</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>derivative</code></td>
+<td>ℝ→ℝ</td>
+<td><code>(derivative f x)</code></td>
+<td><code>(derivative (lambda (x) (* x x)) 3.0)</code> → <code>6</code></td>
+</tr>
+<tr>
+<td><code>gradient</code></td>
+<td>ℝⁿ→ℝ</td>
+<td><code>(gradient f pt)</code></td>
+<td><code>#(6 8)</code> for x²+y² @(3,4)</td>
+</tr>
+<tr>
+<td><code>jacobian</code></td>
+<td>ℝⁿ→ℝᵐ</td>
+<td><code>(jacobian f pt)</code></td>
+<td><code>#((6 0) (0 8))</code></td>
+</tr>
+<tr>
+<td><code>hessian</code></td>
+<td>ℝⁿ→ℝ</td>
+<td><code>(hessian f pt)</code></td>
+<td><code>#((48))</code> for x⁴ <span class="citation" data-cites="2">@2</span></td>
+</tr>
+<tr>
+<td><code>laplacian</code></td>
+<td>ℝⁿ→ℝ</td>
+<td><code>(laplacian f pt)</code></td>
+<td><code>4</code> for x²+y² @(3,4)</td>
+</tr>
+<tr>
+<td><code>directional-derivative</code></td>
+<td>ℝⁿ→ℝ</td>
+<td><code>(directional-derivative f pt dir)</code></td>
+<td><code>6</code></td>
+</tr>
+<tr>
+<td><code>divergence</code></td>
+<td>ℝⁿ→ℝⁿ</td>
+<td><code>(divergence f pt)</code></td>
+<td><code>14</code></td>
+</tr>
+<tr>
+<td><code>curl</code></td>
+<td>ℝ³→ℝ³</td>
+<td><code>(curl f pt)</code></td>
+<td><code>#(0 0 0)</code></td>
+</tr>
+<tr>
+<td><code>diff</code></td>
+<td>AST→AST</td>
+<td><code>(diff f 'x)</code></td>
+<td>symbolic, compile-time</td>
+</tr>
+</tbody>
+</table>
+<h2 id="status-summary">Status summary</h2>
+<ul>
+<li>Oracle gate <strong>PASS</strong> — 60 PASS / 0 XKNOWN / 0 FAIL/CRASH/HANG (JIT + AOT).</li>
+<li><strong>Mixed reverse-over-forward AD:</strong> outer vector <code>gradient</code> over inner <code>derivative</code>, ESH-0093 / #113) — 15/15 in the mixed-mode test.</li>
+<li><strong>Supported:</strong> local-scalar/param captures under reverse mode (ESH-0072/0097), second-order operators on <code>tensor</code>/<code>#(…)</code> points (ESH-0095), vector-param gradient-of-gradient (ESH-0096), named inner-function gradient (ESH-0078). No cell is XKNOWN on this build. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md" target="_blank" rel="noopener noreferrer">support-matrix.md</a>.</li>
+<li><strong>Exact at an exact point:</strong> <code>derivative</code>, <code>gradient</code> and <code>hessian</code> return an exact integer or rational when the point is exact and the body is pure tower arithmetic — <code>(derivative (lambda (x) (* x x)) 1/3)</code> → <code>2/3</code>. Exactness is decided by the carrier’s <strong>runtime</strong> value, not by the shape of the source: the same arithmetic stays exact when the constant comes from a top-level <code>define</code>, when the body is a several-deep composed call, and when the point argument is an expression such as <code>(car ts)</code> whose value happens to be exact.</li>
+<li><strong>Passes nest at any depth and order.</strong> A pass opened inside another live pass runs as a level whose coefficients are numbers of the enclosing levels (ADR-0027), through the evaluation point or a captured variable, exact at an exact point. The table, with verified output for each row, is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting" target="_blank" rel="noopener noreferrer">support-matrix.md</a>.</li>
+</ul>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><p><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">../stdlib/certified-enclosures.md</a> — directed rounding (<code>fl-next-up</code> / <code>fl-next-down</code>), outward-rounded interval arithmetic and rigorous Taylor models. Where AD answers “what is the derivative”, these answer “what interval provably contains it”; <code>tm-bound</code> and <code>tm-prove-bound</code> turn a Taylor model into a certified enclosure.</p></li>
+<li><p><a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">../../guide/AUTOMATIC_DIFFERENTIATION.md</a> — the example-driven AD user guide (arbitrary order, exact, validated, tensor, sparse, checkpointed, control flow, tower numerics)</p></li>
+<li><p><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ad_tape.md" target="_blank" rel="noopener noreferrer">../stdlib/ad_tape.md</a> — the pure-Scheme <code>core.ad.tape</code> module (custom ops with hand-written backward closures, vector-valued nodes, <code>with-tape</code>), a different system from the <code>ad-*</code> builtins in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/tape.md" target="_blank" rel="noopener noreferrer">tape.md</a></p></li>
+<li><p><a href="/docs#page=reference_tensors" data-url="/content/reference_tensors.html">../tensors/INDEX.md</a> — tensors, ML ops, and the modules AD flows through</p></li>
+<li><p><a href="/docs#page=breakdown_autodiff" data-url="/content/breakdown_autodiff.html">../../breakdown/AUTODIFF.md</a> — AD internals breakdown</p></li>
+</ul>

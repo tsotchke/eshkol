@@ -119,19 +119,21 @@ accessor deeper than the structure allows (e.g. `(caddr '(1))` or
 `(fifth '(1 2 3))`) reduces to taking `car`/`cdr` of `'()`, which is a runtime
 error in the underlying `car`/`cdr` — there is no bounds checking here.
 
-### Known issues
+### Taking `cdr` of a non-pair atom mid-chain
 
-Taking `cdr` of a **non-pair atom** mid-chain crashes with SIGSEGV rather
-than a clean runtime error. Verified repro:
+Through v1.3.4 this crashed with SIGSEGV. It now **raises a named runtime
+error** on both engines, and the process exits nonzero:
 
 ```scheme
 (require core.list.compound)
 (define x '((1 2 3) (4 5 6)))
-(display (cdaar x))   ; caar = 1 (an integer); cdr of 1 → SIGSEGV
+(display (cdaar x))   ; caar = 1 (an integer); cdr of 1 raises
 ```
 ```
-[Eshkol] fatal signal: SIGSEGV (segmentation fault) — terminating; output above is what made it to stdout before the crash
+cdr: argument is not a pair
+Unhandled exception: cdr: argument is not a pair
 ```
+(both lines on stderr; the process exits 1.)
 
 This is the general car/cdr-of-non-pair behavior, not specific to this
 module; deep accessors just make it easy to hit.

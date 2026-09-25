@@ -1488,6 +1488,14 @@ private:
      */
     llvm::Value* extractAsDouble(llvm::Value* tagged_val);
 
+    /**
+     * A tensor operator's scalar PARAMETER as a double (a scale factor, an
+     * exponent, a fill value). A derivative carrier (a forward jet or a
+     * reverse-tape node) raises, naming @p op_name: extractAsDouble reads it as
+     * 0.0, and a tensor kernel has no rule to carry it (SW-186).
+     */
+    llvm::Value* scalarParameterAsDouble(llvm::Value* tagged_val, const char* op_name);
+
 public:
     /**
      * How a tensor operand may be satisfied.

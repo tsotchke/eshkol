@@ -1,0 +1,31 @@
+id: SW-250
+bucket: SILENT-WRONG
+subtag: vm
+family: vm-io/standard-port-parameters
+status: fixed
+closed_at: "d5dc2cb54"
+title: "the VM had no current-output-port or current-input-port parameter, so parameterize of a standard port failed; native read with no port ignored a rebound current-input-port"
+repro: >-
+  (define p (open-output-string)) (parameterize ((current-output-port p))
+  (display "hi")) (get-output-string p); natively (parameterize
+  ((current-input-port (open-input-string "(1 2)"))) (read))
+observed: >-
+  VM: "undefined variable 'current-output-port'" and a fatal runtime error.
+  Native: read blocked on, or read from, the process's stdin.
+correct: >-
+  "hi" on both engines, and (1 2).
+root_cause: >-
+  The VM had one fixed stdout port that every port-less output site wrote to
+  with printf, and no parameter objects for the standard ports. Native read
+  passed a null FILE*, meaning stdin, when no port was given.
+fix: >-
+  vm_std_port_parameter makes a parameter object per standard port per VM;
+  the prelude binds current-input-port, current-output-port and
+  current-error-port to them; every port-less read and write goes through
+  vm_current_port. Native read with no port calls
+  eshkol_runtime_current_input_fp.
+evidence: >-
+  tests/core/standard_port_parameters_test.esk (11 checks) on JIT, AOT, VM
+  and VM ESKB (ctest standard_port_parameters_*); VM parity 386/386.
+caught_by: [release-dry-run]
+missed_by: [vm_parity]

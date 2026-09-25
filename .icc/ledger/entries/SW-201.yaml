@@ -1,0 +1,34 @@
+id: SW-201
+bucket: LOUD-ERROR
+family: native/parallel-callback-control
+status: fixed
+closed_at: "5895adefb"
+title: "native parallel callbacks that raise exit the process instead of reaching the caller's handler"
+repro: >-
+  (display (guard (e ((symbol? e) (list 'caught e)))
+    (parallel-map (lambda (x) (if (= x 6) (raise 'six) x)) '(1 2 3 4 5 6 7 8))))
+observed_before: >-
+  eshkol-run -r prints "Unhandled exception: user exception" and exits 1;
+  nothing after the form runs. The exception-handler chain is thread-local, so
+  a raise on a pool worker found no handler; a raise on the calling thread
+  (small lists, the JIT warm-up element) longjmp'd through the scheduler's
+  C++ frames. docs/breakdown/PARALLEL_COMPUTING.md 11.5 described the process
+  exit as the behaviour. The VM answered (caught six).
+correct: >-
+  (caught six): the callback's own raised object reaches the caller's
+  handler; a guard inside the callback resumes that callback.
+fix: >-
+  One unwind boundary (run_in_boundary in lib/backend/parallel_codegen.cpp)
+  runs every callback of parallel-map, -filter, -for-each, -execute and async
+  futures under a handler on the thread that runs it. After the join the entry
+  point returns from its implementation and re-raises the first recorded
+  condition in element order on the calling thread. A future that raised
+  stays unforced and re-raises from force; a refused submission runs its
+  element on the calling thread.
+remeasured: >-
+  At 5895adefb (fix/v135f-vmrt): tests/vm_parity/corpus/parallel_callback_raise.esk
+  is byte-identical on native JIT, VM source and ESKB (run_vm_parity.sh
+  373/0); ctest native_parallel_callback_raise_jit and
+  native_parallel_callback_raise_aot_repeat50 (50 consecutive AOT runs) pass.
+caught_by: [v135f-vmrt-parity-probe]
+missed_by: [vm_parity]

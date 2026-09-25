@@ -40,6 +40,8 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+# shellcheck source=../../scripts/lib/checked_write.sh
+. "$REPO_ROOT/scripts/lib/checked_write.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 if [ -z "${ESHKOL_RUN:-}" ]; then
@@ -95,10 +97,11 @@ TIME_MODE=""
 if /usr/bin/time -l true >/dev/null 2>"$PROBE"; then
     grep -q "maximum resident set size" "$PROBE" 2>/dev/null && TIME_MODE="bsd"
 fi
+eshkol_require_output_file_path "$PROBE"
 if [ -z "$TIME_MODE" ] && /usr/bin/time -v true >"$PROBE" 2>&1; then
     grep -qi "Maximum resident set size" "$PROBE" 2>/dev/null && TIME_MODE="gnu"
 fi
-rm -f "$PROBE"
+eshkol_checked_rm "$PROBE"
 if [ -z "$TIME_MODE" ]; then
     echo "bignum_rational_flat_rss_test.sh: neither \`/usr/bin/time -l\` (macOS) nor \`/usr/bin/time -v\` (Linux) reports peak RSS on this host — cannot gate." >&2
     exit 2

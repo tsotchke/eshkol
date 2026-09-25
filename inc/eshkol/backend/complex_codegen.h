@@ -99,6 +99,24 @@ public:
      */
     llvm::Value* unpackComplexFromTagged(llvm::Value* tagged_val);
 
+    // === Carrier complex (ADR-0025) ===
+    // A complex value whose components carry a derivative keeps the plain
+    // {real, imag} pair first and appends the two components as tagged values
+    // (eshkol_complex_carrier_t); ESHKOL_COMPLEX_CARRIER_FLAG in the tagged
+    // value's flags byte marks it. These three are the only code that knows
+    // the layout.
+
+    /** i1: @p tagged is a COMPLEX value with the carrier flag set. */
+    llvm::Value* isCarrierComplex(llvm::Value* tagged);
+
+    /** Allocate a carrier complex from the primal doubles and the two tagged components. */
+    llvm::Value* packCarrierComplex(llvm::Value* real_primal, llvm::Value* imag_primal,
+                                    llvm::Value* real_tagged, llvm::Value* imag_tagged);
+
+    /** One component of a COMPLEX value as a tagged value: the carrier when
+     *  present, otherwise the plain double. @p tagged must be COMPLEX. */
+    llvm::Value* componentTagged(llvm::Value* tagged, bool imag);
+
     // ═══════════════════════════════════════════════════════════════════════
     // COMPLEX ARITHMETIC OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════

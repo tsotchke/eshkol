@@ -1,0 +1,122 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  A derivative passes through complex values
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  A complex number under real-parameter differentiation is a pair of real
+;;  numbers, and each of those carries the derivative. make-rectangular and
+;;  make-polar used to take the primal of their arguments, so every derivative
+;;  through a complex value was 0 with exit status 0 (SW-180): the Butterworth
+;;  cutoff derivatives in tutorial 05 were 0.
+;;
+;;  Native: a complex value whose component carries a derivative keeps the
+;;  components as numeric-tower values and every complex operation is its
+;;  component formula (ADR-0025). VM: the complex value carries the tangent of
+;;  the VM's first-order dual. Where no derivative exists (the origin for
+;;  magnitude and angle) a derivative raises.
+;;
+;;  Every check pins the analytic value. Runs identically under -r with and
+;;  without the run cache, and as a compiled binary; prints a PASS/FAIL
+;;  summary and exits non-zero on any failure.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(define npass 0)
+(define nfail 0)
+
+(define (rel-ok got want)
+  (let ((d (abs (- got want))))
+    (or (< d 1e-9)
+        (< (/ d (+ 1e-30 (abs want))) 1e-9))))
+
+(define (report-fail name got)
+  (set! nfail (+ nfail 1))
+  (display "FAIL: ") (display name) (display " got ") (display got) (newline))
+
+(define (check name got want)
+  (if (and (number? got) (rel-ok got want))
+      (set! npass (+ npass 1))
+      (report-fail name got)))
+
+(define (check-vec name got want)
+  (let loop ((i 0) (w want) (ok #t))
+    (if (null? w)
+        (if ok (set! npass (+ npass 1)) (report-fail name got))
+        (let ((g (vref got i)))
+          (loop (+ i 1) (cdr w) (and ok (number? g) (rel-ok g (car w))))))))
+
+(define (check-raises name thunk)
+  (if (guard (e (#t #t)) (thunk) #f)
+      (set! npass (+ npass 1))
+      (report-fail name "no error")))
+
+;; ── The ledger rows ──────────────────────────────────────────────────────
+(check "ledger: real-part of make-rectangular"
+       (derivative (lambda (x) (real-part (make-rectangular (* x x) 0.0))) 3.0) 6.0)
+;; |x + 4i| = sqrt(x^2 + 16); d/dx = x / sqrt(x^2 + 16) = 3/5 at 3.
+(check "ledger: magnitude" (derivative (lambda (x) (magnitude (make-rectangular x 4.0))) 3.0) 0.6)
+
+;; ── Construction and the component readers ───────────────────────────────
+(check "imag-part"  (derivative (lambda (x) (imag-part (make-rectangular 1.0 (* x (* x x))))) 2.0) 12.0)
+;; angle(1 + xi) = atan(x); d/dx = 1/(1 + x^2) = 1/2 at 1.
+(check "angle"      (derivative (lambda (x) (angle (make-rectangular 1.0 x))) 1.0) 0.5)
+(check "conjugate"  (derivative (lambda (x) (imag-part (conjugate (make-rectangular 1.0 (* 2.0 x))))) 1.0) -2.0)
+;; make-polar r t = (r cos t, r sin t).
+(check "make-polar in the magnitude" (derivative (lambda (x) (real-part (make-polar x 0.5))) 2.0) (cos 0.5))
+(check "make-polar in the angle"     (derivative (lambda (t) (imag-part (make-polar 2.0 t))) 0.5) (* 2.0 (cos 0.5)))
+
+;; ── Arithmetic ───────────────────────────────────────────────────────────
+;; (x + i)(x + 2i) = (x^2 - 2) + 3x i.
+(check "* real part" (derivative (lambda (x) (real-part (* (make-rectangular x 1.0) (make-rectangular x 2.0)))) 3.0) 6.0)
+(check "* imag part" (derivative (lambda (x) (imag-part (* (make-rectangular x 1.0) (make-rectangular x 2.0)))) 3.0) 3.0)
+(check "+"           (derivative (lambda (x) (real-part (+ (make-rectangular x 1.0) (make-rectangular (* x x) 2.0)))) 3.0) 7.0)
+(check "-"           (derivative (lambda (x) (real-part (- (make-rectangular x 1.0) (make-rectangular (* x x) 2.0)))) 3.0) -5.0)
+;; Re(1 / (x + i)) = x / (x^2 + 1); d/dx = (1 - x^2) / (x^2 + 1)^2 = -3/25 at 2.
+(check "/"           (derivative (lambda (x) (real-part (/ (make-rectangular 1.0 0.0) (make-rectangular x 1.0)))) 2.0) -0.12)
+;; A real carrier times a plain complex: Re(x (2 + 3i)) = 2x.
+(check "real carrier times complex" (derivative (lambda (x) (real-part (* x (make-rectangular 2.0 3.0)))) 5.0) 2.0)
+
+;; ── Functions of a complex value ─────────────────────────────────────────
+;; Re(exp(x + i)) = e^x cos 1.
+(check "exp"  (derivative (lambda (x) (real-part (exp (make-rectangular x 1.0)))) 0.5) (* (exp 0.5) (cos 1.0)))
+;; Re(sqrt(x + 0i)) = sqrt x; d/dx = 1 / (2 sqrt x) = 1/4 at 4.
+(check "sqrt" (derivative (lambda (x) (real-part (sqrt (make-rectangular x 0.0)))) 4.0) 0.25)
+;; Re(log(x + i)) = log sqrt(x^2 + 1); d/dx = x / (x^2 + 1) = 1/2 at 1.
+(check "log"  (derivative (lambda (x) (real-part (log (make-rectangular x 1.0)))) 1.0) 0.5)
+;; Im(sin(x + i)) = cos x sinh 1.
+(check "sin"  (derivative (lambda (x) (imag-part (sin (make-rectangular x 1.0)))) 0.3) (* (- (sin 0.3)) 1.1752011936438014))
+
+;; ── Reverse mode ─────────────────────────────────────────────────────────
+(check-vec "gradient of a magnitude" (gradient (lambda (v) (magnitude (make-rectangular (vref v 0) (vref v 1)))) (vector 3.0 4.0)) '(0.6 0.8))
+;; Re(z^2) = x^2 - y^2.
+(check-vec "gradient of Re(z^2)"
+           (gradient (lambda (v) (let ((z (make-rectangular (vref v 0) (vref v 1)))) (real-part (* z z)))) (vector 3.0 4.0))
+           '(6.0 -8.0))
+
+;; ── The filter the tutorial differentiates ───────────────────────────────
+;; butterworth-lowpass designs its poles in complex arithmetic. The derivative
+;; of the first numerator coefficient with respect to the cutoff at 0.2 is
+;; pinned to the value both engines compute exactly; before the fix it was 0.
+(require signal.filters)
+(define (b0 c) (vector-ref (car (butterworth-lowpass 2 c)) 0))
+(check "butterworth cutoff derivative" (derivative b0 0.2) 0.566576801842721)
+
+;; ── No derivative at the origin ──────────────────────────────────────────
+(check-raises "magnitude at 0+0i with a tangent raises"
+              (lambda () (derivative (lambda (x) (magnitude (make-rectangular (- x 1.0) 0.0))) 1.0)))
+(check-raises "angle at 0+0i with a tangent raises"
+              (lambda () (derivative (lambda (x) (angle (make-rectangular (- x 1.0) 0.0))) 1.0)))
+
+;; ── Values are unchanged ─────────────────────────────────────────────────
+(check "plain magnitude" (magnitude (make-rectangular 3.0 4.0)) 5.0)
+(check "plain product real part" (real-part (* (make-rectangular 1.0 2.0) (make-rectangular 3.0 4.0))) -5.0)
+(check "plain product imag part" (imag-part (* (make-rectangular 1.0 2.0) (make-rectangular 3.0 4.0))) 10.0)
+
+(if (= nfail 0)
+    (begin
+      (display "PASS: complex_value_derivative ")
+      (display npass) (display "/") (display npass)
+      (display " checks") (newline))
+    (begin
+      (display "FAIL: complex_value_derivative ")
+      (display nfail) (display " of ") (display (+ npass nfail))
+      (display " checks failed") (newline)
+      (exit 1)))

@@ -68,11 +68,33 @@ def verify(build_dir: Path, expected: str) -> list[str]:
         except ValueError:
             cuda_major = 0
             failures.append("ESHKOL_HOST_CUDA_MAJOR is not an integer")
-        required_arches = ("75", "86") if cuda_major >= 13 else ("72", "86")
-        if cuda_major >= 13 and "72" in architectures:
-            failures.append(
-                f"CUDA {cuda_major} does not support portable architecture 72"
-            )
+        # The toolkit's own supported set, recorded by the configure
+        # (cmake/EshkolCudaArchitectures.cmake): nvcc's architecture list,
+        # or "RANGE;low;high" from the documented range of its version.
+        # Without it (an older cache), the CUDA major decides.
+        supported = [
+            item for item in cache.get("ESHKOL_CUDA_SUPPORTED_ARCHITECTURES", "").split(";")
+            if item
+        ]
+
+        def arch_supported(arch: str) -> bool:
+            digits = "".join(ch for ch in arch if ch.isdigit()) or "0"
+            number = int(digits)
+            if supported and supported[0] == "RANGE" and len(supported) == 3:
+                return int(supported[1]) <= number <= int(supported[2])
+            if supported:
+                return str(number) in supported
+            return not (cuda_major >= 13 and number < 75)
+
+        for arch in sorted(architectures):
+            if arch[:1].isdigit() and not arch_supported(arch):
+                failures.append(
+                    f"CUDA {cuda_major} does not support portable architecture {arch}"
+                )
+        # The portable floor is the oldest default generation the toolkit
+        # still compiles for: SM72 where supported, SM75 otherwise.
+        floor = "72" if arch_supported("72") else "75"
+        required_arches = (floor, "86")
         for required_arch in required_arches:
             if required_arch not in architectures:
                 failures.append(

@@ -1,0 +1,186 @@
+<h1 id="upgrading-to-v135-evolve">Upgrading to v1.3.5-evolve</h1>
+<p>What a program, a build or a contributor workflow written against v1.3.4-evolve meets on v1.3.5-evolve. Each section states what is true now and what, if anything, to do about it. The complete list of changes is the <code>[1.3.5-evolve]</code> section of <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>; the release summary is <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>.</p>
+<p>Every program on this page was run on the release compiler, on the JIT (<code>eshkol-run -r</code>) and as an AOT binary, with identical output.</p>
+<h2 id="contents">Contents</h2>
+<ol type="1">
+<li><a href="/docs#page=upgrading&amp;1-the-type-checker-sees-more-of-your-program" data-url="/content/upgrading.html">The type checker sees more of your program</a></li>
+<li><a href="/docs#page=upgrading&amp;2-loop-accumulators-are-typed-by-what-they-carry" data-url="/content/upgrading.html">Loop accumulators are typed by what they carry</a></li>
+<li><a href="/docs#page=upgrading&amp;3-a-procedure-variable-means-its-current-value" data-url="/content/upgrading.html">A procedure variable means its current value</a></li>
+<li><a href="/docs#page=upgrading&amp;4-differentiation" data-url="/content/upgrading.html">Differentiation</a></li>
+<li><a href="/docs#page=upgrading&amp;5-language-and-error-behavior" data-url="/content/upgrading.html">Language and error behavior</a></li>
+<li><a href="/docs#page=upgrading&amp;6-library-behaviour" data-url="/content/upgrading.html">Library behaviour</a></li>
+<li><a href="/docs#page=upgrading&amp;7-building-eshkol" data-url="/content/upgrading.html">Building Eshkol</a></li>
+<li><a href="/docs#page=upgrading&amp;8-environment-variables" data-url="/content/upgrading.html">Environment variables</a></li>
+<li><a href="/docs#page=upgrading&amp;9-contributors" data-url="/content/upgrading.html">Contributors</a></li>
+</ol>
+<h2 id="1-the-type-checker-sees-more-of-your-program">1. The type checker sees more of your program</h2>
+<p>The optional static checker examines every evaluated position of every control form: the tests and bodies of <code>cond</code>, <code>case</code>, <code>match</code>, <code>when</code>, <code>unless</code> and <code>do</code>, <code>guard</code> bodies and handlers, <code>and</code>/<code>or</code> operands, <code>set!</code> values, quasiquote escapes, the thunks of <code>dynamic-wind</code> and <code>parameterize</code>, the parts of <code>call/cc</code>, <code>values</code>, <code>call-with-values</code> and <code>let-values</code>, <code>with-region</code> bodies, computed callees, the point of a calculus operator, and every expression of a body rather than only the last. A call in any of those places is checked against the callee’s annotations exactly as the same call at top level.</p>
+<p>A program that compiled silently on v1.3.4 may therefore print type warnings on v1.3.5. Each one is a call whose argument contradicts an annotation:</p>
+<pre class="scheme"><code>(define (area (w : number) (h : number)) (* w h))
+
+(define (report flag)
+  (when flag
+    (area &quot;wide&quot; 3)))
+
+(report #f)
+(display &quot;still runs&quot;)
+(newline)</code></pre>
+<pre class="text"><code>still runs</code></pre>
+<pre class="console"><code>[WARN] Type warning: argument 1 of &#39;area&#39;: expected Number, got String (line 5:11)
+   WARNING: HoTT: 1 type warnings detected (gradual typing continues)</code></pre>
+<p><strong>What to do.</strong> A warning does not stop compilation or change what the program computes. Under <code>--strict-types</code> every such diagnostic is an error and no code is generated, so a strict build that passed on v1.3.4 can stop on v1.3.5 at a mistake it did not see before. Fix the call, narrow the value with a type predicate, or ascribe it with <code>(the type expr)</code> where you know more than the checker. The rules, and how to read a diagnostic, are in <a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">the gradual typing guide</a>.</p>
+<p>Three related rules apply everywhere:</p>
+<ul>
+<li>A multi-branch form has the <strong>join</strong> of its branch types, and <code>if</code> and the equivalent <code>cond</code> have the same type.</li>
+<li>A <strong>return annotation</strong> accepts a body the checker types as <code>Value</code> (unknown), as an argument position does.</li>
+<li><strong>Function types</strong> print as arrows in diagnostics, for example <code>expected (-&gt; Number Number), got (-&gt; Int64 Number)</code>, and are checked contravariantly in their parameters.</li>
+</ul>
+<h2 id="2-loop-accumulators-are-typed-by-what-they-carry">2. Loop accumulators are typed by what they carry</h2>
+<p>An unannotated named-<code>let</code> parameter has the join of its initial value and of every argument the loop passes back to it. Accumulators that start as a literal and grow, such as a pair of flonums fed the results of arithmetic, are accepted without warnings, including the ones in the standard library’s interval and Taylor-model modules:</p>
+<pre class="scheme"><code>(define (mean-pair xs)
+  (let loop ((rest xs) (acc (cons 0.0 0)))
+    (if (null? rest)
+        (/ (car acc) (cdr acc))
+        (loop (cdr rest)
+              (cons (+ (car acc) (car rest)) (+ (cdr acc) 1))))))
+
+(display (mean-pair (list 1.0 2.0 3.0 6.0)))
+(newline)</code></pre>
+<pre class="text"><code>3</code></pre>
+<p>An argument with nothing in common with the seed, such as a string passed to a parameter seeded with <code>0</code>, is still reported. Nothing to do, unless you had added an annotation or a <code>the</code> only to silence one of these warnings; it can go.</p>
+<h2 id="3-a-procedure-variable-means-its-current-value">3. A procedure variable means its current value</h2>
+<p>A call through a variable reaches the procedure the variable holds at that moment, on every path: a direct call, <code>apply</code>, <code>map</code>, <code>vector-map</code>, <code>reduce</code>, <code>remove</code> and the differentiation operators. A variable reassigned with <code>set!</code>, a top-level name defined twice, and a parameter or <code>let</code> binding that reuses a procedure’s name all behave that way.</p>
+<pre class="scheme"><code>(define twice (lambda (x) (* 2 x)))
+(define before (twice 5))
+(set! twice (lambda (x) (* 3 x)))
+(display (list before (twice 5) (apply twice (list 5)) (map twice (list 1 2 3))))
+(newline)
+
+(define G (lambda (x) (* x x)))
+(set! G (lambda (x) (* x x x)))
+(display (derivative G 2.0))
+(newline)</code></pre>
+<pre class="text"><code>(10 15 15 (3 6 9))
+12</code></pre>
+<p><strong>What to do.</strong> A program that relied on <code>map</code>, <code>apply</code> or <code>derivative</code> using a procedure’s first binding after a reassignment gets the current one; bind the first procedure to its own name if that is what you meant. Bindings that are never reassigned keep direct calls, so this costs nothing where nothing changes. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/binding-mutation-and-scope.md#procedure-bindings-that-change" target="_blank" rel="noopener noreferrer">the binding reference</a>.</p>
+<p>A user procedure may share its name with a C math library routine (<code>exp</code>, <code>log</code>, <code>tanh</code>, …) and with the tensor activations that use one; both work in the same program, in either order.</p>
+<h2 id="4-differentiation">4. Differentiation</h2>
+<ul>
+<li><p><strong>Exact at exact points.</strong> Differentiating a polynomial or rational function at an exact point answers exactly, and the exact tower stays closed through <code>sqrt</code> of a perfect square and <code>expt</code> with an exact exponent:</p>
+<pre class="scheme"><code>(define (f x) (* x x x))
+(display (derivative f 2))
+(newline)
+(display (exact? (derivative f 2)))
+(newline)
+(display (derivative f 1/3))
+(newline)
+(display (derivative-n f 2 2))
+(newline)
+(display (sqrt 4/9))
+(newline)
+(display (expt 2/3 -3))
+(newline)</code></pre>
+<pre class="text"><code>12
+#t
+1/3
+12
+2/3
+27/8</code></pre>
+<p>Code that tested a derivative with <code>inexact?</code>, or compared it with <code>eqv?</code> to a flonum, sees an exact number where it saw a flonum. Use <code>=</code> or <code>exact-&gt;inexact</code>.</p></li>
+<li><p><strong>Captures are resolved where the closure was made.</strong> A let-bound closure that captures a variable can be differentiated from inside a nested lambda, and a binding at the call site that shares a captured variable’s name does not disturb it. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/operators.md#where-a-capture-is-resolved" target="_blank" rel="noopener noreferrer">the AD capture rules</a>.</p></li>
+</ul>
+<p>The complete AD support matrix, including nesting, is <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md" target="_blank" rel="noopener noreferrer">reference/ad/support-matrix.md</a>.</p>
+<h2 id="5-language-and-error-behavior">5. Language and error behavior</h2>
+<ul>
+<li><strong>Arity is checked as an error.</strong> A call with too few or too many arguments raises a catchable arity condition on native and VM. This includes an <code>apply</code> call that spreads too many values into a fixed-arity procedure. Check calls that previously depended on an ignored argument or an implicit value; catch the condition with <code>guard</code> when the call is intentionally dynamic.</li>
+<li><strong>Macros use hygienic lexical bindings.</strong> <code>syntax-rules</code> renames introduced binders consistently. A local binding shadows a builtin with the same spelling, including names that have specialized lowering. Remove any workaround that depends on accidental capture; use an explicit parameter when a macro needs a caller binding.</li>
+<li><strong>The empty-list pattern matches only the empty list.</strong> A <code>syntax-rules</code> pattern <code>()</code> no longer matches a one-element list such as <code>(x)</code>. Add the intended one-element pattern if a macro accepted both shapes.</li>
+<li><strong>Top-level <code>begin</code> splices definitions.</strong> Definitions inside a top-level <code>begin</code>, including one emitted by a macro or nested in a top-level <code>with-region</code>, bind at the program level on native and VM. Rename a binding if it previously depended on being scoped to that <code>begin</code>.</li>
+<li><strong>Number input follows one R7RS grammar.</strong> Program literals, <code>read</code>, and <code>string-&gt;number</code> recognize the same rectangular and polar complex forms, radix and exactness prefixes, and rational parts. <code>string-&gt;number</code> accepts radices 2, 8, 10, and 16. Invalid exactness requests return <code>#f</code> through <code>string-&gt;number</code> and raise in program source or <code>read</code>; audit data files that relied on a formerly accepted nonstandard spelling or radix.</li>
+<li><strong>Caught conditions do not write to stderr.</strong> A <code>guard</code> handler owns its condition. If a program parsed the runtime’s former stderr line after a caught error, log the condition explicitly in the handler. An uncaught condition still reports an error.</li>
+</ul>
+<p>See the <a href="/docs#page=reference_language" data-url="/content/reference_language.html">language reference</a> and <a href="/docs#page=adr_0026_macro_hygiene" data-url="/content/adr_0026_macro_hygiene.html">ADR-0026</a>, <a href="/docs#page=adr_0028_number_syntax" data-url="/content/adr_0028_number_syntax.html">ADR-0028</a> for the exact rules.</p>
+<h2 id="6-library-behaviour">6. Library behaviour</h2>
+<ul>
+<li><code>json-get-in</code> takes an optional default, returned when the path is absent: <code>(json-get-in obj path default)</code>. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/json.md" target="_blank" rel="noopener noreferrer">the JSON reference</a>.</li>
+<li><code>tensor-apply</code> resolves its callable lexically: a local binding whose name is also a builtin’s is the one called. Pass the procedure you mean.</li>
+<li>The legacy <code>riemannian-adam-step</code> form refuses on the VM rather than sharing optimizer moments between parameters; allocate a state per parameter.</li>
+<li>Tensor and model saves write validated ESKM v1, and loading validates the payload.</li>
+<li><code>manifold-dim</code> returns the manifold’s dimension, and the VM’s raw manifold operations are the <code>-handle</code> family, so they no longer shadow <code>core.manifold</code>.</li>
+<li><code>make-vector</code> has one capacity limit and one diagnostic on every engine.</li>
+<li>The size variables (<code>ESHKOL_STACK_SIZE</code> and its siblings) accept <code>K</code>/<code>M</code>/<code>G</code> and <code>KiB</code>/<code>MiB</code>/<code>GiB</code>, and report a value they cannot parse.</li>
+</ul>
+<h2 id="7-building-eshkol">7. Building Eshkol</h2>
+<ul>
+<li><strong>Host compilers.</strong> v1.3.5-evolve is built and verified with GCC 13 and with Clang/LLVM 21. GCC 15 is not a supported host compiler in this release: where it is the system default, select a supported one (<code>CC=gcc-13 CXX=g++-13</code>, or Clang 21). See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/BUILD_NOTES.md#supported-host-compilers" target="_blank" rel="noopener noreferrer">Supported host compilers</a>.</li>
+<li><strong><code>roundeven</code>.</strong> Scheme <code>round</code> is ties-to-even. Where the platform C library lacks the C23 <code>roundeven</code>, the runtime supplies it; the configure step prints which one is used.</li>
+<li><strong>Python bindings.</strong> The extension requires the Python <em>development</em> component (headers and the embedding library), not only the interpreter, and on ELF platforms the build makes the archives it links position-independent automatically. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/BUILD_NOTES.md#python-bindings" target="_blank" rel="noopener noreferrer">Python bindings</a>.</li>
+<li><strong>Deeply nested programs</strong> compile ahead of time within the default 8 MiB stack.</li>
+</ul>
+<p>Problems and their fixes are collected in <a href="/docs#page=troubleshooting" data-url="/content/troubleshooting.html">TROUBLESHOOTING.md</a>.</p>
+<h2 id="8-environment-variables">8. Environment variables</h2>
+<p>Read by the compiler and runtime since v1.3.5. The full table, with defaults, is <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/environment-variables.md" target="_blank" rel="noopener noreferrer">the environment-variable reference</a>.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ESHKOL_AOT_MODULE_CACHE_DIR</code></td>
+<td>Directory of the content-addressed AOT module cache</td>
+</tr>
+<tr>
+<td><code>ESHKOL_AOT_MODULE_CACHE_TRACE</code></td>
+<td>Trace AOT module-cache hits and misses</td>
+</tr>
+<tr>
+<td><code>ESHKOL_ARENA_REPORT</code></td>
+<td><code>1</code> prints the global arena’s byte total at exit</td>
+</tr>
+<tr>
+<td><code>ESHKOL_SUBPROC_MAX_CONCURRENT</code></td>
+<td>Maximum concurrently running spawned children (default 64)</td>
+</tr>
+<tr>
+<td><code>ESHKOL_VM_REGION_EVAC</code>, <code>ESHKOL_VM_REGION_COMPACT</code>, <code>ESHKOL_VM_REGION_RECYCLE</code>, <code>ESHKOL_VM_REGION_VERIFY</code>, <code>ESHKOL_VM_REGION_VERIFY_FATAL</code></td>
+<td>Bytecode-VM region reclamation controls</td>
+</tr>
+<tr>
+<td><code>ESHKOL_DUMP_IR_ON_VERIFY_FAIL</code></td>
+<td>Print the LLVM module when verification fails</td>
+</tr>
+<tr>
+<td><code>ESHKOL_LLVM_REMARKS</code></td>
+<td>Let LLVM optimization remarks reach stderr</td>
+</tr>
+<tr>
+<td><code>ESHKOL_TAIL_TRANSFER_ONLY</code></td>
+<td>Force mutual tail calls onto the portable tail-transfer dispatcher</td>
+</tr>
+<tr>
+<td><code>ESHKOL_LANGUAGE_COVERAGE_HOOK_STATS</code>, <code>ESHKOL_NODE_IDENTITY_STATS</code></td>
+<td>Coverage and node-identity diagnostics for the gates</td>
+</tr>
+<tr>
+<td><code>ESHKOL_DENSE_TENSOR_AD_NODES</code>, <code>ESHKOL_AD_STRICT</code></td>
+<td>AD engine switches; see the reference for their current effect</td>
+</tr>
+</tbody>
+</table>
+<p>For evidence-producing scripts, a relative <code>TRACE_DIR</code> or <code>ICC_TRACE_DIR</code> means a path relative to the repository root.</p>
+<h2 id="9-contributors">9. Contributors</h2>
+<ul>
+<li><strong>Tutorial and guide examples are executed</strong> on the JIT and as AOT binaries by the documentation example gate. A page change that breaks an example fails CI; an example that cannot run carries an explicit marker. See <a href="/docs#page=documentation&amp;5-examples-are-executed" data-url="/content/documentation.html">DOCUMENTATION.md</a>.</li>
+<li><strong>Every merged pull request needs a home</strong>: a <code>CHANGELOG.md</code> reference, or a reasoned entry in <code>tests/coverage/changelog_no_user_facing_change.json</code>.</li>
+<li><strong>Release facts have one source</strong>, <code>tests/coverage/release_record.json</code>; edit the record and run <code>python3 scripts/check_surface_counts.py --sync</code>.</li>
+<li><strong>Scripts that write generated files</strong> use the helpers in <code>scripts/lib/checked_write.sh</code>, and scripts that read an evidence path use <code>scripts/lib/evidence_paths.sh</code>.</li>
+<li><strong>Architecture Decision Records</strong> have unique numbers; three were renumbered to 0016, 0017 and 0018. See <a href="/docs#page=design_adr_index" data-url="/content/design_adr_index.html">the ADR index</a>.</li>
+</ul>
+<p>The contributor workflow is in <a href="/docs#page=contributing" data-url="/content/contributing.html">CONTRIBUTING.md</a>, the documentation system in <a href="/docs#page=documentation" data-url="/content/documentation.html">DOCUMENTATION.md</a>, and the release process in <a href="/docs#page=platform_release_process" data-url="/content/platform_release_process.html">platform/RELEASE_PROCESS.md</a>.</p>

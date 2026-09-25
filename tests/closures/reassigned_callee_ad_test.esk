@@ -1,0 +1,270 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  A variable bound to a lambda is resolved statically only while it
+;;  denotes that lambda
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Binding a variable to a lambda records a compile-time alias from the name
+;;  to the lambda's compiled function. The differentiation operators, map,
+;;  apply, reduce and remove call that function directly. The alias used to
+;;  be trusted in three situations where the name no longer denotes the
+;;  lambda:
+;;
+;;    - the binding is reassigned with set! (in its let, at top level, in a
+;;      loop, or before a function that uses it runs);
+;;    - the top-level name is defined a second time;
+;;    - a later binding of the same name in the same function (a sibling let,
+;;      a parameter) found the alias an earlier let had left behind.
+;;
+;;  In each case the first lambda was differentiated, mapped or applied, with
+;;  no diagnostic, while a direct call `(H x)` used the current value. Every
+;;  check below pins the value of the procedure the name denotes at the use
+;;  site; the controls check that never-reassigned bindings still resolve.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(define npass 0)
+(define nfail 0)
+
+(define (rel-ok got want)
+  (let ((d (abs (- got want))))
+    (or (< d 1e-9)
+        (< (/ d (+ 1e-30 (abs want))) 1e-9))))
+
+(define (report-fail name got want)
+  (set! nfail (+ nfail 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got)
+  (display " want=") (display want) (newline))
+
+(define (check name got want)
+  (if (and (number? got) (rel-ok got want))
+      (set! npass (+ npass 1))
+      (report-fail name got want)))
+
+(define (check-equal name got want)
+  (if (equal? got want)
+      (set! npass (+ npass 1))
+      (report-fail name got want)))
+
+(define (check-list name got want)
+  (if (and (list? got) (= (length got) (length want))
+           (let loop ((g got) (w want))
+             (or (null? g)
+                 (and (number? (car g)) (rel-ok (car g) (car w))
+                      (loop (cdr g) (cdr w))))))
+      (set! npass (+ npass 1))
+      (report-fail name got want)))
+
+;; ── 1. set! in a let: every differentiation operator ─────────────────────
+;; Each H starts as one function and is reassigned before the operator runs;
+;; the wanted value belongs to the reassigned function.
+
+;; H: Z^3 -> 3 Z ; dH/dZ at 2 is 3 (the first lambda gives 12)
+(define (let-derivative)
+  (let ((H (lambda (Z) (* Z Z Z))))
+    (set! H (lambda (Z) (* 3.0 Z)))
+    (derivative H 2.0)))
+(check "let: derivative" (let-derivative) 3.0)
+
+(define (let-derivative-n)
+  (let ((H (lambda (Z) (* Z Z Z))))
+    (set! H (lambda (Z) (* Z Z)))
+    (derivative-n H 2.0 2)))
+(check "let: derivative-n order 2" (let-derivative-n) 2.0)
+
+;; taylor of 3 Z at 1: coefficients 3, 3, 0
+(define (let-taylor)
+  (let ((H (lambda (Z) (* Z Z Z))))
+    (set! H (lambda (Z) (* 3.0 Z)))
+    (taylor H 1.0 2)))
+(check-list "let: taylor" (let-taylor) (list 3.0 3.0 0.0))
+
+;; L: x^2 y -> x + 3 y ; gradient (1, 3)
+(define (let-gradient)
+  (let ((L (lambda (v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 1)))))
+    (set! L (lambda (v) (+ (vector-ref v 0) (* 3.0 (vector-ref v 1)))))
+    (gradient L (vector 1.0 2.0))))
+(let ((g (let-gradient)))
+  (check "let: gradient [0]" (vector-ref g 0) 1.0)
+  (check "let: gradient [1]" (vector-ref g 1) 3.0))
+
+;; F: (x y, y) -> (2 x, 5 y) ; jacobian diag(2, 5)
+(define (let-jacobian)
+  (let ((F (lambda (v) (vector (* (vector-ref v 0) (vector-ref v 1)) (vector-ref v 1)))))
+    (set! F (lambda (v) (vector (* 2.0 (vector-ref v 0)) (* 5.0 (vector-ref v 1)))))
+    (jacobian F (vector 1.0 2.0))))
+(let ((J (let-jacobian)))
+  (check "let: jacobian [0 0]" (tensor-ref J 0 0) 2.0)
+  (check "let: jacobian [0 1]" (tensor-ref J 0 1) 0.0)
+  (check "let: jacobian [1 0]" (tensor-ref J 1 0) 0.0)
+  (check "let: jacobian [1 1]" (tensor-ref J 1 1) 5.0))
+
+;; scalar hessian: Z^3 -> 5 Z^2 ; second derivative 10
+(define (let-hessian)
+  (let ((H (lambda (Z) (* Z Z Z))))
+    (set! H (lambda (Z) (* 5.0 Z Z)))
+    (hessian H 2.0)))
+(check "let: hessian" (let-hessian) 10.0)
+
+;; laplacian: x^2 y^2 -> 3 (x^2 + y^2) ; laplacian 12
+(define (let-laplacian)
+  (let ((L (lambda (v) (* (vector-ref v 0) (vector-ref v 0)
+                          (vector-ref v 1) (vector-ref v 1)))))
+    (set! L (lambda (v) (* 3.0 (+ (* (vector-ref v 0) (vector-ref v 0))
+                                  (* (vector-ref v 1) (vector-ref v 1))))))
+    (laplacian L (vector 1.0 2.0))))
+(check "let: laplacian" (let-laplacian) 12.0)
+
+;; divergence: (x^2, y^2) -> (4 x, 4 y) ; divergence 8
+(define (let-divergence)
+  (let ((F (lambda (v) (vector (* (vector-ref v 0) (vector-ref v 0))
+                               (* (vector-ref v 1) (vector-ref v 1))))))
+    (set! F (lambda (v) (vector (* 4.0 (vector-ref v 0)) (* 4.0 (vector-ref v 1)))))
+    (divergence F (vector 1.0 2.0))))
+(check "let: divergence" (let-divergence) 8.0)
+
+;; curl: (0, 0, 0) -> (-y, x, 0) ; curl (0, 0, 2)
+(define (let-curl)
+  (let ((F (lambda (v) (vector 0.0 0.0 0.0))))
+    (set! F (lambda (v) (vector (- 0.0 (vector-ref v 1)) (vector-ref v 0) 0.0)))
+    (curl F (vector 1.0 2.0 3.0))))
+(let ((c (let-curl)))
+  (check "let: curl [0]" (vector-ref c 0) 0.0)
+  (check "let: curl [1]" (vector-ref c 1) 0.0)
+  (check "let: curl [2]" (vector-ref c 2) 2.0))
+
+;; directional derivative along (0, 1): x^2 y -> x + 3 y gives 3
+(define (let-directional)
+  (let ((L (lambda (v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 1)))))
+    (set! L (lambda (v) (+ (vector-ref v 0) (* 3.0 (vector-ref v 1)))))
+    (directional-derivative L (vector 1.0 2.0) (vector 0.0 1.0))))
+(check "let: directional-derivative" (let-directional) 3.0)
+
+;; the reassigned lambda captures a parameter; the first one captured nothing
+(define (let-capturing-derivative h)
+  (let ((H (lambda (Z) (* Z Z))))
+    (set! H (lambda (Z) (* Z h)))
+    (derivative H 1.0)))
+(check "let: derivative of a reassigned capturing lambda" (let-capturing-derivative 0.1) 0.1)
+
+;; the defect as reported: both lambdas capture h
+(define (let-reported h)
+  (let ((H (lambda (Z) (* Z Z h))))
+    (set! H (lambda (Z) (* Z h)))
+    (derivative H 1.0)))
+(check "let: reported shape" (let-reported 0.1) 0.1)
+
+;; let* and a nested lambda that reaches the reassigned binding as a capture
+(define (letstar-nested h)
+  (let* ((k 2.0)
+         (H (lambda (Z) (* Z Z k))))
+    (set! H (lambda (Z) (* Z h)))
+    ((lambda (Z) (derivative H Z)) 1.0)))
+(check "let*: derivative inside a nested lambda" (letstar-nested 0.5) 0.5)
+
+;; ── 3. reassignment inside a loop: a different procedure per iteration ────
+;; H_i = (i + 1) Z^2 at the top of iteration i; dH_i/dZ at 1 is 2 (i + 1)
+(define (loop-derivatives)
+  (let ((H (lambda (Z) (* Z Z)))
+        (out '()))
+    (do ((i 0 (+ i 1)))
+        ((= i 3) (reverse out))
+      (set! out (cons (derivative H 1.0) out))
+      (set! H (let ((c (+ i 2.0))) (lambda (Z) (* c Z Z)))))))
+(check-list "loop: derivative per iteration" (loop-derivatives) (list 2.0 4.0 6.0))
+
+(define (loop-maps)
+  (let ((H (lambda (x) x))
+        (out '()))
+    (do ((i 1 (+ i 1)))
+        ((> i 3) (reverse out))
+      (set! H (let ((c i)) (lambda (x) (* c x))))
+      (set! out (cons (map H (list 1 2)) out)))))
+(check-equal "loop: map per iteration" (loop-maps) (list (list 1 2) (list 2 4) (list 3 6)))
+
+;; ── 4. top-level bindings ──────────────────────────────────────────────
+(define TH (lambda (Z) (* Z Z Z)))
+(define (use-TH) (derivative TH 2.0))
+(define (map-TH) (map TH (list 1.0 2.0)))
+(check "top level: derivative in a function, before set!" (use-TH) 12.0)
+(set! TH (lambda (Z) (* 3.0 Z)))
+(check "top level: derivative" (derivative TH 2.0) 3.0)
+(check "top level: derivative in a function, after set!" (use-TH) 3.0)
+(check-list "top level: map in a function, after set!" (map-TH) (list 3.0 6.0))
+(check "top level: derivative-n" (derivative-n TH 2.0 1) 3.0)
+(check-list "top level: taylor" (taylor TH 1.0 2) (list 3.0 3.0 0.0))
+(check-equal "top level: direct call" (TH 2.0) 6.0)
+(check-equal "top level: apply" (apply TH (list 2.0)) 6.0)
+(check-list "top level: map" (map TH (list 1.0 2.0)) (list 3.0 6.0))
+
+(define TL (lambda (v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 1))))
+(set! TL (lambda (v) (+ (vector-ref v 0) (* 3.0 (vector-ref v 1)))))
+(let ((g (gradient TL (vector 1.0 2.0))))
+  (check "top level: gradient [0]" (vector-ref g 0) 1.0)
+  (check "top level: gradient [1]" (vector-ref g 1) 3.0))
+(check "top level: hessian [0 0]" (tensor-ref (hessian TL (vector 1.0 2.0)) 0 0) 0.0)
+(check "top level: laplacian" (laplacian TL (vector 1.0 2.0)) 0.0)
+(check "top level: directional-derivative"
+       (directional-derivative TL (vector 1.0 2.0) (vector 1.0 0.0)) 1.0)
+
+(define TF (lambda (v) (vector (* (vector-ref v 0) (vector-ref v 0))
+                               (* (vector-ref v 1) (vector-ref v 1)))))
+(set! TF (lambda (v) (vector (* 4.0 (vector-ref v 0)) (* 4.0 (vector-ref v 1)))))
+(check "top level: divergence" (divergence TF (vector 1.0 2.0)) 8.0)
+(check "top level: jacobian [1 1]" (tensor-ref (jacobian TF (vector 1.0 2.0)) 1 1) 4.0)
+
+(define TC (lambda (v) (vector 0.0 0.0 0.0)))
+(set! TC (lambda (v) (vector (- 0.0 (vector-ref v 1)) (vector-ref v 0) 0.0)))
+(check "top level: curl [2]" (vector-ref (curl TC (vector 1.0 2.0 3.0)) 2) 2.0)
+
+(define TP (lambda (a b) (* a b)))
+(set! TP (lambda (a b) (+ a b)))
+(check-equal "top level: reduce" (reduce TP 0 (list 1 2 3)) 6)
+
+;; a top-level name defined twice: each use sees the definition before it
+(define TD (lambda (Z) (* Z Z)))
+(check "top level redefinition: derivative before the second define" (derivative TD 1.0) 2.0)
+(define TD (lambda (Z) (* 5.0 Z)))
+(check "top level redefinition: derivative after the second define" (derivative TD 1.0) 5.0)
+(check-list "top level redefinition: map" (map TD (list 1.0)) (list 5.0))
+
+;; ── 5. a later binding of the same name in the same function ─────────────
+(define (sibling-lets)
+  (let ((H (lambda (x) (* x x))))
+    (H 2.0))
+  (let ((H (car (list (lambda (x) (- 0.0 x))))))
+    (list (map H (list 1.0 2.0)) (derivative H 1.0))))
+(let ((r (sibling-lets)))
+  (check-list "sibling let: map" (car r) (list -1.0 -2.0))
+  (check "sibling let: derivative" (cadr r) -1.0))
+
+(define (parameter-after-let H)
+  (let ((H (lambda (x) (* x x))))
+    (H 3.0))
+  (list (map H (list 1.0 2.0)) (derivative H 1.0)))
+(let ((r (parameter-after-let (lambda (x) (* 7.0 x)))))
+  (check-list "parameter after a let: map" (car r) (list 7.0 14.0))
+  (check "parameter after a let: derivative" (cadr r) 7.0))
+
+;; ── 6. controls: never-reassigned bindings still resolve ─────────────────
+(define (control-let)
+  (let ((H (lambda (Z) (* Z Z Z))))
+    (list (derivative H 2.0) (map H (list 1.0 2.0)))))
+(let ((r (control-let)))
+  (check "control: let derivative" (car r) 12.0)
+  (check-list "control: let map" (cadr r) (list 1.0 8.0)))
+(define CT (lambda (Z) (* Z Z)))
+(check "control: top-level derivative" (derivative CT 3.0) 6.0)
+;; a set! of a different variable with the same name elsewhere does not
+;; affect this binding
+(define (shadowing-set) (let ((CT 1)) (set! CT 2) CT))
+(check-equal "control: set! of a shadowing binding" (shadowing-set) 2)
+(check "control: top-level derivative after an unrelated set!" (derivative CT 3.0) 6.0)
+
+(display "----") (newline)
+(if (= nfail 0)
+    (begin (display "PASS: reassigned_callee_identity ")
+           (display npass) (display "/") (display npass) (display " checks") (newline))
+    (begin (display "FAIL: reassigned_callee_identity ")
+           (display nfail) (display " of ") (display (+ npass nfail))
+           (display " checks failed") (newline)
+           (exit 1)))

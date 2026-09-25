@@ -78,6 +78,51 @@ class VerifyGpuBackendTests(unittest.TestCase):
         self.assertTrue(any("does not support portable architecture 72" in item
                             for item in failures))
 
+    # #606: the verifier checks against the supported set the configure
+    # recorded from nvcc (or from the toolkit's documented range).
+    def test_accepts_architectures_from_recorded_nvcc_set(self) -> None:
+        build = self.make_build(
+            "ESHKOL_GPU_ENABLED:BOOL=ON\n"
+            "ESHKOL_REQUIRE_GPU_BACKEND:BOOL=ON\n"
+            "ESHKOL_GPU_BACKEND:INTERNAL=CUDA\n"
+            "ESHKOL_HOST_CUDA_MAJOR:INTERNAL=13\n"
+            "ESHKOL_CUDA_SUPPORTED_ARCHITECTURES:INTERNAL=75;80;86;89;90;100;120;121\n"
+            "CMAKE_CUDA_COMPILER:FILEPATH=/usr/local/cuda/bin/nvcc\n"
+            "CMAKE_CUDA_ARCHITECTURES:STRING=75;80;86;89;90\n",
+            "build gpu.o: CUDA_COMPILER gpu_memory_cuda.cpp gpu_cuda_kernels.cu\n",
+        )
+        self.assertEqual(verify_gpu_backend.verify(build, "CUDA"), [])
+
+    def test_rejects_architecture_outside_recorded_nvcc_set(self) -> None:
+        build = self.make_build(
+            "ESHKOL_GPU_ENABLED:BOOL=ON\n"
+            "ESHKOL_REQUIRE_GPU_BACKEND:BOOL=ON\n"
+            "ESHKOL_GPU_BACKEND:INTERNAL=CUDA\n"
+            "ESHKOL_HOST_CUDA_MAJOR:INTERNAL=13\n"
+            "ESHKOL_CUDA_SUPPORTED_ARCHITECTURES:INTERNAL=75;80;86;89;90\n"
+            "CMAKE_CUDA_COMPILER:FILEPATH=/usr/local/cuda/bin/nvcc\n"
+            "CMAKE_CUDA_ARCHITECTURES:STRING=72;75;80;86;89;90\n",
+            "build gpu.o: CUDA_COMPILER gpu_memory_cuda.cpp gpu_cuda_kernels.cu\n",
+        )
+        failures = verify_gpu_backend.verify(build, "CUDA")
+        self.assertTrue(any("does not support portable architecture 72" in item
+                            for item in failures))
+
+    def test_recorded_cuda_12_set_requires_sm72(self) -> None:
+        build = self.make_build(
+            "ESHKOL_GPU_ENABLED:BOOL=ON\n"
+            "ESHKOL_REQUIRE_GPU_BACKEND:BOOL=ON\n"
+            "ESHKOL_GPU_BACKEND:INTERNAL=CUDA\n"
+            "ESHKOL_HOST_CUDA_MAJOR:INTERNAL=12\n"
+            "ESHKOL_CUDA_SUPPORTED_ARCHITECTURES:INTERNAL=RANGE;50;999\n"
+            "CMAKE_CUDA_COMPILER:FILEPATH=/usr/local/cuda/bin/nvcc\n"
+            "CMAKE_CUDA_ARCHITECTURES:STRING=75;80;86;89;90\n",
+            "build gpu.o: CUDA_COMPILER gpu_memory_cuda.cpp gpu_cuda_kernels.cu\n",
+        )
+        failures = verify_gpu_backend.verify(build, "CUDA")
+        self.assertTrue(any("portable CUDA architecture 72 is missing" in item
+                            for item in failures))
+
     def test_rejects_cpu_stub_mislabeled_as_cuda(self) -> None:
         build = self.make_build(
             "ESHKOL_GPU_ENABLED:BOOL=OFF\n"

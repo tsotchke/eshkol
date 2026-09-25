@@ -116,18 +116,24 @@ Scheme Vector Memory Layout:
 (car v)  ; → same as (vector-ref v 0)
 ```
 
-**NOT supported on Scheme vectors**:
-- ❌ Linear algebra operations
-- ❌ Automatic differentiation
-- ❌ Element-wise arithmetic
+**Not carried out on Scheme vectors as vector operations**:
+- Linear algebra operations (`matmul`, `solve`, `det`, `inv`)
+- Element-wise arithmetic. A scalar against a Scheme vector in either operand
+  position raises a catchable type error naming the source line of the form
+  that raised it, rather than reading past the shorter operand.
 
-For numeric computation, use **tensors** instead.
+A Scheme vector *is* accepted as a differentiation **point**: `(gradient f
+(vector 2.0))` and the `hessian`/`jacobian` family classify the point by its
+runtime value, so a vector point is routed exactly like the identical literal.
+What the list above rules out is treating the vector itself as a numeric array.
+
+For numeric computation over the array, use **tensors** instead.
 
 ---
 
 ## Tensors (Homogeneous Numeric)
 
-**Implementation**: [`lib/backend/tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (1,867-line dispatcher; thirteen `tensor_*_codegen.cpp` siblings after the v1.2 split)
+**Implementation**: [`lib/backend/tensor_codegen.cpp`](../../lib/backend/tensor_codegen.cpp) (2,012-line dispatcher; thirteen `tensor_*_codegen.cpp` siblings after the v1.2 split)
 
 Tensors are **N-dimensional numeric arrays** optimized for scientific computing:
 
@@ -178,12 +184,13 @@ Tensors are **N-dimensional numeric arrays** optimized for scientific computing:
 ```
 Tensor Memory Layout:
 ┌───────────────────────────────────────────────────────────┐
-│ eshkol_tensor_t structure (32 bytes, cache-aligned)      │
+│ eshkol_tensor_t structure (40 bytes, 8-byte aligned)     │
 ├───────────────────────────────────────────────────────────┤
 │ dimensions*    (8 bytes) → [dim0, dim1, ..., dimN]       │
 │ num_dimensions (8 bytes)   Rank (1-4 typical)            │
 │ elements*      (8 bytes) → flat array of int64 bit patterns │
 │ total_elements (8 bytes)   Total element count           │
+│ dtype          (8 bytes)   Tensor dtype tag              │
 └───────────────────────────────────────────────────────────┘
 
 Elements stored as int64 bit patterns of doubles (reinterpret_cast)
