@@ -567,6 +567,43 @@ def check(required_contexts: list[str], reportable: dict) -> dict:
 #      are skipped at the job level, and the "matrix instantiates" rule for
 #      the classes where they run (however few of their steps do).
 
+# ─────────────── every step of a lane-gated job checks its lane ───────────────
+#
+# A matrix leg whose lane is inactive for a PR's build-impact class still runs
+# (so its required context reports), but skips its checkout and build: each of
+# its steps is gated on `LANE_ACTIVE`. A step that forgets the guard runs on an
+# empty workspace and fails the required context for a reason that has nothing
+# to do with the PR (seen on a non-build PR: the WebGPU contract step could not
+# find its own test file). The only step allowed to run unguarded is the one
+# that computes the lane plan itself.
+
+LANE_GUARD_EXEMPT_STEPS = {"Lane plan"}
+
+
+def lane_guard_problems(doc: dict) -> list[str]:
+    problems: list[str] = []
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    if not isinstance(jobs, dict):
+        return problems
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        env = job.get("env")
+        if not (isinstance(env, dict) and "LANE_ACTIVE" in env):
+            continue
+        for index, step in enumerate(job.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            name = step.get("name") or step.get("uses") or f"step {index + 1}"
+            if name in LANE_GUARD_EXEMPT_STEPS:
+                continue
+            cond = step.get("if")
+            if not (isinstance(cond, str) and "env.LANE_ACTIVE == 'true'" in cond):
+                problems.append(f"job {job_id!r} step {name!r} runs without `env.LANE_ACTIVE == 'true'` "
+                                f"in its `if:`, so it also runs on legs whose lane is inactive")
+    return problems
+
+
 LANE_PLAN_SCRIPT = os.path.join(REPO_ROOT, "scripts", "ci_lane_plan.py")
 DOCS_ONLY_TRUE_CLASS_RE = re.compile(r'"\$impact"\s*==\s*"([a-z-]+)"')
 
@@ -994,6 +1031,30 @@ def self_test() -> bool:
                       + "; ".join(impact["problems"]))
                 all_ok = False
 
+    # Lane guard: a lane-gated job's steps must all check LANE_ACTIVE.
+    guarded = {"jobs": {"m": {"env": {"LANE_ACTIVE": "x"}, "steps": [
+        {"name": "Lane plan", "run": "true"},
+        {"name": "build", "if": "env.LANE_ACTIVE == 'true'", "run": "true"},
+        {"name": "late", "if": "always() && env.LANE_ACTIVE == 'true' && (matrix.name == 'a')", "run": "true"}]}}}
+    unguarded = {"jobs": {"m": {"env": {"LANE_ACTIVE": "x"}, "steps": [
+        {"name": "contract", "if": "matrix.name == 'a'", "run": "true"},
+        {"name": "bare", "run": "true"}]}}}
+    ungated_job = {"jobs": {"n": {"steps": [{"name": "anything", "run": "true"}]}}}
+    for name, doc, want in (("guarded_steps_pass", guarded, 0),
+                            ("unguarded_steps_fail", unguarded, 2),
+                            ("job_without_lane_is_not_graded", ungated_job, 0)):
+        got = len(lane_guard_problems(doc))
+        ok = got == want
+        all_ok = all_ok and ok
+        print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] lane_guard_{name}: {got} problem(s)")
+    real_ci = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
+    if os.path.isfile(real_ci):
+        real = lane_guard_problems(_load_yaml(real_ci))
+        ok = not real
+        all_ok = all_ok and ok
+        print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] lane_guard_real_ci: "
+              + ("every lane-gated step checks LANE_ACTIVE" if ok else "; ".join(real[:3])))
+
     if all_ok:
         print("self-test: PASS — the gate fails on every broken fixture, passes the well-formed ones, "
               "NO_DATA is reachable and distinct from TARGET_ONLY/PASS, and grading target UNION live "
@@ -1071,6 +1132,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         impact = {"passed": True, "rows": [], "problems": []}
 
+    guard_problems: list[str] = []
+    for path in workflows:
+        guard_problems.extend(lane_guard_problems(_load_yaml(path)))
+    result["lane_guard_problems"] = guard_problems
+    result["passed"] = result["passed"] and not guard_problems
+
     status = "PASS" if result["passed"] else "FAIL"
 
     if result["passed"]:
@@ -1083,9 +1150,12 @@ def main(argv: list[str] | None = None) -> int:
         snippet = f"[{mode}] {len(result['missing'])} graded context(s) unreportable: " + "; ".join(
             f"{m['context']!r} ({m['reason_kind']})" for m in result["missing"][:5]
         )
-    else:
+    elif impact["problems"]:
         snippet = f"[{mode}] build-impact class coverage failed: " + "; ".join(
             impact["problems"][:3])
+    else:
+        snippet = f"[{mode}] {len(guard_problems)} lane-gated step(s) without a LANE_ACTIVE guard: " + "; ".join(
+            guard_problems[:3])
 
     if not args.no_trace:
         emit_trace(args.trace_dir, status, snippet)
@@ -1111,6 +1181,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    - {m['context']!r}: {m['reason']} [{m['reason_kind']}]")
         for problem in impact["problems"]:
             print(f"    - BUILD-IMPACT CLASS COVERAGE: {problem}")
+        for problem in guard_problems:
+            print(f"    - LANE GUARD: {problem}")
 
     return 0 if result["passed"] else 1
 
