@@ -20,7 +20,7 @@ sources:
 ---
 # ADR-0030: One program-entry rule and Eshkol-owned physical names
 
-**Status:** Proposed
+**Status:** Accepted (design, 2026-09-26); implementation planned for v1.4
 **Issue:** #724
 **Implements:** ADR-0006 section 5 (collision-free physical names), which was
 specified but never built.
@@ -94,19 +94,35 @@ the `BindingId` / `LibraryId` types in `semantic_identity.h`.
 - **Diagnostics** show Scheme identifiers. A demangler in the same facility
   maps physical names back, and the backtrace and profiler paths use it.
 
-### Rule 2: the C boundary is explicit
+### Rule 2: the export list is the C contract
 
-- A binding reaches a C-visible name only through `:export-symbol [<name>]`,
-  which emits a C-linkage alias for its physical definition. `extern`
-  declarations keep importing C functions by their C names.
-- **Reserved names.** An `:export-symbol` name that is reserved for the
-  runtime (`eshkol_*`, `__eshkol_*`, `_ESK*`, `main`, `_start`) is a
-  compile-time error naming the rule. Every other C name is the author's
-  explicit choice.
-- **Shared libraries** export to C exactly their `:export-symbol` bindings,
-  plus the fixed runtime entry `__eshkol_lib_init__`. `eshkol-run
-  --shared-lib` also writes the matching C header, so a host includes it
-  instead of guessing names.
+Internal definitions and the C-visible interface are separate things. Every
+definition gets a physical name (Rule 1); only a declared interface reaches C,
+and that interface is an explicit, versioned, validated contract.
+
+- **The contract is the export list.** For a library, it is the
+  `define-library` / `provide` export list. For a `--shared-lib` build of a
+  plain source file, it is the file's public top-level definitions, as today.
+  Nothing else is visible to C.
+- **Exported C names do not change.** Each exported binding keeps the C name
+  it has today: a C-ABI entry under its Scheme identifier that forwards to
+  the physical definition. Existing C hosts need no migration.
+  `:export-symbol <name>` chooses a different C name, and `:export-symbol` on
+  a program definition is how a program exposes a binding to C or to a
+  WebAssembly host.
+- **Every exported C name is checked at build time.** A name that is
+  reserved for the runtime (`eshkol_*`, `__eshkol_*`, `_ESK*`, `main`,
+  `_start`), or that equals a symbol defined by anything the artifact links
+  (the runtime, the standard library, libc, libm), is a build error naming
+  both definitions. An export can therefore never interpose a C or runtime
+  function.
+- **Each shared library emits an interface manifest** beside the binary:
+  every exported binding's C name, physical name, arity and, where known,
+  types, with an interface version hash that changes whenever the contract
+  changes. The C header is generated from the manifest, so the two cannot
+  drift. The same manifest can later describe the interface for calls that
+  cross process or machine boundaries.
+- `extern` declarations keep importing C functions by their C names.
 - **The standard library** is compiled with physical names. Programs declare
   stdlib bindings by their physical names and link to `stdlib.o` or the JIT
   by those names. The JIT discovers stdlib bindings from a binding manifest
@@ -124,8 +140,16 @@ sessions are not programs and never get an entry call.
   program's top-level definitions and returns one of: no `main`; `main` with
   zero parameters; `main` with one required parameter; or an error. The
   error says: "`main` is the program entry point; it takes no parameters, or
-  one parameter that receives `(command-line)`". It covers any other arity,
-  optional or rest parameters, and a `main` that is not a procedure.
+  one parameter that receives `(command-line)`", and shows that form. It
+  covers any other arity, required-plus-rest and rest-only parameter lists
+  (`(define (main . args) ...)`), optional parameters, a multi-arity `main`,
+  and a `main` that is not a procedure. Every accepted shape has exactly one
+  meaning, known at compile time. Two argument conventions exist elsewhere
+  (SRFI-22's `(main args)` receives the full command line; some Schemes
+  spread arguments into `(main . args)` without the program name), and
+  accepting both would make the program name depend on how `main` is
+  written. Rejecting is also the reversible choice: a form can be admitted
+  later without breaking anyone.
 - **One lowering.** Both compilers append the planned call to the program as
   ordinary code after every top-level form:
 
@@ -174,11 +198,10 @@ sessions are not programs and never get an entry call.
 - The special cases for `main`, `scheme_main` and `_start`, the duplicate
   mangling helpers and the private-name builders are removed. Each concern
   has one owner.
-- **Breaking for C hosts of shared libraries** that call Eshkol functions by
-  their Scheme names. They add `:export-symbol` to those definitions and
-  include the generated header. The shared-library build lists every public
-  binding that lacks `:export-symbol`, so migration is mechanical. The
-  release notes and `docs/BUILD_INTEGRATION.md` say so.
+- **No migration for C hosts.** Shared-library exports keep their C names.
+  Hosts gain a generated header and a versioned interface manifest, and a
+  build now fails where an export would have interposed a C or runtime
+  function.
 - **Programs that defined `main`** now also run their top-level forms and
   library init on native, and exit with the `exit` mapping of `main`'s
   result. That behaviour was the defect. The 34 test programs that define
@@ -199,9 +222,10 @@ this order, since each builds on the last.
 2. **Functions and derived names.** User and nested functions, lambdas,
    captures, `_sexpr` records, REPL names, module-private names. Stdlib
    binding manifest and JIT discovery.
-3. **The C boundary.** `:export-symbol` aliasing, reserved-name diagnostic,
-   shared-library exports and header generation, migration of the in-repo
-   shared-library harnesses.
+3. **The C contract.** Export-list C entries forwarding to physical
+   definitions, `:export-symbol` naming, the build-time clash check against
+   reserved names and linked libraries, the interface manifest with its
+   version hash, and header generation from it.
 4. **Entry plan.** `eshkol_program_entry_plan`, the native lowering and the
    single entry stub, the in-process JIT, the VM chunk name and lowering,
    WebAssembly exports and the site.
@@ -234,6 +258,10 @@ this order, since each builds on the last.
 - **Collision corpus.** User definitions named after C library and runtime
   functions, including `main`, run correctly on every engine and match the
   VM.
+- **Contract checks.** Existing shared-library harnesses keep working
+  unchanged; exporting a reserved or linked-library name fails the build;
+  the manifest's version hash changes exactly when the export list or a
+  signature changes; the generated header matches the manifest.
 - **ICC.** This ADR is registered; `trace-callers` and `impact` cover every
   site that builds an object name from a binding; `duplicate-implementations`
   shows one physical-name facility and one entry plan.
@@ -249,12 +277,15 @@ this order, since each builds on the last.
   construction: any C or runtime symbol can collide.
 - **A second mangling scheme beside ADR-0006's** would give the same concept
   two owners.
+- **Only `:export-symbol` bindings reach C** would force every existing C host
+  to change for no gain in safety: the build-time clash check already stops
+  an export from interposing a C or runtime function.
 
-## Open questions for the owner
+## Decisions taken with the owner
 
-1. **Shared-library exports.** This ADR follows ADR-0006: only
-   `:export-symbol` bindings reach C. The alternative also exports a
-   library's `export` list under documented derived C names. Recommended:
-   the strict rule, with the generated header and migration listing.
-2. **`(define (main . args) ...)`.** Recommended: rejected with the entry
-   diagnostic, so there is exactly one way to receive arguments.
+1. **C exports:** the export list is the contract; exported names keep their
+   current C names, are validated against reserved and linked symbols, and
+   are described by a versioned interface manifest. No migration for hosts.
+2. **`(define (main . args) ...)`** is rejected with the entry diagnostic.
+3. **The one-parameter `main`** receives the full `(command-line)`, program
+   name first.
