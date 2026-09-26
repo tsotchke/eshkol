@@ -97,6 +97,11 @@
       "pr": 718,
       "class": "test-only",
       "reason": "The ESKM preflight test runner no longer passes empty compiler arguments; test harness only."
+    },
+    {
+      "pr": 725,
+      "class": "release-machinery",
+      "reason": "Teaches the changelog-completeness gate to grade a squash-merged release branch by its own history; release tooling only, no shipped file changes."
     }
   ]
 }
