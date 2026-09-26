@@ -54,7 +54,7 @@ documentation hub lists the same records in
 | [0026](0026-syntax-rules-one-engine-one-renaming-rule.md) | One `syntax-rules` engine and one renaming rule | Accepted — implemented (SW-192) | 2026-09-22 | v1.3.5 |
 | [0027](0027-recursive-taylor-level-carrier.md) | Nested differentiation uses one recursive Taylor level carrier | Accepted — implemented on native JIT and AOT | 2026-09-22 | v1.3.5 |
 | [0028](0028-one-number-syntax-recognizer.md) | One number-syntax recognizer for every reader | Accepted — implemented on native JIT, AOT and the bytecode VM | 2026-09-22 | v1.3.5 |
-| [0030](0030-program-entry-and-eshkol-symbol-namespace.md) | One program-entry rule and an Eshkol-owned symbol namespace | Proposed | 2026-09-25 | v1.4.0 |
+| [0030](0030-program-entry-and-physical-names.md) | One program-entry rule and Eshkol-owned physical names (implements ADR-0006 section 5) | Proposed | 2026-09-25 | v1.4.0 |
 
 ## Numbering
 
