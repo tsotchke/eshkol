@@ -1986,18 +1986,18 @@ jobs:
           cmake --build "${{ matrix.build_dir }}" --parallel ${BUILD_JOBS}
 
       - name: Public compiler APIs link and execute
-        if: matrix.name == 'linux-x64-lite'
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite')
         run: ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure -R '^compiler_public_api_linkage$'
 
       - name: Compiler callable capabilities execute
-        if: matrix.name == 'linux-x64-lite'
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite')
         run: >-
           python3 scripts/run_compiler_assurance.py --runtime-only
           --binary "${{ matrix.build_dir }}/eshkol-run"
           --output .icc/evidence/compiler-capabilities
 
       - name: Preserve compiler capability executions
-        if: always() && matrix.name == 'linux-x64-lite'
+        if: always() && env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite')
         uses: actions/upload-artifact@v6
         with:
           name: compiler-capability-executions
@@ -2008,7 +2008,7 @@ jobs:
           if-no-files-found: error
 
       - name: Parser and stdlib on an 8 MiB stack
-        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite')
         timeout-minutes: 15
         shell: bash
         run: |
@@ -2024,7 +2024,7 @@ jobs:
       # platform-independent and the matrix already exercises the same binary
       # on the other native lanes.
       - name: ESH-0103 nested-expression compile-time/RSS gate
-        if: matrix.name == 'linux-x64-lite'
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite')
         timeout-minutes: 30
         shell: bash
         env:
@@ -2034,7 +2034,7 @@ jobs:
           bash tests/perf/nested_expr_compile_time_test.sh "$BUILD_DIR/eshkol-run"
 
       - name: Experimental ESKM v2 preflight contract
-        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite')
         timeout-minutes: 5
         shell: bash
         run: |
@@ -2047,7 +2047,7 @@ jobs:
           done
 
       - name: Atomic checkpoint save contract
-        if: matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite'
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'macos-arm64-lite')
         shell: bash
         run: |
           set -euxo pipefail
@@ -2077,7 +2077,7 @@ jobs:
       # WASM/lite lane: the no-GPU path must refuse GPU dispatch and still
       # produce the CPU reference result.
       - name: WebGPU regression contracts (CPU/lite path)
-        if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
+        if: env.LANE_ACTIVE == 'true' && (matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build')
         shell: bash
         run: node tests/webgpu/webgpu_regressions_test.mjs
 

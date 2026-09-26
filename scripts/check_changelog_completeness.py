@@ -151,6 +151,9 @@ REFERENCE_RE = re.compile(r"(?<![0-9A-Za-z&])#([0-9]+)\b")
 SECTION_HEADING_RE = re.compile(r"^## \[(?P<name>[^\]]+)\]", re.MULTILINE)
 
 
+FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
 class SourceError(Exception):
     """A source could not be read, so nothing was verified (gate fails closed)."""
 
@@ -181,7 +184,17 @@ def validate_release_record(data: dict, path: str = "release record") -> dict:
             f"(for example \"previous_tag\": \"v1.3.4-evolve\") so the release range can be derived")
     if previous == tag:
         raise SourceError(f"{path} previous_tag equals tag ({tag}); the release range would be empty")
-    return {"tag": tag, "version": tag[1:], "previous_tag": previous}
+    integration = data.get("integration")
+    if integration is not None:
+        pr = integration.get("pr") if isinstance(integration, dict) else None
+        head = integration.get("head") if isinstance(integration, dict) else None
+        if not (isinstance(pr, int) and not isinstance(pr, bool) and pr > 0
+                and isinstance(head, str) and FULL_SHA_RE.fullmatch(head)):
+            raise SourceError(
+                f"{path} integration must be {{\"pr\": <positive int>, \"head\": <40-hex commit>}}: "
+                f"the pull request that squash-merged the release branch and that branch's head")
+        integration = {"pr": pr, "head": head}
+    return {"tag": tag, "version": tag[1:], "previous_tag": previous, "integration": integration}
 
 
 def read_text(path: str, what: str) -> str:
@@ -259,6 +272,65 @@ def collect_range_subjects(range_spec: str, runner=run_git) -> list[tuple[str, s
         if sha:
             commits.append((sha, subject))
     return commits
+
+
+def expand_integration(commits: list[tuple[str, str]], range_spec: str, integration: dict | None,
+                       runner=run_git) -> list[tuple[str, str]]:
+    """Restore the pull requests a squash-merged release branch carried.
+
+    When the release branch is squash-merged, the pull requests merged into it
+    stop being separate commits on the tagged history: the range shows only the
+    squash commit. The release record names that pull request and the branch
+    head it squashed. If the squash commit is in the range, its tree must be
+    byte-identical to the recorded head's tree -- proof that the squash is the
+    branch -- and then the branch's own history since the previous release is
+    walked for the pull requests it merged. Anything that cannot be verified
+    fails closed. When the squash commit is not in the range (grading the
+    release branch itself), the history is already complete and nothing is
+    added.
+    """
+    if not integration:
+        return commits
+    squash = next((sha for sha, subject in commits if parse_pr_number(subject) == integration["pr"]), None)
+    if squash is None:
+        return commits
+    base = range_spec.partition("..")[0]
+    head = integration["head"]
+
+    def git(args: list[str]) -> tuple[int, str, str]:
+        try:
+            return runner(args)
+        except OSError as exc:
+            raise SourceError(f"git is unavailable ({exc}); the release branch cannot be walked") from exc
+
+    code, _, _ = git(["rev-parse", "--verify", "--quiet", head + "^{commit}"])
+    if code != 0:
+        raise SourceError(f"release branch head {head} (pull request #{integration['pr']}) does not "
+                          f"resolve; keep the release branch on the remote and " + FETCH_HINT)
+    trees = []
+    for rev in (squash, head):
+        code, out, err = git(["rev-parse", rev + "^{tree}"])
+        if code != 0:
+            raise SourceError(f"cannot read the tree of {rev}: {err.strip()}")
+        trees.append(out.strip())
+    if trees[0] != trees[1]:
+        raise SourceError(f"squash commit {squash[:12]} of pull request #{integration['pr']} does not "
+                          f"have the tree of the recorded release branch head {head[:12]}; the release "
+                          f"history cannot be reconstructed from it")
+    code, _, _ = git(["merge-base", "--is-ancestor", base, head])
+    if code != 0:
+        raise SourceError(f"{base} is not an ancestor of the release branch head {head[:12]}")
+    code, out, err = git(["log", "--format=%H%x09%s", f"{base}..{head}"])
+    if code != 0:
+        raise SourceError(f"git log {base}..{head[:12]} failed: {err.strip()}")
+    seen = {sha for sha, _ in commits}
+    expanded = list(commits)
+    for line in out.splitlines():
+        sha, _, subject = line.partition("\t")
+        if sha and sha not in seen:
+            seen.add(sha)
+            expanded.append((sha, subject))
+    return expanded
 
 
 # ───────────────────────── pure grading ─────────────────────────
@@ -614,13 +686,62 @@ def self_test() -> bool:
         except SourceError:
             check(f"red_malformed_range_{bad_range}", True)
 
+    # A squash-merged release branch: its pull requests come back only when the
+    # squash commit's tree is the recorded branch head's tree.
+    head_sha = "e" * 40
+    squash_commits = [("f" * 40, "release: v9.8.7-test (#200)")]
+    branch_log = "".join(f"{sha}\t{subject}\n" for sha, subject in commits)
+
+    def fake_integration_git(*, tree_match=True, head_missing=False):
+        def runner(args: list[str]) -> tuple[int, str, str]:
+            if args[:3] == ["rev-parse", "--verify", "--quiet"]:
+                return (1 if head_missing else 0), "", ""
+            if args[:1] == ["rev-parse"] and args[-1].endswith("^{tree}"):
+                rev = args[-1][:-len("^{tree}")]
+                return 0, ("t1" if rev == "f" * 40 or tree_match else "t2") + "\n", ""
+            if args[:1] == ["merge-base"]:
+                return 0, "", ""
+            if args[:1] == ["log"]:
+                return 0, branch_log, ""
+            return 1, "", "unexpected git call"
+        return runner
+
+    integration = {"pr": 200, "head": head_sha}
+    try:
+        expanded = expand_integration(squash_commits, range_spec, integration, runner=fake_integration_git())
+        expanded_prs = set(prs_in_commits(expanded))
+        check("green_squashed_release_branch_restores_its_pull_requests",
+              expanded_prs == {200, 101, 102, 103}, str(sorted(expanded_prs)))
+    except SourceError as exc:
+        check("green_squashed_release_branch_restores_its_pull_requests", False, str(exc))
+    check("green_no_integration_leaves_range_alone",
+          expand_integration(squash_commits, range_spec, None, runner=fake_integration_git()) == squash_commits)
+    check("green_release_branch_itself_needs_no_expansion",
+          expand_integration(commits, range_spec, integration, runner=fake_integration_git()) == commits)
+    for name, runner, needle in (
+        ("squash_tree_differs_from_branch_head", fake_integration_git(tree_match=False), "does not have the tree"),
+        ("branch_head_missing", fake_integration_git(head_missing=True), "does not resolve"),
+    ):
+        try:
+            expand_integration(squash_commits, range_spec, integration, runner=runner)
+            check(f"red_{name}_fails_closed", False, "expanded anyway")
+        except SourceError as exc:
+            check(f"red_{name}_fails_closed", needle in str(exc), str(exc)[:60])
+    for bad in ({"pr": 0, "head": head_sha}, {"pr": 200, "head": "abc"}, {"pr": "200", "head": head_sha}, "x"):
+        try:
+            validate_release_record({"tag": "v9.8.7-test", "previous_tag": "v9.8.6-test", "integration": bad})
+            check(f"red_bad_integration_{bad!r}"[:60], False, "accepted")
+        except SourceError:
+            check(f"red_bad_integration_{str(bad)[:20]}", True)
+
     if all_ok:
         print("self-test: PASS -- a referenced or ledgered pull request is accounted for, an "
               "unaccounted one fails, an [Unreleased] reference counts and an older release's does "
               "not, every ledger rule (class, reason, duplicate, stale, redundant, order, release, "
               "schema) fails red, both merge subject shapes parse and a mid-subject #N does not, "
-              "a pull request under review may account for itself in advance, and a range that "
-              "cannot be walked or yields no pull requests fails closed")
+              "a pull request under review may account for itself in advance, a squash-merged "
+              "release branch restores its pull requests only when its tree matches the recorded "
+              "head, and a range that cannot be walked or yields no pull requests fails closed")
     else:
         print("self-test: FAIL -- the gate did not behave as specified", file=sys.stderr)
     return all_ok
@@ -656,7 +777,8 @@ def main(argv: list[str] | None = None) -> int:
         range_spec = args.range_spec or f"{record['previous_tag']}..HEAD"
         changelog_text = read_text(args.changelog, "changelog")
         ledger = load_ledger(args.ledger)
-        commits = collect_range_subjects(range_spec)
+        commits = expand_integration(collect_range_subjects(range_spec), range_spec,
+                                     record["integration"])
         result = grade(commits, changelog_text, ledger, record, range_spec,
                        tuple(args.pending_pr), args.require_pending)
     except SourceError as exc:

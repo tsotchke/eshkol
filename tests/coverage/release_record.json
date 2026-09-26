@@ -8,9 +8,14 @@
   "ctest_total": null,
   "ctest_total_placeholder": "PLACEHOLDER: replace the null above with the N of ctest's own '100% tests passed ... out of N' line from the full CTest run at the release commit, then run `python3 scripts/check_surface_counts.py --sync` and `scripts/build-site-content.sh`, and delete this key.",
   "vm_parity_total": 388,
+  "integration": {
+    "pr": 628,
+    "head": "b1294b6903ecf2c10d9d77853c5d41b6d6ca0e27"
+  },
   "sources": {
     "previous_tag": "the git tag of the preceding release; must resolve in a full-history checkout and be an ancestor of the release commit (scripts/check_changelog_completeness.py)",
     "ctest_total": "ctest summary line of the full suite at the release commit (scripts/run_ctest_gate.sh)",
-    "vm_parity_total": "scripts/run_vm_parity.sh summary line at the release commit (vm_parity.jsonl, vm_parity_gate)"
+    "vm_parity_total": "scripts/run_vm_parity.sh summary line at the release commit (vm_parity.jsonl, vm_parity_gate)",
+    "integration": "the pull request that squash-merged the release branch and that branch's head commit; scripts/check_changelog_completeness.py proves the squash commit's tree equals the head's tree and then walks the branch history for the pull requests it merged. Keep the release branch on the remote."
   }
 }
