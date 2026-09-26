@@ -69,6 +69,11 @@
       "reason": "Removes a merge-conflict marker that an earlier merge in this same release range left in a C source file outside the build's source list; no released build contained it."
     },
     {
+      "pr": 628,
+      "class": "merge-integration",
+      "reason": "Squash-merges the v1.3.5 release branch; every pull request it carried is accounted for individually through the release record's integration entry."
+    },
+    {
       "pr": 660,
       "class": "test-only",
       "reason": "Makes the smoke probe for the large-procedure VM regression count the descriptive PASS lines that test prints, so a passing test is no longer reported red; one harness script."
