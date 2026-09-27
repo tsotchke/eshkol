@@ -2,6 +2,10 @@
 #ifndef VM_PRELUDE_CACHE_H
 #define VM_PRELUDE_CACHE_H
 
+#include <math.h>
+
+#include <stdint.h>
+
 static const int prelude_code_len = 51833;
 static const int prelude_n_locals = 1564;
 static const int prelude_n_constants = 10261;
@@ -8572,14 +8576,14 @@ static const double prelude_const_floats[] = {
     0.0, 0.0, 0.0, 0.0, 0.0, 1, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.7976931348623157e+308, 0.0,
-    inf, -inf, 1.7976931348623157e+308, -inf, 0.0, 0.0, 0.0, -inf,
-    0.0, -inf, inf, 0.0, 0.0, 0.0, 0.0, 0.0,
+    INFINITY, -INFINITY, 1.7976931348623157e+308, -INFINITY, 0.0, 0.0, 0.0, -INFINITY,
+    0.0, -INFINITY, INFINITY, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, inf,
-    -inf, inf, -1.7976931348623157e+308, 0.0, inf, 0.0, inf, -inf,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, INFINITY,
+    -INFINITY, INFINITY, -1.7976931348623157e+308, 0.0, INFINITY, 0.0, INFINITY, -INFINITY,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
