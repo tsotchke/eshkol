@@ -131,6 +131,14 @@ if [ ! -x "$GEN_EXE" ]; then
     exit 2
 fi
 
+# The generator resolves the canonical prelude module closure relative to its
+# process working directory. CTest invokes this script from the build tree, so
+# anchor execution to the repository root to make its bytecode deterministic.
+if ! cd "$REPO_ROOT"; then
+    echo "FAIL: could not change to repository root: $REPO_ROOT" >&2
+    exit 2
+fi
+
 FRESH_OUTPUT="$(dirname "$GEN_EXE")/vm_prelude_cache.generated.h"
 if ! "$GEN_EXE" > "$FRESH_OUTPUT" 2>/dev/null; then
     echo "FAIL: prelude cache generator failed: $GEN_EXE" >&2
