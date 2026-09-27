@@ -43,11 +43,15 @@
 ;;  number (int / bignum / ratnum), the result endpoint is computed with
 ;;  ordinary exact generic arithmetic (+ - * /) and is therefore exact with
 ;;  ZERO rounding error — R7RS exactness contagion already guarantees this,
-;;  no separate widening step is needed or performed. The moment any
-;;  relevant endpoint is inexact, every operand is coerced to a double
-;;  (`exact->inexact`, a no-op on an already-inexact value) and the outward
-;;  nudge is applied — "mixed exact/inexact takes the conservative
-;;  (rounded) side", per the task brief.
+;;  no separate widening step is needed or performed. In a mixed operation,
+;;  exact endpoints are converted with ia-to-double-down or ia-to-double-up.
+;;  These compare the exact value to the exact rational represented by the
+;;  rounded double, so conversion error is included before the arithmetic
+;;  nudge. Overflow conversion is bounded by the adjacent finite float and
+;;  infinity (some runtimes report NaN for that conversion; the sign of the
+;;  exact input selects those same bounds). An indeterminate non-finite
+;;  corner or a denominator widened across zero fails closed. Inexact
+;;  endpoints remain unchanged.
 ;;
 ;;  Known defect ROUTED AROUND, not fixed: `(expt 1/3 50)` silently returns
 ;;  the exact integer 0 (repeated-exact-multiplication bug in the `expt`
@@ -215,23 +219,62 @@
 (define (ia-all-exact4? al ah bl bh)
   (and (exact? al) (exact? ah) (exact? bl) (exact? bh)))
 
+;; Outward conversion of a single exact endpoint. inexact->exact recovers
+;; the exact dyadic value of every finite double; comparing against that
+;; value is essential because mixed exact/inexact `=`/ordering may itself
+;; round a large exact operand to the same double. Non-finite conversion from
+;; a finite exact value is handled explicitly; some runtimes return infinity,
+;; others NaN, and inexact->exact rejects both.
+(define (ia-to-double-down x)
+  (if (exact? x)
+      (let ((d (exact->inexact x)))
+        (if (not (= d d))
+            (if (> x 0) 1.7976931348623157e308 -inf.0)
+            (if (= d +inf.0)
+                (fl-next-down d)
+                (if (= d -inf.0) d
+                    (if (> (inexact->exact d) x) (fl-next-down d) d)))))
+      x))
+
+(define (ia-to-double-up x)
+  (if (exact? x)
+      (let ((d (exact->inexact x)))
+        (if (not (= d d))
+            (if (> x 0) +inf.0 -1.7976931348623157e308)
+            (if (= d -inf.0)
+                (fl-next-up d)
+                (if (= d +inf.0) d
+                    (if (< (inexact->exact d) x) (fl-next-up d) d)))))
+      x))
+
+(define (ia-float-results-ok? xs)
+  (if (pair? xs)
+      (and (= (car xs) (car xs)) (ia-float-results-ok? (cdr xs)))
+      #t))
+
 (define (ia+ a b)
   (ia-check "ia+" a) (ia-check "ia+" b)
   (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
     (if (ia-all-exact4? al ah bl bh)
         (cons (+ al bl) (+ ah bh))
-        (let ((ald (exact->inexact al)) (ahd (exact->inexact ah))
-              (bld (exact->inexact bl)) (bhd (exact->inexact bh)))
-          (cons (fl-next-down (+ ald bld)) (fl-next-up (+ ahd bhd)))))))
+        (let ((ald (ia-to-double-down al)) (bld (ia-to-double-down bl))
+              (ahd (ia-to-double-up ah)) (bhd (ia-to-double-up bh)))
+          (let ((lo (+ ald bld)) (hi (+ ahd bhd)))
+            (if (ia-float-results-ok? (list lo hi))
+                (cons (fl-next-down lo) (fl-next-up hi))
+                (error "ia+: indeterminate non-finite endpoint arithmetic")))))))
 
 (define (ia- a b)
   (ia-check "ia-" a) (ia-check "ia-" b)
   (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
     (if (ia-all-exact4? al ah bl bh)
         (cons (- al bh) (- ah bl))
-        (let ((ald (exact->inexact al)) (ahd (exact->inexact ah))
-              (bld (exact->inexact bl)) (bhd (exact->inexact bh)))
-          (cons (fl-next-down (- ald bhd)) (fl-next-up (- ahd bld)))))))
+        (let ((ald (ia-to-double-down al)) (bhd (ia-to-double-up bh))
+              (ahd (ia-to-double-up ah)) (bld (ia-to-double-down bl)))
+          (let ((lo (- ald bhd)) (hi (- ahd bld)))
+            (if (ia-float-results-ok? (list lo hi))
+                (cons (fl-next-down lo) (fl-next-up hi))
+                (error "ia-: indeterminate non-finite endpoint arithmetic")))))))
 
 ;; Negation is exact in floating point (sign flip only, no rounding) — no
 ;; nudge needed, exact or not.
@@ -244,15 +287,17 @@
         (let ((p1 (* al bl)) (p2 (* al bh)) (p3 (* ah bl)) (p4 (* ah bh)))
           (cons (ia-min2 (ia-min2 p1 p2) (ia-min2 p3 p4))
                           (ia-max2 (ia-max2 p1 p2) (ia-max2 p3 p4))))
-        (let* ((ald (exact->inexact al)) (ahd (exact->inexact ah))
-               (bld (exact->inexact bl)) (bhd (exact->inexact bh))
+        (let* ((ald (ia-to-double-down al)) (ahd (ia-to-double-up ah))
+               (bld (ia-to-double-down bl)) (bhd (ia-to-double-up bh))
                (p1 (* ald bld)) (p2 (* ald bhd)) (p3 (* ahd bld)) (p4 (* ahd bhd))
                (lo (ia-min2 (ia-min2 p1 p2) (ia-min2 p3 p4)))
                (hi (ia-max2 (ia-max2 p1 p2) (ia-max2 p3 p4))))
           ;; Each of p1..p4 individually carries <=0.5ulp round-to-nearest
           ;; error; nudging the SELECTED extremal candidate by one ulp in
           ;; its own direction is sound regardless of which one it was.
-          (cons (fl-next-down lo) (fl-next-up hi))))))
+          (if (ia-float-results-ok? (list p1 p2 p3 p4))
+              (cons (fl-next-down lo) (fl-next-up hi))
+              (error "ia*: indeterminate non-finite endpoint arithmetic"))))))
 
 ;; ia/: SIGNALS AN ERROR if the denominator interval contains 0 (same
 ;; documented policy as core.ad.interval's interval-div).
@@ -266,12 +311,15 @@
               (let ((q1 (/ al bl)) (q2 (/ al bh)) (q3 (/ ah bl)) (q4 (/ ah bh)))
                 (cons (ia-min2 (ia-min2 q1 q2) (ia-min2 q3 q4))
                                 (ia-max2 (ia-max2 q1 q2) (ia-max2 q3 q4))))
-              (let* ((ald (exact->inexact al)) (ahd (exact->inexact ah))
-                     (bld (exact->inexact bl)) (bhd (exact->inexact bh))
+              (let* ((ald (ia-to-double-down al)) (ahd (ia-to-double-up ah))
+                     (bld (ia-to-double-down bl)) (bhd (ia-to-double-up bh))
                      (q1 (/ ald bld)) (q2 (/ ald bhd)) (q3 (/ ahd bld)) (q4 (/ ahd bhd))
                      (lo (ia-min2 (ia-min2 q1 q2) (ia-min2 q3 q4)))
                      (hi (ia-max2 (ia-max2 q1 q2) (ia-max2 q3 q4))))
-                (cons (fl-next-down lo) (fl-next-up hi))))))))
+                (if (and (or (> bld 0) (< bhd 0))
+                         (ia-float-results-ok? (list q1 q2 q3 q4)))
+                    (cons (fl-next-down lo) (fl-next-up hi))
+                    (error "ia/: converted denominator contains zero or endpoint arithmetic is indeterminate"))))))))
 
 ;; Multiply an interval by an exact integer/rational SCALAR k (both signs).
 (define (ia-scale a k) (ia* a (ia-pt k)))
