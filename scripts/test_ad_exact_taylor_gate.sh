@@ -35,7 +35,9 @@ for name in names:
         ET.SubElement(case, "failure", message="injected intentional fixture failure")
 ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 if mode == "emit-event-failure":
-    os.chmod(os.path.join(os.environ["TRACE_DIR"], "ad_exact_taylor.jsonl"), 0o444)
+    event_path = os.path.join(os.environ["TRACE_DIR"], "ad_exact_taylor.jsonl")
+    os.remove(event_path)
+    os.mkdir(event_path)  # Opening a directory for the final event fails for root and non-root alike.
 raise SystemExit(1 if mode == "fixture-fail" else 0)
 PY
 chmod +x "$TMP/fake-ctest"
