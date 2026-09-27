@@ -4165,6 +4165,36 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: GUW multivariate"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_guw_order8_jit_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/guw_order8_analytic_test.esk"
+                -L${CMAKE_CURRENT_BINARY_DIR}
+    )
+    set_tests_properties(ad_guw_order8_jit_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: GUW order-8 analytic oracle: 2/2 checks, D\\^\\(3,3,2\\)=72"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_guw_order8_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/ad_guw_order8_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/guw_order8_analytic_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/ad_guw_order8_aot'"
+    )
+    set_tests_properties(ad_guw_order8_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "PASS: GUW order-8 analytic oracle: 2/2 checks, D\\^\\(3,3,2\\)=72"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME ad_exact_taylor_gate_selftest
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_ad_exact_taylor_gate.sh"
+    )
+    set_tests_properties(ad_exact_taylor_gate_selftest PROPERTIES
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "PASS: AD exact Taylor gate rejects zero-match, failing-fixture, and timeout injections"
+        FAIL_REGULAR_EXPRESSION "Traceback|AssertionError")
     # Task #114: AD capture reconstruction must resolve free variables with the
     # same local-then-global scope rule codegenLambda used, so an enclosing
     # function's parameter is never replaced by a same-named top-level global.
@@ -5523,6 +5553,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         autodiff_tensor_reductions_runtime_smoke
         ad_structural_int_guard_runtime_smoke
         guw_multivariate_runtime_smoke
+        ad_guw_order8_jit_smoke
         sparse_tensors_runtime_smoke
         reverse_over_taylor_runtime_smoke
         checkpointed_reverse_runtime_smoke

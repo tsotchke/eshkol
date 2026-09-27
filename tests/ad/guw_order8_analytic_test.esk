@@ -1,0 +1,39 @@
+;; GUW order-8 analytic oracle: D_xxx yyy zz (x^3 y^3 z^2) = 72.
+;; The same multiset in a different order must produce the same result.
+(require core.ad.guw)
+
+(define npass 0)
+(define nfail 0)
+
+(define (f v)
+  (let ((x (vector-ref v 0))
+        (y (vector-ref v 1))
+        (z (vector-ref v 2)))
+    (* x x x y y y z z)))
+
+(define xs (vector 2 3 5))
+(define beta-a (list 0 0 0 1 1 1 2 2))
+(define beta-b (list 2 1 0 2 1 0 1 0))
+(define got-a (mixed-partial f xs beta-a))
+(define got-b (mixed-partial f xs beta-b))
+
+(define (check name ok)
+  (if ok
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; Integer seed and polynomial have exact analytic result 3! * 3! * 2! = 72.
+;; GUW currently accumulates through floating Taylor coefficients; allow 1e-8
+;; absolute error while keeping the expected value independent of the engine.
+(check "order-8 analytic D^(3,3,2)=72" (< (abs (- got-a 72)) 1e-8))
+(check "order-8 permutation symmetry" (< (abs (- got-a got-b)) 1e-8))
+
+(if (> nfail 0)
+    (begin
+      (display "GUW order 8: ") (display npass) (display " passed, ")
+      (display nfail) (display " failed") (newline)
+      (exit 1))
+    (begin
+      (display "PASS: GUW order-8 analytic oracle: ")
+      (display npass) (display "/2 checks, D^(3,3,2)=72") (newline)))
