@@ -30,6 +30,11 @@ assert.equal(env.eshkol_ad_tower_carry_result(), 0);
 assert.equal(env.eshkol_ad_jet_extract_tower(), 0);
 assert.equal(env.eshkol_ad_tower_enter(), undefined);
 assert.equal(env.eshkol_ad_tower_leave(), undefined);
+assert.equal(typeof env.eshkol_double_to_exact_tagged, 'function');
+assert.throws(
+    () => env.eshkol_double_to_exact_tagged(0, 0.1, 0),
+    /eshkol_double_to_exact_tagged is unavailable in the browser LLVM\/WASM host glue/,
+);
 
 function uleb(value) {
     const result = [];
@@ -49,11 +54,13 @@ function section(id, payload) {
     return [id, ...uleb(payload.length), ...payload];
 }
 
-// Types: () -> i32 for the two extraction imports; () -> () for void hooks.
+// Types: () -> i32 for extraction imports, () -> () for void hooks, and
+// (i32, f64, i32) -> () for exact conversion's arena/double/out ABI.
 const typeSection = [
-    ...uleb(2),
+    ...uleb(3),
     0x60, 0x00, 0x01, 0x7f,
     0x60, 0x00, 0x00,
+    0x60, 0x03, 0x7f, 0x7c, 0x7f, 0x00,
 ];
 const importEntries = [
     ['eshkol_ad_tower_carry_result', 0],
@@ -61,16 +68,30 @@ const importEntries = [
     ['eshkol_ad_nested_capture_unsupported', 1],
     ['eshkol_ad_tower_enter', 1],
     ['eshkol_ad_tower_leave', 1],
+    ['eshkol_double_to_exact_tagged', 2],
 ].flatMap(([name, type]) => [
     ...wasmString('env'), ...wasmString(name), 0x00, ...uleb(type),
 ]);
-const importSection = [...uleb(5), ...importEntries];
-const functionSection = [...uleb(1), ...uleb(1)];
+const importSection = [...uleb(6), ...importEntries];
+const functionSection = [...uleb(2), ...uleb(1), ...uleb(1)];
 const exportSection = [
-    ...uleb(1), ...wasmString('invokeUnsupported'), 0x00, ...uleb(5),
+    ...uleb(2),
+    ...wasmString('invokeUnsupported'), 0x00, ...uleb(6),
+    ...wasmString('invokeExactUnavailable'), 0x00, ...uleb(7),
 ];
 const body = [0x00, 0x10, 0x02, 0x0b]; // no locals; call imported function 2; end
-const codeSection = [...uleb(1), ...uleb(body.length), ...body];
+const exactBody = [
+    0x00,             // no locals
+    0x41, 0x00,       // arena = 0
+    0x44, ...Array(8).fill(0), // double = 0.0
+    0x41, 0x00,       // out = 0
+    0x10, 0x05,       // call imported function 5
+    0x0b,
+];
+const codeSection = [
+    ...uleb(2), ...uleb(body.length), ...body,
+    ...uleb(exactBody.length), ...exactBody,
+];
 const wasm = new Uint8Array([
     0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
     ...section(1, typeSection),
@@ -86,7 +107,11 @@ const wasm = new Uint8Array([
         () => instance.exports.invokeUnsupported(),
         /Nested autodiff through captured values is unsupported/,
     );
-    process.stdout.write('OK — flat-AD WASM imports link and unsupported capture throws.\n');
+    assert.throws(
+        () => instance.exports.invokeExactUnavailable(),
+        /eshkol_double_to_exact_tagged is unavailable in the browser LLVM\/WASM host glue/,
+    );
+    process.stdout.write('OK — flat-AD WASM imports link and unsupported numeric conversions throw.\n');
 })().catch((error) => {
     process.stderr.write(`${error.stack || error}\n`);
     process.exitCode = 1;
