@@ -124,14 +124,26 @@ compiler that hosts it.
   Hodge conjecture. See the [fourfold example](../examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk)
   and [sweep](../examples/mathematics_fermat_hodge_classes_sweep.esk).
 
+- **Further bounded geometry and topology examples.** On the Fermat sextic
+  surface, the Aoki cycles example computes an exact cycle-character span gap
+  of 24 → 0. Separate examples compute exact Turaev–Viro invariants in
+  cyclotomic fields, Reidemeister torsion distinguishing the homotopy-equivalent
+  pair L(7,1) and L(7,2), and nonabelian Čech descent for torsors on finite
+  spaces. These are computations on the listed cases, not general proofs. See
+  [Aoki cycles](../examples/mathematics_aoki_cycles_fermat_sextic.esk),
+  [Turaev–Viro](../examples/mathematics_turaev_viro_cyclotomic.esk),
+  [Reidemeister torsion](../examples/mathematics_lens_spaces_reidemeister_torsion.esk),
+  and [finite-space descent](../examples/mathematics_stacks_nonabelian_descent.esk).
+
 - **Finite gauge theory and bounded Navier–Stokes examples.** A finite-model
   example computes cohomology and Dijkgraaf–Witten state sums for a 64-point
   model of the three-torus; it does not address continuum Yang–Mills theory or
-  its mass gap. Separately, nine Navier–Stokes programs compute bounded pieces
-  of the construction's leading residual, scaling, and profile structure; they
-  do not reproduce its full argument. All nine have JIT and AOT checks (18
-  tests). See the [finite gauge example](../examples/mathematics_finite_model_three_torus_gauge_theory.esk)
-  and [Navier–Stokes examples and scope](../docs/NAVIER_STOKES_EXAMPLES.md).
+  its mass gap. Separately, 12 distinct Navier–Stokes programs cover bounded
+  parts of the leading residual, scaling, and profile structure, through 14
+  criteria with paired JIT and AOT registrations (28 tests). They do not
+  reproduce the source's full argument. See the [finite gauge example](../examples/mathematics_finite_model_three_torus_gauge_theory.esk),
+  [Navier–Stokes registrations](../CMakeLists.txt#L3640-L3679), and the older
+  [guide to nine foundational examples](../docs/NAVIER_STOKES_EXAMPLES.md).
 
 ## Differentiating capabilities
 
