@@ -92,6 +92,59 @@ compiler that hosts it.
 
 ---
 
+## Advanced Mathematics
+
+- **Exact rational linear algebra.** `core.exact_linalg` provides matrix
+  multiplication, fraction-free determinants, solving, inversion, rank, and
+  nullspaces over exact integers, bignums, and rationals, keeping calculations
+  in the exact numeric tower. See
+  [the module](../lib/core/exact_linalg.esk) and [release notes](../RELEASE_NOTES.md).
+
+- **Proof-backed enclosures, available explicitly.** The rigorous interval
+  layer rounds endpoints outward, while rigorous Taylor models use analytically
+  bounded remainders to enclose their results. These are selected with the
+  explicit `rigorous?` option; the default validated Taylor models may use
+  sampled remainder approximations and do not carry that rigorous guarantee.
+  See the [certified enclosures reference](../docs/reference/stdlib/certified-enclosures.md).
+
+- **Numerical methods and mathematical libraries.** Taylor-series routines
+  evaluate coefficient series and provide scalar ODE solving, root refinement,
+  and local inverse series. The libraries also include Runge–Kutta ODE solvers,
+  FFT and inverse FFT, numerical integration, statistics, and special functions
+  such as the Bessel I₀ function used by the Kaiser window.
+  See [Taylor numerics](../lib/core/ad/taylor_numerics.esk), [ODE solvers](../lib/math/ode.esk),
+  [math reference](../docs/reference/stdlib/math.md), [FFT reference](../docs/reference/stdlib/signal_fft.md),
+  and [signal filters reference](../docs/reference/stdlib/signal_filters.md).
+
+- **A bounded Hodge-class computation.** On one Fermat quartic fourfold, an
+  example computes the rational Hodge-class dimension by two methods, enumerates
+  960 planes, and computes their exact intersection Gram matrix, whose rank is
+  142. A parameterized Fermat sweep emits JSON receipts for other cases. These
+  are computations on the listed varieties, not a resolution of the general
+  Hodge conjecture. See the [fourfold example](../examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk)
+  and [sweep](../examples/mathematics_fermat_hodge_classes_sweep.esk).
+
+- **Further bounded geometry and topology examples.** On the Fermat sextic
+  surface, the Aoki cycles example computes an exact cycle-character span gap
+  of 24 → 0. Separate examples compute exact Turaev–Viro invariants in
+  cyclotomic fields, Reidemeister torsion distinguishing the homotopy-equivalent
+  pair L(7,1) and L(7,2), and nonabelian Čech descent for torsors on finite
+  spaces. These are computations on the listed cases, not general proofs. See
+  [Aoki cycles](../examples/mathematics_aoki_cycles_fermat_sextic.esk),
+  [Turaev–Viro](../examples/mathematics_turaev_viro_cyclotomic.esk),
+  [Reidemeister torsion](../examples/mathematics_lens_spaces_reidemeister_torsion.esk),
+  and [finite-space descent](../examples/mathematics_stacks_nonabelian_descent.esk).
+
+- **Finite gauge theory and bounded Navier–Stokes examples.** A finite-model
+  example computes cohomology and Dijkgraaf–Witten state sums for a 64-point
+  model of the three-torus; it does not address continuum Yang–Mills theory or
+  its mass gap. Separately, 12 distinct Navier–Stokes programs cover bounded
+  parts of the leading residual, scaling, and profile structure, through 14
+  criteria with paired JIT and AOT registrations (28 tests). They do not
+  reproduce the source's full argument. See the [finite gauge example](../examples/mathematics_finite_model_three_torus_gauge_theory.esk),
+  [Navier–Stokes registrations](../CMakeLists.txt#L3640-L3679), and the older
+  [guide to nine foundational examples](../docs/NAVIER_STOKES_EXAMPLES.md).
+
 ## Differentiating capabilities
 
 Each item below cites the file or measurement that grounds the claim.
@@ -214,10 +267,11 @@ Each item below cites the file or measurement that grounds the claim.
   dual numbers. When the seed point is exact and the function only uses
   exact-preserving operators, `derivative-n` and `taylor` return exact
   arbitrary-precision (bignum/rational) results rather than floating-point
-  approximations; `taylor-model`/`tm-range`/`tm-eval` pair the polynomial with a
-  rigorous interval-remainder bound for a provable range enclosure. Towers are
-  tensor-valued, compose through reverse-mode (checkpointed reverse-over-Taylor),
-  recover sparse Hessian structure via graph coloring, and work through
+  approximations when the seed and operations preserve exactness. The explicitly
+  rigorous Taylor-model layer pairs polynomials with analytically bounded
+  remainders for provable range enclosures; the default validated Taylor models
+  do not claim that guarantee. Towers are tensor-valued, recover sparse Hessian
+  structure via graph coloring, and work through
   `if`/`cond`/named-let/recursion. See *lib/core/taylor_recurrences.def*,
   *lib/core/runtime_taylor.c*, and the
   [Automatic Differentiation guide](../docs/guide/AUTOMATIC_DIFFERENTIATION.md).
@@ -236,11 +290,11 @@ Each item below cites the file or measurement that grounds the claim.
   through a helper. See *scripts/run_ad_exactness_gate.sh* and
   *scripts/gate_ad_shared_node_model.py*.
 
-- **Compiler-integrated automatic differentiation (order ≤ 2).** Three modes:
+- **Compiler-integrated automatic differentiation.** Three modes:
   symbolic AST rewriting at compile time using twelve differentiation rules;
   forward mode through 16-byte dual numbers `{value, derivative}`; reverse mode
-  through a computational graph spanning more than twenty AD node types with a
-  32-level tape stack for nested gradients. Eight vector-calculus operators —
+  through a computational graph spanning more than twenty AD node types. Eight
+  vector-calculus operators —
   `derivative`, `gradient`, `jacobian`, `hessian`, `divergence`, `curl`,
   `laplacian`, `directional-derivative` — are language primitives. Custom-VJP
   tape nodes (`AD_NODE_CUSTOM`) carry an externally supplied vector-Jacobian
@@ -442,10 +496,11 @@ Each item below cites the file or measurement that grounds the claim.
 - **A molecular Hessian from a compiled Scheme's own AD, no finite
   differences.** *examples/h2_vibrational.esk* writes the STO-3G H2
   Born-Oppenheimer energy curve as ordinary Eshkol code and differentiates it to
-  exact second order with `derivative-n`: equilibrium R* = 1.3887 bohr,
+  second order with `derivative-n`. The reported floating-point calculation gives
+  equilibrium R* = 1.3887 bohr,
   E(R*) = -1.1373 Ha, force constant d²E/dR² = 0.4771 Ha/bohr², vibrational
   frequency **5003.2 cm⁻¹** (experimental H2 ≈ 4401 cm⁻¹; the gap is the STO-3G
-  basis, not the AD — the second derivative itself is exact).
+  basis; AD computes the derivative, while these reported values are approximate).
 
 - **Native agent FFI.** libcurl-backed HTTP client
   (*lib/agent/c/agent_http_client.c*), sqlite3 (*lib/agent/c/agent_sqlite.c*),
@@ -499,9 +554,8 @@ Each item below cites the file or measurement that grounds the claim.
 
 ## Example
 
-The training loop below is verbatim from *README.md §Why Eshkol*. It uses the
-language's `derivative` primitive to fit `y = 2x` from five points. Nothing here
-is a library import or a framework call — `derivative` is in the compiler.
+The training loop below is adapted from *README.md §Why Eshkol*. It uses the
+language's `derivative` primitive to fit `y = 2x` from five points.
 
 ```scheme
 (define training-data '((1.0 2.0) (2.0 4.0) (3.0 6.0) (4.0 8.0) (5.0 10.0)))
@@ -510,23 +564,42 @@ is a library import or a framework call — `derivative` is in the compiler.
 
 (define (loss w)
   (fold-left (lambda (total pair)
-    (let ((error (- (predict w (car pair)) (cadr pair))))
-      (+ total (* error error))))
-    0.0 training-data))
+               (let ((error (- (predict w (car pair)) (cadr pair))))
+                 (+ total (* error error))))
+             0.0
+             training-data))
 
 (define (train w lr steps)
   (if (= steps 0) w
     (train (- w (* lr (derivative loss w))) lr (- steps 1))))
 
-(display (train 0.0 0.01 200))  ;; => 2.0
+(display (train 0.0 0.01 200))
+(newline)
 ```
 
-Arbitrary-order AD, run for real (`eshkol-run -r`):
+Observed output with the v1.3.5-evolve JIT:
+
+```text
+2
+```
+
+Arbitrary-order AD with an exact seed and exact-preserving operations
+(`eshkol-run -r`):
 
 ```scheme
 (define (f x) (expt x 30))
-(display (derivative-n f 7 12))   ;; => 67465815595294257109436307840000 (exact bignum)
-(display (exact? (derivative-n f 7 12)))  ;; => #t
+(define d12 (derivative-n f 7 12))
+(display d12)
+(newline)
+(display (exact? d12))
+(newline)
+```
+
+Observed output with the v1.3.5-evolve JIT:
+
+```text
+67465815595294257109436307840000
+#t
 ```
 
 Exact rational derivatives, not just exact integer ones — a rational seed
@@ -535,8 +608,18 @@ rounding at any step:
 
 ```scheme
 (define (g x) (* 8 (* x x)))
-(display (derivative-n g 1/3 1))          ;; => 16/3
-(display (exact? (derivative-n g 1/3 1))) ;; => #t
+(define dg (derivative-n g 1/3 1))
+(display dg)
+(newline)
+(display (exact? dg))
+(newline)
+```
+
+Observed output with the v1.3.5-evolve JIT:
+
+```text
+16/3
+#t
 ```
 
 A continuation captured at top level, saved, and re-invoked until a counter runs
@@ -557,14 +640,23 @@ survives re-entry and the loop guard advances:
 ```
 <!-- source: tests/continuations/doc_example_multishot.esk, tests/continuations/expected/doc_example_multishot.txt -->
 
-
 ---
 
 ## Dual backend
 
-`(gradient f 3.0 4.0)` on `f(x,y) = x²y + y³` returns the byte-identical
-`#(24 57)` under the native JIT, the native AOT path, and the bytecode VM —
-three independent executions of one source file.
+This standalone example computes the gradient of `f(x,y) = x²y + y³`:
+
+```scheme
+(define (f x y) (+ (* x x y) (* y y y)))
+(display (gradient f 3.0 4.0))
+(newline)
+```
+
+Observed output with the v1.3.5-evolve JIT:
+
+```text
+#(24 57)
+```
 
 Eshkol ships two production execution backends with the same language semantics
 and independent value representations. The LLVM backend compiles to native ARM64
@@ -645,7 +737,7 @@ builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 |:---|:---|
 | Project | Eshkol |
 | Version | v1.3.5-evolve |
-| Release date | 22 September 2026 (builds on v1.3.4-evolve, 19 August 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
+| Release date | 27 September 2026 (builds on v1.3.4-evolve, 19 August 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
 | Implementation | C17 runtime, C++20 compiler |
 | Backend | LLVM. The source compiles against LLVM 18 through 24; a build pins one major version (21 by default, `ESHKOL_REQUIRED_LLVM_MAJOR`) and aborts on a mismatch |
 | Platforms | macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64 and ARM64 via Visual Studio 2022 + ClangCL |
