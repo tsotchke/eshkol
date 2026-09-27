@@ -220,31 +220,58 @@
   (and (exact? al) (exact? ah) (exact? bl) (exact? bh)))
 
 ;; Outward conversion of a single exact endpoint. inexact->exact recovers
-;; the exact dyadic value of every finite double; comparing against that
-;; value is essential because mixed exact/inexact `=`/ordering may itself
-;; round a large exact operand to the same double. Non-finite conversion from
-;; a finite exact value is handled explicitly; some runtimes return infinity,
-;; others NaN, and inexact->exact rejects both.
+;; the exact dyadic value of every finite double; step until that exact value
+;; proves the requested inequality. One step is not enough: some runtimes
+;; convert a rational by rounding its numerator and denominator separately,
+;; which can put exact->inexact several ulps from the exact ratio. Non-finite
+;; conversion outside binary64 range is bracketed by max-finite and infinity;
+;; an unexpected NaN within range uses a sign-safe coarse enclosure.
+(define ia-max-double-exact (inexact->exact 1.7976931348623157e308))
+(define ia-conversion-max-steps 4096)
+
 (define (ia-to-double-down x)
   (if (exact? x)
       (let ((d (exact->inexact x)))
-        (if (not (= d d))
-            (if (> x 0) 1.7976931348623157e308 -inf.0)
-            (if (= d +inf.0)
-                (fl-next-down d)
-                (if (= d -inf.0) d
-                    (if (> (inexact->exact d) x) (fl-next-down d) d)))))
+        (if (or (not (= d d)) (= d +inf.0) (= d -inf.0))
+            (if (>= x ia-max-double-exact)
+                1.7976931348623157e308
+                (if (<= x (- ia-max-double-exact)) -inf.0
+                    (if (> x 0) 0 (if (< x 0) -inf.0 0))))
+            (let loop ((candidate d) (steps 0))
+              (if (= candidate -inf.0)
+                  candidate
+                  (if (or (= candidate +inf.0)
+                          (> (inexact->exact candidate) x))
+                      (if (>= steps ia-conversion-max-steps)
+                          (error "ia-to-double-down: exact conversion could not be bracketed")
+                          (let ((next (fl-next-down candidate)))
+                            (if (= next candidate)
+                                (error "ia-to-double-down: nextafter made no progress")
+                                (loop next (+ steps 1)))))
+                      candidate)))))
       x))
 
 (define (ia-to-double-up x)
   (if (exact? x)
       (let ((d (exact->inexact x)))
-        (if (not (= d d))
-            (if (> x 0) +inf.0 -1.7976931348623157e308)
-            (if (= d -inf.0)
-                (fl-next-up d)
-                (if (= d +inf.0) d
-                    (if (< (inexact->exact d) x) (fl-next-up d) d)))))
+        (if (or (not (= d d)) (= d +inf.0) (= d -inf.0))
+            (if (>= x ia-max-double-exact)
+                +inf.0
+                (if (<= x (- ia-max-double-exact))
+                    -1.7976931348623157e308
+                    (if (> x 0) +inf.0 0)))
+            (let loop ((candidate d) (steps 0))
+              (if (= candidate +inf.0)
+                  candidate
+                  (if (or (= candidate -inf.0)
+                          (< (inexact->exact candidate) x))
+                      (if (>= steps ia-conversion-max-steps)
+                          (error "ia-to-double-up: exact conversion could not be bracketed")
+                          (let ((next (fl-next-up candidate)))
+                            (if (= next candidate)
+                                (error "ia-to-double-up: nextafter made no progress")
+                                (loop next (+ steps 1)))))
+                      candidate)))))
       x))
 
 (define (ia-float-results-ok? xs)

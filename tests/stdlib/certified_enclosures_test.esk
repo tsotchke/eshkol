@@ -115,6 +115,22 @@
   (check "mixed ia+ contains exact rational plus inexact dyadic"
          (contains-exact? r exact-rational)))
 
+;; exact->inexact rounds this rational's numerator and denominator separately,
+;; leaving its result more than one double step from the exact ratio. One
+;; nextafter on either side is therefore not a valid conversion enclosure.
+(let* ((x (/ 1812779959422046853 5126478537316945397))
+       (d (exact->inexact x))
+       (reference (+ x (inexact->exact (- d))))
+       (result (ia+ (cons x x) (cons (- d) (- d))))
+       (mirror-reference (+ (- x) (inexact->exact d)))
+       (mirror-result (ia+ (cons (- x) (- x)) (cons d d))))
+  (check "ia+ contains exact reference after multi-ulp rational conversion"
+         (contains-exact? result reference))
+  (check "one-step rational conversion negative control misses endpoint"
+         (not (contains-exact? (cons (fl-next-down d) (fl-next-up d)) x)))
+  (check "ia+ sign-mirrored rational cancellation remains enclosed"
+         (contains-exact? mirror-result mirror-reference)))
+
 (let* ((dyadic (inexact->exact 0.1))
        (sub (ia- (cons 1/3 1/3) (cons 0.1 0.1)))
        (mul (ia* (cons 1/3 1/3) (cons 0.1 0.1)))
@@ -133,6 +149,11 @@
        (r (ia+ (cons huge huge) (cons 0.0 0.0))))
   (check "mixed ia+ preserves finite/infinite outward bounds on overflow"
          (and (< (inexact->exact (car r)) huge) (= (cdr r) +inf.0))))
+
+(let* ((huge (exact-power-two 1100))
+       (r (ia/ (cons 1.0 1.0) (cons huge huge))))
+  (check "mixed ia/ keeps an overflow-sized positive exact denominator away from zero"
+         (contains-exact? r (/ 1 huge))))
 
 (let* ((tiny (/ 1 (exact-power-two 1075)))
        (division (guard (exn (else 'caught))
