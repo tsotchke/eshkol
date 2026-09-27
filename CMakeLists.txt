@@ -4174,6 +4174,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(ad_guw_order8_jit_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
             PASS_REGULAR_EXPRESSION "PASS: GUW order-8 analytic oracle: 2/2 checks, D\\^\\(3,3,2\\)=72"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
@@ -4193,7 +4194,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     )
     set_tests_properties(ad_exact_taylor_gate_selftest PROPERTIES
         TIMEOUT 60
-        PASS_REGULAR_EXPRESSION "PASS: AD exact Taylor gate rejects zero-match, failing-fixture, and timeout injections"
+        PASS_REGULAR_EXPRESSION "PASS: AD exact Taylor gate rejects zero-match, bad reports, timeout, and trace-write failures"
         FAIL_REGULAR_EXPRESSION "Traceback|AssertionError")
     # Task #114: AD capture reconstruction must resolve free variables with the
     # same local-then-global scope rule codegenLambda used, so an enclosing
@@ -5553,7 +5554,6 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         autodiff_tensor_reductions_runtime_smoke
         ad_structural_int_guard_runtime_smoke
         guw_multivariate_runtime_smoke
-        ad_guw_order8_jit_smoke
         sparse_tensors_runtime_smoke
         reverse_over_taylor_runtime_smoke
         checkpointed_reverse_runtime_smoke

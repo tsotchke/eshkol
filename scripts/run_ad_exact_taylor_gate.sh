@@ -13,31 +13,48 @@ case "$BUILD_DIR" in
 esac
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
 TRACE_FILE="$TRACE_DIR/ad_exact_taylor.jsonl"
-mkdir -p "$TRACE_DIR"
-: > "$TRACE_FILE"
 emit_event() {
   python3 - "$TRACE_FILE" "$1" "$2" <<'PY'
-import json, sys
+import json, os, sys
 event = {"kind": "ad_exact", "name": "ad_taylor_p4_guw_multivariate",
          "value": sys.argv[2], "snippet": sys.argv[3], "confidence": 1.0}
 with open(sys.argv[1], "w", encoding="utf-8") as f:
     f.write(json.dumps(event, separators=(",", ":")) + "\n")
+    f.flush()
+    os.fsync(f.fileno())
 PY
 }
+if ! mkdir -p "$TRACE_DIR"; then
+  echo "run_ad_exact_taylor_gate.sh: cannot create trace directory $TRACE_DIR" >&2
+  exit 2
+fi
+if ! : > "$TRACE_FILE"; then
+  echo "run_ad_exact_taylor_gate.sh: cannot open trace file $TRACE_FILE" >&2
+  exit 2
+fi
 fail_gate() {
   status="$1"; shift
-  emit_event "$status" "$*"
+  if ! emit_event "$status" "$*"; then
+    echo "run_ad_exact_taylor_gate.sh: could not write ICC failure event to $TRACE_FILE" >&2
+    exit 2
+  fi
   echo "run_ad_exact_taylor_gate.sh: $*" >&2
   exit 1
 }
 
 if [ ! -r "$BUILD_PATH/CTestTestfile.cmake" ]; then
-  emit_event INFRA "no CTest configuration in $BUILD_PATH; configure and build first"
+  if ! emit_event INFRA "no CTest configuration in $BUILD_PATH; configure and build first"; then
+    echo "run_ad_exact_taylor_gate.sh: could not write ICC infrastructure event to $TRACE_FILE" >&2
+    exit 2
+  fi
   echo "run_ad_exact_taylor_gate.sh: no CTest configuration in $BUILD_PATH; configure and build first" >&2
   exit 2
 fi
 if [ ! -x "$BUILD_PATH/eshkol-run" ]; then
-  emit_event INFRA "missing executable $BUILD_PATH/eshkol-run; build target eshkol-run first"
+  if ! emit_event INFRA "missing executable $BUILD_PATH/eshkol-run; build target eshkol-run first"; then
+    echo "run_ad_exact_taylor_gate.sh: could not write ICC infrastructure event to $TRACE_FILE" >&2
+    exit 2
+  fi
   echo "run_ad_exact_taylor_gate.sh: missing executable $BUILD_PATH/eshkol-run; build target eshkol-run first" >&2
   exit 2
 fi
@@ -45,7 +62,9 @@ fi
 CTEST="${CTEST:-ctest}"
 GATE_TIMEOUT="${GATE_TIMEOUT:-900}"
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ad-exact-taylor.XXXXXX")" || {
-  emit_event INFRA "could not create temporary CTest report directory"
+  if ! emit_event INFRA "could not create temporary CTest report directory"; then
+    echo "run_ad_exact_taylor_gate.sh: could not write ICC infrastructure event to $TRACE_FILE" >&2
+  fi
   exit 2
 }
 trap 'rm -rf -- "$RUN_DIR"' EXIT
@@ -92,6 +111,9 @@ then
   fail_gate FAIL "CTest report did not prove both required tests (missing, skipped, or malformed report)"
 fi
 
-emit_event PASS "GUW analytic mixed partial D^(3,3,2) of x^3*y^3*z^2 equals 72 with permutation symmetry; JIT+AOT CTest passed 2/2"
+if ! emit_event PASS "GUW analytic mixed partial D^(3,3,2) of x^3*y^3*z^2 equals 72 with permutation symmetry; JIT+AOT CTest passed 2/2"; then
+  echo "run_ad_exact_taylor_gate.sh: could not write ICC PASS event to $TRACE_FILE" >&2
+  exit 2
+fi
 echo "PASS: GUW analytic order-8 oracle (JIT+AOT, 2/2 CTest cases)"
 echo "$TRACE_FILE written"
