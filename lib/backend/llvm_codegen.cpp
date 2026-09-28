@@ -1564,6 +1564,7 @@ class EshkolLLVMCodeGen;
 // Static callback wrappers for ControlFlowCodegen
 // These allow the extracted module to call back into the main codegen
 namespace ControlFlowCallbacks {
+    void finishIterScopeBeforeExitWrapper(void* context);
     // Wrapper for codegenAST - returns LLVM Value*
     llvm::Value* codegenASTWrapper(const void* ast, void* context);
     // Wrapper for codegenTypedAST - returns pointer to TypedValue (caller owns)
@@ -1665,6 +1666,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Function* ControlFlowCallbacks::getBuiltinPredicateWrapper(const std::string& name, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
+    friend void ControlFlowCallbacks::finishIterScopeBeforeExitWrapper(void* context);
     friend llvm::Value* ControlFlowCallbacks::closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
     friend llvm::Value* ControlFlowCallbacks::closureListCallWrapper(llvm::Value*, llvm::Value*, void*);
     friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
@@ -11698,8 +11700,27 @@ private:
         // is the loop name, so its self-tail-calls are recognized as back
         // edges by the analysis (local_fns) and by codegenTailCallFromContext.
         bool define_iter_needs_nursery = false;  // ESH-0214e
+        bool define_param_shadows_exit =
+            op->define_op.is_variadic && op->define_op.rest_param &&
+            std::strcmp(op->define_op.rest_param, "exit") == 0;
+        bool define_param_shadows_tensor_dot =
+            op->define_op.is_variadic && op->define_op.rest_param &&
+            std::strcmp(op->define_op.rest_param, "tensor-dot") == 0;
+        for (uint64_t i = 0; i < op->define_op.num_params && op->define_op.parameters; i++) {
+            const eshkol_ast_t* param = &op->define_op.parameters[i];
+            if (param->type == ESHKOL_VAR && param->variable.id &&
+                std::strcmp(param->variable.id, "exit") == 0) {
+                define_param_shadows_exit = true;
+            }
+            if (param->type == ESHKOL_VAR && param->variable.id &&
+                std::strcmp(param->variable.id, "tensor-dot") == 0) {
+                define_param_shadows_tensor_dot = true;
+            }
+        }
         bool define_iter_scope_safe = is_tail_rec &&
-            loopBodyIterScopeSafe(op->define_op.value, func_name, &define_iter_needs_nursery);
+            loopBodyIterScopeSafe(op->define_op.value, func_name,
+                                  &define_iter_needs_nursery, define_param_shadows_exit,
+                                  define_param_shadows_tensor_dot);
         // ESH-0214e: mutating-but-safe define loops use the nursery-region path;
         // non-mutating ones keep the arena-scope path. Mutually exclusive.
         bool define_iter_nursery = define_iter_scope_safe && define_iter_needs_nursery;
@@ -29740,6 +29761,19 @@ private:
     // structure pointer, so a nursery-allocated value stored into persistent
     // state is deep-promoted out of the nursery at the store.
     bool iter_scope_needs_nursery_ = false;
+    bool iter_scope_direct_exit_allowed_ = false;
+    bool iter_scope_has_terminal_exit_ = false;
+    bool iter_scope_tensor_dot_allowed_ = false;
+
+    class IterScopeExitAdmissionGuard {
+    public:
+        IterScopeExitAdmissionGuard(bool& flag, bool value)
+            : flag_(flag), saved_(flag) { flag_ = value; }
+        ~IterScopeExitAdmissionGuard() { flag_ = saved_; }
+    private:
+        bool& flag_;
+        bool saved_;
+    };
 
     // The structural mutators admitted into iter-scope under ESH-0214e. Each is
     // barriered UNCONDITIONALLY at its codegen site on the mutated structure's
@@ -30071,6 +30105,89 @@ private:
         return s;
     }
 
+    static bool iterScopeNumericTensorElement(const eshkol_ast_t* expr) {
+        if (!expr) return false;
+        switch (expr->type) {
+            case ESHKOL_INT8: case ESHKOL_INT16: case ESHKOL_INT32: case ESHKOL_INT64:
+            case ESHKOL_UINT8: case ESHKOL_UINT16: case ESHKOL_UINT32: case ESHKOL_UINT64:
+            case ESHKOL_DOUBLE:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool iterScopeSafeTensorLiteral(const eshkol_ast_t* elements,
+                                   const uint64_t* dimensions,
+                                   uint64_t num_dimensions,
+                                   uint64_t total_elements,
+                                   std::set<std::string>& local_fns,
+                                   std::set<std::string>& analyzing,
+                                   int depth) {
+        // The allocation is reclaimed with the iteration arena. Admit only
+        // well-formed, numeric literal tensors here: ESHKOL_TENSOR_OP also
+        // represents evaluated tensor expressions with arbitrary effects.
+        if (num_dimensions == 0 || !dimensions ||
+            (total_elements != 0 && !elements)) {
+            return false;
+        }
+        uint64_t element_count = 1;
+        for (uint64_t i = 0; i < num_dimensions; i++) {
+            const uint64_t dimension = dimensions[i];
+            if (dimension != 0 && element_count > (~uint64_t{0}) / dimension) {
+                return false;
+            }
+            element_count *= dimension;
+        }
+        if (element_count != total_elements) return false;
+        for (uint64_t i = 0; i < total_elements; i++) {
+            const eshkol_ast_t* element = &elements[i];
+            if (!iterScopeNumericTensorElement(element) ||
+                !iterScopeSafeExpr(element, local_fns, analyzing, depth + 1)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool iterScopeSafeTensorDotOperand(const eshkol_ast_t* expr,
+                                       uint64_t* vector_length,
+                                       std::set<std::string>& local_fns,
+                                       std::set<std::string>& analyzing,
+                                       int depth) {
+        if (!expr || !vector_length) return false;
+        const eshkol_ast_t* elements = nullptr;
+        const uint64_t* dimensions = nullptr;
+        uint64_t num_dimensions = 0;
+        uint64_t total_elements = 0;
+        if (expr->type == ESHKOL_OP && expr->operation.op == ESHKOL_TENSOR_OP) {
+            elements = expr->operation.tensor_op.elements;
+            dimensions = expr->operation.tensor_op.dimensions;
+            num_dimensions = expr->operation.tensor_op.num_dimensions;
+            total_elements = expr->operation.tensor_op.total_elements;
+        } else if (expr->type == ESHKOL_TENSOR) {
+            elements = expr->tensor_val.elements;
+            dimensions = expr->tensor_val.dimensions;
+            num_dimensions = expr->tensor_val.num_dimensions;
+            total_elements = expr->tensor_val.total_elements;
+        } else {
+            return false;
+        }
+        if (num_dimensions != 1 || !dimensions || dimensions[0] == 0 ||
+            dimensions[0] != total_elements || !elements) {
+            return false;
+        }
+        for (uint64_t i = 0; i < total_elements; i++) {
+            const eshkol_ast_t* element = &elements[i];
+            if (!element || element->type != ESHKOL_DOUBLE ||
+                !iterScopeSafeExpr(element, local_fns, analyzing, depth + 1)) {
+                return false;
+            }
+        }
+        *vector_length = total_elements;
+        return true;
+    }
+
     // Is `expr` free of iteration-escape channels? local_fns holds names
     // callable as plain loops from this position (the enclosing loop name +
     // any locally nested named-let names); analyzing holds user-define names
@@ -30091,6 +30208,11 @@ private:
             case ESHKOL_BOOL: case ESHKOL_BIGNUM_LITERAL: case ESHKOL_SYMBOL:
             case ESHKOL_CONS:  // quoted data: allocation without escape channels
                 return true;
+            case ESHKOL_TENSOR:
+                return iterScopeSafeTensorLiteral(
+                    expr->tensor_val.elements, expr->tensor_val.dimensions,
+                    expr->tensor_val.num_dimensions, expr->tensor_val.total_elements,
+                    local_fns, analyzing, depth);
             case ESHKOL_OP:
                 break;
             default:
@@ -30152,8 +30274,17 @@ private:
                 // ((lambda ...) args): body + args
                 if (op->call_op.func && op->call_op.func->type == ESHKOL_OP &&
                     op->call_op.func->operation.op == ESHKOL_LAMBDA_OP) {
-                    if (!iterScopeSafeExpr(op->call_op.func->operation.lambda_op.body,
-                                           local_fns, analyzing, depth + 1)) return false;
+                    bool lambda_body_safe = false;
+                    {
+                        IterScopeExitAdmissionGuard disallow_exit(
+                            iter_scope_direct_exit_allowed_, false);
+                        IterScopeExitAdmissionGuard disallow_dot(
+                            iter_scope_tensor_dot_allowed_, false);
+                        lambda_body_safe = iterScopeSafeExpr(
+                            op->call_op.func->operation.lambda_op.body,
+                            local_fns, analyzing, depth + 1);
+                    }
+                    if (!lambda_body_safe) return false;
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         if (!iterScopeSafeExpr(&op->call_op.variables[i],
                                                local_fns, analyzing, depth + 1)) return false;
@@ -30165,6 +30296,62 @@ private:
                     return false;  // computed callee: cannot analyze
                 }
                 const std::string name = op->call_op.func->variable.id;
+
+                // `exit` is admitted only in the owning loop body. Its
+                // codegen finishes the active arena scope only after the
+                // status expression has evaluated and validated; the
+                // callback is unavailable in helpers, lambdas, guards, and
+                // nested named loops, so those contexts remain unsafe.
+                if (name == "exit") {
+                    const std::string exit_func_key = name + "_func";
+                    if (!iter_scope_direct_exit_allowed_ || local_fns.size() != 1 ||
+                        local_fns.count(name) != 0 ||
+                        function_body_ast.count(name) != 0 ||
+                        symbol_table.count(name) != 0 || symbol_table.count(exit_func_key) != 0 ||
+                        global_symbol_table.count(name) != 0 ||
+                        global_symbol_table.count(exit_func_key) != 0 ||
+                        op->call_op.num_vars != 1 ||
+                        !iterScopeSafeExpr(&op->call_op.variables[0], local_fns,
+                                           analyzing, depth + 1)) {
+                        return false;
+                    }
+                    iter_scope_has_terminal_exit_ = true;
+                    return true;
+                }
+
+                // tensor-dot's ordinary 1-D literal path returns a scalar.
+                // Its AD path records tape nodes in the tape's owner arena, so
+                // keep this loop on the nursery path, which isolates only the
+                // iteration-local literal buffers. Computed, integer, unequal,
+                // empty, or higher-rank operands stay conservative.
+                if (name == "tensor-dot") {
+                    const std::string dot_func_key = name + "_func";
+                    if (!iter_scope_tensor_dot_allowed_ || local_fns.size() != 1 ||
+                        local_fns.count(name) != 0 || op->call_op.num_vars != 2) {
+                        return false;
+                    }
+                    // A source body can be recorded for an inactive module
+                    // definition. Only the active symbol tables decide whether
+                    // codegen will shadow the native builtin at this call site.
+                    if (symbol_table.count(name) != 0 ||
+                        symbol_table.count(dot_func_key) != 0 ||
+                        global_symbol_table.count(name) != 0 ||
+                        global_symbol_table.count(dot_func_key) != 0) {
+                        return false;
+                    }
+                    uint64_t left_length = 0, right_length = 0;
+                    if (!iterScopeSafeTensorDotOperand(
+                            &op->call_op.variables[0], &left_length,
+                            local_fns, analyzing, depth + 1) ||
+                        !iterScopeSafeTensorDotOperand(
+                            &op->call_op.variables[1], &right_length,
+                            local_fns, analyzing, depth + 1) ||
+                        left_length != right_length) {
+                        return false;
+                    }
+                    iter_scope_needs_nursery_ = true;
+                    return true;
+                }
 
                 // ESH-0214e: a barriered structural mutator (vector-set! /
                 // vector-fill! / hash-table-set! / set-car! / set-cdr!) is
@@ -30212,8 +30399,17 @@ private:
                         if ((int)i == ho_it->second) {
                             if (arg->type == ESHKOL_OP &&
                                 arg->operation.op == ESHKOL_LAMBDA_OP) {
-                                if (!iterScopeSafeExpr(arg->operation.lambda_op.body,
-                                                       local_fns, analyzing, depth + 1)) return false;
+                                bool callback_body_safe = false;
+                                {
+                                    IterScopeExitAdmissionGuard disallow_exit(
+                                        iter_scope_direct_exit_allowed_, false);
+                                    IterScopeExitAdmissionGuard disallow_dot(
+                                        iter_scope_tensor_dot_allowed_, false);
+                                    callback_body_safe = iterScopeSafeExpr(
+                                        arg->operation.lambda_op.body,
+                                        local_fns, analyzing, depth + 1);
+                                }
+                                if (!callback_body_safe) return false;
                             } else if (arg->type == ESHKOL_VAR && arg->variable.id &&
                                        (local_fns.count(arg->variable.id) ||
                                         iterScopeSafeUserFn(arg->variable.id, analyzing, depth + 1))) {
@@ -30337,14 +30533,58 @@ private:
                     added = local_fns.insert(inner_name).second;
                 }
                 bool ok = true;
-                for (uint64_t i = 0; ok && i < op->let_op.num_bindings; i++) {
+                bool shadows_exit = op->op == ESHKOL_LET_OP &&
+                    op->let_op.name && std::strcmp(op->let_op.name, "exit") == 0;
+                bool shadows_tensor_dot = op->op == ESHKOL_LET_OP &&
+                    op->let_op.name && std::strcmp(op->let_op.name, "tensor-dot") == 0;
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
                     const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                    if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
-                        ok = iterScopeSafeExpr(binding->cons_cell.cdr,
-                                               local_fns, analyzing, depth + 1);
+                    const eshkol_ast_t* pattern =
+                        binding->type == ESHKOL_CONS ? binding->cons_cell.car : nullptr;
+                    if (pattern && pattern->type == ESHKOL_VAR && pattern->variable.id &&
+                        std::strcmp(pattern->variable.id, "exit") == 0) {
+                        shadows_exit = true;
+                    }
+                    if (pattern && pattern->type == ESHKOL_VAR && pattern->variable.id &&
+                        std::strcmp(pattern->variable.id, "tensor-dot") == 0) {
+                        shadows_tensor_dot = true;
                     }
                 }
-                if (ok) ok = iterScopeSafeExpr(op->let_op.body, local_fns, analyzing, depth + 1);
+                if (shadows_exit || shadows_tensor_dot) {
+                    IterScopeExitAdmissionGuard disallow_exit(
+                        iter_scope_direct_exit_allowed_,
+                        iter_scope_direct_exit_allowed_ && !shadows_exit);
+                    IterScopeExitAdmissionGuard disallow_dot(
+                        iter_scope_tensor_dot_allowed_,
+                        iter_scope_tensor_dot_allowed_ && !shadows_tensor_dot);
+                    for (uint64_t i = 0; ok && i < op->let_op.num_bindings; i++) {
+                        const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                        if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                            ok = iterScopeSafeExpr(binding->cons_cell.cdr,
+                                                   local_fns, analyzing, depth + 1);
+                        }
+                    }
+                    if (ok) {
+                        ok = iterScopeSafeExpr(op->let_op.body, local_fns, analyzing, depth + 1);
+                    }
+                } else {
+                    for (uint64_t i = 0; ok && i < op->let_op.num_bindings; i++) {
+                        const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                        if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                            ok = iterScopeSafeExpr(binding->cons_cell.cdr,
+                                                   local_fns, analyzing, depth + 1);
+                        }
+                    }
+                    if (ok && op->op == ESHKOL_LET_OP && op->let_op.name) {
+                        IterScopeExitAdmissionGuard disallow_exit(
+                            iter_scope_direct_exit_allowed_, false);
+                        IterScopeExitAdmissionGuard disallow_dot(
+                            iter_scope_tensor_dot_allowed_, false);
+                        ok = iterScopeSafeExpr(op->let_op.body, local_fns, analyzing, depth + 1);
+                    } else if (ok) {
+                        ok = iterScopeSafeExpr(op->let_op.body, local_fns, analyzing, depth + 1);
+                    }
+                }
                 if (added) local_fns.erase(inner_name);
                 return ok;
             }
@@ -30353,7 +30593,13 @@ private:
                 // The closure allocation itself can only travel through the
                 // dynamically checked channels (args/result) or a mutation
                 // (excluded); its body executes under this same analysis.
-                return iterScopeSafeExpr(op->lambda_op.body, local_fns, analyzing, depth + 1);
+                {
+                    IterScopeExitAdmissionGuard disallow_exit(
+                        iter_scope_direct_exit_allowed_, false);
+                    IterScopeExitAdmissionGuard disallow_dot(
+                        iter_scope_tensor_dot_allowed_, false);
+                    return iterScopeSafeExpr(op->lambda_op.body, local_fns, analyzing, depth + 1);
+                }
 
             case AstRoute::Quote:
                 return true;
@@ -30362,13 +30608,21 @@ private:
                 // Orthogonal: with-region redirects body allocations into its
                 // own arena and frees them itself; walk the body for escape
                 // channels all the same.
+                {
+                IterScopeExitAdmissionGuard disallow_exit(
+                    iter_scope_direct_exit_allowed_, false);
+                IterScopeExitAdmissionGuard disallow_dot(
+                    iter_scope_tensor_dot_allowed_, false);
                 for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
                     if (!iterScopeSafeExpr(&op->with_region_op.body[i],
                                            local_fns, analyzing, depth + 1)) return false;
                 }
                 return true;
+                }
 
             case AstRoute::Guard: {
+                IterScopeExitAdmissionGuard disallow_exit(
+                    iter_scope_direct_exit_allowed_, false);
                 // ESH-0214b (Bug 1): a guard is iter-scope-safe iff it can
                 // never let an exception propagate PAST the loop body. That
                 // holds exactly when the guard has a CATCH-ALL clause (test is
@@ -30423,6 +30677,12 @@ private:
             }
 
             case AstRoute::OtherOperations:
+                if (op->op == ESHKOL_TENSOR_OP) {
+                    return iterScopeSafeTensorLiteral(
+                        op->tensor_op.elements, op->tensor_op.dimensions,
+                        op->tensor_op.num_dimensions, op->tensor_op.total_elements,
+                        local_fns, analyzing, depth);
+                }
                 // set!/define/raise/call-cc/dynamic-wind/case/match/
                 // do/parallel/AD/consciousness/... : conservative no. The
                 // loop keeps its exact pre-feature behavior. (guard is handled
@@ -30464,7 +30724,14 @@ private:
         // accumulation (only when the function is actually escape-safe).
         bool saved_nursery = iter_scope_needs_nursery_;
         iter_scope_needs_nursery_ = false;
-        bool ok = iterScopeSafeExpr(ast_it->second, callee_local_fns, analyzing, depth + 1);
+        bool ok = false;
+        {
+            IterScopeExitAdmissionGuard disallow_exit(
+                iter_scope_direct_exit_allowed_, false);
+            IterScopeExitAdmissionGuard disallow_dot(
+                iter_scope_tensor_dot_allowed_, false);
+            ok = iterScopeSafeExpr(ast_it->second, callee_local_fns, analyzing, depth + 1);
+        }
         bool fn_nursery = iter_scope_needs_nursery_;
         iter_scope_needs_nursery_ = saved_nursery || (ok && fn_nursery);
         analyzing.erase(name);
@@ -30479,7 +30746,9 @@ private:
     // self-tail-calls are the loop's back edges (the named-let name, or the
     // define's own function name).
     bool loopBodyIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name,
-                               bool* out_needs_nursery = nullptr) {
+                               bool* out_needs_nursery = nullptr,
+                               bool loop_shadows_exit = false,
+                               bool loop_shadows_tensor_dot = false) {
         if (out_needs_nursery) *out_needs_nursery = false;
         static const bool disabled = (getenv("ESHKOL_NO_ITER_SCOPE") != nullptr);
         if (disabled || !body) return false;
@@ -30501,8 +30770,24 @@ private:
         std::set<std::string> local_fns = {loop_name};
         std::set<std::string> analyzing;
         iter_scope_needs_nursery_ = false;  // ESH-0214e: reset per loop analysis
+        const bool saved_direct_exit_allowed = iter_scope_direct_exit_allowed_;
+        const bool saved_has_terminal_exit = iter_scope_has_terminal_exit_;
+        const bool saved_tensor_dot_allowed = iter_scope_tensor_dot_allowed_;
+        iter_scope_direct_exit_allowed_ = !loop_shadows_exit;
+        iter_scope_has_terminal_exit_ = false;
+        iter_scope_tensor_dot_allowed_ = !loop_shadows_tensor_dot;
         bool ok = iterScopeSafeExpr(body, local_fns, analyzing, 0);
+        const bool has_terminal_exit = iter_scope_has_terminal_exit_;
+        iter_scope_direct_exit_allowed_ = saved_direct_exit_allowed;
+        iter_scope_has_terminal_exit_ = saved_has_terminal_exit;
+        iter_scope_tensor_dot_allowed_ = saved_tensor_dot_allowed;
         bool nursery = ok && iter_scope_needs_nursery_;
+        if (ok && has_terminal_exit && nursery) {
+            // The exit callback closes arena scopes only; nursery-region
+            // cleanup has a distinct stack and remains conservatively off.
+            ok = false;
+            nursery = false;
+        }
         if (out_needs_nursery) *out_needs_nursery = nursery;
         eshkol_debug("ESH-0214b/e: loop '%s' iter-scope %s%s",
                      loop_name.c_str(), ok ? "ENABLED" : "disabled (analysis)",
@@ -30585,6 +30870,10 @@ private:
     Value* emitIterScopeFinish(Value* out_value) {
         std::vector<Value*> v = emitIterScopeEndImpl({out_value}, /*finish=*/true);
         return v.empty() ? out_value : v[0];
+    }
+    void finishIterScopeBeforeExit() {
+        if (!binding_ || !binding_->getTCOContext().iter_scope) return;
+        emitIterScopeEndImpl(std::vector<Value*>{}, /*finish=*/true);
     }
     // ═══════════════════ END ESH-0214b ═══════════════════
 
@@ -34580,8 +34869,14 @@ private:
         // dynamic extent). See the analysis block above codegenTailCall-
         // FromContext for the safety argument.
         bool iter_needs_nursery = false;  // ESH-0214e
+        const bool loop_param_shadows_exit =
+            std::find(param_names.begin(), param_names.end(), "exit") != param_names.end();
+        const bool loop_param_shadows_tensor_dot =
+            std::find(param_names.begin(), param_names.end(), "tensor-dot") != param_names.end();
         bool iter_scope_safe = all_tail &&
-            loopBodyIterScopeSafe(op->let_op.body, loop_name, &iter_needs_nursery);
+            loopBodyIterScopeSafe(op->let_op.body, loop_name,
+                                  &iter_needs_nursery, loop_param_shadows_exit,
+                                  loop_param_shadows_tensor_dot);
         // ESH-0214e: a mutating-but-escape-safe loop uses the nursery-region path
         // (partial reclamation); a non-mutating one keeps the arena-scope path.
         // The two are mutually exclusive.
@@ -45297,6 +45592,11 @@ private:
 // ============================================================================
 
 namespace ControlFlowCallbacks {
+    void finishIterScopeBeforeExitWrapper(void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        if (codegen) codegen->finishIterScopeBeforeExit();
+    }
+
     // Thread-local storage for TypedValue to handle reentrant calls
     // When control flow operations are nested (e.g., begin inside cond inside and),
     // each level needs its own TypedValue storage

@@ -784,6 +784,8 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
             ControlFlowCallbacks::codegenTypedASTWrapper,
             this
         );
+        system_->setBeforeExitCallback(
+            ControlFlowCallbacks::finishIterScopeBeforeExitWrapper);
         eshkol_debug("Created SystemCodegen");
 
         // Initialize HashCodegen - hash table operations

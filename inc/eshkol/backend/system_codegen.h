@@ -30,6 +30,7 @@ namespace eshkol {
  */
 class SystemCodegen {
 public:
+    using BeforeExitFunc = void (*)(void* context);
     /**
      * Construct SystemCodegen with context and helpers.
      */
@@ -746,6 +747,7 @@ private:
     CodegenASTFunc codegen_ast_callback_ = nullptr;
     CodegenTypedASTFunc codegen_typed_ast_callback_ = nullptr;
     void* callback_context_ = nullptr;
+    BeforeExitFunc before_exit_callback_ = nullptr;
 
     // Helper to extract string pointer from tagged value
     llvm::Value* extractStringPtr(llvm::Value* tagged_val);
@@ -780,6 +782,13 @@ public:
         codegen_typed_ast_callback_ = codegen_typed_ast;
         callback_context_ = context;
     }
+
+    // Runs only after the exit status has been evaluated and validated, just
+    // before the non-returning process exit call.
+    void setBeforeExitCallback(BeforeExitFunc callback) {
+        before_exit_callback_ = callback;
+    }
+
 };
 
 } // namespace eshkol
