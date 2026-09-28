@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 export PYTHONPATH="$REPO_ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}"
-RELEASE_TARGET="${RELEASE_TARGET:-v1.3.6-evolve}"
+export RELEASE_TARGET="${RELEASE_TARGET:-v1.3.6-evolve}"
 RELEASE_TARGET="$(python3 -c 'import os; from release_target import validate_target; print(validate_target(os.environ["RELEASE_TARGET"]))')"
 export RELEASE_TARGET
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
@@ -127,13 +127,13 @@ run_final_evidence_phase() {
     "$ICC_BIN" reindex --repo "$ICC_REPO" --full
     scripts/run_v1_3_release_producers.sh
     python3 scripts/check_release_build_cohort.py verify --build-dir "$BUILD_DIR" --manifest "$COHORT_MANIFEST" --trace "$TRACE_DIR/release-build-cohort.jsonl"
-    python3 scripts/verify_v1_3_release_evidence.py --trace-dir "$TRACE_DIR"
+    python3 scripts/verify_v1_3_release_evidence.py --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR"
     "$ICC_BIN" architecture-verify --repo "$ICC_REPO" --model "$ARCH_MODEL" --trace-dir "$TRACE_DIR" --emit-trace --format markdown
     mark_phase final-evidence
 }
 
 run_readiness_phase() {
-    python3 scripts/verify_v1_3_release_evidence.py --trace-dir "$TRACE_DIR"
+    python3 scripts/verify_v1_3_release_evidence.py --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR"
     "$ICC_BIN" readiness --repo "$ICC_REPO" --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format json > "${READINESS_JSON:?}"
     "$ICC_BIN" readiness --repo "$ICC_REPO" --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format markdown
 
@@ -169,7 +169,7 @@ case "$PHASE" in
         ;;
     readiness)
         require_phase final-evidence
-        python3 scripts/verify_v1_3_release_evidence.py --trace-dir "$TRACE_DIR"
+        python3 scripts/verify_v1_3_release_evidence.py --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR"
         run_readiness_phase
         ;;
 esac

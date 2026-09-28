@@ -1665,7 +1665,10 @@ jobs:
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
             job_timeout_minutes: 240
-            test_timeout_minutes: 180
+            # The exact-head v1.3.6 interval run reached the final two shell
+            # cases when the 180-minute step cap fired (run 36365632095).
+            # Preserve the full suite and leave room for runner variance.
+            test_timeout_minutes: 210
             upload_artifact: 'true'
             artifact_name: eshkol-linux-x64
           # This is the assertion-enabled compilation axis. Keep it as a

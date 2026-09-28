@@ -73,6 +73,16 @@ class Decisions(unittest.TestCase):
                 out.write(json.dumps(release) + "\n")
             self.assertIsNone(module.pending_hold(path, now))
 
+    def test_candidate_only_hold_is_binding(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as folder:
+            path = Path(folder)
+            (path / "thoughts.jsonl").write_text("")
+            hold = {"stream": "dispatch", "kind": "hold", "task_id": "v136-cut",
+                    "ts": "2026-09-14T12:00:00Z", "why": "v136 release hold"}
+            (path / "dispatch.jsonl").write_text(json.dumps(hold) + "\n")
+            now = module.timestamp("2026-09-14T13:00:00Z")
+            self.assertTrue(module.pending_hold(path, now, "v1.3.6-evolve"))
+
 
 class Controller(unittest.TestCase):
     def setUp(self):

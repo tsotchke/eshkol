@@ -86,7 +86,10 @@ def require_window(config, now):
         raise Wait("Authorized publication window expired; no tag will be created")
 
 
-def pending_hold(presence_root, now):
+def pending_hold(presence_root, now, target="v1.3.5-evolve"):
+    target_for_tag(target)
+    version = target.removesuffix("-evolve")
+    scopes = ("eshkol", "v1.3.5", "v135", version, version.replace(".", ""))
     records = []
     for stream in ("dispatch", "thoughts"):
         path = Path(presence_root) / (stream + ".jsonl")
@@ -100,7 +103,7 @@ def pending_hold(presence_root, now):
     for r in candidates:
         scope = " ".join(str(r.get(k) or "") for k in ("repo", "task_id", "why", "text"))
         if (r.get("kind") in ("hold", "veto")
-                and any(s in scope.lower() for s in ("eshkol", "v1.3.5", "v135"))
+                and any(s in scope.lower() for s in scopes)
                 and (now - timestamp(r["ts"])).total_seconds() < 86400):
             return scope
     return None
@@ -387,7 +390,7 @@ class Release:
             return "Already complete: " + self.state["release_url"]
         if (self.directory / "PAUSE").exists():
             raise Wait("Paused by operator: remove the PAUSE file to resume")
-        hold = pending_hold(self.config["presence_root"], utcnow())
+        hold = pending_hold(self.config["presence_root"], utcnow(), self.target)
         if hold:
             raise Wait("Tsotchke hold/veto: " + hold)
         if self.state.get("tagged_sha"):
