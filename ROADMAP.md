@@ -19,6 +19,9 @@
 > - [`docs/RELEASE_LADDER.md`](docs/RELEASE_LADDER.md) — the reconciled
 >   v1.3.6 → v1.4.0 → v1.4.1 → v1.4.5 → v1.5.0 scope, dependency, ownership,
 >   producer, acceptance, blocker, and snapshot-status table.
+> - [`docs/V14_BRANCH_PORTFOLIO.md`](docs/V14_BRANCH_PORTFOLIO.md) — the
+>   searchable index of 19 audited v1.4 branch candidates, exact heads,
+>   caveats, and admission gates.
 > - [`docs/design/adr/0000-unified-trajectory.md`](docs/design/adr/0000-unified-trajectory.md) —
 >   the 14-stage architectural ladder (v1.3.3a through v2.0) that sequences
 >   the load-bearing rewrites (binding/type identity, OALR ABI v2, staged AD

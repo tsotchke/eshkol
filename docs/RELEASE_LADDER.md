@@ -22,11 +22,9 @@ A read-only portfolio audit covered 1,714 refs, 1,083 unique heads, and 169
 worktrees against this master snapshot. Squash ancestry is not enough to prove
 content is new: candidate paths were compared with master and findings below
 are admission leads, not accepted patches. Do not merge whole branches. The
-compact [ICC branch portfolio](../.icc/v14-branch-portfolio.json) records all
-19 focused candidates, exact heads, classifications, evidence, aliases, and
-next gates. ICC worktree aliases/tasks are missing or stale for several
-candidates; register and bind each chosen candidate to its exact head before
-giving it release credit.
+indexed [v1.4 branch portfolio](V14_BRANCH_PORTFOLIO.md) records all 19
+focused candidates, exact heads, release lanes, classifications, evidence
+caveats, ICC alias status, and next gates. The [machine-readable portfolio](../.icc/v14-branch-portfolio.json) is the audit source. ICC aliases or tasks are missing or stale for several candidates; register and bind each chosen candidate to its exact head before giving it release credit.
 
 | Candidate and exact head | Current evidence/status | Next gate and ICC admission gap |
 |---|---|---|
