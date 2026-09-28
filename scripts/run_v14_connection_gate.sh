@@ -100,7 +100,7 @@ probe_run() {
 # binary produced it.  ICC's test-execution receipt stamps exact-clean-current
 # source identity and hashes the declared executable as measurement input.
 probe_http_server_source_receipt() {
-    local icc_bin command_line jit_cache out status snippet receipt_ok
+    local icc_bin command_line jit_cache fingerprint_trace fingerprint_file out status snippet receipt_ok
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
     icc_bin="${ICC_BIN:-$HOME/Desktop/infinite_context_coder/bin/icc}"
     if [ ! -x "$icc_bin" ]; then
@@ -111,13 +111,18 @@ probe_http_server_source_receipt() {
     fi
 
     jit_cache="$WORK/http-server-jit-cache"
-    mkdir -p "$jit_cache"
-    command_line="env BUILD_DIR='$BUILD_DIR_PATH' ESHKOL_LIB_DIR='$BUILD_DIR_PATH' ESHKOL_JIT_CACHE_DIR='$jit_cache' bash ./tests/v1_2_edge_cases/http_server_smoke_test.sh"
+    fingerprint_trace="$WORK/http-server-build-fingerprint"
+    mkdir -p "$jit_cache" "$fingerprint_trace"
+    fingerprint_file="$fingerprint_trace/build_fingerprint.jsonl"
+    command_line="env BUILD_DIR='$BUILD_DIR_PATH' TRACE_DIR='$fingerprint_trace' ESHKOL_LIB_DIR='$BUILD_DIR_PATH' ESHKOL_JIT_CACHE_DIR='$jit_cache' bash ./tests/v1_2_edge_cases/http_server_smoke_test.sh"
     out=$("$icc_bin" test-execution-oracle \
         --repo "${ICC_REPO_NAME:-eshkol}" \
         --name v14_http_server_roundtrip \
         --cwd "$REPO_ROOT" \
         --declare-data "$ESHKOL_RUN" \
+        --declare-data "$BUILD_DIR_PATH/stdlib.o" \
+        --declare-data "$BUILD_DIR_PATH/stdlib.bc" \
+        --declare-data "$fingerprint_file" \
         --declare-instrument scripts/run_v14_connection_gate.sh:http_server_smoke_test.sh \
         --command "$command_line" --format json 2>&1)
     status=$?
@@ -133,9 +138,11 @@ try:
     data = (value.get("provenance", {}).get("data", {})
             if isinstance(value.get("provenance"), dict) else {})
     inputs = data.get("value") if isinstance(data, dict) else None
-    binary = sys.argv[1]
+    binary, stdlib_object, stdlib_bitcode, fingerprint_path = sys.argv[1:]
     binary_rows = [row for row in inputs or []
                    if isinstance(row, dict) and row.get("path") == binary]
+    required_paths = {stdlib_object, stdlib_bitcode, fingerprint_path}
+    declared_paths = {row.get("path") for row in inputs or [] if isinstance(row, dict)}
     ok = (
         payload.get("ok") is True
         and record.get("schema") == "icc.test_execution.v1"
@@ -148,11 +155,17 @@ try:
             == source.get("icc_index_source_fingerprint")
         and len(binary_rows) == 1
         and re.fullmatch(r"[0-9a-f]{64}", str(binary_rows[0].get("sha256") or ""))
+        and required_paths.issubset(declared_paths)
+        and all(
+            re.fullmatch(r"[0-9a-f]{64}", str(row.get("sha256") or ""))
+            for row in inputs or []
+            if isinstance(row, dict) and row.get("path") in required_paths
+        )
     )
 except Exception:
     ok = False
 raise SystemExit(0 if ok else 1)
-' "$ESHKOL_RUN" || receipt_ok=0
+' "$ESHKOL_RUN" "$BUILD_DIR_PATH/stdlib.o" "$BUILD_DIR_PATH/stdlib.bc" "$fingerprint_file" || receipt_ok=0
     else
         receipt_ok=0
     fi
