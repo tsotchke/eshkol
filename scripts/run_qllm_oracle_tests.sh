@@ -28,6 +28,8 @@
 #   --keep-json  write JSON from the AOT lane too (default: JIT lane only, so
 #                the two lanes cannot race on the same output files)
 set -u
+# Perl's golden comparison must use a locale present on macOS and Linux.
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 GEN_DIR="$REPO_ROOT/tests/qllm_oracle"
