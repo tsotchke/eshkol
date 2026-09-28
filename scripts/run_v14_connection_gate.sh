@@ -100,7 +100,7 @@ probe_run() {
 # binary produced it.  ICC's test-execution receipt stamps exact-clean-current
 # source identity and hashes the declared executable as measurement input.
 probe_http_server_source_receipt() {
-    local icc_bin repo_name registered_root checkout_root command_line jit_cache fingerprint_trace fingerprint_file out status snippet receipt_ok
+    local icc_bin repo_name binding_output binding_status command_line jit_cache fingerprint_trace fingerprint_file out status snippet receipt_ok
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
     icc_bin="${ICC_BIN:-$HOME/Desktop/infinite_context_coder/bin/icc}"
     if [ ! -x "$icc_bin" ]; then
@@ -111,18 +111,13 @@ probe_http_server_source_receipt() {
     fi
 
     repo_name="${ICC_REPO_NAME:-eshkol}"
-    registered_root=$("$icc_bin" resolve --repo "$repo_name" --format json 2>/dev/null | python3 -c '
-import json, os, sys
-try:
-    path = json.load(sys.stdin).get("repo", {}).get("path", "")
-    print(os.path.realpath(path) if path else "")
-except Exception:
-    print("")
-')
-    checkout_root=$(cd "$REPO_ROOT" && pwd -P)
-    if [ -z "$registered_root" ] || [ "$registered_root" != "$checkout_root" ]; then
+    binding_output=$(ICC_BIN="$icc_bin" ICC_REPO_NAME="$repo_name" \
+        bash "$REPO_ROOT/tests/v1_2_edge_cases/http_server_smoke_test.sh" \
+        --verify-icc-checkout-only 2>&1)
+    binding_status=$?
+    if [ "$binding_status" -ne 0 ]; then
         PROBE_FAILURES=$((PROBE_FAILURES + 1))
-        emit_event v14_http_server_roundtrip FAIL "ICC repo $repo_name resolves to '$registered_root', but test checkout is '$checkout_root'"
+        emit_event v14_http_server_roundtrip FAIL "$binding_output"
         printf '  \xE2\x9C\x97 %-42s ICC repo checkout mismatch\n' v14_http_server_roundtrip
         return
     fi
