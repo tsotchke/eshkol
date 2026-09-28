@@ -37,7 +37,7 @@
            (nearest (+ (exact->inexact x) -9007199254740992.0)))
       (and (= nearest 0.0) (contains-exact? r exact-sum)
            (not (and (<= (inexact->exact (fl-next-down nearest)) exact-sum)
-                     (>= (inexact->exact (fl-next-up nearest)) exact-sum))))
+                     (>= (inexact->exact (fl-next-up nearest)) exact-sum)))))
     (let* ((power (let loop ((n 70) (a 1))
                     (if (= n 0) a (loop (- n 1) (* a 2)))))
            (x (+ power 1))
