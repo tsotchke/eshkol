@@ -11,11 +11,14 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run"
+case "${BUILD_DIR:-build}" in
+    /*) RUN="${BUILD_DIR}/eshkol-run" ;;
+    *) RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run" ;;
+esac
 
 if [ ! -x "$RUN" ]; then
-    echo "SKIP: $RUN not built"
-    exit 0
+    echo "FAIL: $RUN not built; HTTP server evidence is unavailable"
+    exit 2
 fi
 
 WORK=$(mktemp -d -t eshkol_http_server.XXXXXX)
@@ -99,8 +102,8 @@ cat > "$WORK/http_server.esk" <<'EOF'
 (define srv (create-server-with-retry 5))
 (if (not (server-handle? srv))
     (begin
-      (display "SKIP: http-server-create unavailable") (newline)
-      (exit 0))
+      (display "FAIL: http-server-create unavailable") (newline)
+      (exit 1))
     #t)
 
 (check "http-server-create returns positive handle" #t (server-handle? srv))
