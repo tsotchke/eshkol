@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Expanded the advanced mathematics examples in the v1.3.5 press description
+  and verified the new examples against the compiler. This post-tag documentation
+  correction leaves the frozen v1.3.5 release record unchanged. (#726)
+
 ## [1.3.5-evolve] - 2026-09-22
 
 Release date: Tuesday, September 22, 2026. The callee-identity, type-precision
