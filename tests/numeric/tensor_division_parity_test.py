@@ -37,9 +37,9 @@ assert lines[7].count("-inf.0") == 64
 
 for engine in ("native", "vm"):
     result = run(engine, "exact_rational_zero_test.esk")
-    assert result.returncode != 0 and any(
-        phrase in result.stderr.lower() for phrase in ("division by zero", "divide by zero")), (
-        f"{engine} exact rational division did not raise: {result}")
-    assert result.stdout == "", f"{engine} printed a value after exact division by zero"
+    assert result.returncode == 0 and "ERROR:" not in result.stderr, (
+        f"{engine} exact rational division was not caught: {result}")
+    assert result.stdout == "PASS: exact rational division by exact zero raises\n", (
+        f"{engine} exact rational division produced an unexpected result: {result}")
 
-print("PASS native/VM IEEE tensor division: 8 identical lines; exact zero raises")
+print("PASS native/VM IEEE tensor division: 8 identical lines; exact zero raises catchably")

@@ -10495,12 +10495,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             const VmRational* a_r = vm_coerce_rational(vm, a_val, &a_scratch);
             const VmRational* b_r = vm_coerce_rational(vm, b_val, &b_scratch);
             if (!a_r || !b_r) { vm->error = 1; break; }
-            /* Exact division by an exact zero is fatal (native raises
-             * "rational division by zero"), and must be rejected before the
-             * arithmetic so `(/ 1/2 0)` cannot silently produce 0.5. */
+            /* Exact division by an exact zero is a catchable language error,
+             * matching the native backend and allowing `guard` to handle it.
+             * Reject it before rational arithmetic so `(/ 1/2 0)` cannot
+             * silently produce an inexact value. */
             if (fid == 334 &&
                 (b_r->is_big ? bignum_is_zero(b_r->big_num) : b_r->num == 0)) {
-                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break;
+                vm_raise_error_msg(vm, "rational division by zero"); break;
             }
             char rop = (fid == 331) ? '+' : (fid == 332) ? '-'
                      : (fid == 333) ? '*' : '/';
