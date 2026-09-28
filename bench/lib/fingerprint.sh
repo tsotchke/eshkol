@@ -48,7 +48,21 @@ bench_capture_fingerprint() { # <build_dir> <label> -> JSON object on stdout
         cpu_physical="$(sysctl -n hw.physicalcpu 2>/dev/null || echo 0)"
         mem_bytes="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
     else
-        cpu_model="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/^[^:]*: //' || echo unknown)"
+        cpu_model="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/^[^:]*: //')"
+        # ARM /proc/cpuinfo has no "model name"; lscpu decodes the core IDs
+        # (one "Model name" line per cluster on big.LITTLE parts).
+        if [ -z "$cpu_model" ] && command -v lscpu >/dev/null 2>&1; then
+            local cpu_vendor cpu_cores
+            cpu_vendor="$(LC_ALL=C lscpu 2>/dev/null | awk -F': *' '/^Vendor ID:/{print $2; exit}')"
+            cpu_cores="$(LC_ALL=C lscpu 2>/dev/null | awk -F': *' '/Model name:/{print $2}' | awk '!seen[$0]++' | paste -sd'+' - | sed 's/+/ + /g')"
+            cpu_model="$(printf '%s %s' "$cpu_vendor" "$cpu_cores" | sed 's/^ *//; s/ *$//')"
+        fi
+        local product_name
+        product_name="$(cat /sys/class/dmi/id/product_name 2>/dev/null)"
+        if [ -n "$cpu_model" ] && [ -n "$product_name" ]; then
+            cpu_model="$cpu_model ($product_name)"
+        fi
+        [ -n "$cpu_model" ] || cpu_model="unknown"
         cpu_logical="$(nproc 2>/dev/null || echo 0)"
         cpu_physical="$cpu_logical"
         mem_bytes="$(awk '/MemTotal/{print $2*1024}' /proc/meminfo 2>/dev/null || echo 0)"
@@ -71,11 +85,23 @@ bench_capture_fingerprint() { # <build_dir> <label> -> JSON object on stdout
     fi
     if command -v clang++ >/dev/null 2>&1; then
         cxx_version="$(clang++ --version 2>/dev/null | head -1)"
+    elif command -v c++ >/dev/null 2>&1; then
+        cxx_version="$(c++ --version 2>/dev/null | head -1)"
     fi
 
-    local llvm_version="unknown"
-    if command -v llvm-config >/dev/null 2>&1; then
-        llvm_version="$(llvm-config --version 2>/dev/null)"
+    # The build's own cache says which toolchain it used; Linux distros usually
+    # install only versioned llvm-config-NN, so PATH lookup alone misses it.
+    local cache="$build_dir/CMakeCache.txt"
+    local llvm_version="unknown" llvm_config=""
+    if [ -f "$cache" ]; then
+        llvm_config="$(awk -F= '/^LLVM_CONFIG_EXECUTABLE:/{print $2; exit}' "$cache")"
+    fi
+    if [ -z "$llvm_config" ] || [ ! -x "$llvm_config" ]; then
+        llvm_config="$(command -v llvm-config 2>/dev/null || true)"
+    fi
+    if [ -n "$llvm_config" ]; then
+        llvm_version="$("$llvm_config" --version 2>/dev/null)"
+        [ -n "$llvm_version" ] || llvm_version="unknown"
     fi
 
     local blas_kind="unknown"
@@ -83,6 +109,16 @@ bench_capture_fingerprint() { # <build_dir> <label> -> JSON object on stdout
         blas_kind="Apple Accelerate (vecLib/AMX)"
     elif [ -n "${ESHKOL_BLAS_KIND:-}" ]; then
         blas_kind="$ESHKOL_BLAS_KIND"
+    elif [ -f "$cache" ]; then
+        local blas_lib
+        blas_lib="$(awk -F= '/^BLAS_LIB:/{print $2; exit}' "$cache")"
+        case "$blas_lib" in
+            ""|*NOTFOUND*) ;;
+            *openblas*) blas_kind="OpenBLAS ($blas_lib)" ;;
+            *flexiblas*) blas_kind="FlexiBLAS ($blas_lib)" ;;
+            *mkl*) blas_kind="Intel MKL ($blas_lib)" ;;
+            *) blas_kind="$blas_lib" ;;
+        esac
     fi
 
     local git_sha git_branch git_dirty
