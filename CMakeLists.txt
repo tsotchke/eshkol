@@ -1765,6 +1765,15 @@ if(ESHKOL_GPU_ENABLED)
         if(CUDAToolkit_FOUND)
             set(ESHKOL_HOST_CUDA_MAJOR "${CUDAToolkit_VERSION_MAJOR}"
                 CACHE INTERNAL "CUDA toolkit major used by this build" FORCE)
+            # CMake seeds CMAKE_CUDA_ARCHITECTURES from $ENV{CUDAARCHS} only when
+            # CUDA is enabled, which happens after this point, so honor it here;
+            # otherwise the portable default below would silently replace it.
+            if((NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR
+                "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "") AND
+               NOT "$ENV{CUDAARCHS}" STREQUAL "")
+                set(CMAKE_CUDA_ARCHITECTURES "$ENV{CUDAARCHS}"
+                    CACHE STRING "CUDA architectures" FORCE)
+            endif()
             if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR
                "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
                 # #606: the portable default is resolved against what the
