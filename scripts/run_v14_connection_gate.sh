@@ -311,11 +311,13 @@ fi
 # ESHKOL_MAX_HEAP/ESHKOL_TIMEOUT_MS/etc.) with a real CTest gate
 # (tests/limits/resource_limits_enforcement_gate.sh) that CMake registers
 # but no CI workflow ever runs via ctest. Invoke it directly.
-VM_LIMITS_ARG="$VM_RUN"
-if [ ! -x "$VM_LIMITS_ARG" ]; then VM_LIMITS_ARG=none; fi
-probe_run v14_resource_limits_enforced \
-    'Resource limits (#150): CPU/wall-time/memory/tensor/string/stack ceilings terminate with documented exit codes, and an unreached ceiling changes nothing' \
-    '"$REPO_ROOT/tests/limits/resource_limits_enforcement_gate.sh" "$ESHKOL_RUN" "$VM_LIMITS_ARG" "$WORK/limits"'
+if [ -x "$VM_RUN" ]; then
+    probe_run v14_resource_limits_enforced \
+        'Resource limits (#150): CPU/wall-time/memory/tensor/string/stack ceilings terminate with documented exit codes, and an unreached ceiling changes nothing' \
+        '"$REPO_ROOT/tests/limits/resource_limits_enforcement_gate.sh" "$ESHKOL_RUN" "$VM_RUN" "$WORK/limits"'
+else
+    probe_not_yet_implemented v14_resource_limits_enforced "eshkol-vm-standalone-test not built"
+fi
 
 # TCP/UDP/TLS/WebSocket-server: confirmed absent by direct grep (tcp-connect,
 # tcp-listen, udp-socket, udp-bind, tls-connect, tls-context, make-tls: zero
