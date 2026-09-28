@@ -103,7 +103,7 @@
     ;; rigorous? flag on core.ad.interval: opt-in matches ia+ exactly
     (let ((d (interval-add (cons 0.1 0.1) (cons 0.2 0.2) #t))
           (r (ia+ (cons 0.1 0.1) (cons 0.2 0.2))))
-      (and (= (car d) (car r)) (= (cdr d) (cdr r))))))
+      (and (= (car d) (car r)) (= (cdr d) (cdr r)))))))
 
 (if ok
     (begin (display "PASS: certified_enclosures native/VM parity") (newline))

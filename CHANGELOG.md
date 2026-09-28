@@ -15,9 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Exact rational endpoints are converted outward until exact comparisons certify
   the bounds; indeterminate non-finite endpoint cases fail closed. (#727)
 
-## [1.3.5-evolve] - 2026-09-27
+## [1.3.5-evolve] - 2026-09-22
 
-Release date: Sunday, September 27, 2026. The callee-identity, type-precision
+Release date: Tuesday, September 22, 2026. The callee-identity, type-precision
 and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).
