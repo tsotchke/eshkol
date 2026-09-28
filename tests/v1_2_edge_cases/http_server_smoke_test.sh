@@ -44,6 +44,19 @@ except Exception:
     fi
 fi
 
+if [ "${1:-}" = "--verify-icc-checkout-only" ]; then
+    if [ -z "${ICC_REPO_NAME:-}" ]; then
+        echo "FAIL: ICC_REPO_NAME is required for checkout verification"
+        exit 3
+    fi
+    echo "PASS: ICC repo $ICC_REPO_NAME resolves to the test checkout"
+    exit 0
+fi
+if [ "$#" -gt 0 ]; then
+    echo "FAIL: unexpected argument: $1"
+    exit 2
+fi
+
 if [ ! -x "$RUN" ]; then
     echo "FAIL: $RUN not built; HTTP server evidence is unavailable"
     exit 2

@@ -33,7 +33,8 @@ if [ "$REGISTERED_ROOT" = "$CHECKOUT_ROOT" ]; then
 fi
 
 output=$(ICC_BIN="$ICC_BIN" ICC_REPO_NAME="$ICC_REPO_NAME" BUILD_DIR="$ROOT/build" \
-    bash "$ROOT/tests/v1_2_edge_cases/http_server_smoke_test.sh" 2>&1)
+    bash "$ROOT/tests/v1_2_edge_cases/http_server_smoke_test.sh" \
+    --verify-icc-checkout-only 2>&1)
 status=$?
 if [ "$status" -eq 3 ] && [[ "$output" == *"ICC repo $ICC_REPO_NAME resolves to"* ]]; then
     echo "PASS: mismatched ICC checkout refused before HTTP evidence"
