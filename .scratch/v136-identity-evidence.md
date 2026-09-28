@@ -3,7 +3,7 @@
 - Version identity is `1.3.6` in CMake and the public header; the release
   suffix is `1.3.6-evolve`.
 - The frozen v1.3.5 record remains dated 2026-09-22. Public v1.3.6
-  publication is a separate pending event dated 2026-09-27; no release-ready
+  publication is a separate pending event with no date assigned; no release-ready
   or published verdict is asserted by this change.
 - `.icc/completion-oracles.yaml` adds `v1.3.6-evolve`, carrying the strict
   ledger, oracle-integrity, freshness, changelog, disclosure, context and

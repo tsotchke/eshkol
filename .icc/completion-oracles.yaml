@@ -1960,12 +1960,16 @@ oracles:
         action: python3 scripts/gate_no_silent_wrong.py
       - test_evidence: true
         severity: high
-        label: Mixed exact/inexact interval operations contain independently computed references under JIT and AOT
-        action: cd build && cmake --build . && ctest -R 'certified_enclosures_(runtime|aot)_smoke'
+        label: Mixed exact/inexact interval operations contain independently computed references under JIT
+        action: ctest --test-dir build --output-on-failure -R '^certified_enclosures_runtime_smoke$'
       - test_evidence: true
         severity: high
-        label: The release evidence recipe validates every authored v1.3.6 criterion against fresh receipts
-        action: python3 scripts/verify_v1_3_release_evidence.py --target v1.3.6-evolve --trace-dir .icc/evidence/release
+        label: Mixed exact/inexact interval operations contain independently computed references under AOT
+        action: ctest --test-dir build --output-on-failure -R '^certified_enclosures_aot_smoke$'
+      - test_evidence: true
+        severity: high
+        label: The release evidence recipe rejects missing, duplicate, failed, or unmapped receipts
+        action: python3 tests/toolchain/test_v1_3_release_evidence_recipe.py
 
   # -----------------------------------------------------------------
   # Arbitrary-order AD Taylor-tower campaign -- cross-release gate.

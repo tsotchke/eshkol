@@ -25,13 +25,14 @@ TEST_ACTIONS = {
     "ctest -R v1_3_quoted_datum_kinds_runtime_smoke": "ctest::v1_3_quoted_datum_kinds_runtime_smoke",
     "cd build && cmake --build . && ctest -R python_bindings_capsule_lifetime": "ctest::python_bindings_capsule_lifetime",
     "python3 scripts/check_test_coverage.py": "test_coverage_inventory",
-    "cd build && cmake --build . && ctest -R 'certified_enclosures_(runtime|aot)_smoke'": "ctest::certified_enclosures",
-    "python3 scripts/verify_v1_3_release_evidence.py --target v1.3.6-evolve --trace-dir .icc/evidence/release": "release_evidence_recipe",
+    "ctest --test-dir build --output-on-failure -R '^certified_enclosures_runtime_smoke$'": "certified_enclosures_runtime_smoke",
+    "ctest --test-dir build --output-on-failure -R '^certified_enclosures_aot_smoke$'": "certified_enclosures_aot_smoke",
+    "python3 tests/toolchain/test_v1_3_release_evidence_recipe.py": "release_evidence_recipe_self_test",
 }
 
 EXPECTED_CRITERION_COUNTS = {
     "v1.3.5-evolve": 37,
-    "v1.3.6-evolve": 11,
+    "v1.3.6-evolve": 12,
 }
 
 
@@ -59,8 +60,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--trace-dir", type=Path, required=True)
-    parser.add_argument("--target", default="v1.3.6-evolve",
-                        help="completion-oracle target to verify (default: v1.3.6-evolve)")
+    parser.add_argument("--target", default="v1.3.5-evolve",
+                        help="completion-oracle target to verify (default: v1.3.5-evolve)")
     args = parser.parse_args()
     oracle_file = args.repo_root / ".icc" / "completion-oracles.yaml"
     data = yaml.safe_load(oracle_file.read_text(encoding="utf-8"))
