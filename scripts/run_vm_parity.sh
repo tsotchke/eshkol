@@ -38,7 +38,7 @@
 # Emits (mirroring scripts/run_sicp_smoke.sh):
 #   * pytest-style lines : "PASSED tests/vm_parity/<file>::<check>"
 #   * ICC JSON-L events  : kind=vm_parity into
-#                          scripts/icc_traces/vm_parity.jsonl, consumed by
+#                          ${TRACE_DIR:-scripts/icc_traces}/vm_parity.jsonl, consumed by
 #                          .icc/completion-oracles.yaml::vm-parity
 #
 # Usage: scripts/run_vm_parity.sh [--no-eskb] [--audit-only]
@@ -55,15 +55,15 @@ cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 . "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
 if eshkol_durable_enabled; then
     VM_PARITY_WORK="$(eshkol_durable_prepare_dir vm-parity)" || exit $?
     TRACE_DIR="${TRACE_DIR:-$VM_PARITY_WORK/traces}"
-    # Evidence paths are absolute before first use (scripts/lib/evidence_paths.sh).
-    . "$REPO_ROOT/scripts/lib/evidence_paths.sh"
-    eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 else
-    TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+    TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
 fi
+# Evidence paths are absolute before first use.
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 TRACE_FILE="$TRACE_DIR/vm_parity.jsonl"
 mkdir -p "$TRACE_DIR"
 : "${TRACE_FILE:?TRACE_FILE must be set}"
