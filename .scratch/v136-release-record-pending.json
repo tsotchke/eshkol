@@ -1,0 +1,15 @@
+{
+  "schema": "eshkol.release-record-pending.v1",
+  "tag": "v1.3.6-evolve",
+  "previous_tag": "v1.3.5-evolve",
+  "frozen_previous_release_date": "2026-09-22",
+  "publication_date": "2026-09-27",
+  "status": "PENDING_EVIDENCE",
+  "ctest_total": null,
+  "vm_parity_total": null,
+  "integration": {
+    "pr": 727,
+    "head": "PENDING_FINAL_CUT_SHA"
+  },
+  "notes": "Publication and readiness remain blocked until fresh full-suite and VM-parity evidence is recorded at the final cut."
+}

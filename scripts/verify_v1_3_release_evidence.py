@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed unless every v1.3.5 criterion has fresh release-recipe evidence."""
+"""Fail closed unless every selected v1.3 release criterion has fresh evidence."""
 
 from __future__ import annotations
 
@@ -25,6 +25,13 @@ TEST_ACTIONS = {
     "ctest -R v1_3_quoted_datum_kinds_runtime_smoke": "ctest::v1_3_quoted_datum_kinds_runtime_smoke",
     "cd build && cmake --build . && ctest -R python_bindings_capsule_lifetime": "ctest::python_bindings_capsule_lifetime",
     "python3 scripts/check_test_coverage.py": "test_coverage_inventory",
+    "cd build && cmake --build . && ctest -R 'certified_enclosures_(runtime|aot)_smoke'": "ctest::certified_enclosures",
+    "python3 scripts/verify_v1_3_release_evidence.py --target v1.3.6-evolve --trace-dir .icc/evidence/release": "release_evidence_recipe",
+}
+
+EXPECTED_CRITERION_COUNTS = {
+    "v1.3.5-evolve": 37,
+    "v1.3.6-evolve": 11,
 }
 
 
@@ -52,15 +59,20 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--trace-dir", type=Path, required=True)
+    parser.add_argument("--target", default="v1.3.6-evolve",
+                        help="completion-oracle target to verify (default: v1.3.6-evolve)")
     args = parser.parse_args()
     oracle_file = args.repo_root / ".icc" / "completion-oracles.yaml"
     data = yaml.safe_load(oracle_file.read_text(encoding="utf-8"))
-    oracle = next((item for item in data.get("oracles", []) if item.get("name") == "v1.3.5-evolve"), None)
+    oracle = next((item for item in data.get("oracles", []) if item.get("name") == args.target), None)
     if oracle is None:
-        raise SystemExit("v1.3.5-evolve completion oracle is absent")
+        raise SystemExit(f"{args.target} completion oracle is absent")
     criteria = oracle.get("requires", [])
-    if len(criteria) != 37:
-        raise SystemExit(f"expected 37 authored criteria; found {len(criteria)}")
+    expected_count = EXPECTED_CRITERION_COUNTS.get(args.target)
+    if expected_count is None:
+        raise SystemExit(f"{args.target} has no pinned release-evidence criterion count")
+    if len(criteria) != expected_count:
+        raise SystemExit(f"expected {expected_count} authored criteria for {args.target}; found {len(criteria)}")
 
     records = load_events(args.trace_dir)
     errors: list[str] = []
@@ -102,7 +114,7 @@ def main() -> int:
         for error in errors:
             print(f"release evidence verification: FAIL: {error}")
         return 1
-    print(f"release evidence verification: PASS ({checked_runtime} runtime events, {checked_tests} named test actions, 37 criteria)")
+    print(f"release evidence verification: PASS ({checked_runtime} runtime events, {checked_tests} named test actions, {len(criteria)} criteria, target={args.target})")
     return 0
 
 
