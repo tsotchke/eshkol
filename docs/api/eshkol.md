@@ -24,24 +24,24 @@ Eshkol runtime/compiler version numbers and version string. ESHKOL_VERSION_MAJOR
 #define ESHKOL_VERSION_MINOR 3
 ```
 
-Minor component of the semantic version (the `3` in 1.3.5).
+Minor component of the semantic version (the `3` in 1.3.6).
 
 ### `ESHKOL_VERSION_PATCH`
 
 *Macro* — line 21
 
 ```c
-#define ESHKOL_VERSION_PATCH 5
+#define ESHKOL_VERSION_PATCH 6
 ```
 
-Patch component of the semantic version (the `5` in 1.3.5).
+Patch component of the semantic version (the `6` in 1.3.6).
 
 ### `ESHKOL_VERSION_STRING`
 
 *Macro* — line 23
 
 ```c
-#define ESHKOL_VERSION_STRING "1.3.5-evolve"
+#define ESHKOL_VERSION_STRING "1.3.6-evolve"
 ```
 
 Full release string, `MAJOR.MINOR.PATCH` plus the release-series suffix.
