@@ -115,7 +115,11 @@ probe_http_server_source_receipt() {
     mkdir -p "$jit_cache" "$fingerprint_trace"
     fingerprint_file="$fingerprint_trace/build_fingerprint.jsonl"
     command_line="env BUILD_DIR='$BUILD_DIR_PATH' TRACE_DIR='$fingerprint_trace' ESHKOL_LIB_DIR='$BUILD_DIR_PATH' ESHKOL_JIT_CACHE_DIR='$jit_cache' bash ./tests/v1_2_edge_cases/http_server_smoke_test.sh"
-    out=$("$icc_bin" test-execution-oracle \
+    # The shell test invokes helper files transitively; ICC's command-seed
+    # closure does not enumerate every sourced shell dependency. Disable that
+    # relaxation so only an exact whole-tree source/index match is admissible;
+    # any later commit retires this receipt until the round trip is rerun.
+    out=$(ICC_RECEIPT_CLOSURE=0 "$icc_bin" test-execution-oracle \
         --repo "${ICC_REPO_NAME:-eshkol}" \
         --name v14_http_server_roundtrip \
         --cwd "$REPO_ROOT" \
