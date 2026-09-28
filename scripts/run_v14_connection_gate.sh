@@ -95,6 +95,79 @@ probe_run() {
     fi
 }
 
+# #145 carries a second, immutable ICC receipt.  The ordinary sweep event is
+# useful for the live counter, but cannot attest which source tree or runner
+# binary produced it.  ICC's test-execution receipt stamps exact-clean-current
+# source identity and hashes the declared executable as measurement input.
+probe_http_server_source_receipt() {
+    local icc_bin command_line jit_cache out status snippet receipt_ok
+    PROBE_TOTAL=$((PROBE_TOTAL + 1))
+    icc_bin="${ICC_BIN:-$HOME/Desktop/infinite_context_coder/bin/icc}"
+    if [ ! -x "$icc_bin" ]; then
+        PROBE_FAILURES=$((PROBE_FAILURES + 1))
+        emit_event v14_http_server_roundtrip FAIL "ICC receipt producer unavailable: $icc_bin"
+        printf '  \xE2\x9C\x97 %-42s ICC receipt producer unavailable\n' v14_http_server_roundtrip
+        return
+    fi
+
+    jit_cache="$WORK/http-server-jit-cache"
+    mkdir -p "$jit_cache"
+    command_line="env BUILD_DIR='$BUILD_DIR_PATH' ESHKOL_LIB_DIR='$BUILD_DIR_PATH' ESHKOL_JIT_CACHE_DIR='$jit_cache' bash ./tests/v1_2_edge_cases/http_server_smoke_test.sh"
+    out=$("$icc_bin" test-execution-oracle \
+        --repo "${ICC_REPO_NAME:-eshkol-v14-http-source-evidence}" \
+        --name v14_http_server_roundtrip \
+        --cwd "$REPO_ROOT" \
+        --declare-data "$ESHKOL_RUN" \
+        --declare-instrument scripts/run_v14_connection_gate.sh:http_server_smoke_test.sh \
+        --command "$command_line" --format json 2>&1)
+    status=$?
+    receipt_ok=1
+    if [ "$status" -eq 0 ]; then
+        printf '%s' "$out" | python3 -c '
+import json, re, sys
+try:
+    payload = json.load(sys.stdin)
+    record = payload.get("record", {})
+    value = record.get("value", {})
+    source = value.get("source", {})
+    data = (value.get("provenance", {}).get("data", {})
+            if isinstance(value.get("provenance"), dict) else {})
+    inputs = data.get("value") if isinstance(data, dict) else None
+    binary = sys.argv[1]
+    binary_rows = [row for row in inputs or []
+                   if isinstance(row, dict) and row.get("path") == binary]
+    ok = (
+        payload.get("ok") is True
+        and record.get("schema") == "icc.test_execution.v1"
+        and record.get("kind") == "test_result"
+        and record.get("name") == "v14_http_server_roundtrip"
+        and record.get("status") == "PASS"
+        and source.get("dirty") is False
+        and source.get("icc_fresh") is True
+        and source.get("icc_source_fingerprint")
+            == source.get("icc_index_source_fingerprint")
+        and len(binary_rows) == 1
+        and re.fullmatch(r"[0-9a-f]{64}", str(binary_rows[0].get("sha256") or ""))
+    )
+except Exception:
+    ok = False
+raise SystemExit(0 if ok else 1)
+' "$ESHKOL_RUN" || receipt_ok=0
+    else
+        receipt_ok=0
+    fi
+    if [ "$receipt_ok" -eq 1 ]; then
+        emit_event v14_http_server_roundtrip PASS "ICC test-execution receipt recorded; binary=$ESHKOL_RUN"
+        printf '  \xE2\x9C\x93 %-42s source-bound ICC receipt\n' v14_http_server_roundtrip
+    else
+        PROBE_FAILURES=$((PROBE_FAILURES + 1))
+        snippet=$(printf '%s' "$out" | tail -c 220)
+        [ "$status" -eq 0 ] && snippet="ICC receipt did not bind a fresh source and runner SHA-256"
+        emit_event v14_http_server_roundtrip FAIL "$snippet"
+        printf '  \xE2\x9C\x97 %-42s ICC receipt failed (exit %d)\n' v14_http_server_roundtrip "$status"
+    fi
+}
+
 # A deliverable that does not exist in the tree yet. Emits an honest FAIL
 # with the evidence that it is absent, so the criterion stays real (never
 # silently dropped) until someone lands the feature and swaps this stub for
@@ -136,9 +209,7 @@ fi
 # http-server-create/-accept/-respond/-close, real bind/listen/accept/recv/
 # send) + a real fork+client+server round trip over loopback, already
 # CI-wired via the tests/v1_2_edge_cases/*.esk glob.
-probe_run v14_http_server_roundtrip \
-    'HTTP server (#145): real fork+client GET /health over loopback round-trips' \
-    'BUILD_DIR="$BUILD_DIR_PATH" ./tests/v1_2_edge_cases/http_server_smoke_test.sh'
+probe_http_server_source_receipt
 
 # #148 Prometheus metrics + /metrics endpoint: lib/core/metrics.esk
 # (make-counter/counter-inc!/metrics-render) is real and wired into
