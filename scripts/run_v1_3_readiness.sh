@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 export PYTHONPATH="$REPO_ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}"
-RELEASE_TARGET="${RELEASE_TARGET:-v1.3.6-evolve}"
+export RELEASE_TARGET="${RELEASE_TARGET:-v1.3.6-evolve}"
 RELEASE_TARGET="$(python3 -c 'import os; from release_target import validate_target; print(validate_target(os.environ["RELEASE_TARGET"]))')"
 export RELEASE_TARGET
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
