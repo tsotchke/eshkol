@@ -15,10 +15,31 @@ case "${BUILD_DIR:-build}" in
     /*) RUN="${BUILD_DIR}/eshkol-run" ;;
     *) RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run" ;;
 esac
+case "${BUILD_DIR:-build}" in
+    /*) BUILD_DIR_PATH="${BUILD_DIR}" ;;
+    *) BUILD_DIR_PATH="$ROOT/${BUILD_DIR:-build}" ;;
+esac
 
 if [ ! -x "$RUN" ]; then
     echo "FAIL: $RUN not built; HTTP server evidence is unavailable"
     exit 2
+fi
+
+# Bind the run to the exact runner digest and fail if it predates any
+# build-relevant source change. The ICC test receipt separately stamps the
+# clean source tree and declares this runner as measured data.
+TRACE_DIR="${TRACE_DIR:-$ROOT/scripts/icc_traces}"
+case "$TRACE_DIR" in
+    /*) ;;
+    *) TRACE_DIR="$ROOT/$TRACE_DIR" ;;
+esac
+mkdir -p "$TRACE_DIR"
+. "$ROOT/scripts/lib/build_fingerprint.sh"
+eshkol_emit_build_fingerprint_event "$TRACE_DIR" "v14_http_server_roundtrip" "$BUILD_DIR_PATH" eshkol-run
+if ! python3 "$ROOT/scripts/check_build_fingerprint.py" \
+    --build-dir "$BUILD_DIR_PATH" --trace-dir "$TRACE_DIR" --format json; then
+    echo "FAIL: eshkol-run build fingerprint is stale or mismatched"
+    exit 1
 fi
 
 WORK=$(mktemp -d -t eshkol_http_server.XXXXXX)

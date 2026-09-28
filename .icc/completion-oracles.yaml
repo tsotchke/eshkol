@@ -2108,7 +2108,7 @@ oracles:
           event_schemas: [icc.test_execution.v1]
           event_source_policy: exact_clean_current
         severity: high
-        label: 'HTTP server (#145): loopback GET round-trip has an ICC exact-clean-current test receipt with the runner binary SHA-256 declared as measured input (tests/v1_2_edge_cases/http_server_smoke_test.sh)'
+        label: 'HTTP server (#145): loopback GET round-trip has an ICC exact-clean-current receipt, declared runner/stdlib/build-fingerprint SHA-256 values, and a passing no-stale-compiler-input check (tests/v1_2_edge_cases/http_server_smoke_test.sh)'
         action: run_v14_connection_gate
 
       - runtime_event:
