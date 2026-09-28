@@ -2105,16 +2105,12 @@ oracles:
           event_kinds: [test_result]
           event_names: ["v14_http_server_roundtrip"]
           event_values: ["PASS"]
-          # BLOCKED pending an ICC payload contract that checks command/root
-          # binding and the declared runner, stdlib, and build-fingerprint
-          # inputs. ICC's current test_execution schema checks source freshness
-          # only; a same-name PASS receipt can omit or alter those inputs.
-          # This future schema intentionally matches nothing until ICC installs
-          # the validator. Do not replace it with icc.test_execution.v1 alone.
-          event_schemas: [icc.v14_http_source_build_receipt.v1]
+          event_schemas: [icc.test_execution.v1]
+          event_statuses: [PASS]
+          payload_predicate: eshkol_http_roundtrip_v1
           event_source_policy: exact_clean_current
         severity: high
-        label: 'BLOCKED pending ICC payload validation: HTTP server (#145) loopback evidence must bind the registered checkout and validate runner/stdlib/build-fingerprint hashes before PASS can count (tests/v1_2_edge_cases/http_server_smoke_test.sh)'
+        label: 'HTTP server (#145) loopback evidence binds the registered checkout and validates runner/stdlib/build-fingerprint hashes before PASS can count (tests/v1_2_edge_cases/http_server_smoke_test.sh)'
         action: run_v14_connection_gate
 
       - runtime_event:
