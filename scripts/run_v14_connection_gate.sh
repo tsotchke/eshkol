@@ -114,7 +114,7 @@ probe_http_server_source_receipt() {
     mkdir -p "$jit_cache"
     command_line="env BUILD_DIR='$BUILD_DIR_PATH' ESHKOL_LIB_DIR='$BUILD_DIR_PATH' ESHKOL_JIT_CACHE_DIR='$jit_cache' bash ./tests/v1_2_edge_cases/http_server_smoke_test.sh"
     out=$("$icc_bin" test-execution-oracle \
-        --repo "${ICC_REPO_NAME:-eshkol-v14-http-source-evidence}" \
+        --repo "${ICC_REPO_NAME:-eshkol}" \
         --name v14_http_server_roundtrip \
         --cwd "$REPO_ROOT" \
         --declare-data "$ESHKOL_RUN" \
