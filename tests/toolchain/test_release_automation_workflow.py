@@ -26,6 +26,8 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertEqual(strict["default"], "false")
         self.assertEqual(strict["required"], "false")
         self.assertIn("inputs.strict_readiness", self.text)
+        self.assertEqual(self.workflow["on"]["workflow_dispatch"]["inputs"]["candidate_tag"]["default"],
+                         "v1.3.6-evolve")
 
     def test_missing_icc_fails_on_tag_or_strict_dispatch(self):
         resolve = self.steps["Resolve ICC binary (block on push, never fail-open)"]["run"]
@@ -55,7 +57,8 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertIn('--argjson run_id "$GITHUB_RUN_ID"', run)
         self.assertIn('--argjson run_attempt "$GITHUB_RUN_ATTEMPT"', run)
         self.assertIn('schema:"eshkol.release-readiness.v1"', run)
-        self.assertIn('status:"ready",score:100,target:"v1.3.5-evolve"', run)
+        self.assertIn('status:"ready",score:100,target:$target', run)
+        self.assertIn('--target "$RELEASE_TARGET"', run)
         self.assertIn('if ! jq -n', run)
         self.assertIn('rm -f "$RUNNER_TEMP/release-readiness-receipt.json"', run)
         self.assertNotIn("$RELEASE_TAG", run[run.find("jq -n "):])

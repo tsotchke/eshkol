@@ -9,7 +9,7 @@ on:
       candidate_tag:
         description: Candidate tag label used only for dry-run asset names
         required: true
-        default: v1.3.5-evolve
+        default: v1.3.6-evolve
         type: string
       strict_readiness:
         description: Fail the dry run unless ICC certifies this exact commit ready/100
@@ -32,6 +32,7 @@ env:
   # A manual dispatch is always non-publishing. Its explicit candidate label
   # lets the dry-run archives use the exact names the later tag run will use.
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
+  RELEASE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
   STRICT_READINESS: ${{ github.event_name == 'workflow_dispatch' && inputs.strict_readiness || false }}
 
 jobs:
@@ -1110,7 +1111,7 @@ jobs:
 
   # Release-blocking readiness gate (ADR-0010 section 2.5; closes AR1 gap A5).
   # Regenerates the oracle evidence AT THE TAGGED SHA and runs the canonical
-  # v1.3.5-evolve readiness check. `publish-release` needs this job, so no asset
+  # Candidate-target readiness check. `publish-release` needs this job, so no asset
   # is published on a real tag push unless ICC certifies ready/100. This turns
   # "readiness=100" from a workstation verdict into a property of the released
   # artifact.
@@ -1184,6 +1185,7 @@ jobs:
           python3 scripts/release_readiness_guard.py bind \
             --icc "$ICC_BIN" --repo "$ICC_REPO_REQUESTED" \
             --workspace "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA" \
+            --target "$RELEASE_TARGET" \
             --github-env "$GITHUB_ENV"
 
       # Self-hosted `eshkol` node: CI does not install anything here — the
@@ -1359,10 +1361,10 @@ jobs:
 
       # The canonical recipe owns every required producer, refreshes one trace
       # cohort, reindexes ICC and emits the final architecture verdict before
-      # asking ICC for trace-aware v1.3.5-evolve readiness.
+      # asking ICC for trace-aware candidate-target readiness.
       #
       # The gate. run_v1_3_readiness.sh asks ICC for
-      # trace-aware v1.3.5-evolve readiness, and exits nonzero unless status ==
+      # trace-aware candidate-target readiness, and exits nonzero unless status ==
       # ready. The explicit re-read then asserts score == 100 so the gate is
       # literally "ready/100"; missing or nonnumeric scores cannot pass.
       # On a tag push an
@@ -1395,20 +1397,21 @@ jobs:
 
           if ! python3 scripts/release_readiness_guard.py check \
               --icc "$ICC_BIN" --repo "$ICC_REPO" \
-              --workspace "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA"; then
+              --workspace "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA" \
+              --target "$RELEASE_TARGET"; then
             verdict "ICC is not bound to the exact release checkout."
             exit 0
           fi
 
           if ! scripts/run_v1_3_readiness.sh --phase readiness; then
-            verdict "scripts/run_v1_3_readiness.sh reported v1.3.5-evolve is not ready."
+            verdict "scripts/run_v1_3_readiness.sh reported $RELEASE_TARGET is not ready."
             readiness_command_failed=1
           fi
 
           readiness_json="$RUNNER_TEMP/release-readiness.json"
           if ! "$ICC_BIN" readiness \
               --repo "$ICC_REPO" \
-              --target v1.3.5-evolve \
+              --target "$RELEASE_TARGET" \
               --trace-dir scripts/icc_traces \
               --trace-latest '.icc/runtime-traces-oracle-view/*architecture-model-verify-*.jsonl' \
               --format json > "$readiness_json"; then
@@ -1416,22 +1419,23 @@ jobs:
           fi
           status="$(jq -r '.status // ""' "$readiness_json")"
           score="$(jq -r '.score // .readiness // empty' "$readiness_json")"
-          echo "v1.3.5-evolve readiness: status=$status score=${score:-<none>}"
+          echo "$RELEASE_TARGET readiness: status=$status score=${score:-<none>}"
 
           if [[ "$status" != "ready" ]]; then
-            verdict "v1.3.5-evolve readiness is '$status', expected 'ready'."
+            verdict "$RELEASE_TARGET readiness is '$status', expected 'ready'."
           fi
           if ! python3 scripts/release_readiness_guard.py check \
               --icc "$ICC_BIN" --repo "$ICC_REPO" \
               --workspace "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA" \
+              --target "$RELEASE_TARGET" \
               --verdict "$readiness_json"; then
-            verdict "v1.3.5-evolve requires exact-checkout ready/100 evidence."
+            verdict "$RELEASE_TARGET requires exact-checkout ready/100 evidence."
             exit 0
           fi
 
           if ! jq -e '(.status == "ready") and ((.score // .readiness) == 100)' \
               "$readiness_json" >/dev/null; then
-            verdict "v1.3.5-evolve readiness is not exactly ready/100."
+            verdict "$RELEASE_TARGET readiness is not exactly ready/100."
             exit 0
           fi
           if [[ "$readiness_command_failed" == 1 ]]; then
@@ -1443,7 +1447,8 @@ jobs:
             --arg sha "$GITHUB_SHA" \
             --argjson run_id "$GITHUB_RUN_ID" \
             --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
-            '{schema:"eshkol.release-readiness.v1",sha:$sha,run_id:$run_id,run_attempt:$run_attempt,status:"ready",score:100,target:"v1.3.5-evolve"}' \
+            --arg target "$RELEASE_TARGET" \
+            '{schema:"eshkol.release-readiness.v1",sha:$sha,run_id:$run_id,run_attempt:$run_attempt,status:"ready",score:100,target:$target}' \
             > "$RUNNER_TEMP/release-readiness-receipt.json"; then
             rm -f "$RUNNER_TEMP/release-readiness-receipt.json"
             verdict "Could not write the bound readiness receipt."

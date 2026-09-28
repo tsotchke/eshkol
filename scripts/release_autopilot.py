@@ -20,6 +20,9 @@ import subprocess
 import sys
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_target import target_for_tag
+
 
 class Wait(RuntimeError):
     """An unmet condition; re-evaluate on the next scheduled invocation."""
@@ -63,12 +66,13 @@ def require_checks(checks, required):
         raise Wait("Checks not green: " + ", ".join(sorted(set(pending))))
 
 
-def require_receipt(receipt, sha, run):
+def require_receipt(receipt, sha, run, target):
+    target_for_tag(target)
     if (receipt.get("schema") != "eshkol.release-readiness.v1"
             or receipt.get("sha") != sha
             or str(receipt.get("run_id")) != str(run["id"])
             or str(receipt.get("run_attempt")) != str(run["run_attempt"])
-            or receipt.get("target") != "v1.3.5-evolve"
+            or receipt.get("target") != target
             or receipt.get("status") != "ready"
             or type(receipt.get("score")) not in (int, float)
             or receipt["score"] != 100):
@@ -111,8 +115,9 @@ class Release:
         self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
         self.execute = execute
         self.repo = config["repo"]
-        if self.repo != "tsotchke/eshkol" or config["tag"] != "v1.3.5-evolve":
-            raise ValueError("This authorization is limited to tsotchke/eshkol v1.3.5-evolve")
+        if self.repo != "tsotchke/eshkol":
+            raise ValueError("This authorization is limited to tsotchke/eshkol release candidates")
+        self.target = target_for_tag(config["tag"])
         self.checkout = Path(config["checkout"])
 
     def command(self, args, *, cwd=None, mutate=False, timeout=120):
@@ -196,7 +201,7 @@ class Release:
         if self.state.get("ci_dispatched_sha") == sha:
             raise Wait("Exact-commit master CI dispatch already requested")
         self.gh("workflow", "run", "ci.yml", "--repo", self.repo, "--ref", "master", "-f",
-            "reason=Authorized v1.3.5 release validation after a documentation-only merge", mutate=True)
+            "reason=Authorized release validation after a documentation-only merge", mutate=True)
         self.state["ci_dispatched_sha"] = sha
         raise Wait("Requested exact-commit master CI; documentation-only pushes may not trigger it")
 
@@ -276,7 +281,7 @@ class Release:
             self.gh("run", "download", str(run["id"]), "--repo", self.repo, "--name", receipt_name,
                 "--dir", str(folder), mutate=True)
         receipt = json.loads(receipt_path.read_text())
-        require_receipt(receipt, sha, run)
+        require_receipt(receipt, sha, run, self.target)
         self.state["proof"] = {"sha": sha, "run_id": run["id"], "url": run["html_url"]}
         return run
 
@@ -319,7 +324,7 @@ class Release:
             + self.repo + "/actions/workflows/release.yml).\n")
         path.write_text(current + separator + prior)
         self.git("add", "--", "RELEASE_NOTES.md", mutate=True)
-        self.git("commit", "--only", "-m", "docs: prepare v1.3.5 release notes for final validation", "--",
+        self.git("commit", "--only", "-m", "docs: prepare release notes for final validation", "--",
             "RELEASE_NOTES.md", mutate=True)
         self.git("push", "origin", "HEAD:refs/heads/" + pr["headRefName"], mutate=True)
         raise Wait("Release notes prepared; validating the final candidate commit before merge")

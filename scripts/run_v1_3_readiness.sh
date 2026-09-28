@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Run the phased v1.3.5-evolve evidence recipe and ask ICC for readiness.
+# Run the phased v1.3 evolve evidence recipe and ask ICC for readiness.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+export PYTHONPATH="$REPO_ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}"
+RELEASE_TARGET="${RELEASE_TARGET:-v1.3.6-evolve}"
+RELEASE_TARGET="$(python3 -c 'import os; from release_target import validate_target; print(validate_target(os.environ["RELEASE_TARGET"]))')"
+export RELEASE_TARGET
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 PHASE=all
@@ -130,12 +134,12 @@ run_final_evidence_phase() {
 
 run_readiness_phase() {
     python3 scripts/verify_v1_3_release_evidence.py --trace-dir "$TRACE_DIR"
-    "$ICC_BIN" readiness --repo "$ICC_REPO" --target v1.3.5-evolve --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format json > "${READINESS_JSON:?}"
-    "$ICC_BIN" readiness --repo "$ICC_REPO" --target v1.3.5-evolve --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format markdown
+    "$ICC_BIN" readiness --repo "$ICC_REPO" --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format json > "${READINESS_JSON:?}"
+    "$ICC_BIN" readiness --repo "$ICC_REPO" --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format markdown
 
     status="$(jq -r '.status // ""' "$READINESS_JSON")"
     if [ "$status" != "ready" ]; then
-        echo "v1.3.5-evolve readiness is $status, expected ready" >&2
+        echo "$RELEASE_TARGET readiness is $status, expected ready" >&2
         exit 1
     fi
 }

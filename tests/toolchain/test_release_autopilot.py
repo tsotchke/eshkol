@@ -40,14 +40,14 @@ class Decisions(unittest.TestCase):
         good = {"schema": "eshkol.release-readiness.v1", "sha": SHA, "run_id": 10,
                 "run_attempt": 2, "target": "v1.3.5-evolve", "status": "ready", "score": 100}
         run = {"id": 10, "run_attempt": 2}
-        module.require_receipt(good, SHA, run)
+        module.require_receipt(good, SHA, run, "v1.3.5-evolve")
         for key, value in (("sha", "b" * 40), ("run_id", 9), ("run_attempt", 1),
                            ("target", "v1.3.4-evolve"), ("status", "blocked"),
                            ("score", "100"), ("score", True), ("score", 99), ("schema", "other")):
             with self.subTest(key=key, value=value), self.assertRaises(module.Wait):
-                module.require_receipt({**good, key: value}, SHA, run)
+                module.require_receipt({**good, key: value}, SHA, run, "v1.3.5-evolve")
         with self.assertRaises(module.Wait):
-            module.require_receipt({}, SHA, run)
+            module.require_receipt({}, SHA, run, "v1.3.5-evolve")
 
     def test_montreal_publication_window_is_enforced_in_utc(self):
         config = {"not_before": "2026-09-14T09:00:00-04:00", "expires_at": "2026-09-15T00:00:00-04:00"}
