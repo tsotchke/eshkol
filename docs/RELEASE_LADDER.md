@@ -1,3 +1,14 @@
+---
+kind: project
+status: current
+owner-area: release
+since: v1.3.6-evolve
+sources:
+  - ROADMAP.md
+  - docs/COMPILER_ROADMAP.md
+  - .icc/completion-oracles.yaml
+---
+
 # Release ladder: v1.3.6 through v1.5.0
 
 This is the single reconciled near-term release ladder for the roadmap and

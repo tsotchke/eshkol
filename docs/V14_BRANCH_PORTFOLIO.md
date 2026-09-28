@@ -1,3 +1,13 @@
+---
+kind: project
+status: current
+owner-area: release
+since: v1.3.6-evolve
+sources:
+  - .icc/v14-branch-portfolio.json
+  - ROADMAP.md
+---
+
 # v1.4 Branch Portfolio
 
 Portfolio snapshot: `34fb71417df7273aba11889091a2c2542c8eedff` (2026-09-28); 1714 refs, 1083 unique heads, 169 worktrees.
