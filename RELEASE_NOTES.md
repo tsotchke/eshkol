@@ -1,3 +1,23 @@
+# Eshkol v1.3.6-evolve — Release Notes
+
+**Status:** candidate; release evidence is pending.
+
+<!-- RELEASE_EVIDENCE_PENDING -->
+
+### Changes under review
+
+- **Mixed exact/inexact interval arithmetic preserves containment in the
+  confirmed cases.** Exact endpoints are converted outward before arithmetic;
+  indeterminate non-finite endpoint cases fail closed. (#727)
+- **AOT loop memory reclamation covers the confirmed shapes:** named-let exit,
+  a discarded numeric tensor, and direct literal `tensor-dot`. This does not
+  establish flat RSS for every loop or platform; the gate covers the direct
+  literal form, while other `tensor-dot` forms remain outside this claim. (#729)
+- **Release evidence follows its source identity.** The ICC release guard binds
+  evidence to the exact checkout and commit SHA. VM parity traces honor the
+  configured `TRACE_DIR` and are bound to the release cohort.
+
+---
 # Eshkol v1.3.5-evolve — Release Notes
 
 **Release date:** Tuesday, September 22, 2026.
