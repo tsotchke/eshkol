@@ -33,6 +33,8 @@ RUN apt-get install -y \
     cmake \
     ninja-build \
     g++ \
+    git \
+    python3 \
     llvm-${LLVM_MAJOR} \
     llvm-${LLVM_MAJOR}-dev \
     libreadline-dev \
