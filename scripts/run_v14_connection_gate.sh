@@ -111,7 +111,9 @@ probe_http_server_source_receipt() {
     fi
 
     jit_cache="$WORK/http-server-jit-cache"
-    fingerprint_trace="$WORK/http-server-build-fingerprint"
+    # Keep the fingerprint receipt under the durable trace root; the rest of
+    # the temporary probe state is safely removed when the sweep exits.
+    fingerprint_trace="$TRACE_DIR/v14_http_server_build"
     mkdir -p "$jit_cache" "$fingerprint_trace"
     fingerprint_file="$fingerprint_trace/build_fingerprint.jsonl"
     command_line="env BUILD_DIR='$BUILD_DIR_PATH' TRACE_DIR='$fingerprint_trace' ESHKOL_LIB_DIR='$BUILD_DIR_PATH' ESHKOL_JIT_CACHE_DIR='$jit_cache' bash ./tests/v1_2_edge_cases/http_server_smoke_test.sh"
