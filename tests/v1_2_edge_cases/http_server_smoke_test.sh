@@ -20,6 +20,30 @@ case "${BUILD_DIR:-build}" in
     *) BUILD_DIR_PATH="$ROOT/${BUILD_DIR:-build}" ;;
 esac
 
+# ICC's source stamp is bound to its registered repo root, while --cwd only
+# selects where the test command runs. Refuse a named ICC invocation if those
+# roots differ, before opening sockets or producing test evidence.
+if [ -n "${ICC_REPO_NAME:-}" ]; then
+    ICC_BIN="${ICC_BIN:-$HOME/Desktop/infinite_context_coder/bin/icc}"
+    if [ ! -x "$ICC_BIN" ]; then
+        echo "FAIL: ICC receipt producer unavailable: $ICC_BIN"
+        exit 3
+    fi
+    REGISTERED_ROOT=$("$ICC_BIN" resolve --repo "$ICC_REPO_NAME" --format json 2>/dev/null | python3 -c '
+import json, os, sys
+try:
+    path = json.load(sys.stdin).get("repo", {}).get("path", "")
+    print(os.path.realpath(path) if path else "")
+except Exception:
+    print("")
+')
+    CHECKOUT_ROOT=$(cd "$ROOT" && pwd -P)
+    if [ -z "$REGISTERED_ROOT" ] || [ "$REGISTERED_ROOT" != "$CHECKOUT_ROOT" ]; then
+        echo "FAIL: ICC repo $ICC_REPO_NAME resolves to '$REGISTERED_ROOT', but test checkout is '$CHECKOUT_ROOT'"
+        exit 3
+    fi
+fi
+
 if [ ! -x "$RUN" ]; then
     echo "FAIL: $RUN not built; HTTP server evidence is unavailable"
     exit 2
