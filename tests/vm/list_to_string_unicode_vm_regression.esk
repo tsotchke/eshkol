@@ -1,0 +1,31 @@
+;; VM-only regression for the shared list->string codepoint encoder.
+;; Native JIT/AOT direct list->string Unicode behavior has a separate blocker;
+;; tests/vm_parity/corpus/list_to_string_nul_unicode.esk covers the shared
+;; string-form NUL contract across substrates.
+(define nul (integer->char 0))
+(define lambda (integer->char 955))
+(define s (list->string (list #\A nul lambda #\Z)))
+
+(display (if (= (string-length s) 4) "PASS" "FAIL")) (newline)
+(display (if (and (= (char->integer (string-ref s 0)) 65)
+                  (= (char->integer (string-ref s 1)) 0)
+                  (= (char->integer (string-ref s 2)) 955)
+                  (= (char->integer (string-ref s 3)) 90)) "PASS" "FAIL")) (newline)
+(define joined (string-append "x" s "y"))
+(display (if (and (= (string-length joined) 6)
+                  (= (char->integer (string-ref joined 2)) 0)
+                  (= (char->integer (string-ref joined 3)) 955)) "PASS" "FAIL")) (newline)
+(display (if (= (string-index joined "y") 5) "PASS" "FAIL")) (newline)
+(display (if (= (string-length (list->string '())) 0) "PASS" "FAIL")) (newline)
+
+;; `vm_utf8_encode` maps non-scalars to U+FFFD; keep this explicit contract.
+(define invalid (list->string (list -1 55296 1114112)))
+(display (if (and (= (string-length invalid) 3)
+                  (= (char->integer (string-ref invalid 0)) 65533)
+                  (= (char->integer (string-ref invalid 1)) 65533)
+                  (= (char->integer (string-ref invalid 2)) 65533)) "PASS" "FAIL")) (newline)
+
+;; Ensure no fixed 4095-byte conversion buffer remains.
+(define large (list->string (make-list 5000 #\q)))
+(display (if (and (= (string-length large) 5000)
+                  (char=? (string-ref large 4999) #\q)) "PASS" "FAIL")) (newline)

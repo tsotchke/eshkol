@@ -1,0 +1,25 @@
+;; Regression for length-aware list->string in both bytecode native-call IDs.
+;; Keep output ASCII so embedded NUL bytes are checked through string APIs.
+(define nul (integer->char 0))
+(define lambda (integer->char 955))
+(define s (list->string (list #\A #\B #\Z)))
+(define via-string (string #\A nul lambda #\Z))
+
+(display (if (= (string-length s) 3) "PASS" "FAIL")) (newline)
+(display (if (and (char=? (string-ref s 0) #\A)
+                  (char=? (string-ref s 1) #\B)
+                  (char=? (string-ref s 2) #\Z)) "PASS" "FAIL")) (newline)
+(display (if (and (= (string-length via-string) 4)
+                  (char=? (string-ref via-string 1) nul)
+                  (char=? (string-ref via-string 2) lambda)) "PASS" "FAIL")) (newline)
+(define joined (string-append "x" via-string "y"))
+(display (if (and (= (string-length joined) 6)
+                  (char=? (string-ref joined 2) nul)
+                  (char=? (string-ref joined 3) lambda)) "PASS" "FAIL")) (newline)
+(display (if (= (string-index s "Z") 2) "PASS" "FAIL")) (newline)
+(display (if (string=? (list->string '()) "") "PASS" "FAIL")) (newline)
+
+;; The former 4095-byte scratch buffer silently truncated larger lists.
+(define large (list->string (make-list 5000 #\q)))
+(display (if (and (= (string-length large) 5000)
+                  (char=? (string-ref large 4999) #\q)) "PASS" "FAIL")) (newline)

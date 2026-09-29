@@ -254,6 +254,40 @@ static Value vm_string_value(VM* vm, const char* data, int64_t len) {
     return (Value){.type = VAL_STRING, .as.ptr = ptr};
 }
 
+/** Build a string from a Scheme character list using the shared UTF-8 encoder.
+ * The explicit byte length retained by VmString is necessary for U+0000, and
+ * the encoder maps invalid scalar values to U+FFFD. */
+static Value vm_list_to_string_value(VM* vm, Value lst) {
+    int len = 0;
+    Value cur = lst;
+    /* A finite heap bounds the traversal and prevents a cyclic list looping. */
+    int limit = vm->heap.next_free;
+    while (cur.type == VAL_PAIR && len < limit &&
+           is_valid_heap_ptr(vm, cur.as.ptr)) {
+        len++;
+        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+    }
+
+    int* cps = len ? (int*)vm_alloc(&vm->heap.regions, (size_t)len * sizeof(int)) : NULL;
+    if (len && !cps) return NIL_VAL;
+    cur = lst;
+    for (int i = 0; i < len; i++) {
+        cps[i] = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+    }
+
+    VmString* s = vm_string_from_list(&vm->heap.regions, cps, len);
+    if (!s) return NIL_VAL;
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) {
+        vm->error = 1;
+        return NIL_VAL;
+    }
+    vm->heap.objects[ptr]->type = HEAP_STRING;
+    vm->heap.objects[ptr]->opaque.ptr = s;
+    return (Value){.type = VAL_STRING, .as.ptr = ptr};
+}
+
 /** @brief Build a `(key . value)` pair for use as one entry of an association list. */
 static Value vm_alist_entry(VM* vm, const char* key, Value value) {
     return vm_cons_value(vm, vm_string_value(vm, key, -1), value);
@@ -12842,27 +12876,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 567: { /* list->string — convert list of character codepoints to string */
         Value lst = vm_pop(vm);
-        /* Count characters */
-        int len = 0;
-        Value cur = lst;
-        while (cur.type == VAL_PAIR && len < 4096) {
-            len++;
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-        }
-        char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(len + 1));
-        if (buf) {
-            cur = lst;
-            int idx = 0;
-            while (cur.type == VAL_PAIR && idx < len) {
-                int cp = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                buf[idx++] = (cp >= 0 && cp < 128) ? (char)cp : '?';
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-            buf[idx] = '\0';
-            VmString* s = vm_string_new(&vm->heap.regions, buf, idx);
-            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
-        }
-        vm_push(vm, NIL_VAL);
+        vm_push(vm, vm_list_to_string_value(vm, lst));
         break;
     }
     case 568: { /* string->number (alt ID) */
@@ -16923,17 +16937,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 223: { /* list->string */
         Value lst = vm_pop(vm);
-        char buf[4096]; int len = 0;
-        Value cur = lst;
-        while (cur.type == VAL_PAIR && len < 4095) {
-            int cp = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-            if (cp >= 0 && cp < 128) buf[len++] = (char)cp;
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-        }
-        buf[len] = 0;
-        VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
-        if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); }
-        else vm_push(vm, NIL_VAL);
+        vm_push(vm, vm_list_to_string_value(vm, lst));
         break;
     }
     case 224: { /* gcd([a [, b]]) */
