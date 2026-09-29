@@ -1,0 +1,19 @@
+; Case-lambda fixed/rest dispatch, closure capture and first-class use.
+(define bias 10)
+(define captured
+  (lambda (offset)
+    (case-lambda
+      ((x) (+ offset x))
+      ((x y) (+ offset x y))
+      (all (length all))))
+  )
+(define f (captured bias))
+(display (f 5))
+(display (f 2 3))
+(display (f 1 2 3 4))
+(display (f))
+; Earlier overlapping exact clauses win in source order.
+(define ordered (case-lambda ((x) 1) ((y) 2)))
+(display (ordered 9))
+; A case-lambda result remains a first-class procedure.
+(display ((if #t f f) 7))

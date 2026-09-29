@@ -1,0 +1,4 @@
+; Regression: dispatch must select the matching 2-argument clause.
+; Expected on native, VM source and ESKB: 3
+(define f (case-lambda ((x) x) ((x y) (+ x y))))
+(display (f 1 2))

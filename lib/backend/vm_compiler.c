@@ -4708,6 +4708,72 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
  * @p tail indicates whether @p node is in tail position, enabling
  * OP_TAIL_CALL instead of OP_CALL for the final call in a function body.
  */
+static int vm_node_contains_symbol(const Node* node, const char* name) {
+    if (!node) return 0;
+    if (node->type == N_SYMBOL && strcmp(node->symbol, name) == 0) return 1;
+    for (int i = 0; i < node->n_children; ++i)
+        if (vm_node_contains_symbol(node->children[i], name)) return 1;
+    return 0;
+}
+
+static int vm_case_name_conflicts(FuncChunk* c, Node* tree, const char* name) {
+    if (vm_node_contains_symbol(tree, name)) return 1;
+    for (FuncChunk* frame = c; frame; frame = frame->enclosing)
+        for (int i = 0; i < frame->n_locals; ++i)
+            if (strcmp(frame->locals[i].name, name) == 0) return 1;
+    return 0;
+}
+
+typedef struct {
+    Node** nodes;
+    int count;
+    int capacity;
+} VmCaseBuilder;
+
+static Node* vm_case_new_node(VmCaseBuilder* b, NodeType type) {
+    Node* n = make_node(type);
+    if (!n) return NULL;
+    if (b->count == b->capacity) {
+        int next = b->capacity ? b->capacity * 2 : 32;
+        Node** grown = (Node**)realloc(b->nodes, (size_t)next * sizeof(Node*));
+        if (!grown) { free(n); return NULL; }
+        b->nodes = grown;
+        b->capacity = next;
+    }
+    b->nodes[b->count++] = n;
+    return n;
+}
+
+static Node* vm_case_symbol(VmCaseBuilder* b, const char* name) {
+    Node* n = vm_case_new_node(b, N_SYMBOL);
+    if (n) strncpy(n->symbol, name, sizeof(n->symbol) - 1);
+    return n;
+}
+
+static Node* vm_case_clause_apply(VmCaseBuilder* b, Node* clause, Node* args) {
+    Node* app = vm_case_new_node(b, N_LIST);
+    Node* app_sym = vm_case_symbol(b, "__vm_case_lambda_apply_internal__");
+    Node* lam = vm_case_new_node(b, N_LIST);
+    Node* lam_sym = vm_case_symbol(b, "lambda");
+    add_child(app, app_sym);
+    add_child(app, lam);
+    add_child(app, args);
+    add_child(lam, lam_sym);
+    add_child(lam, clause->children[0]);
+    for (int i = 1; i < clause->n_children; ++i)
+        add_child(lam, clause->children[i]);
+    return app;
+}
+
+static void vm_case_free_builder(VmCaseBuilder* b) {
+    for (int i = 0; i < b->count; ++i) {
+        free(b->nodes[i]->children);
+        free(b->nodes[i]);
+    }
+    free(b->nodes);
+    memset(b, 0, sizeof(*b));
+}
+
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (node && node->type == N_SYMBOL) vm_resolve_colored_identifier(c, node);
     if (node && node->type == N_SYMBOL) {
@@ -5804,6 +5870,18 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* Private intrinsic paired with case-lambda's generated call sites. */
+    if (is_sym(head, "__vm_case_lambda_apply_internal__") &&
+        node->n_children == 3) {
+        int saved = c->n_locals;
+        compile_expr(c, node->children[1], 0);
+        add_local(c, "__operand__");
+        compile_expr(c, node->children[2], 0);
+        c->n_locals = saved;
+        chunk_emit(c, OP_NATIVE_CALL, 70);
+        return;
+    }
+
     /* (values expr1 expr2 ...) — multiple return values.
      * Simplified: pack into a vector. Single value = return as-is. */
     if (is_sym(head, "values") && node->n_children >= 1) {
@@ -5887,28 +5965,88 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* case-lambda: dispatch on argument count */
     if (is_sym(head, "case-lambda") && node->n_children >= 2) {
-        /* Transform: (case-lambda ((x) body1) ((x y) body2) ...)
-         * → (lambda args (cond ((= (length args) 1) (apply (lambda (x) body1) args))
-         *                       ((= (length args) 2) (apply (lambda (x y) body2) args))
-         *                       ...))
-         * Simplified: compile first matching clause inline */
-        /* For now: compile the first clause as a regular lambda */
-        Node* clause = node->children[1]; /* first clause */
-        if (clause->type == N_LIST && clause->n_children >= 2) {
-            Node* params = clause->children[0];
-            /* Build a lambda node: (lambda params body...) */
-            Node* lam = make_node(N_LIST);
-            Node* sym = make_node(N_SYMBOL); strncpy(sym->symbol, "lambda", 127);
-            add_child(lam, sym);
-            add_child(lam, params);
-            for (int i = 1; i < clause->n_children; i++)
-                add_child(lam, clause->children[i]);
-            compile_expr(c, lam, tail);
-            /* Don't free children since they're shared with the original node */
-            lam->n_children = 0;
-            free(lam->children); lam->children = NULL;
-            free(lam); free(sym);
+        /* Make one variadic closure and dispatch in source order. Private
+         * length/apply forms compile to fixed native calls, so user bindings
+         * cannot capture the dispatch helpers. */
+        static unsigned long case_lambda_serial = 0;
+        VmCaseBuilder builder = {0};
+        Node* outer = vm_case_new_node(&builder, N_LIST);
+        Node* lambda_sym = vm_case_symbol(&builder, "lambda");
+        add_child(outer, lambda_sym);
+        Node* args = vm_case_new_node(&builder, N_SYMBOL);
+        do {
+            snprintf(args->symbol, sizeof(args->symbol), "__vm_case_lambda_args_%lu",
+                     ++case_lambda_serial);
+        } while (vm_case_name_conflicts(c, node, args->symbol));
+        add_child(outer, args);
+
+        Node* dispatch = NULL;
+        /* Calling the first clause is the arity-error path if no clause
+         * matches. Its closure performs the standard VM arity check. */
+        Node* first = node->children[1];
+        if (first->type != N_LIST || first->n_children < 2) {
+            vm_compile_error("malformed case-lambda clause", NULL);
+            vm_case_free_builder(&builder);
+            return;
         }
+        dispatch = vm_case_clause_apply(&builder, first, args);
+        for (int i = node->n_children - 1; i >= 1; --i) {
+            Node* clause = node->children[i];
+            if (clause->type != N_LIST || clause->n_children < 2) {
+                vm_compile_error("malformed case-lambda clause", NULL);
+                vm_case_free_builder(&builder);
+                return;
+            }
+            int fixed = 0, rest = 0;
+            Node* params = clause->children[0];
+            if (params->type == N_SYMBOL) rest = 1;
+            else if (params->type == N_LIST) {
+                fixed = params->n_children;
+                for (int p = 0; p < params->n_children; ++p) {
+                    if (params->children[p]->type == N_SYMBOL &&
+                        !params->children[p]->is_verbatim &&
+                        eshkol_syntax_base_is(params->children[p]->symbol, ".")) {
+                        fixed = p; rest = 1; break;
+                    }
+                }
+            } else {
+                vm_compile_error("malformed case-lambda formals", NULL);
+                vm_case_free_builder(&builder);
+                return;
+            }
+            Node* test = vm_case_new_node(&builder, N_LIST);
+            Node* cmp = vm_case_new_node(&builder, N_SYMBOL);
+            strncpy(cmp->symbol, rest ? ">=" : "=", sizeof(cmp->symbol) - 1);
+            add_child(test, cmp);
+            Node* len = vm_case_new_node(&builder, N_LIST);
+            Node* len_sym = vm_case_new_node(&builder, N_SYMBOL);
+            strncpy(len_sym->symbol, "__vm_case_lambda_length_internal__",
+                    sizeof(len_sym->symbol) - 1);
+            add_child(len, len_sym);
+            add_child(len, args);
+            add_child(test, len);
+            Node* n = vm_case_new_node(&builder, N_NUMBER);
+            n->is_int = 1; n->ival = fixed; n->numval = (double)fixed;
+            add_child(test, n);
+            Node* iff = vm_case_new_node(&builder, N_LIST);
+            Node* ifsym = vm_case_new_node(&builder, N_SYMBOL);
+            strncpy(ifsym->symbol, "if", sizeof(ifsym->symbol) - 1);
+            add_child(iff, ifsym);
+            add_child(iff, test);
+            add_child(iff, vm_case_clause_apply(&builder, clause, args));
+            add_child(iff, dispatch);
+            dispatch = iff;
+        }
+        add_child(outer, dispatch);
+        compile_expr(c, outer, tail);
+        vm_case_free_builder(&builder);
+        return;
+    }
+
+    /* Private intrinsic used only by the case-lambda lowering above. */
+    if (is_sym(head, "__vm_case_lambda_length_internal__") && node->n_children == 2) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 71);
         return;
     }
 

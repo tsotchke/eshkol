@@ -158,7 +158,6 @@ multi-head-attention	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	
 norm	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 null-environment	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	eval/environment reflection has no VM binding
 onnx-export-tensor	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
-op:CASE_LAMBDA	behavioral-divergence	tests/vm_parity/found/case_lambda_wrong_clause.esk	wrong clause selected (found/case_lambda_wrong_clause.esk)
 op:COMPOSE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	compose undefined in VM
 op:DIFF	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM

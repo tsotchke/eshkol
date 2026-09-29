@@ -516,7 +516,7 @@ op:CALL	vm-supported	core call opcode
 op:CALL_CC	vm-supported	escape continuations verified 2026-07
 op:CALL_WITH_VALUES	vm-supported	verified 2026-07
 op:CASE	vm-supported	vm_compiler special-form dispatch
-op:CASE_LAMBDA	gap	wrong clause selected (found/case_lambda_wrong_clause.esk)
+op:CASE_LAMBDA	vm-supported	VM dispatches clauses in source order by exact/minimum arity; unmatched calls fail through clause arity checks (corpus/case_lambda_wrong_clause.esk)
 op:COMPOSE	gap	compose undefined in VM
 op:COND	vm-supported	vm_compiler special-form dispatch
 op:COND_EXPAND	native-only-justified	parse-time form handled by the native front-end

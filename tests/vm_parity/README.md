@@ -122,7 +122,6 @@ header. Filed while building this gate, 2026-07:
 | repro | divergence |
 |---|---|
 | `display_newline_per_call.esk` | display appends a newline per call |
-| `case_lambda_wrong_clause.esk` | `case-lambda` picks the wrong clause |
 | `char_type_collapsed.esk` | chars display as integers |
 | `ad_gradient_wrong.esk` | `gradient`/`jacobian`/`hessian` silently wrong |
 | `logic_walk_unresolved.esk` | `walk` does not resolve bindings |
