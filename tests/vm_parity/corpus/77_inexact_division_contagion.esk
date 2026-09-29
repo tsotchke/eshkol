@@ -1,0 +1,45 @@
+; Regression witness for inexact modulo, remainder, and quotient contagion in
+; VM native cases 36–38. The original failures collapsed integral results to
+; exact values, wrapped large quotients through int64, and returned +nan.0 for
+; an inexact remainder by zero. That fatal case is isolated in
+; fatal/remainder_inexact_zero.esk.
+; Before the repair, (exact? (quotient 7.0 2.0)) was #t,
+; (quotient 1e20 3.0) was 3074457345618258602, and
+; (quotient (expt 2 100) 2.0) was exact. Native returns #f,
+; 33333333333333330000, and 6.338253001141147e+29 respectively.
+;
+; Inexact quotient truncates toward zero; every result below remains inexact.
+(display (exact? (quotient -7 2)))
+(newline)
+(display (quotient -7 2))
+(newline)
+(display (exact? (quotient 7.0 2.0)))
+(newline)
+(display (quotient -7.0 2.0))
+(newline)
+(display (quotient 7.0 -2.0))
+(newline)
+(display (quotient -7.5 2.0))
+(newline)
+(display (exact? (quotient 1e20 3.0)))
+(newline)
+(display (quotient 1e20 3.0))
+(newline)
+(display (exact? (quotient (expt 2 100) 2.0)))
+(newline)
+(display (quotient (expt 2 100) 2.0))
+(newline)
+(display (exact? (modulo 5.0 3)))
+(newline)
+(display (exact? (modulo 5 2.0)))
+(newline)
+(display (exact? (remainder 5.0 3)))
+(newline)
+(display (modulo -5.0 3))
+(newline)
+(display (modulo 5.0 -3))
+(newline)
+(display (remainder -5.0 3))
+(newline)
+(display (remainder 5.0 -3))
+(newline)

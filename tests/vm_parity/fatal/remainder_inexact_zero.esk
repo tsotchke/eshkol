@@ -1,0 +1,3 @@
+; An inexact zero divisor is fatal for remainder on both native and VM.
+(display (remainder 5.5 0.0))
+(display "MUST-NOT-PRINT")

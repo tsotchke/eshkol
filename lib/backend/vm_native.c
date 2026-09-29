@@ -7690,6 +7690,14 @@ static __int128 vm_coerce_i128(VM* vm, Value v, int* ok) {
     return 0;
 }
 
+/* Convert numeric division operands only after inexactness has been detected.
+ * `as_number()` does not understand heap-backed bignums/rationals, and the
+ * ordinary VM numeric coercion does not unbox i128. */
+static double vm_division_number_to_double(VM* vm, Value v) {
+    if (v.type == VAL_I128) return (double)vm_unbox_i128(vm, v);
+    return as_number_vm(vm, v);
+}
+
 /* Box and push a computed __int128 result. */
 void vm_push_i128(VM* vm, __int128 value) {
     int32_t ptr = vm_box_i128(vm, value);
@@ -9702,6 +9710,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * status, and every later top-level form silently dropped.  Every fatal
      * path here now names itself on stderr. */
     case 36: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        /* Inexactness is contagious, including when the exact operand is a
+         * bignum or i128. Keep an integral inexact result as a float. */
+        if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+            double x = vm_division_number_to_double(vm, a);
+            double y = vm_division_number_to_double(vm, b);
+            if (y == 0.0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error=1; break; }
+            double r = fmod(x, y);
+            if (r != 0.0 && signbit(r) != signbit(y)) r += y;
+            vm_push(vm, FLOAT_VAL(r)); break;
+        }
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2119); break;
         }
@@ -9713,20 +9731,30 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        /* Native remainder treats an inexact zero divisor as fatal too. */
+        if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+            double x = vm_division_number_to_double(vm, a);
+            double y = vm_division_number_to_double(vm, b);
+            if (y == 0.0) { fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
+            vm_push(vm, FLOAT_VAL(fmod(x, y))); break;
+        }
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2107); break;
         }
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'r'); break; }
-        /* `remainder` with an INEXACT operand is fmod, so a zero divisor is
-         * IEEE-754 (+nan.0) rather than an error — native agrees: it answers
-         * +nan.0 for both (remainder 1.0 0.0) and (remainder 1 0.0).  Only the
-         * all-exact form is a fatal division by zero. */
-        if (a.type==VAL_FLOAT || b.type==VAL_FLOAT) {
-            vm_push(vm, FLOAT_VAL(fmod(as_number(a), as_number(b)))); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia%ib)); break; }
     case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        /* `quotient` truncates toward zero and preserves inexact contagion.
+         * Do the division in double so large results never pass through an
+         * int64 conversion (which both wrapped and made them exact). */
+        if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+            double x = vm_division_number_to_double(vm, a);
+            double y = vm_division_number_to_double(vm, b);
+            if (y == 0.0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error=1; break; }
+            vm_push(vm, FLOAT_VAL(trunc(x / y))); break;
+        }
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2106); break;
         }

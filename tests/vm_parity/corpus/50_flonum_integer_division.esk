@@ -13,15 +13,11 @@
 ; flonum path at all, so both operands went through the int64 unpack and it
 ; returned the SRem of two IEEE-754 bit patterns.
 ;
-; NOT gated here, because the corpus compares PRINTED OUTPUT and this
-; divergence is invisible to it (filed as found/modulo_inexact_collapsed_vm.esk,
-; the VM is the wrong side):
-;   (exact? (modulo 5.0 3))  — native #f (contagion), VM #t. Both print `2`,
-;                              so only `exact?` separates them, and the VM
-;                              cannot be asked that here without reddening the
-;                              gate on a defect this change does not own.
-; The exactness half IS asserted natively, in
-; tests/numeric/integer_division_r7rs_test.esk.
+; Exactness assertions for integral flonum results and large inexact quotient
+; are gated by corpus/77_inexact_division_contagion.esk. This file keeps its
+; printed-value/sign coverage separate:
+; Before the v1.3.6 repair, (exact? (modulo 5.0 3)) was native #f and VM #t;
+; both print `2`, so only `exact?` separates them.
 (display (modulo 5.5 2.0)) (newline)
 (display (remainder 5.5 2.0)) (newline)
 (display (remainder 7.0 2.0)) (newline)
