@@ -346,6 +346,16 @@ static void vm_exec_vec_set(VM* vm) {
             return;
         }
         vec->items[i] = val;
+        /* Reader-origin numeric literals retain tensor? while every stored
+         * value remains numeric. Once a successful general-vector store puts
+         * a non-number in one, the native carrier has promoted to a vector;
+         * drop the reader marker so tensor? follows that same transition.
+         * vector-copy! and vector-append use this opcode through the prelude,
+         * so they inherit the same rule. */
+        if (vm->heap.objects[vec_val.as.ptr]->type == HEAP_VECTOR &&
+            vm->heap.objects[vec_val.as.ptr]->opaque.subtype ==
+                VM_SUBTYPE_TENSOR_LITERAL && !vm_is_arithmetic_number(val))
+            vm->heap.objects[vec_val.as.ptr]->opaque.subtype = 0;
     } else if (vec_val.type == VAL_TENSOR) {
         /* SW-26 sibling gap. */
         if (!vm_vecset_tensor_path(vm, vec_val, idx, val)) return;

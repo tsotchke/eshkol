@@ -60,6 +60,10 @@
 (define c4 #(10 20 30))
 (vector-copy! c4 1 #(7 8))
 (display c4) (newline)
+(define c5 #(10 20 30))
+(vector-copy! c5 0 (vector "x"))
+(display (vector? c5)) (newline)
+(display (tensor? c5)) (newline)
 
 ; a constructed tensor is a tensor on both engines
 (define ct (tensor 1.0 2.0 3.0))
@@ -81,6 +85,8 @@
 ; ADR-0020: a non-numeric store promotes a numeric literal's carrier; the
 ; result is the heterogeneous vector the VM has all along.
 (define ps #(10 20 30))
+(display (vector? ps)) (newline)
+(display (tensor? ps)) (newline)
 (vector-set! ps 0 "x")
 (display ps) (newline)
 (display (vector-ref ps 0)) (newline)

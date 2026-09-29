@@ -1,7 +1,7 @@
 ; Numeric reader literals are tensors and vectors on both substrates; ordinary
 ; constructed and quoted vectors stay vectors only. Ragged or heterogeneous
-; reader values stay non-tensor vectors. The reader tensor marker survives
-; mutation and leaves the vector accessors and first-class tensor? path intact.
+; reader values stay non-tensor vectors. Numeric mutations preserve the reader
+; tensor marker and leave vector accessors and first-class tensor? intact.
 (display (tensor? #(1 2 3))) (newline)
 (display (vector? #(1 2 3))) (newline)
 (display (tensor? (vector 1 2 3))) (newline)
