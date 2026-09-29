@@ -9808,6 +9808,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
                 TIMEOUT 300
                 PASS_REGULAR_EXPRESSION "PASS: native/VM byte-identical"
                 FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
+
+        if(TARGET eshkol-run AND
+           EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/nested_shorthand_function_parity_test.sh")
+            add_test(
+                NAME nested_shorthand_function_vm_native_parity
+                COMMAND bash
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/nested_shorthand_function_parity_test.sh"
+                        "$<TARGET_FILE:eshkol-run>"
+                        "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                        "${CMAKE_CURRENT_BINARY_DIR}"
+            )
+            set_tests_properties(nested_shorthand_function_vm_native_parity
+                PROPERTIES
+                    TIMEOUT 600
+                    PASS_REGULAR_EXPRESSION "PASS: nested shorthand closures preserve native/VM parity and reject undefined set!"
+                    FAIL_REGULAR_EXPRESSION "^FAIL:|ERROR:|fatal signal")
+        endif()
     endif()
 
     # make-string checks its length and fill and repeats a non-ASCII fill

@@ -3672,13 +3672,28 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         /* R7RS §5.3.1: a redefinition reuses the name's existing location
          * rather than binding a new one, so the body below also resolves the
          * name to that slot. */
-        int redef_slot = vm_redefinition_target_slot(c, fname);
+        const int root_definition = c->enclosing == NULL && c->scope_depth == 0;
+        int redef_slot = root_definition ? vm_redefinition_target_slot(c, fname) : -1;
         if (redef_slot < 0 && g_vm_module_predeclared_depth > 0 &&
-            c->enclosing == NULL)
+            root_definition)
             redef_slot = resolve_local(c, fname);
-        int forward_slot = vm_forward_function_slot(c, fname);
-        int func_slot = redef_slot >= 0 ? redef_slot :
+        int forward_slot = root_definition ? vm_forward_function_slot(c, fname) : -1;
+        /* A lexical shorthand definition is a mutable binding location, just
+         * like a local variable definition.  Establish its box before
+         * compiling the procedure body so self and sibling closures capture
+         * the cell rather than a snapshot of the current NIL slot.  Root
+         * definitions keep their long-standing open-slot/repatch behavior. */
+        const int local_function_cell = !root_definition;
+        int func_slot;
+        if (local_function_cell && redef_slot < 0 && forward_slot < 0) {
+            chunk_emit(c, OP_NIL, 0);
+            chunk_emit(c, OP_VEC_CREATE, 1);
+            func_slot = add_local(c, fname);
+            vm_mark_local_slot_boxed(c, func_slot);
+        } else {
+            func_slot = redef_slot >= 0 ? redef_slot :
                         (forward_slot >= 0 ? forward_slot : add_local(c, fname));
+        }
         int stores_existing_slot = redef_slot >= 0 || forward_slot >= 0;
 
         /* Compile function body into a separate chunk.
@@ -3800,10 +3815,23 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         int n_upvals = func.n_upvalues;
         int self_uv_idx = -1;
 
+        /* Keep box and index below the closure's capture operands.  CLOSURE
+         * consumes the captures and leaves the new procedure as VEC_SET's
+         * value, so the cell is populated in place without disturbing the
+         * local slot that later references resolve through. */
+        if (local_function_cell && !stores_existing_slot) {
+            chunk_emit(c, OP_GET_LOCAL, func_slot);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+        }
+
         for (int i = 0; i < n_upvals; i++) {
             if (strcmp(func.upvalues[i].name, fname) == 0) {
-                /* Self-reference: push NIL placeholder (will be patched) */
-                chunk_emit(c, OP_NIL, 0);
+                /* Lexical self-reference captures the binding cell; a root
+                 * function keeps its historical NIL/self-upvalue patch. */
+                if (local_function_cell && !stores_existing_slot)
+                    chunk_emit(c, OP_GET_LOCAL, func_slot);
+                else
+                    chunk_emit(c, OP_NIL, 0);
                 self_uv_idx = func.upvalues[i].index;
             } else {
                 /* Capture from enclosing scope (local or upvalue) */
@@ -3814,11 +3842,12 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
 
         chunk_emit_closure(c, cfunc, n_upvals);
         if (self_uv_idx >= 0) {
-            chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);  /* patch self-ref */
+            if (!local_function_cell || stores_existing_slot)
+                chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);  /* root self patch */
         }
         /* Convert local upvalues to open (stack slot references)
          * for top-level defines only (where enclosing scope persists forever). */
-        if (c->enclosing == NULL) {
+        if (!local_function_cell) {
             for (int i = 0; i < n_upvals; i++) {
                 if (i == self_uv_idx) continue;
                 if (!func.upvalues[i].is_local) continue;
@@ -3843,6 +3872,12 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
              * source position is reached. */
             chunk_emit(c, OP_SET_LOCAL, func_slot);
             chunk_emit(c, OP_NIL, 0);
+        } else if (local_function_cell) {
+            /* The closure's self and sibling captures already point at the
+             * cell; initialize its element while keeping the cell as the
+             * lexical local's sole stack value. */
+            chunk_emit(c, OP_VEC_SET, 0);
+            chunk_emit(c, OP_POP, 0);
         } else if (c->enclosing != NULL) {
             /* Nested defines own a real local slot in their enclosing
              * activation. Keep one copy on the operand stack as the live local
@@ -3865,8 +3900,8 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
  *        FuncChunk chain to find it, threading upvalue registrations
  *        through every intermediate scope (mirroring how a read reference
  *        would resolve it) and emitting OP_SET_UPVALUE or a boxed VEC_SET
- *        through the upvalue. Warns to stderr if the name can't be
- *        resolved anywhere. Always pushes NIL as the (unspecified) result.
+ *        through the upvalue. Fails compilation if the name can't be resolved.
+ *        Always pushes NIL as the (unspecified) result.
  */
 static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
@@ -3975,7 +4010,11 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        if (!found) fprintf(stderr, "WARNING: set! on undefined variable '%s'\n", name);
+        if (!found) {
+            char detail[256];
+            snprintf(detail, sizeof(detail), "set! target '%s' is not defined", name);
+            vm_compile_error("set! on undefined variable", detail);
+        }
     }
     /* set! returns void — push NIL */
     chunk_emit(c, OP_VOID, 0);  /* ADR-0024: set! evaluates to the unspecified value */

@@ -30,3 +30,23 @@
 (define g (make-variadic))
 (display (g 40 1 2))
 (newline)
+
+;; The sibling and recursive closure both resolve through f's mutable cell.
+(define (make-mutated-recursion)
+  (define (f n)
+    (if (= n 0) 0 (+ 1 (f (- n 1)))))
+  (define (invoke n) (f n))
+  (set! f
+    (lambda (n)
+      (if (= n 0) 40 (+ 1 (f (- n 1))))))
+  invoke)
+(display ((make-mutated-recursion) 2))
+(newline)
+
+;; A lexical root-scope closure must capture its box, not a stack-slot alias.
+(define escaped
+  (let ((base 6))
+    (define (g x) (+ base x))
+    g))
+(display (escaped 7))
+(newline)
