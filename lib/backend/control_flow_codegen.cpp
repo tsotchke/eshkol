@@ -1071,10 +1071,10 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
 
         // Inside an ordinary function, an internal procedure definition is a
         // lexical binding with a runtime closure value. Lower the whole group
-        // through letrec so all names have one per-activation cell before any
-        // initializer is compiled. This keeps calls, set!, and sibling
-        // captures on the same storage. Top-level initialization retains the
-        // established named-function path below.
+        // through letrec* so all names have one per-activation cell before any
+        // initializer runs while definitions keep source order. This keeps
+        // calls, set!, and sibling captures on the same storage. Top-level
+        // initialization retains the established named-function path below.
         llvm::Function* enclosing = ctx_.builder().GetInsertBlock()
             ? ctx_.builder().GetInsertBlock()->getParent() : nullptr;
         const std::string enclosing_name = enclosing
@@ -1133,7 +1133,7 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
 
             eshkol_ast_t lowered{};
             lowered.type = ESHKOL_OP;
-            lowered.operation.op = ESHKOL_LETREC_OP;
+            lowered.operation.op = ESHKOL_LETREC_STAR_OP;
             lowered.operation.let_op.bindings = bindings.data();
             lowered.operation.let_op.num_bindings = bindings.size();
             lowered.operation.let_op.body = &body;

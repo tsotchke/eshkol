@@ -13,6 +13,15 @@
 (display (f2 3))
 (newline)
 
+;; Internal definition initializers retain source order.
+(define (ordered-initializers)
+  (define state 0)
+  (define (read-state) state)
+  (define observed (begin (set! state 1) (read-state)))
+  observed)
+(display (ordered-initializers))
+(newline)
+
 ;; Mutating a captured variadic procedure keeps its rest-list calling ABI.
 (define (make-variadic)
   (define (g first . rest) (length rest))
