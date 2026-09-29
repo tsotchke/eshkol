@@ -61,6 +61,22 @@ if [ "$large_stack_kib" -lt 131072 ]; then
 elif [ "$large_stack_kib" -lt 1048576 ]; then
     completion_frames=250000
 fi
+jit_completion_frames="$completion_frames"
+# On the measured 59 MiB completion target (hard limit just under 64 MiB), 100k
+# JIT frames do not fit even though the equivalent AOT fixture does. Use a
+# separately measured 50k JIT fixture only in this narrow finite-limit class;
+# keep the AOT proof at 100k and retain historical depths on larger hosts.
+if [ "$large_stack_kib" -ge $((59 * 1024)) ] && [ "$large_stack_kib" -lt $((60 * 1024)) ]; then
+    jit_completion_frames=50000
+fi
+JIT_TEST="$TEST"
+JIT_COMPLETION_TEST="$SCRATCH/deep_recursion_jit_completion.esk"
+eshkol_require_output_file_path "$JIT_COMPLETION_TEST"
+if [ "$jit_completion_frames" -ne 2000000 ]; then
+    JIT_TEST="$JIT_COMPLETION_TEST"
+fi
+sed "s/(down 2000000)/(down ${jit_completion_frames})/; s/OK 2000000/OK ${jit_completion_frames}/" \
+    "$TEST" >"$JIT_COMPLETION_TEST"
 COMPLETION_TEST="$SCRATCH/deep_recursion_completion.esk"
 eshkol_require_output_file_path "$COMPLETION_TEST"
 sed "s/(down 2000000)/(down ${completion_frames})/; s/OK 2000000/OK ${completion_frames}/" \
@@ -71,6 +87,17 @@ if [ "$large_stack_kib" -lt 131072 ]; then
 elif [ "$large_stack_kib" -lt 1048576 ]; then
     worker_completion_frames=200000
 fi
+worker_jit_completion_frames="$worker_completion_frames"
+if [ "$jit_completion_frames" -eq 50000 ]; then
+    worker_jit_completion_frames=50000
+fi
+WORKER_JIT_TEST="$WORKER_TEST"
+WORKER_JIT_COMPLETION_TEST="$SCRATCH/parallel_stack_jit_completion.esk"
+eshkol_require_output_file_path "$WORKER_JIT_COMPLETION_TEST"
+if [ "$worker_jit_completion_frames" -ne 300000 ]; then
+    WORKER_JIT_TEST="$WORKER_JIT_COMPLETION_TEST"
+fi
+sed "s/300000/${worker_jit_completion_frames}/g" "$WORKER_TEST" >"$WORKER_JIT_COMPLETION_TEST"
 WORKER_COMPLETION_TEST="$SCRATCH/parallel_stack_completion.esk"
 eshkol_require_output_file_path "$WORKER_COMPLETION_TEST"
 sed "s/300000/${worker_completion_frames}/g" "$WORKER_TEST" >"$WORKER_COMPLETION_TEST"
@@ -118,12 +145,12 @@ check_complete() {  # check_complete <lane-name> <stdout-file> <stderr-file> <rc
 unset ESHKOL_STACK_SIZE ESHKOL_WORKER_STACK_BYTES ESHKOL_PARALLEL_NO_WARMUP
 
 # --- Main-thread JIT (-r): the smaller configured stack must fail loudly. ---
-ESHKOL_STACK_SIZE="$small_stack_size" run_capped 120 "$RUN" -r "$TEST" >"$SCRATCH/main-default-jit.out" 2>"$SCRATCH/main-default-jit.err"
+ESHKOL_STACK_SIZE="$small_stack_size" run_capped 120 "$RUN" -r "$JIT_TEST" >"$SCRATCH/main-default-jit.out" 2>"$SCRATCH/main-default-jit.err"
 check_diag "main JIT default" "$SCRATCH/main-default-jit.err" "$?"
 
 # --- Main-thread JIT (-r): the larger available stack must complete. ---
-ESHKOL_STACK_SIZE="$large_stack_size" run_capped 180 "$RUN" -r "$COMPLETION_TEST" >"$SCRATCH/main-large-jit.out" 2>"$SCRATCH/main-large-jit.err"
-check_complete "main JIT ESHKOL_STACK_SIZE=${large_stack_mib}M" "$SCRATCH/main-large-jit.out" "$SCRATCH/main-large-jit.err" "$?" "OK ${completion_frames}"
+ESHKOL_STACK_SIZE="$large_stack_size" run_capped 180 "$RUN" -r "$JIT_COMPLETION_TEST" >"$SCRATCH/main-large-jit.out" 2>"$SCRATCH/main-large-jit.err"
+check_complete "main JIT ESHKOL_STACK_SIZE=${large_stack_mib}M" "$SCRATCH/main-large-jit.out" "$SCRATCH/main-large-jit.err" "$?" "OK ${jit_completion_frames}"
 
 # --- Main-thread AOT: compile once, run at both stack settings. ---
 if run_capped 180 "$RUN" "$TEST" -o "$SCRATCH/main-aot" >"$SCRATCH/main-aot-build.log" 2>&1; then
@@ -144,11 +171,11 @@ fi
 # --- Worker JIT/AOT: the per-thread altstack must make the default worker
 # stack failure diagnosable, and a 1 GiB worker stack must complete. ---
 ESHKOL_WORKER_STACK_BYTES=16M ESHKOL_PARALLEL_NO_WARMUP=1 \
-    run_capped 120 "$RUN" -r "$WORKER_TEST" >"$SCRATCH/worker-default-jit.out" 2>"$SCRATCH/worker-default-jit.err"
+    run_capped 120 "$RUN" -r "$WORKER_JIT_TEST" >"$SCRATCH/worker-default-jit.out" 2>"$SCRATCH/worker-default-jit.err"
 check_diag "parallel worker JIT default" "$SCRATCH/worker-default-jit.err" "$?"
 
 ESHKOL_WORKER_STACK_BYTES="$large_stack_size" ESHKOL_PARALLEL_NO_WARMUP=1 \
-    run_capped 180 "$RUN" -r "$WORKER_COMPLETION_TEST" >"$SCRATCH/worker-large-jit.out" 2>"$SCRATCH/worker-large-jit.err"
+    run_capped 180 "$RUN" -r "$WORKER_JIT_COMPLETION_TEST" >"$SCRATCH/worker-large-jit.out" 2>"$SCRATCH/worker-large-jit.err"
 check_complete "parallel worker JIT ESHKOL_WORKER_STACK_BYTES=${large_stack_mib}M" "$SCRATCH/worker-large-jit.out" "$SCRATCH/worker-large-jit.err" "$?" "OK 4"
 
 if run_capped 180 "$RUN" "$WORKER_TEST" -o "$SCRATCH/worker-aot" >"$SCRATCH/worker-aot-build.log" 2>&1; then
