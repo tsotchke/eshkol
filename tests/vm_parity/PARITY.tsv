@@ -877,7 +877,7 @@ tensor-svd	gap	tensor linalg/manipulation fid missing in VM
 tensor-token-estimate	gap	tensor linalg/manipulation fid missing in VM
 tensor-transpose	vm-supported	
 tensor-var	gap	tensor linalg/manipulation fid missing in VM
-tensor?	vm-supported	
+tensor?	vm-supported	reader-origin rectangular numeric `#(...)` values answer true while constructed and quoted vectors remain false (corpus/100_tensor_reader_literal_classification.esk)
 term-bell	vm-supported	
 term-clipboard-read	vm-supported	
 term-clipboard-write	vm-supported	

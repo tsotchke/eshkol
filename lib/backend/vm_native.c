@@ -17381,7 +17381,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1698: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_is_rational(a))); break; }
     case 1717: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_is_integer(vm, a))); break; }
     case 1699: { Value a = vm_pop(vm);
-        vm_push(vm, BOOL_VAL(a.type == VAL_TENSOR)); break; }
+        int is_tensor = a.type == VAL_TENSOR;
+        if (a.type == VAL_VECTOR && is_valid_heap_ptr(vm, a.as.ptr) &&
+            vm->heap.objects[a.as.ptr] &&
+            vm->heap.objects[a.as.ptr]->type == HEAP_VECTOR &&
+            vm->heap.objects[a.as.ptr]->opaque.subtype == VM_SUBTYPE_TENSOR_LITERAL)
+            is_tensor = 1;
+        vm_push(vm, BOOL_VAL(is_tensor)); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * Additional predicates (160-166)

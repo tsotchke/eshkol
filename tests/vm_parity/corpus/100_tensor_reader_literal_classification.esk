@@ -1,0 +1,25 @@
+; Numeric reader literals are tensors and vectors on both substrates; ordinary
+; constructed and quoted vectors stay vectors only. Ragged or heterogeneous
+; reader values stay non-tensor vectors. The reader tensor marker survives
+; mutation and leaves the vector accessors and first-class tensor? path intact.
+(display (tensor? #(1 2 3))) (newline)
+(display (vector? #(1 2 3))) (newline)
+(display (tensor? (vector 1 2 3))) (newline)
+(display (vector? (vector 1 2 3))) (newline)
+(display (tensor? '#(1 2 3))) (newline)
+(display (vector? '#(1 2 3))) (newline)
+(display (tensor? #(1 "x" 3))) (newline)
+(display (vector? #(1 "x" 3))) (newline)
+(display (tensor? #())) (newline)
+(display (vector? #())) (newline)
+(display (tensor? #(#(1 2) #(3 4)))) (newline)
+(display (vector? #(#(1 2) #(3 4)))) (newline)
+(display (tensor? #(#(1 2) #(3)))) (newline)
+(display (tensor? #(#(1 2) #(3 "x")))) (newline)
+(display ((lambda (p x) (p x)) tensor? #(4 5))) (newline)
+(define mutable-lit #(7 8 9))
+(vector-set! mutable-lit 1 42)
+(display (tensor? mutable-lit)) (newline)
+(display (vector-ref mutable-lit 1)) (newline)
+(display (vector-length mutable-lit)) (newline)
+(display (tensor? (make-vector 3 0))) (newline)

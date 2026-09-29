@@ -165,6 +165,9 @@ plus its VM-side counterpart `namedlet_escaped_closure_vm_routes.esk` →
 `corpus/77_inexact_division_contagion.esk`. (`corpus/52` was claimed by
 `#394`'s `52_numeric_tag_dispatch.esk` on master; files were renumbered
 to the next free slot when the branches merged.)
+`tensor_predicate_on_literal.esk` →
+`corpus/100_tensor_reader_literal_classification.esk` now that reader-origin
+rectangular numeric vectors answer `tensor?` consistently on both substrates.
 
 The parity gate also reruns every `.esk` file still under `found/` on native
 and VM. A file whose outputs now agree is reported as stale and fails the

@@ -253,6 +253,47 @@ static int vm_guard_is_collapsible(FuncChunk* c, Node* clause_list) {
 #define VM_VEC_LITERAL_STACK_CHUNK 256
 #endif
 
+/* Native reader numeric vector literals answer both vector? and tensor?. Keep
+ * the VM's VAL_VECTOR representation so the full vector API stays available,
+ * and mark only reader-origin, rectangular numeric trees. Constructed vectors
+ * and quoted data do not pass through this test. */
+static int vm_numeric_reader_leaf(const Node* node) {
+    return node && node->type == N_NUMBER && !node->is_char && !node->is_bignum;
+}
+
+static int vm_reader_vector_node(const Node* node) {
+    return node && node->type == N_LIST && node->is_vector &&
+           node->n_children > 0 && is_sym(node->children[0], "vector");
+}
+
+static int vm_same_numeric_reader_shape(const Node* a, const Node* b) {
+    if (vm_numeric_reader_leaf(a) && vm_numeric_reader_leaf(b)) return 1;
+    if (!vm_reader_vector_node(a) || !vm_reader_vector_node(b) ||
+        a->n_children != b->n_children) return 0;
+    for (int i = 1; i < a->n_children; i++)
+        if (!vm_same_numeric_reader_shape(a->children[i], b->children[i])) return 0;
+    return 1;
+}
+
+static int vm_numeric_reader_vector(const Node* node) {
+    if (!vm_reader_vector_node(node)) return 0;
+    if (node->n_children == 1) return 1; /* empty numeric tensor literal */
+
+    const Node* first = node->children[1];
+    int children_are_vectors = vm_reader_vector_node(first);
+    if (!children_are_vectors && !vm_numeric_reader_leaf(first)) return 0;
+    for (int i = 1; i < node->n_children; i++) {
+        const Node* child = node->children[i];
+        if (children_are_vectors) {
+            if (!vm_reader_vector_node(child) || !vm_numeric_reader_vector(child) ||
+                !vm_same_numeric_reader_shape(first, child)) return 0;
+        } else if (!vm_numeric_reader_leaf(child)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /**
  * @brief Compile node->children[first..last] as a sequence of operands left
  *        on the stack, registering each pushed result as an anonymous local
@@ -5456,12 +5497,13 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * are first-class closures defined in the preamble. They resolve via normal variable lookup
      * and are called via the standard CALL mechanism. No special-casing needed. */
 
-    /* R7RS vector constructor / reader literal.  Numeric vectors remain
-     * vectors; tensors have their own `(tensor ...)` constructor.  Treating
-     * `#(1 2 3)` as a tensor made vector?, vector-length, call-with-values,
-     * and every vector consumer silently disagree with the native backend. */
+    /* R7RS vector constructor / reader literal. A rectangular numeric reader
+     * literal is both a vector and a tensor natively. Keep VAL_VECTOR so
+     * vector? and vector consumers work, and carry the tensor classification
+     * only on that reader-origin value. */
     if (is_sym(head, "vector")) {
         int n_elems = node->n_children - 1;
+        int tensor_literal = node->is_vector && vm_numeric_reader_vector(node);
         /* OP_VEC_CREATE consumes its elements off the operand stack, so the
          * direct form needs n_elems stack slots — which made a literal's member
          * count a function of ESHKOL_VM_STACK_SIZE (a #(...) of a few thousand
@@ -5483,7 +5525,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 add_local(c, "__vec_literal_idx__");
                 compile_expr(c, node->children[i], 0);                      /* val */
                 c->n_locals = elem_locals;
-                chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */
+                /* Operand 1 marks only the final store for large reader
+                 * tensor literals; ordinary vector-set! remains operand 0. */
+                int mark_tensor_literal = tensor_literal && i == node->n_children - 1;
+                chunk_emit(c, OP_VEC_SET, mark_tensor_literal ? 1 : 0);
+                /* pops val, idx, vec; pushes nil */
                 chunk_emit(c, OP_POP, 0);       /* drop the nil */
             }
             c->n_locals = saved_locals;
@@ -5494,7 +5540,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int s = c->n_locals;
         compile_operands_tracked(c, node, 1, node->n_children - 1);
         c->n_locals = s;
-        chunk_emit(c, OP_VEC_CREATE, n_elems);
+        /* Negative counts encode reader numeric tensors as -(count + 1); an
+         * ordinary vector keeps the original nonnegative bytecode operand. */
+        chunk_emit(c, OP_VEC_CREATE, tensor_literal ? -(n_elems + 1) : n_elems);
         return;
     }
     if (is_sym(head, "make-vector") && node->n_children >= 2) {
