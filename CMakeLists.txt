@@ -10290,6 +10290,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_D
         PASS_REGULAR_EXPRESSION "PASS: repl stdlib/math shadow")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-repl AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/apply_forward_ref_redefinition_test.esk")
+    add_test(
+        NAME repl_apply_forward_ref_redefinition
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_JIT_CACHE_DIR='${CMAKE_CURRENT_BINARY_DIR}/apply-forward-ref-jit-cache' '$<TARGET_FILE:eshkol-repl>' --stdlib < tests/repl/apply_forward_ref_redefinition_test.esk"
+    )
+    set_tests_properties(repl_apply_forward_ref_redefinition PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: apply forward reference and redefinition"
+        FAIL_REGULAR_EXPRESSION "FAIL:|called a forward-referenced function")
+endif()
+
 # EREPL v1 machine-mode protocol self-test, run through the reference
 # Python driver (tools/erepl_client.py --self-test). This is the versioned
 # JSON request/response contract on top of eshkol-repl --machine

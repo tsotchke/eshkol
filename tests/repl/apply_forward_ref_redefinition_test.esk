@@ -1,0 +1,15 @@
+;;; apply on a user function defined in an earlier REPL batch must use its
+;;; hot-reload forward slot, and the existing caller must see redefinitions.
+(define (target x) (+ x 1))
+(define (via-apply x) (apply target (list x)))
+(define failures 0)
+(if (= (via-apply 10) 11)
+    #t
+    (begin (set! failures (+ failures 1)) (display "FAIL: old target")))
+(define (target x) (+ x 2))
+(if (= (via-apply 10) 12)
+    #t
+    (begin (set! failures (+ failures 1)) (display "FAIL: redefined target")))
+(if (= failures 0)
+    (display "PASS: apply forward reference and redefinition")
+    (display "FAIL: apply forward reference and redefinition"))

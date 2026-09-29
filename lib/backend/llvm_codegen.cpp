@@ -43205,6 +43205,7 @@ private:
 
         size_t arity = 0;
         bool registered = false;
+        bool is_repl_user_function = false;
         bool is_variadic = false;
         size_t fixed_params = 0;
         {
@@ -43214,13 +43215,21 @@ private:
                 arity = it->second;
                 registered = true;
             }
+            // The arity registry is also populated for native stdlib
+            // procedures so that their REPL callable metadata is available.
+            // Only Scheme functions defined in a prior REPL batch have a
+            // __repl_fwd_<name> slot. Sending a stdlib name down this path
+            // creates an unresolved external slot (for example, append).
+            is_repl_user_function =
+                g_repl_user_function_names.count(func_name) > 0 &&
+                g_repl_user_variable_names.count(func_name) == 0;
             auto vit = g_repl_variadic_functions.find(func_name);
             if (vit != g_repl_variadic_functions.end() && vit->second.second) {
                 is_variadic = true;
                 fixed_params = vit->second.first;
             }
         }
-        if (!registered) return nullptr;
+        if (!registered || !is_repl_user_function) return nullptr;
 
         size_t fn_param_count = is_variadic ? (fixed_params + 1) : arity;
 
