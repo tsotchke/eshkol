@@ -135,6 +135,10 @@ static const eshkol::cuda::CublasApi* cuda_prepare_cublas_locked(void) {
 static constexpr uint32_t CUDA_FLAG_WRAPPED_HOST = 1u << 0;
 static constexpr uint32_t CUDA_FLAG_COPY_BACK = 1u << 1;
 static constexpr uint32_t CUDA_FLAG_HOST_REGISTERED = 1u << 2;
+// Host memory the device reads and writes in place through the host page
+// tables (coherent CPU-GPU systems such as Grace Hopper / GB10): no pinning,
+// no copies; freeing it only waits for the stream.
+static constexpr uint32_t CUDA_FLAG_HOST_DIRECT = 1u << 3;
 
 /** @brief Initialize CUDA: verify at least one device is present, select
  *         device 0, and create the shared stream. cuBLAS remains unloaded
@@ -216,6 +220,10 @@ static int cuda_alloc(size_t size_bytes, EshkolMemoryType mem_type, EshkolGPUBuf
  *         the underlying CUDA allocation appropriate to its memory type
  *         (unregistering a wrapped-pinned host pointer rather than freeing it). */
 static void cuda_free(EshkolGPUBuffer* buffer) {
+    if (buffer->flags & CUDA_FLAG_HOST_DIRECT) {
+        cudaStreamSynchronize(g_cuda_stream);
+        return;
+    }
     if ((buffer->flags & CUDA_FLAG_COPY_BACK) && buffer->backend_data &&
         buffer->host_ptr && buffer->host_ptr != buffer->backend_data) {
         cudaStreamSynchronize(g_cuda_stream);
@@ -246,6 +254,10 @@ static void cuda_free(EshkolGPUBuffer* buffer) {
  *         host-pinned buffers with a separate device pointer, issues an
  *         async memcpy in the requested direction and waits. */
 static int cuda_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
+    if (buffer->flags & CUDA_FLAG_HOST_DIRECT) {
+        cudaStreamSynchronize(g_cuda_stream);
+        return 0;
+    }
     if (buffer->mem_type == ESHKOL_MEM_UNIFIED) {
         cudaStreamSynchronize(g_cuda_stream);
         if ((buffer->flags & CUDA_FLAG_COPY_BACK) && buffer->backend_data &&
@@ -809,6 +821,27 @@ static int cuda_batch_matmul_f16_from_f64(const double* a, const double* b, doub
  *         data in, and marking it for copy-back to the original pointer on
  *         sync/free. */
 static int cuda_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* out) {
+    // On devices that access pageable host memory through the host page
+    // tables, hand the kernel the host pointer itself: registering (pinning)
+    // every operand per call costs far more than the kernel.
+    static int direct = -1;
+    if (direct < 0) {
+        int dev = 0, v = 0;
+        cudaGetDevice(&dev);
+        direct = (cudaDeviceGetAttribute(&v, cudaDevAttrPageableMemoryAccessUsesHostPageTables, dev) == cudaSuccess && v) ? 1 : 0;
+        if (getenv("ESHKOL_CUDA_NO_DIRECT_HOST")) direct = 0;
+        GPU_LOG("host operands: %s", direct ? "direct (pageable access via host page tables)" : "registered/pinned");
+    }
+    if (direct) {
+        out->host_ptr = host_ptr;
+        out->device_ptr = host_ptr;
+        out->size_bytes = size_bytes;
+        out->mem_type = ESHKOL_MEM_HOST;
+        out->backend = ESHKOL_GPU_CUDA;
+        out->flags = CUDA_FLAG_WRAPPED_HOST | CUDA_FLAG_HOST_DIRECT;
+        out->backend_data = nullptr;
+        return 0;
+    }
     cudaError_t err = cudaHostRegister(host_ptr, size_bytes, cudaHostRegisterMapped);
     if (err == cudaSuccess) {
         void* device_ptr = nullptr;
