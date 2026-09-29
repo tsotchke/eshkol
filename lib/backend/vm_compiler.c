@@ -5959,8 +5959,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* case-lambda: dispatch on argument count */
     if (is_sym(head, "case-lambda") && node->n_children >= 2) {
         /* Make one variadic closure and dispatch in source order. Private
-         * length/apply forms compile to fixed native calls, so user bindings
-         * cannot capture the dispatch helpers. */
+         * length/apply/comparison forms compile to fixed native operations,
+         * so user bindings cannot capture the dispatch helpers. */
         static unsigned long case_lambda_serial = 0;
         VmCaseBuilder builder = {0};
         Node* outer = vm_case_new_node(&builder, N_LIST);
@@ -6009,7 +6009,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             }
             Node* test = vm_case_new_node(&builder, N_LIST);
             Node* cmp = vm_case_new_node(&builder, N_SYMBOL);
-            strncpy(cmp->symbol, rest ? ">=" : "=", sizeof(cmp->symbol) - 1);
+            strncpy(cmp->symbol,
+                    rest ? "__vm_case_lambda_min_arity_internal__"
+                         : "__vm_case_lambda_exact_arity_internal__",
+                    sizeof(cmp->symbol) - 1);
             add_child(test, cmp);
             Node* len = vm_case_new_node(&builder, N_LIST);
             Node* len_sym = vm_case_new_node(&builder, N_SYMBOL);
@@ -6040,6 +6043,16 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "__vm_case_lambda_length_internal__") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0);
         chunk_emit(c, OP_NATIVE_CALL, 71);
+        return;
+    }
+    if ((is_sym(head, "__vm_case_lambda_exact_arity_internal__") ||
+         is_sym(head, "__vm_case_lambda_min_arity_internal__")) &&
+        node->n_children == 3) {
+        compile_operands_tracked(c, node, 1, 2);
+        /* Don't resolve Scheme `=`/`>=` here: case-lambda dispatch must stay
+         * independent of lexical bindings with those names. */
+        chunk_emit(c, is_sym(head, "__vm_case_lambda_exact_arity_internal__")
+                          ? OP_EQ : OP_GE, 0);
         return;
     }
 
