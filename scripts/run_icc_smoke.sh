@@ -652,6 +652,16 @@ probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES per
      ## re-runs the binary under ESHKOL_ARENA_POISON=1 (dangling-ptr tripwire).
      bash tests/memory/iter_scope_partial_reclaim_test.sh'
 
+probe xla_region_reclaim 'XLA/GPU tensor results made inside with-region are reclaimed at region exit (process arena stays near 4 MiB across 800 MiB of region-scoped temporaries)' \
+    'cd "$REPO_ROOT";
+     ## XLA runtime call sites used to allocate results in the raw
+     ## __global_arena slot, which with-region no longer redirects, so every
+     ## XLA-dispatched result leaked (895 MB retained on this fixture). In a
+     ## build without XLA the tensors take the inline CPU path and the gate
+     ## passes trivially.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/xla/xla_region_reclaim_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "PASS: xla_region_reclaim_test"'
+
 probe resident_longrun_flat 'SW-57: a guarded resident daemon loop retains EXACTLY zero arena bytes per tick across an 8x tick horizon on every barriered mutation channel; the publishing fixture stays pinned to its documented 240 bytes/tick' \
     'cd "$REPO_ROOT";
      ## SW-57. Every other flat-memory gate here stops at 100k ticks and asserts

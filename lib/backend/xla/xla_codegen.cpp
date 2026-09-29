@@ -443,9 +443,11 @@ llvm::Value* XLACodegen::emitMatmul(llvm::Value* a, llvm::Value* b) {
     auto* matmulFunc = impl_->getOrCreateMatmulRuntime();
 
     // Get arena pointer
-    auto* arenaPtrPtr = impl_->ctx_->globalArena();
+    // The calling thread's current arena (a with-region body allocates in its
+    // region), as every other allocation site reads it -- not the raw
+    // __global_arena slot, which with-region no longer redirects.
     auto* ptrTy = llvm::PointerType::get(llvm_ctx, 0);
-    auto* arenaPtr = builder.CreateLoad(ptrTy, arenaPtrPtr, "arena_ptr");
+    auto* arenaPtr = impl_->ctx_->currentArena();
 
     // Use canonical tensor type: { ptr dimensions, i64 num_dimensions, ptr elements, i64 total_elements }
     auto* tensorTy = impl_->ctx_->types().getTensorType();
@@ -509,7 +511,7 @@ llvm::Value* XLACodegen::emitElementwise(llvm::Value* a, llvm::Value* b, Element
     auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
 
     // Load arena
-    auto* arenaPtr = builder.CreateLoad(ptrTy, impl_->ctx_->globalArena(), "arena_ptr");
+    auto* arenaPtr = impl_->ctx_->currentArena();
 
     // Extract fields from tensor a
     auto* aDataPtr = builder.CreateStructGEP(tensorTy, a,
@@ -581,7 +583,7 @@ llvm::Value* XLACodegen::emitReduce(llvm::Value* input, int64_t axis, ReduceOp o
     auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
 
     // Load arena
-    auto* arenaPtr = builder.CreateLoad(ptrTy, impl_->ctx_->globalArena(), "arena_ptr");
+    auto* arenaPtr = impl_->ctx_->currentArena();
 
     // Extract fields from input tensor
     auto* dataPtr = builder.CreateStructGEP(tensorTy, input,
@@ -626,7 +628,7 @@ llvm::Value* XLACodegen::emitTranspose(llvm::Value* input) {
     auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
 
     // Load arena
-    auto* arenaPtr = builder.CreateLoad(ptrTy, impl_->ctx_->globalArena(), "arena_ptr");
+    auto* arenaPtr = impl_->ctx_->currentArena();
 
     // Extract fields from input tensor
     auto* dataPtr = builder.CreateStructGEP(tensorTy, input,
@@ -694,7 +696,7 @@ llvm::Value* XLACodegen::emitBroadcast(llvm::Value* input,
     auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
 
     // Load arena
-    auto* arenaPtr = builder.CreateLoad(ptrTy, impl_->ctx_->globalArena(), "arena_ptr");
+    auto* arenaPtr = impl_->ctx_->currentArena();
 
     // Extract fields from input tensor
     auto* dataPtr = builder.CreateStructGEP(tensorTy, input,
@@ -744,7 +746,7 @@ llvm::Value* XLACodegen::emitSlice(llvm::Value* input,
     auto* i64Ty = llvm::Type::getInt64Ty(llvm_ctx);
 
     // Load arena
-    auto* arenaPtr = builder.CreateLoad(ptrTy, impl_->ctx_->globalArena(), "arena_ptr");
+    auto* arenaPtr = impl_->ctx_->currentArena();
 
     // Extract fields from input tensor
     auto* dataPtr = builder.CreateStructGEP(tensorTy, input,
@@ -1023,7 +1025,7 @@ llvm::Value* XLACodegen::emitReduceGradient(llvm::Value* grad,
         // d(sum(x))/dx = ones * grad → broadcast grad to input shape
         // Since grad is a scalar tensor, broadcast it to the input shape
         // by calling the broadcast runtime
-        auto* arenaPtr = builder.CreateLoad(ptrTy, impl_->ctx_->globalArena(), "arena_ptr");
+        auto* arenaPtr = impl_->ctx_->currentArena();
         auto* gradDataPtr = builder.CreateStructGEP(tensorTy, grad,
             TypeSystem::TENSOR_ELEMENTS_IDX, "rg_grad_data_ptr");
         auto* gradData = builder.CreateLoad(ptrTy, gradDataPtr, "rg_grad_data");
@@ -1044,7 +1046,7 @@ llvm::Value* XLACodegen::emitReduceGradient(llvm::Value* grad,
 
     if (op == ReduceOp::MEAN) {
         // d(mean(x))/dx = (1/n) * broadcast(grad) to input shape
-        auto* arenaPtr = builder.CreateLoad(ptrTy, impl_->ctx_->globalArena(), "arena_ptr");
+        auto* arenaPtr = impl_->ctx_->currentArena();
         auto* gradDataPtr = builder.CreateStructGEP(tensorTy, grad,
             TypeSystem::TENSOR_ELEMENTS_IDX, "rg_grad_data_ptr");
         auto* gradData = builder.CreateLoad(ptrTy, gradDataPtr, "rg_grad_data");
@@ -1084,7 +1086,7 @@ llvm::Value* XLACodegen::emitReduceGradient(llvm::Value* grad,
 
     // MAX/MIN/PROD: delegate to runtime for correct gradient computation
     if (op == ReduceOp::MAX || op == ReduceOp::MIN || op == ReduceOp::PROD) {
-        auto* arenaPtr = builder.CreateLoad(ptrTy, impl_->ctx_->globalArena(), "arena_ptr");
+        auto* arenaPtr = impl_->ctx_->currentArena();
 
         // Get gradient data
         auto* gradDataPtr = builder.CreateStructGEP(tensorTy, grad,
