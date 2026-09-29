@@ -1921,9 +1921,9 @@ llvm::Value* StringIOCodegen::stringToList(const eshkol_operations_t* op) {
  * @brief Codegen for R7RS `(list->string chars)`.
  *
  * Emits an LLVM IR loop that first walks the list to count its length (by
- * following cons cell cdrs at offset 16), allocates a header-tagged string
- * buffer of that length, then walks the list a second time storing each
- * char byte into the buffer.
+ * following cons cell cdrs at offset 16), computes the UTF-8 byte length,
+ * allocates a header-tagged string buffer, then walks the list a second time
+ * encoding each character into the buffer.
  */
 llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
@@ -1978,10 +1978,24 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
     ctx_.builder().CreateCondBr(is_nil, count_end, count_body);
 
-    // Count loop body: increment count, move to cdr
+    // Count loop body: add the UTF-8 width of car, move to cdr.
     ctx_.builder().SetInsertPoint(count_body);
     llvm::Value* curr_count = ctx_.builder().CreateLoad(ctx_.int64Type(), count_ptr);
-    llvm::Value* new_count = ctx_.builder().CreateAdd(curr_count, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* count_cons_data = ctx_.builder().CreateExtractValue(iter_val, {4});
+    llvm::Value* count_cons_ptr = ctx_.builder().CreateIntToPtr(count_cons_data, ctx_.ptrType());
+    llvm::Value* count_car = ctx_.builder().CreateLoad(ctx_.taggedValueType(), count_cons_ptr);
+    llvm::Value* count_cp = ctx_.builder().CreateExtractValue(count_car, {4});
+    llvm::Value* is_ascii = ctx_.builder().CreateICmpULT(count_cp, llvm::ConstantInt::get(ctx_.int64Type(), 0x80));
+    llvm::Value* is_two = ctx_.builder().CreateICmpULT(count_cp, llvm::ConstantInt::get(ctx_.int64Type(), 0x800));
+    llvm::Value* is_three = ctx_.builder().CreateICmpULT(count_cp, llvm::ConstantInt::get(ctx_.int64Type(), 0x10000));
+    llvm::Value* width = ctx_.builder().CreateSelect(is_ascii,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateSelect(is_two,
+            llvm::ConstantInt::get(ctx_.int64Type(), 2),
+            ctx_.builder().CreateSelect(is_three,
+                llvm::ConstantInt::get(ctx_.int64Type(), 3),
+                llvm::ConstantInt::get(ctx_.int64Type(), 4))));
+    llvm::Value* new_count = ctx_.builder().CreateAdd(curr_count, width);
     ctx_.builder().CreateStore(new_count, count_ptr);
 
     // Get cdr of current cons cell
@@ -2020,7 +2034,7 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
     ctx_.builder().CreateCondBr(fill_is_nil, fill_end, fill_body);
 
-    // Fill loop body: get car (character), store in buffer
+    // Fill loop body: encode car as one to four UTF-8 bytes.
     ctx_.builder().SetInsertPoint(fill_body);
     llvm::Value* fill_curr = ctx_.builder().CreateLoad(ctx_.taggedValueType(), list_iter_ptr);
     llvm::Value* fill_cons_data = ctx_.builder().CreateExtractValue(fill_curr, {4});
@@ -2029,15 +2043,62 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
     // car is at offset 0
     llvm::Value* car_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), fill_cons_ptr);
     llvm::Value* char_data = ctx_.builder().CreateExtractValue(car_val, {4});
-    llvm::Value* char_byte = ctx_.builder().CreateTrunc(char_data, ctx_.int8Type());
-
-    // Store in buffer at current index
     llvm::Value* curr_idx = ctx_.builder().CreateLoad(ctx_.int64Type(), idx_ptr);
-    llvm::Value* dest_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_buf, curr_idx);
-    ctx_.builder().CreateStore(char_byte, dest_ptr);
+    llvm::Value* fill_ascii = ctx_.builder().CreateICmpULT(char_data, llvm::ConstantInt::get(ctx_.int64Type(), 0x80));
+    llvm::Value* fill_two = ctx_.builder().CreateICmpULT(char_data, llvm::ConstantInt::get(ctx_.int64Type(), 0x800));
+    llvm::Value* fill_three = ctx_.builder().CreateICmpULT(char_data, llvm::ConstantInt::get(ctx_.int64Type(), 0x10000));
+    llvm::Value* fill_width = ctx_.builder().CreateSelect(fill_ascii,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateSelect(fill_two,
+            llvm::ConstantInt::get(ctx_.int64Type(), 2),
+            ctx_.builder().CreateSelect(fill_three,
+                llvm::ConstantInt::get(ctx_.int64Type(), 3),
+                llvm::ConstantInt::get(ctx_.int64Type(), 4))));
+    llvm::Function* fill_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* enc_one = llvm::BasicBlock::Create(ctx_.context(), "lts_encode_one", fill_func);
+    llvm::BasicBlock* enc_check_two = llvm::BasicBlock::Create(ctx_.context(), "lts_check_two", fill_func);
+    llvm::BasicBlock* enc_two = llvm::BasicBlock::Create(ctx_.context(), "lts_encode_two", fill_func);
+    llvm::BasicBlock* enc_check_three = llvm::BasicBlock::Create(ctx_.context(), "lts_check_three", fill_func);
+    llvm::BasicBlock* enc_three = llvm::BasicBlock::Create(ctx_.context(), "lts_encode_three", fill_func);
+    llvm::BasicBlock* enc_four = llvm::BasicBlock::Create(ctx_.context(), "lts_encode_four", fill_func);
+    llvm::BasicBlock* enc_done = llvm::BasicBlock::Create(ctx_.context(), "lts_encode_done", fill_func);
+    ctx_.builder().CreateCondBr(fill_ascii, enc_one, enc_check_two);
 
-    // Increment index
-    llvm::Value* next_idx = ctx_.builder().CreateAdd(curr_idx, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    auto store_byte = [&](llvm::Value* offset, llvm::Value* byte) {
+        llvm::Value* at = ctx_.builder().CreateAdd(curr_idx, offset);
+        llvm::Value* ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_buf, at);
+        ctx_.builder().CreateStore(ctx_.builder().CreateTrunc(byte, ctx_.int8Type()), ptr);
+    };
+    auto byte_const = [&](uint64_t n) { return llvm::ConstantInt::get(ctx_.int64Type(), n); };
+    auto continuation = [&](unsigned shift) -> llvm::Value* {
+        llvm::Value* shifted = ctx_.builder().CreateLShr(char_data, byte_const(shift));
+        return ctx_.builder().CreateOr(ctx_.builder().CreateAnd(shifted, byte_const(0x3f)), byte_const(0x80));
+    };
+    ctx_.builder().SetInsertPoint(enc_one);
+    store_byte(byte_const(0), char_data);
+    ctx_.builder().CreateBr(enc_done);
+    ctx_.builder().SetInsertPoint(enc_check_two);
+    ctx_.builder().CreateCondBr(fill_two, enc_two, enc_check_three);
+    ctx_.builder().SetInsertPoint(enc_two);
+    store_byte(byte_const(0), ctx_.builder().CreateOr(byte_const(0xc0), ctx_.builder().CreateLShr(char_data, byte_const(6))));
+    store_byte(byte_const(1), continuation(0));
+    ctx_.builder().CreateBr(enc_done);
+    ctx_.builder().SetInsertPoint(enc_check_three);
+    ctx_.builder().CreateCondBr(fill_three, enc_three, enc_four);
+    ctx_.builder().SetInsertPoint(enc_three);
+    store_byte(byte_const(0), ctx_.builder().CreateOr(byte_const(0xe0), ctx_.builder().CreateLShr(char_data, byte_const(12))));
+    store_byte(byte_const(1), continuation(6));
+    store_byte(byte_const(2), continuation(0));
+    ctx_.builder().CreateBr(enc_done);
+    ctx_.builder().SetInsertPoint(enc_four);
+    store_byte(byte_const(0), ctx_.builder().CreateOr(byte_const(0xf0), ctx_.builder().CreateLShr(char_data, byte_const(18))));
+    store_byte(byte_const(1), continuation(12));
+    store_byte(byte_const(2), continuation(6));
+    store_byte(byte_const(3), continuation(0));
+    ctx_.builder().CreateBr(enc_done);
+
+    ctx_.builder().SetInsertPoint(enc_done);
+    llvm::Value* next_idx = ctx_.builder().CreateAdd(curr_idx, fill_width);
     ctx_.builder().CreateStore(next_idx, idx_ptr);
 
     // Move to cdr
