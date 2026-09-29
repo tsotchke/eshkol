@@ -164,6 +164,13 @@ public:
         variadic_function_info_ = info;
     }
 
+    using GetVariadicFunctionInfoCallback = bool (*)(const char*, uint64_t*, void*);
+    void setGetVariadicFunctionInfoCallback(GetVariadicFunctionInfoCallback callback,
+                                            void* context) {
+        get_variadic_function_info_callback_ = callback;
+        variadic_function_info_context_ = context;
+    }
+
     /**
      * Set the main codegen's function_table for cross-file apply
      * resolution (Noesis Bug P, 2026-04-23). User functions defined
@@ -302,6 +309,8 @@ private:
 
     // Variadic function metadata
     std::unordered_map<std::string, std::pair<uint64_t, bool>>* variadic_function_info_ = nullptr;
+    GetVariadicFunctionInfoCallback get_variadic_function_info_callback_ = nullptr;
+    void* variadic_function_info_context_ = nullptr;
 
     // Callback for AST codegen
     CodegenASTCallback codegen_ast_callback_ = nullptr;

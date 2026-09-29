@@ -815,6 +815,7 @@ Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
     // gives f's "opts" param the value #t (a non-pair) instead of '(#t).
     // (car opts) then raises "argument is not a pair" mid-display.
     bool is_variadic = false;
+    bool has_variadic_metadata = false;
     uint64_t fixed_params = func->arg_size();
 
     if (variadic_function_info_) {
@@ -828,10 +829,37 @@ Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
             }
         }
         if (variadic_it != variadic_function_info_->end()) {
+            has_variadic_metadata = true;
             is_variadic = variadic_it->second.second;
             if (is_variadic) {
                 fixed_params = variadic_it->second.first;
             }
+        }
+    }
+
+    // In REPL/JIT batches, standard-library procedures live in the already
+    // loaded stdlib module, so their variadic declaration is absent from this
+    // module's AST-local table. The REPL registry carries the same metadata
+    // used by codegenVariable to materialize their first-class closure shape.
+    // Consult it before falling back to the function's physical LLVM arity;
+    // otherwise `(apply append (list (list 1 2)))` passes the data list as
+    // append's `lists` rest parameter and its `(car lists)` fails.
+    if (!has_variadic_metadata && get_variadic_function_info_callback_) {
+        uint64_t registered_fixed_params = 0;
+        bool found = get_variadic_function_info_callback_(
+            func_name.c_str(), &registered_fixed_params, variadic_function_info_context_);
+        if (!found) {
+            const auto rv_pos = func_name.rfind("__rv");
+            if (rv_pos != std::string::npos) {
+                const std::string unmangled = func_name.substr(0, rv_pos);
+                found = get_variadic_function_info_callback_(
+                    unmangled.c_str(), &registered_fixed_params,
+                    variadic_function_info_context_);
+            }
+        }
+        if (found) {
+            is_variadic = true;
+            fixed_params = registered_fixed_params;
         }
     }
 

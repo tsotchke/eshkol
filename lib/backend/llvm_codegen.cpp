@@ -1604,6 +1604,7 @@ namespace ControlFlowCallbacks {
     llvm::Function* getConsSetPtrWrapper(void* context);
     llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
     bool variadicLookupWrapper(const char* name, void* context);
+    bool applyVariadicInfoWrapper(const char* name, uint64_t* fixed_params, void* context);
     llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
     void pushFunctionContextWrapper(void* context);
     void popFunctionContextWrapper(void* context);
@@ -1658,6 +1659,7 @@ class EshkolLLVMCodeGen {
     friend llvm::Function* ControlFlowCallbacks::getConsSetPtrWrapper(void* context);
     friend llvm::Value* ControlFlowCallbacks::resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
     friend bool ControlFlowCallbacks::variadicLookupWrapper(const char* name, void* context);
+    friend bool ControlFlowCallbacks::applyVariadicInfoWrapper(const char* name, uint64_t* fixed_params, void* context);
     friend llvm::Value* ControlFlowCallbacks::indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
     friend void ControlFlowCallbacks::pushFunctionContextWrapper(void* context);
     friend void ControlFlowCallbacks::popFunctionContextWrapper(void* context);
@@ -45811,6 +45813,11 @@ namespace ControlFlowCallbacks {
     bool variadicLookupWrapper(const char* name, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return name && codegen->lookupVariadicProcedure(name, nullptr);
+    }
+
+    bool applyVariadicInfoWrapper(const char* name, uint64_t* fixed_params, void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return name && codegen->lookupVariadicProcedure(name, fixed_params);
     }
 
     llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context) {

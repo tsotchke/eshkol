@@ -9771,7 +9771,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: variadic first-class builtins -- 0 failures"
-            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal"
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/variadic-builtins-jit-cache")
 
     add_test(
         NAME variadic_builtins_first_class_aot_o0_smoke
@@ -9807,7 +9808,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             PROPERTIES
                 TIMEOUT 300
                 PASS_REGULAR_EXPRESSION "PASS: native/VM byte-identical"
-                FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
+                FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>"
+                ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/variadic-builtins-jit-cache")
 
         if(TARGET eshkol-run AND
            EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/nested_shorthand_function_parity_test.sh")
