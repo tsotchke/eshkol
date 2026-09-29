@@ -2879,11 +2879,10 @@ public:
             // module emits @<name> as a pure external declaration plus a
             // __repl_var_<name> marker that addModule consumes to allocate
             // the shared 16-byte tagged_value slot on first definition.
-            // R7RS §5.3.1: a name defined more than once at top level is bound
-            // through a location even when every one of its definitions is a
-            // procedure definition, so the location is pre-declared here for
-            // `is_function` defines too. Ordinary (single) procedure defines
-            // keep the direct-call fast path and get no location.
+            // A top-level procedure whose binding is redefined or assigned
+            // with set! uses one location for reads and calls. Pre-declare
+            // that location here, while leaving immutable procedures on the
+            // direct-call fast path.
             //
             // Library mode is excluded: it has no `main`, so the definition
             // stores that make a location authoritative are emitted by the
@@ -2897,7 +2896,7 @@ public:
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                     (!asts_to_use[i].operation.define_op.is_function ||
                      (!library_mode &&
-                      isRedefinedTopLevelName(asts_to_use[i].operation.define_op.name)))) {
+                      isReassignedTopLevelName(asts_to_use[i].operation.define_op.name)))) {
                     const char* var_name = asts_to_use[i].operation.define_op.name;
                     // `:external` references and library `provide` bindings keep
                     // their raw public name so they bind cross-object to
@@ -3063,7 +3062,7 @@ public:
                         // the top-level order — that is what makes the later
                         // define win and the earlier one win before it.
                         if (is_function_def) {
-                            emitRedefinitionStoreForFunctionDefine(&asts_to_use[i]);
+                            emitMutableProcedureStoreForFunctionDefine(&asts_to_use[i]);
                             continue;
                         }
 
@@ -3389,7 +3388,7 @@ public:
                     if (asts_to_use[i].type == ESHKOL_OP &&
                         asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                         asts_to_use[i].operation.define_op.is_function) {
-                        emitRedefinitionStoreForFunctionDefine(&asts_to_use[i]);
+                        emitMutableProcedureStoreForFunctionDefine(&asts_to_use[i]);
                         continue;
                     }
                     // Process non-function top-level defines to initialize global variables
@@ -4072,14 +4071,14 @@ private:
         return emitFunctionAsCallableValue(func, num_params, is_variadic, fixed_params);
     }
 
-    /* R7RS §5.3.1 store for a top-level PROCEDURE definition of a redefined
-     * name.  Ordinary procedure definitions need no store — their call sites
-     * resolve the LLVM function directly — but a redefined name is bound
-     * through a location, so each definition has to assign the procedure to
-     * that location at its own point in program order.  Emitted from the
+    /* Store a top-level PROCEDURE definition whose binding is mutable.
+     * Immutable procedure definitions need no store — their call sites
+     * resolve the LLVM function directly — but a reassigned name is bound
+     * through a location, so each definition assigns its procedure there at
+     * its own point in program order. Emitted from the
      * main/global-init sequence, where `builder` is already positioned at
      * the definition's place in the top-level order. */
-    void emitRedefinitionStoreForFunctionDefine(const eshkol_ast_t* ast) {
+    void emitMutableProcedureStoreForFunctionDefine(const eshkol_ast_t* ast) {
         if (!ast || ast->type != ESHKOL_OP ||
             ast->operation.op != ESHKOL_DEFINE_OP ||
             !ast->operation.define_op.is_function ||
@@ -4088,11 +4087,11 @@ private:
         }
 
         const char* name = ast->operation.define_op.name;
-        if (!isRedefinedTopLevelName(name)) return;
+        if (library_mode || !isReassignedTopLevelName(name)) return;
 
         auto declared_it = declared_functions_by_ast.find(ast);
         if (declared_it == declared_functions_by_ast.end() || !declared_it->second) {
-            eshkol_debug("R7RS 5.3.1: no declared function for redefined '%s' - "
+            eshkol_debug("Mutable procedure binding: no declared function for '%s' - "
                          "skipping location store", name);
             return;
         }
@@ -4101,7 +4100,7 @@ private:
             userGlobalStorageName(name, g_repl_mode_enabled, library_mode);
         GlobalVariable* location = module->getNamedGlobal(storage_name);
         if (!location) {
-            eshkol_debug("R7RS 5.3.1: no location global for redefined '%s' (%s)",
+            eshkol_debug("Mutable procedure binding: no location global for '%s' (%s)",
                          name, storage_name.c_str());
             return;
         }
@@ -4123,7 +4122,7 @@ private:
         symbol_table[name] = location;
         global_symbol_table[name] = location;
         function_arity_table[name] = arity;
-        eshkol_debug("R7RS 5.3.1: stored procedure '%s' (arity=%llu) into its "
+        eshkol_debug("Mutable procedure binding: stored '%s' (arity=%llu) into "
                      "binding location %s", name,
                      (unsigned long long)arity, storage_name.c_str());
     }

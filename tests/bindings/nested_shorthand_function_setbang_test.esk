@@ -1,0 +1,10 @@
+;; The escaping sibling must share the durable binding cell for f and observe
+;; the reassignment made after both internal definitions are compiled.
+(define (make-current)
+  (define (f x) x)
+  (define (current) f)
+  (set! f (lambda (x) (+ x 1)))
+  current)
+(define current (make-current))
+(display ((current) 41))
+(newline)
