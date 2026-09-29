@@ -622,6 +622,13 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     hashUpdate(hash, "unsafe", std::to_string(unsafe_mode));
     hashUpdate(hash, "opt-level", std::to_string(opt_level));
     hashUpdate(hash, "target-triple", target_triple ? target_triple : "");
+    // ESHKOL_XLA_THRESHOLD is read at compile time and baked into the code as
+    // the GPU dispatch cutoff, so a binary compiled under one value must not be
+    // handed back under another.
+    {
+        const char* xla_threshold = std::getenv("ESHKOL_XLA_THRESHOLD");
+        hashUpdate(hash, "xla-threshold", xla_threshold ? xla_threshold : "");
+    }
 
     const auto stdlib_bc = findBuildArtifact("stdlib.bc");
     const auto stdlib_o = findBuildArtifact("stdlib.o");
