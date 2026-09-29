@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cstring>
 #include <vector>
+#include <mutex>
 #endif
 
 void* eshkol_arena_mutex_create(void);
@@ -88,6 +89,73 @@ extern "C" int eshkol_alloc_failpoint_fire(int site) {
     return 1;
 }
 
+
+// ---------------------------------------------------------------------------
+// Large-block pool.
+//
+// Region teardown frees every block of the region's arena. Blocks of a
+// megabyte or more come straight from mmap in glibc and go straight back, so a
+// loop that makes large temporaries (tensor arithmetic inside `with-region`,
+// the per-step pattern) faults every page of every result in afresh, forever:
+// a 32 MB tensor is 8192 page faults, which costs more than the arithmetic.
+// Keeping recently freed large blocks, up to a cap, and handing them to the
+// next arena that needs a block of about that size keeps those pages mapped.
+//
+// Accounting is unchanged: a pooled block is deallocated in the heap tracker
+// when it enters the pool and allocated again when it leaves, so heap limits
+// and reports measure what arenas hold, not what the pool keeps warm.
+// ESHKOL_ARENA_BLOCK_POOL_MB sets the cap (default 1024; 0 disables). The pool
+// is off under ESHKOL_ARENA_POISON, whose point is that freed memory is not
+// reused.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr size_t kBlockPoolMinSize = (size_t)1 << 20;
+std::mutex g_block_pool_mutex;
+arena_block_t* g_block_pool = nullptr;
+size_t g_block_pool_bytes = 0;
+
+size_t block_pool_cap() {
+    static const size_t cap = [] {
+        const char* e = std::getenv("ESHKOL_ARENA_BLOCK_POOL_MB");
+        size_t mb = e ? (size_t)strtoull(e, nullptr, 10) : (size_t)1024;
+        return mb << 20;
+    }();
+    return cap;
+}
+
+// Best fit among pooled blocks of at least `size` and at most twice it.
+arena_block_t* block_pool_take(size_t size) {
+    if (size < kBlockPoolMinSize || block_pool_cap() == 0) return nullptr;
+    std::lock_guard<std::mutex> lock(g_block_pool_mutex);
+    arena_block_t** best = nullptr;
+    for (arena_block_t** link = &g_block_pool; *link; link = &(*link)->next) {
+        size_t bs = (*link)->size;
+        if (bs >= size && bs / 2 <= size && (!best || bs < (*best)->size)) best = link;
+    }
+    if (!best) return nullptr;
+    arena_block_t* b = *best;
+    *best = b->next;
+    g_block_pool_bytes -= b->size;
+    b->next = nullptr;
+    b->used = 0;
+    return b;
+}
+
+bool block_pool_put(arena_block_t* b) {
+    if (b->size < kBlockPoolMinSize || block_pool_cap() == 0 ||
+        eshkol_arena_poison_enabled() != 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_block_pool_mutex);
+    if (g_block_pool_bytes + b->size > block_pool_cap()) return false;
+    b->used = 0;
+    b->next = g_block_pool;
+    g_block_pool = b;
+    g_block_pool_bytes += b->size;
+    return true;
+}
+}  // namespace
+
 static arena_block_t* create_arena_block(size_t size) {
     if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_ARENA_BLOCK)) {
         eshkol_error("Failed to allocate arena block memory of size %zu", size);
@@ -112,6 +180,14 @@ static arena_block_t* create_arena_block(size_t size) {
         // refusing here would make "limits are not enforced" the more violent
         // of the two settings.
         eshkol_limit_enforce(ESHKOL_LIMIT_HEAP_HARD, "arena block");
+    }
+
+    if (arena_block_t* pooled = block_pool_take(size)) {
+        // Charged at the requested size above; charge the difference too, so
+        // the tracker sees the block's true size (and the matching
+        // deallocation in free_arena_block balances).
+        if (pooled->size > size) eshkol_track_allocation(pooled->size - size);
+        return pooled;
     }
 
     arena_block_t* block = (arena_block_t*)malloc(sizeof(arena_block_t));
@@ -144,6 +220,7 @@ static void free_arena_block(arena_block_t* block) {
         // than by everything it has ever touched. Without this pairing the
         // heap ceiling would degrade into a cap on cumulative allocation.
         eshkol_track_deallocation(block->size);
+        if (block_pool_put(block)) return;
         free(block->memory);
         free(block);
     }

@@ -670,6 +670,15 @@ probe run_cache_xla_threshold_key 'the -r run cache is keyed on ESHKOL_XLA_THRES
      out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/codegen/run_cache_xla_threshold_key_test.sh 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "PASS: run_cache_xla_threshold_key_test"'
 
+probe arena_block_pool 'the large-block arena pool is invisible: identical results with the pool on, off and under ESHKOL_ARENA_POISON, and balanced heap accounting under ESHKOL_MAX_HEAP=256M' \
+    'cd "$REPO_ROOT";
+     ## A region-scoped loop over 8 MiB tensors allocates 4.8 GiB in total but
+     ## holds a few blocks at a time. If pooled blocks were still charged to
+     ## the heap tracker, or charged twice on reuse, the fail-closed 256 MiB
+     ## limit would stop the run.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/arena_block_pool_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "PASS: arena_block_pool_test"'
+
 probe resident_longrun_flat 'SW-57: a guarded resident daemon loop retains EXACTLY zero arena bytes per tick across an 8x tick horizon on every barriered mutation channel; the publishing fixture stays pinned to its documented 240 bytes/tick' \
     'cd "$REPO_ROOT";
      ## SW-57. Every other flat-memory gate here stops at 100k ticks and asserts

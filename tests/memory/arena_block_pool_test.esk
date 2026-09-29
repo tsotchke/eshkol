@@ -1,0 +1,24 @@
+;;; arena_block_pool_test.esk — a region-scoped loop over large tensors, the
+;;; workload the arena's large-block pool serves: every iteration's temporaries
+;;; (4 x 8 MiB) live in blocks that region teardown releases and the next
+;;; iteration reacquires. 150 iterations allocate 4.8 GiB in total but never hold
+;;; more than a few blocks at once. arena_block_pool_test.sh runs it with the
+;;; pool on, off and under ESHKOL_ARENA_POISON, and under a 256 MiB heap limit.
+
+(define N 1048576)
+(define A (make-tensor (list N) 1.5))
+(define B (make-tensor (list N) 1.0000001))
+
+(define (chain x k)
+  (if (= k 0) x (chain (tensor-add (tensor-mul x B) A) (- k 1))))
+
+(define total
+  (let loop ((i 0) (acc 0.0))
+    (if (= i 150)
+        acc
+        (loop (+ i 1) (+ acc (with-region (tensor-sum (chain A 2))))))))
+
+;; each chain maps 1.5 -> 1.5*B+1.5 -> (1.5*B+1.5)*B+1.5 = 4.50000045 per element
+(if (< (abs (- (/ total (* 150 N)) 4.50000045)) 1e-9)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL: wrong total ") (display total) (newline) (exit 1)))
