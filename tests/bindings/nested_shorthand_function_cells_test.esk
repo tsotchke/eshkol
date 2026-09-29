@@ -1,0 +1,23 @@
+;; Each factory activation owns its recursive procedure cell and captured seed.
+(define (make-countdown seed)
+  (define (f n)
+    (if (= n 0) seed (f (- n 1))))
+  (set! f
+    (lambda (n)
+      (if (= n 0) seed (+ 1 (f (- n 1))))))
+  f)
+(define f1 (make-countdown 10))
+(define f2 (make-countdown 20))
+(display (f1 2))
+(newline)
+(display (f2 3))
+(newline)
+
+;; Mutating a captured variadic procedure keeps its rest-list calling ABI.
+(define (make-variadic)
+  (define (g first . rest) (length rest))
+  (set! g (lambda (first . rest) (+ first (length rest))))
+  g)
+(define g (make-variadic))
+(display (g 40 1 2))
+(newline)

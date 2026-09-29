@@ -20,6 +20,7 @@
 #include <eshkol/logger.h>
 #include <eshkol/eshkol.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/Function.h>
 #include <cstring>
 
 namespace eshkol {
@@ -1067,6 +1068,77 @@ llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
 
     // If there are internal defines, handle them specially
     if (!defines.empty() && codegen_func_define_callback_ && codegen_var_define_callback_) {
+
+        // Inside an ordinary function, an internal procedure definition is a
+        // lexical binding with a runtime closure value. Lower the whole group
+        // through letrec so all names have one per-activation cell before any
+        // initializer is compiled. This keeps calls, set!, and sibling
+        // captures on the same storage. Top-level initialization retains the
+        // established named-function path below.
+        llvm::Function* enclosing = ctx_.builder().GetInsertBlock()
+            ? ctx_.builder().GetInsertBlock()->getParent() : nullptr;
+        const std::string enclosing_name = enclosing
+            ? enclosing->getName().str() : std::string();
+        const bool top_level_init = !enclosing || enclosing_name == "main" ||
+            enclosing_name == "__global_init" ||
+            enclosing_name.starts_with("__eshkol_lib_init") ||
+            enclosing_name.starts_with("__eshkol_init_chunk_");
+        if (!top_level_init) {
+            std::vector<eshkol_ast_t> names(defines.size());
+            std::vector<eshkol_ast_t> values(defines.size());
+            std::vector<eshkol_ast_t> lambdas(defines.size());
+            std::vector<eshkol_ast_t> bindings(defines.size());
+            for (size_t i = 0; i < defines.size(); ++i) {
+                const auto& def = defines[i]->operation.define_op;
+                names[i] = {};
+                names[i].type = ESHKOL_VAR;
+                names[i].variable.id = def.name;
+
+                if (def.is_function) {
+                    lambdas[i] = {};
+                    lambdas[i].type = ESHKOL_OP;
+                    lambdas[i].operation.op = ESHKOL_LAMBDA_OP;
+                    lambdas[i].operation.lambda_op.parameters = def.parameters;
+                    lambdas[i].operation.lambda_op.num_params = def.num_params;
+                    lambdas[i].operation.lambda_op.body = def.value;
+                    lambdas[i].operation.lambda_op.is_variadic = def.is_variadic;
+                    lambdas[i].operation.lambda_op.rest_param = def.rest_param;
+                    lambdas[i].operation.lambda_op.return_type = def.return_type;
+                    lambdas[i].operation.lambda_op.param_types = def.param_types;
+                    lambdas[i].line = defines[i]->line;
+                    lambdas[i].column = defines[i]->column;
+                    values[i] = lambdas[i];
+                } else if (def.value) {
+                    values[i] = *def.value;
+                } else {
+                    values[i] = {};
+                }
+
+                bindings[i] = {};
+                bindings[i].type = ESHKOL_CONS;
+                bindings[i].cons_cell.car = &names[i];
+                bindings[i].cons_cell.cdr = &values[i];
+            }
+
+            std::vector<eshkol_ast_t> body_expressions;
+            body_expressions.reserve(non_defines.size());
+            for (const eshkol_ast_t* expr : non_defines) {
+                body_expressions.push_back(*expr);
+            }
+            eshkol_ast_t body{};
+            body.type = ESHKOL_OP;
+            body.operation.op = ESHKOL_SEQUENCE_OP;
+            body.operation.sequence_op.expressions = body_expressions.data();
+            body.operation.sequence_op.num_expressions = body_expressions.size();
+
+            eshkol_ast_t lowered{};
+            lowered.type = ESHKOL_OP;
+            lowered.operation.op = ESHKOL_LETREC_OP;
+            lowered.operation.let_op.bindings = bindings.data();
+            lowered.operation.let_op.num_bindings = bindings.size();
+            lowered.operation.let_op.body = &body;
+            return codegen_ast_callback_(&lowered, callback_context_);
+        }
 
         // First process ALL defines (letrec-like: all bindings visible to all)
         for (const eshkol_ast_t* def : defines) {
