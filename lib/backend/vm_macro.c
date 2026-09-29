@@ -323,6 +323,10 @@ static MacroNode* vm_macro_from_syn(const eshkol_syn* s) {
         case ESHKOL_SYN_VECTOR: {
             MacroNode* list = macro_make_list();
             if (!list) return NULL;
+            /* Preserve reader provenance when syntax-rules returns a matched
+             * list through a pattern variable. */
+            if (origin && origin->type == N_LIST)
+                list->is_quote_sugar = origin->is_quote_sugar;
             if (s->kind == ESHKOL_SYN_VECTOR) {
                 list->is_vector = 1;
                 macro_node_add_child(list, macro_make_symbol("vector"));

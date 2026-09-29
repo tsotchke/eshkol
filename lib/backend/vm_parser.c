@@ -42,6 +42,9 @@ typedef struct Node {
                        * `'(vector 1 2)` still quotes as the list it reads as — the
                        * same discipline `is_verbatim` uses to keep `|.|` apart from
                        * the dotted-pair delimiter. */
+    int is_quote_sugar; /* N_LIST node produced by the reader's `'datum` prefix.
+                         * Its shape is also used by explicit `(quote datum)`,
+                         * but with-region treats only this spelling as a specifier. */
     int64_t ival;     /* exact int64 value when is_int; avoids the precision loss of
                        * routing large integer literals (up to INT64_MAX) through the
                        * double numval field. */
@@ -573,6 +576,7 @@ static Node* parse_sexp(void) {
     if (*src_ptr == '\'') {
         src_ptr++;
         Node* q = make_node(N_LIST); if (!q) return NULL;
+        q->is_quote_sugar = 1;
         Node* qs = make_node(N_SYMBOL); if (!qs) { free_node(q); return NULL; }
         strncpy(qs->symbol, "quote", 127); qs->symbol[127] = 0;
         add_child(q, qs);

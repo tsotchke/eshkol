@@ -4542,6 +4542,12 @@ static int is_quoted_symbol(Node* n) {
            n->children[1] && n->children[1]->type == N_SYMBOL;
 }
 
+/* Region names use the reader's `'name` spelling. Explicit `(quote name)` is
+ * a valid expression body, despite having the same list shape. */
+static int is_quoted_symbol_sugar(Node* n) {
+    return n && n->is_quote_sugar && is_quoted_symbol(n);
+}
+
 /**
  * @brief Compile `(with-region [spec] body ...)` — the VM lowering of the OALR
  *        lexically-scoped region form.
@@ -4612,30 +4618,18 @@ static int is_quoted_symbol(Node* n) {
  * Promoting it to a reclaiming close is Stage-2.
  */
 static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
-    /* Recognise the optional region specifier. `'name` and `('name size)` are
-     * specifiers; anything else is the first body expression.
-     *
-     * The native front end distinguishes the reader's `'name` sugar from an
-     * explicitly written `(quote name)` (its tokenizer sees TOKEN_QUOTE), and
-     * treats only the former as a specifier. The VM reader collapses both to
-     * `(quote name)`, so a with-region whose SOLE body expression is literally
-     * `(quote name)` is read here as "specifier, empty body" — a degenerate
-     * form with no use (its value is a symbol and its body allocates nothing).
-     * That one undocumented spelling is therefore the ONE place this form
-     * diverges from native (native yields the symbol, the VM the empty-body
-     * diagnostic plus `()`); it is filed as a verified divergence in
-     * tests/vm_parity/found/with_region_explicit_quote_body_vm.esk and on the
-     * op:WITH_REGION row of tests/vm_parity/PARITY.tsv. Every DOCUMENTED
-     * spelling agrees on both substrates (corpus/with_region_lowering.esk). */
-    (void)tail;   /* see the comment above: a region body is never a tail call */
+    /* Recognise the optional region specifier. The reader records whether a
+     * quote list came from `'` syntax, so explicit `(quote name)` remains an
+     * ordinary body expression. */
+    (void)tail;   /* a region body is never a tail call */
 
     int body_start = 1;
     int64_t size_hint = 0;
     Node* spec = node->children[1];
-    if (is_quoted_symbol(spec)) {
+    if (is_quoted_symbol_sugar(spec)) {
         body_start = 2;                              /* (with-region 'name …) */
     } else if (spec && spec->type == N_LIST && spec->n_children >= 1 &&
-               spec->n_children <= 2 && is_quoted_symbol(spec->children[0])) {
+               spec->n_children <= 2 && is_quoted_symbol_sugar(spec->children[0])) {
         body_start = 2;                       /* (with-region ('name size) …) */
         /* The size hint is the arena tuning knob documented in
          * docs/reference/runtime/memory-model.md: a region whose whole step
@@ -4650,11 +4644,10 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
     }
 
     if (body_start >= node->n_children) {
-        /* Native rejects this at parse time ("with-region requires at least
-         * one body expression"). Report it the same way and still leave
-         * exactly one value on the stack: an expression that emits nothing
-         * would have the caller's balancing OP_POP discard a live value. */
-        fprintf(stderr, "ERROR: with-region requires at least one body expression\n");
+        /* Native rejects this at parse time. Mark it as a fatal compile error;
+         * the NIL keeps chunk construction balanced until the driver refuses
+         * to execute the failed program. */
+        vm_compile_error("with-region requires at least one body expression", NULL);
         chunk_emit(c, OP_NIL, 0);
         return;
     }
