@@ -12717,7 +12717,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value sub_val = vm_pop(vm), s_val = vm_pop(vm);
         VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
         VmString* sub = (sub_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[sub_val.as.ptr]->opaque.ptr : NULL;
-        vm_push(vm, INT_VAL(vm_string_contains(s, sub)));
+        int index = vm_string_contains(s, sub);
+        if (index < 0) vm_push(vm, BOOL_VAL(false));
+        else vm_push(vm, INT_VAL(index));
         break;
     }
     case 556: { /* make-string(n, char) */
@@ -12745,7 +12747,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value sub_val = vm_pop(vm), s_val = vm_pop(vm);
         VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
         VmString* sub = (sub_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[sub_val.as.ptr]->opaque.ptr : NULL;
-        vm_push(vm, INT_VAL(vm_string_contains(s, sub)));
+        int index = vm_string_contains(s, sub);
+        if (index < 0) vm_push(vm, BOOL_VAL(false));
+        else vm_push(vm, INT_VAL(index));
         break;
     }
     case 560: { /* string=? */

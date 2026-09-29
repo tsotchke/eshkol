@@ -1710,7 +1710,8 @@ with a diagnostic, never a silent `()`.
 - `(string-downcase str)` - Convert to lowercase
 - `(string-replace str old new)` - Replace all occurrences
 - `(string-reverse str)` - Reverse string
-- `(string-contains? str substr)` - Test for substring
+- `(string-contains str substr)` - First Unicode codepoint index or `#f`
+- `(string-contains? str substr)` - Boolean substring predicate
 - `(string-starts-with? str prefix)` - Test for prefix
 - `(string-ends-with? str suffix)` - Test for suffix
 - `(string-index str substr)` - Find first occurrence index
