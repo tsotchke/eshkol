@@ -7910,7 +7910,8 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                 uint64_t nparams = cl.param_names.size();
 
-                // Condition: check list has exactly N elements using null?/cdr
+                // Condition: fixed clauses require exactly N elements;
+                // dotted clauses accept any list with at least N elements.
                 // N=0: (null? __cl_args)
                 // N=1: (if (null? __cl_args) #f (null? (cdr __cl_args)))
                 // N=2: (if (null? __cl_args) #f (if (null? (cdr __cl_args)) #f (null? (cdr (cdr __cl_args)))))
@@ -7923,7 +7924,12 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     for (uint64_t k = 0; k < nparams; k++) {
                         nth_cdr = clMakeCall1("cdr", nth_cdr);
                     }
-                    eshkol_ast_t tail_null = clMakeCall1("null?", nth_cdr);
+                    eshkol_ast_t tail_null;
+                    if (cl.is_variadic) {
+                        eshkol_ast_make_bool(&tail_null, true);
+                    } else {
+                        tail_null = clMakeCall1("null?", nth_cdr);
+                    }
 
                     // Guard: check list has at least N elements
                     // Wrap in: (if (null? cdr^(N-1) __cl_args) #f tail_null)
@@ -7947,12 +7953,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 if (nparams == 0) {
                     then_branch = cl.body;
                 } else {
-                    // Wrap body in let: (let ((p0 (car __cl_args)) (p1 (car (cdr __cl_args))) ...) body)
+                    // Bind fixed parameters and, for dotted formals, the
+                    // remaining tail: (let ((p0 ...) ... (rest (cdr^N args))) body)
                     eshkol_ast_t let_ast = {};
                     let_ast.type = ESHKOL_OP;
                     let_ast.operation.op = ESHKOL_LET_OP;
-                    let_ast.operation.let_op.num_bindings = nparams;
-                    let_ast.operation.let_op.bindings = new eshkol_ast_t[nparams];
+                    uint64_t nbindings = nparams + (cl.is_variadic ? 1 : 0);
+                    let_ast.operation.let_op.num_bindings = nbindings;
+                    let_ast.operation.let_op.bindings = new eshkol_ast_t[nbindings];
                     let_ast.operation.let_op.binding_types = nullptr;
                     let_ast.operation.let_op.name = nullptr;
 
@@ -7962,6 +7970,18 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                         *let_ast.operation.let_op.bindings[j].cons_cell.car = clMakeVar(cl.param_names[j].c_str());
                         let_ast.operation.let_op.bindings[j].cons_cell.cdr = new eshkol_ast_t;
                         *let_ast.operation.let_op.bindings[j].cons_cell.cdr = clMakeNthArg((int)j);
+                    }
+                    if (cl.is_variadic) {
+                        eshkol_ast_t rest_tail = clMakeVar("__cl_args");
+                        for (uint64_t j = 0; j < nparams; j++) {
+                            rest_tail = clMakeCall1("cdr", rest_tail);
+                        }
+                        auto& rest_binding = let_ast.operation.let_op.bindings[nparams];
+                        rest_binding.type = ESHKOL_CONS;
+                        rest_binding.cons_cell.car = new eshkol_ast_t;
+                        *rest_binding.cons_cell.car = clMakeVar(cl.rest_param.c_str());
+                        rest_binding.cons_cell.cdr = new eshkol_ast_t;
+                        *rest_binding.cons_cell.cdr = rest_tail;
                     }
 
                     let_ast.operation.let_op.body = new eshkol_ast_t;

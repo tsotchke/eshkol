@@ -59,6 +59,25 @@
 (check "case-lambda 1-arg clause" 6 (add-or-inc 5))
 (check "case-lambda 2-arg clause" 10 (add-or-inc 3 7))
 
+; Dotted clauses overlap fixed arities and take precedence when listed first.
+(define dotted-first
+  (case-lambda
+    ((x . xs) (cons x xs))
+    ((x y) 'fixed-two)))
+(check "case-lambda dotted rest with no extras" '(1) (dotted-first 1))
+(check "case-lambda dotted rest with one extra" '(1 2) (dotted-first 1 2))
+(check "case-lambda dotted rest with many extras" '(1 2 3 4)
+       (dotted-first 1 2 3 4))
+(check "case-lambda dotted clause preserves clause order" '(1 2)
+       (dotted-first 1 2))
+
+(define captured-dotted
+  (let ((prefix 'captured))
+    (case-lambda
+      ((x . xs) (cons prefix xs)))))
+(check "case-lambda dotted clause captures surrounding variables"
+       '(captured 2 3) (captured-dotted 1 2 3))
+
 ; === make-parameter / parameterize ===
 (define current-radix (make-parameter 10))
 (check "make-parameter initial value" 10 (current-radix))
