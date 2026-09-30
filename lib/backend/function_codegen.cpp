@@ -86,6 +86,7 @@ llvm::Value* FunctionCodegen::createClosure(llvm::Function* func, const std::vec
         {arena_ptr, func_ptr, num_captures, sexpr_ptr, return_type_info},
         "closure"
     );
+    ctx_.emitConstructorAllocationCheck(closure_ptr);
 
     // Store captured values
     for (size_t i = 0; i < captures.size(); i++) {

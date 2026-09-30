@@ -11,11 +11,72 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run"
+case "${BUILD_DIR:-build}" in
+    /*) RUN="${BUILD_DIR}/eshkol-run" ;;
+    *) RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run" ;;
+esac
+case "${BUILD_DIR:-build}" in
+    /*) BUILD_DIR_PATH="${BUILD_DIR}" ;;
+    *) BUILD_DIR_PATH="$ROOT/${BUILD_DIR:-build}" ;;
+esac
+
+# ICC's source stamp is bound to its registered repo root, while --cwd only
+# selects where the test command runs. Refuse a named ICC invocation if those
+# roots differ, before opening sockets or producing test evidence.
+if [ -n "${ICC_REPO_NAME:-}" ]; then
+    ICC_BIN="${ICC_BIN:-$HOME/Desktop/infinite_context_coder/bin/icc}"
+    if [ ! -x "$ICC_BIN" ]; then
+        echo "FAIL: ICC receipt producer unavailable: $ICC_BIN"
+        exit 3
+    fi
+    REGISTERED_ROOT=$("$ICC_BIN" resolve --repo "$ICC_REPO_NAME" --format json 2>/dev/null | python3 -c '
+import json, os, sys
+try:
+    path = json.load(sys.stdin).get("repo", {}).get("path", "")
+    print(os.path.realpath(path) if path else "")
+except Exception:
+    print("")
+')
+    CHECKOUT_ROOT=$(cd "$ROOT" && pwd -P)
+    if [ -z "$REGISTERED_ROOT" ] || [ "$REGISTERED_ROOT" != "$CHECKOUT_ROOT" ]; then
+        echo "FAIL: ICC repo $ICC_REPO_NAME resolves to '$REGISTERED_ROOT', but test checkout is '$CHECKOUT_ROOT'"
+        exit 3
+    fi
+fi
+
+if [ "${1:-}" = "--verify-icc-checkout-only" ]; then
+    if [ -z "${ICC_REPO_NAME:-}" ]; then
+        echo "FAIL: ICC_REPO_NAME is required for checkout verification"
+        exit 3
+    fi
+    echo "PASS: ICC repo $ICC_REPO_NAME resolves to the test checkout"
+    exit 0
+fi
+if [ "$#" -gt 0 ]; then
+    echo "FAIL: unexpected argument: $1"
+    exit 2
+fi
 
 if [ ! -x "$RUN" ]; then
-    echo "SKIP: $RUN not built"
-    exit 0
+    echo "FAIL: $RUN not built; HTTP server evidence is unavailable"
+    exit 2
+fi
+
+# Bind the run to the exact runner digest and fail if it predates any
+# build-relevant source change. The ICC test receipt separately stamps the
+# clean source tree and declares this runner as measured data.
+TRACE_DIR="${TRACE_DIR:-$ROOT/scripts/icc_traces}"
+case "$TRACE_DIR" in
+    /*) ;;
+    *) TRACE_DIR="$ROOT/$TRACE_DIR" ;;
+esac
+mkdir -p "$TRACE_DIR"
+. "$ROOT/scripts/lib/build_fingerprint.sh"
+eshkol_emit_build_fingerprint_event "$TRACE_DIR" "v14_http_server_roundtrip" "$BUILD_DIR_PATH" eshkol-run
+if ! python3 "$ROOT/scripts/check_build_fingerprint.py" \
+    --build-dir "$BUILD_DIR_PATH" --trace-dir "$TRACE_DIR" --format json; then
+    echo "FAIL: eshkol-run build fingerprint is stale or mismatched"
+    exit 1
 fi
 
 WORK=$(mktemp -d -t eshkol_http_server.XXXXXX)
@@ -99,8 +160,8 @@ cat > "$WORK/http_server.esk" <<'EOF'
 (define srv (create-server-with-retry 5))
 (if (not (server-handle? srv))
     (begin
-      (display "SKIP: http-server-create unavailable") (newline)
-      (exit 0))
+      (display "FAIL: http-server-create unavailable") (newline)
+      (exit 1))
     #t)
 
 (check "http-server-create returns positive handle" #t (server-handle? srv))

@@ -317,6 +317,9 @@ public:
      */
     void emitRaiseFmt(const char* format, llvm::ArrayRef<llvm::Value*> args);
 
+    /** Raise the reserved allocation condition before initializing a null result. */
+    void emitConstructorAllocationCheck(llvm::Value* pointer);
+
     // === Global Variables (Arena, AD State) ===
 
     /** Get/set the global arena variable */
