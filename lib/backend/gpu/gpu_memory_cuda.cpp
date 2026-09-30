@@ -824,14 +824,15 @@ static int cuda_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* ou
     // On devices that access pageable host memory through the host page
     // tables, hand the kernel the host pointer itself: registering (pinning)
     // every operand per call costs far more than the kernel.
-    static int direct = -1;
-    if (direct < 0) {
+    static std::once_flag direct_once;
+    static bool direct = false;
+    std::call_once(direct_once, [] {
         int dev = 0, v = 0;
         cudaGetDevice(&dev);
-        direct = (cudaDeviceGetAttribute(&v, cudaDevAttrPageableMemoryAccessUsesHostPageTables, dev) == cudaSuccess && v) ? 1 : 0;
-        if (getenv("ESHKOL_CUDA_NO_DIRECT_HOST")) direct = 0;
+        direct = cudaDeviceGetAttribute(&v, cudaDevAttrPageableMemoryAccessUsesHostPageTables, dev) == cudaSuccess && v;
+        if (getenv("ESHKOL_CUDA_NO_DIRECT_HOST")) direct = false;
         GPU_LOG("host operands: %s", direct ? "direct (pageable access via host page tables)" : "registered/pinned");
-    }
+    });
     if (direct) {
         out->host_ptr = host_ptr;
         out->device_ptr = host_ptr;

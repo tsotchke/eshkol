@@ -247,7 +247,9 @@ arena_t* arena_create(size_t default_block_size) {
     arena->adopted_blocks = nullptr;   // SW-74: filled only by arena_adopt_blocks()
     arena->current_scope = nullptr;
     arena->default_block_size = default_block_size;
-    arena->total_allocated = default_block_size;
+    // The block's real size: one reused from the large-block pool can be
+    // bigger than requested, and every release subtracts block->size.
+    arena->total_allocated = arena->current_block->size;
     arena->alignment = DEFAULT_ALIGNMENT;
     arena->mutex = nullptr;
     arena->thread_safe = false;
@@ -431,7 +433,7 @@ void* arena_allocate_aligned(arena_t* arena, size_t size, size_t alignment) {
         // Link the new block to the front
         new_block->next = arena->current_block;
         arena->current_block = new_block;
-        arena->total_allocated += new_block_size;
+        arena->total_allocated += new_block->size;  // see arena_create
 
         block = new_block;
         current_used = align_block_offset(block, 0, alignment);

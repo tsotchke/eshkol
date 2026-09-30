@@ -186,6 +186,32 @@ int main() {
 
     arena_destroy(arena);
 
+    // Large-block pool accounting: a block released by a scope pop goes to the
+    // pool, and a later smaller request can reuse it. The arena must charge the
+    // block's real size, because every release subtracts block->size; charging
+    // the requested size instead made total_allocated drift down (and wrap
+    // below zero for a small arena) after each such reuse.
+    {
+        arena_t* pooled = arena_create(1024);
+        if (!pooled) return fail("pool-accounting arena_create returned null");
+        const size_t base_total = arena_get_total_memory(pooled);
+
+        arena_push_scope(pooled);
+        if (!arena_allocate(pooled, (size_t)1900 * 1024)) return fail("1.9 MiB allocation returned null");
+        arena_pop_scope(pooled);
+        if (arena_get_total_memory(pooled) != base_total) {
+            return fail("scope pop did not release the 1.9 MiB block from the arena total");
+        }
+
+        arena_push_scope(pooled);  // may be served by the pooled 1.9 MiB block
+        if (!arena_allocate(pooled, (size_t)1100 * 1024)) return fail("1.1 MiB allocation returned null");
+        arena_pop_scope(pooled);
+        if (arena_get_total_memory(pooled) != base_total) {
+            return fail("arena total drifted after reusing a larger pooled block");
+        }
+        arena_destroy(pooled);
+    }
+
     std::cout << "PASS\n";
     return 0;
 }
