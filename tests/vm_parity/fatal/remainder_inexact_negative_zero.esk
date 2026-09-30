@@ -1,0 +1,3 @@
+; Negative inexact zero is a zero divisor for remainder on both substrates.
+(display (remainder 5.5 -0.0))
+(display "MUST-NOT-PRINT")

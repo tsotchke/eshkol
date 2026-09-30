@@ -1,0 +1,25 @@
+;;; Verify the owning named-let loop finishes its arena scope after the exit
+;;; argument has been evaluated. The argument allocates a bounded temporary
+;;; list and returns a valid status; ESHKOL_ARENA_REPORT at process shutdown
+;;; must therefore see the loop and argument allocations reclaimed.
+
+(define total-ticks 1000)
+(define (shadow-exit-loop tick sum)
+  (let ((exit (lambda (code) code)))
+    (if (>= tick 1000)
+        sum
+        (let ((scratch (make-list 12 tick)))
+          (shadow-exit-loop (+ tick 1) (+ sum (exit 0)))))))
+
+(if (= (shadow-exit-loop 0 0) 0)
+    (begin (display "SHADOW\tOK") (newline))
+    (begin (display "SHADOW\tFAIL") (newline)))
+
+(define (run-loop)
+  (let loop ((tick 0) (sum 0))
+    (if (>= tick total-ticks)
+        (exit (begin (make-list 100000 tick) 0))
+        (let ((scratch (make-list 12 tick)))
+          (loop (+ tick 1) (+ sum (length scratch)))))))
+
+(run-loop)

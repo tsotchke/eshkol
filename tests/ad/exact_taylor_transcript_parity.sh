@@ -18,7 +18,7 @@ ESHKOL_VM_NO_DISASM=1 ESHKOL_PATH="$(cd "$(dirname "$source_file")/../.." && pwd
 
 # Engine banners and compile diagnostics are transport framing.  The remaining
 # stream is the program's external transcript and must compare byte-for-byte.
-sed -E '/NOTICE:|remark:|warning:|^\x1b|^=== Eshkol|^=== Execution|^$/d' \
+sed -E '/NOTICE:|remark:|warning:|^\x1b|^\[REPL\] (Discovered [0-9]+ functions|Loaded stdlib from cached object:)|^=== Eshkol|^=== Execution|^$/d' \
     "$work/native.raw" >"$work/native.transcript"
 sed -E '/^=== Eshkol|^=== Execution|^$/d' \
     "$work/vm.raw" >"$work/vm.transcript"

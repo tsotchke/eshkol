@@ -27,6 +27,32 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
         cls.readiness = (ROOT / "scripts/run_v1_3_readiness.sh").read_text(encoding="utf-8")
         cls.smoke = (ROOT / "scripts/run_icc_smoke.sh").read_text(encoding="utf-8")
 
+    def test_interval_receipts_are_real_and_independently_mapped(self):
+        producers = (ROOT / "scripts/run_v1_3_release_producers.sh").read_text(encoding="utf-8")
+        oracle = next(item for item in yaml.safe_load((ROOT / ".icc/completion-oracles.yaml").read_text(encoding="utf-8"))["oracles"] if item["name"] == "v1.3.6-evolve")
+        test_actions = [item["action"] for item in oracle["requires"] if item.get("test_evidence")]
+        self.assertEqual(len(oracle["requires"]), verifier.EXPECTED_CRITERION_COUNTS["v1.3.6-evolve"])
+        self.assertTrue(all(action in verifier.TEST_ACTIONS for action in test_actions))
+        self.assertIn('verify_v1_3_release_evidence.py --target "$RELEASE_TARGET"', self.readiness)
+        self.assertIn("certified_enclosures_runtime_smoke", producers)
+        self.assertIn("certified_enclosures_aot_smoke", producers)
+        self.assertEqual(
+            verifier.TEST_ACTIONS[
+                "ctest --test-dir build --output-on-failure -R '^certified_enclosures_runtime_smoke$'"
+            ],
+            "certified_enclosures_runtime_smoke",
+        )
+        self.assertEqual(
+            verifier.TEST_ACTIONS[
+                "ctest --test-dir build --output-on-failure -R '^certified_enclosures_aot_smoke$'"
+            ],
+            "certified_enclosures_aot_smoke",
+        )
+        self.assertEqual(
+            verifier.TEST_ACTIONS["python3 tests/toolchain/test_v1_3_release_evidence_recipe.py"],
+            "release_evidence_recipe_self_test",
+        )
+
     def test_readiness_owns_one_trace_cohort_and_runs_producers_before_grading(self):
         capture = self.readiness.index("check_release_build_cohort.py capture")
         archive = self.readiness.index("archive_release_trace_cohort.py")
@@ -214,6 +240,40 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
             self.assertNotEqual(check().returncode, 0)
             (trace / "evidence.jsonl").write_text(original.replace('"passed": true', '"passed": false', 1), encoding="utf-8")
             self.assertNotEqual(check().returncode, 0)
+
+    def test_v136_verifier_requires_separate_jit_and_aot_receipts(self):
+        oracle_file = ROOT / ".icc/completion-oracles.yaml"
+        oracle = next(item for item in yaml.safe_load(oracle_file.read_text(encoding="utf-8"))["oracles"]
+                      if item["name"] == "v1.3.6-evolve")
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as temp:
+            root = Path(temp)
+            (root / ".icc").mkdir()
+            (root / ".icc/completion-oracles.yaml").write_bytes(oracle_file.read_bytes())
+            trace = root / "trace"
+            trace.mkdir()
+            records = [{"kind": "release_build_cohort", "name": "release_build_cohort_clean", "value": "PASS"}]
+            for criterion in oracle["requires"]:
+                if "runtime_event" in criterion:
+                    event = criterion["runtime_event"]
+                    records.extend({"kind": event["event_kinds"][0], "name": name, "value": "PASS"}
+                                   for name in event["event_names"])
+                elif criterion.get("test_evidence"):
+                    records.append({"kind": "test_result", "name": verifier.TEST_ACTIONS[criterion["action"]],
+                                    "value": {"passed": True}})
+            evidence = trace / "evidence.jsonl"
+
+            def check(current):
+                evidence.write_text("".join(json.dumps(record) + "\n" for record in current), encoding="utf-8")
+                return subprocess.run([sys.executable, str(ROOT / "scripts/verify_v1_3_release_evidence.py"),
+                                       "--repo-root", str(root), "--trace-dir", str(trace),
+                                       "--target", "v1.3.6-evolve"], capture_output=True, text=True)
+
+            self.assertEqual(check(records).returncode, 0)
+            for name in ("certified_enclosures_runtime_smoke", "certified_enclosures_aot_smoke"):
+                without_one = [record for record in records if record.get("name") != name]
+                result = check(without_one)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(name, result.stdout)
 
     def test_main_build_fingerprint_covers_runtime_artifacts_and_detects_mutation(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as temp:

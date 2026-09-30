@@ -1,0 +1,13 @@
+; VM-only edge coverage for R7RS dotted and rest-only clause ordering.
+(define bias 10)
+(define captured
+  (lambda (offset)
+    (case-lambda
+      ((x . xs) (+ offset x 100))
+      ((x) (+ offset x))
+      (all (length all))))
+  )
+(define f (captured bias))
+(display (f 5))
+(display (f 2 3))
+(display (f))

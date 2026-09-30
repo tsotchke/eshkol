@@ -1,0 +1,7 @@
+(define (f x) (* 2 x))
+(define old-f f)
+(set! f (lambda (x) (+ x 10)))
+(display (f 21))
+(newline)
+(display (old-f 21))
+(newline)

@@ -1,0 +1,7 @@
+; VM-only hygiene regression: generated dispatch helpers must not use these bindings.
+(define length (lambda (xs) 77))
+(define apply (lambda (f xs) 88))
+(define __vm_case_lambda_args_1 10)
+(define f (case-lambda ((x) (+ x __vm_case_lambda_args_1)) (all (length all))))
+(display (f 5))
+(display (f))

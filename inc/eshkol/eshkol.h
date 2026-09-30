@@ -15,12 +15,12 @@
  * embedded in binaries and reported by `--version`.
  */
 #define ESHKOL_VERSION_MAJOR 1
-/** @brief Minor component of the semantic version (the `3` in 1.3.5). */
+/** @brief Minor component of the semantic version (the `3` in 1.3.6). */
 #define ESHKOL_VERSION_MINOR 3
-/** @brief Patch component of the semantic version (the `5` in 1.3.5). */
-#define ESHKOL_VERSION_PATCH 5
+/** @brief Patch component of the semantic version (the `6` in 1.3.6). */
+#define ESHKOL_VERSION_PATCH 6
 /** @brief Full release string, `MAJOR.MINOR.PATCH` plus the release-series suffix. */
-#define ESHKOL_VERSION_STRING "1.3.5-evolve"
+#define ESHKOL_VERSION_STRING "1.3.6-evolve"
 
 #include <stdint.h>
 #include <stdbool.h>

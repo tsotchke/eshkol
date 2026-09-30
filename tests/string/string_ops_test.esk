@@ -2,6 +2,7 @@
 ;; Tests string-upcase, string-downcase, string-contains/string-find,
 ;; string-split, string-reverse, string-repeat, string-starts-with,
 ;; string-ends-with, string-count, string-ci=?
+(require core.strings)
 
 ;; Test counter
 (define tests-passed 0)
@@ -46,8 +47,20 @@
 
 (display "\n--- string-contains ---\n")
 
-(test-case "string-contains found" #t (string-contains "hello" "llo"))
+(test-case "string-contains found" 2 (string-contains "hello" "llo"))
 (test-case "string-contains not found" #f (string-contains "hello" "xyz"))
+(test-case "string-contains start" 0 (string-contains "hello" "he"))
+(test-case "string-contains empty needle" 0 (string-contains "hello" ""))
+(test-case "string-contains UTF-8 codepoint index" 1
+           (string-contains (string-append "é" "b") "b"))
+(test-case "string-contains? start remains boolean" #t
+           (string-contains? "hello" "he"))
+(test-case "string-contains? miss remains boolean" #f
+           (string-contains? "hello" "xyz"))
+(test-case "string-contains first-class" 2
+           (let ((contains string-contains)) (contains "hello" "llo")))
+(test-case "string-contains? first-class remains boolean" #t
+           (let ((contains? string-contains?)) (contains? "hello" "he")))
 (test-case "string-contains? found" #t (string-contains? "hello" "llo"))
 (test-case "string-find found" 2 (string-find "hello" "llo"))
 (test-case "string-find char found" 1 (string-find "hello" #\e))

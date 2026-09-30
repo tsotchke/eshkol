@@ -1,0 +1,13 @@
+;; Quote syntax provenance distinguishes a region specifier from a body form.
+(display (with-region (quote foo))) (newline)
+(display (with-region (quote foo) 41)) (newline)
+(display (with-region 'named 42)) (newline)
+(display (with-region ('sized 128) 43)) (newline)
+
+;; The explicit quote stays a body expression before later body expressions.
+(display (with-region (quote first) 44)) (newline)
+
+;; Quote sugar carried through a pattern variable remains a specifier.
+(define-syntax named-region
+  (syntax-rules () ((_ name body) (with-region name body))))
+(display (named-region 'macro-name 45)) (newline)

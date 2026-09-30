@@ -1,0 +1,4 @@
+(define-syntax empty-named-region
+  (syntax-rules () ((_) (with-region 'empty-region))))
+(empty-named-region)
+(display "MUST-NOT-PRINT")

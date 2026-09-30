@@ -253,6 +253,47 @@ static int vm_guard_is_collapsible(FuncChunk* c, Node* clause_list) {
 #define VM_VEC_LITERAL_STACK_CHUNK 256
 #endif
 
+/* Native reader numeric vector literals answer both vector? and tensor?. Keep
+ * the VM's VAL_VECTOR representation so the full vector API stays available,
+ * and mark only reader-origin, rectangular numeric trees. Constructed vectors
+ * and quoted data do not pass through this test. */
+static int vm_numeric_reader_leaf(const Node* node) {
+    return node && node->type == N_NUMBER && !node->is_char && !node->is_bignum;
+}
+
+static int vm_reader_vector_node(const Node* node) {
+    return node && node->type == N_LIST && node->is_vector &&
+           node->n_children > 0 && is_sym(node->children[0], "vector");
+}
+
+static int vm_same_numeric_reader_shape(const Node* a, const Node* b) {
+    if (vm_numeric_reader_leaf(a) && vm_numeric_reader_leaf(b)) return 1;
+    if (!vm_reader_vector_node(a) || !vm_reader_vector_node(b) ||
+        a->n_children != b->n_children) return 0;
+    for (int i = 1; i < a->n_children; i++)
+        if (!vm_same_numeric_reader_shape(a->children[i], b->children[i])) return 0;
+    return 1;
+}
+
+static int vm_numeric_reader_vector(const Node* node) {
+    if (!vm_reader_vector_node(node)) return 0;
+    if (node->n_children == 1) return 1; /* empty numeric tensor literal */
+
+    const Node* first = node->children[1];
+    int children_are_vectors = vm_reader_vector_node(first);
+    if (!children_are_vectors && !vm_numeric_reader_leaf(first)) return 0;
+    for (int i = 1; i < node->n_children; i++) {
+        const Node* child = node->children[i];
+        if (children_are_vectors) {
+            if (!vm_reader_vector_node(child) || !vm_numeric_reader_vector(child) ||
+                !vm_same_numeric_reader_shape(first, child)) return 0;
+        } else if (!vm_numeric_reader_leaf(child)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /**
  * @brief Compile node->children[first..last] as a sequence of operands left
  *        on the stack, registering each pushed result as an anonymous local
@@ -3672,13 +3713,28 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         /* R7RS §5.3.1: a redefinition reuses the name's existing location
          * rather than binding a new one, so the body below also resolves the
          * name to that slot. */
-        int redef_slot = vm_redefinition_target_slot(c, fname);
+        const int root_definition = c->enclosing == NULL && c->scope_depth == 0;
+        int redef_slot = root_definition ? vm_redefinition_target_slot(c, fname) : -1;
         if (redef_slot < 0 && g_vm_module_predeclared_depth > 0 &&
-            c->enclosing == NULL)
+            root_definition)
             redef_slot = resolve_local(c, fname);
-        int forward_slot = vm_forward_function_slot(c, fname);
-        int func_slot = redef_slot >= 0 ? redef_slot :
+        int forward_slot = root_definition ? vm_forward_function_slot(c, fname) : -1;
+        /* A lexical shorthand definition is a mutable binding location, just
+         * like a local variable definition.  Establish its box before
+         * compiling the procedure body so self and sibling closures capture
+         * the cell rather than a snapshot of the current NIL slot.  Root
+         * definitions keep their long-standing open-slot/repatch behavior. */
+        const int local_function_cell = !root_definition;
+        int func_slot;
+        if (local_function_cell && redef_slot < 0 && forward_slot < 0) {
+            chunk_emit(c, OP_NIL, 0);
+            chunk_emit(c, OP_VEC_CREATE, 1);
+            func_slot = add_local(c, fname);
+            vm_mark_local_slot_boxed(c, func_slot);
+        } else {
+            func_slot = redef_slot >= 0 ? redef_slot :
                         (forward_slot >= 0 ? forward_slot : add_local(c, fname));
+        }
         int stores_existing_slot = redef_slot >= 0 || forward_slot >= 0;
 
         /* Compile function body into a separate chunk.
@@ -3800,10 +3856,23 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         int n_upvals = func.n_upvalues;
         int self_uv_idx = -1;
 
+        /* Keep box and index below the closure's capture operands.  CLOSURE
+         * consumes the captures and leaves the new procedure as VEC_SET's
+         * value, so the cell is populated in place without disturbing the
+         * local slot that later references resolve through. */
+        if (local_function_cell && !stores_existing_slot) {
+            chunk_emit(c, OP_GET_LOCAL, func_slot);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+        }
+
         for (int i = 0; i < n_upvals; i++) {
             if (strcmp(func.upvalues[i].name, fname) == 0) {
-                /* Self-reference: push NIL placeholder (will be patched) */
-                chunk_emit(c, OP_NIL, 0);
+                /* Lexical self-reference captures the binding cell; a root
+                 * function keeps its historical NIL/self-upvalue patch. */
+                if (local_function_cell && !stores_existing_slot)
+                    chunk_emit(c, OP_GET_LOCAL, func_slot);
+                else
+                    chunk_emit(c, OP_NIL, 0);
                 self_uv_idx = func.upvalues[i].index;
             } else {
                 /* Capture from enclosing scope (local or upvalue) */
@@ -3814,11 +3883,12 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
 
         chunk_emit_closure(c, cfunc, n_upvals);
         if (self_uv_idx >= 0) {
-            chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);  /* patch self-ref */
+            if (!local_function_cell || stores_existing_slot)
+                chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);  /* root self patch */
         }
         /* Convert local upvalues to open (stack slot references)
          * for top-level defines only (where enclosing scope persists forever). */
-        if (c->enclosing == NULL) {
+        if (!local_function_cell) {
             for (int i = 0; i < n_upvals; i++) {
                 if (i == self_uv_idx) continue;
                 if (!func.upvalues[i].is_local) continue;
@@ -3843,6 +3913,12 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
              * source position is reached. */
             chunk_emit(c, OP_SET_LOCAL, func_slot);
             chunk_emit(c, OP_NIL, 0);
+        } else if (local_function_cell) {
+            /* The closure's self and sibling captures already point at the
+             * cell; initialize its element while keeping the cell as the
+             * lexical local's sole stack value. */
+            chunk_emit(c, OP_VEC_SET, 0);
+            chunk_emit(c, OP_POP, 0);
         } else if (c->enclosing != NULL) {
             /* Nested defines own a real local slot in their enclosing
              * activation. Keep one copy on the operand stack as the live local
@@ -3865,8 +3941,8 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
  *        FuncChunk chain to find it, threading upvalue registrations
  *        through every intermediate scope (mirroring how a read reference
  *        would resolve it) and emitting OP_SET_UPVALUE or a boxed VEC_SET
- *        through the upvalue. Warns to stderr if the name can't be
- *        resolved anywhere. Always pushes NIL as the (unspecified) result.
+ *        through the upvalue. Fails compilation if the name can't be resolved.
+ *        Always pushes NIL as the (unspecified) result.
  */
 static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
@@ -3975,7 +4051,11 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        if (!found) fprintf(stderr, "WARNING: set! on undefined variable '%s'\n", name);
+        if (!found) {
+            char detail[256];
+            snprintf(detail, sizeof(detail), "set! target '%s' is not defined", name);
+            vm_compile_error("set! on undefined variable", detail);
+        }
     }
     /* set! returns void — push NIL */
     chunk_emit(c, OP_VOID, 0);  /* ADR-0024: set! evaluates to the unspecified value */
@@ -4462,6 +4542,12 @@ static int is_quoted_symbol(Node* n) {
            n->children[1] && n->children[1]->type == N_SYMBOL;
 }
 
+/* Region names use the reader's `'name` spelling. Explicit `(quote name)` is
+ * a valid expression body, despite having the same list shape. */
+static int is_quoted_symbol_sugar(Node* n) {
+    return n && n->is_quote_sugar && is_quoted_symbol(n);
+}
+
 /**
  * @brief Compile `(with-region [spec] body ...)` — the VM lowering of the OALR
  *        lexically-scoped region form.
@@ -4532,30 +4618,18 @@ static int is_quoted_symbol(Node* n) {
  * Promoting it to a reclaiming close is Stage-2.
  */
 static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
-    /* Recognise the optional region specifier. `'name` and `('name size)` are
-     * specifiers; anything else is the first body expression.
-     *
-     * The native front end distinguishes the reader's `'name` sugar from an
-     * explicitly written `(quote name)` (its tokenizer sees TOKEN_QUOTE), and
-     * treats only the former as a specifier. The VM reader collapses both to
-     * `(quote name)`, so a with-region whose SOLE body expression is literally
-     * `(quote name)` is read here as "specifier, empty body" — a degenerate
-     * form with no use (its value is a symbol and its body allocates nothing).
-     * That one undocumented spelling is therefore the ONE place this form
-     * diverges from native (native yields the symbol, the VM the empty-body
-     * diagnostic plus `()`); it is filed as a verified divergence in
-     * tests/vm_parity/found/with_region_explicit_quote_body_vm.esk and on the
-     * op:WITH_REGION row of tests/vm_parity/PARITY.tsv. Every DOCUMENTED
-     * spelling agrees on both substrates (corpus/with_region_lowering.esk). */
-    (void)tail;   /* see the comment above: a region body is never a tail call */
+    /* Recognise the optional region specifier. The reader records whether a
+     * quote list came from `'` syntax, so explicit `(quote name)` remains an
+     * ordinary body expression. */
+    (void)tail;   /* a region body is never a tail call */
 
     int body_start = 1;
     int64_t size_hint = 0;
     Node* spec = node->children[1];
-    if (is_quoted_symbol(spec)) {
+    if (is_quoted_symbol_sugar(spec)) {
         body_start = 2;                              /* (with-region 'name …) */
     } else if (spec && spec->type == N_LIST && spec->n_children >= 1 &&
-               spec->n_children <= 2 && is_quoted_symbol(spec->children[0])) {
+               spec->n_children <= 2 && is_quoted_symbol_sugar(spec->children[0])) {
         body_start = 2;                       /* (with-region ('name size) …) */
         /* The size hint is the arena tuning knob documented in
          * docs/reference/runtime/memory-model.md: a region whose whole step
@@ -4570,11 +4644,10 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
     }
 
     if (body_start >= node->n_children) {
-        /* Native rejects this at parse time ("with-region requires at least
-         * one body expression"). Report it the same way and still leave
-         * exactly one value on the stack: an expression that emits nothing
-         * would have the caller's balancing OP_POP discard a live value. */
-        fprintf(stderr, "ERROR: with-region requires at least one body expression\n");
+        /* Native rejects this at parse time. Mark it as a fatal compile error;
+         * the NIL keeps chunk construction balanced until the driver refuses
+         * to execute the failed program. */
+        vm_compile_error("with-region requires at least one body expression", NULL);
         chunk_emit(c, OP_NIL, 0);
         return;
     }
@@ -4628,6 +4701,72 @@ static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
  * @p tail indicates whether @p node is in tail position, enabling
  * OP_TAIL_CALL instead of OP_CALL for the final call in a function body.
  */
+static int vm_node_contains_symbol(const Node* node, const char* name) {
+    if (!node) return 0;
+    if (node->type == N_SYMBOL && strcmp(node->symbol, name) == 0) return 1;
+    for (int i = 0; i < node->n_children; ++i)
+        if (vm_node_contains_symbol(node->children[i], name)) return 1;
+    return 0;
+}
+
+static int vm_case_name_conflicts(FuncChunk* c, Node* tree, const char* name) {
+    if (vm_node_contains_symbol(tree, name)) return 1;
+    for (FuncChunk* frame = c; frame; frame = frame->enclosing)
+        for (int i = 0; i < frame->n_locals; ++i)
+            if (strcmp(frame->locals[i].name, name) == 0) return 1;
+    return 0;
+}
+
+typedef struct {
+    Node** nodes;
+    int count;
+    int capacity;
+} VmCaseBuilder;
+
+static Node* vm_case_new_node(VmCaseBuilder* b, NodeType type) {
+    Node* n = make_node(type);
+    if (!n) return NULL;
+    if (b->count == b->capacity) {
+        int next = b->capacity ? b->capacity * 2 : 32;
+        Node** grown = (Node**)realloc(b->nodes, (size_t)next * sizeof(Node*));
+        if (!grown) { free(n); return NULL; }
+        b->nodes = grown;
+        b->capacity = next;
+    }
+    b->nodes[b->count++] = n;
+    return n;
+}
+
+static Node* vm_case_symbol(VmCaseBuilder* b, const char* name) {
+    Node* n = vm_case_new_node(b, N_SYMBOL);
+    if (n) strncpy(n->symbol, name, sizeof(n->symbol) - 1);
+    return n;
+}
+
+static Node* vm_case_clause_apply(VmCaseBuilder* b, Node* clause, Node* args) {
+    Node* app = vm_case_new_node(b, N_LIST);
+    Node* app_sym = vm_case_symbol(b, "__vm_case_lambda_apply_internal__");
+    Node* lam = vm_case_new_node(b, N_LIST);
+    Node* lam_sym = vm_case_symbol(b, "lambda");
+    add_child(app, app_sym);
+    add_child(app, lam);
+    add_child(app, args);
+    add_child(lam, lam_sym);
+    add_child(lam, clause->children[0]);
+    for (int i = 1; i < clause->n_children; ++i)
+        add_child(lam, clause->children[i]);
+    return app;
+}
+
+static void vm_case_free_builder(VmCaseBuilder* b) {
+    for (int i = 0; i < b->count; ++i) {
+        free(b->nodes[i]->children);
+        free(b->nodes[i]);
+    }
+    free(b->nodes);
+    memset(b, 0, sizeof(*b));
+}
+
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (node && node->type == N_SYMBOL) vm_resolve_colored_identifier(c, node);
     if (node && node->type == N_SYMBOL) {
@@ -5417,12 +5556,13 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * are first-class closures defined in the preamble. They resolve via normal variable lookup
      * and are called via the standard CALL mechanism. No special-casing needed. */
 
-    /* R7RS vector constructor / reader literal.  Numeric vectors remain
-     * vectors; tensors have their own `(tensor ...)` constructor.  Treating
-     * `#(1 2 3)` as a tensor made vector?, vector-length, call-with-values,
-     * and every vector consumer silently disagree with the native backend. */
+    /* R7RS vector constructor / reader literal. A rectangular numeric reader
+     * literal is both a vector and a tensor natively. Keep VAL_VECTOR so
+     * vector? and vector consumers work, and carry the tensor classification
+     * only on that reader-origin value. */
     if (is_sym(head, "vector")) {
         int n_elems = node->n_children - 1;
+        int tensor_literal = node->is_vector && vm_numeric_reader_vector(node);
         /* OP_VEC_CREATE consumes its elements off the operand stack, so the
          * direct form needs n_elems stack slots — which made a literal's member
          * count a function of ESHKOL_VM_STACK_SIZE (a #(...) of a few thousand
@@ -5444,7 +5584,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 add_local(c, "__vec_literal_idx__");
                 compile_expr(c, node->children[i], 0);                      /* val */
                 c->n_locals = elem_locals;
-                chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */
+                /* Operand 1 marks only the final store for large reader
+                 * tensor literals; ordinary vector-set! remains operand 0. */
+                int mark_tensor_literal = tensor_literal && i == node->n_children - 1;
+                chunk_emit(c, OP_VEC_SET, mark_tensor_literal ? 1 : 0);
+                /* pops val, idx, vec; pushes nil */
                 chunk_emit(c, OP_POP, 0);       /* drop the nil */
             }
             c->n_locals = saved_locals;
@@ -5455,7 +5599,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int s = c->n_locals;
         compile_operands_tracked(c, node, 1, node->n_children - 1);
         c->n_locals = s;
-        chunk_emit(c, OP_VEC_CREATE, n_elems);
+        /* Negative counts encode reader numeric tensors as -(count + 1); an
+         * ordinary vector keeps the original nonnegative bytecode operand. */
+        chunk_emit(c, OP_VEC_CREATE, tensor_literal ? -(n_elems + 1) : n_elems);
         return;
     }
     if (is_sym(head, "make-vector") && node->n_children >= 2) {
@@ -5717,6 +5863,18 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* Private intrinsic paired with case-lambda's generated call sites. */
+    if (is_sym(head, "__vm_case_lambda_apply_internal__") &&
+        node->n_children == 3) {
+        int saved = c->n_locals;
+        compile_expr(c, node->children[1], 0);
+        add_local(c, "__operand__");
+        compile_expr(c, node->children[2], 0);
+        c->n_locals = saved;
+        chunk_emit(c, OP_NATIVE_CALL, 70);
+        return;
+    }
+
     /* (values expr1 expr2 ...) — multiple return values.
      * Simplified: pack into a vector. Single value = return as-is. */
     if (is_sym(head, "values") && node->n_children >= 1) {
@@ -5800,28 +5958,101 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* case-lambda: dispatch on argument count */
     if (is_sym(head, "case-lambda") && node->n_children >= 2) {
-        /* Transform: (case-lambda ((x) body1) ((x y) body2) ...)
-         * → (lambda args (cond ((= (length args) 1) (apply (lambda (x) body1) args))
-         *                       ((= (length args) 2) (apply (lambda (x y) body2) args))
-         *                       ...))
-         * Simplified: compile first matching clause inline */
-        /* For now: compile the first clause as a regular lambda */
-        Node* clause = node->children[1]; /* first clause */
-        if (clause->type == N_LIST && clause->n_children >= 2) {
-            Node* params = clause->children[0];
-            /* Build a lambda node: (lambda params body...) */
-            Node* lam = make_node(N_LIST);
-            Node* sym = make_node(N_SYMBOL); strncpy(sym->symbol, "lambda", 127);
-            add_child(lam, sym);
-            add_child(lam, params);
-            for (int i = 1; i < clause->n_children; i++)
-                add_child(lam, clause->children[i]);
-            compile_expr(c, lam, tail);
-            /* Don't free children since they're shared with the original node */
-            lam->n_children = 0;
-            free(lam->children); lam->children = NULL;
-            free(lam); free(sym);
+        /* Make one variadic closure and dispatch in source order. Private
+         * length/apply/comparison forms compile to fixed native operations,
+         * so user bindings cannot capture the dispatch helpers. */
+        static unsigned long case_lambda_serial = 0;
+        VmCaseBuilder builder = {0};
+        Node* outer = vm_case_new_node(&builder, N_LIST);
+        Node* lambda_sym = vm_case_symbol(&builder, "lambda");
+        add_child(outer, lambda_sym);
+        Node* args = vm_case_new_node(&builder, N_SYMBOL);
+        do {
+            snprintf(args->symbol, sizeof(args->symbol), "__vm_case_lambda_args_%lu",
+                     ++case_lambda_serial);
+        } while (vm_case_name_conflicts(c, node, args->symbol));
+        add_child(outer, args);
+
+        Node* dispatch = NULL;
+        /* Calling the first clause is the arity-error path if no clause
+         * matches. Its closure performs the standard VM arity check. */
+        Node* first = node->children[1];
+        if (first->type != N_LIST || first->n_children < 2) {
+            vm_compile_error("malformed case-lambda clause", NULL);
+            vm_case_free_builder(&builder);
+            return;
         }
+        dispatch = vm_case_clause_apply(&builder, first, args);
+        for (int i = node->n_children - 1; i >= 1; --i) {
+            Node* clause = node->children[i];
+            if (clause->type != N_LIST || clause->n_children < 2) {
+                vm_compile_error("malformed case-lambda clause", NULL);
+                vm_case_free_builder(&builder);
+                return;
+            }
+            int fixed = 0, rest = 0;
+            Node* params = clause->children[0];
+            if (params->type == N_SYMBOL) rest = 1;
+            else if (params->type == N_LIST) {
+                fixed = params->n_children;
+                for (int p = 0; p < params->n_children; ++p) {
+                    if (params->children[p]->type == N_SYMBOL &&
+                        !params->children[p]->is_verbatim &&
+                        eshkol_syntax_base_is(params->children[p]->symbol, ".")) {
+                        fixed = p; rest = 1; break;
+                    }
+                }
+            } else {
+                vm_compile_error("malformed case-lambda formals", NULL);
+                vm_case_free_builder(&builder);
+                return;
+            }
+            Node* test = vm_case_new_node(&builder, N_LIST);
+            Node* cmp = vm_case_new_node(&builder, N_SYMBOL);
+            strncpy(cmp->symbol,
+                    rest ? "__vm_case_lambda_min_arity_internal__"
+                         : "__vm_case_lambda_exact_arity_internal__",
+                    sizeof(cmp->symbol) - 1);
+            add_child(test, cmp);
+            Node* len = vm_case_new_node(&builder, N_LIST);
+            Node* len_sym = vm_case_new_node(&builder, N_SYMBOL);
+            strncpy(len_sym->symbol, "__vm_case_lambda_length_internal__",
+                    sizeof(len_sym->symbol) - 1);
+            add_child(len, len_sym);
+            add_child(len, args);
+            add_child(test, len);
+            Node* n = vm_case_new_node(&builder, N_NUMBER);
+            n->is_int = 1; n->ival = fixed; n->numval = (double)fixed;
+            add_child(test, n);
+            Node* iff = vm_case_new_node(&builder, N_LIST);
+            Node* ifsym = vm_case_new_node(&builder, N_SYMBOL);
+            strncpy(ifsym->symbol, "if", sizeof(ifsym->symbol) - 1);
+            add_child(iff, ifsym);
+            add_child(iff, test);
+            add_child(iff, vm_case_clause_apply(&builder, clause, args));
+            add_child(iff, dispatch);
+            dispatch = iff;
+        }
+        add_child(outer, dispatch);
+        compile_expr(c, outer, tail);
+        vm_case_free_builder(&builder);
+        return;
+    }
+
+    /* Private intrinsic used only by the case-lambda lowering above. */
+    if (is_sym(head, "__vm_case_lambda_length_internal__") && node->n_children == 2) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 71);
+        return;
+    }
+    if ((is_sym(head, "__vm_case_lambda_exact_arity_internal__") ||
+         is_sym(head, "__vm_case_lambda_min_arity_internal__")) &&
+        node->n_children == 3) {
+        compile_operands_tracked(c, node, 1, 2);
+        /* Don't resolve Scheme `=`/`>=` here: case-lambda dispatch must stay
+         * independent of lexical bindings with those names. */
+        chunk_emit(c, is_sym(head, "__vm_case_lambda_exact_arity_internal__")
+                          ? OP_EQ : OP_GE, 0);
         return;
     }
 

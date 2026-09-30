@@ -292,11 +292,16 @@ static void vm_exec_popn(VM* vm, int32_t operand) {
 }
 
 static void vm_exec_vec_create(VM* vm, int32_t operand) {
-    int count = operand;
-    if (count < 0) {
+    /* A negative operand is the reader-only numeric tensor-literal form:
+     * -(count + 1). Existing vector construction continues to use count >= 0.
+     * Decode in int64 so INT32_MIN cannot overflow during negation. */
+    int tensor_literal = operand < 0;
+    int64_t decoded_count = tensor_literal ? -(int64_t)operand - 1 : operand;
+    if (decoded_count > INT32_MAX) {
         vm_raise_error_msg(vm, "vector: size is outside the representable range");
         return;
     }
+    int count = (int)decoded_count;
     int32_t ptr = heap_alloc(&vm->heap);
     if (ptr < 0) { vm->error = 1; return; }
     vm->heap.objects[ptr]->type = HEAP_VECTOR;
@@ -308,6 +313,8 @@ static void vm_exec_vec_create(VM* vm, int32_t operand) {
     if (!vec->items && count > 0) { vm->error = 1; return; }
     for (int i = count - 1; i >= 0; i--) vec->items[i] = vm_pop(vm);
     vm->heap.objects[ptr]->opaque.ptr = vec;
+    if (tensor_literal)
+        vm->heap.objects[ptr]->opaque.subtype = VM_SUBTYPE_TENSOR_LITERAL;
     vm_push(vm, (Value){.type = VAL_VECTOR, .as.ptr = ptr});
 }
 
@@ -339,11 +346,33 @@ static void vm_exec_vec_set(VM* vm) {
             return;
         }
         vec->items[i] = val;
+        /* Reader-origin numeric literals retain tensor? while every stored
+         * value remains numeric. Once a successful general-vector store puts
+         * a non-number in one, the native carrier has promoted to a vector;
+         * drop the reader marker so tensor? follows that same transition.
+         * vector-copy! and vector-append use this opcode through the prelude,
+         * so they inherit the same rule. */
+        if (vm->heap.objects[vec_val.as.ptr]->type == HEAP_VECTOR &&
+            vm->heap.objects[vec_val.as.ptr]->opaque.subtype ==
+                VM_SUBTYPE_TENSOR_LITERAL && !vm_is_arithmetic_number(val))
+            vm->heap.objects[vec_val.as.ptr]->opaque.subtype = 0;
     } else if (vec_val.type == VAL_TENSOR) {
         /* SW-26 sibling gap. */
         if (!vm_vecset_tensor_path(vm, vec_val, idx, val)) return;
     }
     vm_push(vm, (Value){.type = VAL_VOID});  /* ADR-0024: unspecified */
+}
+
+/* The compiler's large reader-literal path marks its final OP_VEC_SET with
+ * operand 1. Preserve vm_exec_vec_set's one-argument interface because the
+ * first-class native vector-set! dispatch shares it. */
+static void vm_exec_vec_set_with_literal_marker(VM* vm, int32_t operand) {
+    Value vec_val = vm->sp >= 3 ? vm->stack[vm->sp - 3] : NIL_VAL;
+    vm_exec_vec_set(vm);
+    if (operand == 1 && !vm->error && vec_val.type == VAL_VECTOR &&
+        is_valid_heap_ptr(vm, vec_val.as.ptr) && vm->heap.objects[vec_val.as.ptr] &&
+        vm->heap.objects[vec_val.as.ptr]->type == HEAP_VECTOR)
+        vm->heap.objects[vec_val.as.ptr]->opaque.subtype = VM_SUBTYPE_TENSOR_LITERAL;
 }
 
 static void vm_exec_vec_len(VM* vm) {

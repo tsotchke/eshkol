@@ -35,11 +35,11 @@
 (check "downcase search"
        (string-contains "psql -c 'drop table users'"
                         (string-downcase "DROP TABLE"))
-       #t)
+       9)
 
 ;; Search must use the same UTF-8 representation that construction creates.
 (define box (string (integer->char 9474)))
-(check "box drawing search" (string-contains (string-append "a" box "b") box) #t)
+(check "box drawing search" (string-contains (string-append "a" box "b") box) 1)
 
 ;; Hosted runtime datum reader and VM runtime datum reader use the same escape
 ;; grammar as source parsing.

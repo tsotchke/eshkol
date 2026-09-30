@@ -71,6 +71,11 @@
 #define VM_SUBTYPE_ERROR     21
 #define VM_SUBTYPE_BYTEVEC   22
 #define VM_SUBTYPE_PARAMETER 23
+/* HEAP_VECTOR payloads normally leave opaque.subtype at zero. Reader-origin
+ * numeric #(...) vectors use this marker so tensor? can preserve the native
+ * reader's tensor classification while vector? and vector operations retain
+ * the ordinary VAL_VECTOR representation. */
+#define VM_SUBTYPE_TENSOR_LITERAL 24
 #define VM_SUBTYPE_MULTI_VAL 4
 #define VM_SUBTYPE_FUTURE    26
 #define VM_SUBTYPE_I128      27

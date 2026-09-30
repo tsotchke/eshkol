@@ -439,9 +439,9 @@ def render_record_span(key: str, record: dict) -> str | None:
 def release_scope(doc_rel: str, text: str, record: dict) -> tuple[int, int]:
     """[start, end) of the part of a document that describes the current release.
 
-    CHANGELOG.md: the current version's section. RELEASE_NOTES.md and
-    ANNOUNCEMENT.md: everything above the first horizontal rule, below which
-    earlier releases are archived verbatim. Every other document: all of it.
+    CHANGELOG.md: the current version's section. RELEASE_NOTES.md: the unique
+    section whose heading identifies the recorded tag. ANNOUNCEMENT.md:
+    everything above the first horizontal rule. Every other document: all of it.
     """
     base = os.path.basename(doc_rel)
     if base == "CHANGELOG.md":
@@ -450,7 +450,16 @@ def release_scope(doc_rel: str, text: str, record: dict) -> tuple[int, int]:
             return (0, 0)
         tail = re.search(r"^## \[", text[head.end():], re.MULTILINE)
         return (head.start(), head.end() + tail.start() if tail else len(text))
-    if base in ("RELEASE_NOTES.md", "ANNOUNCEMENT.md"):
+    if base == "RELEASE_NOTES.md":
+        target = f"# Eshkol {record['tag']} — Release Notes"
+        matches = list(re.finditer(r"^# Eshkol .*? — Release Notes\s*$", text, re.MULTILINE))
+        exact = [match for match in matches if match.group(0).strip() == target]
+        if len(exact) != 1:
+            return (0, 0)
+        head = exact[0]
+        tail = re.search(r"\n---\n", text[head.end():])
+        return (head.start(), head.end() + tail.start() if tail else len(text))
+    if base == "ANNOUNCEMENT.md":
         cut = text.find("\n---\n")
         return (0, cut if cut >= 0 else len(text))
     return (0, len(text))
@@ -529,6 +538,16 @@ def check_release_doc(doc_rel: str, record: dict, *, mirror: bool = False) -> tu
 
     findings: list[dict] = []
     edits: list[dict] = []
+
+    if not mirror and os.path.basename(doc_rel) == "RELEASE_NOTES.md":
+        target = f"# Eshkol {record['tag']} — Release Notes"
+        headings = list(re.finditer(r"^# Eshkol .*? — Release Notes\s*$", text, re.MULTILINE))
+        exact = [match for match in headings if match.group(0).strip() == target]
+        if len(exact) != 1:
+            reason = "missing" if not exact else "duplicate"
+            findings.append({"doc": doc_rel, "quantity": "release_notes_identity", "line": 0,
+                             "found": reason, "expected": target,
+                             "snippet": "release notes must contain exactly one heading for the recorded tag"})
 
     def finding(quantity: str, offset: int, found, expected, snippet: str) -> None:
         findings.append({"doc": doc_rel, "quantity": quantity,

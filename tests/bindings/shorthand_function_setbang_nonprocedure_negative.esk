@@ -1,0 +1,3 @@
+(define (f x) x)
+(set! f 42)
+(f 1)

@@ -503,7 +503,7 @@ void vm_run(VM* vm) {
 
     lbl_VEC_REF: vm_exec_vec_ref(vm); DISPATCH();
 
-    lbl_VEC_SET: vm_exec_vec_set(vm); DISPATCH();
+    lbl_VEC_SET: vm_exec_vec_set_with_literal_marker(vm, instr.operand); DISPATCH();
 
     lbl_VEC_LEN: vm_exec_vec_len(vm); DISPATCH();
 
@@ -924,7 +924,7 @@ vm_exit:
          * codegen — see vm_raise_error_msg() in vm_native.c. */
         case OP_VEC_REF: vm_exec_vec_ref(vm); break;
 
-        case OP_VEC_SET: vm_exec_vec_set(vm); break;
+        case OP_VEC_SET: vm_exec_vec_set_with_literal_marker(vm, instr.operand); break;
 
         case OP_VEC_LEN: vm_exec_vec_len(vm); break;
 

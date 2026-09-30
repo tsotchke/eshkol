@@ -1,0 +1,4 @@
+(define (f x) x)
+(set! f (lambda (x) (* 2 x)))
+(display (f 21))
+(newline)

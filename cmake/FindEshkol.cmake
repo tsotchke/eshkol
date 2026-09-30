@@ -42,16 +42,22 @@
 #   Eshkol_ROOT / ESHKOL_ROOT — override search root (checked first)
 #
 # ── Two archives, two audiences ─────────────────────────────────────────
-# The package ships TWO static archives that are easy to confuse because
-# both spell "eshkol" and both exist under lib/ and lib/eshkol/:
+# Source builds produce TWO static archives that are easy to confuse because
+# both spell "eshkol":
 #
 #   eshkol-runtime  — the lean hosted runtime (arena, tagged values, printer,
 #                      AD tower) that CODE eshkol-run COMPILES links against.
 #                      This is Eshkol_LIBRARY / Eshkol::eshkol.
 #   eshkol-static   — the compiler/tool aggregate (parser, HoTT checker,
 #                      LLVM codegen, the whole eshkol-run binary's own
-#                      internals) meant for embedding the COMPILER itself,
+#                      internals) used when embedding the COMPILER itself,
 #                      not for linking a generated program.
+#
+# Official v1.3.5 binary packages ship the generated-program runtime surface
+# (eshkol-runtime, stdlib.o, compiler, and module sources), but do not ship
+# eshkol-static or the public FFI headers. Compiler embedding currently
+# requires a source build and the matching LLVM/platform link dependencies;
+# it is not an installed binary-package SDK contract. See docs/api/eshkol_ffi.md.
 #
 # A find_library() call that accepts bare names like "eshkol-static" or
 # "libeshkol" as a stand-in for "the Eshkol library" can silently resolve to

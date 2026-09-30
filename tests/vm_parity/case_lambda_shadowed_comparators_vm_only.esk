@@ -1,0 +1,7 @@
+; Expected output is 2 on native, VM source, and VM ESKB.
+(let ((= (lambda (a b) #f))
+      (>= (lambda (a b) #f))
+      (length (lambda (x) 999))
+      (apply (lambda (f xs) 'wrong)))
+  (display ((case-lambda ((x) 1) ((x y) 2) ((x y . rest) 3)) 4 5))
+  (newline))

@@ -1,0 +1,53 @@
+;;; Eliot shape 2: define+guard loop with a discarded numeric tensor literal.
+;;; Bounded count is substituted by define_loop_flat_rss_aot_test.sh for the
+;;; 10k/50k/100k RSS-slope runs; the source body/control flow stays identical.
+
+(define total-passes 100000)
+(define (loop i acc)
+  (guard (e (#t acc))
+    (if (>= i total-passes)
+        acc
+        (let ((scratch (make-list 12 i))
+              (v #(1.0 2.0 3.0)))
+          (loop (+ i 1)
+                (+ acc (length scratch)
+                   (if (= (vector-ref v 0) 1.0) 0 1)))))))
+
+(let ((result (loop 0 0)))
+  (display "passes=") (display total-passes)
+  (display " result=") (display result) (newline)
+  (if (= result (* total-passes 12))
+      (begin (display "PASS") (newline))
+      (begin (display "FAIL") (newline))))
+
+;;; A tensor allocated in the first iteration escapes through a loop-carried
+;;; argument and the returned value. Later tensor literals are discarded.
+(define (carry-tensor i carried)
+  (guard (e (#t carried))
+    (if (>= i 8)
+        carried
+        (let ((fresh #(7.0 8.0 9.0)))
+          (carry-tensor (+ i 1) (if (= i 0) fresh carried))))))
+
+(let ((carried (carry-tensor 0 #f)))
+  (if (= (vector-ref carried 0) 7.0)
+      (begin (display "CARRY\tOK") (newline))
+      (begin (display "CARRY\tFAIL") (newline))))
+
+;;; A computed vector element has a global side effect. The scope analysis must
+;;; continue to reject this loop even though the numeric-literal tensor form is
+;;; accepted above.
+(define side-effect-elements 0)
+(define (tensor-side-effect-value i)
+  (set! side-effect-elements (+ side-effect-elements 1))
+  i)
+(define (unsafe-tensor-loop i)
+  (if (>= i 4)
+      0
+      (let ((v #((tensor-side-effect-value i) 2.0 3.0)))
+        (unsafe-tensor-loop (+ i 1)))))
+
+(unsafe-tensor-loop 0)
+(if (= side-effect-elements 4)
+    (begin (display "SIDE_EFFECTS\tOK\t") (display side-effect-elements) (newline))
+    (begin (display "SIDE_EFFECTS\tFAIL\t") (display side-effect-elements) (newline)))

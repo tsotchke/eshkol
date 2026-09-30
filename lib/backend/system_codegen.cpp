@@ -731,6 +731,11 @@ llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
     llvm::Value* code_i32 = unpackExitCode(code);
     if (!code_i32) return nullptr;
 
+    // Finish a loop's active iteration and loop scopes only after argument
+    // evaluation and validation succeeded. If any of the earlier checks
+    // returns, the loop still owns its scopes and may continue normally.
+    if (before_exit_callback_) before_exit_callback_(callback_context_);
+
     // Call exit(code)
     ctx_.builder().CreateCall(exit_func, {code_i32});
 

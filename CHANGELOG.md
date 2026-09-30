@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Mixed exact/inexact rigorous interval arithmetic preserves containment.**
   Exact rational endpoints are converted outward until exact comparisons certify
   the bounds; indeterminate non-finite endpoint cases fail closed. (#727)
+- **AOT per-iteration RSS is bounded for the confirmed loop cases.** The fix
+  covers named-let exit, a discarded numeric tensor, and direct literal
+  `tensor-dot`; it does not establish flat RSS for every loop or platform. The
+  exact Eliot dot source remains unavailable. (#729)
 
 ## [1.3.5-evolve] - 2026-09-22
 

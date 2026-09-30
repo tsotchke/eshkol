@@ -491,7 +491,7 @@ mkstemp	vm-supported
 mod	gap	no VM name binding
 model-load	vm-supported	
 model-save	vm-supported	
-modulo	vm-supported	values and both sign conventions agree on every representation (corpus/50_flonum_integer_division.esk); an INTEGRAL flonum result comes back EXACT in the VM and inexact natively (resolved/modulo_inexact_collapsed_vm.esk) - invisible to the printed-output differential
+modulo	vm-supported	values, sign conventions and inexact contagion agree on every representation (corpus/50_flonum_integer_division.esk, corpus/77_inexact_division_contagion.esk, resolved/modulo_inexact_collapsed_vm.esk); zero divisors are fatal
 monotonic-time-ms	vm-supported	
 mse-loss	gap	ml faculty has no VM fid coverage
 multi-head-attention	gap	ml faculty has no VM fid coverage
@@ -516,7 +516,7 @@ op:CALL	vm-supported	core call opcode
 op:CALL_CC	vm-supported	escape continuations verified 2026-07
 op:CALL_WITH_VALUES	vm-supported	verified 2026-07
 op:CASE	vm-supported	vm_compiler special-form dispatch
-op:CASE_LAMBDA	gap	wrong clause selected (found/case_lambda_wrong_clause.esk)
+op:CASE_LAMBDA	vm-supported	VM dispatches clauses in source order by exact/minimum arity; unmatched calls fail through clause arity checks (corpus/case_lambda_wrong_clause.esk)
 op:COMPOSE	gap	compose undefined in VM
 op:COND	vm-supported	vm_compiler special-form dispatch
 op:COND_EXPAND	native-only-justified	parse-time form handled by the native front-end
@@ -620,7 +620,7 @@ op:VALUES	vm-supported	values + call-with-values verified 2026-07
 op:WALK	vm-supported	task #100: resolves binding chains (?a -> ?b -> 99), returns an unbound variable and a non-variable unchanged, and returns a sub-term binding as the list it came from. Was a gap because the VM's walk only dereferenced a raw VAL_INT term. Pinned by corpus/54_logic_var_kb_query.esk
 op:WEAK_REF	native-only-justified	OALR ownership — native-arena construct
 op:WHEN	vm-supported	vm_compiler propagates tail position through when/unless/and/or; corpus/73_vm_tail_position_forms.esk covers single and multiple operands
-op:WITH_REGION	native-only-justified	The remaining divergence is ONE UNDOCUMENTED SPELLING, not reclamation: (with-region (quote name)) with no other body is native foo / VM () plus an ERROR: line, because the VM reader collapses the 'name sugar and the explicit (quote name) list to one node and reads the sole argument as a specifier (found/with_region_explicit_quote_body_vm.esk). Every DOCUMENTED spelling (anonymous, 'name, ('name size)) is value-identical on both substrates and pinned by corpus/with_region_lowering.esk. RECLAMATION IS NO LONGER NATIVE-ONLY: the Stage-1 VM region evacuator (lib/backend/vm_region_evac.c, SW-14) brackets the body with native 2213/2214 and reclaims measurably there — flat peak RSS across a swept iteration count (26 MB flat at 1000/4000/16000) against 796 MB with the evacuator disabled, gated by tests/memory/vm_region_flat_rss_test.sh and tests/memory/vm_region_evac_subtype_coverage_test.sh. Before corpus/with_region_lowering.esk the VM mis-lowered the form outright — no OP_POP for non-final body expressions (stranded values shifted later top-level bindings: (+ 111 222) read back 0) and the ('name size) specifier compiled as a call (ERROR: calling non-function).
+op:WITH_REGION	vm-supported	Former explicit-quote-body divergence fixed: explicit `(quote name)` is a body whether sole or followed by more body forms. Reader quote-sugar provenance survives syntax-rules substitution (corpus/with_region_explicit_quote_body.esk; empty named regions reject directly and through a macro in fatal/with_region_empty_named*.esk). Documented anonymous, `'name`, and `('name size)` spellings remain pinned in corpus/with_region_lowering.esk. VM reclamation is measured by the region evacuator: flat peak RSS across 1000/4000/16000 iterations, versus 796 MB with it disabled; gated by tests/memory/vm_region_flat_rss_test.sh and vm_region_evac_subtype_coverage_test.sh.
 op:WORKSPACE_PRED	vm-supported	BUILTINS fid 541
 op:WS_REGISTER	vm-supported	BUILTINS fid 542
 op:WS_STEP	vm-supported	BUILTINS fid 543
@@ -686,7 +686,7 @@ ptr-add	native-only-justified	low-level memory/FFI primitive tied to native code
 quantum-random	vm-supported	
 quantum-random-int	vm-supported	
 quantum-random-range	vm-supported	
-quotient	vm-supported	exact operands agree; with an INEXACT operand the VM packs the truncated quotient as an EXACT int64, so it loses contagion and wraps past 2^63 (found/quotient_inexact_native_vm.esk)
+quotient	vm-supported	exact operands agree; inexact operands truncate toward zero, remain inexact, and large quotients avoid int64 packing (corpus/77_inexact_division_contagion.esk)
 rand	vm-supported	Variadic tensor random generation uses the same canonical seeded PRNG state as native AOT/JIT (corpus/58_rng_seed_parity.esk)
 randint	gap	PRNG surface has no VM binding
 randn	gap	PRNG surface has no VM binding
@@ -716,7 +716,7 @@ region-close	native-only-justified	#341 region handles: the name resolves on bot
 region-open	native-only-justified	#341 region handles: see region-close. Open/close/validate and every error message match; the VM records a bookkeeping-only handle whose close frees no VM heap (Stage-2), and prints a one-time note saying so. ESHKOL_VM_REGION_QUIET=1 silences it.
 region-open?	vm-supported	
 relu	vm-supported	
-remainder	vm-supported	values and the truncated-remainder sign convention agree on every representation (corpus/50_flonum_integer_division.esk); a zero divisor raises everywhere except the VM's pure-double path, which answers +nan.0 (found/quotient_inexact_native_vm.esk)
+remainder	vm-supported	values, truncated-remainder sign convention and inexact contagion agree on every representation (corpus/50_flonum_integer_division.esk, corpus/77_inexact_division_contagion.esk); ±0.0 divisors are fatal (fatal/remainder_inexact_zero.esk, fatal/remainder_inexact_negative_zero.esk)
 remove	gap	no VM name binding
 remq	gap	no VM name binding
 remv	gap	no VM name binding
@@ -877,7 +877,7 @@ tensor-svd	gap	tensor linalg/manipulation fid missing in VM
 tensor-token-estimate	gap	tensor linalg/manipulation fid missing in VM
 tensor-transpose	vm-supported	
 tensor-var	gap	tensor linalg/manipulation fid missing in VM
-tensor?	vm-supported	
+tensor?	vm-supported	reader-origin rectangular numeric `#(...)` values answer true while constructed and quoted vectors remain false (corpus/100_tensor_reader_literal_classification.esk)
 term-bell	vm-supported	
 term-clipboard-read	vm-supported	
 term-clipboard-write	vm-supported	

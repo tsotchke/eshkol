@@ -2,6 +2,7 @@
 ;; This tests the fix for findFreeVariables AND_OP/OR_OP traversal bug
 
 (require stdlib)
+(require core.strings)
 
 ;; Test framework
 (define tests-passed 0)
@@ -30,10 +31,20 @@
 
 ;; Test string-contains (uses nested lambda)
 (display "\nTesting string-contains:\n")
-(check "string-contains true" #t (string-contains "hello world" "world"))
+(check "string-contains true" 6 (string-contains "hello world" "world"))
 (check "string-contains false" #f (string-contains "hello world" "xyz"))
-(check "string-contains at start" #t (string-contains "hello" "hel"))
-(check "string-contains at end" #t (string-contains "hello" "llo"))
+(check "string-contains wrong type" #f (string-contains 42 "x"))
+(check "string-contains at start" 0 (string-contains "hello" "hel"))
+(check "string-contains at end" 2 (string-contains "hello" "llo"))
+(check "string-contains empty needle" 0 (string-contains "hello" ""))
+(check "string-contains UTF-8 codepoint index" 1
+       (string-contains (string-append "é" "b") "b"))
+(check "string-contains first-class" 2
+       (let ((contains string-contains)) (contains "hello" "llo")))
+(check "string-contains? stays boolean at index zero" #t
+       (string-contains? "hello" "hel"))
+(check "string-contains? first-class stays boolean" #t
+       (let ((contains? string-contains?)) (contains? "hello" "hel")))
 
 ;; Test string-index (uses nested lambda capturing str, char/substr)
 (display "\nTesting string-index:\n")

@@ -8,6 +8,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_target import validate_target
+
 PENDING = 'RELEASE_EVIDENCE_PENDING'
 
 
@@ -65,13 +68,15 @@ def bind(icc, requested, workspace, sha):
     return verify_binding(icc, selected, workspace, sha)
 
 
-def check_verdict(payload):
+def check_verdict(payload, target):
     # Older ICC versions call the numeric score `readiness`. A missing or
     # nonnumeric score is never a successful ready/100 release verdict.
     if not isinstance(payload, dict):
         raise ValueError('release readiness result must be a JSON object')
+    validate_target(target)
     score = payload.get('score', payload.get('readiness'))
-    if payload.get('status') != 'ready' or type(score) not in (int, float) or score != 100:
+    if (payload.get('target') != target or payload.get('status') != 'ready'
+            or type(score) not in (int, float) or score != 100):
         raise ValueError('release readiness requires status=ready and numeric score=100')
 
 
@@ -95,6 +100,7 @@ def main():
             p.add_argument('--github-env', required=True)
         else:
             p.add_argument('--verdict')
+        p.add_argument('--target', required=True)
     p = sub.add_parser('notes')
     p.add_argument('--notes', required=True)
     p.add_argument('--tag', required=True)
@@ -110,7 +116,7 @@ def main():
         elif args.action == 'check':
             verify_binding(args.icc, args.repo, args.workspace, args.sha)
             if args.verdict:
-                check_verdict(json.loads(Path(args.verdict).read_text()))
+                check_verdict(json.loads(Path(args.verdict).read_text()), args.target)
             print('PASS: release evidence identity and verdict')
         else:
             Path(args.output).write_text(release_notes(

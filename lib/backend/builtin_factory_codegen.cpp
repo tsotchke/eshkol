@@ -660,6 +660,8 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         call_apply_ = std::make_unique<eshkol::CallApplyCodegen>(*ctx_, *tagged_, *arith_);
         call_apply_->setSymbolTables(&symbol_table, &global_symbol_table);
         call_apply_->setVariadicFunctionInfo(&variadic_function_info);
+        call_apply_->setGetVariadicFunctionInfoCallback(
+            ControlFlowCallbacks::applyVariadicInfoWrapper, this);
         call_apply_->setFunctionTable(&function_table);
         call_apply_->setCodegenASTCallback(ControlFlowCallbacks::codegenASTTypedWrapper, this);
         call_apply_->setTopLevelCalleeReassignedCallback(
@@ -784,6 +786,8 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
             ControlFlowCallbacks::codegenTypedASTWrapper,
             this
         );
+        system_->setBeforeExitCallback(
+            ControlFlowCallbacks::finishIterScopeBeforeExitWrapper);
         eshkol_debug("Created SystemCodegen");
 
         // Initialize HashCodegen - hash table operations

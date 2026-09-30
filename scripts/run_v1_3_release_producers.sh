@@ -47,6 +47,10 @@ run_test_action test_coverage_inventory "documented test inventory matches the c
     python3 scripts/check_test_coverage.py
 run_test_action release_evidence_recipe_self_test "producer ordering, CTest cardinality, archive isolation, and fingerprint fault injection" \
     python3 tests/toolchain/test_v1_3_release_evidence_recipe.py
+run_test_action certified_enclosures_runtime_smoke "mixed exact/inexact interval containment under JIT" \
+    ctest --test-dir "$BUILD_DIR" --output-on-failure -R '^certified_enclosures_runtime_smoke$'
+run_test_action certified_enclosures_aot_smoke "mixed exact/inexact interval containment under AOT" \
+    ctest --test-dir "$BUILD_DIR" --output-on-failure -R '^certified_enclosures_aot_smoke$'
 
 # The release build has ESHKOL_BUILD_TESTS=ON and Python bindings enabled.
 # Run only the five named release CTests and require all five in JUnit output.

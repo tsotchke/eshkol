@@ -1,0 +1,20 @@
+;;; Eliot shape 1: a named-let loop that allocates one 12-cell list per turn.
+;;; The exit argument deliberately allocates a large temporary list before
+;;; returning status 0. The active iteration/loop scopes must be closed only
+;;; after that argument has been evaluated and validated.
+
+(define total-ticks 100000)
+(define (main-loop)
+  (let loop ((tick 0) (checksum 0))
+    (if (>= tick total-ticks)
+        (begin
+          (display "RESULT\tOK\t") (display tick) (display "\t")
+          (display checksum) (newline)
+          (exit 0))
+        (let* ((scratch (make-list 12 tick))
+               (delta (if (= (length scratch) 12)
+                          12
+                          (begin (display "ERROR") (newline) (exit 1)))))
+          (loop (+ tick 1) (+ checksum delta))))))
+
+(main-loop)

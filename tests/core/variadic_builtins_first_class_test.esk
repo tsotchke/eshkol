@@ -88,11 +88,21 @@
 
 ;; ---- append --------------------------------------------------------------
 (define alias-append append)
+(check "apply append, 0 lists" (equal? (apply append (list)) (list)))
+(check "apply append, 1 list"
+       (equal? (apply append (list (list 1 2))) (list 1 2)))
 (check "apply append"
        (equal? (apply append (list (list 1) (list 2) (list 3)))
                (list 1 2 3)))
+(check "apply alias append"
+       (equal? (apply alias-append (list (list 1) (list 2))) (list 1 2)))
 (check "alias append, 3"
        (equal? (alias-append (list 1) (list 2) (list 3)) (list 1 2 3)))
+
+;; string-copy is a stdlib variadic procedure, not a REPL user function.
+;; Applying it must resolve its callable value through the stdlib metadata.
+(check "apply string-copy, defaults"
+       (equal? (apply string-copy (list "abc")) "abc"))
 
 ;; ---- + -------------------------------------------------------------------
 (define alias-plus +)

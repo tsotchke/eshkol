@@ -8,7 +8,7 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-set(ESHKOL_VERSION "1.3.5")
+set(ESHKOL_VERSION "1.3.6")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
@@ -9771,7 +9771,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: variadic first-class builtins -- 0 failures"
-            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal")
+            FAIL_REGULAR_EXPRESSION "^FAIL:|Undefined variable|LLVM module verification failed|fatal signal"
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/variadic-builtins-jit-cache")
 
     add_test(
         NAME variadic_builtins_first_class_aot_o0_smoke
@@ -9807,7 +9808,25 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             PROPERTIES
                 TIMEOUT 300
                 PASS_REGULAR_EXPRESSION "PASS: native/VM byte-identical"
-                FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>")
+                FAIL_REGULAR_EXPRESSION "^FAIL:|^<|^>"
+                ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/variadic-builtins-jit-cache")
+
+        if(TARGET eshkol-run AND
+           EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/nested_shorthand_function_parity_test.sh")
+            add_test(
+                NAME nested_shorthand_function_vm_native_parity
+                COMMAND bash
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindings/nested_shorthand_function_parity_test.sh"
+                        "$<TARGET_FILE:eshkol-run>"
+                        "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                        "${CMAKE_CURRENT_BINARY_DIR}"
+            )
+            set_tests_properties(nested_shorthand_function_vm_native_parity
+                PROPERTIES
+                    TIMEOUT 600
+                    PASS_REGULAR_EXPRESSION "PASS: nested shorthand closures preserve native/VM parity and reject undefined set!"
+                    FAIL_REGULAR_EXPRESSION "^FAIL:|ERROR:|fatal signal")
+        endif()
     endif()
 
     # make-string checks its length and fill and repeats a non-ASCII fill
@@ -10271,6 +10290,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_D
     set_tests_properties(repl_stdlib_shadow_test PROPERTIES
         TIMEOUT 300
         PASS_REGULAR_EXPRESSION "PASS: repl stdlib/math shadow")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-repl AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/apply_forward_ref_redefinition_test.esk")
+    add_test(
+        NAME repl_apply_forward_ref_redefinition
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && ESHKOL_JIT_CACHE_DIR='${CMAKE_CURRENT_BINARY_DIR}/apply-forward-ref-jit-cache' '$<TARGET_FILE:eshkol-repl>' --stdlib < tests/repl/apply_forward_ref_redefinition_test.esk"
+    )
+    set_tests_properties(repl_apply_forward_ref_redefinition PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: apply forward reference and redefinition"
+        FAIL_REGULAR_EXPRESSION "FAIL:|called a forward-referenced function")
 endif()
 
 # EREPL v1 machine-mode protocol self-test, run through the reference

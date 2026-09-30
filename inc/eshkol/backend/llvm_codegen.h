@@ -127,6 +127,9 @@ struct LambdaSExprMetadata {
 };
 
 namespace ControlFlowCallbacks {
+    // Close the active per-iteration arena + loop scopes immediately before a
+    // validated terminal process exit.
+    void finishIterScopeBeforeExitWrapper(void* context);
     // Wrapper for codegenAST - returns LLVM Value*
     llvm::Value* codegenASTWrapper(const void* ast, void* context);
     // Wrapper for codegenTypedAST - returns pointer to TypedValue (caller owns)
@@ -166,6 +169,7 @@ namespace ControlFlowCallbacks {
     llvm::Function* getConsSetPtrWrapper(void* context);
     llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
     bool variadicLookupWrapper(const char* name, void* context);
+    bool applyVariadicInfoWrapper(const char* name, uint64_t* fixed_params, void* context);
     llvm::Value* indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
     void pushFunctionContextWrapper(void* context);
     void popFunctionContextWrapper(void* context);
@@ -209,6 +213,7 @@ std::vector<LambdaSExprMetadata>& pendingLambdaSExprs();
 }
 
 class EshkolLLVMCodeGen {
+    friend void ControlFlowCallbacks::finishIterScopeBeforeExitWrapper(void* context);
     // Friend declarations for ControlFlowCodegen callbacks
     friend llvm::Value* ControlFlowCallbacks::codegenASTWrapper(const void* ast, void* context);
     friend void* ControlFlowCallbacks::codegenTypedASTWrapper(const void* ast, void* context);
@@ -2288,6 +2293,19 @@ private:
     // structure pointer, so a nursery-allocated value stored into persistent
     // state is deep-promoted out of the nursery at the store.
     bool iter_scope_needs_nursery_ = false;
+    bool iter_scope_direct_exit_allowed_ = false;
+    bool iter_scope_has_terminal_exit_ = false;
+    bool iter_scope_tensor_dot_allowed_ = false;
+
+    class IterScopeExitAdmissionGuard {
+    public:
+        IterScopeExitAdmissionGuard(bool& flag, bool value)
+            : flag_(flag), saved_(flag) { flag_ = value; }
+        ~IterScopeExitAdmissionGuard() { flag_ = saved_; }
+    private:
+        bool& flag_;
+        bool saved_;
+    };
 
     // The structural mutators admitted into iter-scope under ESH-0214e. Each is
     // barriered UNCONDITIONALLY at its codegen site on the mutated structure's
@@ -2389,6 +2407,19 @@ private:
                            std::set<std::string>& local_fns,
                            std::set<std::string>& analyzing,
                            int depth);
+    static bool iterScopeNumericTensorElement(const eshkol_ast_t* expr);
+    bool iterScopeSafeTensorLiteral(const eshkol_ast_t* elements,
+                                   const uint64_t* dimensions,
+                                   uint64_t num_dimensions,
+                                   uint64_t total_elements,
+                                   std::set<std::string>& local_fns,
+                                   std::set<std::string>& analyzing,
+                                   int depth);
+    bool iterScopeSafeTensorDotOperand(const eshkol_ast_t* expr,
+                                       uint64_t* vector_length,
+                                       std::set<std::string>& local_fns,
+                                       std::set<std::string>& analyzing,
+                                       int depth);
 
     // Analyze a user-defined function's body by name (define-level map).
     // Memoized; a name already on the analysis stack is resolved inductively
@@ -2403,7 +2434,10 @@ private:
     // self-tail-calls are the loop's back edges (the named-let name, or the
     // define's own function name).
     bool loopBodyIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name,
-                               bool* out_needs_nursery = nullptr);
+                               bool* out_needs_nursery = nullptr,
+                               bool loop_shadows_exit = false,
+                               bool loop_shadows_tensor_dot = false);
+    void finishIterScopeBeforeExit();
 
     // Emit the end-of-iteration scope release: store the out-flowing tagged
     // values into an entry-hoisted scratch array and call the runtime helper,

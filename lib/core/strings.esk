@@ -129,12 +129,15 @@
               i
               (search (- i 1)))))))
 
-;; string-contains: Check if string contains substring
+;; string-contains: Return the first codepoint index, or #f if absent
 (define (string-contains str substr)
-  (>= (string-index str substr) 0))
+  (if (and (string? str) (string? substr))
+      (let ((index (string-index str substr)))
+        (if (< index 0) #f index))
+      #f))
 
 (define (string-contains? str substr)
-  (string-contains str substr))
+  (if (string-contains str substr) #t #f))
 
 ;; string-count: Count occurrences of substring in string
 (define (string-count str substr)

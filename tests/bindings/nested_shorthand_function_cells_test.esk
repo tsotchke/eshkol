@@ -1,0 +1,52 @@
+;; Each factory activation owns its recursive procedure cell and captured seed.
+(define (make-countdown seed)
+  (define (f n)
+    (if (= n 0) seed (f (- n 1))))
+  (set! f
+    (lambda (n)
+      (if (= n 0) seed (+ 1 (f (- n 1))))))
+  f)
+(define f1 (make-countdown 10))
+(define f2 (make-countdown 20))
+(display (f1 2))
+(newline)
+(display (f2 3))
+(newline)
+
+;; Internal definition initializers retain source order.
+(define (ordered-initializers)
+  (define state 0)
+  (define (read-state) state)
+  (define observed (begin (set! state 1) (read-state)))
+  observed)
+(display (ordered-initializers))
+(newline)
+
+;; Mutating a captured variadic procedure keeps its rest-list calling ABI.
+(define (make-variadic)
+  (define (g first . rest) (length rest))
+  (set! g (lambda (first . rest) (+ first (length rest))))
+  g)
+(define g (make-variadic))
+(display (g 40 1 2))
+(newline)
+
+;; The sibling and recursive closure both resolve through f's mutable cell.
+(define (make-mutated-recursion)
+  (define (f n)
+    (if (= n 0) 0 (+ 1 (f (- n 1)))))
+  (define (invoke n) (f n))
+  (set! f
+    (lambda (n)
+      (if (= n 0) 40 (+ 1 (f (- n 1))))))
+  invoke)
+(display ((make-mutated-recursion) 2))
+(newline)
+
+;; A lexical root-scope closure must capture its box, not a stack-slot alias.
+(define escaped
+  (let ((base 6))
+    (define (g x) (+ base x))
+    g))
+(display (escaped 7))
+(newline)

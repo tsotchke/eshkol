@@ -233,8 +233,13 @@ int64_t eshkol_utf8_ref(const char* s, int64_t k) {
     int64_t cp_idx = 0;
     int64_t i = 0;
     while (i < byte_len && cp_idx < k) {
-        if ((s[i] & 0xC0) != 0x80) cp_idx++;
-        i++;
+        // Advance one complete codepoint.  Skipping only the lead byte leaves
+        // `i` on a continuation byte for every multibyte character before k,
+        // causing the next ref to decode U+FFFD instead of the requested char.
+        const char* next = s + i;
+        (void)decode_utf8_codepoint(&next);
+        i = (int64_t)(next - s);
+        cp_idx++;
     }
     if (i >= byte_len) return -1;
     const char* p = s + i;

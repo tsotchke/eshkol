@@ -254,6 +254,40 @@ static Value vm_string_value(VM* vm, const char* data, int64_t len) {
     return (Value){.type = VAL_STRING, .as.ptr = ptr};
 }
 
+/** Build a string from a Scheme character list using the shared UTF-8 encoder.
+ * The explicit byte length retained by VmString is necessary for U+0000, and
+ * the encoder maps invalid scalar values to U+FFFD. */
+static Value vm_list_to_string_value(VM* vm, Value lst) {
+    int len = 0;
+    Value cur = lst;
+    /* A finite heap bounds the traversal and prevents a cyclic list looping. */
+    int limit = vm->heap.next_free;
+    while (cur.type == VAL_PAIR && len < limit &&
+           is_valid_heap_ptr(vm, cur.as.ptr)) {
+        len++;
+        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+    }
+
+    int* cps = len ? (int*)vm_alloc(&vm->heap.regions, (size_t)len * sizeof(int)) : NULL;
+    if (len && !cps) return NIL_VAL;
+    cur = lst;
+    for (int i = 0; i < len; i++) {
+        cps[i] = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
+        cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+    }
+
+    VmString* s = vm_string_from_list(&vm->heap.regions, cps, len);
+    if (!s) return NIL_VAL;
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) {
+        vm->error = 1;
+        return NIL_VAL;
+    }
+    vm->heap.objects[ptr]->type = HEAP_STRING;
+    vm->heap.objects[ptr]->opaque.ptr = s;
+    return (Value){.type = VAL_STRING, .as.ptr = ptr};
+}
+
 /** @brief Build a `(key . value)` pair for use as one entry of an association list. */
 static Value vm_alist_entry(VM* vm, const char* key, Value value) {
     return vm_cons_value(vm, vm_string_value(vm, key, -1), value);
@@ -7690,6 +7724,14 @@ static __int128 vm_coerce_i128(VM* vm, Value v, int* ok) {
     return 0;
 }
 
+/* Convert numeric division operands only after inexactness has been detected.
+ * `as_number()` does not understand heap-backed bignums/rationals, and the
+ * ordinary VM numeric coercion does not unbox i128. */
+static double vm_division_number_to_double(VM* vm, Value v) {
+    if (v.type == VAL_I128) return (double)vm_unbox_i128(vm, v);
+    return as_number_vm(vm, v);
+}
+
 /* Box and push a computed __int128 result. */
 void vm_push_i128(VM* vm, __int128 value) {
     int32_t ptr = vm_box_i128(vm, value);
@@ -9702,6 +9744,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * status, and every later top-level form silently dropped.  Every fatal
      * path here now names itself on stderr. */
     case 36: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        /* Inexactness is contagious, including when the exact operand is a
+         * bignum or i128. Keep an integral inexact result as a float. */
+        if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+            double x = vm_division_number_to_double(vm, a);
+            double y = vm_division_number_to_double(vm, b);
+            if (y == 0.0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error=1; break; }
+            double r = fmod(x, y);
+            if (r != 0.0 && signbit(r) != signbit(y)) r += y;
+            vm_push(vm, FLOAT_VAL(r)); break;
+        }
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2119); break;
         }
@@ -9713,20 +9765,30 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        /* Native remainder treats an inexact zero divisor as fatal too. */
+        if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+            double x = vm_division_number_to_double(vm, a);
+            double y = vm_division_number_to_double(vm, b);
+            if (y == 0.0) { fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
+            vm_push(vm, FLOAT_VAL(fmod(x, y))); break;
+        }
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2107); break;
         }
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'r'); break; }
-        /* `remainder` with an INEXACT operand is fmod, so a zero divisor is
-         * IEEE-754 (+nan.0) rather than an error — native agrees: it answers
-         * +nan.0 for both (remainder 1.0 0.0) and (remainder 1 0.0).  Only the
-         * all-exact form is a fatal division by zero. */
-        if (a.type==VAL_FLOAT || b.type==VAL_FLOAT) {
-            vm_push(vm, FLOAT_VAL(fmod(as_number(a), as_number(b)))); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia%ib)); break; }
     case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        /* `quotient` truncates toward zero and preserves inexact contagion.
+         * Do the division in double so large results never pass through an
+         * int64 conversion (which both wrapped and made them exact). */
+        if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+            double x = vm_division_number_to_double(vm, a);
+            double y = vm_division_number_to_double(vm, b);
+            if (y == 0.0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error=1; break; }
+            vm_push(vm, FLOAT_VAL(trunc(x / y))); break;
+        }
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2106); break;
         }
@@ -10495,12 +10557,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             const VmRational* a_r = vm_coerce_rational(vm, a_val, &a_scratch);
             const VmRational* b_r = vm_coerce_rational(vm, b_val, &b_scratch);
             if (!a_r || !b_r) { vm->error = 1; break; }
-            /* Exact division by an exact zero is fatal (native raises
-             * "rational division by zero"), and must be rejected before the
-             * arithmetic so `(/ 1/2 0)` cannot silently produce 0.5. */
+            /* Exact division by an exact zero is a catchable language error,
+             * matching the native backend and allowing `guard` to handle it.
+             * Reject it before rational arithmetic so `(/ 1/2 0)` cannot
+             * silently produce an inexact value. */
             if (fid == 334 &&
                 (b_r->is_big ? bignum_is_zero(b_r->big_num) : b_r->num == 0)) {
-                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break;
+                vm_raise_error_msg(vm, "rational division by zero"); break;
             }
             char rop = (fid == 331) ? '+' : (fid == 332) ? '-'
                      : (fid == 333) ? '*' : '/';
@@ -12716,7 +12779,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value sub_val = vm_pop(vm), s_val = vm_pop(vm);
         VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
         VmString* sub = (sub_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[sub_val.as.ptr]->opaque.ptr : NULL;
-        vm_push(vm, INT_VAL(vm_string_contains(s, sub)));
+        int index = vm_string_contains(s, sub);
+        if (index < 0) vm_push(vm, BOOL_VAL(false));
+        else vm_push(vm, INT_VAL(index));
         break;
     }
     case 556: { /* make-string(n, char) */
@@ -12744,7 +12809,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value sub_val = vm_pop(vm), s_val = vm_pop(vm);
         VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
         VmString* sub = (sub_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[sub_val.as.ptr]->opaque.ptr : NULL;
-        vm_push(vm, INT_VAL(vm_string_contains(s, sub)));
+        int index = vm_string_contains(s, sub);
+        if (index < 0) vm_push(vm, BOOL_VAL(false));
+        else vm_push(vm, INT_VAL(index));
         break;
     }
     case 560: { /* string=? */
@@ -12809,27 +12876,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 567: { /* list->string — convert list of character codepoints to string */
         Value lst = vm_pop(vm);
-        /* Count characters */
-        int len = 0;
-        Value cur = lst;
-        while (cur.type == VAL_PAIR && len < 4096) {
-            len++;
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-        }
-        char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)(len + 1));
-        if (buf) {
-            cur = lst;
-            int idx = 0;
-            while (cur.type == VAL_PAIR && idx < len) {
-                int cp = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                buf[idx++] = (cp >= 0 && cp < 128) ? (char)cp : '?';
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-            buf[idx] = '\0';
-            VmString* s = vm_string_new(&vm->heap.regions, buf, idx);
-            if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
-        }
-        vm_push(vm, NIL_VAL);
+        vm_push(vm, vm_list_to_string_value(vm, lst));
         break;
     }
     case 568: { /* string->number (alt ID) */
@@ -16890,17 +16937,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 223: { /* list->string */
         Value lst = vm_pop(vm);
-        char buf[4096]; int len = 0;
-        Value cur = lst;
-        while (cur.type == VAL_PAIR && len < 4095) {
-            int cp = (int)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-            if (cp >= 0 && cp < 128) buf[len++] = (char)cp;
-            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-        }
-        buf[len] = 0;
-        VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
-        if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); }
-        else vm_push(vm, NIL_VAL);
+        vm_push(vm, vm_list_to_string_value(vm, lst));
         break;
     }
     case 224: { /* gcd([a [, b]]) */
@@ -17348,7 +17385,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1698: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_is_rational(a))); break; }
     case 1717: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(vm_num_is_integer(vm, a))); break; }
     case 1699: { Value a = vm_pop(vm);
-        vm_push(vm, BOOL_VAL(a.type == VAL_TENSOR)); break; }
+        int is_tensor = a.type == VAL_TENSOR;
+        if (a.type == VAL_VECTOR && is_valid_heap_ptr(vm, a.as.ptr) &&
+            vm->heap.objects[a.as.ptr] &&
+            vm->heap.objects[a.as.ptr]->type == HEAP_VECTOR &&
+            vm->heap.objects[a.as.ptr]->opaque.subtype == VM_SUBTYPE_TENSOR_LITERAL)
+            is_tensor = 1;
+        vm_push(vm, BOOL_VAL(is_tensor)); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * Additional predicates (160-166)

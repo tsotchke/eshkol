@@ -148,19 +148,23 @@ Index of the **last** occurrence of `substr`, or `-1`.
 ```
 
 ### `(string-contains str substr)` / `(string-contains? str substr)`
-Boolean "does `str` contain `substr`?". `string-contains` is the stdlib
-function `(>= (string-index …) 0)`; `string-contains?` is a **codegen builtin**.
-On ASCII they agree; on embedded NUL they diverge (Known issues).
+`string-contains` returns the first Unicode codepoint index of `substr` in
+`str`, or `#f` when it is absent. `string-contains?` returns a boolean.
+Both accept exactly two strings; `string-contains` returns `#f` for a
+non-string argument. An empty needle matches at index `0`.
 
 ```scheme
 (display (string-contains  "hello" "ell")) (newline)
+(display (string-contains  "hello" "z"))   (newline)
 (display (string-contains? "hello" "z"))   (newline)
 ```
 ```
-#t
+2
+#f
 #f
 ```
-Edge cases: empty needle returns `#t`.
+The empty needle returns index `0`; `string-contains?` stays boolean even
+when the match starts at index `0`.
 
 ### `(string-count str substr)`
 Count non-overlapping occurrences of `substr` in `str`. Empty needle returns
@@ -239,14 +243,14 @@ This is observable on one input:
 (display (string-index s "b"))     (newline)  ; 2
 (display (string-contains? s "b")) (newline)  ; #t
 (display (string-find s "b"))      (newline)  ; 2   (stdlib, NUL-safe)
-(display (string-contains s "b"))  (newline)  ; #t  (stdlib, NUL-safe)
+(display (string-contains s "b"))  (newline)  ; 2   (stdlib, NUL-safe)
 (display (string-count s "b"))     (newline)  ; 1   (stdlib, NUL-safe)
 ```
 ```
 2
 #t
 2
-#t
+2
 1
 ```
 The large NUL-bearing literal regression **ESH-0099** is covered by the stress

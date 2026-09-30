@@ -1,0 +1,114 @@
+;;; Synthetic bounded discriminator for the pending tensor-dot Eliot report.
+;;; This is intentionally separate from the admitted numeric-literal fixture:
+;;; tensor-dot outputs are scalar, but its lowering may allocate arena temporaries.
+;;; The shared AOT gate substitutes total-passes with 10k/50k/100k only.
+
+(define total-passes 100000)
+(define (loop i acc)
+  (guard (e (#t acc))
+    (if (>= i total-passes)
+        acc
+        (let ((scratch (make-list 12 i))
+              (dot (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0 6.0))))
+          (loop (+ i 1)
+                (+ acc (length scratch) (if (= dot 32.0) 0 1)))))))
+
+(let ((result (loop 0 0)))
+  (display "passes=") (display total-passes)
+  (display " result=") (display result) (newline)
+  (if (= result (* total-passes 12))
+      (begin (display "PASS") (newline))
+      (begin (display "FAIL") (newline))))
+
+;;; In AD mode, tensor-dot records nodes on the tape's owner arena while the
+;;; literal buffers remain iteration-local. The loop carry and nested gradient
+;;; check guard that nursery recycling preserves both lifetimes.
+(define (dot-quadratic x)
+  (let loop ((i 0) (sum 0.0))
+    (if (>= i 3)
+        sum
+        (let ((dot (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0 6.0))))
+          (loop (+ i 1)
+                (+ sum (* (* (vector-ref x 0) (vector-ref x 0)) dot)))))))
+
+(let ((first (vector-ref (gradient dot-quadratic (vector 2.0)) 0)))
+  (if (= first 384.0)
+      (begin (display "AD\tOK\t") (display first) (newline))
+      (begin (display "AD\tFAIL\t") (display first) (newline))))
+
+;;; These loops must stay outside the special nursery admission: one operand is
+;;; computed, one shape is unequal, and one is rank 2.
+(define (computed-dot-loop i)
+  (if (>= i 2)
+      0.0
+      (begin (tensor-dot (vector 1.0 2.0 3.0) #(4.0 5.0 6.0))
+             (computed-dot-loop (+ i 1)))))
+
+(define (unequal-dot-loop i)
+  (if (>= i 2)
+      0.0
+      (begin (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0))
+             (unequal-dot-loop (+ i 1)))))
+
+(define (rank2-dot-loop i)
+  (if (>= i 2)
+      0.0
+      (begin (tensor-dot #(#(1.0 2.0) #(3.0 4.0))
+                         #(#(5.0 6.0) #(7.0 8.0)))
+             (rank2-dot-loop (+ i 1)))))
+
+(define dot-mutation-state 0)
+(define (mutating-dot-loop i)
+  (if (>= i 2)
+      0.0
+      (begin (set! dot-mutation-state (+ dot-mutation-state 1))
+             (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0 6.0))
+             (mutating-dot-loop (+ i 1)))))
+
+(define (parallel-dot-loop i)
+  (if (>= i 2)
+      0.0
+      (begin (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0 6.0))
+             (parallel-dot-loop (+ i 1)))))
+(parallel-map parallel-dot-loop '())
+
+;;; A local tensor-dot binding is ordinary user code and must not enter the
+;;; builtin-only nursery admission above.
+(define (shadowed-tensor-dot-loop start)
+  (let ((tensor-dot (lambda (a b) 42.0)))
+    (let loop ((i start) (sum 0.0))
+      (if (>= i (+ start 3))
+          sum
+          (loop (+ i 1)
+                (+ sum (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0 6.0))))))))
+
+(if (= (shadowed-tensor-dot-loop 0) 126.0)
+    (begin (display "DOT_SHADOW\tOK") (newline))
+    (begin (display "DOT_SHADOW\tFAIL") (newline)))
+
+;;; Higher-order callback parameters named like builtin procedures remain local
+;;; procedures; their calls must not be mistaken for terminal exit or builtin
+;;; tensor-dot calls during loop analysis.
+(define (callback-exit-loop i)
+    (if (>= i 2)
+        0
+        (begin
+          (for-each (lambda (exit) (exit 0)) (list (lambda (status) status)))
+          (callback-exit-loop (+ i 1)))))
+
+(define (callback-dot-loop i sum)
+  (if (>= i 3)
+      sum
+      (begin
+        (for-each
+          (lambda (tensor-dot)
+            (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0 6.0)))
+          (list (lambda (a b) 42.0)))
+        (callback-dot-loop (+ i 1) (+ sum 42.0)))))
+
+(if (= (callback-exit-loop 0) 0)
+    (begin (display "CALLBACK_EXIT\tOK") (newline))
+    (begin (display "CALLBACK_EXIT\tFAIL") (newline)))
+(if (= (callback-dot-loop 0 0.0) 126.0)
+    (begin (display "CALLBACK_DOT\tOK") (newline))
+    (begin (display "CALLBACK_DOT\tFAIL") (newline)))

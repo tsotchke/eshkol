@@ -15,14 +15,23 @@ SHA = 'a' * 40
 
 
 class ReleaseGuardTests(unittest.TestCase):
-    def test_exact_score_required(self):
+    def test_exact_target_and_score_required(self):
+        target = 'v1.3.6-evolve'
+        good = {'status': 'ready', 'score': 100, 'target': target}
         for payload in ({'status': 'ready'}, {'status': 'ready', 'score': None},
                         {'status': 'ready', 'score': '100'}, {'status': 'ready', 'score': 99},
-                        {'status': 'blocked', 'score': 100}, {'status': 'ready', 'score': True}):
+                        {'status': 'blocked', 'score': 100}, {'status': 'ready', 'score': True},
+                        {**good, 'target': 'v1.3.4-evolve'},
+                        {**good, 'target': 'v1.3.6'}):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
-                guard.check_verdict(payload)
-        guard.check_verdict({'status': 'ready', 'score': 100})
-        guard.check_verdict({'status': 'ready', 'readiness': 100})
+                guard.check_verdict(payload, target)
+        guard.check_verdict(good, target)
+        guard.check_verdict({k: v for k, v in good.items() if k != 'score'} | {'readiness': 100}, target)
+
+    def test_candidate_target_validation_rejects_wrong_version(self):
+        with self.assertRaises(ValueError):
+            guard.check_verdict({'status': 'ready', 'score': 100, 'target': 'v2.0.0-evolve'},
+                                'v2.0.0-evolve')
 
     def test_planted_pending_sentinel_blocks_publication(self):
         clean = '# Eshkol v1.3.5-evolve — Release Notes\n\nMeasured release.\n'

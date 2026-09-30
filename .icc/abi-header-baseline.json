@@ -1,5 +1,5 @@
 {
-  "commit": "6efb99dbbd57e4e776a0e3f7b5b949499f99fa6f",
+  "commit": "e301e277cfcc8afc5b7923419860e01e056d687e",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 33,
@@ -255,6 +255,22 @@
       "lib/ffi/eshkol_ffi.cpp": 1,
       "press/ESHKOL_PRESS_INFORMATION_SHEET.md": 1,
       "site/static/eshkol-runtime.js": 1
+    },
+    "S1_clang_header_member": {
+      "inc/eshkol/eshkol.h": 1,
+      "lib/agent/c/agent_system_builtins.c": 1,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+    },
+    "S2_clang_sizeof": {
+      "inc/eshkol/eshkol.h": 2,
+      "inc/eshkol/memory_abi_v2.h": 3,
+      "lib/agent/c/agent_system_builtins.c": 1,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4
+    },
+    "S3_clang_header_cast": {
+      "inc/eshkol/eshkol.h": 1,
+      "lib/agent/c/agent_system_builtins.c": 1,
+      "tests/ffi/sqlite_column_roundtrip_test.c": 4
     }
   },
   "generated_by": "scripts/abi_header_inventory.py baseline",
@@ -294,6 +310,9 @@
     "H_wasm_glue": 35,
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
-    "L_layout_in_prose": 86
+    "L_layout_in_prose": 86,
+    "S1_clang_header_member": 6,
+    "S2_clang_sizeof": 10,
+    "S3_clang_header_cast": 6
   }
 }

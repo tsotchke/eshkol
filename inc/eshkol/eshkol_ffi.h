@@ -18,7 +18,7 @@
  * Memory: values allocated through the FFI use the global arena.
  * Call eshkol_ffi_shutdown() to release all memory.
  *
- * Prerequisites: link against libeshkol-static.a and LLVM libraries.
+ * Prerequisites: link against libeshkol-static.a and LLVM libraries. Distribution: official v1.3.5 binary packages support generated-program runtime linkage, but do not ship this header or libeshkol-static.a; compiler embedding requires a source build and matching LLVM/platform link dependencies. A packaged embedding SDK is planned for v1.4.1.
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */

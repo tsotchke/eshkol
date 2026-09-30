@@ -13,7 +13,8 @@
 (string-append "hello" " " "world")   ;; => "hello world"
 (string-upcase "hello")               ;; => "HELLO"
 (string-downcase "HELLO")             ;; => "hello"
-(string-contains "hello world" "world")  ;; => #t
+(string-contains "hello world" "world")  ;; => 6 (index or #f)
+(string-contains? "hello world" "world") ;; => #t (boolean predicate)
 (string-find "hello world" "world")      ;; => 6 (index)
 (string-reverse "abcde")              ;; => "edcba"
 (string-repeat "ab" 3)                ;; => "ababab"
