@@ -16,6 +16,12 @@
 > - [`docs/NOESIS_TRAJECTORY.md`](docs/NOESIS_TRAJECTORY.md) — the
 >   Noesis-readiness view, tracked separately because Noesis has a
 >   distinct downstream cadence.
+> - [`docs/RELEASE_LADDER.md`](docs/RELEASE_LADDER.md) — the reconciled
+>   v1.3.6 → v1.4.0 → v1.4.1 → v1.4.5 → v1.5.0 scope, dependency, ownership,
+>   producer, acceptance, blocker, and snapshot-status table.
+> - [`docs/V14_BRANCH_PORTFOLIO.md`](docs/V14_BRANCH_PORTFOLIO.md) — the
+>   searchable index of 19 audited v1.4 branch candidates, exact heads,
+>   caveats, and admission gates.
 > - [`docs/design/adr/0000-unified-trajectory.md`](docs/design/adr/0000-unified-trajectory.md) —
 >   the 14-stage architectural ladder (v1.3.3a through v2.0) that sequences
 >   the load-bearing rewrites (binding/type identity, OALR ABI v2, staged AD
@@ -30,42 +36,18 @@
 
 This roadmap tracks Eshkol's evolution from the **completed v1.0-foundation release** through upcoming versions that will establish Eshkol as the definitive platform for gradient-based computing and integrated AI.
 
-### ADR-0000 stage attainment (added 2026-08-25, conformity audit item a1)
+### ADR-0000 stage attainment
 
-The release lines below describe *what ships*; [ADR-0000](docs/design/adr/0000-unified-trajectory.md)
-describes the *architectural substrate that has to land first* for the back
-half of this roadmap (v1.4 onward) to be buildable rather than aspirational.
-As of `4bf871a0` (2026-08-25), remeasured directly against the tree:
-
-**0 of 14 ADR-0000 stages SATISFIED; 3 PARTIAL (Stage 1 ~55%, Stage 4 ~15%,
-Stage 5 ~35%), 11 NOT STARTED.** Remeasured against the tree at the
-v1.3.5-evolve cut: two of the five load-bearing artifacts the ADR names as the
-gate for v1.4+ now exist as phase-A substrate. The `NodeId -> SourceSpan` side
-table is implemented and consumed by the parser and the LLVM codegen
-dispatcher (`inc/eshkol/frontend/node_identity.h`,
-`lib/frontend/node_identity.cpp`, #476), and the OALR ABI v2 header defines
-and statically pins both layouts with the migration off by default
-(`inc/eshkol/memory_abi_v2.h`, #478). The remaining three — `BindingId`
-(declared as a future column of the same substrate, not implemented),
-`FlowEnv`, and `eshkol_compile_staged_value_grad` — are still absent. Full
-stage-by-stage detail (what exists, what's missing, why the gate isn't
-meetable yet) is in ADR-0000's own "Attainment" section and in
-`docs/design/AUDIT_2026_08_25_RESOLUTION.md`.
-
-This is a statement about **present attainment, not a retraction of the
-plan**: every one of the 14 stages stays on the ladder below, each mapped to
-the release line it targets. One of the two CRITICAL implementation defects
-behind the AD-related stalls are both closed in v1.3.5-evolve. The LLVM
-finite-difference counter had zero callers and is enforced for real (#474,
-ledger SW-47), with a negative control proving the assertion can still go red.
-And ADR-0002's dense tensor AD node now executes (ledger SW-48, COMPLETE):
-`matmul`, `tensor-sum` and `tensor-mean` each record exactly one dense node,
-the reverse pass discriminates on `tensor_value` *or* `tensor_gradient`, and
-the gate holds the two lowerings to byte-identical gradients. The dense-kernel
-staging that rides on it — the primitive registry as a real table, first-class
-cotangent-layout and error ABI, the strict-mode kernel flag — remains ADR-0002
-Phase G work (with the ADR-0016 grafts) under **v1.6.0-reasoning** below, so Stages 5, 7 and 8 are now
-gated on that staging rather than on an unexecutable node.
+The checked source snapshot is `34fb71417df7273aba11889091a2c2542c8eedff`
+(2026-09-28). ADR-0000's detailed attainment record supports **2 of 14 stages
+SATISFIED, 1 PARTIAL (Stage 5), and 11 NOT STARTED**. This corrects the stale
+`0/14, 3 partial` tally previously repeated here; the corresponding stale
+compiler-roadmap tally is corrected as well. See the [release ladder](docs/RELEASE_LADDER.md)
+for scope, gate availability, and the boundary between the v1.4.0 interface
+spike, the parallel v1.4.5 device runtime, and v1.5.0 native mesh work. The
+underlying stage evidence and limitations remain in
+[ADR-0000](docs/design/adr/0000-unified-trajectory.md); this reconciliation
+does not claim a fresh execution of its gate scripts.
 
 > **Parallel platform program**: The internal freestanding / kernel / embedded architecture work begins during `v1.2-scale` as a mergeable infrastructure program and converges publicly at `v1.8-platform`. See [docs/platform/README.md](docs/platform/README.md) and [docs/platform/ROADMAP_ALIGNMENT.md](docs/platform/ROADMAP_ALIGNMENT.md).
 
@@ -466,14 +448,16 @@ velocity (the v1.3.1→v1.3.4 line averaged roughly five weeks per point
 release, including hardening waves). The ladder below is dated to what the
 shipped velocity supports, with v2.0 at **~Q4 2028**.
 
-The 2026-09-10 re-staging (maintainer ruling) fixes the near dates and makes
-the span between them finer-grained rather than coarser: **v1.4.0-connection
-targets 2026-10-15** and **v1.5.0-intelligence targets 2026-12-05**, with
-v1.4.1 between them, the accelerator line (v1.4.5) running as a parallel track
-that gates nothing, and the DBSP incremental-dataflow spine (W1) threaded
-through every release from v1.5 to v2.0 as one milestone per release rather
-than a single drop. The per-version sections that follow, and the Release
-Timeline table, use this ladder.
+The 2026-09-10 re-staging set **v1.4.0-connection to 2026-10-15**,
+**v1.4.1 to 2026-11-06**, and **v1.5.0-intelligence to 2026-12-05**. The
+owner has since required publication order v1.4.0 → v1.4.1 → v1.4.5 →
+v1.5.0: accelerator development may run in parallel, but v1.4.5 must publish
+before v1.5.0. The old v1.4.5 Q1 2027 target conflicts with the old v1.5.0
+Dec 5, 2026 target, so both release windows require a joint rebaseline; do not
+treat either date as current. If v1.4.5 device gates are not ready, v1.5.0
+slides. The per-version sections and Release Timeline table follow that
+mandatory publication sequence. The DBSP incremental-dataflow spine (W1)
+continues from v1.5 to v2.0 as one milestone per release.
 
 Every release from v1.3.5 forward ships work from some mix of six standing
 workstreams rather than a single theme:
@@ -534,8 +518,9 @@ workstreams rather than a single theme:
     pure-XLA client, since XLA re-associates reductions by design.
   - One workload dials between the two tiers (fast vs. exact) — "exactness
     is an axis," applied to distribution. Staging: v1.4.0 PJRT client spike
-    + XLA multi-device single-host + native collectives over sockets;
-    v1.5.0 Tier-1 data-parallel + Tier-2 mesh bit-identity gate; v1.6.x
+    + XLA multi-device single-host; native collectives over v1.4.0 sockets
+    remain provisionally in v1.4.0 pending owner R7 ruling. v1.5.0 separately
+    carries Tier-1 data-parallel + Tier-2 native-mesh bit-identity gate; v1.6.x
     sharding annotations on the staged dense graph -> GSPMD multi-host +
     distributed DBSP; v1.8.x fault tolerance/elasticity; v2.0 gates per
     tier (Tier 1 >=85% scaling efficiency at 8 devices; Tier 2
@@ -759,8 +744,11 @@ under the same discipline that made `Qubit` linear.
 - [ ] Codebase: native image I/O dependency removal; decompose
       `runtime_regions.cpp`; doc-truth ratchet phase 1 (rank + quota, not
       yet release-blocking)
-- [ ] W6 distributed: PJRT client spike + XLA multi-device single-host +
-      native collectives over sockets
+- [ ] W6 interface spike: compile and execute one StableHLO module through
+      the PJRT CPU plugin, with a recorded trace. This does not claim device
+      execution or TPU readiness. XLA multi-device single-host is also in the
+      v1.4.0 plan; native collectives over its sockets remain subject to the
+      owner R7 scope ruling. Accelerator execution is delivered by v1.4.5.
 
 ---
 
@@ -774,12 +762,15 @@ under the same discipline that made `Qubit` linear.
       Portable tail transfer also SHIPPED in v1.3.5-evolve (#483): the
       tail-transfer dispatcher makes differing arities and non-AArch64 targets
       unbounded, so ESH-0171 is now a performance item, not a correctness one
-- [ ] ADR-0012 object-ABI migration Stages 1-6: convert every site in
+- [ ] ADR-0012 object-ABI migration Stages 3-6: convert every remaining site in
       `docs/design/ABI_V2_MIGRATION_INVENTORY.md` from the 8-byte v1 object
       header to the 32-byte v2 header. Stage 0 — the machine inventory, the
       layout pin, and the link-time mixed-ABI guard that fails with a named
       undefined symbol rather than a silently wrong program — SHIPPED in
-      v1.3.5-evolve (#488)
+      v1.3.5-evolve (#488); Stages 1-2 (ABI cache keys and WASM geometry guard)
+      also COMPLETE per ADR-0012. A full embedding SDK must separately deliver
+      its public header set, LLVM/platform link contract, static archive, and
+      passing cold-consumer tests.
 - [ ] Codebase: decompose `vm_run.c` (the file every VM fix touches) —
       carried from v1.3.5, NOT SHIPPED (2,002 lines at the v1.3.4 cut, 2,163
       at the v1.3.5 cut)
@@ -788,12 +779,13 @@ under the same discipline that made `Qubit` linear.
 
 ---
 
-## v1.4.5-accelerate — the device runtime (target: Q1 2027, parallel track) - PLANNED
+## v1.4.5-accelerate — the device runtime (date: joint rebaseline required) - PLANNED
 
-This line runs as a **parallel accelerator track**: its nine stages each gate
-on their own oracle criterion and none of them gates v1.5.0-intelligence, so
-it lands after v1.5.0 in time while keeping its version number in the v1.4
-ABI/systems family it depends on.
+Accelerator development may proceed in parallel with other work, but
+**publication order is mandatory: v1.4.0 → v1.4.1 → v1.4.5 → v1.5.0**.
+The previous Q1 2027 v1.4.5 target conflicts with the previous Dec 5, 2026
+v1.5.0 target. Both release windows need a joint rebaseline. v1.5.0 slides if
+v1.4.5's device gates are not ready; v1.4.5 does not publish after v1.5.0.
 
 **Focus:** The XLA backend reaches real accelerator silicon. Training as well
 as inference for the geometric language model runs on TPU through Eshkol's own
@@ -801,10 +793,11 @@ PJRT client, and the whole language, not a tensor subset, compiles against it.
 
 This is the build item that earns the v1.1-accelerate XLA claims on an
 accelerator: the compile pipeline existed, the device runtime did not. The
-program is nine gated stages; each is one criterion on the `xla-tpu-ready`
-oracle (`scripts/run_xla_gate.sh`, one flag per stage) or one of its two
-companion oracles, and ICC grades them in dependency order so a stage cannot
-be reported done ahead of the one it rests on.
+program is nine planned gated stages. `scripts/run_xla_gate.sh` and the named
+`xla-tpu-ready` oracle are not present at the checked snapshot; implement and
+bind a producer/trace for every stage before claiming gate coverage. ICC must
+grade the stages in dependency order. The prior v1.4.5 and v1.5.0 dates are
+under joint rebaseline.
 
 - [ ] S0 build baseline: `ESHKOL_XLA_ENABLED` build against StableHLO's pinned
       LLVM, verifier-clean standard library, baseline recorded
@@ -822,8 +815,8 @@ be reported done ahead of the one it rests on.
 - [ ] S5 region formation: whole-language programs partitioned into device
       regions and host glue, so the rest of the language rides the fragment
       (`xla-region-formation` oracle)
-- [ ] S6 multi-device sharding (`xla_multidevice_step`); absorbs the W6
-      PJRT client spike listed under v1.4.0-connection
+- [ ] S6 multi-device sharding (`xla_multidevice_step`); advances from the
+      v1.4.0 CPU-plugin PJRT interface spike to device sharding
 - [ ] S7 bf16 numerics bounded (`xla_bf16_numerics_bounded`)
 - [ ] S8 production ready: an end-to-end training run and inference for the
       geometric language model on TPU (`xla_tpu_production_ready`)
@@ -836,7 +829,7 @@ be reported done ahead of the one it rests on.
 
 ---
 
-## v1.5.0-intelligence (target: 2026-12-05) - PLANNED
+## v1.5.0-intelligence (date: conditional on v1.4.5 publication) - PLANNED
 
 **Focus:** The full neuro-symbolic logic system — neural and symbolic
 computation flow bidirectionally, and the DBSP incremental-dataflow spine
@@ -847,10 +840,6 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 **Flagship:** `core.dbsp` GA (W1) + native-product PGO in the release
 workflow (ADR-0007 Phase 1).
 
-- [ ] SBLC second slice (ADR-0017): universal `U⊕` self-interpreter, resumable
-      E6 search with deterministic mesh sharding, DBSP/N3 receipts, VM PRNG
-      parity, experimental differentiable proposals (REINFORCE, projected
-      relaxations) — all under exact-verification gates
 - [ ] Symbol embeddings (learnable vector representations of KB symbols)
 - [ ] Soft unification (differentiable similarity — gradients flow through matching)
 - [ ] LSTM and GRU cells (standard recurrent neural architectures)
@@ -880,6 +869,11 @@ workflow (ADR-0007 Phase 1).
 - [ ] Codebase: decompose `vm_geometric.c`; ADR-0008 tooling core lands
       (`eshkol check` + LSP on a shared workspace-analysis core)
 - [ ] W6 distributed: Tier-1 data-parallel + Tier-2 mesh bit-identity gate
+
+v1.5.0 cannot publish before v1.4.5. Its former Dec 5, 2026 target is subject
+to joint rebaseline with the former Q1 2027 v1.4.5 window; the v1.5.0 date
+slides if v1.4.5 device gates are incomplete. ADR-0017 assigns the first
+SBLC slice to v1.4.0; this release line does not claim its gate is implemented.
 
 Note: the arbitrary-order AD substrate this section used to stage here
 (P5/P7/P9/P10) shipped complete in v1.3.0-evolve, ahead of this plan — see
@@ -1104,11 +1098,12 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 | **v1.3.0-evolve** | Jul 2026 | Evolve | **SHIPPED.** R7RS libraries, string interpolation; arbitrary-order AD **P0–P12 complete** (Taylor towers, exact coefficients, GUW multivariate, reverse-over-Taylor, tensor towers, Taylor models, sparse tensors — closes ESH-0118, delivered ahead of the original P1-only plan); full R7RS conformance (34/34 vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent adversarial-testing infrastructure |
 | **v1.3.1 → v1.3.4-evolve** | Jul-Aug 2026 | Evolve | **SHIPPED 2026-08-19** (tag `v1.3.4-evolve`, commit `694c3179`). v1.3.1: flat memory for resident/daemon loops, iterative reader. v1.3.2: thread-safe regions, deeper evacuation. v1.3.3: opt-in differentiable quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum crypto, `core.dbsp` incremental dataflow, 100% executable language coverage. v1.3.4: automatic per-iteration reclamation matching explicit regions (ESH-0214e), race-free `parallel-map`, exact gradients through every callable form on the LLVM backend (the bytecode VM's `divergence`/`curl` were still central-difference FD at the v1.3.4 cut; converted to exact forward duals in v1.3.5-evolve by #487), shortest-round-trip float printing, checked `(the <type> expr)` ascription + predicate narrowing, linear `Qubit`, high-precision numerics (Ozaki-II exact/fast GEMM, mixed-precision `linear-solve`, `i128`), Moonlab v1.2.0 (QGT/QNG), full hosted-VM tensor-matmul parity. Plus the consumer-hardening correctness wave: fatal compile diagnostics, tag-decided exactness on both engines, exact-point differentiation, same-unit `define-library` on all three back ends, a real `--shared-lib` (#377), the portable event loop, the fixed-point/`i128` accumulation engine, region handles, **the qLLM bridge implementation (#386/#392 — the completion the v1.1 line above claimed early)**, and embedding/Fréchet-mean backward passes. **Release gates** (RELEASE_NOTES.md, measured on the release cut): aggregate suite 45/45 suites / 770 tests; CTest 190/190 (remeasured 2026-08-25 against `4bf871a0`, `evidence/audit/07_ctest.log`; corrects the stale 183/183 figure); executable language coverage 1,106/1,106 (100.0%, canonical count — corrects the stale 1,091/1,091 figure, conformity audit item d3); SICP full-book gate 88/88; reference-Scheme differential 34/34 AGREE vs. chibi-scheme 0.12.0; VM parity differential 188/188 (remeasured 2026-08-25, `evidence/audit/06_vm_parity.log`; corrects "184/184", the corpus-differential count, not the full manifest) over a 956-row manifest (581/331/44) plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger; qLLM oracle gate 10/10; ICC readiness 100, verdict `ready` |
 | **v1.3.5-evolve** | 2026-09-22 | Consolidation | **SHIPPED 2026-09-22** (tag `v1.3.5-evolve`). A parser with no recursion budget (16,000 levels on an 8 MiB stack, explicit continuation stack through parse, type check and codegen); dense tensor autodiff executing end to end (SW-48); `tensor-apply` calling the callable rather than a builtin name; the bytecode VM reclaiming memory under `with-region` (VM OALR Stage-1 evacuator, #461); multi-shot continuations on all three engines (#491); certified enclosures; one constant-curvature geometry implementation (#498, #499); validated ESKM v1 model I/O with atomic publication; compiler assurance measured against deliberate mutations; the exact tower and `core.exact_linalg`; every callable builtin first-class on both engines; EREPL v1; LLVM 18-24. CTest, parity and coverage are measured at the tagged commit and recorded in the release notes. |
-| **v1.4.0-connection** | 2026-10-15 | Systems profile | TCP/UDP/TLS, Unix sockets, HTTP/WebSocket, linear resource types; WebGPU dispatch (#562); the mesh as primary CI executor (#529); the nested-differentiation carrier rewrite (SW-154); W5 interop wave 2; W6 PJRT spike *(AD substrate P4/P6/P11 already delivered in v1.3.0-evolve, ahead of schedule)* |
-| **v1.4.1** | 2026-11-06 | ABI | OALR ABI v2 Phase B, ADR-0012 object-ABI stages 3-6, PGO training workload, `vm_run.c` and `bignum.cpp` decomposition |
-| **v1.5.0-intelligence** | 2026-12-05 | Intelligence | `core.dbsp` GA, native PGO, Noesis M2 surface, symbol embeddings, differentiable logic, LSTM/GRU; W6 Tier-1 data-parallel + Tier-2 mesh bit-identity gate *(high-order AD P5/P7/P9/P10 already delivered in v1.3.0-evolve, ahead of schedule)* |
-| **v1.5.1** | Q1 2027 | — | DBSP circuits, resident A/B sessions, doc-truth gate becomes release-blocking |
-| **v1.4.5-accelerate** | Q1 2027 (parallel track) | Device runtime | PJRT client, StableHLO on device, gradients against the exact-AD golden vectors, geometric decompositions, region formation, multi-device sharding, bf16 numerics bounded, end-to-end training on accelerator silicon — nine individually gated stages that do not block v1.5.0 |
+| **v1.3.6 (conditional)** | — | Evolve | Narrow post-tag correction only: #727 interval work on reproduction; published package documentation/contract correction for the failing cold embedding consumer; #721 allocation only after independent gates; #722 experimental. Full embedding SDK is a separate v1.4.1 deliverable. See [the reconciled release ladder](docs/RELEASE_LADDER.md). |
+| **v1.4.0-connection** | 2026-10-15 (prior target; review at joint rebaseline) | Systems profile | TCP/UDP/TLS, Unix sockets, HTTP/WebSocket, linear resource types; WebGPU dispatch (#562); the mesh as primary CI executor (#529); the nested-differentiation carrier rewrite (SW-154); W5 interop wave 2; ADR-0017 SBLC first slice; W6 PJRT spike and XLA multi-device single-host; native collectives over sockets pending owner R7 ruling |
+| **v1.4.1** | 2026-11-06 (prior target; review at joint rebaseline) | ABI | OALR ABI v2 Phase B, ADR-0012 object-ABI stages 3-6, PGO training workload, `vm_run.c` and `bignum.cpp` decomposition |
+| **v1.4.5-accelerate** | Joint rebaseline required (old target Q1 2027) | Device runtime | Nine XLA stages through accelerator training/inference; publish before v1.5.0; not shipped |
+| **v1.5.0-intelligence** | Conditional; joint rebaseline required (old target 2026-12-05) | Intelligence | `core.dbsp` GA, native PGO, Noesis M2 surface, symbol embeddings, differentiable logic, LSTM/GRU; W6 Tier-1 data-parallel + Tier-2 native-mesh bit-identity gate *(high-order AD P5/P7/P9/P10 already delivered in v1.3.0-evolve, ahead of schedule)* |
+| **v1.5.1** | Q1 2027 (prior target) | — | DBSP circuits, resident A/B sessions, doc-truth gate becomes release-blocking |
 | **v1.6.0-reasoning** | Q2 2027 | Reasoning | Backward/forward chaining, constraint solving, knowledge graphs, staged AD ABI; W6 GSPMD multi-host *(sparse high-order AD tensors P12 already delivered in v1.3.0-evolve, ahead of schedule)* |
 | **v1.6.1** | Q3 2027 | — | DBSP traces + staged scratch plan, region-safety machine-checked-invariant work begins |
 | **v1.7.0-synthesis** | Q3-Q4 2027 | Synthesis | Neural-guided search, program synthesis, GNN, recursive IVM |
@@ -1119,13 +1114,12 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 | **v1.9.2** | Q3 2028 | — | Spill tier, reflective self-modification |
 | **v2.0-starlight** | Q4 2028 | Starlight | Unified `differentiate` primitive, quantum region compilation, QAOA, formal verification (Lean kernel export); training-grade performance gates; W6 gates per tier |
 
-> **Re-dating note (maintainer ruling R1, executed 2026-08-24; re-staged
-> 2026-09-10):** every date from v1.4 onward supersedes the table published
-> before 2026-08-24, whose dates (v1.4 "Jul 2026" through v2.0 "Q1 2027") were
-> not going to be hit at measured velocity. The 2026-09-10 re-staging fixes
-> v1.4.0 at 2026-10-15 and v1.5.0 at 2026-12-05, keeps v1.4.1 between them,
-> runs v1.4.5-accelerate as a parallel track that gates nothing, and threads
-> the DBSP spine from v1.5 to v2.0 one milestone per release. See
+> **Re-dating note (historical):** the maintainer ruling R1 was executed
+> 2026-08-24 and the ladder was re-staged 2026-09-10. The 2026-09-10 target
+> dates and ordering are now superseded by the 2026-09-28 owner ruling:
+> publication must follow v1.4.0 → v1.4.1 → v1.4.5 → v1.5.0, and the old
+> v1.4.5 Q1 2027 / v1.5.0 Dec 5, 2026 windows require joint rebaseline.
+> v1.5.0 slides if v1.4.5 device gates are not ready. See
 > the "Development workstreams" section above for the
 > six workstreams every release now draws from, and the point-release rows
 > (v1.4.1, v1.5.1, v1.6.1, v1.8.1, v1.9.1, v1.9.2) for the finer-grained
@@ -1297,11 +1291,17 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
 ---
 
-*Last Updated: 2026-09-22 (v1.3.5-evolve release — the v1.3.5 section
-rewritten against what the cut actually contains, its follow-up queue added,
-SW-48 recorded COMPLETE, and the ladder re-staged per the 2026-09-10 ruling:
-v1.4.0 at 2026-10-15, v1.5.0 at 2026-12-05, v1.4.5 as a parallel track, the
-DBSP spine threaded v1.5 to v2.0. Previously 2026-08-28, v1.3.5-evolve release
+*Last Updated: 2026-09-28 (release ladder reconciliation — v1.3.6 conditional
+scope, ADR-0000 attainment corrected to 2/14 + 1 partial, ADR-0012 remaining
+Stages 3-6, v1.4.5 publication before v1.5.0 with joint rebaseline, branch
+portfolio findings and gate/ICC gaps recorded. The v1.3.5 source was internally
+released 2026-09-22 and publicly published 2026-09-27; its frozen verification
+record remains bound to its tagged commit. Previously 2026-09-22 (v1.3.5-evolve
+release — the v1.3.5 section rewritten against what the cut contains, its
+follow-up queue added, SW-48 recorded COMPLETE, and the 2026-09-10 ladder
+staging recorded. That staging put v1.4.5 after v1.5.0; it is superseded by
+the required publication order and joint rebaseline above. The DBSP spine was
+threaded v1.5 to v2.0. Previously 2026-08-28, v1.3.5-evolve release
 documentation audit — carried items named, ADR-0000 attainment remeasured
 against the tree, ADR-0012 staged migration added to v1.4.1. Previously
 2026-08-25, v1.3.5 documentation wave — re-dated ladder,
@@ -1320,4 +1320,4 @@ quantum/formal-verification (v2.0) arc, and its successor, the unified
 `differentiate` primitive (W1), is the v2.0 endpoint. See
 [`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md).*
 
-*Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 and v1.1.13 additions (production VM, web platform, browser AD, Windows ARM64, mobile site). The v1.3 line runs through v1.3.5-evolve, released 2026-09-22 with its verification record bound to the tagged commit. The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), consolidation (v1.3.5), networking & resources (v1.4.0-connection), the ABI release (v1.4.1), neuro-symbolic intelligence (v1.5.0-intelligence), symbolic reasoning (v1.6.0-reasoning), program synthesis (v1.7.0-synthesis), platform & hardware (v1.8.0-platform), advanced type theory (v1.9.0-types), and quantum computing with formal verification (v2.0-starlight) — with a two-tier distributed-computing workstream (W6) running underneath the whole v1.4.0→v2.0 span rather than confined to one release.*
+*Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 and v1.1.13 additions (production VM, web platform, browser AD, Windows ARM64, mobile site). The v1.3 line runs through v1.3.5-evolve, internally released 2026-09-22 with its verification record bound to the tagged commit. The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), consolidation (v1.3.5), networking & resources (v1.4.0-connection), the ABI release (v1.4.1), accelerator device runtime (v1.4.5-accelerate), neuro-symbolic intelligence (v1.5.0-intelligence), symbolic reasoning (v1.6.0-reasoning), program synthesis (v1.7.0-synthesis), platform & hardware (v1.8.0-platform), advanced type theory (v1.9.0-types), and quantum computing with formal verification (v2.0-starlight). v1.4.5 must publish before v1.5.0; their previous target windows require joint rebaseline — W6's development work may proceed in parallel, but publication order is fixed.*
