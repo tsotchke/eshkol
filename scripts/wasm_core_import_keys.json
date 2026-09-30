@@ -64,6 +64,7 @@
   "eshkol_deep_equal",
   "eshkol_display_value",
   "eshkol_display_value_to_port",
+  "eshkol_double_to_exact_tagged",
   "eshkol_double_to_rational",
   "eshkol_enforce_tensor_elements",
   "eshkol_error_object_irritants",

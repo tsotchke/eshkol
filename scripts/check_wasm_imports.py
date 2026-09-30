@@ -134,6 +134,9 @@ SMOKE_PROGRAMS = {
     "parameters": "(define p (make-parameter 1)) (display (p)) (newline)",
     "regions": "(with-region (lambda () (define x (list 1 2 3)) (display (car x)) (newline)))",
     "bignum_rational": "(display (* 100000000000 100000000000)) (newline) (display (/ 1 3)) (newline)",
+    # inexact->exact now has a shared shape-changing runtime entry point for
+    # int64/bignum/rational results; keep its env import in the WASM smoke set.
+    "exact_conversion": "(display (inexact->exact 0.1)) (newline)",
     "ad": "(display (derivative (lambda (x) (* x x)) 3.0)) (newline)",
     "control": "(call/cc (lambda (k) (display \"hello\") (newline) (k 0)))",
     "match_guard":

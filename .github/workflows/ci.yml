@@ -979,14 +979,15 @@ jobs:
     # job cancelled mid-corpus.
     #
     # Measured, whole job: 18m11s with a 107-file parity corpus; the corpus is
-    # now 148 files and each file costs ~1.9x what it did, because
+    # now 176 files and each file costs ~1.9x what it did, because
     # run_vm_parity.sh compiles every corpus program natively and each such
     # compile links the whole stdlib object (5.0 s/file -> 9.5 s/file; same
     # per-program factor the Windows test lanes measured, same cause, tracked
-    # as ledger entry DD-16). That puts run_vm_parity.sh at ~23 minutes inside
-    # its unchanged 30-minute step budget, and the job at ~35 minutes.
-    # 60 covers that with headroom for hosted-runner variance.
-    timeout-minutes: 60
+    # as ledger entry DD-16). PR #727 run 36379115061 hit the 30-minute step
+    # limit after reaching stage 2b (filed-reproducer recheck), so the corpus
+    # needs a larger bounded step budget. Keep the job budget above that step
+    # plus toolchain setup, build, and preceding gates.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
 
@@ -1050,7 +1051,7 @@ jobs:
         run: bash scripts/run_ad_validated_bounds_gate.sh
 
       - name: run_vm_parity.sh (the audit's own control case for this whole finding)
-        timeout-minutes: 30
+        timeout-minutes: 45
         shell: bash
         env:
           BUILD_DIR: build
@@ -1665,7 +1666,10 @@ jobs:
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
             job_timeout_minutes: 240
-            test_timeout_minutes: 180
+            # The exact-head v1.3.6 interval run reached the final two shell
+            # cases when the 180-minute step cap fired (run 36365632095).
+            # Preserve the full suite and leave room for runner variance.
+            test_timeout_minutes: 210
             upload_artifact: 'true'
             artifact_name: eshkol-linux-x64
           # This is the assertion-enabled compilation axis. Keep it as a
