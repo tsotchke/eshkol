@@ -127,7 +127,7 @@ Several R7RS derived forms (`case-lambda`, `parameterize`, `cond-expand`, `defin
 
 ### S-Expression Parser
 
-**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,678 lines)
+**Implementation:** [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp) (11,698 lines)
 
 The parser builds an AST from S-expressions through an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so native stack consumption is independent of grammar nesting. It handles:
 
@@ -589,7 +589,7 @@ All arithmetic operations (`+`, `-`, `*`, `/`, comparison, `abs`, `min`, `max`, 
 
 ### First-Class Continuations
 
-**Implementation:** [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) (1,108 lines), with `call/cc` and `dynamic-wind` dispatch in [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
+**Implementation:** [`control_flow_codegen.cpp`](../../lib/backend/control_flow_codegen.cpp) (1,180 lines), with `call/cc` and `dynamic-wind` dispatch in [`llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
 
 - `call/cc` -- multi-shot re-entrant continuations; escape-only captures keep the zero-overhead setjmp/longjmp path
 - `dynamic-wind` -- before/after thunks with proper unwinding on non-local exit
