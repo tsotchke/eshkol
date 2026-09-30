@@ -1696,6 +1696,10 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
+            # Required run 36772926982 hit the two-hour job cap during the full suite.
+            # Keep all tests and reserve toolchain/build time above the test budget.
+            job_timeout_minutes: 240
+            test_timeout_minutes: 210
             upload_artifact: 'true'
             artifact_name: eshkol-linux-arm64
           - name: linux-x64-xla
