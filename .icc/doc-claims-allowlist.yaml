@@ -890,3 +890,17 @@ entries:
   reason: same `4bf871a0`-pinned historical snapshot as claim 1ef94e09a80a0a7f -- confirmed in range against
     that commit's 51-line file; the file was rewritten to 6 lines after the audit, on this same branch, as
     the ADR's tracked visibility BUILD ITEM landed. Added 2026-09-10.
+- claim_id: 3d1797ca622cd780
+  path: docs/design/AUDIT_2026_08_25_RESOLUTION.md
+  line: 56
+  claim_type: numeric
+  subject: lib/core/model_io.cpp
+  value: 880
+  disposition: EXEMPT-HISTORICAL
+  reason: >-
+    Dated 2026-08-25 resolution-audit row d4 records a past model_io.cpp measurement.
+    ICC independently confirms that immutable candidate
+    833f831140b8d51f96b5a8e6fe4dbfa008eec4cf contains 880 lines. The later
+    all-active integration head 5975af908ec38218c6c081557d2ec91f17ca5a2a
+    contains 969 lines after subsequent source changes. Preserve the dated
+    880-line historical measurement; it is not a claim about current size.

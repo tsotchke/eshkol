@@ -2996,3 +2996,69 @@ jobs:
         with:
           path: C:\src\clang+llvm-${{ env.WINDOWS_LLVM_SDK_VERSION }}-${{ matrix.llvm_suffix }}-pc-windows-msvc
           key: windows-llvm-sdk-${{ matrix.arch }}-${{ env.WINDOWS_LLVM_SDK_VERSION }}
+
+  active-integration-linux:
+    name: active-integration-linux
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/integration/all-active-code-')
+    runs-on: [self-hosted, Linux, X64, eshkol]
+    timeout-minutes: 180
+    env:
+      QUALIFICATION_SOURCE: ${{ github.workspace }}/active-${{ github.run_id }}-${{ github.run_attempt }}
+      ICC_BIN_CONFIGURED: ${{ vars.ICC_BIN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          path: active-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Register exact qualification checkout with ICC
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ICC_BIN_CONFIGURED" && test -x "$ICC_BIN_CONFIGURED"
+          cd "$QUALIFICATION_SOURCE"
+          qualification_repo="eshkol-active-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$ICC_BIN_CONFIGURED" register --name "$qualification_repo" --path "$QUALIFICATION_SOURCE" --if-absent
+          "$ICC_BIN_CONFIGURED" reindex --repo "$qualification_repo" --full
+          echo "ICC_BIN=$ICC_BIN_CONFIGURED" >> "$GITHUB_ENV"
+          echo "ICC_REPO=$qualification_repo" >> "$GITHUB_ENV"
+          mkdir -p .scratch/active-qualification
+      - name: Qualifier negative controls through ICC
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$QUALIFICATION_SOURCE"
+          "$ICC_BIN" test-execution-oracle --repo "$ICC_REPO" --name active_qualifier_controls \
+            --command "python3 -m unittest discover -s tests/toolchain -p test_active_integration_qualification.py" \
+            --declare-instrument active-integration-qualifier-negative-controls --timeout-s 300 --format json \
+            > .scratch/active-qualification/controls-receipt.json
+      - name: Test-enabled CPU integration build through ICC
+        shell: bash
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          cd "$QUALIFICATION_SOURCE"
+          "$ICC_BIN" test-execution-oracle --repo "$ICC_REPO" --name active_integration_linux_build \
+            --command "python3 scripts/run_active_integration_qualification.py --phase build --jobs 4" \
+            --declare-data scripts/run_active_integration_qualification.py \
+            --declare-data CMakeLists.txt --declare-instrument LLVM21-Linux-CPU-allocation-ESKM-enabled \
+            --timeout-s 4800 --tail-lines 50 --format json > .scratch/active-qualification/build-receipt.json
+      - name: Allocation failures and experimental format qualification through ICC
+        shell: bash
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          cd "$QUALIFICATION_SOURCE"
+          "$ICC_BIN" test-execution-oracle --repo "$ICC_REPO" --name active_integration_linux_tests \
+            --command "python3 scripts/run_active_integration_qualification.py --phase test" \
+            --declare-data build-active-qualification/eshkol-run \
+            --declare-data build-active-qualification/eshkol-vm-standalone-test \
+            --declare-data build-active-qualification/stdlib.o --declare-data build-active-qualification/stdlib.bc \
+            --declare-instrument Linux-allocator-faults-ESKM-resource-gates \
+            --timeout-s 4800 --tail-lines 80 --format json > .scratch/active-qualification/tests-receipt.json
+      - name: Upload integration qualification receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: active-linux-qualification-${{ github.sha }}
+          path: ${{ env.QUALIFICATION_SOURCE }}/.scratch/active-qualification/
+          if-no-files-found: error
