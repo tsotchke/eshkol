@@ -1,6 +1,17 @@
+---
+kind: project
+status: current
+owner-area: runtime
+since: v1.3.6-evolve
+sources:
+  - cmake/AllocationHardeningTests.cmake
+  - tests/core/runtime_allocation_hardening_test.cpp
+  - tests/core/constructor_allocation_shim.cpp
+---
+
 # Constructor and exception-handler allocation hardening
 
-This follow-up targets the pending v1.3.5 release implementation. It preserves
+This follow-up hardens the v1.3.5 runtime implementation. It preserves
 that implementation's promotion transaction, destination rollback, and existing
 per-thread allocation-failure condition. It does not replace the promotion ABI.
 
