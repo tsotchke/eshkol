@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Roadmap and branch portfolio distinguish patch work from experimental integration.**
+  The active feature inventory records branch ownership, release scope and pending
+  qualification for the separate integration build. (#728)
 - **Advanced mathematics press copy covers shipped exact and proof-backed
   capabilities.** It adds bounded examples for exact rational linear algebra,
   rigorous enclosures, numerical methods, geometry, topology, gauge theory, and
