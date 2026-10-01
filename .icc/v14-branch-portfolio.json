@@ -1,0 +1,184 @@
+{
+  "schema": "eshkol.branch_portfolio.v1",
+  "snapshot": {
+    "repo_head": "34fb71417df7273aba11889091a2c2542c8eedff",
+    "audited_at": "2026-09-28",
+    "refs": 1714,
+    "unique_heads": 1083,
+    "worktrees": 169,
+    "method": "Read-only ref, head, tree, path and ICC registry comparison. No branch is admitted by ancestry alone; differing paths may be superseded or conflicted."
+  },
+  "entries": [
+    {
+      "branch": "math/g1-ipm-residual",
+      "head": "1bc5692996b3e7379f6d186564e1ada4ad68a4de",
+      "release_lane": "v1.4.0 math examples",
+      "classification": "unmerged-promising",
+      "evidence": "74 paths; 53 differ from master and 21 are byte-equal. Local IPM JIT/AOT 24/24 receipt has no source fingerprint; new Aoki examples lack equivalent traces. Finite examples do not prove general theorems.",
+      "icc_alias": "eshkol-math-stream (STALE)",
+      "next_gate": "Reindex exact head; classify examples individually, bind focused gates and traces; keep runtime AD changes separate. Do not copy the old run_math_example_gate.sh wholesale."
+    },
+    {
+      "branch": "integration/full-carrier-release",
+      "head": "efed708b5bd5e570adbb132b75f31409ebe022a2",
+      "release_lane": "already shipped v1.3.5 substrate",
+      "classification": "superseded",
+      "evidence": "634 paths; 448 byte-equal to master; old full-carrier train removes newer master tests and shrinks core runtime files.",
+      "icc_alias": null,
+      "next_gate": "Do not merge. Reopen only for a minimal failing carrier case reproduced on current master."
+    },
+    {
+      "branch": "feat/astra-v14-connection",
+      "head": "aaab5989dd6a1a3e1862b70587f9457f4695e843",
+      "release_lane": "v1.4.0 connection",
+      "classification": "unmerged-promising",
+      "evidence": "27 paths; 25 differ from master. Bounded numeric IPv4/IPv6 TCP/UDP, synchronization, UTF-8/MessagePack fixes and loopback tests; no DNS/TLS/HTTP/WebSocket or compiler-enforced resource ownership.",
+      "icc_alias": null,
+      "next_gate": "Selectively port to exact master; resolve CMake/VM/LLVM conflicts; gate handle lifetime, cancellation and capability semantics plus missing promised protocols."
+    },
+    {
+      "branch": "feat/astra-v14-webgpu",
+      "head": "2d0dc90774fbde968bbf5b33982c09566a63fbd9",
+      "release_lane": "v1.4.0 WebGPU",
+      "classification": "unmerged-promising",
+      "evidence": "56 paths; 49 differ from master; stacked on connection work. Includes WGSL kernels, browser dispatch and WASM fallback coverage.",
+      "icc_alias": null,
+      "next_gate": "Compare residuals with current browser/WASM artifacts, select a focused lane, and capture live browser compute evidence on the integrated exact head."
+    },
+    {
+      "branch": "fix/v135f-port-webgpu562",
+      "head": "541cd1ca5a865d0fb65fd13d6812dd150c073411",
+      "release_lane": "v1.4.0 WebGPU",
+      "classification": "held",
+      "evidence": "925-path broad old integration train; 824 paths byte-equal to master, with 101 differing paths remaining.",
+      "icc_alias": null,
+      "next_gate": "Do not port wholesale. Compare each residual against current master/browser artifacts and live browser compute acceptance before selecting any path."
+    },
+    {
+      "branch": "fix/webgpu-vm-master",
+      "head": "5292924738a88dc5bf4ee81ab37bb7db3f09be3c",
+      "release_lane": "v1.4.0 WebGPU",
+      "classification": "held",
+      "evidence": "36 paths; 23 differ from master. Later VM-focused lane with overlap against the broader WebGPU candidate.",
+      "icc_alias": null,
+      "next_gate": "Compare VM residuals to the selected WebGPU lane and current browser artifacts; require live browser compute evidence."
+    },
+    {
+      "branch": "feat/abi-v2-stages-1-2",
+      "head": "083809c616e0d70ae0db4aab791121bcc58ff14f",
+      "release_lane": "shipped v1.3.5 ABI substrate",
+      "classification": "already-shipped",
+      "evidence": "ABI fingerprint header is byte-equal to master; ADR-0012 Stages 0–2 shipped through the release train.",
+      "icc_alias": null,
+      "next_gate": "No additional credit. Continue with ADR-0012 Stages 3–6 on the v1.4.1 lane."
+    },
+    {
+      "branch": "feat/xla-tpu-program",
+      "head": "c0e7edc0fdd4da1fc25678d6100343c1bbe51d2f",
+      "release_lane": "v1.4.5 accelerator",
+      "classification": "held",
+      "evidence": "Large overlapping XLA implementation line; overlaps newer production-completion and multi-device branches.",
+      "icc_alias": null,
+      "next_gate": "Use the production branch only as an audit source; compare stage-level source and evidence before choosing a current-master integration lane."
+    },
+    {
+      "branch": "feat/astra-xla-production",
+      "head": "2d8c73a63e52f6ed80f73b1ceeeed62b65bf445f",
+      "release_lane": "v1.4.5 accelerator",
+      "classification": "unmerged-promising",
+      "evidence": "126 paths; 120 differ from master. S1–S9 harness exists on this branch. S9 explicitly FAILS: device training restore, multi-device checkpoint reassembly and atomic pair publication are incomplete; multi-device gate requires at least two addressable PJRT devices.",
+      "icc_alias": null,
+      "next_gate": "Admit stages against the exact selected master head; keep missing-device results FAIL; finish S9 and resolve model-I/O/allocation dependencies before v1.4.5 release."
+    },
+    {
+      "branch": "feat/xla-astra-completion",
+      "head": "8ae4b3bd1111d8047e864f94e6257cc7f407827f",
+      "release_lane": "v1.4.5 accelerator",
+      "classification": "held",
+      "evidence": "145 commits ahead of its base and 118 differing paths; overlaps the selected XLA production audit branch.",
+      "icc_alias": null,
+      "next_gate": "Compare individual stage changes with the selected production branch; no whole-branch merge until conflicts and S9 evidence are reconciled."
+    },
+    {
+      "branch": "feat/xla-s8-multidevice",
+      "head": "b7a8425cf37152bf81d4e25952b1a2b52f5ed02d",
+      "release_lane": "v1.4.5 accelerator",
+      "classification": "held",
+      "evidence": "132 commits ahead of its base and 102 differing paths; overlaps XLA production branches.",
+      "icc_alias": null,
+      "next_gate": "Require 2+ addressable PJRT devices and stage-specific parity traces on a selected current-master integration head."
+    },
+    {
+      "branch": "feat/xla-s9-production",
+      "head": "ba5269da9da969f71cff70fcc66f625b1d3875aa",
+      "release_lane": "v1.4.5 accelerator",
+      "classification": "held",
+      "evidence": "131 commits ahead of its base and 108 differing paths; production stage remains unproven/incomplete in the combined XLA audit.",
+      "icc_alias": null,
+      "next_gate": "Close device training restore, multi-device checkpoint reassembly and atomic pair publication with bound traces before calling S9 ready."
+    },
+    {
+      "branch": "feat/core-dbsp",
+      "head": "278a942352c7982d665283cb85e4e5e599b47623",
+      "release_lane": "shipped library; v1.5+ circuits remain planned",
+      "classification": "already-shipped",
+      "evidence": "The pure-Eshkol core.dbsp library and test are byte-equal to master; native circuits, persistent incremental state and AD integration remain future work.",
+      "icc_alias": null,
+      "next_gate": "No library re-merge. Define separate v1.5+ gates for native circuits, persistent state and AD integration."
+    },
+    {
+      "branch": "feat/noesis-packaging",
+      "head": "181886c02fef78947af5933296a9aa8b62565b4b",
+      "release_lane": "shipped Noesis packaging",
+      "classification": "already-shipped",
+      "evidence": "Shipped through #496; canonical FindEshkol.cmake is byte-equal to master.",
+      "icc_alias": null,
+      "next_gate": "No re-merge. Track current cold-consumer package correction separately from this shipped compiler packaging work."
+    },
+    {
+      "branch": "feat/noesis-large-file-bench",
+      "head": "ca6d841946da0ac887cec2b7c7b57850c3f46c9b",
+      "release_lane": "shipped benchmark; future Noesis compatibility",
+      "classification": "already-shipped",
+      "evidence": "Shipped through #495; benchmark files match master, with only the old nightly workflow differing. Benchmark measurement is not a compiler scaling fix.",
+      "icc_alias": null,
+      "next_gate": "No re-merge. Keep future M2 downstream compatibility separate from the shipped benchmark."
+    },
+    {
+      "branch": "fix/noesis-ffi-ergonomics",
+      "head": "e4f7c183e5a964acecd53ef486f6dbbc9e2dff79",
+      "release_lane": "shipped FFI ergonomics",
+      "classification": "already-shipped",
+      "evidence": "Integrated through #161; branch ancestry is historical, not new implementation credit.",
+      "icc_alias": null,
+      "next_gate": "No re-merge. Verify only any new cold-package contract issue against the published v1.3.5 archive."
+    },
+    {
+      "branch": "docs/adr-0030-entry-and-symbols",
+      "head": "9a40dbf2e182d32425d2c359d256f86e9382caa1",
+      "release_lane": "v1.4.0 design",
+      "classification": "unmerged-promising",
+      "evidence": "Three documentation/index paths define a useful explicit program-entry/export contract; design acceptance is not implementation completion.",
+      "icc_alias": "eshkol-v14-adr-0030",
+      "next_gate": "Confirm current ADR acceptance and bind a separate implementation task/gate; do not count the design branch as shipped code."
+    },
+    {
+      "branch": "feat/v14-guw-analytic-oracle",
+      "head": "29065314225aeb26505838cc62e96a301b30324a",
+      "release_lane": "v1.3.6 / v1.4.0 AD acceptance",
+      "classification": "unmerged-promising",
+      "evidence": "Four focused paths; local JIT/AOT 2/2 analytic witness receipt lacks source head and fingerprint.",
+      "icc_alias": "eshkol_v14_guw_oracle (exists; evidence must be rebound)",
+      "next_gate": "Re-run the focused exact Taylor gate and bind its receipt to this exact commit and current master baseline before release credit."
+    },
+    {
+      "branch": "feat/v14-connection-oracle",
+      "head": "61af25f7c31b82fb02d3b6c935396cc49119f525",
+      "release_lane": "v1.4.0 connection oracle",
+      "classification": "held",
+      "evidence": "Adds a v1.4 completion-oracle harness and one HTTP metrics roundtrip test; the harness is a progress counter that intentionally exits 0 while expected FAIL events remain.",
+      "icc_alias": null,
+      "next_gate": "Current master already contains the harness. Use ICC readiness, not this shell exit code, as the release gate; register no duplicate branch alias."
+    }
+  ]
+}

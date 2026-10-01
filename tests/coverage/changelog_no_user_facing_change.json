@@ -102,6 +102,11 @@
       "pr": 725,
       "class": "ci",
       "reason": "Release and CI machinery only: the changelog gate grades a squash-merged release branch by its own history, and every lane-gated CI step checks LANE_ACTIVE under a new consistency rule. No shipped file changes."
+    },
+    {
+      "pr": 734,
+      "class": "ci",
+      "reason": "Raises the ARM64 full-suite CI job timeout and test timeout budgets; the same test command runs and no language, runtime, package or API behavior changes."
     }
   ]
 }
