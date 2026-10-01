@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Roadmap and branch portfolio distinguish patch work from experimental integration.**
+  The active feature inventory records branch ownership, release scope and pending
+  qualification for the separate integration build. (#728)
 - **Advanced mathematics press copy covers shipped exact and proof-backed
   capabilities.** It adds bounded examples for exact rational linear algebra,
   rigorous enclosures, numerical methods, geometry, topology, gauge theory, and
   Navier–Stokes, with explicit limits on what each example establishes. (#726)
+  The post-tag documentation correction leaves the frozen v1.3.5 release record unchanged.
 - **Mixed exact/inexact rigorous interval arithmetic preserves containment.**
   Exact rational endpoints are converted outward until exact comparisons certify
   the bounds; indeterminate non-finite endpoint cases fail closed. (#727)

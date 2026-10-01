@@ -189,6 +189,21 @@ void CodegenContext::emitSequenceFill(llvm::Value* sequence_tagged,
     emitSlotStoreStatusCheck(status, who);
 }
 
+void CodegenContext::emitConstructorAllocationCheck(llvm::Value* pointer) {
+    llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+    auto* success = llvm::BasicBlock::Create(context_, "constructor_allocated", fn);
+    auto* failure = llvm::BasicBlock::Create(context_, "constructor_failed", fn);
+    builder_.CreateCondBr(builder_.CreateIsNotNull(pointer), success, failure);
+    builder_.SetInsertPoint(failure);
+    auto raise = module_.getOrInsertFunction("eshkol_raise_allocation_failure",
+        llvm::FunctionType::get(voidType(), {ptrType(), sizeType()}, false));
+    auto* call = builder_.CreateCall(raise, {builder_.CreateGlobalString("object constructor"),
+        llvm::ConstantInt::get(sizeType(), 0)});
+    call->setDoesNotReturn();
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(success);
+}
+
 // === Runtime Guard Failure ===
 //
 // See the header for the full history: a guard whose diagnostic was conditional

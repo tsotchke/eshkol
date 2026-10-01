@@ -10,12 +10,11 @@ sources:
 ---
 # ESKM v2: experimental internal preflight contract
 
-**Status: experimental, test-only; the format decision remains Proposed.**
-This page describes the private preflight validator staged in
-`lib/core/eskm_v2_preflight.c`. It is not a supported public checkpoint format
-or an installed API. Public model and tensor loading/saving retain their
-existing ESKM v1 behavior. The prototype may change following maintainer
-review of the [format decision](../../design/ESKM_V2_FORMAT_DECISION.md).
+**Status: experimental; the format decision remains Proposed.**
+The private preflight validator and the explicitly gated hosted-engine prototype
+are review evidence, not an accepted public format or installed API. Ordinary
+builds retain ESKM v1 behavior. See [experimental integration](#experimental-hosted-integration)
+for the two opt-ins required to exercise loading and saving.
 
 The validator checks a complete immutable byte buffer without constructing
 tensors, doing I/O, allocating heap memory, or invoking callbacks. Success
@@ -67,7 +66,8 @@ byte count (`u32`), then the key bytes and value bytes. Entries must exactly
 consume the payload. An empty annotation table and empty values are valid;
 keys must be nonempty and unique by raw bytes. Keys and values are opaque and
 may contain NUL or non-UTF-8 bytes. The validator accepts any unique key order.
-Canonical writer sorting and annotation exposure/preservation are future work.
+The experimental writer emits no annotations. Canonical sorting of user-supplied
+annotations and annotation exposure/preservation remain future API decisions.
 
 ## Tensor records
 
@@ -134,14 +134,9 @@ empty table are distinguished by `has_annotations`. Failure clears the result
 entirely and returns only a status and byte offset, so no partial records become
 observable.
 
-The buffer limit is an admission check on already supplied bytes. It cannot
-prevent a caller from allocating those bytes beforehand, and is not a total
-process-memory limit. Before public reader integration, the project still needs
-approved numeric backend record/name/rank/dimension/element limits, file
-admission before buffering, aggregate memory accounting including materialized
-tensors, and transactional cleanup/publication guarantees. Those gates remain
-open under GK-SER-05a/05b; this prototype neither changes v1 admission nor
-imposes backend signed-dimension limits as new wire rules.
+The standalone validator's buffer limit applies to bytes already supplied.
+It is not a process-memory limit. The hosted integration adds file admission
+before buffering and a separate provisional backend policy described below.
 
 ## Failure contract
 
@@ -187,8 +182,8 @@ their own diagnostics without relying on a partial result.
 
 ## Scope and validation
 
-The parser is compiled into private tests only and is not linked into public
-model I/O, the VM, or its browser bundle. The standalone runner builds C and
+The parser is built into private tests and, only when explicitly enabled,
+hosted native/VM model I/O. The browser build does not enable v2. The standalone runner builds C and
 C++ consumers without LLVM:
 
 ```sh
@@ -211,10 +206,105 @@ rejection classes and precedence, reduced limit boundaries, and negative
 controls that deliberately change expected metadata/status/offset. Existing v1
 fixtures remain unchanged.
 
-This is preparatory evidence, not completion of the accepted GK-SER-05a gate.
-There are no public v2 producers or consumers, so the native JIT/AOT and VM
-source/bytecode v2 interoperability matrix remains future integration work.
-Maintainer acceptance of the wire layout, resource policy, and public contract
-is still required before public integration. An opt-in writer/API follows
-reader integration; default-format changes, compression, new dtypes, and
-checkpoint-publication changes are outside this prototype.
+## Experimental hosted integration
+
+Configure with `-DESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2=ON`, then set exactly one
+process environment value before invoking JIT, AOT, VM source or VM bytecode:
+
+| `ESHKOL_EXPERIMENTAL_ESKM_V2` | Readers | Writers |
+|---|---|---|
+| Unset or empty | v1 only | byte-identical v1 |
+| `read` | v1 and experimental v2 | v1 |
+| `write` | v1 and experimental v2 | v2 |
+
+A nonempty unknown value, or a request in a build without the CMake option,
+refuses checkpoint I/O with a diagnostic. The policy is process-scoped and
+applies to existing `tensor-load`, `model-load`, `tensor-save`, and `model-save`;
+it is not a new per-call API. Do not mutate the environment concurrently with
+checkpoint I/O. Ordinary builds and invocations preserve default v1 saves.
+
+V2 writers use the existing atomic temporary-file/rename helper, zero required
+features and zero extension bytes. This is the canonical encoding of absent
+annotations. Readers validate every optional TLV and annotation before skipping
+it. Model/tensor APIs expose only tensors: annotation and unknown-extension
+bytes are **not preserved by load/save**. Such metadata preservation needs a
+separate accepted API; this prototype does not claim a metadata round trip.
+
+The following backend limits are provisional inclusive ceilings, separate
+from wire validity. A parser-valid file can be refused by a backend.
+
+| Resource | Experimental hosted ceiling |
+|---|---:|
+| Whole file before buffering | 256 MiB |
+| Records | 4,096 |
+| Name bytes per record | 4,096; embedded NUL refused |
+| Rank | 8 |
+| Each dimension and every row-major stride | `INT64_MAX` |
+| Aggregate elements | 16,777,216 |
+| Checkpoint incremental memory admission budget | 512 MiB |
+
+Each engine's configured tensor-element limit further lowers the aggregate ceiling.
+Signed dimensions/strides are checked even for empty tensors. The buffer,
+structural preflight, backend admission, and complete record boundary checks
+all precede tensor allocation. A file that grows after the size check is
+refused on the final EOF check. No new v1 backend limits are introduced.
+
+The shared accounting charges wire bytes plus 32 bytes per element, four bytes
+per name byte, 8,192 bytes per record and the 16 KiB parser workspace. This
+conservatively covers parsing copies, staging payloads, padding, tensor/string/
+list objects, VM temporary element copies and its block over-allocation. Any
+replacement VM object-index or region-membership arrays are additionally
+charged in full before exact-capacity reservation. This bounds incremental
+checkpoint allocations; it is not an RSS cap or a bound on a caller's existing
+heap, libc allocator bookkeeping, page rounding or stdio buffers.
+
+Native loading materializes into a private bounded arena; successful loads
+splice the entire block chain into the destination's ordinary allocation chain
+under its lock. Scope rewinds and lexical-region ownership therefore see the
+loaded objects. Bounded native destination arenas refuse v2 rather than adopt
+capacity outside their configured bound. This is an experimental limitation.
+VM loading uses a private 8 KiB-block staging arena, independent of any outer
+region's block-size hint, and pre-reserves exact table capacities. Failures free
+staging blocks and restore live/recycled object slots and region membership;
+reserved table capacity may remain for reuse. Results become observable only
+after complete construction. The existing VM heap watchdog is checked against
+the combined heap on commit. Atomic saves retain the old destination on failure.
+
+On POSIX hosts, run focused checks and the four-engine matrix after building the
+enabled targets (the native malloc-site injection additionally requires Linux):
+
+```sh
+cmake --build build --target eshkol-run eshkol-vm-standalone-test \
+  eskm_v2_backend_test eskm_v2_runtime_test eskm_v2_vm_allocation_test
+ctest --test-dir build -R 'eskm_v2_(backend|runtime|vm_allocation)_test' --output-on-failure
+python3 scripts/run_eskm_v2_engine_parity.py build/eshkol-run \
+  build/eshkol-vm-standalone-test --self-test
+```
+
+The backend unit test pins lowered inclusive limits and refusal controls.
+Native tests exercise late staging failure, scope ownership, bounded-arena
+refusal, public-loader malloc failures and C++ parser allocation failures.
+VM tests inject allocator failures while loading multi-record data and check
+arena/slot rollback, including a recycled slot. Both engines bound cyclic
+writer lists before unbounded traversal or record-vector growth. The matrix checks independently constructed
+bytes and cross-engine rewrites, scalar/empty checkpoints, metadata skipping,
+refusal controls and region lifetimes. Immutable v1 and v2 fixtures are unchanged.
+
+Before this can become a supported API, maintainers still need to accept the
+wire layout and numeric limits, decide metadata exposure/preservation and
+per-call opt-in/error behavior, and resolve the bounded-native-arena limitation.
+The decision remains Proposed; default-format changes, compression and new
+dtypes are outside this prototype.
+
+Validation on Linux with Clang 22 and LLVM 21: the enabled four-engine matrix
+passed all 16 producer/consumer pairs (40 produced files, 160 exact v2 rewrites,
+80 default/read-mode v1 outputs, 8 metadata-discard rewrites, 16 poisoned region
+escape rewrites), 84 refusal/diagnostic checks and 304 wrong-oracle controls.
+A separate default-OFF build passed the v1 model/tensor suites and rejected v2
+in native JIT and VM source with unset/read/write policies. The browser bundle
+was regenerated with pinned emsdk 4.0.22; v2 remains disabled there, and the
+sqrt/gradient/tensor-shape Node smoke checks passed.
+The three focused v2 tests also passed a full AddressSanitizer and
+UndefinedBehaviorSanitizer build with leak detection enabled; native public
+loading refused six injected malloc failures and three injected C++ allocation
+failures, and VM loading rolled back nine injected allocation failures.

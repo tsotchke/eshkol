@@ -74,6 +74,7 @@ llvm::Value* CollectionCodegen::allocConsCell(llvm::Value* car_val, llvm::Value*
     // Allocate tagged cons cell with object header (takes only arena pointer).
     // Returns pointer to cons cell data; header is at (ptr - 8).
     llvm::Value* cons_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr}, "cons_cell");
+    ctx_.emitConstructorAllocationCheck(cons_ptr);
 
     // Create allocas at function entry to ensure dominance
     llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
@@ -1343,6 +1344,7 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, length});
+    ctx_.emitConstructorAllocationCheck(vec_ptr);
 
     // Store length at beginning (offset 0)
     llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
@@ -1418,6 +1420,7 @@ llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), num_elems)});
+    ctx_.emitConstructorAllocationCheck(vec_ptr);
 
     // Store length at beginning (offset 0)
     llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());

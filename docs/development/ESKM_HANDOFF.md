@@ -3,7 +3,7 @@
 ## Current checkpoint — 2026-09-23
 
 The public master baseline is `c3372a49`; the pending v1.3.5 release candidate
-is `2bed1aa9` in [#628](https://github.com/tsotchke/eshkol/pull/628). Inclusion
+is `cfc72b37` in [#628](https://github.com/tsotchke/eshkol/pull/628). Inclusion
 in that candidate is not a claim that a change has reached master or shipped.
 
 | Work | Current disposition | Next action |
@@ -13,12 +13,20 @@ in that candidate is not a claim that a change has reached master or shipped.
 | Public tensor parity | On master through #620, superseding #617 | Keep testing the public ESKM dispatch |
 | Scalar/empty VM materialization | #698 closed as included in pending #628 | Verify the final merged release SHA; no replacement PR is needed |
 | Private v2 validator | #699 closed as included in pending #628 | Public v2 remains experimental and the format decision remains Proposed |
-| Default v2 preflight runner | Integration regression repaired in [#718](https://github.com/tsotchke/eshkol/pull/718) | Land the small runner fix |
-| Fresh release build | Missing `<cstring>` prerequisite repaired in [#719](https://github.com/tsotchke/eshkol/pull/719) | Land the include fix |
+| Default v2 preflight runner | [#718](https://github.com/tsotchke/eshkol/pull/718) merged into the release (`8b20f3ce`) | Retain default and sanitizer checks |
+| Fresh release build | [#719](https://github.com/tsotchke/eshkol/pull/719) merged into the release (`9dc024e4`) | Include prerequisite is complete |
+| Constructor/handler hardening | Separate [draft #721](https://github.com/tsotchke/eshkol/pull/721), preserving the release promotion design | Post-release review/retargeting and platform CI |
+| Experimental v2 readers/writers | [Draft #722](https://github.com/tsotchke/eshkol/pull/722); source `65f711b4`, explicit build/runtime opt-in | Wire/cap/API acceptance, metadata policy and bounded native destination support remain open |
 
-The immediate contributor work is experimental v2 reader/writer integration,
-explicit admission and cleanup evidence, and a separate constructor/handler
-allocation-hardening follow-up. The latter preserves the release's promotion
+The two follow-up drafts now contain implementation and Linux evidence. V2's
+16-pair matrix, 84 diagnostic refusals and 304 oracle controls pass; a separate
+default-OFF build passes five compatibility tests, and a full ASan/UBSan build
+with leak detection passes all three materialization/admission tests. See the
+[experimental reference](../reference/tensors/eskm-v2.md#experimental-hosted-integration)
+for limits and commands. Metadata is validated then discarded; the writer emits
+absent annotations. These results do not accept or ship the format.
+
+The separate constructor/handler allocation follow-up preserves the promotion
 transaction: #714's parameter publication fix and failpoint approach were
 incorporated, while its alternative transaction was not. The maintainer
 explicitly invited the remaining allocation checks as a separate post-release

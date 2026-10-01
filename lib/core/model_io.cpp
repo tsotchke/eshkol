@@ -1,8 +1,10 @@
 #include <eshkol/model_io.h>
+#include <eshkol/core/resource_limits.h>
 #include <eshkol/tensor_validation.h>
 
 #include "arena_memory.h"
 #include "model_io_atomic.h"
+#include "eskm_v2_experimental.h"
 
 #include <array>
 #include <bit>
@@ -215,13 +217,19 @@ bool read_file(const char* path, std::vector<std::uint8_t>* bytes) {
         return false;
     }
 
-    bytes->assign(static_cast<std::size_t>(size), 0);
+    if (!eskm_v2_file_admit(file, static_cast<std::uint64_t>(size))) {
+        std::fclose(file);
+        return false;
+    }
+    try { bytes->assign(static_cast<std::size_t>(size), 0); }
+    catch (...) { std::fclose(file); throw; }
     if (size > 0 && std::fread(bytes->data(), 1, bytes->size(), file) != bytes->size()) {
         std::fclose(file);
         return false;
     }
+    const bool complete = std::fgetc(file) == EOF && !std::ferror(file);
     std::fclose(file);
-    return true;
+    return complete;
 }
 
 /** @brief Bounds-checked cursor over an in-memory byte buffer.
@@ -306,13 +314,31 @@ bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& rec
      * this is where the "file-write" capability is required. */
     if (!eshkol_capability_require("file-write")) return false;
 
+    const int mode = eskm_v2_mode();
+    if (mode < 0) return false;
+    if (mode == 2) {
+        eskm_v2_backend_limits limits = ESKM_V2_BACKEND_DEFAULT;
+        if (eshkol_get_limits()->max_tensor_elements < limits.elements)
+            limits.elements = eshkol_get_limits()->max_tensor_elements;
+        eskm_v2_budget budget{};
+        budget.wire_bytes = 28;
+        for (const auto& record : records) {
+            std::uint64_t total;
+            if (!record.tensor ||
+                (record.tensor->num_dimensions && !record.tensor->dimensions) ||
+                !eskm_v2_account(&budget, &limits, record.name.size(), record.tensor->num_dimensions,
+                                 record.tensor->dimensions, &total) ||
+                total != record.tensor->total_elements || (total && !record.tensor->elements)) return false;
+        }
+    }
     FileWriter writer(path);
     if (!writer.good()) return false;
 
     if (!writer.write_bytes(kMagic.data(), kMagic.size())) return false;
-    if (!writer.write_u32(kFormatVersion)) return false;
+    if (!writer.write_u32(mode == 2 ? 2 : kFormatVersion)) return false;
     if (!writer.write_u32(static_cast<std::uint32_t>(records.size()))) return false;
     if (!writer.write_u32(0)) return false;
+    if (mode == 2 && !writer.write_u64(0)) return false; // Canonical absent annotations.
 
     for (const TensorRecordView& record : records) {
         if (!record.tensor) return false;
@@ -341,7 +367,9 @@ bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& rec
  *  @param path Source file path.
  *  @param records Output vector of parsed records.
  *  @return True on a fully consumed, valid file; false on any corruption or mismatch. */
-bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records) {
+bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records,
+                      std::size_t* staging_bytes = nullptr) {
+    if (staging_bytes) *staging_bytes = 0;
     if (!path || !records) return false;
 
     /* A malformed header can advertise billions of records/dimensions. Keep
@@ -374,7 +402,21 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
     if (!reader.read_u32(&version) || !reader.read_u32(&tensor_count) || !reader.read_u32(&flags)) {
         return false;
     }
-    if (flags != 0 || version != kFormatVersion) return false;
+    if (version == 2) {
+#ifdef ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2
+        eskm_v2_backend_limits limits = ESKM_V2_BACKEND_DEFAULT;
+        if (eshkol_get_limits()->max_tensor_elements < limits.elements)
+            limits.elements = eshkol_get_limits()->max_tensor_elements;
+        eskm_v2_result parsed;
+        eskm_v2_budget budget;
+        if (eskm_v2_mode() <= 0 ||
+            !eskm_v2_backend_admit(bytes.data(), bytes.size(), &limits, &parsed, &budget)) return false;
+        reader.offset = static_cast<std::size_t>(parsed.records_offset);
+        if (staging_bytes) *staging_bytes = static_cast<std::size_t>(budget.materialized_bytes + 64);
+#else
+        return false;
+#endif
+    } else if (flags != 0 || version != kFormatVersion) return false;
 
     records->clear();
     if (reader.offset > reader.size ||
@@ -466,6 +508,34 @@ bool tensor_from_record(arena_t* arena, const ParsedTensorRecord& record, eshkol
     return true;
 }
 
+/* A failed experimental materialization frees its private bounded arena.
+ * Splicing into the ordinary block chain preserves scope/region ownership.
+ * Bounded destinations cannot adopt extra capacity and deliberately refuse v2. */
+class CheckpointArena {
+public:
+    CheckpointArena(arena_t* destination, std::size_t bytes) : destination_(destination) {
+        arena_ = bytes ? (destination && !destination->bounded ? arena_create_bounded(bytes) : nullptr)
+                       : destination;
+    }
+    ~CheckpointArena() { if (arena_ && arena_ != destination_) arena_destroy(arena_); }
+    arena_t* get() const { return arena_; }
+    void commit() {
+        if (!arena_ || arena_ == destination_) return;
+        arena_lock(destination_);
+        arena_block_t* tail = arena_->current_block;
+        while (tail->next) tail = tail->next;
+        tail->next = destination_->current_block;
+        destination_->current_block = arena_->current_block;
+        destination_->total_allocated += arena_->total_allocated;
+        arena_->current_block = nullptr;
+        arena_->total_allocated = 0;
+        arena_unlock(destination_);
+    }
+private:
+    arena_t* destination_;
+    arena_t* arena_;
+};
+
 /** @brief Extract named-tensor records from an Eshkol association list.
  *  Walks a proper list of (name . tensor) pairs, validating that each name is a
  *  string/symbol and each value is a tensor.
@@ -475,9 +545,12 @@ bool tensor_from_record(arena_t* arena, const ParsedTensorRecord& record, eshkol
 bool extract_model_entries(const eshkol_tagged_value_t* list_value, std::vector<TensorRecordView>* out) {
     if (!list_value || !out) return false;
     out->clear();
+    const int mode = eskm_v2_mode();
+    if (mode < 0) return false;
 
     eshkol_tagged_value_t current = *list_value;
     while (is_pair(current)) {
+        if (mode == 2 && out->size() >= ESKM_V2_BACKEND_RECORDS) return false;
         const eshkol_tagged_value_t entry_value = pair_car(current);
         if (!is_pair(entry_value)) return false;
 
@@ -485,6 +558,11 @@ bool extract_model_entries(const eshkol_tagged_value_t* list_value, std::vector<
         const eshkol_tagged_value_t tensor_value = pair_cdr(entry_value);
         const char* name = tagged_c_string(&name_value);
         if (!name || !tagged_is_tensor(&tensor_value)) return false;
+        if (mode == 2) {
+            const auto bytes = ESHKOL_GET_HEADER(name)->size;
+            if (!bytes || bytes > ESKM_V2_BACKEND_NAME + 1 ||
+                std::memchr(name, 0, bytes) != name + bytes - 1) return false;
+        }
 
         out->push_back(TensorRecordView{
             .name = name,
@@ -588,7 +666,8 @@ extern "C" void eshkol_tensor_load_tagged(arena_t* arena,
     if (!arena || !path) return;
 
     std::vector<ParsedTensorRecord> records;
-    if (!parse_checkpoint(path, &records)) {
+    std::size_t staging_bytes = 0;
+    if (!parse_checkpoint(path, &records, &staging_bytes)) {
         report_checkpoint_failure("tensor-load", path);
         return;
     }
@@ -599,7 +678,9 @@ extern "C" void eshkol_tensor_load_tagged(arena_t* arena,
     }
 
     eshkol_tensor_t* tensor = nullptr;
-    if (!tensor_from_record(arena, records.front(), &tensor)) return;
+    CheckpointArena transaction(arena, staging_bytes);
+    if (!tensor_from_record(transaction.get(), records.front(), &tensor)) return;
+    transaction.commit();
     *result = make_heap_ptr(tensor);
 }
 
@@ -851,9 +932,13 @@ extern "C" void eshkol_model_save_tagged(arena_t* arena,
     const char* path = tagged_c_string(path_tv);
     if (!path) return;
 
-    std::vector<TensorRecordView> entries;
-    if (!extract_model_entries(entries_tv, &entries)) return;
-    *result = make_bool(write_checkpoint(path, entries));
+    try {
+        std::vector<TensorRecordView> entries;
+        if (!extract_model_entries(entries_tv, &entries)) return;
+        *result = make_bool(write_checkpoint(path, entries));
+    } catch (const std::exception&) {
+        *result = make_bool(false);
+    }
 }
 
 /** @brief Load a whole model (Scheme `model-load`) from a checkpoint file.
@@ -870,11 +955,15 @@ extern "C" void eshkol_model_load_tagged(arena_t* arena,
     if (!arena || !path) return;
 
     std::vector<ParsedTensorRecord> records;
-    if (!parse_checkpoint(path, &records)) {
+    std::size_t staging_bytes = 0;
+    if (!parse_checkpoint(path, &records, &staging_bytes)) {
         report_checkpoint_failure("model-load", path);
         return;
     }
-    if (!build_model_list(arena, records, result)) {
+    CheckpointArena transaction(arena, staging_bytes);
+    if (!build_model_list(transaction.get(), records, result)) {
         *result = make_null();
+        return;
     }
+    transaction.commit();
 }

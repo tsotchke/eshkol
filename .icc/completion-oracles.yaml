@@ -2190,11 +2190,15 @@ oracles:
       # Networking (#145/#146/#148/#150/#161)
       # ─────────────────────────────────────────────────────────
       - runtime_event:
-          event_kinds: [v1_4_connection]
+          event_kinds: [test_result]
           event_names: ["v14_http_server_roundtrip"]
           event_values: ["PASS"]
+          event_schemas: [icc.test_execution.v1]
+          event_statuses: [PASS]
+          payload_predicate: eshkol_http_roundtrip_v1
+          event_source_policy: exact_clean_current
         severity: high
-        label: 'HTTP server (#145): http-server-create/-accept/-respond/-close round-trip a real GET request over loopback (fork+client, tests/v1_2_edge_cases/http_server_smoke_test.sh)'
+        label: 'HTTP server (#145) loopback evidence binds the registered checkout and validates runner/stdlib/build-fingerprint hashes before PASS can count (tests/v1_2_edge_cases/http_server_smoke_test.sh)'
         action: run_v14_connection_gate
 
       - runtime_event:

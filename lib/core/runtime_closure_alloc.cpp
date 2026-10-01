@@ -41,6 +41,12 @@ eshkol_closure_env_t* arena_allocate_closure_env(arena_t* arena, size_t num_capt
         eshkol_warn("Allocating closure environment with zero captures");
     }
 
+    if (num_captures > (SIZE_MAX - sizeof(eshkol_closure_env_t)) /
+                           sizeof(eshkol_tagged_value_t)) {
+        eshkol_error("Closure environment capture count overflow");
+        return nullptr;
+    }
+
     const size_t size = sizeof(eshkol_closure_env_t) +
                         (num_captures * sizeof(eshkol_tagged_value_t));
 
@@ -206,9 +212,8 @@ eshkol_closure_t* arena_allocate_closure_with_header(arena_t* arena, uint64_t fu
 
     if (actual_num_captures > 0) {
         closure->env = arena_allocate_closure_env(arena, actual_num_captures);
-        if (closure->env) {
-            closure->env->num_captures = packed_info;
-        }
+        if (!closure->env) return nullptr;
+        closure->env->num_captures = packed_info;
     } else {
         closure->env = nullptr;
     }

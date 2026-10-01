@@ -277,7 +277,7 @@ manifest again.
 | S-expression parser | Yes | Explicit continuation stack | Stack use independent of nesting depth; gated at 16,000 levels on an 8 MiB stack |
 | Macro system | Yes | Hygienic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
-| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,353 lines |
+| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,371 lines |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
 | **Optimizations** |
@@ -529,7 +529,7 @@ manifest again.
 | Early stopping | Yes | Production | Via user code |
 | **Model Operations** |
 | Save/load weights | Yes | v1.2 | Via file I/O; `model_io_test` PASS (`ctest -R model_io_test`) — corrected 2026-08-25 from `WIP`, conformity audit item d4 |
-| Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`, 880 lines) |
+| Model serialization | Yes | v1.2 | Native `.eshkol-model` serialiser (`lib/core/model_io.cpp`, 969 lines) |
 | ONNX export | Yes | v1.2 | `lib/core/onnx_export.c` (239 lines); `tests/v1_2_edge_cases/onnx_export_test.esk` |
 | **Datasets** |
 | In-memory datasets | Yes | Production | Lists/tensors |
