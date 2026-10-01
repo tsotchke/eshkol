@@ -7,17 +7,16 @@ disagree, `ROADMAP.md` is correct and this document needs updating.
 `docs/NOESIS_TRAJECTORY.md` is the Noesis-readiness view of the same plan;
 both stay consistent with `ROADMAP.md`.
 
-**ADR-0000 cross-reference (added 2026-08-25, conformity audit item b6):**
-this document previously never cited
-[ADR-0000](design/adr/0000-unified-trajectory.md), the 14-stage
-architectural ladder that sequences the load-bearing rewrites (binding/type
-identity, OALR ABI v2, staged AD kernels, DBSP, resident sessions)
-underneath the release lines below. As of `4bf871a0` (2026-08-25): **0 of
-14 stages SATISFIED, 2 PARTIAL, 12 NOT STARTED** — see ADR-0000's own
-"Attainment" section and `docs/design/AUDIT_2026_08_25_RESOLUTION.md` for
-the full breakdown. The engineering-detail task tiers below (M0-M4) are
-release-line work; ADR-0000's stages are the substrate they build on, and
-the two should be read together, not as competing plans.
+**ADR-0000 cross-reference:** [ADR-0000](design/adr/0000-unified-trajectory.md)
+defines the 14-stage architectural ladder underneath the release lines. At
+source snapshot `34fb71417df7273aba11889091a2c2542c8eedff` (2026-09-28), its
+attainment record is **2 stages SATISFIED, 1 PARTIAL, and 11 NOT STARTED**.
+This replaces this document's stale `0/14, 2 partial` summary. See the
+[reconciled release ladder](RELEASE_LADDER.md) for the current release scope,
+dependencies, owners, producers, acceptance criteria, blockers, and exact
+snapshot status; it also distinguishes the v1.4.0 PJRT interface spike from
+the parallel v1.4.5 device runtime and v1.5 native mesh work. The engineering
+tiers below remain detail for their respective release lines.
 
 Two axes are tracked side-by-side:
 
@@ -124,11 +123,12 @@ Verification snapshot:
 | v1.2.x | scale | May 2026 | Model I/O + Noesis M0 closeout |
 | v1.3.0-evolve through v1.3.4-evolve | evolve | Jul-Aug 2026 — **SHIPPED** (v1.3.4-evolve tagged 2026-08-19, commit `694c3179`) | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12) on the LLVM backend, 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
 | v1.3.5-evolve | evolve | **SHIPPED 2026-09-22** | Consolidation: parser with no recursion budget, dense tensor autodiff, VM region reclamation, multi-shot continuations, certified enclosures, validated ESKM v1 |
-| v1.4.0 | connection | 2026-10-15 | Networking + concurrency + linear types |
-| v1.4.1 | ABI | 2026-11-06 | OALR ABI v2 Phase B + object-ABI migration |
-| v1.5.0 | intelligence | 2026-12-05 | The full neuro-symbolic logic system |
-| v1.4.5 | accelerate | Q1 2027 (parallel track) | Device runtime on accelerator silicon |
-| v1.5.1 | — | Q1 2027 | DBSP circuits + resident sessions |
+| v1.3.6 | evolve | Conditional | #727 interval work on reproduction; cold embedding package contract correction; #721 only after independent gates; #722 experimental. Full SDK is v1.4.1. |
+| v1.4.0 | connection | 2026-10-15 (prior target; joint rebaseline review) | Networking + concurrency + linear types; SBLC first slice; PJRT CPU spike and XLA multi-device single-host; native collectives over sockets pending owner R7 ruling |
+| v1.4.1 | ABI | 2026-11-06 (prior target; joint rebaseline review) | OALR ABI v2 Phase B, ADR-0012 stages 3-6, full embedding SDK |
+| v1.4.5 | accelerate | Joint rebaseline required (old target Q1 2027) | Device runtime on accelerator silicon; must publish before v1.5.0 |
+| v1.5.0 | intelligence | Conditional; joint rebaseline required (old target 2026-12-05) | The full neuro-symbolic logic system; native mesh/data-parallel gates |
+| v1.5.1 | — | Q1 2027 (prior target) | DBSP circuits + resident sessions |
 | v1.6 | reasoning | Q2 2027 | Production logic engine |
 | v1.7 | synthesis | Q3-Q4 2027 | Self-writing programs |
 | v1.8 | platform | Q4 2027 | Windowing + audio + embedded |
@@ -573,7 +573,7 @@ separate — the substrate is ready).
 
 ---
 
-## v1.5 — "intelligence" (target: 2026-12-05)
+## v1.5 — "intelligence" (date: conditional on v1.4.5 publication)
 
 Neuro-symbolic bridge. Unblocks Noesis M2 (Mneme at scale).
 
