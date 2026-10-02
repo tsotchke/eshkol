@@ -1,0 +1,11 @@
+(define total-passes 1000000)
+(define (loop i acc)
+  (guard (e (#t acc))
+    (if (>= i total-passes)
+        acc
+        (let ((scratch (make-list 12 i))
+              (value (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0 6.0))))
+          (loop (+ i 1) (+ acc (length scratch) (if (= value 32.0) 0 1)))))))
+(let ((result (loop 0 0)))
+  (display "[his_gate_plus_tensor] passes=") (display total-passes) (display " result=") (display result) (newline)
+  (if (= result (* total-passes 12)) (begin (display "PASS") (newline)) (begin (display "FAIL") (newline))))

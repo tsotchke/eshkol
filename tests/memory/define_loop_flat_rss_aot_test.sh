@@ -6,6 +6,7 @@
 # 10k/50k/100k slope checks for the Eliot named-let list, discarded tensor
 # literal, and narrow tensor-dot forms. The slope check compares high-water RSS
 # at different pass counts so a short run cannot look flat by itself.
+# The original million-iteration tensor-dot report is also gated unchanged.
 #
 # Unlike scripts/run_rss_bounded_test.sh (which gates the JIT `-r` path),
 # this gate is AOT-focused: it compiles each source ahead-of-time with
@@ -50,8 +51,9 @@ SRC="$REPO_ROOT/tests/memory/define_loop_flat_rss_aot_test.esk"
 NAMED_SRC="$REPO_ROOT/tests/memory/named_let_flat_rss_aot_test.esk"
 TENSOR_SRC="$REPO_ROOT/tests/memory/define_loop_discarded_tensor_flat_rss_aot_test.esk"
 DOT_SRC="$REPO_ROOT/tests/memory/define_loop_tensor_dot_flat_rss_aot_test.esk"
+DOT_REPORT_SRC="$REPO_ROOT/tests/memory/fixtures/define_loop_tensor_dot_report.esk"
 EXIT_PROBE_SRC="$REPO_ROOT/tests/features/iter_scope_exit_arg_order_test.esk"
-for source in "$SRC" "$NAMED_SRC" "$TENSOR_SRC" "$DOT_SRC" "$EXIT_PROBE_SRC"; do
+for source in "$SRC" "$NAMED_SRC" "$TENSOR_SRC" "$DOT_SRC" "$DOT_REPORT_SRC" "$EXIT_PROBE_SRC"; do
     if [ ! -f "$source" ]; then
         echo "define_loop_flat_rss_aot_test.sh: $source not found." >&2
         exit 2
@@ -303,7 +305,12 @@ if run_slope_gate tensor_literal "$TENSOR_SRC" total-passes; then
 else
     fail=1
 fi
-if ! run_slope_gate tensor_dot "$DOT_SRC" total-passes; then fail=1; fi
+dot_slope_ok=0
+if run_slope_gate tensor_dot "$DOT_SRC" total-passes; then
+    dot_slope_ok=1
+else
+    fail=1
+fi
 
 echo
 echo "--- exact 1M discarded-tensor proof after bounded slope passes ---"
@@ -326,6 +333,25 @@ if [ "$tensor_slope_ok" -eq 1 ]; then
     fi
 else
     echo "SKIP: tensor-literal AOT 1M because its bounded slope gate failed."
+fi
+
+echo
+echo "--- original 1M tensor-dot report after bounded slope passes ---"
+if [ "$dot_slope_ok" -eq 1 ]; then
+    run_aot "$DOT_REPORT_SRC" "$WORK/tensor_dot_report_1000000_bin"
+    if [ "$FR_COMPILE_RC" -ne 0 ] || [ "$FR_RUN_RC" -ne 0 ] ||
+       ! grep -Fqx "[his_gate_plus_tensor] passes=1000000 result=12000000" "$FR_OUT" ||
+       ! grep -Fqx "PASS" "$FR_OUT" ||
+       [ "$FR_RSS_MB" -le 0 ] || [ "$FR_RSS_MB" -gt "$CEILING_MB" ] ||
+       [ "$FR_ARENA_BYTES" -gt 10000000 ]; then
+        echo "FAIL: original tensor-dot AOT 1M report exit=$FR_RUN_RC rss=${FR_RSS_MB}MB arena=${FR_ARENA_BYTES}B"
+        cat "$FR_OUT"
+        fail=1
+    else
+        echo "PASS: original tensor-dot AOT 1M result=12000000 peak_rss=${FR_RSS_MB}MB arena=${FR_ARENA_BYTES}B"
+    fi
+else
+    echo "SKIP: original tensor-dot AOT 1M because its bounded slope gate failed."
 fi
 
 echo

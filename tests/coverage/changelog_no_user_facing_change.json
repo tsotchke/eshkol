@@ -107,6 +107,11 @@
       "pr": 734,
       "class": "ci",
       "reason": "Raises the ARM64 full-suite CI job timeout and test timeout budgets; the same test command runs and no language, runtime, package or API behavior changes."
+    },
+    {
+      "pr": 735,
+      "class": "test-only",
+      "reason": "Adds the supplied million-iteration guarded tensor-dot fixture and checks its semantic result, peak RSS and arena use in the existing AOT test harness; shipped compiler code and package contents are unchanged."
     }
   ]
 }
