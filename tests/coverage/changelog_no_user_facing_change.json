@@ -12,6 +12,11 @@
       "pr": 735,
       "class": "test-only",
       "reason": "Adds the supplied million-iteration guarded tensor-dot fixture and checks its semantic result, peak RSS and arena use in the existing AOT test harness; shipped compiler code and package contents are unchanged."
+    },
+    {
+      "pr": 736,
+      "class": "release-machinery",
+      "reason": "Moves the active release record and accounting boundary to v1.3.6, synchronizes existing release facts and website asset names, and rebuilds the candidate site bundle; the native compiler and language behavior are unchanged, and final qualification remains pending."
     }
   ]
 }
