@@ -30,6 +30,18 @@ docker build -f docker/cuda/Dockerfile -t eshkol-cuda .
 
 **GPU requirements:** NVIDIA GPU with compute capability 7.0+ and CUDA 12.4 compatible drivers.
 
+**Blackwell (sm_120 / sm_121):** CUDA 12.4 cannot generate Blackwell code, so the default image runs there on the `compute_90` PTX through the driver JIT. For native Blackwell code, override the base image (arm64 hosts such as DGX Spark / GB10 pull the arm64 variant automatically):
+
+```bash
+docker build -f docker/cuda/Dockerfile \
+  --build-arg CUDA_IMAGE=nvidia/cuda:13.0.1-devel-ubuntu24.04 \
+  --build-arg UBUNTU_CODENAME=noble \
+  --build-arg CUDA_ARCHITECTURES=121 \
+  -t eshkol-cuda-blackwell .
+```
+
+Use `CUDA_ARCHITECTURES=120` for RTX PRO 6000-class sm_120 parts. CUDA 13 no longer accepts sm_72; the portable default drops it automatically.
+
 **Additional packages:** `libopenblas-dev` (CPU BLAS fallback), `libpng-dev`, `libjpeg-dev`, `libwebp-dev`, `curl`, `dpkg-dev`, `file`.
 
 ---
