@@ -74,7 +74,7 @@
 ;; subset the verifier evaluates.
 
 ;; BEGIN RELEASE FACTS
-(define release-tag "v1.3.5-evolve")
+(define release-tag "v1.3.6-evolve")
 (define release-download-base
   (string-append "https://github.com/tsotchke/eshkol/releases/download/" release-tag "/"))
 (define release-linux-asset
@@ -85,7 +85,7 @@
 (define release-publication-heading
   (string-append release-tag " Publication"))
 (define release-downloads-summary
-  (string-append "Install Eshkol on macOS, Linux, Windows, or build from source. " release-tag " provides 15 platform packages plus SHA256SUMS.txt in a 16-file release payload."))
+  (string-append "Install Eshkol on macOS, Linux, Windows, or build from source. " release-tag " has a planned payload of 15 platform packages plus SHA256SUMS.txt in a 16-file release payload. Candidate publication is pending."))
 (define release-linux-install-html
   (string-append
     "<code style='color:#606078'># " release-tag ", Linux x64 Lite</code>\n"
@@ -645,6 +645,18 @@
 (define (render-whats-new parent)
   (let ((section (create-section parent)))
     (section-heading section release-whats-new-heading)
+    (body-html section "<strong style='color:#a78bfa'>Release candidate.</strong> This patch focuses on interval containment and confirmed loop memory cases. Final-source verification and package publication remain pending.")
+    (let ((patch-grid (create-grid-3 section)))
+      (render-feature-card patch-grid
+        "Mixed exact/inexact intervals"
+        "Exact rational endpoints are converted outward until exact comparisons certify containment before arithmetic. Indeterminate non-finite endpoint cases fail closed.")
+      (render-feature-card patch-grid
+        "Confirmed AOT loop memory fixes"
+        "Reclamation covers named-let exit, discarded numeric tensors, and direct literal tensor-dot. Broader loop forms and platforms still require their own evidence.")
+      (render-feature-card patch-grid
+        "Focused runtime patch"
+        "Experimental features remain in the separate integration build. This candidate carries the runtime corrections under qualification."))
+    (section-subheading section "Capabilities carried forward")
     (body-html section "<strong style='color:#a78bfa'>Sixteen thousand levels deep.</strong> Parsing, type synthesis, and lowering use explicit continuations through JIT and AOT under an 8 MiB stack limit. The gate compiles 16,000 levels. Recursive Taylor levels compose exact derivatives at arbitrary nesting depth and order. Hygienic macros, one R7RS number grammar, dense tensor gradients, multi-shot continuations, and VM region reclamation complete the language contract.")
 
     (let ((grid (create-grid-3 section)))
@@ -713,11 +725,11 @@
 
       (render-feature-card grid
         "Declared language surface"
-        "The generated language-surface manifest declares 1,116 constructs. Every one earned its row by running: execution-backed coverage is 1,116/1,116 declared constructs on the exact release commit.")
+        "The generated language-surface manifest declares 1,116 constructs. Required execution-backed coverage is 1,116/1,116 declared constructs at the final release commit; the candidate verification remains pending.")
 
       (render-feature-card grid
         "Portable release packages"
-        "Fifteen platform packages plus SHA256SUMS.txt are validated as one 16-file release payload. Clean Windows, Linux, and macOS hosts exercise the relocated core and agent JITs, cached AOT links, image codecs, LLVM 21, and CUDA 12 paths."))
+        "Fifteen platform packages plus SHA256SUMS.txt must be validated as one 16-file release payload. Clean Windows, Linux, and macOS hosts exercise the relocated core and agent JITs, cached AOT links, image codecs, LLVM 21, and CUDA 12 paths."))
 
     (let ((grid2 (create-grid-3 section)))
       (render-feature-card grid2
@@ -726,7 +738,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "962 parity rows: 620 vm-supported, 46 native-only-justified, 296 gap. The VM parity differential runs 388/388, and differential gates compare each release with its reference engines.")
+        "962 parity rows: 622 vm-supported, 45 native-only-justified, 295 gap. The candidate VM parity differential count remains pending; differential gates compare each release with its reference engines.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
@@ -1469,7 +1481,7 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "347KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "349KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))
