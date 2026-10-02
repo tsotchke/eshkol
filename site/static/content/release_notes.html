@@ -1,5 +1,16 @@
+<h1 id="eshkol-v136-evolve--release-notes">Eshkol v1.3.6-evolve — Release Notes</h1>
+<p><strong>Status:</strong> RELEASE CANDIDATE; release evidence is pending. <strong>Planned release date:</strong> Friday, October 2, 2026.</p>
+<p>CTest and VM parity totals remain unrecorded for the final release SHA.</p>
+<!-- RELEASE_EVIDENCE_PENDING -->
+<h3 id="changes-under-review">Changes under review</h3>
+<ul>
+<li><strong>Mixed exact/inexact interval arithmetic preserves containment in the confirmed cases.</strong> Exact endpoints are converted outward before arithmetic; indeterminate non-finite endpoint cases fail closed. (#727)</li>
+<li><strong>AOT loop memory reclamation covers the confirmed shapes:</strong> named-let exit, a discarded numeric tensor, and direct literal <code>tensor-dot</code>. This does not establish flat RSS for every loop or platform; the gate covers the direct literal form, while other <code>tensor-dot</code> forms remain outside this claim. (#729)</li>
+<li><strong>Release evidence follows its source identity.</strong> The ICC release guard binds evidence to the exact checkout and commit SHA. VM parity traces honor the configured <code>TRACE_DIR</code> and are bound to the release cohort.</li>
+</ul>
+<hr />
 <h1 id="eshkol-v135-evolve--release-notes">Eshkol v1.3.5-evolve — Release Notes</h1>
-<p><strong>Release date:</strong> Tuesday, September 22, 2026. <strong>Status:</strong> released. The verification record for the tagged commit is the “Final verification” section below.</p>
+<p><strong>v1.3.5-evolve shipped:</strong> Tuesday, September 22, 2026. <strong>Status:</strong> released. The verification record for the tagged commit is the “Final verification” section below.</p>
 <p>Feed the compiler a source file sixteen thousand parentheses deep, on a thread with an eight-megabyte stack, and it compiles it. That is not a metaphor for robustness. The recursive-descent parser was replaced with an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so <code>await_suspend</code> only records a child and <code>final_suspend</code> only suspends — neither one calls the other. Native stack consumption is therefore independent of grammar nesting, and stays independent in an unoptimized build. Two downstream passes that used to re-introduce the dependency, the type checker’s <code>synthesize</code> and the code generator’s <code>codegenAST → codegenOperation → codegenCall → codegenArithmetic</code> chain, run on the same driver. <strong>16,000.</strong></p>
 <p>The release also joins exact, arbitrarily nested differentiation with a single number grammar and hygienic macros. Dense tensor autodifferentiation records one node per operation, and <code>tensor-apply</code> invokes the callable value it receives. The bytecode VM reclaims memory within <code>with-region</code>, supports multi-shot continuations, and can dispatch tensor work through browser WebGPU. The release record reports <strong>388/388</strong> VM parity differential checks; the manifest classifies <strong>962</strong> rows. The full migration contract is in <a href="/docs#page=upgrading" data-url="/content/upgrading.html">Upgrading</a>.</p>
 <h3 id="language-and-runtime-contracts">Language and runtime contracts</h3>

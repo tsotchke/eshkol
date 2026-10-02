@@ -90,7 +90,7 @@
 ;; =&gt; (if (&gt; x 0) (begin (display &quot;positive&quot;) (newline)) #f)</code></pre>
 <p>Several R7RS derived forms (<code>case-lambda</code>, <code>parameterize</code>, <code>cond-expand</code>, <code>define-record-type</code>) are desugared during macro expansion or the subsequent parse phase.</p>
 <h3 id="s-expression-parser">S-Expression Parser</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> (11,678 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> (11,698 lines)</p>
 <p>The parser builds an AST from S-expressions through an explicit continuation stack: a child parse suspends into a heap-allocated coroutine frame and is resumed through a linked list, so native stack consumption is independent of grammar nesting. It handles:</p>
 <pre class="c"><code>// inc/eshkol/eshkol.h
 typedef struct eshkol_ast {
@@ -762,7 +762,7 @@ HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEA
 <p><strong>Exactness tracking:</strong> The <code>ESHKOL_VALUE_EXACT_FLAG</code> flag in the tagged value’s flags byte propagates through operations. R7RS semantics: exact + exact = exact, exact + inexact = inexact.</p>
 <p><strong>Runtime functions for exact arithmetic:</strong> - <code>eshkol_bignum_binary_tagged</code> – bignum +, -, *, div, mod, gcd - <code>eshkol_bignum_compare_tagged</code> – exact comparison - <code>eshkol_bignum_pow_tagged</code> – exact exponentiation via repeated squaring - <code>eshkol_rational_compare_tagged_ptr</code> – rational comparison - <code>eshkol_bignum_to_string</code> / <code>eshkol_string_to_number_tagged</code> – conversion</p>
 <h3 id="first-class-continuations">First-Class Continuations</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>control_flow_codegen.cpp</code></a> (1,108 lines), with <code>call/cc</code> and <code>dynamic-wind</code> dispatch in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>llvm_codegen.cpp</code></a></p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/control_flow_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>control_flow_codegen.cpp</code></a> (1,180 lines), with <code>call/cc</code> and <code>dynamic-wind</code> dispatch in <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>llvm_codegen.cpp</code></a></p>
 <ul>
 <li><code>call/cc</code> – multi-shot re-entrant continuations; escape-only captures keep the zero-overhead setjmp/longjmp path</li>
 <li><code>dynamic-wind</code> – before/after thunks with proper unwinding on non-local exit</li>

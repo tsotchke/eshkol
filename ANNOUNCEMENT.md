@@ -1,3 +1,12 @@
+# Eshkol v1.3.6-evolve — release candidate
+
+Runtime fixes for mixed exact/inexact interval containment and the confirmed
+AOT loop memory cases are under qualification. Planned release date: Friday,
+October 2, 2026. Final-source CTest and VM parity totals are not recorded.
+Publication remains pending; see [release notes](RELEASE_NOTES.md).
+
+---
+
 # Eshkol v1.3.5-evolve — exact differentiation, one language contract, and a reclaiming VM
 
 Released September 22, 2026. Eshkol compiles R7RS Scheme through LLVM and runs the same language on its bytecode VM and in the browser.

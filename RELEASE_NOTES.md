@@ -1,6 +1,9 @@
 # Eshkol v1.3.6-evolve — Release Notes
 
-**Status:** candidate; release evidence is pending.
+**Status:** RELEASE CANDIDATE; release evidence is pending.
+**Planned release date:** Friday, October 2, 2026.
+
+CTest and VM parity totals remain unrecorded for the final release SHA.
 
 <!-- RELEASE_EVIDENCE_PENDING -->
 
@@ -18,9 +21,10 @@
   configured `TRACE_DIR` and are bound to the release cohort.
 
 ---
+
 # Eshkol v1.3.5-evolve — Release Notes
 
-**Release date:** Tuesday, September 22, 2026.
+**v1.3.5-evolve shipped:** Tuesday, September 22, 2026.
 **Status:** released. The verification record for the tagged commit is the
 "Final verification" section below.
 

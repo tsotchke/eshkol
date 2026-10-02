@@ -529,9 +529,16 @@ workstreams rather than a single theme:
 
 ---
 
+## v1.3.6-evolve — runtime fixes - RELEASE CANDIDATE
+
+Planned release date: Friday, October 2, 2026. Exact-source readiness and
+publication are pending. The candidate includes certified mixed exact/inexact
+interval conversion and the confirmed AOT loop memory fixes; experimental
+features remain in the separate integration build.
+
 ## v1.3.5-evolve — the consolidation release - SHIPPED
 
-Release date: Tuesday, September 22, 2026.
+Shipped on September 22, 2026.
 The release includes the integrated callee-identity, type-precision and
 ICC-invariant hardening. Its platform matrix, test suites, VM and engine
 parity, language-surface coverage, package checks and ICC readiness are

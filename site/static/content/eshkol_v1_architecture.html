@@ -54,7 +54,7 @@
 </tr>
 <tr>
 <td>LLVM backend</td>
-<td>39 codegen modules, 118,470 lines</td>
+<td>39 codegen modules, 120,154 lines</td>
 </tr>
 <tr>
 <td>Bytecode VM</td>
@@ -62,7 +62,7 @@
 </tr>
 <tr>
 <td>Main codegen</td>
-<td>47,107 lines (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a>)</td>
+<td>47,338 lines (<a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a>)</td>
 </tr>
 <tr>
 <td>Parser</td>
@@ -913,27 +913,27 @@ eshkol&gt; (cube 3)
 │   ├── stdlib.esk          # Standard library (149 lines, re-exports)
 │   ├── math.esk            # Math library (412 lines)
 │   │
-│   ├── backend/            # 35 codegen modules (~106.5K lines)
-│   │   ├── llvm_codegen.cpp      # Main engine (44,003 lines)
-│   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic (4,012 lines)
-│   │   ├── autodiff_codegen.cpp  # AD operations (14,545 lines)
-│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher (2,012 lines); per-domain in tensor_*_codegen.cpp
-│   │   ├── collection_codegen.cpp# Lists/vectors (3,173 lines)
-│   │   ├── control_flow_codegen.cpp # if/cond/and/or (1,107 lines)
-│   │   ├── binding_codegen.cpp   # define/let/set! (1,662 lines)
-│   │   ├── call_apply_codegen.cpp# apply &amp; closures (1,270 lines)
-│   │   ├── map_codegen.cpp       # Higher-order map (1,142 lines)
-│   │   ├── homoiconic_codegen.cpp# Quote &amp; S-expr (706 lines)
-│   │   ├── string_io_codegen.cpp # Strings &amp; I/O (3,860 lines)
-│   │   ├── hash_codegen.cpp      # Hash tables (671 lines)
-│   │   ├── tail_call_codegen.cpp # TCO infra (748 lines)
-│   │   ├── type_system.cpp       # LLVM types (187 lines)
-│   │   ├── tagged_value_codegen.cpp # Pack/unpack (807 lines)
-│   │   ├── memory_codegen.cpp    # Arena decls (329 lines)
-│   │   ├── builtin_declarations.cpp # Runtime funcs (148 lines)
-│   │   ├── function_cache.cpp    # C library (173 lines)
-│   │   ├── codegen_context.cpp   # Shared state (377 lines)
-│   │   └── function_codegen.cpp  # Lambda/closure (209 lines)
+│   ├── backend/            # 39 codegen modules (~120.2K lines)
+│   │   ├── llvm_codegen.cpp      # Main engine
+│   │   ├── arithmetic_codegen.cpp# Polymorphic arithmetic
+│   │   ├── autodiff_codegen.cpp  # AD operations
+│   │   ├── tensor_codegen.cpp    # Tensor-op dispatcher; per-domain in tensor_*_codegen.cpp
+│   │   ├── collection_codegen.cpp# Lists/vectors
+│   │   ├── control_flow_codegen.cpp # if/cond/and/or
+│   │   ├── binding_codegen.cpp   # define/let/set!
+│   │   ├── call_apply_codegen.cpp# apply &amp; closures
+│   │   ├── map_codegen.cpp       # Higher-order map
+│   │   ├── homoiconic_codegen.cpp# Quote &amp; S-expr
+│   │   ├── string_io_codegen.cpp # Strings &amp; I/O
+│   │   ├── hash_codegen.cpp      # Hash tables
+│   │   ├── tail_call_codegen.cpp # TCO infra
+│   │   ├── type_system.cpp       # LLVM types
+│   │   ├── tagged_value_codegen.cpp # Pack/unpack
+│   │   ├── memory_codegen.cpp    # Arena decls
+│   │   ├── builtin_declarations.cpp # Runtime funcs
+│   │   ├── function_cache.cpp    # C library
+│   │   ├── codegen_context.cpp   # Shared state
+│   │   └── function_codegen.cpp  # Lambda/closure
 │   │
 │   ├── core/               # Core runtime (C)
 │   │   ├── runtime_arena_core.cpp # Arena runtime core (720 lines)
@@ -1103,7 +1103,7 @@ llvm::Value* arg_value = codegen_ast_callback_(ast, callback_context_);</code></
 <p><strong>Bottleneck</strong>: LLVM optimization passes (can be reduced with -O0)</p>
 <hr />
 <h2 id="build-system">Build System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (12,231 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (12,263 lines)</p>
 <h3 id="requirements">Requirements</h3>
 <ul>
 <li><strong>CMake</strong>: 3.14 or higher</li>
@@ -1239,9 +1239,9 @@ target_link_options(eshkol-static PUBLIC
 <h3 id="primary-source-files-analyzed-in-detail">Primary Source Files (analyzed in detail)</h3>
 <ul>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> - Main system header (3,786 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a> - Core codegen (47,038 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a> - Core codegen (47,353 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> - Arena runtime core (1282 lines; 4,259 across all <code>runtime_*</code> memory modules)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> - S-expr parser (11,678 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> - S-expr parser (11,698 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> - Type inference (6,087 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (4,712 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> - Compiler executable (6,092 lines)</li>

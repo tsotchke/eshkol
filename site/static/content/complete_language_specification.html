@@ -1131,7 +1131,8 @@ use-exactly-once is NOT enforced for it</code></pre>
 <li><code>(string-downcase str)</code> - Convert to lowercase</li>
 <li><code>(string-replace str old new)</code> - Replace all occurrences</li>
 <li><code>(string-reverse str)</code> - Reverse string</li>
-<li><code>(string-contains? str substr)</code> - Test for substring</li>
+<li><code>(string-contains str substr)</code> - First Unicode codepoint index or <code>#f</code></li>
+<li><code>(string-contains? str substr)</code> - Boolean substring predicate</li>
 <li><code>(string-starts-with? str prefix)</code> - Test for prefix</li>
 <li><code>(string-ends-with? str suffix)</code> - Test for suffix</li>
 <li><code>(string-index str substr)</code> - Find first occurrence index</li>

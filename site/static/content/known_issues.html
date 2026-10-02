@@ -12,5 +12,68 @@
 <h2 id="logic-and-types">Logic and types</h2>
 <p>The VM logic occurs-check does not recurse through fact internals (<code>lib/backend/vm_logic.c</code>). A cyclic variable reference inside a fact can pass that check. Avoid recursive fact terms when using VM unification.</p>
 <p>The optional type system supports outermost <code>forall</code> quantification and tensor shape dependent types. Higher-rank polymorphism and arbitrary value-level computation in types are outside its implemented scope.</p>
+<h2 id="inherited-tracked-limitations">Inherited tracked limitations</h2>
+<p>The following open issues were recorded before the v1.3.6 release work. They remain known limitations; a coverage waiver records an engine gap and does not fix it. The v1.3.5 behavior and release-record facts above remain historical until the v1.3.6 release record is cut.</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Ledger</th>
+<th>Affected engine(s) and behavior</th>
+<th>Workaround</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LE-20</td>
+<td>Native JIT and AOT reject a legal nested named-let when an inner loop reuses an outer binding name.</td>
+<td>Rename the inner accumulator; removing the intermediate named let also avoids the failure.</td>
+<td><code>tests/math_acceptance/shadowed_named_let_scope_test.esk</code> (wired, expected value 176).</td>
+</tr>
+<tr>
+<td>LE-30</td>
+<td>Native JIT and AOT reject <code>set!</code> of a procedure introduced with <code>(define (f ...) ...)</code>.</td>
+<td>Define the procedure with a lambda-valued variable definition, <code>(define f (lambda (...) ...))</code>.</td>
+<td>Direct measurement on the v1.3.5 cut, recorded in <code>.icc/ledger/entries/LE-30.yaml</code>.</td>
+</tr>
+<tr>
+<td>SW-87</td>
+<td>Native JIT and AOT reject assignment to a guard variable; capturing it in a closure fails LLVM verification. VM routes run both forms correctly.</td>
+<td>Use a VM route for mutable or captured guard variables.</td>
+<td><code>tests/error_handling/guard_coverage/found/native_guard_variable_not_a_binding.esk</code>; measured in <code>18_guard_variable_mutation.esk</code>.</td>
+</tr>
+<tr>
+<td>SW-88</td>
+<td>Native JIT and AOT fail LLVM verification when several individually valid <code>guard</code>/<code>dynamic-wind</code> blocks share one module. VM routes run the combined repro.</td>
+<td>Compile the blocks separately on native engines, or run the combined form on a VM route.</td>
+<td><code>tests/error_handling/guard_coverage/found/guard_wind_multi_module_dominance.esk</code>; isolated controls <code>12_wind_normal_exit.esk</code>, <code>13_guard_inside_wind.esk</code>, and <code>14_sequential_winds.esk</code>.</td>
+</tr>
+<tr>
+<td>SW-85b (historical alias SW-85)</td>
+<td>Both VM routes (<code>vm-src</code>, <code>vm-eskb</code>) can lose a top-level mutation made in a guard clause.</td>
+<td>Use a native engine for code that relies on the clause’s global side effect.</td>
+<td><code>tests/error_handling/guard_coverage/found/vm_setbang_global_from_guard_clause_lost.esk</code>; the ledger notes a recurring-loop case where the two VM routes differ in when the mutation is lost.</td>
+</tr>
+<tr>
+<td>SW-86b</td>
+<td>Both VM routes return the wrong value for internal definitions in a guard body. Native engines are correct.</td>
+<td>Use a native engine for this form.</td>
+<td><code>tests/error_handling/guard_coverage/found/vm_internal_defines_in_guard_body.esk</code>; measured in <code>16_internal_defines_in_body.esk</code>.</td>
+</tr>
+<tr>
+<td>SW-89</td>
+<td><code>vm-eskb</code> runs a guard clause before the dynamic-wind after-thunk; <code>vm-src</code> and native engines follow the required order.</td>
+<td>Use <code>vm-src</code> or a native engine when the unwind/clause order matters.</td>
+<td><code>tests/error_handling/guard_coverage/found/vm_eskb_wind_order_vs_clause.esk</code>; measured by <code>17_wind_unwind_order.esk</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>These are ledgered findings, not newly introduced regressions. The <code>guard_coverage/ENGINES.tsv</code> manifest defines the five-axis default and the format for any per-case waiver; it contains no case-specific waiver rows at this base. A waiver, when present, records coverage scope and does not change the status or behavior described here.</p>
 <h2 id="reporting-an-issue">Reporting an issue</h2>
 <p>Include a small <code>.esk</code> program, the engine and command used, the observed output, and the expected output. See <a href="/docs#page=contributing" data-url="/content/contributing.html">CONTRIBUTING.md</a>.</p>

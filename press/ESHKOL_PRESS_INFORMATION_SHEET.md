@@ -18,7 +18,7 @@ artefact it carries.
 | Project | Eshkol |
 | Version | v1.3.5-evolve |
 | Builds on | v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
-| Release date | 22 September 2026 |
+| v1.3.5 shipment date | 22 September 2026 |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
