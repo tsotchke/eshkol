@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.6-evolve] - 2026-10-02
+
+RELEASE CANDIDATE. Planned release date: Friday, October 2, 2026; final-source
+qualification and publication remain pending.
+
 ### Changed
 
 - **Advanced mathematics press copy covers shipped exact and proof-backed
@@ -19,14 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AOT per-iteration RSS is bounded for the confirmed loop cases.** The fix
   covers named-let exit, a discarded numeric tensor, and direct literal
   `tensor-dot`; it does not establish flat RSS for every loop or platform. The
-  exact Eliot dot source remains unavailable. (#729)
+  original million-iteration report is retained as a regression fixture. (#729)
 - **Roadmap and branch portfolio distinguish patch work from experimental integration.**
   The active feature inventory records branch ownership, release scope and pending
   qualification for the separate integration build. (#728)
 
 ## [1.3.5-evolve] - 2026-09-22
 
-Release date: Tuesday, September 22, 2026. The callee-identity, type-precision
+v1.3.5-evolve shipped Tuesday, September 22, 2026. The callee-identity, type-precision
 and ICC-invariant hardening changes are integrated. The entries below record
 the source changes; the verification record for the tagged commit is the
 "Final verification" section of [RELEASE_NOTES.md](RELEASE_NOTES.md).

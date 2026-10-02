@@ -9,7 +9,8 @@
 (string-append &quot;hello&quot; &quot; &quot; &quot;world&quot;)   ;; =&gt; &quot;hello world&quot;
 (string-upcase &quot;hello&quot;)               ;; =&gt; &quot;HELLO&quot;
 (string-downcase &quot;HELLO&quot;)             ;; =&gt; &quot;hello&quot;
-(string-contains &quot;hello world&quot; &quot;world&quot;)  ;; =&gt; #t
+(string-contains &quot;hello world&quot; &quot;world&quot;)  ;; =&gt; 6 (index or #f)
+(string-contains? &quot;hello world&quot; &quot;world&quot;) ;; =&gt; #t (boolean predicate)
 (string-find &quot;hello world&quot; &quot;world&quot;)      ;; =&gt; 6 (index)
 (string-reverse &quot;abcde&quot;)              ;; =&gt; &quot;edcba&quot;
 (string-repeat &quot;ab&quot; 3)                ;; =&gt; &quot;ababab&quot;

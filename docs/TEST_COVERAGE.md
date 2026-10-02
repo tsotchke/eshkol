@@ -1,12 +1,21 @@
-# Eshkol v1.3.5-evolve Test Coverage
+# Eshkol Test Coverage
+
+## v1.3.6-evolve candidate
+
+Final-source qualification remains pending. Required gates include
+<!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and
+<!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->.
+No final-source total or readiness verdict is claimed.
+
+## v1.3.5-evolve historical coverage
 
 **Version**: v1.3.5-evolve
 **Last Updated**: 2026-09-22
 **Status**: orchestrated suites at 100% pass rate on the verified release gates
 
 **Release evidence (v1.3.5-evolve)**: aggregate suite **46/46
-suites** and **1,020/1,020** individual tests; <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->; the value-position and compound-accessor regression is green; executable language coverage
-**1,115/1,115**; <!-- release-record:vm-parity -->VM parity differential **388/388**<!-- /release-record -->
+suites** and **1,020/1,020** individual tests; the full CTest suite; the value-position and compound-accessor regression is green; executable language coverage
+**1,115/1,115**; the VM parity differential passed 388 checks
 over a **961-row** manifest (604
 `vm-supported`, 46 `native-only-justified`, 311 `gap`) plus its
 gap-disposition sidecar (the 338/338, 194/194 and 188/188 figures that older
