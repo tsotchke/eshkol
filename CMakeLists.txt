@@ -189,53 +189,9 @@ if(DEFINED ENV{ESHKOL_FETCHCONTENT_BASE_DIR} AND
     message(STATUS "FetchContent source cache: ${FETCHCONTENT_BASE_DIR}")
 endif()
 
-# Native image I/O backends: macOS uses ImageIO/CoreGraphics, Windows uses
-# GDI+, and Linux uses distro codec libraries.
-if(APPLE)
-    find_library(ESHKOL_IMAGEIO_FRAMEWORK ImageIO REQUIRED)
-    find_library(ESHKOL_COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
-    find_library(ESHKOL_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
-    add_compile_definitions(ESHKOL_IMAGE_IO_APPLE=1)
-    list(APPEND ESHKOL_EXTRA_LINK_LIBS
-        "-framework ImageIO"
-        "-framework CoreGraphics"
-        "-framework CoreFoundation")
-    message(STATUS "Image I/O: Apple ImageIO/CoreGraphics")
-elseif(WIN32)
-    add_compile_definitions(ESHKOL_IMAGE_IO_GDIPLUS=1)
-    list(APPEND ESHKOL_EXTRA_LINK_LIBS Gdiplus.lib)
-    message(STATUS "Image I/O: Windows GDI+")
-else()
-    find_package(PNG QUIET)
-    if(PNG_FOUND)
-        find_package(JPEG QUIET)
-        pkg_check_modules(WEBP QUIET libwebp)
-
-        add_compile_definitions(ESHKOL_IMAGE_IO_LIBPNG=1)
-        include_directories(SYSTEM ${PNG_INCLUDE_DIRS})
-        list(APPEND ESHKOL_EXTRA_LINK_LIBS PNG::PNG)
-
-        set(_eshkol_image_io_backends "libpng")
-        if(JPEG_FOUND)
-            add_compile_definitions(ESHKOL_IMAGE_IO_LIBJPEG=1)
-            include_directories(SYSTEM ${JPEG_INCLUDE_DIRS})
-            list(APPEND ESHKOL_EXTRA_LINK_LIBS JPEG::JPEG)
-            list(APPEND _eshkol_image_io_backends "libjpeg")
-        endif()
-        if(WEBP_FOUND)
-            add_compile_definitions(ESHKOL_IMAGE_IO_LIBWEBP=1)
-            include_directories(SYSTEM ${WEBP_INCLUDE_DIRS})
-            list(APPEND ESHKOL_EXTRA_LINK_LIBS ${WEBP_LDFLAGS})
-            list(APPEND _eshkol_image_io_backends "libwebp")
-        endif()
-        string(JOIN "/" _eshkol_image_io_backend_label ${_eshkol_image_io_backends})
-        message(STATUS "Image I/O: ${_eshkol_image_io_backend_label}")
-    else()
-        message(STATUS
-            "Image I/O: native codec backends disabled "
-            "(install libpng-dev/libjpeg-dev/libwebp-dev to enable Linux image read/write)")
-    endif()
-endif()
+# Native image I/O capability and optional requirement. The same production
+# module is exercised by tests/toolchain/test_native_image_io_contract.py.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolImageIO.cmake")
 
 # Set C standard
 set(CMAKE_C_STANDARD 17)
@@ -7640,7 +7596,8 @@ endif()
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
     foreach(_release_invariant_test IN ITEMS
             test_release_invariant_contracts
-            test_release_probe_receipts)
+            test_release_probe_receipts
+            test_native_image_io_contract)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py")
             add_test(NAME ${_release_invariant_test}
                 COMMAND ${Python3_EXECUTABLE}

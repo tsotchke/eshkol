@@ -10,7 +10,7 @@ Eshkol is a Scheme-based programming language that unifies functional programmin
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.5--evolve-blue.svg)](RELEASE_NOTES.md)
 
-**Release candidate:** v1.3.6-evolve. **Planned release date:** Friday, October 2, 2026.
+**Release candidate:** v1.3.6-evolve. **Planned release date:** Monday, October 5, 2026.
 Qualification is pending at the final release SHA. The latest shipped release is
 v1.3.5-evolve (September 22, 2026). See the
 [release notes](RELEASE_NOTES.md) and [upgrading guide](docs/UPGRADING.md).

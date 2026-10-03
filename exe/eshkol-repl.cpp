@@ -226,6 +226,20 @@ void display_exception(eshkol_exception_t* exc) {
 // Check if running interactively
 static bool g_interactive = false;
 
+// Pipes and machine mode share the same input path on every line-editing backend.
+static char* simple_readline(const char* prompt) {
+    if (g_interactive && prompt) {
+        std::cout << prompt << std::flush;
+    }
+    std::string line;
+    if (!std::getline(std::cin, line)) {
+        return nullptr;
+    }
+    char* result = (char*)malloc(line.length() + 1);
+    strcpy(result, line.c_str());
+    return result;
+}
+
 #ifdef HAVE_READLINE
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -294,18 +308,6 @@ void save_readline_history() {
     write_history(history_file.c_str());
 }
 
-// Simple readline for non-interactive mode (pipes)
-// In non-interactive mode, don't print prompts (cleaner output)
-char* simple_readline(const char* /* prompt */) {
-    std::string line;
-    if (!std::getline(std::cin, line)) {
-        return nullptr;
-    }
-    char* result = (char*)malloc(line.length() + 1);
-    strcpy(result, line.c_str());
-    return result;
-}
-
 // Wrapper that uses real readline only in interactive mode
 char* eshkol_readline(const char* prompt) {
     if (g_interactive) {
@@ -318,14 +320,7 @@ char* eshkol_readline(const char* prompt) {
 #else
 // Fallback if readline not available
 char* eshkol_readline(const char* prompt) {
-    std::cout << prompt << std::flush;
-    std::string line;
-    if (!std::getline(std::cin, line)) {
-        return nullptr;
-    }
-    char* result = (char*)malloc(line.length() + 1);
-    strcpy(result, line.c_str());
-    return result;
+    return simple_readline(prompt);
 }
 void add_history(const char*) {}
 void init_readline() {}

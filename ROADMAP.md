@@ -531,7 +531,7 @@ workstreams rather than a single theme:
 
 ## v1.3.6-evolve — runtime fixes - RELEASE CANDIDATE
 
-Planned release date: Friday, October 2, 2026. Exact-source readiness and
+Planned release date: Monday, October 5, 2026. Exact-source readiness and
 publication are pending. The candidate includes certified mixed exact/inexact
 interval conversion and the confirmed AOT loop memory fixes; experimental
 features remain in the separate integration build.
