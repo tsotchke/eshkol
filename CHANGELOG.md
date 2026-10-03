@@ -9,11 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.6-evolve] - 2026-10-05
 
-RELEASE CANDIDATE. Planned release date: Monday, October 5, 2026; final-source
-qualification and publication remain pending.
+RELEASE CANDIDATE. Planned release date: Monday, October 5, 2026. Publication
+requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
 
 ### Changed
 
+- **Native REPL input is shared across line-editing backends.** Pipes and
+  machine mode stay prompt-free with readline available or absent; interactive
+  sessions retain their prompts. (#737)
+- **Native image I/O is required for release builds.** All package and
+  readiness configurations require a selected native backend. Developer builds
+  retain the optional backend setting. (#737)
 - **Advanced mathematics press copy covers shipped exact and proof-backed
   capabilities.** It adds bounded examples for exact rational linear algebra,
   rigorous enclosures, numerical methods, geometry, topology, gauge theory, and
@@ -24,7 +30,7 @@ qualification and publication remain pending.
 - **AOT per-iteration RSS is bounded for the confirmed loop cases.** The fix
   covers named-let exit, a discarded numeric tensor, and direct literal
   `tensor-dot`; it does not establish flat RSS for every loop or platform. The
-  original million-iteration report is retained as a regression fixture. (#729)
+  original million-iteration report is retained as a regression fixture. (#729, #735)
 - **Roadmap and branch portfolio distinguish patch work from experimental integration.**
   The active feature inventory records branch ownership, release scope and pending
   qualification for the separate integration build. (#728)

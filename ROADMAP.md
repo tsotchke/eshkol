@@ -531,10 +531,12 @@ workstreams rather than a single theme:
 
 ## v1.3.6-evolve — runtime fixes - RELEASE CANDIDATE
 
-Planned release date: Monday, October 5, 2026. Exact-source readiness and
-publication are pending. The candidate includes certified mixed exact/inexact
-interval conversion and the confirmed AOT loop memory fixes; experimental
-features remain in the separate integration build.
+Planned release date: Monday, October 5, 2026. Publication requires the release
+workflow's exact-commit evidence and ICC ready/100 verdict. The candidate
+includes shared native REPL input across line-editing backends, required native
+image I/O in release builds, certified mixed exact/inexact interval conversion,
+and the confirmed AOT loop memory fixes; experimental features remain in the
+separate integration build.
 
 ## v1.3.5-evolve — the consolidation release - SHIPPED
 

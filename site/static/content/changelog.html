@@ -3,12 +3,14 @@
 <p>The format is based on <a href="https://keepachangelog.com/en/1.0.0/">Keep a Changelog</a>, and this project adheres to <a href="https://semver.org/spec/v2.0.0.html">Semantic Versioning</a>.</p>
 <h2 id="unreleased">[Unreleased]</h2>
 <h2 id="136-evolve---2026-10-05">[1.3.6-evolve] - 2026-10-05</h2>
-<p>RELEASE CANDIDATE. Planned release date: Monday, October 5, 2026; final-source qualification and publication remain pending.</p>
+<p>RELEASE CANDIDATE. Planned release date: Monday, October 5, 2026. Publication requires the release workflow’s exact-commit evidence and ICC ready/100 verdict.</p>
 <h3 id="changed">Changed</h3>
 <ul>
+<li><strong>Native REPL input is shared across line-editing backends.</strong> Pipes and machine mode stay prompt-free with readline available or absent; interactive sessions retain their prompts. (#737)</li>
+<li><strong>Native image I/O is required for release builds.</strong> All package and readiness configurations require a selected native backend. Developer builds retain the optional backend setting. (#737)</li>
 <li><strong>Advanced mathematics press copy covers shipped exact and proof-backed capabilities.</strong> It adds bounded examples for exact rational linear algebra, rigorous enclosures, numerical methods, geometry, topology, gauge theory, and Navier–Stokes, with explicit limits on what each example establishes. (#726)</li>
 <li><strong>Mixed exact/inexact rigorous interval arithmetic preserves containment.</strong> Exact rational endpoints are converted outward until exact comparisons certify the bounds; indeterminate non-finite endpoint cases fail closed. (#727)</li>
-<li><strong>AOT per-iteration RSS is bounded for the confirmed loop cases.</strong> The fix covers named-let exit, a discarded numeric tensor, and direct literal <code>tensor-dot</code>; it does not establish flat RSS for every loop or platform. The original million-iteration report is retained as a regression fixture. (#729)</li>
+<li><strong>AOT per-iteration RSS is bounded for the confirmed loop cases.</strong> The fix covers named-let exit, a discarded numeric tensor, and direct literal <code>tensor-dot</code>; it does not establish flat RSS for every loop or platform. The original million-iteration report is retained as a regression fixture. (#729, #735)</li>
 <li><strong>Roadmap and branch portfolio distinguish patch work from experimental integration.</strong> The active feature inventory records branch ownership, release scope and pending qualification for the separate integration build. (#728)</li>
 </ul>
 <h2 id="135-evolve---2026-09-22">[1.3.5-evolve] - 2026-09-22</h2>
