@@ -1,7 +1,7 @@
 # Eshkol v1.3.6-evolve — Release Notes
 
 **Status:** RELEASE CANDIDATE; release evidence is pending.
-**Planned release date:** Friday, October 2, 2026.
+**Planned release date:** Monday, October 5, 2026.
 
 CTest and VM parity totals remain unrecorded for the final release SHA.
 

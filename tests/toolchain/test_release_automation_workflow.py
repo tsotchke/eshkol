@@ -2,7 +2,10 @@
 """Static negative controls for strict release-readiness workflow wiring."""
 
 from pathlib import Path
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -88,6 +91,66 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         gate = self.steps["ICC readiness gate (tag push or strict dry run requires ready/100)"]["run"]
         self.assertIn('--trace-latest "$ARCH_TRACE_GLOB"', wrapper)
         self.assertIn(f"--trace-latest '{canonical_trace}'", gate)
+
+    def test_configured_readiness_toolchain_rejects_missing_or_relative_files(self):
+        self.assertEqual(self.job["env"]["CMAKE_TOOLCHAIN_FILE"],
+                         "${{ vars.RELEASE_CMAKE_TOOLCHAIN_FILE }}")
+        script = self.steps["Validate configured readiness toolchain"]["run"]
+        scratch = ROOT / ".scratch"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="readiness-toolchain-", dir=scratch) as directory:
+            valid = Path(directory) / "toolchain.cmake"
+            valid.write_text("# Test toolchain fixture\n", encoding="utf-8")
+            for path, expected in [("", 0), (str(valid), 0),
+                                   (str(valid) + ".missing", 1), (valid.name, 1),
+                                   (directory, 1)]:
+                with self.subTest(path=path):
+                    result = subprocess.run(["bash", "-c", script],
+                                            env=dict(os.environ, CMAKE_TOOLCHAIN_FILE=path),
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
+    def test_readiness_library_paths_are_validated_and_preserve_existing_search_path(self):
+        self.assertEqual(self.job["env"]["READINESS_LIBRARY_PATH"],
+                         "${{ vars.RELEASE_RUNTIME_LIBRARY_PATH }}")
+        script = self.steps["Validate configured readiness toolchain"]["run"]
+        scratch = ROOT / ".scratch"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="readiness-libraries-", dir=scratch) as directory:
+            output = Path(directory) / "github-env"
+            for path, expected in [(directory, 0), (directory + ".missing", 1),
+                                   ("relative", 1), (directory + "\nINJECTED=1", 1),
+                                   (":" + directory, 1), (directory + ":", 1),
+                                   (directory + "::" + directory, 1),
+                                   (directory + "\rINJECTED=1", 1)]:
+                with self.subTest(path=path):
+                    output.write_text("", encoding="utf-8")
+                    result = subprocess.run(["bash", "-c", script],
+                                            env=dict(os.environ, CMAKE_TOOLCHAIN_FILE="",
+                                                     READINESS_LIBRARY_PATH=path,
+                                                     LD_LIBRARY_PATH="/existing/path",
+                                                     GITHUB_ENV=str(output)),
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                    if expected == 0:
+                        self.assertEqual(output.read_text(),
+                                         f"LD_LIBRARY_PATH={directory}:/existing/path\n")
+                    else:
+                        self.assertEqual(output.read_text(), "")
+
+    def test_release_packages_and_evidence_builds_require_image_io(self):
+        for job_name, expected in [("unix-release-matrix", 1),
+                                   ("windows-release-matrix", 1),
+                                   ("release-readiness-gate", 3)]:
+            commands = "\n".join(step.get("run", "")
+                                 for step in self.workflow["jobs"][job_name]["steps"])
+            with self.subTest(job=job_name):
+                self.assertEqual(commands.count("-DESHKOL_REQUIRE_IMAGE_IO=ON"), expected)
+
+    def test_readiness_python_dependencies_match_the_qualified_profile(self):
+        script = self.steps["Prepare isolated Python binding test environment"]["run"]
+        self.assertIn("pybind11==3.1.0 numpy==2.5.3 pyyaml==6.0.3", script)
+        self.assertIn('python3 -m venv "$python_env"', script)
 
 
 if __name__ == "__main__":

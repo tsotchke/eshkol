@@ -1,8 +1,7 @@
 # Eshkol v1.3.6-evolve — release candidate
 
 Runtime fixes for mixed exact/inexact interval containment and the confirmed
-AOT loop memory cases are under qualification. Planned release date: Friday,
-October 2, 2026. Final-source CTest and VM parity totals are not recorded.
+AOT loop memory cases are under qualification. Planned release date: Monday, October 5, 2026. Final-source CTest and VM parity totals are not recorded.
 Publication remains pending; see [release notes](RELEASE_NOTES.md).
 
 ---

@@ -228,6 +228,7 @@ jobs:
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
             -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
+            -DESHKOL_REQUIRE_IMAGE_IO=ON \
             -DCUDAToolkit_ROOT=/usr/local/cuda-12.4
 
       - name: Verify real CUDA build graph
@@ -705,6 +706,7 @@ jobs:
             '-B', '${{ matrix.build_dir }}',
             '-DBUILD_REPL=ON',
             '-DESHKOL_BUILD_TESTS=OFF',
+            '-DESHKOL_REQUIRE_IMAGE_IO=ON',
             '-DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }}',
             "-DESHKOL_HOST_CXX_COMPILER=$hostCxx",
             '-DESHKOL_STDLIB_TARGET_CPU=generic',
@@ -1144,6 +1146,8 @@ jobs:
       # job-level env of the same name would shadow that write in later steps.
       ICC_BIN_OVERRIDE: ${{ vars.ICC_BIN }}
       ICC_REPO_REQUESTED: ${{ vars.ICC_REPO || 'eshkol_lang' }}
+      CMAKE_TOOLCHAIN_FILE: ${{ vars.RELEASE_CMAKE_TOOLCHAIN_FILE }}
+      READINESS_LIBRARY_PATH: ${{ vars.RELEASE_RUNTIME_LIBRARY_PATH }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -1254,6 +1258,36 @@ jobs:
 
           exit $fail
 
+      - name: Validate configured readiness toolchain
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
+            if [[ "$CMAKE_TOOLCHAIN_FILE" != /* || ! -f "$CMAKE_TOOLCHAIN_FILE" || ! -r "$CMAKE_TOOLCHAIN_FILE" ]]; then
+              echo "::error::Configured release toolchain must be an absolute, readable file."
+              exit 1
+            fi
+          fi
+          if [[ -n "${READINESS_LIBRARY_PATH:-}" ]]; then
+            if [[ "$READINESS_LIBRARY_PATH" == :* || "$READINESS_LIBRARY_PATH" == *: || "$READINESS_LIBRARY_PATH" == *::* ]]; then
+              echo "::error::Configured release library paths must not contain empty entries."
+              exit 1
+            fi
+            if [[ "$READINESS_LIBRARY_PATH" == *$'\n'* || "$READINESS_LIBRARY_PATH" == *$'\r'* ]]; then
+              echo "::error::Configured release library paths must not contain line breaks."
+              exit 1
+            fi
+            IFS=: read -r -a library_dirs <<< "$READINESS_LIBRARY_PATH"
+            for directory in "${library_dirs[@]}"; do
+              if [[ "$directory" != /* || ! -d "$directory" ]]; then
+                echo "::error::Configured release library paths must be absolute directories."
+                exit 1
+              fi
+            done
+            printf 'LD_LIBRARY_PATH=%s%s\n' "$READINESS_LIBRARY_PATH" "${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          fi
+
       - name: Prepare isolated Python binding test environment
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
@@ -1261,7 +1295,7 @@ jobs:
           set -euo pipefail
           python_env="$RUNNER_TEMP/eshkol-release-python"
           python3 -m venv "$python_env"
-          "$python_env/bin/python" -m pip install --disable-pip-version-check pybind11 numpy pyyaml
+          "$python_env/bin/python" -m pip install --disable-pip-version-check pybind11==3.1.0 numpy==2.5.3 pyyaml==6.0.3
           pybind11_dir="$("$python_env/bin/python" -m pybind11 --cmakedir)"
           test -f "$pybind11_dir/pybind11Config.cmake"
           {
@@ -1279,6 +1313,7 @@ jobs:
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
             -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_REQUIRE_IMAGE_IO=ON \
             -DESHKOL_BUILD_AGENT_FFI=ON \
             -DESHKOL_PYTHON_BINDINGS=ON \
             -DESHKOL_PYTHON3_EXECUTABLE="$ESHKOL_TEST_PYTHON" \
@@ -1297,6 +1332,7 @@ jobs:
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
             -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_REQUIRE_IMAGE_IO=ON \
             -DESHKOL_BUILD_AGENT_FFI=OFF \
             -DESHKOL_ENABLE_FUZZ=ON
           cmake --build build-fuzz --target eskm_model_fuzz_probe --parallel 4
@@ -1326,6 +1362,7 @@ jobs:
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
             -DESHKOL_QUANTUM_ENABLED=ON \
             -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_REQUIRE_IMAGE_IO=ON \
             -DESHKOL_BUILD_AGENT_FFI=ON
           cmake --build build-quantum --parallel 4
 

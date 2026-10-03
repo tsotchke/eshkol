@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.6-evolve] - 2026-10-02
+## [1.3.6-evolve] - 2026-10-05
 
-RELEASE CANDIDATE. Planned release date: Friday, October 2, 2026; final-source
+RELEASE CANDIDATE. Planned release date: Monday, October 5, 2026; final-source
 qualification and publication remain pending.
 
 ### Changed
