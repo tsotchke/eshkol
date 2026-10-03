@@ -41,6 +41,16 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         # Ordinary dry-runs retain their warning-and-continue behavior.
         self.assertIn("This non-publishing dry-run continues", resolve)
 
+    def test_release_icc_selector_prefers_release_override_and_keeps_ci_default(self):
+        self.assertEqual(self.job["env"]["ICC_BIN_OVERRIDE"],
+                         "${{ vars.RELEASE_ICC_BIN || vars.ICC_BIN }}")
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("ICC_BIN_OVERRIDE: ${{ vars.ICC_BIN }}", ci)
+        self.assertNotIn("RELEASE_ICC_BIN", ci)
+        pillars = (ROOT / ".github/workflows/pillars-nightly.yml").read_text(encoding="utf-8")
+        self.assertIn("ICC_BIN_OVERRIDE: ${{ vars.ICC_BIN }}", pillars)
+        self.assertNotIn("RELEASE_ICC_BIN", pillars)
+
     def test_unready_strict_dispatch_is_blocking_and_advisory_stays_advisory(self):
         gate = self.steps["ICC readiness gate (tag push or strict dry run requires ready/100)"]
         run = gate["run"]
@@ -106,9 +116,81 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
                                    (directory, 1)]:
                 with self.subTest(path=path):
                     result = subprocess.run(["bash", "-c", script],
-                                            env=dict(os.environ, CMAKE_TOOLCHAIN_FILE=path),
+                                            env=dict(os.environ, CMAKE_TOOLCHAIN_FILE=path,
+                                                     READINESS_TOOL_BIN_DIR=""),
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
+    def test_readiness_tool_selector_validates_and_appends_only_after_all_paths_pass(self):
+        self.assertEqual(self.job["env"]["READINESS_TOOL_BIN_DIR"],
+                         "${{ vars.RELEASE_TOOLCHAIN_BIN_DIR }}")
+        names = [step.get("name") for step in self.job["steps"]]
+        self.assertLess(names.index("Validate configured readiness toolchain"),
+                        names.index("Toolchain preflight (self-hosted; provisioned out of band)"))
+        script = self.steps["Validate configured readiness toolchain"]["run"]
+        scratch = ROOT / ".scratch"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="readiness-tool-bin-", dir=scratch) as directory:
+            valid = Path(directory) / "bin"
+            valid.mkdir()
+            regular_file = Path(directory) / "file"
+            regular_file.write_text("tool", encoding="utf-8")
+            path_output = Path(directory) / "github-path"
+            env_output = Path(directory) / "github-env"
+            cases = [("", 0), (str(valid), 0), (str(valid) + ".missing", 1),
+                     (valid.name, 1), (str(regular_file), 1),
+                     (str(valid) + ":" + str(valid), 1),
+                     (str(valid) + "\nINJECTED=1", 1),
+                     (str(valid) + "\rINJECTED=1", 1)]
+            for tool_dir, expected in cases:
+                with self.subTest(tool_dir=tool_dir):
+                    path_output.write_text("", encoding="utf-8")
+                    env_output.write_text("", encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "-c", script],
+                        env=dict(os.environ,
+                                 CMAKE_TOOLCHAIN_FILE="",
+                                 READINESS_LIBRARY_PATH="",
+                                 READINESS_TOOL_BIN_DIR=tool_dir,
+                                 GITHUB_PATH=str(path_output),
+                                 GITHUB_ENV=str(env_output)),
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected,
+                                     result.stdout + result.stderr)
+                    if expected == 0 and tool_dir:
+                        self.assertEqual(path_output.read_text(), f"{valid}\n")
+                    else:
+                        self.assertEqual(path_output.read_text(), "")
+                    self.assertEqual(env_output.read_text(), "")
+
+            combined_cases = [
+                (str(valid), "relative-library", 1),
+                (str(valid) + ".missing", directory, 1),
+                (str(valid), directory, 0),
+            ]
+            for tool_dir, library_path, expected in combined_cases:
+                with self.subTest(tool_dir=tool_dir, library_path=library_path):
+                    path_output.write_text("", encoding="utf-8")
+                    env_output.write_text("", encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "-c", script],
+                        env=dict(os.environ,
+                                 CMAKE_TOOLCHAIN_FILE="",
+                                 READINESS_LIBRARY_PATH=library_path,
+                                 READINESS_TOOL_BIN_DIR=tool_dir,
+                                 LD_LIBRARY_PATH="/existing/path",
+                                 GITHUB_PATH=str(path_output),
+                                 GITHUB_ENV=str(env_output)),
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, expected,
+                                     result.stdout + result.stderr)
+                    if expected:
+                        self.assertEqual(path_output.read_text(), "")
+                        self.assertEqual(env_output.read_text(), "")
+                    else:
+                        self.assertEqual(path_output.read_text(), f"{valid}\n")
+                        self.assertEqual(env_output.read_text(),
+                                         f"LD_LIBRARY_PATH={directory}:/existing/path\n")
 
     def test_readiness_library_paths_are_validated_and_preserve_existing_search_path(self):
         self.assertEqual(self.job["env"]["READINESS_LIBRARY_PATH"],
@@ -128,6 +210,7 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
                     result = subprocess.run(["bash", "-c", script],
                                             env=dict(os.environ, CMAKE_TOOLCHAIN_FILE="",
                                                      READINESS_LIBRARY_PATH=path,
+                                                     READINESS_TOOL_BIN_DIR="",
                                                      LD_LIBRARY_PATH="/existing/path",
                                                      GITHUB_ENV=str(output)),
                                             capture_output=True, text=True)
