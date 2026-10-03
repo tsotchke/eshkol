@@ -1,13 +1,20 @@
 # Eshkol v1.3.6-evolve — Release Notes
 
-**Status:** RELEASE CANDIDATE; release evidence is pending.
+**Status:** RELEASE CANDIDATE.
 **Planned release date:** Monday, October 5, 2026.
 
-CTest and VM parity totals remain unrecorded for the final release SHA.
+Publication requires the release workflow's evidence and ICC ready/100 verdict
+at the exact release commit. CTest and VM parity totals remain unrecorded in
+the release record.
 
-<!-- RELEASE_EVIDENCE_PENDING -->
+### Changes
 
-### Changes under review
+- **Native REPL input stays clean across line-editing backends.** Pipes and
+  machine mode use one noninteractive reader whether readline is available or
+  absent; interactive sessions retain their prompts. (#737)
+- **Release builds require native image I/O.** Every package and readiness
+  configuration requires a native backend; configuration fails if none is
+  selected. Developer builds retain the optional backend setting. (#737)
 
 - **Mixed exact/inexact interval arithmetic preserves containment in the
   confirmed cases.** Exact endpoints are converted outward before arithmetic;
@@ -15,7 +22,7 @@ CTest and VM parity totals remain unrecorded for the final release SHA.
 - **AOT loop memory reclamation covers the confirmed shapes:** named-let exit,
   a discarded numeric tensor, and direct literal `tensor-dot`. This does not
   establish flat RSS for every loop or platform; the gate covers the direct
-  literal form, while other `tensor-dot` forms remain outside this claim. (#729)
+  literal form, while other `tensor-dot` forms remain outside this claim. (#729, #735)
 - **Release evidence follows its source identity.** The ICC release guard binds
   evidence to the exact checkout and commit SHA. VM parity traces honor the
   configured `TRACE_DIR` and are bound to the release cohort.

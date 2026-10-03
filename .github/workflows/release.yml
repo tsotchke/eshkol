@@ -1144,10 +1144,11 @@ jobs:
       # Name intentionally distinct from ICC_BIN: the resolved binary path is
       # published to $GITHUB_ENV as ICC_BIN by the resolve step below, and a
       # job-level env of the same name would shadow that write in later steps.
-      ICC_BIN_OVERRIDE: ${{ vars.ICC_BIN }}
+      ICC_BIN_OVERRIDE: ${{ vars.RELEASE_ICC_BIN || vars.ICC_BIN }}
       ICC_REPO_REQUESTED: ${{ vars.ICC_REPO || 'eshkol_lang' }}
       CMAKE_TOOLCHAIN_FILE: ${{ vars.RELEASE_CMAKE_TOOLCHAIN_FILE }}
       READINESS_LIBRARY_PATH: ${{ vars.RELEASE_RUNTIME_LIBRARY_PATH }}
+      READINESS_TOOL_BIN_DIR: ${{ vars.RELEASE_TOOLCHAIN_BIN_DIR }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -1203,6 +1204,51 @@ jobs:
       # oracle), and `prlimit` (Rosette Wire's process sandbox) are extra
       # requirements this job has beyond the standard mesh set — provision
       # them alongside the rest.
+      - name: Validate configured readiness toolchain
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
+            if [[ "$CMAKE_TOOLCHAIN_FILE" != /* || ! -f "$CMAKE_TOOLCHAIN_FILE" || ! -r "$CMAKE_TOOLCHAIN_FILE" ]]; then
+              echo "::error::Configured release toolchain must be an absolute, readable file."
+              exit 1
+            fi
+          fi
+          if [[ -n "${READINESS_LIBRARY_PATH:-}" ]]; then
+            if [[ "$READINESS_LIBRARY_PATH" == :* || "$READINESS_LIBRARY_PATH" == *: || "$READINESS_LIBRARY_PATH" == *::* ]]; then
+              echo "::error::Configured release library paths must not contain empty entries."
+              exit 1
+            fi
+            if [[ "$READINESS_LIBRARY_PATH" == *$'\n'* || "$READINESS_LIBRARY_PATH" == *$'\r'* ]]; then
+              echo "::error::Configured release library paths must not contain line breaks."
+              exit 1
+            fi
+            IFS=: read -r -a library_dirs <<< "$READINESS_LIBRARY_PATH"
+            for directory in "${library_dirs[@]}"; do
+              if [[ "$directory" != /* || ! -d "$directory" ]]; then
+                echo "::error::Configured release library paths must be absolute directories."
+                exit 1
+              fi
+            done
+          fi
+          if [[ -n "${READINESS_TOOL_BIN_DIR:-}" ]]; then
+            if [[ "$READINESS_TOOL_BIN_DIR" == *:* || "$READINESS_TOOL_BIN_DIR" == *$'\n'* || "$READINESS_TOOL_BIN_DIR" == *$'\r'* ]]; then
+              echo "::error::Configured release tool directory must be a single path without colons or line breaks."
+              exit 1
+            fi
+            if [[ "$READINESS_TOOL_BIN_DIR" != /* || ! -d "$READINESS_TOOL_BIN_DIR" ]]; then
+              echo "::error::Configured release tool directory must be an absolute existing directory."
+              exit 1
+            fi
+          fi
+          if [[ -n "${READINESS_LIBRARY_PATH:-}" ]]; then
+            printf 'LD_LIBRARY_PATH=%s%s\n' "$READINESS_LIBRARY_PATH" "${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          fi
+          if [[ -n "${READINESS_TOOL_BIN_DIR:-}" ]]; then
+            printf '%s\n' "$READINESS_TOOL_BIN_DIR" >> "$GITHUB_PATH"
+          fi
+
       - name: Toolchain preflight (self-hosted; provisioned out of band)
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
@@ -1257,36 +1303,6 @@ jobs:
           fi
 
           exit $fail
-
-      - name: Validate configured readiness toolchain
-        if: env.ICC_AVAILABLE == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]]; then
-            if [[ "$CMAKE_TOOLCHAIN_FILE" != /* || ! -f "$CMAKE_TOOLCHAIN_FILE" || ! -r "$CMAKE_TOOLCHAIN_FILE" ]]; then
-              echo "::error::Configured release toolchain must be an absolute, readable file."
-              exit 1
-            fi
-          fi
-          if [[ -n "${READINESS_LIBRARY_PATH:-}" ]]; then
-            if [[ "$READINESS_LIBRARY_PATH" == :* || "$READINESS_LIBRARY_PATH" == *: || "$READINESS_LIBRARY_PATH" == *::* ]]; then
-              echo "::error::Configured release library paths must not contain empty entries."
-              exit 1
-            fi
-            if [[ "$READINESS_LIBRARY_PATH" == *$'\n'* || "$READINESS_LIBRARY_PATH" == *$'\r'* ]]; then
-              echo "::error::Configured release library paths must not contain line breaks."
-              exit 1
-            fi
-            IFS=: read -r -a library_dirs <<< "$READINESS_LIBRARY_PATH"
-            for directory in "${library_dirs[@]}"; do
-              if [[ "$directory" != /* || ! -d "$directory" ]]; then
-                echo "::error::Configured release library paths must be absolute directories."
-                exit 1
-              fi
-            done
-            printf 'LD_LIBRARY_PATH=%s%s\n' "$READINESS_LIBRARY_PATH" "${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
-          fi
 
       - name: Prepare isolated Python binding test environment
         if: env.ICC_AVAILABLE == 'true'
