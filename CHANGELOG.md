@@ -30,7 +30,7 @@ requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
 - **AOT per-iteration RSS is bounded for the confirmed loop cases.** The fix
   covers named-let exit, a discarded numeric tensor, and direct literal
   `tensor-dot`; it does not establish flat RSS for every loop or platform. The
-  original million-iteration report is retained as a regression fixture. (#729, #735)
+  original million-iteration report is retained as a regression fixture. (#729)
 - **Roadmap and branch portfolio distinguish patch work from experimental integration.**
   The active feature inventory records branch ownership, release scope and pending
   qualification for the separate integration build. (#728)
