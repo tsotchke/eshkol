@@ -17,6 +17,11 @@
       "pr": 736,
       "class": "release-machinery",
       "reason": "Moves the active release record and accounting boundary to v1.3.6, synchronizes existing release facts and website asset names, and rebuilds the candidate site bundle; the native compiler and language behavior are unchanged, and final qualification remains pending."
+    },
+    {
+      "pr": 738,
+      "class": "release-machinery",
+      "reason": "Synchronizes the final v1.3.6 candidate documentation and site content and wires ICC and tool profiles for release preparation; it adds no product runtime behavior beyond the already-accounted changes in #737."
     }
   ]
 }
