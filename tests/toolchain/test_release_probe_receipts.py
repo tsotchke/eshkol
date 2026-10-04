@@ -11,6 +11,72 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProbeReceipts(unittest.TestCase):
+    def test_smoke_transport_persists_full_nested_failure_and_exact_status(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            path = Path(directory)
+            trace = path / "trace.jsonl"
+            trace.touch()
+            passing = path / "passing-producer.sh"
+            passing.write_text("#!/usr/bin/env bash\nprintf success-marker\n", encoding="utf-8")
+            failing = path / "nested-producer.sh"
+            failing.write_text("#!/usr/bin/env bash\nprintf nested-marker >&2\nexit 7\n", encoding="utf-8")
+            script = '''set -u
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+. "$REPO_ROOT/scripts/lib/icc_probe.sh"
+PROBE_TOTAL=0; PROBE_FAILURES=0; PROBE_INFRA=0
+mkdir -p "$ICC_PROBE_LOG_DIR"
+export ICC_PROBE_LOG_DIR
+probe passing 'passing control' 'out=$(bash "$PASS_SCRIPT" 2>&1); printf "%s\\n" "$out"'
+probe nested_failure 'nested failure control' 'out=$(bash "$FAIL_SCRIPT" 2>&1); rc=$?; if [ "$rc" -ne 0 ]; then printf "%s\\n" "$out" >&2; exit "$rc"; fi'
+test "$PROBE_TOTAL" -eq 2
+test "$PROBE_FAILURES" -eq 1
+test "$(cat "$ICC_PROBE_LOG_DIR/passing.exit-status")" = 0
+test "$(cat "$ICC_PROBE_LOG_DIR/nested_failure.exit-status")" = 7
+grep -q success-marker "$ICC_PROBE_LOG_DIR/passing.log"
+grep -q nested-marker "$ICC_PROBE_LOG_DIR/nested_failure.log"
+python3 - "$TRACE_FILE" <<'PYCODE'
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+assert any(e.get("kind") == "eshkol_smoke" and e.get("name") == "nested_failure" and e.get("value") == "FAIL" for e in events)
+assert any(e.get("kind") == "eshkol_smoke" and e.get("name") == "passing" and e.get("snippet") == "passing control: OK" for e in events), events
+PYCODE
+'''
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                env={**os.environ, "REPO_ROOT": str(ROOT), "TRACE_FILE": str(trace), "ICC_PROBE_LOG_DIR": str(path / "logs"), "PASS_SCRIPT": str(passing), "FAIL_SCRIPT": str(failing)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_receipt_write_failure_preserves_observed_verdict_and_blocks_durability(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
+            path = Path(directory)
+            trace = path / "trace.jsonl"
+            trace.touch()
+            unusable = path / "not-a-directory"
+            unusable.write_text("block receipt writes\n", encoding="utf-8")
+            script = '''set -u
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+. "$REPO_ROOT/scripts/lib/icc_probe.sh"
+probe receipt_pass 'positive receipt failure' 'printf positive-marker'
+probe receipt_fail 'negative receipt failure' 'printf wrong-answer-marker; exit 7'
+test "$PROBE_TOTAL" -eq 2
+test "$PROBE_FAILURES" -eq 1
+test "$PROBE_INFRA" -eq 2
+python3 - "$TRACE_FILE" <<'PYCODE'
+import json, sys
+events = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
+smoke = {(e.get("name"), e.get("value")) for e in events if e.get("kind") == "eshkol_smoke"}
+assert ("receipt_pass", "INFRA") in smoke
+assert ("receipt_pass", "PASS") not in smoke
+assert ("receipt_fail", "FAIL") in smoke
+assert ("receipt_fail_evidence_persistence", "INFRA") in smoke
+results = {(e.get("name"), e.get("value", {}).get("passed")) for e in events if e.get("kind") == "test_result"}
+assert ("receipt_fail", False) in results
+assert not any(name == "receipt_pass" for name, _ in results)
+PYCODE
+'''
+            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                env={**os.environ, "REPO_ROOT": str(ROOT), "TRACE_FILE": str(trace), "ICC_PROBE_LOG_DIR": str(unusable)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_completed_outcomes_have_typed_receipts_but_infra_does_not(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
             trace = Path(directory) / "trace.jsonl"
@@ -31,6 +97,8 @@ test "$PROBE_INFRA" -eq 1
             events = [json.loads(line) for line in trace.read_text().splitlines()]
             smoke = {e["name"]: e["value"] for e in events if e["kind"] == "eshkol_smoke"}
             self.assertEqual(smoke, {"measured_pass": "PASS", "measured_failure": "FAIL", "missing_verdict": "INFRA"})
+            pass_receipt = next(e for e in events if e.get("kind") == "eshkol_smoke" and e.get("name") == "measured_pass")
+            self.assertEqual(pass_receipt["snippet"], 'pass with "quoted" label: OK')
             results = {e["name"]: e["value"]["passed"] for e in events if e["kind"] == "test_result"}
             self.assertEqual(results, {"measured_pass": True, "measured_failure": False})
 

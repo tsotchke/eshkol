@@ -81,7 +81,10 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
         job = self.workflow[self.workflow.index("  release-readiness-gate:"):]
         self.assertIn("fetch-depth: 0", job)
         self.assertIn("Prepare isolated Python binding test environment", job)
-        self.assertIn("pip install --disable-pip-version-check pybind11 numpy pyyaml", job)
+        self.assertIn(
+            "pip install --disable-pip-version-check pybind11==3.1.0 numpy==2.5.3 pyyaml==6.0.3",
+            job,
+        )
         self.assertIn("command -v sbcl", job)
         self.assertIn("command -v prlimit", job)
         self.assertIn("-DESHKOL_PYTHON_BINDINGS=ON", job)
