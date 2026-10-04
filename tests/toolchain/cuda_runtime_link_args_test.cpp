@@ -147,8 +147,10 @@ int main(int argc, char** argv) {
                      "configured CUDA markers resolve on the consumer");
         ok &= expect(contains(configured, expected_link_arg("cudart")),
                      "configured runtime closure resolves cudart by name");
-        ok &= expect(contains(configured, expected_link_arg("cublas")),
-                     "configured runtime closure resolves cuBLAS by name");
+        ok &= expect(!contains(configured, expected_link_arg("cublas")),
+                     "CPU/AOT runtime closure does not eagerly link cuBLAS");
+        ok &= expect(!contains(configured, expected_link_arg("cublasLt")),
+                     "CPU/AOT runtime closure does not eagerly link cuBLASLt");
     }
 
     clear_cuda_library_path();

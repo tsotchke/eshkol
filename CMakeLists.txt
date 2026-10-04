@@ -1758,15 +1758,13 @@ if(ESHKOL_GPU_ENABLED)
             set(GPU_FOUND TRUE)
             set(ESHKOL_GPU_BACKEND "CUDA" CACHE INTERNAL
                 "Resolved Eshkol GPU backend (NONE, METAL, CUDA, or WEBGPU)" FORCE)
-            set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
-            set(ESHKOL_CUDA_RUNTIME_LINK_NAMES cudart cublas)
-            if(TARGET CUDA::cublasLt)
-                list(APPEND GPU_LIBRARIES CUDA::cublasLt)
-                list(APPEND ESHKOL_CUDA_RUNTIME_LINK_NAMES cublasLt)
-            elseif(CUDA_cublasLt_LIBRARY)
-                list(APPEND GPU_LIBRARIES "${CUDA_cublasLt_LIBRARY}")
-                list(APPEND ESHKOL_CUDA_RUNTIME_LINK_NAMES cublasLt)
-            endif()
+            # cuBLAS is admitted by the CUDA GEMM loader on first use. Linking
+            # it here loads its large host image into CPU-only programs and
+            # JIT/VM hosts before a GPU operation is requested. Keep the eager
+            # target interface and generated AOT/cache link closure identical:
+            # cudart provides kernels; cuBLAS stays a typed runtime capability.
+            set(GPU_LIBRARIES CUDA::cudart ${CMAKE_DL_LIBS})
+            set(ESHKOL_CUDA_RUNTIME_LINK_NAMES cudart)
 
             if(WIN32)
                 set(ESHKOL_CUDA_DEVICE_RUNTIME "")
@@ -1837,6 +1835,7 @@ if(ESHKOL_GPU_ENABLED)
             # CUDA backend — .cpp host code + .cu kernels
             set(GPU_SOURCES
                 "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_cuda.cpp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/cublas_loader.cpp"
                 "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_cuda_kernels.cu")
         else()
             message(STATUS "GPU: CUDA not found (install NVIDIA CUDA Toolkit for GPU support)")
@@ -1971,6 +1970,9 @@ if(NOT APPLE)
         foreach(_cuda_runtime_name IN LISTS ESHKOL_CUDA_RUNTIME_LINK_NAMES)
             list(APPEND ESHKOL_HOST_RUNTIME_LINK_ARGS
                 "__ESHKOL_CUDA_LIB__/${_cuda_runtime_name}")
+        endforeach()
+        foreach(_cuda_loader_lib IN LISTS CMAKE_DL_LIBS)
+            eshkol_append_host_runtime_link_arg("${_cuda_loader_lib}")
         endforeach()
     elseif(GPU_FOUND AND GPU_LIBRARIES)
         foreach(_gpu_lib IN LISTS GPU_LIBRARIES)
@@ -8320,6 +8322,75 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cu
         ${ESHKOL_GENERATED_INCLUDE_DIR})
     add_test(NAME cuda_runtime_link_args_test
         COMMAND cuda_runtime_link_args_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_GPU_BACKEND STREQUAL "CUDA")
+    # Real toolkit declarations type-check the fake exports and production
+    # loader together. These tests need no device and must run on CUDA CI even
+    # when the numerical GPU gates correctly report that hardware is absent.
+    add_executable(cublas_lazy_loader_test
+        tests/toolchain/cublas_lazy_loader_test.cpp
+        lib/backend/gpu/cublas_loader.cpp)
+    target_compile_features(cublas_lazy_loader_test PRIVATE cxx_std_17)
+    target_compile_definitions(cublas_lazy_loader_test PRIVATE
+        ESHKOL_CUBLAS_LOADER_TESTING=1)
+    target_include_directories(cublas_lazy_loader_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu)
+    target_include_directories(cublas_lazy_loader_test SYSTEM PRIVATE
+        ${CUDAToolkit_INCLUDE_DIRS})
+    find_package(Threads REQUIRED)
+    target_link_libraries(cublas_lazy_loader_test PRIVATE
+        CUDA::cudart Threads::Threads ${CMAKE_DL_LIBS})
+    foreach(_fake_variant complete incomplete wrong_major property_failure create_failure stream_failure)
+        add_library(cublas_fake_${_fake_variant} SHARED
+            tests/toolchain/cublas_lazy_loader_fake.cpp)
+        target_compile_features(cublas_fake_${_fake_variant} PRIVATE cxx_std_17)
+        target_include_directories(cublas_fake_${_fake_variant} SYSTEM PRIVATE
+            ${CUDAToolkit_INCLUDE_DIRS})
+        if(WIN32)
+            set_target_properties(cublas_fake_${_fake_variant} PROPERTIES
+                PREFIX "" OUTPUT_NAME "cublas64_${CUDAToolkit_VERSION_MAJOR}"
+                RUNTIME_OUTPUT_DIRECTORY
+                    "${CMAKE_CURRENT_BINARY_DIR}/cublas-fake/${_fake_variant}/$<CONFIG>/bin")
+        else()
+            set_target_properties(cublas_fake_${_fake_variant} PROPERTIES
+                OUTPUT_NAME cublas SUFFIX ".so.${CUDAToolkit_VERSION_MAJOR}"
+                LIBRARY_OUTPUT_DIRECTORY
+                    "${CMAKE_CURRENT_BINARY_DIR}/cublas-fake/${_fake_variant}/$<CONFIG>/lib64")
+        endif()
+    endforeach()
+    target_compile_definitions(cublas_fake_incomplete PRIVATE FAKE_MISSING_SYMBOL=1)
+    target_compile_definitions(cublas_fake_wrong_major PRIVATE
+        "FAKE_RUNTIME_MAJOR=(CUBLAS_VER_MAJOR+1)")
+    target_compile_definitions(cublas_fake_property_failure PRIVATE
+        FAKE_PROPERTY_QUERY_FAILURE=1)
+    target_compile_definitions(cublas_fake_create_failure PRIVATE
+        FAKE_HANDLE_CREATE_FAILURE=1)
+    target_compile_definitions(cublas_fake_stream_failure PRIVATE
+        FAKE_STREAM_BIND_FAILURE=1)
+    add_test(NAME cublas_lazy_loader_test
+        COMMAND cublas_lazy_loader_test
+            $<TARGET_FILE:cublas_fake_complete>
+            $<TARGET_FILE:cublas_fake_incomplete>
+            $<TARGET_FILE:cublas_fake_wrong_major>
+            $<TARGET_FILE:cublas_fake_property_failure>
+            $<TARGET_FILE:cublas_fake_create_failure>
+            $<TARGET_FILE:cublas_fake_stream_failure>)
+    set_tests_properties(cublas_lazy_loader_test PROPERTIES TIMEOUT 60)
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    find_program(ESHKOL_CUDA_IMPORT_READER
+        NAMES llvm-readobj-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-readobj
+        HINTS ${LLVM_TOOLS_BINARY_DIR})
+    if(NOT ESHKOL_CUDA_IMPORT_READER)
+        message(FATAL_ERROR "CUDA link-closure tests require llvm-readobj")
+    endif()
+    add_test(NAME cuda_cpu_link_closure_test
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_cpu_link_closure_test.py
+            --runner $<TARGET_FILE:eshkol-run>
+            --readobj ${ESHKOL_CUDA_IMPORT_READER})
+    set_tests_properties(cuda_cpu_link_closure_test PROPERTIES TIMEOUT 900)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/decl_attribute_test.cpp")

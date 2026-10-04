@@ -284,6 +284,14 @@ fi
 echo -e "${GREEN}Using build directory: $BUILD_DIR${NC}"
 echo ""
 
+if grep -q '^ESHKOL_GPU_BACKEND:INTERNAL=CUDA$' "$BUILD_DIR/CMakeCache.txt"; then
+    if ! "${ESHKOL_TEST_PYTHON:-python3}" scripts/run_cuda_runtime_contracts.py \
+        --build-dir "$BUILD_DIR"; then
+        echo 'FAIL: CUDA device-independent runtime contracts' >&2
+        exit 1
+    fi
+fi
+
 run_gate_canary
 run_gate_self_test
 echo ""
