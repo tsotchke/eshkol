@@ -16,14 +16,26 @@ def main():
     common = ['ctest', '--test-dir', args.build_dir]
     if args.config:
         common += ['-C', args.config]
+
+    build = ['cmake', '--build', args.build_dir, '--target',
+             'cuda_runtime_contracts']
+    if args.config:
+        build += ['--config', args.config]
+    built = subprocess.run(build, capture_output=True, text=True, timeout=1200)
+    if built.returncode:
+        raise RuntimeError(
+            'Failed to build CUDA runtime contract targets: '
+            f'exit {built.returncode}\n{built.stdout}{built.stderr}')
+
     manifest = subprocess.run(common + ['--show-only=json-v1'],
                               capture_output=True, text=True, timeout=60)
     if manifest.returncode:
         raise RuntimeError(manifest.stderr)
     tests = [test['name'] for test in json.loads(manifest.stdout)['tests']]
-    missing = REQUIRED.difference(tests)
-    if missing or any(tests.count(name) != 1 for name in REQUIRED):
-        raise RuntimeError(f'Missing or ambiguous CUDA contract registrations: {sorted(missing)}')
+    invalid = sorted(name for name in REQUIRED if tests.count(name) != 1)
+    if invalid:
+        raise RuntimeError(
+            f'Missing or ambiguous CUDA contract registrations: {invalid}')
     regex = '^(' + '|'.join(sorted(REQUIRED)) + ')$'
     result = subprocess.run(common + ['-R', regex, '--output-on-failure'], timeout=1200)
     if result.returncode:

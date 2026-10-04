@@ -1864,6 +1864,13 @@ else()
     set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_stub.cpp")
 endif()
 
+if(ESHKOL_GPU_BACKEND STREQUAL "CUDA")
+    # The backend is resolved below project setup. Keep CUDA's three
+    # device-independent CTest contracts available even when the broad test
+    # suite is disabled by the Windows CUDA CI configuration.
+    enable_testing()
+endif()
+
 macro(eshkol_append_host_runtime_link_arg item)
     if(NOT "${item}" STREQUAL "")
         set(_eshkol_runtime_link_arg "")
@@ -8312,7 +8319,8 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ji
         COMMAND jit_aarch64_coff_target_config_test)
 endif()
 
-if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_runtime_link_args_test.cpp")
+if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_runtime_link_args_test.cpp")
     add_executable(cuda_runtime_link_args_test
         tests/toolchain/cuda_runtime_link_args_test.cpp
         lib/core/platform_runtime.cpp)
@@ -8324,7 +8332,7 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cu
         COMMAND cuda_runtime_link_args_test)
 endif()
 
-if(ESHKOL_BUILD_TESTS AND ESHKOL_GPU_BACKEND STREQUAL "CUDA")
+if(ESHKOL_GPU_BACKEND STREQUAL "CUDA")
     # Real toolkit declarations type-check the fake exports and production
     # loader together. These tests need no device and must run on CUDA CI even
     # when the numerical GPU gates correctly report that hardware is absent.
@@ -8493,7 +8501,7 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/assoc_e
     )
 endif()
 
-if(ESHKOL_BUILD_TESTS AND NOT WIN32)
+if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND NOT WIN32)
     add_executable(eshkol-vm-standalone-test lib/backend/eshkol_vm.c)
     target_include_directories(eshkol-vm-standalone-test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
@@ -8508,6 +8516,9 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         ${LLVM_LIBS_LIST}
         ${LLVM_SYSTEM_LIBS_LIST}
     )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     add_test(NAME eshkol_vm_standalone_smoke
         COMMAND eshkol-vm-standalone-test)
     set_tests_properties(eshkol_vm_standalone_smoke PROPERTIES
@@ -9476,6 +9487,27 @@ endif()
                 ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
                 PASS_REGULAR_EXPRESSION "SUMMARY:"
                 FAIL_REGULAR_EXPRESSION "FAIL:|undefined variable|fatal runtime error")
+    endif()
+endif()
+
+if(ESHKOL_GPU_BACKEND STREQUAL "CUDA")
+    # The Windows CUDA CI configuration deliberately disables the broad test
+    # suite, but these three device-independent contracts remain mandatory.
+    # Build only their executable/fake-library prerequisites for the selected
+    # configuration; the non-Windows VM runner is part of the contract too.
+    add_custom_target(cuda_runtime_contracts
+        DEPENDS
+            eshkol-run
+            cuda_runtime_link_args_test
+            cublas_lazy_loader_test
+            cublas_fake_complete
+            cublas_fake_incomplete
+            cublas_fake_wrong_major
+            cublas_fake_property_failure
+            cublas_fake_create_failure
+            cublas_fake_stream_failure)
+    if(NOT WIN32)
+        add_dependencies(cuda_runtime_contracts eshkol-vm-standalone-test)
     endif()
 endif()
 
