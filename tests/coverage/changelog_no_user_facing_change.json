@@ -22,6 +22,11 @@
       "pr": 738,
       "class": "release-machinery",
       "reason": "Synchronizes the final v1.3.6 candidate documentation and site content and wires ICC and tool profiles for release preparation; it adds no product runtime behavior beyond the already-accounted changes in #737."
+    },
+    {
+      "pr": 739,
+      "class": "release-machinery",
+      "reason": "Retains full release-probe output and exit status, uploads phase-owned failure evidence, and adds a nonpublishing workflow mode for the three memory qualification gates; compiler/runtime code, shipped language behavior and package contents are unchanged."
     }
   ]
 }
