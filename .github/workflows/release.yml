@@ -16,6 +16,11 @@ on:
         required: false
         default: false
         type: boolean
+      memory_diagnostics:
+        description: Build the canonical release profile and run only the three memory diagnostics
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -34,9 +39,11 @@ env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
   RELEASE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
   STRICT_READINESS: ${{ github.event_name == 'workflow_dispatch' && inputs.strict_readiness || false }}
+  MEMORY_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.memory_diagnostics || false }}
 
 jobs:
   unix-release-matrix:
+    if: inputs.memory_diagnostics != true
     name: release-${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -446,6 +453,7 @@ jobs:
   # infrequent and high-stakes, so this stays self-contained here rather
   # than assuming ci.yml's cache population already ran for this ref.
   prefetch-windows-llvm-archives:
+    if: inputs.memory_diagnostics != true
     name: prefetch-windows-llvm-archives (${{ matrix.arch }})
     runs-on: ubuntu-22.04
     continue-on-error: true
@@ -488,6 +496,7 @@ jobs:
           enableCrossOsArchive: true
 
   windows-release-matrix:
+    if: inputs.memory_diagnostics != true
     name: release-${{ matrix.name }}
     needs: prefetch-windows-llvm-archives
     runs-on: ${{ matrix.runner }}
@@ -1158,6 +1167,16 @@ jobs:
       # Resolve ICC FIRST so a runner without it decides fast, before spending
       # ~20 min on a build it could never certify. On a real tag push, absence
       # of the oracle is a blocked release, never a green one.
+      - name: Reject incompatible memory diagnostic options
+        if: env.MEMORY_DIAGNOSTICS == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$STRICT_READINESS" == "true" ]]; then
+            echo "::error::memory_diagnostics cannot be combined with strict_readiness=true."
+            exit 1
+          fi
+
       - name: Resolve ICC binary (block on push, never fail-open)
         shell: bash
         run: |
@@ -1172,6 +1191,10 @@ jobs:
           fi
           echo "ICC_AVAILABLE=false" >> "$GITHUB_ENV"
           msg="ICC_BIN='${ICC_BIN:-unset}' is not present or executable on this runner. The release cannot be certified without the readiness oracle. Provision ICC on the release runner and set the ICC_BIN repository variable — see CONTRIBUTING.md 'Release-blocking readiness'."
+          if [[ "${MEMORY_DIAGNOSTICS}" == "true" ]]; then
+            echo "::error title=Memory diagnostics blocked::$msg"
+            exit 1
+          fi
           if [[ "${GITHUB_EVENT_NAME}" == "push" || "${STRICT_READINESS}" == "true" ]]; then
             echo "::error title=Release readiness gate: ICC unavailable::$msg Publication is BLOCKED (never fail-open)."
             exit 1
@@ -1179,6 +1202,7 @@ jobs:
           echo "::warning title=Readiness gate skipped (dry-run)::$msg This non-publishing dry-run continues; a real tag push would be BLOCKED here."
 
       - name: Release identity and publication negative controls
+        if: env.MEMORY_DIAGNOSTICS != 'true'
         shell: bash
         run: python3 tests/toolchain/test_release_readiness_guard.py
 
@@ -1341,6 +1365,11 @@ jobs:
           # consumes — without it architecture-verify false-FAILs.
           cmake --build build --parallel 4
 
+      - name: Configure and build fuzz tree (readiness evidence)
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
           # Keep the ESKM release oracle isolated from the main product build:
           # configure fuzz support separately and build only its bounded probe.
           cmake -S . -B build-fuzz -G Ninja \
@@ -1368,7 +1397,7 @@ jobs:
       # than a second macOS lane, since release readiness only needs one
       # quantum-capable tree, not two.
       - name: Configure and build quantum tree (readiness evidence)
-        if: env.ICC_AVAILABLE == 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -1382,35 +1411,70 @@ jobs:
             -DESHKOL_BUILD_AGENT_FFI=ON
           cmake --build build-quantum --parallel 4
 
+      - name: Run nonpublishing memory diagnostics
+        if: env.MEMORY_DIAGNOSTICS == 'true'
+        timeout-minutes: 360
+        shell: bash
+        env:
+          ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/memory-diagnostics
+          BUILD_DIR: build
+        run: |
+          set -uo pipefail
+          mkdir -p "$ESHKOL_DURABLE_WORK_ROOT"
+          status_file="$ESHKOL_DURABLE_WORK_ROOT/status.tsv"
+          : > "$status_file"
+          failures=0
+          tests=(
+            tests/memory/region_evac_subtype_coverage_test.sh
+            tests/memory/vm_region_flat_rss_test.sh
+            tests/memory/iter_scope_partial_reclaim_test.sh
+          )
+          for test_script in "${tests[@]}"; do
+            name="${test_script##*/}"
+            log="$ESHKOL_DURABLE_WORK_ROOT/$name.log"
+            echo "Running $test_script; full output: $log"
+            BUILD_DIR="$BUILD_DIR" bash "$test_script" >"$log" 2>&1
+            rc=$?
+            printf '%s\t%d\n' "$test_script" "$rc" | tee -a "$status_file"
+            if (( rc != 0 )); then failures=1; fi
+          done
+          if (( failures != 0 )); then
+            echo "Memory diagnostic failures recorded in $status_file" >&2
+            exit 1
+          fi
+
       # Each evidence phase has its own step budget. Coverage/full-suite and VM
       # parity run first; the expensive smoke battery follows against the same
       # captured build cohort; the remaining focused gates run before final ICC.
       - name: Release evidence baseline (coverage and VM parity)
-        if: env.ICC_AVAILABLE == 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
         timeout-minutes: 360
         shell: bash
         env:
           TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
+          ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/baseline
           QUANTUM_BUILD_DIR: build-quantum
-        run: scripts/run_v1_3_readiness.sh --phase baseline
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase baseline
 
       - name: Release smoke evidence
-        if: env.ICC_AVAILABLE == 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
         timeout-minutes: 360
         shell: bash
         env:
           TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
+          ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/smoke
           QUANTUM_BUILD_DIR: build-quantum
-        run: scripts/run_v1_3_readiness.sh --phase smoke
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase smoke
 
       - name: Remaining release producers and architecture verification
-        if: env.ICC_AVAILABLE == 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
         timeout-minutes: 360
         shell: bash
         env:
           TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
+          ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/final-evidence
           QUANTUM_BUILD_DIR: build-quantum
-        run: scripts/run_v1_3_readiness.sh --phase final-evidence
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase final-evidence
 
       # The canonical recipe owns every required producer, refreshes one trace
       # cohort, reindexes ICC and emits the final architecture verdict before
@@ -1424,11 +1488,12 @@ jobs:
       # unready verdict blocks publication; on a dry-run it is advisory.
       - name: ICC readiness gate (tag push or strict dry run requires ready/100)
         id: readiness
-        if: env.ICC_AVAILABLE == 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
         timeout-minutes: 360
         shell: bash
         env:
           TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
+          ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/readiness
           QUANTUM_BUILD_DIR: build-quantum
         run: |
           set -uxo pipefail
@@ -1456,6 +1521,7 @@ jobs:
             exit 0
           fi
 
+          mkdir -p "$ESHKOL_DURABLE_WORK_ROOT"
           if ! scripts/run_v1_3_readiness.sh --phase readiness; then
             verdict "scripts/run_v1_3_readiness.sh reported $RELEASE_TARGET is not ready."
             readiness_command_failed=1
@@ -1518,7 +1584,7 @@ jobs:
             scripts/icc_traces/
             .icc/runtime-traces/
             .icc/runtime-traces-oracle-view/
-            .scratch/v1-3-readiness/SANITIZER_FUZZ_REPORT.md
+            .scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: ignore
 
       - name: Upload bound release-readiness receipt
@@ -1542,9 +1608,11 @@ jobs:
         run: |
           set -u
           rm -rf build build-quantum build-fuzz build-asan-ubsan \
-            .scratch/v1-3-readiness .scratch/icc-stdlib-rebuild || true
+            ".scratch/release-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            .scratch/icc-stdlib-rebuild || true
 
   publish-release:
+    if: inputs.memory_diagnostics != true
     name: publish-release
     runs-on: ubuntu-22.04
     needs:

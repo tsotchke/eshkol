@@ -32,6 +32,83 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertEqual(self.workflow["on"]["workflow_dispatch"]["inputs"]["candidate_tag"]["default"],
                          "v1.3.6-evolve")
 
+    def test_memory_diagnostic_mode_is_opt_in_and_nonpublishing(self):
+        diagnostic = self.workflow["on"]["workflow_dispatch"]["inputs"]["memory_diagnostics"]
+        self.assertEqual(diagnostic["type"], "boolean")
+        self.assertEqual(diagnostic["default"], "false")
+        self.assertEqual(diagnostic["required"], "false")
+        self.assertEqual(self.workflow["jobs"]["unix-release-matrix"]["if"],
+                         "inputs.memory_diagnostics != true")
+        self.assertEqual(self.workflow["jobs"]["prefetch-windows-llvm-archives"]["if"],
+                         "inputs.memory_diagnostics != true")
+        self.assertEqual(self.workflow["jobs"]["windows-release-matrix"]["if"],
+                         "inputs.memory_diagnostics != true")
+        self.assertEqual(self.workflow["jobs"]["publish-release"]["if"],
+                         "inputs.memory_diagnostics != true")
+        reject = self.steps["Reject incompatible memory diagnostic options"]
+        self.assertIn('[[ "$STRICT_READINESS" == "true" ]]', reject["run"])
+        resolve = self.steps["Resolve ICC binary (block on push, never fail-open)"]
+        self.assertNotIn("if", resolve)
+        self.assertIn('if [[ "${MEMORY_DIAGNOSTICS}" == "true" ]]; then', resolve["run"])
+        self.assertIn("exit 1", resolve["run"])
+        self.assertEqual(self.steps["Bind ICC to this release checkout and commit"]["if"],
+                         "env.ICC_AVAILABLE == 'true'")
+        run = self.steps["Run nonpublishing memory diagnostics"]
+        self.assertEqual(run["if"], "env.MEMORY_DIAGNOSTICS == 'true'")
+        self.assertEqual(run["env"]["BUILD_DIR"], "build")
+        for test_script in (
+            "tests/memory/region_evac_subtype_coverage_test.sh",
+            "tests/memory/vm_region_flat_rss_test.sh",
+            "tests/memory/iter_scope_partial_reclaim_test.sh",
+        ):
+            self.assertIn(test_script, run["run"])
+        self.assertIn("status.tsv", run["run"])
+        self.assertIn('if (( failures != 0 )); then', run["run"])
+        self.assertIn("${{ github.run_id }}", run["env"]["ESHKOL_DURABLE_WORK_ROOT"])
+        self.assertIn("${{ github.run_attempt }}", run["env"]["ESHKOL_DURABLE_WORK_ROOT"])
+        self.assertNotIn("scripts/run_v1_3_readiness.sh", run["run"])
+        self.assertNotIn("receipt_created", run["run"])
+        self.assertEqual(self.steps["Configure and build (readiness evidence)"]["if"],
+                         "env.ICC_AVAILABLE == 'true'")
+        self.assertEqual(self.steps["Configure and build fuzz tree (readiness evidence)"]["if"],
+                         "env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'")
+        self.assertEqual(self.steps["Configure and build quantum tree (readiness evidence)"]["if"],
+                         "env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'")
+        self.assertIn("env.MEMORY_DIAGNOSTICS != 'true'", self.steps[
+            "ICC readiness gate (tag push or strict dry run requires ready/100)"]["if"])
+        self.assertEqual(self.steps["Upload bound release-readiness receipt"]["if"],
+                         "steps.readiness.outputs.receipt_created == 'true'")
+
+    def test_memory_diagnostics_run_all_gates_and_retain_each_failure_log_and_status(self):
+        run = self.steps["Run nonpublishing memory diagnostics"]["run"]
+        tests = (
+            "tests/memory/region_evac_subtype_coverage_test.sh",
+            "tests/memory/vm_region_flat_rss_test.sh",
+            "tests/memory/iter_scope_partial_reclaim_test.sh",
+        )
+        with tempfile.TemporaryDirectory(prefix="memory-diagnostic-") as directory:
+            root = Path(directory)
+            fake_tests = root / "fake-tests"
+            fake_tests.mkdir()
+            for index, source in enumerate(tests):
+                test = fake_tests / Path(source).name
+                test.write_text(f'echo "captured-{index}"\nexit {index}\n', encoding="utf-8")
+                run = run.replace(source, str(test))
+            evidence = root / "evidence"
+            result = subprocess.run(
+                ["bash", "-c", run],
+                cwd=ROOT,
+                env=dict(os.environ, ESHKOL_DURABLE_WORK_ROOT=str(evidence), BUILD_DIR="build"),
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            rows = (evidence / "status.tsv").read_text(encoding="utf-8").splitlines()
+            self.assertEqual([row.rsplit("\t", 1)[1] for row in rows], ["0", "1", "2"])
+            for index, source in enumerate(tests):
+                log = evidence / (Path(source).name + ".log")
+                self.assertIn(f"captured-{index}", log.read_text(encoding="utf-8"))
+                self.assertIn(str(log), result.stdout)
+
     def test_missing_icc_fails_on_tag_or_strict_dispatch(self):
         resolve = self.steps["Resolve ICC binary (block on push, never fail-open)"]["run"]
         self.assertIn('rm -f "$RUNNER_TEMP/release-readiness-receipt.json"', resolve)
@@ -85,6 +162,37 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertEqual(upload["with"]["path"], "${{ runner.temp }}/release-readiness-receipt.json")
         self.assertEqual(upload["with"]["if-no-files-found"], "error")
         self.assertNotIn("always()", upload["if"])
+
+    def test_each_release_phase_owns_fresh_durable_root_uploaded_before_cleanup(self):
+        phases = ("baseline", "smoke", "final-evidence", "readiness")
+        roots = []
+        for phase in phases:
+            step_name = {
+                "baseline": "Release evidence baseline (coverage and VM parity)",
+                "smoke": "Release smoke evidence",
+                "final-evidence": "Remaining release producers and architecture verification",
+                "readiness": "ICC readiness gate (tag push or strict dry run requires ready/100)",
+            }[phase]
+            step = self.steps[step_name]
+            root = step["env"]["ESHKOL_DURABLE_WORK_ROOT"]
+            self.assertIn("${{ github.run_id }}", root)
+            self.assertIn("${{ github.run_attempt }}", root)
+            self.assertTrue(root.endswith("/" + phase), root)
+            roots.append(root)
+            self.assertIn('mkdir -p "$ESHKOL_DURABLE_WORK_ROOT"', step["run"])
+        self.assertEqual(len(set(roots)), len(phases))
+        upload = self.steps["Upload readiness evidence"]
+        self.assertEqual(upload["if"], "always()")
+        self.assertIn("release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/", upload["with"]["path"])
+        diagnostic_root = self.steps["Run nonpublishing memory diagnostics"]["env"]["ESHKOL_DURABLE_WORK_ROOT"]
+        self.assertIn("${{ github.run_id }}", diagnostic_root)
+        self.assertIn("${{ github.run_attempt }}", diagnostic_root)
+        self.assertIn("release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/", upload["with"]["path"])
+        cleanup_index = next(i for i, step in enumerate(self.job["steps"]) if step.get("name") == "Reclaim build trees")
+        upload_index = next(i for i, step in enumerate(self.job["steps"]) if step.get("name") == "Upload readiness evidence")
+        self.assertLess(upload_index, cleanup_index)
+        self.assertNotIn(".scratch/v1-3-readiness", upload["with"]["path"])
+        self.assertNotIn(".scratch/v1-3-readiness", self.steps["Reclaim build trees"]["run"])
 
     def test_readiness_budget_and_build_parallelism_cover_the_expanded_recipe(self):
         self.assertEqual(self.job["timeout-minutes"], "720")

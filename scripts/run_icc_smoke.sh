@@ -127,6 +127,17 @@ rm() {
 
 . "$REPO_ROOT/scripts/lib/icc_probe.sh"
 
+# Keep a full per-probe transcript beside durable smoke evidence.  The trace
+# retains its existing bounded summary; these logs preserve diagnostics that
+# previously disappeared inside nested command substitutions.
+if eshkol_durable_enabled; then
+    ICC_PROBE_LOG_DIR="$ESHKOL_ICC_WORK/probe-logs"
+else
+    ICC_PROBE_LOG_DIR="$ESHKOL_SCRATCH_ROOT/icc-smoke-probe-logs"
+fi
+mkdir -p "$ICC_PROBE_LOG_DIR"
+export ICC_PROBE_LOG_DIR
+
 echo "Running ICC smoke probes → $TRACE_FILE"
 echo
 
@@ -509,7 +520,9 @@ probe ad_adversarial_fd_oracle \
 probe region_evac_subtype_coverage \
     'ESH-0214d/e region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)' \
     'cd "$REPO_ROOT";
-     out=$(ESHKOL_ARENA_POISON=1 BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/region_evac_subtype_coverage_test.sh 2>&1) || exit 1;
+     out=$(ESHKOL_ARENA_POISON=1 BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/region_evac_subtype_coverage_test.sh 2>&1); rc=$?;
+     if [ "$rc" -ne 0 ]; then printf "%s\n" "$out" >&2; exit "$rc"; fi;
+     printf "%s\n" "$out";
      printf "%s" "$out" | grep -q "region_evac_subtype_coverage_test.sh: PASS"'
 
 probe parallel_map_scope_reclaim_race \
@@ -573,7 +586,9 @@ probe vm_region_flat_rss 'SW-14 close: (with-region ...) MEASURABLY reclaims on 
      ## and requires flatness, requires a 2x separation against
      ## ESHKOL_VM_REGION_EVAC=0, and requires the printed answer to be identical
      ## either way — so the reclamation claim is a measurement, not an assertion.
-     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/vm_region_flat_rss_test.sh 2>&1) || exit 1;
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/vm_region_flat_rss_test.sh 2>&1); rc=$?;
+     if [ "$rc" -ne 0 ]; then printf "%s\n" "$out" >&2; exit "$rc"; fi;
+     printf "%s\n" "$out";
      printf "%s" "$out" | grep -q "vm_region_flat_rss_test.sh: PASS"'
 
 probe vm_region_evac_subtype_coverage 'SW-14 close: every VM heap subtype a program can build inside a region survives the pop with its interior intact — read back and compared under ESHKOL_ARENA_POISON=1, under the post-sweep audit, and with reclamation disabled' \
@@ -585,7 +600,9 @@ probe vm_region_evac_subtype_coverage 'SW-14 close: every VM heap subtype a prog
      ## to recycle retired indices, so a coverage hole faults instead of
      ## aliasing; the audit stage independently scans the object table for a
      ## surviving reference to a retired index.
-     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/vm_region_evac_subtype_coverage_test.sh 2>&1) || exit 1;
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/vm_region_evac_subtype_coverage_test.sh 2>&1); rc=$?;
+     if [ "$rc" -ne 0 ]; then printf "%s\n" "$out" >&2; exit "$rc"; fi;
+     printf "%s\n" "$out";
      printf "%s" "$out" | grep -q "vm_region_evac_subtype_coverage_test.sh: PASS"'
 
 probe vm_region_growth_watchdog 'The VM heap growth watchdog after the SW-14 close: no false "reclaims nothing" claim for with-region, the still-true note on the bookkeeping-only region HANDLE surface, a loud budget diagnostic for unbounded growth with no region around it, fail-closed mode, and silence for the loop that now gets its memory back' \
