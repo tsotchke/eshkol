@@ -8385,11 +8385,17 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_GPU_BACKEND STREQUAL "CUDA")
     if(NOT ESHKOL_CUDA_IMPORT_READER)
         message(FATAL_ERROR "CUDA link-closure tests require llvm-readobj")
     endif()
+    set(_cuda_cpu_vm_args "")
+    # The standalone VM test host is only built on non-Windows platforms.
+    if(NOT WIN32)
+        list(APPEND _cuda_cpu_vm_args
+            --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>)
+    endif()
     add_test(NAME cuda_cpu_link_closure_test
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_cpu_link_closure_test.py
             --runner $<TARGET_FILE:eshkol-run>
-            --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>
+            ${_cuda_cpu_vm_args}
             --readobj ${ESHKOL_CUDA_IMPORT_READER})
     set_tests_properties(cuda_cpu_link_closure_test PROPERTIES TIMEOUT 900)
 endif()

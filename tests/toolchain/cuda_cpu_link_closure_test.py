@@ -48,26 +48,29 @@ def verify_answer(command, environment=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--runner', required=True)
-    parser.add_argument('--vm-runner', required=True)
+    parser.add_argument('--vm-runner')
     parser.add_argument('--readobj', required=True)
     args = parser.parse_args()
     runner = Path(args.runner).resolve()
-    vm_runner = Path(args.vm_runner).resolve()
+    vm_runner = Path(args.vm_runner).resolve() if args.vm_runner else None
     with tempfile.TemporaryDirectory(prefix='cuda-cpu-link-') as directory:
         root = Path(directory)
         source = root / 'cpu.esk'
         source.write_text('(display "CUDA_CPU_CLOSURE=") (display (+ 19 23)) (newline)\n')
         output = root / ('cpu.exe' if os.name == 'nt' else 'cpu')
         run([str(runner), str(source), '-o', str(output)])
-        for binary in (runner, output, vm_runner):
+        binaries = (runner, output, vm_runner) if vm_runner else (runner, output)
+        for binary in binaries:
             libraries = imports(binary, args.readobj)
             if eager_cublas(libraries):
                 raise RuntimeError(f'CPU executable eagerly imports cuBLAS: {binary}\n{libraries}')
         verify_answer([str(output)])
         verify_answer([str(runner), '-r', str(source)])
-        verify_answer([str(vm_runner), str(source)],
-                      dict(os.environ, ESHKOL_VM_NO_DISASM='1'))
-    print('PASS: CUDA-capable native/JIT/VM CPU paths omit eager cuBLAS imports')
+        if vm_runner:
+            verify_answer([str(vm_runner), str(source)],
+                          dict(os.environ, ESHKOL_VM_NO_DISASM='1'))
+    paths = 'native/JIT/VM' if vm_runner else 'native/JIT'
+    print(f'PASS: CUDA-capable {paths} CPU paths omit eager cuBLAS imports')
 
 
 if __name__ == '__main__':
