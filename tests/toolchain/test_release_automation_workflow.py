@@ -96,7 +96,7 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
                 run = run.replace(source, str(test))
             evidence = root / "evidence"
             result = subprocess.run(
-                ["bash", "-c", run],
+                ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", run],
                 cwd=ROOT,
                 env=dict(os.environ, ESHKOL_DURABLE_WORK_ROOT=str(evidence), BUILD_DIR="build"),
                 capture_output=True, text=True,

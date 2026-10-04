@@ -1433,8 +1433,11 @@ jobs:
             name="${test_script##*/}"
             log="$ESHKOL_DURABLE_WORK_ROOT/$name.log"
             echo "Running $test_script; full output: $log"
-            BUILD_DIR="$BUILD_DIR" bash "$test_script" >"$log" 2>&1
-            rc=$?
+            if BUILD_DIR="$BUILD_DIR" bash "$test_script" >"$log" 2>&1; then
+              rc=0
+            else
+              rc=$?
+            fi
             printf '%s\t%d\n' "$test_script" "$rc" | tee -a "$status_file"
             if (( rc != 0 )); then failures=1; fi
           done
