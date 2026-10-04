@@ -8389,6 +8389,7 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_GPU_BACKEND STREQUAL "CUDA")
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_cpu_link_closure_test.py
             --runner $<TARGET_FILE:eshkol-run>
+            --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>
             --readobj ${ESHKOL_CUDA_IMPORT_READER})
     set_tests_properties(cuda_cpu_link_closure_test PROPERTIES TIMEOUT 900)
 endif()

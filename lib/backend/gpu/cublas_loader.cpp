@@ -228,7 +228,11 @@ bool CublasLoader::admit_locked(const char* test_path, std::string* diagnostic) 
         DWORD flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
         if (absolute) flags |= LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR;
         Module module = LoadLibraryExW(path.c_str(), nullptr, flags);
-        const std::string display_path = std::filesystem::path(path).u8string();
+        const auto encoded_path = std::filesystem::path(path).u8string();
+        // C++20 returns u8string here; diagnostics preserve its UTF-8 bytes
+        // while Windows library admission continues to use the native path.
+        const std::string display_path(
+            reinterpret_cast<const char*>(encoded_path.data()), encoded_path.size());
         if (!module) {
             attempts << display_path << ": " << loader_error(GetLastError()) << "; ";
             continue;

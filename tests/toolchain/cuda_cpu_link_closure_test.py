@@ -38,27 +38,35 @@ def eager_cublas(libraries):
             if name.lower().startswith(('libcublas', 'cublas'))]
 
 
+def verify_answer(command, environment=None):
+    answer = run(command, env=environment)
+    markers = [line for line in answer.splitlines() if line.startswith('CUDA_CPU_CLOSURE=')]
+    if markers != ['CUDA_CPU_CLOSURE=42']:
+        raise RuntimeError(f'CPU path produced {answer!r}, expected one CUDA_CPU_CLOSURE=42 marker')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--runner', required=True)
+    parser.add_argument('--vm-runner', required=True)
     parser.add_argument('--readobj', required=True)
     args = parser.parse_args()
     runner = Path(args.runner).resolve()
+    vm_runner = Path(args.vm_runner).resolve()
     with tempfile.TemporaryDirectory(prefix='cuda-cpu-link-') as directory:
         root = Path(directory)
         source = root / 'cpu.esk'
-        source.write_text('(display (+ 19 23)) (newline)\n')
+        source.write_text('(display "CUDA_CPU_CLOSURE=") (display (+ 19 23)) (newline)\n')
         output = root / ('cpu.exe' if os.name == 'nt' else 'cpu')
         run([str(runner), str(source), '-o', str(output)])
-        for binary in (runner, output):
+        for binary in (runner, output, vm_runner):
             libraries = imports(binary, args.readobj)
             if eager_cublas(libraries):
                 raise RuntimeError(f'CPU executable eagerly imports cuBLAS: {binary}\n{libraries}')
-        for command in ([str(output)], [str(runner), '-r', str(source)],
-                        [str(runner), '--vm', str(source)]):
-            answer = run(command)
-            if answer.strip() != '42':
-                raise RuntimeError(f'CPU path produced {answer!r}, expected 42')
+        verify_answer([str(output)])
+        verify_answer([str(runner), '-r', str(source)])
+        verify_answer([str(vm_runner), str(source)],
+                      dict(os.environ, ESHKOL_VM_NO_DISASM='1'))
     print('PASS: CUDA-capable native/JIT/VM CPU paths omit eager cuBLAS imports')
 
 
