@@ -15,7 +15,9 @@
 #if defined(_WIN32)
 #include <windows.h>
 using TestModule = HMODULE;
-static TestModule open_test_module(const char* path) { return LoadLibraryA(path); }
+static TestModule open_test_module(const std::filesystem::path& path) {
+    return LoadLibraryW(path.c_str());
+}
 static void* test_symbol(TestModule m, const char* n) {
     return reinterpret_cast<void*>(GetProcAddress(m, n));
 }
@@ -23,7 +25,9 @@ static void* test_symbol(TestModule m, const char* n) {
 #include <dlfcn.h>
 #include <unistd.h>
 using TestModule = void*;
-static TestModule open_test_module(const char* path) { return dlopen(path, RTLD_NOW | RTLD_LOCAL); }
+static TestModule open_test_module(const std::filesystem::path& path) {
+    return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+}
 static void* test_symbol(TestModule m, const char* n) { return dlsym(m, n); }
 #endif
 
@@ -56,10 +60,18 @@ int main(int argc, char** argv) {
     const auto marker = test_root / "load-marker";
     std::filesystem::remove(marker, ec);
 #if defined(_WIN32)
-    const char* root_variable = "CUDA_PATH";
+    const wchar_t* root_variable = L"CUDA_PATH";
+    const wchar_t* old_root = _wgetenv(root_variable);
+    const bool had_root = old_root != nullptr;
+    const std::wstring saved_root = old_root ? old_root : L"";
+    const wchar_t* old_library_path = _wgetenv(L"ESHKOL_CUDA_LIBRARY_PATH");
+    const bool had_library_path = old_library_path != nullptr;
+    const std::wstring saved_library_path = old_library_path ? old_library_path : L"";
+    const wchar_t* old_marker = _wgetenv(L"FAKE_CUBLAS_LOAD_MARKER");
+    const bool had_marker = old_marker != nullptr;
+    const std::wstring saved_marker = old_marker ? old_marker : L"";
 #else
     const char* root_variable = "CUDA_HOME";
-#endif
     const char* old_root = std::getenv(root_variable);
     const bool had_root = old_root != nullptr;
     const std::string saved_root = old_root ? old_root : "";
@@ -69,16 +81,29 @@ int main(int argc, char** argv) {
     const char* old_marker = std::getenv("FAKE_CUBLAS_LOAD_MARKER");
     const bool had_marker = old_marker != nullptr;
     const std::string saved_marker = old_marker ? old_marker : "";
-    const auto runtime_root = std::filesystem::u8path(argv[1]).parent_path().parent_path();
-#if defined(_WIN32)
-    const auto library_dir = runtime_root / "lib" / "x64";
-#else
-    const auto library_dir = std::filesystem::u8path(argv[1]).parent_path();
 #endif
 #if defined(_WIN32)
-    _putenv_s("FAKE_CUBLAS_LOAD_MARKER", marker.string().c_str());
-    _putenv_s(root_variable, runtime_root.u8string().c_str());
-    _putenv_s("ESHKOL_CUDA_LIBRARY_PATH", library_dir.u8string().c_str());
+    // Exercise native environment and DLL path handling beyond ASCII, using
+    // the actual complete fixture built against the selected toolkit headers.
+    const auto runtime_root = test_root / L"\u03bb\u6d4b\u8bd5-runtime";
+    const auto library_dir = runtime_root / "lib" / "x64";
+    const auto complete_path = library_dir / std::filesystem::u8path(argv[1]).filename();
+    std::filesystem::create_directories(library_dir, ec);
+    if (!ec) std::filesystem::copy_file(std::filesystem::u8path(argv[1]), complete_path,
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "FAIL: Unicode fixture setup: " << ec.message() << '\n';
+        return 2;
+    }
+#else
+    const auto runtime_root = std::filesystem::u8path(argv[1]).parent_path().parent_path();
+    const auto library_dir = std::filesystem::u8path(argv[1]).parent_path();
+    const auto complete_path = std::filesystem::u8path(argv[1]);
+#endif
+#if defined(_WIN32)
+    _wputenv_s(L"FAKE_CUBLAS_LOAD_MARKER", marker.c_str());
+    _wputenv_s(root_variable, runtime_root.c_str());
+    _wputenv_s(L"ESHKOL_CUDA_LIBRARY_PATH", library_dir.c_str());
 #else
     setenv("FAKE_CUBLAS_LOAD_MARKER", marker.string().c_str(), 1);
     setenv(root_variable, runtime_root.string().c_str(), 1);
@@ -109,7 +134,7 @@ int main(int argc, char** argv) {
                  "complete table and handle publish together after validation");
     ok &= expect(marker_exists(marker), "first GEMM admission opens the fake module");
 
-    TestModule complete_module = open_test_module(argv[1]);
+    TestModule complete_module = open_test_module(complete_path);
     using Counter = int (*)();
     auto create_count = reinterpret_cast<Counter>(test_symbol(complete_module,
                                                                "fake_cublas_create_count"));
@@ -163,7 +188,7 @@ int main(int argc, char** argv) {
                      "handle creation or stream binding failure rejects GEMM admission");
         ok &= expect(failed_handle.handle() == nullptr,
                      "failed GEMM admission never publishes a handle");
-        TestModule module = open_test_module(argv[index]);
+        TestModule module = open_test_module(std::filesystem::u8path(argv[index]));
         auto live = reinterpret_cast<Counter>(test_symbol(module, "fake_cublas_live_handles"));
         ok &= expect(live && live() == 0,
                      "failed handle admission leaves no vendor handles allocated");
@@ -181,9 +206,9 @@ int main(int argc, char** argv) {
 #endif
     std::filesystem::remove_all(test_root, ec);
 #if defined(_WIN32)
-    _putenv_s("FAKE_CUBLAS_LOAD_MARKER", had_marker ? saved_marker.c_str() : "");
-    _putenv_s(root_variable, had_root ? saved_root.c_str() : "");
-    _putenv_s("ESHKOL_CUDA_LIBRARY_PATH", had_library_path ? saved_library_path.c_str() : "");
+    _wputenv_s(L"FAKE_CUBLAS_LOAD_MARKER", had_marker ? saved_marker.c_str() : L"");
+    _wputenv_s(root_variable, had_root ? saved_root.c_str() : L"");
+    _wputenv_s(L"ESHKOL_CUDA_LIBRARY_PATH", had_library_path ? saved_library_path.c_str() : L"");
 #else
     if (had_marker) setenv("FAKE_CUBLAS_LOAD_MARKER", saved_marker.c_str(), 1);
     else unsetenv("FAKE_CUBLAS_LOAD_MARKER");

@@ -11,6 +11,22 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def write_graph_helper(path, tool_log, *, metadata_linker=False):
+    script = '#!/bin/sh\n'
+    if metadata_linker:
+        # CMake uses these exact queries to identify linker capabilities.
+        # Any arguments requesting an actual link still reach the failure.
+        script += (
+            'case "$*" in\n'
+            '  -v|-V|--version|--help|"--push-state --pop-state") '
+            'printf "LLD 18.1.0\\n"; exit 0 ;;\n'
+            'esac\n')
+    path.write_text(script +
+                    f'printf "%s\\n" "$0 $*" >> "{tool_log}"\n'
+                    'exit 97\n')
+    path.chmod(0o755)
+
+
 def fake_target_block():
     cmake = (ROOT / 'CMakeLists.txt').read_text()
     start = cmake.index('    foreach(_fake_variant complete incomplete wrong_major')
@@ -24,6 +40,29 @@ class CublasFakeWindowsOutputTests(unittest.TestCase):
         for tool in ('cmake', 'ninja', 'clang++'):
             if not shutil.which(tool):
                 raise unittest.SkipTest(f'{tool} is required for Windows graph generation')
+
+    def test_graph_linker_metadata_queries_and_real_link_rejection(self):
+        with tempfile.TemporaryDirectory(prefix='cublas-graph-helper-') as directory:
+            root = Path(directory)
+            linker = root / 'linker'
+            tool_log = root / 'invocations.log'
+            write_graph_helper(linker, tool_log, metadata_linker=True)
+            for args in (['-v'], ['-V'], ['--version'], ['--help'],
+                         ['--push-state', '--pop-state']):
+                with self.subTest(args=args):
+                    result = subprocess.run([str(linker), *args],
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('LLD', result.stdout)
+                    self.assert_graph_tools_unused(tool_log)
+            for args in (['/OUT:fixture.dll', 'input.obj'],
+                         ['--help', 'input.obj']):
+                with self.subTest(args=args):
+                    tool_log.unlink(missing_ok=True)
+                    result = subprocess.run([str(linker), *args],
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 97)
+                    self.assertIn(' '.join(args), tool_log.read_text())
 
     def configure_fixture(self, root, *, legacy=False, compiler_target):
         block = fake_target_block()
@@ -75,22 +114,7 @@ class CublasFakeWindowsOutputTests(unittest.TestCase):
         for name in ('rc', 'mt', 'linker', 'ar', 'ranlib', 'compiler-ar',
                      'compiler-ranlib', 'dlltool'):
             path = tool_dir / name
-            if name == 'linker':
-                # GNU-target compiler identification may query the linker.
-                # Answer those metadata probes, but reject and record any
-                # actual link command.
-                script = (
-                    '#!/bin/sh\n'
-                    'case "$*" in\n'
-                    '  -v|-V|--version|"--push-state --pop-state") '
-                    'printf "LLD 18.1.0\\n"; exit 0 ;;\n'
-                    'esac\n')
-            else:
-                script = '#!/bin/sh\n'
-            path.write_text(script +
-                            f'printf "%s\\n" "$0 $*" >> "{tool_log}"\n'
-                            'exit 97\n')
-            path.chmod(0o755)
+            write_graph_helper(path, tool_log, metadata_linker=(name == 'linker'))
             tools[name] = path
         # Keep host resource, linker, and archive tools out of CMake's search
         # path. The generator itself is the only extra executable exposed.

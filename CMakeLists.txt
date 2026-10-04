@@ -8358,6 +8358,9 @@ if(ESHKOL_GPU_BACKEND STREQUAL "CUDA")
         if(WIN32)
             set_target_properties(cublas_fake_${_fake_variant} PROPERTIES
                 PREFIX "" OUTPUT_NAME "cublas64_${CUDAToolkit_VERSION_MAJOR}"
+                # MS-compatible tools export definitions through a generated
+                # .def file; CUDA's existing declarations stay unmodified.
+                WINDOWS_EXPORT_ALL_SYMBOLS ON
                 RUNTIME_OUTPUT_DIRECTORY
                     "${CMAKE_CURRENT_BINARY_DIR}/cublas-fake/${_fake_variant}/bin"
                 ARCHIVE_OUTPUT_DIRECTORY

@@ -9,7 +9,11 @@
 #include <cstdio>
 #include <cstdlib>
 
-#if defined(_WIN32)
+#if defined(_WIN32) && defined(_MSC_VER)
+// CMake exports these definitions through its generated .def file. Adding
+// dllexport after CUDA's GemmEx declarations is rejected by clang-cl.
+#define FAKE_EXPORT extern "C"
+#elif defined(_WIN32)
 #define FAKE_EXPORT extern "C" __declspec(dllexport)
 #else
 #define FAKE_EXPORT extern "C" __attribute__((visibility("default")))
@@ -22,9 +26,16 @@ std::atomic<int> property_count{0};
 std::atomic<int> live_handles{0};
 
 void note_loaded() {
+#if defined(_WIN32)
+    const wchar_t* marker = _wgetenv(L"FAKE_CUBLAS_LOAD_MARKER");
+    if (!marker || !*marker) return;
+    FILE* f = _wfopen(marker, L"a");
+#else
     const char* marker = std::getenv("FAKE_CUBLAS_LOAD_MARKER");
     if (!marker || !*marker) return;
-    if (FILE* f = std::fopen(marker, "a")) {
+    FILE* f = std::fopen(marker, "a");
+#endif
+    if (f) {
         std::fputs("loaded\n", f);
         std::fclose(f);
     }
