@@ -8359,7 +8359,13 @@ if(ESHKOL_GPU_BACKEND STREQUAL "CUDA")
             set_target_properties(cublas_fake_${_fake_variant} PROPERTIES
                 PREFIX "" OUTPUT_NAME "cublas64_${CUDAToolkit_VERSION_MAJOR}"
                 RUNTIME_OUTPUT_DIRECTORY
-                    "${CMAKE_CURRENT_BINARY_DIR}/cublas-fake/${_fake_variant}/$<CONFIG>/bin")
+                    "${CMAKE_CURRENT_BINARY_DIR}/cublas-fake/${_fake_variant}/bin"
+                ARCHIVE_OUTPUT_DIRECTORY
+                    "${CMAKE_CURRENT_BINARY_DIR}/cublas-fake/${_fake_variant}/lib"
+                PDB_OUTPUT_DIRECTORY
+                    "${CMAKE_CURRENT_BINARY_DIR}/cublas-fake/${_fake_variant}/pdb"
+                COMPILE_PDB_OUTPUT_DIRECTORY
+                    "${CMAKE_CURRENT_BINARY_DIR}/cublas-fake/${_fake_variant}/compile-pdb")
         else()
             set_target_properties(cublas_fake_${_fake_variant} PROPERTIES
                 OUTPUT_NAME cublas SUFFIX ".so.${CUDAToolkit_VERSION_MAJOR}"

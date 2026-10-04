@@ -635,6 +635,7 @@ jobs:
           python3 scripts/ci_change_class.py --self-test
           python3 tests/toolchain/test_disclosure_base.py
           python3 tests/toolchain/test_cuda_runtime_contract_gate.py
+          python3 tests/toolchain/test_cublas_fake_windows_outputs.py
           python3 scripts/ci_lane_plan.py --self-test
           python3 scripts/ci_equivalent_head.py --self-test
           python3 scripts/check_package_manifest.py --self-test
