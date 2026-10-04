@@ -16,12 +16,26 @@ def run(argv, **kwargs):
 
 
 def imports(binary, reader):
-    magic = binary.read_bytes()[:4]
+    with binary.open('rb') as stream:
+        magic = stream.read(4)
     if magic == b'\x7fELF':
-        return run([reader, '--needed-libs', str(binary)])
+        listing = run([reader, '--needed-libs', str(binary)])
+        libraries = re.search(r'NeededLibraries\s*\[([^]]*)\]', listing)
+        if not libraries:
+            raise RuntimeError(f'Missing ELF dependency records: {binary}')
+        return [line.strip() for line in libraries.group(1).splitlines() if line.strip()]
     if magic[:2] == b'MZ':
-        return run([reader, '--coff-imports', str(binary)])
+        listing = run([reader, '--coff-imports', str(binary)])
+        libraries = re.findall(r'^\s*Name:\s*(\S+)', listing, re.MULTILINE)
+        if not libraries:
+            raise RuntimeError(f'Missing PE import records: {binary}')
+        return libraries
     raise RuntimeError(f'Unexpected CUDA executable format: {binary}')
+
+
+def eager_cublas(libraries):
+    return [name for name in libraries
+            if name.lower().startswith(('libcublas', 'cublas'))]
 
 
 def main():
@@ -37,9 +51,9 @@ def main():
         output = root / ('cpu.exe' if os.name == 'nt' else 'cpu')
         run([str(runner), str(source), '-o', str(output)])
         for binary in (runner, output):
-            listing = imports(binary, args.readobj)
-            if re.search(r'cublas(?:lt|64)?[._-]', listing, re.IGNORECASE):
-                raise RuntimeError(f'CPU executable eagerly imports cuBLAS: {binary}\n{listing}')
+            libraries = imports(binary, args.readobj)
+            if eager_cublas(libraries):
+                raise RuntimeError(f'CPU executable eagerly imports cuBLAS: {binary}\n{libraries}')
         for command in ([str(output)], [str(runner), '-r', str(source)],
                         [str(runner), '--vm', str(source)]):
             answer = run(command)
