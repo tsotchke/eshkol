@@ -22,6 +22,21 @@ from release_publication_fixtures import verifier_fixture
 import check_release_build_cohort as cohort  # noqa: E402
 
 
+RELEASE_PATH_ENV = (
+    "ESHKOL_DURABLE_WORK_ROOT", "ESHKOL_RELEASE_TRACE_ARCHIVE_ROOT", "TRACE_DIR",
+    "ICC_TRACE_DIR", "ESHKOL_TRACE_DIR", "ESH0103_TRACE_DIR", "ESHKOL_RELEASE_PHASE_ID",
+    "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "READINESS_JSON", "BUILD_DIR", "QUANTUM_BUILD_DIR",
+)
+
+def isolated_release_env(**overrides):
+    """Give readiness shell probes private paths despite an active outer release run."""
+    env = dict(os.environ)
+    for name in RELEASE_PATH_ENV:
+        env.pop(name, None)
+    env.update(overrides)
+    return env
+
+
 class ReleaseEvidenceRecipeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -58,8 +73,12 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
     def test_readiness_owns_one_trace_cohort_and_runs_producers_before_grading(self):
         capture = self.readiness.index("check_release_build_cohort.py capture")
         archive = self.readiness.index("archive_release_trace_cohort.py")
-        coverage = self.readiness.index("scripts/run_language_coverage.sh")
-        parity = self.readiness.index("scripts/run_vm_parity.sh")
+        baseline_start = self.readiness.index("run_baseline_phase() {")
+        baseline = self.readiness[baseline_start:].split("validate_measurements() {", 1)[0]
+        full_start = self.readiness.index("run_full_measurements() {")
+        full_measurements = self.readiness[full_start:].split("run_baseline_phase() {", 1)[0]
+        coverage = baseline_start + baseline.index("scripts/run_language_coverage.sh")
+        parity = baseline_start + baseline.index("run_full_measurements")
         smoke = self.readiness.index("scripts/run_icc_smoke.sh")
         reindex = self.readiness.index('"$ICC_BIN" reindex')
         producers = self.readiness.index("scripts/run_v1_3_release_producers.sh")
@@ -108,13 +127,33 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
         producer = (ROOT / "scripts/run_v1_3_release_producers.sh").read_text(encoding="utf-8")
         self.assertIn("tests/toolchain/test_v1_3_release_evidence_recipe.py", producer)
 
-    def test_exactly_one_full_ctest_and_durable_raw_parity_in_baseline(self):
-        baseline = self.readiness.split('run_baseline_phase() {', 1)[1].split('run_smoke_phase()', 1)[0]
+
+    def test_measurements_phase_is_isolated_nonqualifying_and_shared(self):
+        self.assertIn("all|baseline|measurements|smoke|final-evidence|readiness)", self.readiness)
+        dispatch = self.readiness.split("    measurements)\n", 1)[1].split("    smoke)\n", 1)[0]
+        calls = [line.strip() for line in dispatch.splitlines() if line.strip() and not line.strip().startswith(";;")]
+        self.assertEqual(calls, ["start_cohort", "run_full_measurements", "check_cohort"])
+        self.assertEqual(self.readiness.count("run_full_measurements"), 3)  # definition plus the two deliberate callers
+        self.assertNotIn("mark_phase", dispatch)
+        self.assertNotIn("run_readiness_phase", dispatch)
+        self.assertNotIn("ICC_BIN", dispatch)
+
+    def test_exactly_one_shared_full_ctest_vm_measurement_block(self):
+        baseline = self.readiness.split('run_baseline_phase() {', 1)[1].split('validate_measurements() {', 1)[0]
+        shared = self.readiness.split('run_full_measurements() {', 1)[1].split('run_baseline_phase() {', 1)[0]
+        measurements = self.readiness.split('    measurements)\n', 1)[1].split('    smoke)\n', 1)[0]
         self.assertEqual(self.readiness.count('scripts/run_ctest_gate.sh'), 1)
-        self.assertIn('scripts/run_ctest_gate.sh', baseline)
-        self.assertNotIn('run_ctest_gate.sh --', baseline)
-        self.assertIn('scripts/run_vm_parity.sh > "$PUBLICATION_BUNDLE/vm/raw.log" 2>&1', baseline)
-        self.assertIn('validate_measurements', baseline)
+        self.assertEqual(baseline.count('run_full_measurements'), 1)
+        self.assertIn('scripts/run_ctest_gate.sh', shared)
+        self.assertNotIn('run_ctest_gate.sh --', shared)
+        self.assertIn('scripts/run_vm_parity.sh > "$PUBLICATION_BUNDLE/vm/raw.log" 2>&1', shared)
+        self.assertIn('validate_measurements', shared)
+        self.assertIn('start_cohort', measurements)
+        self.assertIn('run_full_measurements', measurements)
+        self.assertIn('check_cohort', measurements)
+        self.assertNotIn('mark_phase', measurements)
+        self.assertNotIn('run_readiness_phase', measurements)
+        self.assertNotIn('ICC_BIN', measurements)
         ctest = (ROOT / 'scripts/run_ctest_gate.sh').read_text()
         for artifact in ('inventory.json', 'junit.xml', 'exit.json', 'source-start.json', 'receipt-validation.log'):
             self.assertIn(artifact, ctest)
@@ -203,17 +242,50 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
     def test_readiness_wrapper_rejects_bad_phase_and_missing_main_build_before_work(self):
         bad_phase = subprocess.run(
             ["bash", str(ROOT / "scripts/run_v1_3_readiness.sh"), "--phase", "unsupported"],
-            capture_output=True, text=True, env={**os.environ, "GITHUB_RUN_ID": "", "ESHKOL_RELEASE_PHASE_ID": ""})
+            capture_output=True, text=True,
+            env=isolated_release_env(GITHUB_RUN_ID="", GITHUB_RUN_ATTEMPT="", ESHKOL_RELEASE_PHASE_ID=""))
         self.assertEqual(bad_phase.returncode, 2)
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as temp:
-            trace_dir = Path(temp) / "traces"
+            root = Path(temp)
+            trace_dir = root / "traces"
+            archive_root = root / "trace-history"
             missing_build = subprocess.run(
                 ["bash", str(ROOT / "scripts/run_v1_3_readiness.sh"), "--phase", "baseline"],
                 capture_output=True, text=True,
-                env={**os.environ, "TRACE_DIR": str(trace_dir), "BUILD_DIR": str(Path(temp) / "absent"),
-                     "ESHKOL_RELEASE_PHASE_ID": "negative-plumbing-test", "GITHUB_RUN_ID": "", "GITHUB_RUN_ATTEMPT": ""})
+                env=isolated_release_env(TRACE_DIR=str(trace_dir), BUILD_DIR=str(root / "absent"),
+                     ESHKOL_RELEASE_PHASE_ID="negative-plumbing-test", GITHUB_RUN_ID="", GITHUB_RUN_ATTEMPT="",
+                     ESHKOL_RELEASE_TRACE_ARCHIVE_ROOT=str(archive_root)))
             self.assertNotEqual(missing_build.returncode, 0)
             self.assertIn("required main-build artifact missing", missing_build.stdout + missing_build.stderr)
+
+    def test_readiness_preflight_probe_isolated_from_inherited_active_release_roots(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as temp:
+            root = Path(temp)
+            outer_durable = root / "active-release" / "final-evidence"
+            existing_child = outer_durable / "v1-3-readiness"
+            existing_child.mkdir(parents=True)
+            (existing_child / "sentinel.json").write_text('{"owner":"outer release"}\n')
+            outer_trace = root / "active-traces"
+            outer_trace.mkdir()
+            (outer_trace / "keep.jsonl").write_text('{"kind":"sentinel"}\n')
+            outer_archive = root / "outer-history"
+            outer_archive.mkdir()
+            (outer_archive / "retain.txt").write_text("retain\n")
+            def snapshot():
+                return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+            before = snapshot()
+            env = dict(os.environ, ESHKOL_DURABLE_WORK_ROOT=str(outer_durable),
+                       ESHKOL_RELEASE_TRACE_ARCHIVE_ROOT=str(outer_archive), TRACE_DIR=str(outer_trace),
+                       ESHKOL_RELEASE_PHASE_ID="outer-run-9", GITHUB_RUN_ID="888", GITHUB_RUN_ATTEMPT="9",
+                       READINESS_JSON=str(root / "outer-readiness.json"))
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()), "-v",
+                 "ReleaseEvidenceRecipeTests.test_readiness_wrapper_rejects_bad_phase_and_missing_main_build_before_work"],
+                cwd=ROOT, capture_output=True, text=True, env=env, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("test_readiness_wrapper_rejects_bad_phase_and_missing_main_build_before_work", result.stderr)
+            self.assertIn("Ran 1 test", result.stderr)
+            self.assertEqual(snapshot(), before, "the nested preflight test modified the inherited outer release evidence")
 
     def test_verifier_rejects_missing_duplicate_failed_and_unmapped_evidence(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as temp:
@@ -449,8 +521,8 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-c", script, str(ROOT / "scripts/run_v1_3_release_producers.sh")],
                 cwd=ROOT, capture_output=True, text=True,
-                env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}", "SEEN": str(seen),
-                     "TRACE_DIR": str(relative), "BUILD_DIR": "build"})
+                env=isolated_release_env(PATH=f"{stub_dir}:{os.environ['PATH']}", SEEN=str(seen),
+                     TRACE_DIR=str(relative), BUILD_DIR="build"))
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(seen.read_text(), str(ROOT / relative / "v1_3_required_ctest.junit.xml"))
 

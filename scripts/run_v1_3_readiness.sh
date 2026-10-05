@@ -14,11 +14,11 @@ PHASE=all
 if [ "$#" -eq 2 ] && [ "$1" = "--phase" ]; then
     PHASE="$2"
 elif [ "$#" -ne 0 ]; then
-    echo "usage: $0 [--phase baseline|smoke|final-evidence|readiness]" >&2
+    echo "usage: $0 [--phase baseline|measurements|smoke|final-evidence|readiness]" >&2
     exit 2
 fi
 case "$PHASE" in
-    all|baseline|smoke|final-evidence|readiness) ;;
+    all|baseline|measurements|smoke|final-evidence|readiness) ;;
     *) echo "unknown release readiness phase: $PHASE" >&2; exit 2 ;;
 esac
 
@@ -91,27 +91,8 @@ mark_phase() {
     python3 scripts/release_phase_state.py mark --repo-root "$REPO_ROOT" --state "$PHASE_STATE" --phase-id "$PHASE_ID" --phase "$1"
 }
 
-run_baseline_phase() {
-    # Coverage runs the complete suite once and records its prerequisite result.
-    scripts/run_language_coverage.sh
-    python3 - "$TRACE_DIR/language_surface_coverage_prereq.jsonl" <<'PY'
-import json, sys
-found = []
-with open(sys.argv[1], encoding="utf-8") as handle:
-    for line in handle:
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if event.get("kind") == "language_coverage_prereq" and event.get("name") == "core_suite":
-            found.append(event)
-if len(found) != 1 or found[0].get("value") != "PASS":
-    raise SystemExit("run_all_tests.sh prerequisite did not produce exactly one PASS")
-PY
-    . scripts/lib/harness_outcome.sh
-    eshkol_outcome_emit_test_result "$TRACE_DIR/release_test_actions.jsonl" release_action::run_tco_tests PASS "run_all_tests.sh completed all suites including run_tco_tests.sh"
-    eshkol_outcome_emit_test_result "$TRACE_DIR/release_test_actions.jsonl" release_action::run_control_flow_tests PASS "run_all_tests.sh completed all suites including run_control_flow_tests.sh"
-    # One canonical, unfiltered configured CTest producer; never repeated later.
+run_full_measurements() {
+    # One canonical, unfiltered CTest and full serialized-bytecode VM producer block.
     mkdir "$PUBLICATION_BUNDLE"
     cp "$COHORT_MANIFEST" "$PUBLICATION_BUNDLE/build-cohort.json"
     RELEASE_MEASUREMENT_DIR="$PUBLICATION_BUNDLE/ctest" scripts/run_ctest_gate.sh
@@ -137,6 +118,29 @@ receipts = ["ctest/measurement.json", "vm/measurement.json"]
     "receipt_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in receipts}}, sort_keys=True, indent=2) + "\n")
 PYMANIFEST
     validate_measurements
+}
+
+run_baseline_phase() {
+    # Coverage runs the complete suite once and records its prerequisite result.
+    scripts/run_language_coverage.sh
+    python3 - "$TRACE_DIR/language_surface_coverage_prereq.jsonl" <<'PY'
+import json, sys
+found = []
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for line in handle:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("kind") == "language_coverage_prereq" and event.get("name") == "core_suite":
+            found.append(event)
+if len(found) != 1 or found[0].get("value") != "PASS":
+    raise SystemExit("run_all_tests.sh prerequisite did not produce exactly one PASS")
+PY
+    . scripts/lib/harness_outcome.sh
+    eshkol_outcome_emit_test_result "$TRACE_DIR/release_test_actions.jsonl" release_action::run_tco_tests PASS "run_all_tests.sh completed all suites including run_tco_tests.sh"
+    eshkol_outcome_emit_test_result "$TRACE_DIR/release_test_actions.jsonl" release_action::run_control_flow_tests PASS "run_all_tests.sh completed all suites including run_control_flow_tests.sh"
+    run_full_measurements
     python3 scripts/check_release_phase_receipts.py baseline --trace-dir "$TRACE_DIR"
     mark_phase baseline
 }
@@ -198,6 +202,11 @@ case "$PHASE" in
     baseline)
         start_cohort
         run_baseline_phase
+        ;;
+    measurements)
+        start_cohort
+        run_full_measurements
+        check_cohort
         ;;
     smoke)
         require_phase baseline
