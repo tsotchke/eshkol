@@ -18,6 +18,8 @@ from typing import Mapping
 
 ROOT = Path(__file__).resolve().parent.parent
 FRAGMENT = ROOT / "scripts" / "wasm_flat_ad_imports.fragment.js"
+EXACT_RUNTIME = ROOT / "scripts" / "wasm_exact_runtime.fragment.js"
+EXACT_IMPORTS = ROOT / "scripts" / "wasm_exact_imports.fragment.js"
 CONTRACT = ROOT / "scripts" / "wasm_core_import_keys.json"
 JS_FILES = (
     ROOT / "web" / "eshkol-repl.js",
@@ -29,6 +31,22 @@ BLOCK_RE = re.compile(
     r"(?m)^(?P<indent>[ \t]*)" + re.escape(BEGIN)
     + r"\n(?P<body>.*?)\n(?P=indent)" + re.escape(END), re.DOTALL
 )
+
+EXACT_BLOCKS = (
+    ("EXACT RUNTIME", EXACT_RUNTIME, ""),
+    ("EXACT IMPORTS", EXACT_IMPORTS, "                "),
+)
+
+
+def exact_block(kind: str, source: Path, indent: str) -> str:
+    return "\n".join([indent + "// BEGIN GENERATED " + kind]
+                     + [indent + line for line in source.read_text().rstrip().splitlines()]
+                     + [indent + "// END GENERATED " + kind])
+
+
+def exact_pattern(kind: str) -> re.Pattern[str]:
+    return re.compile(r"(?m)^[ \t]*// BEGIN GENERATED " + kind
+                      + r"\n.*?^[ \t]*// END GENERATED " + kind, re.DOTALL)
 
 
 def _extract_env_keys(js_text: str) -> set[str]:
@@ -85,6 +103,11 @@ def check(
             failures.append(f"required glue file missing: {label}")
             continue
         js_text = by_path[path]
+        for kind, source, indent in EXACT_BLOCKS:
+            pattern = exact_pattern(kind)
+            exact_matches = list(pattern.finditer(js_text))
+            if len(exact_matches) != 1 or exact_matches[0].group(0) != exact_block(kind, source, indent):
+                failures.append(f"{label}: generated {kind.lower()} block is stale")
         blocks = list(BLOCK_RE.finditer(js_text))
         if len(blocks) != 1:
             failures.append(f"{label}: expected one generated flat-AD block, found {len(blocks)}")
@@ -120,7 +143,14 @@ def write() -> list[str]:
                 f"{path.relative_to(ROOT)}: expected one generated flat-AD block, found {len(matches)}"
             )
             continue
-        path.write_text(BLOCK_RE.sub(lambda _match: block, text, count=1))
+        text = BLOCK_RE.sub(lambda _match: block, text, count=1)
+        for kind, source, indent in EXACT_BLOCKS:
+            pattern = exact_pattern(kind)
+            if len(list(pattern.finditer(text))) != 1:
+                failures.append(f"{path.relative_to(ROOT)}: expected one {kind} block")
+                continue
+            text = pattern.sub(lambda _match: exact_block(kind, source, indent), text, count=1)
+        path.write_text(text)
     return failures
 
 

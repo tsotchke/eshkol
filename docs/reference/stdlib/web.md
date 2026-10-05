@@ -315,6 +315,62 @@ web-demo.wasm: WebAssembly (wasm) binary module version 0x1 (MVP)
 
 The module exports a zero-argument `main` entry point; a hosting page calls it after `WebAssembly.instantiate()` supplies the `env.web_*` imports (the export section of the module built above contains exactly one function export, `main`; `docs/breakdown/WEB_PLATFORM.md` names it `_eshkol_main`).
 
+## Exact numbers in the browser LLVM/WASM runtime
+
+The standalone site and browser LLVM REPL use the same generated exact-number
+runtime. `inexact->exact` converts every finite IEEE754 double to its exact value:
+an int64 integer, an arbitrary-precision integer, or a reduced rational with a
+positive denominator. A null output pointer is a no-op, matching the native ABI.
+For example, `0.1` becomes
+`3602879701896397/36028797018963968`. Subnormals retain their full denominators;
+whole values beyond int64 retain their full integer magnitude. Both signed zeros
+become exact integer zero. Converting a finite nonzero result back to inexact
+reproduces the original double, including subnormals.
+
+These heap values support numeric predicates, arithmetic, comparisons,
+numerator/denominator, rounding, integer powers, perfect rational roots and powers, printing, and conversion back to
+double. Mixed inexact arithmetic produces an inexact result. AD scalar extraction
+recognizes exact heap numbers. Exact Taylor differentiation refuses explicitly
+at seeding. Captured nested differentiation remains outside this browser lane;
+the generated capture-refusal guard throws when reached.
+Complex square root and complex exponentiation imports link so real programs can
+instantiate, but genuinely reached complex branches throw an
+`ESH_NUMERIC_UNSUPPORTED` error without writing a fabricated result.
+Nonperfect roots retain the caller-supplied inexact fallback. `numerator` of a
+double copies that value, and `denominator` returns exact integer one, matching
+the native runtime entry points.
+The separate Emscripten bytecode VM has its own runtime and capability scope.
+
+Flonum printing preserves negative zero as `-0.0` and uses the readable tokens
+`+nan.0`, `+inf.0`, and `-inf.0`. Finite decimal spelling follows JavaScript's
+shortest round-trip formatting; its choice can differ from native decimal
+spelling while preserving the value on readback. Positive zero and integral
+doubles retain the native convention of printing `0` and `3`, respectively,
+which can change exactness when read back.
+The same renderer backs the native-shaped `eshkol_format_double` import used by
+compiled `number->string`, bounded NUL-terminated buffers, and
+`eshkol_fprint_double` for stdout and registered string ports. The bounded
+formatter reports the full required character count when truncated; a zero
+capacity returns zero without touching the buffer, matching native
+`dtoa_shortest`. Invalid spans and unknown nonzero output streams refuse.
+
+NaN and infinities have no exact value. The browser LLVM/WASM conversion throws
+an `EshkolNumericError` with code `ESH_NUMERIC_DOMAIN` and the diagnostic
+`inexact->exact: no exact representation for ...`; it leaves the output slot
+unchanged. This browser refusal is stricter than the native entry point, which
+reports that diagnostic and writes an exact-zero error sentinel. A failed
+conversion is never displayed as a successful zero result.
+
+Embedding code must call `prepareWasm(bytes)` before instantiating a raw module.
+It reads active data segment bounds, reserves the shadow stack above those data,
+and sets the imported stack pointer to its upper bound before starting
+the shared, checked arena. Heap pointers refer to header-prefixed WASM32 objects,
+and views are refreshed after memory growth. Values remain live for the arena's
+lifetime; the browser allocator does not claim native region reclamation.
+Instantiating another raw module over an already live arena refuses rather than
+overwriting retained values with unrelocated data segments. The native compiler
+and JS host check both object and numeric payload geometry at startup.
+
 ## Known issues
 
 ### `web-query-selector-all` handles are not walked by the generic tree functions

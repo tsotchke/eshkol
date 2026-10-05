@@ -5246,6 +5246,26 @@ private:
                 args.push_back(ConstantInt::get(i32, value));
             }
             builder->CreateCall(check, args);
+            // Separate extension: old objects retain the 20-field object guard.
+            // These values describe the target's pointer width, not the host's.
+            const uint64_t numeric_geometry[] = {
+                sizeof(eshkol_bignum_t), offsetof(eshkol_bignum_t, sign),
+                offsetof(eshkol_bignum_t, num_limbs), sizeof(eshkol_bignum_t),
+                24 + 2 * pointer_width,
+                offsetof(eshkol_rational_t, numerator),
+                offsetof(eshkol_rational_t, denominator),
+                offsetof(eshkol_rational_t, is_big),
+                offsetof(eshkol_rational_t, reserved),
+                offsetof(eshkol_rational_t, big_num), 24 + pointer_width
+            };
+            std::vector<llvm::Type*> numeric_types(11, i32);
+            auto numeric_check = module->getOrInsertFunction(
+                "eshkol_wasm_numeric_abi_check",
+                FunctionType::get(types->getVoidType(), numeric_types, false));
+            args.clear();
+            for (uint64_t value : numeric_geometry)
+                args.push_back(ConstantInt::get(i32, value));
+            builder->CreateCall(numeric_check, args);
         };
 
         // Check if main function exists

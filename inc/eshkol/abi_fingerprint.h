@@ -84,6 +84,7 @@
  * for a correctness property is not a risk worth carrying, so the dependency is
  * taken here rather than assumed of every caller. */
 #include <eshkol/eshkol.h>
+#include <eshkol/core/rational.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -341,6 +342,19 @@ ESHKOL_ABI_ASSERT(offsetof(eshkol_tagged_value_t, reserved) == 2,
                   "tagged value reserved field must remain at offset 2 for the WASM ABI");
 ESHKOL_ABI_ASSERT(offsetof(eshkol_tagged_value_t, data) == 8,
                   "tagged value data must remain at offset 8 for the WASM ABI");
+
+/* Numeric payload fields shared by native runtime and WASM32 host glue.
+ * Pointer-bearing rational layout has the same prefix in both lanes. */
+ESHKOL_ABI_ASSERT(sizeof(eshkol_bignum_t) == 8, "bignum prefix changed");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_bignum_t, sign) == 0, "bignum sign moved");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_bignum_t, num_limbs) == 4, "bignum limb count moved");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_rational_t, numerator) == 0, "rational numerator moved");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_rational_t, denominator) == 8, "rational denominator moved");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_rational_t, is_big) == 16, "rational discriminator moved");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_rational_t, reserved) == 20, "rational reserved field moved");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_rational_t, big_num) == 24, "rational numerator pointer moved");
+ESHKOL_ABI_ASSERT(offsetof(eshkol_rational_t, big_den) == 24 + sizeof(void*), "rational denominator pointer moved");
+ESHKOL_ABI_ASSERT(sizeof(eshkol_rational_t) == 24 + 2 * sizeof(void*), "rational payload size changed");
 
 /* The v1 layout is pinned field by field regardless of which ABI is active,
  * because generated code emits -8/-7/-6/-4 as separate literals: a field that

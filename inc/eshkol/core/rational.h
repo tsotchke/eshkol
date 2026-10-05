@@ -287,7 +287,8 @@ void eshkol_rational_round_tagged(void* arena, void* r, eshkol_tagged_value_t* r
  * value — never a nearby approximation. `(inexact->exact 0.1)` is
  * 3602879701896397/36028797018963968, as documented in
  * ESHKOL_LANGUAGE_GUIDE.md; `(exact->inexact (inexact->exact x))` reproduces
- * `x` bit-for-bit for every finite `x`, subnormals included. Whole values come
+ * `x` bit-for-bit for every finite nonzero `x`, subnormals included.
+ * Both signed zeros canonicalize to exact integer zero. Whole values come
  * back with denominator 1 and a bignum numerator when they exceed int64.
  *
  * @param arena Arena to allocate the result from.

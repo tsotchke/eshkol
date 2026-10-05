@@ -15,6 +15,7 @@ def main() -> int:
     for command in (
         [sys.executable, str(generator), "--selftest"],
         ["node", str(node_test)],
+        ["node", str(ROOT / "tests/toolchain/wasm_exact_runtime_test.js")],
     ):
         result = subprocess.run(command, cwd=ROOT, check=False)
         if result.returncode:
