@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -275,15 +276,42 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="readiness-toolchain-", dir=scratch) as directory:
             valid = Path(directory) / "toolchain.cmake"
             valid.write_text("# Test toolchain fixture\n", encoding="utf-8")
+            env_output = Path(directory) / "github-env"
+            path_output = Path(directory) / "github-path"
             for path, expected in [("", 0), (str(valid), 0),
                                    (str(valid) + ".missing", 1), (valid.name, 1),
                                    (directory, 1)]:
                 with self.subTest(path=path):
                     result = subprocess.run(["bash", "-c", script],
                                             env=dict(os.environ, CMAKE_TOOLCHAIN_FILE=path,
-                                                     READINESS_TOOL_BIN_DIR=""),
+                                                     READINESS_TOOL_BIN_DIR="",
+                                                     READINESS_LIBRARY_PATH="",
+                                                     GITHUB_ENV=str(env_output),
+                                                     GITHUB_PATH=str(path_output)),
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
+    def test_toolchain_probe_preserves_inherited_workflow_environment_files(self):
+        scratch = ROOT / ".scratch"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="outer-workflow-env-", dir=scratch) as directory:
+            root = Path(directory)
+            library = root / "lib"
+            library.mkdir()
+            env_output = root / "outer-env"
+            path_output = root / "outer-path"
+            env_output.write_text("OUTER_SENTINEL=keep\n", encoding="utf-8")
+            path_output.write_text("outer-path-sentinel\n", encoding="utf-8")
+            before = (env_output.read_bytes(), path_output.read_bytes())
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()),
+                 "ReleaseAutomationWorkflowTests.test_configured_readiness_toolchain_rejects_missing_or_relative_files"],
+                cwd=ROOT, capture_output=True, text=True,
+                env=dict(os.environ, READINESS_LIBRARY_PATH=str(library),
+                         GITHUB_ENV=str(env_output), GITHUB_PATH=str(path_output)), timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((env_output.read_bytes(), path_output.read_bytes()), before,
+                             "the toolchain probe modified the outer workflow environment")
 
     def test_readiness_tool_selector_validates_and_appends_only_after_all_paths_pass(self):
         self.assertEqual(self.job["env"]["READINESS_TOOL_BIN_DIR"],
