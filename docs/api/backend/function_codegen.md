@@ -155,8 +155,8 @@ Result of the application
 | `FunctionCodegen::CodegenASTFunc` | Typedef | 105 |
 | `FunctionCodegen::CodegenTypedASTFunc` | Typedef | 106 |
 | `FunctionCodegen::TypedToTaggedFunc` | Typedef | 107 |
-| `FunctionCodegen::nullptr` | Variable | 109 |
-| `FunctionCodegen::nullptr` | Variable | 110 |
-| `FunctionCodegen::nullptr` | Variable | 111 |
-| `FunctionCodegen::nullptr` | Variable | 112 |
+| `FunctionCodegen::codegen_ast_callback_` | Variable | 109 |
+| `FunctionCodegen::codegen_typed_ast_callback_` | Variable | 110 |
+| `FunctionCodegen::typed_to_tagged_callback_` | Variable | 111 |
+| `FunctionCodegen::callback_context_` | Variable | 112 |
 | `FunctionCodegen::setCodegenCallbacks` | Function | 114 |
