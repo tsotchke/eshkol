@@ -14,6 +14,12 @@ requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
 
 ### Changed
 
+- **The browser LLVM/WASM host supports exact numeric startup and consumers.**
+  Finite doubles retain their exact integer or rational values in a checked
+  shared arena. Arithmetic, comparisons, rounding, roots and numeric formatting
+  use those values; `number->string` preserves signed zero and readable nonfinite
+  forms. Unsupported complex and exact Taylor paths refuse explicitly. This
+  restores site startup for the corrected example guides. (#744)
 - **Example documentation follows the implementations.** The catalogue covers all
   67 programs, including 46 mathematics examples, with algorithms, arithmetic,
   executable checks, prerequisites and limits. Navier–Stokes registration is
