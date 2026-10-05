@@ -58,8 +58,12 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
     def test_readiness_owns_one_trace_cohort_and_runs_producers_before_grading(self):
         capture = self.readiness.index("check_release_build_cohort.py capture")
         archive = self.readiness.index("archive_release_trace_cohort.py")
-        coverage = self.readiness.index("scripts/run_language_coverage.sh")
-        parity = self.readiness.index("scripts/run_vm_parity.sh")
+        baseline_start = self.readiness.index("run_baseline_phase() {")
+        baseline = self.readiness[baseline_start:].split("validate_measurements() {", 1)[0]
+        full_start = self.readiness.index("run_full_measurements() {")
+        full_measurements = self.readiness[full_start:].split("run_baseline_phase() {", 1)[0]
+        coverage = baseline_start + baseline.index("scripts/run_language_coverage.sh")
+        parity = baseline_start + baseline.index("run_full_measurements")
         smoke = self.readiness.index("scripts/run_icc_smoke.sh")
         reindex = self.readiness.index('"$ICC_BIN" reindex')
         producers = self.readiness.index("scripts/run_v1_3_release_producers.sh")
@@ -108,13 +112,33 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
         producer = (ROOT / "scripts/run_v1_3_release_producers.sh").read_text(encoding="utf-8")
         self.assertIn("tests/toolchain/test_v1_3_release_evidence_recipe.py", producer)
 
-    def test_exactly_one_full_ctest_and_durable_raw_parity_in_baseline(self):
-        baseline = self.readiness.split('run_baseline_phase() {', 1)[1].split('run_smoke_phase()', 1)[0]
+
+    def test_measurements_phase_is_isolated_nonqualifying_and_shared(self):
+        self.assertIn("all|baseline|measurements|smoke|final-evidence|readiness)", self.readiness)
+        dispatch = self.readiness.split("    measurements)\n", 1)[1].split("    smoke)\n", 1)[0]
+        calls = [line.strip() for line in dispatch.splitlines() if line.strip() and not line.strip().startswith(";;")]
+        self.assertEqual(calls, ["start_cohort", "run_full_measurements", "check_cohort"])
+        self.assertEqual(self.readiness.count("run_full_measurements"), 3)  # definition plus the two deliberate callers
+        self.assertNotIn("mark_phase", dispatch)
+        self.assertNotIn("run_readiness_phase", dispatch)
+        self.assertNotIn("ICC_BIN", dispatch)
+
+    def test_exactly_one_shared_full_ctest_vm_measurement_block(self):
+        baseline = self.readiness.split('run_baseline_phase() {', 1)[1].split('validate_measurements() {', 1)[0]
+        shared = self.readiness.split('run_full_measurements() {', 1)[1].split('run_baseline_phase() {', 1)[0]
+        measurements = self.readiness.split('    measurements)\n', 1)[1].split('    smoke)\n', 1)[0]
         self.assertEqual(self.readiness.count('scripts/run_ctest_gate.sh'), 1)
-        self.assertIn('scripts/run_ctest_gate.sh', baseline)
-        self.assertNotIn('run_ctest_gate.sh --', baseline)
-        self.assertIn('scripts/run_vm_parity.sh > "$PUBLICATION_BUNDLE/vm/raw.log" 2>&1', baseline)
-        self.assertIn('validate_measurements', baseline)
+        self.assertEqual(baseline.count('run_full_measurements'), 1)
+        self.assertIn('scripts/run_ctest_gate.sh', shared)
+        self.assertNotIn('run_ctest_gate.sh --', shared)
+        self.assertIn('scripts/run_vm_parity.sh > "$PUBLICATION_BUNDLE/vm/raw.log" 2>&1', shared)
+        self.assertIn('validate_measurements', shared)
+        self.assertIn('start_cohort', measurements)
+        self.assertIn('run_full_measurements', measurements)
+        self.assertIn('check_cohort', measurements)
+        self.assertNotIn('mark_phase', measurements)
+        self.assertNotIn('run_readiness_phase', measurements)
+        self.assertNotIn('ICC_BIN', measurements)
         ctest = (ROOT / 'scripts/run_ctest_gate.sh').read_text()
         for artifact in ('inventory.json', 'junit.xml', 'exit.json', 'source-start.json', 'receipt-validation.log'):
             self.assertIn(artifact, ctest)

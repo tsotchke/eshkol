@@ -38,18 +38,18 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertEqual(diagnostic["default"], "false")
         self.assertEqual(diagnostic["required"], "false")
         self.assertEqual(self.workflow["jobs"]["unix-release-matrix"]["if"],
-                         "inputs.memory_diagnostics != true")
+                         "inputs.memory_diagnostics != true && inputs.measurement_preparation != true")
         self.assertEqual(self.workflow["jobs"]["prefetch-windows-llvm-archives"]["if"],
-                         "inputs.memory_diagnostics != true")
+                         "inputs.memory_diagnostics != true && inputs.measurement_preparation != true")
         self.assertEqual(self.workflow["jobs"]["windows-release-matrix"]["if"],
-                         "inputs.memory_diagnostics != true")
+                         "inputs.memory_diagnostics != true && inputs.measurement_preparation != true")
         self.assertEqual(self.workflow["jobs"]["publish-release"]["if"],
-                         "inputs.memory_diagnostics != true")
-        reject = self.steps["Reject incompatible memory diagnostic options"]
-        self.assertIn('[[ "$STRICT_READINESS" == "true" ]]', reject["run"])
+                         "inputs.memory_diagnostics != true && inputs.measurement_preparation != true")
+        reject = self.steps["Reject incompatible diagnostic and measurement options"]
+        self.assertIn('[[ "$MEMORY_DIAGNOSTICS" == "true" && "$STRICT_READINESS" == "true" ]]', reject["run"])
         resolve = self.steps["Resolve ICC binary (block on push, never fail-open)"]
         self.assertNotIn("if", resolve)
-        self.assertIn('if [[ "${MEMORY_DIAGNOSTICS}" == "true" ]]; then', resolve["run"])
+        self.assertIn('if [[ "${MEMORY_DIAGNOSTICS}" == "true" || "${MEASUREMENT_PREPARATION}" == "true" ]]; then', resolve["run"])
         self.assertIn("exit 1", resolve["run"])
         self.assertEqual(self.steps["Bind ICC to this release checkout and commit"]["if"],
                          "env.ICC_AVAILABLE == 'true'")
@@ -71,13 +71,62 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertEqual(self.steps["Configure and build (readiness evidence)"]["if"],
                          "env.ICC_AVAILABLE == 'true'")
         self.assertEqual(self.steps["Configure and build fuzz tree (readiness evidence)"]["if"],
-                         "env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'")
+                         "env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'")
         self.assertEqual(self.steps["Configure and build quantum tree (readiness evidence)"]["if"],
-                         "env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'")
+                         "env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'")
         self.assertIn("env.MEMORY_DIAGNOSTICS != 'true'", self.steps[
             "ICC readiness gate (tag push or strict dry run requires ready/100)"]["if"])
         self.assertEqual(self.steps["Upload bound release-readiness receipt"]["if"],
                          "steps.readiness.outputs.receipt_created == 'true'")
+
+
+    def test_measurement_preparation_is_dispatch_only_incompatible_and_nonqualifying(self):
+        mode = self.workflow["on"]["workflow_dispatch"]["inputs"]["measurement_preparation"]
+        self.assertEqual((mode["type"], mode["default"], mode["required"]), ("boolean", "false", "false"))
+        reject = self.steps["Reject incompatible diagnostic and measurement options"]["run"]
+        base = dict(os.environ, GITHUB_EVENT_NAME="workflow_dispatch", MEASUREMENT_PREPARATION="true",
+                    MEMORY_DIAGNOSTICS="false", STRICT_READINESS="false")
+        def run_guard(**changes):
+            return subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", reject],
+                                  capture_output=True, text=True, env={**base, **changes})
+        self.assertEqual(run_guard().returncode, 0)
+        for changes in ({"STRICT_READINESS": "true"}, {"MEMORY_DIAGNOSTICS": "true"},
+                        {"GITHUB_EVENT_NAME": "push"}):
+            with self.subTest(changes=changes):
+                self.assertNotEqual(run_guard(**changes).returncode, 0)
+        for name in ("unix-release-matrix", "prefetch-windows-llvm-archives", "windows-release-matrix", "publish-release"):
+            self.assertIn("inputs.measurement_preparation != true", self.workflow["jobs"][name]["if"])
+        prep = self.steps["Prepare full measurements only"]
+        self.assertEqual(prep["if"], "env.ICC_AVAILABLE == 'true' && env.MEASUREMENT_PREPARATION == 'true'")
+        self.assertEqual(prep["timeout-minutes"], "360")
+        self.assertIn("--phase measurements", prep["run"])
+        self.assertIn("github.run_id", prep["env"]["ESHKOL_DURABLE_WORK_ROOT"])
+        self.assertIn("github.run_attempt", prep["env"]["ESHKOL_DURABLE_WORK_ROOT"])
+        for name in ("Release evidence baseline (coverage and VM parity)", "Release smoke evidence",
+                     "Remaining release producers and architecture verification",
+                     "ICC readiness gate (tag push or strict dry run requires ready/100)"):
+            self.assertIn("env.MEASUREMENT_PREPARATION != 'true'", self.steps[name]["if"])
+        self.assertEqual(self.steps["Configure and build (readiness evidence)"]["if"], "env.ICC_AVAILABLE == 'true'")
+        for name in ("Configure and build fuzz tree (readiness evidence)", "Configure and build quantum tree (readiness evidence)"):
+            self.assertIn("env.MEASUREMENT_PREPARATION != 'true'", self.steps[name]["if"])
+        self.assertNotIn("receipt_created", prep["run"])
+        self.assertEqual(self.steps["Upload readiness evidence"]["if"], "always()")
+        receipt = self.steps["Upload bound release-readiness receipt"]
+        self.assertEqual(receipt["if"], "steps.readiness.outputs.receipt_created == 'true'")
+
+    def test_measurement_preparation_fails_without_icc(self):
+        step = self.steps["Resolve ICC binary (block on push, never fail-open)"]
+        scratch = ROOT / ".scratch"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="measurement-preparation-", dir=scratch) as directory:
+            root = Path(directory)
+            env = dict(os.environ, ICC_BIN_OVERRIDE="", GITHUB_EVENT_NAME="workflow_dispatch",
+                       GITHUB_ENV=str(root / "github-env"), RUNNER_TEMP=str(root),
+                       MEMORY_DIAGNOSTICS="false", MEASUREMENT_PREPARATION="true", STRICT_READINESS="false")
+            result = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+                                    capture_output=True, text=True, env=env)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Nonpublishing preparation blocked", result.stdout)
 
     def test_memory_diagnostics_run_all_gates_and_retain_each_failure_log_and_status(self):
         run = self.steps["Run nonpublishing memory diagnostics"]["run"]

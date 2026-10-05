@@ -28,9 +28,14 @@
 <td>Never</td>
 <td>Advisory, or blocking with <code>strict_readiness=true</code></td>
 </tr>
+<tr>
+<td><code>workflow_dispatch</code> with <code>measurement_preparation=true</code></td>
+<td>Never</td>
+<td>No readiness verdict; records only the full CTest and VM measurement bundle</td>
+</tr>
 </tbody>
 </table>
-<p>A manual dispatch is always non-publishing. Its <code>candidate_tag</code> input is only a label, so the dry-run archives carry the exact names the tag run will use. Runs for one ref are serialised and never cancel each other.</p>
+<p>A manual dispatch is always non-publishing. Its <code>candidate_tag</code> input is only a label, so the dry-run archives carry the exact names the tag run will use. <code>measurement_preparation=true</code> is a separate, ICC-required dispatch mode. It cannot be combined with <code>strict_readiness</code> or <code>memory_diagnostics</code>, and it never runs for a tag push. It skips the fifteen package jobs, Windows prefetch, fuzz and quantum build trees, and <code>publish-release</code>; it keeps the canonical release configure/build profile and records only full CTest and VM parity measurements. Runs for one ref are serialised and never cancel each other.</p>
 <p>The jobs, in dependency order:</p>
 <ol type="1">
 <li><strong><code>unix-release-matrix</code></strong> builds ten packages: Linux x86-64 and ARM64 in the lite, XLA and CUDA configurations, and macOS ARM64 and x86-64 in the lite and XLA configurations. Each job validates the tag label, configures and builds, verifies that <code>stdlib.bc</code> targets a generic CPU (<code>scripts/verify_portable_stdlib.py</code>), checks the WebAssembly import glue on the lite configuration (<code>scripts/check_wasm_imports.py</code>), runs the configuration’s test command plus the agent HTTP, SSE and capability tests, and then packages.</li>
@@ -64,6 +69,7 @@
 <p>On a tag push, an unavailable oracle is a blocked release. The gate never falls open to a green publish. On a default dispatch the same condition is a warning; with <code>strict_readiness=true</code> it blocks exactly as a tag push does.</p>
 <p>When every check passes, the job writes a receipt, <code>release-readiness-receipt-&lt;sha&gt;</code>, with the schema <code>eshkol.release-readiness.v1</code>: the commit SHA, the workflow run id and run attempt, the <code>target</code> supplied through <code>RELEASE_TARGET</code>, <code>status: ready</code> and <code>score: 100</code>. The workflow derives that target from the pushed tag or the dispatch candidate tag and validates the <code>v1.3.&lt;5+&gt;-evolve</code> form; the local recipe defaults to <code>v1.3.6-evolve</code>. A receipt is only ever written for the commit and the run attempt that produced it.</p>
 <p><code>tests/toolchain/test_release_readiness_guard.py</code> runs first in the job as the negative controls for this logic: a mismatched SHA, a dirty checkout, a score that is missing, non-numeric or below 100, and release notes with a planted pending-evidence marker must each be refused, and a repository name that resolves to a different checkout must get a separate verified alias rather than a rebind.</p>
+<p>The separate <code>measurement_preparation</code> dispatch is not a readiness-gate run. It still requires ICC to be available and bound to the exact checkout, then uses the canonical <code>build</code> tree to capture full CTest and serialized-bytecode VM measurements. It does not run package jobs, Windows prefetch, fuzz or quantum trees, smoke/final evidence phases, ICC readiness, or receipt creation. Its measurements are uploaded with the existing hidden readiness-evidence bundle before cleanup; they never create a ready verdict or publication proof.</p>
 <h3 id="what-the-gate-builds">What the gate builds</h3>
 <p>The gate configures with the pinned LLVM major and builds, with at most four parallel jobs:</p>
 <ul>
@@ -74,12 +80,14 @@
 </ul>
 <p>The toolchain is provisioned on the runner ahead of time. The workflow installs no system packages there; its preflight step only resolves what is present and fails with a specific message when something is missing. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/SELF_HOSTED_RUNNERS.md" target="_blank" rel="noopener noreferrer">SELF_HOSTED_RUNNERS.md</a>.</p>
 <h2 id="the-evidence-recipe">The evidence recipe</h2>
-<p><code>scripts/run_v1_3_readiness.sh</code> is the one recipe, and the workflow delegates to it in four phases, each a separate step with its own time budget:</p>
+<p><code>scripts/run_v1_3_readiness.sh</code> is the one recipe, and the normal release flow delegates to it in four phases, each a separate step with its own time budget. A standalone <code>measurements</code> phase is available only to <code>measurement_preparation</code>:</p>
 <pre><code>scripts/run_v1_3_readiness.sh --phase baseline
 scripts/run_v1_3_readiness.sh --phase smoke
 scripts/run_v1_3_readiness.sh --phase final-evidence
-scripts/run_v1_3_readiness.sh --phase readiness</code></pre>
-<p>Run without <code>--phase</code>, it executes all four in order.</p>
+scripts/run_v1_3_readiness.sh --phase readiness
+# measurement_preparation only; records measurements without phase qualification
+scripts/run_v1_3_readiness.sh --phase measurements</code></pre>
+<p>Run without <code>--phase</code>, it executes the four normal phases in order; it never selects the standalone measurement-preparation phase.</p>
 <table>
 <colgroup>
 <col style="width: 28%" />
@@ -94,7 +102,11 @@ scripts/run_v1_3_readiness.sh --phase readiness</code></pre>
 <tbody>
 <tr>
 <td><code>baseline</code></td>
-<td>Archives any earlier trace cohort outside the active trace root, captures the build cohort manifest, then runs <code>scripts/run_language_coverage.sh</code> (which runs the complete suite once and records exactly one <code>core_suite</code> PASS) and <code>scripts/run_vm_parity.sh</code>.</td>
+<td>Archives any earlier trace cohort outside the active trace root, captures the build cohort manifest, then runs <code>scripts/run_language_coverage.sh</code> (which runs the complete suite once and records exactly one <code>core_suite</code> PASS) plus the shared full CTest/VM measurement block. It marks <code>baseline</code> only after coverage and measurement checks pass.</td>
+</tr>
+<tr>
+<td><code>measurements</code></td>
+<td>Starts a fresh cohort, runs the same full CTest/VM measurement block, then rechecks the build cohort. It does not run language coverage, mark a normal phase complete, call ICC readiness, or create a ready receipt.</td>
 </tr>
 <tr>
 <td><code>smoke</code></td>
@@ -110,7 +122,8 @@ scripts/run_v1_3_readiness.sh --phase readiness</code></pre>
 </tr>
 </tbody>
 </table>
-<p>Three mechanisms keep the phases honest:</p>
+<p>The <code>measurements</code> phase is standalone and nonqualifying. Its captured producer bundle cannot substitute for the ordered baseline/smoke/final-evidence phases.</p>
+<p>Three mechanisms keep the normal phases honest:</p>
 <ul>
 <li><strong>One cohort.</strong> <code>scripts/check_release_build_cohort.py</code> fingerprints the compiler and runtime artifacts at the start and checks them before each later phase. Evidence from a rebuilt or mutated tree is refused.</li>
 <li><strong>Ordered phases.</strong> <code>scripts/release_phase_state.py</code> records each completed phase against a phase id derived from the workflow run id and attempt. A phase requires its predecessor under the same id, so a failed or missing earlier phase cannot be resumed as a completed one.</li>
