@@ -49,9 +49,15 @@ section of [RELEASE_NOTES.md](../../RELEASE_NOTES.md#final-verification).
 |---------|-----------|----------------|
 | Push of a tag matching `v*` | Yes | Blocking |
 | `workflow_dispatch` with `candidate_tag` (and optionally `strict_readiness`) | Never | Advisory, or blocking with `strict_readiness=true` |
+| `workflow_dispatch` with `measurement_preparation=true` | Never | No readiness verdict; records only the full CTest and VM measurement bundle |
 
 A manual dispatch is always non-publishing. Its `candidate_tag` input is only a
 label, so the dry-run archives carry the exact names the tag run will use.
+`measurement_preparation=true` is a separate, ICC-required dispatch mode. It
+cannot be combined with `strict_readiness` or `memory_diagnostics`, and it never
+runs for a tag push. It skips the fifteen package jobs, Windows prefetch, fuzz
+and quantum build trees, and `publish-release`; it keeps the canonical release
+configure/build profile and records only full CTest and VM parity measurements.
 Runs for one ref are serialised and never cancel each other.
 
 The jobs, in dependency order:
@@ -168,6 +174,14 @@ pending-evidence marker must each be refused, and a repository name that
 resolves to a different checkout must get a separate verified alias rather
 than a rebind.
 
+The separate `measurement_preparation` dispatch is not a readiness-gate run. It
+still requires ICC to be available and bound to the exact checkout, then uses
+the canonical `build` tree to capture full CTest and serialized-bytecode VM
+measurements. It does not run package jobs, Windows prefetch, fuzz or quantum
+trees, smoke/final evidence phases, ICC readiness, or receipt creation. Its
+measurements are uploaded with the existing hidden readiness-evidence bundle
+before cleanup; they never create a ready verdict or publication proof.
+
 ### What the gate builds
 
 The gate configures with the pinned LLVM major and builds, with at most four
@@ -189,26 +203,34 @@ present and fails with a specific message when something is missing. See
 
 ## The evidence recipe
 
-`scripts/run_v1_3_readiness.sh` is the one recipe, and the workflow delegates
-to it in four phases, each a separate step with its own time budget:
+`scripts/run_v1_3_readiness.sh` is the one recipe, and the normal release flow
+delegates to it in four phases, each a separate step with its own time budget.
+A standalone `measurements` phase is available only to `measurement_preparation`:
 
 ```
 scripts/run_v1_3_readiness.sh --phase baseline
 scripts/run_v1_3_readiness.sh --phase smoke
 scripts/run_v1_3_readiness.sh --phase final-evidence
 scripts/run_v1_3_readiness.sh --phase readiness
+# measurement_preparation only; records measurements without phase qualification
+scripts/run_v1_3_readiness.sh --phase measurements
 ```
 
-Run without `--phase`, it executes all four in order.
+Run without `--phase`, it executes the four normal phases in order; it never
+selects the standalone measurement-preparation phase.
 
 | Phase | What it produces |
 |-------|------------------|
-| `baseline` | Archives any earlier trace cohort outside the active trace root, captures the build cohort manifest, then runs `scripts/run_language_coverage.sh` (which runs the complete suite once and records exactly one `core_suite` PASS) and `scripts/run_vm_parity.sh`. |
+| `baseline` | Archives any earlier trace cohort outside the active trace root, captures the build cohort manifest, then runs `scripts/run_language_coverage.sh` (which runs the complete suite once and records exactly one `core_suite` PASS) plus the shared full CTest/VM measurement block. It marks `baseline` only after coverage and measurement checks pass. |
+| `measurements` | Starts a fresh cohort, runs the same full CTest/VM measurement block, then rechecks the build cohort. It does not run language coverage, mark a normal phase complete, call ICC readiness, or create a ready receipt. |
 | `smoke` | The Taylor monomorphization equivalence gate, the ESKM model-loader fuzz smoke, and the runtime smoke battery `scripts/run_icc_smoke.sh`, which includes the release invariant probes. |
 | `final-evidence` | Refreshes the ICC index, runs `scripts/run_v1_3_release_producers.sh`, verifies the build cohort is unchanged, checks the evidence set with `scripts/verify_v1_3_release_evidence.py`, and only then asks ICC for the architecture grade (`icc architecture-verify` against `.icc/architecture-model.yaml`). |
 | `readiness` | Re-verifies the evidence set and asks ICC for trace-aware readiness of `RELEASE_TARGET` (default `v1.3.6-evolve` locally; the workflow uses its pushed tag or dispatch candidate tag). |
 
-Three mechanisms keep the phases honest:
+The `measurements` phase is standalone and nonqualifying. Its captured producer
+bundle cannot substitute for the ordered baseline/smoke/final-evidence phases.
+
+Three mechanisms keep the normal phases honest:
 
 - **One cohort.** `scripts/check_release_build_cohort.py` fingerprints the
   compiler and runtime artifacts at the start and checks them before each later

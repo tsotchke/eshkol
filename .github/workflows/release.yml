@@ -21,6 +21,11 @@ on:
         required: false
         default: false
         type: boolean
+      measurement_preparation:
+        description: Build the canonical release profile and record full CTest/VM measurements only
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -40,10 +45,11 @@ env:
   RELEASE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
   STRICT_READINESS: ${{ github.event_name == 'workflow_dispatch' && inputs.strict_readiness || false }}
   MEMORY_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.memory_diagnostics || false }}
+  MEASUREMENT_PREPARATION: ${{ github.event_name == 'workflow_dispatch' && inputs.measurement_preparation || false }}
 
 jobs:
   unix-release-matrix:
-    if: inputs.memory_diagnostics != true
+    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true
     name: release-${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -453,7 +459,7 @@ jobs:
   # infrequent and high-stakes, so this stays self-contained here rather
   # than assuming ci.yml's cache population already ran for this ref.
   prefetch-windows-llvm-archives:
-    if: inputs.memory_diagnostics != true
+    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true
     name: prefetch-windows-llvm-archives (${{ matrix.arch }})
     runs-on: ubuntu-22.04
     continue-on-error: true
@@ -496,7 +502,7 @@ jobs:
           enableCrossOsArchive: true
 
   windows-release-matrix:
-    if: inputs.memory_diagnostics != true
+    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true
     name: release-${{ matrix.name }}
     needs: prefetch-windows-llvm-archives
     runs-on: ${{ matrix.runner }}
@@ -1167,12 +1173,24 @@ jobs:
       # Resolve ICC FIRST so a runner without it decides fast, before spending
       # ~20 min on a build it could never certify. On a real tag push, absence
       # of the oracle is a blocked release, never a green one.
-      - name: Reject incompatible memory diagnostic options
-        if: env.MEMORY_DIAGNOSTICS == 'true'
+      - name: Reject incompatible diagnostic and measurement options
+        if: env.MEMORY_DIAGNOSTICS == 'true' || env.MEASUREMENT_PREPARATION == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$STRICT_READINESS" == "true" ]]; then
+          if [[ "$MEASUREMENT_PREPARATION" == "true" && "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "::error::measurement_preparation is available only on workflow_dispatch, never on a tag push."
+            exit 1
+          fi
+          if [[ "$MEASUREMENT_PREPARATION" == "true" && "$STRICT_READINESS" == "true" ]]; then
+            echo "::error::measurement_preparation cannot be combined with strict_readiness=true."
+            exit 1
+          fi
+          if [[ "$MEASUREMENT_PREPARATION" == "true" && "$MEMORY_DIAGNOSTICS" == "true" ]]; then
+            echo "::error::measurement_preparation cannot be combined with memory_diagnostics=true."
+            exit 1
+          fi
+          if [[ "$MEMORY_DIAGNOSTICS" == "true" && "$STRICT_READINESS" == "true" ]]; then
             echo "::error::memory_diagnostics cannot be combined with strict_readiness=true."
             exit 1
           fi
@@ -1191,8 +1209,8 @@ jobs:
           fi
           echo "ICC_AVAILABLE=false" >> "$GITHUB_ENV"
           msg="ICC_BIN='${ICC_BIN:-unset}' is not present or executable on this runner. The release cannot be certified without the readiness oracle. Provision ICC on the release runner and set the ICC_BIN repository variable — see CONTRIBUTING.md 'Release-blocking readiness'."
-          if [[ "${MEMORY_DIAGNOSTICS}" == "true" ]]; then
-            echo "::error title=Memory diagnostics blocked::$msg"
+          if [[ "${MEMORY_DIAGNOSTICS}" == "true" || "${MEASUREMENT_PREPARATION}" == "true" ]]; then
+            echo "::error title=Nonpublishing preparation blocked::$msg"
             exit 1
           fi
           if [[ "${GITHUB_EVENT_NAME}" == "push" || "${STRICT_READINESS}" == "true" ]]; then
@@ -1202,7 +1220,7 @@ jobs:
           echo "::warning title=Readiness gate skipped (dry-run)::$msg This non-publishing dry-run continues; a real tag push would be BLOCKED here."
 
       - name: Release identity and publication negative controls
-        if: env.MEMORY_DIAGNOSTICS != 'true'
+        if: env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
         shell: bash
         run: |
           python3 tests/toolchain/test_release_readiness_guard.py
@@ -1368,7 +1386,7 @@ jobs:
           cmake --build build --parallel 4
 
       - name: Configure and build fuzz tree (readiness evidence)
-        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -1399,7 +1417,7 @@ jobs:
       # than a second macOS lane, since release readiness only needs one
       # quantum-capable tree, not two.
       - name: Configure and build quantum tree (readiness evidence)
-        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
         shell: bash
         run: |
           set -euxo pipefail
@@ -1448,11 +1466,22 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare full measurements only
+        if: env.ICC_AVAILABLE == 'true' && env.MEASUREMENT_PREPARATION == 'true'
+        timeout-minutes: 360
+        shell: bash
+        env:
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
+          ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/measurement-preparation
+          BUILD_DIR: build
+          QUANTUM_BUILD_DIR: build-quantum
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase measurements
+
       # Each evidence phase has its own step budget. Coverage/full-suite and VM
       # parity run first; the expensive smoke battery follows against the same
       # captured build cohort; the remaining focused gates run before final ICC.
       - name: Release evidence baseline (coverage and VM parity)
-        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
         timeout-minutes: 360
         shell: bash
         env:
@@ -1462,7 +1491,7 @@ jobs:
         run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase baseline
 
       - name: Release smoke evidence
-        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
         timeout-minutes: 360
         shell: bash
         env:
@@ -1472,7 +1501,7 @@ jobs:
         run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase smoke
 
       - name: Remaining release producers and architecture verification
-        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
         timeout-minutes: 360
         shell: bash
         env:
@@ -1493,7 +1522,7 @@ jobs:
       # unready verdict blocks publication; on a dry-run it is advisory.
       - name: ICC readiness gate (tag push or strict dry run requires ready/100)
         id: readiness
-        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
         timeout-minutes: 360
         shell: bash
         env:
@@ -1632,7 +1661,7 @@ jobs:
             .scratch/icc-stdlib-rebuild || true
 
   publish-release:
-    if: inputs.memory_diagnostics != true
+    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true
     name: publish-release
     runs-on: ubuntu-22.04
     needs:
