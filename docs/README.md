@@ -15,6 +15,8 @@ pages and lets them fan out to their siblings.
 - [QUICKSTART](QUICKSTART.md) — 15-minute hands-on tutorial (lists to closures to tensors to gradients)
 - [Tutorials index](tutorials/README.md) — all 27 tutorials, from first program through full projects
 - [First 5 Minutes](tutorials/00_FIRST_5_MINUTES.md) — install, hello world, five wow moments
+- [Complete example catalogue](EXAMPLES.md) — source-backed descriptions, prerequisites, checks and run scope for every tracked program
+- [Mathematics example catalogue](MATHEMATICS_EXAMPLES.md) — algorithms, domains, arithmetic and limits, plus the authored JIT/AOT matrix
 - [Examples](../examples/README.md) — the runnable example collection (AD, parallelism, consciousness engine, streaming, simulation, quantum chemistry, and exact mathematics)
 - [AI-driven mathematics examples](AI_MATHEMATICS_EXAMPLES.md) — exact and AD-verified public witnesses, including the Jacobian counterexample, AlphaTensor factorizations, and a FunSearch cap set
 - [FAQ](FAQ.md) — installation, troubleshooting, common questions

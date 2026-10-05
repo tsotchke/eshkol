@@ -135,6 +135,7 @@ import datetime
 import html
 import json
 import os
+from pathlib import Path
 import re
 import sys
 import tempfile
@@ -232,7 +233,7 @@ def load_canonical_surface_total() -> int:
     except Exception as exc:
         raise SourceError(f"{COVERAGE_POLICY_PATH} is not valid JSON: {exc}") from exc
     value = data.get("baseline_surface_total")
-    if not isinstance(value, int):
+    if type(value) is not int:
         raise SourceError(f"{COVERAGE_POLICY_PATH} has no integer baseline_surface_total")
     return value
 
@@ -247,35 +248,29 @@ def load_canonical_builtins_total() -> int:
         raise SourceError(f"{LANGUAGE_SURFACE_PATH} is not valid JSON: {exc}") from exc
     counts = data.get("counts") if isinstance(data, dict) else None
     value = counts.get("builtins_total") if isinstance(counts, dict) else None
-    if not isinstance(value, int):
+    if type(value) is not int:
         raise SourceError(f"{LANGUAGE_SURFACE_PATH} has no integer counts.builtins_total")
     return value
+
+
+from release_publication_contract import (ContractError, load_record, ctest_summary,
+    parity_summary, metadata_facts)
 
 
 def parse_ctest_log(path: str) -> int | None:
     """Total tests run, from ctest's own summary line. None if unparseable."""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            text = handle.read()
-    except OSError:
-        return None
-    match = CTEST_LOG_TOTAL_RE.search(text)
-    if not match:
-        return None
-    return int(match.group(1))
+        return ctest_summary(Path(path).read_text(encoding="utf-8"))[0]
+    except (ContractError, OSError, UnicodeError) as exc:
+        raise SourceError(f"explicit CTest evidence cannot be used: {exc}") from exc
 
 
 def parse_parity_log(path: str) -> int | None:
-    """Total cases (passed + failed), from run_vm_parity.sh's summary line."""
+    """Read a supplied full summary; malformed evidence never falls back."""
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            text = handle.read()
-    except OSError:
-        return None
-    match = PARITY_LOG_RE.search(text)
-    if not match:
-        return None
-    return int(match.group(1)) + int(match.group(2))
+        return sum(parity_summary(Path(path).read_text(encoding="utf-8")))
+    except (ContractError, OSError, UnicodeError) as exc:
+        raise SourceError(f"explicit parity evidence cannot be used: {exc}") from exc
 
 
 # ───────────────────────── release record ─────────────────────────
@@ -289,7 +284,7 @@ def parse_parity_log(path: str) -> int | None:
 
 RELEASE_RECORD_PATH = os.path.join(REPO_ROOT, "tests", "coverage", "release_record.json")
 RELEASE_STATUS_SHIPPED = "SHIPPED"
-RELEASE_STATUSES = ("RELEASE CANDIDATE", RELEASE_STATUS_SHIPPED)
+RELEASE_STATUSES = ("RELEASE CANDIDATE", "PREPARED FOR PUBLICATION", RELEASE_STATUS_SHIPPED)
 
 # Documents that speak about the CURRENT release. Unlike REGISTERED_DOCS these
 # include the dated narrative files, so each is graded only inside the scope
@@ -361,32 +356,11 @@ RECORD_SPAN_RE = re.compile(
     r"<!-- release-record:(?P<key>[a-z-]+) -->(?P<body>.*?)<!-- /release-record -->", re.DOTALL)
 
 def load_release_record() -> dict:
-    if not os.path.isfile(RELEASE_RECORD_PATH):
-        raise SourceError(f"canonical source not found: {RELEASE_RECORD_PATH}")
     try:
-        with open(RELEASE_RECORD_PATH, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except Exception as exc:
-        raise SourceError(f"{RELEASE_RECORD_PATH} is not valid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise SourceError(f"{RELEASE_RECORD_PATH} is not a JSON object")
-    tag = data.get("tag")
-    if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9]+)?", tag):
-        raise SourceError(f"{RELEASE_RECORD_PATH} has no well-formed tag")
-    try:
-        release_date = datetime.date.fromisoformat(str(data.get("release_date")))
-    except ValueError as exc:
-        raise SourceError(f"{RELEASE_RECORD_PATH} has no ISO release_date: {exc}") from exc
-    status = data.get("status")
-    if status not in RELEASE_STATUSES:
-        raise SourceError(f"{RELEASE_RECORD_PATH} status must be one of {RELEASE_STATUSES}")
-    totals = {}
-    for key in ("ctest_total", "vm_parity_total"):
-        value = data.get(key)
-        if value is not None and (type(value) is not int or value <= 0):
-            raise SourceError(f"{RELEASE_RECORD_PATH} {key} must be a positive integer or null")
-        totals[key] = value
-    return {"tag": tag, "version": tag[1:], "date": release_date, "status": status, **totals}
+        data = load_record(RELEASE_RECORD_PATH)
+    except ContractError as exc:
+        raise SourceError(str(exc)) from exc
+    return {**data, "version": data["tag"][1:], "date": datetime.date.fromisoformat(data["release_date"])}
 
 
 def iso_date(value: datetime.date) -> str:
@@ -817,7 +791,7 @@ def self_test() -> bool:
         SITE_MIRROR_DIR = os.path.relpath(os.path.join(tmp_dir, "no-site"), REPO_ROOT)
 
         def write_record(**overrides) -> None:
-            record = {"tag": "v9.8.7-test", "release_date": "2031-03-04", "status": "SHIPPED",
+            record = {"schema": "eshkol.release-record.v1", "previous_tag": "v1.3.5-evolve", "tag": "v1.3.9-evolve", "release_date": "2031-03-04", "status": "SHIPPED",
                       "ctest_total": None, "vm_parity_total": None}
             record.update(overrides)
             with open(RELEASE_RECORD_PATH, "w", encoding="utf-8") as handle:
@@ -928,25 +902,25 @@ def self_test() -> bool:
         release_cases = [
             ("green_release_date_and_status",
              "**Release date:** Tuesday, March 4, 2031.\n\n"
-             "| **v9.8.7-test** | 2031-03-04 | Theme | **SHIPPED 2031-03-04.** text |\n", {}, True),
+             "| **v1.3.9-evolve** | 2031-03-04 | Theme | **SHIPPED 2031-03-04.** text |\n", {}, True),
             ("red_stale_release_date",
              "**Release date:** Tuesday, February 25, 2031.\n", {}, False),
             ("red_wrong_weekday",
              "**Release date:** Monday, March 4, 2031.\n", {}, False),
             ("red_changelog_heading_date",
-             "## [9.8.7-test] - 2031-02-25\n", {}, False),
+             "## [1.3.9-evolve] - 2031-02-25\n", {}, False),
             ("red_shipped_date_after_tag",
-             "v9.8.7-test SHIPPED 2031-02-25 with a parser.\n"
+             "v1.3.9-evolve SHIPPED 2031-02-25 with a parser.\n"
              "**Release date:** Tuesday, March 4, 2031.\n", {}, False),
             ("red_day_first_fact_table_date",
              "**Release date:** Tuesday, March 4, 2031.\n| Release date | 25 February 2031 |\n", {}, False),
             ("green_day_first_fact_table_date",
              "| Release date | 4 March 2031 |\n", {}, True),
             ("red_parenthesized_date_after_tag",
-             "**Last shipped release**: v9.8.7-test (2031-02-25).\n"
+             "**Last shipped release**: v1.3.9-evolve (2031-02-25).\n"
              "**Release date:** Tuesday, March 4, 2031.\n", {}, False),
             ("green_other_release_date_is_not_ours",
-             "v9.8.7-test follows v9.8.6-test, SHIPPED 2031-01-01.\n"
+             "v1.3.9-evolve follows v9.8.6-test, SHIPPED 2031-01-01.\n"
              "**Release date:** Tuesday, March 4, 2031.\n", {}, True),
             ("red_pre_release_wording_after_shipped",
              "**Release date:** Tuesday, March 4, 2031.\n"
@@ -956,9 +930,9 @@ def self_test() -> bool:
              "The refreshed candidate awaits its battery.\n", {"status": "RELEASE CANDIDATE"}, True),
             ("red_status_row_not_shipped",
              "**Release date:** Tuesday, March 4, 2031.\n"
-             "| **v9.8.7-test** | 2031-03-04 | Theme | In flight |\n", {}, False),
+             "| **v1.3.9-evolve** | 2031-03-04 | Theme | In flight |\n", {}, False),
             ("red_missing_anchor_date",
-             "This document never says when v9.8.7-test shipped.\n", {}, False),
+             "This document never says when v1.3.9-evolve shipped.\n", {}, False),
             ("green_span_without_total",
              "**Release date:** Tuesday, March 4, 2031.\n"
              "<!-- release-record:ctest -->the full CTest suite<!-- /release-record -->\n",
@@ -1007,7 +981,7 @@ def self_test() -> bool:
         # edits the gate proposes, the same document must pass.
         write_record(ctest_total=1234, vm_parity_total=340)
         with open(release_doc, "w", encoding="utf-8") as handle:
-            handle.write("## [9.8.7-test] - 2031-02-25\n"
+            handle.write("## [1.3.9-evolve] - 2031-02-25\n"
                          "**Release date:** Monday, February 25, 2031.\n"
                          "<!-- release-record:ctest -->the full CTest suite<!-- /release-record -->\n"
                          "<!-- release-record:vm-parity-figure -->**338/338**<!-- /release-record -->\n")
@@ -1088,12 +1062,23 @@ def main(argv: list[str] | None = None) -> int:
                               "tests/coverage/release_record.json, then grade")
     parser.add_argument("--require-complete", action="store_true",
                          help="fail while the release record still has a null total")
+    parser.add_argument('--publication-evidence', help='strict full source-bound measurement bundle')
+    parser.add_argument('--sha')
+    parser.add_argument('--role', choices=('candidate-proof', 'tag-publication'), default='candidate-proof')
     args = parser.parse_args(argv)
 
     if args.self_test:
         return 0 if self_test() else 1
 
     try:
+        if args.publication_evidence:
+            if args.sync or not args.sha:
+                raise SourceError('strict evidence requires --sha and forbids --sync after capture')
+            try:
+                metadata_facts(RELEASE_RECORD_PATH, os.path.join(REPO_ROOT, 'RELEASE_NOTES.md'), args.publication_evidence,
+                               args.sha, load_record(RELEASE_RECORD_PATH)['tag'], args.role)
+            except ContractError as exc:
+                raise SourceError(str(exc)) from exc
         if args.sync:
             changed = apply_edits(run_gate(args.ctest_log, args.parity_log)["edits"])
             for doc_rel in changed:

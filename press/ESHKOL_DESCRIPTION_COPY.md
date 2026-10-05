@@ -118,15 +118,20 @@ compiler that hosts it.
 
 - **A bounded Hodge-class computation.** On one Fermat quartic fourfold, an
   example computes the rational Hodge-class dimension by two methods, enumerates
-  960 planes, and computes their exact intersection Gram matrix, whose rank is
-  142. A parameterized Fermat sweep emits JSON receipts for other cases. These
+  960 planes, and computes their exact intersection Gram matrix. Its rank
+  modulo 10007 is 142, attaining the geometric Hodge upper bound and thereby
+  certifying the rational span in this case. A parameterized Fermat sweep
+  emits JSON receipts for other cases. These
   are computations on the listed varieties, not a resolution of the general
   Hodge conjecture. See the [fourfold example](../examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk)
   and [sweep](../examples/mathematics_fermat_hodge_classes_sweep.esk).
 
 - **Further bounded geometry and topology examples.** On the Fermat sextic
-  surface, the Aoki cycles example computes an exact cycle-character span gap
-  of 24 → 0. Separate examples compute exact Turaev–Viro invariants in
+  surface, the Aoki cycles example computes exact character supports for lines
+  and the supplied C/Y curve families, then reports the uncovered Hodge
+  characters. Zero uncovered characters certifies spanning under the cited
+  period formula; the program's PASS checks do not require that count to be
+  zero. Separate examples compute exact Turaev–Viro invariants in
   cyclotomic fields, Reidemeister torsion distinguishing the homotopy-equivalent
   pair L(7,1) and L(7,2), and nonabelian Čech descent for torsors on finite
   spaces. These are computations on the listed cases, not general proofs. See
@@ -142,8 +147,9 @@ compiler that hosts it.
   parts of the leading residual, scaling, and profile structure, through 14
   criteria with paired JIT and AOT registrations (28 tests). They do not
   reproduce the source's full argument. See the [finite gauge example](../examples/mathematics_finite_model_three_torus_gauge_theory.esk),
-  [Navier–Stokes registrations](../CMakeLists.txt#L3640-L3679), and the older
-  [guide to nine foundational examples](../docs/NAVIER_STOKES_EXAMPLES.md).
+  [Navier–Stokes registrations](../CMakeLists.txt), the
+  [Navier–Stokes guide](../docs/NAVIER_STOKES_EXAMPLES.md), and the
+  [complete mathematics catalogue](../docs/MATHEMATICS_EXAMPLES.md).
 
 ## Differentiating capabilities
 

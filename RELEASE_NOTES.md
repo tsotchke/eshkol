@@ -7,7 +7,18 @@ Publication requires the release workflow's evidence and ICC ready/100 verdict
 at the exact release commit. CTest and VM parity totals remain unrecorded in
 the release record.
 
+<!-- RELEASE_EVIDENCE_PENDING -->
+
 ### Changes
+
+- **Example documentation follows the implementations.** The catalogue covers all
+  67 programs, including 46 mathematics examples, with algorithms, arithmetic,
+  executable checks, prerequisites and limits. Navier–Stokes registration is
+  derived from its 12 programs, 14 criteria and 28 native JIT/AOT entries. (#742)
+- **Publication requires complete source-bound measurements.** The release gate
+  validates full configured CTest and VM parity results against committed
+  metadata and the exact source, workflow run and build cohort. Removing a
+  pending marker cannot qualify a candidate for publication. (#742)
 
 - **Native REPL input stays clean across line-editing backends.** Pipes and
   machine mode use one noninteractive reader whether readline is available or
@@ -15,6 +26,10 @@ the release record.
 - **Release builds require native image I/O.** Every package and readiness
   configuration requires a native backend; configuration fails if none is
   selected. Developer builds retain the optional backend setting. (#737)
+- **CUDA GEMM loads cuBLAS on demand.** In CUDA-enabled builds, native, JIT,
+  and VM programs load cuBLAS only when GPU GEMM needs it. Programs without
+  GEMM can keep using other CUDA kernels without cuBLAS; a missing or
+  incompatible library leaves GEMM on the CPU fallback. (#740)
 
 - **Mixed exact/inexact interval arithmetic preserves containment in the
   confirmed cases.** Exact endpoints are converted outward before arithmetic;

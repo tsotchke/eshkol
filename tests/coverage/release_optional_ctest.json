@@ -1,0 +1,5 @@
+{
+  "schema": "eshkol.release-optional-ctest.v1",
+  "exclusions": {},
+  "_comment": "No configured release tests are excluded. Optional internal capability subprobes retain their existing script policy and are not fabricated measured capabilities. Named configured exclusions require a source-reviewed existing capability policy before qualification, never a runtime waiver."
+}

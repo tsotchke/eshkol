@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import yaml
+from release_publication_contract import ContractError, load_measurements, read_json, source_snapshot, sha256
 
 
 TEST_ACTIONS = {
@@ -77,6 +78,12 @@ def main() -> int:
 
     records = load_events(args.trace_dir)
     errors: list[str] = []
+    try:
+        state = read_json(args.trace_dir / "release-phase-state.json")
+        load_measurements(args.trace_dir / "publication", source_snapshot(args.repo_root)["sha"], args.target,
+                          state.get("phase_id"), sha256(args.trace_dir / "release-build-cohort.json"))
+    except (ContractError, OSError, ValueError) as exc:
+        errors.append(f"full release measurements: {exc}")
     checked_runtime = checked_tests = 0
     cohort = [r for r in records if r.get("kind") == "release_build_cohort" and r.get("name") == "release_build_cohort_clean"]
     if len(cohort) != 1 or cohort[0].get("value") != "PASS":

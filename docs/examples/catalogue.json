@@ -1,0 +1,3347 @@
+{
+  "schema": "eshkol.example-catalogue.v1",
+  "inventory_policy": "Every Git-tracked examples/**/*.esk program, including nested artifact generators. No untracked or missing paths.",
+  "entries": [
+    {
+      "path": "examples/autodiff.esk",
+      "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
+      "title": "Scalar automatic differentiation",
+      "kind": "example",
+      "purpose": "Introduce derivative and gradient calls on simple scalar polynomials.",
+      "algorithm": "Differentiate x³ and x³+2x; create a reusable derivative closure.",
+      "domain": "x=2,3,5; expected displayed derivatives 12,29,75.",
+      "arithmetic": "Floating-point scalar inputs.",
+      "validation": "Prints results and expected comments; it contains no pass/fail assertion.",
+      "limitations": "An introductory output demonstration, not a convergence or performance benchmark.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Automatic Differentiation — Forward and reverse mode"
+        },
+        {
+          "line": 5,
+          "text": "(define f (lambda (x) (* x x x)))"
+        },
+        {
+          "line": 6,
+          "text": "(define df (derivative f 2.0))"
+        },
+        {
+          "line": 7,
+          "text": "(display \"d/dx(x^3) at x=2: \") (display df) (newline)"
+        },
+        {
+          "line": 13,
+          "text": "(display \"grad(x^3+2x) at x=3: \") (display grad-g) (newline)"
+        },
+        {
+          "line": 18,
+          "text": "(display \"d/dx(x^3) at x=5: \") (display (df-func 5.0)) (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/bayesian_diagnosis.esk",
+      "source_sha256": "afff5f21b486298fc3540b1568faedfd694c0e77ca353ae6212481a3a0a4d467",
+      "title": "Symbolic and probabilistic symptom model",
+      "kind": "example",
+      "purpose": "Demonstrate a fixed knowledge base alongside a small factor graph.",
+      "algorithm": "Assert/query symptom links, run belief propagation and compare reported free energies under three observation regimes.",
+      "domain": "Three binary variables and the source’s fixed symptom/disease factors and observations.",
+      "arithmetic": "Discrete symbolic facts and floating-point factor probabilities.",
+      "validation": "Prints query and inference/free-energy outputs without a numerical assertion.",
+      "limitations": "The source labels this a toy triage model; its fixed factors are not calibrated clinical evidence or a validated diagnosis system.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 25,
+          "text": "(define kb (make-kb))"
+        },
+        {
+          "line": 51,
+          "text": "(define fg (make-factor-graph 3 #(2 2 2)))"
+        },
+        {
+          "line": 100,
+          "text": "(display \"  - The KB-side query above gave a symbolic answer to\")"
+        },
+        {
+          "line": 102,
+          "text": "(display \"    'what could cause fever?'; the factor-graph layer turns\")"
+        },
+        {
+          "line": 104,
+          "text": "(display \"    that catalogue into a quantitative ranking.\")"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/consciousness.esk",
+      "source_sha256": "eee6b99749d188852a76743d4dccb437f563313840a9f9ed612a5d04d09db5c9",
+      "title": "Knowledge base, factor graph and workspace",
+      "kind": "example",
+      "purpose": "Exercise three neuro-symbolic runtime interfaces.",
+      "algorithm": "Assert/query facts, run ten factor-graph inference iterations and register two scored global-workspace modules.",
+      "domain": "Alice/Bob facts; two three-state graph variables; four-dimensional workspace content and two registered callbacks.",
+      "arithmetic": "Symbolic facts and floating-point beliefs/scores.",
+      "validation": "Prints query, free energy and workspace-step results; no behavioral assertion is implemented.",
+      "limitations": "Demonstrates selected interfaces, not a test of consciousness or proof that all advertised primitives are exercised.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Consciousness Engine — Logic, inference, and global workspace"
+        },
+        {
+          "line": 5,
+          "text": "(define kb (make-kb))"
+        },
+        {
+          "line": 11,
+          "text": "(define results (kb-query kb (make-fact \"likes\" \"alice\" ?x)))"
+        },
+        {
+          "line": 12,
+          "text": "(display \"Alice likes: \") (display results) (newline)"
+        },
+        {
+          "line": 19,
+          "text": "(display \"Free energy: \") (display (free-energy fg #())) (newline)"
+        },
+        {
+          "line": 25,
+          "text": "(display \"Workspace step: \") (display (ws-step! ws)) (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/differentiable_physics.esk",
+      "source_sha256": "e0ca3c23bba825102d5fc1ba8311e698701728baf3b325864c9799ca4dd7e33f",
+      "title": "Projectile launch-angle fitting",
+      "kind": "example",
+      "purpose": "Differentiate a recursive numerical trajectory to fit landing distance.",
+      "algorithm": "Euler-step linear-drag dynamics and apply gradient descent to squared horizontal landing error.",
+      "domain": "g=9.81,k=0.08,v₀=14,target=12; dt=0.01,max 800 steps; θ₀=0.5,lr=0.00005,200 updates.",
+      "arithmetic": "Floating-point integration and AD.",
+      "validation": "Prints initial/final angle, landing distance and error; no convergence threshold assertion.",
+      "limitations": "Discrete landing termination and a fixed time step limit the model; no global optimizer, continuum accuracy bound or measured speed claim.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 16,
+          "text": "(define g 9.81)         ; gravity"
+        },
+        {
+          "line": 17,
+          "text": "(define k 0.08)         ; linear drag coefficient"
+        },
+        {
+          "line": 93,
+          "text": "(display \"step.  No symbolic preprocessing, no finite differences,\") (newline)"
+        },
+        {
+          "line": 94,
+          "text": "(display \"and no manual reverse-mode framework — `gradient` just works\") (newline)"
+        },
+        {
+          "line": 95,
+          "text": "(display \"through the same loop the forward simulation runs.\") (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/eagle_train.esk",
+      "source_sha256": "2fe46c3f09b8d965f82b755ae24c9d0ed4dc33a5b2699bdf1c79ea49e6d99245",
+      "title": "Native linear feature-distillation demonstration",
+      "kind": "example",
+      "purpose": "Exercise scalar AD and the native linear backward/SGD bridge on the same small corpus.",
+      "algorithm": "Fit a 2×2 linear next-feature map using scalar-per-weight derivatives, then train a native eagle-linear layer row by row.",
+      "domain": "Fixed two-dimensional synthetic corpus; zero initial weights,lr=0.05,150 epochs per path.",
+      "arithmetic": "Floating-point losses, gradients and SGD.",
+      "validation": "Prints loss, learned weights and a native dW sample; no final accuracy assertion.",
+      "limitations": "The corpus is synthetic and two-dimensional; this does not train or validate a full Kimi/EAGLE model or establish large-model scalability.",
+      "prerequisites": "Built eshkol-run/stdlib, agent.eagle module and the existing native eagle-linear FFI bridge; no runtime activation requested.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";;; eagle_train.esk — native EAGLE feature-distillation training in Eshkol (no python, no torch)."
+        },
+        {
+          "line": 14,
+          "text": "(define (pred0 w00 w01 h0 h1) (+ (* w00 h0) (* w01 h1)))"
+        },
+        {
+          "line": 15,
+          "text": "(define (pred1 w10 w11 h0 h1) (+ (* w10 h0) (* w11 h1)))"
+        },
+        {
+          "line": 90,
+          "text": "    (display \"native learned W \")"
+        },
+        {
+          "line": 91,
+          "text": "    (display (list (eagle-linear-weight layer 0 0)"
+        },
+        {
+          "line": 96,
+          "text": "    (display \"native dW00 sample \") (display (eagle-linear-grad layer 0 0)) (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/gradient_descent_demo.esk",
+      "source_sha256": "302739919dc6e49fe8bc4bd0ac81788c68403380e2b4a07de47030f78c28c092",
+      "title": "Quadratic regression with AD",
+      "kind": "example",
+      "purpose": "Fit a quadratic to the checked-in data table.",
+      "algorithm": "Compute full-batch mean squared error and reverse-mode gradients for a,b,c, then gradient-descent updates.",
+      "domain": "Twelve supplied x/y rows, initial (0,0,0), lr=0.02, 1200 updates.",
+      "arithmetic": "Floating-point parameters, losses and gradients.",
+      "validation": "Prints progress and final parameters/loss; no convergence assertion.",
+      "limitations": "The data table is fixed rather than generated by a documented noise distribution. Printed progress does not certify convergence or generalization.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 17,
+          "text": "(define training-data"
+        },
+        {
+          "line": 31,
+          "text": "(define (model params x)"
+        },
+        {
+          "line": 88,
+          "text": "(display \"Final loss:     \") (display (squared-error trained)) (newline)"
+        },
+        {
+          "line": 90,
+          "text": "(display \"The compiler differentiated through the model + loss without\")"
+        },
+        {
+          "line": 92,
+          "text": "(display \"any framework, runtime tape, or symbolic preprocessing step.\")"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/h2_vibrational.esk",
+      "source_sha256": "5d43fbd0b72dd49dc125794b697ec79b3d5bd958a9084630653ab498d29191b3",
+      "title": "H₂ harmonic frequency from Taylor AD",
+      "kind": "example",
+      "purpose": "Compute molecular curvature through the source’s Gaussian-integral energy model.",
+      "algorithm": "Implement Boys/erf approximations, STO-3G integrals and a 2×2 full-CI eigenvalue; find an equilibrium and take derivative-n order two.",
+      "domain": "Fixed STO-3G hydrogen exponents/coefficients and reduced mass 1836.15267343/2; source-defined equilibrium iteration.",
+      "arithmetic": "Floating-point molecular model and analytic AD through its implemented approximations.",
+      "validation": "Prints equilibrium, energy, curvature and cm⁻¹ conversion; no experimental-agreement assertion.",
+      "limitations": "“Exact derivative” refers to differentiating this code without finite differences, not exact-real arithmetic or basis-complete/experimental molecular accuracy.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 15,
+          "text": "(define pi 3.141592653589793)"
+        },
+        {
+          "line": 18,
+          "text": "(define exps  (list 3.42525091 0.62391373 0.16885540))"
+        },
+        {
+          "line": 132,
+          "text": "(display \"force constant d2E/dR2 = \") (display k)           (display \" Ha/bohr^2\")  (newline)"
+        },
+        {
+          "line": 133,
+          "text": "(display \"vibrational frequency = \") (display omega-cm)     (display \" cm^-1\")       (newline)"
+        },
+        {
+          "line": 134,
+          "text": "(display \"  (exact 2nd derivative via Eshkol's Taylor tower; STO-3G, exp. ~4401)\") (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/h2_vibrational_full.esk",
+      "source_sha256": "3be1fcc934fc79cec88c4530de4a8c8a7506b22046e23e75ef137d5053e66a92",
+      "title": "H₂ geometry AD and quantum response",
+      "kind": "example",
+      "purpose": "Combine Pauli-coefficient geometry derivatives with quantum-state response.",
+      "algorithm": "Differentiate g_i(R), evaluate H/H′/H″ through Moonlab, estimate the parameter Hessian by finite differences of gradients and solve a 4×4 response system.",
+      "domain": "Two-qubit H₂ Pauli basis II,IZ,ZI,ZZ,XX; source-selected equilibrium/ansatz; Hessian ε=1e-4.",
+      "arithmetic": "Floating-point Taylor AD, backend quantum quantities and a finite-difference parameter Hessian.",
+      "validation": "Prints frozen term, response, force constant and frequency; no assertion verifies agreement or response magnitude.",
+      "limitations": "The parameter Hessian is not wholly AD-derived; model/backend and finite-difference approximation remain explicit.",
+      "prerequisites": "Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; =================================================================="
+        },
+        {
+          "line": 20,
+          "text": "(define pi 3.141592653589793)"
+        },
+        {
+          "line": 21,
+          "text": "(define exps  (list 3.42525091 0.62391373 0.16885540))"
+        },
+        {
+          "line": 185,
+          "text": "(display \"force constant k          = \") (display k) (display \" Ha/bohr^2\") (newline)"
+        },
+        {
+          "line": 186,
+          "text": "(display \"vibrational frequency     = \") (display omega) (display \" cm^-1\") (newline)"
+        },
+        {
+          "line": 187,
+          "text": "(display \"  (geometry derivs: Eshkol Taylor tower; <P>, response, Hessian: Moonlab)\") (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/h2_vibrational_quantum.esk",
+      "source_sha256": "1afb2473ed1a79d281d24c71e0a3f429f6411cf86bdcf9cd8dd971b49f9474e5",
+      "title": "H₂ frequency from quantum-backend geometry differences",
+      "kind": "example",
+      "purpose": "Compute curvature of the backend energy surface by three-point differencing.",
+      "algorithm": "Evaluate exact-ground-energy backend calls at three bond lengths and convert the central second difference to a frequency.",
+      "domain": "R₀=0.740 Å,step=0.02 Å; energies at 0.72,0.74,0.76 Å; fixed mass/bohr conversion.",
+      "arithmetic": "Floating-point backend energies and finite differences.",
+      "validation": "Prints energies, curvature and frequency; a displayed agreement claim is not an executable comparison with h2_vibrational.esk.",
+      "limitations": "Accuracy depends on energy-surface smoothness and step size; no independent exact derivative or experimental validation is asserted.",
+      "prerequisites": "Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; H2 vibrational frequency from Moonlab's smooth-PES Hamiltonian, finite-"
+        },
+        {
+          "line": 8,
+          "text": "(define bohr 0.52917721067)   ;; Angstrom per bohr"
+        },
+        {
+          "line": 10,
+          "text": "(define (E r-ang)             ;; Moonlab ground energy at bond length r (Angstrom)"
+        },
+        {
+          "line": 24,
+          "text": "(display \"  omega          = \") (display omega)  (display \" cm^-1\") (newline)"
+        },
+        {
+          "line": 25,
+          "text": "(display \"  (exact Taylor-tower AD route gives 5003 cm^-1 -- two independent stacks agree;\") (newline)"
+        },
+        {
+          "line": 26,
+          "text": "(display \"   the FD is clean only because the PES fix made E(R) smooth.)\") (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/hello.esk",
+      "source_sha256": "5532b55c4759c73f8f592fa8db70b8891287f9210b619a4b5f4ee25683c26aa7",
+      "title": "Hello and a historical version string",
+      "kind": "example",
+      "purpose": "Show display/newline syntax.",
+      "algorithm": "Print two string literals.",
+      "domain": "No parameters; the second literal says v1.2.1-scale.",
+      "arithmetic": "String output only.",
+      "validation": "No assertions; normal execution prints the literals.",
+      "limitations": "The version literal is historical example text, not the current release identity.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Hello World — Basic Eshkol example"
+        },
+        {
+          "line": 2,
+          "text": "(display \"Hello, Eshkol!\") (newline)"
+        },
+        {
+          "line": 3,
+          "text": "(display \"Version: v1.2.1-scale\") (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/mathematics_abelian_sheaves_finite_site.esk",
+      "source_sha256": "1b516d970bf01f9ae7f7e65232bac390a8804c17b8034ba59ff3528978a70136",
+      "title": "Abelian sheaves on finite sites",
+      "kind": "mathematics",
+      "purpose": "Compare sheafification and cohomology routes on finite Alexandrov sites.",
+      "algorithm": "Build rational restriction matrices, matching-family kernels, plus construction, pointwise limits and Cech/derived-limit complexes.",
+      "domain": "Pseudocircle and pseudo-2-sphere; constant Q, a nonseparated presheaf and a monodromy -1 local system.",
+      "arithmetic": "Exact rational linear algebra and kernel/rank computations over Q.",
+      "validation": "Functor laws, separated/sheaf conditions, point-route dimensions and kernel/cokernel dimensions are checked; the sphere cover deliberately misses H² when it is not Leray.",
+      "limitations": "Rational coefficients omit torsion. Dimensionwise checks of exactness/comparison must not be described as a machine proof of the general sheafification theorem.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "cat_abelian_sheaves_finite_site",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Abelian sheaves on a finite site, over the rationals: the Alexandrov"
+        },
+        {
+          "line": 63,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 64,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 455,
+          "text": "(check \"i is not right exact: the unit Q -> a(Q) is a map of presheaves with cokernel of dimension 1 exactly at the disconnected open {a, b} and 0 elsewhere\""
+        },
+        {
+          "line": 571,
+          "text": "(check \"pseudocircle: the cover by U_c and U_d is Leray and the three routes agree, (1, 1, 0) for Q and (0, 0, 0) for the monodromy -1 local system over Q\""
+        },
+        {
+          "line": 573,
+          "text": "(check \"pseudo-2-sphere: the derived limit gives (1, 0, 1, 0), while the only cover by maximal opens has the pseudocircle as its intersection (not acyclic), so both Cech routes give (1, 0, 0, 0) and miss H^2: the Leray condition fails, as in the finite-spaces and descent examples\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_alphatensor_3x3_gf2.esk",
+      "source_sha256": "222712935cc60af1f734f817d22c2b6a8c9fbcca97e4d56d6bf383d2710b1006",
+      "title": "Rank-23 matrix multiplication over F₂",
+      "kind": "mathematics",
+      "purpose": "Verify a supplied public AlphaTensor factorization.",
+      "algorithm": "Contract U/V/W integer bit masks by parity of bitwise intersections.",
+      "domain": "3×3 matrices over F₂; all 9×9 pairs of matrix units; fixed rank 23 witness.",
+      "arithmetic": "Exact integers and reduction modulo 2.",
+      "validation": "Basis-pair expansion agrees with matrix-unit multiplication; bilinearity extends this complete tensor identity to every pair of 3×3 F₂ matrices.",
+      "limitations": "Certifies the supplied bilinear witness over F₂; does not search for it or prove rank optimality.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Recent result and public witness: https://github.com/google-deepmind/alphatensor"
+        },
+        {
+          "line": 14,
+          "text": "(define rank 23)"
+        },
+        {
+          "line": 15,
+          "text": "(define u-masks (vector 65 325 195 69 6 22 54 5 30 27 40 9 32 288 416 8 128 16 360 432 64 424 18))"
+        },
+        {
+          "line": 57,
+          "text": "(check \"rank-23 factorization has 23 bilinear products\" (= rank 23))"
+        },
+        {
+          "line": 58,
+          "text": "(check \"rank-23 tensor expands to 3x3 multiplication over F2\""
+        },
+        {
+          "line": 59,
+          "text": "       (check-all 0))"
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_alphatensor_gf2.esk",
+      "source_sha256": "eb57351038fdc11718775948f85f98017cec9d0accd8a4ca89f1c8bac3fb9f1e",
+      "title": "Rank-47 matrix multiplication over F₂",
+      "kind": "mathematics",
+      "purpose": "Verify the supplied 4×4 AlphaTensor factorization.",
+      "algorithm": "Contract the fixed rank-47 U/V/W bit-mask factors and compare with ordinary matrix multiplication.",
+      "domain": "4×4 matrices over F₂; all 16×16 matrix-unit pairs plus a nontrivial sample.",
+      "arithmetic": "Exact integer bitsets with parity reduction.",
+      "validation": "The complete basis expansion certifies the bilinear multiplication tensor for all inputs over F₂.",
+      "limitations": "No factorization search, field-independent rank claim, or rank-optimality proof is implemented.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Recent result: https://github.com/google-deepmind/alphatensor"
+        },
+        {
+          "line": 15,
+          "text": "(define rank 47)"
+        },
+        {
+          "line": 19,
+          "text": "(define u-masks"
+        },
+        {
+          "line": 93,
+          "text": "(check \"rank-47 factorization has 47 bilinear products\" (= rank 47))"
+        },
+        {
+          "line": 94,
+          "text": "(check \"rank-47 tensor expands to 4x4 multiplication over F2\""
+        },
+        {
+          "line": 96,
+          "text": "(check \"nontrivial sample multiplication is exact over F2\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_aoki_cycles_fermat_sextic.esk",
+      "source_sha256": "2367ee5fcc98cde07590fce5085459b276442f35518dfc46e675ed720591b28e",
+      "title": "Cycle supports on the Fermat sextic surface",
+      "kind": "mathematics",
+      "purpose": "Measure which rational Hodge characters the supplied lines and two Aoki curve families cover.",
+      "algorithm": "Expand sparse four-variable factorizations and Jacobian determinants in the exact extension tower; reduce in the Jacobian ring and close supports under permutations/Galois actions.",
+      "domain": "Degree-6 surface X₆²; lines, p=2,d=3 curve C and p=3,d=2 curve Y; 85 primitive Hodge characters.",
+      "arithmetic": "Exact Q(ζ₁₂)[c]/(c³−2) coefficients and integer exponents.",
+      "validation": "Tower relations, polynomial decompositions, line supports, Galois closure and Hodge membership are asserted; a receipt records the uncovered support count.",
+      "limitations": "A PASS receipt reports the computed gap for its parameters; it does not imply the gap is zero. Period and support conclusions use the cited geometric results.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "hodge_aoki_cycles_fermat_sextic",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Aoki's cycles on the Fermat sextic surface: the character supports of"
+        },
+        {
+          "line": 59,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 60,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 311,
+          "text": "(check \"F = f1 g1 + f2 g2 for Y (checked inside), the support of [Y] is Galois-closed, consists of Hodge characters, and contains Aoki's alpha = (1, 3, 5, 3) up to permutation\""
+        },
+        {
+          "line": 319,
+          "text": "(check \"every character covered is a Hodge character and the covered set is Galois-closed (the span of these cycles is a rational sub-Hodge structure of the algebraic classes)\""
+        },
+        {
+          "line": 321,
+          "text": "(check \"receipt: the number of Hodge characters left uncovered by lines, C and Y on the Fermat sextic surface is recorded (0 means the three families generate NS over Q)\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_aoki_cycles_fermat_surfaces_sweep.esk",
+      "source_sha256": "33d0a77acceb97ce29a75d0a70f659cd53c118e7d9c8d503094d257f6c77e56f",
+      "title": "Aoki cycle supports by surface degree",
+      "kind": "mathematics",
+      "purpose": "Sweep the supports of available p-standard cycles against Fermat-surface Hodge characters.",
+      "algorithm": "Construct degree-dependent cyclotomic/radical towers, verify polynomial decompositions and union line/C/Y/Q supports across divisor levels; organize residual character orbits and bounded multiset witnesses.",
+      "domain": "MATH_FERMAT_DEGREE defaults 8 (header domain m≥4); eligible C levels are even, Y levels divisible by 3 and Q levels divisible by 4; MATH_WITNESS_K defaults 4.",
+      "arithmetic": "Exact sparse polynomial and extension-field arithmetic.",
+      "validation": "JSON receipt reports C/Y/Q support and cover counts, divisor levels, missing characters/orbits, bounded inductive witnesses and no-witness counts; PASS checks support/Hodge/Galois consistency, not zero missing count.",
+      "limitations": "The Q-family decomposition is checked as an exact polynomial identity; the earlier modular screen was a discovery method. The bounded witness search reports no witness only within its configured bound, which does not imply that no algebraic cycle exists.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "hodge_aoki_surface_sweep_default",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Aoki's p-standard cycles on Fermat surfaces of composite degree, as a"
+        },
+        {
+          "line": 27,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 28,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 470,
+          "text": "                        \",\\\"Q_support\\\":\" (if supp-Q (number->string (length supp-Q)) \"null\") \",\\\"Q_cover\\\":\" (if supp-Q (number->string (length cover-Q)) \"null\") \",\\\"Q_levels\\\":\" (json-list (map number->string Q-levels)) \",\\\"C_levels\\\":\" (json-list (map number->string C-levels)) \",\\\"Y_levels\\\":\" (json-list (map number->string Y-levels)) \",\\\"covered\\\":\" (number->string (length supp-all)) \",\\\"missing\\\":\" (number->string (length missing))"
+        },
+        {
+          "line": 471,
+          "text": "                        \",\\\"missing_characters\\\":\" (json-list (map json-char missing)) \",\\\"missing_orbits\\\":\" (json-list (map json-orbit orbit-reports)) \",\\\"witness_k_max\\\":\" (number->string witness-K) \",\\\"inductive\\\":\" (number->string inductive-count) \",\\\"no_witness\\\":\" (number->string no-witness-count)"
+        },
+        {
+          "line": 474,
+          "text": "(if ok (begin (display \"RESULT: ALL PASS\") (newline) (exit 0)) (begin (display \"RESULT: FAILURES DETECTED\") (newline) (exit 1)))"
+        },
+        {
+          "line": 362,
+          "text": ";; Q curve at level m' (4 | m'), found 2026-09-11 by a mod-p reducibility screen of the pencil F|_{x_3^4 = c x_0 x_1 x_2^2}"
+        },
+        {
+          "line": 386,
+          "text": "(define Q-levels (filter (lambda (k) (= 0 (modulo k 4))) levels))"
+        },
+        {
+          "line": 397,
+          "text": "(define supp-all (dedup (append supp-lines cover-C cover-Y cover-Q)))"
+        },
+        {
+          "line": 400,
+          "text": "(define ok (and (all? hodge-char? supp-all) (galois-closed? supp-all) (= (length supp-lines) standard-count)"
+        },
+        {
+          "line": 432,
+          "text": "(define witness-K (let ((v (get-environment-variable \"MATH_WITNESS_K\"))) (if v (string->number v) 4)))"
+        },
+        {
+          "line": 459,
+          "text": "(define inductive-count (sum (map (lambda (r) (if (caddr r) (cadr r) 0)) orbit-reports)))"
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_classifying_space_dijkgraaf_witten.esk",
+      "source_sha256": "8f88b7dec7f8bc1362bd3c5b9d082a9c21b3c3ce5a5e99f90436a607ded6e172",
+      "title": "Finite-group classifying spaces and state sums",
+      "kind": "mathematics",
+      "purpose": "Connect explicit bar-complex homology, Q/Z cocycles and Dijkgraaf–Witten state sums.",
+      "algorithm": "Build nerve boundary matrices and integer Smith forms; test cocycles/coboundaries, enumerate flat colorings of branched Delta-complexes and pair cocycles with fundamental cycles.",
+      "domain": "Z/2, Z/3, (Z/2)² and S₃ homology cases; state sums on the supplied S³, RP³ and T³ complexes with the implemented groups/twists.",
+      "arithmetic": "Exact bignum integer linear algebra, rational cocycles modulo 1 and exact sign phases.",
+      "validation": "Homology and twist counts, untwisted connection counts, lens/commuting-triple formulas, RP³ fundamental-class pairing and a wrong-orientation negative control are checked.",
+      "limitations": "Finite supplied complexes and group/twist sets delimit the computation; no universal classification of arbitrary manifolds or gauge groups is executed.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "dw_classifying_space_state_sums",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Classifying spaces of finite groups, their integral homology, the"
+        },
+        {
+          "line": 85,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 86,
+          "text": "(define (gcd2 a b) (if (= b 0) (abs a) (gcd2 b (remainder a b))))"
+        },
+        {
+          "line": 871,
+          "text": "(check \"twice it is a boundary: the class has order exactly 2, so [RP^3] generates H_3(BZ/2; Z) = Z/2\""
+        },
+        {
+          "line": 873,
+          "text": "(check \"the pairing of the twisted cocycle with that class is 1/2, which is the sign that makes Z(RP^3) vanish\""
+        },
+        {
+          "line": 879,
+          "text": "(check \"negative control -- the trivial coloring's chain is a boundary (its class is zero)\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_cohomology_rings_cup_products.esk",
+      "source_sha256": "76c92a5f354f0d6352bc980b035e2d41070495bdcc5c45b1987eee70131664bb",
+      "title": "Cup products and Bockstein on finite-group nerves",
+      "kind": "mathematics",
+      "purpose": "Compute ring information beyond cohomology dimensions and identify selected Dijkgraaf–Witten twists.",
+      "algorithm": "Normalized bar cochains, modular coboundary ranks, Alexander–Whitney cup products and Bockstein from integer lifts; Q/Z coboundary systems for cubic classes.",
+      "domain": "Z/2, Z/4, Z/3, (Z/2)² and (Z/2)³; selected products through degrees 3/4; all 127 nonzero combinations of seven surviving cubic twists.",
+      "arithmetic": "Exact arithmetic over F₂, F₃ and integers.",
+      "validation": "Relations, independence, graded commutativity, Cartan/Bockstein comparisons and Q/Z twist nontriviality are asserted.",
+      "limitations": "The finite degree computations support these stated relations; they are not an unlimited symbolic presentation proof for every degree or group.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "dw_cohomology_rings_cup_products",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Cohomology rings of classifying spaces by cup products on the normalized"
+        },
+        {
+          "line": 58,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 59,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 392,
+          "text": "(check \"none of the 127 nonzero combinations of the seven surviving monomials is a Q/Z coboundary: the twists form (Z/2)^7\""
+        },
+        {
+          "line": 397,
+          "text": "(check \"the seven survivors span the twists together with the three Sq^1 images: 7 + 3 = 10 = dim H^3(G; Z/2)\""
+        },
+        {
+          "line": 399,
+          "text": "(check \"negative control -- the zero cochain and the coboundary of a 2-cochain are Q/Z coboundaries\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_cohomology_rings_nonabelian.esk",
+      "source_sha256": "b0be0f12899204d96a6977a5e96c7d30fd6a4e75cbd0c60d495b126c69f1582e",
+      "title": "Nonabelian order-eight cohomology rings",
+      "kind": "mathematics",
+      "purpose": "Separate the dihedral and quaternion groups using cup products.",
+      "algorithm": "Find cocycle bases from normalized bar-complex kernels; test product classes modulo images and compute Bockstein lifts.",
+      "domain": "D₄ (order eight, also called D₈) and Q₈, F₂ coefficients, degrees 0–3 and selected Bockstein operations.",
+      "arithmetic": "Exact modular linear algebra and integer lifts.",
+      "validation": "Dimensions (1,2,3,4)/(1,2,2,1), distinct quadratic/cubic relations, generators and cross-group negative controls are asserted.",
+      "limitations": "Degree-limited computations do not independently establish every relation in the full infinite cohomology rings.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "dw_cohomology_rings_nonabelian",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Cohomology rings of the two non-abelian groups of order eight over Z/2:"
+        },
+        {
+          "line": 45,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 46,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 310,
+          "text": "(check \"D_4: Sq^1 w = beta(w) is a cocycle of degree 3 (recorded; its class is a computed fact, printed below)\""
+        },
+        {
+          "line": 316,
+          "text": "(check \"D_4: Sq^1 w is not a coboundary, lies in the span of (x + y) w, x^3, y^3, and not in the span of x^3, y^3\""
+        },
+        {
+          "line": 324,
+          "text": "(check \"negative control -- a 2-cochain with a single nonzero entry on D_4 is not a cocycle\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_cp2_symmetric_square_connected_sums.esk",
+      "source_sha256": "cd4208ffe43a2c638469407a77c56db2761be82d9c24f9ba8e489850eb395c1d",
+      "title": "Symmetric square, connected sums and second k-invariant",
+      "kind": "mathematics",
+      "purpose": "Distinguish simply connected four-manifold models with equal mod-2 homology.",
+      "algorithm": "Quotient the simplicial product of tetrahedron-boundary spheres by factor swap; glue connected sums by face tables; compute modular cohomology, cup forms and mapping-space state sums.",
+      "domain": "10-vertex/48-pentachoron CP² Delta-complex; S²×S² and the supplied CP² connected sums; target π₂=π₃=Z/2 with k equal to cup square.",
+      "arithmetic": "Exact finite incidence data, F₂ ranks and rational state-sum weights.",
+      "validation": "Cell counts, pseudomanifold/Euler/Betti checks, odd/even forms and state-sum versus fibration comparisons separate S²×S² from CP²#CP².",
+      "limitations": "The quotient is a Delta-complex, not a simplicial complex or minimal triangulation. The topology identifications follow the cited source.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "postnikov_cp2_connected_sums",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; CP^2 as the symmetric square of S^2, connected sums of 4-manifolds, and"
+        },
+        {
+          "line": 55,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 56,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 305,
+          "text": "(check \"k = iota u iota: state sum = fibration formula; CP^2 1/2, S^2xS^2 1, CP^2#CP^2 1/2, CP^2#S^2xS^2 1/2, CP^2#CP^2#CP^2 1/2\""
+        },
+        {
+          "line": 307,
+          "text": "(check \"S^2 x S^2 and CP^2 # CP^2 have the same mod 2 homology and the same 2-type, and the 3-type P tells them apart (1 against 1/2)\""
+        },
+        {
+          "line": 311,
+          "text": "(check \"the number of classes with x u x = 0 is 2^(b_2 - 1) for an odd form (a hyperplane, the kernel of the Wu class) and 2^b_2 for the even one\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_descent_hypercohomology.esk",
+      "source_sha256": "71c379900d312ff204a80ba9aa65625f7d07e545534528f254cfa5353993abfd",
+      "title": "Descent double complexes and hypercohomology",
+      "kind": "mathematics",
+      "purpose": "Show why a non-Leray cover needs derived sections rather than plain Cech sections.",
+      "algorithm": "Build the Cech/sheaf double complex with signed total differential and mapping-cone complexes; compute integral cohomology and modular cross-checks.",
+      "domain": "16-point torus model, a two-open non-Leray cover, constant and (-1,+1) local systems; multiplication-by-0/1/2/3 sheaf complexes.",
+      "arithmetic": "Exact integer matrices, Smith-form torsion and F₂/F₃ comparisons.",
+      "validation": "D²=0, torus/descent results, twisted torsion and cone answers are asserted; dropping the total-complex sign is a negative control.",
+      "limitations": "The body check gives plain Cech H¹=0 for this cover, contrary to the header summary (Z,Z,0). The listed derived-section and torus-model checks use the body’s calculation.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "sheaf_descent_hypercohomology",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Cohomological descent and hypercohomology on a finite space: a non-Leray"
+        },
+        {
+          "line": 53,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 54,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 468,
+          "text": "(check \"the exact complex Z --1--> Z has vanishing hypercohomology\""
+        },
+        {
+          "line": 470,
+          "text": "(check \"the zero map gives H^n (+) H^{n-1}: (Z, Z^3, Z^3, Z)\""
+        },
+        {
+          "line": 472,
+          "text": "(check \"negative control -- multiplication by 3 gives the mod-3 answer (0, Z/3, (Z/3)^2, Z/3), not the mod-2 one\""
+        },
+        {
+          "line": 26,
+          "text": ";;      is wrong; the descent double complex gives (Z, Z^2, Z), which is"
+        },
+        {
+          "line": 397,
+          "text": "(check \"plain Cech cohomology of the non-Leray cover is wrong: its H^1 vanishes (the two sections restrict onto the connected intersection) while H^1 of the torus model has rank 2\""
+        },
+        {
+          "line": 398,
+          "text": "       (and (= 1 (cadr (car plain))) (= 0 (cadr (cadr plain))) (not (= 2 (cadr (cadr plain))))))"
+        },
+        {
+          "line": 404,
+          "text": "(check \"cohomological descent: the double complex over the Cech nerve computes (Z, Z^2, Z, 0) for the non-Leray cover\""
+        },
+        {
+          "line": 405,
+          "text": "       (equal? descent (list (list 0 1 '()) (list 1 2 '()) (list 2 1 '()) (list 3 0 '()))))"
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_fermat_hodge_classes_sweep.esk",
+      "source_sha256": "25ba69494aaef6f87f64ade1c0f8861aa7cbdd32a01aace3ed34c40c3d2470c4",
+      "title": "Fermat Hodge and linear-cycle sweep",
+      "kind": "mathematics",
+      "purpose": "Compare Hodge dimensions with the span detected by the linear-cycle intersection matrix.",
+      "algorithm": "Count Jacobian-ring monomials and Galois-closed characters; enumerate coordinate matchings/cycles; build exact intersection numbers and eliminate modulo a prime.",
+      "domain": "MATH_FERMAT_DEGREE m≥3 (default 4), MATH_FERMAT_DIM even 2 or 4 (default 2), MATH_FERMAT_PRIME prime (default 10007).",
+      "arithmetic": "Exact integer counts/intersections and finite-field matrix rank.",
+      "validation": "Receipt compares Griffiths/Shioda counts, nonnegative gap and the modular rank against the Hodge dimension.",
+      "limitations": "Rank modulo p lower-bounds rational rank. A zero gap together with the stated geometric upper bound certifies spanning for that parameter case; a positive gap only bounds the missing dimension and is not an exact rational-rank result. The conclusion depends on valid parameters and the cited geometric formulas.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "hodge_fermat_sweep_default",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Hodge classes on Fermat varieties X_m^n against their linear cycles, as"
+        },
+        {
+          "line": 36,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 37,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 177,
+          "text": "(display (string-append \"{\\\"schema\\\":\\\"eshkol.math.fermat_hodge_classes.v1\\\",\\\"degree\\\":\" (number->string m) \",\\\"dim\\\":\" (number->string n)"
+        },
+        {
+          "line": 178,
+          "text": "                        \",\\\"hodge_numbers_griffiths\\\":\" (json-int-list griff) \",\\\"hodge_numbers_shioda\\\":\" (json-int-list shio)"
+        },
+        {
+          "line": 184,
+          "text": "(if (string=? verdict \"PASS\") (begin (display \"RESULT: ALL PASS\") (newline) (exit 0)) (begin (display \"RESULT: FAILURES DETECTED\") (newline) (exit 1)))"
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_finite_categories_kan_extensions.esk",
+      "source_sha256": "d04c60d9390806909c63b23ddbb572074f467f00f796246942972bf33c88e117",
+      "title": "Finite categories and Kan extensions",
+      "kind": "mathematics",
+      "purpose": "Make finite categorical constructions explicit and test their universal-property comparisons.",
+      "algorithm": "Enumerate presented arrows/composites, functors, natural transformations, limits/colimits, comma-category Kan extensions and categories of elements.",
+      "domain": "Walking arrow, commutative square, pseudocircle/cone diagrams and Z/2 sets; finite derived-limit examples.",
+      "arithmetic": "Exact finite sets, arrow tables and rational/integer cochain linear algebra.",
+      "validation": "Identity/composition/naturality laws, selected adjunction triangles, extension sizes, element-category lifting and derived-limit dimensions are checked.",
+      "limitations": "The source explicitly obtains a discrete opfibration for its covariant element construction; do not automatically relabel it a contravariant fibration. Presentation rewriting and universal-property claims are restricted to the supplied categories.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "cat_finite_categories_kan",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Finite categories as computations: categories from generators and"
+        },
+        {
+          "line": 78,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 79,
+          "text": "(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))"
+        },
+        {
+          "line": 447,
+          "text": "(check \"the category of elements of G on the pseudocircle has 10 objects and 18 arrows (10 identities and 8 lifts), and the projection is a discrete opfibration (each arrow out of an object's image has exactly one lift)\""
+        },
+        {
+          "line": 493,
+          "text": "(check \"derived limits recover sheaf cohomology: (1, 1, 0) for the pseudocircle and (1, 0, 1, 0) for the pseudo-2-sphere, the values of the finite-spaces example\""
+        },
+        {
+          "line": 495,
+          "text": "(check \"lim^0 agrees with the limit of the constant functor computed categorically: one compatible family on each connected poset\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_finite_model_three_torus_gauge_theory.esk",
+      "source_sha256": "1f0b3667858417a74aceb4aace7d4ab55c4f67a23eb6d4ebfb96f130ef0cfeb1",
+      "title": "Dijkgraaf–Witten on a finite three-torus",
+      "kind": "mathematics",
+      "purpose": "Compare finite-space gauge-coloring sums with commuting-triple formulas.",
+      "algorithm": "Enumerate the order complex, oriented fundamental cycle and spanning-tree gauge-fixed flat connections; evaluate cocycle weights.",
+      "domain": "64-point product of three pseudocircles; 448 edges, 768 triangles, 384 tetrahedra; cyclic Z/2 and Z/3 cases.",
+      "arithmetic": "Exact integer incidence/Smith-form calculations and rational cocycle phases.",
+      "validation": "Integral torus cohomology, fundamental-cycle closure, flat-connection counts, sums 4/9, gauge invariance and non-cocycle negative controls are checked.",
+      "limitations": "These are finite group/complex calculations; they do not implement continuous Yang–Mills dynamics or all possible gauge groups.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "dw_finite_model_three_torus",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Gauge theory on a finite space: Dijkgraaf-Witten invariants of the"
+        },
+        {
+          "line": 47,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 48,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 422,
+          "text": "(check \"the cocycle weight is invariant under every single-vertex gauge change of every connection\""
+        },
+        {
+          "line": 424,
+          "text": "(check \"a delta-function cochain is not a cocycle\" (not (cocycle? Z3 delta-cochain-weight)))"
+        },
+        {
+          "line": 425,
+          "text": "(check \"negative control -- the delta-function weight changes under some single-vertex gauge change of some connection: a non-cocycle defines no invariant of the space\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_finite_site_sheafification.esk",
+      "source_sha256": "7bfec621ecbd1420e4c8ff0150d6ffee911c568ff831a6bb312f6cd577309cf2",
+      "title": "Integral plus construction on a finite site",
+      "kind": "mathematics",
+      "purpose": "Check the sheaf condition throughout the finite open-set site.",
+      "algorithm": "Build integer restriction matrices, enumerate every cover, compute matching-family kernels and the finest-cover plus construction.",
+      "domain": "Supplied pseudocircle open-set lattice; constant, separated and nonseparated free-abelian presheaves.",
+      "arithmetic": "Exact integer linear algebra with torsion-aware kernels.",
+      "validation": "Functoriality, every-cover sheaf/separated conditions, unit-map ranks, idempotence and restoration of circle H¹ are checked.",
+      "limitations": "The exhaustive quantifiers apply to this finite site. They are not a proof for arbitrary infinite sites.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "sheaf_finite_site_sheafification",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; The sheaf condition and the plus construction on a finite site, verified"
+        },
+        {
+          "line": 48,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 49,
+          "text": "(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))"
+        },
+        {
+          "line": 339,
+          "text": "(check \"negative control -- for the non-separated presheaf the map F(X) -> F^+(X) is zero: the section that restricted to zero is killed, while F^+(X) = Z survives\""
+        },
+        {
+          "line": 354,
+          "text": "(check \"for the constant presheaf the cover computes (Z, 0): the presheaf cannot see the circle\""
+        },
+        {
+          "line": 356,
+          "text": "(check \"for the constant sheaf and for F^+ the cover computes (Z, Z): the sheafification restores H^1 of the circle\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_finite_spaces_sheaf_cohomology.esk",
+      "source_sha256": "53c55836b821e593f8749f058b67ab43f93b6f25fde7b64e0f92569ff60bfcc1",
+      "title": "Sheaf cohomology of finite spaces",
+      "kind": "mathematics",
+      "purpose": "Compute derived limits and compare Leray-cover Cech descent while retaining torsion.",
+      "algorithm": "Form cosimplicial-replacement cochain matrices with local restriction maps and compute Smith forms and cover complexes.",
+      "domain": "4-point pseudocircle, 6-point pseudo-2-sphere, a cone and 16-point torus; constant and sign-monodromy integer local systems.",
+      "arithmetic": "Exact integer matrices/Smith normal forms.",
+      "validation": "Functor laws, differential squares, constant/twisted groups and Leray Cech agreement are asserted; a partial cover gives the wrong H¹ as a negative control.",
+      "limitations": "The comparisons apply to the listed finite models and coefficient systems; non-Leray covers require the separate descent construction.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "sheaf_finite_spaces_cech_descent",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Sheaf cohomology on finite spaces: derived limits over a poset, local"
+        },
+        {
+          "line": 56,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 57,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 383,
+          "text": "(check \"Cech cohomology of the Leray cover equals the derived limit on the torus model: (Z, Z^2, Z, 0)\""
+        },
+        {
+          "line": 385,
+          "text": "(check \"and for the local system (-1, +1): (0, Z/2, Z/2, 0)\""
+        },
+        {
+          "line": 387,
+          "text": "(check \"negative control -- two of the four opens cover only 12 of the 16 points, and the Cech H^1 of that partial cover has rank 1 (an annulus), not 2\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_four_manifolds_second_k_invariant.esk",
+      "source_sha256": "f895a42c6c178071c3fdc8cd578d71edb713f78ce40e1e11f261071be010f69d",
+      "title": "Cup-square obstruction in four-manifold models",
+      "kind": "mathematics",
+      "purpose": "Detect a second Postnikov k-invariant through mapping-space counts.",
+      "algorithm": "Build four-dimensional face tables and F₂ cup products; count solutions δy=x∪x and compare cochain-state-sum normalization with a fibration formula.",
+      "domain": "Supplied S⁴, RP⁴ and S²×S² Delta-complexes; π₂=π₃=Z/2, trivial π₁; k=0 versus cup square.",
+      "arithmetic": "Exact modular linear algebra and rational cardinalities.",
+      "validation": "Face closure, δ²=0, Betti numbers, cup-square obstructions and equality of two cardinality routes are checked.",
+      "limitations": "The computation is bounded by the target 3-type and supplied finite complexes; the manifold/model identifications use the cited results.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "postnikov_four_manifolds_second_k",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Four-dimensional Delta-complexes and the second k-invariant: mapping"
+        },
+        {
+          "line": 65,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 66,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 267,
+          "text": "(check \"k = 0: the state sum equals the fibration formula and the product of the two Eilenberg-MacLane cardinalities on all three manifolds\""
+        },
+        {
+          "line": 269,
+          "text": "(check \"k = iota u iota: the state sum equals the fibration formula on all three manifolds, exactly\""
+        },
+        {
+          "line": 271,
+          "text": "(check \"the second k-invariant is seen by RP^4 and only there: its value halves (x^2 fails to lift, since x^4 is not zero), S^4 and S^2 x S^2 keep their k = 0 values\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_funsearch_cap_set.esk",
+      "source_sha256": "dc27292115bb4bd49875557420807bfb0cd9ff5e7a58f5a26a1f89d6e9d43806",
+      "title": "Explicit 512-cap in AG(8,3)",
+      "kind": "mathematics",
+      "purpose": "Verify a supplied public cap-set construction.",
+      "algorithm": "Enumerate 3⁸ vectors, select the construction classes and test the third point on every affine line determined by an unordered cap-point pair.",
+      "domain": "AG(8,3); fixed construction with 512 points and 130816 unordered pairs.",
+      "arithmetic": "Exact integer coordinates modulo 3.",
+      "validation": "Ambient and cap cardinalities and exhaustive absence of a third cap point establish the finite no-three-collinear property.",
+      "limitations": "This certifies the supplied set; it neither reruns FunSearch nor proves a maximum cap size.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Recent result and public witness: https://github.com/google-deepmind/funsearch"
+        },
+        {
+          "line": 15,
+          "text": "(define (contains? x xs)"
+        },
+        {
+          "line": 19,
+          "text": "(define (decode-base3 n)"
+        },
+        {
+          "line": 127,
+          "text": "(check \"explicit construction has 512 points\" (= (length cap) 512))"
+        },
+        {
+          "line": 128,
+          "text": "(check \"ambient AG(8,3) has 3^8 exact vectors\" (= (expt 3 8) 6561))"
+        },
+        {
+          "line": 129,
+          "text": "(check \"512-point witness is a cap in AG(8,3)\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_group_cohomology_order_eight.esk",
+      "source_sha256": "b9c26ca0cf2578b0b27bd91d78d867e6e5a1cdc844682000716689060263f476",
+      "title": "Integral homology and twists of order-eight groups",
+      "kind": "mathematics",
+      "purpose": "Compare torsion homology and twisted-double invariants across small groups.",
+      "algorithm": "Normalized bar-boundary Smith forms, cocycle evaluations and finite state sums/commuting-triple and centralizer-class counts.",
+      "domain": "All five order-eight groups (Z/8, Z/4×Z/2, (Z/2)³, D₄, Q₈), plus S₃ and normalization controls Z/2/Z/3; degrees through H₃.",
+      "arithmetic": "Exact bignum integer/rational arithmetic.",
+      "validation": "Homology/twist counts, the type-III torus value 22 versus untwisted 64, manifold state sums and orientation/edge negative controls are asserted.",
+      "limitations": "The equal count 22 does not by itself prove equivalence of entire braided categories; expensive dense Smith forms have explicit source-versioned CTest budgets.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "dw_group_cohomology_order_eight",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Group cohomology of the groups of order eight, the classification of their"
+        },
+        {
+          "line": 54,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 55,
+          "text": "(define (mod2 x) (modulo x 2))                 ;; phases as integers over the denominator 2"
+        },
+        {
+          "line": 580,
+          "text": "(check \"Z(RP^3) for the type III theory is 3/4: only the all-ones element picks up the sign\""
+        },
+        {
+          "line": 582,
+          "text": "(check \"Z(RP^3) untwisted counts homomorphisms Z/2 -> G over |G|: 6/8 for D_4, 2/8 for Q_8\""
+        },
+        {
+          "line": 590,
+          "text": "(check \"negative control -- swapping two edges of one tetrahedron of S^3 breaks Z(S^3) = 1/8 for D_4 and for the type III theory\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_group_cohomology_sweep.esk",
+      "source_sha256": "c3efb683240920475ceb2d78e144d55a837f7a25822daf3a3374cd15d6593274",
+      "title": "Parametric finite-group homology receipts",
+      "kind": "mathematics",
+      "purpose": "Produce integral bar-complex homology receipts for a chosen finite group.",
+      "algorithm": "Parse a group specification, build its normalized bar complex and compute torsion/Betti data by dense bignum Smith elimination.",
+      "domain": "MATH_GROUP defaults cyclic:2; cyclic:N, product:N,M[,K], dihedral:N (order 2N), quaternion, symmetric:3, alternating:4; MATH_DEGREE defaults 3.",
+      "arithmetic": "Exact integer matrices and JSON integer/torsion fields.",
+      "validation": "Self-check verdict and H₀…H_degree data are emitted; |H₃| is reported when that degree is computed.",
+      "limitations": "Cost grows as (|G|−1)^k for the degree-k boundary; documentation does not promise runtimes or arbitrary-size feasibility. A receipt is parameter-specific, not a new execution claim.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Sweep program: integral homology of a finite group's classifying space,"
+        },
+        {
+          "line": 23,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 24,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 198,
+          "text": "(display (string-append \"{\\\"schema\\\":\\\"eshkol.math.group_homology.v1\\\",\\\"group\\\":\\\"\" spec \"\\\",\\\"order\\\":\" (number->string (g-order G))"
+        },
+        {
+          "line": 199,
+          "text": "                        \",\\\"degree\\\":\" (number->string degree) \",\\\"homology\\\":\" (json-homology table)"
+        },
+        {
+          "line": 204,
+          "text": "(exit (if ok 0 1))"
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk",
+      "source_sha256": "dd10ce37a9c1bb2ad8f4092d08a5bbc7ae085e3beaecc0395d012f8748b8a91b",
+      "title": "Exhibited cycles on the Fermat quartic fourfold",
+      "kind": "mathematics",
+      "purpose": "Compare the rational Hodge space with the span of explicit planes.",
+      "algorithm": "Count Jacobian-ring and character Hodge data; enumerate 960 planes, exact excess-intersection numbers and their Gram rank modulo 10007.",
+      "domain": "X₄⁴ in P⁵; quartic/quintic/sextic surface comparison cases with 48/75/108 lines.",
+      "arithmetic": "Exact integer/rational combinatorics and modular rank.",
+      "validation": "The checked rank 142 reaches the stated Hodge upper bound; surface cases distinguish line spans 20,37,62 from their corresponding Hodge dimensions.",
+      "limitations": "For the fourfold the lower/upper-rank sandwich is a spanning certificate under the cited geometric formulas. It is not a proof of the Hodge conjecture for every variety; the sextic line gap is real.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "hodge_fermat_quartic_fourfold",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Hodge classes on the Fermat quartic fourfold, with the algebraic cycles"
+        },
+        {
+          "line": 83,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 84,
+          "text": "(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))"
+        },
+        {
+          "line": 241,
+          "text": "(check \"Fermat quartic surface: 48 lines, Picard number 20, and the lines' Gram matrix has rank 20: the lines generate NS over Q\""
+        },
+        {
+          "line": 243,
+          "text": "(check \"Fermat quintic surface: 75 lines, rho = 37, and the lines generate NS over Q (rank 37); Fermat sextic surface: 108 lines, rho = 86, but the lines span only rank 62, so the remaining 24 dimensions need the further cycles of Aoki and Shioda (Lefschetz (1,1) guarantees they exist)\""
+        },
+        {
+          "line": 245,
+          "text": "(check \"Griffiths and Shioda agree on the quartic, quintic and sextic surfaces: h^{2,0}, h^{1,1}_prim, h^{0,2} = (1, 19, 1), (4, 44, 4), (10, 85, 10)\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_homotopy_colimits_grothendieck.esk",
+      "source_sha256": "514dd29538277472de7112382f796daf43e8ffc84b7ca0b27d4094d720d2997c",
+      "title": "Grothendieck constructions and homotopy colimits",
+      "kind": "mathematics",
+      "purpose": "Contrast homotopy constructions with strict colimits.",
+      "algorithm": "Enumerate diagram element/action categories, normalized nerves and integral cochain Smith forms.",
+      "domain": "Span diagrams suspending two points/pseudocircle; Z/2 actions on a point and pseudocircle, including free and reflection actions.",
+      "arithmetic": "Exact finite categorical data and integer torsion calculations.",
+      "validation": "Suspension/Borel cohomology and action laws are checked; the strict free-action quotient is contractible while the homotopy quotient retains a circle.",
+      "limitations": "Finite degrees and supplied diagrams are computed; the general Thomason equivalence is a cited theorem rather than a new universal proof.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "hocolim_grothendieck_borel",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Homotopy colimits as nerves of Grothendieck constructions: suspensions,"
+        },
+        {
+          "line": 49,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 50,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 352,
+          "text": "(check \"reflection with two fixed points: BZ/2 v BZ/2, (Z, 0, (Z/2)^2, 0)\""
+        },
+        {
+          "line": 356,
+          "text": "(check \"the strict quotient poset of the free action is contractible, (Z, 0): the strict colimit forgets the circle the homotopy quotient keeps\""
+        },
+        {
+          "line": 359,
+          "text": "(check \"negative control -- swapping the roles of the two actions fails: the free action's answer is not the trivial action's\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_ipm_velocity_expansion.esk",
+      "source_sha256": "49c4d411d8b98fd577aedf8b2cb2e79c9fefe81ecb0e79359d19eadd603126da",
+      "title": "Local oscillatory IPM velocity expansion",
+      "kind": "mathematics",
+      "purpose": "Derive and cross-check coefficients of a local Fourier-multiplier expansion.",
+      "algorithm": "Differentiate the rational symbol σ(ξ)=ξ₁/|ξ|² and independently solve the local closure recursion; assemble oscillatory truncated velocities and residuals.",
+      "domain": "Polynomial envelopes f-main/f-even/f-mixed at (x,y)=(1/2,−1/3), base wavevector (b,a)=(4/5,3/5), Kmax=4; source also checks non-unit wavevectors and symmetry variants.",
+      "arithmetic": "Exact rational coefficient algebra; the 2π normalization is handled separately as stated in the source.",
+      "validation": "Coefficient parity, two-route agreement, closure/divergence through the requested finite order and perturbed-symbol/coefficient/envelope negative controls are asserted.",
+      "limitations": "Checks a finite formal asymptotic expansion, not the full analytic error estimate, existence of singular solutions or an infinite-order convergence theorem. Normalization follows the cited source.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "ipm_velocity_expansion_closes",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Incompressible porous media (IPM) -- the local velocity expansion, with its"
+        },
+        {
+          "line": 86,
+          "text": "(define (tpow t n) (if (= n 0) 1 (* t (tpow t (- n 1)))))"
+        },
+        {
+          "line": 87,
+          "text": "(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))"
+        },
+        {
+          "line": 584,
+          "text": "(check \"negative control -- dropping the V^{K-1}(d_j f sin) terms of Corollary 2.6.1 breaks div u^3 below order 3\""
+        },
+        {
+          "line": 587,
+          "text": "(check \"negative control -- stopping at V^{K-1} leaves the order-(K-1) term of the closure residual\""
+        },
+        {
+          "line": 590,
+          "text": "(check \"negative control -- with an odd part added to f, u^3 is no longer odd\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_jacobian_counterexample.esk",
+      "source_sha256": "51770f32f89bad44e6ea905881f4350f1245b3c8a3f710aefadf2fffac5181b1",
+      "title": "Polynomial Jacobian map and fibers",
+      "kind": "mathematics",
+      "purpose": "Verify the explicit map, finite fibers and determinant identities supplied by the cited paper.",
+      "algorithm": "Compute P,Q,R and cubic/discriminant fiber data; use reverse AD through a closure factory and independent explicit partials on an exact degree grid.",
+      "domain": "Three rational preimages of (-1/4,0,0); a 9×8×3 determinant grid with coordinate degree bounds (8,7,2); two Theorem-5.1 parameter cases.",
+      "arithmetic": "Exact rational polynomial/fiber checks; AD carrier checks use tolerance 1e-9, including rational-input vectors.",
+      "validation": "The over-degree grid certifies the polynomial determinant identity globally, while the AD comparisons remain numerical. The supplied rational preimages are checked explicitly.",
+      "limitations": "The exact degree-grid determinant certificate and tolerance-based AD comparisons have different scopes. Interpreting the construction as a real or complex Jacobian conjecture counterexample depends on the paper’s domain and hypotheses.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Recent result: https://www.ulam.ai/research/jacobian.pdf"
+        },
+        {
+          "line": 22,
+          "text": "(define (close? a b)"
+        },
+        {
+          "line": 25,
+          "text": "(define (A x y) (+ 1 (* x y)))"
+        },
+        {
+          "line": 194,
+          "text": "(check \"exact determinant is identically -2 on the degree grid\""
+        },
+        {
+          "line": 223,
+          "text": "(check \"Theorem 5.1 family determinant lambda=2,a=1,c=3\""
+        },
+        {
+          "line": 225,
+          "text": "(check \"Theorem 5.1 family determinant lambda=-1,a=2,c=1\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_kan_complexes_horns.esk",
+      "source_sha256": "d7658e4c2af928b12d8fbdeea990d04a43f3dcee99bc875d335eff512b7b7e05",
+      "title": "Horn fillers and low homotopy groups",
+      "kind": "mathematics",
+      "purpose": "Compare 2-group nerves with a poset nerve using explicit horns.",
+      "algorithm": "Enumerate finite simplices/horns/fillers and sphere homotopy relations; build π₁ multiplication from fillers.",
+      "domain": "Four supplied finite crossed-module nerves and the pseudocircle category; horns in dimensions 2/3 and π₁/π₂.",
+      "arithmetic": "Exact finite enumeration and modular group labels.",
+      "validation": "Compatible horn counts, inner versus outer horn distinction, equivalence relations, kernel/cokernel homotopy sizes and Latin-square products are asserted.",
+      "limitations": "The body’s 2-horn multiplicities are |M| (2,1,2,4), rather than the header’s |ker d|. horn-table forms horns from faces of an existing simplex; positive counts do not exhaust every compatible unfilled horn. Poset and low-homotopy checks are finite; broader Kan interpretations use the cited nerve theory.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "hocolim_kan_complexes_horns",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Kan complexes as computations: horn fillers, quasi-categories against"
+        },
+        {
+          "line": 55,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 56,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 290,
+          "text": "(check \"the homotopy relation is an equivalence relation on the 1-spheres and on the 2-spheres of every nerve\""
+        },
+        {
+          "line": 292,
+          "text": "(check \"Kan's pi_1 has |coker d| elements and pi_2 has |ker d| elements: (1,2), (2,1), (2,2), (2,2)\""
+        },
+        {
+          "line": 302,
+          "text": "(check \"pi_1 tables are Latin squares with an identity: the horn-filler product is the group Z/2\""
+        },
+        {
+          "line": 190,
+          "text": "  (let loop ((fs faces) (i 0) (acc \"\"))"
+        },
+        {
+          "line": 192,
+          "text": "(define (horn-table es k)                          ;; hash: horn string -> number of fillers"
+        },
+        {
+          "line": 203,
+          "text": "(define (all-equal-to? xs v) (all? (lambda (x) (= x v)) xs))"
+        },
+        {
+          "line": 223,
+          "text": "(check \"every 2-horn and every 3-horn of the four 2-group nerves has a filler: they are Kan complexes (every horn listed here comes from a simplex, and the count says how many simplices fill it)\""
+        },
+        {
+          "line": 227,
+          "text": "(check \"2-horns have exactly |M| fillers (the third edge ranges over a coset of the image of d, the 2-cell over its kernel): 2, 1, 2, 4\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_lens_spaces_reidemeister_torsion.esk",
+      "source_sha256": "63219178f66793b91a3425d159e83f6551cbef183dd8b7ed1ceef6919cae2c05",
+      "title": "Cyclotomic Reidemeister torsion of lens complexes",
+      "kind": "mathematics",
+      "purpose": "Separate selected lens spaces that homology or homotopy checks do not separate.",
+      "algorithm": "Build twisted boundary matrices, greedily choose pivot blocks, multiply alternating determinants and compare torsions under units, inversion and Galois conjugation.",
+      "domain": "Seven lens cases (5,1),(5,2),(5,3),(7,1),(7,2),(7,4),(7,6).",
+      "arithmetic": "Exact rational coefficient vectors in Q(ζ_p).",
+      "validation": "Acyclicity, norms p² or p⁻², agreement with the implemented lens formula and distinctions among the cases are asserted.",
+      "limitations": "The computed invariant plus cited classification criteria support the stated lens-space comparisons; do not infer arbitrary manifold classification or numerical root approximations.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "torsion_lens_spaces_reidemeister",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Reidemeister torsion of lens spaces over Q(zeta_p): the invariant that"
+        },
+        {
+          "line": 50,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 51,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 468,
+          "text": "(check \"Reidemeister: L(5,2) ~ L(5,3), L(7,2) ~ L(7,4), L(7,1) ~ L(7,6) (q' = +-q^(+-1)); L(5,1), L(5,2), L(5,3) otherwise distinct; L(7,1) is not L(7,2) nor L(7,4)\""
+        },
+        {
+          "line": 470,
+          "text": "(check \"the classical pair: L(7,1) and L(7,2) are homotopy equivalent (same square class in the sibling example) but not homeomorphic (torsions differ by a non-unit for every Galois conjugate)\""
+        },
+        {
+          "line": 472,
+          "text": "(check \"tau is invariant under the choice of root of unity up to Galois: each tau matches its own conjugate under zeta -> zeta^2\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_lens_spaces_yetter.esk",
+      "source_sha256": "5b2658d592be50e427b8187400091377c6e409602893e7263a53bae5335c2a3a",
+      "title": "Lens-space linking data and 2-group invariants",
+      "kind": "mathematics",
+      "purpose": "Compute lens-complex cohomology and observe k-invariant obstructions.",
+      "algorithm": "Glue coned hemispheres by rotation, compute integral/cup/Bockstein data, then compare reduced/full gauge sums with the Postnikov fibration formula.",
+      "domain": "Source-defined lens spaces including L(3,1),L(3,2),L(9,1), S³ and T³; Z/3 and Z/9 crossed modules and sign-action Z/4 cases.",
+      "arithmetic": "Exact integer Smith forms, modular cochains and rational state sums.",
+      "validation": "Homology, linking square classes, order-three k data, obstruction counts and agreement of independent counting routes are asserted.",
+      "limitations": "Only the supplied spaces/modules are enumerated; homotopy/homeomorphism criteria remain cited topology, not a general classifier.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "yetter_lens_spaces",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Lens spaces as Delta-complexes: cohomology, the square class of the"
+        },
+        {
+          "line": 64,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 65,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 447,
+          "text": "(check \"the order-three k-invariant is detected by L(3,1) and L(3,2): 3 for k = 0, 1 for k = x u beta x; L(9,1) gives 3 for both; T^3 gives 27 for both; the other lens spaces have no Z/3 in pi_1 and give 1\""
+        },
+        {
+          "line": 453,
+          "text": "(check \"obstruction counts: on L(3,1) two of three rho are obstructed for the 4^n action, on L(9,1) none of three (the Bockstein of H^1(L(9,1); Z/3) vanishes)\""
+        },
+        {
+          "line": 460,
+          "text": "(check \"Z/4 -> Z/4 with the sign action: L(2,1) sees k (2 against 1), L(4,1) does not (2 and 2, since x^3 = 0 in H^3(L(4,1); Z/2)); both agree with the fibration formula\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_first_principles.esk",
+      "source_sha256": "ee7ca7df5fb98ad75d14f670405ba348d4e02a144ee961f86cb0680d1864f199",
+      "title": "Derived similarity exponents and leading profiles",
+      "kind": "mathematics",
+      "purpose": "Derive the leading scaling/profile balance rather than insert the final coefficients.",
+      "algorithm": "Solve an exact exponent linear system with free h; interpolate the leading operator, solve finite profile recurrences and compare leading physical residuals.",
+      "domain": "Five exponent unknowns; admissible h inequalities; source-selected polynomial/profile truncations and z=0 residual samples.",
+      "arithmetic": "Exact rational linear systems and coefficients; physical residual comparisons use the source’s stated numerical checks.",
+      "validation": "Solved exponents, Kummer recurrence, leading vanishing and perturbed-profile negative controls are asserted.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_leading_profile_balance",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- deriving the scale exponents and the"
+        },
+        {
+          "line": 61,
+          "text": "(define (close? a b tol) (< (abs (- a b)) tol))"
+        },
+        {
+          "line": 69,
+          "text": "(define (row-combine r1 r2 f)              ;; r1 - f * r2"
+        },
+        {
+          "line": 558,
+          "text": "(check \"negative control -- the perturbed profile leaves a nonzero leading residual\""
+        },
+        {
+          "line": 562,
+          "text": "(check \"the perturbed residual is tau-independent after rescaling by q^{A+1}\""
+        },
+        {
+          "line": 566,
+          "text": "(check \"the perturbed physical residual therefore diverges like tau^{-(1+A)}\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "2.1, 3.1, 4.1 ((4.9), (4.12), (4.13))"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_heat_exterior.esk",
+      "source_sha256": "e5e1041e56354dae869dcd30cde75b20070faf2fc3c7d4a097070d9754f9bcb5",
+      "title": "Azimuthal heat exterior and moments",
+      "kind": "mathematics",
+      "purpose": "Build a regular exterior model and compare moment matching.",
+      "algorithm": "Solve curvature-corrected radial heat coefficients by triangular recursion, invert a distinct-power moment matrix and inspect near-terminal-time behavior.",
+      "domain": "Small finite polynomial case, power weights α=0,2 and a separately approximated transcendental contribution; t approaches 1 at fixed r.",
+      "arithmetic": "Exact rational recursion/moment solve; transcendental moments and limiting samples are numerical.",
+      "validation": "Heat residual, invertibility, moment reconstruction, bounded derivatives and colliding-weight/blow-up negative controls are asserted.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. The source explicitly refuses to call the transcendental moment exact.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_heat_exterior_exact",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- the azimuthal heat exterior and its"
+        },
+        {
+          "line": 54,
+          "text": "(define icc-target \"ns_heat_exterior_exact\")"
+        },
+        {
+          "line": 56,
+          "text": "(define (icc-event name value)"
+        },
+        {
+          "line": 217,
+          "text": "(check \"the transcendental piece's moment is NOT exact -- stated to converge numerically, not asserted exact\""
+        },
+        {
+          "line": 232,
+          "text": "(check \"v(r, t) and its r-, t-derivatives stay finite as t -> 1 at fixed r\""
+        },
+        {
+          "line": 248,
+          "text": "(check \"negative control -- a candidate exterior carrying an inner-profile divergent factor is NOT bounded near t = 1\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "2.3, Appendix A, Lemma A.1"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_localization.esk",
+      "source_sha256": "3f42a5ad891e010417e6625ce2921181eefcdfabdfdc72b765f7b70cdbe768ff",
+      "title": "Cutoffs, periodization and discrete energy",
+      "kind": "mathematics",
+      "purpose": "Check localization ingredients in explicitly constructed fields.",
+      "algorithm": "Cancel a temporal pole with a cutoff polynomial, guard spatial bumps, periodize within one cell and differentiate a discrete energy model.",
+      "domain": "Source-defined support boxes/radii and period cell; three registered criteria for smooth extension, energy and torus scaling.",
+      "arithmetic": "Rational finite-grid/cutoff data and AD; the discrete energy equality is asserted exactly.",
+      "validation": "Support/period-cell agreement, torus averages, exact energy balance and oversized-radius/dropped-viscosity negative controls are asserted.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. The energy balance is a discrete model, not an independently proved continuum energy estimate.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_localization_smooth_extension",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_energy_dissipation_bounds",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_torus_corollary_scaling",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- compact forcing, whole-space"
+        },
+        {
+          "line": 62,
+          "text": "(define (dn f x k)"
+        },
+        {
+          "line": 77,
+          "text": "(define X1 3)              ;; the fixed, positive radius"
+        },
+        {
+          "line": 250,
+          "text": "(check \"KE'(t0) and the RHS are exact rationals\""
+        },
+        {
+          "line": 252,
+          "text": "(check \"the discrete energy identity holds exactly: KE'(t) = <f,u> - nu ||u||^2\""
+        },
+        {
+          "line": 264,
+          "text": "(check \"negative control -- dropping the viscous term from the force breaks the identity\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "10, Proposition 10.1, Lemmas 10.2-10.4, Corollary 10.6"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_mean_corrections.esk",
+      "source_sha256": "700a0d7391951114ba3f5d0e0da8941f4dc20e92137615b8e4c9541349416944",
+      "title": "Compact mean corrections and moment solve",
+      "kind": "mathematics",
+      "purpose": "Realize selected mean corrections with solved amplitudes.",
+      "algorithm": "Build supported divergence-free bump fields, compute a five-moment generalized Vandermonde matrix and solve amplitudes with exact_linalg.",
+      "domain": "Five moments at λ=1; source-selected disjoint correction boxes and sample points.",
+      "arithmetic": "Exact rational moment system; AD divergence/residual checks as implemented.",
+      "validation": "Moment realization, support separation, divergence and wrong-support/oversized-cutoff negative controls are asserted.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_five_moment_vandermonde",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- compactly supported mean corrections."
+        },
+        {
+          "line": 67,
+          "text": "(define (dn f x k)"
+        },
+        {
+          "line": 98,
+          "text": "(define (Braw t c w) (* (- (* w w) (* (- t c) (- t c))) (- (* w w) (* (- t c) (- t c)))))"
+        },
+        {
+          "line": 307,
+          "text": "(check \"negative control -- the wrong-support axial correction leaves a nonzero residual\""
+        },
+        {
+          "line": 315,
+          "text": "(check \"negative control -- an oversized cutoff is nonzero where the correct one is zero\""
+        },
+        {
+          "line": 317,
+          "text": "(check \"the correctly sized bump really is zero at that point\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "8, Lemma 8.2 and Lemma 8.7"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_oscillatory_realization.esk",
+      "source_sha256": "b5aa516b7ce59234db58123cbbcc460971c67a1f17d4619be4ab20092ee0dee3",
+      "title": "Auxiliary-torus pulse realization",
+      "kind": "mathematics",
+      "purpose": "Recover averaged stress from two independent pulse families.",
+      "algorithm": "Construct trigonometric polynomials on a four-point auxiliary torus, extract zero-mode fluxes and solve a two-component stress matrix.",
+      "domain": "Two distinct C/B flux ratios, in-cone target stresses and four-point torus average.",
+      "arithmetic": "Exact trigonometric representation/torus products and rational exact_linalg solve.",
+      "validation": "Zero means, distinct flux ratios, full rank two and positive solved weights are asserted; one-family rank-one failures are negative controls.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. The finite auxiliary-torus stress realization is distinct from full spatial oscillatory error estimates.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_oscillatory_zero_mode",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- the oscillatory realization on the"
+        },
+        {
+          "line": 44,
+          "text": "(define icc-target \"ns_oscillatory_zero_mode\")"
+        },
+        {
+          "line": 46,
+          "text": "(define (icc-event name value)"
+        },
+        {
+          "line": 189,
+          "text": "(check \"negative control -- one family alone has exact-rank 1 and cannot span both stress components\""
+        },
+        {
+          "line": 192,
+          "text": "(check \"the two-family flux matrix has full exact-rank 2 (it CAN span both stress components)\""
+        },
+        {
+          "line": 198,
+          "text": "(check \"negative control -- family 1 alone cannot realize a general 2-component target (exact-solve raises, not square)\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "6, 7, 2.2"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_pulse_growth.esk",
+      "source_sha256": "3bcbc358e7d3299f0e0ea4e6aec9094ebf21d0961eacfc7abf2aa7a419461813",
+      "title": "Craik–Criminale crossover on simple shear",
+      "kind": "mathematics",
+      "purpose": "Compare an amplification/damping crossover with an integrated amplitude curve.",
+      "algorithm": "Derive the affine-background wavevector law and log-amplitude rate, bisect the crossover and integrate the amplitude by RK4.",
+      "domain": "Source-selected simple-shear/viscosity parameters, finite sampled time range and zero-shear negative control.",
+      "arithmetic": "Exact/rational wavevector and rate checks with AD; RK4/exp comparison uses 1e-3 relative tolerance and one-step peak tolerance.",
+      "validation": "Derivative/rate agreement, interior maximum and growth-then-decay are asserted; zero shear removes amplification/crossover.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Finite integration and sampled tails do not by themselves certify every asymptotic statement.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_pulse_growth_crossover",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- Craik-Criminale pulse growth on an"
+        },
+        {
+          "line": 52,
+          "text": "(define icc-target \"ns_pulse_growth_crossover\")"
+        },
+        {
+          "line": 54,
+          "text": "(define (icc-event name value)"
+        },
+        {
+          "line": 250,
+          "text": "(check \"the tail decays: P(t) is very negative at large t, so a(t) -> 0\""
+        },
+        {
+          "line": 257,
+          "text": "(check \"negative control -- with S = 0, rate(t) is a constant negative value (no amplification phase)\""
+        },
+        {
+          "line": 266,
+          "text": "(check \"negative control -- with S = 0 there is no crossover: rate never exceeds 0 on the sampled range\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "Introduction ([9]), 2.2"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_pulse_stress.esk",
+      "source_sha256": "df6bef6bc9cf6f15debb860401ad08a460ef80981f10cc1b3f2ce72da6a9b42d",
+      "title": "Pulse covariance and shear growth",
+      "kind": "mathematics",
+      "purpose": "Compute the momentum flux supplied by two oscillatory pulse families.",
+      "algorithm": "Average angular products, solve a rational two-family covariance system and integrate one transverse mode on an affine background.",
+      "domain": "Source-defined two covariance directions and shear-mode trajectory/time grid.",
+      "arithmetic": "Exact rational covariance/positivity checks; trajectory and growth comparisons are numerical.",
+      "validation": "Zero angular means, nonzero fluxes, transversality, positive solve and interior growth/damping peak checks are asserted.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_covariance_two_family_solve",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- oscillatory pulses and the momentum flux"
+        },
+        {
+          "line": 51,
+          "text": "(define (close? a b tol) (< (abs (- a b)) tol))"
+        },
+        {
+          "line": 54,
+          "text": "(define pi4 (* 4.0 (atan 1.0)))"
+        },
+        {
+          "line": 394,
+          "text": "(check \"the damping overtakes the amplification: final below initial\""
+        },
+        {
+          "line": 397,
+          "text": "(check \"the shear shortens the radial wavelength: |k|^2 has an interior minimum\""
+        },
+        {
+          "line": 404,
+          "text": "(check \"the amplitude peak follows the wavelength minimum, as the Orr mechanism requires\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "2.2, 3.2 (Figure 4), 3.3 and 7"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_residual_ladder.esk",
+      "source_sha256": "c64df90fbd3fe1ddf54064d2741c781e6e0576d727c24ac2dcc432854432652b",
+      "title": "Three-rung residual improvement model",
+      "kind": "mathematics",
+      "purpose": "Make finite residual improvement and skipped-rung failures explicit.",
+      "algorithm": "Compute the rational exponent ladder and cancel three Taylor coefficients of the scalar residual with linear term 2w and quadratic w².",
+      "domain": "Three solved rungs; source-selected rational parameters; orders 1–3 vanish while order 4 may remain.",
+      "arithmetic": "Exact rational/Taylor coefficient algebra.",
+      "validation": "Each cancellation and raised vanishing order are asserted; omission of each rung leaves its coefficient nonzero.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. This scalar correction model is not the full nonlinear PDE iteration.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_residual_exponent_ladder",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- residual improvement and the local"
+        },
+        {
+          "line": 63,
+          "text": "(define (sigma j) (+ 1/5 (* j 1/10)))"
+        },
+        {
+          "line": 64,
+          "text": "(define (B-exp j) (+ 1/2 (sigma j)))"
+        },
+        {
+          "line": 187,
+          "text": "(check \"negative control -- skipping rung 3 (c3 = 0, c1 c2 solved) leaves the order-3 coefficient nonzero\""
+        },
+        {
+          "line": 193,
+          "text": "(check \"negative control -- the skipped order-2 coefficient equals the pre-rung-2 value exactly\""
+        },
+        {
+          "line": 195,
+          "text": "(check \"negative control -- the skipped order-3 coefficient equals the pre-rung-3 value exactly\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "9, (9.8), (9.18), Propositions 9.3 and 9.6"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_residual_order_n.esk",
+      "source_sha256": "6e3ebda54051e7da69aa165959e5866cfd706f8edc99b36b2107365427f22c81",
+      "title": "Finite-order background residual recursion",
+      "kind": "mathematics",
+      "purpose": "Check lower-order cancellation in a finite formal expansion.",
+      "algorithm": "Apply a fixed linear correction operator to known lower-order forcing; compare Taylor coefficients with derivative-n/factorial extraction.",
+      "domain": "N=4 in the supplied recursion and rational X samples; deliberately perturbed correction orders 0,2,3.",
+      "arithmetic": "Exact Taylor-coefficient/rational equality checks.",
+      "validation": "Orders below N cancel, the order-N residual remains nonzero generally, extraction routes agree and perturbations reintroduce exactly their order.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Finite truncation does not establish convergence or cancellation to infinitely many orders.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_residual_order_n_vanishes",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- the background residual beyond"
+        },
+        {
+          "line": 56,
+          "text": "(define icc-target \"ns_residual_order_n_vanishes\")"
+        },
+        {
+          "line": 58,
+          "text": "(define (icc-event name value)"
+        },
+        {
+          "line": 212,
+          "text": "(check \"negative control -- perturbing the order-0 correction leaves a nonzero coefficient at exactly order 0\""
+        },
+        {
+          "line": 218,
+          "text": "(check \"negative control -- perturbing the order-3 correction leaves a nonzero coefficient at exactly order 3\""
+        },
+        {
+          "line": 226,
+          "text": "(check \"delta = 0 recovers the unperturbed (all lower orders vanish) case\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "5, 5.1, equations (5.1)-(5.6)"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_similarity_scales.esk",
+      "source_sha256": "3d5c00c6aa36d2a01aab06b7cde67775603073d54df9d01383447744b1c2bd7b",
+      "title": "Similarity coordinates and fitted scale laws",
+      "kind": "mathematics",
+      "purpose": "Differentiate the implicit similarity-coordinate construction and inspect scaling.",
+      "algorithm": "Build the self-similar axisymmetric ansatz, differentiate q’s implicit solve, fit scale exponents and evaluate core energy/physical residual scaling.",
+      "domain": "τ=1−t, h=0.005=1/200, A=1/2+h, D=1/2−h; source-defined coordinate samples over six decades in τ.",
+      "arithmetic": "AD and floating-point fitted/physical quantities; source-specific tolerance comparisons.",
+      "validation": "Incompressibility/pressure/coordinate relations and fitted energy/residual exponents are checked on the selected samples.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Fitted or sampled exponent behavior is distinguished from an exact general asymptotic proof.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_similarity_exponents_solved",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- similarity coordinates and scale laws."
+        },
+        {
+          "line": 61,
+          "text": "(define (close? a b tol) (< (abs (- a b)) tol))"
+        },
+        {
+          "line": 69,
+          "text": "(define h 0.005)                      ;; 1/200, inside the paper's 0 < h < 1/100"
+        },
+        {
+          "line": 462,
+          "text": "(check \"leading angular residual grows exactly like tau^{-(1+A)}\""
+        },
+        {
+          "line": 468,
+          "text": "(check \"leading axial residual grows exactly like tau^{-(1+A)}\""
+        },
+        {
+          "line": 474,
+          "text": "(check \"full angular residual, axial viscosity included, is within 2h of -(1+A)\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7))"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_stress_cone.esk",
+      "source_sha256": "9f42d15e596b5ddd5bcde8624f6b3599a439834dffec0624f8a939f994f57e4c",
+      "title": "Admissible stress cone and profile tests",
+      "kind": "mathematics",
+      "purpose": "Decide the cone inequalities without introducing approximate square roots.",
+      "algorithm": "Use rational quadratic sign tests, integrate the radial profile equation and reuse an established threshold P_K on constructed stresses.",
+      "domain": "Source-selected rational profile/radius samples, positive rescalings and relaxed connecting-interval cone cases.",
+      "arithmetic": "Exact rational signs/integration and explicit sampled checks.",
+      "validation": "Cone equivalence tests, homogeneity, constructed-stress acceptance and nonpositive/transverse-heavy rejection are asserted.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Acceptance on sampled radii must not be rewritten as an unchecked all-radius analytic bound.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_cone_condition_equivalence",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- the admissible stress cone."
+        },
+        {
+          "line": 61,
+          "text": "(define icc-target \"ns_cone_condition_equivalence\")"
+        },
+        {
+          "line": 63,
+          "text": "(define (icc-event name value)"
+        },
+        {
+          "line": 563,
+          "text": "(check \"the relaxed cone is strictly weaker: it accepts a direction with v_s <= 2\""
+        },
+        {
+          "line": 570,
+          "text": "(check \"negative control -- a stress with T_theta + t_s T_z <= 0 is refused\""
+        },
+        {
+          "line": 578,
+          "text": "(check \"negative control -- a transverse-heavy stress leaves the cone\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "4.3, Lemma 4.5, Appendix C"
+    },
+    {
+      "path": "examples/mathematics_navier_stokes_viscosity_scaling.esk",
+      "source_sha256": "abea7eaed518f1086cca52127da298fac84a25cb4e17a413854390b921ae257b",
+      "title": "Viscosity rescaling of an AD residual",
+      "kind": "mathematics",
+      "purpose": "Verify the residual, energy and dissipation rescaling on explicit fields.",
+      "algorithm": "Assemble time/advection/Laplacian/pressure derivatives by AD for u=(1+t)(y²z,z²x,x²y), p=xyz+tx²; rescale fields and grids.",
+      "domain": "ν=1/4,1,9/16,25/9,4 with rational square roots; ν=2 as an irrational numerical case.",
+      "arithmetic": "Source asserts rational exact equalities for the rational cases; the ν=2 residual check uses 1e-9 tolerance.",
+      "validation": "Divergence, residual identity and discrete ν^(5/2) energy/dissipation scaling are checked; omitted velocity/pressure factors fail.",
+      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Discrete quadrature/scaled-grid identities are not a new continuum integration theorem.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_NS_EXAMPLES",
+          "criterion": "ns_viscosity_scaling_exact",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Navier-Stokes example -- viscosity scaling of the residual."
+        },
+        {
+          "line": 49,
+          "text": "(define (close? a b tol) (< (abs (- a b)) tol))"
+        },
+        {
+          "line": 65,
+          "text": "(define (u-ref i x y z t)"
+        },
+        {
+          "line": 239,
+          "text": "(check \"discrete energy scales by nu^{5/2} exactly on the scaled grid\""
+        },
+        {
+          "line": 248,
+          "text": "(check \"discrete dissipation nu * |grad u_nu|^2 scales by nu^{5/2} exactly\""
+        },
+        {
+          "line": 258,
+          "text": "(check \"the rescaling leaves the time variable untouched\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
+      "paper_sections": "3 (outline), 10.4 equations (10.22)-(10.23)"
+    },
+    {
+      "path": "examples/mathematics_presheaf_topos_internal_logic.esk",
+      "source_sha256": "11fdc767fc44cda5f0be5a43a347e44463caa810b37d3634905d3c77110163b8",
+      "title": "Internal logic of finite presheaf categories",
+      "kind": "mathematics",
+      "purpose": "Construct classifiers, exponentials and local operators as finite data.",
+      "algorithm": "Enumerate sieves, subpresheaves and natural maps, construct exponentials and Heyting operations, and enumerate Grothendieck/Lawvere–Tierney topologies.",
+      "domain": "Walking arrow, pseudocircle, commutative square and BZ/2; explicitly supplied finite presheaves.",
+      "arithmetic": "Exact finite set enumeration and truth-table comparisons.",
+      "validation": "Classifier bijections/pullbacks, exponential adjunction counts, Heyting laws/non-Boolean examples and 4/16/2 topology counts are checked.",
+      "limitations": "The complete walking-arrow local-operator enumeration certifies that finite case; broader universal-property statements are restricted to the constructed inputs/cited theory.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "cat_presheaf_topos_internal_logic",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; The internal logic of a presheaf topos, computed: for finite categories C"
+        },
+        {
+          "line": 66,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 67,
+          "text": "(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))"
+        },
+        {
+          "line": 312,
+          "text": "(check \"Omega(1) on the walking arrow has three elements and is not Boolean (the sieve {f} has no complement); Omega on BZ/2 is Boolean; Omega(c) on the pseudocircle (five sieves) is not\""
+        },
+        {
+          "line": 343,
+          "text": "(check \"every Grothendieck topology gives a Lawvere-Tierney topology, distinct topologies give distinct j, with 4 topologies on the walking arrow, 16 on the pseudocircle and 2 on BZ/2 (the trivial and the dense one)\""
+        },
+        {
+          "line": 348,
+          "text": "(check \"Theorem V.1.2 by exhaustion on the walking arrow: the Lawvere-Tierney topologies (4, out of 108 endomorphisms of Omega) are exactly the ones induced by the 4 Grothendieck topologies\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_sheafification_descent_kan.esk",
+      "source_sha256": "72aae0f72e6bb160b435055a394c7cd2f9651f72b7d8a9ba588786d291684a49",
+      "title": "Sheafification, reflector and Kan descent",
+      "kind": "mathematics",
+      "purpose": "Compare finite-site plus construction with matching-family Kan limits.",
+      "algorithm": "Enumerate covering sieves and finite matching families, apply plus twice, build comma-category limits and count natural maps into sheaves.",
+      "domain": "Pseudocircle site with 6 opens and pseudo-2-sphere site with 9 opens; constant, locally constant and nonseparated set presheaves.",
+      "arithmetic": "Exact finite sets and enumeration/pruned-count cross-checks.",
+      "validation": "Grothendieck axioms, separated/sheaf conditions, section counts, Kan/matching equality and selected reflector-adjunction counts are asserted.",
+      "limitations": "The exhaustive site is finite; selected adjunction counts must not be promoted to a proof for arbitrary infinite sites or all presheaves.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "cat_sheafification_descent_kan",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Sheafification as a reflector and descent as a Kan extension, computed on"
+        },
+        {
+          "line": 61,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 62,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 527,
+          "text": "(check \"on the pseudo-2-sphere the constant presheaf sheafifies to |A|^{pi_0(U)} on all 9 opens and the result is a sheaf\""
+        },
+        {
+          "line": 551,
+          "text": "(check \"the pruned count agrees with the brute-force enumeration on the small case Hom(const, A^pi_0)\" (= (car uc1) (length (all-naturals (opposite CS*) const-S locally-constant-S))))"
+        },
+        {
+          "line": 554,
+          "text": "(check \"a -| i: Hom(F, G) = Hom(aF, G) for the sheaf G = A^{pi_0}, for the constant presheaf and for the non-separated one\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_stacks_nonabelian_descent.esk",
+      "source_sha256": "ec081828506dfeb2f49624d1dc0d6433da10330f60ae1e7d9a0690b00833d097",
+      "title": "Torsors and nonabelian descent on finite spaces",
+      "kind": "mathematics",
+      "purpose": "Compare torsor groupoids and descent on torus/Klein-bottle models.",
+      "algorithm": "Backtrack group labels on Hasse edges with path relations, gauge-fix a spanning tree, quotient by conjugation and compute centralizers/Cech descent data.",
+      "domain": "Source-supplied finite spaces and six finite groups, including S₃, D₄ and Q₈; Klein bottle as a twisted finite product.",
+      "arithmetic": "Exact group-table enumeration and rational groupoid cardinalities.",
+      "validation": "Cover conditions, bundle/class/automorphism counts and descent agreement are asserted; D₄ and Q₈ differ in Klein-bottle class counts despite equal cardinality.",
+      "limitations": "Finite torsor groupoids are calculated rather than a general stack theory solver; the underlying finite model identifications use the cited topology.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "stacks_nonabelian_descent",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Stacks on finite spaces: G-torsors as homotopy limits over a poset,"
+        },
+        {
+          "line": 77,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 78,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 562,
+          "text": "(check \"the Klein bottle separates D_4 from Q_8: 40 flat bundles each and cardinality 5, but 20 classes against 16 (the torus gives 22 and 22)\""
+        },
+        {
+          "line": 566,
+          "text": "(check \"S_3 has a rigid torsor on the Klein bottle (trivial automorphism group) and none on the torus\""
+        },
+        {
+          "line": 568,
+          "text": "(check \"every groupoid cardinality in the program is an exact rational equal to |objects|/|G|\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_turaev_viro_cyclotomic.esk",
+      "source_sha256": "9d9112a7cec9c780980892c1ecf7545aea2350d3953af7e5edc7580d2e197fc4",
+      "title": "Exact cyclotomic Turaev–Viro state sums",
+      "kind": "mathematics",
+      "purpose": "Evaluate recoupling state sums and compare selected triangulations and theories.",
+      "algorithm": "Build cyclotomic polynomials/field inverses, quantum integers, theta/tetrahedral nets and admissible edge-coloring sums.",
+      "domain": "A=ζ₄r; r=3,4,5 on supplied S³/RP³/T³ and lens complexes, with specified level restrictions per comparison.",
+      "arithmetic": "Exact rational cyclotomic field arithmetic.",
+      "validation": "Quantum relations, alternative triangulation agreement, selected homeomorphic lens values, double-semion comparison and torus counts 4/9/16 are asserted.",
+      "limitations": "Finite comparisons cover only the listed triangulations; Pachner-move invariance and normalization follow the cited theory.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "tv_turaev_viro_cyclotomic",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Turaev-Viro invariants computed exactly in cyclotomic fields: the"
+        },
+        {
+          "line": 58,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 59,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 502,
+          "text": "(check \"level one is the double semion, the Z/2 Dijkgraaf-Witten theory with the nontrivial cocycle: ratios 0, 8, 2, 1, 1, 1, 0\""
+        },
+        {
+          "line": 511,
+          "text": "(check \"TV_r(T^3) is the number of simple objects of the Drinfeld centre, (r-1)^2: 4, 9, 16 (the dimension of the torus state space)\""
+        },
+        {
+          "line": 513,
+          "text": "(check \"TV_5 separates L(5,1) from L(5,2) (1/2 against 0) although TV_3 and TV_4 do not; TV_5(RP^3) = 0\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_two_descent_cech_nerves.esk",
+      "source_sha256": "0a7ac6f1b5d1d364746801aa5f985fcc3b3da530ae55e804521f461bc7208985",
+      "title": "Cech nerves and 2-descent",
+      "kind": "mathematics",
+      "purpose": "Expose descent failures visible to 2-types but invisible to 1-types.",
+      "algorithm": "Construct intersection-component Cech nerves through their 3-skeleton, compute crossed-module mapping counts and compare order-complex and fibration routes.",
+      "domain": "Pseudocircle, torus, Klein-bottle and pseudo-2-sphere covers; supplied finite 2-groups and Z/2,Z/3 targets.",
+      "arithmetic": "Exact finite incidence, modular Smith-form counts and rational normalizations.",
+      "validation": "Leray-cover agreements and the non-Leray sphere discrepancy are asserted; T³ uses the enumerated 3-skeleton needed for these 2-type targets.",
+      "limitations": "The intersection-component nerve used here is not the full topological Cech simplicial object in every context; its contractible-component hypotheses and finite target scope are explicit.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "descent_two_descent_cech_nerves",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; 2-descent on finite spaces: the Cech nerve of a cover as a simplicial"
+        },
+        {
+          "line": 67,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 68,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 589,
+          "text": "(check \"the pseudo-2-sphere's only cover by maximal opens has a connected non-cone intersection (the pseudocircle): the Cech nerve is one edge, and the cover is not Leray\""
+        },
+        {
+          "line": 591,
+          "text": "(check \"the order complex of the pseudo-2-sphere is a sphere: H^* = (Z, 0, Z)\""
+        },
+        {
+          "line": 596,
+          "text": "(check \"descent failure is invisible to the 1-type BZ/2 (1/2 on both sides, pi_1 S^2 = 0) and visible to K(Z/2,2) (nerve 2, space 4) and to the split 2-type (1 against 2)\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_two_groups_postnikov.esk",
+      "source_sha256": "506ec63d21f893faf59f35ed1e17a65ecb2faf48d1a601ef00bc150b0a8c0f62",
+      "title": "Crossed-module nerves and Postnikov data",
+      "kind": "mathematics",
+      "purpose": "Distinguish 2-types with identical π₁ and π₂ using k-sensitive cohomology.",
+      "algorithm": "Check crossed-module/Peiffer laws, enumerate edge/triangle-labeled nerve simplices, check face identities and compute integral/mod-2 complexes.",
+      "domain": "Finite abelian crossed modules including Z/2→1,1→Z/2,Z/2→Z/2 and Z/4→Z/4 with trivial/sign action; source-defined low degrees.",
+      "arithmetic": "Exact integer and finite-field linear algebra.",
+      "validation": "Kernel/cokernel homotopy sizes, cohomology dimensions, nontrivial-twist distinction and dropped-tetrahedron-equation negative controls are asserted.",
+      "limitations": "Finite-degree computations distinguish these presentations; equivalence of entire 2-types invokes the cited crossed-module/Postnikov theory.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "hocolim_two_groups_postnikov",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Strict 2-groups as crossed modules, their nerves, and the Postnikov"
+        },
+        {
+          "line": 67,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 68,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 364,
+          "text": "(check \"integral H_2: Z/2 for the two products and 0 for the sign-action twist, as the sequence H_3(BZ/2) -> pi_2 -> H_2(X) -> H_2(BZ/2) = 0 predicts when the first map (the k-invariant) is an isomorphism; H_1 = Z/2 for all three\""
+        },
+        {
+          "line": 380,
+          "text": "(check \"negative control -- dropping the tetrahedron equation admits more 3-simplices for the split 2-type (128 against 64)\""
+        },
+        {
+          "line": 382,
+          "text": "(check \"negative control -- degree 1 cannot separate the 2-types: dim H^1 = 1 for all of them\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_yetter_three_torus_finite_model.esk",
+      "source_sha256": "3378acb1aa13827bc82f111bfd7a07049f902cf4115d09cf8f50866a2c702b75",
+      "title": "Yetter invariants on the 64-point torus",
+      "kind": "mathematics",
+      "purpose": "Recompute 2-group invariants on a larger finite-space triangulation.",
+      "algorithm": "Use spanning-tree holonomies, 1-gauge reduction, cached twisted Smith forms and independent fibration counts.",
+      "domain": "64 vertices/448 edges/768 triangles/384 tetrahedra; nine supplied crossed modules; 8 or 27 holonomies.",
+      "arithmetic": "Exact integer/modular Smith forms and rational normalizations, including denominator factors 2³⁸⁴ or 3³⁸⁴.",
+      "validation": "The nine stated invariants and two routes agree exactly; source checks twelve reused Smith forms and twisted-coefficient orders.",
+      "limitations": "Avoids impossible brute-force edge enumeration using a source-derived gauge reduction; this catalogue claims neither runtime measurements nor new executions.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "yetter_three_torus_finite_model",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Yetter's 2-group invariants on the 64-point finite model of the 3-torus:"
+        },
+        {
+          "line": 51,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 52,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 464,
+          "text": "(check \"no homomorphism Z^3 -> pi_1 is obstructed for the sign-action Z/4 module (8 of 8) or the 4^n Z/9 module (27 of 27)\""
+        },
+        {
+          "line": 471,
+          "text": "(check \"twisted Z/3 coefficients: |H^3| is 3 for the trivial character and 1 for the seven others; one nontrivial character has all four orders 1, and the untwisted orders satisfy |H^0||H^2| = |H^1||H^3| (chi = 0)\""
+        },
+        {
+          "line": 476,
+          "text": "(check \"twelve Smith normal forms serve the whole program: three untwisted coboundaries, delta^2 for the seven nontrivial characters, and delta^0, delta^1 for one of them (the first version needed 129)\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/mathematics_yetter_two_group_invariants.esk",
+      "source_sha256": "51777e8a49ad8535dea26ca65a9bc8c10f262fc287146a89087f5177720a065f",
+      "title": "Yetter state sums and Postnikov fibration",
+      "kind": "mathematics",
+      "purpose": "Compare explicit crossed-module state sums with mapping-space formulas.",
+      "algorithm": "Gauge-fix edge labels, solve affine triangle equations by Smith forms and evaluate local-coefficient obstruction/fibration counts.",
+      "domain": "Supplied S³,RP³,T³ Delta-complexes and six crossed modules, including sign-action Z/4→Z/4 and Z/3→Z/2.",
+      "arithmetic": "Exact group labels, integer Smith forms and rational cardinalities.",
+      "validation": "Presentation-equivalence cases, RP³ k-obstruction, twisted coefficient orders and independent counting-route equality are asserted.",
+      "limitations": "Counts apply to these finite complexes/modules; general topological invariance and mapping-space interpretations use cited theorems.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "yetter_two_group_invariants",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Yetter's 2-group invariants of 3-manifolds, computed as state sums on"
+        },
+        {
+          "line": 65,
+          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+        },
+        {
+          "line": 66,
+          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+        },
+        {
+          "line": 391,
+          "text": "(check \"M -> 1 gives |H^2(X; M)| |H^0| / |H^1| = 2 on all three manifolds; 1 -> Z/2 gives |Hom(pi_1 X, Z/2)| / 2 = 1/2, 1, 4\""
+        },
+        {
+          "line": 398,
+          "text": "(check \"twisted coefficients: the nontrivial character of pi_1 RP^3 kills H^*(RP^3; Z/3) to (1,1,1,1), and the seven nontrivial characters on T^3 kill H^* while the trivial one gives (3,27,27,3)\""
+        },
+        {
+          "line": 402,
+          "text": "(check \"Z/3 -> Z/2 with the sign action: (3/2, 2, 5); RP^3 is 3/2 + 1/2 from the untwisted and the twisted sector, T^3 is 3/2 + 7/2\""
+        }
+      ],
+      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+    },
+    {
+      "path": "examples/milli_mag_bohrification.esk",
+      "source_sha256": "4db2c322e5e691e1173f460a758e34080efe4567e1cf4da3fac87ed1eb2348f5",
+      "title": "Finite-symbol Bohrification sketch",
+      "kind": "example",
+      "purpose": "Represent a small intended context/spectrum diagram within the language surface.",
+      "algorithm": "Use symbols/lists and total maps for two contexts, spectrum points, projections, a K₀ basis and a stipulated zero pairing.",
+      "domain": "Scalar/full context; visible/dark spectrum sectors.",
+      "arithmetic": "Exact symbolic equality and finite integer pairing values.",
+      "validation": "Checks context relations, spectrum restrictions, sector round-trips, basis generators and zero pairing, with a failure exit.",
+      "limitations": "The source explicitly calls this an executable sketch; it does not construct a physical magnetic model or a general operator-algebra/K-homology calculation.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Executable sketch of the milli-magnetic Bohrification model."
+        },
+        {
+          "line": 7,
+          "text": "(define C-A-F-objects (list 'scalar-subalgebra 'full-algebra))"
+        },
+        {
+          "line": 8,
+          "text": "(define scalar-spectrum (list 'unit))"
+        },
+        {
+          "line": 85,
+          "text": "(check \"minimal projections and sectors round-trip\""
+        },
+        {
+          "line": 93,
+          "text": "(check \"K0 basis is generated by the spectrum points\""
+        },
+        {
+          "line": 97,
+          "text": "(check \"milli-magnetic K-homology pairing vanishes on generators\""
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/monte_carlo_pi.esk",
+      "source_sha256": "60f0c491c44e57773f9ed875dd6d467637ef46caeafeeda0a9e308d1e85f0305",
+      "title": "Parallel Monte Carlo π estimate",
+      "kind": "example",
+      "purpose": "Demonstrate isolated PRNG streams and parallel aggregation.",
+      "algorithm": "Assign a private seeded stream per shard, sample the unit square and count quarter-circle hits with parallel-map.",
+      "domain": "Eight shard IDs, 100 samples/batch × 2000 batches/shard = 1600000 samples; base seed 123456789 and step 2654435761.",
+      "arithmetic": "Floating-point random samples and integer hit counts.",
+      "validation": "Prints estimate, absolute error, elapsed time and throughput from the actual run; no statistical tolerance assertion.",
+      "limitations": "Sampling error and host timing vary; this catalogue records no observed throughput or cross-platform performance result.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 21,
+          "text": "(define samples-per-batch 100)"
+        },
+        {
+          "line": 22,
+          "text": "(define batches-per-shard 2000)"
+        },
+        {
+          "line": 79,
+          "text": "(display \"Sample throughput:    \")"
+        },
+        {
+          "line": 80,
+          "text": "(display (* 1000.0 (/ total-samples elapsed-ms)))"
+        },
+        {
+          "line": 81,
+          "text": "(display \" samples/sec\") (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/neural_xor.esk",
+      "source_sha256": "b8e3a8c248e547f4088706408b10589842ca6f7ae8ed1696fd324c7f71027e00",
+      "title": "Small XOR neural network",
+      "kind": "example",
+      "purpose": "Train a fixed two-layer network using compiler AD.",
+      "algorithm": "Evaluate a 2→4 tanh→1 sigmoid network and full-batch MSE, updating one 17-element parameter vector.",
+      "domain": "Four XOR rows; seeded PRNG 42,lr=0.5,1500 epochs.",
+      "arithmetic": "Floating-point activations, gradients and loss.",
+      "validation": "Prints loss and per-row predictions; no classification-accuracy assertion.",
+      "limitations": "A fixed small learning demonstration; printed convergence expectations are not new measured results or guarantees for arbitrary initialization/data.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 23,
+          "text": "(define (sigmoid x)"
+        },
+        {
+          "line": 26,
+          "text": "(define (forward params x1 x2)"
+        },
+        {
+          "line": 121,
+          "text": "(display \"The compiler differentiated through three matmuls, four tanh\") (newline)"
+        },
+        {
+          "line": 122,
+          "text": "(display \"calls, and a sigmoid in 1,500 gradient steps. No framework, no\") (newline)"
+        },
+        {
+          "line": 123,
+          "text": "(display \"graph object, no Python.\") (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/newton_method.esk",
+      "source_sha256": "1040c89347b83e513ec75f85948ef2debc0cacd2dcd8bbce6530ef1cc3f162b2",
+      "title": "Newton iteration with AD",
+      "kind": "example",
+      "purpose": "Find several numerical roots using the same derivative-based iteration.",
+      "algorithm": "Update x−f(x)/f′(x) with residual tolerance and an iteration cap.",
+      "domain": "x³−27,x²−2,x−cos x,x⁵−3x+1; source-defined starting points/tolerances/caps.",
+      "arithmetic": "Floating-point scalar AD and iteration.",
+      "validation": "Prints roots and iteration counts; no independent root/error assertion.",
+      "limitations": "Convergence depends on the initial point and derivative; reaching an iteration cap is not a mathematical convergence certificate.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 16,
+          "text": "(define (newton f x0 tolerance max-iters)"
+        },
+        {
+          "line": 27,
+          "text": "(define (report label result)"
+        },
+        {
+          "line": 62,
+          "text": "(display \"Real root of x^5 - 3x + 1:\") (newline)"
+        },
+        {
+          "line": 67,
+          "text": "(display \"Every call above used the same ten-line `newton` loop —\")"
+        },
+        {
+          "line": 69,
+          "text": "(display \"the compiler differentiated each function inline.\")"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/parallel.esk",
+      "source_sha256": "2ffc1e69b0e6d5121cc8dcf10922cdfa31e17bb40266ee525d208741e74a8e85",
+      "title": "Parallel thunks and thread-pool information",
+      "kind": "example",
+      "purpose": "Introduce parallel-execute.",
+      "algorithm": "Run three independent squaring thunks and collect their results.",
+      "domain": "Inputs 10,20,30 with expected list (100,400,900).",
+      "arithmetic": "Exact integer arithmetic with runtime scheduling.",
+      "validation": "Prints results and worker information; expected output is a comment, not an assertion.",
+      "limitations": "No throughput or determinism benchmark is implemented.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Parallel Computation — Work-stealing thread pool"
+        },
+        {
+          "line": 4,
+          "text": "(define results (parallel-execute"
+        },
+        {
+          "line": 9,
+          "text": "(display \"Parallel results: \") (display results) (newline)"
+        },
+        {
+          "line": 13,
+          "text": "(display \"Worker threads: \") (display (thread-pool-info)) (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/qng_vqe.esk",
+      "source_sha256": "96f7bb3649796f3b2366d917426664b966282102546df5ae101f983e543241c4",
+      "title": "Quantum natural-gradient comparison",
+      "kind": "example",
+      "purpose": "Compare regularized natural-gradient and ordinary-gradient updates from identical parameters.",
+      "algorithm": "Obtain vqe-gradient and quantum geometric tensor from Moonlab; solve (g+εI)d=gradient in Scheme.",
+      "domain": "Four ansatz parameters initialized (0.1,0.2,0.3,0.4),lr=0.3,reg=0.001,40 steps; source H₂ Hamiltonian.",
+      "arithmetic": "Floating-point backend gradients/metric and a 4×4 linear solve.",
+      "validation": "Prints energy progress and ground-energy reference; no iteration-speedup assertion is implemented.",
+      "limitations": "A printed/introductory expectation of fewer iterations is not a measured result in this catalogue; regularization and the selected ansatz matter.",
+      "prerequisites": "Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; =================================================================="
+        },
+        {
+          "line": 17,
+          "text": "(define lr 0.3) (define reg 0.001) (define steps 40)"
+        },
+        {
+          "line": 20,
+          "text": "(define (vsub u v) (vector (- (vector-ref u 0)(vector-ref v 0)) (- (vector-ref u 1)(vector-ref v 1))"
+        },
+        {
+          "line": 88,
+          "text": "            (display \"descends to the ground state far faster than the raw gradient.\") (newline))"
+        },
+        {
+          "line": 91,
+          "text": "                (begin (display \"   \") (display i) (display \"    \")"
+        },
+        {
+          "line": 92,
+          "text": "                       (display (vqe-energy ham tq)) (display \"   \") (display (vqe-energy ham tv)) (newline))"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/streaming_stats.esk",
+      "source_sha256": "fd101dfcf7bf4cbe3364fd2a4f6baea167de332bb4fd8d13c913b0c7550d4c8b",
+      "title": "Online mean and variance",
+      "kind": "example",
+      "purpose": "Accumulate bounded-state statistics over a synthetic stream.",
+      "algorithm": "Update a five-element Welford state holding count,mean,M₂,min,max.",
+      "domain": "200000 samples; PRNG seed 1234567; base 5+0.5 sin(i/10000), trend 0.0001(i/10000), uniform PRNG noise minus 0.5.",
+      "arithmetic": "Floating-point Welford updates and variance M₂/n.",
+      "validation": "Prints count,mean,population variance,stddev,extrema and actual-run timing; no statistical assertion.",
+      "limitations": "Despite the header mentioning percentiles, the body has no percentile estimator. M₂/n is population variance, not the unbiased M₂/(n−1) estimate.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 21,
+          "text": "(define n-samples 200000)"
+        },
+        {
+          "line": 25,
+          "text": "(define stream-rng (make-prng 1234567))"
+        },
+        {
+          "line": 87,
+          "text": "(display (* 1000.0 (/ n elapsed-ms))) (display \" samples/sec\") (newline)"
+        },
+        {
+          "line": 89,
+          "text": "(display \"Memory footprint of the streaming state: a single 5-element\") (newline)"
+        },
+        {
+          "line": 90,
+          "text": "(display \"vector.  The full 200,000-sample stream was never stored.\") (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/symbolic_diff.esk",
+      "source_sha256": "ea87c06eb45a9eeea68adb57af8a401f6a2dee8b3b0db47671b32cf6fd5bb420",
+      "title": "Symbolic, forward and reverse differentiation",
+      "kind": "example",
+      "purpose": "Display differentiation routes alongside an analytic derivative.",
+      "algorithm": "Use diff/D forms and runtime derivative/gradient for sin(x²)+3x, with vector wrapping for reverse mode.",
+      "domain": "Selected points 0,0.5,1,1.5,2 and x=2 symbolic examples.",
+      "arithmetic": "Symbolic transforms plus floating-point runtime evaluation.",
+      "validation": "Prints a comparison table and an agreement statement; no precision threshold assertion.",
+      "limitations": "The displayed statement does not itself verify machine-precision agreement or establish universal memory/runtime costs for AD modes.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 42,
+          "text": "(define x 2.0)"
+        },
+        {
+          "line": 43,
+          "text": "(define diff-at-x (diff (+ (sin (* x x)) (* 3 x)) x))"
+        },
+        {
+          "line": 85,
+          "text": "(display \"right tool for compile-time optimisation; forward mode wins for\") (newline)"
+        },
+        {
+          "line": 86,
+          "text": "(display \"low-input-dim, many-output-dim problems; reverse mode wins for\") (newline)"
+        },
+        {
+          "line": 87,
+          "text": "(display \"neural-network-shaped problems (many inputs, scalar loss).\") (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/tensors.esk",
+      "source_sha256": "5a4705399968990fb792a18c471bebe43e3205543c63787793aad6df1c98a534",
+      "title": "Tensor multiplication and reductions",
+      "kind": "example",
+      "purpose": "Show basic tensor creation and linear algebra calls.",
+      "algorithm": "Reshape supplied arrays, multiply 2×3 by 3×2, reduce sum/mean/max and add A to itself.",
+      "domain": "Fixed six-element A/B inputs.",
+      "arithmetic": "Floating-point tensor operations and backend dispatch.",
+      "validation": "Prints operation results without assertions.",
+      "limitations": "The available backend controls dispatch; this program does not prove a GPU was used or benchmark SIMD/BLAS/GPU performance.",
+      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Tensor Operations — Linear algebra and GPU dispatch"
+        },
+        {
+          "line": 5,
+          "text": "(define A (reshape #(1.0 2.0 3.0 4.0 5.0 6.0) 2 3))"
+        },
+        {
+          "line": 6,
+          "text": "(define B (reshape #(7.0 8.0 9.0 10.0 11.0 12.0) 3 2))"
+        },
+        {
+          "line": 14,
+          "text": "(display \"mean(A) = \") (display (tensor-mean A)) (newline)"
+        },
+        {
+          "line": 15,
+          "text": "(display \"max(A) = \") (display (tensor-max A)) (newline)"
+        },
+        {
+          "line": 19,
+          "text": "(display \"A + A = \") (display D) (newline)"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/vqe_h2.esk",
+      "source_sha256": "16ee4266c13ea345e3a5210f65a511285f6c7c63be02d50c2d74b0c4f216975a",
+      "title": "H₂ variational quantum optimization",
+      "kind": "example",
+      "purpose": "Exercise reverse-mode optimization through a backend quantum energy function.",
+      "algorithm": "Use gradient around vqe-energy and descend four ansatz parameters against a backend ground-energy reference.",
+      "domain": "H₂ bond=0.7414 Å,lr=0.2,200 steps; source-selected initial parameters.",
+      "arithmetic": "Floating-point backend energy/adjoint gradients and updates.",
+      "validation": "Prints optimization energy and the ground-energy reference; no final-error assertion.",
+      "limitations": "The calculation depends on the supplied ansatz/backend and is not an experimental molecular result or convergence guarantee.",
+      "prerequisites": "Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; ============================================================"
+        },
+        {
+          "line": 25,
+          "text": "(define bond 0.7414)   ;; H2 bond length in Angstrom (equilibrium)"
+        },
+        {
+          "line": 26,
+          "text": "(define lr   0.2)      ;; gradient-descent step size"
+        },
+        {
+          "line": 49,
+          "text": "            (display \"state -- no finite differences, no framework, no GC pauses.\") (newline))"
+        },
+        {
+          "line": 52,
+          "text": "                (begin (display \"  step \") (display step)"
+        },
+        {
+          "line": 53,
+          "text": "                       (display \"   E = \") (display (vqe-energy ham p)) (display \" Ha\") (newline))"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    },
+    {
+      "path": "examples/wgsl_artifact/generate.esk",
+      "source_sha256": "4598899b130bc9a1007309ac69007978d8c8ee18a1be8fa0b83b28740e8de1bb",
+      "title": "Bounded strain-energy WGSL generator",
+      "kind": "example",
+      "purpose": "Generate value and two derivative evaluators from one Taylor model.",
+      "algorithm": "Take order-10 Taylor coefficients of W(e)=(a/b)(exp(be)−1−be), derive coefficient arrays and emit bounded Horner WGSL.",
+      "domain": "a=2 Pa,b=3,e₀=0,|t|≤0.2; source emits a maximum of 4096 samples and generation/status fields.",
+      "arithmetic": "Floating-point Taylor/AD observations; emitted WGSL uses f32.",
+      "validation": "Source compares value/first/second derivatives on 41 points with thresholds 1e-9/1e-8/1e-6 and prints AD_MODEL_PASS/FAIL; build_artifact.py additionally compares native/VM output.",
+      "limitations": "Nested generator is outside examples/*.esk discovery. Sampled AD errors, analytic remainder/conversion bounds and recorded-adapter GPU evidence are distinct; no new browser/GPU execution is claimed.",
+      "prerequisites": "Built eshkol-run/stdlib; use examples/wgsl_artifact/build_artifact.py. The optional browser demo requires its existing Node/browser/WebGPU setup, not a new qualification hardware requirement.",
+      "review_status": "source-inspected",
+      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; One independent dimensionless strain e.  a=2 Pa and b=3 are held fixed."
+        },
+        {
+          "line": 4,
+          "text": "(define a 2.0)"
+        },
+        {
+          "line": 5,
+          "text": "(define b 3.0)"
+        },
+        {
+          "line": 70,
+          "text": "(display \"}\\n\")"
+        },
+        {
+          "line": 71,
+          "text": "(display \"// wgsl-end\\n\")"
+        },
+        {
+          "line": 72,
+          "text": "(display (if (and (< err-value 1e-9) (< err-first 1e-8) (< err-second 1e-6))"
+        }
+      ],
+      "literature_review": "The linked source is the reference for the implemented demonstration."
+    }
+  ],
+  "runner_contract": {
+    "path": "scripts/run_examples_tests.sh",
+    "source_sha256": "54af42a95ffea531aa8b2a23c76d3de40a69d39dca852e2f5f5fca044b6270a4",
+    "discovery": "examples/*.esk",
+    "mode": "aot",
+    "quantum_condition": "ESHKOL_QUANTUM_ENABLED=ON",
+    "quantum_sources": [
+      "examples/vqe_h2.esk",
+      "examples/h2_vibrational_quantum.esk",
+      "examples/h2_vibrational_full.esk",
+      "examples/qng_vqe.esk"
+    ],
+    "excluded_patterns": [
+      "selene_*",
+      "qllm_*",
+      "agent.esk",
+      "consciousness_*"
+    ]
+  }
+}

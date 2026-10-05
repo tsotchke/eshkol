@@ -1,11 +1,8 @@
 # Navier-Stokes examples: residuals, scaling laws and similarity profiles
 
-Status: verified on macOS arm64 with native JIT (`-r`) and native AOT. The nine
-programs are discovered by `scripts/run_examples_tests.sh`, which runs on the
-lite CI lanes, and each is additionally pinned by a JIT and an AOT CTest entry
-(18 tests total, `ctest --test-dir build -R '^ns_'`, under 60s together). The
-completion oracle `navier-stokes-mechanization` in
-`.icc/completion-oracles.yaml` carries one criterion per program.
+<!-- example-catalogue:ns-summary:start -->
+The authored matrix contains **12 programs, 14 criteria and 28 CTest entries**, each with native JIT and AOT variants, under `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Localization supplies three criteria. The actual run supplies outcomes and timing; this documentation update reports source inspection only.
+<!-- example-catalogue:ns-summary:end -->
 
 Source: an external reference construction for the three-dimensional
 Navier-Stokes equations,
@@ -30,17 +27,22 @@ nonzero if any check failed.
 
 ## What each program covers
 
-| Program | Paper sections | What it computes | Checks |
+<!-- example-catalogue:ns-table:start -->
+| Program | Paper sections | Implemented calculation | CTest criteria |
 |---|---|---|---|
-| [`mathematics_navier_stokes_viscosity_scaling.esk`](../examples/mathematics_navier_stokes_viscosity_scaling.esk) | 3 (outline), 10.4 equations (10.22)-(10.23) | The residual `R(u,p) = d_t u + (u.grad)u - nu Lap u + grad p` assembled from AD partials of an explicit smooth divergence-free polynomial field, and the viscosity rescaling identity verified as an exact rational equality at four rational viscosities, with the energy and dissipation identities | 9 |
-| [`mathematics_navier_stokes_similarity_scales.esk`](../examples/mathematics_navier_stokes_similarity_scales.esk) | 2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7)) | The self-similar axisymmetric ansatz in similarity coordinates: incompressibility and the centrifugal pressure balance as AD identities, the coordinate derivatives of Lemma 4.1 differentiated through the implicit solve for `q`, the nine scale-law exponents fitted from computed quantities, the core kinetic energy exponent, and the unbounded background residual | 23 |
-| [`mathematics_navier_stokes_first_principles.esk`](../examples/mathematics_navier_stokes_first_principles.esk) | 2.1, 3.1, 4.1 ((4.9), (4.12), (4.13)) | The scale exponents derived, not assumed: a linear system in the five unknown exponents with one free parameter `h`, solved exactly over the rationals, followed by the admissible range of `h` derived from the positivity requirements; then the leading profile series derived from the leading balance operator by exact interpolation and an exact linear solve, with a negative control | 21 |
-| [`mathematics_navier_stokes_pulse_stress.esk`](../examples/mathematics_navier_stokes_pulse_stress.esk) | 2.2, 3.2 (Figure 4), 3.3 and 7 | The oscillatory ring pulses: zero angular means, nonzero averaged momentum fluxes, the leading transversality that makes them divergence free, the two-family covariance system solved in exact rational arithmetic with positivity, and the Craik-Criminale growth-then-decay of a single mode on an affine background | 20 |
-| [`mathematics_navier_stokes_stress_cone.esk`](../examples/mathematics_navier_stokes_stress_cone.esk) | 4.3, Lemma 4.5, Appendix C | The cone equivalence (4.20)-(4.23) decided by exact rational sign tests on a quadratic (never a square root); the base flow's own radial equation (4.9)-(4.10) integrated exactly; a threshold `P_K` established once (Part D) and reused (not reasserted) for the physical `(a, -b_s)` of the constructed stress, which lands inside the admissible cone | 21 |
-| [`mathematics_navier_stokes_residual_order_n.esk`](../examples/mathematics_navier_stokes_residual_order_n.esk) | 5, 5.1, equations (5.1)-(5.6) | Section 5's order-by-order recursion, reduced to a fixed linear operator against a known lower-order forcing, substituted as a formal expansion truncated at order N and read off with the exact-coefficient Taylor tower (`taylor`/`derivative-n`) | 8 |
-| [`mathematics_navier_stokes_heat_exterior.esk`](../examples/mathematics_navier_stokes_heat_exterior.esk) | 2.3, Appendix A, Lemma A.1 | The curvature-corrected radial heat equation for the azimuthal exterior, solved exactly by a triangular recursion in t; Appendix A's distinct-power-weight moment matrix, exact for a small case; the smooth limit at `t -> 1`, contrasted against a deliberately wrong blowing-up candidate | 8 |
-| [`mathematics_navier_stokes_oscillatory_realization.esk`](../examples/mathematics_navier_stokes_oscillatory_realization.esk) | 6, 7, 2.2 | Two pulse families as exact trigonometric polynomials on a 4-point auxiliary torus, their zero angular mean and nonzero flux products extracted by `torus-average`, and the stacked stress solve via `core.exact_linalg`'s `exact-solve` | 11 |
-| [`mathematics_navier_stokes_pulse_growth.esk`](../examples/mathematics_navier_stokes_pulse_growth.esk) | Introduction ([9]), 2.2 | The Craik-Criminale wavevector law on a simple-shear background, exact and AD-verified; the amplification-then-damping crossover bisected exactly and cross-checked against an RK4-integrated amplitude curve | 16 |
+| [mathematics_navier_stokes_first_principles.esk](../examples/mathematics_navier_stokes_first_principles.esk#L1) | 2.1, 3.1, 4.1 ((4.9), (4.12), (4.13)) | Solve an exact exponent linear system with free h; interpolate the leading operator, solve finite profile recurrences and compare leading physical residuals. | `ns_leading_profile_balance` |
+| [mathematics_navier_stokes_heat_exterior.esk](../examples/mathematics_navier_stokes_heat_exterior.esk#L1) | 2.3, Appendix A, Lemma A.1 | Solve curvature-corrected radial heat coefficients by triangular recursion, invert a distinct-power moment matrix and inspect near-terminal-time behavior. | `ns_heat_exterior_exact` |
+| [mathematics_navier_stokes_localization.esk](../examples/mathematics_navier_stokes_localization.esk#L1) | 10, Proposition 10.1, Lemmas 10.2-10.4, Corollary 10.6 | Cancel a temporal pole with a cutoff polynomial, guard spatial bumps, periodize within one cell and differentiate a discrete energy model. | `ns_localization_smooth_extension`, `ns_energy_dissipation_bounds`, `ns_torus_corollary_scaling` |
+| [mathematics_navier_stokes_mean_corrections.esk](../examples/mathematics_navier_stokes_mean_corrections.esk#L1) | 8, Lemma 8.2 and Lemma 8.7 | Build supported divergence-free bump fields, compute a five-moment generalized Vandermonde matrix and solve amplitudes with exact_linalg. | `ns_five_moment_vandermonde` |
+| [mathematics_navier_stokes_oscillatory_realization.esk](../examples/mathematics_navier_stokes_oscillatory_realization.esk#L1) | 6, 7, 2.2 | Construct trigonometric polynomials on a four-point auxiliary torus, extract zero-mode fluxes and solve a two-component stress matrix. | `ns_oscillatory_zero_mode` |
+| [mathematics_navier_stokes_pulse_growth.esk](../examples/mathematics_navier_stokes_pulse_growth.esk#L1) | Introduction ([9]), 2.2 | Derive the affine-background wavevector law and log-amplitude rate, bisect the crossover and integrate the amplitude by RK4. | `ns_pulse_growth_crossover` |
+| [mathematics_navier_stokes_pulse_stress.esk](../examples/mathematics_navier_stokes_pulse_stress.esk#L1) | 2.2, 3.2 (Figure 4), 3.3 and 7 | Average angular products, solve a rational two-family covariance system and integrate one transverse mode on an affine background. | `ns_covariance_two_family_solve` |
+| [mathematics_navier_stokes_residual_ladder.esk](../examples/mathematics_navier_stokes_residual_ladder.esk#L1) | 9, (9.8), (9.18), Propositions 9.3 and 9.6 | Compute the rational exponent ladder and cancel three Taylor coefficients of the scalar residual with linear term 2w and quadratic w². | `ns_residual_exponent_ladder` |
+| [mathematics_navier_stokes_residual_order_n.esk](../examples/mathematics_navier_stokes_residual_order_n.esk#L1) | 5, 5.1, equations (5.1)-(5.6) | Apply a fixed linear correction operator to known lower-order forcing; compare Taylor coefficients with derivative-n/factorial extraction. | `ns_residual_order_n_vanishes` |
+| [mathematics_navier_stokes_similarity_scales.esk](../examples/mathematics_navier_stokes_similarity_scales.esk#L1) | 2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7)) | Build the self-similar axisymmetric ansatz, differentiate q’s implicit solve, fit scale exponents and evaluate core energy/physical residual scaling. | `ns_similarity_exponents_solved` |
+| [mathematics_navier_stokes_stress_cone.esk](../examples/mathematics_navier_stokes_stress_cone.esk#L1) | 4.3, Lemma 4.5, Appendix C | Use rational quadratic sign tests, integrate the radial profile equation and reuse an established threshold P_K on constructed stresses. | `ns_cone_condition_equivalence` |
+| [mathematics_navier_stokes_viscosity_scaling.esk](../examples/mathematics_navier_stokes_viscosity_scaling.esk#L1) | 3 (outline), 10.4 equations (10.22)-(10.23) | Assemble time/advection/Laplacian/pressure derivatives by AD for u=(1+t)(y²z,z²x,x²y), p=xyz+tx²; rescale fields and grids. | `ns_viscosity_scaling_exact` |
+<!-- example-catalogue:ns-table:end -->
 
 ## What the verdicts certify
 
@@ -287,46 +289,52 @@ amplification terms and gives pure viscous decay with no crossover.
 
 ## Running them
 
-```bash
-cmake -S . -B build -G Ninja -DESHKOL_BUILD_TESTS=ON
-cmake --build build -j8
+<!-- example-catalogue:ns-commands:start -->
+Prerequisites and scope are stated in the [complete mathematics catalogue](MATHEMATICS_EXAMPLES.md). Run from the repository root after building the compiler and stdlib.
 
-# JIT
-./build/eshkol-run -r examples/mathematics_navier_stokes_viscosity_scaling.esk
-./build/eshkol-run -r examples/mathematics_navier_stokes_similarity_scales.esk
+```bash
+mkdir -p .scratch/example-manual
 ./build/eshkol-run -r examples/mathematics_navier_stokes_first_principles.esk
-./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_stress.esk
-./build/eshkol-run -r examples/mathematics_navier_stokes_stress_cone.esk
-./build/eshkol-run -r examples/mathematics_navier_stokes_residual_order_n.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_first_principles.esk -o .scratch/example-manual/mathematics_navier_stokes_first_principles && .scratch/example-manual/mathematics_navier_stokes_first_principles
+
 ./build/eshkol-run -r examples/mathematics_navier_stokes_heat_exterior.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_heat_exterior.esk -o .scratch/example-manual/mathematics_navier_stokes_heat_exterior && .scratch/example-manual/mathematics_navier_stokes_heat_exterior
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_localization.esk -o .scratch/example-manual/mathematics_navier_stokes_localization && .scratch/example-manual/mathematics_navier_stokes_localization
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_mean_corrections.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_mean_corrections.esk -o .scratch/example-manual/mathematics_navier_stokes_mean_corrections && .scratch/example-manual/mathematics_navier_stokes_mean_corrections
+
 ./build/eshkol-run -r examples/mathematics_navier_stokes_oscillatory_realization.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_oscillatory_realization.esk -o .scratch/example-manual/mathematics_navier_stokes_oscillatory_realization && .scratch/example-manual/mathematics_navier_stokes_oscillatory_realization
+
 ./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_growth.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_pulse_growth.esk -o .scratch/example-manual/mathematics_navier_stokes_pulse_growth && .scratch/example-manual/mathematics_navier_stokes_pulse_growth
 
-# AOT
-./build/eshkol-run -o build/ns_vs examples/mathematics_navier_stokes_viscosity_scaling.esk
-./build/ns_vs
-```
+./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_stress.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_pulse_stress.esk -o .scratch/example-manual/mathematics_navier_stokes_pulse_stress && .scratch/example-manual/mathematics_navier_stokes_pulse_stress
 
-The examples suite discovers the nine files automatically:
+./build/eshkol-run -r examples/mathematics_navier_stokes_residual_ladder.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_residual_ladder.esk -o .scratch/example-manual/mathematics_navier_stokes_residual_ladder && .scratch/example-manual/mathematics_navier_stokes_residual_ladder
 
-```bash
-./scripts/run_examples_tests.sh
-```
+./build/eshkol-run -r examples/mathematics_navier_stokes_residual_order_n.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_residual_order_n.esk -o .scratch/example-manual/mathematics_navier_stokes_residual_order_n && .scratch/example-manual/mathematics_navier_stokes_residual_order_n
 
-The CTest entries, nine JIT and nine AOT (18 total, under 60s together), are
-named for the criterion ids used by the mechanization design document and by
-the `navier-stokes-mechanization` completion oracle:
+./build/eshkol-run -r examples/mathematics_navier_stokes_similarity_scales.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_similarity_scales.esk -o .scratch/example-manual/mathematics_navier_stokes_similarity_scales && .scratch/example-manual/mathematics_navier_stokes_similarity_scales
 
-```bash
+./build/eshkol-run -r examples/mathematics_navier_stokes_stress_cone.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_stress_cone.esk -o .scratch/example-manual/mathematics_navier_stokes_stress_cone && .scratch/example-manual/mathematics_navier_stokes_stress_cone
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_viscosity_scaling.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_viscosity_scaling.esk -o .scratch/example-manual/mathematics_navier_stokes_viscosity_scaling && .scratch/example-manual/mathematics_navier_stokes_viscosity_scaling
+
 ctest --test-dir build --output-on-failure -R '^ns_'
 ```
 
-`ns_viscosity_scaling_exact`, `ns_similarity_exponents_solved`,
-`ns_leading_profile_balance`, `ns_covariance_two_family_solve`,
-`ns_cone_condition_equivalence`, `ns_residual_order_n_vanishes`,
-`ns_heat_exterior_exact`, `ns_oscillatory_zero_mode` and
-`ns_pulse_growth_crossover`, each with a `_jit` and an `_aot` variant, pin the
-verdict line in both execution modes.
+The criterion table above declares `_jit` and `_aot` variants; it is not a receipt that either ran.
+<!-- example-catalogue:ns-commands:end -->
 
 ## Exactness boundaries
 
@@ -334,9 +342,9 @@ verdict line in both execution modes.
   family — the exponent solve, the Vandermonde interpolation, the
   profile-coefficient solve, the stress-cone threshold and identities — are
   written out over the scalar exact tower on Scheme lists of rationals.
-  `mathematics_navier_stokes_oscillatory_realization.esk` is the exception: it
-  uses `core.exact_linalg`'s `exact-solve`/`exact-rank`/`torus-average`
-  (merged from `feat/exact-rational-linalg`), which are also scalar-exact —
+  The oscillatory-realization, mean-correction and localization programs also
+  use `core.exact_linalg` for their exact solves or torus averages. Its
+  `exact-solve`/`exact-rank`/`torus-average` operations are scalar-exact —
   Eshkol tensors remain f64-backed, so `exact_linalg`'s matrices are vectors
   of row-vectors, never tensors.
 - Derivatives are exact at exact scalar points. Earlier rounds of this family
@@ -351,11 +359,11 @@ verdict line in both execution modes.
   data (`q^{2h}`, `sqrt(2X)`, the trigonometric pulses, the implicit solve for
   `q`, the RK4-integrated amplitude curve), the arithmetic is double precision
   and the verdicts state a tolerance.
-- No enclosure or interval bound is used anywhere in this family, and nothing
-  here should be read as a certified bound. `core.ad.interval` widens by a
-  relative epsilon rather than using directed rounding, and
-  `core.ad.taylor_models` bounds its remainder by a sampled derivative; neither
-  is rigorous today, and neither is invoked here.
+- This family does not invoke `core.ad.interval` or `core.ad.taylor_models`.
+  Read each verdict according to the construction it checks: an exact
+  algebraic identity, an explicitly constructed finite object, a truncated
+  series identity, or a numerical comparison with a stated tolerance. The
+  numerical comparisons do not establish a uniform interval bound.
 - All derivatives are automatic, not symbolic. `(diff expr var)` exists and
   returns a quoted S-expression, but it is not used in this family; every
   derivative printed or compared comes from `derivative`, `derivative-n`,
@@ -395,10 +403,10 @@ These are capability gaps, stated as such.
   (`core.ad.rigorous_taylor_models`, with `tm-bound` / `tm-prove-bound` /
   `tm-prove-nonzero`) — see
   [reference/stdlib/certified-enclosures.md](reference/stdlib/certified-enclosures.md).
-  What remains is routing these programs' tolerances through that layer; the
-  validated `core.ad.interval` widens by a relative epsilon and
-  `core.ad.taylor_models` bounds its remainder by sampling, and it is those two
-  that the checks here currently rest on.
+  What remains is routing these programs' numerical tolerances through that
+  layer. The examples currently use direct exact-equality checks or sampled
+  numerical comparisons; they do not call either `core.ad.interval` or
+  `core.ad.taylor_models`.
 - **Symbolic series values for the residual to every order.** Only a scalar
   model of the order-by-order recursion is closed here
   (`mathematics_navier_stokes_residual_order_n.esk`), not the paper's actual

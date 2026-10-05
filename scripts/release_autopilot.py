@@ -22,6 +22,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_target import target_for_tag
+from release_publication_contract import ContractError, load_record, validate_notes, validate_publication, validate_proof
 
 
 class Wait(RuntimeError):
@@ -67,16 +68,11 @@ def require_checks(checks, required):
 
 
 def require_receipt(receipt, sha, run, target):
-    target_for_tag(target)
-    if (receipt.get("schema") != "eshkol.release-readiness.v1"
-            or receipt.get("sha") != sha
-            or str(receipt.get("run_id")) != str(run["id"])
-            or str(receipt.get("run_attempt")) != str(run["run_attempt"])
-            or receipt.get("target") != target
-            or receipt.get("status") != "ready"
-            or type(receipt.get("score")) not in (int, float)
-            or receipt["score"] != 100):
-        raise Wait("Missing or mismatched exact-commit ready/100 receipt")
+    try:
+        validate_proof(receipt, {**receipt, "sha": sha, "run_id": run["id"], "run_attempt": run["run_attempt"],
+                                "target": target, "role": "candidate-proof"})
+    except (ContractError, TypeError) as exc:
+        raise Wait("Missing or mismatched exact-commit v2 ready/100 receipt: " + str(exc)) from exc
 
 
 def require_window(config, now):
@@ -276,7 +272,7 @@ class Release:
         artifacts = self.api(f"actions/runs/{run['id']}/artifacts?per_page=100")["artifacts"]
         names = {a["name"] for a in artifacts if not a["expired"]}
         receipt_name = "release-readiness-receipt-" + sha
-        if receipt_name not in names or "release-dry-run-" + sha not in names:
+        if receipt_name not in names or "release-dry-run-" + sha not in names or "release-publication-evidence-" + sha not in names:
             raise Wait("Successful run lacks strict readiness receipt or validated asset set")
         folder = self.directory / ("receipt-" + str(run["id"]) + "-" + str(run["run_attempt"]))
         receipt_path = folder / "release-readiness-receipt.json"
@@ -285,7 +281,17 @@ class Release:
                 "--dir", str(folder), mutate=True)
         receipt = json.loads(receipt_path.read_text())
         require_receipt(receipt, sha, run, self.target)
-        self.state["proof"] = {"sha": sha, "run_id": run["id"], "url": run["html_url"]}
+        evidence = folder / "publication-evidence"
+        if not (evidence / "manifest.json").exists():
+            self.gh("run", "download", str(run["id"]), "--repo", self.repo,
+                    "--name", "release-publication-evidence-" + sha, "--dir", str(evidence), mutate=True)
+        try:
+            validate_publication(self.checkout / "tests/coverage/release_record.json", self.checkout / "RELEASE_NOTES.md",
+                                 evidence, receipt, {"sha": sha, "target": self.target, "role": "candidate-proof",
+                                                     "run_id": run["id"], "run_attempt": run["run_attempt"]})
+        except (ContractError, OSError) as exc:
+            raise Wait("Strict candidate publication evidence failed: " + str(exc)) from exc
+        self.state["proof"] = {"sha": sha, "run_id": run["id"], "run_attempt": run["run_attempt"], "url": run["html_url"], "receipt": str(receipt_path), "evidence": str(evidence)}
         return run
 
     def proof_and_checks(self, branch, sha, checks, required):
@@ -302,35 +308,12 @@ class Release:
         return run
 
     def prepare_notes(self, pr):
-        """Finish documentation before validating the immutable candidate SHA."""
-        path = self.checkout / "RELEASE_NOTES.md"
-        original = path.read_text()
-        pending = "RELEASE_EVIDENCE_PENDING" in original.split("\n---\n", 1)[0]
-        status = re.search(r"^\*\*Status:\*\*.*$", original.split("\n---\n", 1)[0], re.MULTILINE)
-        candidate = status and any(word in status.group().lower() for word in ("candidate", "pending"))
-        if not pending and not candidate:
-            return
-        if not self.execute:
-            raise Wait("Preview: would prepare release notes before validation")
-        current, separator, prior = original.partition("\n---\n")
-        if status:
-            historical = re.search(r"The [^.]*measurements[^\n]*", status.group())
-            replacement = "**Status:** publication requires passing CI, strict readiness, and asset checks."
-            if historical:
-                replacement += "\n\n" + historical.group()
-            current = current.replace(status.group(), replacement, 1)
-        current = re.sub(r"<!--\s*RELEASE_EVIDENCE_PENDING\s*-->", "", current)
-        if "RELEASE_EVIDENCE_PENDING" in current:
-            raise Wait("Unrecognized pending-evidence block requires an editorial update")
-        current += ("\n\nThe final candidate and tagged commit are checked before publication. "
-            "Validation results are recorded in the [Release workflow](https://github.com/"
-            + self.repo + "/actions/workflows/release.yml).\n")
-        path.write_text(current + separator + prior)
-        self.git("add", "--", "RELEASE_NOTES.md", mutate=True)
-        self.git("commit", "--only", "-m", "docs: prepare release notes for final validation", "--",
-            "RELEASE_NOTES.md", mutate=True)
-        self.git("push", "origin", "HEAD:refs/heads/" + pr["headRefName"], mutate=True)
-        raise Wait("Release notes prepared; validating the final candidate commit before merge")
+        """Require deliberate complete preparation; never delete its way to ready."""
+        try:
+            record = load_record(self.checkout / "tests/coverage/release_record.json", strict=True)
+            validate_notes((self.checkout / "RELEASE_NOTES.md").read_text(), record, self.config["tag"], "candidate-proof")
+        except (ContractError, OSError) as exc:
+            raise Wait("Release metadata must be prepared with actual observed totals and synced documents before immutable validation: " + str(exc)) from exc
 
     def ensure_homebrew(self):
         endpoint = "repos/tsotchke/homebrew-eshkol/contents/Formula/eshkol.rb"
@@ -437,7 +420,10 @@ class Release:
         self.proof_and_checks("master", sha, master_checks, required)
         require_window(self.config, utcnow())
         self.command([self.config["python"], "scripts/release_readiness_guard.py", "notes", "--notes",
-            "RELEASE_NOTES.md", "--tag", self.config["tag"], "--output", str(self.directory / "release-notes.md")],
+            "RELEASE_NOTES.md", "--tag", self.config["tag"], "--output", str(self.directory / "release-notes.md"),
+            "--role", "candidate-proof", "--workspace", str(self.checkout), "--sha", sha, "--target", self.target,
+            "--run-id", str(self.state["proof"]["run_id"]), "--run-attempt", str(self.state["proof"]["run_attempt"]),
+            "--receipt", self.state["proof"]["receipt"], "--evidence-root", self.state["proof"]["evidence"]],
             cwd=self.checkout)
         if self.api("branches/master")["commit"]["sha"] != sha:
             raise Wait("Master changed during verification; restarting with its new commit")

@@ -88,6 +88,13 @@ for arg in "$@"; do
     esac
 done
 
+# Full scope is explicit in the producer trace, including reduced modes.
+python3 - "$TRACE_FILE" "$DO_ESKB" "$AUDIT_ONLY" <<'PYSCOPE'
+import json, sys
+with open(sys.argv[1], "a") as handle:
+    handle.write(json.dumps({"kind": "release_measurement_scope", "value": {"do_eskb": int(sys.argv[2]), "audit_only": int(sys.argv[3])}}) + "\n")
+PYSCOPE
+
 TIMEOUT_RUN="${VM_PARITY_TIMEOUT:-60}"
 
 # Real, signal-observing timeout wrapper (scripts/lib/harness_outcome.sh).

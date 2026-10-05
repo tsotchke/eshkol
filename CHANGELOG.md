@@ -14,6 +14,15 @@ requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
 
 ### Changed
 
+- **Example documentation follows the implementations.** The catalogue covers all
+  67 programs, including 46 mathematics examples, with algorithms, arithmetic,
+  executable checks, prerequisites and limits. Navier–Stokes registration is
+  derived from its 12 programs, 14 criteria and 28 native JIT/AOT entries. (#742)
+- **Publication requires complete source-bound measurements.** The release gate
+  validates full configured CTest and VM parity results against committed
+  metadata and the exact source, workflow run and build cohort. Removing a
+  pending marker cannot qualify a candidate for publication. (#742)
+
 - **CUDA builds load cuBLAS when GPU GEMM needs it.** CPU-only native, JIT, and
   VM paths avoid its eager memory footprint. Library admission validates the
   ABI major and complete typed API; failure retains CPU matrix multiplication

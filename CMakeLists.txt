@@ -3597,7 +3597,7 @@ endif()
 #
 # scripts/run_examples_tests.sh discovers examples/*.esk and is a compile-and-run
 # smoke gate: it fails a program that crashes, not one that prints a failing
-# verdict. These nine programs exit nonzero on any failed check, and the CTest
+# verdict. The programs registered below exit nonzero on any failed check, and the CTest
 # entries below additionally pin the verdict line, in JIT (-r) and AOT, so a
 # regression in the AD surface they exercise cannot pass silently. The test
 # names are the criterion ids used by the mechanization design document.
@@ -7605,6 +7605,12 @@ endif()
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
     foreach(_release_invariant_test IN ITEMS
             test_release_invariant_contracts
+            test_example_catalogue
+            test_release_publication_contract
+            test_release_readiness_guard
+            test_release_automation_workflow
+            test_release_autopilot
+            test_v1_3_release_evidence_recipe
             test_release_probe_receipts
             test_native_image_io_contract)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py")

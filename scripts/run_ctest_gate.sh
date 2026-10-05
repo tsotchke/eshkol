@@ -65,7 +65,10 @@ REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 # shellcheck source=lib/checked_write.sh
 . "$REPO_ROOT/scripts/lib/checked_write.sh"
-TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 TRACE_FILE="$TRACE_DIR/ctest_gate.jsonl"
 mkdir -p "$TRACE_DIR"
 
@@ -136,11 +139,42 @@ print(json.dumps({"kind": "test_result", "name": sys.argv[1],
 # ── run ──────────────────────────────────────────────────────────────────
 SCRATCH_ROOT="$REPO_ROOT/.scratch"
 mkdir -p "$SCRATCH_ROOT"
-RUN_DIR="$(mktemp -d "$SCRATCH_ROOT/ctest-gate.XXXXXX")"
-RUN_LOG="$RUN_DIR/ctest.log"
-JUNIT="$RUN_DIR/ctest-junit.xml"
-cleanup() { rm -rf -- "$RUN_DIR"; }
-trap cleanup EXIT
+if [ -n "${RELEASE_MEASUREMENT_DIR:-}" ]; then
+    RUN_DIR="$RELEASE_MEASUREMENT_DIR"
+    [ ! -e "$RUN_DIR" ] && mkdir "$RUN_DIR" || exit 2
+elif eshkol_durable_enabled; then
+    RUN_DIR="$(eshkol_durable_prepare_dir ctest-gate)" || exit $?
+else
+    RUN_DIR="$(mktemp -d "$SCRATCH_ROOT/ctest-gate.XXXXXX")"
+fi
+RUN_LOG="$RUN_DIR/raw.log"
+JUNIT="$RUN_DIR/junit.xml"
+# Retain actual outcomes even when the producer aborts; no raw evidence cleanup.
+python3 scripts/release_publication_contract.py source --workspace "$REPO_ROOT" --output "$RUN_DIR/source-start.json" || exit $?
+ctest --test-dir "$BUILD_DIR" --show-only=json-v1 > "$RUN_DIR/inventory.json" || exit $?
+cp tests/coverage/release_optional_ctest.json "$RUN_DIR/optional-policy.json" || exit $?
+CTEST_RC=255
+finish_measurement() {
+    local gate_rc=$?
+    cp "$TRACE_FILE" "$RUN_DIR/trace.jsonl"
+    python3 - "$RUN_DIR/exit.json" "$gate_rc" "$CTEST_RC" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} <<'PYEXIT'
+import json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps({"gate_exit_code": int(sys.argv[2]), "ctest_exit_code": int(sys.argv[3]), "argv": sys.argv[4:]}) + "\n")
+PYEXIT
+    if [ -n "${ESHKOL_RELEASE_PHASE_ID:-}" ] && [ -r "$TRACE_DIR/release-build-cohort.json" ]; then
+        argv_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"})"
+        python3 scripts/release_publication_contract.py measure --root "$RUN_DIR" \
+            --producer run_ctest_gate --workspace "$REPO_ROOT" --start "$RUN_DIR/source-start.json" \
+            --cohort "$TRACE_DIR/release-build-cohort.json" --phase-id "$ESHKOL_RELEASE_PHASE_ID" \
+            --target "$RELEASE_TARGET" --exit-code "$gate_rc" --ctest-exit-code "$CTEST_RC" \
+            --argv-json "$argv_json" > "$RUN_DIR/receipt-validation.log" 2>&1
+        receipt_rc=$?
+        [ "$gate_rc" -ne 0 ] || gate_rc=$receipt_rc
+    fi
+    exit "$gate_rc"
+}
+trap finish_measurement EXIT
 
 echo "== ctest gate =="
 echo "build dir: $BUILD_DIR"
@@ -199,6 +233,7 @@ for case in root.iter("testcase"):
               or status in ("fail", "failed", "notrun", "error"))
     skipped = case.find("skipped") is not None or status == "skipped"
     if skipped:
+        print("%s\tSKIP\tconfigured test skipped" % name)
         continue
     detail = "%s in %ss" % (status or ("failed" if failed else "passed"),
                             case.get("time") or "?")
@@ -241,7 +276,10 @@ while IFS="$(printf '\t')" read -r name verdict detail; do
         PASS)
             PASSED=$((PASSED + 1))
             echo "PASSED ctest::$name"
-            emit_test_result "ctest::$name" "$verdict" "$detail"
+            emit_test_result "ctest-full::$name" "$verdict" "$detail"
+            ;;
+        SKIP)
+            echo "SKIP ctest::$name — $detail"
             ;;
         INFRA)
             INFRA=$((INFRA + 1))
@@ -256,7 +294,7 @@ while IFS="$(printf '\t')" read -r name verdict detail; do
         *)
             FAILED=$((FAILED + 1))
             echo "FAILED ctest::$name — $detail"
-            emit_test_result "ctest::$name" "$verdict" "$detail"
+            emit_test_result "ctest-full::$name" "$verdict" "$detail"
             ;;
     esac
     emit_event "ctest_$name" "$verdict" "$detail"
@@ -266,7 +304,7 @@ if [ "$TOTAL" -eq 0 ]; then
     emit_event "ctest_suite_green" FAIL "ctest produced no parseable test verdicts"
     emit_test_result "ctest::suite" FAIL "no parseable test verdicts"
     echo "ctest gate: FAIL — no test verdicts parsed from the run" >&2
-    eshkol_checked_rm "$RESULTS"
+    true # retain per-test outcomes durably
     exit 1
 fi
 
@@ -299,13 +337,14 @@ GROUP_FAILURES=0
 GROUP_INFRA=0
 while IFS="$(printf '\t')" read -r event regex floor label; do
     [ -n "${event:-}" ] || continue
-    matched=0; g_pass=0; g_fail=0; g_infra=0; first_fail=""
+    matched=0; g_pass=0; g_fail=0; g_infra=0; g_skip=0; first_fail=""
     while IFS="$(printf '\t')" read -r name verdict detail; do
         [ -n "$name" ] || continue
         printf '%s' "$name" | grep -Eq "$regex" || continue
         matched=$((matched + 1))
         case "$verdict" in
             PASS)  g_pass=$((g_pass + 1)) ;;
+            SKIP) g_skip=$((g_skip + 1)) ;;
             INFRA) g_infra=$((g_infra + 1)) ;;
             *)
                 g_fail=$((g_fail + 1))
@@ -346,8 +385,8 @@ while IFS="$(printf '\t')" read -r event regex floor label; do
         emit_event "$event" INFRA "$label: $g_infra/$matched infra (no verdict obtained)"
         echo "INFRA  ctest-group::$event ($g_infra/$matched) — no verdict obtained"
     else
-        emit_event "$event" PASS "$label: $g_pass/$matched ctest gates green$([ "$g_infra" -gt 0 ] && printf '; %d infra' "$g_infra")"
-        emit_test_result "ctest-group::$event" PASS "$g_pass/$matched green"
+        emit_event "$event" PASS "$label: $g_pass measured PASS, $g_skip configured skips out of $matched$([ "$g_infra" -gt 0 ] && printf '; %d infra' "$g_infra")"
+        emit_test_result "ctest-group::$event" PASS "$g_pass measured PASS; $g_skip optional/unresolved configured skips (policy receipt decides)"
         echo "PASSED ctest-group::$event ($g_pass/$matched)$([ "$g_infra" -gt 0 ] && printf ' — %d infra (no verdict)' "$g_infra")"
     fi
 done <<GROUPS_EOF
@@ -380,7 +419,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILUR
         echo
         echo "Trace written: $TRACE_FILE"
         echo "ctest gate: PASS ($SUMMARY)"
-        eshkol_checked_rm "$RESULTS"
+        true # retain per-test outcomes durably
         exit 0
     elif [ "$INFRA" -gt 0 ]; then
         SUMMARY="$SUMMARY; $INFRA infra (no verdict, not counted as failure)"
@@ -390,7 +429,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILUR
         echo "Trace written: $TRACE_FILE"
         echo "ctest gate: PASS ($SUMMARY)"
         echo "WARNING: $INFRA ctest test(s) could not obtain a verdict (per-test TIMEOUT) — re-run under less contention if this persists." >&2
-        eshkol_checked_rm "$RESULTS"
+        true # retain per-test outcomes durably
         exit 0
     else
         DETAIL="$SUMMARY; every parsed testcase is PASS/INFRA but ctest itself exited $CTEST_RC with 0 INFRA to explain it — harness contradiction, not trusted"
@@ -399,7 +438,7 @@ if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILUR
         echo
         echo "Trace written: $TRACE_FILE"
         echo "ctest gate: FAIL ($DETAIL)" >&2
-        eshkol_checked_rm "$RESULTS"
+        true # retain per-test outcomes durably
         exit 1
     fi
 fi
@@ -410,5 +449,5 @@ emit_test_result "ctest::suite" FAIL "$DETAIL"
 echo
 echo "Trace written: $TRACE_FILE"
 echo "ctest gate: FAIL ($DETAIL)" >&2
-eshkol_checked_rm "$RESULTS"
+true # retain per-test outcomes durably
 exit 1
