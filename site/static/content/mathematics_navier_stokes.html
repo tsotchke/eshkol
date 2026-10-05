@@ -1,0 +1,210 @@
+<h1 id="navier-stokes-examples-residuals-scaling-laws-and-similarity-profiles">Navier-Stokes examples: residuals, scaling laws and similarity profiles</h1>
+<!-- example-catalogue:ns-summary:start -->
+<p>The authored matrix contains <strong>12 programs, 14 criteria and 28 CTest entries</strong>, each with native JIT and AOT variants, under <code>ESHKOL_BUILD_TESTS AND TARGET eshkol-run</code>. Localization supplies three criteria. The actual run supplies outcomes and timing; this documentation update reports source inspection only. <!-- example-catalogue:ns-summary:end --></p>
+<p>Source: an external reference construction for the three-dimensional Navier-Stokes equations, <a href="https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf" class="uri">https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf</a>. Section, equation and lemma numbers cited below (e.g. “Lemma 4.5”, “(4.20)”) refer to that source.</p>
+<p>These programs do not reproduce the source’s full argument. They compute the <em>leading structure</em> of the construction mechanically, where a reader would otherwise differentiate, rescale and balance powers by hand: the residual operator is assembled from AD partials, the similarity coordinates are differentiated through their own implicit definition, the scale exponents are solved as a linear system in exact rational arithmetic, and the leading profile series is derived from the leading balance operator rather than quoted. Every number printed is computed by the program. The only literal constants that appear in a comparison are the exact values the paper states, and each such comparison is either an exact rational equality or carries a stated tolerance.</p>
+<p>Each program prints one <code>PASS:</code>/<code>FAIL:</code> line per check, a <code>Passed:</code>/<code>Failed:</code> count, a <code>RESULT: ALL PASS</code> or <code>RESULT: FAILURES DETECTED</code> verdict, and exits nonzero if any check failed.</p>
+<h2 id="what-each-program-covers">What each program covers</h2>
+<!-- example-catalogue:ns-table:start -->
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Program</th>
+<th>Paper sections</th>
+<th>Implemented calculation</th>
+<th>CTest criteria</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_first_principles.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_first_principles.esk</a></td>
+<td>2.1, 3.1, 4.1 ((4.9), (4.12), (4.13))</td>
+<td>Solve an exact exponent linear system with free h; interpolate the leading operator, solve finite profile recurrences and compare leading physical residuals.</td>
+<td><code>ns_leading_profile_balance</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_heat_exterior.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_heat_exterior.esk</a></td>
+<td>2.3, Appendix A, Lemma A.1</td>
+<td>Solve curvature-corrected radial heat coefficients by triangular recursion, invert a distinct-power moment matrix and inspect near-terminal-time behavior.</td>
+<td><code>ns_heat_exterior_exact</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_localization.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_localization.esk</a></td>
+<td>10, Proposition 10.1, Lemmas 10.2-10.4, Corollary 10.6</td>
+<td>Cancel a temporal pole with a cutoff polynomial, guard spatial bumps, periodize within one cell and differentiate a discrete energy model.</td>
+<td><code>ns_localization_smooth_extension</code>, <code>ns_energy_dissipation_bounds</code>, <code>ns_torus_corollary_scaling</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_mean_corrections.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_mean_corrections.esk</a></td>
+<td>8, Lemma 8.2 and Lemma 8.7</td>
+<td>Build supported divergence-free bump fields, compute a five-moment generalized Vandermonde matrix and solve amplitudes with exact_linalg.</td>
+<td><code>ns_five_moment_vandermonde</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_oscillatory_realization.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_oscillatory_realization.esk</a></td>
+<td>6, 7, 2.2</td>
+<td>Construct trigonometric polynomials on a four-point auxiliary torus, extract zero-mode fluxes and solve a two-component stress matrix.</td>
+<td><code>ns_oscillatory_zero_mode</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_pulse_growth.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_pulse_growth.esk</a></td>
+<td>Introduction ([9]), 2.2</td>
+<td>Derive the affine-background wavevector law and log-amplitude rate, bisect the crossover and integrate the amplitude by RK4.</td>
+<td><code>ns_pulse_growth_crossover</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_pulse_stress.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_pulse_stress.esk</a></td>
+<td>2.2, 3.2 (Figure 4), 3.3 and 7</td>
+<td>Average angular products, solve a rational two-family covariance system and integrate one transverse mode on an affine background.</td>
+<td><code>ns_covariance_two_family_solve</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_residual_ladder.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_residual_ladder.esk</a></td>
+<td>9, (9.8), (9.18), Propositions 9.3 and 9.6</td>
+<td>Compute the rational exponent ladder and cancel three Taylor coefficients of the scalar residual with linear term 2w and quadratic w².</td>
+<td><code>ns_residual_exponent_ladder</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_residual_order_n.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_residual_order_n.esk</a></td>
+<td>5, 5.1, equations (5.1)-(5.6)</td>
+<td>Apply a fixed linear correction operator to known lower-order forcing; compare Taylor coefficients with derivative-n/factorial extraction.</td>
+<td><code>ns_residual_order_n_vanishes</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_similarity_scales.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_similarity_scales.esk</a></td>
+<td>2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7))</td>
+<td>Build the self-similar axisymmetric ansatz, differentiate q’s implicit solve, fit scale exponents and evaluate core energy/physical residual scaling.</td>
+<td><code>ns_similarity_exponents_solved</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_stress_cone.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_stress_cone.esk</a></td>
+<td>4.3, Lemma 4.5, Appendix C</td>
+<td>Use rational quadratic sign tests, integrate the radial profile equation and reuse an established threshold P_K on constructed stresses.</td>
+<td><code>ns_cone_condition_equivalence</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_viscosity_scaling.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_viscosity_scaling.esk</a></td>
+<td>3 (outline), 10.4 equations (10.22)-(10.23)</td>
+<td>Assemble time/advection/Laplacian/pressure derivatives by AD for u=(1+t)(y²z,z²x,x²y), p=xyz+tx²; rescale fields and grids.</td>
+<td><code>ns_viscosity_scaling_exact</code></td>
+</tr>
+</tbody>
+</table>
+<!-- example-catalogue:ns-table:end -->
+<h2 id="what-the-verdicts-certify">What the verdicts certify</h2>
+<h3 id="mathematics_navier_stokes_viscosity_scalingesk"><code>mathematics_navier_stokes_viscosity_scaling.esk</code></h3>
+<p>The test field is <code>u = (1+t)(y^2 z, z^2 x, x^2 y)</code>, <code>p = xyz + t x^2</code>, chosen so that <code>d_x u1 = d_y u2 = d_z u3 = 0</code> makes it divergence free while advection and the Laplacian are both nonzero. Every derivative is an AD call; the residual is never hand-differentiated.</p>
+<ul>
+<li>Divergence of the reference field and of each rescaled field is an exact zero.</li>
+<li>The identity of (10.22), <code>R_nu(u_nu,p_nu)(x,t) = sqrt(nu) R_1(u,p)(x/sqrt(nu),t)</code>, holds as an exact rational equality at <code>nu = 1/4, 1, 9/16, 25/9, 4</code>, whose square roots are rational. Two negative controls confirm the check is not vacuous: omitting the <code>sqrt(nu)</code> on the velocity, or the <code>nu</code> on the pressure, makes the gap nonzero.</li>
+<li>At <code>nu = 2</code>, whose square root is irrational, the same identity holds to <code>1e-9</code>.</li>
+<li>The discrete energy and dissipation of (10.23) scale by exactly <code>nu^{5/2}</code> on the correspondingly scaled grid. These are Riemann sums, not integrals: the <code>nu</code> grid is the reference grid scaled by <code>sqrt(nu)</code>, so the identity is exact term by term, and that is what is certified.</li>
+<li>The time variable is untouched by the rescaling, so the time coordinate itself is unchanged.</li>
+</ul>
+<h3 id="mathematics_navier_stokes_similarity_scalesesk"><code>mathematics_navier_stokes_similarity_scales.esk</code></h3>
+<p>Concrete smooth profiles are installed that satisfy incompressibility (4.7), the centrifugal pressure balance and the axis regularity (4.4), with the slightly asymmetric axial profile of Section 2.1. They are <strong>not</strong> the profiles of Theorem 4.6: nothing here makes the leading residual vanish on the inner region or matches the heat exterior, so the residual is unbounded throughout the core rather than only in the annulus.</p>
+<ul>
+<li>The divergence-free identity of (4.7) and the pressure balance <code>Pi_X = E^2/(2X)</code> hold at every sample point to <code>1e-9</code>, with a negative control on a perturbed <code>V0</code>.</li>
+<li><code>q - z^2 q^{2h} = tau</code> is solved to <code>1e-14</code> by a fixed-point iteration whose contraction rate is <code>2 h eta^2</code>, and the five coordinate derivatives of Lemma 4.1 agree with AD through that solve to <code>1e-7</code>.</li>
+<li>The scale exponents come out as pure power laws and are fitted to <code>1e-9</code>: <code>l_r ~ tau^{1/2}</code>, <code>l_z ~ tau^{1/2-h}</code>, <code>l_r/l_z ~ tau^h</code>, <code>sup|u_theta|, sup|u_z| ~ tau^{-1/2-h}</code>, <code>sup|u_r| ~ tau^{-1/2}</code>, <code>Re_theta ~ tau^{-h}</code> (unbounded), <code>Re_r ~ tau^0</code>, and the axial-to-radial diffusion ratio <code>~ tau^{2h}</code> (vanishing).</li>
+<li>The core kinetic energy separates into a tangential part scaling as exactly <code>tau^{1/2-3h}</code> (fitted to <code>1e-9</code>) and a radial part scaling as <code>tau^{1/2-h}</code>. The total therefore carries a relative correction of size <code>tau^{2h}</code>, which biases the fitted slope of the total upward by at most <code>2h</code>. The verdict on the total energy uses that <code>2h</code> bound and additionally requires the fitted slope to decrease monotonically toward <code>1/2-3h</code>; the sharp statement is the tangential one. With the paper’s <code>h &lt; 1/100</code> the correction decays too slowly for a naive log-log fit of the total to converge, and the program says so by construction rather than by widening a tolerance without a reason.</li>
+<li>The leading angular and axial residuals, with axial viscosity removed as in (4.12), grow like exactly <code>tau^{-(1+A)}</code>: <code>q^{A+1} R_theta^{(0)}</code> is independent of <code>tau</code> to a relative <code>1e-6</code> over six decades, which is the self-similarity of the residual itself. The full residual, axial viscosity included, is within <code>2h</code> of the same exponent. The magnitude at <code>tau = 1e-8</code> exceeds <code>1e6</code>, so no smooth force can sustain this background alone.</li>
+</ul>
+<h3 id="mathematics_navier_stokes_first_principlesesk"><code>mathematics_navier_stokes_first_principles.esk</code></h3>
+<p><strong>Part A.</strong> The exponents in <code>l_r ~ tau^a</code>, <code>l_z ~ tau^b</code>, <code>u_theta ~ tau^-c</code>, <code>u_z ~ tau^-d</code>, <code>u_r ~ tau^-e</code> are unknowns. Five requirements from Sections 2.1 and 3.1 — radial diffusion and radial and axial transport all entering the leading balance at rate <code>tau^-1</code>, the angular Reynolds number growing like <code>tau^-h</code>, and the axial-to-radial diffusion ratio being <code>tau^{2h}</code> — form a linear system whose right-hand sides are affine in <code>h</code>. It is solved exactly over the rationals, twice, for the constant part and the <code>h</code> coefficient. The program derives</p>
+<pre class="text"><code>a = 1/2,   b = 1/2 - h,   c = 1/2 + h,   d = 1/2 + h,   e = 1/2</code></pre>
+<p>so <code>c = d = A</code> and <code>b = D</code>, and the compound exponents follow: core energy <code>1/2 - 3h</code>, <code>Re_theta ~ tau^{-h}</code>, <code>Re_r ~ tau^0</code>, diffusion ratio <code>tau^{2h}</code>. Incompressibility, <code>u_r/l_r ~ u_z/l_z</code>, is <strong>not</strong> imposed; it is checked afterwards and is satisfied, which is what makes the system consistent.</p>
+<p>The admissible range of <code>h</code> is then derived, not stated: each requirement is “this exponent is strictly positive”, an affine condition <code>p + qh &gt; 0</code> that gives <code>h &gt; -p/q</code> when <code>q &gt; 0</code> and <code>h &lt; -p/q</code> when <code>q &lt; 0</code>. Intersecting them gives <code>0 &lt; h &lt; 1/6</code>. The program prints which requirement binds each end: the lower end by the core becoming slender (<code>l_r/l_z -&gt; 0</code>) and the upper end by the core kinetic energy vanishing, <code>1/2 - 3h &gt; 0</code>. The paper’s <code>0 &lt; h &lt; 1/100</code> lies strictly inside.</p>
+<p><strong>Part B.</strong> For the leading tangential residual (4.12) the identities</p>
+<pre class="text"><code>q^{A+1} R_theta^{(0)} = (E/L) B_theta,     q^{A+1} R_z^{(0)} = B_z / L</code></pre>
+<p>hold exactly, with <code>B_theta</code> and <code>B_z</code> the profile operators of (4.13) built from the sources (4.9). Both <code>E * B_theta</code> and <code>B_z</code> are linear in the profile they act on, so the program evaluates each operator on the monomial basis <code>X^j</code> with AD, recovers each image polynomial by exact rational interpolation (an exact Vandermonde solve), and then solves, again exactly, for the coefficients that annihilate every image coefficient below the truncation order. That derives the profile series from the operator.</p>
+<ul>
+<li>The derived series annihilate their operators below the truncation exactly, and the truncation residual is an exact rational.</li>
+<li>The derived coefficient ratios are printed and match the Kummer recurrences of the two operators, identifying the profiles as <code>1F1(1+h; 2; X/2)</code> and <code>1F1(A; 1; X/2)</code>. The recurrences are a consequence of the derivation, not an input to it.</li>
+<li>Negative control: perturbing one interior coefficient of either series leaves a nonzero coefficient below the truncation.</li>
+<li>Pushed back through the physical residual, assembled by AD in <code>(r,z,t)</code> through the implicit solve for <code>q</code>, the derived profiles make <code>q^{A+1} R_theta^{(0)}</code> vanish on <code>z = 0</code> to <code>1e-7</code>, while the perturbed profile leaves a nonzero <code>tau</code>-independent value and a physical residual that diverges like <code>tau^{-(1+A)}</code> with the fitted exponent matching to <code>1e-4</code>.</li>
+</ul>
+<p>All of Part B is evaluated at <code>eta = 0</code> with profiles independent of <code>eta</code>. The <code>eta</code>-derivatives that appear in (4.9) are still computed rather than dropped; they evaluate to zero there, and that is what makes the reduced balance a pair of Kummer equations.</p>
+<h3 id="mathematics_navier_stokes_pulse_stressesk"><code>mathematics_navier_stokes_pulse_stress.esk</code></h3>
+<ul>
+<li>Both pulse families have zero angular mean in every cylindrical component (<code>&lt; 1e-12</code> by discrete angular averaging over a full ring), while the averaged products <code>&lt;w_r w_theta&gt;</code> and <code>&lt;w_r w_z&gt;</code> are nonzero and agree with the exact rational values <code>a_i a_j / 2</code> to <code>1e-12</code>. Reversing both components of a flux leaves the flux unchanged, which is the mechanism of Section 2.2.</li>
+<li>The cylindrical divergence of each pulse, computed by AD, reduces to the <code>O(1)</code> envelope term <code>w_r/r</code>: the term of the order of the wavenumber cancels exactly under the transversality <code>a . k = 0</code>. A negative control detunes <code>k_z</code> and leaves an <code>O(wavenumber)</code> divergence.</li>
+<li>The two covariance vectors are linearly independent — an exact rational determinant <code>19/80</code> — so the 2x2 system spans both required stress components. A target inside the cone has strictly positive weights and is reproduced exactly by the positive combination; a target outside it has a negative weight. All of this is written out over the scalar exact tower on Scheme lists of rationals; it does not go through the tensor <code>solve</code>/<code>det</code> path, which is f64-backed.</li>
+<li>The Craik-Criminale mode on an affine background: the closed-form wavevector satisfies <code>k' = -S^T k</code> as an exact rational identity under AD, the AD gradient of the production quadratic form equals <code>-(S + S^T) a</code>, the wave stays transverse along the integration, and the amplitude grows by a factor above <code>1.5</code>, peaks at an interior time near the minimum of <code>|k|^2</code>, then decays below both the maximum and its initial value as the shear shortens the radial wavelength and viscous damping overtakes the amplification.</li>
+</ul>
+<h3 id="mathematics_navier_stokes_stress_coneesk"><code>mathematics_navier_stokes_stress_cone.esk</code></h3>
+<p>The stress T0 is constructed, not assumed: with <code>eta = 0</code> and profiles independent of <code>eta</code>, (4.9) collapses to <code>S_q = -l - h</code> and <code>S_n = -X U' - A U</code>, the radial equations (4.10) are integrated in exact rational arithmetic, and Q_s is checked against its own radial equation (4.9). Lemma 4.5’s cone equivalence and threshold are certified without ever evaluating a square root: the relaxed and admissible cone tests are exact rational sign tests on the quadratic <code>Pq(v) = 2(P_c-v)^2 - (v-2)J_c^2</code>, whose root structure (leading coefficient positive, <code>Pq(2) &gt; 0</code>, <code>Pq(P_c) &lt;= 0</code>) is itself certified rather than assumed; the floating-point value of <code>U(P_c,J_c)</code> is computed only to be compared against the exact decision, never to gate a verdict.</p>
+<p>Part D’s threshold <code>P_K</code> is established once, over a parameter sample K, and Part E reuses that SAME derivation for the physical <code>(a, -b_s)</code> of the constructed base flow (added to K with <code>w = 0</code>) rather than re-deriving a second, disconnected argument: with <code>p_s = (P_K * factor, 0)</code>, the constructed stress lands inside the admissible cone at every sampled radius, the cone decision stays exact rational throughout, is homogeneous under rescaling, and a separate radius with <code>v_s &lt;= 2</code> demonstrates the relaxed cone (the connecting interval) is genuinely weaker than the admissible one. Negative controls: a rescaled <code>Q_s</code> breaks its own radial equation; a stress with <code>T_theta + t_s T_z &lt;= 0</code> or a transverse-heavy stress is refused; a target far below <code>P_K</code> is refused.</p>
+<h3 id="mathematics_navier_stokes_residual_order_nesk"><code>mathematics_navier_stokes_residual_order_n.esk</code></h3>
+<p>Section 5.1’s equations (5.1)-(5.6) are a linear recursion: at each order <code>n</code> the same fixed operator is solved against a forcing built from already- constructed lower orders. This is mechanized on a scalar model of that skeleton — a fixed operator <code>c(X)</code> and a known forcing sequence <code>f_n(X)</code> — with <code>y_n(X) = f_n(X)/c(X)</code> solving <code>L[y_n] = f_n</code> exactly at each of <code>N = 4</code> orders. Substituting the truncated expansion <code>y(tau,X) = sum_{n&lt;N} y_n(X) tau^n</code> into the model residual <code>R = c*y - F</code> and reading off the coefficient of each power of <code>tau</code> with <code>taylor</code>/<code>derivative-n</code> at the exact point <code>tau = 0</code> gives orders <code>0..N-1</code> vanishing exactly and order <code>N</code> equal to <code>-f_N(X)</code> exactly (the background residual beyond leading order, nonzero in general — why Section 5 keeps going to the next order). Negative controls: perturbing the order-<code>k</code> correction leaves a nonzero coefficient at EXACTLY order <code>k</code>, every other order (including the order-<code>N</code> tail) untouched, for <code>k = 0, 2, 3</code>; the unperturbed (<code>delta = 0</code>) case recovers the all-orders-vanish result.</p>
+<h3 id="mathematics_navier_stokes_heat_exterioresk"><code>mathematics_navier_stokes_heat_exterior.esk</code></h3>
+<p>For a purely azimuthal, height-independent field, the momentum equation reduces to the curvature-corrected radial heat equation <code>d_t v = nu(d_r^2 v + (1/r) d_r v - v/r^2)</code>. Its operator satisfies the closed form <code>L[r^n] = (n^2-1) r^{n-2}</code>, so an odd polynomial in r with time-dependent coefficients solves it exactly whenever those coefficients satisfy the resulting triangular linear recursion in t — verified by AD at four <code>(r,t)</code> samples, with a negative control that perturbs one coefficient without its coupled partners. Appendix A’s Lemma A.1 (distinct power weights give an invertible moment matrix) is certified exactly for a 2x2 case (two polynomial bumps, weights <code>x^0</code> and <code>x^2</code>): the moment matrix is exactly invertible, solving it exactly reproduces a prescribed discrepancy, and colliding weights give a singular matrix. The one moment that needs a transcendental profile piece is computed to a stated numerical tolerance (mesh refinement, not <code>=</code>), never asserted exact — the exactness boundary Appendix A itself does not need to cross for polynomial pieces. The exterior stays finite as <code>t -&gt; 1</code> at fixed radius, contrasted against a deliberately wrong candidate carrying the inner profile’s own <code>(1-t)^{-1}</code>-type divergent factor, which grows without bound.</p>
+<h3 id="mathematics_navier_stokes_oscillatory_realizationesk"><code>mathematics_navier_stokes_oscillatory_realization.esk</code></h3>
+<p>Two pulse families are built as trigonometric polynomials on a 4-point auxiliary torus, where <code>cos</code>/<code>sin</code> of the sample angles <code>k pi/2</code> are the exact integers <code>{1,0,-1,0}</code>/<code>{0,1,0,-1}</code> (a lookup table — no transcendental call anywhere in this file). Each family’s radial, azimuthal and axial components are in-phase with distinct amplitude ratios, matching Section 2.2’s “different ratios of radial angular-momentum flux to radial axial-momentum flux”: each family’s velocity has exactly zero angular mean (<code>torus-average</code>), and the quadratic momentum-flux products’ zero mode — extracted BY <code>torus-average</code>, not asserted — matches <code>A*B/2</code> and <code>A*C/2</code> exactly. The stacked 2x2 flux matrix is exactly invertible, and <code>core.exact_linalg</code>’s <code>exact-solve</code> finds POSITIVE weights realizing a prescribed target stress (both families contributing constructively, i.e. inside the cone). Negative controls: one family alone has <code>exact-rank</code> 1, and being non-square cannot realize a general two-component target (<code>exact-solve</code> raises rather than fabricating a value).</p>
+<h3 id="mathematics_navier_stokes_pulse_growthesk"><code>mathematics_navier_stokes_pulse_growth.esk</code></h3>
+<p>For a simple-shear background <code>U = (Sy, 0)</code>, the Craik-Criminale wavevector equation <code>dk/dt = -(grad U)^T k</code> gives <code>k_theta</code> constant and <code>k_r(t) = k_r(0) - S k_theta t</code> exactly affine in t — verified against the CL ODE by AD at five sampled t, with a negative control on a perturbed law. A representative growth-rate model <code>rate(t) = G0 - lambda t - nu|k(t)|^2</code> (amplification proportional to shear, weakened linearly by the changing orientation, opposed by viscous dissipation growing with <code>|k(t)|^2</code>) is positive initially and eventually negative, monotonically decreasing, with the crossover bisected to an exact rational bracket under <code>1e-9</code> width — no square root, no <code>exp</code>. The log-amplitude <code>P(t)</code>, an exact rational cubic, is verified to be the exact AD antiderivative of <code>rate(t)</code>, and <code>exp(P(t))</code> is cross-checked against an independently RK4-integrated amplitude curve to <code>1e-3</code> relative, with the numerically-integrated curve’s peak matching the exact crossover to within one integration step. The tail decays (<code>P(t)</code> very negative at large t). Negative control: zero shear collapses the model’s amplification terms and gives pure viscous decay with no crossover.</p>
+<h2 id="running-them">Running them</h2>
+<!-- example-catalogue:ns-commands:start -->
+<p>Prerequisites and scope are stated in the <a href="/docs#page=mathematics_examples" data-url="/content/mathematics_examples.html">complete mathematics catalogue</a>. Run from the repository root after building the compiler and stdlib.</p>
+<pre class="bash"><code>mkdir -p .scratch/example-manual
+./build/eshkol-run -r examples/mathematics_navier_stokes_first_principles.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_first_principles.esk -o .scratch/example-manual/mathematics_navier_stokes_first_principles &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_first_principles
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_heat_exterior.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_heat_exterior.esk -o .scratch/example-manual/mathematics_navier_stokes_heat_exterior &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_heat_exterior
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_localization.esk -o .scratch/example-manual/mathematics_navier_stokes_localization &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_localization
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_mean_corrections.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_mean_corrections.esk -o .scratch/example-manual/mathematics_navier_stokes_mean_corrections &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_mean_corrections
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_oscillatory_realization.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_oscillatory_realization.esk -o .scratch/example-manual/mathematics_navier_stokes_oscillatory_realization &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_oscillatory_realization
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_growth.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_pulse_growth.esk -o .scratch/example-manual/mathematics_navier_stokes_pulse_growth &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_pulse_growth
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_stress.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_pulse_stress.esk -o .scratch/example-manual/mathematics_navier_stokes_pulse_stress &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_pulse_stress
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_residual_ladder.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_residual_ladder.esk -o .scratch/example-manual/mathematics_navier_stokes_residual_ladder &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_residual_ladder
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_residual_order_n.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_residual_order_n.esk -o .scratch/example-manual/mathematics_navier_stokes_residual_order_n &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_residual_order_n
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_similarity_scales.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_similarity_scales.esk -o .scratch/example-manual/mathematics_navier_stokes_similarity_scales &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_similarity_scales
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_stress_cone.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_stress_cone.esk -o .scratch/example-manual/mathematics_navier_stokes_stress_cone &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_stress_cone
+
+./build/eshkol-run -r examples/mathematics_navier_stokes_viscosity_scaling.esk
+./build/eshkol-run -L./build examples/mathematics_navier_stokes_viscosity_scaling.esk -o .scratch/example-manual/mathematics_navier_stokes_viscosity_scaling &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_viscosity_scaling
+
+ctest --test-dir build --output-on-failure -R &#39;^ns_&#39;</code></pre>
+<p>The criterion table above declares <code>_jit</code> and <code>_aot</code> variants; it is not a receipt that either ran. <!-- example-catalogue:ns-commands:end --></p>
+<h2 id="exactness-boundaries">Exactness boundaries</h2>
+<ul>
+<li>Exact arithmetic here is mostly <strong>scalar</strong>. Most exact systems in this family — the exponent solve, the Vandermonde interpolation, the profile-coefficient solve, the stress-cone threshold and identities — are written out over the scalar exact tower on Scheme lists of rationals. The oscillatory-realization, mean-correction and localization programs also use <code>core.exact_linalg</code> for their exact solves or torus averages. Its <code>exact-solve</code>/<code>exact-rank</code>/<code>torus-average</code> operations are scalar-exact — Eshkol tensors remain f64-backed, so <code>exact_linalg</code>’s matrices are vectors of row-vectors, never tensors.</li>
+<li>Derivatives are exact at exact scalar points. Earlier rounds of this family found four additional exactness leaks in <code>derivative</code>/<code>derivative-n</code>/<code>taylor</code> beyond the three closed SW-148/149/150 defects: a top-level <code>define</code>d constant (vs. an inline literal) in the differentiand, a loop-derived point argument, a several-deep composed differentiand, and a function-call expression passed directly as the differentiand alongside another <code>derivative</code>/<code>taylor</code> call site in the same file causing a hard compile failure. All four are now fixed and no longer reproduce; the affected programs’ AD surface notes record this in the past tense. Where the field carries irrational data (<code>q^{2h}</code>, <code>sqrt(2X)</code>, the trigonometric pulses, the implicit solve for <code>q</code>, the RK4-integrated amplitude curve), the arithmetic is double precision and the verdicts state a tolerance.</li>
+<li>This family does not invoke <code>core.ad.interval</code> or <code>core.ad.taylor_models</code>. Read each verdict according to the construction it checks: an exact algebraic identity, an explicitly constructed finite object, a truncated series identity, or a numerical comparison with a stated tolerance. The numerical comparisons do not establish a uniform interval bound.</li>
+<li>All derivatives are automatic, not symbolic. <code>(diff expr var)</code> exists and returns a quoted S-expression, but it is not used in this family; every derivative printed or compared comes from <code>derivative</code>, <code>derivative-n</code>, <code>gradient</code> or <code>taylor</code>.</li>
+</ul>
+<h2 id="compiler-defects-found-while-building-this-family">Compiler defects found while building this family</h2>
+<p>All defects this section used to describe in detail are closed: SW-148 (an exact operand stealing the scalar dispatch from a live jet), SW-149 (a vanishing tangent returning an inexact zero at an exact rational seed) and SW-150 (a captured outer variable lost by an inner differentiation pass) are pinned by <code>tests/ad/exact_rational_derivative_test.esk</code> and <code>tests/ad/nested_operator_matrix_test.esk</code>, and the four programs from the first round of this family now call <code>derivative</code>/<code>derivative-n</code> directly at their own call sites instead of routing around them. The four additional exactness leaks a later round of this family found — see “Exactness boundaries” above — are also fixed and no longer reproduce.</p>
+<h2 id="not-mechanized-yet">Not mechanized yet</h2>
+<p>These are capability gaps, stated as such.</p>
+<ul>
+<li><strong>Exact-element tensors.</strong> Eshkol tensors are f64-backed (<code>(tensor 1/3)</code> prints <code>#(0)</code>), so every exact system in this family is written out over the scalar exact tower on Scheme vectors/lists, or (for <code>mathematics_navier_stokes_oscillatory_realization.esk</code>) through <code>core.exact_linalg</code>’s vector-of-row-vectors matrices — never through the tensor linear-algebra path. An exact tensor element type would let these be one call each.</li>
+<li><strong>Certified enclosures with directed rounding.</strong> Every tolerance in this family is a numerical agreement at sampled points, not a bound over a region, so no statement here is a certified bound. The capability itself is no longer missing: v1.3.5 ships the directed-rounding builtins <code>fl-next-up</code> / <code>fl-next-down</code> on both engines, outward-rounded interval arithmetic (<code>core.ad.rigorous_interval</code>) and Makino-Berz rigorous Taylor models whose remainder is <strong>derived</strong> rather than sampled (<code>core.ad.rigorous_taylor_models</code>, with <code>tm-bound</code> / <code>tm-prove-bound</code> / <code>tm-prove-nonzero</code>) — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">reference/stdlib/certified-enclosures.md</a>. What remains is routing these programs’ numerical tolerances through that layer. The examples currently use direct exact-equality checks or sampled numerical comparisons; they do not call either <code>core.ad.interval</code> or <code>core.ad.taylor_models</code>.</li>
+<li><strong>Symbolic series values for the residual to every order.</strong> Only a scalar model of the order-by-order recursion is closed here (<code>mathematics_navier_stokes_residual_order_n.esk</code>), not the paper’s actual second-order elliptic system near the axis at every order. That needs a residual that returns a graded value whose coefficients can be collected and solved — symbolic multivariate polynomial and series <em>values</em> and polynomial-valued duals, neither of which exists today.</li>
+<li><strong>Proof-object export.</strong> Nothing here emits a certificate that could be checked without running Eshkol. Every verdict above rests on trusting this compiler, and that trust is not transferable.</li>
+</ul>

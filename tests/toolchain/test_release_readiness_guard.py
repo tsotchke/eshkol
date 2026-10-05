@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 import subprocess
 import unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_release_publication_contract import record, notes
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,17 +37,20 @@ class ReleaseGuardTests(unittest.TestCase):
                                 'v2.0.0-evolve')
 
     def test_planted_pending_sentinel_blocks_publication(self):
-        clean = '# Eshkol v1.3.5-evolve — Release Notes\n\nMeasured release.\n'
-        poisoned = clean + '\n<!-- RELEASE_EVIDENCE_PENDING -->\n'
-        self.assertEqual(guard.release_notes(clean, 'v1.3.5-evolve'), clean)
+        value = record()
+        clean = notes()
+        for extra in ('RELEASE_EVIDENCE_PENDING', '<!-- RELEASE_EVIDENCE_PENDING -->'):
+            with self.assertRaises(ValueError):
+                guard.release_notes(notes(extra=extra), value['tag'], record=value)
+        self.assertEqual(guard.release_notes(clean, value['tag'], record=value), clean.split('\n---\n')[0].rstrip() + '\n')
         with self.assertRaises(ValueError):
-            guard.release_notes(poisoned, 'v1.3.5-evolve')
-        self.assertIn(guard.PENDING, guard.release_notes(poisoned, 'v1.3.5-evolve', True))
-        # A prior release's notes cannot contaminate the current extraction.
-        self.assertEqual(guard.release_notes(clean + '\n---\n' + poisoned,
-                                            'v1.3.5-evolve'), clean)
+            guard.release_notes(clean, value['tag'])
         with self.assertRaises(ValueError):
-            guard.release_notes(clean, 'v1.3.4-evolve')
+            guard.release_notes(clean, value['tag'], True, record=value, role='tag-publication')
+        candidate = record(status='RELEASE CANDIDATE', ctest_total=None, vm_parity_total=None)
+        self.assertIn('RELEASE CANDIDATE', guard.release_notes(notes(status='RELEASE CANDIDATE'), value['tag'], True, record=candidate))
+        with self.assertRaises(ValueError):
+            guard.release_notes(notes(status='RELEASE CANDIDATE'), value['tag'], record=candidate)
 
     def backend(self, registry, head=SHA, dirty=False):
         def run(args):

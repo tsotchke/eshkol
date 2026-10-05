@@ -62,6 +62,8 @@ if [ -z "$PHASE_ID" ]; then
     echo "split readiness phases require ESHKOL_RELEASE_PHASE_ID" >&2
     exit 2
 fi
+export ESHKOL_RELEASE_PHASE_ID="$PHASE_ID"
+PUBLICATION_BUNDLE="$TRACE_DIR/publication"
 PHASE_STATE="$TRACE_DIR/release-phase-state.json"
 COHORT_MANIFEST="$TRACE_DIR/release-build-cohort.json"
 
@@ -82,6 +84,7 @@ check_cohort() {
 require_phase() {
     python3 scripts/release_phase_state.py require --repo-root "$REPO_ROOT" --state "$PHASE_STATE" --phase-id "$PHASE_ID" --phase "$1"
     check_cohort
+    validate_measurements
 }
 
 mark_phase() {
@@ -108,9 +111,39 @@ PY
     . scripts/lib/harness_outcome.sh
     eshkol_outcome_emit_test_result "$TRACE_DIR/release_test_actions.jsonl" release_action::run_tco_tests PASS "run_all_tests.sh completed all suites including run_tco_tests.sh"
     eshkol_outcome_emit_test_result "$TRACE_DIR/release_test_actions.jsonl" release_action::run_control_flow_tests PASS "run_all_tests.sh completed all suites including run_control_flow_tests.sh"
-    scripts/run_vm_parity.sh
+    # One canonical, unfiltered configured CTest producer; never repeated later.
+    mkdir "$PUBLICATION_BUNDLE"
+    cp "$COHORT_MANIFEST" "$PUBLICATION_BUNDLE/build-cohort.json"
+    RELEASE_MEASUREMENT_DIR="$PUBLICATION_BUNDLE/ctest" scripts/run_ctest_gate.sh
+    mkdir "$PUBLICATION_BUNDLE/vm"
+    python3 scripts/release_publication_contract.py source --workspace "$REPO_ROOT" --output "$PUBLICATION_BUNDLE/vm/source-start.json"
+    set +e
+    scripts/run_vm_parity.sh > "$PUBLICATION_BUNDLE/vm/raw.log" 2>&1
+    parity_rc=$?
+    set -e
+    cat "$PUBLICATION_BUNDLE/vm/raw.log"
+    cp "$TRACE_DIR/vm_parity.jsonl" "$PUBLICATION_BUNDLE/vm/trace.jsonl"
+    printf '{"exit_code":%s}\n' "$parity_rc" > "$PUBLICATION_BUNDLE/vm/exit.json"
+    python3 scripts/release_publication_contract.py measure --root "$PUBLICATION_BUNDLE/vm" \
+        --producer run_vm_parity --workspace "$REPO_ROOT" --start "$PUBLICATION_BUNDLE/vm/source-start.json" \
+        --cohort "$COHORT_MANIFEST" --phase-id "$PHASE_ID" --target "$RELEASE_TARGET" --exit-code "$parity_rc"
+    [ "$parity_rc" -eq 0 ] || return "$parity_rc"
+    python3 - "$PUBLICATION_BUNDLE" <<'PYMANIFEST'
+import hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+receipts = ["ctest/measurement.json", "vm/measurement.json"]
+(root / "manifest.json").write_text(json.dumps({"schema": "eshkol.release-measurements.v1", "receipts": receipts,
+    "receipt_sha256": {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in receipts}}, sort_keys=True, indent=2) + "\n")
+PYMANIFEST
+    validate_measurements
     python3 scripts/check_release_phase_receipts.py baseline --trace-dir "$TRACE_DIR"
     mark_phase baseline
+}
+
+validate_measurements() {
+    python3 scripts/release_publication_contract.py measurements --root "$PUBLICATION_BUNDLE" \
+        --sha "$(git rev-parse HEAD)" --target "$RELEASE_TARGET" --phase-id "$PHASE_ID" --cohort "$COHORT_MANIFEST"
 }
 
 run_smoke_phase() {
@@ -130,9 +163,19 @@ run_final_evidence_phase() {
     python3 scripts/verify_v1_3_release_evidence.py --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR"
     "$ICC_BIN" architecture-verify --repo "$ICC_REPO" --model "$ARCH_MODEL" --trace-dir "$TRACE_DIR" --emit-trace --format markdown
     mark_phase final-evidence
+    cp "$PHASE_STATE" "$PUBLICATION_BUNDLE/phase-state.json"
+    python3 - "$PUBLICATION_BUNDLE" <<'PYSTATE'
+import hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+manifest = json.loads((root / "manifest.json").read_text())
+manifest["phase_state_sha256"] = hashlib.sha256((root / "phase-state.json").read_bytes()).hexdigest()
+(root / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
+PYSTATE
 }
 
 run_readiness_phase() {
+    validate_measurements
     python3 scripts/verify_v1_3_release_evidence.py --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR"
     "$ICC_BIN" readiness --repo "$ICC_REPO" --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format json > "${READINESS_JSON:?}"
     "$ICC_BIN" readiness --repo "$ICC_REPO" --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format markdown

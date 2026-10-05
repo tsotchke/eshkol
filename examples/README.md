@@ -1,138 +1,102 @@
 # Eshkol Examples
 
-A runnable program collection spanning the language's load-bearing capabilities — automatic differentiation, parallel work-stealing, symbolic computation, the consciousness engine, real-time streaming, physical simulation, and exact verification of public mathematical witnesses. Every public example in this directory compiles cleanly, runs in well under a minute, and produces output you can inspect.
+<!-- example-catalogue:examples-overview:start -->
+The source-reviewed catalogue covers **67 programs**, including **46 mathematics programs**. Start with the [complete guide](../docs/EXAMPLES.md) or the [mathematics guide](../docs/MATHEMATICS_EXAMPLES.md) for algorithms, domains, arithmetic, checks, limits and per-program commands.
+
+The general runner discovers **66 flat sources** for native AOT, with **4 quantum-conditional programs** and the existing declared exclusions. The nested [WGSL generator](wgsl_artifact/README.md) follows its artifact pipeline. Dedicated mathematics registration contains NS **12/14/28** and IPM **29/29/58** programs/criteria/JIT-AOT entries, under the authored build condition.
+
+These are source and registration facts, not a new execution receipt. Each entry distinguishes asserted checks from printed diagnostics. Runtime, convergence, backend dispatch and cross-host byte equality require their own measured evidence.
+
+Run from the repository root with an already built compiler and stdlib, as described in the [Quickstart](../docs/QUICKSTART.md):
 
 ```bash
-# Compile and run any example in one command:
-./build/eshkol-run examples/<name>.esk -o /tmp/eshkol-<name>
-/tmp/eshkol-<name>
+mkdir -p .scratch/example-manual
+./build/eshkol-run -r examples/hello.esk
+./build/eshkol-run -L./build examples/hello.esk -o .scratch/example-manual/hello
+.scratch/example-manual/hello
 ```
 
-Or use the AOT compiler with no separate run step:
-
-```bash
-./build/eshkol-run examples/<name>.esk
-```
-
----
-
-## Start here
-
-| Example | What it shows | LOC |
-|---------|--------------|----:|
-| **[hello.esk](hello.esk)** | The simplest possible Eshkol program | 3 |
-| **[autodiff.esk](autodiff.esk)** | Forward- and reverse-mode AD in 16 lines | 19 |
-| **[tensors.esk](tensors.esk)** | Matrix creation, matmul, GPU dispatch (Metal / CUDA / SIMD) | 19 |
-| **[consciousness.esk](consciousness.esk)** | The 22-builtin neuro-symbolic surface: KB + factor graph + workspace | 25 |
-
-## Automatic differentiation
-
-The compiler differentiates through arbitrary Eshkol code — no framework, no graph object, no Python.
-
-| Example | What it shows | LOC |
-|---------|--------------|----:|
-| **[gradient_descent_demo.esk](gradient_descent_demo.esk)** | Train a 3-parameter quadratic on noisy data; loss falls from 63 → 0.06 in 400 steps | 93 |
-| **[newton_method.esk](newton_method.esk)** | Newton's root finder in 10 lines using `derivative`. Cube root, square root, the Dottie number, and a quintic root — each converges in 4–5 iterations | 70 |
-| **[symbolic_diff.esk](symbolic_diff.esk)** | Three modes of AD (`diff` / `derivative` / `gradient`) agree to machine precision on `sin(x²) + 3x`. The symbolic mode prints its rewritten AST | 87 |
-| **[differentiable_physics.esk](differentiable_physics.esk)** | Optimise a projectile launch angle by differentiating *through* a recursive Euler integrator with linear drag. Converges to the high-arc 68° solution in 200 steps with final error 1.3e-8 | 95 |
-| **[neural_xor.esk](neural_xor.esk)** | Two-layer MLP (2 → 4 hidden tanh → 1 sigmoid) learns XOR by full-batch gradient descent in 1,500 epochs. Loss 1.10 → <0.001 | 123 |
-| **[h2_vibrational.esk](h2_vibrational.esk)** | Molecular vibrational frequency from *arbitrary-order* AD: build an STO-3G H₂ potential-energy surface in pure Eshkol, take the force constant k = d²E/dR² with `derivative-n`, and recover ω = 5003 cm⁻¹ — matching the reference value | 134 |
-
-## Parallelism and performance
-
-Work-stealing thread pool, Chase-Lev deques, per-worker arenas, no GC pauses.
-
-| Example | What it shows | LOC |
-|---------|--------------|----:|
-| **[parallel.esk](parallel.esk)** | `parallel-execute` with three concurrent thunks across 24 workers | 13 |
-| **[monte_carlo_pi.esk](monte_carlo_pi.esk)** | Estimate π by parallel Monte Carlo: 1.6M samples across 8 independent PRNG streams in ~45 ms (≈35M samples/sec on M2 Ultra) | 81 |
-| **[streaming_stats.esk](streaming_stats.esk)** | Welford's online algorithm for running mean, variance, min, max. 200,000 samples processed without ever storing the stream | 90 |
-
-
-## Quantum chemistry
-
-Eshkol's automatic differentiation driving [Moonlab](https://github.com/tsotchke/moonlab)'s VQE — built only when `-DESHKOL_QUANTUM_ENABLED=ON`.
-
-| Example | What it shows | LOC |
-|---------|--------------|----:|
-| **[vqe_h2.esk](vqe_h2.esk)** | Gradient-descend *through* `vqe-energy` to the H₂ ground state, −1.14217 Ha; the gradient is Eshkol's, flowing through the Moonlab energy call | 60 |
-| **[h2_vibrational_quantum.esk](h2_vibrational_quantum.esk)** | Vibrational frequency from Moonlab's exact ground energy, finite-differenced over bond length: ω ≈ 4936 cm⁻¹ | 26 |
-| **[h2_vibrational_full.esk](h2_vibrational_full.esk)** | The deep weld: Eshkol Taylor-towers the Pauli coefficients while Moonlab supplies ⟨Pᵢ⟩, the parameter Hessian, and the response gradient via auxiliary Hamiltonians — the Born-Oppenheimer response formula gives ω = 5003 cm⁻¹, matching the pure-AD answer exactly | 187 |
-| **[qng_vqe.esk](qng_vqe.esk)** | Quantum Natural Gradient in Scheme: θ ← θ − lr·(g+εI)⁻¹∇E with the Fubini-Study metric g = `vqe-qgt`; reaches the ground state in ~⅓ the steps of vanilla GD | 96 |
-
-## Cognitive computing
-
-The consciousness engine: logic programming, active inference, global workspace.
-
-| Example | What it shows | LOC |
-|---------|--------------|----:|
-| **[bayesian_diagnosis.esk](bayesian_diagnosis.esk)** | Medical triage agent that combines a symbolic KB with a 3-variable factor graph; tracks free energy across three observation regimes | 105 |
-
-## AI-driven mathematics
-
-The public finite witnesses in [AI-driven mathematics examples](../docs/AI_MATHEMATICS_EXAMPLES.md)
-are flat files so the existing examples test target discovers them automatically.
-They print self-checking `PASS:` lines and finish with `RESULT: ALL PASS`.
-
-| Example | What it verifies |
-|---------|------------------|
-| **[mathematics_jacobian_counterexample.esk](mathematics_jacobian_counterexample.esk)** | The 2026 polynomial Keller map, rational fibers, cubic/discriminant geometry, exact determinant identity, AD, and two Theorem 5.1 family instances |
-| **[mathematics_alphatensor_3x3_gf2.esk](mathematics_alphatensor_3x3_gf2.esk)** | Public rank-23 3x3 matrix multiplication over F2 by complete basis-pair expansion |
-| **[mathematics_alphatensor_gf2.esk](mathematics_alphatensor_gf2.esk)** | Public rank-47 4x4 matrix multiplication over F2 by complete basis-pair expansion |
-| **[mathematics_funsearch_cap_set.esk](mathematics_funsearch_cap_set.esk)** | Public 512-point cap in AG(8,3), verified against every pair |
-
-## Mechanized mathematics: Navier-Stokes residuals and scaling laws
-
-Nine programs that compute the leading structure of a similarity-scaling
-construction for the three-dimensional Navier-Stokes equations, described in
-[Navier-Stokes examples](../docs/NAVIER_STOKES_EXAMPLES.md). They
-follow the same flat-file convention, print `PASS:` lines and `RESULT: ALL PASS`,
-and exit nonzero on any failed check.
-
-| Example | What it verifies |
-|---------|------------------|
-| **[mathematics_navier_stokes_viscosity_scaling.esk](mathematics_navier_stokes_viscosity_scaling.esk)** | The momentum residual assembled from AD partials, and the viscosity rescaling of the equation, energy and dissipation as exact rational identities at four rational viscosities |
-| **[mathematics_navier_stokes_similarity_scales.esk](mathematics_navier_stokes_similarity_scales.esk)** | The self-similar ansatz in similarity coordinates: incompressibility, the pressure balance, the coordinate derivatives differentiated through the implicit solve, the nine scale-law exponents, and the unbounded background residual |
-| **[mathematics_navier_stokes_first_principles.esk](mathematics_navier_stokes_first_principles.esk)** | The scale exponents and the admissible range of h derived from the balance requirements by an exact rational linear solve, and the leading profile series derived from the leading balance operator, with a negative control |
-| **[mathematics_navier_stokes_pulse_stress.esk](mathematics_navier_stokes_pulse_stress.esk)** | Zero-mean oscillatory ring pulses with nonzero averaged momentum fluxes, the two-family covariance solve in exact rational arithmetic, and the shear-amplification-then-viscous-damping growth curve of one mode |
-| **[mathematics_navier_stokes_stress_cone.esk](mathematics_navier_stokes_stress_cone.esk)** | Lemma 4.5's cone equivalence and threshold, decided by exact rational sign tests on a quadratic (never a square root), placing the constructed base-flow stress inside the admissible cone |
-| **[mathematics_navier_stokes_residual_order_n.esk](mathematics_navier_stokes_residual_order_n.esk)** | The order-by-order cancellation of Section 5's formal expansion (5.1)-(5.6), truncated at order N, verified with the exact-coefficient Taylor tower |
-| **[mathematics_navier_stokes_heat_exterior.esk](mathematics_navier_stokes_heat_exterior.esk)** | The azimuthal heat exterior solving its radial heat equation exactly, Appendix A's moment-matrix invertibility for distinct power weights, and the smooth limit as t -> 1 |
-| **[mathematics_navier_stokes_oscillatory_realization.esk](mathematics_navier_stokes_oscillatory_realization.esk)** | Two pulse families as exact trigonometric polynomials on an auxiliary torus, their zero angular mean and nonzero flux products, and the stacked stress solve via `core.exact_linalg`'s `exact-solve` |
-| **[mathematics_navier_stokes_pulse_growth.esk](mathematics_navier_stokes_pulse_growth.esk)** | The Craik-Criminale wavevector law on an affine background, exact and AD-verified, and the amplification-then-damping crossover cross-checked against an integrated amplitude curve |
-
-## Scientific computing
-
-Exact arithmetic, the numeric tower, category-theoretic models.
-
-| Example | What it shows | LOC |
-|---------|--------------|----:|
-| **[milli_mag_bohrification.esk](milli_mag_bohrification.esk)** | CODATA physical-constants demonstration: ten PASS assertions covering Bohrification of the milli-magnetic model, K-homology pairing, projection round-trip | 114 |
-
----
-
-## What makes these examples interesting
-
-**No black-box framework.** Every gradient, every parallel dispatch, every probabilistic-graph belief is a compiler primitive. `gradient`, `parallel-map`, `fg-infer!` are not library function calls into a runtime VM — they lower directly to LLVM IR.
-
-**Each program tells one story.** A neural network learns XOR. A projectile finds its angle. A medical agent updates its beliefs. The examples are sized to fit on one screen and they all run in under a minute.
-
-**Reproducible.** Every PRNG in this directory uses a fixed seed. Run the same example on two different machines and you get bit-identical output. (`monte_carlo_pi.esk` and `neural_xor.esk` both have this property; see their PRNG-seed comments.)
-
-**Reflects v1.2.1-scale reality.** Every API call here matches the actual production codegen signatures. The `(gradient fn vector)` arity, the `(cons salience proposal)` workspace closure contract, the `(make-factor-graph num-vars dims-tensor)` factor-graph signature — all verified against `lib/backend/` source.
-
----
+| Program | Source-backed purpose | Detailed guide |
+|---|---|---|
+| [autodiff.esk](autodiff.esk#L1) | Introduce derivative and gradient calls on simple scalar polynomials. | [Scalar automatic differentiation](../docs/EXAMPLES.md#autodiff) |
+| [bayesian_diagnosis.esk](bayesian_diagnosis.esk#L1) | Demonstrate a fixed knowledge base alongside a small factor graph. | [Symbolic and probabilistic symptom model](../docs/EXAMPLES.md#bayesian-diagnosis) |
+| [consciousness.esk](consciousness.esk#L1) | Exercise three neuro-symbolic runtime interfaces. | [Knowledge base, factor graph and workspace](../docs/EXAMPLES.md#consciousness) |
+| [differentiable_physics.esk](differentiable_physics.esk#L1) | Differentiate a recursive numerical trajectory to fit landing distance. | [Projectile launch-angle fitting](../docs/EXAMPLES.md#differentiable-physics) |
+| [eagle_train.esk](eagle_train.esk#L1) | Exercise scalar AD and the native linear backward/SGD bridge on the same small corpus. | [Native linear feature-distillation demonstration](../docs/EXAMPLES.md#eagle-train) |
+| [gradient_descent_demo.esk](gradient_descent_demo.esk#L1) | Fit a quadratic to the checked-in data table. | [Quadratic regression with AD](../docs/EXAMPLES.md#gradient-descent-demo) |
+| [h2_vibrational.esk](h2_vibrational.esk#L1) | Compute molecular curvature through the source’s Gaussian-integral energy model. | [H₂ harmonic frequency from Taylor AD](../docs/EXAMPLES.md#h2-vibrational) |
+| [h2_vibrational_full.esk](h2_vibrational_full.esk#L1) | Combine Pauli-coefficient geometry derivatives with quantum-state response. | [H₂ geometry AD and quantum response](../docs/EXAMPLES.md#h2-vibrational-full) |
+| [h2_vibrational_quantum.esk](h2_vibrational_quantum.esk#L1) | Compute curvature of the backend energy surface by three-point differencing. | [H₂ frequency from quantum-backend geometry differences](../docs/EXAMPLES.md#h2-vibrational-quantum) |
+| [hello.esk](hello.esk#L1) | Show display/newline syntax. | [Hello and a historical version string](../docs/EXAMPLES.md#hello) |
+| [mathematics_abelian_sheaves_finite_site.esk](mathematics_abelian_sheaves_finite_site.esk#L1) | Compare sheafification and cohomology routes on finite Alexandrov sites. | [Abelian sheaves on finite sites](../docs/MATHEMATICS_EXAMPLES.md#mathematics-abelian-sheaves-finite-site) |
+| [mathematics_alphatensor_3x3_gf2.esk](mathematics_alphatensor_3x3_gf2.esk#L1) | Verify a supplied public AlphaTensor factorization. | [Rank-23 matrix multiplication over F₂](../docs/MATHEMATICS_EXAMPLES.md#mathematics-alphatensor-3x3-gf2) |
+| [mathematics_alphatensor_gf2.esk](mathematics_alphatensor_gf2.esk#L1) | Verify the supplied 4×4 AlphaTensor factorization. | [Rank-47 matrix multiplication over F₂](../docs/MATHEMATICS_EXAMPLES.md#mathematics-alphatensor-gf2) |
+| [mathematics_aoki_cycles_fermat_sextic.esk](mathematics_aoki_cycles_fermat_sextic.esk#L1) | Measure which rational Hodge characters the supplied lines and two Aoki curve families cover. | [Cycle supports on the Fermat sextic surface](../docs/MATHEMATICS_EXAMPLES.md#mathematics-aoki-cycles-fermat-sextic) |
+| [mathematics_aoki_cycles_fermat_surfaces_sweep.esk](mathematics_aoki_cycles_fermat_surfaces_sweep.esk#L1) | Sweep the supports of available p-standard cycles against Fermat-surface Hodge characters. | [Aoki cycle supports by surface degree](../docs/MATHEMATICS_EXAMPLES.md#mathematics-aoki-cycles-fermat-surfaces-sweep) |
+| [mathematics_classifying_space_dijkgraaf_witten.esk](mathematics_classifying_space_dijkgraaf_witten.esk#L1) | Connect explicit bar-complex homology, Q/Z cocycles and Dijkgraaf–Witten state sums. | [Finite-group classifying spaces and state sums](../docs/MATHEMATICS_EXAMPLES.md#mathematics-classifying-space-dijkgraaf-witten) |
+| [mathematics_cohomology_rings_cup_products.esk](mathematics_cohomology_rings_cup_products.esk#L1) | Compute ring information beyond cohomology dimensions and identify selected Dijkgraaf–Witten twists. | [Cup products and Bockstein on finite-group nerves](../docs/MATHEMATICS_EXAMPLES.md#mathematics-cohomology-rings-cup-products) |
+| [mathematics_cohomology_rings_nonabelian.esk](mathematics_cohomology_rings_nonabelian.esk#L1) | Separate the dihedral and quaternion groups using cup products. | [Nonabelian order-eight cohomology rings](../docs/MATHEMATICS_EXAMPLES.md#mathematics-cohomology-rings-nonabelian) |
+| [mathematics_cp2_symmetric_square_connected_sums.esk](mathematics_cp2_symmetric_square_connected_sums.esk#L1) | Distinguish simply connected four-manifold models with equal mod-2 homology. | [Symmetric square, connected sums and second k-invariant](../docs/MATHEMATICS_EXAMPLES.md#mathematics-cp2-symmetric-square-connected-sums) |
+| [mathematics_descent_hypercohomology.esk](mathematics_descent_hypercohomology.esk#L1) | Show why a non-Leray cover needs derived sections rather than plain Cech sections. | [Descent double complexes and hypercohomology](../docs/MATHEMATICS_EXAMPLES.md#mathematics-descent-hypercohomology) |
+| [mathematics_fermat_hodge_classes_sweep.esk](mathematics_fermat_hodge_classes_sweep.esk#L1) | Compare Hodge dimensions with the span detected by the linear-cycle intersection matrix. | [Fermat Hodge and linear-cycle sweep](../docs/MATHEMATICS_EXAMPLES.md#mathematics-fermat-hodge-classes-sweep) |
+| [mathematics_finite_categories_kan_extensions.esk](mathematics_finite_categories_kan_extensions.esk#L1) | Make finite categorical constructions explicit and test their universal-property comparisons. | [Finite categories and Kan extensions](../docs/MATHEMATICS_EXAMPLES.md#mathematics-finite-categories-kan-extensions) |
+| [mathematics_finite_model_three_torus_gauge_theory.esk](mathematics_finite_model_three_torus_gauge_theory.esk#L1) | Compare finite-space gauge-coloring sums with commuting-triple formulas. | [Dijkgraaf–Witten on a finite three-torus](../docs/MATHEMATICS_EXAMPLES.md#mathematics-finite-model-three-torus-gauge-theory) |
+| [mathematics_finite_site_sheafification.esk](mathematics_finite_site_sheafification.esk#L1) | Check the sheaf condition throughout the finite open-set site. | [Integral plus construction on a finite site](../docs/MATHEMATICS_EXAMPLES.md#mathematics-finite-site-sheafification) |
+| [mathematics_finite_spaces_sheaf_cohomology.esk](mathematics_finite_spaces_sheaf_cohomology.esk#L1) | Compute derived limits and compare Leray-cover Cech descent while retaining torsion. | [Sheaf cohomology of finite spaces](../docs/MATHEMATICS_EXAMPLES.md#mathematics-finite-spaces-sheaf-cohomology) |
+| [mathematics_four_manifolds_second_k_invariant.esk](mathematics_four_manifolds_second_k_invariant.esk#L1) | Detect a second Postnikov k-invariant through mapping-space counts. | [Cup-square obstruction in four-manifold models](../docs/MATHEMATICS_EXAMPLES.md#mathematics-four-manifolds-second-k-invariant) |
+| [mathematics_funsearch_cap_set.esk](mathematics_funsearch_cap_set.esk#L1) | Verify a supplied public cap-set construction. | [Explicit 512-cap in AG(8,3)](../docs/MATHEMATICS_EXAMPLES.md#mathematics-funsearch-cap-set) |
+| [mathematics_group_cohomology_order_eight.esk](mathematics_group_cohomology_order_eight.esk#L1) | Compare torsion homology and twisted-double invariants across small groups. | [Integral homology and twists of order-eight groups](../docs/MATHEMATICS_EXAMPLES.md#mathematics-group-cohomology-order-eight) |
+| [mathematics_group_cohomology_sweep.esk](mathematics_group_cohomology_sweep.esk#L1) | Produce integral bar-complex homology receipts for a chosen finite group. | [Parametric finite-group homology receipts](../docs/MATHEMATICS_EXAMPLES.md#mathematics-group-cohomology-sweep) |
+| [mathematics_hodge_classes_fermat_quartic_fourfold.esk](mathematics_hodge_classes_fermat_quartic_fourfold.esk#L1) | Compare the rational Hodge space with the span of explicit planes. | [Exhibited cycles on the Fermat quartic fourfold](../docs/MATHEMATICS_EXAMPLES.md#mathematics-hodge-classes-fermat-quartic-fourfold) |
+| [mathematics_homotopy_colimits_grothendieck.esk](mathematics_homotopy_colimits_grothendieck.esk#L1) | Contrast homotopy constructions with strict colimits. | [Grothendieck constructions and homotopy colimits](../docs/MATHEMATICS_EXAMPLES.md#mathematics-homotopy-colimits-grothendieck) |
+| [mathematics_ipm_velocity_expansion.esk](mathematics_ipm_velocity_expansion.esk#L1) | Derive and cross-check coefficients of a local Fourier-multiplier expansion. | [Local oscillatory IPM velocity expansion](../docs/MATHEMATICS_EXAMPLES.md#mathematics-ipm-velocity-expansion) |
+| [mathematics_jacobian_counterexample.esk](mathematics_jacobian_counterexample.esk#L1) | Verify the explicit map, finite fibers and determinant identities supplied by the cited paper. | [Polynomial Jacobian map and fibers](../docs/MATHEMATICS_EXAMPLES.md#mathematics-jacobian-counterexample) |
+| [mathematics_kan_complexes_horns.esk](mathematics_kan_complexes_horns.esk#L1) | Compare 2-group nerves with a poset nerve using explicit horns. | [Horn fillers and low homotopy groups](../docs/MATHEMATICS_EXAMPLES.md#mathematics-kan-complexes-horns) |
+| [mathematics_lens_spaces_reidemeister_torsion.esk](mathematics_lens_spaces_reidemeister_torsion.esk#L1) | Separate selected lens spaces that homology or homotopy checks do not separate. | [Cyclotomic Reidemeister torsion of lens complexes](../docs/MATHEMATICS_EXAMPLES.md#mathematics-lens-spaces-reidemeister-torsion) |
+| [mathematics_lens_spaces_yetter.esk](mathematics_lens_spaces_yetter.esk#L1) | Compute lens-complex cohomology and observe k-invariant obstructions. | [Lens-space linking data and 2-group invariants](../docs/MATHEMATICS_EXAMPLES.md#mathematics-lens-spaces-yetter) |
+| [mathematics_navier_stokes_first_principles.esk](mathematics_navier_stokes_first_principles.esk#L1) | Derive the leading scaling/profile balance rather than insert the final coefficients. | [Derived similarity exponents and leading profiles](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-first-principles) |
+| [mathematics_navier_stokes_heat_exterior.esk](mathematics_navier_stokes_heat_exterior.esk#L1) | Build a regular exterior model and compare moment matching. | [Azimuthal heat exterior and moments](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-heat-exterior) |
+| [mathematics_navier_stokes_localization.esk](mathematics_navier_stokes_localization.esk#L1) | Check localization ingredients in explicitly constructed fields. | [Cutoffs, periodization and discrete energy](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-localization) |
+| [mathematics_navier_stokes_mean_corrections.esk](mathematics_navier_stokes_mean_corrections.esk#L1) | Realize selected mean corrections with solved amplitudes. | [Compact mean corrections and moment solve](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-mean-corrections) |
+| [mathematics_navier_stokes_oscillatory_realization.esk](mathematics_navier_stokes_oscillatory_realization.esk#L1) | Recover averaged stress from two independent pulse families. | [Auxiliary-torus pulse realization](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-oscillatory-realization) |
+| [mathematics_navier_stokes_pulse_growth.esk](mathematics_navier_stokes_pulse_growth.esk#L1) | Compare an amplification/damping crossover with an integrated amplitude curve. | [Craik–Criminale crossover on simple shear](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-pulse-growth) |
+| [mathematics_navier_stokes_pulse_stress.esk](mathematics_navier_stokes_pulse_stress.esk#L1) | Compute the momentum flux supplied by two oscillatory pulse families. | [Pulse covariance and shear growth](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-pulse-stress) |
+| [mathematics_navier_stokes_residual_ladder.esk](mathematics_navier_stokes_residual_ladder.esk#L1) | Make finite residual improvement and skipped-rung failures explicit. | [Three-rung residual improvement model](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-residual-ladder) |
+| [mathematics_navier_stokes_residual_order_n.esk](mathematics_navier_stokes_residual_order_n.esk#L1) | Check lower-order cancellation in a finite formal expansion. | [Finite-order background residual recursion](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-residual-order-n) |
+| [mathematics_navier_stokes_similarity_scales.esk](mathematics_navier_stokes_similarity_scales.esk#L1) | Differentiate the implicit similarity-coordinate construction and inspect scaling. | [Similarity coordinates and fitted scale laws](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-similarity-scales) |
+| [mathematics_navier_stokes_stress_cone.esk](mathematics_navier_stokes_stress_cone.esk#L1) | Decide the cone inequalities without introducing approximate square roots. | [Admissible stress cone and profile tests](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-stress-cone) |
+| [mathematics_navier_stokes_viscosity_scaling.esk](mathematics_navier_stokes_viscosity_scaling.esk#L1) | Verify the residual, energy and dissipation rescaling on explicit fields. | [Viscosity rescaling of an AD residual](../docs/MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-viscosity-scaling) |
+| [mathematics_presheaf_topos_internal_logic.esk](mathematics_presheaf_topos_internal_logic.esk#L1) | Construct classifiers, exponentials and local operators as finite data. | [Internal logic of finite presheaf categories](../docs/MATHEMATICS_EXAMPLES.md#mathematics-presheaf-topos-internal-logic) |
+| [mathematics_sheafification_descent_kan.esk](mathematics_sheafification_descent_kan.esk#L1) | Compare finite-site plus construction with matching-family Kan limits. | [Sheafification, reflector and Kan descent](../docs/MATHEMATICS_EXAMPLES.md#mathematics-sheafification-descent-kan) |
+| [mathematics_stacks_nonabelian_descent.esk](mathematics_stacks_nonabelian_descent.esk#L1) | Compare torsor groupoids and descent on torus/Klein-bottle models. | [Torsors and nonabelian descent on finite spaces](../docs/MATHEMATICS_EXAMPLES.md#mathematics-stacks-nonabelian-descent) |
+| [mathematics_turaev_viro_cyclotomic.esk](mathematics_turaev_viro_cyclotomic.esk#L1) | Evaluate recoupling state sums and compare selected triangulations and theories. | [Exact cyclotomic Turaev–Viro state sums](../docs/MATHEMATICS_EXAMPLES.md#mathematics-turaev-viro-cyclotomic) |
+| [mathematics_two_descent_cech_nerves.esk](mathematics_two_descent_cech_nerves.esk#L1) | Expose descent failures visible to 2-types but invisible to 1-types. | [Cech nerves and 2-descent](../docs/MATHEMATICS_EXAMPLES.md#mathematics-two-descent-cech-nerves) |
+| [mathematics_two_groups_postnikov.esk](mathematics_two_groups_postnikov.esk#L1) | Distinguish 2-types with identical π₁ and π₂ using k-sensitive cohomology. | [Crossed-module nerves and Postnikov data](../docs/MATHEMATICS_EXAMPLES.md#mathematics-two-groups-postnikov) |
+| [mathematics_yetter_three_torus_finite_model.esk](mathematics_yetter_three_torus_finite_model.esk#L1) | Recompute 2-group invariants on a larger finite-space triangulation. | [Yetter invariants on the 64-point torus](../docs/MATHEMATICS_EXAMPLES.md#mathematics-yetter-three-torus-finite-model) |
+| [mathematics_yetter_two_group_invariants.esk](mathematics_yetter_two_group_invariants.esk#L1) | Compare explicit crossed-module state sums with mapping-space formulas. | [Yetter state sums and Postnikov fibration](../docs/MATHEMATICS_EXAMPLES.md#mathematics-yetter-two-group-invariants) |
+| [milli_mag_bohrification.esk](milli_mag_bohrification.esk#L1) | Represent a small intended context/spectrum diagram within the language surface. | [Finite-symbol Bohrification sketch](../docs/EXAMPLES.md#milli-mag-bohrification) |
+| [monte_carlo_pi.esk](monte_carlo_pi.esk#L1) | Demonstrate isolated PRNG streams and parallel aggregation. | [Parallel Monte Carlo π estimate](../docs/EXAMPLES.md#monte-carlo-pi) |
+| [neural_xor.esk](neural_xor.esk#L1) | Train a fixed two-layer network using compiler AD. | [Small XOR neural network](../docs/EXAMPLES.md#neural-xor) |
+| [newton_method.esk](newton_method.esk#L1) | Find several numerical roots using the same derivative-based iteration. | [Newton iteration with AD](../docs/EXAMPLES.md#newton-method) |
+| [parallel.esk](parallel.esk#L1) | Introduce parallel-execute. | [Parallel thunks and thread-pool information](../docs/EXAMPLES.md#parallel) |
+| [qng_vqe.esk](qng_vqe.esk#L1) | Compare regularized natural-gradient and ordinary-gradient updates from identical parameters. | [Quantum natural-gradient comparison](../docs/EXAMPLES.md#qng-vqe) |
+| [streaming_stats.esk](streaming_stats.esk#L1) | Accumulate bounded-state statistics over a synthetic stream. | [Online mean and variance](../docs/EXAMPLES.md#streaming-stats) |
+| [symbolic_diff.esk](symbolic_diff.esk#L1) | Display differentiation routes alongside an analytic derivative. | [Symbolic, forward and reverse differentiation](../docs/EXAMPLES.md#symbolic-diff) |
+| [tensors.esk](tensors.esk#L1) | Show basic tensor creation and linear algebra calls. | [Tensor multiplication and reductions](../docs/EXAMPLES.md#tensors) |
+| [vqe_h2.esk](vqe_h2.esk#L1) | Exercise reverse-mode optimization through a backend quantum energy function. | [H₂ variational quantum optimization](../docs/EXAMPLES.md#vqe-h2) |
+| [wgsl_artifact/generate.esk](wgsl_artifact/generate.esk#L1) | Generate value and two derivative evaluators from one Taylor model. | [Bounded strain-energy WGSL generator](../docs/EXAMPLES.md#generate) |
+<!-- example-catalogue:examples-overview:end -->
 
 ## Beyond this directory
 
 | Where | What |
 |---|---|
-| **[`docs/tutorials/`](../docs/tutorials/)** | 29 step-by-step tutorials — start with `00_FIRST_5_MINUTES.md`, then `01_AUTODIFF_AND_ML.md`, then pick by interest |
-| **[`docs/breakdown/`](../docs/breakdown/)** | 36 per-subsystem deep dives — read `AUTODIFF.md` for the AD architecture, `CONSCIOUSNESS_ENGINE.md` for the neuro-symbolic stack |
-| **[`docs/API_REFERENCE.md`](../docs/API_REFERENCE.md)** | 336 documented procedures with signatures and examples |
-| **[`docs/SDNC.md`](../docs/SDNC.md)** | The Self-Differentiating Neural Computer paper artefact — a constructive proof that a six-layer transformer can be an interpreter |
-| **[eshkol.ai](https://eshkol.ai)** | Browser REPL with a 64-opcode VM and 555+ built-in functions — no installation required |
+| **[`docs/tutorials/`](../docs/tutorials/)** | Step-by-step tutorials — start with `00_FIRST_5_MINUTES.md`, then `01_AUTODIFF_AND_ML.md`, then pick by interest |
+| **[`docs/breakdown/`](../docs/breakdown/)** | Per-subsystem deep dives — read `AUTODIFF.md` for the AD architecture, `CONSCIOUSNESS_ENGINE.md` for the neuro-symbolic stack |
+| **[`docs/API_REFERENCE.md`](../docs/API_REFERENCE.md)** | Procedure signatures and examples |
+| **[`docs/SDNC.md`](../docs/SDNC.md)** | The historical Self-Differentiating Neural Computer paper artefact |
+| **[eshkol.ai](https://eshkol.ai)** | Browser REPL and documentation |
 
 ## Try it in the browser
 
-Visit **[eshkol.ai](https://eshkol.ai)** to run Eshkol without installing anything. The website itself is a 1,500-line Eshkol program compiled to a 220,306-byte (about 215 KiB) WebAssembly binary.
+Visit **[eshkol.ai](https://eshkol.ai)** for the browser REPL. Its supported runtime surface is documented separately; native prerequisites such as the Moonlab backend are not implied by an example’s presence in this directory.

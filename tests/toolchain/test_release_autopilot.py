@@ -37,8 +37,10 @@ class Decisions(unittest.TestCase):
             module.require_checks([rows[0], {"name": "optional", "conclusion": "FAILURE"}], {"sanitizer"})
 
     def test_receipt_requires_exact_identity_and_numeric_ready_100(self):
-        good = {"schema": "eshkol.release-readiness.v1", "sha": SHA, "run_id": 10,
-                "run_attempt": 2, "target": "v1.3.5-evolve", "status": "ready", "score": 100}
+        good = {"schema": "eshkol.release-readiness.v2", "sha": SHA, "run_id": 10,
+                "run_attempt": 2, "target": "v1.3.5-evolve", "status": "ready", "score": 100,
+                "qualification_mode": "normal", "waiver_count": 0, "role": "candidate-proof", "metadata_validated": True,
+                "phase_id": "fixture", **{key: "b" * 64 for key in ("record_sha256", "notes_sha256", "measurement_manifest_sha256", "build_cohort_sha256")}}
         run = {"id": 10, "run_attempt": 2}
         module.require_receipt(good, SHA, run, "v1.3.5-evolve")
         for key, value in (("sha", "b" * 40), ("run_id", 9), ("run_attempt", 1),
@@ -240,26 +242,16 @@ class Controller(unittest.TestCase):
                     self.release.verify_published(SHA)
         self.assertFalse(self.release.state.get("completed"))
 
-    def test_notes_are_prepared_without_claiming_success_and_are_idempotent(self):
+    def test_pending_metadata_cannot_become_ready_by_marker_deletion(self):
         self.release.checkout.mkdir()
         path = self.release.checkout / "RELEASE_NOTES.md"
-        path.write_text('# Eshkol v1.3.5-evolve — Release Notes\n\n'
-            '**Status:** refreshed release candidate; final verification and publication are pending. '
-            'Hardening remains open. The September 11 measurements below are historical.\n\n'
-            '<!-- RELEASE_EVIDENCE_PENDING -->\n')
+        original = '# Eshkol v1.3.5-evolve — Release Notes\n**Status:** RELEASE CANDIDATE.\n<!-- RELEASE_EVIDENCE_PENDING -->\n'
+        path.write_text(original)
         self.release.execute = True
-        with patch.object(self.release, "git"):
-            with self.assertRaisesRegex(module.Wait, "notes prepared"):
-                self.release.prepare_notes({"headRefName": "release/v135-cut-final"})
-        content = path.read_text()
-        self.assertNotIn("Hardening remains open", content)
-        self.assertNotIn("RELEASE_EVIDENCE_PENDING", content)
-        self.assertIn("September 11 measurements below are historical", content)
-        self.assertIn("publication requires passing CI, strict readiness, and asset checks", content)
-        self.assertNotIn("validated release", content)
-        self.assertIn("https://github.com/tsotchke/eshkol/actions/workflows/release.yml", content)
         with patch.object(self.release, "git") as git:
-            self.release.prepare_notes({"headRefName": "release/v135-cut-final"})
+            with self.assertRaisesRegex(module.Wait, "metadata must be prepared"):
+                self.release.prepare_notes({"headRefName": "release/v135-cut-final"})
+        self.assertEqual(path.read_text(), original)
         git.assert_not_called()
 
     def test_notes_change_precedes_candidate_validation_and_merge(self):
@@ -281,7 +273,7 @@ class Controller(unittest.TestCase):
                 patch.object(self.release, "refresh_cut"), patch.object(self.release, "docs_ready"), \
                 patch.object(self.release, "git"), patch.object(self.release, "gh") as gh, \
                 patch.object(self.release, "proof_and_checks") as validation:
-            with self.assertRaisesRegex(module.Wait, "notes prepared"):
+            with self.assertRaisesRegex(module.Wait, "metadata must be prepared"):
                 self.release.step()
         validation.assert_not_called()
         gh.assert_not_called()

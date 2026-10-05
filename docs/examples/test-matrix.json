@@ -1,0 +1,388 @@
+{
+  "schema": "eshkol.example-test-matrix.v1",
+  "authored_condition": "ESHKOL_BUILD_TESTS AND TARGET eshkol-run",
+  "programs": 67,
+  "mathematics_programs": 46,
+  "families": {
+    "ESHKOL_NS_EXAMPLES": {
+      "criteria": 14,
+      "distinct_sources": 12,
+      "ctest_entries": 28,
+      "rows": [
+        {
+          "criterion": "ns_viscosity_scaling_exact",
+          "source": "examples/mathematics_navier_stokes_viscosity_scaling.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_similarity_exponents_solved",
+          "source": "examples/mathematics_navier_stokes_similarity_scales.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_leading_profile_balance",
+          "source": "examples/mathematics_navier_stokes_first_principles.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_covariance_two_family_solve",
+          "source": "examples/mathematics_navier_stokes_pulse_stress.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_five_moment_vandermonde",
+          "source": "examples/mathematics_navier_stokes_mean_corrections.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_residual_exponent_ladder",
+          "source": "examples/mathematics_navier_stokes_residual_ladder.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_localization_smooth_extension",
+          "source": "examples/mathematics_navier_stokes_localization.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_energy_dissipation_bounds",
+          "source": "examples/mathematics_navier_stokes_localization.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_torus_corollary_scaling",
+          "source": "examples/mathematics_navier_stokes_localization.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_cone_condition_equivalence",
+          "source": "examples/mathematics_navier_stokes_stress_cone.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_residual_order_n_vanishes",
+          "source": "examples/mathematics_navier_stokes_residual_order_n.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_heat_exterior_exact",
+          "source": "examples/mathematics_navier_stokes_heat_exterior.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_oscillatory_zero_mode",
+          "source": "examples/mathematics_navier_stokes_oscillatory_realization.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "ns_pulse_growth_crossover",
+          "source": "examples/mathematics_navier_stokes_pulse_growth.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ]
+    },
+    "ESHKOL_IPM_EXAMPLES": {
+      "criteria": 29,
+      "distinct_sources": 29,
+      "ctest_entries": 58,
+      "rows": [
+        {
+          "criterion": "ipm_velocity_expansion_closes",
+          "source": "examples/mathematics_ipm_velocity_expansion.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "dw_classifying_space_state_sums",
+          "source": "examples/mathematics_classifying_space_dijkgraaf_witten.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "dw_group_cohomology_order_eight",
+          "source": "examples/mathematics_group_cohomology_order_eight.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "dw_cohomology_rings_cup_products",
+          "source": "examples/mathematics_cohomology_rings_cup_products.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "dw_cohomology_rings_nonabelian",
+          "source": "examples/mathematics_cohomology_rings_nonabelian.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "sheaf_finite_spaces_cech_descent",
+          "source": "examples/mathematics_finite_spaces_sheaf_cohomology.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "sheaf_finite_site_sheafification",
+          "source": "examples/mathematics_finite_site_sheafification.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "dw_finite_model_three_torus",
+          "source": "examples/mathematics_finite_model_three_torus_gauge_theory.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "hocolim_grothendieck_borel",
+          "source": "examples/mathematics_homotopy_colimits_grothendieck.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "sheaf_descent_hypercohomology",
+          "source": "examples/mathematics_descent_hypercohomology.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "hocolim_two_groups_postnikov",
+          "source": "examples/mathematics_two_groups_postnikov.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "hocolim_kan_complexes_horns",
+          "source": "examples/mathematics_kan_complexes_horns.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "stacks_nonabelian_descent",
+          "source": "examples/mathematics_stacks_nonabelian_descent.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "yetter_two_group_invariants",
+          "source": "examples/mathematics_yetter_two_group_invariants.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "yetter_lens_spaces",
+          "source": "examples/mathematics_lens_spaces_yetter.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "yetter_three_torus_finite_model",
+          "source": "examples/mathematics_yetter_three_torus_finite_model.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "torsion_lens_spaces_reidemeister",
+          "source": "examples/mathematics_lens_spaces_reidemeister_torsion.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "tv_turaev_viro_cyclotomic",
+          "source": "examples/mathematics_turaev_viro_cyclotomic.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "descent_two_descent_cech_nerves",
+          "source": "examples/mathematics_two_descent_cech_nerves.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "postnikov_four_manifolds_second_k",
+          "source": "examples/mathematics_four_manifolds_second_k_invariant.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "postnikov_cp2_connected_sums",
+          "source": "examples/mathematics_cp2_symmetric_square_connected_sums.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "hodge_fermat_quartic_fourfold",
+          "source": "examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "hodge_fermat_sweep_default",
+          "source": "examples/mathematics_fermat_hodge_classes_sweep.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "cat_finite_categories_kan",
+          "source": "examples/mathematics_finite_categories_kan_extensions.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "cat_presheaf_topos_internal_logic",
+          "source": "examples/mathematics_presheaf_topos_internal_logic.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "cat_sheafification_descent_kan",
+          "source": "examples/mathematics_sheafification_descent_kan.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "cat_abelian_sheaves_finite_site",
+          "source": "examples/mathematics_abelian_sheaves_finite_site.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "hodge_aoki_cycles_fermat_sextic",
+          "source": "examples/mathematics_aoki_cycles_fermat_sextic.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "hodge_aoki_surface_sweep_default",
+          "source": "examples/mathematics_aoki_cycles_fermat_surfaces_sweep.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ]
+    }
+  },
+  "general_runner": {
+    "discovery": "examples/*.esk",
+    "mode": "aot",
+    "flat_programs": 66,
+    "quantum_sources": [
+      "examples/vqe_h2.esk",
+      "examples/h2_vibrational_quantum.esk",
+      "examples/h2_vibrational_full.esk",
+      "examples/qng_vqe.esk"
+    ],
+    "excluded_patterns": [
+      "selene_*",
+      "qllm_*",
+      "agent.esk",
+      "consciousness_*"
+    ],
+    "current_excluded_sources": [],
+    "nested_sources": [
+      "examples/wgsl_artifact/generate.esk"
+    ]
+  },
+  "execution_claim": "No new execution; source inventory and authored registrations only."
+}

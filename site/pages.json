@@ -15,6 +15,10 @@
   },
   "pages": [
     {"file": "docs/QUICKSTART.md", "slug": "quickstart", "view": "docs", "section": "START HERE", "title": "Quickstart"},
+    {"file": "docs/EXAMPLES.md", "slug": "examples", "view": "docs", "section": "START HERE", "title": "Example catalogue"},
+    {"file": "docs/MATHEMATICS_EXAMPLES.md", "slug": "mathematics_examples", "view": "docs", "section": "START HERE", "title": "Mathematics examples"},
+    {"file": "docs/NAVIER_STOKES_EXAMPLES.md", "slug": "mathematics_navier_stokes", "view": "docs", "section": "START HERE", "title": "Navier–Stokes examples"},
+    {"file": "docs/AI_MATHEMATICS_EXAMPLES.md", "slug": "ai_mathematics_examples", "view": "docs", "section": "START HERE", "title": "AI mathematics witnesses"},
     {"file": "docs/TROUBLESHOOTING.md", "slug": "troubleshooting", "view": "docs", "section": "START HERE", "title": "Troubleshooting", "pending": true},
     {"file": "docs/UPGRADING.md", "slug": "upgrading", "view": "docs", "section": "START HERE", "title": "Upgrading"},
     {"file": "docs/FAQ.md", "slug": "faq", "view": "docs", "section": "START HERE", "title": "FAQ"},

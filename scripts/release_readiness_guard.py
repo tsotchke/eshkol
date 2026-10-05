@@ -10,6 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_target import validate_target
+from release_publication_contract import load_record, validate_notes, validate_publication, read_json
 
 PENDING = 'RELEASE_EVIDENCE_PENDING'
 
@@ -80,13 +81,13 @@ def check_verdict(payload, target):
         raise ValueError('release readiness requires status=ready and numeric score=100')
 
 
-def release_notes(text, tag, allow_pending=False):
-    current = text.split('\n---\n', 1)[0]
-    if current.splitlines()[:1] != [f'# Eshkol {tag} — Release Notes']:
-        raise ValueError('release-notes heading does not match the tag')
-    if PENDING in current and not allow_pending:
-        raise ValueError('release evidence is pending; publication is blocked')
-    return current.rstrip() + '\n'
+def release_notes(text, tag, allow_pending=False, *, record=None, role=None):
+    role = role or ("preparation" if allow_pending else "tag-publication")
+    if allow_pending and role != "preparation":
+        raise ValueError("--allow-pending is permitted only for nonpublishing preparation")
+    if record is None:
+        raise ValueError("typed release record is required; marker removal cannot qualify notes")
+    return validate_notes(text, record, tag, role)
 
 
 def main():
@@ -106,6 +107,12 @@ def main():
     p.add_argument('--tag', required=True)
     p.add_argument('--output', required=True)
     p.add_argument('--allow-pending', action='store_true')
+    p.add_argument('--role', choices=('preparation', 'candidate-proof', 'tag-publication'))
+    p.add_argument('--record', default='tests/coverage/release_record.json')
+    for option in ('evidence-root', 'receipt', 'workspace', 'sha', 'target'):
+        p.add_argument('--' + option)
+    p.add_argument('--run-id', type=int)
+    p.add_argument('--run-attempt', type=int)
     args = parser.parse_args()
     try:
         if args.action == 'bind':
@@ -119,8 +126,21 @@ def main():
                 check_verdict(json.loads(Path(args.verdict).read_text()), args.target)
             print('PASS: release evidence identity and verdict')
         else:
-            Path(args.output).write_text(release_notes(
-                Path(args.notes).read_text(), args.tag, args.allow_pending))
+            role = args.role or ('preparation' if args.allow_pending else 'tag-publication')
+            if args.allow_pending and role != 'preparation':
+                raise ValueError('--allow-pending cannot be combined with a strict publication role')
+            record = load_record(args.record, strict=role != 'preparation')
+            if role == 'preparation':
+                notes = release_notes(Path(args.notes).read_text(), args.tag, True, record=record, role=role)
+            else:
+                if not all((args.evidence_root, args.receipt, args.workspace, args.sha, args.target, args.run_id, args.run_attempt)):
+                    raise ValueError('strict notes requires full evidence, receipt and source/run identity')
+                if args.tag != args.target:
+                    raise ValueError('tag and release target disagree')
+                check_workspace(args.workspace, args.sha)
+                notes = validate_publication(args.record, args.notes, args.evidence_root, read_json(args.receipt),
+                    {'sha': args.sha, 'target': args.target, 'role': role, 'run_id': args.run_id, 'run_attempt': args.run_attempt})
+            Path(args.output).write_text(notes)
     except (ValueError, OSError, TypeError) as exc:
         print(f'FAIL: {exc}', file=sys.stderr)
         return 1

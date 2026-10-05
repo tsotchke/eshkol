@@ -134,7 +134,7 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertIn('"${GITHUB_EVENT_NAME}" == "push" || "${STRICT_READINESS}" == "true"', run)
         self.assertIn('if [[ "$block" == 1 ]]; then', run)
         self.assertIn('if [[ "$status" != "ready" ]]; then', run)
-        self.assertIn("score:100", run)
+        self.assertIn("release_publication_contract.py proof", run)
         self.assertIn("--verdict \"$readiness_json\"", run)
         self.assertIn("readiness_command_failed=1", run)
         self.assertIn('if [[ "$readiness_command_failed" == 1 ]]; then', run)
@@ -143,17 +143,22 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         gate = self.steps["ICC readiness gate (tag push or strict dry run requires ready/100)"]
         run = gate["run"]
         self.assertIn('echo "receipt_created=false" >> "$GITHUB_OUTPUT"', run)
-        self.assertIn('--arg sha "$GITHUB_SHA"', run)
-        self.assertIn('--argjson run_id "$GITHUB_RUN_ID"', run)
-        self.assertIn('--argjson run_attempt "$GITHUB_RUN_ATTEMPT"', run)
-        self.assertIn('schema:"eshkol.release-readiness.v1"', run)
-        self.assertIn('status:"ready",score:100,target:$target', run)
-        self.assertIn('--target "$RELEASE_TARGET"', run)
-        self.assertIn('if ! jq -n', run)
-        self.assertIn('rm -f "$RUNNER_TEMP/release-readiness-receipt.json"', run)
-        self.assertNotIn("$RELEASE_TAG", run[run.find("jq -n "):])
-        self.assertLess(run.find('--verdict "$readiness_json"'), run.find("jq -n "))
-        self.assertLess(run.find('(.status == "ready")'), run.find("jq -n "))
+        for flag in ('--sha "$GITHUB_SHA"', '--run-id "$GITHUB_RUN_ID"', '--run-attempt "$GITHUB_RUN_ATTEMPT"',
+                     '--target "$RELEASE_TARGET"', '--root scripts/icc_traces/publication', '--role "$role"'):
+            self.assertIn(flag, run)
+        self.assertIn('release_publication_contract.py proof', run)
+        self.assertIn('if [[ "$block" != 1 ]]; then', run)
+        self.assertIn('role=tag-publication', run)
+        self.assertLess(run.find('--verdict "$readiness_json"'), run.find('release_publication_contract.py proof'))
+        publish_steps = {step.get('name'): step for step in self.workflow['jobs']['publish-release']['steps']}
+        for name in ('Download same-run readiness proof', 'Download same-run bound publication evidence'):
+            self.assertEqual(publish_steps[name]['if'], "github.event_name == 'push' || inputs.strict_readiness == true")
+            self.assertNotIn('run-id', publish_steps[name]['with'])
+        notes = publish_steps['Prepare Curated Release Notes']['run']
+        for flag in ('--receipt publication-proof/release-readiness-receipt.json', '--evidence-root publication-evidence',
+                     '--run-id "$GITHUB_RUN_ID"', '--run-attempt "$GITHUB_RUN_ATTEMPT"'):
+            self.assertIn(flag, notes)
+        self.assertNotIn('--allow-pending', notes)
 
     def test_receipt_upload_requires_created_proof_and_uses_sha_name(self):
         upload = self.steps["Upload bound release-readiness receipt"]

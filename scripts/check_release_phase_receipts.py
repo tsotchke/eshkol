@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from release_publication_contract import ContractError, load_measurements, source_snapshot, read_json, sha256
 from pathlib import Path
 
 
@@ -13,6 +15,7 @@ PHASE_REQUIREMENTS = {
         ("runtime_event", "language_surface_coverage", "PASS"),
         ("language_coverage_prereq", "core_suite", "PASS"),
         ("vm_parity", "vm_parity_gate", "PASS"),
+        ("ctest", "ctest_suite_green", "PASS"),
     ),
     "smoke": (
         ("eshkol_smoke", "language_surface_coverage_floor", "PASS"),
@@ -26,7 +29,7 @@ PHASE_REQUIREMENTS = {
 
 def records(trace_dir: Path) -> list[dict]:
     result = []
-    for path in sorted(trace_dir.rglob("*.jsonl")):
+    for path in sorted(trace_dir.glob("*.jsonl")):
         for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip():
                 continue
@@ -51,6 +54,13 @@ def main() -> int:
         if len(matched) != 1 or matched[0].get("value") != value:
             actual = [event.get("value") for event in matched]
             errors.append(f"{kind}:{name}: expected one {value}, found {actual}")
+    try:
+        state = read_json(args.trace_dir / "release-phase-state.json")
+        load_measurements(args.trace_dir / "publication", source_snapshot(Path(__file__).resolve().parents[1])["sha"],
+                          os.environ.get("RELEASE_TARGET", "v1.3.6-evolve"), state.get("phase_id"),
+                          sha256(args.trace_dir / "release-build-cohort.json"))
+    except (ContractError, OSError, ValueError) as exc:
+        errors.append(str(exc))
     if errors:
         for error in errors:
             print(f"release {args.phase} phase receipt: FAIL: {error}")

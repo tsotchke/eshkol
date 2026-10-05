@@ -17,6 +17,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import verify_v1_3_release_evidence as verifier  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_publication_fixtures import verifier_fixture
 import check_release_build_cohort as cohort  # noqa: E402
 
 
@@ -105,6 +107,19 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
             self.assertIn(f"scripts/run_v1_3_readiness.sh --phase {phase}", commands)
         producer = (ROOT / "scripts/run_v1_3_release_producers.sh").read_text(encoding="utf-8")
         self.assertIn("tests/toolchain/test_v1_3_release_evidence_recipe.py", producer)
+
+    def test_exactly_one_full_ctest_and_durable_raw_parity_in_baseline(self):
+        baseline = self.readiness.split('run_baseline_phase() {', 1)[1].split('run_smoke_phase()', 1)[0]
+        self.assertEqual(self.readiness.count('scripts/run_ctest_gate.sh'), 1)
+        self.assertIn('scripts/run_ctest_gate.sh', baseline)
+        self.assertNotIn('run_ctest_gate.sh --', baseline)
+        self.assertIn('scripts/run_vm_parity.sh > "$PUBLICATION_BUNDLE/vm/raw.log" 2>&1', baseline)
+        self.assertIn('validate_measurements', baseline)
+        ctest = (ROOT / 'scripts/run_ctest_gate.sh').read_text()
+        for artifact in ('inventory.json', 'junit.xml', 'exit.json', 'source-start.json', 'receipt-validation.log'):
+            self.assertIn(artifact, ctest)
+        self.assertNotIn('rm -rf -- "$RUN_DIR"', ctest)
+        self.assertNotIn('eshkol_checked_rm "$RESULTS"', ctest)
 
     def test_smoke_has_no_in_place_stdlib_mutation_or_duplicate_coverage(self):
         self.assertNotIn("touch lib/stdlib.esk", self.smoke)
@@ -233,6 +248,7 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
                      "--repo-root", str(repo), "--trace-dir", str(trace)],
                     capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(ROOT / "scripts")})
 
+            verifier_fixture(repo, trace, "v1.3.5-evolve")
             result = check()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             original = (trace / "evidence.jsonl").read_text(encoding="utf-8")
@@ -271,7 +287,9 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
                                        "--repo-root", str(root), "--trace-dir", str(trace),
                                        "--target", "v1.3.6-evolve"], capture_output=True, text=True)
 
-            self.assertEqual(check(records).returncode, 0)
+            verifier_fixture(root, trace, "v1.3.6-evolve")
+            result = check(records)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             for name in ("certified_enclosures_runtime_smoke", "certified_enclosures_aot_smoke"):
                 without_one = [record for record in records if record.get("name") != name]
                 result = check(without_one)

@@ -24,7 +24,8 @@ R = 2x - 3x^2y - x^3z
 
 It checks the three rational preimages of `(-1/4,0,0)`, the binary cubic
 `2pS^3 - qS^2T + 2ST^2 - rT^3`, the discriminant fiber-count cases, reverse
-mode AD at multiple double-valued points, and an exact determinant identity.
+mode AD through a nested closure factory at both double-valued points and
+exact-rational vector inputs, and an exact determinant identity.
 The identity check evaluates the explicit rational partial derivatives on a
 `9 x 8 x 3` grid. The determinant has per-variable degree bounds `(8,7,2)`,
 so this grid is larger than the bound in every variable.
@@ -32,9 +33,12 @@ so this grid is larger than the bound in every variable.
 The Theorem 5.1 family is also checked for two parameter choices, with the
 predicted determinant `-2c lambda^2`.
 
-The AD checks intentionally use double vectors. Exact-rational vector inputs
-remain tracked by `SW-136`; the program contains the required TODO at the
-replacement point.
+The AD determinant checks use a tolerance of `1e-9`, including when the input
+vector contains exact rationals: the AD carrier is inexact internally. The
+separate determinant identity uses explicit polynomial partial derivatives
+and exact rational arithmetic over the degree-bounded grid. These are two
+different checks; the tolerance-based AD result is not the exact-arithmetic
+identity certificate.
 
 ## AlphaTensor matrix multiplication
 
@@ -70,3 +74,27 @@ For mode-specific checks, use the same `eshkol-run` binary with its AOT, JIT,
 and VM options as described in the runtime reference. The examples suite is
 part of `scripts/run_all_tests.sh`, so these files run in CI with the other
 public examples.
+
+<!-- example-catalogue:ai-inventory:start -->
+The source catalogue contains **4 public witness programs** in this family. The lane status above records earlier family verification; this source-documentation update adds no execution receipt. Each complete description separates exact identity checks from numerical AD comparisons.
+
+- [Rank-23 matrix multiplication over F₂](MATHEMATICS_EXAMPLES.md#mathematics-alphatensor-3x3-gf2): [mathematics_alphatensor_3x3_gf2.esk](../examples/mathematics_alphatensor_3x3_gf2.esk#L1).
+- [Rank-47 matrix multiplication over F₂](MATHEMATICS_EXAMPLES.md#mathematics-alphatensor-gf2): [mathematics_alphatensor_gf2.esk](../examples/mathematics_alphatensor_gf2.esk#L1).
+- [Explicit 512-cap in AG(8,3)](MATHEMATICS_EXAMPLES.md#mathematics-funsearch-cap-set): [mathematics_funsearch_cap_set.esk](../examples/mathematics_funsearch_cap_set.esk#L1).
+- [Polynomial Jacobian map and fibers](MATHEMATICS_EXAMPLES.md#mathematics-jacobian-counterexample): [mathematics_jacobian_counterexample.esk](../examples/mathematics_jacobian_counterexample.esk#L1).
+
+```bash
+mkdir -p .scratch/example-manual
+./build/eshkol-run -r examples/mathematics_alphatensor_3x3_gf2.esk
+./build/eshkol-run -L./build examples/mathematics_alphatensor_3x3_gf2.esk -o .scratch/example-manual/mathematics_alphatensor_3x3_gf2 && .scratch/example-manual/mathematics_alphatensor_3x3_gf2
+
+./build/eshkol-run -r examples/mathematics_alphatensor_gf2.esk
+./build/eshkol-run -L./build examples/mathematics_alphatensor_gf2.esk -o .scratch/example-manual/mathematics_alphatensor_gf2 && .scratch/example-manual/mathematics_alphatensor_gf2
+
+./build/eshkol-run -r examples/mathematics_funsearch_cap_set.esk
+./build/eshkol-run -L./build examples/mathematics_funsearch_cap_set.esk -o .scratch/example-manual/mathematics_funsearch_cap_set && .scratch/example-manual/mathematics_funsearch_cap_set
+
+./build/eshkol-run -r examples/mathematics_jacobian_counterexample.esk
+./build/eshkol-run -L./build examples/mathematics_jacobian_counterexample.esk -o .scratch/example-manual/mathematics_jacobian_counterexample && .scratch/example-manual/mathematics_jacobian_counterexample
+```
+<!-- example-catalogue:ai-inventory:end -->

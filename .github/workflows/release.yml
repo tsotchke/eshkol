@@ -1204,7 +1204,9 @@ jobs:
       - name: Release identity and publication negative controls
         if: env.MEMORY_DIAGNOSTICS != 'true'
         shell: bash
-        run: python3 tests/toolchain/test_release_readiness_guard.py
+        run: |
+          python3 tests/toolchain/test_release_readiness_guard.py
+          python3 tests/toolchain/test_release_publication_contract.py
 
       - name: Bind ICC to this release checkout and commit
         if: env.ICC_AVAILABLE == 'true'
@@ -1565,15 +1567,19 @@ jobs:
             exit 0
           fi
 
-          if ! jq -n \
-            --arg sha "$GITHUB_SHA" \
-            --argjson run_id "$GITHUB_RUN_ID" \
-            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
-            --arg target "$RELEASE_TARGET" \
-            '{schema:"eshkol.release-readiness.v1",sha:$sha,run_id:$run_id,run_attempt:$run_attempt,status:"ready",score:100,target:$target}' \
-            > "$RUNNER_TEMP/release-readiness-receipt.json"; then
+          # Preparation is nonpublishing and cannot emit a qualifying receipt.
+          if [[ "$block" != 1 ]]; then
+            exit 0
+          fi
+          role=candidate-proof
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then role=tag-publication; fi
+          if ! python3 scripts/release_publication_contract.py proof \
+              --record tests/coverage/release_record.json --notes RELEASE_NOTES.md \
+              --root scripts/icc_traces/publication --sha "$GITHUB_SHA" --target "$RELEASE_TARGET" \
+              --role "$role" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --verdict "$readiness_json" --output "$RUNNER_TEMP/release-readiness-receipt.json"; then
             rm -f "$RUNNER_TEMP/release-readiness-receipt.json"
-            verdict "Could not write the bound readiness receipt."
+            verdict "Complete metadata and full source-bound measurements did not validate."
             exit 0
           fi
           echo "receipt_created=true" >> "$GITHUB_OUTPUT"
@@ -1596,6 +1602,14 @@ jobs:
         with:
           name: release-readiness-receipt-${{ github.sha }}
           path: ${{ runner.temp }}/release-readiness-receipt.json
+          if-no-files-found: error
+
+      - name: Upload bound publication evidence
+        if: steps.readiness.outputs.receipt_created == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-publication-evidence-${{ github.sha }}
+          path: scripts/icc_traces/publication/
           if-no-files-found: error
 
       # A hosted runner is destroyed after the job; this self-hosted node is
@@ -1625,6 +1639,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Download same-run readiness proof
+        if: github.event_name == 'push' || inputs.strict_readiness == true
+        uses: actions/download-artifact@v8
+        with:
+          name: release-readiness-receipt-${{ github.sha }}
+          path: publication-proof
+
+      - name: Download same-run bound publication evidence
+        if: github.event_name == 'push' || inputs.strict_readiness == true
+        uses: actions/download-artifact@v8
+        with:
+          name: release-publication-evidence-${{ github.sha }}
+          path: publication-evidence
 
       - name: Download Packaged Assets
         uses: actions/download-artifact@v8
@@ -1685,13 +1713,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pending_flags=()
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            pending_flags+=(--allow-pending)
+          contract_flags=(--role preparation)
+          if [[ "$GITHUB_EVENT_NAME" == "push" || "$STRICT_READINESS" == "true" ]]; then
+            role=candidate-proof
+            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then role=tag-publication; fi
+            contract_flags=(--role "$role" --workspace "$GITHUB_WORKSPACE" --sha "$GITHUB_SHA"
+              --target "$RELEASE_TARGET" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+              --receipt publication-proof/release-readiness-receipt.json --evidence-root publication-evidence)
           fi
           python3 scripts/release_readiness_guard.py notes \
-            --notes RELEASE_NOTES.md --tag "$RELEASE_TAG" \
-            --output "$RUNNER_TEMP/release-notes.md" "${pending_flags[@]}"
+            --notes RELEASE_NOTES.md --tag "$RELEASE_TAG" --record tests/coverage/release_record.json \
+            --output "$RUNNER_TEMP/release-notes.md" "${contract_flags[@]}"
           test -s "$RUNNER_TEMP/release-notes.md"
 
       - name: Upload Validated Dry-Run Assets

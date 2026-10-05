@@ -23,6 +23,38 @@
       "url": "/content/quickstart.html"
     },
     {
+      "slug": "examples",
+      "title": "Example catalogue",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/EXAMPLES.md",
+      "url": "/content/examples.html"
+    },
+    {
+      "slug": "mathematics_examples",
+      "title": "Mathematics examples",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/MATHEMATICS_EXAMPLES.md",
+      "url": "/content/mathematics_examples.html"
+    },
+    {
+      "slug": "mathematics_navier_stokes",
+      "title": "Navier–Stokes examples",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/NAVIER_STOKES_EXAMPLES.md",
+      "url": "/content/mathematics_navier_stokes.html"
+    },
+    {
+      "slug": "ai_mathematics_examples",
+      "title": "AI mathematics witnesses",
+      "view": "docs",
+      "section": "START HERE",
+      "source": "docs/AI_MATHEMATICS_EXAMPLES.md",
+      "url": "/content/ai_mathematics_examples.html"
+    },
+    {
       "slug": "troubleshooting",
       "title": "Troubleshooting",
       "view": "docs",

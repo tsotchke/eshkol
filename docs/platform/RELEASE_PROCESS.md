@@ -155,9 +155,11 @@ warning; with `strict_readiness=true` it blocks exactly as a tag push does.
 When every check passes, the job writes a receipt,
 `release-readiness-receipt-<sha>`, with the schema
 `eshkol.release-readiness.v1`: the commit SHA, the workflow run id and run
-attempt, the target `v1.3.5-evolve`, `status: ready` and `score: 100`. A
-receipt is only ever written for the commit and the run attempt that produced
-it.
+attempt, the `target` supplied through `RELEASE_TARGET`, `status: ready` and
+`score: 100`. The workflow derives that target from the pushed tag or the
+dispatch candidate tag and validates the `v1.3.<5+>-evolve` form; the local
+recipe defaults to `v1.3.6-evolve`. A receipt is only ever written for the
+commit and the run attempt that produced it.
 
 `tests/toolchain/test_release_readiness_guard.py` runs first in the job as the
 negative controls for this logic: a mismatched SHA, a dirty checkout, a score
@@ -204,7 +206,7 @@ Run without `--phase`, it executes all four in order.
 | `baseline` | Archives any earlier trace cohort outside the active trace root, captures the build cohort manifest, then runs `scripts/run_language_coverage.sh` (which runs the complete suite once and records exactly one `core_suite` PASS) and `scripts/run_vm_parity.sh`. |
 | `smoke` | The Taylor monomorphization equivalence gate, the ESKM model-loader fuzz smoke, and the runtime smoke battery `scripts/run_icc_smoke.sh`, which includes the release invariant probes. |
 | `final-evidence` | Refreshes the ICC index, runs `scripts/run_v1_3_release_producers.sh`, verifies the build cohort is unchanged, checks the evidence set with `scripts/verify_v1_3_release_evidence.py`, and only then asks ICC for the architecture grade (`icc architecture-verify` against `.icc/architecture-model.yaml`). |
-| `readiness` | Re-verifies the evidence set and asks ICC for trace-aware readiness of the `v1.3.5-evolve` target. |
+| `readiness` | Re-verifies the evidence set and asks ICC for trace-aware readiness of `RELEASE_TARGET` (default `v1.3.6-evolve` locally; the workflow uses its pushed tag or dispatch candidate tag). |
 
 Three mechanisms keep the phases honest:
 
@@ -294,18 +296,15 @@ compiler-capability runs) are described in
 
 ### The readiness target
 
-The `v1.3.5-evolve` target in `.icc/completion-oracles.yaml` lists 35 required
-criteria: 20 runtime events, 14 test-evidence criteria and one
-no-stubbed-paths criterion. Each is bound to a committed gate, script or CTest
-name and states the command that produces its evidence. Examples: the
-node-identity substrate and its span-coverage floor, the VM region evacuator's
-flat-RSS and subtype-coverage gates, linear `Qubit` cloning as a compile-time
-error, the nested-expression compile-time budget, the AD exactness gate, the
-AD carrier manifest, the ABI layout pin, the sanitizer failure path, ESKM
-model-loader fuzzing and engine parity, the ledger, oracle-schema, false-green
-and staleness audits, public API and generated API documentation, the tutorial
-example gate, the disclosure scan, required-context consistency, engine
-semantic parity thresholds, and the Rosette Wire oracle.
+`RELEASE_TARGET` is the validated release tag identity, not a fixed target
+name in the recipe. The local default is `v1.3.6-evolve`; the release
+workflow supplies the pushed tag or dispatch candidate tag and accepts only
+`v1.3.<5+>-evolve`. The matching release-scoped oracle is declared in
+`.icc/completion-oracles.yaml`. For v1.3.6, that target preserves the standing
+ledger, oracle-integrity, freshness and disclosure controls, and adds the
+v1.3.6 release-identity criteria alongside its other declared requirements.
+Review the target's current `requires` entries there for its exact scope; the
+receipt records the same `RELEASE_TARGET` value ICC graded.
 
 `scripts/verify_v1_3_release_evidence.py` maps every test-evidence criterion to
 its receipt name and requires exactly one passing `test_result` for each:
@@ -480,3 +479,43 @@ check, and never moves or overwrites a tag.
 - [COMPILER_ASSURANCE.md](COMPILER_ASSURANCE.md)
 - [TESTING.md](../TESTING.md) and [TEST_COVERAGE.md](../TEST_COVERAGE.md)
 - [TROUBLESHOOTING.md](../TROUBLESHOOTING.md), "Release and gate failures met locally"
+
+### Prepared metadata and source-bound publication proof
+
+`PREPARED FOR PUBLICATION` is intended publication metadata, not a claim that a
+release has shipped or passed qualification. Before freezing the candidate,
+record actual previously observed full configured CTest and VM parity totals,
+sync every release-record-owned document span, and regenerate site mirrors.
+The candidate/null record remains nonpublishing until those observations exist.
+Changing a count, date, note, or source after freezing requires a new candidate
+SHA and its own complete qualification. Reserve `SHIPPED` for separately verified
+post-publication documentation; publication itself uses the GitHub release and
+its bound receipt as shipping evidence.
+
+The baseline owns exactly one full unfiltered `run_ctest_gate.sh` invocation in
+addition to language coverage and full serialized-bytecode VM parity. Later
+phases reuse its raw log, JUnit, configured inventory, outcomes, source snapshots,
+actual exit receipts, and build cohort in `scripts/icc_traces/publication/`.
+The focused five-test producer remains its separate criterion evidence; its
+filtered denominator cannot supply the full release count. Required failed,
+INFRA, missing, or unexpected skipped tests block the publication contract.
+Optional internal subprobes retain their existing capability policy. Any
+source-reviewed configured optional exclusion is named and justified in
+`tests/coverage/release_optional_ctest.json`, reported separately from measured
+passes, and rendered as configured/required/optional figures instead of an
+untrue N/N. The policy currently excludes no configured tests.
+
+Strict dispatch produces a `candidate-proof`; a tag run produces its own
+`tag-publication` proof. The v2 receipt binds exact SHA, run/attempt, target,
+normal complete phases with zero waivers, metadata hashes, and the measurement
+manifest. The publish job downloads and revalidates that same-run bundle before
+extracting notes. Preparation dispatch accepts well-formed incomplete metadata
+and emits no qualifying receipt. Removing a pending marker alone grants no
+publication authority; the autopilot waits for deliberate complete preparation.
+
+The full suite's added runtime is presently unmeasured. Preserve the existing
+720-minute job ceiling and 360-minute phase step ceilings. Before dispatching a
+fresh qualification, use retained actual phase/full-CTest timing receipts to
+confirm baseline and total job fit those limits with headroom, or explicitly
+review a budget/placement adjustment. Do not silently raise a timeout, run the
+full producer twice, cap the suite, or truncate evidence to fit a budget.
