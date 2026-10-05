@@ -711,7 +711,9 @@ jobs:
 
       - name: Generated API docs are healthy
         shell: bash
-        run: python3 scripts/gen_api_docs.py --check
+        run: |
+          python3 tests/toolchain/test_gen_api_docs.py
+          python3 scripts/gen_api_docs.py --check
 
       - name: Completion-oracle file parses and every criterion is gradeable
         shell: bash

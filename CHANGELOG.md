@@ -19,7 +19,9 @@ requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
   shared arena. Arithmetic, comparisons, rounding, roots and numeric formatting
   use those values; `number->string` preserves signed zero and readable nonfinite
   forms. Unsupported complex and exact Taylor paths refuse explicitly. This
-  restores site startup for the corrected example guides. (#744)
+  restores site startup for the corrected example guides. Generated API pages
+  distinguish compile-time statements from callable declarations and preserve
+  scoped methods, grouped declarators and initialized variables. (#744)
 - **Example documentation follows the implementations.** The catalogue covers all
   67 programs, including 46 mathematics examples, with algorithms, arithmetic,
   executable checks, prerequisites and limits. Navier–Stokes registration is
