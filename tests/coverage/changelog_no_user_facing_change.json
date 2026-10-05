@@ -27,6 +27,11 @@
       "pr": 739,
       "class": "release-machinery",
       "reason": "Retains full release-probe output and exit status, uploads phase-owned failure evidence, and adds a nonpublishing workflow mode for the three memory qualification gates; compiler/runtime code, shipped language behavior and package contents are unchanged."
+    },
+    {
+      "pr": 743,
+      "class": "release-machinery",
+      "reason": "Adds a nonpublishing full-measurement preparation path using the same canonical build and CTest/VM producers, and isolates nested readiness self-test evidence after the confirmed inherited-directory collision; compiler/runtime code, language behavior and package contents are unchanged."
     }
   ]
 }
