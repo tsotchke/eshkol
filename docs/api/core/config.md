@@ -345,4 +345,4 @@ Reference to the wrapped eshkol_config_t, allowing in-place edits.
 | `Config::Config` | Function | 344 |
 | `Config::~Config` | Function | 346 |
 | `Config::config_` | Variable | 348 |
-| `Config::false` | Variable | 349 |
+| `Config::loaded_` | Variable | 349 |

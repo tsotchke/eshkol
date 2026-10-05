@@ -160,13 +160,13 @@ Nearest exact int64 to numerator/denominator, per R7RS round semantics.
 
 ### `eshkol_double_to_rational`
 
-*Function* — line 298
+*Function* — line 299
 
 ```c
 void* eshkol_double_to_rational(void* arena, double d);
 ```
 
-Exact IEEE-754 double to rational (R7RS `inexact->exact`). A finite double is exactly `mantissa * 2^exponent`, and this returns that value — never a nearby approximation. `(inexact->exact 0.1)` is 3602879701896397/36028797018963968, as documented in ESHKOL_LANGUAGE_GUIDE.md; `(exact->inexact (inexact->exact x))` reproduces `x` bit-for-bit for every finite `x`, subnormals included. Whole values come back with denominator 1 and a bignum numerator when they exceed int64.
+Exact IEEE-754 double to rational (R7RS `inexact->exact`). A finite double is exactly `mantissa * 2^exponent`, and this returns that value — never a nearby approximation. `(inexact->exact 0.1)` is 3602879701896397/36028797018963968, as documented in ESHKOL_LANGUAGE_GUIDE.md; `(exact->inexact (inexact->exact x))` reproduces `x` bit-for-bit for every finite nonzero `x`, subnormals included. Both signed zeros canonicalize to exact integer zero. Whole values come back with denominator 1 and a bignum numerator when they exceed int64.
 
 **Parameters**
 
@@ -179,7 +179,7 @@ Newly allocated rational pointer.
 
 ### `eshkol_double_to_exact_tagged`
 
-*Function* — line 313
+*Function* — line 314
 
 ```c
 void eshkol_double_to_exact_tagged(void* arena, double d,

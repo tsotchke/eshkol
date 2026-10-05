@@ -200,7 +200,7 @@ eshkol_ast_t copyAst(const eshkol_ast_t& ast);
 
 Deep copy an AST node.
 
-### `MacroExpander::false`
+### `MacroExpander::toplevel_form_`
 
 *Variable* — line 173
 
