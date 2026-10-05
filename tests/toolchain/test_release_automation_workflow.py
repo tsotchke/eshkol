@@ -188,6 +188,8 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertEqual(len(set(roots)), len(phases))
         upload = self.steps["Upload readiness evidence"]
         self.assertEqual(upload["if"], "always()")
+        self.assertEqual(upload["with"].get("include-hidden-files"), "true",
+                         "raw .scratch logs and .icc traces must survive artifact filtering")
         self.assertIn("release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/", upload["with"]["path"])
         diagnostic_root = self.steps["Run nonpublishing memory diagnostics"]["env"]["ESHKOL_DURABLE_WORK_ROOT"]
         self.assertIn("${{ github.run_id }}", diagnostic_root)

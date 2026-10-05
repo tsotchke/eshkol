@@ -1589,6 +1589,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: release-readiness-evidence
+          # The declared .icc/.scratch evidence roots are hidden directories.
+          # Preserve those owned traces and raw logs before runner cleanup.
+          include-hidden-files: true
           path: |
             scripts/icc_traces/
             .icc/runtime-traces/
