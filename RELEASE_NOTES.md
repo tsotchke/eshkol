@@ -14,11 +14,11 @@ the release record.
 - **Example documentation follows the implementations.** The catalogue covers all
   67 programs, including 46 mathematics examples, with algorithms, arithmetic,
   executable checks, prerequisites and limits. Navier–Stokes registration is
-  derived from its 12 programs, 14 criteria and 28 native JIT/AOT entries.
+  derived from its 12 programs, 14 criteria and 28 native JIT/AOT entries. (#742)
 - **Publication requires complete source-bound measurements.** The release gate
   validates full configured CTest and VM parity results against committed
   metadata and the exact source, workflow run and build cohort. Removing a
-  pending marker cannot qualify a candidate for publication.
+  pending marker cannot qualify a candidate for publication. (#742)
 
 - **Native REPL input stays clean across line-editing backends.** Pipes and
   machine mode use one noninteractive reader whether readline is available or
