@@ -1664,6 +1664,18 @@ if (-not $SkipConfigureBuild) {
     Ensure-BuildArtifacts -Targets @("eshkol-run", "eshkol-repl", "stdlib")
 }
 
+$cudaCache = Join-Path $script:BuildDir "CMakeCache.txt"
+if ((Test-Path $cudaCache) -and
+    (Select-String -Path $cudaCache -Pattern '^ESHKOL_GPU_BACKEND:INTERNAL=CUDA$' -Quiet)) {
+    $cudaContractArgs = @(
+        (Join-Path $script:ProjectRoot "scripts/run_cuda_runtime_contracts.py"),
+        "--build-dir", $script:BuildDir
+    )
+    if ($script:BuildConfig) { $cudaContractArgs += @("--config", $script:BuildConfig) }
+    & python @cudaContractArgs
+    if ($LASTEXITCODE -ne 0) { throw "CUDA device-independent runtime contracts failed" }
+}
+
 Write-Section "Eshkol Complete Windows Test Suite"
 Write-Host ("Project Root: {0}" -f $script:ProjectRoot)
 Write-Host ("Build Dir:    {0}" -f $script:BuildDir)

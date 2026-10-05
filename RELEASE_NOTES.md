@@ -1108,11 +1108,16 @@ CUDA 12 builds on newer GNU hosts now require a compatible compiler for the
 whole build, avoiding unsafe nvcc-only host overrides that mix libstdc++ ABI
 and library search paths. Unix workflow configuration uses a scalar toolkit
 hint so non-CUDA macOS lanes remain compatible with Bash 3.2 under `set -u`.
-Generated AOT and persistent-cache links now resolve CUDA runtime/cuBLAS names
+Generated AOT and persistent-cache links now resolve CUDA runtime names
 from the consumer's explicit toolkit roots, `nvcc`, and standard multiarch
 layouts instead of replaying hosted-runner absolute paths. Linux links require
 the configured CUDA ABI-major sonames, so CUDA 12 artifacts fail closed rather
-than substituting CUDA 13 unreported. Windows uses native shell-free driver paths
+than substituting CUDA 13 unreported. cuBLAS is loaded only when CUDA GEMM needs
+it, after checking its ABI major and complete typed API. CPU-only native, JIT,
+and VM programs avoid its eager host-memory footprint; missing cuBLAS keeps the
+CPU GEMM fallback and other CUDA kernels available. This behavior preserves the
+existing memory ceilings and does not itself establish final release readiness.
+Windows uses native shell-free driver paths
 instead of MSVC STL generic-path conversion, keeping generated links compatible
 with consumer Visual C++ import libraries that predate `__std_replace_copy_2`.
 Its CUDA 12.4 setup also requests only documented Windows subpackages; `nvcc`

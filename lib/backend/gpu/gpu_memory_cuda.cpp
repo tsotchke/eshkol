@@ -11,6 +11,7 @@
 
 #include "eshkol/backend/gpu/gpu_memory.h"
 #include <eshkol/logger.h>
+#include "cublas_loader.h"
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -117,15 +118,27 @@ static std::mutex g_gpu_init_mutex;
 #if ESHKOL_GPU_CUDA_AVAILABLE
 
 static cudaStream_t g_cuda_stream = nullptr;
-static cublasHandle_t g_cublas_handle = nullptr;
+static eshkol::cuda::CublasLoader g_cublas_loader;
+
+// Callers hold g_gpu_init_mutex across admission and the GEMM sequence,
+// matching shutdown's lock and protecting the shared handle from destruction.
+static const eshkol::cuda::CublasApi* cuda_prepare_cublas_locked(void) {
+    if (g_active_backend != ESHKOL_GPU_CUDA || !g_cuda_stream) return nullptr;
+    std::string diagnostic;
+    if (!g_cublas_loader.ensure_handle(g_cuda_stream, &diagnostic)) {
+        GPU_LOG("cuBLAS GEMM unavailable: %s", diagnostic.c_str());
+        return nullptr;
+    }
+    return g_cublas_loader.api();
+}
 
 static constexpr uint32_t CUDA_FLAG_WRAPPED_HOST = 1u << 0;
 static constexpr uint32_t CUDA_FLAG_COPY_BACK = 1u << 1;
 static constexpr uint32_t CUDA_FLAG_HOST_REGISTERED = 1u << 2;
 
 /** @brief Initialize CUDA: verify at least one device is present, select
- *         device 0, and create the shared stream and cuBLAS handle used by
- *         all subsequent CUDA operations. Returns 0 on success, -1 on any
+ *         device 0, and create the shared stream. cuBLAS remains unloaded
+ *         until the first GEMM. Returns 0 on success, -1 on any
  *         failure (cleaning up any partially-created resources). */
 static int cuda_init(void) {
     int device_count = 0;
@@ -138,23 +151,12 @@ static int cuda_init(void) {
     err = cudaStreamCreate(&g_cuda_stream);
     if (err != cudaSuccess) return -1;
 
-    cublasStatus_t status = cublasCreate(&g_cublas_handle);
-    if (status != CUBLAS_STATUS_SUCCESS) {
-        cudaStreamDestroy(g_cuda_stream);
-        return -1;
-    }
-
-    cublasSetStream(g_cublas_handle, g_cuda_stream);
-
     return 0;
 }
 
 /** @brief Destroy the shared cuBLAS handle and CUDA stream, if created. */
 static void cuda_shutdown(void) {
-    if (g_cublas_handle) {
-        cublasDestroy(g_cublas_handle);
-        g_cublas_handle = nullptr;
-    }
+    g_cublas_loader.destroy_handle();
     if (g_cuda_stream) {
         cudaStreamDestroy(g_cuda_stream);
         g_cuda_stream = nullptr;
@@ -338,7 +340,7 @@ static void cuda_ozaki_check_env(void) {
  *         error source is dropping slice-pairs with p+q>T. */
 static int cuda_matmul_ozaki_int8_f64(const double* dA, const double* dB, double* dC,
                                       uint64_t M, uint64_t K, uint64_t N, int T) {
-    if (!g_cublas_handle || !dA || !dB || !dC) return -1;
+    if (!g_cublas_loader.handle() || !dA || !dB || !dC) return -1;
     if (M == 0 || K == 0 || N == 0) return -1;
     // cuBLAS int GEMM dims/leading dims are int; reject sizes that would truncate.
     if (M > (uint64_t)0x7fffffff || K > (uint64_t)0x7fffffff || N > (uint64_t)0x7fffffff)
@@ -420,8 +422,8 @@ static int cuda_matmul_ozaki_int8_f64(const double* dA, const double* dB, double
                 first = false;
                 const int8_t* Ap = dAs + (size_t)pq.first  * totA;  // col-major KxM (A_p^T bytes)
                 const int8_t* Bq = dBs + (size_t)pq.second * totB;  // col-major KxN (transposed)
-                cublasStatus_t st = cublasGemmEx(
-                    g_cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                cublasStatus_t st = g_cublas_loader.api()->gemm_ex(
+                    g_cublas_loader.handle(), CUBLAS_OP_T, CUBLAS_OP_N,
                     (int)N, (int)M, (int)K,
                     &ialpha,
                     Bq, CUDA_R_8I, (int)K,
@@ -576,6 +578,9 @@ static bool cuda_select_f64(uint64_t M, uint64_t K, uint64_t N, double budget,
  *         is timed to self-calibrate its cost model. */
 static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                             uint64_t M, uint64_t K, uint64_t N) {
+    std::lock_guard<std::mutex> gemm_lock(g_gpu_init_mutex);
+    const auto* cublas = cuda_prepare_cublas_locked();
+    if (!cublas) return -1;
     cuda_ozaki_check_env();
     const double budget = cuda_matmul_budget();
 
@@ -630,7 +635,7 @@ static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
     // cuBLAS uses column-major, so we compute C^T = B * A (in cuBLAS terms)
     // which gives us row-major C = A * B
     auto t0 = std::chrono::steady_clock::now();
-    cublasStatus_t status = cublasDgemm(g_cublas_handle,
+    cublasStatus_t status = cublas->dgemm(g_cublas_loader.handle(),
         CUBLAS_OP_N, CUBLAS_OP_N,
         (int)N, (int)M, (int)K,
         &alpha,
@@ -652,10 +657,13 @@ static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
 /** @brief Single-precision matmul via cuBLAS SGEMM, same column/row-major trick as cuda_matmul_f64. */
 static int cuda_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                             uint64_t M, uint64_t K, uint64_t N) {
+    std::lock_guard<std::mutex> gemm_lock(g_gpu_init_mutex);
+    const auto* cublas = cuda_prepare_cublas_locked();
+    if (!cublas) return -1;
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
-    cublasStatus_t status = cublasSgemm(g_cublas_handle,
+    cublasStatus_t status = cublas->sgemm(g_cublas_loader.handle(),
         CUBLAS_OP_N, CUBLAS_OP_N,
         (int)N, (int)M, (int)K,
         &alpha,
@@ -677,7 +685,10 @@ static int cuda_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
 // Returns 0 on success; any failure returns -1 so the caller falls back to f64.
 static int cuda_matmul_f16_from_f64(const double* A, const double* B, double* C,
                                     uint64_t M, uint64_t K, uint64_t N) {
-    if (!g_cublas_handle || !A || !B || !C) return -1;
+    std::lock_guard<std::mutex> gemm_lock(g_gpu_init_mutex);
+    const auto* cublas = cuda_prepare_cublas_locked();
+    if (!cublas) return -1;
+    if (!A || !B || !C) return -1;
     // P1: cuBLAS takes the dims and leading dimensions as int; reject sizes that
     // would silently truncate on the (int) casts below (wrong-shape GEMM).
     if (M > (uint64_t)0x7fffffff || K > (uint64_t)0x7fffffff || N > (uint64_t)0x7fffffff) return -1;
@@ -704,8 +715,8 @@ static int cuda_matmul_f16_from_f64(const double* A, const double* B, double* C,
         if (cudaMemcpy(dB, hB.data(), bN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
 
         const float alpha = 1.0f, beta = 0.0f;
-        cublasStatus_t st = cublasGemmEx(
-            g_cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        cublasStatus_t st = cublas->gemm_ex(
+            g_cublas_loader.handle(), CUBLAS_OP_N, CUBLAS_OP_N,
             (int)N, (int)M, (int)K,
             &alpha,
             dB, CUDA_R_16F, (int)N,
@@ -735,7 +746,10 @@ static int cuda_matmul_f16_from_f64(const double* A, const double* B, double* C,
 // falls back to the CPU batched f64 path).
 static int cuda_batch_matmul_f16_from_f64(const double* a, const double* b, double* c,
                                           int64_t batch, int64_t M, int64_t K, int64_t N) {
-    if (!g_cublas_handle || !a || !b || !c || batch <= 0) return -1;
+    std::lock_guard<std::mutex> gemm_lock(g_gpu_init_mutex);
+    const auto* cublas = cuda_prepare_cublas_locked();
+    if (!cublas) return -1;
+    if (!a || !b || !c || batch <= 0) return -1;
     // P1: cuBLAS strided-batched takes int dims; reject sizes that truncate.
     if (M > 0x7fffffff || K > 0x7fffffff || N > 0x7fffffff || batch > 0x7fffffff) return -1;
     const size_t aN = (size_t)batch * M * K;
@@ -760,8 +774,8 @@ static int cuda_batch_matmul_f16_from_f64(const double* a, const double* b, doub
         if (cudaMemcpy(dB, hB.data(), bN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
 
         const float alpha = 1.0f, beta = 0.0f;
-        cublasStatus_t st = cublasGemmStridedBatchedEx(
-            g_cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+        cublasStatus_t st = cublas->gemm_strided_batched_ex(
+            g_cublas_loader.handle(), CUBLAS_OP_N, CUBLAS_OP_N,
             (int)N, (int)M, (int)K,
             &alpha,
             dB, CUDA_R_16F, (int)N, (long long)(K * N),

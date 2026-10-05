@@ -61,6 +61,15 @@ for both browser setup examples.
 
 ## CUDA build architectures
 
+CUDA builds retain the CUDA runtime for device kernels and load cuBLAS on the
+first GPU matrix multiplication that needs it. CPU-only native, JIT, and VM
+programs do not load cuBLAS merely because CUDA was enabled at build time.
+The loader checks the library's ABI major against the compiled toolkit headers
+and validates every required function before creating a handle. If admission
+fails, matrix multiplication uses the existing CPU fallback; other CUDA kernels
+remain available. A successfully admitted library stays loaded for the process
+lifetime, including across GPU shutdown and reinitialization.
+
 The portable `ESHKOL_CUDA_ARCHITECTURES` defaults are filtered against the
 installed toolkit. Configuration first asks `nvcc --list-gpu-arch`; when that
 is unavailable, it uses the toolkit version's supported range. Unsupported

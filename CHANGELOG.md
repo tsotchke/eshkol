@@ -14,6 +14,10 @@ requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
 
 ### Changed
 
+- **CUDA builds load cuBLAS when GPU GEMM needs it.** CPU-only native, JIT, and
+  VM paths avoid its eager memory footprint. Library admission validates the
+  ABI major and complete typed API; failure retains CPU matrix multiplication
+  and other CUDA kernels. (#740)
 - **Native REPL input is shared across line-editing backends.** Pipes and
   machine mode stay prompt-free with readline available or absent; interactive
   sessions retain their prompts. (#737)
