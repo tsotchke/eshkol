@@ -419,18 +419,26 @@ def main():
         cands = cands[:args.limit]
 
     baseline = load_baseline()
-    workdir = args.workdir or tempfile.mkdtemp(prefix="value-position-")
+    scratch = os.path.join(REPO, ".scratch")
+    os.makedirs(scratch, exist_ok=True)
+    workdir = args.workdir or tempfile.mkdtemp(prefix="value-position-", dir=scratch)
     os.makedirs(workdir, exist_ok=True)
 
     records = []
     new_findings, known_findings, skipped, checked = [], [], [], 0
     started = time.time()
 
-    for e in cands:
+    for position, e in enumerate(cands, 1):
         name, cat, arity = e["name"], e["category"], e["arity"]
         src = build_program(name, cat, arity, args_for(name, cat, arity))
         for axis in axes:
+            probe_started = time.monotonic()
+            print("value-position progress: %d/%d %s %s start" %
+                  (position, len(cands), name, axis), flush=True)
             probes, err = run_axis(axis, src, workdir, args.timeout)
+            print("value-position progress: %d/%d %s %s %.2fs %s" %
+                  (position, len(cands), name, axis, time.monotonic() - probe_started,
+                   err or "completed"), flush=True)
             nodeid = "builtins/%s" % name
             if err or probes is None or "call" not in probes:
                 skipped.append((name, axis, err or "no-call-probe"))

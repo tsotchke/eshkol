@@ -7612,6 +7612,7 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
             test_release_autopilot
             test_v1_3_release_evidence_recipe
             test_release_probe_receipts
+            test_release_harness_paths
             test_native_image_io_contract)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py")
             add_test(NAME ${_release_invariant_test}

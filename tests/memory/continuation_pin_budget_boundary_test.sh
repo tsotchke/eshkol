@@ -7,8 +7,10 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
 cd "$SCRIPT_DIR/../.."
 ROOT=$(pwd -P)
 BUILD_DIR=${BUILD_DIR:-build}
-RUN=${ESHKOL_RUN:-$ROOT/$BUILD_DIR/eshkol-run}
-VM=${ESHKOL_VM:-$ROOT/$BUILD_DIR/eshkol-vm-standalone-test}
+. "$ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var BUILD_DIR "$ROOT" || exit $?
+RUN=${ESHKOL_RUN:-$BUILD_DIR/eshkol-run}
+VM=${ESHKOL_VM:-$BUILD_DIR/eshkol-vm-standalone-test}
 NATIVE_SRC=$ROOT/tests/memory/region_pin_budget_native_boundary.esk
 VM_SRC=$ROOT/tests/memory/region_pin_budget_vm_boundary.esk
 WORK_ROOT=${ESHKOL_SCRATCH_ROOT:-$ROOT/.scratch}

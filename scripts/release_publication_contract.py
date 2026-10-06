@@ -249,9 +249,20 @@ def ctest_summary(text):
 
 def ctest_raw_outcomes(text, total):
     """Require the producer's complete unique per-test console verdicts."""
-    pattern = re.compile(r"^\s*(\d+)/(\d+)\s+Test\s+#\s*(\d+):\s+(\S+)\s+\.{2,}\s+(.+?)\s+([0-9]+(?:\.[0-9]+)?)\s+sec\s*$")
+    pattern = re.compile(r"^\s*(\d+)/(\d+)\s+Test\s+#\s*(\d+):\s+(\S+)\s+\.{2,}\s*(.+?)\s+([0-9]+(?:\.[0-9]+)?)\s+sec\s*$")
     outcomes, indices = {}, set()
-    for line in text.splitlines():
+    lines = iter(text.splitlines())
+    for line in lines:
+        # CTest attaches starred failures directly to the dotted leader and
+        # prints a trailing newline inside PASS_REGULAR_EXPRESSION as two
+        # console lines. Join only its exact closing-bracket/duration shape;
+        # arbitrary test output must never supply a missing verdict.
+        if not pattern.fullmatch(line) and re.match(r"^\s*\d+/\d+\s+Test\s+#", line) and re.search(
+                r"\*+Failed\s+Required regular expression not found\. Regex=\[[^\n]*$", line):
+            continuation = next(lines, "")
+            if not re.fullmatch(r"\]\s+[0-9]+(?:\.[0-9]+)?\s+sec\s*", continuation):
+                raise ContractError("truncated CTest regular-expression failure")
+            line += continuation
         match = pattern.fullmatch(line)
         if not match:
             continue

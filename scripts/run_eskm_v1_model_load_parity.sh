@@ -46,7 +46,9 @@ source "$ROOT_DIR/scripts/lib/durable_work_root.sh"
 if [ -n "${ESHKOL_TEST_TMPDIR:-}" ]; then
     WORK_DIR="$(mktemp -d "$ESHKOL_TEST_TMPDIR/eshkol-eskm-v1.XXXXXX")" || exit 125
 elif eshkol_durable_enabled; then
-    WORK_DIR="$(eshkol_durable_prepare_dir eskm-v1-model-io-parity)" || exit $?
+    work_role=eskm-v1-model-io-parity
+    if [ "$SELF_TEST" -eq 1 ]; then work_role=eskm-v1-model-io-parity-selftest; fi
+    WORK_DIR="$(eshkol_durable_prepare_dir "$work_role")" || exit $?
 else
     TMP_BASE="${ESHKOL_TEST_TMP_ROOT:-${TMPDIR:-/tmp}}"
     WORK_DIR="$(mktemp -d "$TMP_BASE/eshkol-eskm-v1.XXXXXX")" || exit 125

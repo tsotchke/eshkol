@@ -3,7 +3,9 @@ set -u
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-build}"
-VM="$ROOT_DIR/$BUILD_DIR/eshkol-vm-standalone-test"
+. "$ROOT_DIR/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var BUILD_DIR "$ROOT_DIR" || exit $?
+VM="${ESHKOL_VM:-$BUILD_DIR/eshkol-vm-standalone-test}"
 
 if [ ! -x "$VM" ]; then
     echo "FAIL: VM executable not found at $VM" >&2

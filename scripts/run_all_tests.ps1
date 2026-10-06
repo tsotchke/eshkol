@@ -1665,8 +1665,8 @@ if (-not $SkipConfigureBuild) {
 }
 
 $cudaCache = Join-Path $script:BuildDir "CMakeCache.txt"
-if ((Test-Path $cudaCache) -and
-    (Select-String -Path $cudaCache -Pattern '^ESHKOL_GPU_BACKEND:INTERNAL=CUDA$' -Quiet)) {
+if ((Test-RegularFile -Path $cudaCache) -and
+    (Select-String -LiteralPath $cudaCache -Pattern '^ESHKOL_GPU_BACKEND:INTERNAL=CUDA$' -Quiet)) {
     $cudaContractArgs = @(
         (Join-Path $script:ProjectRoot "scripts/run_cuda_runtime_contracts.py"),
         "--build-dir", $script:BuildDir

@@ -187,6 +187,23 @@ class PublicationContractTests(unittest.TestCase):
                 with self.assertRaises(contract.ContractError):
                     contract.measurement_facts(bundle / 'ctest', 'run_ctest_gate')
 
+    def test_real_ctest_failure_and_timeout_console_shapes(self):
+        text = (
+            "1/5 Test #1: good ................ Passed 0.01 sec\n"
+            "2/5 Test #2: wrong ...............***Failed    0.02 sec\n"
+            "3/5 Test #3: missing .............***Failed  Required regular expression not found. Regex=[PASS: proof\n"
+            "]  0.03 sec\n"
+            "4/5 Test #4: slow ................***Timeout 1800.04 sec\n"
+            "5/5 Test #5: regex ...............***Failed  Required regular expression not found. Regex=[PASS] 0.01 sec\n"
+        )
+        self.assertEqual(contract.ctest_raw_outcomes(text, 5),
+                         {"good": "passed", "wrong": "failed", "missing": "failed", "slow": "infra", "regex": "failed"})
+        for invalid in (text.replace("]  0.03 sec", ""),
+                        text.replace("]  0.03 sec", "invented ]  0.03 sec"),
+                        text.replace("***Timeout", "***Unknown")):
+            with self.subTest(invalid=invalid), self.assertRaises(contract.ContractError):
+                contract.ctest_raw_outcomes(invalid, 5)
+
     def test_alternate_hashed_filename_cannot_leave_consumed_raw_unbound(self):
         with tempfile.TemporaryDirectory(dir=ROOT / '.scratch') as directory:
             bundle = bundle_fixture(Path(directory) / 'bundle')

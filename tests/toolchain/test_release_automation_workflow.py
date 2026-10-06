@@ -81,6 +81,20 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
                          "steps.readiness.outputs.receipt_created == 'true'")
 
 
+    def test_release_full_ctest_has_browser_and_semantic_dependencies(self):
+        steps = self.workflow["jobs"]["release-readiness-gate"]["steps"]
+        by_name = {step.get("name"): step for step in steps}
+        node = by_name["Prepare Node.js for browser runtime gates"]
+        self.assertEqual(node["uses"], "actions/setup-node@v4")
+        self.assertEqual(str(node["with"]["node-version"]), "20")
+        preflight = by_name["Toolchain preflight (self-hosted; provisioned out of band)"]["run"]
+        self.assertIn("command -v node", preflight)
+        python = by_name["Prepare isolated Python binding test environment"]["run"]
+        self.assertIn("clang==21.1.7", python)
+        self.assertIn('test "$LLVM_MAJOR" = 21', python)
+        self.assertIn("cindex.Index.create()", python)
+        self.assertIn('echo "ESHKOL_LIBCLANG=$libclang"', python)
+
     def test_measurement_preparation_is_dispatch_only_incompatible_and_nonqualifying(self):
         mode = self.workflow["on"]["workflow_dispatch"]["inputs"]["measurement_preparation"]
         self.assertEqual((mode["type"], mode["default"], mode["required"]), ("boolean", "false", "false"))
