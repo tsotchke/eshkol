@@ -20,7 +20,7 @@ requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
   loading handles the ESM package entry correctly. Independent Python and
   browser prerequisites overlap, then join before build and evidence phases.
   The complete value-position correctness sweep has a 60-minute overall budget
-  based on measured runner throughput; all cases and per-case limits remain.
+  based on measured runner throughput; all cases and per-case limits remain. (#745)
 
 - **The browser LLVM/WASM host supports exact numeric startup and consumers.**
   Finite doubles retain their exact integer or rational values in a checked
