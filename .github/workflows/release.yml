@@ -1369,7 +1369,8 @@ jobs:
           "$python_env/bin/python" -m pip install --disable-pip-version-check clang==21.1.7
           llvm_libdir="$("$LLVM_CONFIG" --libdir)"
           libclang=""
-          for candidate in "$llvm_libdir/libclang.so.1" "$llvm_libdir/libclang.so"; do
+          for candidate in "$llvm_libdir/libclang.so.1" "$llvm_libdir/libclang.so" \
+            "$llvm_libdir/libclang-${LLVM_MAJOR}.so.1" "$llvm_libdir/libclang-${LLVM_MAJOR}.so.${LLVM_MAJOR}"; do
             if [ -f "$candidate" ]; then libclang="$candidate"; break; fi
           done
           if [ -z "$libclang" ]; then
