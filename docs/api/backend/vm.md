@@ -71,7 +71,7 @@ Install the resolved limit configuration from a hosted entry point.
 | `g_eshkol_vm_max_insn` | Variable | 215 |
 | `g_eshkol_vm_insn_limit_active` | Variable | 216 |
 | `g_eshkol_vm_enforce_hard_limits` | Variable | 217 |
-| `void` | Function | 218 |
+| `g_eshkol_vm_poll_interrupt` | Variable | 218 |
 | `eshkol_vm_host_pop_int64` | Function | 231 |
 | `eshkol_vm_host_push_int64` | Function | 232 |
 | `eshkol_vm_host_pop_double` | Function | 233 |

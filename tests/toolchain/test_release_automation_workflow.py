@@ -81,6 +81,50 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
                          "steps.readiness.outputs.receipt_created == 'true'")
 
 
+    def test_release_full_ctest_has_browser_and_semantic_dependencies(self):
+        steps = self.workflow["jobs"]["release-readiness-gate"]["steps"]
+        by_name = {step.get("name"): step for step in steps}
+        node = by_name["Prepare Node.js for browser runtime gates"]
+        self.assertEqual(node["uses"], "actions/setup-node@v4")
+        self.assertEqual(str(node["with"]["node-version"]), "20")
+        preflight = by_name["Toolchain preflight (self-hosted; provisioned out of band)"]["run"]
+        self.assertIn("command -v node", preflight)
+        python = by_name["Prepare isolated Python binding test environment"]["run"]
+        self.assertIn("clang==21.1.7", python)
+        self.assertIn('test "$LLVM_MAJOR" = 21', python)
+        self.assertIn("cindex.Index.create()", python)
+        self.assertIn('"$llvm_libdir/libclang-${LLVM_MAJOR}.so.1"', python)
+        self.assertIn('"$llvm_libdir/libclang-${LLVM_MAJOR}.so.${LLVM_MAJOR}"', python)
+        self.assertIn('echo "ESHKOL_LIBCLANG=$libclang"', python)
+
+    def test_release_libclang_discovery_handles_runtime_sonames(self):
+        body = self.steps["Prepare isolated Python binding test environment"]["run"]
+        discovery = body[body.index('llvm_libdir='):body.index('"$python_env/bin/python" -c')]
+        scratch = ROOT / ".scratch"
+        scratch.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="libclang discovery ", dir=scratch) as directory:
+            root = Path(directory)
+            config = root / "llvm-config"
+            config.write_text('#!/bin/bash\nprintf "%s\\n" "$TEST_LLVM_LIBDIR"\n')
+            config.chmod(0o755)
+            env = {**os.environ, "LLVM_CONFIG": str(config), "LLVM_MAJOR": "21",
+                   "TEST_LLVM_LIBDIR": str(root)}
+            for filename in ("libclang.so.1", "libclang.so", "libclang-21.so.1", "libclang-21.so.21"):
+                with self.subTest(filename=filename):
+                    library = root / filename
+                    library.touch()
+                    result = subprocess.run(["bash", "-eu", "-c", discovery + '\nprintf "%s" "$libclang"'],
+                                            env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, str(library))
+                    library.unlink()
+            # An unrelated compiler major cannot satisfy this gate.
+            (root / "libclang-20.so.1").touch()
+            result = subprocess.run(["bash", "-eu", "-c", discovery], env=env,
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("libclang is absent", result.stdout)
+
     def test_measurement_preparation_is_dispatch_only_incompatible_and_nonqualifying(self):
         mode = self.workflow["on"]["workflow_dispatch"]["inputs"]["measurement_preparation"]
         self.assertEqual((mode["type"], mode["default"], mode["required"]), ("boolean", "false", "false"))

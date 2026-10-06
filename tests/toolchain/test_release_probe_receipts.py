@@ -117,15 +117,19 @@ test "$PROBE_INFRA" -eq 1
         readiness_gate = workflow.index("      - name: ICC readiness gate")
         readiness_call = workflow.index("scripts/run_v1_3_readiness.sh", readiness_gate)
         wrapper = (ROOT / "scripts/run_v1_3_readiness.sh").read_text()
-        coverage = wrapper.index("scripts/run_language_coverage.sh")
-        vm = wrapper.index("scripts/run_vm_parity.sh")
+        baseline = wrapper.split("run_baseline_phase() {", 1)[1].split("\n}\n", 1)[0]
+        measurements = wrapper.split("run_full_measurements() {", 1)[1].split("\n}\n", 1)[0]
+        coverage = baseline.index("scripts/run_language_coverage.sh")
+        vm = baseline.index("run_full_measurements")
+        self.assertLess(measurements.index("scripts/run_ctest_gate.sh"),
+                        measurements.index("scripts/run_vm_parity.sh"))
         smoke_step = wrapper.index("scripts/run_icc_smoke.sh")
         producers = wrapper.index("scripts/run_v1_3_release_producers.sh")
         grade = wrapper.index('"$ICC_BIN" architecture-verify')
         verify = wrapper.index("scripts/verify_v1_3_release_evidence.py")
         self.assertLess(readiness_call, len(workflow))
         self.assertLess(coverage, vm)
-        self.assertLess(vm, smoke_step)
+        self.assertLess(wrapper.index("run_baseline_phase() {"), smoke_step)
         self.assertLess(smoke_step, producers)
         self.assertLess(producers, verify)
         self.assertLess(verify, grade)

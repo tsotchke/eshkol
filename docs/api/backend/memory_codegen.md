@@ -463,7 +463,7 @@ Get the WASM-side object-ABI geometry check import, if this is wasm32.
 | `MemoryCodegen::arena_allocate_tensor_with_header` | Variable | 221 |
 | `MemoryCodegen::arena_allocate_tensor_full` | Variable | 222 |
 | `MemoryCodegen::eshkol_make_exception_with_header` | Variable | 225 |
-| `MemoryCodegen::nullptr` | Variable | 226 |
+| `MemoryCodegen::wasm_abi_check` | Variable | 226 |
 | `MemoryCodegen::createFunc` | Function | 229 |
 | `MemoryCodegen::createCoreArenaFunctions` | Function | 232 |
 | `MemoryCodegen::createConsCellFunctions` | Function | 233 |

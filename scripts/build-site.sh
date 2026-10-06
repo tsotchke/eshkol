@@ -77,9 +77,10 @@ fi
 #    The `--wasm` (a.k.a. `-w`) flag in exe/eshkol-run.cpp sets the LLVM
 #    target to wasm32-unknown-unknown and routes through
 #    eshkol_compile_llvm_ir_to_wasm_file(), which writes the .wasm without
-#    invoking the host linker.  No stdlib.o is required because main.esk
-#    has no `(require ...)` and uses only `extern` declarations resolved
-#    by the JS glue (site/static/eshkol-runtime.js).
+#    invoking the host linker. The compiler automatically loads stdlib from
+#    source, including module initializers such as the exact DBL_MAX interval
+#    constant. Runtime imports are resolved by site/static/eshkol-runtime.js;
+#    no native stdlib.o is linked into this browser module.
 # ----------------------------------------------------------------------------
 
 echo "build-site.sh: compiling $SITE_SRC -> $SITE_OUT"

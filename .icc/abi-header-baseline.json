@@ -202,8 +202,10 @@
       "tests/ffi/sqlite_column_roundtrip_test.c": 5
     },
     "H_wasm_glue": {
-      "site/static/eshkol-runtime.js": 18,
-      "web/eshkol-repl.js": 17
+      "scripts/wasm_exact_runtime.fragment.js": 8,
+      "site/static/eshkol-runtime.js": 25,
+      "tests/toolchain/wasm_exact_runtime_test.js": 4,
+      "web/eshkol-repl.js": 25
     },
     "J_secondary_prefix_abi": {
       "lib/core/arena_memory.h": 5,
@@ -297,6 +299,28 @@
     "ok": true
   },
   "note": "Ratchet baseline for object-header layout dependence. Counts are per (class, file). A commit may not raise any count or add a file. Lowering counts requires an exact, reasoned entry in .icc/abi-header-ratchet-allowlist.json; re-run `baseline` afterwards to tighten the ratchet. Raising one requires an explicit, reasoned re-baseline in the same commit.",
+  "reviewed_additions": [
+    {
+      "after": {
+        "scripts/wasm_exact_runtime.fragment.js": 8,
+        "site/static/eshkol-runtime.js": 25,
+        "tests/toolchain/wasm_exact_runtime_test.js": 4,
+        "web/eshkol-repl.js": 25
+      },
+      "before": {
+        "site/static/eshkol-runtime.js": 18,
+        "web/eshkol-repl.js": 17
+      },
+      "class": "H_wasm_glue",
+      "reason": "PR744 replaces null exact-number browser imports with the canonical wasm32 arena and numeric implementation. JavaScript cannot call native C header macros. One shared fragment owns header construction/validation; both generated bundles embed that fragment. The independent raw-memory oracle in wasm_exact_runtime_test.js intentionally reads the ABI. Existing native layout assertions and additive wasm32 numeric fingerprint checks in abi_fingerprint.h/build-site.sh pin the representation. This admits only the reviewed four-file delta; semantic and all other class counts remain unchanged.",
+      "source": "2276b6742fe91f909f0c72085257b1802f1850df",
+      "verification": [
+        "scripts/generate_wasm_import_glue.py --check",
+        "tests/toolchain/wasm_exact_runtime_test.js",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    }
+  ],
   "schema": 1,
   "totals": {
     "A_macro_api": 133,
@@ -307,7 +331,7 @@
     "E_alloc_with_header": 204,
     "F_parallel_header_decl": 2,
     "G_header_field_write": 184,
-    "H_wasm_glue": 35,
+    "H_wasm_glue": 62,
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
     "L_layout_in_prose": 86,

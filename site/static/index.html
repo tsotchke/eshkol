@@ -74,8 +74,10 @@
         const runtime = new EshkolRuntime();
         await runtime.initWebGPU();
         const response = await fetch('eshkol-site.wasm');
+        const wasmBytes = await response.arrayBuffer();
+        runtime.prepareWasm(wasmBytes);
         const { instance: rawInstance } = await WebAssembly.instantiate(
-          await response.arrayBuffer(),
+          wasmBytes,
           runtime.createImports()
         );
         const instance = runtime.wrapInstance(rawInstance);

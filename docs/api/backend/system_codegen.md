@@ -2805,17 +2805,17 @@ R7RS 6.11: #t => successful termination (0), #f => unsuccessful (1).
 
 | Symbol | Kind | Line |
 |---|---|---:|
-| `SystemCodegen::void` | Function | 32 |
+| `SystemCodegen::BeforeExitFunc` | Variable | 32 |
 | `SystemCodegen::ctx_` | Variable | 737 |
 | `SystemCodegen::tagged_` | Variable | 739 |
 | `SystemCodegen::mem_` | Variable | 740 |
 | `SystemCodegen::function_table_` | Variable | 741 |
 | `SystemCodegen::CodegenASTFunc` | Typedef | 744 |
 | `SystemCodegen::CodegenTypedASTFunc` | Typedef | 745 |
-| `SystemCodegen::nullptr` | Variable | 747 |
-| `SystemCodegen::nullptr` | Variable | 748 |
-| `SystemCodegen::nullptr` | Variable | 749 |
-| `SystemCodegen::nullptr` | Variable | 750 |
+| `SystemCodegen::codegen_ast_callback_` | Variable | 747 |
+| `SystemCodegen::codegen_typed_ast_callback_` | Variable | 748 |
+| `SystemCodegen::callback_context_` | Variable | 749 |
+| `SystemCodegen::before_exit_callback_` | Variable | 750 |
 | `SystemCodegen::extractStringPtr` | Function | 753 |
 | `SystemCodegen::setCodegenCallbacks` | Function | 772 |
 | `SystemCodegen::setBeforeExitCallback` | Function | 788 |

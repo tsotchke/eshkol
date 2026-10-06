@@ -68,5 +68,5 @@ true if the path is safe to use; false otherwise.
 | Symbol | Kind | Line |
 |---|---|---:|
 | `kMaxRequestBodySize` | Variable | 25 |
-| `kMaxRequestBodySize` | Variable | 28 |
+| `kMaxRequestTotalSize` | Variable | 28 |
 | `kMaxConcurrentConnections` | Variable | 31 |

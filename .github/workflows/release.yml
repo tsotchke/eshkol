@@ -1293,6 +1293,12 @@ jobs:
             printf '%s\n' "$READINESS_TOOL_BIN_DIR" >> "$GITHUB_PATH"
           fi
 
+      - name: Prepare Node.js for browser runtime gates
+        if: env.ICC_AVAILABLE == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Toolchain preflight (self-hosted; provisioned out of band)
         if: env.ICC_AVAILABLE == 'true'
         shell: bash
@@ -1322,6 +1328,7 @@ jobs:
           command -v cmake   >/dev/null 2>&1 || note "cmake is not installed on this runner."
           command -v ninja   >/dev/null 2>&1 || note "ninja is not installed on this runner."
           command -v python3 >/dev/null 2>&1 || note "python3 is not installed on this runner."
+          command -v node    >/dev/null 2>&1 || note "node is not installed on this runner (required by browser runtime tests)."
           command -v jq      >/dev/null 2>&1 || note "jq is not installed on this runner (needed to parse the ICC readiness verdict)."
           command -v sbcl    >/dev/null 2>&1 || note "sbcl is not installed on this runner (required by the pinned Rosette Wire release oracle)."
           command -v prlimit >/dev/null 2>&1 || note "prlimit is not installed on this runner (required by Rosette Wire's isolated worker)."
@@ -1356,6 +1363,22 @@ jobs:
           python_env="$RUNNER_TEMP/eshkol-release-python"
           python3 -m venv "$python_env"
           "$python_env/bin/python" -m pip install --disable-pip-version-check pybind11==3.1.0 numpy==2.5.3 pyyaml==6.0.3
+          # Use bindings for the same LLVM major as the native library; do not
+          # install PyPI libclang's unrelated bundled compiler library.
+          test "$LLVM_MAJOR" = 21
+          "$python_env/bin/python" -m pip install --disable-pip-version-check clang==21.1.7
+          llvm_libdir="$("$LLVM_CONFIG" --libdir)"
+          libclang=""
+          for candidate in "$llvm_libdir/libclang.so.1" "$llvm_libdir/libclang.so" \
+            "$llvm_libdir/libclang-${LLVM_MAJOR}.so.1" "$llvm_libdir/libclang-${LLVM_MAJOR}.so.${LLVM_MAJOR}"; do
+            if [ -f "$candidate" ]; then libclang="$candidate"; break; fi
+          done
+          if [ -z "$libclang" ]; then
+            echo "::error::LLVM $LLVM_MAJOR libclang is absent from $llvm_libdir; provision libclang-$LLVM_MAJOR-dev."
+            exit 1
+          fi
+          "$python_env/bin/python" -c 'import sys; from clang import cindex; cindex.Config.set_library_file(sys.argv[1]); cindex.Index.create()' "$libclang"
+          echo "ESHKOL_LIBCLANG=$libclang" >> "$GITHUB_ENV"
           pybind11_dir="$("$python_env/bin/python" -m pybind11 --cmakedir)"
           test -f "$pybind11_dir/pybind11Config.cmake"
           {

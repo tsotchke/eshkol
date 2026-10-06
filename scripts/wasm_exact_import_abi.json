@@ -1,0 +1,231 @@
+{
+  "eshkol_ad_point_is_exact_number": [
+    "tagged_ptr"
+  ],
+  "eshkol_ad_point_is_exact_scalar": [
+    "tagged_ptr"
+  ],
+  "eshkol_ad_point_is_scalar": [
+    "tagged_ptr"
+  ],
+  "eshkol_ad_point_to_double": [
+    "tagged_ptr",
+    "cstring_ptr"
+  ],
+  "eshkol_ad_seed_to_double": [
+    "tagged_ptr",
+    "i32_out_ptr"
+  ],
+  "eshkol_bignum_binary_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_ptr",
+    "i32",
+    "tagged_out_ptr"
+  ],
+  "eshkol_bignum_compare_tagged": [
+    "tagged_ptr",
+    "tagged_ptr",
+    "i32",
+    "tagged_out_ptr"
+  ],
+  "eshkol_bignum_from_int64": [
+    "arena_ptr",
+    "i64"
+  ],
+  "eshkol_bignum_from_overflow": [
+    "arena_ptr",
+    "i64",
+    "i64",
+    "i32"
+  ],
+  "eshkol_bignum_is_even": [
+    "bignum_payload_ptr"
+  ],
+  "eshkol_bignum_is_odd": [
+    "bignum_payload_ptr"
+  ],
+  "eshkol_bignum_is_zero": [
+    "bignum_payload_ptr"
+  ],
+  "eshkol_bignum_neg": [
+    "arena_ptr",
+    "bignum_payload_ptr"
+  ],
+  "eshkol_bignum_pow_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_bignum_to_double": [
+    "bignum_payload_ptr"
+  ],
+  "eshkol_bignum_to_string": [
+    "arena_ptr",
+    "bignum_payload_ptr"
+  ],
+  "eshkol_complex_pow": [
+    "complex_payload_ptr",
+    "complex_payload_ptr",
+    "complex_payload_ptr"
+  ],
+  "eshkol_complex_sqrt": [
+    "complex_payload_ptr",
+    "complex_payload_ptr"
+  ],
+  "eshkol_display_value": [
+    "tagged_ptr"
+  ],
+  "eshkol_display_value_to_port": [
+    "tagged_ptr",
+    "port_ptr"
+  ],
+  "eshkol_double_to_exact_tagged": [
+    "arena_ptr",
+    "f64",
+    "tagged_out_ptr"
+  ],
+  "eshkol_double_to_rational": [
+    "arena_ptr",
+    "f64"
+  ],
+  "eshkol_exact_rational_pow_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_ptr",
+    "f64",
+    "tagged_out_ptr"
+  ],
+  "eshkol_exact_sqrt_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "f64",
+    "tagged_out_ptr"
+  ],
+  "eshkol_format_double": [
+    "char_buffer_ptr",
+    "size_t",
+    "f64"
+  ],
+  "eshkol_fprint_double": [
+    "FILE_ptr",
+    "f64"
+  ],
+  "eshkol_is_bignum_tagged": [
+    "tagged_ptr"
+  ],
+  "eshkol_is_rational_tagged_ptr": [
+    "tagged_ptr"
+  ],
+  "eshkol_rational_binary_tagged_ptr": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_ptr",
+    "i32",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_ceil": [
+    "rational_payload_ptr"
+  ],
+  "eshkol_rational_ceil_tagged": [
+    "arena_ptr",
+    "rational_payload_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_compare_tagged_ptr": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_ptr",
+    "i32",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_create": [
+    "arena_ptr",
+    "i64",
+    "i64"
+  ],
+  "eshkol_rational_denominator_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_equal": [
+    "rational_payload_ptr",
+    "rational_payload_ptr"
+  ],
+  "eshkol_rational_floor": [
+    "rational_payload_ptr"
+  ],
+  "eshkol_rational_floor_tagged": [
+    "arena_ptr",
+    "rational_payload_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_from_bignums_tagged": [
+    "arena_ptr",
+    "bignum_payload_ptr",
+    "bignum_payload_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_make_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_numerator_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_pow_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_round": [
+    "rational_payload_ptr"
+  ],
+  "eshkol_rational_round_tagged": [
+    "arena_ptr",
+    "rational_payload_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_rational_to_double": [
+    "rational_payload_ptr"
+  ],
+  "eshkol_rational_to_string": [
+    "arena_ptr",
+    "rational_payload_ptr"
+  ],
+  "eshkol_rational_truncate": [
+    "rational_payload_ptr"
+  ],
+  "eshkol_rational_truncate_tagged": [
+    "arena_ptr",
+    "rational_payload_ptr",
+    "tagged_out_ptr"
+  ],
+  "eshkol_wasm_numeric_abi_check": [
+    "i32",
+    "i32",
+    "i32",
+    "i32",
+    "i32",
+    "i32",
+    "i32",
+    "i32",
+    "i32",
+    "i32",
+    "i32"
+  ],
+  "eshkol_write_value": [
+    "tagged_ptr"
+  ],
+  "eshkol_write_value_to_port": [
+    "tagged_ptr",
+    "port_ptr"
+  ]
+}

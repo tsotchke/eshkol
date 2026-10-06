@@ -92,7 +92,7 @@ Create a tail call that will reuse the current stack frame. The call must be imm
 
 The result of the tail call
 
-### `TailCallCodegen::x0F00000000000000ULL`
+### `TailCallCodegen::BOUNCE_TAG`
 
 *Variable* — line 94
 
@@ -244,16 +244,16 @@ Generate a self-call redirect: store new args to allocas and branch to loop. Use
 | Symbol | Kind | Line |
 |---|---|---:|
 | `TailCallCodegen::TailCallCodegen` | Function | 45 |
-| `TailCallCodegen::IterativeInfo::nullptr` | Variable | 155 |
+| `TailCallCodegen::IterativeInfo::func` | Variable | 155 |
 | `TailCallCodegen::IterativeInfo::func_name` | Variable | 156 |
 | `TailCallCodegen::IterativeInfo::param_allocas` | Variable | 157 |
-| `TailCallCodegen::IterativeInfo::nullptr` | Variable | 158 |
-| `TailCallCodegen::IterativeInfo::nullptr` | Variable | 159 |
-| `TailCallCodegen::IterativeInfo::false` | Variable | 160 |
+| `TailCallCodegen::IterativeInfo::loop_header` | Variable | 158 |
+| `TailCallCodegen::IterativeInfo::body` | Variable | 159 |
+| `TailCallCodegen::IterativeInfo::active` | Variable | 160 |
 | `TailCallCodegen::ctx_` | Variable | 181 |
 | `TailCallCodegen::tagged_` | Variable | 183 |
 | `TailCallCodegen::mem_` | Variable | 184 |
-| `TailCallCodegen::nullptr` | Variable | 187 |
+| `TailCallCodegen::trampoline_func_` | Variable | 187 |
 | `TailCallCodegen::iterative_info_` | Variable | 190 |
 | `TailCallCodegen::isLastInSequence` | Function | 193 |
 | `TailCallCodegen::canUseDirectTCO` | Function | 196 |

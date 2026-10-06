@@ -8,6 +8,455 @@
  * Handle system: integer handles → JavaScript objects
  *   0 = null, 1 = document, 2 = window, 3 = document.body
  */
+// BEGIN GENERATED EXACT RUNTIME
+// Canonical browser numeric/arena implementation. Embedded into both bundles.
+// Heap objects use the C WASM32 ABI; BigInt is only arithmetic scratch state.
+function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
+    const MIN = -(1n << 63n), MAX = (1n << 63n) - 1n;
+    const MASK = (1n << 64n) - 1n;
+    class NumericError extends RangeError {
+        constructor(message, code = 'ESH_NUMERIC_DOMAIN') {
+            super(message); this.name = 'EshkolNumericError'; this.code = code;
+        }
+    }
+    const fail = (message, code) => { throw new NumericError(message, code); };
+    const mem = () => memoryRef() || fail('missing WASM linear memory', 'ESH_NUMERIC_ABI');
+    const view = () => new DataView(mem().buffer);
+    const uint = (x) => {
+        const n = Number(x);
+        if (!Number.isSafeInteger(n) || n < 0 || n > 0xffffffff)
+            fail('invalid wasm32 size or pointer', 'ESH_NUMERIC_ABI');
+        return n;
+    };
+    const span = (p, n, alignment = 1) => {
+        p = uint(p); n = uint(n);
+        if (!p || p % alignment || p + n > mem().buffer.byteLength)
+            fail('invalid WASM memory span', 'ESH_NUMERIC_ABI');
+        return p;
+    };
+    const align = n => Math.ceil(n / 8) * 8;
+    const ensure = end => {
+        if (end > 0xffffffff) fail('WASM arena exhausted', 'ESH_NUMERIC_MEMORY');
+        const m = mem();
+        if (end > m.buffer.byteLength) {
+            try { m.grow(Math.ceil((end - m.buffer.byteLength) / 65536)); }
+            catch (_) { fail('WASM arena exhausted', 'ESH_NUMERIC_MEMORY'); }
+        }
+    };
+    // Parse active data offsets before instantiation, before any import can
+    // allocate. This raw-object lane has no wasm-ld exported __heap_base.
+    function prepare(bytes) {
+        const a = new Uint8Array(bytes);
+        if (a.length < 8 || a[0] !== 0 || a[1] !== 97 || a[2] !== 115 || a[3] !== 109)
+            fail('invalid WASM module header', 'ESH_NUMERIC_ABI');
+        let p = 8, staticEnd = 1024;
+        const byte = () => { if (p >= a.length) fail('truncated WASM module', 'ESH_NUMERIC_ABI'); return a[p++]; };
+        const leb = (signed = false) => {
+            let x = 0n, shift = 0n, b;
+            do {
+                b = byte(); x |= BigInt(b & 127) << shift; shift += 7n;
+                if (shift > 35n) fail('invalid WASM offset', 'ESH_NUMERIC_ABI');
+            } while (b & 128);
+            if (signed && (b & 64)) x -= 1n << shift;
+            return Number(x);
+        };
+        while (p < a.length) {
+            const id = byte(), length = leb(), end = p + length;
+            if (end > a.length) fail('truncated WASM section', 'ESH_NUMERIC_ABI');
+            if (id === 11) {
+                const count = leb();
+                for (let i = 0; i < count; i++) {
+                    const flags = leb();
+                    let offset = null;
+                    if (flags === 0 || flags === 2) {
+                        if (flags === 2 && leb() !== 0) fail('multiple WASM memories unsupported', 'ESH_NUMERIC_ABI');
+                        if (byte() !== 0x41) fail('data offset must be a constant', 'ESH_NUMERIC_ABI');
+                        offset = uint(leb(true));
+                        if (byte() !== 0x0b) fail('invalid data offset expression', 'ESH_NUMERIC_ABI');
+                    } else if (flags !== 1) fail('invalid data segment flags', 'ESH_NUMERIC_ABI');
+                    const size = leb();
+                    if (offset !== null) staticEnd = Math.max(staticEnd, offset + size);
+                    p += size;
+                    if (p > end) fail('truncated data segment', 'ESH_NUMERIC_ABI');
+                }
+                if (p !== end) fail('invalid data section length', 'ESH_NUMERIC_ABI');
+            }
+            p = end;
+        }
+        const stackBegin = align(staticEnd), stackEnd = stackBegin + stackBytes;
+        const floor = align(stackEnd);
+        if (owner._exactPrepared && owner._bumpPtr > owner._heapFloor)
+            fail('cannot instantiate another raw module over a live arena', 'ESH_NUMERIC_ABI');
+        ensure(floor);
+        owner._stackTop = stackEnd; owner._heapFloor = floor; owner._bumpPtr = floor; owner._exactPrepared = true;
+        return { staticEnd, stackBegin, stackEnd, heapFloor: floor };
+    }
+    const allocate = size => {
+        if (!owner._exactPrepared) fail('prepare WASM memory layout before allocation', 'ESH_NUMERIC_ABI');
+        size = uint(size);
+        const p = owner._bumpPtr, end = p + align(Math.max(size, 1));
+        ensure(end); owner._bumpPtr = end;
+        new Uint8Array(mem().buffer, p, end - p).fill(0);
+        return p;
+    };
+    const header = (size, subtype, flags = 0) => {
+        size = uint(size);
+        const block = allocate(size + 8), v = view();
+        v.setUint8(block, subtype); v.setUint8(block + 1, flags);
+        v.setUint32(block + 4, size, true);
+        return block + 8;
+    };
+    const transaction = fn => {
+        const checkpoint = owner._bumpPtr;
+        try { return fn(); }
+        catch (error) { owner._bumpPtr = checkpoint; throw error; }
+    };
+    const payload = (p, subtype, minimum) => {
+        p = span(p, minimum, 8); span(p - 8, 8);
+        const v = view(), size = v.getUint32(p - 4, true);
+        if (v.getUint8(p - 8) !== subtype || size < minimum)
+            fail('invalid numeric object header', 'ESH_NUMERIC_ABI');
+        span(p, size); return size;
+    };
+    const abs = x => x < 0n ? -x : x;
+    const gcd = (a, b) => { a = abs(a); b = abs(b); while (b) [a, b] = [b, a % b]; return a; };
+    const rational = (n, d = 1n) => {
+        if (!d) fail('exact division by zero');
+        if (d < 0n) { n = -n; d = -d; }
+        const g = gcd(n, d); return { n: n / g, d: d / g };
+    };
+    function readBignum(p) {
+        const size = payload(p, 11, 16), v = view();
+        const sign = v.getInt32(p, true), count = v.getUint32(p + 4, true);
+        if (sign < 0 || sign > 1 || !count || 8 + count * 8 !== size)
+            fail('invalid bignum layout', 'ESH_NUMERIC_ABI');
+        let n = 0n;
+        for (let i = count - 1; i >= 0; i--) n = (n << 64n) | v.getBigUint64(p + 8 + 8 * i, true);
+        if ((count > 1 && v.getBigUint64(p + 8 * count, true) === 0n) || (!n && sign))
+            fail('noncanonical bignum', 'ESH_NUMERIC_ABI');
+        return sign ? -n : n;
+    }
+    const writeBignum = n => {
+        let magnitude = abs(n), limbs = [];
+        do { limbs.push(magnitude & MASK); magnitude >>= 64n; } while (magnitude);
+        const p = header(8 + limbs.length * 8, 11), v = view();
+        v.setInt32(p, n < 0n ? 1 : 0, true); v.setUint32(p + 4, limbs.length, true);
+        limbs.forEach((limb, i) => v.setBigUint64(p + 8 + 8 * i, limb, true));
+        return p;
+    };
+    function readRational(p) {
+        if (payload(p, 19, 32) !== 32) fail('invalid rational size', 'ESH_NUMERIC_ABI');
+        const v = view(), big = v.getInt32(p + 16, true);
+        let n, d;
+        if (big === 0) {
+            n = v.getBigInt64(p, true); d = v.getBigInt64(p + 8, true);
+            if (v.getUint32(p + 24, true) || v.getUint32(p + 28, true)) fail('invalid small rational pointers', 'ESH_NUMERIC_ABI');
+        } else if (big === 1) {
+            if (v.getBigInt64(p, true) !== 0n || v.getBigInt64(p + 8, true) !== 1n)
+                fail('invalid big rational inactive fields', 'ESH_NUMERIC_ABI');
+            n = readBignum(v.getUint32(p + 24, true)); d = readBignum(v.getUint32(p + 28, true));
+            if (n >= MIN && n <= MAX && d <= MAX) fail('noncanonical big rational', 'ESH_NUMERIC_ABI');
+        } else fail('invalid rational discriminator', 'ESH_NUMERIC_ABI');
+        if (v.getInt32(p + 20, true) !== 0 || d <= 0n || gcd(n, d) !== 1n)
+            fail('noncanonical rational', 'ESH_NUMERIC_ABI');
+        return { n, d };
+    }
+    const writeRational = r => {
+        const big = r.n < MIN || r.n > MAX || r.d > MAX;
+        const num = big ? writeBignum(r.n) : 0, den = big ? writeBignum(r.d) : 0;
+        const p = header(32, 19), v = view();
+        v.setBigInt64(p, big ? 0n : r.n, true); v.setBigInt64(p + 8, big ? 1n : r.d, true);
+        v.setInt32(p + 16, big ? 1 : 0, true);
+        v.setUint32(p + 24, num, true); v.setUint32(p + 28, den, true);
+        return p;
+    };
+    const baseType = p => {
+        const t = view().getUint8(span(p, 16, 8));
+        // Folded numeric flags exist; legacy string tag33 is not an integer.
+        return t === 0x11 ? 1 : t === 0x22 ? 2 : t;
+    };
+    const pointer = p => {
+        const x = view().getBigUint64(span(p, 16, 8) + 8, true);
+        if (x > 0xffffffffn) fail('numeric pointer exceeds wasm32', 'ESH_NUMERIC_ABI');
+        return Number(x);
+    };
+    const subtype = p => { p = span(p, 1, 8); span(p - 8, 8); return view().getUint8(p - 8); };
+    const isSubtype = (p, type) => baseType(p) === 8 && subtype(pointer(p)) === type;
+    const read = p => {
+        const type = baseType(p), v = view();
+        if (type === 1) return { n: v.getBigInt64(Number(p) + 8, true), d: 1n };
+        if (type === 2) return { double: v.getFloat64(Number(p) + 8, true) };
+        if (type === 8) {
+            const q = pointer(p), s = subtype(q);
+            if (s === 11) return { n: readBignum(q), d: 1n };
+            if (s === 19) return readRational(q);
+        }
+        fail('expected a real numeric value', 'ESH_NUMERIC_TYPE');
+    };
+    const write = (p, r) => {
+        p = span(p, 16, 8);
+        let type, flags, data;
+        if ('double' in r) { type = 2; flags = 0x20; data = r.double; }
+        else if (r.d === 1n && r.n >= MIN && r.n <= MAX) { type = 1; flags = 0x10; data = r.n; }
+        else { type = 8; flags = r.d === 1n ? 0x10 : 0; data = BigInt(r.d === 1n ? writeBignum(r.n) : writeRational(r)); }
+        const v = view(); new Uint8Array(mem().buffer, p, 16).fill(0);
+        v.setUint8(p, type); v.setUint8(p + 1, flags);
+        if (type === 2) v.setFloat64(p + 8, data, true);
+        else if (type === 1) v.setBigInt64(p + 8, data, true);
+        else v.setBigUint64(p + 8, data, true);
+    };
+    const output = (p, fn) => { span(p, 16, 8); return transaction(() => write(p, fn())); };
+    const bits = new DataView(new ArrayBuffer(8));
+    function fromDouble(d) {
+        if (!Number.isFinite(d)) fail(`inexact->exact: no exact representation for ${Number.isNaN(d) ? '+nan.0' : d > 0 ? '+inf.0' : '-inf.0'}`);
+        bits.setFloat64(0, d, true);
+        const raw = bits.getBigUint64(0, true), E = Number((raw >> 52n) & 2047n);
+        let m = raw & ((1n << 52n) - 1n), e = E ? E - 1075 : -1074;
+        if (E) m |= 1n << 52n;
+        if (!m) return { n: 0n, d: 1n };
+        while ((m & 1n) === 0n) { m >>= 1n; e++; }
+        if (raw >> 63n) m = -m;
+        return e >= 0 ? { n: m << BigInt(e), d: 1n } : { n: m, d: 1n << BigInt(-e) };
+    }
+    const bitlen = n => n.toString(2).length;
+    function toDouble(r) {
+        if ('double' in r) return r.double;
+        if (!r.n) return 0;
+        const negative = r.n < 0n, n = abs(r.n), d = r.d;
+        let e = bitlen(n) - bitlen(d);
+        if (e >= 0 ? n < (d << BigInt(e)) : (n << BigInt(-e)) < d) e--;
+        if (e > 1023) return negative ? -Infinity : Infinity;
+        const shift = e < -1022 ? 1074 : 52 - e;
+        const N = shift >= 0 ? n << BigInt(shift) : n;
+        const D = shift >= 0 ? d : d << BigInt(-shift);
+        let q = N / D;
+        const twice = (N % D) * 2n;
+        if (twice > D || (twice === D && (q & 1n))) q++;
+        let raw;
+        if (e < -1022) raw = q;
+        else {
+            if (q === (1n << 53n)) { q >>= 1n; e++; }
+            raw = e > 1023 ? 0x7ff0000000000000n : (BigInt(e + 1023) << 52n) | (q - (1n << 52n));
+        }
+        if (negative) raw |= 1n << 63n;
+        bits.setBigUint64(0, raw, true); return bits.getFloat64(0, true);
+    }
+    const integer = r => {
+        if ('double' in r || r.d !== 1n) fail('expected an exact integer', 'ESH_NUMERIC_TYPE');
+        return r.n;
+    };
+    const binary = (a, b, op) => {
+        if (op === 7) return 'double' in a ? { double: -a.double } : { n: -a.n, d: a.d };
+        if ('double' in a || 'double' in b) {
+            const x = toDouble(a), y = toDouble(b);
+            if ((op === 3 && !('double' in b) && b.n === 0n) || (op >= 4 && op <= 6 && y === 0)) fail('division by zero');
+            const modulo = () => {
+                let rem = x % y;
+                if (rem !== 0 && (rem < 0) !== (y < 0)) rem += y;
+                return rem;
+            };
+            const ops = [() => x + y, () => x - y, () => x * y, () => x / y,
+                modulo, () => Math.trunc(x / y), () => x % y];
+            if (!ops[op]) fail('invalid numeric operation', 'ESH_NUMERIC_ABI');
+            return { double: ops[op]() };
+        }
+        if (op === 0) return rational(a.n * b.d + b.n * a.d, a.d * b.d);
+        if (op === 1) return rational(a.n * b.d - b.n * a.d, a.d * b.d);
+        if (op === 2) return rational(a.n * b.n, a.d * b.d);
+        if (op === 3) return rational(a.n * b.d, a.d * b.n);
+        const x = integer(a), y = integer(b);
+        if (!y) fail('exact division by zero');
+        if (op === 5) return rational(x / y);
+        let r = x % y;
+        if (op === 4 && r && (r < 0n) !== (y < 0n)) r += y;
+        else if (op !== 4 && op !== 6) fail('invalid numeric operation', 'ESH_NUMERIC_ABI');
+        return rational(r);
+    };
+    const boolean = (p, b) => {
+        p = span(p, 16, 8); const v = view();
+        new Uint8Array(mem().buffer, p, 16).fill(0); v.setUint8(p, 3); v.setBigInt64(p + 8, b ? 1n : 0n, true);
+    };
+    const compare = (a, b, op, out) => {
+        if (op < 0 || op > 4) fail('invalid comparison operation', 'ESH_NUMERIC_ABI');
+        let x, y;
+        if ('double' in a || 'double' in b) { x = toDouble(a); y = toDouble(b); }
+        else { x = a.n * b.d; y = b.n * a.d; }
+        boolean(out, [x < y, x > y, x === y, x <= y, x >= y][op]);
+    };
+    const round = (r, op) => {
+        const q = r.n / r.d, rem = r.n % r.d;
+        if (op === 0) return q - (rem < 0n ? 1n : 0n);
+        if (op === 1) return q + (rem > 0n ? 1n : 0n);
+        if (op === 2) return q;
+        const twice = abs(rem) * 2n;
+        return q + ((twice > r.d || (twice === r.d && (abs(q) & 1n))) ? r.n < 0n ? -1n : 1n : 0n);
+    };
+    const pow = (a, e) => {
+        if ('double' in a || 'double' in e || e.d !== 1n) return { double: Math.pow(toDouble(a), toDouble(e)) };
+        let k = abs(e.n), n = 1n, d = 1n, N = a.n, D = a.d;
+        while (k) { if (k & 1n) { n *= N; d *= D; } k >>= 1n; if (k) { N *= N; D *= D; } }
+        return e.n < 0n ? rational(d, n) : rational(n, d);
+    };
+    // Integer root by binary search with bounded exponentiation. Comparison
+    // stops once the trial power exceeds n, avoiding enormous dead products.
+    const root = (n, degree) => {
+        if (n < 0n || degree <= 0n) return null;
+        if (n <= 1n || degree === 1n) return n;
+        if (degree > BigInt(bitlen(n))) return null;
+        let low = 1n, high = 1n << ((BigInt(bitlen(n)) + degree - 1n) / degree);
+        const comparePower = base => {
+            let value = 1n, k = degree;
+            while (k) {
+                if (k & 1n) { value *= base; if (value > n) return 1; }
+                k >>= 1n;
+                if (k) { base *= base; if (base > n) base = n + 1n; }
+            }
+            return value < n ? -1 : value > n ? 1 : 0;
+        };
+        while (low <= high) {
+            const middle = (low + high) >> 1n, cmp = comparePower(middle);
+            if (!cmp) return middle;
+            if (cmp < 0) low = middle + 1n; else high = middle - 1n;
+        }
+        return null;
+    };
+    const exactRoot = (a, degree, exponent, fallback) => {
+        if ('double' in a || a.n < 0n || (a.n === 0n && exponent < 0n)) return { double: fallback };
+        const n = root(a.n, degree), d = root(a.d, degree);
+        return n === null || d === null ? { double: fallback } : pow({ n, d }, { n: exponent, d: 1n });
+    };
+    const formatDouble = d => {
+        if (Number.isNaN(d)) return '+nan.0';
+        if (d === Infinity) return '+inf.0';
+        if (d === -Infinity) return '-inf.0';
+        if (Object.is(d, -0)) return '-0.0';
+        // The engine supplies shortest round-trip finite decimal rendering.
+        // Its decimal choice need not be byte-identical to native dtoa.
+        return String(d);
+    };
+    const format = r => 'double' in r ? formatDouble(r.double) : r.d === 1n ? String(r.n) : `${r.n}/${r.d}`;
+    const string = text => {
+        const bytes = new TextEncoder().encode(text), p = header(bytes.length + 1, 1);
+        new Uint8Array(mem().buffer, p, bytes.length).set(bytes); return p;
+    };
+    const numeric = p => {
+        const t = baseType(p);
+        return t === 1 || t === 2 || (t === 8 && [11, 19].includes(subtype(pointer(p))));
+    };
+    const display = (p, port) => {
+        const isNumber = numeric(p);
+        if (!isNumber && port === undefined) return;
+        const text = isNumber ? format(read(p)) : String(p);
+        const chunks = owner._stringPorts && owner._stringPorts.get(port);
+        if (chunks) chunks.push(text); else console.log(text);
+    };
+    const adDouble = p => {
+        if (numeric(p)) return toDouble(read(p));
+        const type = baseType(p), v = view();
+        if (type === 6) return v.getFloat64(span(pointer(p), 8, 8), true);
+        if (type === 3 || type === 4) return Number(v.getBigInt64(Number(p) + 8, true));
+        fail('AD point is not a numeric scalar', 'ESH_NUMERIC_TYPE');
+    };
+    const numericGeometry = [8, 0, 4, 8, 32, 0, 8, 16, 20, 24, 28];
+    const imports = {
+        eshkol_format_double: (buffer, capacity, d) => {
+            capacity = uint(capacity);
+            // Native dtoa_shortest returns0 for cap0 without touching buf.
+            if (!capacity) return 0;
+            buffer = span(buffer, capacity);
+            const text = formatDouble(d), bytes = new TextEncoder().encode(text);
+            const written = Math.min(bytes.length, capacity - 1);
+            const target = new Uint8Array(mem().buffer, buffer, capacity);
+            target.set(bytes.subarray(0, written)); target[written] = 0;
+            return bytes.length;
+        },
+        eshkol_fprint_double: (file, d) => {
+            file = uint(file);
+            const text = formatDouble(d);
+            if (!file) { console.log(text); return; }
+            const chunks = owner._stringPorts && owner._stringPorts.get(file);
+            if (!chunks) fail('invalid or unsupported WASM output stream', 'ESH_NUMERIC_ABI');
+            chunks.push(text);
+        },
+        eshkol_complex_pow: (_a, _b, _out) => fail('Complex exponentiation is unsupported in the browser LLVM/WASM lane', 'ESH_NUMERIC_UNSUPPORTED'),
+        eshkol_complex_sqrt: (_in, _out) => fail('Complex square root is unsupported in the browser LLVM/WASM lane', 'ESH_NUMERIC_UNSUPPORTED'),
+        eshkol_wasm_numeric_abi_check: (...actual) => {
+            if (actual.length !== numericGeometry.length || actual.some((n, i) => Number(n) !== numericGeometry[i]))
+                fail('Eshkol WASM numeric ABI mismatch', 'ESH_NUMERIC_ABI');
+        },
+        eshkol_double_to_exact_tagged: (_arena, d, out) => { if (out) output(out, () => fromDouble(d)); },
+        eshkol_double_to_rational: (_arena, d) => transaction(() => writeRational(fromDouble(d))),
+        eshkol_bignum_from_int64: (_arena, n) => writeBignum(BigInt(n)),
+        eshkol_bignum_from_overflow: (_arena, a, b, op) => {
+            a = BigInt(a); b = BigInt(b);
+            if (op < 0 || op > 2) fail('invalid overflow operation', 'ESH_NUMERIC_ABI');
+            return writeBignum([a + b, a - b, a * b][op]);
+        },
+        eshkol_bignum_to_double: p => toDouble({ n: readBignum(p), d: 1n }),
+        eshkol_bignum_to_string: (_arena, p) => string(String(readBignum(p))),
+        eshkol_bignum_is_zero: p => readBignum(p) === 0n ? 1 : 0,
+        eshkol_bignum_is_even: p => (readBignum(p) & 1n) === 0n ? 1 : 0,
+        eshkol_bignum_is_odd: p => (readBignum(p) & 1n) === 1n ? 1 : 0,
+        eshkol_bignum_neg: (_arena, p) => writeBignum(-readBignum(p)),
+        eshkol_is_bignum_tagged: p => isSubtype(p, 11) ? 1 : 0,
+        eshkol_is_rational_tagged_ptr: p => isSubtype(p, 19) ? 1 : 0,
+        eshkol_bignum_binary_tagged: (_arena, a, b, op, out) => output(out, () => binary(read(a), op === 7 ? null : read(b), op)),
+        eshkol_bignum_compare_tagged: (a, b, op, out) => compare(read(a), read(b), op, out),
+        eshkol_rational_create: (_arena, n, d) => transaction(() => writeRational(rational(BigInt(n), BigInt(d)))),
+        eshkol_rational_make_tagged: (_arena, n, d, out) => output(out, () => rational(integer(read(n)), integer(read(d)))),
+        eshkol_rational_from_bignums_tagged: (_arena, n, d, out) => output(out, () => rational(readBignum(n), readBignum(d))),
+        eshkol_rational_to_double: p => toDouble(readRational(p)),
+        eshkol_rational_to_string: (_arena, p) => string(format(readRational(p))),
+        eshkol_rational_binary_tagged_ptr: (_arena, a, b, op, out) => output(out, () => binary(read(a), read(b), op)),
+        eshkol_rational_compare_tagged_ptr: (_arena, a, b, op, out) => compare(read(a), read(b), op, out),
+        eshkol_rational_numerator_tagged: (_arena, p, out) => output(out, () => {
+            const r = read(p); return 'double' in r ? r : rational(r.n);
+        }),
+        eshkol_rational_denominator_tagged: (_arena, p, out) => output(out, () => {
+            const r = read(p); return rational('double' in r ? 1n : r.d);
+        }),
+        eshkol_exact_sqrt_tagged: (_arena, p, fallback, out) => {
+            if (out) output(out, () => exactRoot(read(p), 2n, 1n, fallback));
+        },
+        eshkol_exact_rational_pow_tagged: (_arena, p, e, fallback, out) => {
+            if (out) output(out, () => {
+                const exponent = read(e);
+                return 'double' in exponent || !isSubtype(e, 19) ? { double: fallback }
+                    : exactRoot(read(p), exponent.d, exponent.n, fallback);
+            });
+        },
+        eshkol_bignum_pow_tagged: (_arena, a, e, out) => output(out, () => pow(read(a), read(e))),
+        eshkol_rational_pow_tagged: (_arena, a, e, out) => output(out, () => pow(read(a), read(e))),
+        eshkol_rational_equal: (a, b) => { const x = readRational(a), y = readRational(b); return x.n === y.n && x.d === y.d ? 1 : 0; },
+        eshkol_display_value: p => display(p),
+        eshkol_write_value: p => display(p),
+        eshkol_display_value_to_port: (p, port) => display(p, port),
+        eshkol_write_value_to_port: (p, port) => display(p, port),
+        eshkol_ad_point_to_double: (p, _what) => adDouble(p),
+        eshkol_ad_seed_to_double: (p, ok) => {
+            span(ok, 4, 4);
+            const t = baseType(p), valid = numeric(p) || [3, 4, 6].includes(t);
+            const d = valid ? adDouble(p) : 0;
+            view().setInt32(Number(ok), valid ? 1 : 0, true); return d;
+        },
+        eshkol_ad_point_is_scalar: p => numeric(p) || [3, 4, 6].includes(baseType(p)) ? 1 : 0,
+        eshkol_ad_point_is_exact_scalar: p => baseType(p) === 8 && numeric(p) ? 1 : 0,
+        eshkol_ad_point_is_exact_number: p => numeric(p) && baseType(p) !== 2 ? 1 : 0,
+    };
+    for (const [name, op] of [['floor', 0], ['ceil', 1], ['truncate', 2], ['round', 3]]) {
+        imports[`eshkol_rational_${name}`] = p => {
+            const n = round(readRational(p), op);
+            if (n < MIN || n > MAX) fail('rational integer result requires tagged ABI', 'ESH_NUMERIC_ABI');
+            return n;
+        };
+        imports[`eshkol_rational_${name}_tagged`] = (_arena, p, out) => output(out, () => rational(round(readRational(p), op)));
+    }
+    return { imports, prepare, allocate, header, read, readBignum, readRational,
+        fromDouble, toDouble, write: (p, r) => output(p, () => r), format,
+        NumericError, transaction, string, span };
+}
+// END GENERATED EXACT RUNTIME
+
 class EshkolRuntime {
     constructor() {
         // Handle system
@@ -25,16 +474,20 @@ class EshkolRuntime {
     // A header-prefixed string buffer of `len` bytes plus the terminator;
     // the one place the JS string allocation knows the header's size.
     _allocString(len) {
-        return this._bump(len + 9) + 8;
+        return this._numeric().header(len + 1, 1);
     }
 
-    // Bump allocator for arena stubs
-    _bump(size) {
-        if (!this._bumpPtr) this._bumpPtr = 131072; // Start at 128KB
-        const ptr = this._bumpPtr;
-        this._bumpPtr += ((size + 7) & ~7); // 8-byte aligned
-        return ptr;
+    _numeric() {
+        if (!this.memory && !this._importedMemory)
+            this._importedMemory = new WebAssembly.Memory({ initial: 256, maximum: 1024 });
+        return this._exact || (this._exact = createEshkolExactRuntime(
+            () => this.memory || this._importedMemory, this, 1048576));
     }
+
+    prepareWasm(bytes) { return this._numeric().prepare(bytes); }
+
+    _bump(size) { return this._numeric().allocate(size); }
+
 
     setInstance(instance) {
         this.instance = instance;
@@ -528,13 +981,14 @@ class EshkolRuntime {
         if (!rt._importedMemory) {
             rt._importedMemory = new WebAssembly.Memory({ initial: 256, maximum: 1024 });
         }
+        const exact = this._numeric();
         const gpu = rt._gpuEnv();
         return {
             env: {
                 // Memory
                 __linear_memory: rt._importedMemory,
                 // WASM linker globals (required by LLVM static relocation)
-                __stack_pointer: new WebAssembly.Global({ value: 'i32', mutable: true }, 1048576), // 1MB stack
+                __stack_pointer: new WebAssembly.Global({ value: 'i32', mutable: true }, rt._stackTop || 1048576), // 1MB stack
                 __indirect_function_table: new WebAssembly.Table({ initial: 256, element: 'anyfunc' }),
 
                 // Bump allocator (all arena functions use this)
@@ -555,7 +1009,7 @@ class EshkolRuntime {
                 eshkol_wasm_abi_check: (...geometry) => checkWasmAbiGeometry(...geometry),
                 arena_destroy: () => {},
                 arena_allocate: (arena, size) => { return rt._bump(Number(size)); },
-                arena_allocate_with_header: (arena, size) => { return rt._bump(Number(size) + 8) + 8; },
+                arena_allocate_with_header: (_arena, size, subtype, flags) => exact.header(Number(size), subtype, flags),
                 arena_push_scope: () => {},
                 arena_pop_scope: () => {},
                 // Named-let TCO loop per-iteration arena scope reclamation
@@ -673,12 +1127,10 @@ class EshkolRuntime {
                 eshkol_decrement_recursion_depth: () => {},
                 eshkol_make_exception_with_header: () => 0,
                 eshkol_raise: (exc) => { console.error('Eshkol exception raised'); },
-                eshkol_display_value: () => {},
                 // R7RS `write` (write/write-shared/write-simple): same
                 // single-pointer-argument shape as eshkol_display_value above
                 // (void eshkol_write_value(const tagged_value_t* value)),
                 // degraded the same way.
-                eshkol_write_value: () => {},
                 eshkol_deep_equal: () => 0,
                 eshkol_type_error: () => { throw new Error('Eshkol type error (WASM stub)'); },
                 eshkol_shape_error: () => { throw new Error('Eshkol shape error (WASM stub)'); },
@@ -842,18 +1294,11 @@ class EshkolRuntime {
                 eshkol_gpu_set_threshold: gpu.eshkol_gpu_set_threshold,
                 eshkol_gpu_get_threshold: gpu.eshkol_gpu_get_threshold,
 
-                eshkol_format_double: () => 0,
-                eshkol_fprint_double: () => 0,
                 eshkol_set_error_location: () => {},
                 eshkol_lambda_registry_init: () => {},
                 eshkol_lambda_registry_add: () => {},
                 eshkol_lambda_registry_lookup: () => 0,
                 eshkol_closure_get_arity: () => 0,
-                eshkol_bignum_binary_tagged: () => 0,
-                eshkol_bignum_compare_tagged: () => 0,
-                eshkol_is_bignum_tagged: () => 0,
-                eshkol_rational_compare_tagged_ptr: () => 0,
-                eshkol_is_rational_tagged_ptr: () => 0,
 
                 // C library
                 strcmp: (a, b) => {
@@ -1023,21 +1468,8 @@ class EshkolRuntime {
                     mem[dataPtr + text.length] = 0;
                     return dataPtr;
                 },
-                eshkol_display_value_to_port: (value, port) => {
-                    if (!rt._stringPorts) rt._stringPorts = new Map();
-                    const chunks = rt._stringPorts.get(port);
-                    if (chunks) chunks.push(String(value));
-                    else console.log('[port]', value);
-                },
                 // R7RS `write` to an explicit port: same degraded shape as
                 // eshkol_display_value_to_port above.
-                eshkol_write_value_to_port: (value, port) => {
-                    if (!rt._stringPorts) rt._stringPorts = new Map();
-                    const chunks = rt._stringPorts.get(port);
-                    if (chunks) chunks.push(String(value));
-                    else console.log('[port]', value);
-                },
-
                 // Exception handling — Eshkol exceptions in the WASM build
                 // are degraded to console.error + bail; setjmp returns 0
                 // (no-jump path) and longjmp throws so the JS host can
@@ -1102,47 +1534,12 @@ class EshkolRuntime {
                 // Compiler-rt builtins LLVM emits for 128-bit arithmetic.
                 __multi3: (alo, ahi, blo, bhi) => 0n,  // 128×128→128 mul; bignums route through eshkol_bignum_*
 
-                // Bignum runtime — full impl is in lib/core/runtime.cpp on
-                // native; for the website we degrade gracefully (return 0
-                // so subsequent operations hit type-checks rather than
-                // crashing).
-                eshkol_bignum_from_int64: () => 0,
-                eshkol_bignum_from_overflow: () => 0,
-                eshkol_bignum_to_double:     () => 0.0,
-                eshkol_bignum_to_string:     () => 0,
-                eshkol_bignum_is_zero:       () => 0,
-                eshkol_bignum_is_even:       () => 0,
-                eshkol_bignum_is_odd:        () => 0,
-                eshkol_bignum_neg:           () => 0,
-                eshkol_bignum_pow_tagged:    () => 0,
-
-                // Rational runtime — same degradation pattern as bignum.
-                eshkol_rational_create:           () => 0,
-                eshkol_double_to_rational:        () => 0,
-                eshkol_rational_to_double:        () => 0.0,
-                eshkol_rational_to_string:        () => 0,
-                eshkol_rational_binary_tagged_ptr:() => 0,
-                eshkol_rational_floor:            () => 0,
-                // void eshkol_rational_make_tagged(arena, num, den, result) —
-                // (make-rational num den) on tagged operands. Unlike the
-                // sibling degradations above (which RETURN 0 and are only
-                // ever consulted through eshkol_is_rational_tagged_ptr,
-                // itself always 0 here), this one constructs a value through
-                // a struct-return out-parameter with no such gate in front
-                // of it: `() => 0` would leave `result` holding whatever was
-                // already on the WASM stack and the caller would use that
-                // uninspected. writeFalse is this file's established fix for
-                // exactly that shape (see eshkol_builtin_make_event_loop
-                // below and its doc comment) — fail closed with a real #f
-                // rather than an unwritten slot.
-                eshkol_rational_make_tagged:    (_arena, _num, _den, result) => rt.writeFalse(result),
+                // Exact numeric imports are generated below.
                 eshkol_list_reverse_tagged:       (value) => value,
 
-                // Taylor-tower runtime (ESH-0186 / AD P1) — same degradation
-                // pattern as bignum/rational above: eshkol_is_taylor_tagged
-                // always reports "not a tower" so the generic double/AD path
-                // handles everything, leaving the binary/unary/seed/extract
-                // kernels below unreachable.
+                // Taylor towers remain outside this browser lane. Exact entry
+                // refuses at seeding; the ordinary scalar lane uses the shared
+                // numeric extraction imports, including exact heap values.
                 // ESH-0393/0394 AD point classification + coercion. These used to
                 // be inline IR (a bitcast for DOUBLE, SIToFP for everything
                 // else); they became runtime calls so an exact rational/bignum
@@ -1153,66 +1550,12 @@ class EshkolRuntime {
                 // conversion here instead, over the same tagged layout the
                 // region helpers above use: [0]=type, [1]=flags, [8..16]=data.
                 //
-                // The browser build has no bignum/rational and no Taylor tower
-                // (eshkol_is_taylor_tagged reports "not a tower" below), so a
-                // HEAP-tagged point is not a number it can represent: report
-                // "not a number" through `ok` rather than inventing one, which
-                // is what the native build's catchable type error does.
-                eshkol_ad_seed_to_double: (v, okPtr) => {
-                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
-                    const setOk = (n) => { if (dv && okPtr) dv.setInt32(Number(okPtr), n, true); };
-                    if (!dv || !v) { setOk(0); return 0.0; }
-                    const p = Number(v);
-                    const bt = dv.getUint8(p) & 0x0F;
-                    setOk(1);
-                    if (bt === 2) return dv.getFloat64(p + 8, true);            // DOUBLE
-                    if (bt === 1) return Number(dv.getBigInt64(p + 8, true));   // INT64
-                    if (bt === 6) {                                             // DUAL: primal
-                        const jet = Number(dv.getBigUint64(p + 8, true));
-                        return jet ? dv.getFloat64(jet, true) : 0.0;
-                    }
-                    if (bt === 3 || bt === 4) return Number(dv.getBigInt64(p + 8, true)); // BOOL/CHAR
-                    setOk(0);
-                    return 0.0;
-                },
-                eshkol_ad_point_to_double: (v, _what) => {
-                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
-                    if (!dv || !v) return 0.0;
-                    const p = Number(v);
-                    const bt = dv.getUint8(p) & 0x0F;
-                    if (bt === 2) return dv.getFloat64(p + 8, true);
-                    if (bt === 1) return Number(dv.getBigInt64(p + 8, true));
-                    if (bt === 6) {
-                        const jet = Number(dv.getBigUint64(p + 8, true));
-                        return jet ? dv.getFloat64(jet, true) : 0.0;
-                    }
-                    if (bt === 3 || bt === 4) return Number(dv.getBigInt64(p + 8, true));
-                    return 0.0;
-                },
-                // Scalar-vs-collection: an immediate number (or a dual) is a
-                // scalar. A HEAP point in the browser build is a collection --
-                // the exact heap scalars are the ones it cannot represent.
-                eshkol_ad_point_is_scalar: (v) => {
-                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
-                    if (!dv || !v) return 0;
-                    const bt = dv.getUint8(Number(v)) & 0x0F;
-                    return (bt === 1 || bt === 2 || bt === 3 || bt === 4 || bt === 6) ? 1 : 0;
-                },
-                // No bignum/rational in the browser build, so no point is ever an
-                // exact HEAP scalar, and the exact tier is never entered.
-                eshkol_ad_point_is_exact_scalar: () => 0,
-                // ...but an immediate int64 IS an exact number, so answer from
-                // the tag rather than declaring a blanket 0.
-                eshkol_ad_point_is_exact_number: (v) => {
-                    const dv = this.memory ? new DataView(this.memory.buffer) : null;
-                    if (!dv || !v) return 0;
-                    return ((dv.getUint8(Number(v)) & 0x0F) === 1) ? 1 : 0;
-                },
+                // Exact heap scalars use the shared numeric imports below.
                 eshkol_is_taylor_tagged:        () => 0,
                 eshkol_taylor_c0:               () => 0.0,
                 eshkol_taylor_binary_tagged:    () => 0,
                 eshkol_taylor_unary_tagged:     () => 0,
-                eshkol_taylor_seed_tagged:      () => 0,
+                eshkol_taylor_seed_tagged:      (_arena, _point, _order, _out) => { throw new exact.NumericError('Exact Taylor differentiation is unsupported in the browser LLVM/WASM lane', 'ESH_NUMERIC_UNSUPPORTED'); },
                 eshkol_taylor_extract:          () => 0.0,
                 eshkol_taylor_coeffs_list:      () => 0,
                 // P5 reverse-over-Taylor helpers (autodiff_codegen.cpp):
@@ -1231,6 +1574,59 @@ class EshkolRuntime {
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
                 // non-nested seeding, exactly as the sibling stubs degrade.
                 eshkol_ad_nested_seed:          () => 0,
+                // BEGIN GENERATED EXACT IMPORTS
+                eshkol_ad_point_is_exact_number: exact.imports.eshkol_ad_point_is_exact_number,
+                eshkol_ad_point_is_exact_scalar: exact.imports.eshkol_ad_point_is_exact_scalar,
+                eshkol_ad_point_is_scalar: exact.imports.eshkol_ad_point_is_scalar,
+                eshkol_ad_point_to_double: exact.imports.eshkol_ad_point_to_double,
+                eshkol_ad_seed_to_double: exact.imports.eshkol_ad_seed_to_double,
+                eshkol_bignum_binary_tagged: exact.imports.eshkol_bignum_binary_tagged,
+                eshkol_bignum_compare_tagged: exact.imports.eshkol_bignum_compare_tagged,
+                eshkol_bignum_from_int64: exact.imports.eshkol_bignum_from_int64,
+                eshkol_bignum_from_overflow: exact.imports.eshkol_bignum_from_overflow,
+                eshkol_bignum_is_even: exact.imports.eshkol_bignum_is_even,
+                eshkol_bignum_is_odd: exact.imports.eshkol_bignum_is_odd,
+                eshkol_bignum_is_zero: exact.imports.eshkol_bignum_is_zero,
+                eshkol_bignum_neg: exact.imports.eshkol_bignum_neg,
+                eshkol_bignum_pow_tagged: exact.imports.eshkol_bignum_pow_tagged,
+                eshkol_bignum_to_double: exact.imports.eshkol_bignum_to_double,
+                eshkol_bignum_to_string: exact.imports.eshkol_bignum_to_string,
+                eshkol_complex_pow: exact.imports.eshkol_complex_pow,
+                eshkol_complex_sqrt: exact.imports.eshkol_complex_sqrt,
+                eshkol_display_value: exact.imports.eshkol_display_value,
+                eshkol_display_value_to_port: exact.imports.eshkol_display_value_to_port,
+                eshkol_double_to_exact_tagged: exact.imports.eshkol_double_to_exact_tagged,
+                eshkol_double_to_rational: exact.imports.eshkol_double_to_rational,
+                eshkol_exact_rational_pow_tagged: exact.imports.eshkol_exact_rational_pow_tagged,
+                eshkol_exact_sqrt_tagged: exact.imports.eshkol_exact_sqrt_tagged,
+                eshkol_format_double: exact.imports.eshkol_format_double,
+                eshkol_fprint_double: exact.imports.eshkol_fprint_double,
+                eshkol_is_bignum_tagged: exact.imports.eshkol_is_bignum_tagged,
+                eshkol_is_rational_tagged_ptr: exact.imports.eshkol_is_rational_tagged_ptr,
+                eshkol_rational_binary_tagged_ptr: exact.imports.eshkol_rational_binary_tagged_ptr,
+                eshkol_rational_ceil: exact.imports.eshkol_rational_ceil,
+                eshkol_rational_ceil_tagged: exact.imports.eshkol_rational_ceil_tagged,
+                eshkol_rational_compare_tagged_ptr: exact.imports.eshkol_rational_compare_tagged_ptr,
+                eshkol_rational_create: exact.imports.eshkol_rational_create,
+                eshkol_rational_denominator_tagged: exact.imports.eshkol_rational_denominator_tagged,
+                eshkol_rational_equal: exact.imports.eshkol_rational_equal,
+                eshkol_rational_floor: exact.imports.eshkol_rational_floor,
+                eshkol_rational_floor_tagged: exact.imports.eshkol_rational_floor_tagged,
+                eshkol_rational_from_bignums_tagged: exact.imports.eshkol_rational_from_bignums_tagged,
+                eshkol_rational_make_tagged: exact.imports.eshkol_rational_make_tagged,
+                eshkol_rational_numerator_tagged: exact.imports.eshkol_rational_numerator_tagged,
+                eshkol_rational_pow_tagged: exact.imports.eshkol_rational_pow_tagged,
+                eshkol_rational_round: exact.imports.eshkol_rational_round,
+                eshkol_rational_round_tagged: exact.imports.eshkol_rational_round_tagged,
+                eshkol_rational_to_double: exact.imports.eshkol_rational_to_double,
+                eshkol_rational_to_string: exact.imports.eshkol_rational_to_string,
+                eshkol_rational_truncate: exact.imports.eshkol_rational_truncate,
+                eshkol_rational_truncate_tagged: exact.imports.eshkol_rational_truncate_tagged,
+                eshkol_wasm_numeric_abi_check: exact.imports.eshkol_wasm_numeric_abi_check,
+                eshkol_write_value: exact.imports.eshkol_write_value,
+                eshkol_write_value_to_port: exact.imports.eshkol_write_value_to_port,
+                // END GENERATED EXACT IMPORTS
+
                 // BEGIN GENERATED FLAT-AD IMPORTS
                 // Browser WASM has no Taylor tower lane. Keep the base lane's established
                 // flat behavior: extraction declines the tower and enter/leave do nothing.
@@ -1246,12 +1642,6 @@ class EshkolRuntime {
                 // A jet pass's extraction guard (ADR-0027). The lite lane has no Taylor
                 // carrier, so no carrier can reach it.
                 eshkol_ad_jet_result_check: () => {},
-                // This LLVM/WASM JavaScript host-import path does not implement exact
-                // integer/rational conversion. Keep the ABI import linkable, but fail closed
-                // instead of returning a fabricated tagged value for `(inexact->exact)`.
-                eshkol_double_to_exact_tagged: (_arena, _double, _out) => {
-                    throw new Error('eshkol_double_to_exact_tagged is unavailable in the browser LLVM/WASM host glue; exact conversion is unsupported on this JS import path');
-                },
                 // END GENERATED FLAT-AD IMPORTS
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},

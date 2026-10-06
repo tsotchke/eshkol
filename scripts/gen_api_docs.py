@@ -338,7 +338,200 @@ CLASS_LIKE_RE = re.compile(r"^(class|struct|union)\b(\s+[A-Za-z_]\w*)?")
 ATTRIBUTE_IDENTS = {"__attribute__", "__declspec"}
 
 
-def classify_chunk(text: str) -> tuple[Symbol, tuple[int, int] | None] | None:
+DECLARATION_ONLY_WORDS = {
+    "const", "constexpr", "extern", "explicit", "friend", "inline",
+    "mutable", "register", "static", "template", "typename", "virtual",
+    "volatile",
+}
+
+
+def _balanced_close(text: str, start: int, opening: str, closing: str) -> int | None:
+    depth = 0
+    quote = None
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == opening:
+            depth += 1
+        elif ch == closing:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def declaration_structure(text: str) -> tuple[list[int], int | None]:
+    """Return top-level paren starts and the first top-level initializer `=`.
+
+    This deliberately tracks only the balanced groups needed to distinguish
+    declaration heads from nested attributes, templates, parameters and
+    expressions. It is not a C++ parser.
+    """
+    groups: list[int] = []
+    paren = bracket = brace = angle = 0
+    assignment = None
+    quote = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "[":
+            bracket += 1
+        elif ch == "]":
+            bracket = max(0, bracket - 1)
+        elif ch == "{":
+            brace += 1
+        elif ch == "}":
+            brace = max(0, brace - 1)
+        elif ch == "<" and not (paren or bracket or brace) and not (
+            i and text[i - 1] == "<"
+        ):
+            before = text[:i].rstrip()
+            token = re.search(r"([A-Za-z_]\w*|>)$", before)
+            if angle or (token and token.group(1) != "operator"):
+                angle += 1
+        elif ch == ">" and angle and not (paren or bracket or brace):
+            angle -= 1
+        elif ch == "(" and not (bracket or brace):
+            if paren == 0 and angle == 0:
+                groups.append(i)
+            paren += 1
+        elif ch == ")":
+            paren = max(0, paren - 1)
+        elif ch == "=" and not (paren or bracket or brace or angle):
+            before = text[i - 1] if i else ""
+            after = text[i + 1] if i + 1 < len(text) else ""
+            is_operator_equal = bool(re.search(r"\boperator\s*$", text[:i]))
+            if before not in "=!<>" and after != "=" and not is_operator_equal:
+                assignment = i
+                break
+        i += 1
+    return groups, assignment
+
+
+def _strip_declaration_attributes(text: str) -> str:
+    out = []
+    i = 0
+    while i < len(text):
+        if text.startswith("[[", i):
+            end = _balanced_close(text, i, "[", "]")
+            if end is not None:
+                i = end + 1
+                continue
+        attr = re.match(r"(?:__attribute__|__declspec)\s*\(", text[i:])
+        if attr:
+            open_idx = i + attr.end() - 1
+            end = _balanced_close(text, open_idx, "(", ")")
+            if end is not None:
+                i = end + 1
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def _has_return_type_prefix(text: str) -> bool:
+    prefix = _strip_declaration_attributes(text).strip()
+    # A trailing scope path belongs to the callable name (`ns::factory`),
+    # not its return type. A scope path by itself cannot make a function.
+    prefix = re.sub(r"(?:[A-Za-z_]\w*::)+$", "", prefix).strip()
+    words = IDENT_RE.findall(prefix)
+    return any(word not in DECLARATION_ONLY_WORDS for word in words)
+
+
+def _matching_constructor(name: str, qualifier: str, class_scope: str | None) -> bool:
+    plain_name = name.removeprefix("~")
+    if class_scope is not None and not qualifier and plain_name == class_scope:
+        return True
+    scope_parts = re.findall(r"([A-Za-z_]\w*)::", qualifier)
+    return bool(scope_parts and plain_name == scope_parts[-1])
+
+
+def _trailing_parenthesized_group(text: str) -> tuple[int, str] | None:
+    """Return the start and body of the final balanced parenthesis group."""
+    end = len(text.rstrip()) - 1
+    if end < 0 or text[end] != ")":
+        return None
+    stack: list[int] = []
+    quote = None
+    i = 0
+    while i <= end:
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            stack.append(i)
+        elif ch == ")" and stack:
+            start = stack.pop()
+            if i == end and not stack:
+                return start, text[start + 1 : end]
+        i += 1
+    return None
+
+
+def _grouped_declarator(text: str) -> dict[str, str | bool] | None:
+    group = _trailing_parenthesized_group(text)
+    if not group:
+        return None
+    group_start, body = group
+    prefix = text[:group_start]
+    pointer_match = re.match(
+        r"\s*(?P<pointers>[*&]+)\s*"
+        r"(?:(?:const|volatile|restrict|__restrict)\s+)*"
+        r"(?P<qualifier>(?:[A-Za-z_]\w*::)*)"
+        r"(?P<name>~?[A-Za-z_]\w*)",
+        body,
+    )
+    match = pointer_match or re.match(
+        r"\s*(?P<qualifier>(?:[A-Za-z_]\w*::)*)"
+        r"(?P<name>~?[A-Za-z_]\w*)",
+        body,
+    )
+    if not match:
+        return None
+    rest = body[match.end() :].strip()
+    has_inner_parameters = False
+    if rest:
+        if not rest.startswith("("):
+            return None
+        close = _balanced_close(rest, 0, "(", ")")
+        if close != len(rest) - 1:
+            return None
+        has_inner_parameters = True
+    return {
+        "prefix": prefix,
+        "pointers": bool(pointer_match),
+        "qualifier": match.group("qualifier"),
+        "name": match.group("name"),
+        "inner": has_inner_parameters,
+    }
+
+
+def classify_chunk(
+    text: str, *, class_scope: str | None = None
+) -> tuple[Symbol, tuple[int, int] | None] | None:
     """Classify one declaration chunk. Returns (Symbol, inner_span) where
     inner_span is the (open_brace_idx, close_brace_idx) offsets within
     `text` for a C++ class/struct body worth recursing into, or None.
@@ -403,52 +596,69 @@ def classify_chunk(text: str) -> tuple[Symbol, tuple[int, int] | None] | None:
             inner = (brace_idx, close_idx) if (close_idx and keyword in ("class", "struct")) else None
             return sym, inner
 
-    # Function decl/def: an identifier immediately followed by '(' at
-    # top (chunk-relative) nesting depth 0, appearing before any '{'.
-    # Attribute annotations (`__attribute__((...))`, `__declspec(...)`)
-    # sometimes precede the real declarator; skip over those parenthesized
-    # groups rather than mistaking the annotation for the function name.
+    # Function declarations and callable pointer objects share balanced
+    # declarator groups. Resolve the group around the name before deciding
+    # whether its following parameter list declares a function or a variable.
     brace_idx = text.find("{")
     head = text if brace_idx == -1 else text[:brace_idx]
-    depth = 0
-    func_name = None
-    paren_pos = None
-    idx = 0
-    n_head = len(head)
-    while idx < n_head:
-        ch = head[idx]
-        if ch == "(":
-            if depth == 0:
-                m2 = re.search(r"(~?[A-Za-z_]\w*)\s*$", head[:idx])
-                ident = m2.group(1) if m2 else None
-                if ident and ident not in ATTRIBUTE_IDENTS:
-                    func_name = ident
-                    paren_pos = idx
-                    break
-                skip_depth = 1
-                idx += 1
-                while idx < n_head and skip_depth > 0:
-                    if head[idx] == "(":
-                        skip_depth += 1
-                    elif head[idx] == ")":
-                        skip_depth -= 1
-                    idx += 1
-                continue
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        idx += 1
-    if func_name and paren_pos is not None:
-        if brace_idx == -1:
-            sig = text
+    top_groups, initializer = declaration_structure(head)
+    callable_name_re = re.compile(
+        r"(?P<qualifier>(?:[A-Za-z_]\w*::)*)"
+        r"(?P<name>~?[A-Za-z_]\w*)\s*$"
+    )
+    operator_name_re = re.compile(
+        r"(?P<qualifier>(?:[A-Za-z_]\w*::)*)"
+        r"(?P<name>operator\s*(?:\(\)|\[\]|->\*?|\+\+|--|"
+        r"==|!=|<=|>=|<<=?|>>=?|&&|\|\||[=+\-*/%&|^~<>]))\s*$"
+    )
+    for paren_pos in top_groups:
+        if initializer is not None and paren_pos > initializer:
+            continue
+        before = head[:paren_pos]
+        grouped = _grouped_declarator(before)
+        if grouped:
+            name = str(grouped["name"])
+            qualifier = str(grouped["qualifier"])
+            pointers = bool(grouped["pointers"])
+            prefix = str(grouped["prefix"])
+            if not _has_return_type_prefix(prefix):
+                if not _matching_constructor(name, qualifier, class_scope):
+                    continue
+            if pointers:
+                kind = "function" if grouped["inner"] else "variable"
+            else:
+                kind = "function"
         else:
-            sig = head.rstrip() + " { ... }"
-        sig = re.sub(r"[ \t]+", " ", sig).strip()
-        return Symbol(kind="function", name=func_name, signature=sig, line=0), None
+            callable_name = operator_name_re.search(before) or callable_name_re.search(before)
+            if not callable_name:
+                continue
+            name = callable_name.group("name")
+            qualifier = callable_name.group("qualifier")
+            if name in ATTRIBUTE_IDENTS:
+                continue
+            prefix = before[:callable_name.start()]
+            if not _has_return_type_prefix(prefix) and not _matching_constructor(
+                name, qualifier, class_scope
+            ):
+                continue
+            kind = "function"
+
+        signature = text if brace_idx == -1 else head.rstrip() + " { ... }"
+        signature = re.sub(r"[ \t]+", " ", signature).strip()
+        symbol_name = qualifier + name if qualifier else name
+        return Symbol(kind=kind, name=symbol_name, signature=signature, line=0), None
 
     # Fall back: plain variable-ish declaration `TYPE name;` or `TYPE name = init;`
-    if text.endswith(";") and "(" not in text:
-        name = extract_trailing_name(text)
+    variable_head = head[:initializer] if initializer is not None else text
+    if (initializer is not None or not top_groups) and (
+        variable_head.rstrip().endswith(";") or initializer is not None
+    ):
+        if initializer is not None:
+            variable_head = variable_head.rstrip() + ";"
+        # Parentheses confined to a template-id (std::function<void()>) do
+        # not make the declarator callable. Top-level groups were already
+        # examined above and none identified a function declarator.
+        name = extract_trailing_name(variable_head)
         if name:
             sig = re.sub(r"[ \t]+", " ", text).strip()
             return Symbol(kind="variable", name=name, signature=sig, line=0), None
@@ -617,7 +827,8 @@ def parse_header(path: Path) -> tuple[list[Symbol], str]:
     def process(chunks: list[Chunk], prefix: str, depth: int) -> None:
         for chunk in sorted(chunks, key=lambda c: c.start):
             text = code_only[chunk.start : chunk.end]
-            result = classify_chunk(text)
+            class_scope = prefix.rstrip(":").rsplit("::", 1)[-1] if prefix else None
+            result = classify_chunk(text, class_scope=class_scope)
             if result is None:
                 if chunk.is_directive:
                     blank_span(gap_buf, chunk.start, chunk.end)
