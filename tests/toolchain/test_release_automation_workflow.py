@@ -97,6 +97,42 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertIn('"$llvm_libdir/libclang-${LLVM_MAJOR}.so.${LLVM_MAJOR}"', python)
         self.assertIn('echo "ESHKOL_LIBCLANG=$libclang"', python)
 
+    def test_parallel_prerequisites_join_before_the_build(self):
+        steps = self.workflow["jobs"]["release-readiness-gate"]["steps"]
+        names = [step.get("name") for step in steps]
+        python = self.steps["Prepare isolated Python binding test environment"]
+        browser = self.steps["Prepare real browser GPU test environment"]
+        join = self.steps["Wait for release test prerequisites"]
+        self.assertEqual(python["background"], "true")
+        self.assertEqual(python["id"], "release-python-environment")
+        self.assertIn("wait-all", join)
+        self.assertNotIn("if", join)
+        self.assertNotIn("continue-on-error", join)
+        self.assertLess(names.index("Prepare isolated Python binding test environment"),
+                        names.index("Prepare real browser GPU test environment"))
+        self.assertLess(names.index("Prepare real browser GPU test environment"),
+                        names.index("Wait for release test prerequisites"))
+        self.assertLess(names.index("Wait for release test prerequisites"),
+                        names.index("Configure and build (readiness evidence)"))
+        self.assertNotIn("ESHKOL_TEST_PYTHON", browser["run"])
+        self.assertEqual([step["name"] for step in steps if "background" in step],
+                         ["Prepare isolated Python binding test environment"])
+
+    def test_full_release_prepares_real_browser_before_build_and_measurements(self):
+        steps = self.workflow["jobs"]["release-readiness-gate"]["steps"]
+        names = [step.get("name") for step in steps]
+        browser = self.steps["Prepare real browser GPU test environment"]
+        self.assertIn("playwright@1.59.0", browser["run"])
+        self.assertIn("--ignore-scripts", browser["run"])
+        self.assertIn("xvfb-run -a node scripts/check_webgpu_release_environment.mjs", browser["run"])
+        self.assertLess(names.index("Prepare real browser GPU test environment"),
+                        names.index("Configure and build (readiness evidence)"))
+        self.assertIn("env.MEMORY_DIAGNOSTICS != 'true'", browser["if"])
+        for step in steps:
+            command = step.get("run", "")
+            if "scripts/run_v1_3_readiness.sh --phase" in command:
+                self.assertIn('TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase', command)
+
     def test_release_libclang_discovery_handles_runtime_sonames(self):
         body = self.steps["Prepare isolated Python binding test environment"]["run"]
         discovery = body[body.index('llvm_libdir='):body.index('"$python_env/bin/python" -c')]

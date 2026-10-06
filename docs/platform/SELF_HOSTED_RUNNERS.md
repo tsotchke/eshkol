@@ -115,6 +115,23 @@ scripts/mesh/seed_fetchcontent_cache.sh
 The image is Linux x64. It registers only the `eshkol,linux-mesh` capability
 labels, so it cannot accidentally claim an ARM, macOS, or GPU lane.
 
+### Full release browser measurements
+
+The unfiltered release CTest suite includes live WebGPU checks when Node is
+available. The Linux release runner therefore needs Google Chrome at the standard
+`/opt/google/chrome/chrome` location, a working native Vulkan GPU driver, and
+`Xvfb`, `xvfb-run`, and `xauth` on its configured toolchain `PATH`. Provision these
+outside the workflow; do not reconfigure serving processes to make a test pass.
+The workflow installs the pinned Playwright package in the checkout's ignored
+scratch directory and verifies a real GPU readback before the long build.
+
+Linux browser tests run under an isolated X11 display with the shared native
+Vulkan launch configuration. The harness rejects software/fallback adapters and
+requires an identified hardware adapter. For a manual check, use
+`xvfb-run -a node scripts/check_webgpu_release_environment.mjs`; on macOS or
+Windows the same script uses headless Chrome without Xvfb. The full readiness
+phases retain all configured tests and run inside the isolated display.
+
 ## 5. Registering ephemeral containers
 
 ### 5.1 Create the registration credential

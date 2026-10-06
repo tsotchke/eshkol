@@ -21,6 +21,7 @@
  */
 
 import http from 'node:http';
+import { webgpuLaunchOptions, requireHardwareWebGpu, loadWebGpuPlaywright } from '../../scripts/lib/webgpu_test_browser.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,18 +40,7 @@ if (CORRUPT) {
     WEBGPU_SRC = WEBGPU_SRC.replace(from, 'case 0u:  { r = f64_add(a, f64_neg(b)); }');
 }
 
-let chromium;
-try {
-    ({ chromium } = await import('playwright'));
-} catch {
-    try {
-        ({ chromium } = await import(path.join(ROOT, '.scratch', 'node_modules',
-                                               'playwright', 'index.js')));
-    } catch (error) {
-        console.error('webgpu_vm_test: Playwright is unavailable: ' + error);
-        process.exit(2);
-    }
-}
+const { chromium } = await loadWebGpuPlaywright();
 
 const TYPES = { '.js': 'text/javascript', '.wasm': 'application/wasm' };
 const server = http.createServer((req, res) => {
@@ -107,8 +97,8 @@ const check = (ok, label, detail) => {
 
 let browser;
 try {
-    browser = await chromium.launch({ channel: 'chrome', headless: true,
-                                      args: ['--enable-unsafe-webgpu'] });
+    browser = await chromium.launch(webgpuLaunchOptions());
+    await requireHardwareWebGpu(browser, `http://localhost:${port}/`);
     const page = async (init) => {
         const p = await browser.newPage();
         if (init) await p.addInitScript(init);

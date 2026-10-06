@@ -3,6 +3,7 @@
  * same bundle with WebGPU eligible or excluded by its dispatch threshold. */
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { webgpuLaunchOptions, requireHardwareWebGpu, loadWebGpuPlaywright } from '../../scripts/lib/webgpu_test_browser.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,9 +11,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const staticDir = path.join(root, 'site/static');
 const program = fs.readFileSync(path.join(root, 'tests/numeric/tensor_division_ieee_test.esk'), 'utf8');
-let chromium;
-try { ({ chromium } = await import('playwright')); }
-catch { ({ chromium } = await import(path.join(root, '.scratch/node_modules/playwright/index.js'))); }
+const { chromium } = await loadWebGpuPlaywright();
 
 const server = http.createServer((req, res) => {
     const name = path.basename(req.url.split('?')[0]);
@@ -27,8 +26,8 @@ const server = http.createServer((req, res) => {
 await new Promise(resolve => server.listen(0, 'localhost', resolve));
 let browser;
 try {
-    browser = await chromium.launch({ channel: 'chrome', headless: true,
-                                      args: ['--enable-unsafe-webgpu'] });
+    browser = await chromium.launch(webgpuLaunchOptions());
+    await requireHardwareWebGpu(browser, `http://localhost:${server.address().port}/`);
     async function run(threshold) {
         const page = await browser.newPage();
         try {
