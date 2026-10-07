@@ -34,7 +34,7 @@ before publication.
 - **Release qualification separates complete coverage from full measurements.**
   Sequential steps retain every traced-suite, CTest and VM check within the
   workflow's step limits. Coverage alone cannot produce a complete baseline
-  or publication proof; source, workflow-attempt and binary binding remain mandatory.
+  or publication proof; source, workflow-attempt and binary binding remain mandatory. (#749)
 - **SHA-256 and HMAC consume complete UTF-8 inputs.** Crypto wrappers use byte
   lengths for both data and HMAC keys, with independent reference vectors for
   ASCII, multibyte and supplementary Unicode inputs. (#748)
