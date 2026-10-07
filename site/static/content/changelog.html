@@ -3,7 +3,7 @@
 <p>The format is based on <a href="https://keepachangelog.com/en/1.0.0/">Keep a Changelog</a>, and this project adheres to <a href="https://semver.org/spec/v2.0.0.html">Semantic Versioning</a>.</p>
 <h2 id="unreleased">[Unreleased]</h2>
 <h2 id="136-evolve---2026-10-07">[1.3.6-evolve] - 2026-10-07</h2>
-<p>PREPARED FOR PUBLICATION. Intended release date: Wednesday, October 7, 2026. Full preparation recorded CTest 787/787 and VM parity 405/405. Publication requires independent exact-commit evidence and an ICC ready/100 verdict.</p>
+<p>PREPARED FOR PUBLICATION. Intended release date: Wednesday, October 7, 2026. Full preparation recorded CTest 787/787 and VM parity 405/405. Publication requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)</p>
 <h3 id="changed">Changed</h3>
 <ul>
 <li><p><strong>Release output auditing records configured expected failures explicitly.</strong> The self-verdict check reads the captured CTest inventory and distinguishes existing <code>WILL_FAIL</code> acceptance tests from ordinary passing tests. Original output remains intact, and the report names each expected-failure case. Real CTest controls verify that ordinary tests printing failures and unexpected successes in inverted tests still block their respective gates. (#746)</p></li>

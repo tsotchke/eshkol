@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 PREPARED FOR PUBLICATION. Intended release date: Wednesday, October 7, 2026.
 Full preparation recorded CTest 787/787 and VM parity 405/405. Publication
-requires independent exact-commit evidence and an ICC ready/100 verdict.
+requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
