@@ -1,24 +1,44 @@
 # Eshkol v1.3.6-evolve — Release Notes
 
-**Status:** RELEASE CANDIDATE.
-**Planned release date:** Monday, October 5, 2026.
+**Status:** PREPARED FOR PUBLICATION.
+**Intended release date:** Wednesday, October 7, 2026.
 
-Publication requires the release workflow's evidence and ICC ready/100 verdict
-at the exact release commit. CTest and VM parity totals remain unrecorded in
-the release record.
-
-<!-- RELEASE_EVIDENCE_PENDING -->
+Full measurement preparation recorded **CTest 787/787** and **VM parity
+405/405**, with no failed, skipped or infrastructure-only checks. The
+[verified preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
+binds both measurements to one source commit and build cohort. The release
+workflow independently qualifies the final commit and requires ICC ready/100
+before publication.
 
 ### Changes
 
+- **Browser startup and exact numeric consumers share a checked runtime.** The
+  LLVM/WASM host preserves finite doubles as their exact integer or rational
+  values through arithmetic, comparisons, rounding, roots and formatting.
+  `number->string` preserves signed zero and readable nonfinite forms;
+  unsupported complex and exact Taylor paths refuse explicitly. This restores
+  site startup for the corrected example guides. Generated API pages distinguish
+  compile-time statements from callable declarations and retain scoped methods,
+  grouped declarators and initialized variables. (#744)
+- **Release browser tests require a working hardware GPU environment.** The
+  workflow provisions pinned Playwright and verifies device readback before
+  building. Linux Chrome uses an isolated X11 display with native Vulkan, and
+  the live browser gates reject software adapters. Independent Python and
+  browser setup steps run in parallel and join before the build. The complete
+  value-position sweep retains every case and per-case limit, with an overall
+  budget based on measured runner throughput. (#745)
+- **Release evidence reports configured expected failures explicitly.** The
+  output audit uses the captured CTest inventory to distinguish existing
+  expected-failure acceptance cases from ordinary passing tests. It retains
+  their original output and still rejects ordinary false passes. (#746)
 - **Example documentation follows the implementations.** The catalogue covers all
   67 programs, including 46 mathematics examples, with algorithms, arithmetic,
   executable checks, prerequisites and limits. Navier–Stokes registration is
   derived from its 12 programs, 14 criteria and 28 native JIT/AOT entries. (#742)
 - **Publication requires complete source-bound measurements.** The release gate
   validates full configured CTest and VM parity results against committed
-  metadata and the exact source, workflow run and build cohort. Removing a
-  pending marker cannot qualify a candidate for publication. (#742)
+  metadata and the exact source, workflow run and build cohort. Deleting an
+  evidence-status marker cannot qualify a release for publication. (#742)
 
 - **Native REPL input stays clean across line-editing backends.** Pipes and
   machine mode use one noninteractive reader whether readline is available or

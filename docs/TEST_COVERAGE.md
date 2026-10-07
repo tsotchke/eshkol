@@ -1,11 +1,13 @@
 # Eshkol Test Coverage
 
-## v1.3.6-evolve candidate
+## v1.3.6-evolve measurement preparation
 
-Final-source qualification remains pending. Required gates include
-<!-- release-record:ctest -->the full CTest suite<!-- /release-record --> and
-<!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->.
-No final-source total or readiness verdict is claimed.
+The [verified full preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
+recorded
+<!-- release-record:ctest -->CTest **787/787**<!-- /release-record --> and
+<!-- release-record:vm-parity -->VM parity differential **405/405**<!-- /release-record -->.
+Final-source qualification requires independent exact-commit evidence and an
+ICC ready/100 verdict before publication.
 
 ## v1.3.5-evolve historical coverage
 
@@ -100,7 +102,7 @@ comprehensive test suite:
 |------|--------|-------------|
 | `scripts/run_vm_tests.sh` | 50/50 source tests | Standalone VM source programs with verified output capture |
 | `build/test_vm_c_api` | 81/81 checks | Public C ABI, in-memory chunks, host native callbacks, futures |
-| `ctest --test-dir build` | <!-- release-record:ctest-cell -->every registered test<!-- /release-record --> | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
+| `ctest --test-dir build` | <!-- release-record:ctest-cell -->787/787 tests<!-- /release-record --> | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
 
 Primary test command:
 ```bash

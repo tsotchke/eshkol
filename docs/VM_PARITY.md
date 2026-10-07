@@ -287,6 +287,12 @@ recent promotions are
 `op:LOGIC_VAR`, `op:WALK` and `walk`, retired to `vm-supported` when the
 logic-variable representation was unified across the engines (task #100).
 
+The v1.3.6-evolve preparation snapshot (2026-10-07, source `37cab398`)
+classifies **962 rows — 622 `vm-supported`, 45 `native-only-justified`,
+295 `gap`**. Its [verified full preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
+recorded **405/405** VM-parity checks. Publication requires independent
+qualification of the final release commit.
+
 **A status is a claim about the running system, and is now checked as one.**
 This audit validates the ledger against SOURCE TEXT — names scraped from the
 C++ dispatch table in `llvm_codegen.cpp` and the op enum — so it can neither
@@ -307,9 +313,9 @@ explicit disposition and a live generated probe in
 2026-08-25, conformity audit item g6, cross-referenced from FEATURE_MATRIX.md
 d9 and KNOWN_ISSUES.md e6). The historical 323-name baseline was fully
 retested in PR-02: no native-resolved name remained absent from the desktop VM,
-and the file now contains zero entries. The 961-row `PARITY.tsv` accounting
-therefore no longer has an untracked surface backlog, although its 330
-behavioral `gap` rows remain a separate contract.
+and the file now contains zero entries. The current 962-row `PARITY.tsv`
+accounting therefore no longer has an untracked surface backlog, although its
+295 declared `gap` rows remain a separate contract.
 
 ## The ratchet workflow
 

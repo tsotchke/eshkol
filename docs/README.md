@@ -68,7 +68,7 @@ pages and lets them fan out to their siblings.
   - [jit-internals.md](reference/runtime/jit-internals.md) — run cache, stdlib object cache, large code model
 - [Bytecode VM (breakdown)](breakdown/BYTECODE_VM.md) — 72-opcode core interpreter, ESKB format, WebAssembly execution
 - [REPL JIT (breakdown)](breakdown/REPL_JIT.md) — LLVM OrcJIT, opt-level matching, stdlib preloading, hot reload
-- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 961 rows (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), differential (v1.3.6 final-source total pending)
+- [VM Parity](VM_PARITY.md) — bytecode-VM vs native-codegen parity ratchet: 962 rows (622 `vm-supported`, 45 `native-only-justified`, 295 `gap`); <!-- release-record:vm-parity -->VM parity differential **405/405**<!-- /release-record --> in v1.3.6 preparation, with final-source qualification required
 - [VM Memory Ops as Weight Matrices](breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md) — lifting VM opcodes into transformer weight constructions
 - [Computable Transformer](breakdown/COMPUTABLE_TRANSFORMER.md) — programs as neural network weight matrices, 6-layer transformer VM encoding
 - [Command-Line Reference](breakdown/COMMAND_LINE_REFERENCE.md) — complete flag reference for `eshkol-run` and `eshkol-repl`
@@ -225,7 +225,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [Writing documentation](DOCUMENTATION.md) — page kinds, front matter, evergreen wording, facts rendered from sources, executed examples and every documentation gate
 - [Public Benchmarks reference index](reference/benchmarks/INDEX.md) — reproducible, one-command benchmark suite on the four axes Eshkol claims superiority (exact-AD cost curves, Ozaki-II CRT GEMM, flat-RSS, differentiable quantum kernels); see [`bench/README.md`](../bench/README.md) for the full reproduction guide and [`bench/reference-run/results.md`](../bench/reference-run/results.md) for the published reference run
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
-- [Test Coverage](TEST_COVERAGE.md) — required v1.3.6 candidate gates (final-source qualification pending): <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->, <!-- release-record:vm-parity -->the VM parity differential<!-- /release-record -->
+- [Test Coverage](TEST_COVERAGE.md) — required v1.3.6 candidate gates (final-source qualification pending): <!-- release-record:ctest -->CTest **787/787**<!-- /release-record -->, <!-- release-record:vm-parity -->VM parity differential **405/405**<!-- /release-record -->
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
 
 Adversarial-campaign pillar harnesses (`tests/`):

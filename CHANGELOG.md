@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.6-evolve] - 2026-10-05
+## [1.3.6-evolve] - 2026-10-07
 
-RELEASE CANDIDATE. Planned release date: Monday, October 5, 2026. Publication
-requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
+PREPARED FOR PUBLICATION. Intended release date: Wednesday, October 7, 2026.
+Full preparation recorded CTest 787/787 and VM parity 405/405. Publication
+requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
@@ -47,8 +48,8 @@ requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
   derived from its 12 programs, 14 criteria and 28 native JIT/AOT entries. (#742)
 - **Publication requires complete source-bound measurements.** The release gate
   validates full configured CTest and VM parity results against committed
-  metadata and the exact source, workflow run and build cohort. Removing a
-  pending marker cannot qualify a candidate for publication. (#742)
+  metadata and the exact source, workflow run and build cohort. Deleting an
+  evidence-status marker cannot qualify a release for publication. (#742)
 
 - **CUDA builds load cuBLAS when GPU GEMM needs it.** CPU-only native, JIT, and
   VM paths avoid its eager memory footprint. Library admission validates the

@@ -127,7 +127,7 @@ Eight criteria are wired this way (since v1.3.4). Five read CTest directly — t
 harnesses that judge the same cut: `vm_surface_regression_suite` (kind
 `vm_surface`), `vm_parity_gate` (kind `vm_parity`) and `event_loop_works`
 (kind `eshkol_smoke`). The release evidence, regenerated at the tagged commit,
-is <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->; the
+is <!-- release-record:ctest -->CTest **787/787**<!-- /release-record -->; the
 value-position and compound-accessor regression is green. Superseded CTest
 figures that older documents quote: 541/541 and 198/198, each measured on an
 earlier commit; and 183/183, superseded by 190/190 for the v1.3.4-evolve cut
@@ -245,9 +245,11 @@ VM-supported nor consciously waived in `tests/vm_parity/PARITY.tsv`. A
 VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
-The v1.3.6-evolve release requires the VM parity differential at the final SHA;
-qualification is pending. The v1.3.5-evolve differential passed 388 checks and the manifest is **961 rows — 604 `vm-supported`, 46
-`native-only-justified`, 311 `gap`**; verified behavioral divergences are
+For v1.3.6-evolve, full preparation recorded
+<!-- release-record:vm-parity -->VM parity differential **405/405**<!-- /release-record -->.
+The release workflow rechecks parity at the final SHA. The v1.3.5-evolve
+differential passed 388 checks. The current manifest has **962 rows — 622
+`vm-supported`, 45 `native-only-justified`, 295 `gap`**; verified behavioral divergences are
 explicit `gap` rows with reproducible programs under `tests/vm_parity/found/`.
 Superseded figures that older documents quote: 338/338 (the 2026-09-11
 documentation cut) and 188/188 (commit `afbaaf5b`); 184/184 is superseded by
