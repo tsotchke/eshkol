@@ -318,9 +318,10 @@ fi
 SELF_VERDICT_FAILURES=0
 if [ "$HAVE_JUNIT" -eq 1 ] && [ -s "$JUNIT" ]; then
     if self_verdict_out=$(python3 "$REPO_ROOT/scripts/check_self_verdicts.py" \
-            --junit "$JUNIT" --no-trace 2>&1); then
-        emit_event "ctest_self_verdict_scan" PASS "no PASS-graded ctest test self-reports a failure"
-        emit_test_result "ctest::self-verdict-scan" PASS "clean"
+            --junit "$JUNIT" --ctest-inventory "$RUN_DIR/inventory.json" --no-trace 2>&1); then
+        echo "$self_verdict_out"
+        emit_event "ctest_self_verdict_scan" PASS "no ordinary PASS-graded test self-reports failure; configured expected-failure cases reported separately"
+        emit_test_result "ctest::self-verdict-scan" PASS "clean against captured CTest expectations"
     else
         SELF_VERDICT_FAILURES=1
         echo "$self_verdict_out"

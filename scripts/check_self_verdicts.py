@@ -181,14 +181,74 @@ def _ctest_verdict_failed(case: ET.Element) -> bool:
     )
 
 
-def scan_junit(path: str, extra_pattern: str | None) -> tuple[list[Contradiction], int]:
-    """Returns (contradictions, testcases_examined). Raises on unparseable XML —
-    the caller decides whether that is fatal for the whole run."""
+def load_ctest_expectations(path: str) -> dict[str, bool]:
+    """Read expectation polarity from CTest's captured configured inventory.
+
+    This is not a name-based waiver: WILL_FAIL is part of the test definition
+    that CTest used to grade the run. The release producer binds this same
+    inventory by hash in its measurement receipt.
+    """
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate inventory key: {key}")
+            result[key] = value
+        return result
+
+    with open(path, encoding="utf-8") as source:
+        inventory = json.load(source, object_pairs_hook=unique_object)
+    version = inventory.get("version") if isinstance(inventory, dict) else None
+    if (not isinstance(inventory, dict) or inventory.get("kind") != "ctestInfo"
+            or not isinstance(version, dict) or set(version) != {"major", "minor"}
+            or any(type(version[key]) is not int for key in version)
+            or version != {"major": 1, "minor": 0}
+            or not isinstance(inventory.get("tests"), list)):
+        raise ValueError("expected a CTest --show-only=json-v1 inventory")
+    expectations = {}
+    for test in inventory["tests"]:
+        if not isinstance(test, dict) or not isinstance(test.get("name"), str) or not test["name"]:
+            raise ValueError("inventory test needs a nonempty name")
+        name = test["name"]
+        if name in expectations:
+            raise ValueError(f"duplicate inventory test: {name}")
+        properties = test.get("properties", [])
+        if not isinstance(properties, list):
+            raise ValueError(f"invalid properties for {name}")
+        seen = set()
+        will_fail = False
+        for prop in properties:
+            if (not isinstance(prop, dict) or not isinstance(prop.get("name"), str)
+                    or not prop["name"] or "value" not in prop or prop["name"] in seen):
+                raise ValueError(f"invalid or duplicate property for {name}")
+            seen.add(prop["name"])
+            if prop["name"] == "WILL_FAIL":
+                if type(prop["value"]) is not bool:
+                    raise ValueError(f"WILL_FAIL must be a JSON boolean for {name}")
+                will_fail = prop["value"]
+        expectations[name] = will_fail
+    return expectations
+
+
+def scan_junit(path: str, extra_pattern: str | None, *,
+               ctest_expectations: dict[str, bool] | None = None,
+               expected_failures: list[dict] | None = None) -> tuple[list[Contradiction], int]:
+    """Return contradictions and examined count; reject malformed supplied metadata.
+
+    Without a configured inventory, every passing case retains the ordinary
+    PASS interpretation. With one, successful inverted tests are reported in
+    expected_failures instead of asserting that their programs succeeded.
+    """
     root = ET.parse(path).getroot()
     contradictions: list[Contradiction] = []
     examined = 0
+    seen = set()
     for case in root.iter("testcase"):
         name = case.get("name") or ""
+        if ctest_expectations is not None:
+            if name not in ctest_expectations or name in seen:
+                raise ValueError(f"unknown or duplicate JUnit testcase: {name!r}")
+            seen.add(name)
         if not name:
             continue
         status = case.get("status") or ""
@@ -206,6 +266,15 @@ def scan_junit(path: str, extra_pattern: str | None) -> tuple[list[Contradiction
             text_parts.append(err_el.text)
         combined = "\n".join(text_parts)
         hits = offending_lines(combined, extra_pattern)
+        if ctest_expectations is not None and ctest_expectations[name]:
+            # A successful WILL_FAIL test certifies its configured rejection,
+            # not a successful program. Keep its original markers visible in
+            # a separate report. Failed/skipped CTest cases were handled above
+            # and never become expected successes here.
+            if expected_failures is not None:
+                expected_failures.append({"source": f"junit:{os.path.basename(path)}",
+                                          "name": name, "failure_markers": hits})
+            continue
         if hits:
             contradictions.append(Contradiction(f"junit:{os.path.basename(path)}", name, hits))
     return contradictions, examined
@@ -393,6 +462,7 @@ def self_test() -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--junit", action="append", default=[], help="CTest/JUnit XML file (repeatable)")
+    parser.add_argument("--ctest-inventory", help="captured CTest json-v1 inventory defining WILL_FAIL expectations")
     parser.add_argument("--manifest", action="append", default=[], help="VERDICT<TAB>path[<TAB>label] TSV file (repeatable)")
     parser.add_argument("--pair", action="append", default=[], help="VERDICT:PATH ad hoc pair (repeatable)")
     parser.add_argument("--extra-pattern", default=None, help="extra regex OR-ed into the failure marker set")
@@ -408,13 +478,26 @@ def main(argv: list[str] | None = None) -> int:
     contradictions: list[Contradiction] = []
     examined = 0
     read_errors: list[str] = []
+    expected_failures: list[dict] = []
+    ctest_expectations = None
+    if args.ctest_inventory:
+        if not args.junit:
+            parser.error("--ctest-inventory requires --junit")
+        try:
+            ctest_expectations = load_ctest_expectations(args.ctest_inventory)
+        except (OSError, ValueError) as exc:
+            read_errors.append(f"ctest inventory {args.ctest_inventory}: {exc}")
 
     for path in args.junit:
+        if args.ctest_inventory and ctest_expectations is None:
+            break
         try:
-            c, n = scan_junit(path, args.extra_pattern)
+            c, n = scan_junit(path, args.extra_pattern,
+                              ctest_expectations=ctest_expectations,
+                              expected_failures=expected_failures)
             contradictions.extend(c)
             examined += n
-        except (OSError, ET.ParseError) as exc:
+        except (OSError, ET.ParseError, ValueError) as exc:
             read_errors.append(f"junit {path}: {exc}")
 
     for path in args.manifest:
@@ -444,6 +527,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if passed:
         snippet = f"{examined} artifact(s) examined across {len(args.junit) + len(args.manifest) + len(args.pair)} source(s), no contradiction"
+        if expected_failures:
+            snippet += f"; {len(expected_failures)} configured expected-failure case(s) reported separately"
     else:
         details = [c.describe() for c in contradictions] + read_errors
         snippet = f"{len(details)} problem(s): " + "; ".join(details[:5])
@@ -457,10 +542,15 @@ def main(argv: list[str] | None = None) -> int:
             "examined": examined,
             "contradictions": [{"source": c.source, "name": c.name, "offending": c.offending} for c in contradictions],
             "read_errors": read_errors,
+            "expected_failure_cases": expected_failures,
         }, indent=2))
     else:
         print(f"{PROBE_ID}: {'PASS' if passed else 'FAIL'}")
         print(f"  artifacts examined : {examined}")
+        if expected_failures:
+            print(f"  configured expected-failure cases : {len(expected_failures)}")
+            for case in expected_failures:
+                print(f"    - {case['name']} (WILL_FAIL; original output retained in JUnit)")
         if contradictions:
             print("  CONTRADICTIONS (graded PASS, but self-reports failure):")
             for c in contradictions:
