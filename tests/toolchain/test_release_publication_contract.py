@@ -266,7 +266,7 @@ args = sys.argv[1:]
 names = ['fixedpoint_one', 'runtime_closure_arity_spread_one', 'define_library_same_unit_one', 'load_path_engine_parity_test', 'squared_distance_gradcheck']
 names += [base + '_' + mode + '_smoke' for base in ('taylor_tower', 'taylor_tower_mono', 'exact_taylor', 'reverse_over_taylor', 'taylor_numerics', 'region_evac_taylor_exact') for mode in ('runtime', 'aot')]
 if '--show-only=json-v1' in args:
-    print(json.dumps({'tests': [{'name': name} for name in names]})); sys.exit(0)
+    print(json.dumps({'kind': 'ctestInfo', 'version': {'major': 1, 'minor': 0}, 'tests': [{'name': name} for name in names]})); sys.exit(0)
 if '-N' in args: sys.exit(0)
 timeout = os.environ.get('FAKE_TIMEOUT') == '1'
 path = Path(args[args.index('--output-junit') + 1])

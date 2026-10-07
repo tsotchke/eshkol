@@ -8110,7 +8110,14 @@ if(ESHKOL_BUILD_TESTS)
                     --self-test
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         )
-        set_tests_properties(self_verdict_gate self_verdict_gate_selftest PROPERTIES TIMEOUT 60)
+        add_test(
+            NAME self_verdict_ctest_inventory
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_self_verdict_ctest_inventory.py"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(self_verdict_gate self_verdict_gate_selftest
+                            self_verdict_ctest_inventory PROPERTIES TIMEOUT 60)
     endif()
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_build_fingerprint.py")
         add_test(

@@ -14,6 +14,13 @@ requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
 
 ### Changed
 
+- **Release output auditing records configured expected failures explicitly.**
+  The self-verdict check reads the captured CTest inventory and distinguishes
+  existing `WILL_FAIL` acceptance tests from ordinary passing tests. Original
+  output remains intact, and the report names each expected-failure case.
+  Real CTest controls verify that ordinary tests printing failures and
+  unexpected successes in inverted tests still block their respective gates. (#746)
+
 - **Full release measurements use a verified browser GPU environment.** The
   workflow provisions Playwright, runs Linux Chrome under an isolated X11
   display, and rejects software adapters before building. Shared browser test
