@@ -19,7 +19,7 @@ requires the release workflow's exact-commit evidence and ICC ready/100 verdict.
   existing `WILL_FAIL` acceptance tests from ordinary passing tests. Original
   output remains intact, and the report names each expected-failure case.
   Real CTest controls verify that ordinary tests printing failures and
-  unexpected successes in inverted tests still block their respective gates.
+  unexpected successes in inverted tests still block their respective gates. (#746)
 
 - **Full release measurements use a verified browser GPU environment.** The
   workflow provisions Playwright, runs Linux Chrome under an isolated X11
