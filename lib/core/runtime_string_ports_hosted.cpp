@@ -21,13 +21,12 @@
 
 #define MAX_STRING_OUTPUT_PORTS 256
 
-static struct {
+struct string_output_port_t {
     FILE* fp;
     char* buf;
     size_t size;
-} string_output_ports[MAX_STRING_OUTPUT_PORTS];
-
-static int num_string_output_ports = 0;
+};
+static string_output_port_t string_output_ports[MAX_STRING_OUTPUT_PORTS];
 
 struct hosted_port_state_t {
     uint8_t type_tag;
@@ -75,15 +74,28 @@ extern "C" int eshkol_runtime_port_is_string(void* fp_void) {
 extern "C" int eshkol_runtime_close_port(void* fp_void) {
     FILE* fp = static_cast<FILE*>(fp_void);
     if (!fp) return EOF;
-    {
-        std::lock_guard<std::mutex> lock(g_hosted_ports_mutex);
-        auto it = g_hosted_ports.find(fp);
-        if (it != g_hosted_ports.end()) {
-            if (!it->second.is_open) return 0;
-            it->second.is_open = false;
+    std::lock_guard<std::mutex> lock(g_hosted_ports_mutex);
+    auto it = g_hosted_ports.find(fp);
+    if (it != g_hosted_ports.end()) {
+        if (!it->second.is_open) return 0;
+        it->second.is_open = false;
+    }
+    // fclose may update an open_memstream's buffer and size one last time.
+    // Keep its slot stable until then, and retire it before another open can
+    // reuse the FILE* address. Snapshots already live in their own arena copies.
+    string_output_port_t* output = nullptr;
+    for (auto& slot : string_output_ports) {
+        if (slot.fp == fp) {
+            output = &slot;
+            break;
         }
     }
-    return fclose(fp);
+    int result = fclose(fp);
+    if (output) {
+        free(output->buf);
+        *output = {nullptr, nullptr, 0};
+    }
+    return result;
 }
 
 /**
@@ -135,8 +147,9 @@ extern "C" void* eshkol_open_input_string(void* arena_void, const char* str, int
 /**
  * @brief Open a growable in-memory output port (R7RS `open-output-string` support).
  *
- * Reserves a slot in the fixed-size `string_output_ports` table (capped at
- * MAX_STRING_OUTPUT_PORTS) so `eshkol_get_output_string` can later recover the
+ * Reserves a free slot in the fixed-size `string_output_ports` table (capped at
+ * MAX_STRING_OUTPUT_PORTS simultaneously open ports) so `eshkol_get_output_string`
+ * can recover the
  * written bytes by matching on the FILE* pointer. On POSIX, backed by
  * open_memstream, which owns and grows `string_output_ports[idx].buf`/`.size`
  * as data is written. On Windows (no open_memstream), backed by a tmpfile()
@@ -147,8 +160,10 @@ extern "C" void* eshkol_open_input_string(void* arena_void, const char* str, int
  *          underlying stream could not be opened.
  */
 extern "C" void* eshkol_open_output_string(void) {
-    if (num_string_output_ports >= MAX_STRING_OUTPUT_PORTS) return nullptr;
-    int idx = num_string_output_ports++;
+    std::lock_guard<std::mutex> lock(g_hosted_ports_mutex);
+    int idx = 0;
+    while (idx < MAX_STRING_OUTPUT_PORTS && string_output_ports[idx].fp) ++idx;
+    if (idx == MAX_STRING_OUTPUT_PORTS) return nullptr;
     string_output_ports[idx].buf = nullptr;
     string_output_ports[idx].size = 0;
 #ifdef _WIN32
@@ -157,16 +172,18 @@ extern "C" void* eshkol_open_output_string(void) {
     FILE* fp = open_memstream(&string_output_ports[idx].buf,
                               &string_output_ports[idx].size);
 #endif
+    if (!fp) return nullptr;
     string_output_ports[idx].fp = fp;
-    return eshkol_runtime_register_port(fp,
-        ESHKOL_VALUE_HEAP_PTR | 0x40, 1);
+    g_hosted_ports[fp] = {ESHKOL_VALUE_HEAP_PTR | 0x40, true, true};
+    return fp;
 }
 
 /**
  * @brief Snapshot the bytes written so far to an output-string port as an
  * arena-allocated Eshkol string (R7RS `get-output-string` support).
  *
- * Flushes `fp` first. On POSIX, looks up the matching entry in
+ * Validates the live output-string port before flushing it. On POSIX, looks up
+ * the matching entry in
  * `string_output_ports` and copies its open_memstream buffer/size into a new
  * HEAP_SUBTYPE_STRING-tagged arena allocation. On Windows, since the port is a
  * plain tmpfile(), the current file position is saved, the file is measured by
@@ -182,9 +199,13 @@ extern "C" void* eshkol_open_output_string(void) {
 extern "C" void* eshkol_get_output_string(void* arena_void, void* fp_void) {
     auto* arena = static_cast<arena_t*>(arena_void);
     FILE* fp = static_cast<FILE*>(fp_void);
-    fflush(fp);
-    for (int i = 0; i < num_string_output_ports; i++) {
+    std::lock_guard<std::mutex> lock(g_hosted_ports_mutex);
+    auto state = g_hosted_ports.find(fp);
+    bool live = fp && state != g_hosted_ports.end() && state->second.is_open &&
+        state->second.is_string && (state->second.type_tag & 0x40) != 0;
+    for (int i = 0; live && i < MAX_STRING_OUTPUT_PORTS; i++) {
         if (string_output_ports[i].fp == fp) {
+            if (fflush(fp) != 0) break;
 #ifdef _WIN32
             long saved_pos = ftell(fp);
             if (saved_pos < 0) {

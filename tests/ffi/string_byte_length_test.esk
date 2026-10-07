@@ -10,6 +10,7 @@
 ;; this builtin exists to prevent stays caught.
 
 (require stdlib)
+(require agent.crypto)
 
 (define passed 0)
 (define failed 0)
@@ -40,6 +41,33 @@
 (check "empty string-length is 0"      (= (string-length "") 0))
 (check "empty string-byte-length is 0" (= (string-byte-length "") 0))
 
+;; ---- Crypto FFI lengths are UTF-8 byte counts, with Python hashlib/hmac
+;; reference vectors. These catch truncation of both HMAC data and key. ----
+(check "SHA-256 ASCII reference"
+       (string=? (sha256 "hello")
+                 "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"))
+(check "SHA-256 UTF-8 éx reference"
+       (string=? (sha256 "éx")
+                 "75ffd91e9de1dcdd5f349e17f877dd3ea559667e1bdbf4c8f3560ca0b81a0b02"))
+(check "SHA-256 UTF-8 éy reference"
+       (string=? (sha256 "éy")
+                 "5e0906a4eef5d1c557da2161974d523733b9b634acc90bd047be41a0f22f4048"))
+(check "SHA-256 supplementary Unicode reference"
+       (string=? (sha256 "𐐷x")
+                 "cb9a79997a2e3a81c974d1aafdfd4d805a29c6a3f558193e94315d0d11895f44"))
+(check "HMAC-SHA256 UTF-8 data éx reference"
+       (string=? (hmac-sha256 "clé" "éx")
+                 "aca96be9cbc779d46872c8a4490bac04074dfc708201b64b213e93da12a2c9d8"))
+(check "HMAC-SHA256 UTF-8 data éy reference"
+       (string=? (hmac-sha256 "clé" "éy")
+                 "53d69d7b810569a02e19e75a06e51a8a0bd6f0fb48c44b465580cd62707f76bb"))
+(check "HMAC-SHA256 UTF-8 key reference"
+       (string=? (hmac-sha256 "clé" "hello")
+                 "b2fb56a169cecc69642d336d407ba685bf7369b38ec3523d925d9c4a8f3c3645"))
+(check "HMAC-SHA256 supplementary Unicode reference"
+       (string=? (hmac-sha256 "🔐" "𐐷x")
+                 "2cc76a7f8badefe386ecf4c14e27898403cdfe59c447374ac923bd5fd86e3bd2"))
+
 ;; ---- fwrite regression: writing (string-byte-length s) bytes must not
 ;; truncate, unlike the old (string-length s) call site this replaces
 ;; (see lib/core/memory_store.esk's ms-append-fsync!). ----
@@ -47,7 +75,9 @@
 (extern i64 ms-test-fwrite ptr i64 i64 ptr :real fwrite)
 (extern i32 ms-test-fclose ptr :real fclose)
 
-(define out-path "/tmp/eshkol_string_byte_length_test.txt")
+(define out-path
+  (string-append (or (getenv "ESHKOL_TEST_TMPDIR") (getenv "TMPDIR") ".")
+                 "/eshkol_string_byte_length_test.txt"))
 (define f (ms-test-fopen out-path "w"))
 (check "fopen succeeded" (not (null? f)))
 (ms-test-fwrite mixed 1 (string-byte-length mixed) f)
