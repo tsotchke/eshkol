@@ -39,3 +39,41 @@
   (display (get-output-string p))
   (newline))
 ; Expected: first then first second
+
+; Closed string ports must not supply stale buffers when libc reuses a FILE*.
+(define (check-string-port label expected actual)
+  (if (equal? expected actual) #t (error label expected actual)))
+
+(define (string-port-snapshot text)
+  (let ((p (open-output-string)))
+    (write-string text p)
+    (let ((snapshot (get-output-string p)))
+      (close-output-port p)
+      snapshot)))
+
+(let ((first (string-port-snapshot "first snapshot")))
+  (check-string-port "reopened output string" "second snapshot"
+                     (string-port-snapshot "second snapshot"))
+  (check-string-port "snapshot survives close" "first snapshot" first))
+
+; Recycle closed slots rather than exhausting the 256 simultaneously-open limit.
+(let loop ((i 0))
+  (if (< i 600)
+      (let ((text (string-append "snapshot-" (number->string i))))
+        (check-string-port "recycled output slot" text (string-port-snapshot text))
+        (loop (+ i 1)))
+      #t))
+
+; Reusing a closed slot must leave other live streams and earlier snapshots intact.
+(let ((a (open-output-string)) (b (open-output-string)))
+  (write-string "a" a)
+  (write-string "b" b)
+  (let ((snapshot (get-output-string b)))
+    (close-output-port a)
+    (check-string-port "new stream beside live stream" "new" (string-port-snapshot "new"))
+    (write-string "-continued" b)
+    (check-string-port "live stream after slot reuse" "b-continued" (get-output-string b))
+    (close-output-port b)
+    (check-string-port "independent snapshot" "b" snapshot)))
+(display "PASS: string-port close, reuse, and independent snapshots")
+(newline)
