@@ -23,6 +23,7 @@
  */
 
 import http from 'node:http';
+import { webgpuLaunchOptions, requireHardwareWebGpu, loadWebGpuPlaywright } from './webgpu_test_browser.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -300,16 +301,10 @@ for (const tier of REGRESSIONS ? ['fast'] : ['exact']) {
 
 /* ---- main ---- */
 let playwright;
-try {
-    playwright = await import('playwright');
-} catch {
-    try {
-        playwright = await import(path.join(REPO, '.scratch', 'node_modules', 'playwright', 'index.js'));
-    } catch {
-        console.error('webgpu_diff_runner: SKIP - playwright is not installed.');
-        console.error('  npm install playwright   (channel=chrome uses the system Chrome; no browser download)');
-        process.exit(77);
-    }
+try { playwright = await loadWebGpuPlaywright(); }
+catch (error) {
+    console.error('webgpu_diff_runner: SKIP - Playwright unavailable: ' + error);
+    process.exit(77);
 }
 
 const { src, applied } = loadModuleSource();
@@ -329,11 +324,8 @@ const port = server.address().port;
 
 let browser, out;
 try {
-    browser = await playwright.chromium.launch({
-        channel: 'chrome',
-        headless: !HEADED,
-        args: ['--enable-unsafe-webgpu'],
-    });
+    browser = await playwright.chromium.launch(webgpuLaunchOptions({ headless: !HEADED }));
+    await requireHardwareWebGpu(browser, `http://localhost:${port}/`);
     const page = await browser.newPage();
     const consoleErrors = [];
     page.on('pageerror', (e) => consoleErrors.push(String(e)));

@@ -1356,7 +1356,9 @@ jobs:
           exit $fail
 
       - name: Prepare isolated Python binding test environment
+        id: release-python-environment
         if: env.ICC_AVAILABLE == 'true'
+        background: true
         shell: bash
         run: |
           set -euo pipefail
@@ -1385,6 +1387,27 @@ jobs:
             echo "ESHKOL_TEST_PYTHON=$python_env/bin/python"
             echo "ESHKOL_PYBIND11_DIR=$pybind11_dir"
           } >> "$GITHUB_ENV"
+
+      - name: Prepare real browser GPU test environment
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v xvfb-run >/dev/null
+          command -v Xvfb >/dev/null
+          command -v xauth >/dev/null
+          test -x /opt/google/chrome/chrome
+          npm install --prefix "$GITHUB_WORKSPACE/.scratch" --no-save --ignore-scripts \
+            --no-audit --no-fund playwright@1.59.0
+          node --version
+          /opt/google/chrome/chrome --version
+          TMPDIR="$RUNNER_TEMP" xvfb-run -a node scripts/check_webgpu_release_environment.mjs
+
+      # Python writes only its private venv and environment exports; the
+      # browser step installs into .scratch and does not consume those exports.
+      # Join both prerequisites before configuration or evidence collection.
+      - name: Wait for release test prerequisites
+        wait-all:
 
       - name: Configure and build (readiness evidence)
         if: env.ICC_AVAILABLE == 'true'
@@ -1498,7 +1521,7 @@ jobs:
           ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/measurement-preparation
           BUILD_DIR: build
           QUANTUM_BUILD_DIR: build-quantum
-        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase measurements
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase measurements
 
       # Each evidence phase has its own step budget. Coverage/full-suite and VM
       # parity run first; the expensive smoke battery follows against the same
@@ -1511,7 +1534,7 @@ jobs:
           TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
           ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/baseline
           QUANTUM_BUILD_DIR: build-quantum
-        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase baseline
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase baseline
 
       - name: Release smoke evidence
         if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
@@ -1521,7 +1544,7 @@ jobs:
           TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
           ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/smoke
           QUANTUM_BUILD_DIR: build-quantum
-        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase smoke
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase smoke
 
       - name: Remaining release producers and architecture verification
         if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
@@ -1531,7 +1554,7 @@ jobs:
           TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
           ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/final-evidence
           QUANTUM_BUILD_DIR: build-quantum
-        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && scripts/run_v1_3_readiness.sh --phase final-evidence
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase final-evidence
 
       # The canonical recipe owns every required producer, refreshes one trace
       # cohort, reindexes ICC and emits the final architecture verdict before
@@ -1579,7 +1602,7 @@ jobs:
           fi
 
           mkdir -p "$ESHKOL_DURABLE_WORK_ROOT"
-          if ! scripts/run_v1_3_readiness.sh --phase readiness; then
+          if ! TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase readiness; then
             verdict "scripts/run_v1_3_readiness.sh reported $RELEASE_TARGET is not ready."
             readiness_command_failed=1
           fi

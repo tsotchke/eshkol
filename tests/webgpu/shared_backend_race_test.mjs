@@ -4,6 +4,7 @@
  * the 1x1 and 8x8 cases. Distinct memories expose state leaking between
  * suspended calls; every result cell and per-case telemetry are checked. */
 import http from 'node:http';
+import { webgpuLaunchOptions, requireHardwareWebGpu, loadWebGpuPlaywright } from '../../scripts/lib/webgpu_test_browser.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,12 +13,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const WEBGPU = fs.readFileSync(path.join(ROOT, 'web', 'eshkol-webgpu.js'), 'utf8');
 const VM_JS = fs.readFileSync(path.join(ROOT, 'site', 'static', 'eshkol-vm.js'));
 const VM_WASM = fs.readFileSync(path.join(ROOT, 'site', 'static', 'eshkol-vm.wasm'));
-let chromium;
-try { ({ chromium } = await import('playwright')); }
-catch {
-    try { ({ chromium } = await import(path.join(ROOT, '.scratch', 'node_modules', 'playwright', 'index.js'))); }
-    catch (e) { console.error('shared_backend_race_test: Playwright unavailable: ' + e); process.exit(2); }
-}
+const { chromium } = await loadWebGpuPlaywright();
 
 const server = http.createServer((req, res) => {
     if (req.url === '/eshkol-webgpu.js') { res.writeHead(200, { 'Content-Type': 'text/javascript' }); res.end(WEBGPU); return; }
@@ -29,7 +25,8 @@ const server = http.createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, 'localhost', resolve));
 let browser;
 try {
-    browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--enable-unsafe-webgpu'] });
+    browser = await chromium.launch(webgpuLaunchOptions());
+    await requireHardwareWebGpu(browser, `http://localhost:${server.address().port}/`);
     const page = await browser.newPage();
     await page.goto(`http://localhost:${server.address().port}/`);
     const result = await page.evaluate(async () => {

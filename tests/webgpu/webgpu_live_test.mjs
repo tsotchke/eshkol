@@ -5,24 +5,14 @@
  * test failure, not a green CPU-only result. */
 
 import http from 'node:http';
+import { webgpuLaunchOptions, requireHardwareWebGpu, loadWebGpuPlaywright } from '../../scripts/lib/webgpu_test_browser.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SOURCE = fs.readFileSync(path.join(ROOT, 'web', 'eshkol-webgpu.js'), 'utf8');
 const RUNTIME = fs.readFileSync(path.join(ROOT, 'site', 'static', 'eshkol-runtime.js'), 'utf8');
-let chromium;
-try {
-    ({ chromium } = await import('playwright'));
-} catch {
-    try {
-        ({ chromium } = await import(path.join(ROOT, '.scratch', 'node_modules',
-                                               'playwright', 'index.js')));
-    } catch (error) {
-        console.error('webgpu_live_test: Playwright is unavailable: ' + error);
-        process.exit(2);
-    }
-}
+const { chromium } = await loadWebGpuPlaywright();
 
 const server = http.createServer((req, res) => {
     if (req.url === '/eshkol-webgpu.js' || req.url === '/eshkol-runtime.js') {
@@ -39,8 +29,8 @@ await new Promise((resolve) => server.listen(0, 'localhost', resolve));
 const port = server.address().port;
 let browser;
 try {
-    browser = await chromium.launch({ channel: 'chrome', headless: true,
-                                      args: ['--enable-unsafe-webgpu'] });
+    browser = await chromium.launch(webgpuLaunchOptions());
+    await requireHardwareWebGpu(browser, `http://localhost:${port}/`);
     const page = await browser.newPage();
     await page.goto(`http://localhost:${port}/`);
     const result = await page.evaluate(async () => {

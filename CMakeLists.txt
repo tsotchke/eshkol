@@ -10291,9 +10291,14 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         COMMAND sh -c
             "cd '${CMAKE_CURRENT_SOURCE_DIR}' && BUILD_DIR='${CMAKE_CURRENT_BINARY_DIR}' python3 scripts/run_value_position_sweep.py --quiet"
     )
+    # The release runner measured about 9.8 seconds per builtin in the full
+    # 239-name sweep (40 minutes); 30 minutes truncated it at name 184.
+    # This is a correctness inventory, not the separate ESH-0103 timing gate.
+    # Keep every case and its 90-second subprocess budget; allow the complete
+    # serial sweep to finish on the supported release runner.
     set_tests_properties(value_position_axis_sweep
         PROPERTIES
-            TIMEOUT 1800
+            TIMEOUT 3600
             PASS_REGULAR_EXPRESSION "value-position sweep: OK"
             FAIL_REGULAR_EXPRESSION "value-position discrepancy")
 endif()
