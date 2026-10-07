@@ -11,6 +11,10 @@ from pathlib import Path
 
 
 PHASE_REQUIREMENTS = {
+    "coverage": (
+        ("runtime_event", "language_surface_coverage", "PASS"),
+        ("language_coverage_prereq", "core_suite", "PASS"),
+    ),
     "baseline": (
         ("runtime_event", "language_surface_coverage", "PASS"),
         ("language_coverage_prereq", "core_suite", "PASS"),
@@ -56,9 +60,18 @@ def main() -> int:
             errors.append(f"{kind}:{name}: expected one {value}, found {actual}")
     try:
         state = read_json(args.trace_dir / "release-phase-state.json")
-        load_measurements(args.trace_dir / "publication", source_snapshot(Path(__file__).resolve().parents[1])["sha"],
-                          os.environ.get("RELEASE_TARGET", "v1.3.6-evolve"), state.get("phase_id"),
-                          sha256(args.trace_dir / "release-build-cohort.json"))
+        head = source_snapshot(Path(__file__).resolve().parents[1])["sha"]
+        if state.get("head") != head:
+            raise ContractError("phase state does not match the current source")
+        expected_phase = os.environ.get("ESHKOL_RELEASE_PHASE_ID")
+        if expected_phase and state.get("phase_id") != expected_phase:
+            raise ContractError("phase state does not match this workflow run/attempt")
+        # Coverage is a deliberately partial producer phase. Its caller checks
+        # the captured binaries; no baseline/qualification marker is earned.
+        if args.phase != "coverage":
+            load_measurements(args.trace_dir / "publication", head,
+                              os.environ.get("RELEASE_TARGET", "v1.3.6-evolve"), state.get("phase_id"),
+                              sha256(args.trace_dir / "release-build-cohort.json"))
     except (ContractError, OSError, ValueError) as exc:
         errors.append(str(exc))
     if errors:

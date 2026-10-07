@@ -1148,7 +1148,7 @@ jobs:
   # "Release-blocking readiness".
   release-readiness-gate:
     name: release-readiness-gate
-    timeout-minutes: 720
+    timeout-minutes: 1080
     # ICC only exists on the maintainer's self-hosted node (see ICC_BIN
     # below) — a hosted runner can never certify this gate, only report it
     # unavailable. Labels per docs/platform/SELF_HOSTED_RUNNERS.md §2; the
@@ -1523,18 +1523,29 @@ jobs:
           QUANTUM_BUILD_DIR: build-quantum
         run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase measurements
 
-      # Each evidence phase has its own step budget. Coverage/full-suite and VM
-      # parity run first; the expensive smoke battery follows against the same
-      # captured build cohort; the remaining focused gates run before final ICC.
-      - name: Release evidence baseline (coverage and VM parity)
+      # Coverage's complete traced suite and the unfiltered CTest/VM measurements
+      # are separate sequential steps under GitHub's 360-minute step ceiling.
+      # Both must complete for the same source/run and captured binary cohort
+      # before baseline evidence can authorize smoke or final readiness.
+      - name: Release language coverage
         if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
         timeout-minutes: 360
         shell: bash
         env:
           TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
-          ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/baseline
+          ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/coverage
           QUANTUM_BUILD_DIR: build-quantum
-        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase baseline
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase coverage
+
+      - name: Release baseline measurements (CTest and VM parity)
+        if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'
+        timeout-minutes: 360
+        shell: bash
+        env:
+          TRACE_DIR: ${{ github.workspace }}/scripts/icc_traces
+          ESHKOL_DURABLE_WORK_ROOT: ${{ github.workspace }}/.scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/baseline-measurements
+          QUANTUM_BUILD_DIR: build-quantum
+        run: mkdir -p "$ESHKOL_DURABLE_WORK_ROOT" && TMPDIR="$RUNNER_TEMP" xvfb-run -a scripts/run_v1_3_readiness.sh --phase baseline-measurements
 
       - name: Release smoke evidence
         if: env.ICC_AVAILABLE == 'true' && env.MEMORY_DIAGNOSTICS != 'true' && env.MEASUREMENT_PREPARATION != 'true'

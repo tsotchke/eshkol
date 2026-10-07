@@ -73,12 +73,15 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
     def test_readiness_owns_one_trace_cohort_and_runs_producers_before_grading(self):
         capture = self.readiness.index("check_release_build_cohort.py capture")
         archive = self.readiness.index("archive_release_trace_cohort.py")
-        baseline_start = self.readiness.index("run_baseline_phase() {")
-        baseline = self.readiness[baseline_start:].split("validate_measurements() {", 1)[0]
-        full_start = self.readiness.index("run_full_measurements() {")
-        full_measurements = self.readiness[full_start:].split("run_baseline_phase() {", 1)[0]
-        coverage = baseline_start + baseline.index("scripts/run_language_coverage.sh")
-        parity = baseline_start + baseline.index("run_full_measurements")
+        coverage_start = self.readiness.index("run_baseline_coverage_phase() {")
+        measurements_start = self.readiness.index("run_baseline_measurements_phase() {")
+        combined = self.readiness.split("run_baseline_phase() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(combined.index("run_baseline_coverage_phase"),
+                        combined.index("run_baseline_measurements_phase"))
+        coverage_body = self.readiness[coverage_start:].split("\n}\n", 1)[0]
+        measurements_body = self.readiness[measurements_start:].split("\n}\n", 1)[0]
+        coverage = coverage_start + coverage_body.index("scripts/run_language_coverage.sh")
+        parity = measurements_start + measurements_body.index("run_full_measurements")
         smoke = self.readiness.index("scripts/run_icc_smoke.sh")
         reindex = self.readiness.index('"$ICC_BIN" reindex')
         producers = self.readiness.index("scripts/run_v1_3_release_producers.sh")
@@ -116,20 +119,20 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
         self.assertNotIn('architecture-verify \\\n', commands)
         self.assertIn("scripts/run_v1_3_readiness.sh --phase readiness", job)
         positions = [commands.index(f"scripts/run_v1_3_readiness.sh --phase {phase}")
-                     for phase in ("baseline", "smoke", "final-evidence")]
+                     for phase in ("coverage", "baseline-measurements", "smoke", "final-evidence")]
         self.assertEqual(positions, sorted(positions))
         phase_steps = {step["name"]: step for step in parsed["jobs"]["release-readiness-gate"]["steps"] if "name" in step}
-        for name in ("Release evidence baseline (coverage and VM parity)", "Release smoke evidence",
+        for name in ("Release language coverage", "Release baseline measurements (CTest and VM parity)", "Release smoke evidence",
                      "Remaining release producers and architecture verification"):
             self.assertEqual(phase_steps[name]["timeout-minutes"], "360")
-        for phase in ("baseline", "smoke", "final-evidence"):
+        for phase in ("coverage", "baseline-measurements", "smoke", "final-evidence"):
             self.assertIn(f"scripts/run_v1_3_readiness.sh --phase {phase}", commands)
         producer = (ROOT / "scripts/run_v1_3_release_producers.sh").read_text(encoding="utf-8")
         self.assertIn("tests/toolchain/test_v1_3_release_evidence_recipe.py", producer)
 
 
     def test_measurements_phase_is_isolated_nonqualifying_and_shared(self):
-        self.assertIn("all|baseline|measurements|smoke|final-evidence|readiness)", self.readiness)
+        self.assertIn("all|baseline|coverage|baseline-measurements|measurements|smoke|final-evidence|readiness)", self.readiness)
         dispatch = self.readiness.split("    measurements)\n", 1)[1].split("    smoke)\n", 1)[0]
         calls = [line.strip() for line in dispatch.splitlines() if line.strip() and not line.strip().startswith(";;")]
         self.assertEqual(calls, ["start_cohort", "run_full_measurements", "check_cohort"])
@@ -139,7 +142,7 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
         self.assertNotIn("ICC_BIN", dispatch)
 
     def test_exactly_one_shared_full_ctest_vm_measurement_block(self):
-        baseline = self.readiness.split('run_baseline_phase() {', 1)[1].split('validate_measurements() {', 1)[0]
+        baseline = self.readiness.split('run_baseline_measurements_phase() {', 1)[1].split('\n}\n', 1)[0]
         shared = self.readiness.split('run_full_measurements() {', 1)[1].split('run_baseline_phase() {', 1)[0]
         measurements = self.readiness.split('    measurements)\n', 1)[1].split('    smoke)\n', 1)[0]
         self.assertEqual(self.readiness.count('scripts/run_ctest_gate.sh'), 1)
@@ -216,6 +219,28 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
             self.assertTrue((archived[0] / "release-build-cohort.json").is_file())
             self.assertTrue((archived[0] / "release-phase-state.json").is_file())
 
+    def test_coverage_receipts_are_partial_and_bound_to_source_run(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as temp:
+            trace = Path(temp)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+            state = {"schema": "eshkol.release-evidence-phases.v1", "head": head,
+                     "phase_id": "coverage-run-1", "completed": []}
+            events = [{"kind": "runtime_event", "name": "language_surface_coverage", "value": "PASS"},
+                      {"kind": "language_coverage_prereq", "name": "core_suite", "value": "PASS"}]
+            def grade(phase="coverage", records=None, changes=None):
+                (trace / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in (events if records is None else records)))
+                (trace / "release-phase-state.json").write_text(json.dumps({**state, **(changes or {})}))
+                return subprocess.run([sys.executable, str(ROOT / "scripts/check_release_phase_receipts.py"),
+                                       phase, "--trace-dir", str(trace)], capture_output=True, text=True,
+                                      env=isolated_release_env(ESHKOL_RELEASE_PHASE_ID="coverage-run-1"))
+            self.assertEqual(grade().returncode, 0)
+            self.assertNotEqual(grade("baseline").returncode, 0)  # full measurements remain mandatory
+            self.assertNotEqual(grade(records=events[:1]).returncode, 0)
+            self.assertNotEqual(grade(records=events + events[:1]).returncode, 0)
+            self.assertNotEqual(grade(records=[{**events[0], "value": "FAIL"}, events[1]]).returncode, 0)
+            self.assertNotEqual(grade(changes={"head": "0" * 40}).returncode, 0)
+            self.assertNotEqual(grade(changes={"phase_id": "other-run"}).returncode, 0)
+
     def test_split_phase_state_is_bound_to_head_run_and_order(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as temp:
             state = Path(temp) / "phase-state.json"
@@ -231,6 +256,11 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
             self.assertNotEqual(invoke("require", "smoke").returncode, 0)
             self.assertNotEqual(invoke("mark", "smoke").returncode, 0)
             self.assertNotEqual(invoke("mark", "baseline", phase_id="other-run").returncode, 0)
+            self.assertNotEqual(invoke("mark", "baseline").returncode, 0)
+            self.assertNotEqual(invoke("mark", "coverage", phase_id="other-run").returncode, 0)
+            self.assertEqual(invoke("mark", "coverage").returncode, 0)
+            self.assertEqual(invoke("require", "coverage").returncode, 0)
+            self.assertNotEqual(invoke("require", "baseline").returncode, 0)
             self.assertEqual(invoke("mark", "baseline").returncode, 0)
             self.assertEqual(invoke("require", "baseline").returncode, 0)
             self.assertNotEqual(invoke("require", "smoke").returncode, 0)

@@ -119,8 +119,8 @@ test "$PROBE_INFRA" -eq 1
         wrapper = (ROOT / "scripts/run_v1_3_readiness.sh").read_text()
         baseline = wrapper.split("run_baseline_phase() {", 1)[1].split("\n}\n", 1)[0]
         measurements = wrapper.split("run_full_measurements() {", 1)[1].split("\n}\n", 1)[0]
-        coverage = baseline.index("scripts/run_language_coverage.sh")
-        vm = baseline.index("run_full_measurements")
+        coverage = baseline.index("run_baseline_coverage_phase")
+        vm = baseline.index("run_baseline_measurements_phase")
         self.assertLess(measurements.index("scripts/run_ctest_gate.sh"),
                         measurements.index("scripts/run_vm_parity.sh"))
         smoke_step = wrapper.index("scripts/run_icc_smoke.sh")

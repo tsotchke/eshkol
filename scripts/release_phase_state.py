@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 PHASES = ("baseline", "smoke", "final-evidence")
+COVERAGE_PHASE = "coverage"
 MARKABLE_PHASES = PHASES
 
 
@@ -35,14 +36,14 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--phase-id", required=True)
-    parser.add_argument("--phase", choices=PHASES)
+    parser.add_argument("--phase", choices=(COVERAGE_PHASE, *PHASES))
     args = parser.parse_args()
     repo_root = args.repo_root.resolve()
     head = head_at(repo_root)
 
     if args.action == "begin":
         state = {"schema": "eshkol.release-evidence-phases.v1", "head": head,
-                 "phase_id": args.phase_id, "completed": []}
+                 "phase_id": args.phase_id, "completed": [], "coverage_completed": False}
         args.state.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=args.state.parent,
                                          prefix="release-phase-state.", delete=False) as handle:
@@ -67,6 +68,27 @@ def main() -> int:
     completed = state.get("completed", [])
     if not isinstance(completed, list) or any(phase not in MARKABLE_PHASES for phase in completed):
         print("release phase state: FAIL: invalid completed-phase list")
+        return 1
+
+    # Coverage is a partial milestone, not an extra complete producer phase.
+    # Keep the final baseline/smoke/final-evidence proof shape unchanged.
+    if args.phase == COVERAGE_PHASE:
+        if args.action == "require":
+            if state.get("coverage_completed") is not True:
+                print("release phase state: FAIL: coverage incomplete")
+                return 1
+            print("release phase state: PASS (partial coverage complete)")
+            return 0
+        if completed or state.get("coverage_completed") is True:
+            print("release phase state: FAIL: coverage is already recorded or producer phases have begun")
+            return 1
+        state["coverage_completed"] = True
+        args.state.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print("release phase state: recorded partial coverage")
+        return 0
+
+    if args.action == "mark" and args.phase == "baseline" and state.get("coverage_completed") is not True:
+        print("release phase state: FAIL: coverage must complete before baseline")
         return 1
 
     if args.action == "require":

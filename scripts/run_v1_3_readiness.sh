@@ -14,11 +14,11 @@ PHASE=all
 if [ "$#" -eq 2 ] && [ "$1" = "--phase" ]; then
     PHASE="$2"
 elif [ "$#" -ne 0 ]; then
-    echo "usage: $0 [--phase baseline|measurements|smoke|final-evidence|readiness]" >&2
+    echo "usage: $0 [--phase baseline|coverage|baseline-measurements|measurements|smoke|final-evidence|readiness]" >&2
     exit 2
 fi
 case "$PHASE" in
-    all|baseline|measurements|smoke|final-evidence|readiness) ;;
+    all|baseline|coverage|baseline-measurements|measurements|smoke|final-evidence|readiness) ;;
     *) echo "unknown release readiness phase: $PHASE" >&2; exit 2 ;;
 esac
 
@@ -120,7 +120,7 @@ PYMANIFEST
     validate_measurements
 }
 
-run_baseline_phase() {
+run_baseline_coverage_phase() {
     # Coverage runs the complete suite once and records its prerequisite result.
     scripts/run_language_coverage.sh
     python3 - "$TRACE_DIR/language_surface_coverage_prereq.jsonl" <<'PY'
@@ -140,9 +140,25 @@ PY
     . scripts/lib/harness_outcome.sh
     eshkol_outcome_emit_test_result "$TRACE_DIR/release_test_actions.jsonl" release_action::run_tco_tests PASS "run_all_tests.sh completed all suites including run_tco_tests.sh"
     eshkol_outcome_emit_test_result "$TRACE_DIR/release_test_actions.jsonl" release_action::run_control_flow_tests PASS "run_all_tests.sh completed all suites including run_control_flow_tests.sh"
+    check_cohort
+    python3 scripts/check_release_phase_receipts.py coverage --trace-dir "$TRACE_DIR"
+    mark_phase coverage
+}
+
+run_baseline_measurements_phase() {
+    # Coverage-only state is not a baseline verdict. Validate it against this
+    # source/run and unchanged binaries before creating the measurement bundle.
+    python3 scripts/release_phase_state.py require --repo-root "$REPO_ROOT" --state "$PHASE_STATE" --phase-id "$PHASE_ID" --phase coverage
+    check_cohort
+    python3 scripts/check_release_phase_receipts.py coverage --trace-dir "$TRACE_DIR"
     run_full_measurements
     python3 scripts/check_release_phase_receipts.py baseline --trace-dir "$TRACE_DIR"
     mark_phase baseline
+}
+
+run_baseline_phase() {
+    run_baseline_coverage_phase
+    run_baseline_measurements_phase
 }
 
 validate_measurements() {
@@ -202,6 +218,13 @@ case "$PHASE" in
     baseline)
         start_cohort
         run_baseline_phase
+        ;;
+    coverage)
+        start_cohort
+        run_baseline_coverage_phase
+        ;;
+    baseline-measurements)
+        run_baseline_measurements_phase
         ;;
     measurements)
         start_cohort
