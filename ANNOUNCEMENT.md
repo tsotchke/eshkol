@@ -1,11 +1,11 @@
-# Eshkol v1.3.6-evolve — release candidate
+# Eshkol v1.3.6-evolve — prepared for publication
 
-Planned release date: Monday, October 5, 2026. The candidate adds clean
+Intended release date: Wednesday, October 7, 2026. The release adds clean
 noninteractive native REPL input across line-editing backends and requires
 native image I/O in release builds, alongside the confirmed mixed
-exact/inexact interval and AOT loop memory fixes. CTest and VM parity totals
-remain unrecorded in the release record. Publication requires the release
-workflow's exact-commit evidence and ICC ready/100 verdict; see
+exact/inexact interval and AOT loop memory fixes. Full preparation recorded
+CTest 787/787 and VM parity 405/405. Publication requires the release
+workflow's independent exact-commit evidence and ICC ready/100 verdict; see
 [release notes](RELEASE_NOTES.md).
 
 ---
