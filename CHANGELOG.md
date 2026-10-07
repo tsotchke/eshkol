@@ -18,13 +18,13 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 - **SHA-256 and HMAC hash every UTF-8 input byte.** The agent crypto wrappers
   pass byte lengths for data and HMAC keys, preventing different Unicode inputs
   from being truncated to the same prefix. Reference-vector regressions cover
-  ASCII, multibyte data and keys, and supplementary Unicode characters.
+  ASCII, multibyte data and keys, and supplementary Unicode characters. (#748)
 
 - **Closed output-string ports release their buffers and registry slots.**
   A newly opened stream cannot inherit an earlier stream's snapshot when libc
   reuses its address. The fixed-size registry limits simultaneously open ports,
   while closed slots can be reused. Regressions cover repeated open/close cycles,
-  independent snapshots, and other streams remaining live during slot reuse.
+  independent snapshots, and other streams remaining live during slot reuse. (#748)
 
 - **Release output auditing records configured expected failures explicitly.**
   The self-verdict check reads the captured CTest inventory and distinguishes

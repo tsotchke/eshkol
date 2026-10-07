@@ -33,11 +33,11 @@ before publication.
   their original output and still rejects ordinary false passes. (#746)
 - **SHA-256 and HMAC consume complete UTF-8 inputs.** Crypto wrappers use byte
   lengths for both data and HMAC keys, with independent reference vectors for
-  ASCII, multibyte and supplementary Unicode inputs.
+  ASCII, multibyte and supplementary Unicode inputs. (#748)
 - **Output-string ports can be closed and reused safely.** Closing a stream
   retires its buffer and registry slot before its address can be reused.
   Snapshots remain independent, and repeated open/close cycles no longer
-  exhaust a lifetime limit or return an earlier stream's text.
+  exhaust a lifetime limit or return an earlier stream's text. (#748)
 - **Example documentation follows the implementations.** The catalogue covers all
   67 programs, including 46 mathematics examples, with algorithms, arithmetic,
   executable checks, prerequisites and limits. Navier–Stokes registration is
