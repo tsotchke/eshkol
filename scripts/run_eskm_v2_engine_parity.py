@@ -10,11 +10,27 @@ import sys
 import tempfile
 import zlib
 
-from run_eskm_tensor_engine_parity import ENGINES, Failure, Infrastructure, ROOT, run, verify_bytes
+from run_eskm_tensor_engine_parity import ENGINES, Failure, Infrastructure, ROOT, run as run_engine, verify_bytes
 
 SOURCE = ROOT / "tests/core/eskm_v2_engine_parity.esk"
 FIXTURES = ROOT / "tests/core/fixtures"
 TENSORS = ("scalar", "empty", "ordinary", "rank8")
+
+
+def run(command, directory, label, env, timeout, marker=False):
+    try:
+        return run_engine(command, directory, label, env, timeout, marker)
+    except (Failure, Infrastructure):
+        # Keep the complete files and surface the useful child diagnostic in
+        # CTest/CI output even when an ephemeral runner cannot be inspected.
+        for suffix in ("stdout", "stderr"):
+            path = directory / f"{label}.{suffix}"
+            if path.is_file():
+                text = path.read_text(errors="replace")
+                if text:
+                    print(f"--- {label}.{suffix} (last 4000 characters) ---", file=sys.stderr)
+                    print(text[-4000:], file=sys.stderr)
+        raise
 
 
 def wire(records, version=2, extensions=b"", flags=0):

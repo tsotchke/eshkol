@@ -1206,8 +1206,14 @@ jobs:
       - name: Run ESKM v2 backend, native, VM allocation and four-engine tests
         timeout-minutes: 20
         shell: bash
+        env:
+          ESHKOL_LIB_DIR: ${{ github.workspace }}/build-hosted-experimental
+          ESHKOL_PATH: ${{ github.workspace }}/lib
+          ESHKOL_TEST_TMPDIR: ${{ github.workspace }}/.scratch/hosted-eskm-v2-matrix
+          ESHKOL_TEST_KEEP_TMPDIR: '1'
         run: |
           set -euxo pipefail
+          mkdir -p "$ESHKOL_TEST_TMPDIR"
           ctest --test-dir build-hosted-experimental --output-on-failure \
             --no-tests=error --timeout 600 \
             -R '^(eskm_v2_backend_test|eskm_v2_runtime_test|eskm_v2_vm_allocation_test|eskm_v2_engine_parity_test)$'
@@ -1266,6 +1272,17 @@ jobs:
           ctest --test-dir build-hosted-experimental-sanitized --output-on-failure \
             --no-tests=error --timeout 900 \
             -R '^(eskm_v2_backend_test|eskm_v2_runtime_test|eskm_v2_vm_allocation_test)$'
+
+      - name: Preserve hosted experimental test evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hosted-experimental-evidence-${{ github.sha }}
+          path: |
+            .scratch/hosted-eskm-v2-matrix/
+            build-hosted-experimental/Testing/Temporary/
+            build-hosted-experimental-sanitized/Testing/Temporary/
+          if-no-files-found: warn
 
   # The payoff (ADR-0010 §2.5 item 4): given whatever trace evidence this
   # PR's own CI run produced, ask ICC for a real readiness verdict instead
