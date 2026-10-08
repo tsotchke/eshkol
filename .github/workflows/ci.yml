@@ -1143,7 +1143,7 @@ jobs:
             libpcre2-dev libsqlite3-dev git python3
 
       - name: Configure experimental allocation profile
-        timeout-minutes: 5
+        timeout-minutes: 15
         shell: bash
         run: |
           set -euxo pipefail
@@ -1213,7 +1213,7 @@ jobs:
             -R '^(eskm_v2_backend_test|eskm_v2_runtime_test|eskm_v2_vm_allocation_test|eskm_v2_engine_parity_test)$'
 
       - name: Configure ASan, UBSan and leak-detection profile
-        timeout-minutes: 5
+        timeout-minutes: 15
         shell: bash
         run: |
           set -euxo pipefail

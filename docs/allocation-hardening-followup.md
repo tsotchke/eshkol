@@ -1,3 +1,14 @@
+---
+kind: guide
+status: current
+owner-area: runtime
+since: v1.3.6
+sources:
+  - inc/eshkol/backend/codegen_context.h
+  - lib/core/runtime_closure_alloc.cpp
+  - lib/core/runtime_exceptions_hosted.cpp
+  - cmake/AllocationHardeningTests.cmake
+---
 # Constructor and exception-handler allocation hardening
 
 This follow-up is integrated against the post-v1.3.5 runtime for v1.3.6. It preserves
