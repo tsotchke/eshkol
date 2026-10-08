@@ -19,7 +19,7 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 - **Outside-contributor ARM64 CUDA tooling is integrated.** `CUDAARCHS`, Docker
   toolchain arguments and Linux build fingerprints reflect the chosen build.
   Benchmark output distinguishes actual Ozaki dispatch from vendor fallback;
-  measured errors and implementation bounds are reported separately. (#732)
+  measured errors and implementation bounds are reported separately. (#732, #750)
 - **Constructor and handler allocation failures are checked.** Generated
   cons/vector/closure and selected collection/parallel/FFT paths guard their
   results; failed capture environments and handler frames refuse incomplete

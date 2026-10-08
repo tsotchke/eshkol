@@ -18,7 +18,7 @@ before publication.
   arguments, and Linux fingerprints use the configured LLVM and BLAS. Ozaki
   reports distinguish dispatched CUDA kernels from vendor-BLAS fallback and
   separate measured errors from the implementation bound. They do not certify
-  bit-exact CUDA results. (#732)
+  bit-exact CUDA results. (#732, #750)
 - **Generated constructors and exception handlers check allocation failures.**
   Cons, vector and closure construction, selected collection/parallel/FFT
   paths, captured environments and handler frames refuse incomplete results
