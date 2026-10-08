@@ -15,6 +15,13 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Release coverage and full measurements run in separate steps.** The
+  workflow retains the complete traced suite, unfiltered CTest run, and full VM
+  parity producer while giving coverage and measurements separate six-hour
+  step budgets. A partial coverage milestone cannot qualify a baseline or
+  publication; both phases bind to the same source, workflow attempt and
+  captured binaries. The self-hosted job budget is eighteen hours. (#749)
+
 - **SHA-256 and HMAC hash every UTF-8 input byte.** The agent crypto wrappers
   pass byte lengths for data and HMAC keys, preventing different Unicode inputs
   from being truncated to the same prefix. Reference-vector regressions cover

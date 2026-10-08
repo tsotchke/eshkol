@@ -315,7 +315,20 @@ sys.exit(8 if timeout else 0)
                                ("run_id", 9), ("run_attempt", 1), ("notes_sha256", "0" * 64), ("metadata_validated", False)):
                 with self.subTest(key=key), self.assertRaises(contract.ContractError):
                     contract.validate_publication(root / "record.json", root / "notes.md", bundle, {**proof, key: value}, identity)
-            state = contract.read_json(bundle / "phase-state.json")
+            original_state = contract.read_json(bundle / "phase-state.json")
+            for coverage in (False, "true", None):
+                with self.subTest(coverage=coverage):
+                    state = {**original_state, "coverage_completed": coverage}
+                    dump(bundle / "phase-state.json", state)
+                    refresh_manifest(bundle)
+                    with self.assertRaisesRegex(contract.ContractError, "complete baseline"):
+                        contract.metadata_facts(root / "record.json", root / "notes.md", bundle, SHA, TARGET, "candidate-proof")
+            state = {**original_state, "completed": []}
+            dump(bundle / "phase-state.json", state)
+            refresh_manifest(bundle)
+            with self.assertRaisesRegex(contract.ContractError, "complete baseline"):
+                contract.metadata_facts(root / "record.json", root / "notes.md", bundle, SHA, TARGET, "candidate-proof")
+            state = original_state
             state["completed"] = ["baseline"]
             dump(bundle / "phase-state.json", state)
             refresh_manifest(bundle)

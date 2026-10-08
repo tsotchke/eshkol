@@ -183,7 +183,7 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertIn("--phase measurements", prep["run"])
         self.assertIn("github.run_id", prep["env"]["ESHKOL_DURABLE_WORK_ROOT"])
         self.assertIn("github.run_attempt", prep["env"]["ESHKOL_DURABLE_WORK_ROOT"])
-        for name in ("Release evidence baseline (coverage and VM parity)", "Release smoke evidence",
+        for name in ("Release language coverage", "Release baseline measurements (CTest and VM parity)", "Release smoke evidence",
                      "Remaining release producers and architecture verification",
                      "ICC readiness gate (tag push or strict dry run requires ready/100)"):
             self.assertIn("env.MEASUREMENT_PREPARATION != 'true'", self.steps[name]["if"])
@@ -299,11 +299,12 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertNotIn("always()", upload["if"])
 
     def test_each_release_phase_owns_fresh_durable_root_uploaded_before_cleanup(self):
-        phases = ("baseline", "smoke", "final-evidence", "readiness")
+        phases = ("coverage", "baseline-measurements", "smoke", "final-evidence", "readiness")
         roots = []
         for phase in phases:
             step_name = {
-                "baseline": "Release evidence baseline (coverage and VM parity)",
+                "coverage": "Release language coverage",
+                "baseline-measurements": "Release baseline measurements (CTest and VM parity)",
                 "smoke": "Release smoke evidence",
                 "final-evidence": "Remaining release producers and architecture verification",
                 "readiness": "ICC readiness gate (tag push or strict dry run requires ready/100)",
@@ -332,7 +333,11 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertNotIn(".scratch/v1-3-readiness", self.steps["Reclaim build trees"]["run"])
 
     def test_readiness_budget_and_build_parallelism_cover_the_expanded_recipe(self):
-        self.assertEqual(self.job["timeout-minutes"], "720")
+        self.assertEqual(self.job["timeout-minutes"], "1080")
+        self.assertLess(int(self.job["timeout-minutes"]), 24 * 60)
+        for step in self.job["steps"]:
+            if "timeout-minutes" in step:
+                self.assertLessEqual(int(step["timeout-minutes"]), 360)
         commands = "\n".join(step.get("run", "") for step in self.job["steps"])
         builds = [line.strip() for line in commands.splitlines() if "cmake --build" in line]
         self.assertEqual(len(builds), 3)

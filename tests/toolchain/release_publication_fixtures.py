@@ -33,7 +33,7 @@ def bundle_fixture(bundle, sha=SHA, target=TARGET, skipped=False, declared=True)
     dump(bundle / "build-cohort.json", cohort)
     phase = "fixture-1"
     dump(bundle / "phase-state.json", {"schema": "eshkol.release-evidence-phases.v1", "head": sha,
-         "phase_id": phase, "completed": ["baseline", "smoke", "final-evidence"]})
+         "phase_id": phase, "completed": ["baseline", "smoke", "final-evidence"], "coverage_completed": True})
     for child, producer in (("ctest", "run_ctest_gate"), ("vm", "run_vm_parity")):
         root = bundle / child
         root.mkdir()

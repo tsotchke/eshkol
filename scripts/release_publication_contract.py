@@ -539,6 +539,7 @@ def metadata_facts(record_path, notes_path, bundle, sha, target, role):
     if (not isinstance(state, dict) or state.get("schema") != "eshkol.release-evidence-phases.v1"
             or state.get("head") != sha or state.get("phase_id") != ctest["phase_id"]
             or state.get("completed") != ["baseline", "smoke", "final-evidence"]
+            or state.get("coverage_completed") is not True
             or sha256(Path(bundle) / "phase-state.json") != manifest.get("phase_state_sha256")):
         raise ContractError("normal complete baseline/smoke/final-evidence phase proof required")
     source_policy = Path(notes_path).parent / "tests/coverage/release_optional_ctest.json"
