@@ -1,10 +1,11 @@
 # Eshkol v1.3.6-evolve — Release Notes
 
 **Status:** PREPARED FOR PUBLICATION.
-**Intended release date:** Wednesday, October 7, 2026.
+**Intended release date:** Thursday, October 8, 2026.
 
-Full measurement preparation recorded **CTest 787/787** and **VM parity
-405/405**, with no failed, skipped or infrastructure-only checks. The
+Final publication requires **CTest 789/789** and **VM parity 405/405**, with no
+failed, skipped or infrastructure-only checks. Earlier preparation passed all
+787 configured CTest cases and all 405 serialized VM parity cases. The
 [verified preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
 binds both measurements to one source commit and build cohort. The release
 workflow independently qualifies the final commit and requires ICC ready/100
@@ -12,6 +13,29 @@ before publication.
 
 ### Changes
 
+- **Outside-contributor CUDA tooling supports Linux ARM64 builds and reports.**
+  `CUDAARCHS` is honored, CUDA Docker builds expose toolchain/architecture
+  arguments, and Linux fingerprints use the configured LLVM and BLAS. Ozaki
+  reports distinguish dispatched CUDA kernels from vendor-BLAS fallback and
+  separate measured errors from the implementation bound. They do not certify
+  bit-exact CUDA results. (#732)
+- **Generated constructors and exception handlers check allocation failures.**
+  Cons, vector and closure construction, selected collection/parallel/FFT
+  paths, captured environments and handler frames refuse incomplete results
+  rather than dereferencing failed allocations. Dedicated failure-injection
+  and IR controls cover this constructor/handler tranche. (#721)
+- **ESKM v2 is available as a doubly gated hosted experiment.** The source
+  includes bounded, transactional readers and atomic writers with cross-engine
+  compatibility checks. Ordinary packaged builds remain v1; the experiment
+  requires a build option and process opt-in. Metadata is validated then
+  discarded, bounded native destinations refuse v2, and stable public v2 APIs
+  remain a separate design decision. (#722)
+- **Unsupported native `main` signatures produce a compiler diagnostic.**
+  Fixed/rest-argument entries are refused before an invalid LLVM call is
+  generated. File JIT preserves the real nullary entry across symbol renaming,
+  including collisions with a user procedure named `scheme_main`. Native AOT
+  exit status, library compilation and VM top-level execution retain their
+  respective contracts. (#724)
 - **Browser startup and exact numeric consumers share a checked runtime.** The
   LLVM/WASM host preserves finite doubles as their exact integer or rational
   values through arithmetic, comparisons, rounding, roots and formatting.

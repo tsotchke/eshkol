@@ -1,8 +1,8 @@
 # ESKM v2 format decision: an extensible metadata envelope
 
-- **Status:** Proposed; an internal test-only preflight prototype is staged below; public v2 reader/writer integration remains gated
+- **Status:** Proposed; private preflight and a doubly opt-in hosted reader/writer prototype are staged; supported public integration remains gated
 - **Date:** 2026-09-06
-- **Technical review updated:** 2026-09-07
+- **Technical review updated:** 2026-09-23
 - **Dependency/dispatch status refreshed:** 2026-09-17; decision remains Proposed
 - **Author:** Gabriel “Gabe” Kahen
 - **Decision owners:** Eshkol model/checkpoint maintainers
@@ -35,9 +35,13 @@ and can distinguish skippable extensions from features that change tensor
 meaning.
 
 This remains a proposed design decision. Existing public save APIs continue to
-emit v1. The test-only preparatory work described below exercises the proposal
-without accepting it; public v2 integration begins only after byte-level review
-and the applicable implementation gates are satisfied.
+emit v1. The preparatory validator and hosted experiment exercise the proposal without
+accepting it. The hosted experiment requires both a build option and an explicit
+process-level `read`/`write` opt-in; ordinary saves still emit v1. Its provisional
+backend limits, transaction rules, metadata-dropping behavior and unsupported
+bounded destination case are specified in the [experimental integration contract](../reference/tensors/eskm-v2.md#experimental-hosted-integration).
+Supported public v2 integration still requires byte-level review and the
+applicable implementation gates.
 
 ## Decision
 
@@ -293,12 +297,32 @@ provisional admission limits; it does not satisfy backend admission gates.
 CRC-32 detects accidental corruption only. It is not authentication and must
 not be presented as protection against a malicious writer.
 
+## v1.3.6 experimental integration review
+
+The initial hosted profile is accepted for explicitly gated experimental
+integration in v1.3.6. This review selects the header and TLV grammar above and
+the numeric ceilings in the [hosted contract](../reference/tensors/eskm-v2.md#experimental-hosted-integration)
+for the experiment. It preserves byte-identical v1 output by default.
+
+The experiment validates then discards annotations and unknown optional
+extensions, writes zero extensions, refuses bounded native destination arenas,
+and uses the documented process-level `read`/`write` policy. These are deliberate
+limits of this integration. Both the build option and a runtime opt-in remain
+required; ordinary packaged builds do not enable v2.
+
+The broader format decision remains **Proposed** for stable public use.
+Metadata-preserving and per-call APIs, a change of default format, and bounded
+native destination support require separate decisions. This experimental
+integration does not establish any of those contracts. Current-source
+compatibility, four-engine, fault-injection and sanitizer gates must pass before
+the implementation is accepted for the release; historical contributor results
+alone do not qualify the integrated tree.
+
 ## Decision lifecycle
 
 Maintainer byte-level review advances this document from **Proposed** to
-**Accepted** and authorizes the implementation slices below. The limited
-test-only preparation described next does not require or establish that status
-change. Acceptance of the decision does not claim that v2 exists. The status
+**Accepted** and authorizes the implementation slices below. The experimental
+preparation described next does not establish that status change. Acceptance of the decision does not claim that v2 exists. The status
 advances to **Implemented** only after the
 gates below pass and the normative `docs/reference/tensors/eskm-v2.md` ships.
 
@@ -313,12 +337,12 @@ separate review prerequisite for the writer slice.
 Until then, GK-SER-05 has completed its design slice but not its implementation
 or roadmap acceptance.
 
-### Internal test-only preparation while Proposed
+### Experimental preparation while Proposed
 
 The private C17 preflight validator in `lib/core/eskm_v2_preflight.c` makes the
-proposed grammar executable before maintainer acceptance. It is compiled into
-private test targets only, with no public loading/saving dispatch, installed
-header, tensor construction, or filesystem I/O. Its
+proposed grammar executable before maintainer acceptance. It remains an allocation-free private API. Ordinary builds compile it only
+for tests; explicitly opted-in hosted builds also call it before experimental
+loading. There is no installed v2 header or supported public format. Its
 [experimental internal reference](../reference/tensors/eskm-v2.md) describes
 that prototype, not an accepted public v2 contract.
 
@@ -329,14 +353,14 @@ allocates no heap memory. Annotation-key spans occupy a fixed 16 KiB workspace;
 all other state is fixed-size. The parser applies the provisional caps above,
 which callers may lower but cannot raise. Zero is an actual zero limit.
 
-This preparation covers the wire-level part of GK-SER-05a and supplies bounded
-fixtures and standalone C/C++ tests. It does **not** complete GK-SER-05a,
-authorize public v2 I/O, claim four-engine compatibility, or approve backend
-resource policies. Structural validation cannot establish that a backend can
-materialize a tensor. File admission before buffering, numeric backend caps,
-aggregate peak-memory accounting, and transactional materialization cleanup
-remain prerequisites for public reader integration. Review may still change
-this prototype's wire contract, interface, limits, and fixtures.
+The preparation covers the wire-level part of GK-SER-05a and supplies bounded
+fixtures and standalone C/C++ tests. The additional doubly opt-in hosted
+experiment now exercises prebuffer file admission, proposed numeric backend
+caps, aggregate accounting, transactional materialization, atomic v2 writing
+and a four-engine matrix. These are reviewable implementation evidence, not
+approval of resource policies or completion of the accepted GK-SER-05a gate.
+Review may still change the wire contract, interface, limits and fixtures.
+Metadata API/preservation and bounded native loading remain open decisions.
 
 ## Required implementation gates
 

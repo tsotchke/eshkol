@@ -594,6 +594,10 @@ static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
         if (cuda_ozaki_worthwhile(M, K, N)) {
             use_ozaki = true; ozT = g_cuda_ozaki_T;
             why = "ESHKOL_CUDA_F64_KERNEL override";
+            // The override bypasses cuda_select_f64, so ask the same cost model
+            // for its prediction; otherwise the log line reports the unset 1.0.
+            const double w = 2.0 * (double)M * (double)K * (double)N;
+            pred_speedup = cuda_gemm_predict_ns(0, w) / cuda_gemm_predict_ns(ozT, w);
         }
     } else if (budget >= 0.0) {
         // Accuracy-budget selector (stage 2 of #311).

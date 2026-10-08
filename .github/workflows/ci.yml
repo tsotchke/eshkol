@@ -1115,6 +1115,158 @@ jobs:
             .icc/runtime-traces-oracle-view/
           if-no-files-found: ignore
 
+  # Hosted integration coverage for the bounded allocation-hardening and
+  # experimental ESKM v2 work. Both builds use this job's exact checkout and
+  # LLVM 21; the ordinary platform matrix remains default-OFF. This profile
+  # does not change release production or advertise v2 as supported.
+  hosted-experimental-allocation:
+    name: hosted experimental allocation
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.docs_only == 'false'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (Linux LLVM 21)
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            clang-${LLVM_MAJOR} libclang-rt-${LLVM_MAJOR}-dev \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      - name: Configure experimental allocation profile
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build-hosted-experimental -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="clang-${LLVM_MAJOR}" \
+            -DCMAKE_CXX_COMPILER="clang++-${LLVM_MAJOR}" \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}" \
+            -DESHKOL_XLA_ENABLED=OFF \
+            -DESHKOL_GPU_ENABLED=OFF \
+            -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_ALLOCATION_TESTING=ON \
+            -DESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2=ON
+
+      - name: Verify normal CTest inventory (exactly seven contract tests)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ctest --test-dir build-hosted-experimental --show-only=json-v1 \
+            -L '^allocation-hardening$' > "$RUNNER_TEMP/hosted-allocation-tests.json"
+          ctest --test-dir build-hosted-experimental --show-only=json-v1 \
+            -R '^(eskm_v2_backend_test|eskm_v2_runtime_test|eskm_v2_vm_allocation_test|eskm_v2_engine_parity_test)$' \
+            > "$RUNNER_TEMP/hosted-eskm-v2-tests.json"
+          python3 - "$RUNNER_TEMP/hosted-allocation-tests.json" \
+            "$RUNNER_TEMP/hosted-eskm-v2-tests.json" <<'PY'
+          import json
+          import sys
+          expected = (
+              (sys.argv[1], {"runtime_allocation_hardening_test", "constructor_allocation_aot",
+                             "checked_constructor_ir_dominance"}),
+              (sys.argv[2], {"eskm_v2_backend_test", "eskm_v2_runtime_test",
+                             "eskm_v2_vm_allocation_test", "eskm_v2_engine_parity_test"}),
+          )
+          for filename, wanted in expected:
+              actual = {test["name"] for test in json.load(open(filename, encoding="utf-8"))["tests"]}
+              if actual != wanted:
+                  raise SystemExit(f"CTest inventory mismatch in {filename}: expected {sorted(wanted)}, got {sorted(actual)}")
+              print(f"PASS: exact CTest inventory ({len(wanted)} tests): {', '.join(sorted(wanted))}")
+          PY
+
+      - name: Build compiler, VM, stdlib, allocation and ESKM v2 tests
+        timeout-minutes: 35
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build-hosted-experimental --parallel 2 --target \
+            eshkol-run eshkol-vm-standalone-test stdlib \
+            allocation-hardening-tests \
+            eskm_v2_backend_test eskm_v2_runtime_test eskm_v2_vm_allocation_test
+
+      - name: Run allocation-hardening CTests (including constructor IR controls)
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ctest --test-dir build-hosted-experimental --output-on-failure \
+            --no-tests=error --timeout 300 -L '^allocation-hardening$'
+
+      - name: Run ESKM v2 backend, native, VM allocation and four-engine tests
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ctest --test-dir build-hosted-experimental --output-on-failure \
+            --no-tests=error --timeout 600 \
+            -R '^(eskm_v2_backend_test|eskm_v2_runtime_test|eskm_v2_vm_allocation_test|eskm_v2_engine_parity_test)$'
+
+      - name: Configure ASan, UBSan and leak-detection profile
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build-hosted-experimental-sanitized -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="clang-${LLVM_MAJOR}" \
+            -DCMAKE_CXX_COMPILER="clang++-${LLVM_MAJOR}" \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}" \
+            -DESHKOL_XLA_ENABLED=OFF \
+            -DESHKOL_GPU_ENABLED=OFF \
+            -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2=ON \
+            -DESHKOL_ENABLE_ASAN=ON \
+            -DESHKOL_ENABLE_UBSAN=ON
+
+      - name: Verify sanitized CTest inventory (exactly three v2 tests)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ctest --test-dir build-hosted-experimental-sanitized --show-only=json-v1 \
+            -R '^(eskm_v2_backend_test|eskm_v2_runtime_test|eskm_v2_vm_allocation_test)$' \
+            > "$RUNNER_TEMP/hosted-eskm-v2-sanitized-tests.json"
+          python3 - "$RUNNER_TEMP/hosted-eskm-v2-sanitized-tests.json" <<'PY'
+          import json
+          import sys
+          expected = {"eskm_v2_backend_test", "eskm_v2_runtime_test", "eskm_v2_vm_allocation_test"}
+          actual = {test["name"] for test in json.load(open(sys.argv[1], encoding="utf-8"))["tests"]}
+          if actual != expected:
+              raise SystemExit(f"CTest inventory mismatch: expected {sorted(expected)}, got {sorted(actual)}")
+          print(f"PASS: exact sanitized CTest inventory ({len(expected)} tests): {', '.join(sorted(expected))}")
+          PY
+
+      - name: Build fully instrumented ESKM v2 backend, native and VM allocation tests
+        timeout-minutes: 40
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build-hosted-experimental-sanitized --parallel 2 --target \
+            eskm_v2_backend_test eskm_v2_runtime_test eskm_v2_vm_allocation_test
+
+      - name: Run three fully instrumented ESKM v2 tests with ASan, UBSan and leak detection
+        timeout-minutes: 25
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:allocator_may_return_null=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          set -euxo pipefail
+          ctest --test-dir build-hosted-experimental-sanitized --output-on-failure \
+            --no-tests=error --timeout 900 \
+            -R '^(eskm_v2_backend_test|eskm_v2_runtime_test|eskm_v2_vm_allocation_test)$'
+
   # The payoff (ADR-0010 §2.5 item 4): given whatever trace evidence this
   # PR's own CI run produced, ask ICC for a real readiness verdict instead
   # of leaving that step to a human on a workstation. Follows the exact
