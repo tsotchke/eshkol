@@ -225,7 +225,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [Writing documentation](DOCUMENTATION.md) — page kinds, front matter, evergreen wording, facts rendered from sources, executed examples and every documentation gate
 - [Public Benchmarks reference index](reference/benchmarks/INDEX.md) — reproducible, one-command benchmark suite on the four axes Eshkol claims superiority (exact-AD cost curves, Ozaki-II CRT GEMM, flat-RSS, differentiable quantum kernels); see [`bench/README.md`](../bench/README.md) for the full reproduction guide and [`bench/reference-run/results.md`](../bench/reference-run/results.md) for the published reference run
 - [Testing & Adversarial Harnesses](TESTING.md) — SICP gate plus the adversarial harnesses and how to run them
-- [Test Coverage](TEST_COVERAGE.md) — required v1.3.6 candidate gates (final-source qualification pending): <!-- release-record:ctest -->CTest **787/787**<!-- /release-record -->, <!-- release-record:vm-parity -->VM parity differential **405/405**<!-- /release-record -->
+- [Test Coverage](TEST_COVERAGE.md) — required v1.3.6 candidate gates (final-source qualification pending): <!-- release-record:ctest -->CTest **789/789**<!-- /release-record -->, <!-- release-record:vm-parity -->VM parity differential **405/405**<!-- /release-record -->
 - [Depth-coverage matrix](DEPTH_COVERAGE_MATRIX.md) — whole-language depth-parametric testing (pillar P6 auditor)
 
 Adversarial-campaign pillar harnesses (`tests/`):

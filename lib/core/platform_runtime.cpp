@@ -60,7 +60,11 @@ std::filesystem::path canonical_if_exists(const std::filesystem::path& path) {
     return canonical;
 }
 
-/** @brief Resolve a regular executable without trusting builder-only paths. */
+/** @brief Resolve a regular executable while preserving its invocation name.
+ *
+ * Compiler drivers such as clang++ may be symlinks to clang, and use the
+ * invoked basename to select C++ driver behavior. Return an absolute path
+ * without resolving symlinks or lexically normalizing its components. */
 std::filesystem::path executable_if_available(const std::filesystem::path& path) {
     if (path.empty()) {
         return {};
@@ -74,8 +78,8 @@ std::filesystem::path executable_if_available(const std::filesystem::path& path)
         return {};
     }
 #endif
-    auto canonical = std::filesystem::weakly_canonical(path, ec);
-    return ec ? path : canonical;
+    auto absolute = std::filesystem::absolute(path, ec);
+    return ec ? path : absolute;
 }
 
 /** @brief Search PATH for an executable name. */

@@ -16,6 +16,9 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Native AOT linking preserves C++ compiler-driver names.** A configured
+  `clang++` symlink keeps its invocation name when resolved, so linking retains
+  C++ runtime and exception support rather than dispatching as `clang`. (#750)
 - **Outside-contributor ARM64 CUDA tooling is integrated.** `CUDAARCHS`, Docker
   toolchain arguments and Linux build fingerprints reflect the chosen build.
   Benchmark output distinguishes actual Ozaki dispatch from vendor fallback;

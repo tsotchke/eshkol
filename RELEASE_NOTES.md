@@ -13,6 +13,9 @@ before publication.
 
 ### Changes
 
+- **Native AOT linking preserves the configured C++ driver name.** A
+  `clang++` symlink retains C++ runtime and exception linking instead of being
+  invoked through its `clang` target. (#750)
 - **Outside-contributor CUDA tooling supports Linux ARM64 builds and reports.**
   `CUDAARCHS` is honored, CUDA Docker builds expose toolchain/architecture
   arguments, and Linux fingerprints use the configured LLVM and BLAS. Ozaki

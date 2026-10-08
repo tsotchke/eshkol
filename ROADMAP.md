@@ -531,8 +531,8 @@ workstreams rather than a single theme:
 
 ## v1.3.6-evolve — runtime fixes - PREPARED FOR PUBLICATION
 
-Intended release date: Wednesday, October 7, 2026. Full preparation recorded
-CTest 787/787 and VM parity 405/405. Publication requires the release
+Intended release date: Thursday, October 8, 2026. Earlier preparation passed all
+787 configured CTest cases and all 405 VM parity cases. Publication requires the release
 workflow's independent exact-commit evidence and ICC ready/100 verdict. The release
 includes shared native REPL input across line-editing backends, required native
 image I/O in release builds, certified mixed exact/inexact interval conversion,
