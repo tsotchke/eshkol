@@ -74,6 +74,7 @@ llvm::Value* CollectionCodegen::allocConsCell(llvm::Value* car_val, llvm::Value*
     // Allocate tagged cons cell with object header (takes only arena pointer).
     // Returns pointer to cons cell data; header is at (ptr - 8).
     llvm::Value* cons_ptr = ctx_.builder().CreateCall(alloc_func, {arena_ptr}, "cons_cell");
+    ctx_.emitConstructorAllocationCheck(cons_ptr);
 
     // Create allocas at function entry to ensure dominance
     llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
@@ -847,6 +848,7 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         llvm::Value* arena_ptr = ctx_.currentArena();
         llvm::Value* typed_new_vec = ctx_.builder().CreateCall(
             mem_.getArenaAllocateVectorWithHeader(), {arena_ptr, new_length});
+        ctx_.emitConstructorAllocationCheck(typed_new_vec);
 
         // Store new length
         ctx_.builder().CreateStore(new_length, typed_new_vec);
@@ -1343,6 +1345,7 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, length});
+    ctx_.emitConstructorAllocationCheck(vec_ptr);
 
     // Store length at beginning (offset 0)
     llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
@@ -1418,6 +1421,7 @@ llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), num_elems)});
+    ctx_.emitConstructorAllocationCheck(vec_ptr);
 
     // Store length at beginning (offset 0)
     llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
@@ -2386,6 +2390,7 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, count});
+    ctx_.emitConstructorAllocationCheck(new_vec);
     llvm::Value* new_len_ptr = ctx_.builder().CreatePointerCast(new_vec, ctx_.ptrType());
     ctx_.builder().CreateStore(count, new_len_ptr);
 
@@ -2441,6 +2446,7 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
         llvm::Value* arena_ptr = ctx_.currentArena();
         llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
             {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 0)});
+        ctx_.emitConstructorAllocationCheck(vec_ptr);
         llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
         ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), len_ptr);
         return tagged_.packHeapPtr(vec_ptr);
@@ -2533,6 +2539,7 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* new_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, total_len});
+    ctx_.emitConstructorAllocationCheck(new_vec);
 
     // Store length
     llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(new_vec, ctx_.ptrType());
@@ -3007,6 +3014,8 @@ llvm::Value* CollectionCodegen::listToVector(const eshkol_operations_t* op) {
     llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, length});
+    ctx_.emitConstructorAllocationCheck(vec_ptr);
+    llvm::BasicBlock* alloc_ok_bb = ctx_.builder().GetInsertBlock();
 
     // Store length
     llvm::Value* len_ptr = ctx_.builder().CreatePointerCast(vec_ptr, ctx_.ptrType());
@@ -3027,8 +3036,8 @@ llvm::Value* CollectionCodegen::listToVector(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(fill_header);
     llvm::PHINode* fill_node = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "l2v_fill_node");
     llvm::PHINode* fill_i = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "l2v_fill_i");
-    fill_node->addIncoming(list_arg, count_done);
-    fill_i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0), count_done);
+    fill_node->addIncoming(list_arg, alloc_ok_bb);
+    fill_i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0), alloc_ok_bb);
 
     llvm::Value* fill_done_cond = ctx_.builder().CreateICmpUGE(fill_i, length);
     ctx_.builder().CreateCondBr(fill_done_cond, fill_done, fill_body);

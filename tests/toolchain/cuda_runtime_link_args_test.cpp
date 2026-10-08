@@ -87,6 +87,22 @@ int main(int argc, char** argv) {
     }
 
     bool ok = true;
+    // A configured clang++ may be a symlink to clang. Keep the selected
+    // driver's basename so the linker starts in C++ mode.
+    const char* cxx_override = std::getenv("ESHKOL_CXX_COMPILER");
+    const fs::path configured_driver(ESHKOL_HOST_CXX_COMPILER);
+    std::error_code driver_ec;
+    if ((!cxx_override || !*cxx_override) &&
+        fs::is_symlink(fs::symlink_status(configured_driver, driver_ec)) &&
+        !driver_ec && fs::is_regular_file(configured_driver, driver_ec) &&
+        !driver_ec) {
+        const fs::path resolved_driver(eshkol::platform::cxx_compiler());
+        ok &= expect(resolved_driver.is_absolute(),
+                     "configured C++ driver resolution returns an absolute path");
+        ok &= expect(resolved_driver.filename() == configured_driver.filename(),
+                     "configured C++ driver resolution preserves its symlink basename");
+    }
+
     const fs::path fixture =
         fs::temp_directory_path() / "eshkol-cuda-runtime-link-args-test";
     std::error_code ec;

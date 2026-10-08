@@ -3024,6 +3024,18 @@ public:
                 // Check if there's a user-defined main function
                 bool has_user_main = function_table.find("main") != function_table.end();
 
+                // All LLVM executable paths call the explicit entry with no
+                // arguments. Refuse an unsupported signature before creating
+                // that call, rather than exposing an internal verifier error.
+                // Library mode above does not select or invoke an entry point.
+                if (has_user_main) {
+                    Function* entry = function_table.at("main");
+                    if (entry->arg_size() != 0 || entry->isVarArg()) {
+                        eshkol_error("Invalid entry point 'main': main must be defined with zero parameters for executable compilation");
+                        return std::make_pair(nullptr, nullptr);
+                    }
+                }
+
                 if (!has_user_main) {
                     // No user main - create main function wrapper for top-level expressions
                     createMainWrapper();
@@ -3243,6 +3255,9 @@ public:
 
                 // Step 1: Create the main wrapper structure
                 Function* user_main = function_table["main"];
+                // Preserve source identity for REPL symbol registration after
+                // renaming, including collisions with a user scheme_main.
+                user_main->addFnAttr("eshkol.user-entry-main");
                 user_main->setName("scheme_main");  // Rename user's main
 
                 // DWARF DEBUG INFO: Update the user's main DISubprogram after rename
@@ -4055,6 +4070,7 @@ private:
         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                  {arena_ptr, func_ptr_int, packed_info_val,
                                                   sexpr_ptr, return_type_info, closure_name});
+        ctx_->emitConstructorAllocationCheck(closure_ptr);
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
@@ -6544,6 +6560,7 @@ private:
         
         // Allocate cons cell using arena
         Value* cons_ptr = builder->CreateCall(getArenaAllocateConsCellFunc(), {arena_ptr});
+        ctx_->emitConstructorAllocationCheck(cons_ptr);
         
         // Store car value - arena_cons_cell_t has car at offset 0
         Value* car_ptr = builder->CreateStructGEP(
@@ -6585,6 +6602,7 @@ private:
 
         // Allocate tagged cons cell with object header (consolidated pointer format)
         Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+        ctx_->emitConstructorAllocationCheck(cons_ptr);
 
         // Store COMPLETE tagged_value structs directly using Phase 3B helpers!
         Value* is_car = ConstantInt::get(int1_type, 0);
@@ -6633,6 +6651,7 @@ private:
 
         // Allocate tagged cons cell with object header (consolidated pointer format)
         Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+        ctx_->emitConstructorAllocationCheck(cons_ptr);
 
         // Both slots are stored whole (SW-183); see TaggedValueCodegen::storeConsSlot.
         tagged_->storeConsSlot(cons_ptr, false, car_tagged);
@@ -7563,6 +7582,7 @@ private:
             builder->SetInsertPoint(rest_body);
             Value* rest_arena = getArenaPtr();
             Value* rest_cons = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {rest_arena});
+            ctx_->emitConstructorAllocationCheck(rest_cons);
             Value* rest_elem = builder->CreateLoad(tagged_value_type,
                 builder->CreateGEP(spread_args_type, spread->args_ptr,
                     {ConstantInt::get(int64_type, 0), rest_i}));
@@ -7615,6 +7635,7 @@ private:
                 for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
                     Value* arena_ptr = getArenaPtr();
                     Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+                    ctx_->emitConstructorAllocationCheck(cons_cell);
 
                     builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
                     builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
@@ -9950,6 +9971,7 @@ private:
                     getArenaAllocateClosureWithHeaderFunc(),
                     {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr,
                      return_type_info, closure_name});
+                ctx_->emitConstructorAllocationCheck(closure_ptr);
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
@@ -9975,6 +9997,7 @@ private:
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                          {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
+                ctx_->emitConstructorAllocationCheck(closure_ptr);
                 // Pack as CALLABLE (subtype CLOSURE is in header)
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
@@ -9997,6 +10020,7 @@ private:
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                          {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
+                ctx_->emitConstructorAllocationCheck(closure_ptr);
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
@@ -10024,6 +10048,7 @@ private:
                 Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                          {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
+                ctx_->emitConstructorAllocationCheck(closure_ptr);
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
         }
@@ -10080,6 +10105,7 @@ private:
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                 {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr,
                  return_type_info, closure_name});
+            ctx_->emitConstructorAllocationCheck(closure_ptr);
             return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
         }
 
@@ -10109,6 +10135,7 @@ private:
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                          {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
+                ctx_->emitConstructorAllocationCheck(closure_ptr);
                 // Pack as CALLABLE (subtype CLOSURE is in header)
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
             }
@@ -10306,6 +10333,7 @@ private:
                 // Use with_header allocator for consolidated CALLABLE type
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                          {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
+                ctx_->emitConstructorAllocationCheck(closure_ptr);
                 eshkol_debug("Wrapped REPL function '%s' (arity=%zu) in closure for first-class use",
                             var_name.c_str(), num_params);
                 // Pack as CALLABLE (subtype CLOSURE is in header)
@@ -10462,6 +10490,7 @@ private:
             getArenaAllocateClosureWithHeaderFunc(),
             {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr,
              return_type_info, closure_name});
+        ctx_->emitConstructorAllocationCheck(closure_ptr);
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
@@ -26130,6 +26159,7 @@ private:
         Value* arena_ptr = getArenaPtr();
         Value* vec_ptr = builder->CreateCall(mem->getArenaAllocateVectorWithHeader(),
             {arena_ptr, ConstantInt::get(int64_type, num_elems)});
+        ctx_->emitConstructorAllocationCheck(vec_ptr);
 
         // Store length at beginning (vec_ptr points to length field)
         Value* len_ptr = builder->CreateBitCast(vec_ptr, PointerType::getUnqual(*context));
@@ -34012,6 +34042,7 @@ private:
             Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
             Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                      {arena_ptr, func_ptr, packed_captures, toIntPtr(sexpr_ptr), return_type_val, closure_name});
+            ctx_->emitConstructorAllocationCheck(closure_ptr);
 
             // Store captured values into closure environment
             // The closure struct is: { uint64_t func_ptr, eshkol_closure_env_t* env }
@@ -34314,6 +34345,7 @@ private:
         // Use with_header allocator for consolidated CALLABLE type
         Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                  {arena_ptr, func_ptr, num_captures, toIntPtr(sexpr_ptr), return_type_info, closure_name});
+        ctx_->emitConstructorAllocationCheck(closure_ptr);
 
         // Pack as CALLABLE (subtype CLOSURE is in header)
         Value* closure_tagged = packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
@@ -34470,6 +34502,7 @@ private:
         Value* closure_ptr = builder->CreateCall(
             getArenaAllocateClosureWithHeaderFunc(),
             {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
+        ctx_->emitConstructorAllocationCheck(closure_ptr);
 
         if (!info.captures.empty()) {
             // env layout: { size_t packed_info; eshkol_tagged_value_t captures[] }
@@ -41971,6 +42004,7 @@ private:
         // Allocate output vector of complex numbers
         Function* alloc_vec_func = mem->getArenaAllocateVectorWithHeader();
         Value* out_vec = builder->CreateCall(alloc_vec_func, {arena_ptr, len}, "fft_out_vec");
+        ctx_->emitConstructorAllocationCheck(out_vec);
 
         // Store length
         builder->CreateStore(len, out_vec);

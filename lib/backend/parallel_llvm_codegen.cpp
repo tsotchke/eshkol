@@ -1102,6 +1102,8 @@ llvm::Value* ParallelCodegen::generateListReversal(llvm::Value* list_val) {
             "arena_allocate_cons_with_header", &ctx_.module());
     }
     llvm::Value* new_cell = ctx_.builder().CreateCall(alloc_cons_func, {arena_ptr}, "rev_new_cell");
+    ctx_.emitConstructorAllocationCheck(new_cell);
+    llvm::BasicBlock* alloc_ok_bb = ctx_.builder().GetInsertBlock();
 
     // Store car
     llvm::Value* new_car_ptr = ctx_.builder().CreateStructGEP(cons_type, new_cell, 0, "new_car_ptr");
@@ -1121,8 +1123,8 @@ llvm::Value* ParallelCodegen::generateListReversal(llvm::Value* list_val) {
     new_result = ctx_.builder().CreateInsertValue(new_result, new_cell_i64, {4});
 
     // Update PHIs and loop back
-    current_phi->addIncoming(cdr_val, loop_body_bb);
-    result_phi->addIncoming(new_result, loop_body_bb);
+    current_phi->addIncoming(cdr_val, alloc_ok_bb);
+    result_phi->addIncoming(new_result, alloc_ok_bb);
     ctx_.builder().CreateBr(loop_bb);
 
     // === DONE ===
@@ -1314,6 +1316,8 @@ llvm::Value* ParallelCodegen::parallelMapSequentialInline(const eshkol_operation
     }
 
     llvm::Value* new_cell = ctx_.builder().CreateCall(alloc_cons_func, {arena_ptr}, "new_cell");
+    ctx_.emitConstructorAllocationCheck(new_cell);
+    llvm::BasicBlock* alloc_ok_bb = ctx_.builder().GetInsertBlock();
 
     // Store mapped value as car
     llvm::Value* new_car_ptr = ctx_.builder().CreateStructGEP(cons_type, new_cell, 0, "new_car_ptr");
@@ -1333,8 +1337,8 @@ llvm::Value* ParallelCodegen::parallelMapSequentialInline(const eshkol_operation
     new_result_head = ctx_.builder().CreateInsertValue(new_result_head, new_cell_i64, {4});
 
     // Update PHI nodes and loop back
-    current_phi->addIncoming(cdr_val, loop_body_bb);
-    result_head_phi->addIncoming(new_result_head, loop_body_bb);
+    current_phi->addIncoming(cdr_val, alloc_ok_bb);
+    result_head_phi->addIncoming(new_result_head, alloc_ok_bb);
     ctx_.builder().CreateBr(loop_bb);
 
     // === DONE ===
@@ -1604,6 +1608,8 @@ llvm::Value* ParallelCodegen::parallelFilter(const eshkol_operations_t* op) {
     }
 
     llvm::Value* new_cell = ctx_.builder().CreateCall(alloc_cons_func, {arena_ptr}, "new_cell");
+    ctx_.emitConstructorAllocationCheck(new_cell);
+    llvm::BasicBlock* alloc_ok_bb = ctx_.builder().GetInsertBlock();
 
     // Store car (the kept element)
     llvm::Value* new_car_ptr = ctx_.builder().CreateStructGEP(cons_type, new_cell, 0, "new_car_ptr");
@@ -1629,9 +1635,9 @@ llvm::Value* ParallelCodegen::parallelFilter(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(loop_bb);
 
     // Update PHI nodes
-    current_phi->addIncoming(cdr_val, keep_bb);
+    current_phi->addIncoming(cdr_val, alloc_ok_bb);
     current_phi->addIncoming(cdr_val, skip_bb);
-    result_head_phi->addIncoming(new_result_head, keep_bb);
+    result_head_phi->addIncoming(new_result_head, alloc_ok_bb);
     result_head_phi->addIncoming(result_head_phi, skip_bb);
 
     // === DONE ===

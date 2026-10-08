@@ -1,37 +1,29 @@
 #!/usr/bin/env bash
-# bench/axes/02_ozaki_gemm.sh — AXIS 2: Ozaki-II CRT exact f64 GEMM.
+# bench/axes/02_ozaki_gemm.sh — AXIS 2: Ozaki GPU GEMM accuracy and throughput.
 #
-# Compares the GPU Ozaki-II exact-CRT DGEMM tier against the vendor BLAS
-# baseline (Apple Accelerate / AMX on macOS) ON THE SAME MACHINE, on both
-# axes the public claim rests on:
-#   * THROUGHPUT — GF/s at a range of N, vendor BLAS vs Ozaki-II exact vs
-#     the reduced-precision Ozaki-II "fast" tier (bonus, opt-in reduced
-#     accuracy);
-#   * ACCURACY — error vs a TRUE exact reference. Unlike the correctness
-#     gate this reuses the convention of (tests/gpu/ozaki_correctness_test.esk
-#     compares Ozaki-II against an independent CPU f64 triple-loop
-#     reference), this axis's reference is computed in Eshkol's own EXACT
-#     RATIONAL arithmetic — the reference itself has zero rounding error, not
-#     just a different f64 accumulation order. That is the strongest
-#     available substantiation of "Ozaki-II computes the exact product and
-#     rounds once, where BLAS rounds every accumulation": both the vendor
-#     BLAS result and the Ozaki-II result are compared against a reference
-#     that cannot itself be wrong.
+# Compares the selected GPU Ozaki GEMM tier against vendor BLAS on the same
+# machine, on both axes the public claim rests on:
+#   * THROUGHPUT — GF/s at a range of N, vendor BLAS vs the selected Ozaki
+#     tier and its optional reduced-accuracy tier;
+#   * ACCURACY — sampled errors against an exact-rational reference. The
+#     reference has no rounding error; measured kernel errors are reported by
+#     backend and are not treated as certification.
 #
-# The CUDA INT8-Ozaki numbers in CHANGELOG.md (RTX 3090 / RTX PRO 6000
-# Blackwell) are NOT reproduced here — this machine has no NVIDIA GPU. They
-# are cited in bench/README.md as prior published measurements on named
-# other hardware, never re-quoted as something this suite measured.
+# On CUDA, the GPU rows use the separate INT8 tensor-core Ozaki scheme. Its
+# T=6 conservative implementation relative-error bound is 1e-13; measured
+# fixture error is reported separately, with no bit-exactness or fixture
+# certification claimed. Any cited CUDA hardware figures are prior measurements.
 #
 # GPU/kernel selection is env-var only (no Eshkol-level GEMM API beyond the
-# plain `matmul` builtin) — see docs/breakdown/GPU_ACCELERATION.md and
-# tests/gpu/ozaki_correctness_gate.sh, whose env-forcing convention this
-# script follows:
+# plain `matmul` builtin) — see docs/breakdown/GPU_ACCELERATION.md,
+# tests/gpu/ozaki_correctness_gate.sh and tests/gpu/cuda_ozaki_correctness_gate.sh,
+# whose env-forcing conventions this script follows:
 #   ESHKOL_GPU_MATMUL_THRESHOLD=0 ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1
-#   ESHKOL_SF64_KERNEL=ozaki|ozaki-fast   forces the GPU Ozaki-II path
-#   (unset)                                default: vendor BLAS (Accelerate/AMX)
+#   Metal: ESHKOL_SF64_KERNEL=ozaki|ozaki-fast            forces Ozaki-II CRT
+#   CUDA:  ESHKOL_CUDA_F64_KERNEL=ozaki-int8 ESHKOL_OZAKI_CUDA_T=6|4
+#   (unset)                                default: vendor BLAS on the CPU
 #
-# Requires a real Metal (macOS) or CUDA (Linux) GPU for the Ozaki-II rows;
+# Requires a real Metal (macOS) or CUDA (Linux) GPU for the Ozaki rows;
 # on a GPU-less host those rows are SKIPPED (never faked) and the vendor-BLAS
 # throughput/accuracy rows are still reported.
 set -u
@@ -64,14 +56,25 @@ else
     ACC_N=64
 fi
 
-# ── GPU presence probe (matches tests/gpu/ozaki_correctness_gate.sh) ───────
-GPU_PRESENT=0
+# ── GPU presence probe (matches tests/gpu/ozaki_correctness_gate.sh and
+#    tests/gpu/cuda_ozaki_correctness_gate.sh) ─────────────────────────────
+# Metal runs the Ozaki-II CRT kernel (ESHKOL_SF64_KERNEL=ozaki|ozaki-fast);
+# CUDA runs the separate INT8 tensor-core Ozaki kernel (ESHKOL_CUDA_F64_KERNEL=ozaki-int8).
+# The two schemes are labeled separately in the result report.
+GPU_BACKEND=none
 UNAME_S="$(uname -s)"
 if [ "$UNAME_S" = "Darwin" ]; then
-    GPU_PRESENT=1   # Metal is present on every supported macOS host
+    GPU_BACKEND=metal   # Metal is present on every supported macOS host
 elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
-    bench_log "02_ozaki_gemm: this host has a CUDA GPU, not Metal — Ozaki-II here is Metal-only; GPU rows will be skipped"
-    GPU_PRESENT=0
+    GPU_BACKEND=cuda
+fi
+
+# The CUDA override engages INT8-Ozaki only when M, N and K are all >= 1024
+# (cuda_ozaki_worthwhile in lib/backend/gpu/gpu_memory_cuda.cpp) and runs
+# cublasDgemm below that. The accuracy fixture must therefore be at least that
+# large on CUDA, and the reducer checks per size which kernel really ran.
+if [ "$GPU_BACKEND" = "cuda" ] && [ "$SMOKE" != "1" ]; then
+    ACC_N=1024
 fi
 
 scheme_list() { local out="(" first=1; for w in "$@"; do [ "$first" = 1 ] || out="$out "; out="$out$w"; first=0; done; printf '%s)' "$out"; }
@@ -215,8 +218,10 @@ run_variant() {
     env "$@" "$ACCURACY_BIN" >"$WORK_DIR/accuracy.$tag.out" 2>"$WORK_DIR/accuracy.$tag.stderr"
     local rc2=$?
     VARIANT_DISPATCHED=0
-    if grep -q '^\[GPU\] Ozaki-II:' "$WORK_DIR/throughput.$tag.stderr" 2>/dev/null \
-       || grep -q '^\[GPU\] Ozaki-II:' "$WORK_DIR/accuracy.$tag.stderr" 2>/dev/null; then
+    # Metal logs "[GPU] Ozaki-II: ..."; CUDA logs "[GPU] matmul ... -> INT8-Ozaki T=...".
+    local marker='^\[GPU\] (Ozaki-II:|matmul .* -> INT8-Ozaki T=)'
+    if grep -Eq "$marker" "$WORK_DIR/throughput.$tag.stderr" 2>/dev/null \
+       || grep -Eq "$marker" "$WORK_DIR/accuracy.$tag.stderr" 2>/dev/null; then
         VARIANT_DISPATCHED=1
     fi
     if [ "$rc1" -ne 0 ]; then
@@ -233,25 +238,35 @@ AMX_OK=1
 
 OZAKI_OK=0
 OZAKI_FAST_OK=0
-if [ "$GPU_PRESENT" = "1" ]; then
-    run_variant ozaki \
-        ESHKOL_GPU_MATMUL_THRESHOLD=0 ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1 \
-        ESHKOL_BLAS_PEAK_GFLOPS=0.001 ESHKOL_GPU_PEAK_GFLOPS=1000000 \
-        ESHKOL_SF64_KERNEL=ozaki
-    [ "$VARIANT_DISPATCHED" = "1" ] && OZAKI_OK=1 || bench_log "02_ozaki_gemm: ozaki-exact never showed a GPU dispatch marker — treating as unavailable on this host"
-
-    run_variant ozaki-fast \
-        ESHKOL_GPU_MATMUL_THRESHOLD=0 ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1 \
-        ESHKOL_BLAS_PEAK_GFLOPS=0.001 ESHKOL_GPU_PEAK_GFLOPS=1000000 \
-        ESHKOL_SF64_KERNEL=ozaki-fast
-    [ "$VARIANT_DISPATCHED" = "1" ] && OZAKI_FAST_OK=1 || bench_log "02_ozaki_gemm: ozaki-fast never showed a GPU dispatch marker — treating as unavailable on this host"
-else
-    bench_log "02_ozaki_gemm: no Metal/CUDA GPU on this host — Ozaki-II rows will be marked unavailable"
-fi
+GPU_FORCE="ESHKOL_GPU_MATMUL_THRESHOLD=0 ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1 ESHKOL_BLAS_PEAK_GFLOPS=0.001 ESHKOL_GPU_PEAK_GFLOPS=1000000"
+case "$GPU_BACKEND" in
+    metal)
+        # shellcheck disable=SC2086  # GPU_FORCE is a deliberate word-split list of VAR=value
+        run_variant ozaki $GPU_FORCE ESHKOL_SF64_KERNEL=ozaki
+        [ "$VARIANT_DISPATCHED" = "1" ] && OZAKI_OK=1 || bench_log "02_ozaki_gemm: ozaki-exact never showed a GPU dispatch marker — treating as unavailable on this host"
+        # shellcheck disable=SC2086
+        run_variant ozaki-fast $GPU_FORCE ESHKOL_SF64_KERNEL=ozaki-fast
+        [ "$VARIANT_DISPATCHED" = "1" ] && OZAKI_FAST_OK=1 || bench_log "02_ozaki_gemm: ozaki-fast never showed a GPU dispatch marker — treating as unavailable on this host"
+        ;;
+    cuda)
+        # CUDA T=6 has a conservative 1e-13 implementation error bound. The
+        # reducer reports observed fixture error separately; this is not certified.
+        # shellcheck disable=SC2086
+        run_variant ozaki $GPU_FORCE ESHKOL_CUDA_F64_KERNEL=ozaki-int8 ESHKOL_OZAKI_CUDA_T=6
+        [ "$VARIANT_DISPATCHED" = "1" ] && OZAKI_OK=1 || bench_log "02_ozaki_gemm: CUDA INT8-Ozaki T=6 never dispatched — treating as unavailable on this host"
+        # shellcheck disable=SC2086
+        run_variant ozaki-fast $GPU_FORCE ESHKOL_CUDA_F64_KERNEL=ozaki-int8 ESHKOL_OZAKI_CUDA_T=4
+        [ "$VARIANT_DISPATCHED" = "1" ] && OZAKI_FAST_OK=1 || bench_log "02_ozaki_gemm: CUDA INT8-Ozaki T=4 never dispatched — treating as unavailable on this host"
+        ;;
+    *)
+        bench_log "02_ozaki_gemm: no Metal or CUDA GPU on this host — Ozaki rows will be marked unavailable"
+        ;;
+esac
 bench_disk_cap_check "$WORK_DIR"
 
 python3 "$SCRIPT_DIR/02_ozaki_gemm_reduce.py" \
     --workdir "$WORK_DIR" --amx-ok "$AMX_OK" --ozaki-ok "$OZAKI_OK" --ozaki-fast-ok "$OZAKI_FAST_OK" \
+    --gpu-backend "$GPU_BACKEND" --acc-n "$ACC_N" \
     --json-out "$JSON_OUT" --md-out "$MD_OUT" \
     || bench_die "02_ozaki_gemm: result reduction failed"
 

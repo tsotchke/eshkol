@@ -7,14 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.6-evolve] - 2026-10-07
+## [1.3.6-evolve] - 2026-10-08
 
-PREPARED FOR PUBLICATION. Intended release date: Wednesday, October 7, 2026.
-Full preparation recorded CTest 787/787 and VM parity 405/405. Publication
+PREPARED FOR PUBLICATION. Intended release date: Thursday, October 8, 2026.
+The final measurement contract requires CTest 789/789 and VM parity 405/405.
+Earlier preparation passed 787 configured CTest cases and 405 VM parity cases. Publication
 requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Native AOT linking preserves C++ compiler-driver names.** A configured
+  `clang++` symlink keeps its invocation name when resolved, so linking retains
+  C++ runtime and exception support rather than dispatching as `clang`. (#750)
+- **Outside-contributor ARM64 CUDA tooling is integrated.** `CUDAARCHS`, Docker
+  toolchain arguments and Linux build fingerprints reflect the chosen build.
+  Benchmark output distinguishes actual Ozaki dispatch from vendor fallback;
+  measured errors and implementation bounds are reported separately. (#732, #750)
+- **Constructor and handler allocation failures are checked.** Generated
+  cons/vector/closure and selected collection/parallel/FFT paths guard their
+  results; failed capture environments and handler frames refuse incomplete
+  publication. Scoped failure-injection and semantic IR controls accompany
+  the hardening. (#721)
+- **Hosted ESKM v2 remains explicitly experimental.** Bounded transactional
+  readers and atomic writers require both build and runtime opt-in; default
+  saves remain byte-identical v1. The initial experimental policy is reviewed,
+  with metadata discarded and bounded native destination loading refused.
+  Stable metadata-preserving/per-call APIs remain separate decisions. (#722)
+- **Native executable `main` has a checked signature and stable JIT identity.**
+  Unsupported parameters produce a diagnostic rather than an LLVM verifier
+  failure. Nullary file-JIT entries retain their actual source procedure across
+  internal renaming and do not steal similarly named user procedures. (#724)
 - **Release coverage and full measurements run in separate steps.** The
   workflow retains the complete traced suite, unfiltered CTest run, and full VM
   parity producer while giving coverage and measurements separate six-hour

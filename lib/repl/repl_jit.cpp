@@ -73,6 +73,7 @@
 #include <filesystem>
 #include <set>
 #include <vector>
+#include <tuple>
 #include <cctype>
 #include <algorithm>
 
@@ -1244,6 +1245,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_make_exception);
     ADD_SYMBOL(eshkol_make_exception_with_header);
     ADD_SYMBOL(eshkol_push_exception_handler);
+    ADD_SYMBOL(eshkol_raise_allocation_failure);
     ADD_SYMBOL(eshkol_pop_exception_handler);
     ADD_SYMBOL(eshkol_exception_handler_depth);          // SW-58
     ADD_SYMBOL(eshkol_exception_handlers_unwind_to);     // SW-58
@@ -3641,11 +3643,16 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
             }
         }
         // Track user-defined functions
-        else if (defined_lambdas_.find(fname) != defined_lambdas_.end()) {
-            auto& lambda_info = defined_lambdas_[fname];
-            if (lambda_info.first.empty()) {
+        else if (defined_lambdas_.find(
+                     func.hasFnAttribute("eshkol.user-entry-main") ? "main" : fname)
+                 != defined_lambdas_.end()) {
+            const std::string source_name =
+                func.hasFnAttribute("eshkol.user-entry-main") ? "main" : fname;
+            auto& lambda_info = defined_lambdas_[source_name];
+            if (lambda_info.first.empty() ||
+                func.hasFnAttribute("eshkol.user-entry-main")) {
                 size_t arity = func.arg_size();
-                defined_lambdas_[fname] = {fname, arity};
+                defined_lambdas_[source_name] = {fname, arity};
             }
         }
     }
@@ -3706,8 +3713,16 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
         // Renaming would destroy the user's function body and leave the
         // REPL with no actual entry point. Fail fast with a diagnostic
         // instead of silently producing a broken batch.
+        const bool canonical_main_wrapper =
+            func_name == "main" && entry_func->getReturnType()->isIntegerTy(32) &&
+            !entry_func->isVarArg() &&
+            entry_func->arg_size() == 2 &&
+            entry_func->getFunctionType()->getParamType(0)->isIntegerTy(32) &&
+            entry_func->getFunctionType()->getParamType(1)->isPointerTy() &&
+            !entry_func->hasFnAttribute("eshkol.user-entry-main");
         bool looks_like_user_define =
-            defined_lambdas_.find(func_name) != defined_lambdas_.end() ||
+            (!canonical_main_wrapper &&
+             defined_lambdas_.find(func_name) != defined_lambdas_.end()) ||
             func_name.find("__rv") != std::string::npos ||
             (entry_func->hasExternalLinkage() &&
              func_name.find("__repl_") != 0 &&
@@ -3742,7 +3757,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
 
     // Capture named top-level functions so later REPL evaluations can import them
     // even when the pre-registration path misses a module-loaded definition.
-    std::vector<std::pair<std::string, size_t>> exported_function_infos;
+    std::vector<std::tuple<std::string, std::string, size_t>> exported_function_infos;
     for (auto& func : cpp_module->functions()) {
         if (func.isDeclaration() || func.hasLocalLinkage() || func.getName().starts_with("llvm.")) {
             continue;
@@ -3751,21 +3766,23 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
         if (fname.find("__") == 0 || fname.find("lambda_") == 0) {
             continue;
         }
-        exported_function_infos.push_back({fname, func.arg_size()});
+        const std::string source_name =
+            func.hasFnAttribute("eshkol.user-entry-main") ? "main" : fname;
+        exported_function_infos.push_back({source_name, fname, func.arg_size()});
     }
 
     // Release module + extract its context for proper ThreadSafeModule pairing
     auto module_context = eshkol_extract_module_context_for_jit(c_module);
     addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
 
-    for (const auto& [func_name_export, arity] : exported_function_infos) {
+    for (const auto& [source_name, func_name_export, arity] : exported_function_infos) {
         uint64_t func_addr_export = lookupSymbol(func_name_export);
         if (func_addr_export == 0) {
             continue;
         }
 
-        defined_lambdas_[func_name_export] = {func_name_export, arity};
-        eshkol_repl_register_function(func_name_export.c_str(), func_addr_export, arity);
+        defined_lambdas_[source_name] = {func_name_export, arity};
+        eshkol_repl_register_function(source_name.c_str(), func_addr_export, arity);
         registered_lambdas_.insert(func_name_export);
 
         // REPL HOT RELOAD: also register under the unversioned user name so
@@ -3773,7 +3790,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
         // current __rv<N> definition. The lambda_names mapping tells codegen
         // which JIT symbol the user name actually points at. On redefinition
         // these are overwritten so the latest version wins.
-        std::string user_name = strip_repl_version_suffix(func_name_export);
+        std::string user_name = strip_repl_version_suffix(source_name);
         if (!user_name.empty()) {
             eshkol_repl_register_function(user_name.c_str(), func_addr_export, arity);
             eshkol_repl_register_lambda_name(user_name.c_str(), func_name_export.c_str());

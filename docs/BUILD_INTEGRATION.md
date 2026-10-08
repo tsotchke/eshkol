@@ -124,6 +124,15 @@ against a real `brew install --build-from-source` result, and gated by
 `.icc/package-manifest.yaml`'s `integration_contract` entry when
 `scripts/check_package_manifest.py` runs with `--verify-integration-contract`).
 
+LLVM executable compilation, including file JIT and WebAssembly, accepts an
+explicit `(define (main) ...)` entry only when it declares no parameters. A
+fixed-argument or rest-argument `main` produces an entry-signature diagnostic
+instead of an internal LLVM verifier error. A nullary native `main` still uses
+its integer result as the process exit status. Library compilation does not
+select or invoke an entry point, so this restriction does not apply there.
+VM source and bytecode continue to execute their top-level root; a user binding
+named `main` remains an ordinary procedure in those engines.
+
 This module is scoped to macOS/Linux today; the link recipe has not yet
 been established for the Windows/MSVC toolchain.
 
