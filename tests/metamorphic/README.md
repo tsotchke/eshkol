@@ -15,7 +15,7 @@ programs use no runtime randomness.
   `min + max = a + b`.
 - `string-char`: string/list roundtrip, whole-substring identity, and exact
   number/string/number roundtrip.
-- `roundtrip-control`: tracked write/read roundtrip gap, tensor save/load,
+- `roundtrip-control`: `write` then `read` identity, tensor save/load,
   call/cc identity, apply/map consistency, apply/sum consistency, and values
   roundtrip.
 
@@ -38,6 +38,12 @@ Every generated file is run twice through JIT with cache disabled; the two
 combined outputs and exit codes must match byte-for-byte. AOT is enabled by
 default and can be skipped with `--no-aot`.
 
-Known-open law violations print `XKNOWN:` and must name an `.swarm/tasks/`
-ticket. XKNOWN findings are tolerated by the gate so the harness can land while
-still keeping the violation visible in reports and ICC traces.
+Known-open law violations are emitted through `metamorphic-xknown!`, print
+`XKNOWN:` and must name their tracking entry. XKNOWN findings are tolerated by
+the gate so the harness can land while still keeping the violation visible in
+reports and ICC traces. At v1.3.6-evolve every law holds: the quick JIT run
+reports `total=5 passed=5 xknown=0 failed=0` and `metamorphic gate: PASS`.
+
+The pillars workflow (`.github/workflows/pillars-nightly.yml`, started with
+`workflow_dispatch`) runs `scripts/run_metamorphic.sh` as one of its steps. `BUILD_DIR` selects a build tree
+other than `build`.

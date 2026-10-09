@@ -18,15 +18,17 @@
 #include <atomic>
 #include <cstring>
 #include <vector>
-#include <mutex>
 #endif
 
 void* eshkol_arena_mutex_create(void);
 void eshkol_arena_mutex_destroy(void* mutex);
 void eshkol_arena_mutex_lock(void* mutex);
 void eshkol_arena_mutex_unlock(void* mutex);
+void eshkol_arena_block_pool_lock(void);
+void eshkol_arena_block_pool_unlock(void);
 
 extern "C" int eshkol_arena_poison_enabled(void);
+extern "C" size_t eshkol_arena_block_pool_cap(void);
 
 // Default alignment for memory allocations
 #define DEFAULT_ALIGNMENT 8
@@ -110,23 +112,24 @@ extern "C" int eshkol_alloc_failpoint_fire(int site) {
 // ---------------------------------------------------------------------------
 namespace {
 constexpr size_t kBlockPoolMinSize = (size_t)1 << 20;
-std::mutex g_block_pool_mutex;
 arena_block_t* g_block_pool = nullptr;
 size_t g_block_pool_bytes = 0;
 
 size_t block_pool_cap() {
-    static const size_t cap = [] {
-        const char* e = std::getenv("ESHKOL_ARENA_BLOCK_POOL_MB");
-        size_t mb = e ? (size_t)strtoull(e, nullptr, 10) : (size_t)1024;
-        return mb << 20;
-    }();
-    return cap;
+    return eshkol_arena_block_pool_cap();
 }
+
+struct BlockPoolLock {
+    BlockPoolLock() { eshkol_arena_block_pool_lock(); }
+    ~BlockPoolLock() { eshkol_arena_block_pool_unlock(); }
+    BlockPoolLock(const BlockPoolLock&) = delete;
+    BlockPoolLock& operator=(const BlockPoolLock&) = delete;
+};
 
 // Best fit among pooled blocks of at least `size` and at most twice it.
 arena_block_t* block_pool_take(size_t size) {
     if (size < kBlockPoolMinSize || block_pool_cap() == 0) return nullptr;
-    std::lock_guard<std::mutex> lock(g_block_pool_mutex);
+    BlockPoolLock lock;
     arena_block_t** best = nullptr;
     for (arena_block_t** link = &g_block_pool; *link; link = &(*link)->next) {
         size_t bs = (*link)->size;
@@ -146,7 +149,7 @@ bool block_pool_put(arena_block_t* b) {
         eshkol_arena_poison_enabled() != 0) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(g_block_pool_mutex);
+    BlockPoolLock lock;
     if (g_block_pool_bytes + b->size > block_pool_cap()) return false;
     b->used = 0;
     b->next = g_block_pool;

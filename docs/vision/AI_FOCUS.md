@@ -2,6 +2,16 @@
 
 This document details Eshkol's **production automatic differentiation system** (established in v1.0-foundation and extended through v1.2.1-scale) — a compiler-integrated implementation supporting forward-mode dual numbers, reverse-mode computational graphs, and nested gradients.
 
+> **Status at v1.3.6-evolve (2026-10-09).** This page describes the AD system
+> as of v1.2.1-scale. Since then v1.3.0-evolve added arbitrary-order AD
+> (`derivative-n`, `taylor`, `mixed-partial`, `gradient-n`, `taylor-model`,
+> `sparse-hessian`) with exact bignum/rational coefficients, v1.3.4 made
+> gradients exact through every callable form on the LLVM backend, and v1.3.5
+> executes dense tensor AD end to end and moved the VM's `divergence`/`curl`
+> to forward duals. See the
+> [Automatic Differentiation guide](../guide/AUTOMATIC_DIFFERENTIATION.md); the
+> reverse-mode structures quoted below are still the core of the engine.
+
 ## The AD Challenge in ML/AI
 
 Modern machine learning depends on automatic differentiation for:

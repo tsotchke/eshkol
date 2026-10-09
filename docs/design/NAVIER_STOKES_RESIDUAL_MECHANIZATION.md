@@ -234,10 +234,15 @@ Taylor-tower builtins, target v1.4.1) — and on the VM `diff` is an alias of th
 numeric `derivative` rather than the symbolic form. Everything in Section 2 that
 names `taylor` or `derivative-n` runs today on the LLVM backend, AOT and JIT.
 
-### 3.2 The nine example programs
+### 3.2 The example programs
 
-The `examples/mathematics_navier_stokes_*.esk` family lands with this document
-and exercises the steps of Section 2 that are fully executable today, each as
+The twelve `examples/mathematics_navier_stokes_*.esk` programs shipped in
+v1.3.5-evolve; every one prints `RESULT: ALL PASS` with `Failed: 0` in native
+JIT and native AOT at the v1.3.6 release SHA `60f345def` (measured outcomes and
+the computed values per program:
+[MATHEMATICS_EXAMPLES.md](../MATHEMATICS_EXAMPLES.md), recorded in
+`docs/examples/measurements.json`). The family
+exercises the steps of Section 2 that are fully executable today, each as
 a REPRESENTATIVE REDUCTION rather than a call into the general-purpose BUILD
 ITEMS of Section 3.4 (which mostly remain PLANNED — see below): where a step's
 own BUILD ITEM is not yet shipped, the program mechanizes the same algebraic
@@ -245,26 +250,30 @@ skeleton on a small, honestly-scoped model instead of asserting the general
 capability. It follows the flat `examples/*.esk` convention, so
 [`scripts/run_examples_tests.sh`](../../scripts/run_examples_tests.sh) discovers
 the files without further wiring, exactly as the existing AI-mathematics family
-does (`docs/AI_MATHEMATICS_EXAMPLES.md`).
+does (`docs/AI_MATHEMATICS_EXAMPLES.md`). Each program is also registered as a
+dedicated CTest criterion in `ESHKOL_NS_EXAMPLES` (CMakeLists.txt), in JIT and
+AOT, pinned to its verdict line.
 
 | Program | Computation steps | What it computes | Status | Version | Gate |
 |---|---|---|---|---|---|
-| `mathematics_navier_stokes_viscosity_scaling.esk` | 9, 71, 83 | The exact viscosity-scaling identity through the AD residual operator: the rescaled fields are pushed through `∂t u + (u·∇)u − νΔu + ∇p` and the residual difference closes to exact zero, not to a tolerance | IN PROGRESS | v1.3.5 | `ns_viscosity_scaling_exact` |
-| `mathematics_navier_stokes_similarity_scales.esk` | 1, 2, 7, 8 | The similarity scale exponents `(A, D, ℓr, ℓz, E_core, D_core)` derived as a linear system solved exactly over rationals on the scalar exact tower, with the finite-energy condition `h < 1/6` verified exactly | IN PROGRESS | v1.3.5 | `ns_similarity_exponents_solved` |
-| `mathematics_navier_stokes_first_principles.esk` | 3, 5, 6, 43 | The leading-order profile balance obtained by collecting Taylor coefficients of the residual of the similarity ansatz, with a negative control: a deliberately wrong exponent must leave a nonzero coefficient | IN PROGRESS | v1.3.5 | `ns_leading_profile_balance` |
-| `mathematics_navier_stokes_pulse_stress.esk` | 58, 59, 62 | The pulse momentum-flux averages and the two-family stress solve: the exact angular average `1/2`, the 2x2 covariance system `y = H^{−1}T`, positivity of both squared amplitudes, and the first-order signed increment | IN PROGRESS | v1.3.5 | `ns_covariance_two_family_solve` |
-| `mathematics_navier_stokes_stress_cone.esk` | 16-20, 35-39 | Lemma 4.5's cone equivalence (4.20)-(4.23) certified by exact rational sign tests on the quadratic `Pq`, never a square root; the threshold `P_K` folded over an abstract parameter sample EXTENDED with the physical `(a, -b_s)` of the constructed base flow, so the same proven threshold mechanism (not a second, unconnected argument) places the constructed stress inside the admissible cone | IN PROGRESS | v1.3.5 | `ns_cone_condition_equivalence` |
-| `mathematics_navier_stokes_residual_order_n.esk` | 40-44 | The order-by-order linear recursion of (5.1)-(5.6), reduced to a fixed linear operator against a known lower-order forcing at a sampled similarity coordinate (not the full second-order elliptic solve near the axis, which stays a BUILD ITEM below): the formal expansion truncated at order N substituted into a model residual, with orders 0..N-1 vanishing exactly by the exact-coefficient Taylor tower (`taylor`/`derivative-n`) | IN PROGRESS | v1.3.5 | `ns_residual_order_n_vanishes` |
-| `mathematics_navier_stokes_heat_exterior.esk` | 22, 27 | The curvature-corrected radial heat equation for the azimuthal exterior solved exactly by an odd polynomial in r with a triangular linear recursion in t (closed form `L[r^n] = (n^2-1)r^{n-2}`, verified by AD); Lemma A.1's distinct-power-weight moment matrix, fully exact for a small 2x2 case, with the one transcendental-profile moment stated (not asserted) to be inexact | IN PROGRESS | v1.3.5 | `ns_heat_exterior_exact` |
-| `mathematics_navier_stokes_oscillatory_realization.esk` | 58, 59, 61 | Two pulse families as exact trigonometric polynomials on a 4-point auxiliary torus (cos/sin at k·π/2 are the exact integers `{1,0,-1,0}`/`{0,1,0,-1}`, no transcendental call); their zero angular mean and the nonzero mean momentum-flux products extracted by `torus-average`; the stacked 2x2 flux solve via `exact-solve` (`core.exact_linalg`, merged from `feat/exact-rational-linalg`) gives positive in-cone weights | IN PROGRESS | v1.3.5 | `ns_oscillatory_zero_mode` |
-| `mathematics_navier_stokes_pulse_growth.esk` | Introduction ([9]), 2.2 | The Craik-Criminale wavevector law made exact for a simple-shear background (rational, affine in t, AD-verified against the CL ODE); a representative amplification-then-damping growth-rate model whose crossover is bisected to an exact rational bracket and cross-checked against an independently RK4-integrated amplitude curve | IN PROGRESS | v1.3.5 | `ns_pulse_growth_crossover` |
+| `mathematics_navier_stokes_viscosity_scaling.esk` | 9, 71, 83 | The exact viscosity-scaling identity through the AD residual operator: the rescaled fields are pushed through `∂t u + (u·∇)u − νΔu + ∇p` and the residual difference closes to exact zero, not to a tolerance | SHIPPED | v1.3.5 | `ns_viscosity_scaling_exact` |
+| `mathematics_navier_stokes_similarity_scales.esk` | 1, 2, 7, 8 | The similarity scale exponents `(A, D, ℓr, ℓz, E_core, D_core)` derived as a linear system solved exactly over rationals on the scalar exact tower, with the finite-energy condition `h < 1/6` verified exactly | SHIPPED | v1.3.5 | `ns_similarity_exponents_solved` |
+| `mathematics_navier_stokes_first_principles.esk` | 3, 5, 6, 43 | The leading-order profile balance obtained by collecting Taylor coefficients of the residual of the similarity ansatz, with a negative control: a deliberately wrong exponent must leave a nonzero coefficient | SHIPPED | v1.3.5 | `ns_leading_profile_balance` |
+| `mathematics_navier_stokes_pulse_stress.esk` | 58, 59, 62 | The pulse momentum-flux averages and the two-family stress solve: the exact angular average `1/2`, the 2x2 covariance system `y = H^{−1}T`, positivity of both squared amplitudes, and the first-order signed increment | SHIPPED | v1.3.5 | `ns_covariance_two_family_solve` |
+| `mathematics_navier_stokes_stress_cone.esk` | 16-20, 35-39 | Lemma 4.5's cone equivalence (4.20)-(4.23) certified by exact rational sign tests on the quadratic `Pq`, never a square root; the threshold `P_K` folded over an abstract parameter sample EXTENDED with the physical `(a, -b_s)` of the constructed base flow, so the same proven threshold mechanism (not a second, unconnected argument) places the constructed stress inside the admissible cone | SHIPPED | v1.3.5 | `ns_cone_condition_equivalence` |
+| `mathematics_navier_stokes_residual_order_n.esk` | 40-44 | The order-by-order linear recursion of (5.1)-(5.6), reduced to a fixed linear operator against a known lower-order forcing at a sampled similarity coordinate (not the full second-order elliptic solve near the axis, which is planned below): the formal expansion truncated at order N substituted into a model residual, with orders 0..N-1 vanishing exactly by the exact-coefficient Taylor tower (`taylor`/`derivative-n`) | SHIPPED | v1.3.5 | `ns_residual_order_n_vanishes` |
+| `mathematics_navier_stokes_heat_exterior.esk` | 22, 27 | The curvature-corrected radial heat equation for the azimuthal exterior solved exactly by an odd polynomial in r with a triangular linear recursion in t (closed form `L[r^n] = (n^2-1)r^{n-2}`, verified by AD); Lemma A.1's distinct-power-weight moment matrix, fully exact for a small 2x2 case, with the one transcendental-profile moment stated (not asserted) to be inexact | SHIPPED | v1.3.5 | `ns_heat_exterior_exact` |
+| `mathematics_navier_stokes_oscillatory_realization.esk` | 58, 59, 61 | Two pulse families as exact trigonometric polynomials on a 4-point auxiliary torus (cos/sin at k·π/2 are the exact integers `{1,0,-1,0}`/`{0,1,0,-1}`, no transcendental call); their zero angular mean and the nonzero mean momentum-flux products extracted by `torus-average`; the stacked 2x2 flux solve via `exact-solve` (`core.exact_linalg`, merged from `feat/exact-rational-linalg`) gives positive in-cone weights | SHIPPED | v1.3.5 | `ns_oscillatory_zero_mode` |
+| `mathematics_navier_stokes_pulse_growth.esk` | Introduction ([9]), 2.2 | The Craik-Criminale wavevector law made exact for a simple-shear background (rational, affine in t, AD-verified against the CL ODE); a representative amplification-then-damping growth-rate model whose crossover is bisected to an exact rational bracket and cross-checked against an independently RK4-integrated amplitude curve | SHIPPED | v1.3.5 | `ns_pulse_growth_crossover` |
+| `mathematics_navier_stokes_mean_corrections.esk` | 64-66, 68 | Section 8: a compactly supported, piecewise-polynomial vector potential whose field is exactly divergence free by AD, and Lemma 8.7's five radial moment conditions solved as generalized Vandermonde systems by `exact-solve` (`core.exact_linalg`) at `lambda = 1`; the solved amplitudes weight the bumps of the first part, so the field realizes the cancelling correction | SHIPPED | v1.3.5 | `ns_five_moment_vandermonde` |
+| `mathematics_navier_stokes_residual_ladder.esk` | 71, 73, 75, 76 | Section 9: the residual-exponent ladder `sigma_j = 1/5 + j/10` of (9.8), (9.18) in exact arithmetic, and three rungs of a scalar model of the correction cycle, each cancelling one Taylor coefficient exactly (solved `c1 = 3/2`, `c2 = -1/8`, `c3 = 43/16`) with skipped-rung negative controls | SHIPPED | v1.3.5 | `ns_residual_exponent_ladder` |
+| `mathematics_navier_stokes_localization.esk` | 79-81, 84 | Section 10: a temporal cutoff that cancels an order-2 pole (exact Taylor coefficients about `t = 1`), exact compact support of the cutoff force, periodization onto `T^3` for support radius below `1/2` cross-checked with `torus-average-2d`, and the discrete energy identity with the force defined as the residual | SHIPPED | v1.3.5 | `ns_localization_smooth_extension`, `ns_energy_dissipation_bounds`, `ns_torus_corollary_scaling` |
 
 ### 3.3 IN PROGRESS
 
 | BUILD ITEM | What it unlocks | Version | Gate |
 |---|---|---|---|
 | `core.dbsp` GA — incremental evaluation over the closed world | Steps 46, 75: the coefficient induction and the correction cycle re-evaluate only what changed, so order `n+1` and stage `j+1` are incremental rather than full recomputations; this is also the substrate for search over ansatz families | v1.5.0-intelligence | `ns_coefficient_induction_closes` |
-| The nine example programs of Section 3.2 | Steps 1, 2, 5-9, 16-20, 22, 27, 35-44, 58, 59, 61, 62, 71, 83, plus Introduction [9]/2.2 (Craik-Criminale) executable and gated in CI | v1.3.5 | `./scripts/run_examples_tests.sh` |
 
 ### 3.4 PLANNED
 
@@ -274,7 +283,7 @@ does (`docs/AI_MATHEMATICS_EXAMPLES.md`).
 | **Polynomial-valued duals.** The residual of a symbolic ansatz to every order: AD operators applied to a symbolic field so that `R(u, p)` returns a graded value whose coefficients can be collected and solved, rather than a number. Rests on the item above plus the shipped tower | Steps 3, 10, 14, 40-42, 44 | v1.4.0-connection | `ns_leading_profile_balance` |
 | **Torus averaging and oscillatory stress realization as builtins.** `T¹`/`T²`-valued fields, the Haar mean `⟨·⟩_Y`, the angular mean `⟨·⟩_θ`, evaluation at a phase map `Y(r,t)` with full chain-rule propagation, support-disjointness bookkeeping, and the inverse of a directional derivative on the zero-mean subspace | Steps 35, 37, 38, 50, 52, 58, 61, 63, 67 | v1.5.0-intelligence | `ns_torus_support_disjointness`, `ns_fast_time_inverse` |
 | **Exact linear algebra.** Rational and bignum Gaussian elimination, determinant and inverse over the exact scalar tower, and an exact tensor element type. Verified absent today: `lib/math.esk`'s `det`/`inv` seed inexact constants, `lib/core/linear_solve.cpp` and the BLAS entry points are f64-only, and Eshkol tensors are f64-backed (`(tensor 1/3)` rounds to the nearest double). Until it lands, every exact system in Section 2 is written out directly over the scalar exact tower on Scheme vectors, which do carry exact rationals | Steps 7, 22, 24, 25, 34, 59, 68 | v1.4.0-connection | `ns_moment_matrix_invertible` |
-| **Rigorous enclosures.** Directed-rounding interval arithmetic (Eshkol exposes no `nextafter`/`fesetround` today, so `lib/core/ad/interval.esk` widens by a relative epsilon instead) and a proved Taylor-model remainder in place of the current 65-point sampled derivative bound times a safety factor. This is the ROADMAP Formal Verification item that stages Lean-certifying the validated-AD Taylor models | Every row in Section 2 whose gate is an enclosure | v1.5.0-intelligence (directed rounding), v2.0-starlight (proved remainder) | `ns_certificate_external_check` |
+| **Rigorous enclosures in this family.** The capability shipped in v1.3.5-evolve: the directed-rounding builtins `fl-next-up`/`fl-next-down` on both engines, outward-rounded interval arithmetic (`core.ad.rigorous_interval`: `ia+`, `ia*`, `ia-exp`, …) and Makino-Berz Taylor models with a derived remainder (`core.ad.rigorous_taylor_models`: `tm-bound`, `tm-prove-bound`, `tm-prove-nonzero`), documented in [certified-enclosures.md](../reference/stdlib/certified-enclosures.md). The earlier `lib/core/ad/interval.esk` (relative-epsilon widening) and `lib/core/ad/taylor_models.esk` (65-point sampled remainder) remain as the validated tier. What is open is routing this family's numerical tolerances through the rigorous tier, and the Lean-certifying of the Taylor models staged by the ROADMAP Formal Verification item | Every row in Section 2 whose gate is an enclosure | v1.5.0-intelligence (routing), v2.0-starlight (machine-checked remainder) | `ns_certificate_external_check` |
 | **Rigorous compact-set bounds.** Supremum/infimum over a parameter box with adaptive subdivision on top of the two items above, so a compactness constant is produced rather than asserted | Steps 19, 30 (tail), 72, 77, 81 (tail) | v1.5.0-intelligence | `ns_cone_condition_equivalence` |
 | **Interval and Taylor-model tensor element types with AD.** Tensor element types whose entries are intervals or Taylor models, differentiable by the same operators — the composition of the shipped tensor towers with the shipped Taylor models, which today are separate | Steps 72, 77, 78, 80 | v1.6.0-reasoning | `ns_summation_flatness` |
 | **Graded coefficient classes.** A value type carrying an exponent grade whose product and derivative rules are checked by construction, so the paper's coefficient classes (Definitions 6.4-6.5, Proposition 6.6) are types rather than side conditions | Steps 54, 70 | v1.6.0-reasoning | `ns_residual_exponent_ladder` |
@@ -305,8 +314,15 @@ itself rather than inferred:
   `lib/core/ad/taylor_models.esk` bounds the remainder by a 65-point sample of
   the next derivative times a safety factor — both files say so in their own
   headers. Every "enclosure" in Section 2 is sound in practice and gated in CI
-  (`scripts/run_ad_validated_bounds_gate.sh`), and becomes rigorous with the
-  build item above. Each row reports only the computation or bound stated in its status.
+  (`scripts/run_ad_validated_bounds_gate.sh`). The rigorous tier now exists
+  beside them — `fl-next-up`/`fl-next-down`, `core.ad.rigorous_interval` and
+  `core.ad.rigorous_taylor_models` (shipped in v1.3.5-evolve; `(fl-next-up 1.0)`
+  prints `1.0000000000000002` at `60f345def`) — and a Section 2 enclosure becomes
+  rigorous when its row is routed through that tier, as planned above. No
+  program in this family calls either tier yet. Each row reports only the
+  computation or bound stated in its status. (The header of
+  `lib/core/ad/interval.esk` still says Eshkol exposes no `nextafter`; that
+  source comment predates the directed-rounding builtins.)
 - **Symbolic algebra means symbolic differentiation only.** `(diff expr var)`
   is real and returns a quoted S-expression, but there is no polynomial ring,
   no resultants, no series *values* — that is the v1.4.0-connection build item.
@@ -406,15 +422,24 @@ cmake --build build -j
 ./scripts/run_examples_tests.sh
 ```
 
-To run a single program in each of the three execution modes, use the same
-binary the AI-mathematics family documents:
+To run a single program in the two native execution modes (JIT, then AOT,
+which writes `a.out` in the working directory), use the same binary the
+AI-mathematics family documents. Both commands were run at `60f345def` from the
+repository root and print `RESULT: ALL PASS` (the second after running `./a.out`):
 
 ```bash
 ./build/eshkol-run -r examples/mathematics_navier_stokes_viscosity_scaling.esk -L build
 ./build/eshkol-run examples/mathematics_navier_stokes_similarity_scales.esk -L build
 ```
 
-The AD surface the four programs rest on has its own suites, which are the
+Each program is also a pair of CTest entries (`ctest --test-dir build -R '^ns_'`).
+The AOT entries compile from the build directory and find the stdlib sources
+only through the build tree's location (`<build>/../lib`), so for a build
+directory that is not a child of the source tree set
+`ESHKOL_PATH=<source>/lib` first; without it the AOT entries fail with
+`Unknown function` errors at module resolution.
+
+The AD surface the twelve programs rest on has its own suites, which are the
 upstream gates for every SHIPPED row in Section 2:
 
 ```bash
@@ -445,12 +470,17 @@ Ready to paste; the release cut owns `RELEASE_NOTES.md`.
 > background correction, the auxiliary torus, the two-family stress solve, the
 > residual-improvement ladder, and the localization to a compactly supported
 > force — and for each step names the Eshkol primitive that performs it or the
-> build item that will, together with the gate that certifies it. Four new
-> example programs run the steps that are executable today: the viscosity
+> planned capability that will, together with the gate that certifies it. Twelve
+> example programs run the steps that are executable today, and all twelve pass
+> in JIT and AOT at the release SHA: the viscosity
 > scaling identity through the AD residual operator, the similarity exponents as
 > an exactly solved rational system, the leading-order profile balance by
-> Taylor-coefficient collection with a negative control, and the pulse
-> momentum-flux averages with the two-family stress solve. What makes this
+> Taylor-coefficient collection with a negative control, the pulse
+> momentum-flux averages with the two-family stress solve, the admissible stress
+> cone decided by exact sign tests, the order-by-order recursion, the heat
+> exterior, the auxiliary-torus realization, the Craik-Criminale crossover, the
+> five-moment mean correction, the residual-exponent ladder, and the
+> localization to a compactly supported force and to the torus. What makes this
 > tractable is the combination the language already ships: exact rational and
 > bignum arithmetic, Taylor towers whose coefficients stay exact, forward and
 > reverse differentiation, and validated enclosures — so an identity that is

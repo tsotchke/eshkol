@@ -88,10 +88,14 @@ Eshkol v1.0-foundation delivers a production-ready compiler that tightly integra
 | **v1.2-scale** | **Q2 2026** | **COMPLETE** | **Full numeric tower (bignum / rational / complex), Metal + CUDA, XLA dual-mode, FFI hardening (HTTP / SQLite / subprocess / fs-watch), 22-builtin consciousness engine** |
 | **v1.2.1-scale** | **2026-05-20** | **COMPLETE** | **Edge-case hardening: stdlib `LinkOnceODR`, parser line-tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation, agent-FFI link wiring** |
 | **v1.3.0-evolve** | **Jul 2026** | **SHIPPED** | **Arbitrary-order Taylor-tower AD matrix (all 13 phases P0–P12: exact bignum/rational coefficients, GUW multivariate mixed partials, reverse-over-Taylor, tensor towers, validated Taylor models, sparse high-order tensors, differentiable control flow, checkpointed reverse, tower numerics); full R7RS conformance (34/34 vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent adversarial-testing infrastructure. See [`../../ROADMAP.md`](../../ROADMAP.md) (canonical) and [`../../CHANGELOG.md`](../../CHANGELOG.md).** |
-| **v1.4-connection** | **Target Q3 2026** | **Planned** | **Networking, TLS, event loop, linear resource types** |
-| **v1.5-intelligence** | **Q4 2026** | **Planned** | **Symbol embeddings, differentiable logic, LSTM/GRU, neuro-symbolic integration, VM-as-transformer Stage 3 (lift remaining delegated opcodes into weight matrices)** |
-| **v1.9-types** | **Dec 2026** | **Planned** | **Effect / refinement type system, dependent types, algebraic effects, session types** |
-| **v2.0-quantum** | **2027+** | **Research** | **Quantum computing, formal verification (Lean-certified validated-AD Taylor models), fully verified compilation chain** |
+| **v1.3.1 → v1.3.4-evolve** | **Jul–Aug 2026** | **SHIPPED** | **Flat memory for resident loops, thread-safe regions, opt-in differentiable quantum computing, ML-KEM, `core.dbsp`, exact gradients through every callable form, linear `Qubit`, high-precision numerics, the portable event loop** |
+| **v1.3.5-evolve** | **2026-09-22** | **SHIPPED** | **A parser with no recursion budget, dense tensor AD end to end, VM region reclamation, multi-shot continuations on all engines, certified enclosures, the exact tower and `core.exact_linalg`** |
+| **v1.3.6-evolve** | **2026-10-08** | **PREPARED FOR PUBLICATION** | **The 46 mathematics examples documented with the scope of each result, certified mixed exact/inexact intervals, exact browser numerics, measurement-bound publication** |
+| **v1.4.0-connection** | **Prior target 2026-10-15; joint rebaseline** | **Planned** | **Networking, TLS, linear resource types for handles (the event loop shipped in v1.3.4), WebGPU dispatch** |
+| **v1.4.1 / v1.4.5-accelerate** | **Joint rebaseline** | **Planned** | **The ABI release; then the accelerator device runtime, which publishes before v1.5.0** |
+| **v1.5.0-intelligence** | **After v1.4.5; joint rebaseline** | **Planned** | **Symbol embeddings, differentiable logic, LSTM/GRU, neuro-symbolic integration, VM-as-transformer Stage 3 (lift remaining delegated opcodes into weight matrices)** |
+| **v1.9.0-types** | **Q1–Q2 2028** | **Planned** | **Effect / refinement type system, dependent types, algebraic effects, session types** |
+| **v2.0-starlight** | **Q4 2028** | **Research** | **Quantum computing, formal verification (Lean-certified validated-AD Taylor models), fully verified compilation chain** |
 
 > **Note:** items previously slotted under "v1.3" in this vision view — effect/refinement
 > types, PGO + whole-program optimization, distributed training, automatic C-header
@@ -424,7 +428,7 @@ We welcome contributions from researchers, engineers, and enthusiasts who share 
 - Regular release cycle (quarterly)
 
 **Package Ecosystem:**
-- Central package repository (planned v1.1)
+- Central package repository (the `eshkol-pkg` client shipped in v1.1; a hosted central registry is Research)
 - Dependency management system
 - Versioning and compatibility
 - Documentation generation

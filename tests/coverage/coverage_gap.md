@@ -19,8 +19,9 @@ after the policy floor moves — add the explicit flag:
 ## Phase result (historical — the #277 phase-3/4 campaign)
 
 The numbers in this section are the record of that campaign, not the live
-contract. The current surface and floor are **1,078/1,078** — see
-"A1 — execution-backed certification" below and `coverage_policy.json`.
+contract. The policy floor at v1.3.6-evolve is **1,116/1,116**
+(`coverage_policy.json`, re-baselined in the v1.3.5-evolve release); see
+"A1 — execution-backed certification" below for how the floor moved.
 
 | Metric | Before | At the close of #277 |
 |---|---:|---:|
@@ -53,10 +54,10 @@ now have execution evidence:
 - macro syntax and hygiene
 - region-memory ownership
 
-The campaign exposed and fixed real defects rather than weakening the policy:
+The campaign closed real gaps rather than weakening the policy:
 cross-representation vector mutation/equality, VM symbol identity, VM complex
 and rational dispatch, dead dual-number aliases, a non-failing `syntax-error`,
-invalid `tile` IR, and incorrect `tensor-apply` arithmetic/return packing.
+`tile` IR validity, and `tensor-apply` arithmetic/return packing.
 
 ## Full-surface closure (as of #277)
 
@@ -65,15 +66,16 @@ programs that their mandatory CI harness compiles and executes.  The final
 lower-risk
 closure added hermetic native and VM probes for port lifecycles, file/process
 operations, atomics and raw-pointer FFI, image resizing, condition variables,
-futures, polling, and immediate process termination.  Those probes exposed and
-fixed implementation defects instead of receiving token-only credit: native
+futures, polling, and immediate process termination.  Those probes drove
+implementation fixes instead of receiving token-only credit: native
 `directory-walk` returned a packed string rather than a list, `current-jiffy`
 lost exactness and nanosecond precision, string conversions returned untagged
 buffers, file wrapper arities and current-port rebinding were incomplete, and
-VM image results were incorrectly freed despite arena ownership.
+VM image results now follow arena ownership.
 
 The policy floor was therefore ratcheted to 1,056/1,056 at that point, and has
-since been re-baselined upward to **1,078/1,078** (below).  Any construct removed
+since been re-baselined upward to **1,078/1,078** (below) and then to
+**1,116/1,116** in the v1.3.5-evolve release.  Any construct removed
 from the executable corpus fails CI; the floor cannot be lowered by a
 command-line threshold.
 
@@ -101,7 +103,7 @@ The surface grew from the 1,056 proven in #277 to 1,078: the `i128` numeric
 tower (20 builtins), `linear-solve`, and `string`/`ptr` conversions landed as
 new core builtins after that campaign, while the committed sidecar and policy
 floor still read 1,056. The gate always measures against the live manifest, so
-the honest floor is re-baselined here to 1,078/1,078 rather than left stale, and
+the honest floor is re-baselined here to 1,078/1,078 rather than left at the old value, and
 all 22 agent-FFI (quantum/PQC) constructs are proven on the quantum build.
 
 The table above is the state at that re-baseline. The live numbers are whatever

@@ -59,15 +59,15 @@ skipping without saying so.
 ## The reference run published in this repo
 
 `bench/reference-run/` holds the actual `results.json` / `results.md` this suite produced
-on the machine below — this is not an illustration, it is the numbers this PR's commit
-message and description quote. Read them there, not copied into this file, so they never
-drift out of sync with the JSON.
+on the machine below — this is not an illustration, it is the numbers the benchmark PR's
+commit message and description quote. Read them there, not copied into this file, so they
+never drift out of sync with the JSON. **Measured at v1.3.4-evolve** (2026-08-25); the
+suite has not been re-run for a later release, so these are that version's numbers.
 
-- **Machine:** Mac Studio (Mac14,14), Apple M2 Ultra, 24 cores (16P+8E), 192GB unified
-  memory, macOS 15.1.
+- **Machine:** Apple-silicon (arm64) desktop, 24 CPU cores, unified memory, macOS 15.
 - **Compiler/toolchain:** Homebrew LLVM/Clang 21.1.7, `-DCMAKE_BUILD_TYPE=Release`.
 - **BLAS:** Apple Accelerate (vecLib/AMX) — the vendor baseline axis 2 compares against.
-- **GPU:** Apple M2 Ultra integrated GPU via Metal — the device axis 2's Ozaki-II rows
+- **GPU:** the integrated Apple GPU via Metal — the device axis 2's Ozaki-II rows
   measure.
 - Full detail (exact compiler version string, git SHA, load average at capture time, and
   every other field) is in `bench/reference-run/results.json`'s `environment` object —
@@ -104,7 +104,7 @@ of building a real harness instead of hand-picking numbers:
    28MB, 1000 to 64000 iterations). This is a genuine finding this suite's curve surfaced
    that the original single-point measurement could not have — it is reported here, not
    fixed here (fixing it is separate compiler work, out of scope for a benchmark-harness
-   PR), and is worth a v1.3.5 follow-up investigation into what grows in the native
+   PR), and is worth a follow-up investigation into what grows in the native
    resident-loop path beyond ~100-200k ticks (candidates: hash-table internal resize
    policy counting insertions rather than distinct keys, or per-region backing-chunk
    allocation not being reclaimed across chunk boundaries — neither confirmed, both
@@ -133,12 +133,15 @@ One `results.json` per run:
 
 `results.md` is generated FROM `results.json` (never hand-edited) and is the
 human-readable rendering of the same data — every number in it traces back to a field in
-the JSON. See `bench/combine_results.py`.
+the JSON. See `bench/combine_results.py`. The one exception is the committed
+`bench/reference-run/results.md`, whose header carries the "Measured at" version label
+and whose environment lines are reduced to capability labels for publication; the
+numbers in it are unchanged.
 
 ### On `scripts/lib/build_fingerprint.sh`
 
 At the time this suite was written, PR #465 (which adds `scripts/lib/build_fingerprint.sh`)
-had not merged. That file solves a narrower, complementary problem — proving a test
+had not merged; it has since landed. That file solves a narrower, complementary problem — proving a test
 harness's evidence talks about the exact binary still on disk (a sha256/mtime staleness
 check), not describing the machine/toolchain that produced it. `bench/lib/fingerprint.sh`
 solves the provenance problem this suite needs: a full environment description embedded
@@ -199,9 +202,9 @@ Explicitly ruled out for wave 1:
   problem (dense ML training throughput, not CRT-exact f64 reconstruction) — putting them
   side by side would invite exactly the apples-to-oranges reading this suite exists to
   avoid.
-- **The CUDA Ozaki-II INT8 tensor-core numbers already in `CHANGELOG.md`** (RTX 3090,
-  RTX PRO 6000 Blackwell) are **not re-measured here** — this reference machine has no
-  NVIDIA GPU. `bench/axes/02_ozaki_gemm.sh`'s JSON output cites them explicitly as prior
+- **The CUDA Ozaki-II INT8 tensor-core numbers already in `CHANGELOG.md`** (measured on
+  NVIDIA GPUs) are **not re-measured here** — this reference machine has no NVIDIA
+  GPU. `bench/axes/02_ozaki_gemm.sh`'s JSON output cites them explicitly as prior
   published measurements on that other, named hardware; it never re-quotes them as
   something this suite measured on this machine.
 - **General-purpose language/interpreter benchmark suites** (e.g. the classic
@@ -228,6 +231,13 @@ bench/
     04_quantum_kernels.sh / _reduce.py
   reference-run/               this repo's own measured reference numbers (committed)
   results/                     default --out-dir for ad-hoc runs (gitignored)
+  pgo_corpus/                  ADR 0007's five-program PGO training corpus; smoke-run
+                               by scripts/run_pgo_corpus_smoke.sh in
+                               .github/workflows/adversarial-nightly.yml
+  allocation_hardening_probe.esk  1M-cons allocation timing probe
+  consumer_aot_compile_bench.sh   cold AOT source-to-object compile of a real
+                                  consumer (caller supplies the work root);
+                                  NOT part of the wave-1 axis suite
   generate_large_single_file.py     synthetic large-single-file .esk generator
   large_single_file_compile_bench.sh  continuous AOT compile-time ceiling gate
                                        for that shape — see its header comment;

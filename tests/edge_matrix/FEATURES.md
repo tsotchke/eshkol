@@ -35,7 +35,7 @@ Producers:
 Contexts:
 
 - `store_read`: `(let ((sv{ID} #f)) (set! sv{ID} {X}) sv{ID})` (accepts: any)
-- `lambda_store`: `(let ((sw{ID} #f)) ((lambda () (set! sw{ID} {X}))) sw{ID})` (accepts: any) -- hole value escapes via set! from inside a closure
+- `lambda_store`: `(let ((sl{ID} #f)) ((lambda () (set! sl{ID} {X}))) sl{ID})` (accepts: any) -- hole value escapes via set! from inside a closure
 - `set_twice`: `(let ((sz{ID} 0)) (set! sz{ID} {X}) (set! sz{ID} sz{ID}) sz{ID})` (accepts: any)
 
 ## first_class **[high-risk]**

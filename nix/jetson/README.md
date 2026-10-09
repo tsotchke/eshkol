@@ -44,10 +44,13 @@ Three gotchas the build/run scripts handle:
 ## Verifying a real GPU GEMM
 
 `nix/jetson/jetson_gemm_bench.esk` runs an NxN matmul and reports GFLOPS. Force GPU
-dispatch with `ESHKOL_GPU_THRESHOLD=1`; `ESHKOL_GPU_VERBOSE=1` prints
-`[GPU] matmul ... -> CUDA cuBLAS` lines.
+dispatch with `ESHKOL_GPU_THRESHOLD=1`; `ESHKOL_GPU_VERBOSE=1` prints one
+`[GPU] matmul <M>x<K> @ <K>x<N> -> cublasDgemm (...)` line per dispatch (or
+`-> INT8-Ozaki ...` when that tier is selected, `-> CPU` when the GPU path is
+not taken).
 
-Measured on this Xavier (1024x1024x1024 f64, end-to-end through `(matmul ...)`):
+Measured on a Jetson AGX Xavier board at v1.2.3 (1024x1024x1024 f64, end-to-end
+through `(matmul ...)`):
 
 | path | per-GEMM | GFLOPS |
 |------|----------|--------|
@@ -69,8 +72,9 @@ input, numeric diff) into a self-contained script that builds Eshkol with
 and without GPU acceleration, runs a shared workload through both, and
 skips cleanly on any host without a real GPU. It is wired into
 `.github/workflows/gpu-execution-gate.yml` for a self-hosted GPU
-runner (this Jetson is one candidate) or a scheduled job; see that
-workflow file and `docs/breakdown/GPU_ACCELERATION.md` section 9 for the
-compilation-vs-execution distinction. `jetson_gemm_bench.esk` stays as-is
+runner (a Jetson board is one candidate) or a scheduled job; see that
+workflow file and `docs/breakdown/GPU_ACCELERATION.md` section 13,
+"CI Testing: Compilation vs. Execution", for the compilation-vs-execution
+distinction. `jetson_gemm_bench.esk` stays as-is
 for hand-run GFLOPS benchmarking — the gate script is the correctness
 signal, this file is the performance one.

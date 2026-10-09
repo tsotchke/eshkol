@@ -20,7 +20,7 @@ sources:
 ---
 # Known Issues
 
-These are current limitations of v1.3.5-evolve. Resolved behavior is recorded in
+These are current limitations of v1.3.6-evolve. Resolved behavior is recorded in
 [CHANGELOG.md](../CHANGELOG.md); the manifest in
 [VM_PARITY.md](VM_PARITY.md) classifies each VM operation.
 
@@ -42,8 +42,11 @@ workloads and monitor the heap budget for long-running processes.
 
 ## VM parity and library calls
 
-The parity manifest has **962** rows: 620 `vm-supported`, 46
-`native-only-justified`, and 296 `gap`. The **388/388** differential count in
+The parity manifest has **962** rows (`python3 -c` count over
+`tests/vm_parity/PARITY.tsv` at the release commit): 622 `vm-supported`, 45
+`native-only-justified`, and 295 `gap` — the same breakdown recorded in
+[VM_PARITY.md](VM_PARITY.md#the-manifest) as the v1.3.6-evolve preparation
+snapshot. The **405/405** differential count in
 [the release record](../tests/coverage/release_record.json) covers its test
 corpus, not every manifest row. Consult the row for a specific operation before
 moving a native workload to the VM.

@@ -1,11 +1,11 @@
 # Generative multi-oracle differential harness (adversarial testing pillar P7c)
 
-> "If our system does not constantly expose every single hidden bug then it has
+> "If our system does not constantly expose every hidden divergence then it has
 > no coverage." — the maintainer.
 
 The hand-written reference-differential corpus (`scripts/gen_reference_corpus.py`,
-34 programs) is now 34/34 AGREE against chibi on master — it no longer exposes
-anything. This pillar makes differential testing **generative and multi-oracle**:
+34 programs) agrees 34/34 with chibi — on its own it no longer exposes
+anything new. This pillar makes differential testing **generative and multi-oracle**:
 it generates a large, deterministic family of closed R7RS-small programs and runs
 each one through every execution oracle installed, flagging any pairwise
 disagreement.
@@ -17,7 +17,7 @@ disagreement.
 | `scripts/gen_generative_corpus.py` | Deterministic program generator (a pure function of `seed`, `count`). Two families: **diff** (typed value-printing probes) and **meta** (self-checking metamorphic properties). Every program is closed, printable, TOTAL (no div-by-zero / out-of-range / car-of-'()) and deterministic. |
 | `scripts/run_generative_differential.py` | The harness: generates programs, runs every oracle, normalises, cross-checks, writes divergence artifacts, emits the ICC trace. |
 | `scripts/run_generative_differential.sh` | Thin wrapper used as the ICC `action:` and by the smoke probe. |
-| `tests/generative-diff/baseline.txt` | Known-divergence signatures (`program::kind`). The smoke probe fails only on a divergence **not** in this baseline — i.e. a NEW miscompile. |
+| `tests/generative-diff/baseline.txt` | Known-divergence signatures (`program::kind`). The smoke probe fails only on a divergence **not** in this baseline — i.e. a NEW miscompile. At v1.3.6-evolve the baseline holds no signatures. |
 
 ## Oracles (auto-discovered)
 
@@ -32,12 +32,12 @@ disagreement.
 
 | Kind | Meaning |
 |---|---|
-| `JIT_VS_CHIBI_MISMATCH` / `AOT_O0_VS_CHIBI_MISMATCH` / `AOT_O2_VS_CHIBI_MISMATCH` | An Eshkol native path disagrees with chibi ground truth (R7RS conformance bug). |
-| `*_VS_CHIBI_ERROR` | chibi ran clean (exit 0) but an Eshkol path errored/crashed/timed out. |
+| `JIT_VS_CHIBI_MISMATCH` / `AOT_O0_VS_CHIBI_MISMATCH` / `AOT_O2_VS_CHIBI_MISMATCH` | An Eshkol native path disagrees with chibi ground truth (an R7RS conformance divergence). |
+| `*_VS_CHIBI_ERROR` | chibi ran clean (exit 0) but an Eshkol path errored, stopped on a signal or timed out. |
 | `AOT_O0_VS_O2_MISMATCH` | AOT output changes with optimisation level — a miscompile. Reference-free; guards the O2-default change. |
 | `JIT_VS_AOT_MISMATCH` | JIT and AOT disagree on the same source. Reference-free. |
-| `VM_SILENT_WRONG` | The VM exited **without an error marker** but its value differs from the reference — a silent VM miscompile (the treasure; the VM exits 0 even on fatal errors, so a wrong value with no diagnostic is the dangerous case). |
-| `META_PROPERTY_FALSE` | A `meta`-family program printed `#f` for a property that must hold — a reference-free bug on whichever oracle printed it. |
+| `VM_SILENT_WRONG` | The VM exited **without an error marker** but its value differs from the reference — a silent VM miscompile. This is the case the harness exists to find: a fatal VM error now exits nonzero (stage 4 of `scripts/run_vm_parity.sh` gates that), so a differing value with no diagnostic is the dangerous case. |
+| `META_PROPERTY_FALSE` | A `meta`-family program printed `#f` for a property that must hold — a reference-free divergence on whichever oracle printed it. |
 
 The VM is only flagged when it runs *clean*: if the VM prints an
 `ERROR`/`OVERFLOW`/unhandled-native marker the feature is simply outside the VM
@@ -65,6 +65,11 @@ scripts/run_generative_differential.py --smoke --baseline tests/generative-diff/
 # regenerate the on-disk corpus for inspection / manual minimisation
 python3 scripts/gen_generative_corpus.py --out tests/generative-diff/corpus
 ```
+
+At v1.3.6-evolve the smoke run (`--smoke`, seed 1234, count 12 per family)
+checks 31 programs and reports `gate: PASS (baseline mode: 0 known, 0 NEW
+divergences)`. `--workdir` keeps the run's generated programs under a
+caller-created directory, and `--trace-dir` redirects the ICC trace.
 
 Determinism: the corpus is a pure function of `(seed, count)`, so a divergence
 found in CI reproduces locally byte-for-byte. On any divergence the exact program

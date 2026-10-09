@@ -1,5 +1,14 @@
 # Eshkol: Purpose and Vision
 
+> **Status at v1.3.6-evolve (2026-10-09).** This page describes the v1.0
+> baseline as extended through v1.2.1-scale. The current release is
+> v1.3.6-evolve (prepared for publication; v1.3.5-evolve is the latest shipped
+> tag), and several items listed below as next steps have shipped since; their
+> status is recorded under "The Path Forward". The
+> [README](../../README.md) describes the current language, and the
+> [white paper](TECHNICAL_WHITE_PAPER.md#implementation-status-v136) carries a
+> section-by-section implementation status table.
+
 ## Mission Statement
 
 Eshkol delivers a **production-ready programming language** for gradient-based optimisation, neural-network development, and scientific computing. Built on an LLVM-21 compiler with a Scheme front end, Eshkol combines homoiconic syntax with compiler-integrated automatic differentiation, deterministic arena memory, an exact numeric tower (bignum / rational / complex), GPU acceleration (Metal + CUDA + XLA), parallel work-stealing primitives, and a neuro-symbolic stack delivered as compiler builtins. The current production line is **v1.2.1-scale**.
@@ -316,7 +325,7 @@ struct eshkol_closure_env {
 
 ## The Path Forward
 
-Eshkol's v1.0-foundation established the architectural baseline that v1.1-accelerate and v1.2-scale built on; the current production line is **v1.2.1-scale**:
+Eshkol's v1.0-foundation established the architectural baseline that v1.1-accelerate and v1.2-scale built on; this page was last revised against **v1.2.1-scale**, and the current release is **v1.3.6-evolve**:
 
 **Current State (v1.0-foundation baseline):**
 - Production compiler with comprehensive test suite
@@ -328,17 +337,24 @@ Eshkol's v1.0-foundation established the architectural baseline that v1.1-accele
 - Exception handling
 - Hash tables and data structures
 
-**Immediate Next Steps (Post-v1.0):**
-- GPU acceleration for tensor operations
-- Quantum computing integration
-- Multi-threading primitives
-- Distributed computing support
-- Performance profiling tools
-- Expanded standard library
+**Immediate Next Steps (Post-v1.0)** — status at v1.3.6:
+- GPU acceleration for tensor operations — SHIPPED (Metal and CUDA, v1.1)
+- Quantum computing integration — SHIPPED in part (opt-in differentiable
+  Moonlab VQE/CHSH, v1.3.3; linear `Qubit`, v1.3.4); circuit compilation is
+  v2.0-starlight
+- Multi-threading primitives — SHIPPED (`parallel-map`, `future`/`force` on a
+  work-stealing pool, v1.1; channels, mutexes and condition variables)
+- Distributed computing support — Planned (workstream W6, v1.4.0-connection
+  spike through v2.0-starlight gates)
+- Performance profiling tools — Planned (AD-aware debugger/profiler, v1.9.1)
+- Expanded standard library — SHIPPED and continuing (1,056 builtins on a
+  1,116-construct canonical surface)
 
 **Medium-Term Vision (v1.5+):**
-- Advanced type system features (dependent types, linear types)
-- Hardware-specific optimizations
+- Advanced type system features (dependent types, linear types) — linear
+  `Qubit` shipped in v1.3.4, linear handles are v1.4.0-connection, dependent
+  types are v1.9.0-types
+- Hardware-specific optimizations — the v1.4.5-accelerate device runtime
 - Domain-specific embedded languages
 
 See [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) for detailed development plans.
@@ -362,4 +378,4 @@ See [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) for detailed development plans.
 
 ---
 
-*Eshkol's v1.0-foundation established a complete, working compiler that integrates automatic differentiation, deterministic arena memory management, and homoiconic closures while maintaining R7RS compatibility. The current production line (v1.2.1-scale) builds on that baseline with the exact-numeric tower, GPU dispatch, the agent FFI surface, and the v1.2.1 hardening fixes.*
+*Eshkol's v1.0-foundation established a complete, working compiler that integrates automatic differentiation, deterministic arena memory management, and homoiconic closures while maintaining R7RS compatibility. The v1.2.1-scale line this page was last revised against builds on that baseline with the exact-numeric tower, GPU dispatch, the agent FFI surface, and the v1.2.1 hardening fixes.*

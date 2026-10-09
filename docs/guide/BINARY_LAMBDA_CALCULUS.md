@@ -100,6 +100,7 @@ is `blc-max-steps`.
 that begins with the self-delimiting BLC encoding of a closed program `M`
 followed by input bits, `U` reduces to `M` applied to the remaining list:
 
+<!-- doc-example: skip fragment: depends on `(require core.blc)`, shown earlier on this page, which is not repeated in this fence -->
 ```scheme
 ;; Identity program: U consumes encode(I) off the front, then applies I to
 ;; the rest of the stream (here a marker K), yielding K unchanged.
@@ -142,6 +143,7 @@ BLC8 operates on byte streams: a byte is a delimited list of its 8 bits in
 **big-endian** order (most significant bit first), and a byte string is a
 list of such byte-lists.
 
+<!-- doc-example: skip fragment: depends on `(require core.blc)`, shown earlier on this page, which is not repeated in this fence -->
 ```scheme
 (blc-term->bytes  (blc-string->term "Hi"))   ; => (72 105)
 (blc-term->string (blc-string->term "Hi"))   ; => "Hi"
@@ -197,6 +199,7 @@ Exact encoding and round-trip:
 
 Evaluation — combinators reduce as expected:
 
+<!-- doc-example: skip fragment: depends on `(require core.blc)`, shown earlier on this page, which is not repeated in this fence -->
 ```scheme
 ;; K I S = I
 (blc-eval (blc-app (blc-app blc-K blc-I) blc-S))   ; => (lam (var 1))
@@ -209,6 +212,7 @@ Evaluation — combinators reduce as expected:
 Normal-order in action — a divergent argument is discarded, not evaluated,
 so evaluation terminates (applicative order would loop forever):
 
+<!-- doc-example: skip fragment: depends on `(require core.blc)`, shown earlier on this page, which is not repeated in this fence -->
 ```scheme
 ;; K I Omega = I   (Omega = (λx.x x)(λx.x x) never gets reduced)
 (blc-eval (blc-app (blc-app blc-K blc-I) blc-omega))   ; => (lam (var 1))

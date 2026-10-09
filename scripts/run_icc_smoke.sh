@@ -657,6 +657,10 @@ probe pr751_regression_harness_controls 'ABI language flags and XLA/pool/cache h
      python3 tests/toolchain/test_abi_header_inventory_flags.py &&
      python3 tests/toolchain/test_pr751_regression_harnesses.py'
 
+probe release_documentation_controls 'Example verdicts require coherent receipts and public API manifests retain their reviewed inventory' \
+    'cd "$REPO_ROOT";
+     python3 tests/toolchain/test_docs_gate_hardening.py'
+
 probe xla_region_reclaim 'XLA/GPU tensor results made inside with-region are reclaimed at region exit (process arena stays near 4 MiB across 800 MiB of region-scoped temporaries)' \
     'cd "$REPO_ROOT";
      ## XLA runtime call sites used to allocate results in the raw

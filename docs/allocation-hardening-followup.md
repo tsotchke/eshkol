@@ -11,6 +11,8 @@ sources:
 ---
 # Constructor and exception-handler allocation hardening
 
+> **Status at v1.3.6-evolve (2026-10-09):** integrated as #721; the release summary is in the `[1.3.6-evolve]` section of the CHANGELOG and in [SECURITY.md](../SECURITY.md).
+
 This follow-up is integrated against the post-v1.3.5 runtime for v1.3.6. It preserves
 that implementation's promotion transaction, destination rollback, and existing
 per-thread allocation-failure condition. It does not replace the promotion ABI.

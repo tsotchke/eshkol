@@ -1,5 +1,7 @@
 # Eshkol trajectory — from v1.2-scale to zero-compromise Noesis
 
+> **Status at v1.3.6-evolve (2026-10-09):** this plan was written on 2026-04-17 against v1.2-scale; "current" below means that release. Eshkol has since shipped the v1.3 line through v1.3.5-evolve, and v1.3.6-evolve is prepared for publication. Noesis ships with v1.5.0-intelligence, which now publishes after v1.4.5-accelerate (see [ROADMAP](../ROADMAP.md)).
+
 **Date**: 2026-04-17
 **Source audit**: Noesis faculty-layer runtime feature audit, 2026-04-17
 **Position in the doc set**: this is the **Noesis-readiness view** of the

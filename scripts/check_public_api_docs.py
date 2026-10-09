@@ -12,6 +12,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HEADER_MANIFEST = REPO_ROOT / "docs" / "api" / "public_surface.tsv"
 EXPORT_MANIFEST = REPO_ROOT / "docs" / "reference" / "stdlib" / "public_exports.tsv"
 TRACE_NAME = "public_api_docs_clean"
+EXPECTED_HEADER_COUNT = 132
+EXPECTED_EXPORT_COUNT = 59
 
 
 def emit_trace(path: Path, status: str, detail: str) -> None:
@@ -128,10 +130,10 @@ def main() -> int:
         return 1
 
     errors = check_manifest(
-        headers, 68, root, root / "docs/api/INDEX.md", "docs/api/public_surface.md"
+        headers, EXPECTED_HEADER_COUNT, root, root / "docs/api/INDEX.md", "docs/api/public_surface.md"
     )
     errors.extend(check_manifest(
-        exports, 59, root, root / "docs/reference/stdlib/INDEX.md",
+        exports, EXPECTED_EXPORT_COUNT, root, root / "docs/reference/stdlib/INDEX.md",
         "docs/reference/stdlib/shipped_exports.md"
     ))
     if errors:
@@ -142,11 +144,11 @@ def main() -> int:
             emit_trace(args.trace_dir / "public_api_docs_gate.jsonl", "FAIL", "; ".join(errors))
         return 1
     print("public_api_docs: PASS")
-    print("Header symbols: 68/68 documented and indexed")
-    print("Eshkol exports: 59/59 documented and indexed")
+    print(f"Header symbols: {len(headers)}/{EXPECTED_HEADER_COUNT} documented and indexed")
+    print(f"Eshkol exports: {len(exports)}/{EXPECTED_EXPORT_COUNT} documented and indexed")
     if not args.no_trace:
         emit_trace(args.trace_dir / "public_api_docs_gate.jsonl", "PASS",
-                   "68 header symbols and 59 Eshkol exports are documented and indexed")
+                   f"{len(headers)} header symbols and {len(exports)} Eshkol exports are documented and indexed")
     return 0
 
 

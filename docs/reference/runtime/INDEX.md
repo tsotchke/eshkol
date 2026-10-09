@@ -37,6 +37,11 @@ Reference documentation for the Eshkol runtime and toolchain (v1.3.5-evolve).
   `event-loop-remove-fd!`, `event-loop-poll`, `event-loop-close`, the Windows
   completion-vs-readiness adaptation and its stated limits, and why the loop
   lives outside the arena.
+- [Fixed-point, i128, and exact accumulation](fixed-point.md) — the
+  `esk_i128` / `esk_fixed<W,F>` / `esk_dot_exact_*` / `esk_imatmul_i32` C ABI
+  for the compression stack: explicit per-operation rounding and overflow
+  policy, exactness-reporting conversions, and the order-independent
+  i128-accumulator dot products and matmul.
 
 ## See also
 

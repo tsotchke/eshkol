@@ -764,7 +764,7 @@ outer or the inner pass. All nine pairings agree:
 (derivative   (lambda (a) (derivative   (lambda (b) (* a b)) 1.0))       2.0)
 (derivative-n (lambda (a) (derivative-n (lambda (b) (* a b)) 1.0 1)) 2.0 1)
 (derivative   (lambda (a) (list-ref (taylor (lambda (b) (* a b)) 1.0 1) 1)) 2.0)
-;; => 1, 1, 1
+;; all three forms above independently evaluate to 1; the last one => 1
 ```
 
 Nesting has no ceiling. A pass opened inside another live pass runs as a

@@ -96,7 +96,7 @@
 (define release-vm-banner-html
   (string-append
     "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>" release-tag "</span>\n"
-    "<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n"
+    "<span style='color:#71717a'>72-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n"
     "<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 ;; END RELEASE FACTS
 
@@ -645,17 +645,27 @@
 (define (render-whats-new parent)
   (let ((section (create-section parent)))
     (section-heading section release-whats-new-heading)
-    (body-html section "<strong style='color:#a78bfa'>Release candidate.</strong> This patch focuses on interval containment and confirmed loop memory cases. Final-source verification and package publication remain pending.")
+    (body-html section "<strong style='color:#a78bfa'>Published mathematics, checked exactly.</strong> Mathematics that machines discovered, reproduced in Eshkol and checked with exact integer and rational arithmetic. Each program rebuilds a public witness and verifies it completely: every pair of points, every pair of matrix units, every point of a degree-bounded grid. The example catalogue now describes every program, mathematics included, with its algorithm, arithmetic, checks, and limits. Publication is pending final-source qualification.")
+    (let ((math-grid (create-grid-3 section)))
+      (render-feature-card math-grid
+        "The FunSearch cap set"
+        "The explicit cap set in the eight-dimensional affine space over the field of three elements is rebuilt from its construction classes. Every unordered pair of its points is checked against the third point on their affine line. Exact integers throughout, and no third point is ever in the set.")
+      (render-feature-card math-grid
+        "AlphaTensor decompositions over F₂"
+        "The published three-by-three and four-by-four matrix multiplication factorizations are contracted as exact bit masks. The map is bilinear, so expanding every pair of matrix units is a complete check of each factorization, not a sample of it.")
+      (render-feature-card math-grid
+        "A Jacobian-conjecture counterexample map"
+        "Checked through its rational preimages, its fiber-count cases, reverse-mode gradients through a nested closure factory, and an exact determinant identity evaluated on a grid larger than the determinant's degree in every variable."))
     (let ((patch-grid (create-grid-3 section)))
       (render-feature-card patch-grid
-        "Mixed exact/inexact intervals"
-        "Exact rational endpoints are converted outward until exact comparisons certify containment before arithmetic. Indeterminate non-finite endpoint cases fail closed.")
+        "Rigorous intervals across exactness"
+        "Mixed exact and inexact interval endpoints are converted outward until exact comparisons certify containment before arithmetic. Indeterminate non-finite endpoint cases fail closed.")
       (render-feature-card patch-grid
-        "Confirmed AOT loop memory fixes"
-        "Reclamation covers named-let exit, discarded numeric tensors, and direct literal tensor-dot. Broader loop forms and platforms still require their own evidence.")
+        "Exact numbers in the browser"
+        "The browser LLVM host keeps finite doubles as their exact integer or rational values through arithmetic, comparisons, rounding, roots, and formatting, so the example guides start and run on this site.")
       (render-feature-card patch-grid
-        "Focused runtime patch"
-        "Experimental features remain in the separate integration build. This candidate carries the runtime corrections under qualification."))
+        "AOT loops that give memory back"
+        "Per-iteration memory in natively compiled loops stays bounded for named-let exit, discarded numeric tensors, and direct literal tensor-dot. Broader loop forms and platforms carry their own evidence."))
     (section-subheading section "Capabilities carried forward")
     (body-html section "<strong style='color:#a78bfa'>Sixteen thousand levels deep.</strong> Parsing, type synthesis, and lowering use explicit continuations through JIT and AOT under an 8 MiB stack limit. The gate compiles 16,000 levels. Recursive Taylor levels compose exact derivatives at arbitrary nesting depth and order. Hygienic macros, one R7RS number grammar, dense tensor gradients, multi-shot continuations, and VM region reclamation complete the language contract.")
 
@@ -1467,7 +1477,7 @@
         (style! h "fontSize" "1.5rem")
         (style! h "marginBottom" "12px"))
 
-      (body-text banner "This website runs TWO Eshkol WASM modules simultaneously: the site renderer (compiled via LLVM to WebAssembly) and the bytecode VM interpreter (compiled via Emscripten). The REPL above executes real Eshkol code through the full 83-opcode bytecode interpreter.")
+      (body-text banner "This website runs TWO Eshkol WASM modules simultaneously: the site renderer (compiled via LLVM to WebAssembly) and the bytecode VM interpreter (compiled via Emscripten). The REPL above executes real Eshkol code through the full 72-opcode bytecode interpreter.")
 
       (body-text banner "Try: (+ 1 2), (map (lambda (x) (* x x)) '(1 2 3 4 5)), (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) then (fib 20)"))
 
@@ -1481,17 +1491,17 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "349KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "352KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))
         (web-add-class s2 "text-center")
-        (let ((v (create-text "div" "1335KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "1351KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "VM WASM" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-card stats)))
         (web-add-class s3 "text-center")
-        (let ((v (create-text "div" "83" s3))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "72" s3))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "VM Opcodes" s3))) (web-add-class l "stat-label")))
 
       (let ((s4 (create-card stats)))

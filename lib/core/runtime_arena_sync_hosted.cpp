@@ -17,8 +17,28 @@
 namespace {
 #ifdef _WIN32
 std::mutex g_hash_table_mutex;
+std::mutex g_block_pool_mutex;
 #else
 pthread_mutex_t g_hash_table_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t g_block_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+}
+
+/** @brief Lock the process-wide arena block pool. */
+void eshkol_arena_block_pool_lock(void) {
+#ifdef _WIN32
+    g_block_pool_mutex.lock();
+#else
+    pthread_mutex_lock(&g_block_pool_mutex);
+#endif
+}
+
+/** @brief Unlock the process-wide arena block pool. */
+void eshkol_arena_block_pool_unlock(void) {
+#ifdef _WIN32
+    g_block_pool_mutex.unlock();
+#else
+    pthread_mutex_unlock(&g_block_pool_mutex);
 #endif
 }
 

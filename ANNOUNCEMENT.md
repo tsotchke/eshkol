@@ -1,12 +1,97 @@
-# Eshkol v1.3.6-evolve — prepared for publication
+# Eshkol v1.3.6-evolve — published mathematics, checked exactly
 
-Intended release date: Thursday, October 8, 2026. The release adds clean
-noninteractive native REPL input across line-editing backends and requires
-native image I/O in release builds, alongside the confirmed mixed
-exact/inexact interval and AOT loop memory fixes. Earlier preparation passed all
-787 configured CTest cases and all 405 VM parity cases. Publication requires the release
-workflow's independent exact-commit evidence and ICC ready/100 verdict; see
-[release notes](RELEASE_NOTES.md).
+Prepared for publication. Intended release date: Thursday, October 8, 2026.
+Eshkol compiles R7RS Scheme through LLVM and runs the same language on its
+bytecode VM and in the browser.
+
+Eshkol checks mathematics that machines discovered. That is not a metaphor.
+Three published results of AI-driven discovery are rebuilt as Eshkol
+programs and verified with exact integer and rational arithmetic, completely
+rather than by sampling.
+
+The FunSearch cap set is rebuilt from its explicit construction: 512 points in
+the affine space AG(8,3), selected from all 3^8 ambient points by four
+construction classes. Every unordered pair is checked against the third point
+on its affine line, and none of those points is in the set. That is
+**130,816 exact pair checks**.
+
+The AlphaTensor matrix multiplication decompositions over F₂, rank 23 for
+3×3 and rank 47 for 4×4, are contracted with factor rows and columns held as
+exact integer bit masks. The map is bilinear, so expanding every pair of matrix
+units is a complete check of the factorization: **81 pairs** for 3×3 and
+**256 pairs** for 4×4.
+
+The polynomial map in the published Jacobian-conjecture counterexample has a
+Jacobian determinant that is the constant −2, and yet three distinct rational
+points map to (−1/4, 0, 0). Eshkol checks both halves. The three preimages and
+the binary cubic that counts the fibers are checked exactly; reverse-mode
+differentiation through a nested closure factory reproduces the determinant;
+and the identity itself is evaluated with exact rationals on a **9 × 8 × 3**
+grid, larger in every variable than the determinant's degree bounds of
+(8, 7, 2), which makes agreement on the grid a proof of the identity rather
+than a sample of it.
+
+These programs reproduce public witnesses. They do not claim to rediscover
+them, and each one states which of its checks are exact identities and which
+are numerical comparisons. Run any of them with one command:
+
+```text
+$ eshkol-run -r examples/mathematics_funsearch_cap_set.esk
+PASS: explicit construction has 512 points
+PASS: ambient AG(8,3) has 3^8 exact vectors
+PASS: 512-point witness is a cap in AG(8,3)
+FunSearch 512-cap in AG(8,3)
+Exact pair checks: 130816
+Passed: 3
+Failed: 0
+RESULT: ALL PASS
+```
+
+The same release documents every example program the repository ships:
+**67 programs, 46 of them mathematics**, each with its algorithm, its
+arithmetic, its executable checks, its prerequisites, and the limits of what it
+establishes. Among them, an exact computation of the rational Hodge classes of
+one Fermat quartic fourfold by two methods, with 960 planes and an exact
+intersection Gram matrix of rank 142 modulo 10007; exact Turaev–Viro invariants
+in cyclotomic fields; Reidemeister torsion separating the lens spaces L(7,1) and
+L(7,2); and bounded Navier–Stokes profile computations across 12 programs. Read
+the [mathematics catalogue](docs/MATHEMATICS_EXAMPLES.md) and the
+[AI mathematics witnesses](docs/AI_MATHEMATICS_EXAMPLES.md).
+
+Rigorous interval arithmetic now accepts mixed exact and inexact endpoints:
+exact rational endpoints are converted outward until exact comparisons certify
+containment, and indeterminate non-finite cases fail closed. The browser LLVM
+host keeps finite doubles as their exact integer or rational values through
+arithmetic, comparisons, rounding, roots and formatting, which is what lets the
+example guides start and run on the website. Natively compiled loops keep
+per-iteration memory bounded for named-let exit, discarded numeric tensors, and
+direct literal `tensor-dot`.
+
+The runtime surface is stricter where it matters. Generated cons, vector and
+closure constructors, captured environments and exception-handler frames check
+their allocations and refuse an incomplete result. An unsupported native
+`main` signature is a compiler diagnostic. SHA-256 and HMAC consume every byte
+of a UTF-8 input. Closed output-string ports retire their buffers and registry
+slots. CUDA builds load cuBLAS only when a GEMM needs it, so CPU-only paths
+never pay for it. The native REPL reads pipes and machine mode prompt-free with
+or without a line editor, and every release build carries native image I/O.
+ESKM v2 model files are available as a doubly gated experiment; default saves
+remain byte-identical v1.
+
+The final publication contract is **CTest 789/789** and **VM parity 405/405**,
+with no failed, skipped or infrastructure-only checks, bound to the exact
+release commit. Earlier preparation passed all 787 configured CTest cases and
+all 405 VM parity cases.
+
+Kristoffer Josefsson contributed the Linux ARM64 CUDA tooling: `CUDAARCHS`,
+CUDA Docker toolchain arguments, Linux build fingerprints, and Ozaki reports
+that distinguish dispatched kernels from vendor fallback (#732). Gabriel Kahen
+contributed the constructor and handler allocation checks (#721) and the gated
+ESKM v2 reader and writer (#722).
+
+Read the [release notes](RELEASE_NOTES.md) for mechanisms and verification,
+[upgrading guidance](docs/UPGRADING.md) for behavior changes, and
+[current limits](docs/KNOWN_ISSUES.md) for capabilities still in progress.
 
 ---
 

@@ -146,7 +146,7 @@ optimizer.step()
 
 - Extensive ML libraries such as scikit-learn, etc
 - GPU acceleration (shipped in v1.1 via Metal, CUDA, and XLA backends)
-- Distributed training frameworks (planned for v1.2-scale)
+- Distributed training frameworks (Planned: workstream W6, a PJRT/XLA spike at v1.4.0-connection, native-mesh gates through v2.0-starlight)
 - Visualization libraries
 - Large community/ecosystem
 
@@ -348,7 +348,7 @@ BindingCodegen        - Variable definitions
 **vs. Python Ecosystem:**
 - GPU acceleration (Metal SF64 + CUDA, shipped in v1.1)
 - ML builtins (75+ operations: activations, losses, optimizers, CNN, transformer)
-- No distributed training frameworks (planned for v1.2-scale)
+- No distributed training frameworks (Planned: workstream W6, v1.4.0-connection through v2.0-starlight)
 - Small community/package ecosystem (eshkol-pkg shipped, registry growing)
 
 **vs. Julia:**
@@ -624,4 +624,4 @@ With XLA / SIMD / parallel-map / GPU dispatch / consciousness engine / exact-num
 
 ---
 
-*This analysis reflects v1.1-accelerate capabilities. For future features, see [ROADMAP.md](../../ROADMAP.md).*
+*This analysis reflects v1.1-accelerate capabilities. Status at v1.3.6-evolve (2026-10-09): since then Eshkol has added arbitrary-order exact AD (Taylor towers, v1.3.0), full R7RS conformance on the portable differential corpus (34/34 against chibi-scheme), multi-shot continuations on every engine, certified interval and Taylor-model enclosures, exact rational linear algebra, and 46 documented mathematics examples verified in exact arithmetic ([docs/MATHEMATICS_EXAMPLES.md](../MATHEMATICS_EXAMPLES.md)); the comparison axes above are otherwise unchanged. For future features, see [ROADMAP.md](../../ROADMAP.md).*

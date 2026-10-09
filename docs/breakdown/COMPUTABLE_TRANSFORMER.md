@@ -38,9 +38,12 @@ forward pass evaluates a specified semantics. The novelties here, relative
 to the prior art, are:
 
 1. **The semantics is a *real* bytecode**, not a DSL chosen to make the
-   compilation easy. The 83-opcode ISA comes from the production Eshkol
-   compiler (`lib/backend/vm_core.c`) and is the same one consumed by the
-   reference C interpreter (`lib/backend/vm_run.c`, computed-goto dispatch).
+   compilation easy. The base 64 opcodes come from the production Eshkol
+   compiler (`lib/backend/vm_core.c`) and are the same ones consumed by the
+   reference C interpreter (`lib/backend/vm_run.c`, computed-goto dispatch);
+   the full 84-opcode ISA this artifact targets adds a 19-opcode AD
+   extension plus `OP_SWAP`, both specific to the shared weight-matrix
+   `SdncOpCode` enum (`lib/backend/sdnc_isa.h`).
 2. **Reverse-mode AD is in the ISA**. Nineteen opcodes
    (`OP_AD_VAR=64 … OP_AD_COS=82`) record nodes onto a 64-dimensional
    in-state tape, walk it backwards, and accumulate gradients via the same
@@ -302,14 +305,21 @@ indicator over the cell index in `S_TOS`. The full encoding scheme is
 the subject of
 `docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §5`.
 
-## 5. The 83-opcode ISA
+## 5. The 84-opcode ISA
 
 The canonical numbering — used by the production C compiler, the
 reference interpreter, the weight constructor, and the qLLM loader — is
 the enum at `lib/backend/vm_core.c §5-92` (`OP_NOP=0` through
-`OP_VOID=63`, `OP_COUNT=64` for the base set) and at
-`lib/backend/weight_matrices.c §102-131` (the 19-opcode AD extension
-`OP_AD_VAR=64` through `OP_AD_COS=82`, `OP_COUNT=83`).
+`OP_VOID=63`, `OP_COUNT=64` for the base set). The weight-matrix layer's
+own 84-opcode ISA (base 0-63, a 19-opcode AD extension 64-82, plus
+`OP_SWAP=83` appended after the AD band) is now the single shared
+`SdncOpCode` enum in `lib/backend/sdnc_isa.h §74-108` (`OP_AD_VAR=64`
+through `OP_AD_COS=82`, `OP_SWAP=83`, `OP_COUNT=84`), included by both
+`weight_matrices.c` (producer) and `qllm_interpreter.c` (consumer) so the
+two halves of the serialization boundary cannot drift out of sync again
+(`OP_SWAP` previously existed only in the producer's private copy while
+the consumer's `OP_COUNT` stopped at 83, decoding a valid SWAP as
+out-of-range).
 
 The opcode families and the count per family:
 
@@ -338,11 +348,12 @@ The opcode families and the count per family:
 | AD binary         | 66–68, 79–80   | 5     | `AD_ADD, AD_SUB, AD_MUL, AD_DIV, AD_POW`               |
 | AD unary          | 69–76, 81–82   | 10    | `AD_NEG…AD_SQRT, AD_SIN, AD_COS`                       |
 | AD control        | 77–78          | 2     | `AD_BACKWARD, AD_GRAD`                                 |
-| **Total**         | **0–82**       | **83** | (= 64 base + 19 AD)                                  |
+| Swap (post-AD)    | 83             | 1     | `SWAP` (exchanges TOS<->SOS; base stack op, not AD)    |
+| **Total**         | **0–83**       | **84** | (= 64 base + 19 AD + 1 swap)                         |
 
-Of these 83, the current artifact weight-encodes 82.
+Of these 84, the current artifact weight-encodes 83.
 `opcode-coverage.json` from `artifacts/paper/outputs/` lists exactly
-opcodes $\{0,1,\ldots,36,38,39,\ldots,82\}$ as weight-implemented and
+opcodes $\{0,1,\ldots,36,38,39,\ldots,83\}$ as weight-implemented and
 zero opcodes as native-delegated; the missing index is 37,
 `OP_NATIVE_CALL`. This is the deliberate external boundary for host
 runtime services (the Eshkol runtime uses native IDs in the 300+ range
@@ -413,9 +424,10 @@ runners execute every program:
 
 For each test program, `test()` (line 5487) executes all three runners
 from a freshly reset state and compares the printed output to a hand-
-coded expectation. The pass count after a clean run is **126 inline
+coded expectation. The pass count after a clean run is **127 inline
 tests, 0 failed** (from `scripts/paper/run_paper_suite.sh` log: see
-`build-paper.suite_trace.log` line 174).
+`build-paper.suite_trace.log`; re-verified at the v1.3.6 release SHA
+60f345def on 2026-10-09 via the shared build's `tools/weight_matrices`).
 
 For per-step state agreement, the same binary writes JSONL trace files
 via `--trace-vm` and `--trace-transformer` flags. `compare_traces.py`
@@ -427,13 +439,13 @@ for each weight-implemented step, and reports two metrics:
 ```json
 {
   "status": "ok",
-  "total_programs": 123,
-  "output_agreeing_programs": 123,
-  "fully_agreeing_programs": 123
+  "total_programs": 124,
+  "output_agreeing_programs": 124,
+  "fully_agreeing_programs": 124
 }
 ```
 
-The 123-program traced suite is a subset of the 126 inline tests; the
+The 124-program traced suite is a subset of the 127 inline tests; the
 three excluded are inline-only diagnostics that do not produce a
 traceable program sequence.
 
@@ -591,7 +603,7 @@ The papers most directly cited by the construction:
   what the SDNC is, how to reproduce it, and the bit-identity bug
   history.
 - `docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md` — the
-  per-opcode-class encoding spec; what each of the 82 weight-encoded
+  per-opcode-class encoding spec; what each of the 83 weight-encoded
   opcodes computes inside the gated FFN.
 - `docs/breakdown/BYTECODE_VM.md` — the ISA reference, with each
   opcode's small-step semantics.
@@ -624,5 +636,5 @@ The papers most directly cited by the construction:
 | `artifacts/paper/outputs/weights.qlmw`        | ~48 MB | Regenerated QLMW                                              |
 | `artifacts/paper/outputs/vm-traces.jsonl`     |  ~50K  | Per-step reference traces                                     |
 | `artifacts/paper/outputs/transformer-traces.jsonl` | ~50K | Per-step matrix traces                                        |
-| `artifacts/paper/outputs/comparison-report.json` | 4K    | Agreement report (123/123)                                    |
+| `artifacts/paper/outputs/comparison-report.json` | 4K    | Agreement report (124/124)                                    |
 | `artifacts/paper/outputs/opcode-coverage.json`   | 8K    | Per-opcode test coverage                                      |

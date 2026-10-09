@@ -1,13 +1,15 @@
-# Eshkol v1.3.5-evolve — Press Information Sheet
+# Eshkol v1.3.6-evolve — Press Information Sheet
 
 For trade-press and academic readers preparing coverage of the v1.3 release
 line — arbitrary-order automatic differentiation, full R7RS conformance,
 resident/daemon-workload robustness, opt-in differentiable quantum computing
-with post-quantum cryptography, and, as of v1.3.5-evolve, multi-shot re-entrant
+with post-quantum cryptography; as of v1.3.5-evolve, multi-shot re-entrant
 continuations on every engine, region reclamation on the bytecode VM, constant
 stack space for mutual tail recursion in every tail-position spelling, and
-differentiation dispatch the compiler proves exhaustive — and the SDNC paper
-artefact it carries.
+differentiation dispatch the compiler proves exhaustive; as of v1.3.6-evolve,
+exact reproduction of published results of AI-driven mathematical discovery and
+a documented catalogue of every example program, 46 of them mathematics — and
+the SDNC paper artefact it carries.
 
 ---
 
@@ -16,9 +18,10 @@ artefact it carries.
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.3.5-evolve |
-| Builds on | v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
-| v1.3.5 shipment date | 22 September 2026 |
+| Version | v1.3.6-evolve |
+| Release status | Prepared for publication (release record, `tests/coverage/release_record.json`) |
+| Intended release date | 8 October 2026 |
+| Builds on | v1.3.5-evolve (22 September 2026), v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -28,6 +31,18 @@ artefact it carries.
 ---
 
 ## Headline
+
+In v1.3.6-evolve Eshkol checks mathematics that machines discovered. That is
+not a metaphor. Three published results of AI-driven discovery — the FunSearch
+cap set, the AlphaTensor matrix multiplication decompositions over F₂, and a
+polynomial counterexample map to the Jacobian conjecture — are rebuilt as
+Eshkol programs and verified completely with exact integer and rational
+arithmetic: every pair of points of the 512-point cap in AG(8,3), every pair of
+matrix units for the rank-23 3×3 and rank-47 4×4 factorizations, and the
+counterexample's constant Jacobian determinant on a grid larger than its degree
+in every variable, beside the three rational points that share one image.
+130,816 exact pair checks; 81 and 256 matrix-unit pairs; a 9 × 8 × 3 grid.
+<!-- source: examples/mathematics_funsearch_cap_set.esk, examples/mathematics_alphatensor_3x3_gf2.esk, examples/mathematics_alphatensor_gf2.esk, examples/mathematics_jacobian_counterexample.esk; each run ALL PASS on native JIT and native AOT at 60f345def (lane receipts) -->
 
 In v1.3.5-evolve you can call a procedure that has already returned. That is
 not a metaphor. `call/cc` is multi-shot and re-entrant on all three engines
@@ -83,6 +98,18 @@ benchmark suite on Eshkol's own axes, and lays the first column of the
 frontend node-identity substrate that the compiler, the LSP, the docs, the REPL,
 and the VM will share.
 
+v1.3.6-evolve is the published-mathematics release. Its headline is the exact
+reproduction of AI-driven results above, and alongside it the example catalogue
+now documents all 67 example programs — 46 of them mathematics, across exact
+algebraic geometry, low-dimensional topology, finite gauge models, certified
+enclosures and bounded Navier–Stokes profile structure — with each program's
+algorithm, arithmetic, executable checks, prerequisites and limits. The runtime
+work in the same release extends rigorous interval arithmetic to mixed exact and
+inexact endpoints, gives the browser LLVM host exact integer and rational
+numerics, bounds per-iteration memory in natively compiled loops for the
+confirmed loop shapes, and makes publication itself depend on complete,
+source-bound measurements.
+
 ---
 
 ## Why this is news
@@ -113,7 +140,120 @@ artefact directory is
 
 ---
 
-## What is new in v1.3.5-evolve
+## What is new in v1.3.6-evolve
+
+The published-mathematics release. Each reproduced result and each program
+named in the measured table below was run on native JIT and native AOT at the
+release-line commit; catalogue counts come from `docs/examples/catalogue.json`;
+every runtime change is pinned by the gate its pull request added.
+
+**Published mathematics, reproduced exactly**
+
+- **The FunSearch cap set in AG(8,3).** `examples/mathematics_funsearch_cap_set.esk`
+  implements the public explicit construction: it decodes the 3^8 ambient
+  points, selects four construction classes, and obtains 512 points. Every
+  unordered pair is checked against the third point on its affine line, and
+  that point must not be in the set: 130,816 exact pair checks, none of which
+  finds one. Source: <https://github.com/google-deepmind/funsearch>.
+- **The AlphaTensor decompositions over F₂.**
+  `examples/mathematics_alphatensor_3x3_gf2.esk` and
+  `examples/mathematics_alphatensor_gf2.esk` contract the public rank-23 3×3
+  and rank-47 4×4 factorizations with factor rows and columns held as exact
+  integer bit masks. Matrix multiplication is bilinear, so expansion on every
+  pair of matrix units — 81 pairs and 256 pairs — is a complete exact check of
+  the tensor identity, not a sample of it. Source:
+  <https://github.com/google-deepmind/alphatensor>.
+- **A polynomial counterexample map to the Jacobian conjecture.**
+  `examples/mathematics_jacobian_counterexample.esk` verifies a map whose
+  Jacobian determinant is the constant −2 while three distinct rational points
+  share the image (−1/4, 0, 0). It checks the three preimages, the binary cubic
+  and its discriminant fiber-count cases, reverse-mode AD through a nested
+  closure factory at double and exact-rational inputs (to a stated `1e-9`
+  tolerance, because the AD carrier is inexact internally), and, separately, the
+  exact determinant identity with explicit rational partials on a 9 × 8 × 3
+  grid that exceeds the per-variable degree bounds (8, 7, 2). The Theorem 5.1
+  family is checked at two parameter choices. Source:
+  <https://www.ulam.ai/research/jacobian.pdf>.
+- **Scope, stated exactly.** These programs reproduce public witnesses; they do
+  not claim to rediscover them. Each states which of its checks are exact
+  identities and which are numerical comparisons. See
+  [AI_MATHEMATICS_EXAMPLES.md](../docs/AI_MATHEMATICS_EXAMPLES.md).
+
+**Every example documented**
+
+- **67 programs, 46 of them mathematics.** `docs/examples/catalogue.json` and
+  [EXAMPLES.md](../docs/EXAMPLES.md) describe each program's purpose,
+  algorithm, domain, arithmetic, executable checks, prerequisites and limits;
+  [MATHEMATICS_EXAMPLES.md](../docs/MATHEMATICS_EXAMPLES.md) gives the
+  mathematics family in full. Highlights: the rational Hodge classes of one
+  Fermat quartic fourfold computed by two methods, with 960 planes whose exact
+  intersection Gram matrix has rank 142 modulo 10007, attaining the Hodge bound
+  for that variety; exact Turaev–Viro invariants in cyclotomic fields;
+  Reidemeister torsion separating the homotopy-equivalent lens spaces L(7,1)
+  and L(7,2); nonabelian Čech descent on finite spaces; Dijkgraaf–Witten state
+  sums for a finite model of the three-torus; and 12 bounded Navier–Stokes
+  programs registered as 14 criteria with paired JIT and AOT entries. Each is a
+  computation on the listed cases, not a general proof. (#742, #726)
+
+**Numerics and runtime**
+
+- **Rigorous intervals across exactness.** Mixed exact/inexact rigorous
+  interval arithmetic converts exact rational endpoints outward until exact
+  comparisons certify containment; indeterminate non-finite endpoint cases fail
+  closed. (#727)
+- **Exact numbers in the browser.** The browser LLVM/WASM host keeps finite
+  doubles as their exact integer or rational values in a checked shared arena
+  through arithmetic, comparisons, rounding, roots and formatting;
+  `number->string` preserves signed zero and readable non-finite forms, and
+  unsupported complex and exact Taylor paths refuse explicitly. The website's
+  example guides start and run on it. (#744)
+- **Bounded per-iteration memory in compiled loops.** Native AOT reclamation
+  covers named-let exit, a discarded numeric tensor and direct literal
+  `tensor-dot`; the original million-iteration report is retained as a
+  regression fixture. It does not establish flat RSS for every loop or
+  platform. (#729, #735)
+- **Allocation-checked constructors and handlers.** Generated cons, vector and
+  closure construction, selected collection, parallel and FFT paths, captured
+  environments and exception-handler frames check their allocations and refuse
+  an incomplete result, with scoped failure injection and semantic IR controls.
+  (#721)
+- **A checked native `main`.** Unsupported entry signatures produce a compiler
+  diagnostic, and a nullary file-JIT entry keeps its source identity across
+  internal renaming. (#724)
+- **Byte-complete cryptographic hashing and reusable string ports.** SHA-256
+  and HMAC consume every byte of a UTF-8 input and key; closed output-string
+  ports retire their buffers and registry slots, so a new stream never inherits
+  an earlier one's text. (#748)
+- **One REPL input path, and native image I/O in every release build.** Pipes
+  and machine mode stay prompt-free with or without a line editor; package and
+  readiness configurations require a native image backend. (#737)
+- **cuBLAS on demand.** CUDA builds load cuBLAS when a GEMM needs it, so
+  CPU-only native, JIT and VM paths do not carry its memory footprint; admission
+  validates the ABI major and the typed API, and refusal keeps CPU matrix
+  multiplication. (#740)
+- **ESKM v2 as a doubly gated experiment.** Bounded transactional readers and
+  atomic writers require a build option and a process opt-in; default saves
+  remain byte-identical v1. (#722)
+- **Linux ARM64 CUDA tooling.** `CUDAARCHS` is honoured, CUDA Docker builds
+  expose toolchain and architecture arguments, and Ozaki reports distinguish
+  dispatched CUDA kernels from vendor-BLAS fallback and measured error from the
+  implementation bound. (#732)
+
+**Release evidence**
+
+- **Publication requires complete, source-bound measurements.** The release
+  gate validates the full configured CTest and VM parity results against
+  committed metadata and the exact source, workflow run and build cohort; the
+  final contract is CTest 789/789 and VM parity 405/405 with no failed, skipped
+  or infrastructure-only checks. Earlier preparation passed all 787 configured
+  CTest cases and all 405 VM parity cases. (#742, #747, #749)
+
+Contributors: Kristoffer Josefsson (Linux ARM64 CUDA tooling, #732); Gabriel
+Kahen (allocation-checked constructors and handlers, #721; gated ESKM v2, #722).
+
+---
+
+## What v1.3.5-evolve added
 
 A re-entrant-continuations release, and the release in which the bytecode VM
 starts giving memory back. Every capability below is pinned by an executable
@@ -429,7 +569,28 @@ gate.
   ICC, runs on the maintainer's own runner with a preflight step that resolves
   its toolchain and fails loud and specific if anything is missing.
 
-### Measured this cycle
+### Measured for v1.3.6-evolve
+
+Run with the release-line compiler built from commit `60f345def` on macOS
+ARM64 (`ESHKOL_JIT_CACHE=0`; native JIT with `eshkol-run -r`, native AOT with
+`eshkol-run -L<build> <file> -o <out>`).
+
+| Claim | Where it is measured | Result |
+|---|---|---|
+| FunSearch 512-cap in AG(8,3) | `examples/mathematics_funsearch_cap_set.esk` | 3/3 checks, 130,816 exact pair checks, ALL PASS on JIT and AOT |
+| AlphaTensor rank-23 3×3 over F₂ | `examples/mathematics_alphatensor_3x3_gf2.esk` | 2/2 checks over 81 matrix-unit pairs, ALL PASS on JIT and AOT |
+| AlphaTensor rank-47 4×4 over F₂ | `examples/mathematics_alphatensor_gf2.esk` | 3/3 checks over 256 matrix-unit pairs, ALL PASS on JIT and AOT |
+| Jacobian-conjecture counterexample map | `examples/mathematics_jacobian_counterexample.esk` | 12/12 checks, determinant identically −2 on the 9 × 8 × 3 exact grid, ALL PASS on JIT and AOT |
+| Hodge classes, Fermat quartic fourfold | `examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk` | 10/10 checks; 960 planes, Gram rank 142 modulo 10007; ALL PASS on JIT and AOT |
+| Turaev–Viro invariants in cyclotomic fields | `examples/mathematics_turaev_viro_cyclotomic.esk` | 9/9 checks, ALL PASS on JIT and AOT |
+| Reidemeister torsion of lens spaces | `examples/mathematics_lens_spaces_reidemeister_torsion.esk` | 7/7 checks; L(7,1) and L(7,2) separated; ALL PASS on JIT and AOT |
+| Nonabelian Čech descent on finite spaces | `examples/mathematics_stacks_nonabelian_descent.esk` | ALL PASS on JIT and AOT |
+| Finite three-torus gauge model | `examples/mathematics_finite_model_three_torus_gauge_theory.esk` | ALL PASS on JIT and AOT |
+| Exact rational derivative | `(derivative-n g 1/3 1)` for `g(x) = 8x²` | `16/3`, `exact?` `#t` |
+| Exact bignum derivative | `(derivative-n f 7 12)` for `f(x) = x^30` | `67465815595294257109436307840000`, `exact?` `#t` |
+| Example catalogue | `docs/examples/catalogue.json` | 67 entries: 46 mathematics, 21 general |
+
+### Measured for v1.3.5-evolve
 
 Every number below is produced by a gate or harness in the repository. The
 v1.3.4-evolve rows were re-measured against a from-source build during the
@@ -438,7 +599,7 @@ v1.3.5 documentation wave and carry into this release unchanged.
 | Claim | Where it is measured | Result |
 |---|---|---|
 | Re-entrant continuations across engines | `scripts/run_continuation_tests.sh` over `tests/continuations/` | 6 fixtures on native JIT, native AOT and the bytecode VM; transcripts byte-identical to the committed expected files |
-| VM region reclamation, one fixture swept by iteration count | `tests/memory/vm_region_flat_rss_test.sh`; [RUNTIME_CONFIGURATION.md](../docs/breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation) | flat 25-27 MB at 1,000 / 4,000 / 16,000 iterations, against 793 MB with `ESHKOL_VM_REGION_EVAC=0` and 704 MB for an unwrapped control |
+| VM region reclamation, one fixture swept by iteration count | `tests/memory/vm_region_flat_rss_test.sh`; [RUNTIME_CONFIGURATION.md](../docs/breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation) | 33, 34 and 34 MB at 1,000 / 4,000 / 16,000 iterations on the release cut, against 304 MB with `ESHKOL_VM_REGION_EVAC=0` and 125 MB for an unwrapped control |
 | VM heap tag coverage | `vm_evac_subtype_table[]`, compile-time span check | 33 rows: 28 `HeapType` members, 3 manifold tags, 2 unassigned slots |
 | Mutual tail recursion in every spelling | `scripts/gen_recursion_depth.py`, `mutual_tail_cond` and `mutual_tail_forms` | ladder of 500,000 / 5,000,000 / 100,000,000 hops, all expected to pass |
 | Differing-signature mutual tail calls | tail-transfer dispatcher gate, `.icc/completion-oracles.yaml` | 100,000,000 hops at 9.1 MB peak RSS |
@@ -456,7 +617,7 @@ v1.3.5 documentation wave and carry into this release unchanged.
 | Exact rational derivative | `(derivative-n g 1/3 1)` for `g(x) = 8x²` | `16/3`, `exact?` `#t` |
 | Exact bignum derivative | `(derivative-n f 7 12)` for `f(x) = x^30` | `67465815595294257109436307840000`, `exact?` `#t` |
 | H2 vibrational frequency, exact second derivative | `eshkol-run -r examples/h2_vibrational.esk` | 5003.2038 cm⁻¹ (R* = 1.38869 bohr, E(R*) = -1.13731 Ha) |
-| Ozaki-II CRT exact GEMM, Metal on Apple M2 Ultra | `tests/gpu/ozaki_certification_test.esk` | 25/25 samples, 0 mismatches, max 58 correct dot bits, PASS |
+| Ozaki-II CRT exact GEMM, Metal on Apple silicon | `tests/gpu/ozaki_certification_test.esk` | 25/25 samples, 0 mismatches, max 58 correct dot bits, PASS |
 | CHSH Bell-inequality gate | `tests/quantum/bell_chsh_test.esk` | S = 2.835 over 16,000 shots, gate `2.4 < S <= 2.95`, PASS |
 | Gradient parity across engines | `(gradient f 3.0 4.0)` for `f(x,y) = x²y + y³` | `#(24 57)` on native JIT, native AOT and the VM, byte-identical |
 | Flat-RSS resident loop, AOT gate | `tests/memory/define_loop_flat_rss_aot_test.sh`, 1,000,000 iterations | 8 MB peak RSS, against 2,620 MB with reclamation compiled out |
@@ -1405,7 +1566,7 @@ browser REPL where forward-mode automatic differentiation
 bytecode-VM dual-number propagation path without native code. The
 interactive textbook has every example runnable in-browser.
 
-The browser REPL uses the bytecode VM rather than LLVM JIT: an
+The browser REPL uses the bytecode VM rather than LLVM JIT: a
 72-opcode register-plus-stack interpreter with 743 native-call IDs,
 ESKB binary format with LEB128 encoding and CRC32 checksums
 (*docs/DESIGN.md §Dual backend architecture*).
@@ -1526,7 +1687,7 @@ link errors.
 @software{eshkol2026,
   title    = {Eshkol: A Programming Language for Mathematical Computing},
   author   = {tsotchke},
-  version  = {1.3.5-evolve},
+  version  = {1.3.6-evolve},
   year     = {2026},
   url      = {https://github.com/tsotchke/eshkol}
 }

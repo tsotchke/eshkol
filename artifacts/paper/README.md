@@ -29,32 +29,48 @@ docker run --rm -v "$(pwd):/work" -w /work eshkol-paper \
 scripts/paper/run_paper_suite.sh
 ```
 
-Expected wall time on a 2023 M2 Max: under five minutes.
+The suite builds only the `weight_matrices` target. It configures a Release
+build in `build-paper/` at the repository root the first time; set
+`BUILD_DIR` to reuse an existing configured build tree, e.g.
+`BUILD_DIR=build scripts/paper/run_paper_suite.sh`. Its logs are written next
+to that directory (`<BUILD_DIR>.suite_trace.log`, `<BUILD_DIR>.weights.log`,
+`<BUILD_DIR>.build.log`). The script header mentions a `--quick` flag; the
+script does not parse it, and every run is the full suite.
+
+Expected wall time on a 2023 M2 Max: under five minutes. With `weight_matrices`
+already built, the v1.3.6-evolve source (`60f345def`) completed the suite in
+11 seconds on Apple Silicon, twice, with bit-identical outputs.
 
 Output: populated `artifacts/paper/outputs/` with:
-- `weights.qlmw` — regenerated weight matrices (SHA-256 checksum below)
+- `weights.qlmw` — regenerated weight matrices, 48,881,716 bytes (a 28-byte
+  header plus 12,220,422 float32 parameters; SHA-256 checksum below)
 - `vm-traces.jsonl` — per-step state traces from the reference C interpreter
 - `transformer-traces.jsonl` — per-step state traces from the compiled transformer
-- `comparison-report.json` — fieldwise agreement report (123/123 expected)
-- `opcode-coverage.json` — 82/83 canonical opcodes weight-implemented in the
-  exercised bounded suite; `OP_NATIVE_CALL` remains the explicit external
+- `comparison-report.json` — fieldwise agreement report (124/124 expected)
+- `opcode-coverage.json` — 83 of the 84 opcodes in the current enum
+  weight-implemented in the exercised bounded suite (82 of the paper's 83, plus
+  the later `OP_SWAP=83`); `OP_NATIVE_CALL` (37) remains the explicit external
   boundary
 - `tables/*.tex` — regenerated LaTeX for every table in the paper
+  (`tab_params.tex`, `tab_verification.tex`, `tab_opcode_coverage.tex`,
+  `tab_runtime.tex`)
 
 ## Expected Checksums
 
 ```
-SHA-256  weights.qlmw              381599e7a5607b4047ede0d6c8e6d270cb81dbdebfdb0bf0c0eba38758aa3f0c
-SHA-256  vm-traces.jsonl           4239cbb91dc9abb9abe80528c5b4ac4c2121a85db5a50dbf43c634a77e304801
-SHA-256  transformer-traces.jsonl  4239cbb91dc9abb9abe80528c5b4ac4c2121a85db5a50dbf43c634a77e304801
-SHA-256  comparison-report.json    80aa6fed4db40bca521217ae8777677173fe7eeb239baa69847111e7ac674105
-SHA-256  opcode-coverage.json      152a4bacc483d8985abeb08bc0d44112144f536ed663274bc7b1eeccbdd2dfe4
+SHA-256  weights.qlmw              77388ac0ae297b1b1276e1a5bdb8d24dccacd964b5adf93b41298a1320e80e7b
+SHA-256  vm-traces.jsonl           49cb2143f4286950362776138958c16920bea904cca15aab56ebae0eb9f07e44
+SHA-256  transformer-traces.jsonl  49cb2143f4286950362776138958c16920bea904cca15aab56ebae0eb9f07e44
+SHA-256  comparison-report.json    22e28236f192240ed25004d133b34bac0b9b608f4077e8baacdf01f868e1fd70
+SHA-256  opcode-coverage.json      8b1ae62fd9e81f976c75b221924f42f67dabd4487dee42d7550e48cdd48a6812
 ```
 
-The current regeneration records these hashes; every subsequent regeneration
-from the same source tree on an IEEE 754 float32 platform should produce
-bit-identical outputs. Platform divergence is a bug; file an issue with
-the platform details.
+These hashes were regenerated at the v1.3.6-evolve source (`60f345def`,
+2026-10-09) and agree with [docs/SDNC.md §7.3](../../docs/SDNC.md). They
+replace the earlier set recorded when the suite had 123 traced programs. Every
+subsequent regeneration from the same source tree on an IEEE 754 float32
+platform should produce bit-identical outputs; re-pin them when the suite grows.
+If the outputs diverge on a platform, file an issue with the platform details.
 
 ### What the agreement metrics mean
 
@@ -68,7 +84,7 @@ between the reference C interpreter and the matrix forward pass. The
     vector matches bitwise (PC, SP, TOS, SOS, registers, memory, tape,
     flags).
 
-**Both metrics must equal `total_programs` (currently 123/123).** If a regression
+**Both metrics must equal `total_programs` (currently 124/124).** If a regression
 ever introduces a divergence, it must be fixed — not documented as
 acceptable drift.
 
@@ -95,8 +111,8 @@ no architectural way to compute direct multiplication.
 ## What the paper claims the artifact proves
 
 1. The weight generation is deterministic — same ISA, same weights, bit-identical across platforms.
-2. Three-way agreement: reference C VM = simulated transformer (C code mirroring the weight-implemented opcodes) = matrix forward pass (actual W @ x + b matmul). The current repository artifact verifies 126/126 inline programs and 123/123 traced programs.
-3. The strict bounded-artifact scope covers 82/83 canonical opcodes in weights. `OP_NATIVE_CALL` remains the explicit external boundary for host services and high-level runtime calls.
+2. Three-way agreement: reference C VM = simulated transformer (C code mirroring the weight-implemented opcodes) = matrix forward pass (actual W @ x + b matmul). The current repository artifact verifies 127/127 inline programs and 124/124 traced programs.
+3. The strict bounded-artifact scope covers 82/83 canonical opcodes in weights (83 of the 84 the enum now carries, with the later `OP_SWAP=83`). `OP_NATIVE_CALL` remains the explicit external boundary for host services and high-level runtime calls.
 4. The AD tape (8 nodes in the state vector) correctly computes gradients on the reported toy scalar/vector programs; gradient-check vs. dual numbers within 1e-6 relative error.
 
 ## What this artifact does NOT claim
@@ -113,9 +129,10 @@ end. `scripts/paper/run_paper_suite.sh` builds `weight_matrices`, exports the
 QLMW artifact, dumps both reference-VM and matrix-forward traces, compares them
 fieldwise, and regenerates the paper tables.
 
-The current bounded artifact verifies 126/126 inline programs and 123/123 traced
-programs. Opcode coverage is 82 weight-implemented / 0 native-delegated / 0
-transformer-native-assisted opcodes in the exercised suite. `OP_NATIVE_CALL`
+The current bounded artifact verifies 127/127 inline programs and 124/124 traced
+programs (measured at `60f345def`, 2026-10-09). Opcode coverage is 83
+weight-implemented / 0 native-delegated / 0 transformer-native-assisted opcodes
+in the exercised suite. `OP_NATIVE_CALL`
 remains the intentional host-service boundary.
 
 ## Issues and questions

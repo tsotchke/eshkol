@@ -13,6 +13,16 @@
 #include <cstdlib>
 #include <cstring>
 
+/** @brief Read and cache the hosted process's arena block-pool byte cap. */
+extern "C" size_t eshkol_arena_block_pool_cap(void) {
+    static const size_t cap = [] {
+        const char* env = std::getenv("ESHKOL_ARENA_BLOCK_POOL_MB");
+        const size_t mb = env ? (size_t)std::strtoull(env, nullptr, 10) : (size_t)1024;
+        return mb << 20;
+    }();
+    return cap;
+}
+
 /**
  * @brief Report whether arena allocation poisoning is enabled for this process.
  *

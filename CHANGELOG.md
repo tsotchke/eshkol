@@ -16,6 +16,17 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Example outcomes are bound to their measured sources.** The catalogue
+  records native JIT and AOT outcomes for all 67 programs. All 46 mathematics
+  programs ran in both modes; 45 emitted their explicit all-pass result and
+  the group-cohomology sweep completed successfully. Published constructions,
+  arithmetic and finite computation limits are documented alongside them. (#755)
+- **Public documentation covers the release's implementation and interfaces.**
+  Guides, language reference, architecture and vision documents, test-harness
+  instructions and the paper artifact describe the current implementation.
+  Fixed-point, i128 and exact-accumulation APIs are documented and indexed;
+  site figures agree with the committed browser artifacts. (#753, #754, #756,
+  #757, #758, #759)
 - **XLA results respect the calling thread's active region.** All nine XLA
   result allocation sites use the current arena, and the run cache includes
   the compiled GPU dispatch threshold. Elementwise results avoid redundant
