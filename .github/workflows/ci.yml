@@ -1913,6 +1913,11 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
+            # Run 37975921318 spent 45 minutes setting up/building, then
+            # passed 75 minutes of the full suite before the two-hour job
+            # cap cancelled it. Preserve every suite and allow runner variance.
+            job_timeout_minutes: 240
+            test_timeout_minutes: 210
             upload_artifact: 'true'
             artifact_name: eshkol-macos-arm64
           - name: macos-x64-lite

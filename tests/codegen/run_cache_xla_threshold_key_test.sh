@@ -35,6 +35,10 @@ ESK
 
 run() {  # label threshold -> require successful program and exactly one valid cache status
     local label=$1 threshold=$2
+    # Language-coverage collection intentionally bypasses the persistent cache.
+    # Isolate only these cache probes from a traced parent suite; all other
+    # tests retain the caller's trace directory and still exercise tracing.
+    ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR= \
     ESHKOL_JIT_CACHE_DIR="$WORK/cache" ESHKOL_JIT_CACHE_TRACE=1 ESHKOL_XLA_THRESHOLD="$threshold" \
         eshkol_test_timeout 300 "$ESHKOL_RUN" -r "$WORK/prog.esk" -L"$B" > "$WORK/$label.out" 2>&1 || {
             echo "FAIL: $label execution failed" >&2

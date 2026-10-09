@@ -15,6 +15,11 @@ SCRATCH = ROOT / ".scratch"
 FAKE_RUN = r'''#!/bin/sh
 set -eu
 if [ "${FAKE_KIND:-}" = cache ]; then
+    if [ -n "${ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR:-}" ]; then
+        echo '[jit-cache] bypass language-coverage-tracing'
+        echo 24
+        exit 0
+    fi
     n=0
     [ -f "$FAKE_STATE" ] && n=$(cat "$FAKE_STATE")
     n=$((n + 1)); printf '%s\n' "$n" > "$FAKE_STATE"
@@ -72,7 +77,7 @@ class HarnessControls(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def invoke(self, script, mode=None):
+    def invoke(self, script, mode=None, extra_env=None):
         env = os.environ.copy()
         env.update(BUILD_DIR=str(self.build), ESHKOL_RUN=str(self.fake),
                    ESHKOL_TEST_TMP_ROOT=str(SCRATCH),
@@ -81,6 +86,8 @@ class HarnessControls(unittest.TestCase):
             state = self.work / f"{mode}.state"
             state.unlink(missing_ok=True)
             env.update(FAKE_KIND="cache", FAKE_MODE=mode, FAKE_STATE=str(state))
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(["bash", str(ROOT / script)], cwd=ROOT, env=env,
                               text=True, capture_output=True, timeout=30)
 
@@ -132,6 +139,13 @@ class HarnessControls(unittest.TestCase):
 
     def test_cache_positive_requires_miss_miss_hit(self):
         result = self.invoke("tests/codegen/run_cache_xla_threshold_key_test.sh", "positive")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("miss / miss / hit", result.stdout)
+
+    def test_cache_probes_work_inside_a_language_traced_suite(self):
+        result = self.invoke(
+            "tests/codegen/run_cache_xla_threshold_key_test.sh", "positive",
+            {"ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR": str(self.work / "coverage")})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("miss / miss / hit", result.stdout)
 

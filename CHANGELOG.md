@@ -35,6 +35,11 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 - **Release CTest uses four workers.** The full test inventory, per-test
   limits and publication receipts are retained. The source-mutating ABI
   negative control and timing-sensitive calibration checks run serially. (#752)
+- **Traced CI still verifies persistent run-cache invalidation.** The XLA
+  threshold cache probes isolate the tracing mode that bypasses caching;
+  tracing remains enabled for the surrounding suite. The macOS ARM64 full
+  suite receives the same job budget as the Linux ARM64 and macOS Intel
+  lanes after its two-hour limit interrupted passing tests. (#752)
 - **ABI inventory accounts for the integrated contributor changes.** The
   baseline records the ESKM name-size accessor and eleven allocator sites in
   three regression-test files, with exact counts and review reasons. Lexical
