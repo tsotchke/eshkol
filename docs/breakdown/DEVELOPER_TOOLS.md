@@ -261,7 +261,7 @@ The extension registers the `eshkol` language ID for files with the `.esk` exten
 | `if` | `(if test consequent alternate)` | Conditional |
 | `cond` | `(cond (test expr) ... (else default))` | Multi-way conditional |
 | `map` | `(map (lambda (x) body) list)` | Map over list |
-| `tensor` | `(tensor (list elements))` | Create a tensor (shape from the nesting) |
+| `tensor` | `(reshape (tensor values) dims)` | Create a tensor from its elements and reshape it to the given dimensions |
 | `grad` | `(gradient (lambda (x) body) point)` | Autodiff gradient |
 | `pmap` | `(parallel-map (lambda (x) body) list)` | Parallel map |
 | `region` | `(with-region body)` | Lexical memory region |
