@@ -130,8 +130,8 @@ actually got wrong. `lib/agent/subprocess.esk` does both — see
 
 | C return | Repacked as |
 |----------|-------------|
-| `i32` | `SIToFP` → tagged **double** (so error codes compare with `= < >`) |
-| `i64` | tagged **int** (used for opaque handles) |
+| `i32` | sign-extended → tagged exact **int** (status codes, errnos, counts) |
+| `i64` | tagged exact **int** (also used for opaque handles) |
 | `f32`/`f64` | tagged **double** |
 | `ptr` | tagged `HEAP_PTR` |
 
@@ -141,9 +141,8 @@ string and copies the bytes. Modules that return C-owned buffers wrap this
 (e.g. `process-owned-c-string->string` in `agent.subprocess`, which copies then
 frees the C buffer).
 
-> Because `i32` returns are repacked as doubles, an FFI status code of `-1`
-> compares correctly with numeric predicates; do not assume it stays an exact
-> integer.
+> An `i32` status code is an exact integer, so `(= rc 0)`, `(eqv? rc 0)` and
+> `(equal? rc 0)` all hold for a zero return.
 
 ## Requiring agent FFI and AOT linking
 

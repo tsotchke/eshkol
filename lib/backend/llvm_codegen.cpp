@@ -20093,11 +20093,11 @@ private:
         Type* ret_type = result->getType();
         if (ret_type != tagged_value_type && !ret_type->isVoidTy()) {
             if (ret_type->isIntegerTy(32)) {
-                /* i32 → SIToFP to double → pack as tagged double.
-                 * Eshkol uses doubles as its native number type, so i32 error
-                 * codes and flags become comparable with = > < immediately. */
-                Value* dbl = builder->CreateSIToFP(result, double_type);
-                co_return packDoubleToTaggedValue(dbl);
+                /* i32 → sign-extend → pack as an exact integer. A C int
+                 * (an errno, a status, a count) is an exact integer, so it
+                 * is eqv?/equal? to the exact literal it is compared with. */
+                Value* wide = builder->CreateSExt(result, int64_type);
+                co_return packInt64ToTaggedValue(wide, true);
             } else if (ret_type->isIntegerTy(64)) {
                 /* i64 stays as tagged int — used for opaque handles passed
                  * between extern calls, not typically compared with = > <. */
