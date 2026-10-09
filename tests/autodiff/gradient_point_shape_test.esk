@@ -6,7 +6,8 @@
 ;;     Rank-1 points, Scheme vectors and scalars keep their established result.
 ;;   * hessian of a loss built from tensor-add/-sub/-mul/-div and tensor-matmul
 ;;     over reshaped inputs is exact (the jet tensor rule carries the mixed
-;;     second-order coefficient), including broadcast operands.
+;;     second-order coefficient), including broadcast operands; layer-norm and
+;;     scaled-dot-attention carry the same coefficients.
 ;;   * a forward-mode derivative that meets a reverse-mode tensor value inside
 ;;     a nested gradient is refused by name instead of answering zero.
 
@@ -97,6 +98,36 @@
                       (vector 1.0 2.0 3.0 4.0)))
 (check "hessian through tensor-matmul of reshaped inputs"
        (tensor-near? H-mm '(2.0 1.0 1.0 0.0  1.0 0.0 2.0 1.0  1.0 2.0 0.0 1.0  0.0 1.0 1.0 2.0)))
+
+;; ── hessian through layer-norm and attention (forward jet kernels) ────
+;; Compared with central second differences of the same loss.
+(define fd-h 1e-4)
+(define (fd-diag f base i)
+  (let ((plus (vector-copy base)) (minus (vector-copy base)))
+    (vector-set! plus i (+ (vector-ref base i) fd-h))
+    (vector-set! minus i (- (vector-ref base i) fd-h))
+    (/ (+ (f plus) (f minus) (* -2.0 (f base))) (* fd-h fd-h))))
+(define (near-fd? a b) (< (abs (- a b)) (+ 1e-4 (* 1e-4 (abs b)))))
+
+(define (ln-loss v)
+  (let ((y (layer-norm (reshape v 1 3) 1.0 0.0 1e-5)))
+    (+ (tensor-get y 0 0) (* 3.0 (tensor-get y 0 2)))))
+(define ln-point (vector 0.3 1.1 -0.4))
+(define H-ln (hessian ln-loss ln-point))
+(check "hessian through layer-norm H[0][0] matches FD"
+       (near-fd? (tensor-ref H-ln 0 0) (fd-diag ln-loss ln-point 0)))
+(check "hessian through layer-norm H[2][2] matches FD"
+       (near-fd? (tensor-ref H-ln 2 2) (fd-diag ln-loss ln-point 2)))
+
+(define att-k (reshape (vector 0.5 0.1 -0.3 0.2) 2 2))
+(define (att-loss v)
+  (tensor-get (scaled-dot-attention (reshape v 2 2) att-k (reshape v 2 2)) 0 1))
+(define att-point (vector 0.3 1.1 -0.4 0.7))
+(define H-att (hessian att-loss att-point))
+(check "hessian through scaled-dot-attention H[0][0] matches FD"
+       (near-fd? (tensor-ref H-att 0 0) (fd-diag att-loss att-point 0)))
+(check "hessian through scaled-dot-attention H[1][1] matches FD"
+       (near-fd? (tensor-ref H-att 1 1) (fd-diag att-loss att-point 1)))
 
 ;; ── forward meets reverse: refused by name ─────────────────────────────
 (define (refused? thunk)

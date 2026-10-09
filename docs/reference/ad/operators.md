@@ -121,8 +121,9 @@ following returns `0.5` and is checked against a central finite difference:
 (derivative attention-value 1.0)  ;; => 0.5
 ```
 
-This is first-order forward support. Reverse-mode tensor gradients for these
-operations remain scalarizing. Native supports rank-2 and rank-3 attention;
+The native kernels carry the whole forward jet, so a `hessian` through
+`layer-norm` or `scaled-dot-attention` is exact as well. Reverse-mode tensor
+gradients for these operations remain scalarizing. Native supports rank-2 and rank-3 attention;
 the VM supports the rank-2 form and the same layer-norm contract.
 
 Second derivative by nesting two `derivative` calls (two perturbation slots,
