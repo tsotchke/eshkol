@@ -42,11 +42,11 @@
 (edge-check-g1950)
 
 ;; check quote_veclit_ref__in__closures_escaping_set
-(define (edge-check-g1951) (edge-chk "quote_veclit_ref__in__closures_escaping_set" (let ((ethg1951 #f)) (set! ethg1951 (lambda () (vector-ref #(9 8 7) 2))) (ethg1951)) 7))
+(define (edge-check-g1951) (edge-chk "quote_veclit_ref__in__closures_escaping_set" (let ((ethg1951 #f)) (set! ethg1951 (lambda () (vector-ref #(9 8 7) 2))) (ethg1951)) 7.0))
 (edge-check-g1951)
 
 ;; check quote_veclit_ref__in__closures_immediate_lambda
-(define (edge-check-g1952) (edge-chk "quote_veclit_ref__in__closures_immediate_lambda" ((lambda () (vector-ref #(9 8 7) 2))) 7))
+(define (edge-check-g1952) (edge-chk "quote_veclit_ref__in__closures_immediate_lambda" ((lambda () (vector-ref #(9 8 7) 2))) 7.0))
 (edge-check-g1952)
 
 ;; check quote_qq_sugar__in__closures_escaping_set

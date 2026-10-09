@@ -27,7 +27,7 @@
 (edge-check-g2121)
 
 ;; check quote_veclit_ref__in__modules_require_filter_wrap
-(define (edge-check-g2122) (edge-chk "quote_veclit_ref__in__modules_require_filter_wrap" (car (filter (lambda (fw) #t) (list (vector-ref #(9 8 7) 2)))) 7))
+(define (edge-check-g2122) (edge-chk "quote_veclit_ref__in__modules_require_filter_wrap" (car (filter (lambda (fw) #t) (list (vector-ref #(9 8 7) 2)))) 7.0))
 (edge-check-g2122)
 
 ;; check quote_qq_sugar__in__modules_require_filter_wrap

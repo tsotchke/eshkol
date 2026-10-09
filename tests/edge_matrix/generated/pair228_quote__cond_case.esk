@@ -58,15 +58,15 @@
 (edge-check-g1968)
 
 ;; check quote_veclit_ref__in__cond_case_cond_hole
-(define (edge-check-g1969) (edge-chk "quote_veclit_ref__in__cond_case_cond_hole" (cond ((= 1 1) (vector-ref #(9 8 7) 2)) (else 'no)) 7))
+(define (edge-check-g1969) (edge-chk "quote_veclit_ref__in__cond_case_cond_hole" (cond ((= 1 1) (vector-ref #(9 8 7) 2)) (else 'no)) 7.0))
 (edge-check-g1969)
 
 ;; check quote_veclit_ref__in__cond_case_case_hole
-(define (edge-check-g1970) (edge-chk "quote_veclit_ref__in__cond_case_case_hole" (case 1 ((1) (vector-ref #(9 8 7) 2)) (else 'no)) 7))
+(define (edge-check-g1970) (edge-chk "quote_veclit_ref__in__cond_case_case_hole" (case 1 ((1) (vector-ref #(9 8 7) 2)) (else 'no)) 7.0))
 (edge-check-g1970)
 
 ;; check quote_veclit_ref__in__cond_case_when_hole
-(define (edge-check-g1971) (edge-chk "quote_veclit_ref__in__cond_case_when_hole" (when #t (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g1971) (edge-chk "quote_veclit_ref__in__cond_case_when_hole" (when #t (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g1971)
 
 ;; check quote_qq_sugar__in__cond_case_cond_hole

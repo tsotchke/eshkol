@@ -42,19 +42,19 @@
 (edge-check-g1622)
 
 ;; check tensors_lit_int_ref__in__first_class_thunk_in_list
-(define (edge-check-g1623) (edge-chk "tensors_lit_int_ref__in__first_class_thunk_in_list" ((car (list (lambda () (vector-ref #(9 8 7) 0))))) 9))
+(define (edge-check-g1623) (edge-chk "tensors_lit_int_ref__in__first_class_thunk_in_list" ((car (list (lambda () (vector-ref #(9 8 7) 0))))) 9.0))
 (edge-check-g1623)
 
 ;; check tensors_lit_int_ref__in__first_class_apply_id
-(define (edge-check-g1624) (edge-chk "tensors_lit_int_ref__in__first_class_apply_id" (apply (lambda (fa) fa) (list (vector-ref #(9 8 7) 0))) 9))
+(define (edge-check-g1624) (edge-chk "tensors_lit_int_ref__in__first_class_apply_id" (apply (lambda (fa) fa) (list (vector-ref #(9 8 7) 0))) 9.0))
 (edge-check-g1624)
 
 ;; check tensors_lit_int_ref__in__first_class_map_hole
-(define (edge-check-g1625) (edge-chk "tensors_lit_int_ref__in__first_class_map_hole" (car (map (lambda (fi) (vector-ref #(9 8 7) 0)) (list 0))) 9))
+(define (edge-check-g1625) (edge-chk "tensors_lit_int_ref__in__first_class_map_hole" (car (map (lambda (fi) (vector-ref #(9 8 7) 0)) (list 0))) 9.0))
 (edge-check-g1625)
 
 ;; check tensors_lit_int_ref__in__first_class_fn_arg_call
-(define (edge-check-g1626) (edge-chk "tensors_lit_int_ref__in__first_class_fn_arg_call" ((lambda (ff) (ff)) (lambda () (vector-ref #(9 8 7) 0))) 9))
+(define (edge-check-g1626) (edge-chk "tensors_lit_int_ref__in__first_class_fn_arg_call" ((lambda (ff) (ff)) (lambda () (vector-ref #(9 8 7) 0))) 9.0))
 (edge-check-g1626)
 
 (display "EDGE-MATRIX-DONE") (newline)

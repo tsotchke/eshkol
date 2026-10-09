@@ -34,15 +34,15 @@
 (edge-check-g1632)
 
 ;; check tensors_lit_int_ref__in__set_bang_store_read
-(define (edge-check-g1633) (edge-chk "tensors_lit_int_ref__in__set_bang_store_read" (let ((svg1633 #f)) (set! svg1633 (vector-ref #(9 8 7) 0)) svg1633) 9))
+(define (edge-check-g1633) (edge-chk "tensors_lit_int_ref__in__set_bang_store_read" (let ((svg1633 #f)) (set! svg1633 (vector-ref #(9 8 7) 0)) svg1633) 9.0))
 (edge-check-g1633)
 
 ;; check tensors_lit_int_ref__in__set_bang_lambda_store
-(define (edge-check-g1634) (edge-chk "tensors_lit_int_ref__in__set_bang_lambda_store" (let ((slg1634 #f)) ((lambda () (set! slg1634 (vector-ref #(9 8 7) 0)))) slg1634) 9))
+(define (edge-check-g1634) (edge-chk "tensors_lit_int_ref__in__set_bang_lambda_store" (let ((slg1634 #f)) ((lambda () (set! slg1634 (vector-ref #(9 8 7) 0)))) slg1634) 9.0))
 (edge-check-g1634)
 
 ;; check tensors_lit_int_ref__in__set_bang_set_twice
-(define (edge-check-g1635) (edge-chk "tensors_lit_int_ref__in__set_bang_set_twice" (let ((szg1635 0)) (set! szg1635 (vector-ref #(9 8 7) 0)) (set! szg1635 szg1635) szg1635) 9))
+(define (edge-check-g1635) (edge-chk "tensors_lit_int_ref__in__set_bang_set_twice" (let ((szg1635 0)) (set! szg1635 (vector-ref #(9 8 7) 0)) (set! szg1635 szg1635) szg1635) 9.0))
 (edge-check-g1635)
 
 (display "EDGE-MATRIX-DONE") (newline)

@@ -42,11 +42,11 @@
 (edge-check-g2111)
 
 ;; check quote_veclit_ref__in__match_result_hole
-(define (edge-check-g2112) (edge-chk "quote_veclit_ref__in__match_result_hole" (match 1 (1 (vector-ref #(9 8 7) 2)) (_ 'no)) 7))
+(define (edge-check-g2112) (edge-chk "quote_veclit_ref__in__match_result_hole" (match 1 (1 (vector-ref #(9 8 7) 2)) (_ 'no)) 7.0))
 (edge-check-g2112)
 
 ;; check quote_veclit_ref__in__match_binder_hole
-(define (edge-check-g2113) (edge-chk "quote_veclit_ref__in__match_binder_hole" (match (list (vector-ref #(9 8 7) 2)) ((list mrg2113) mrg2113) (_ 'no)) 7))
+(define (edge-check-g2113) (edge-chk "quote_veclit_ref__in__match_binder_hole" (match (list (vector-ref #(9 8 7) 2)) ((list mrg2113) mrg2113) (_ 'no)) 7.0))
 (edge-check-g2113)
 
 ;; check quote_qq_sugar__in__match_result_hole

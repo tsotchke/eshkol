@@ -58,15 +58,15 @@
 (edge-check-g194)
 
 ;; check quote_veclit_ref__in__variadic_rest_car
-(define (edge-check-g195) (edge-chk "quote_veclit_ref__in__variadic_rest_car" (car ((lambda vgs vgs) (vector-ref #(9 8 7) 2))) 7))
+(define (edge-check-g195) (edge-chk "quote_veclit_ref__in__variadic_rest_car" (car ((lambda vgs vgs) (vector-ref #(9 8 7) 2))) 7.0))
 (edge-check-g195)
 
 ;; check quote_veclit_ref__in__variadic_dotted_first
-(define (edge-check-g196) (edge-chk "quote_veclit_ref__in__variadic_dotted_first" ((lambda (vh . vt) vh) (vector-ref #(9 8 7) 2) 'p1 'p2) 7))
+(define (edge-check-g196) (edge-chk "quote_veclit_ref__in__variadic_dotted_first" ((lambda (vh . vt) vh) (vector-ref #(9 8 7) 2) 'p1 'p2) 7.0))
 (edge-check-g196)
 
 ;; check quote_veclit_ref__in__variadic_apply_rest
-(define (edge-check-g197) (edge-chk "quote_veclit_ref__in__variadic_apply_rest" (apply (lambda (vk . vm) vk) (list (vector-ref #(9 8 7) 2) 0)) 7))
+(define (edge-check-g197) (edge-chk "quote_veclit_ref__in__variadic_apply_rest" (apply (lambda (vk . vm) vk) (list (vector-ref #(9 8 7) 2) 0)) 7.0))
 (edge-check-g197)
 
 ;; check quote_qq_sugar__in__variadic_rest_car

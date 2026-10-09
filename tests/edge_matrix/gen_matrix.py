@@ -105,7 +105,9 @@ axis("quote", "quote / quasiquote / literal data", producers=[
     Producer("list", "'(1 2 3)", "(list 1 2 3)", "list"),
     Producer("empty", "'()", "(list)", "list"),
     Producer("nested_quote", "(car ''nq)", '(string->symbol "quote")', "sym"),
-    Producer("veclit_ref", "(vector-ref #(9 8 7) 2)", "7", "int"),
+    # A numeric #(...) literal is an f64 tensor natively, so its elements are
+    # the inexact 7.0 / 9.0, and equal? distinguishes exactness.
+    Producer("veclit_ref", "(vector-ref #(9 8 7) 2)", "7.0", "int"),
     Producer("qq_sugar", "`(1 ,(+ 1 1) ,@(list 3 4))", "(list 1 2 3 4)",
              "list"),
     Producer("qq_longform", "(quasiquote (1 (unquote (+ 1 1))))",
@@ -418,7 +420,7 @@ axis("tensors", "homogeneous f64 tensors incl. #(...) literals", producers=[
     Producer("lit_ref", "(vector-ref #(9.5 8.5) 1)", "8.5", "double"),
     Producer("tensor_op_ref", "(tensor-ref (tensor 1.0 2.5 3.0) 1)", "2.5",
              "double"),
-    Producer("lit_int_ref", "(vector-ref #(9 8 7) 0)", "9", "int"),
+    Producer("lit_int_ref", "(vector-ref #(9 8 7) 0)", "9.0", "int"),
 ], contexts=[
     Context("tensor_elem", "(tensor-ref (tensor {X} 0.0) 0)",
             accepts=frozenset({"double"})),

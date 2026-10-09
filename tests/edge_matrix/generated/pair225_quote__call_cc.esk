@@ -42,11 +42,11 @@
 (edge-check-g1936)
 
 ;; check quote_veclit_ref__in__call_cc_cc_body
-(define (edge-check-g1937) (edge-chk "quote_veclit_ref__in__call_cc_cc_body" (call/cc (lambda (ckg1937) (vector-ref #(9 8 7) 2))) 7))
+(define (edge-check-g1937) (edge-chk "quote_veclit_ref__in__call_cc_cc_body" (call/cc (lambda (ckg1937) (vector-ref #(9 8 7) 2))) 7.0))
 (edge-check-g1937)
 
 ;; check quote_veclit_ref__in__call_cc_cc_escape
-(define (edge-check-g1938) (edge-chk "quote_veclit_ref__in__call_cc_cc_escape" (call/cc (lambda (ceg1938) (ceg1938 (vector-ref #(9 8 7) 2)) 'unreached)) 7))
+(define (edge-check-g1938) (edge-chk "quote_veclit_ref__in__call_cc_cc_escape" (call/cc (lambda (ceg1938) (ceg1938 (vector-ref #(9 8 7) 2)) 'unreached)) 7.0))
 (edge-check-g1938)
 
 ;; check quote_qq_sugar__in__call_cc_cc_body
