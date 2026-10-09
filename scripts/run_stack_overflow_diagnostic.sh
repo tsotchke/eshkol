@@ -7,6 +7,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 BUILD_DIR="${BUILD_DIR:-build}"
 case "$BUILD_DIR" in
     /*) RUN="$BUILD_DIR/eshkol-run" ;;
@@ -102,11 +103,9 @@ WORKER_COMPLETION_TEST="$SCRATCH/parallel_stack_completion.esk"
 eshkol_require_output_file_path "$WORKER_COMPLETION_TEST"
 sed "s/300000/${worker_completion_frames}/g" "$WORKER_TEST" >"$WORKER_COMPLETION_TEST"
 
-# macOS has no timeout(1); use a perl alarm wrapper.
-run_capped() {  # run_capped <seconds> <cmd...>
-    local secs="$1"; shift
-    perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' "$secs" "$@"
-}
+# Shared wall-clock guard (macOS has no timeout(1)); stops the whole process
+# group on timeout.
+run_capped() { eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 pass=0; fail=0
 

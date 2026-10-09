@@ -256,35 +256,11 @@ check_disk_budget() {
     fi
 }
 
-run_guarded() {
-    LC_ALL=C LANG=C perl -MPOSIX=':sys_wait_h' -e '
-        my $seconds = shift;
-        my $pid = fork();
-        die "fork failed: $!" unless defined $pid;
-        if ($pid == 0) {
-            setpgrp(0, 0);
-            exec @ARGV or exit 127;
-        }
-        local $SIG{ALRM} = sub {
-            kill "TERM", -$pid;
-            select undef, undef, undef, 0.5;
-            kill "KILL", -$pid;
-            exit 124;
-        };
-        alarm $seconds;
-        waitpid($pid, 0);
-        my $status = $?;
-        alarm 0;
-        if (WIFEXITED($status)) {
-            exit WEXITSTATUS($status);
-        }
-        if (WIFSIGNALED($status)) {
-            exit 128 + WTERMSIG($status);
-        }
-        exit 125;
-    ' \
-        "$1" "${@:2}"
-}
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+run_guarded() { LC_ALL=C LANG=C eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 append_run() {
     local src="$1" axis="$2" phase="$3" rc="$4" out="$5" err="$6"

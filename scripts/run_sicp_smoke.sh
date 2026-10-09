@@ -72,11 +72,11 @@ for arg in "$@"; do
     esac
 done
 
-# macOS has no `timeout(1)`; emulate with perl alarm.
-run_guarded() {
-    perl -e 'my $seconds = shift; alarm $seconds; exec @ARGV; die "exec failed: $ARGV[0]: $!\n"' \
-        "$1" "${@:2}"
-}
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+. "$(dirname "$ESHKOL_TEST_LIB")/harness_outcome.sh"
+run_guarded() { eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 # Programs that are EXPECTED to fail (documented gaps, not gate regressions).
 is_xfail() {
