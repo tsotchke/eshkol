@@ -2881,6 +2881,7 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_BLAS_ENABLED)
     target_link_libraries(eshkol-blas-provider-test PRIVATE eshkol-runtime)
     if(BUILD_TESTING)
         add_test(NAME blas-peak-calibration COMMAND eshkol-blas-peak-calibration-test)
+        set_tests_properties(blas-peak-calibration PROPERTIES RUN_SERIAL TRUE)
         set_tests_properties(blas-peak-calibration PROPERTIES TIMEOUT 30)
         add_test(NAME blas-provider COMMAND eshkol-blas-provider-test)
         set_tests_properties(blas-provider PROPERTIES TIMEOUT 30)
@@ -7605,6 +7606,9 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header
              COMMAND ${Python3_EXECUTABLE}
                      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py
                      selftest --repo ${CMAKE_CURRENT_SOURCE_DIR})
+    # The negative control temporarily injects a source site. Quiesce other
+    # tests so concurrent source readers cannot observe that deliberate edit.
+    set_tests_properties(abi_header_inventory_selftest PROPERTIES RUN_SERIAL TRUE)
 endif()
 endif()
 
@@ -8598,6 +8602,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         )
         set_tests_properties(nested_expr_compile_time_gate
             PROPERTIES
+                RUN_SERIAL TRUE
                 TIMEOUT 900
                 PASS_REGULAR_EXPRESSION "PASS: nested-expression compile-time/RSS scaling is approximately linear"
                 FAIL_REGULAR_EXPRESSION "FAIL:")

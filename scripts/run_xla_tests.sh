@@ -320,6 +320,20 @@ eshkol_checked_rm "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk"
 
 echo ""
 
+# Exercise region lifetime and cache/pool contracts in the actual XLA lane,
+# rather than relying on the non-XLA fallback exercised by general smoke.
+for regression_script in \
+    tests/xla/xla_region_reclaim_test.sh \
+    tests/codegen/run_cache_xla_threshold_key_test.sh \
+    tests/memory/arena_block_pool_test.sh; do
+    if BUILD_DIR="$BUILD_DIR" bash "$regression_script"; then
+        ((PASS++)) || true
+    else
+        FAILED_TESTS+=("$regression_script")
+        ((FAIL++)) || true
+    fi
+done
+
 # ===== Summary =====
 echo "========================================="
 echo "  XLA Test Results Summary"

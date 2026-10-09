@@ -399,3 +399,16 @@ Variables local to one script (for example the continuation suite's
 `ESHKOL_CONT_*` or the TensorCore integration test's `ESHKOL_TENSORCORE_*`
 paths) are documented in that script's header. Self-hosted runner provisioning
 variables are in [SELF_HOSTED_RUNNERS.md](../../platform/SELF_HOSTED_RUNNERS.md).
+
+
+## Native arena and CUDA controls
+
+| Variable | Effect | Default |
+|----------|--------|---------|
+| `ESHKOL_ARENA_BLOCK_POOL_MB` | Maximum MiB retained for reuse across native arena teardown. Blocks smaller than 1 MiB are not pooled. `0` disables pooling; `ESHKOL_ARENA_POISON` also disables it. Read once on first pool use. | 1024 |
+| `ESHKOL_CUDA_NO_DIRECT_HOST` | Its presence disables direct host operands on CUDA devices that support pageable access through host page tables, retaining the registered/pinned path. Unset it to allow capability-based direct access. Read once on first wrapped operand. | unset |
+
+Pooled blocks are outside the active-arena heap usage while retained. Reuse
+checks the full block size against the active heap ceiling, including any
+excess over the requested size. An enforced ceiling terminates on a rejected
+charge. The pool cap separately bounds retained blocks.

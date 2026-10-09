@@ -1,9 +1,17 @@
 #include "../../lib/core/arena_memory.h"
+#include <eshkol/core/resource_limits.h>
 
 #include <cstdint>
 #include <cstring>
+#include <cerrno>
 #include <iostream>
 #include <limits>
+#include <string>
+
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -16,9 +24,104 @@ bool is_aligned(const void* ptr, uintptr_t alignment) {
     return (reinterpret_cast<uintptr_t>(ptr) % alignment) == 0;
 }
 
+#if !defined(_WIN32)
+int run_heap_limit_pool_process_regression() {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return fail("heap-limit regression pipe creation failed");
+
+    const pid_t child = fork();
+    if (child < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return fail("heap-limit regression fork failed");
+    }
+    if (child == 0) {
+        close(pipefd[0]);
+        if (dup2(pipefd[1], STDERR_FILENO) < 0) _exit(90);
+        close(pipefd[1]);
+
+        eshkol_resource_limits_t limits = eshkol_get_default_limits();
+        limits.max_heap_bytes = (size_t)3 << 20;
+        limits.heap_soft_limit_bytes = 0;
+        limits.active_limits = ESHKOL_LIMIT_ACTIVE_HEAP;
+        limits.enforce_hard_limits = true;
+        limits.enable_warnings = false;
+        eshkol_set_limits(&limits);
+        eshkol_reset_resource_tracking();
+        unsetenv("ESHKOL_ARENA_POISON");
+        unsetenv("ESHKOL_ARENA_BLOCK_POOL_MB");
+        setenv("ESHKOL_ARENA_BLOCK_POOL_MB", "16", 1);
+
+        // Warm one 2 MiB pooled block, then hold 2 MiB in four 512 KiB blocks.
+        arena_t* warm = arena_create((size_t)2 << 20);
+        if (!warm) { dprintf(STDERR_FILENO, "TEST_SETUP_FAIL warm\n"); _exit(90); }
+        arena_destroy(warm);
+        arena_t* live[4] = {};
+        for (arena_t*& a : live) {
+            a = arena_create((size_t)512 << 10);
+            if (!a) { dprintf(STDERR_FILENO, "TEST_SETUP_FAIL live\n"); _exit(90); }
+        }
+        if (eshkol_get_heap_usage() != ((size_t)2 << 20)) {
+            dprintf(STDERR_FILENO, "TEST_SETUP_FAIL usage=%zu\n", eshkol_get_heap_usage());
+            _exit(90);
+        }
+
+        // Corrected core terminates here with ESHKOL_EXIT_LIMIT_HEAP after the
+        // pooled block's extra 1 MiB charge is rejected.
+        dprintf(STDERR_FILENO, "TARGET_REQUEST\n");
+        arena_t* target = arena_create((size_t)1 << 20);
+        (void)target;
+        dprintf(STDERR_FILENO, "TEST_TARGET_RETURNED\n");
+        _exit(91);
+    }
+
+    close(pipefd[1]);
+    std::string diagnostic;
+    char buffer[256];
+    for (;;) {
+        const ssize_t n = read(pipefd[0], buffer, sizeof(buffer));
+        if (n == 0) break;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            close(pipefd[0]);
+            return fail("heap-limit regression diagnostic read failed");
+        }
+        diagnostic.append(buffer, static_cast<size_t>(n));
+    }
+    close(pipefd[0]);
+
+    int status = 0;
+    for (;;) {
+        if (waitpid(child, &status, 0) >= 0) break;
+        if (errno != EINTR) return fail("heap-limit regression waitpid failed");
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != ESHKOL_EXIT_LIMIT_HEAP) {
+        std::cerr << "FAIL: pooled-block enforcement status=" << status
+                  << " diagnostic=" << diagnostic;
+        return 1;
+    }
+    if (diagnostic.find("TEST_SETUP_FAIL") != std::string::npos ||
+        diagnostic.find("TARGET_REQUEST") == std::string::npos ||
+        diagnostic.find("TEST_TARGET_RETURNED") != std::string::npos ||
+        diagnostic.find("Heap hard limit exceeded") == std::string::npos ||
+        diagnostic.find("pooled arena block") == std::string::npos) {
+        std::cerr << "FAIL: pooled-block enforcement diagnostic mismatch: " << diagnostic;
+        return 1;
+    }
+    return 0;
+}
+#endif
+
 }  // namespace
 
 int main() {
+#if defined(_WIN32)
+    // The process-isolated enforcement regression is POSIX-only; the rest of
+    // this arena test remains portable.
+#else
+    if (run_heap_limit_pool_process_regression() != 0) return 1;
+#endif
+
     if (arena_get_used_memory(nullptr) != 0) return fail("null used-memory query mismatch");
     if (arena_get_total_memory(nullptr) != 0) return fail("null total-memory query mismatch");
     if (arena_get_block_count(nullptr) != 0) return fail("null block-count query mismatch");
@@ -185,6 +288,32 @@ int main() {
     }
 
     arena_destroy(arena);
+
+    // Large-block pool accounting: a block released by a scope pop goes to the
+    // pool, and a later smaller request can reuse it. The arena must charge the
+    // block's real size, because every release subtracts block->size; charging
+    // the requested size instead made total_allocated drift down (and wrap
+    // below zero for a small arena) after each such reuse.
+    {
+        arena_t* pooled = arena_create(1024);
+        if (!pooled) return fail("pool-accounting arena_create returned null");
+        const size_t base_total = arena_get_total_memory(pooled);
+
+        arena_push_scope(pooled);
+        if (!arena_allocate(pooled, (size_t)1900 * 1024)) return fail("1.9 MiB allocation returned null");
+        arena_pop_scope(pooled);
+        if (arena_get_total_memory(pooled) != base_total) {
+            return fail("scope pop did not release the 1.9 MiB block from the arena total");
+        }
+
+        arena_push_scope(pooled);  // may be served by the pooled 1.9 MiB block
+        if (!arena_allocate(pooled, (size_t)1100 * 1024)) return fail("1.1 MiB allocation returned null");
+        arena_pop_scope(pooled);
+        if (arena_get_total_memory(pooled) != base_total) {
+            return fail("arena total drifted after reusing a larger pooled block");
+        }
+        arena_destroy(pooled);
+    }
 
     std::cout << "PASS\n";
     return 0;

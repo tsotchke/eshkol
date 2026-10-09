@@ -16,10 +16,18 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **XLA results respect the calling thread's active region.** All nine XLA
+  result allocation sites use the current arena, and the run cache includes
+  the compiled GPU dispatch threshold. Elementwise results avoid redundant
+  zeroing, bounded arena-block reuse preserves allocation accounting and heap
+  enforcement, and coherent CUDA devices can use host operands directly. (#751, #752)
+- **Release CTest uses four workers.** The full test inventory, per-test
+  limits and publication receipts are retained. The source-mutating ABI
+  negative control and timing-sensitive calibration checks run serially. (#752)
 - **ABI inventory accounts for the integrated contributor changes.** The
   baseline records the ESKM name-size accessor and eleven allocator sites in
   three regression-test files, with exact counts and review reasons. Lexical
-  and semantic ratchets and injected-site negative controls remain enforced.
+  and semantic ratchets and injected-site negative controls remain enforced. (#752)
 - **Native AOT linking preserves C++ compiler-driver names.** A configured
   `clang++` symlink keeps its invocation name when resolved, so linking retains
   C++ runtime and exception support rather than dispatching as `clang`. (#750)

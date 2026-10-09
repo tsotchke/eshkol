@@ -233,7 +233,8 @@ extern "C" void* eshkol_xla_elementwise(
         }
     }
 
-    eshkol_tensor_t* result = arena_allocate_tensor_full(
+    // Every element is written below (GPU kernel or CPU loop), so skip zeroing.
+    eshkol_tensor_t* result = arena_allocate_tensor_full_uninit(
         reinterpret_cast<arena_t*>(arena), static_cast<uint64_t>(rank), static_cast<uint64_t>(total_elements));
     if (!result) return nullptr;
     result->dtype = ESHKOL_TENSOR_DTYPE_F64;

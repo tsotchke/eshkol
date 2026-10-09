@@ -617,8 +617,8 @@ eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena) {
  * @param total_elements  Total element count (product of dimensions); 0 allocates no elements array.
  * @return                Newly allocated, populated tensor, or nullptr on failure.
  */
-eshkol_tensor_t* arena_allocate_tensor_full(
-    arena_t* arena, uint64_t num_dims, uint64_t total_elements) {
+static eshkol_tensor_t* arena_allocate_tensor_impl(
+    arena_t* arena, uint64_t num_dims, uint64_t total_elements, bool zero) {
     if (!arena) {
         eshkol_error("Invalid arena for tensor allocation");
         return nullptr;
@@ -673,13 +673,30 @@ eshkol_tensor_t* arena_allocate_tensor_full(
             eshkol_error("Failed to allocate tensor elements array");
             return nullptr;
         }
-        std::memset(tensor->elements, 0, elem_size);
+        if (zero) std::memset(tensor->elements, 0, elem_size);
     }
 
     tensor->num_dimensions = num_dims;
     tensor->total_elements = total_elements;
 
     return tensor;
+}
+
+eshkol_tensor_t* arena_allocate_tensor_full(
+    arena_t* arena, uint64_t num_dims, uint64_t total_elements) {
+    return arena_allocate_tensor_impl(arena, num_dims, total_elements, true);
+}
+
+/**
+ * @brief As arena_allocate_tensor_full, but the elements are NOT zeroed.
+ *
+ * For results every element of which the caller writes before the tensor is
+ * visible (elementwise kernels): zeroing 8 bytes per element first is a full
+ * extra pass over memory that is immediately overwritten.
+ */
+eshkol_tensor_t* arena_allocate_tensor_full_uninit(
+    arena_t* arena, uint64_t num_dims, uint64_t total_elements) {
+    return arena_allocate_tensor_impl(arena, num_dims, total_elements, false);
 }
 
 }  // extern "C"

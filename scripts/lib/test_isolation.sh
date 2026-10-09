@@ -66,6 +66,76 @@ eshkol_test_isolation_fail() {
     exit 1
 }
 
+# Run a child with a real wall-clock deadline without relying on the product
+# runtime being tested. Prefer an installed GNU/coreutils timeout; on minimal
+# macOS hosts, use Python's standard library and kill the whole process group.
+# A timed-out child gets the conventional status 124.
+eshkol_test_timeout() {
+    local seconds="$1"
+    shift
+    [ -n "$seconds" ] && [ "$#" -gt 0 ] || {
+        echo "test_isolation: timeout requires seconds and a command" >&2
+        return 2
+    }
+    if [ "${ESHKOL_TEST_TIMEOUT_FORCE_PYTHON:-0}" != 1 ]; then
+        if command -v gtimeout >/dev/null 2>&1; then
+            gtimeout "$seconds" "$@"
+            return $?
+        fi
+        if command -v timeout >/dev/null 2>&1; then
+            timeout "$seconds" "$@"
+            return $?
+        fi
+    fi
+    python3 - "$seconds" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+seconds = float(sys.argv[1])
+argv = sys.argv[2:]
+is_windows = os.name == "nt"
+
+def kill_tree(force):
+    if is_windows:
+        try:
+            subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                           check=False, timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return
+    try:
+        os.killpg(child.pid, signal.SIGKILL if force else signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+try:
+    child = subprocess.Popen(
+        argv,
+        start_new_session=not is_windows,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if is_windows else 0,
+    )
+except OSError as exc:
+    print(f"test_isolation: cannot execute timeout child: {exc}", file=sys.stderr)
+    raise SystemExit(127)
+try:
+    result = child.wait(timeout=seconds)
+    raise SystemExit(128 + (-result) if result < 0 else result)
+except subprocess.TimeoutExpired:
+    kill_tree(False)
+    try:
+        child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        kill_tree(True)
+        try:
+            child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    raise SystemExit(124)
+PY
+}
+
 # Resolve the repo root from this file's own location (scripts/lib/), not from
 # $PWD — suites are invoked from the repo root, from ctest's build directory,
 # and from run_all_tests.sh, and must all agree on which checkout they are in.
