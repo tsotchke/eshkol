@@ -56,6 +56,13 @@ REGRESSES below its tracked baseline max-depth
 (`scripts/ad_depth_report.py::BASELINE`); a fix that raises a boundary shows up
 as an "improvement" and stays green.
 
+Each run is bounded by `scripts/lib/guarded_exec.pl`, which stops `eshkol-run`
+together with the build and run processes it starts. The default budgets are
+240 s for `-r`, 360 s for an AOT compile and 90 s for an AOT run; a probe that
+measurably needs more has a row in `budgets.tsv` with the measurement behind
+it, and `JIT_TIMEOUT`, `AOT_COMPILE_TIMEOUT` or `AOT_RUN_TIMEOUT` in the
+environment override every probe.
+
 ## Files
 
 - `../../scripts/gen_ad_depth.py` — deterministic generator (byte-for-byte
@@ -67,6 +74,8 @@ as an "improvement" and stays green.
   ICC trace; holds the tracked baseline (`BASELINE`) and tracking map
   (`TRACK`).
 - `../../scripts/run_ad_depth.sh` — JIT+AOT runner.
+- `budgets.tsv` — per-probe wall-clock budgets above the defaults, each with
+  its measurement.
 - `found/` — hand-shrunk minimal repros for the divergences this oracle
   discovered (acceptance tests of their tracking entries; not run by the
   gate).
