@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "primitive": "squared_distance",
-  "eshkol_version": "1.3.4",
+  "eshkol_version": "1.3.6-evolve",
   "generator": "tests/qllm_oracle/squared_distance.esk",
   "reference": "inc/eshkol/bridge/space_form.h (AD_NODE_SQUARED_DISTANCE)",
   "formula": "d^2(x,y) on H^n (ball) / S^n / R^n and products; grad_x d^2 = -2 log_x(y)",

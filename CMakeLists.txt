@@ -3653,7 +3653,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
             add_test(NAME ${_ns_name}_aot
                 COMMAND sh -c
-                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ns_file}_aot' '${_ns_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ns_file}_aot'")
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ns_name}_aot' '${_ns_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ns_name}_aot'")
             set_tests_properties(${_ns_name}_aot PROPERTIES
                 TIMEOUT 240
                 ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
@@ -3718,7 +3718,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
             add_test(NAME ${_ipm_name}_aot
                 COMMAND sh -c
-                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot' '${_ipm_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot'")
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_name}_aot' '${_ipm_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_name}_aot'")
             set_tests_properties(${_ipm_name}_aot PROPERTIES
                 TIMEOUT 240
                 ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
