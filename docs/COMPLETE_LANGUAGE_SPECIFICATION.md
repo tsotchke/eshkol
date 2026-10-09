@@ -1377,6 +1377,9 @@ tensor against a SCALAR is a type error, in either operand order — scalar
 broadcast is a separate, explicitly named operator (`tensor-scale`), not an
 overload of the arithmetic operators. A vector and a rank-1 tensor are two
 spellings of one value, so a mixed pair is the element-wise result.
+Element-wise results are computed in f64, as tensor arithmetic is, so
+the elements of `(* (vector 1 2) (vector 3 4))` are the inexact 3.0 and 8.0:
+the result is `equal?` to `(vector 3.0 8.0)`, not to `(vector 3 8)`.
 
 Shapes broadcast NumPy-style, so "matching shape" means broadcast-compatible
 rather than identical; a pair that cannot be broadcast is a catchable error
