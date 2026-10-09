@@ -9,14 +9,23 @@ sources:
   - lib/types/type_checker.cpp
   - lib/types/type_relation.cpp
   - inc/eshkol/backend/static_callee_binding.h
+  - lib/core/platform_runtime.cpp
+  - lib/core/eskm_v2_experimental.h
+  - lib/agent/crypto.esk
+  - lib/backend/gpu/cublas_loader.cpp
+  - cmake/EshkolImageIO.cmake
+  - exe/eshkol-repl.cpp
 ---
-# Upgrading to v1.3.5-evolve
+# Upgrading to v1.3.6-evolve
 
 What a program, a build or a contributor workflow written against
-v1.3.4-evolve meets on v1.3.5-evolve. Each section states what is true now and
+v1.3.4-evolve meets on v1.3.6-evolve. Sections 1-9 are the v1.3.4-to-v1.3.5
+changes and remain true on v1.3.6; section 10 is what v1.3.5-evolve to
+v1.3.6-evolve adds on top of them. Each section states what is true now and
 what, if anything, to do about it. The complete list of changes is the
-`[1.3.5-evolve]` section of [CHANGELOG.md](../CHANGELOG.md); the release
-summary is [RELEASE_NOTES.md](../RELEASE_NOTES.md).
+`[1.3.5-evolve]` and `[1.3.6-evolve]` sections of
+[CHANGELOG.md](../CHANGELOG.md); the release summary is
+[RELEASE_NOTES.md](../RELEASE_NOTES.md).
 
 Every program on this page was run on the release compiler, on the JIT
 (`eshkol-run -r`) and as an AOT binary, with identical output.
@@ -32,6 +41,7 @@ Every program on this page was run on the release compiler, on the JIT
 7. [Building Eshkol](#7-building-eshkol)
 8. [Environment variables](#8-environment-variables)
 9. [Contributors](#9-contributors)
+10. [Upgrading from v1.3.5-evolve to v1.3.6-evolve](#10-upgrading-from-v135-evolve-to-v136-evolve)
 
 ## 1. The type checker sees more of your program
 
@@ -306,3 +316,82 @@ means a path relative to the repository root.
 The contributor workflow is in [CONTRIBUTING.md](../CONTRIBUTING.md), the
 documentation system in [DOCUMENTATION.md](DOCUMENTATION.md), and the release
 process in [platform/RELEASE_PROCESS.md](platform/RELEASE_PROCESS.md).
+
+## 10. Upgrading from v1.3.5-evolve to v1.3.6-evolve
+
+What a program, a build or a contributor workflow written against
+v1.3.5-evolve meets on v1.3.6-evolve. The complete list is the
+`[1.3.6-evolve]` section of [CHANGELOG.md](../CHANGELOG.md).
+
+- **SHA-256 and HMAC-SHA256 hash every byte of a multibyte input.** `(sha256 data)` and `(hmac-sha256 key data)` in
+  [`lib/agent/crypto.esk`](../lib/agent/crypto.esk) now pass
+  `string-byte-length`, not character count, to the native hash. On v1.3.5 the
+  digest of a string containing non-ASCII characters covered a UTF-8 prefix
+  of character-count bytes; on v1.3.6 it covers the whole string, so those
+  digests change. Keys and data with only ASCII bytes are unaffected,
+  since byte length and character count agree. (#748)
+- **Closing an output string port releases its buffer and registry slot.**
+  A new `open-output-string` port starts empty even when the C allocator
+  reuses the address of an earlier, closed port, so programs can close output
+  string ports as soon as they are done with them. (#748)
+- **AOT linking preserves the C++ driver's invocation name.** Native linking
+  resolves the configured `clang++`/`clang++-<N>` driver (or, where
+  `ESHKOL_CXX`/`CXX` names a `clang`-named symlink to it, the symlink itself)
+  rather than normalizing to a plain `clang` invocation; see
+  `normalize_cxx_driver_path` and `resolve_cxx_driver` in
+  [`lib/core/platform_runtime.cpp`](../lib/core/platform_runtime.cpp). A build
+  that depended on native AOT output linking without the C++ runtime and
+  exception-handling support should re-check it, since the driver now keeps
+  its C++ identity. (#750)
+- **CUDA builds load cuBLAS lazily, by exact ABI major.** GPU GEMM dispatch
+  now resolves `libcublas.so.<major>` (or the matching Windows DLL) at first
+  use through [`lib/backend/gpu/cublas_loader.cpp`](../lib/backend/gpu/cublas_loader.cpp)
+  instead of linking it eagerly; a CPU-only build, and the JIT and VM paths,
+  no longer carry cuBLAS's memory footprint. A mismatched or missing cuBLAS
+  major fails closed to CPU matrix multiplication rather than binding an
+  incompatible library. (#740)
+- **Hosted ESKM v2 reading and writing are explicitly experimental and
+  opt-in.** They need both a build flag (`ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2`)
+  and a runtime mode (`ESHKOL_EXPERIMENTAL_ESKM_V2=read` or `=write`); either
+  one unset, or a build without the flag requesting a mode, fails closed. See
+  [`lib/core/eskm_v2_experimental.h`](../lib/core/eskm_v2_experimental.h).
+  Default saves and loads remain byte-identical ESKM v1 and are unaffected.
+  (#722)
+- **Release and package builds require a native image I/O backend.** The new
+  CMake option `ESHKOL_REQUIRE_IMAGE_IO` (default `OFF`) fails configuration
+  when no backend (Apple ImageIO, GDI+, libpng/libjpeg/libwebp) is found; see
+  [`cmake/EshkolImageIO.cmake`](../cmake/EshkolImageIO.cmake). The release
+  workflow sets it `ON`. A developer build that previously configured without
+  an image backend still does; only a build that also passes
+  `-DESHKOL_REQUIRE_IMAGE_IO=ON` needs one. (#737)
+- **REPL input is shared across line-editing backends.** Piped input and
+  `--machine` mode use the same prompt-free input path as before on every
+  backend (`readline` present or absent); interactive terminal sessions keep
+  their prompt. See `simple_readline`/`eshkol_readline` in
+  [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp). (#737)
+- **Mixed exact/inexact rigorous interval arithmetic preserves containment.**
+  An interval with one exact and one inexact endpoint converts the exact
+  endpoint outward until an exact comparison certifies containment, rather
+  than risking a narrowed bound from a direct inexact conversion; an
+  indeterminate non-finite endpoint fails closed. Nothing to do unless a
+  program inspected interval internals directly rather than through the
+  published interval operations. (#727)
+- **A narrow set of AOT loops have bounded flat per-iteration RSS.** A
+  named-let loop that exits normally, a loop that discards a numeric tensor
+  each iteration, and a loop computing `tensor-dot` on a literal tensor no
+  longer grow resident memory per iteration under AOT. This is not a general
+  flat-RSS guarantee for every loop shape or platform; the original
+  million-iteration growth report is kept as a regression fixture
+  (`tests/memory/define_loop_discarded_tensor_flat_rss_aot_test.esk` and
+  neighboring `tests/memory/*flat_rss*` tests). (#729, #735)
+- **Constructor and handler allocation failures are checked rather than
+  assumed.** Generated `cons`/vector/closure construction and selected
+  collection, parallel and FFT paths now check their allocation result;
+  a failed capture environment or handler frame fails the operation instead
+  of continuing with a partially built value. This should not be observable
+  in a program that was not already exhausting memory, since it replaces an
+  unchecked path with a checked failure on the same error condition. (#721)
+
+Troubleshooting steps are collected in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md); the full change list is
+[CHANGELOG.md](../CHANGELOG.md).

@@ -36,6 +36,7 @@ addressing — O(1) average lookup and insertion.
 
 ## Iterating
 
+<!-- doc-example: skip fragment: ht is an assumed hash table from earlier on the page -->
 ```scheme
 ;; Get all keys
 (display (hash-table-keys ht))

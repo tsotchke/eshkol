@@ -251,13 +251,13 @@ N-dimensional arrays for numerical computing.
 ```scheme
 ; Create tensors
 (define v (vector 1.0 2.0 3.0))         ; 1D vector
-(define M #((1 2 3) (4 5 6)))           ; 2D matrix (literal syntax)
+(define M #(#(1 2 3) #(4 5 6)))         ; 2D matrix (literal syntax: a vector of row vectors)
 
 ; Tensor creation functions
 (zeros 5)           ; => #(0.0 0.0 0.0 0.0 0.0)
 (ones 2 3)          ; => #((1.0 1.0 1.0) (1.0 1.0 1.0))
-(eye 3)             ; => 3×3 identity matrix
-(arange 0.0 1.0 0.2) ; => #(0.0 0.2 0.4 0.6 0.8)
+(eye 3)             ; => #((1 0 0) (0 1 0) (0 0 1))  (a 3x3 identity matrix)
+(arange 0.0 1.0 0.2) ; => #(0 0.2 0.4 0.6000000000000001 0.8)  (step accumulates in floating point)
 
 ; Element access
 (vref v 0)          ; => 1.0
@@ -268,8 +268,8 @@ N-dimensional arrays for numerical computing.
 (tensor-mul v v)                ; => #(1.0 4.0 9.0)
 
 ; Linear algebra
-(define A #((1 2) (3 4)))
-(define B #((5 6) (7 8)))
+(define A #(#(1 2) #(3 4)))
+(define B #(#(5 6) #(7 8)))
 (matmul A B)        ; => #((19 22) (43 50))
 (transpose A)       ; => #((1 3) (2 4))
 (trace A)           ; => 5.0
@@ -329,6 +329,7 @@ Efficient for functions ℝ → ℝⁿ (single input, many outputs).
 
 Efficient for functions ℝⁿ → ℝ (many inputs, single output). Essential for machine learning.
 
+<!-- doc-example: skip fragment: a sketch of a training step; weights, data and targets are assumed, not constructed here -->
 ```scheme
 ; Gradient of scalar function
 (define (f v) 
@@ -375,7 +376,7 @@ Physics and field theory operators.
 (jacobian F #(3.0 4.0))  ; => #((2.0 0.0) (1.0 1.0))
 
 ; Hessian (curvature)
-(hessian f #(1.0 1.0))  ; => #((2.0 0.0) (0.0 2.0))
+(hessian u #(1.0 1.0))  ; => #((2.0 0.0) (0.0 2.0))
 ```
 
 **Applications**: Physics simulations, optimization, PDE solvers
@@ -384,11 +385,13 @@ Physics and field theory operators.
 
 ## Part 6: Complete Example - Neural Network Training
 
-Here's a complete 2-layer neural network with backpropagation:
+Here's a complete 2-layer neural network with backpropagation. Today
+`(gradient f w)` with respect to a 2-D tensor parameter returns the gradient
+flattened (shape `(12)` for a `(3 4)` weight matrix). Planned for v1.4: the
+gradient in the parameter's own shape, which the weight update below uses.
 
+<!-- doc-example: skip pseudo-code: planned capability for v1.4; the weight update uses gradients in the parameter's own shape -->
 ```scheme
-(require core.functional)
-
 ; Network parameters
 (define input-size 3)
 (define hidden-size 4)
@@ -445,8 +448,8 @@ Here's a complete 2-layer neural network with backpropagation:
          (grad-w2 (gradient (lambda (w) (loss-fn W1 w)) W2)))
     
     ; Update weights: W := W - α∇L
-    (set! W1 (tensor-sub W1 (tensor-mul learning-rate grad-w1)))
-    (set! W2 (tensor-sub W2 (tensor-mul learning-rate grad-w2)))
+    (set! W1 (tensor-sub W1 (* (vector learning-rate) grad-w1)))
+    (set! W2 (tensor-sub W2 (* (vector learning-rate) grad-w2)))
     
     ; Return current loss
     (loss-fn W1 W2)))
@@ -492,7 +495,9 @@ Here's a complete 2-layer neural network with backpropagation:
 
 ; Manipulate code
 (define (get-lambda-params code)
-  (cadr code))  ; => (x)
+  (cadr code))
+(display (get-lambda-params code))  ; => (x)
+(newline)
 
 ; Display shows source structure
 (display (lambda (x) (* x 2)))
@@ -507,8 +512,8 @@ Here's a complete 2-layer neural network with backpropagation:
 (define (classify x)
   (match x
     ((? number?) 'is-number)
-    ((a b c) 'is-triple)
-    ((h . t) 'is-pair)
+    ((list a b c) 'is-triple)
+    ((cons h t) 'is-pair)
     (_ 'unknown)))
 
 (classify 42)           ; => is-number
@@ -538,7 +543,7 @@ Here's a complete 2-layer neural network with backpropagation:
 
 ```scheme
 (guard (exn
-         ((divide-by-zero? exn) 'infinity)
+         ((error-object? exn) 'infinity)
          (else 'unknown-error))
   (/ 1 0))
 ; => infinity
@@ -582,7 +587,7 @@ Gradient descent to find minimum of Rosenbrock function.
   (define (step i)
     (if (< i iterations)
         (let* ((grad (gradient f point))
-               (update (tensor-mul learning-rate grad))
+               (update (* (vector learning-rate) grad))
                (new-point (tensor-sub point update)))
           
           ; Print progress
@@ -638,8 +643,6 @@ f(optimum) = 8.4e-7
 Solve the 1D heat equation: ∂u/∂t = α∇²u
 
 ```scheme
-(require core.functional)
-
 ; Discretized Laplacian (finite differences)
 (define (discrete-laplacian u dx)
   (let* ((n (vector-length u))
@@ -658,7 +661,7 @@ Solve the 1D heat equation: ∂u/∂t = α∇²u
 ; Time step
 (define (heat-step u alpha dt dx)
   (let ((lap (discrete-laplacian u dx)))
-    (tensor-add u (tensor-mul (* alpha dt) lap))))
+    (tensor-add u (* (vector (* alpha dt)) lap))))
 
 ; Simulation
 (define (simulate-heat u0 alpha dt dx steps)
@@ -691,6 +694,7 @@ Solve the 1D heat equation: ∂u/∂t = α∇²u
 
 ### Essential Syntax
 
+<!-- doc-example: skip pseudo-code: a cheat-sheet of grammar shapes; value/new-value/etc. are metavariables -->
 ```scheme
 ; Comments
 ; Single-line comment
@@ -759,7 +763,9 @@ For agent harnesses and the larger research-grade examples (`agent.esk`, `selene
 ; Import modules
 (require core.list.higher_order)  ; fold, filter, any, every
 (require core.list.sort)           ; sort, merge
-(require core.functional)          ; compose, curry, flip
+(require core.functional.compose)  ; compose, compose3, identity, constantly
+(require core.functional.curry)    ; curry2, curry3, partial, partial2, partial3
+(require core.functional.flip)     ; flip
 (require core.strings)             ; String utilities
 (require core.json)                ; JSON parsing
 
@@ -841,6 +847,7 @@ eshkol-run --no-stdlib program.esk -o program
 
 ### Performance
 
+<!-- doc-example: skip fragment: (big-computation) names an assumed function, illustrating the let-caching idiom rather than a complete program -->
 ```scheme
 ; Use let for cached computations
 (let ((expensive-calc (big-computation)))
@@ -860,6 +867,7 @@ eshkol-run --no-stdlib program.esk -o program
 
 ### Debugging
 
+<!-- doc-example: skip fragment: my-data, x and lst are assumed bindings illustrating the debugging idioms, not a complete program -->
 ```scheme
 ; Display shows structure
 (display my-data)
@@ -1050,6 +1058,7 @@ ESHKOL_GPU_VERBOSE=1 eshkol-run my_program.esk   # See dispatch decisions
 
 ### Parallel Programming
 
+<!-- doc-example: skip fragment: expensive-computation-1/2 name assumed functions illustrating future/force usage -->
 ```scheme
 ;; Parallel map — distributes work across threads
 (parallel-map (lambda (x) (* x x)) '(1 2 3 4 5))  ; => (1 4 9 16 25)
@@ -1078,7 +1087,7 @@ ESHKOL_GPU_VERBOSE=1 eshkol-run my_program.esk   # See dispatch decisions
 (kb-assert! kb (make-fact 'parent 'alice 'bob))
 (kb-assert! kb (make-fact 'parent 'bob 'charlie))
 (kb-query kb (make-fact 'parent ?who 'charlie))
-;; => list of substitutions where ?who = bob
+;; => ({?who -> bob})  (one substitution: ?who bound to bob)
 
 ;; Active inference with factor graphs
 (define fg (make-factor-graph 2 #(2 2)))   ; 2 binary variables
@@ -1092,7 +1101,8 @@ ESHKOL_GPU_VERBOSE=1 eshkol-run my_program.esk   # See dispatch decisions
 ### Signal Processing
 
 ```scheme
-(require signal)
+(require signal.fft)
+(require signal.filters)
 
 ;; FFT — Cooley-Tukey radix-2 (input length must be power of 2)
 (define signal #(1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0))
@@ -1217,9 +1227,10 @@ Compile Eshkol to WebAssembly for browser deployment:
 eshkol-run --wasm app.esk -o app.wasm
 ```
 
+<!-- doc-example: skip platform-specific: compiles only under --wasm with a browser DOM; the native JIT/AOT engines have no window object -->
 ```scheme
 ;; app.esk — interactive web application
-(require web)
+(require web.web)
 
 ;; Get DOM handles
 (define body (web-get-body))

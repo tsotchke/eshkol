@@ -67,6 +67,7 @@ terms equal:
 
 ### Type Predicates
 
+<!-- doc-example: skip fragment: kb/s1 are assumed bindings from earlier on the page -->
 ```scheme
 (logic-var? ?x)           ;; => #t  (bare ?x, no quote)
 (logic-var? 'hello)       ;; => #f
@@ -119,6 +120,7 @@ through `fg-marginal` (a system builtin, not in the core 22).
 Free energy quantifies surprise — how much the model's predictions diverge
 from the observed evidence:
 
+<!-- doc-example: skip fragment: fg is an assumed factor graph from earlier on the page -->
 ```scheme
 ;; Observations are encoded as #(var-index observed-state) pairs.
 ;; Passing a single 2-element tensor #(0 0) is read as: variable 0 was
@@ -150,6 +152,7 @@ its insertion index — the same order in which `fg-add-factor!` was
 called). After updating a factor, the message cache is reset so the next
 `fg-infer!` reconverges from the new CPT.
 
+<!-- doc-example: skip fragment: fg is an assumed factor graph from earlier on the page -->
 ```scheme
 ;; Update factor 0's CPT in light of new evidence.
 (fg-update-cpt! fg 0 #(0.95 0.05 0.15 0.85))
@@ -204,6 +207,7 @@ at 16, regardless of what you pass).
 
 ### Type Predicates
 
+<!-- doc-example: skip fragment: fg/ws are assumed bindings from earlier on the page -->
 ```scheme
 (factor-graph? fg)   ;; => #t
 (workspace? ws)      ;; => #t

@@ -9,6 +9,7 @@ long-running resident stack-overflowed every 45-75 minutes.
 
 ## TL;DR — the canonical pattern
 
+<!-- doc-example: skip fragment: tick/state/max-ticks/run-one-tick!/log-stumble!/on-error/updated are assumed bindings illustrating the tail-position pattern, not a complete program -->
 ```scheme
 (define (resident-loop tick state)
   (if (>= tick max-ticks)
@@ -50,6 +51,7 @@ disabled) or happened unsoundly (TCO enabled but leaking) before ESH-0222:
    then ran as real, unbounded recursion — one native stack frame per
    iteration, forever:
 
+<!-- doc-example: skip fragment: tick/state/max-ticks/run-one-tick!/log-stumble!/on-error/updated are assumed bindings illustrating the tail-position pattern, not a complete program -->
    ```scheme
    (define (loop tick state)
      (if (>= tick max-ticks)
@@ -84,6 +86,7 @@ means the pattern from bug (1) above — recursion in **both** the guard
 body's tail position and a handler clause's tail position — now compiles
 to a flat loop:
 
+<!-- doc-example: skip fragment: tick/state/max-ticks/run-one-tick!/log-stumble!/on-error/updated are assumed bindings illustrating the tail-position pattern, not a complete program -->
 ```scheme
 (define (loop tick state)
   (if (>= tick max-ticks)

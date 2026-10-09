@@ -86,6 +86,7 @@ matched exactly in patterns.
 Hygienic macros prevent accidental variable capture. The `tmp` in `swap!`
 above cannot conflict with user code:
 
+<!-- doc-example: skip fragment: depends on the `swap!` macro defined earlier on this page -->
 ```scheme
 (define tmp 42)
 (define a 1)
