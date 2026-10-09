@@ -11,7 +11,7 @@
       "lib/core/introspection.cpp": 6,
       "lib/core/kb_persistence.cpp": 4,
       "lib/core/logic.cpp": 7,
-      "lib/core/model_io.cpp": 1,
+      "lib/core/model_io.cpp": 2,
       "lib/core/runtime_arena_core.cpp": 2,
       "lib/core/runtime_autodiff.cpp": 2,
       "lib/core/runtime_deep_equal.cpp": 7,
@@ -148,9 +148,12 @@
       "lib/core/workspace.cpp": 3,
       "lib/repl/repl_jit.cpp": 9,
       "tests/core/abi_layout_pin_test.cpp": 1,
+      "tests/core/constructor_allocation_shim.cpp": 9,
+      "tests/core/eskm_v2_runtime_test.cpp": 1,
       "tests/core/model_io_test.cpp": 2,
       "tests/core/parameter_region_barrier_test.cpp": 1,
       "tests/core/region_promotion_failure_test.cpp": 6,
+      "tests/core/runtime_allocation_hardening_test.cpp": 1,
       "tests/core/runtime_closure_alloc_test.cpp": 2,
       "tests/core/runtime_deep_equal_test.cpp": 4,
       "tests/core/runtime_object_alloc_test.cpp": 10,
@@ -319,16 +322,48 @@
         "tests/toolchain/wasm_exact_runtime_test.js",
         "scripts/abi_header_inventory.py selftest"
       ]
+    },
+    {
+      "after": {
+        "lib/core/model_io.cpp": 2
+      },
+      "before": {
+        "lib/core/model_io.cpp": 1
+      },
+      "class": "A_macro_api",
+      "reason": "PR750 integrates the experimental ESKM v2 reader from PR722. Its bounded name validation uses the canonical ESHKOL_GET_HEADER accessor to inspect the allocated string size before memchr. This admits only that reviewed accessor; no raw offset, layout change, detector exemption or semantic baseline change.",
+      "source": "60f345def03a73b0b676376db8f64962d48fb0a6",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "tests/core/constructor_allocation_shim.cpp": 9,
+        "tests/core/eskm_v2_runtime_test.cpp": 1,
+        "tests/core/runtime_allocation_hardening_test.cpp": 1
+      },
+      "before": {},
+      "class": "E_alloc_with_header",
+      "reason": "PR750 integrates the PR721 constructor failure-injection wrappers (three declarations, three wrappers and three forwarded allocator calls), one PR722 ESKM runtime string fixture allocation and one closure-allocation hardening assertion. These eleven test-only sites use the existing header-aware allocator family; they introduce no alternate header construction or layout. Only these exact file counts are admitted; all other lexical and semantic counts and negative controls remain enforced.",
+      "source": "60f345def03a73b0b676376db8f64962d48fb0a6",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
     }
   ],
   "schema": 1,
   "totals": {
-    "A_macro_api": 133,
+    "A_macro_api": 134,
     "B_header_type": 78,
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 47,
-    "E_alloc_with_header": 204,
+    "E_alloc_with_header": 215,
     "F_parallel_header_decl": 2,
     "G_header_field_write": 184,
     "H_wasm_glue": 62,

@@ -16,6 +16,10 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **ABI inventory accounts for the integrated contributor changes.** The
+  baseline records the ESKM name-size accessor and eleven allocator sites in
+  three regression-test files, with exact counts and review reasons. Lexical
+  and semantic ratchets and injected-site negative controls remain enforced.
 - **Native AOT linking preserves C++ compiler-driver names.** A configured
   `clang++` symlink keeps its invocation name when resolved, so linking retains
   C++ runtime and exception support rather than dispatching as `clang`. (#750)
