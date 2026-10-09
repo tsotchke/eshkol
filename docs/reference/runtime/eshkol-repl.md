@@ -148,8 +148,12 @@ Success response:
 - `value` / `value_type` — the form's own value, and its coarse runtime
   type name (`integer`, `real`, `boolean`, `string`, `pair`, `symbol`,
   `procedure`, `vector`, `null` for the empty list, `unspecified` for the
-  unspecified value, etc. — the same classification the language exposes as
-  `type-of`). A form that evaluates to the unspecified value (a definition,
+  unspecified value, etc. — produced by the same internal name registry,
+  `eshkol_format_value_type_tag`, that formats type-error messages; **not**
+  what the `type-of` builtin returns, which is the integer type tag, not a
+  name. Planned for v1.4: readable type names via `type-name`, a
+  Scheme-level builtin exposing this same name registry.
+  A form that evaluates to the unspecified value (a definition,
   `display`, `set!`, a `when` whose test is false, ...) is reported with an
   empty `value` and `value_type: "unspecified"`
   ([ADR-0024](../../design/adr/0024-unspecified-value.md)).

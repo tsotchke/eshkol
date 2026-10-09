@@ -32,7 +32,7 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 
 **Implementation references:**
 - Parser: [parser.cpp](../../lib/frontend/parser.cpp) (11,698 lines)
-- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (47,353 lines)
+- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (47,407 lines)
 - Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (6,087 lines)
 
 ---

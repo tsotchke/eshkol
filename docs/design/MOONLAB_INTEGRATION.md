@@ -30,7 +30,7 @@ cites the file and symbol it is grounded in, across four repositories:
 Moonlab already **consumes** Eshkol. Moonlab's GPU backend bridges into
 Eshkol's Metal/CUDA precision tiers for VQE/QAOA GEMM:
 `src/optimization/gpu/backends/gpu_eshkol.h` in Moonlab exposes
-`moonlab_eshkol_zgemm` (`gpu_eshkol.h:123`) dispatching through Eshkol, and
+`moonlab_eshkol_zgemm` (`gpu_eshkol.h:124`) dispatching through Eshkol, and
 Eshkol carries the reciprocal note at `lib/backend/gpu/gpu_memory.mm:56`
 (`// (Moonlab 2026-04-19 integration report). Per-call logging must be opt-in.`).
 
@@ -58,7 +58,7 @@ the existing bridge.
   `moonlab_*`/`quantum_*`/`gate_*`/`vqe_*` symbol is exported.
 - Consumer link path: `-lquantumsim` at build time, or `dlopen`+`dlsym` the
   `moonlab_*` symbols at runtime feature-gated by `moonlab_abi_version()`
-  (`moonlab_export.h:6-8, 72`).
+  (doc comment `moonlab_export.h:19`, declaration `moonlab_export.h:132`).
 
 There are **two ABI tiers**, and the binding should treat them differently:
 
@@ -81,8 +81,8 @@ lower-level state-vector/gate/VQE surface. Feature-gate at load with
 
 | Type | Header | Shape | Notes |
 |---|---|---|---|
-| `moonlab_ca_mps_t` | `moonlab_export.h:217` | opaque fwd-decl | Clifford-assisted MPS state |
-| `moonlab_tdvp_engine_t` | `moonlab_export.h:521` | opaque fwd-decl | adaptive-bond TDVP engine |
+| `moonlab_ca_mps_t` | `moonlab_export.h:395` | opaque fwd-decl | Clifford-assisted MPS state |
+| `moonlab_tdvp_engine_t` | `moonlab_export.h:723` | opaque fwd-decl | adaptive-bond TDVP engine |
 | `quantum_state_t` | `src/quantum/state.h:131` | **public struct** | dense state vector (`num_qubits`, `state_dim`, `amplitudes`, `owns_memory`, `gpu_state`, `gpu_backend`) |
 | `measurement_result_t` | returned by `quantum_measure` (`gates.h:293`) | struct-by-value | `{outcome, probability, entropy}` |
 | `pauli_hamiltonian_t`, `vqe_ansatz_t`, `vqe_optimizer_t`, `vqe_solver_t`, `noise_model_t` | `src/algorithms/vqe.h` | opaque handles | VQE building blocks |
@@ -97,24 +97,24 @@ opaque handles, avoiding the ctypes-mirror fragility the Python binding accepts.
 
 - Stable `moonlab_*` ABI: `int` return, `0` = success, negative = error.
   Scalar-energy entry points (DMRG) return `double` with `DBL_MAX` as the error
-  sentinel (`moonlab_export.h:296-299`); topology one-shots use `INT_MIN`.
-  `moonlab_status_string(int module, int status)` (`moonlab_export.h:700`)
+  sentinel (`moonlab_export.h:499-500`); topology one-shots use `INT_MIN`.
+  `moonlab_status_string(int module, int status)` (`moonlab_export.h:951`)
   stringifies, with `moonlab_status_module_t` enumerating modules.
 - State-vector/gate layer: `qs_error_t` enum (`state.h:79-88`): `QS_SUCCESS=0`,
   `QS_ERROR_INVALID_QUBIT=-1`, ... `QS_ERROR_DRIVER=-8`.
 - QRNG layer: `qrng_v3_error_t` (`qrng.h:140-150`).
 - Ownership: every `*_create`/`*_clone` has a matching `*_free`/`*_destroy`
-  (`moonlab_ca_mps_free` `:222`, `quantum_state_destroy` `state.h:382`,
-  `moonlab_tdvp_engine_free` `:678`, `vqe_*_free`). `moonlab_z2_lgt_1d_build`
+  (`moonlab_ca_mps_free` `:400`, `quantum_state_destroy` `state.h:382`,
+  `moonlab_tdvp_engine_free` `:880`, `vqe_*_free`). `moonlab_z2_lgt_1d_build`
   allocates `*out_paulis`/`*out_coeffs` the **caller must `free()`**
-  (`moonlab_export.h:466`). `moonlab_qrng_bytes` is zero-setup: it lazily builds
+  (`moonlab_export.h:687`). `moonlab_qrng_bytes` is zero-setup: it lazily builds
   a process-lifetime context freed at `atexit` (`moonlab_qrng_export.c:33-75`).
 
 ### 1.4 The ~30 core functions worth exposing to Scheme, grouped
 
 **Lifecycle / diagnostics**
-- `moonlab_abi_version(int*,int*,int*)` — `moonlab_export.h:72` — version gate.
-- `moonlab_status_string(int,int)` — `moonlab_export.h:700` — error strings.
+- `moonlab_abi_version(int*,int*,int*)` — `moonlab_export.h:132` — version gate.
+- `moonlab_status_string(int,int)` — `moonlab_export.h:951` — error strings.
 
 **State-vector ops** (`src/quantum/state.h`)
 - `quantum_state_create(int)` / `quantum_state_destroy` — `state.h:373/382`.
@@ -144,35 +144,35 @@ opaque handles, avoiding the ctypes-mirror fragility the Python binding accepts.
   `vqe_exact_ground_state_energy` `:203` (FCI reference).
 - Ansaetze `vqe_create_hardware_efficient_ansatz/_uccsd_/_symmetry_preserving_`
   `:246/261/272`; `vqe_ansatz_free`/`vqe_apply_ansatz` `:282/293`.
-- `vqe_optimizer_create/_free` `:347/353`; `vqe_solver_create/_free`/`vqe_solve`
-  `:407/418/496`.
-- `vqe_compute_energy(solver, params)` `:476` — the scalar loss E(theta).
-- `vqe_compute_gradient(solver, params, grad)` `:509` — exact gradient (see Sec 4).
-- DMRG scalar drivers `moonlab_dmrg_tfim_energy` `moonlab_export.h:314`,
-  `_heisenberg_energy` `:342`.
+- `vqe_optimizer_create/_free` `:357/387`; `vqe_solver_create/_free`/`vqe_solve`
+  `:457/468/546`.
+- `vqe_compute_energy(solver, params)` `:526` — the scalar loss E(theta).
+- `vqe_compute_gradient(solver, params, grad)` `:586` — exact gradient (see Sec 4).
+- DMRG scalar drivers `moonlab_dmrg_tfim_energy` `moonlab_export.h:516`,
+  `_heisenberg_energy` `:544`.
 
 **QRNG** (the honest-random source)
-- `moonlab_qrng_bytes(uint8_t* buf, size_t size)` — `moonlab_export.h:96`,
-  impl `moonlab_qrng_export.c:57`. The stable, zero-setup, thread-safe entry.
+- `moonlab_qrng_bytes(uint8_t* buf, size_t size)` — `moonlab_export.h:167`,
+  impl `moonlab_qrng_export.c:94`. The stable, zero-setup, thread-safe entry.
   Doc (`moonlab_export.h:78-84`): "combines a hardware entropy pool (RDSEED /
   /dev/urandom / SecRandomCopyBytes) with a Bell-verified quantum simulation
   layer". Returns 0 / -1 (null buf) / -2 (engine init failed) / -3 (byte-gen
   failure, e.g. a rejected Bell-verification epoch).
 - Lower-level (optional, for entropy diagnostics): `qrng_v3_verify_quantum`,
-  `qrng_v3_get_entanglement_entropy` — `qrng.h:404/415`.
+  `qrng_v3_get_entanglement_entropy` — `qrng.h:413/424`.
 
 **PQC / ML-KEM (FIPS 203)** (`moonlab_export.h`, impl `src/crypto/mlkem/mlkem.c`)
-- `moonlab_mlkem512_keygen_qrng/_encaps_qrng/_decaps` `:147/160/172`.
-- `moonlab_mlkem768_keygen_qrng/_encaps_qrng/_decaps` `:183/184/185`
+- `moonlab_mlkem512_keygen_qrng/_encaps_qrng/_decaps` `:302/317/333`.
+- `moonlab_mlkem768_keygen_qrng/_encaps_qrng/_decaps` `:345/348/352`
   (recommended default).
-- `moonlab_mlkem1024_keygen_qrng/_encaps_qrng/_decaps` `:194/195/196`.
+- `moonlab_mlkem1024_keygen_qrng/_encaps_qrng/_decaps` `:364/367/371`.
 - Buffer-size macros `MOONLAB_MLKEM{512,768,1024}_{PUBLICKEY,SECRETKEY,CIPHERTEXT,SHAREDSECRET}BYTES`.
 
 **CA-MPS / TDVP (large-system tensor-network engines, stable ABI)** — bind in a
 later stage if there is demand; lifecycle `moonlab_ca_mps_create/_free`
-`:220/222`, gates `:234-261`, observables `moonlab_ca_mps_expect_pauli_sum`
-`:280`; TDVP `moonlab_tdvp_create_heisenberg/_tfim` `:553/574`, `_step`/`_evolve_to`
-`:595/608`.
+`:398/400`, gates `:412-440`, observables `moonlab_ca_mps_expect_pauli_sum`
+`:458`; TDVP `moonlab_tdvp_create_heisenberg/_tfim` `:755/776`, `_step`/`_evolve_to`
+`:797/810`.
 
 **Extension registries** (advanced; out of initial scope)
 - `moonlab_register_decoder`/`_unregister_decoder` — `decoder_bench.h:151/158`.
@@ -200,19 +200,20 @@ later stage if there is demand; lifecycle `moonlab_ca_mps_create/_free`
 From `src/optimization/gpu/backends/gpu_eshkol.h` (the existing Moonlab->Eshkol
 bridge), the reverse binding must reuse the same vocabulary:
 
-- **Precision tiers** — `moonlab_eshkol_precision_t` (`gpu_eshkol.h:51-56`):
+- **Precision tiers** — `moonlab_eshkol_precision_t` (`gpu_eshkol.h:52-57`):
   `EXACT=0` (fp53 bit-exact fp64), `HIGH=1` (df64), `FAST=2` (f32), `ML=3`
   (fp24). These map to Eshkol's `ESHKOL_GPU_PRECISION` env semantics. Any
   Eshkol builtin that offers a Moonlab GPU-resident state (`quantum_state_create_gpu`)
   must expose tiers with **identical names/order**.
-- **Status enum** — `moonlab_eshkol_status_t` (`gpu_eshkol.h:58-65`): `OK=0`,
+- **Status enum** — `moonlab_eshkol_status_t` (`gpu_eshkol.h:59-66`): `OK=0`,
   `NOT_BUILT=-1`, `NO_GPU=-2`, `INVALID_ARGS=-3`, `DISPATCH_FAILED=-4`, `OOM=-5`.
   The reverse binding's own status surface should follow the 0/negative pattern.
 - **Memory ownership** — caller-owns-everything; host pointers passed by
-  reference; GPU staging buffers stay internal (`gpu_eshkol.h:96-123`). The
-  Eshkol shim must likewise never hand Moonlab a pointer it will free.
+  reference, no GPU-resident buffer handle is exposed in the header
+  (`moonlab_eshkol_zgemm` signature, `gpu_eshkol.h:124-129`). The Eshkol shim
+  must likewise never hand Moonlab a pointer it will free.
 - **Complex element type** — `typedef double _Complex moonlab_cplx_t;`
-  (`gpu_eshkol.h:49`), interleaved (re, im). Amplitude readback from Moonlab
+  (`gpu_eshkol.h:50`), interleaved (re, im). Amplitude readback from Moonlab
   states uses the same interleaved-complex convention.
 - **Compile-gate + graceful fallback** — the bridge is gated by
   `QSIM_ENABLE_ESHKOL`; when off, symbols still declare and `available()`
@@ -347,16 +348,17 @@ bridge can honor Eshkol's AD honesty doctrine with no finite differences.**
 
 ### 4.1 What Moonlab provides
 
-`vqe_compute_gradient(solver, params, grad)` (`vqe.h:509`, impl `vqe.c:1714`)
+`vqe_compute_gradient(solver, params, grad)` (`vqe.h:586`, impl `vqe.c:1983`)
 returns `dE/dtheta` for the whole parameter vector. Its dispatch is two exact
 paths, no finite differences:
 
 1. **Reverse-mode adjoint autograd (default fast path)** — `vqe_compute_gradient`
-   tries `vqe_compute_gradient_adjoint` first (`vqe.c:1668`), conditioned on a
-   hardware-efficient ansatz and noise-free simulation (`vqe.c:1672-1673`). It
-   builds a `moonlab_diff_circuit_t` tape (`vqe_build_hea_diff_circuit`,
-   `vqe.c:1628`), runs `moonlab_diff_forward`, then
-   `moonlab_diff_backward_pauli_sum` (`vqe.c:1705`). Cost ~2 forward passes,
+   tries `vqe_compute_gradient_adjoint` first (call site `vqe.c:2006`, defined
+   at `vqe.c:1936`), conditioned on a hardware-efficient ansatz and
+   noise-free simulation (`vqe.c:1941-1942`). It builds a
+   `moonlab_diff_circuit_t` tape (`vqe_build_hea_diff_circuit`, call at
+   `vqe.c:1944`), runs `moonlab_diff_forward` (`vqe.c:1967`), then
+   `moonlab_diff_backward_pauli_sum` (`vqe.c:1974`). Cost ~2 forward passes,
    independent of parameter count. The autograd engine is
    `src/algorithms/diff/differentiable.h` — the header states it is "the same
    algorithm used by PennyLane, Qiskit Aer, and JAX-Qsim for exact
@@ -364,14 +366,20 @@ paths, no finite differences:
    entry `moonlab_diff_backward_pauli_sum(c, forward_state, terms, num_terms,
    grad_out)` (`differentiable.h:216`) accumulating `d/dtheta` of
    `sum_k c_k <psi|P_k|psi>`.
-2. **Parameter-shift rule (fallback)** — `vqe.c:1741-1768`,
-   `grad[i] = (E(theta + (pi/2) e_i) - E(theta - (pi/2) e_i)) / 2` (documented at
-   `vqe.h:501-502`). Also exact/analytic (comment `vqe.c:1762`: "Exact gradient
-   via parameter shift"). Used for UCCSD / symmetry-preserving ansaetze and any
-   noisy channel.
+2. **Parameter-shift rule (fallback, inlined in the same function,
+   `vqe.c:2010-2080`)** — for a hardware-efficient ansatz this reduces to the
+   two-term rule `grad[i] = (E(theta + (pi/2) e_i) - E(theta - (pi/2) e_i)) / 2`
+   (`vqe.c:2069-2075`; declared at `vqe.h:582-589`). As of the pinned Moonlab
+   revision the fallback is generator-spectrum-dependent (`vqe.c:2044-2062`):
+   UCCSD / symmetry-preserving ansaetze have eigenvalues `{-1/2, 0, +1/2}`, for
+   which the two-term rule silently drops the half-frequency component, so
+   those ansaetze use an exact four-term rule instead (explanatory comment
+   `vqe.c:2044-2062`; `c1 = 1/4 + sqrt(2)/8`, `c2 = sqrt(2)/8 - 1/4` defined at
+   `vqe.c:2066-2067`). Both branches remain exact/analytic, not
+   finite-difference.
 
-Both are exact. The loss itself is `vqe_compute_energy(solver, params)`
-(`vqe.h:476`).
+Both paths are exact. The loss itself is `vqe_compute_energy(solver, params)`
+(`vqe.h:526`).
 
 **Export gap to resolve:** neither `vqe_compute_gradient` nor any
 `moonlab_diff_*` symbol is tagged `MOONLAB_API`, and `moonlab_export.h` does not
@@ -575,14 +583,22 @@ the one flagged Moonlab export change in S3).
   `ESHKOL_ENABLE_MOONLAB` build gate with graceful fallback (mirroring
   `QSIM_ENABLE_ESHKOL`).
 - **Eshkol files** (honest `quantum-random`, core-builtin path — works under
-  WASM): `lib/quantum/quantum_rng.c` + `quantum_rng_wrapper.c` (re-point the
-  `eshkol_qrng_*` implementation to `moonlab_qrng_bytes` / `qrng_v3`;
-  `wrapper.c:31-57`), `lib/backend/vm_native.c` (replace the xorshift
-  `vm_qrng_*` bodies `:4299-4334, 12392-12420` with calls to the same
-  `eshkol_qrng_*` — kills the VM-vs-LLVM divergence), `lib/backend/eshkol_vm.c`
-  (add `quantum-random-source` predicate), `CMakeLists.txt` (link libquantumsim
-  or vendored qrng_v3 into the core runtime archive at `:1608`),
-  `tests/coverage/language_surface.json`.
+  WASM): `lib/quantum/quantum_rng.c` + `lib/quantum/quantum_rng_wrapper.c`
+  (gates the `eshkol_qrng_*` implementation on `ESHKOL_MOONLAB_QRNG_ENABLED`,
+  calling `moonlab_qrng_bytes` / `qrng_v3` when it is defined and a classical
+  PRNG fallback otherwise; `lib/quantum/quantum_rng_wrapper.c:31-57`).
+  **Status as shipped:** `lib/backend/vm_native.c` calls the same
+  `eshkol_qrng_*` entry points directly from the `quantum-random`/`-int`/`-range`
+  dispatch cases (`lib/backend/vm_native.c:19197-19225`) — there is no separate
+  `vm_qrng_*` body to replace, so the VM/LLVM-AOT divergence this bullet
+  originally proposed to kill is already closed. The build gate landed as the
+  existing `ESHKOL_QUANTUM_ENABLED` CMake option (`CMakeLists.txt:269`), not a
+  new `ESHKOL_ENABLE_MOONLAB` option. Runtime source disclosure is
+  `eshkol_qrng_source_label()` (`lib/quantum/quantum_rng_wrapper.c:163`,
+  declared `lib/quantum/quantum_rng_wrapper.h:84`); a Scheme-level
+  `quantum-random-source` predicate built on it is planned for v1.4 as a
+  builtin (see the Section 5 requirements above, which this label already
+  satisfies at the C level).
 - **Eshkol files** (rich quantum surface, agent.X path): `lib/agent/quantum.esk`
   (new), `lib/agent/c/agent_quantum.c` (new shim), `CMakeLists.txt` AGENT_FFI
   block (`:3117-3296`, add libquantumsim discovery + `ESHKOL_HOST_AGENT_FFI_LINK_ARGS`

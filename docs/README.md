@@ -15,10 +15,11 @@ pages and lets them fan out to their siblings.
 - [QUICKSTART](QUICKSTART.md) — 15-minute hands-on tutorial (lists to closures to tensors to gradients)
 - [Tutorials index](tutorials/README.md) — all 27 tutorials, from first program through full projects
 - [First 5 Minutes](tutorials/00_FIRST_5_MINUTES.md) — install, hello world, five wow moments
-- [Complete example catalogue](EXAMPLES.md) — source-backed descriptions, prerequisites, checks and run scope for every tracked program
-- [Mathematics example catalogue](MATHEMATICS_EXAMPLES.md) — algorithms, domains, arithmetic and limits, plus the authored JIT/AOT matrix
+- [Complete example catalogue](EXAMPLES.md) — source-backed descriptions, prerequisites, checks and run scope for every tracked program; 67 tracked examples (46 mathematics), each entry naming the published result it reproduces, its references, and its measured outcome at the release SHA ([docs/examples/measurements.json](examples/measurements.json))
+- [Mathematics example catalogue](MATHEMATICS_EXAMPLES.md) — algorithms, domains, arithmetic and limits, plus the authored JIT/AOT matrix, for the 46 mathematics programs among the 67 tracked examples
 - [Examples](../examples/README.md) — the runnable example collection (AD, parallelism, consciousness engine, streaming, simulation, quantum chemistry, and exact mathematics)
 - [AI-driven mathematics examples](AI_MATHEMATICS_EXAMPLES.md) — exact and AD-verified public witnesses, including the Jacobian counterexample, AlphaTensor factorizations, and a FunSearch cap set
+- [Navier-Stokes examples](NAVIER_STOKES_EXAMPLES.md) — residuals, scaling laws and similarity profiles; the authored 12-program/14-criteria/28-CTest matrix with native JIT and AOT variants
 - [FAQ](FAQ.md) — installation, troubleshooting, common questions
 - [Upgrading to v1.3.5-evolve](UPGRADING.md) — what a program, a build or a contributor workflow written against v1.3.4 meets on v1.3.5
 - [Troubleshooting](TROUBLESHOOTING.md) — build and run problems with known causes: LLVM discovery, host compilers, `ESHKOL_PATH`, caches, stack size, Python bindings, Windows, WebAssembly
@@ -97,6 +98,7 @@ pages and lets them fan out to their siblings.
 - [Memory Management (breakdown)](breakdown/MEMORY_MANAGEMENT.md) — OALR system, arena allocation, linear types, reference counting
 - [Memory model (runtime reference)](reference/runtime/memory-model.md) — tagged values, arena allocator, `with-region`
 - [core.memory faculty](reference/agent/memory-faculty.md) — content-addressed, CRDT-merged event log
+- [Constructor and exception-handler allocation hardening](allocation-hardening-followup.md) — v1.3.6 follow-up: allocation-result checks in generated cons/vector/closure constructors and the per-thread allocation-failure condition
 
 ## Macros and Modules
 
@@ -184,6 +186,7 @@ pages and lets them fan out to their siblings.
 - [ESKM v2 format decision](design/ESKM_V2_FORMAT_DECISION.md) — proposed extensible metadata envelope, compatibility rules, and implementation gates
 - [ESKM v1 scalar and empty-tensor VM materialization](design/ESKM_V1_VM_MATERIALIZATION.md) — the rank-0 / empty-tensor case native model loading materializes and VM model loading does not, and what closing it requires
 - [Tensor application shares ordinary callable dispatch](design/TENSOR_APPLY_CALLABLE_DISPATCH.md) — how `tensor-apply` was routed onto `codegenClosureCall` and `vm_enter_call`, and the four-engine gate that holds it there
+- [Navier-Stokes residual and similarity-profile mechanization](design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md) — the capability ledger and the gated capabilities planned for the residual/scaling-law computations
 - [Navier-Stokes computations: evidence ledger](design/NAVIER_STOKES_EVIDENCE_LEDGER.md) — per-step record of what is exact, what is validated by enclosure, and what is analytic-only in the mechanization design note
 - [Incompressible porous media: local velocity expansion, evidence ledger](design/IPM_LOCAL_EXPANSION_LEDGER.md) — the companion ledger for the local velocity expansion
 

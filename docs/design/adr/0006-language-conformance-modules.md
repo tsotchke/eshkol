@@ -27,12 +27,27 @@
   present.** ≥8 distinct tail walkers across 3 back ends; the permissive
   `default: return true;` this ADR indicts is still at
   `tail_call_codegen.cpp:559-562`.
-- **Strict R7RS visibility + `--legacy-open-modules` — ABSENT; codified
-  opposite.** `exe/eshkol-run.cpp:3889-3912` documents `(provide ...)` as
-  "INFORMATIONAL, not a hard export boundary" and `(void)rename_private_symbols;`
-  deliberately dead-codes the private-name rewriter.
-  `tests/modules/visibility_fail_test.esk:20-23` *asserts* a non-provided
-  helper IS callable — the test suite pins the pre-ADR behavior.
+- **Strict R7RS visibility + `--legacy-open-modules` — was ABSENT at
+  `4bf871a0`; RESOLVED 2026-08-29.** The commit cited below made
+  `rename_private_symbols` a live call again
+  (`exe/eshkol-run.cpp:3996-3999`: `if (!inline_load && !exports.empty())
+  eshkol::rename_private_symbols(...)`, run before `process_requires`) and
+  added the matching VM-path mangler (`vm_mangle_private_name`/
+  `vm_mangle_private_node`, `lib/backend/vm_compiler.c:1505-1620`).
+  `tests/modules/visibility_fail_test.esk` was flipped back to a negative
+  test (`;;; Expected: Error`, 6 lines) and now asserts the opposite of what
+  this bullet originally described. Verified by direct execution at
+  60f345def: `eshkol-run tests/modules/visibility_fail_test.esk` ->
+  `error: Unknown function: helper` (exit 1); `eshkol-run --profile hosted-vm
+  --emit-eskb <out> tests/modules/visibility_fail_test.esk` -> `ERROR:
+  module-private binding is not visible to this importer / helper` (exit 1).
+  Landed in `90203a8e0` ("feat(surface): DD-10 no-op surface implemented —
+  ... provide privacy on both engines ...", 2026-08-29), which post-dates the
+  2026-08-25 attainment review pinned above. `--legacy-open-modules` itself
+  was not added as a separate flag; the informational-`provide` behavior this
+  bullet asked to gate behind such a flag is simply gone on both engines, so
+  there is currently no escape hatch back to pre-ADR permissive visibility —
+  a residual item if one is still wanted.
 - **`--language=r7rs-small` "earned by evidence" — no such flag exists**
   (conformity audit item c9). `cond-expand` reports feature `r7rs` true
   unconditionally from a hard-coded predicate in two places
@@ -154,19 +169,28 @@ an error (`tests/modules/r7rs_import_modifiers_test.esk:7`).
 
 ### Visibility is lane-dependent and not lexical
 
-The AOT driver flattens top-level sequences and physically prepends every
-required module's ASTs to one compilation unit
-(`exe/eshkol-run.cpp:2170-2185`, `exe/eshkol-run.cpp:3396-3412`,
-`exe/eshkol-run.cpp:3634-3641`). Its symbol table treats a missing or empty
-export set as export-all (`exe/eshkol-run.cpp:1094-1124`). A private-name
-rewriter exists, but it finds definitions and recursively rewrites matching
-strings (`exe/eshkol-run.cpp:3348-3391`); the active load path deliberately
-disables it because `provide` is informational
-(`exe/eshkol-run.cpp:3577-3598`). `provide` nodes are then removed before final
-code generation (`exe/eshkol-run.cpp:3616-3629`). The positive visibility test
-explicitly requires a non-provided helper to remain externally callable
-(`tests/modules/visibility_fail_test.esk:11-29`,
-`tests/modules/visibility_fail_test.esk:37-45`).
+**Updated 2026-08-29/2026-09-10 (commit `90203a8e0`), re-verified at the v1.3.6
+release SHA `60f345def`: this subsection described the state before that change and is
+now historical.** The AOT driver still flattens top-level sequences and
+physically prepends every required module's ASTs to one compilation unit; a
+missing or empty `provide` list is still export-all
+(`exe/eshkol-run.cpp:3978-3981`: `inline_load ? defined_symbols :
+(exports.empty() ? defined_symbols : exports)`). But for `(require ...)`
+(`inline_load == false`) with a non-empty `provide` list, the private-name
+rewriter is now an active, unconditional call —
+`eshkol::rename_private_symbols(module_asts, module_name, exports)`
+(`exe/eshkol-run.cpp:3996-3999`) — run before `process_requires`, not a
+disabled dead path. The VM has a matching mangler
+(`vm_mangle_private_name`/`vm_mangle_private_node`,
+`lib/backend/vm_compiler.c:1505-1620`). `tests/modules/visibility_fail_test.esk`
+no longer requires a non-provided helper to remain callable; it was rewritten
+to a 6-line negative test (`;;; Expected: Error`) asserting the opposite.
+Verified by direct execution: `eshkol-run tests/modules/visibility_fail_test.esk`
+-> `error: Unknown function: helper` (exit 1, native path);
+`eshkol-run --profile hosted-vm --emit-eskb <out>
+tests/modules/visibility_fail_test.esk` -> `ERROR: module-private binding is
+not visible to this importer / helper` (exit 1, VM path). Both paths now
+reject the foreign private reference.
 
 The REPL implements a different rule. It computes private names after parsing a
 module (`lib/repl/repl_jit.cpp:2583-2627`), compiles the whole batch, and then
