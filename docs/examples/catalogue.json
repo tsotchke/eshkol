@@ -330,7 +330,7 @@
     },
     {
       "path": "examples/h2_vibrational_full.esk",
-      "source_sha256": "3be1fcc934fc79cec88c4530de4a8c8a7506b22046e23e75ef137d5053e66a92",
+      "source_sha256": "8786ed83b7e1f5015dc1cb8d312fc3f6c7ee244bf48b05842f3862eb41cd8564",
       "title": "H₂ geometry AD and quantum response",
       "kind": "example",
       "purpose": "Combine Pauli-coefficient geometry derivatives with quantum-state response.",
@@ -356,15 +356,15 @@
           "text": "(define exps  (list 3.42525091 0.62391373 0.16885540))"
         },
         {
-          "line": 185,
+          "line": 204,
           "text": "(display \"force constant k          = \") (display k) (display \" Ha/bohr^2\") (newline)"
         },
         {
-          "line": 186,
+          "line": 205,
           "text": "(display \"vibrational frequency     = \") (display omega) (display \" cm^-1\") (newline)"
         },
         {
-          "line": 187,
+          "line": 206,
           "text": "(display \"  (geometry derivs: Eshkol Taylor tower; <P>, response, Hessian: Moonlab)\") (newline)"
         }
       ],
@@ -539,7 +539,7 @@
     },
     {
       "path": "examples/mathematics_alphatensor_3x3_gf2.esk",
-      "source_sha256": "222712935cc60af1f734f817d22c2b6a8c9fbcca97e4d56d6bf383d2710b1006",
+      "source_sha256": "7f439ceb1a3ea82e8a500f5421320f53963909e2198cc3f358dd81fbd51ffdd5",
       "title": "Rank-23 matrix multiplication over F₂",
       "kind": "mathematics",
       "purpose": "Verify a supplied public AlphaTensor factorization.",
@@ -550,7 +550,16 @@
       "limitations": "Certifies the supplied bilinear witness over F₂; does not search for it or prove rank optimality.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "registrations": [],
+      "registrations": [
+        {
+          "family": "ESHKOL_AI_WITNESS_EXAMPLES",
+          "criterion": "alphatensor_rank23_gf2",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
       "source_anchors": [
         {
           "line": 1,
@@ -597,7 +606,7 @@
     },
     {
       "path": "examples/mathematics_alphatensor_gf2.esk",
-      "source_sha256": "eb57351038fdc11718775948f85f98017cec9d0accd8a4ca89f1c8bac3fb9f1e",
+      "source_sha256": "97b4bebee4eba04141d1618cfac8fdada8ca1de719d26f7b36dc10ce150a5940",
       "title": "Rank-47 matrix multiplication over F₂",
       "kind": "mathematics",
       "purpose": "Verify the supplied 4×4 AlphaTensor factorization.",
@@ -608,7 +617,16 @@
       "limitations": "No factorization search, field-independent rank claim, or rank-optimality proof is implemented.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "registrations": [],
+      "registrations": [
+        {
+          "family": "ESHKOL_AI_WITNESS_EXAMPLES",
+          "criterion": "alphatensor_rank47_gf2",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
       "source_anchors": [
         {
           "line": 1,
@@ -1683,7 +1701,7 @@
     },
     {
       "path": "examples/mathematics_funsearch_cap_set.esk",
-      "source_sha256": "dc27292115bb4bd49875557420807bfb0cd9ff5e7a58f5a26a1f89d6e9d43806",
+      "source_sha256": "45d91a4f2f3503bb752ee024d6dca7e50eb8e3fb2fe66cd46e598fbfe6b600a6",
       "title": "Explicit 512-cap in AG(8,3)",
       "kind": "mathematics",
       "purpose": "Verify a supplied public cap-set construction.",
@@ -1694,7 +1712,16 @@
       "limitations": "This certifies the supplied set; it neither reruns FunSearch nor proves a maximum cap size.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "registrations": [],
+      "registrations": [
+        {
+          "family": "ESHKOL_AI_WITNESS_EXAMPLES",
+          "criterion": "funsearch_cap_set_512",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
       "source_anchors": [
         {
           "line": 1,
@@ -2088,7 +2115,7 @@
     },
     {
       "path": "examples/mathematics_jacobian_counterexample.esk",
-      "source_sha256": "51770f32f89bad44e6ea905881f4350f1245b3c8a3f710aefadf2fffac5181b1",
+      "source_sha256": "17695cfcfb489d40a4e842192c87e55dc218de708bad7bf380618eae1a2a0238",
       "title": "Polynomial Jacobian map and fibers",
       "kind": "mathematics",
       "purpose": "Verify the explicit map, finite fibers and determinant identities supplied by the cited paper.",
@@ -2099,7 +2126,16 @@
       "limitations": "The exact degree-grid determinant certificate and tolerance-based AD comparisons have different scopes. Interpreting the construction as a real or complex Jacobian conjecture counterexample depends on the paper’s domain and hypotheses.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "registrations": [],
+      "registrations": [
+        {
+          "family": "ESHKOL_AI_WITNESS_EXAMPLES",
+          "criterion": "jacobian_counterexample_fibers",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
       "source_anchors": [
         {
           "line": 1,
