@@ -27,11 +27,16 @@ extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type,
 namespace {
 
 /* Forward-mode tensor boundaries use the same 64-byte jet layout emitted by
- * AutodiffCodegen::packDualToTagged: the first four coefficients are the
- * value jet and the second four are the reverse-seed derivative jet.  These
- * transformer kernels are first-order forward consumers, but retaining the
- * complete storage and copying the untouched slots makes the representation
- * safe for a caller that is itself nested in another AD operation. */
+ * AutodiffCodegen::packDualToTagged. Coefficient s belongs to the monomial
+ * whose bits name its perturbations (bit 0 = e1, bit 1 = e2, bit 2 = the
+ * reverse seed ep), each nilpotent, so c[3] is the mixed e1e2 term a Hessian
+ * reads. The rules below are the complete truncated algebra: a product's
+ * coefficient s sums x[a] y[s\a] over the subsets a of s, a quotient follows
+ * the division recurrence, and a unary f composes its Taylor coefficients
+ * with the nilpotent part. Single-perturbation coefficients are evaluated in
+ * exactly the order the VM's first-order tensor duals mirror
+ * (lib/backend/vm_tensor_ops.c, docs/VM_PARITY.md), so first-order results
+ * stay bit-identical across engines. */
 struct tensor_dual_jet {
     double c[8];
 };
@@ -95,10 +100,23 @@ static tensor_dual_jet jet_sub(const tensor_dual_jet& a,
  * WebAssembly, which has no scalar f64 FMA instruction — a one-ulp
  * native-vs-WASM divergence in the same source.  If a future kernel wants a
  * fused product, it must say so with an explicit fma() call. */
+static inline bool jet_single_perturbation(int s) { return (s & (s - 1)) == 0; }
+
+/* Sum over the proper, nonempty subsets a of s of x[a] * y[s ^ a]: the
+ * cross terms a product gains at a multi-perturbation coefficient. */
+static double jet_cross_terms(const double* x, const double* y, int s) {
+    double acc = 0.0;
+    for (int a = (s - 1) & s; a > 0; a = (a - 1) & s) acc += x[a] * y[s ^ a];
+    return acc;
+}
+
 static tensor_dual_jet jet_mul(const tensor_dual_jet& a,
                                const tensor_dual_jet& b) {
     tensor_dual_jet out{};
-    for (int i = 0; i < 8; ++i) out.c[i] = a.c[i] * b.c[0] + a.c[0] * b.c[i];
+    for (int s = 1; s < 8; ++s) {
+        out.c[s] = a.c[s] * b.c[0] + a.c[0] * b.c[s];
+        if (!jet_single_perturbation(s)) out.c[s] += jet_cross_terms(a.c, b.c, s);
+    }
     out.c[0] = a.c[0] * b.c[0];
     return out;
 }
@@ -115,9 +133,29 @@ static tensor_dual_jet jet_div(const tensor_dual_jet& a,
     const double inv = 1.0 / b.c[0];
     const double inv2 = inv * inv;
     out.c[0] = a.c[0] * inv;
-    for (int i = 1; i < 8; ++i)
-        out.c[i] = a.c[i] * inv - a.c[0] * b.c[i] * inv2;
+    /* q_s = (a_s - sum over nonempty t subset of s of b_t q_{s\t}) / b_0; at a
+     * single perturbation this is a_s/b_0 - a_0 b_s/b_0^2. Subsets of s are
+     * numerically smaller than s, so ascending s sees every q it reads. */
+    for (int s = 1; s < 8; ++s) {
+        if (jet_single_perturbation(s)) {
+            out.c[s] = a.c[s] * inv - a.c[0] * b.c[s] * inv2;
+        } else {
+            double acc = a.c[s];
+            for (int t = s; t > 0; t = (t - 1) & s) acc -= b.c[t] * out.c[s ^ t];
+            out.c[s] = acc * inv;
+        }
+    }
     return out;
+}
+
+/* n (x) n and n (x) n (x) n for the nilpotent part n of a jet (n[0] = 0). Only
+ * multi-perturbation coefficients of a power of n are nonzero. */
+static void jet_nilpotent_powers(const tensor_dual_jet& a, double* n2, double* n3) {
+    double n[8];
+    std::memcpy(n, a.c, sizeof(n));
+    n[0] = 0.0;
+    for (int s = 0; s < 8; ++s) n2[s] = s == 0 ? 0.0 : jet_cross_terms(n, n, s);
+    for (int s = 0; s < 8; ++s) n3[s] = s == 0 ? 0.0 : jet_cross_terms(n2, n, s);
 }
 
 static tensor_dual_jet jet_unary_sqrt(const tensor_dual_jet& a,
@@ -130,10 +168,16 @@ static tensor_dual_jet jet_unary_sqrt(const tensor_dual_jet& a,
     tensor_dual_jet out{};
     const double root = std::sqrt(a.c[0]);
     out.c[0] = root;
-    if (root == 0.0) {
-        for (int i = 1; i < 8; ++i) out.c[i] = 0.0;
-    } else {
-        for (int i = 1; i < 8; ++i) out.c[i] = a.c[i] / (2.0 * root);
+    if (root == 0.0) return out;
+    /* sqrt(x0 + n) = root + n/(2 root) - n^2/(8 root^3) + n^3/(16 root^5). */
+    double n2[8], n3[8];
+    jet_nilpotent_powers(a, n2, n3);
+    const double root3 = root * root * root;
+    const double g2 = -1.0 / (8.0 * root3);
+    const double g3 = 1.0 / (16.0 * root3 * root * root);
+    for (int s = 1; s < 8; ++s) {
+        out.c[s] = a.c[s] / (2.0 * root);
+        if (!jet_single_perturbation(s)) out.c[s] += g2 * n2[s] + g3 * n3[s];
     }
     return out;
 }
@@ -142,7 +186,14 @@ static tensor_dual_jet jet_unary_exp(const tensor_dual_jet& a) {
     tensor_dual_jet out{};
     const double value = std::exp(a.c[0]);
     out.c[0] = value;
-    for (int i = 1; i < 8; ++i) out.c[i] = value * a.c[i];
+    /* exp(x0 + n) = value (1 + n + n^2/2 + n^3/6). */
+    double n2[8], n3[8];
+    jet_nilpotent_powers(a, n2, n3);
+    for (int s = 1; s < 8; ++s) {
+        out.c[s] = value * a.c[s];
+        if (!jet_single_perturbation(s))
+            out.c[s] += value * (0.5 * n2[s] + n3[s] / 6.0);
+    }
     return out;
 }
 
