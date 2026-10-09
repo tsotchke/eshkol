@@ -12374,6 +12374,21 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
         PASS_REGULAR_EXPRESSION "PASS: [0-9]+ hygiene checks agree")
 endif()
 
+# Expansion renames binders and their references at every nesting depth, and
+# limits only the nesting that expansion itself introduces.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
+   AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME macro_expansion_depth
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_expansion_depth_test.py
+            --native $<TARGET_FILE:eshkol-run>
+            --vm $<TARGET_FILE:eshkol-vm-standalone-test>)
+    set_tests_properties(macro_expansion_depth PROPERTIES
+        TIMEOUT 600 LABELS "macros"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        PASS_REGULAR_EXPRESSION "PASS: [0-9]+ macro expansion depth checks")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-repl)
     add_test(NAME repl_macro_keyword_scope
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
