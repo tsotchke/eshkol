@@ -25,6 +25,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 # shellcheck source=../../scripts/lib/checked_write.sh
 . "$REPO_ROOT/scripts/lib/checked_write.sh"
 SCRATCH_ROOT="${ESHKOL_MEMORY_SCRATCH_ROOT:-$REPO_ROOT/.scratch/memory-gates}"
@@ -107,12 +108,12 @@ fi
 chmod +x "$BIN"
 
 if [ "$TIME_MODE" = "bsd" ]; then
-    ( cd "$WORK" && /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+    ( cd "$WORK" && /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
         "$TIMEOUT_S" "$BIN" ) > "${RUN_OUT:?}" 2> "${TIME_LOG:?}"
     RUN_RC=$?
     RSS_MB=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$TIME_LOG")
 else
-    ( cd "$WORK" && /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+    ( cd "$WORK" && /usr/bin/time -v perl "$ESHKOL_GUARDED_EXEC" \
         "$TIMEOUT_S" "$BIN" ) > "${RUN_OUT:?}" 2> "${TIME_LOG:?}"
     RUN_RC=$?
     RSS_MB=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$TIME_LOG")
@@ -175,13 +176,13 @@ else
         chmod +x "$HANDLER_BIN"
         if [ "$TIME_MODE" = "bsd" ]; then
             eshkol_require_output_file_path "$HANDLER_AOT_OUT"
-            ( cd "$WORK" && /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+            ( cd "$WORK" && /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
                 "$TIMEOUT_S" "$HANDLER_BIN" ) > "$HANDLER_AOT_OUT" 2> "$HANDLER_AOT_TIME"
             HANDLER_AOT_RC=$?
             HANDLER_AOT_RSS=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$HANDLER_AOT_TIME")
         else
             eshkol_require_output_file_path "$HANDLER_AOT_OUT"
-            ( cd "$WORK" && /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+            ( cd "$WORK" && /usr/bin/time -v perl "$ESHKOL_GUARDED_EXEC" \
                 "$TIMEOUT_S" "$HANDLER_BIN" ) > "$HANDLER_AOT_OUT" 2> "$HANDLER_AOT_TIME"
             HANDLER_AOT_RC=$?
             HANDLER_AOT_RSS=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$HANDLER_AOT_TIME")
@@ -198,13 +199,13 @@ else
 
         if [ "$TIME_MODE" = "bsd" ]; then
             eshkol_require_output_file_path "$HANDLER_VM_OUT"
-            ( cd "$WORK" && /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+            ( cd "$WORK" && /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
                 "$TIMEOUT_S" env ESHKOL_VM_NO_DISASM=1 "$ESHKOL_VM" "$HANDLER_SRC" ) > "$HANDLER_VM_OUT" 2> "$HANDLER_VM_TIME"
             HANDLER_VM_RC=$?
             HANDLER_VM_RSS=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$HANDLER_VM_TIME")
         else
             eshkol_require_output_file_path "$HANDLER_VM_OUT"
-            ( cd "$WORK" && /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+            ( cd "$WORK" && /usr/bin/time -v perl "$ESHKOL_GUARDED_EXEC" \
                 "$TIMEOUT_S" env ESHKOL_VM_NO_DISASM=1 "$ESHKOL_VM" "$HANDLER_SRC" ) > "$HANDLER_VM_OUT" 2> "$HANDLER_VM_TIME"
             HANDLER_VM_RC=$?
             HANDLER_VM_RSS=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$HANDLER_VM_TIME")

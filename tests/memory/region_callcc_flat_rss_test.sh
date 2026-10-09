@@ -66,6 +66,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 # shellcheck source=../../scripts/lib/checked_write.sh
 . "$REPO_ROOT/scripts/lib/checked_write.sh"
@@ -177,7 +178,7 @@ measure() {
     fi
     chmod +x "$bin"
     ( cd "$WORK" && env ESHKOL_ARENA_REPORT=1 \
-        perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec: $!\n"' \
+        perl "$ESHKOL_GUARDED_EXEC" \
         "$TIMEOUT_S" "$bin" ) > "$out" 2> "$MEAS_ERR"
     MEAS_RC=$?
     grep -q "^PASS$" "$out" 2>/dev/null || MEAS_RC=$(( MEAS_RC == 0 ? 126 : MEAS_RC ))

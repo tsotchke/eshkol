@@ -33,6 +33,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 # shellcheck source=../../scripts/lib/checked_write.sh
 . "$REPO_ROOT/scripts/lib/checked_write.sh"
@@ -105,12 +106,12 @@ run_aot() {
     if [ "$FR_COMPILE_RC" -ne 0 ]; then FR_RUN_RC=127; FR_RSS_MB=0; FR_OUT="$clog"; return; fi
     chmod +x "$bin"
     if [ "$TIME_MODE" = "bsd" ]; then
-        ( cd "$WORK" && env "$@" /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec: $!\n"' \
+        ( cd "$WORK" && env "$@" /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
             "$TIMEOUT_S" "$bin" ) > "$rout" 2> "$tlog"
         FR_RUN_RC=$?
         FR_RSS_MB=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$tlog")
     else
-        ( cd "$WORK" && env "$@" /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec: $!\n"' \
+        ( cd "$WORK" && env "$@" /usr/bin/time -v perl "$ESHKOL_GUARDED_EXEC" \
             "$TIMEOUT_S" "$bin" ) > "$rout" 2> "$tlog"
         FR_RUN_RC=$?
         FR_RSS_MB=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$tlog")
@@ -150,10 +151,10 @@ echo
 echo "--- [2] re-run fix-ON binary under ESHKOL_ARENA_POISON=1 ---"
 if [ -x "$WORK/ispr_fix_on" ]; then
     if [ "$TIME_MODE" = "bsd" ]; then
-        ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die' \
+        ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
             "$TIMEOUT_S" "$WORK/ispr_fix_on" ) > "$WORK/poison.out" 2>/dev/null
     else
-        ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die' \
+        ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -v perl "$ESHKOL_GUARDED_EXEC" \
             "$TIMEOUT_S" "$WORK/ispr_fix_on" ) > "$WORK/poison.out" 2>/dev/null
     fi
     prc=$?
@@ -203,10 +204,10 @@ if [ $? -ne 0 ]; then
 else
     chmod +x "$WORK/ispr_fix_off"
     if [ "$TIME_MODE" = "bsd" ]; then
-        ( cd "$WORK" && /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die' "$TIMEOUT_S" "$WORK/ispr_fix_off" ) > "$WORK/off.out" 2> "$WORK/off.time"
+        ( cd "$WORK" && /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" "$TIMEOUT_S" "$WORK/ispr_fix_off" ) > "$WORK/off.out" 2> "$WORK/off.time"
         off_rss=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$WORK/off.time")
     else
-        ( cd "$WORK" && /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die' "$TIMEOUT_S" "$WORK/ispr_fix_off" ) > "$WORK/off.out" 2> "$WORK/off.time"
+        ( cd "$WORK" && /usr/bin/time -v perl "$ESHKOL_GUARDED_EXEC" "$TIMEOUT_S" "$WORK/ispr_fix_off" ) > "$WORK/off.out" 2> "$WORK/off.time"
         off_rss=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$WORK/off.time")
     fi
     [ -n "$off_rss" ] || off_rss=0

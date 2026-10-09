@@ -23,7 +23,8 @@ Every row of `budgets.tsv` (file, mode, class, wall-time ceiling, per-mode
 max-RSS ceiling, expected stdout, XKNOWN tracking id) is executed under the JIT
 and/or AOT and classified as `PASS / FAIL / CRASH / HANG / OVER-RSS /
 OVER-TIME` (plus `XKNOWN` / `XPASS` for rows that carry a tracking id). RSS comes from `/usr/bin/time -l` (max resident set size);
-timeouts use `perl alarm` (macOS has no `timeout(1)`). Reference baselines on
+timeouts use `scripts/lib/guarded_exec.pl` (macOS has no `timeout(1)`), which
+stops the program together with every process it started. Reference baselines on
 macOS arm64: a trivial `-r` run is ~222MB RSS (stdlib object + LLVM), a
 trivial AOT binary ~28MB — ceilings are sized above those floors, and every
 loosened ceiling carries a comment with the measured number that justified it.

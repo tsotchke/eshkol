@@ -110,31 +110,15 @@ if [ ! -x "$ESHKOL_RUN" ]; then
     exit 2
 fi
 
-# ---- macOS perl-alarm timeout guard (no coreutils `timeout` on stock macOS)-
-# fork()+alarm so SIGALRM is caught in the PARENT (a bare exec would replace
-# perl and lose the handler). Preserves distinct exit codes: 128+signal for a
-# signalled child (timeout kill -> 137, SIGSEGV -> 139) so a genuine crash is
-# still distinguishable from a timeout in logs.
-run_guarded() {  # run_guarded <secs> <cmd...>
-    # macOS does not provide the glibc-style C.UTF-8 locale.  Perl resolves
-    # the inherited locale before it executes this wrapper and otherwise
-    # aborts with exit 9 before either oracle starts.  The corpus is ASCII and
-    # each engine performs its own UTF-8 handling, so the portable C locale is
-    # the correct deterministic environment for the timeout supervisor.
-    LC_ALL=C LANG=C perl -e '
-        my $t = shift;
-        my $pid = fork();
-        exit 127 unless defined $pid;
-        if ($pid == 0) { exec @ARGV; exit 127; }
-        $SIG{ALRM} = sub { kill "KILL", $pid; };
-        alarm $t;
-        waitpid($pid, 0);
-        my $st = $?;
-        alarm 0;
-        if ($st & 127) { exit(128 + ($st & 127)); }
-        exit($st >> 8);
-    ' "$@"
-}
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+# macOS does not provide the glibc-style C.UTF-8 locale; Perl resolves the
+# inherited locale before the guard starts and otherwise aborts before either
+# oracle runs. The corpus is ASCII and each engine performs its own UTF-8
+# handling, so the portable C locale is the deterministic environment here.
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+run_guarded() { LC_ALL=C LANG=C eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 disk_used_mb() { du -sm "$ART_DIR" 2>/dev/null | awk '{print $1}'; }
 check_disk() {
