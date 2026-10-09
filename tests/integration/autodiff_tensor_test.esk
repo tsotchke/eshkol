@@ -349,18 +349,18 @@
   (display ": gradient of scaled dot product = scaled basis vector") (newline))
 
 ;; ============================================================
-;; Test 21: Multi-dimensional tensor gradient flattens all elements
-;; f(x) = sum(x) for x:[2,2], gradient = [1, 1, 1, 1]
+;; Test 21: Multi-dimensional tensor gradient has the point's shape
+;; f(x) = sum(x) for x:[2,2], gradient = [[1, 1], [1, 1]]
 ;; ============================================================
 (let* ((g (gradient
             (lambda (x) (tensor-sum x))
             (tensor 2 2 1.0 2.0 3.0 4.0))))
   (display
-    (if (and (= (vector-length g) 4)
-             (approx= (vector-ref g 0) 1.0 1e-6)
-             (approx= (vector-ref g 1) 1.0 1e-6)
-             (approx= (vector-ref g 2) 1.0 1e-6)
-             (approx= (vector-ref g 3) 1.0 1e-6))
+    (if (and (equal? (tensor-shape g) '(2 2))
+             (approx= (tensor-ref g 0 0) 1.0 1e-6)
+             (approx= (tensor-ref g 0 1) 1.0 1e-6)
+             (approx= (tensor-ref g 1 0) 1.0 1e-6)
+             (approx= (tensor-ref g 1 1) 1.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient of 2x2 tensor-sum covers all elements") (newline))
 
@@ -374,11 +374,11 @@
             (lambda (x) (tensor-sum (matmul x c)))
             (tensor 2 2 10.0 20.0 30.0 40.0))))
   (display
-    (if (and (= (vector-length g) 4)
-             (approx= (vector-ref g 0) 3.0 1e-6)
-             (approx= (vector-ref g 1) 7.0 1e-6)
-             (approx= (vector-ref g 2) 3.0 1e-6)
-             (approx= (vector-ref g 3) 7.0 1e-6))
+    (if (and (equal? (tensor-shape g) '(2 2))
+             (approx= (tensor-ref g 0 0) 3.0 1e-6)
+             (approx= (tensor-ref g 0 1) 7.0 1e-6)
+             (approx= (tensor-ref g 1 0) 3.0 1e-6)
+             (approx= (tensor-ref g 1 1) 7.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient through matmul covers matrix elements") (newline))
 
@@ -392,29 +392,29 @@
             (lambda (x) (tensor-sum (tensor-dot x c)))
             (tensor 2 2 10.0 20.0 30.0 40.0))))
   (display
-    (if (and (= (vector-length g) 4)
-             (approx= (vector-ref g 0) 3.0 1e-6)
-             (approx= (vector-ref g 1) 7.0 1e-6)
-             (approx= (vector-ref g 2) 3.0 1e-6)
-             (approx= (vector-ref g 3) 7.0 1e-6))
+    (if (and (equal? (tensor-shape g) '(2 2))
+             (approx= (tensor-ref g 0 0) 3.0 1e-6)
+             (approx= (tensor-ref g 0 1) 7.0 1e-6)
+             (approx= (tensor-ref g 1 0) 3.0 1e-6)
+             (approx= (tensor-ref g 1 1) 7.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient through matrix tensor-dot covers matrix elements") (newline))
 
 ;; ============================================================
 ;; Test 24: Gradient through matmul then tensor-sum
 ;; f(A) = sum(A * b), where b = [[10], [20]]
-;; gradient wrt each row of A is b^T, flattened as [10, 20, 10, 20]
+;; gradient wrt each row of A is b^T: [[10, 20], [10, 20]]
 ;; ============================================================
 (let* ((b (tensor 2 1 10.0 20.0))
        (g (gradient
             (lambda (a) (tensor-sum (matmul a b)))
             (tensor 2 2 1.0 2.0 3.0 4.0))))
   (display
-    (if (and (= (vector-length g) 4)
-             (approx= (vector-ref g 0) 10.0 1e-6)
-             (approx= (vector-ref g 1) 20.0 1e-6)
-             (approx= (vector-ref g 2) 10.0 1e-6)
-             (approx= (vector-ref g 3) 20.0 1e-6))
+    (if (and (equal? (tensor-shape g) '(2 2))
+             (approx= (tensor-ref g 0 0) 10.0 1e-6)
+             (approx= (tensor-ref g 0 1) 20.0 1e-6)
+             (approx= (tensor-ref g 1 0) 10.0 1e-6)
+             (approx= (tensor-ref g 1 1) 20.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient through matmul tensor-sum matches right operand") (newline))
 
@@ -427,11 +427,11 @@
             (lambda (a) (tensor-sum (tensor-dot a b)))
             (tensor 2 2 1.0 2.0 3.0 4.0))))
   (display
-    (if (and (= (vector-length g) 4)
-             (approx= (vector-ref g 0) 10.0 1e-6)
-             (approx= (vector-ref g 1) 20.0 1e-6)
-             (approx= (vector-ref g 2) 10.0 1e-6)
-             (approx= (vector-ref g 3) 20.0 1e-6))
+    (if (and (equal? (tensor-shape g) '(2 2))
+             (approx= (tensor-ref g 0 0) 10.0 1e-6)
+             (approx= (tensor-ref g 0 1) 20.0 1e-6)
+             (approx= (tensor-ref g 1 0) 10.0 1e-6)
+             (approx= (tensor-ref g 1 1) 20.0 1e-6))
         "PASS" "FAIL"))
   (display ": gradient through 2D tensor-dot tensor-sum matches right operand") (newline))
 

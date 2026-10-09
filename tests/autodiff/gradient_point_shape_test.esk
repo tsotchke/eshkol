@@ -1,0 +1,129 @@
+;; A gradient has the shape of the point it is taken at, and forward-mode
+;; derivatives pass through elementwise tensor arithmetic and matmul.
+;;
+;;   * (gradient f W) for a rank-2 tensor W is a rank-2 tensor of W's shape,
+;;     so a weight update (tensor-sub W (tensor-scale g lr)) needs no reshape.
+;;     Rank-1 points, Scheme vectors and scalars keep their established result.
+;;   * hessian of a loss built from tensor-add/-sub/-mul/-div and tensor-matmul
+;;     over reshaped inputs is exact (the jet tensor rule carries the mixed
+;;     second-order coefficient), including broadcast operands.
+;;   * a forward-mode derivative that meets a reverse-mode tensor value inside
+;;     a nested gradient is refused by name instead of answering zero.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin (set! tests-passed (+ tests-passed 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! tests-failed (+ tests-failed 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define (near? a b) (< (abs (- a b)) 1e-9))
+
+(define (tensor-near? t expected)
+  (let ((n (length expected)))
+    (let loop ((i 0) (xs expected))
+      (cond ((= i n) #t)
+            ((near? (vector-ref (tensor->vector (flatten t)) i) (car xs))
+             (loop (+ i 1) (cdr xs)))
+            (else #f)))))
+
+;; ── gradient shape ──────────────────────────────────────────────────────
+(define W (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+
+(define g-sq (gradient (lambda (w) (tensor-sum (tensor-mul w w))) W))
+(check "rank-2 point -> rank-2 gradient shape" (equal? (tensor-shape g-sq) '(2 3)))
+(check "rank-2 gradient values" (tensor-near? g-sq '(2.0 4.0 6.0 8.0 10.0 12.0)))
+
+(define x (reshape (vector 1.0 2.0) 1 2))
+(define g-mm (gradient (lambda (w) (tensor-sum (matmul x w))) W))
+(check "matmul loss gradient shape" (equal? (tensor-shape g-mm) '(2 3)))
+(check "matmul loss gradient values" (tensor-near? g-mm '(1.0 1.0 1.0 2.0 2.0 2.0)))
+
+(define W-next (tensor-sub W (tensor-scale g-sq 0.1)))
+(check "weight update keeps the parameter shape" (equal? (tensor-shape W-next) '(2 3)))
+(check "weight update values" (tensor-near? W-next '(0.8 1.6 2.4 3.2 4.0 4.8)))
+
+(define (wg f p) (gradient f p))
+(define g-wrapped (wg (lambda (w) (tensor-sum (tensor-mul w w))) W))
+(check "gradient through a wrapper keeps the point shape"
+       (equal? (tensor-shape g-wrapped) '(2 3)))
+
+(define g-vec (gradient (lambda (v) (tensor-sum (tensor-mul v v))) (vector 1.0 2.0)))
+(check "Scheme-vector point result unchanged" (and (near? (vector-ref g-vec 0) 2.0)
+                                                   (near? (vector-ref g-vec 1) 4.0)))
+
+(define g-r1 (gradient (lambda (v) (tensor-sum (tensor-mul v v))) (tensor 3 1.0 2.0 3.0)))
+(check "rank-1 tensor point result unchanged" (equal? (tensor-shape g-r1) '(3)))
+
+;; ── hessian through elementwise tensor arithmetic and matmul ───────────
+;; f = sum(M*M) for M = reshape(v,2,2): H = 2 I
+(define H-mul (hessian (lambda (v) (tensor-sum (tensor-mul (reshape v 2 2) (reshape v 2 2))))
+                       (vector 1.0 2.0 3.0 4.0)))
+(check "hessian through tensor-mul of reshaped input"
+       (tensor-near? H-mul '(2.0 0.0 0.0 0.0  0.0 2.0 0.0 0.0  0.0 0.0 2.0 0.0  0.0 0.0 0.0 2.0)))
+
+;; f = sum(v*v*v): H = diag(6 v)
+(define H-cube (hessian (lambda (v) (tensor-sum (tensor-mul (reshape v 2 1)
+                                                            (tensor-mul (reshape v 2 1)
+                                                                        (reshape v 2 1)))))
+                        (vector 1.0 2.0)))
+(check "hessian through nested tensor-mul" (tensor-near? H-cube '(6.0 0.0 0.0 12.0)))
+
+;; f = sum(M * (M - b)) with b of shape (1 2) broadcast over rows:
+;; d2f/dv_i^2 = 2, cross terms 0
+(define H-bc (hessian (lambda (v)
+                        (let ((m (reshape v 2 2)))
+                          (tensor-sum (tensor-mul m (tensor-sub m (reshape (vector 0.5 1.5) 1 2))))))
+                      (vector 1.0 2.0 3.0 4.0)))
+(check "hessian through broadcast tensor-sub"
+       (tensor-near? H-bc '(2.0 0.0 0.0 0.0  0.0 2.0 0.0 0.0  0.0 0.0 2.0 0.0  0.0 0.0 0.0 2.0)))
+
+;; f = sum(M / 2) + sum(M + M): linear, H = 0
+(define H-lin (hessian (lambda (v)
+                         (let ((m (reshape v 2 2)))
+                           (+ (tensor-sum (tensor-div m (reshape (vector 2.0 2.0 2.0 2.0) 2 2)))
+                              (tensor-sum (tensor-add m m)))))
+                       (vector 1.0 2.0 3.0 4.0)))
+(check "hessian through tensor-div and tensor-add (linear)"
+       (tensor-near? H-lin '(0.0 0.0 0.0 0.0  0.0 0.0 0.0 0.0  0.0 0.0 0.0 0.0  0.0 0.0 0.0 0.0)))
+
+;; f = sum(A @ B), A = reshape(v,2,2), B = reshape(v,2,2)
+(define H-mm (hessian (lambda (v) (tensor-sum (tensor-matmul (reshape v 2 2) (reshape v 2 2))))
+                      (vector 1.0 2.0 3.0 4.0)))
+(check "hessian through tensor-matmul of reshaped inputs"
+       (tensor-near? H-mm '(2.0 1.0 1.0 0.0  1.0 0.0 2.0 1.0  1.0 2.0 0.0 1.0  0.0 1.0 1.0 2.0)))
+
+;; ── forward meets reverse: refused by name ─────────────────────────────
+(define (refused? thunk)
+  (call-with-current-continuation
+    (lambda (k)
+      (with-exception-handler
+        (lambda (e) (k #t))
+        (lambda () (thunk) #f)))))
+
+(check "nested gradient through tensor-mul is refused, not zero"
+       (refused? (lambda ()
+                   (gradient (lambda (w)
+                               (vector-ref (gradient (lambda (x) (tensor-sum (tensor-mul w x)))
+                                                     (vector 1.0 2.0))
+                                           0))
+                             (vector 3.0 4.0)))))
+
+(check "nested gradient through matmul is refused, not zero"
+       (refused? (lambda ()
+                   (gradient (lambda (w)
+                               (vector-ref (gradient (lambda (x)
+                                                       (tensor-sum (tensor-matmul (reshape w 2 2)
+                                                                                  (reshape x 2 2))))
+                                                     (vector 1.0 2.0 3.0 4.0))
+                                           0))
+                             (vector 3.0 4.0 5.0 6.0)))))
+
+(newline)
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
