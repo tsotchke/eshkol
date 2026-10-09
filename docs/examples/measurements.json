@@ -1,0 +1,2645 @@
+{
+  "schema": "eshkol.example-measurements.v1",
+  "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+  "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+  "build_type": "Release",
+  "platform": "macOS arm64",
+  "measured_on": "2026-10-09",
+  "parallel_jobs": 6,
+  "timing_note": "Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.",
+  "commands": {
+    "jit": "ESHKOL_JIT_CACHE=0 ./build/eshkol-run -r <program>",
+    "aot": "./build/eshkol-run -L./build <program> -o <binary> && <binary>",
+    "ctest": "ctest --test-dir build -R '<criterion>_(jit|aot)$'"
+  },
+  "gates": {
+    "general_runner": {
+      "command": "./scripts/run_examples_tests.sh",
+      "summary": "native AOT over the 66 flat programs: 62 working, 0 compile failures, 0 runtime failures, 0 runtime errors; the 4 quantum programs skipped because ESHKOL_QUANTUM_ENABLED is OFF in the release configuration; 827 s wall."
+    },
+    "math_ctest": {
+      "command": "ctest --test-dir build -R '^((<ESHKOL_NS_EXAMPLES and ESHKOL_IPM_EXAMPLES criteria>)_(jit|aot)|vm_mathematics_[a-z_]+)$'",
+      "summary": "90 entries (43 criteria in JIT and AOT, plus the 4 bytecode-VM cohomology entries). With ESHKOL_PATH=<source>/lib: 90 of 90 passed, 315 s with 6 parallel jobs. Without it, in a build directory that is not a child of the source tree, 47 of 90 pass: 39 AOT entries and the 4 VM entries stop at module resolution (`Unknown function: list-ref`, `module source not found: stdlib`), because those registrations locate the stdlib sources through `<build>/../lib`; set ESHKOL_PATH when the build directory is outside the source tree."
+    },
+    "wgsl_artifact": {
+      "command": "python3 examples/wgsl_artifact/build_artifact.py",
+      "summary": "artifact PASS: native=VM; evaluator.wgsl and the manifest's source and WGSL hashes reproduce byte for byte; 1.9 s."
+    },
+    "ai_witness_vm": {
+      "command": "ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test examples/<ai witness program>.esk",
+      "summary": "the four AI-witness programs print RESULT: ALL PASS with Failed: 0 on the hosted bytecode VM (12, 2, 3 and 3 checks)."
+    }
+  },
+  "records": {
+    "examples/autodiff.esk": {
+      "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.1,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.09
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 0.97
+      },
+      "ctest": [],
+      "key_output": [
+        "d/dx(x^3) at x=2: 12",
+        "grad(x^3+2x) at x=3: 29",
+        "d/dx(x^3) at x=5: 75"
+      ],
+      "output_lines": 5
+    },
+    "examples/bayesian_diagnosis.esk": {
+      "source_sha256": "afff5f21b486298fc3540b1568faedfd694c0e77ca353ae6212481a3a0a4d467",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.03,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.02
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 0.72
+      },
+      "ctest": [],
+      "key_output": [
+        "============================================",
+        "  Bayesian symptom-to-disease triage",
+        "============================================",
+        "What diseases involve 'fever'?",
+        "  ({?d -> flu} {?d -> covid})"
+      ],
+      "output_lines": 27
+    },
+    "examples/consciousness.esk": {
+      "source_sha256": "eee6b99749d188852a76743d4dccb437f563313840a9f9ed612a5d04d09db5c9",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.99,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.98
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.28,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 0.8
+      },
+      "ctest": [],
+      "key_output": [
+        "Alice likes: ({?x -> math} {?x -> physics})",
+        "Free energy: -2.1972245773362196",
+        "Workspace step: #<workspace: dim=4, 2 modules, step=1>"
+      ],
+      "output_lines": 5
+    },
+    "examples/differentiable_physics.esk": {
+      "source_sha256": "e0ca3c23bba825102d5fc1ba8311e698701728baf3b325864c9799ca4dd7e33f",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.18,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.17
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.25,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.04,
+        "compile_exit": 0,
+        "compile_s": 1.17
+      },
+      "ctest": [],
+      "key_output": [
+        "Target distance:    12 m",
+        "Starting angle: 0.5 rad (~28.64788975654116 deg)",
+        "Initial landing x: 15.605138156135443",
+        "  step 125  theta=1.1882050833332447  x_land=12.05091024197138  err^2=0.002591852737584445"
+      ],
+      "output_lines": 28
+    },
+    "examples/eagle_train.esk": {
+      "source_sha256": "2fe46c3f09b8d965f82b755ae24c9d0ed4dc33a5b2699bdf1c79ea49e6d99245",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.86,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.83
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.21,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.54
+      },
+      "ctest": [],
+      "key_output": [
+        "final loss 0.011300917261427406",
+        "learned W  (1.0508584553814884 0.7880655110623402 0.4695148821794422 1.1233218658459732)"
+      ],
+      "output_lines": 20
+    },
+    "examples/gradient_descent_demo.esk": {
+      "source_sha256": "302739919dc6e49fe8bc4bd0ac81788c68403380e2b4a07de47030f78c28c092",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.3,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.28
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.23,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.03,
+        "compile_exit": 0,
+        "compile_s": 2.11
+      },
+      "ctest": [],
+      "key_output": [
+        "True parameters:  a=2.0  b=-3.0  c=1.0",
+        "Final params:   #(2.027222777220948 -3.0705544455524905 0.977335164844524)",
+        "Final loss:     0.059491289960039835"
+      ],
+      "output_lines": 20
+    },
+    "examples/h2_vibrational.esk": {
+      "source_sha256": "5d43fbd0b72dd49dc125794b697ec79b3d5bd958a9084630653ab498d29191b3",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 2.4,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 2.36
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.66,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.45,
+        "compile_exit": 0,
+        "compile_s": 2.48
+      },
+      "ctest": [],
+      "key_output": [
+        "equilibrium R*        = 1.3886947151919542 bohr",
+        "force constant d2E/dR2 = 0.47709682545822807 Ha/bohr^2",
+        "vibrational frequency = 5003.203812553002 cm^-1"
+      ],
+      "output_lines": 8
+    },
+    "examples/h2_vibrational_full.esk": {
+      "source_sha256": "3be1fcc934fc79cec88c4530de4a8c8a7506b22046e23e75ef137d5053e66a92",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 19.59,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 19.21
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.11,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.91,
+        "compile_exit": 0,
+        "compile_s": 4.61
+      },
+      "ctest": [],
+      "key_output": [
+        "equilibrium R*        = 1.3886947151919553 bohr",
+        "frozen term  sum g'' <P>  = 0.5144480462412556 Ha/bohr^2",
+        "quantum response          = +nan.0 Ha/bohr^2",
+        "force constant k          = +nan.0 Ha/bohr^2",
+        "vibrational frequency     = +nan.0 cm^-1"
+      ],
+      "output_lines": 9,
+      "note": "Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON. At this SHA the program prints `+nan.0` for the quantum response, the force constant and the vibrational frequency (output quoted above); the source makes no assertion about these values. Planned: finite values for these three quantities."
+    },
+    "examples/h2_vibrational_quantum.esk": {
+      "source_sha256": "1afb2473ed1a79d281d24c71e0a3f429f6411cf86bdcf9cd8dd971b49f9474e5",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 7.17,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 7.0
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.73
+      },
+      "ctest": [],
+      "key_output": [
+        "  E(0.72,0.74,0.76 A) = -1.141989759265339 -1.1421829377925534 -1.1417128306116846",
+        "  force constant = 0.464347288414274 Ha/bohr^2",
+        "  omega          = 4935.900408038456 cm^-1"
+      ],
+      "output_lines": 8,
+      "note": "Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON."
+    },
+    "examples/hello.esk": {
+      "source_sha256": "5532b55c4759c73f8f592fa8db70b8891287f9210b619a4b5f4ee25683c26aa7",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.0,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.99
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 0.7
+      },
+      "ctest": [],
+      "key_output": [
+        "Hello, Eshkol!",
+        "Version: v1.2.1-scale"
+      ],
+      "output_lines": 4
+    },
+    "examples/mathematics_abelian_sheaves_finite_site.esk": {
+      "source_sha256": "1b516d970bf01f9ae7f7e65232bac390a8804c17b8034ba59ff3528978a70136",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 7.98,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 7.82
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.5,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.29,
+        "compile_exit": 0,
+        "compile_s": 40.37
+      },
+      "ctest": [
+        {
+          "name": "cat_abelian_sheaves_finite_site_jit",
+          "status": "Passed",
+          "seconds": 40.91
+        },
+        {
+          "name": "cat_abelian_sheaves_finite_site_aot",
+          "status": "Passed",
+          "seconds": 40.04
+        }
+      ],
+      "key_output": [
+        "  dims of a(Q) on the pseudocircle opens and pi_0; dims of a(Q) on the pseudo-2-sphere opens = ((1 1 1 1 1 2) (1 1 1 1 1 2) (1 1 1 1 1 1 1 1 2))",
+        "  H^*(pseudocircle; Q) three ways (lim^n over points, Cech of the point-route sections, Cech of a(Q) on the site) = ((1 1 0) (1 1 0) (1 1 0))",
+        "  H^*(pseudo-2-sphere; Q) three ways = ((1 0 1 0) (1 0 0 0) (1 0 0 0))",
+        "  H^*(pseudocircle; twisted Q) three ways = ((0 0 0) (0 0 0) (0 0 0))",
+        "PASS: pseudo-2-sphere: the derived limit gives (1, 0, 1, 0), while the only cover by maximal opens has the pseudocircle as its intersection (not acyclic), so both Cech routes give (1, 0, 0, 0) and miss H^2: the Leray condition fails, as in "
+      ],
+      "output_lines": 19
+    },
+    "examples/mathematics_alphatensor_3x3_gf2.esk": {
+      "source_sha256": "222712935cc60af1f734f817d22c2b6a8c9fbcca97e4d56d6bf383d2710b1006",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.37,
+        "passed": 2,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.35
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.21,
+        "passed": 2,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.03,
+        "compile_exit": 0,
+        "compile_s": 1.35
+      },
+      "ctest": [],
+      "key_output": [
+        "PASS: rank-23 factorization has 23 bilinear products",
+        "PASS: rank-23 tensor expands to 3x3 multiplication over F2",
+        "Basis pairs checked: 81"
+      ],
+      "output_lines": 9
+    },
+    "examples/mathematics_alphatensor_gf2.esk": {
+      "source_sha256": "eb57351038fdc11718775948f85f98017cec9d0accd8a4ca89f1c8bac3fb9f1e",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.6,
+        "passed": 3,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.58
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.35,
+        "passed": 3,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.15,
+        "compile_exit": 0,
+        "compile_s": 1.51
+      },
+      "ctest": [],
+      "key_output": [
+        "PASS: rank-47 factorization has 47 bilinear products",
+        "PASS: rank-47 tensor expands to 4x4 multiplication over F2",
+        "PASS: nontrivial sample multiplication is exact over F2",
+        "Basis pairs checked: 256"
+      ],
+      "output_lines": 10
+    },
+    "examples/mathematics_aoki_cycles_fermat_sextic.esk": {
+      "source_sha256": "2367ee5fcc98cde07590fce5085459b276442f35518dfc46e675ed720591b28e",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 5.68,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 4.73
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.26,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.06,
+        "compile_exit": 0,
+        "compile_s": 14.91
+      },
+      "ctest": [
+        {
+          "name": "hodge_aoki_cycles_fermat_sextic_jit",
+          "status": "Passed",
+          "seconds": 11.2
+        },
+        {
+          "name": "hodge_aoki_cycles_fermat_sextic_aot",
+          "status": "Passed",
+          "seconds": 11.72
+        }
+      ],
+      "key_output": [
+        "PASS: Shioda's Theorem 1-1 as a computation: the support of [L] is exactly the 25 characters with a_0 + a_1 = a_2 + a_3 = 0 mod 6",
+        "PASS: all lines together: the 61 standard characters (those with a zero-sum pair), so the lines span 62 of 86 Hodge classes as in the Gram computation",
+        "  support of Aoki's curve C: count, Galois-closed, all Hodge = (4 #t #t)",
+        "  support of Aoki's curve Y (p = 3): count, Galois-closed, all Hodge = (6 #t #t)",
+        "  characters covered by lines, permutations of C, permutations of Y; missing Hodge characters = (61 24 12 85 0)",
+        "GAP 0"
+      ],
+      "output_lines": 20
+    },
+    "examples/mathematics_aoki_cycles_fermat_surfaces_sweep.esk": {
+      "source_sha256": "33d0a77acceb97ce29a75d0a70f659cd53c118e7d9c8d503094d257f6c77e56f",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 7.12,
+        "passed": null,
+        "failed": null,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 6.87
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.27,
+        "passed": null,
+        "failed": null,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.08,
+        "compile_exit": 0,
+        "compile_s": 28.24
+      },
+      "ctest": [
+        {
+          "name": "hodge_aoki_surface_sweep_default_jit",
+          "status": "Passed",
+          "seconds": 32.71
+        },
+        {
+          "name": "hodge_aoki_surface_sweep_default_aot",
+          "status": "Passed",
+          "seconds": 27.5
+        }
+      ],
+      "key_output": [
+        "{\"schema\":\"eshkol.math.fermat_surface_aoki.v1\",\"degree\":8,\"hodge_characters\":175,\"standard\":127,\"lines_cover\":127,\"C_support\":6,\"C_cover\":60,\"Y_support\":null,\"Y_cover\":null,\"Q_support\":4,\"Q_cover\":48,\"Q_levels\":[4,8],\"C_levels\":[4,8],\"Y_levels\":[],\"covered\":175,\"missing\":0,\"missing_characters\":[],\"missing_orbits\":[],\"witness_k_max\":4,\"inductive\":0,\"no_witness\":0,\"elapsed_ms\":86,\"verdict\":\"PASS\"}"
+      ],
+      "output_lines": 4
+    },
+    "examples/mathematics_classifying_space_dijkgraaf_witten.esk": {
+      "source_sha256": "8f88b7dec7f8bc1362bd3c5b9d082a9c21b3c3ce5a5e99f90436a607ded6e172",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 6.39,
+        "passed": 40,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 6.18
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.16,
+        "passed": 40,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.95,
+        "compile_exit": 0,
+        "compile_s": 13.81
+      },
+      "ctest": [
+        {
+          "name": "dw_classifying_space_state_sums_jit",
+          "status": "Passed",
+          "seconds": 15.07
+        },
+        {
+          "name": "dw_classifying_space_state_sums_aot",
+          "status": "Passed",
+          "seconds": 14.52
+        }
+      ],
+      "key_output": [
+        "  H_k(BZ/2; Z), k = 0..4  (betti, torsion) = ((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (2)) (4 0 ()))",
+        "  H_k(BZ/3; Z), k = 0..4 = ((0 1 ()) (1 0 (3)) (2 0 ()) (3 0 (3)) (4 0 ()))",
+        "  H_k(B(Z/2 x Z/2); Z), k = 0..3 = ((0 1 ()) (1 0 (2 2)) (2 0 (2)) (3 0 (2 2 2)))",
+        "  H_k(BS_3; Z), k = 0..2 = ((0 1 ()) (1 0 (2)) (2 0 ()))",
+        "  |H^3(BG; Q/Z)| = |H_3(BG; Z)| for Z/2, Z/3, Z/2 x Z/2 = (2 3 8)",
+        "  Z(S^3) for Z/2 twisted, Z/3 twisted, Z/2 x Z/2 type II = (1/2 1/3 1/4)",
+        "  Z(RP^3): Z/2 untwisted, Z/2 twisted, Z/3 twisted, Z/2 x Z/2 type II, type I = (1 0 1/3 1/2 0)",
+        "  Z(T^3): Z/2 twisted, Z/3 twisted, Z/2 x Z/2 type II, type I + type II = (4 9 16 16)",
+        "  Z(S^3) for Z/3 twisted with one orientation flipped = (2/9 0 0)",
+        "PASS: twice it is a boundary: the class has order exactly 2, so [RP^3] generates H_3(BZ/2; Z) = Z/2"
+      ],
+      "output_lines": 57
+    },
+    "examples/mathematics_cohomology_rings_cup_products.esk": {
+      "source_sha256": "76c92a5f354f0d6352bc980b035e2d41070495bdcc5c45b1987eee70131664bb",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 13.31,
+        "passed": 30,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 12.88
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 5.84,
+        "passed": 30,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 5.6,
+        "compile_exit": 0,
+        "compile_s": 6.76
+      },
+      "ctest": [
+        {
+          "name": "dw_cohomology_rings_cup_products_jit",
+          "status": "Passed",
+          "seconds": 12.55
+        },
+        {
+          "name": "dw_cohomology_rings_cup_products_aot",
+          "status": "Passed",
+          "seconds": 12.84
+        },
+        {
+          "name": "vm_mathematics_cohomology_rings_cup_products",
+          "status": "Passed",
+          "seconds": 10.2
+        }
+      ],
+      "key_output": [
+        "  dim H^n(BZ/2; Z/2), n = 0..4 = (1 1 1 1 1)",
+        "PASS: on Z/4, x cup x IS a coboundary: the cup product separates Z/4 from Z/2 although H^1 and H^2 agree",
+        "PASS: y cup x_2 generates H^3 and x_2 cup x_2 generates H^4: H^*(BZ/3; Z/3) = Lambda[y] x Z/3[x_2] through degree 4",
+        "PASS: x^3, x^2 y, x y^2, y^3 are independent in H^3 and dim H^3 = 4: H^*(B(Z/2)^2; Z/2) = Z/2[x, y]",
+        "PASS: none of the 127 nonzero combinations of the seven surviving monomials is a Q/Z coboundary: the twists form (Z/2)^7"
+      ],
+      "output_lines": 38
+    },
+    "examples/mathematics_cohomology_rings_nonabelian.esk": {
+      "source_sha256": "b0be0f12899204d96a6977a5e96c7d30fd6a4e75cbd0c60d495b126c69f1582e",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 48.42,
+        "passed": 16,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 48.04
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 38.05,
+        "passed": 16,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 33.59,
+        "compile_exit": 0,
+        "compile_s": 4.96
+      },
+      "ctest": [
+        {
+          "name": "dw_cohomology_rings_nonabelian_jit",
+          "status": "Passed",
+          "seconds": 37.09
+        },
+        {
+          "name": "dw_cohomology_rings_nonabelian_aot",
+          "status": "Passed",
+          "seconds": 40.81
+        },
+        {
+          "name": "vm_mathematics_cohomology_rings_nonabelian",
+          "status": "Passed",
+          "seconds": 121.72
+        }
+      ],
+      "key_output": [
+        "  dim H^n(BD_4; Z/2), n = 0..3 = (1 2 3 4)",
+        "  dim H^n(BQ_8; Z/2), n = 0..3 = (1 2 2 1)",
+        "PASS: D_4: x cup y is a coboundary (the relation xy = 0) while x^2 and y^2 are independent",
+        "PASS: Q_8: x^2 + xy + y^2 is a coboundary (the relation) while x^2 and xy are independent and span H^2 (dim 2); no degree-2 generator",
+        "  D_4: is beta(w) a coboundary? = #f"
+      ],
+      "output_lines": 26
+    },
+    "examples/mathematics_cp2_symmetric_square_connected_sums.esk": {
+      "source_sha256": "cd4208ffe43a2c638469407a77c56db2761be82d9c24f9ba8e489850eb395c1d",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 193.25,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 186.86
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 86.21,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 84.46,
+        "compile_exit": 0,
+        "compile_s": 7.1
+      },
+      "ctest": [
+        {
+          "name": "postnikov_cp2_connected_sums_jit",
+          "status": "Passed",
+          "seconds": 91.3
+        },
+        {
+          "name": "postnikov_cp2_connected_sums_aot",
+          "status": "Passed",
+          "seconds": 94.95
+        }
+      ],
+      "key_output": [
+        "  S^2 x S^2 cells, Sym^2 cells = ((16 84 216 240 96) (10 45 110 120 48))",
+        "  mod 2 Betti numbers = ((1 0 1 0 1) (1 0 2 0 1) (1 0 2 0 1) (1 0 3 0 1) (1 0 3 0 1))",
+        "  intersection forms mod 2 on computed bases = (((1)) ((0 1) (1 0)) ((1 1) (1 0)) ((1 1 0) (1 1 1) (0 1 0)) ((1 0 1) (0 1 1) (1 1 1)))",
+        "  Map into the 3-type with k = iota u iota: state sum, fibration formula = ((1/2 1 1/2 1/2 1/2) (1/2 1 1/2 1/2 1/2))",
+        "PASS: S^2 x S^2 and CP^2 # CP^2 have the same mod 2 homology and the same 2-type, and the 3-type P tells them apart (1 against 1/2)"
+      ],
+      "output_lines": 22
+    },
+    "examples/mathematics_descent_hypercohomology.esk": {
+      "source_sha256": "71c379900d312ff204a80ba9aa65625f7d07e545534528f254cfa5353993abfd",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 5.83,
+        "passed": 13,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 5.71
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.8,
+        "passed": 13,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.6,
+        "compile_exit": 0,
+        "compile_s": 13.89
+      },
+      "ctest": [
+        {
+          "name": "sheaf_descent_hypercohomology_jit",
+          "status": "Passed",
+          "seconds": 15.94
+        },
+        {
+          "name": "sheaf_descent_hypercohomology_aot",
+          "status": "Passed",
+          "seconds": 16.53
+        }
+      ],
+      "key_output": [
+        "  H^*(U1 cap U2; Z) = ((0 1 ()) (1 3 ()) (2 0 ()))",
+        "  plain Cech H^* of the non-Leray cover, constant Z = ((0 1 ()) (1 0 ()))",
+        "  descent double complex H^* of the non-Leray cover, constant Z = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))",
+        "  descent H^* for the local system with monodromy (-1, +1) = ((0 0 ()) (1 0 (2)) (2 0 (2)) (3 0 ()))",
+        "  hypercohomology of Z --2--> Z on the torus model = ((0 0 ()) (1 0 (2)) (2 0 (2 2)) (3 0 (2)))"
+      ],
+      "output_lines": 29
+    },
+    "examples/mathematics_fermat_hodge_classes_sweep.esk": {
+      "source_sha256": "25ba69494aaef6f87f64ade1c0f8861aa7cbdd32a01aace3ed34c40c3d2470c4",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 2.17,
+        "passed": null,
+        "failed": null,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 2.11
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.22,
+        "passed": null,
+        "failed": null,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.04,
+        "compile_exit": 0,
+        "compile_s": 3.46
+      },
+      "ctest": [
+        {
+          "name": "hodge_fermat_sweep_default_jit",
+          "status": "Passed",
+          "seconds": 3.73
+        },
+        {
+          "name": "hodge_fermat_sweep_default_aot",
+          "status": "Passed",
+          "seconds": 3.65
+        }
+      ],
+      "key_output": [
+        "{\"schema\":\"eshkol.math.fermat_hodge_classes.v1\",\"degree\":4,\"dim\":2,\"hodge_numbers_griffiths\":[1,19,1],\"hodge_numbers_shioda\":[1,19,1],\"hodge_dim\":20,\"all_hodge_characters_standard\":true,\"linear_cycles\":48,\"self_intersection\":-2,\"gram_rank_mod_p\":20,\"prime\":10007,\"gap\":0,\"elapsed_ms\":30,\"verdict\":\"PASS\"}"
+      ],
+      "output_lines": 4
+    },
+    "examples/mathematics_finite_categories_kan_extensions.esk": {
+      "source_sha256": "d04c60d9390806909c63b23ddbb572074f467f00f796246942972bf33c88e117",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 5.56,
+        "passed": 19,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 5.43
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.25,
+        "passed": 19,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.05,
+        "compile_exit": 0,
+        "compile_s": 15.89
+      },
+      "ctest": [
+        {
+          "name": "cat_finite_categories_kan_jit",
+          "status": "Passed",
+          "seconds": 18.92
+        },
+        {
+          "name": "cat_finite_categories_kan_aot",
+          "status": "Passed",
+          "seconds": 17.46
+        }
+      ],
+      "key_output": [
+        "  arrow counts: walking arrow, parallel pair, span, cospan, square, S, cone(S), S^2, BZ/2, point = (3 4 5 5 9 8 13 18 2 1)",
+        "  Lan and Ran along BZ/2 -> point: (orbits, fixed points) of the regular and the trivial 2-element Z/2-sets = ((1 0) (2 2))",
+        "  Lan and Ran along S -> cone(S): sizes at a, b, c, d, top = ((2 2 3 3 2) (2 2 3 3 1))",
+        "PASS: triangle identity eps_{Lan G} o Lan(eta_G) = id holds for Lan along the collapse (regular and trivial Z/2-sets) and along the inclusion S -> cone(S)",
+        "  lim^n of the constant presheaf over the pseudocircle and the pseudo-2-sphere (as F_p-dimensions) = ((1 1 0) (1 0 1 0))"
+      ],
+      "output_lines": 30
+    },
+    "examples/mathematics_finite_model_three_torus_gauge_theory.esk": {
+      "source_sha256": "1f0b3667858417a74aceb4aace7d4ab55c4f67a23eb6d4ebfb96f130ef0cfeb1",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 42.43,
+        "passed": 17,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 42.1
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 21.13,
+        "passed": 17,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 20.54,
+        "compile_exit": 0,
+        "compile_s": 9.31
+      },
+      "ctest": [
+        {
+          "name": "dw_finite_model_three_torus_jit",
+          "status": "Passed",
+          "seconds": 30.34
+        },
+        {
+          "name": "dw_finite_model_three_torus_aot",
+          "status": "Passed",
+          "seconds": 34.38
+        }
+      ],
+      "key_output": [
+        "  vertices, edges, triangles, tetrahedra of the order complex = (64 448 768 384)",
+        "  H^*(finite model of T^3; Z) = ((0 1 ()) (1 3 ()) (2 3 ()) (3 1 ()))",
+        "  gauge-fixed flat connections for Z/2 and Z/3 = (8 27)",
+        "  Z(T^3) on the finite model: Z/2 untwisted, twisted; Z/3 untwisted, twisted = (4 4 9 9)",
+        "  state sum with the non-cocycle on Z/3 = 9"
+      ],
+      "output_lines": 28
+    },
+    "examples/mathematics_finite_site_sheafification.esk": {
+      "source_sha256": "7bfec621ecbd1420e4c8ff0150d6ffee911c568ff831a6bb312f6cd577309cf2",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 4.56,
+        "passed": 17,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 4.5
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.48,
+        "passed": 17,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.28,
+        "compile_exit": 0,
+        "compile_s": 10.11
+      },
+      "ctest": [
+        {
+          "name": "sheaf_finite_site_sheafification_jit",
+          "status": "Passed",
+          "seconds": 11.77
+        },
+        {
+          "name": "sheaf_finite_site_sheafification_aot",
+          "status": "Passed",
+          "seconds": 11.25
+        }
+      ],
+      "key_output": [
+        "  number of covers of X, of U_c, of {a, b} = (40 8 5)",
+        "  first cover on which the constant presheaf fails to glue (open, cover) = ((0 1) ((1) (0)))",
+        "  ranks of F^+ on the opens (empty, {a}, {b}, {a,b}, U_c, U_d, X) = (0 1 1 2 1 1 1)",
+        "  Cech (H^0, H^1) of (U_c, U_d): constant presheaf, constant sheaf, F^+ = ((1 (0 ())) (1 (1 ())) (1 (1 ())))"
+      ],
+      "output_lines": 29
+    },
+    "examples/mathematics_finite_spaces_sheaf_cohomology.esk": {
+      "source_sha256": "53c55836b821e593f8749f058b67ab43f93b6f25fde7b64e0f92569ff60bfcc1",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 3.77,
+        "passed": 23,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 3.65
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.3,
+        "passed": 23,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.1,
+        "compile_exit": 0,
+        "compile_s": 8.36
+      },
+      "ctest": [
+        {
+          "name": "sheaf_finite_spaces_cech_descent_jit",
+          "status": "Passed",
+          "seconds": 9.46
+        },
+        {
+          "name": "sheaf_finite_spaces_cech_descent_aot",
+          "status": "Passed",
+          "seconds": 8.69
+        }
+      ],
+      "key_output": [
+        "  H^*(pseudocircle; Z) = ((0 1 ()) (1 1 ()) (2 0 ()))",
+        "  H^*(pseudo-2-sphere; Z) = ((0 1 ()) (1 0 ()) (2 1 ()) (3 0 ()))",
+        "  H^*(torus model; Z) = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))",
+        "  H^*(pseudocircle; Z twisted by -1) = ((0 0 ()) (1 0 (2)) (2 0 ()))",
+        "  H^*(torus model; Z twisted by (-1, +1)) = ((0 0 ()) (1 0 (2)) (2 0 (2)) (3 0 ()))",
+        "  Cech H^*(torus model; Z) for the four maximal opens = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))"
+      ],
+      "output_lines": 41
+    },
+    "examples/mathematics_four_manifolds_second_k_invariant.esk": {
+      "source_sha256": "f895a42c6c178071c3fdc8cd578d71edb713f78ce40e1e11f261071be010f69d",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 35.99,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 34.89
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 15.58,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 15.2,
+        "compile_exit": 0,
+        "compile_s": 5.57
+      },
+      "ctest": [
+        {
+          "name": "postnikov_four_manifolds_second_k_jit",
+          "status": "Passed",
+          "seconds": 20.54
+        },
+        {
+          "name": "postnikov_four_manifolds_second_k_aot",
+          "status": "Passed",
+          "seconds": 20.96
+        }
+      ],
+      "key_output": [
+        "  cells (V, E, F, T, P) = ((6 15 20 15 6) (5 20 40 40 16) (16 84 216 240 96))",
+        "  mod 2 Betti numbers = ((1 0 0 0 1) (1 1 1 1 1) (1 0 2 0 1))",
+        "  classes of x u x in H^4 = Z/2 over all x in H^2: S^4, RP^4, S^2xS^2 = ((0) (0 1) (0 0 0 0))",
+        "  k = 0: state sum, fibration formula, |Map(X, K(Z/2,2))| |Map(X, K(Z/2,3))| = ((1 2 1) (1 2 1) (1 2 1))",
+        "  k = iota u iota: state sum, fibration formula = ((1 1 1) (1 1 1))"
+      ],
+      "output_lines": 20
+    },
+    "examples/mathematics_funsearch_cap_set.esk": {
+      "source_sha256": "dc27292115bb4bd49875557420807bfb0cd9ff5e7a58f5a26a1f89d6e9d43806",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 12.5,
+        "passed": 3,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 12.33
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 6.88,
+        "passed": 3,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 5.93,
+        "compile_exit": 0,
+        "compile_s": 1.61
+      },
+      "ctest": [],
+      "key_output": [
+        "PASS: explicit construction has 512 points",
+        "PASS: 512-point witness is a cap in AG(8,3)",
+        "Exact pair checks: 130816"
+      ],
+      "output_lines": 10
+    },
+    "examples/mathematics_group_cohomology_order_eight.esk": {
+      "source_sha256": "b9c26ca0cf2578b0b27bd91d78d867e6e5a1cdc844682000716689060263f476",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 131.6,
+        "passed": 26,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 126.4
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 61.99,
+        "passed": 26,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 60.55,
+        "compile_exit": 0,
+        "compile_s": 9.51
+      },
+      "ctest": [
+        {
+          "name": "dw_group_cohomology_order_eight_jit",
+          "status": "Passed",
+          "seconds": 69.77
+        },
+        {
+          "name": "dw_group_cohomology_order_eight_aot",
+          "status": "Passed",
+          "seconds": 75.96
+        },
+        {
+          "name": "vm_mathematics_group_cohomology_order_eight",
+          "status": "Passed",
+          "seconds": 138.81
+        }
+      ],
+      "key_output": [
+        "  H_*(BZ/2) unnormalized / normalized = (((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (2))))",
+        "  H_*(BS_3; Z), k = 0..3 = ((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (6)))",
+        "  H_*(BZ/8) = ((0 1 ()) (1 0 (8)) (2 0 ()) (3 0 (8)))",
+        "  H_*(B(Z/4 x Z/2)) = ((0 1 ()) (1 0 (2 4)) (2 0 (2)) (3 0 (2 2 4)))",
+        "  H_*(B(Z/2)^3) = ((0 1 ()) (1 0 (2 2 2)) (2 0 (2 2 2)) (3 0 (2 2 2 2 2 2 2)))",
+        "  H_*(BD_4) = ((0 1 ()) (1 0 (2 2)) (2 0 (2)) (3 0 (2 2 4)))",
+        "  H_*(BQ_8) = ((0 1 ()) (1 0 (2 2)) (2 0 ()) (3 0 (8)))",
+        "  |H^3(G; Q/Z)| = number of Dijkgraaf-Witten twists: Z/8, Z/4xZ/2, (Z/2)^3, D_4, Q_8 = (8 16 128 16 8)",
+        "  Z(T^3) for (Z/2)^3: untwisted, type I, type II, type III = (64 64 64 22)",
+        "  Z(T^3) for D_4, Q_8, S_3 untwisted = (22 22 8)",
+        "  Z(RP^3): (Z/2)^3 type III, D_4 untwisted, Q_8 untwisted = (3/4 3/4 1/4)"
+      ],
+      "output_lines": 44
+    },
+    "examples/mathematics_group_cohomology_sweep.esk": {
+      "source_sha256": "c3efb683240920475ceb2d78e144d55a837f7a25822daf3a3374cd15d6593274",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 2.38,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 2.33
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.21,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 3.86
+      },
+      "ctest": [],
+      "key_output": [
+        "{\"schema\":\"eshkol.math.group_homology.v1\",\"group\":\"cyclic:2\",\"order\":2,\"degree\":3,\"homology\":[{\"degree\":0,\"betti\":1,\"torsion\":[]},{\"degree\":1,\"betti\":0,\"torsion\":[2]},{\"degree\":2,\"betti\":0,\"torsion\":[]},{\"degree\":3,\"betti\":0,\"torsion\":[2]}],\"h1_order\":2,\"dw_twists\":2,\"axioms\":true,\"h0_is_Z\":true,\"verdict\":\"PASS\"}"
+      ],
+      "output_lines": 3
+    },
+    "examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk": {
+      "source_sha256": "dd10ce37a9c1bb2ad8f4092d08a5bbc7ae085e3beaecc0395d012f8748b8a91b",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 25.43,
+        "passed": 10,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 24.93
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 8.12,
+        "passed": 10,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 7.88,
+        "compile_exit": 0,
+        "compile_s": 3.81
+      },
+      "ctest": [
+        {
+          "name": "hodge_fermat_quartic_fourfold_jit",
+          "status": "Passed",
+          "seconds": 11.41
+        },
+        {
+          "name": "hodge_fermat_quartic_fourfold_aot",
+          "status": "Passed",
+          "seconds": 11.72
+        }
+      ],
+      "key_output": [
+        "  Fermat quartic fourfold: primitive Hodge numbers h^{4-q,q}, q = 0..4, by Griffiths and by Shioda = ((0 21 141 21 0) (0 21 141 21 0))",
+        "  plane 0: how many planes meet it in a line, in a point, not at all = (33 299 627)",
+        "  rank of the 960 x 960 Gram matrix modulo 10007 = 142",
+        "  Fermat surfaces (degree, lines, Picard number by characters, rank of the lines' Gram matrix) = ((4 48 20 20) (5 75 37 37) (6 108 86 62))"
+      ],
+      "output_lines": 21
+    },
+    "examples/mathematics_homotopy_colimits_grothendieck.esk": {
+      "source_sha256": "514dd29538277472de7112382f796daf43e8ffc84b7ca0b27d4094d720d2997c",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 3.53,
+        "passed": 12,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 3.45
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.23,
+        "passed": 12,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.04,
+        "compile_exit": 0,
+        "compile_s": 8.2
+      },
+      "ctest": [
+        {
+          "name": "hocolim_grothendieck_borel_jit",
+          "status": "Passed",
+          "seconds": 9.24
+        },
+        {
+          "name": "hocolim_grothendieck_borel_aot",
+          "status": "Passed",
+          "seconds": 9.42
+        }
+      ],
+      "key_output": [
+        "  H^*(hocolim of pt <- S^0 -> pt) = ((0 1 ()) (1 1 ()) (2 0 ()))",
+        "  H^*(hocolim of pt <- pseudocircle -> pt) = ((0 1 ()) (1 0 ()) (2 1 ()) (3 0 ()))",
+        "  H^*(BZ/2; Z) from the action category of a point = ((0 1 ()) (1 0 ()) (2 0 (2)) (3 0 ()) (4 0 (2)))",
+        "  H^*(S^1_{hZ/2}) for the trivial action = ((0 1 ()) (1 1 ()) (2 0 (2)) (3 0 (2)))",
+        "  H^*(S^1_{hZ/2}) for the antipodal (free) action = ((0 1 ()) (1 1 ()) (2 0 ()) (3 0 ()))",
+        "  H^*(S^1_{hZ/2}) for the reflection = ((0 1 ()) (1 0 ()) (2 0 (2 2)) (3 0 ()))",
+        "PASS: the strict quotient poset of the free action is contractible, (Z, 0): the strict colimit forgets the circle the homotopy quotient keeps"
+      ],
+      "output_lines": 25
+    },
+    "examples/mathematics_ipm_velocity_expansion.esk": {
+      "source_sha256": "49c4d411d8b98fd577aedf8b2cb2e79c9fefe81ecb0e79359d19eadd603126da",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 2.49,
+        "passed": 24,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 2.43
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.27,
+        "passed": 24,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.08,
+        "compile_exit": 0,
+        "compile_s": 4.38
+      },
+      "ctest": [
+        {
+          "name": "ipm_velocity_expansion_closes_jit",
+          "status": "Passed",
+          "seconds": 5.05
+        },
+        {
+          "name": "ipm_velocity_expansion_closes_aot",
+          "status": "Passed",
+          "seconds": 4.86
+        }
+      ],
+      "key_output": [
+        "  kappa^s_{0,0} kappa^c_{0,0} = (0 4/5)",
+        "  kappa^s_{1,j} j=0,1         = (-7/25 -24/25)",
+        "  kappa^c_{2,j} j=0,1,2       = (44/125 -234/125 -44/125)",
+        "  kappa^s_{3,j} j=0..3        = (-527/625 1008/625 1581/625 -336/625)",
+        "  leading surviving order of Delta V^K + d1 w, K = 0..4 = (0 1 2 3 4)",
+        "  K = 2 failing term at order epsilon^2: (sin, cos) coefficients = (513739/27000 0)",
+        "  leading surviving order of div u^K, K = 0..4 = (0 1 2 3 4)",
+        "PASS: route 2 (order-by-order solve of the closure relation) reproduces V^4(rho) from route 1 (symbol derivatives) term by term"
+      ],
+      "output_lines": 42
+    },
+    "examples/mathematics_jacobian_counterexample.esk": {
+      "source_sha256": "51770f32f89bad44e6ea905881f4350f1245b3c8a3f710aefadf2fffac5181b1",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.78,
+        "passed": 12,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.73
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.19,
+        "passed": 12,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 2.44
+      },
+      "ctest": [],
+      "key_output": [
+        "PASS: three rational preimages share (-1/4,0,0)",
+        "PASS: AD determinant is -2 at exact-rational vectors",
+        "PASS: exact determinant is identically -2 on the degree grid",
+        "PASS: Theorem 5.1 family determinant lambda=2,a=1,c=3",
+        "PASS: Theorem 5.1 family determinant lambda=-1,a=2,c=1"
+      ],
+      "output_lines": 18
+    },
+    "examples/mathematics_kan_complexes_horns.esk": {
+      "source_sha256": "d7658e4c2af928b12d8fbdeea990d04a43f3dcee99bc875d335eff512b7b7e05",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 8.96,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 8.25
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 3.44,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 3.16,
+        "compile_exit": 0,
+        "compile_s": 7.95
+      },
+      "ctest": [
+        {
+          "name": "hocolim_kan_complexes_horns_jit",
+          "status": "Passed",
+          "seconds": 10.38
+        },
+        {
+          "name": "hocolim_kan_complexes_horns_aot",
+          "status": "Passed",
+          "seconds": 13.14
+        }
+      ],
+      "key_output": [
+        "  horns of twisted: dimension 3 = ((0 4096 1 1) (1 4096 1 1) (2 4096 1 1) (3 4096 1 1))",
+        "PASS: 2-horns have exactly |M| fillers (the third edge ranges over a coset of the image of d, the 2-cell over its kernel): 2, 1, 2, 4",
+        "  pseudocircle nerve: outer 2-horns (count, min fillers, max fillers, unfillable) = (20 0 1 8)",
+        "  |pi_1| and |pi_2| from Kan's definition: K(Z/2,2), BZ/2, split, twisted = ((1 2) (2 1) (2 2) (2 2))"
+      ],
+      "output_lines": 27
+    },
+    "examples/mathematics_lens_spaces_reidemeister_torsion.esk": {
+      "source_sha256": "63219178f66793b91a3425d159e83f6551cbef183dd8b7ed1ceef6919cae2c05",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 5.7,
+        "passed": 7,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 5.61
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.3,
+        "passed": 7,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.1,
+        "compile_exit": 0,
+        "compile_s": 21.31
+      },
+      "ctest": [
+        {
+          "name": "torsion_lens_spaces_reidemeister_jit",
+          "status": "Passed",
+          "seconds": 24.11
+        },
+        {
+          "name": "torsion_lens_spaces_reidemeister_aot",
+          "status": "Passed",
+          "seconds": 26.52
+        }
+      ],
+      "key_output": [
+        "  norms N(tau) down to Q = (25 25 25 49 49 49 49)",
+        "  torsion verdicts for L(5,1)~L(5,2), L(5,2)~L(5,3), L(5,1)~L(5,3), L(7,1)~L(7,2), L(7,2)~L(7,4), L(7,1)~L(7,6), L(7,1)~L(7,4) = (#f #t #f #f #t #t #f)",
+        "PASS: the classical pair: L(7,1) and L(7,2) are homotopy equivalent (same square class in the sibling example) but not homeomorphic (torsions differ by a non-unit for every Galois conjugate)"
+      ],
+      "output_lines": 17
+    },
+    "examples/mathematics_lens_spaces_yetter.esk": {
+      "source_sha256": "5b2658d592be50e427b8187400091377c6e409602893e7263a53bae5335c2a3a",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 11.66,
+        "passed": 14,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 11.59
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 4.52,
+        "passed": 14,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 4.22,
+        "compile_exit": 0,
+        "compile_s": 16.0
+      },
+      "ctest": [
+        {
+          "name": "yetter_lens_spaces_jit",
+          "status": "Passed",
+          "seconds": 20.29
+        },
+        {
+          "name": "yetter_lens_spaces_aot",
+          "status": "Passed",
+          "seconds": 25.81
+        }
+      ],
+      "key_output": [
+        "  square classes: L(2,1) L(3,1) L(3,2) L(4,1) L(5,1) L(5,2) L(7,1) L(7,2) L(9,1) = (square square nonsquare square square nonsquare square square square)",
+        "  Yetter (reduced sum): rows Z/3->Z/3, Z/9->Z/9 trivial, Z/9->Z/9 with 4^n = ((1 3 3 1 1 1 1 1 3 27) (1 3 3 1 1 1 1 1 3 27) (1 1 1 1 1 1 1 1 3 27))",
+        "  fibration formula, same layout = ((1 3 3 1 1 1 1 1 3 27) (1 3 3 1 1 1 1 1 3 27) (1 1 1 1 1 1 1 1 3 27))",
+        "  Z/4 -> Z/4 trivial and sign on L(2,1), L(4,1) = ((2 2) (1 2))"
+      ],
+      "output_lines": 29
+    },
+    "examples/mathematics_navier_stokes_first_principles.esk": {
+      "source_sha256": "ee7ca7df5fb98ad75d14f670405ba348d4e02a144ee961f86cb0680d1864f199",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 3.35,
+        "passed": 21,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 3.26
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.35,
+        "passed": 21,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 7.51
+      },
+      "ctest": [
+        {
+          "name": "ns_leading_profile_balance_jit",
+          "status": "Passed",
+          "seconds": 8.45
+        },
+        {
+          "name": "ns_leading_profile_balance_aot",
+          "status": "Passed",
+          "seconds": 8.44
+        }
+      ],
+      "key_output": [
+        "  a  (l_r ~ tau^a)           = (1/2 + 0 h)",
+        "  b  (l_z ~ tau^b)           = (1/2 + -1 h)",
+        "  c  (u_theta ~ tau^-c)      = (1/2 + 1 h)",
+        "  core energy exponent       = (1/2 + -3 h)",
+        "  upper bound                = 1/6",
+        "  azimuthal profile phi       = (1 51/200 1717/40000 259267/48000000 17370889/32000000000 4360093139/96000000000000 187484004977/57600000000000000)",
+        "  axial profile U             = (1 13/50 247/5000 1729/250000 19019/25000000 2149147/31250000000 49430381/9375000000000)",
+        "PASS: the derived azimuthal recurrence is the Kummer recurrence for 1F1(1+h;2;X/2)",
+        "PASS: the derived axial recurrence is the Kummer recurrence for 1F1(A;1;X/2)"
+      ],
+      "output_lines": 61
+    },
+    "examples/mathematics_navier_stokes_heat_exterior.esk": {
+      "source_sha256": "e5e1041e56354dae869dcd30cde75b20070faf2fc3c7d4a097070d9754f9bcb5",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.59,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.52
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 2.47
+      },
+      "ctest": [
+        {
+          "name": "ns_heat_exterior_exact_jit",
+          "status": "Passed",
+          "seconds": 0.06
+        },
+        {
+          "name": "ns_heat_exterior_exact_aot",
+          "status": "Passed",
+          "seconds": 2.74
+        }
+      ],
+      "key_output": [
+        "PASS: the heat exterior solves the curvature-corrected radial heat equation exactly",
+        "  moment matrix B = ((B11 B12) (B21 B22)) = ((1/6 1/12) (1/20 1/30))",
+        "  det B = 1/720",
+        "  correction coefficients (c1, c2) = (-8/3 22/3)",
+        "  transcendental moment (fine mesh)   = 0.12271054521258372"
+      ],
+      "output_lines": 28
+    },
+    "examples/mathematics_navier_stokes_localization.esk": {
+      "source_sha256": "3f42a5ad891e010417e6625ce2921181eefcdfabdfdc72b765f7b70cdbe768ff",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.38,
+        "passed": 15,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.35
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": 15,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.69
+      },
+      "ctest": [
+        {
+          "name": "ns_localization_smooth_extension_jit",
+          "status": "Passed",
+          "seconds": 1.99
+        },
+        {
+          "name": "ns_localization_smooth_extension_aot",
+          "status": "Passed",
+          "seconds": 2.0
+        },
+        {
+          "name": "ns_energy_dissipation_bounds_jit",
+          "status": "Passed",
+          "seconds": 0.36
+        },
+        {
+          "name": "ns_energy_dissipation_bounds_aot",
+          "status": "Passed",
+          "seconds": 2.15
+        },
+        {
+          "name": "ns_torus_corollary_scaling_jit",
+          "status": "Passed",
+          "seconds": 2.16
+        },
+        {
+          "name": "ns_torus_corollary_scaling_aot",
+          "status": "Passed",
+          "seconds": 2.1
+        }
+      ],
+      "key_output": [
+        "  cutoff-field Taylor coefficients about t=1, at fixed r=X1 = (0 -9/16 0 9/2 0)",
+        "  uncut field at r=X1, t = 9/10, 99/100, 999/1000 = (900 90000 9000000)",
+        "  torus-average-2d of the periodized field and the plain cell field (4x4 grid) = (1/3906250000 1/3906250000)",
+        "  KE'(t0) and the energy-identity RHS <f,u> - nu||u||^2, at t0 = (26/9 26/9)"
+      ],
+      "output_lines": 28
+    },
+    "examples/mathematics_navier_stokes_mean_corrections.esk": {
+      "source_sha256": "700a0d7391951114ba3f5d0e0da8941f4dc20e92137615b8e4c9541349416944",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.48,
+        "passed": 22,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.45
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.21,
+        "passed": 22,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.92
+      },
+      "ctest": [
+        {
+          "name": "ns_five_moment_vandermonde_jit",
+          "status": "Passed",
+          "seconds": 2.17
+        },
+        {
+          "name": "ns_five_moment_vandermonde_aot",
+          "status": "Passed",
+          "seconds": 2.19
+        }
+      ],
+      "key_output": [
+        "  azimuthal amplitudes (u0 u1 u2) = #(1949/945 -3260/189 3776/945)",
+        "  axial amplitudes (s0 s1)       = #(23/8 -21/8)",
+        "PASS: the solved azimuthal amplitudes cancel the defect exactly: M_az u + T_az = 0",
+        "PASS: the realized correction field (solved amplitudes) is exactly divergence free, by AD"
+      ],
+      "output_lines": 32
+    },
+    "examples/mathematics_navier_stokes_oscillatory_realization.esk": {
+      "source_sha256": "b5aa516b7ce59234db58123cbbcc460971c67a1f17d4619be4ab20092ee0dee3",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.23,
+        "passed": 11,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.2
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": 11,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.21
+      },
+      "ctest": [
+        {
+          "name": "ns_oscillatory_zero_mode_jit",
+          "status": "Passed",
+          "seconds": 1.57
+        },
+        {
+          "name": "ns_oscillatory_zero_mode_aot",
+          "status": "Passed",
+          "seconds": 1.54
+        }
+      ],
+      "key_output": [
+        "  mean angular-momentum flux, family 1 (A1 B1 / 2) = 1",
+        "  mean axial-momentum flux,   family 2 (A2 C2 / 2) = 3/2",
+        "  flux matrix = #(#(1 1/2) #(1/2 3/2))",
+        "  weights (w1, w2) = #(8/5 4/5)",
+        "PASS: the stacked stress solve gives POSITIVE in-cone weights (both families contribute constructively)"
+      ],
+      "output_lines": 35
+    },
+    "examples/mathematics_navier_stokes_pulse_growth.esk": {
+      "source_sha256": "3bcbc358e7d3299f0e0ea4e6aec9094ebf21d0961eacfc7abf2aa7a419461813",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.45,
+        "passed": 16,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.41
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.21,
+        "passed": 16,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.83
+      },
+      "ctest": [
+        {
+          "name": "ns_pulse_growth_crossover_jit",
+          "status": "Passed",
+          "seconds": 0.06
+        },
+        {
+          "name": "ns_pulse_growth_crossover_aot",
+          "status": "Passed",
+          "seconds": 2.11
+        }
+      ],
+      "key_output": [
+        "  crossover bracket [lo, hi]      = (927400548855/549755813888 231850137215/137438953472)",
+        "  bracket width                  = 5/549755813888",
+        "  integrated a(4)                 = 0.23851255413333725",
+        "  exp(P(4)) closed form           = 0.23851255385430242",
+        "  numeric peak time               = 1.6900000000000013",
+        "  exact crossover (bracket mid)   = 1.6869317712144039"
+      ],
+      "output_lines": 45
+    },
+    "examples/mathematics_navier_stokes_pulse_stress.esk": {
+      "source_sha256": "df6bef6bc9cf6f15debb860401ad08a460ef80981f10cc1b3f2ce72da6a9b42d",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 2.3,
+        "passed": 20,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 2.23
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.24,
+        "passed": 20,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.04,
+        "compile_exit": 0,
+        "compile_s": 4.15
+      },
+      "ctest": [
+        {
+          "name": "ns_covariance_two_family_solve_jit",
+          "status": "Passed",
+          "seconds": 4.89
+        },
+        {
+          "name": "ns_covariance_two_family_solve_aot",
+          "status": "Passed",
+          "seconds": 4.63
+        }
+      ],
+      "key_output": [
+        "  v1 (exact)                  = (1/2 1/8)",
+        "  v2 (exact)                  = (1/10 1/2)",
+        "  det [v1 v2] (exact)         = 19/80",
+        "  weights (c1,c2) (exact)     = (52/95 5/19)",
+        "  weights (c1,c2) (exact)     = (104/95 -9/19)",
+        "  time of maximum             = 3.980000000000003",
+        "  amplification factor        = 2.4846706067098037"
+      ],
+      "output_lines": 51
+    },
+    "examples/mathematics_navier_stokes_residual_ladder.esk": {
+      "source_sha256": "c64df90fbd3fe1ddf54064d2741c781e6e0576d727c24ac2dcc432854432652b",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.22,
+        "passed": 19,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.19
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.21,
+        "passed": 19,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.3
+      },
+      "ctest": [
+        {
+          "name": "ns_residual_exponent_ladder_jit",
+          "status": "Passed",
+          "seconds": 1.74
+        },
+        {
+          "name": "ns_residual_exponent_ladder_aot",
+          "status": "Passed",
+          "seconds": 1.49
+        }
+      ],
+      "key_output": [
+        "  sigma_0 sigma_1 sigma_2 sigma_3 = (1/5 3/10 2/5 1/2)",
+        "  rung 1 -- solved c1                             = 3/2",
+        "  rung 2 -- solved c2                             = -1/8",
+        "  rung 3 -- solved c3                             = 43/16",
+        "  residual order-4 coefficient after three rungs (uncorrected, as expected) = 59/64"
+      ],
+      "output_lines": 37
+    },
+    "examples/mathematics_navier_stokes_residual_order_n.esk": {
+      "source_sha256": "6e3ebda54051e7da69aa165959e5866cfd706f8edc99b36b2107365427f22c81",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.52,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.48
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": 8,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.93
+      },
+      "ctest": [
+        {
+          "name": "ns_residual_order_n_vanishes_jit",
+          "status": "Passed",
+          "seconds": 1.55
+        },
+        {
+          "name": "ns_residual_order_n_vanishes_aot",
+          "status": "Passed",
+          "seconds": 2.29
+        }
+      ],
+      "key_output": [
+        "PASS: orders 0..N-1 of the substituted residual vanish exactly at every sampled X",
+        "PASS: the background residual beyond order N-1 equals -f_N(X) exactly (nonzero in general)",
+        "  taylor tower at X = 5/2, N = 4   = (0 0 0 0 -3)"
+      ],
+      "output_lines": 24
+    },
+    "examples/mathematics_navier_stokes_similarity_scales.esk": {
+      "source_sha256": "3d5c00c6aa36d2a01aab06b7cde67775603073d54df9d01383447744b1c2bd7b",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 3.25,
+        "passed": 23,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 3.18
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.22,
+        "passed": 23,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.03,
+        "compile_exit": 0,
+        "compile_s": 7.8
+      },
+      "ctest": [
+        {
+          "name": "ns_similarity_exponents_solved_jit",
+          "status": "Passed",
+          "seconds": 8.42
+        },
+        {
+          "name": "ns_similarity_exponents_solved_aot",
+          "status": "Passed",
+          "seconds": 8.27
+        }
+      ],
+      "key_output": [
+        "  l_r                        = 0.49999999999999994",
+        "  l_z                        = 0.4949999999999999",
+        "  sup |u_theta|              = -0.505",
+        "Core kinetic energy: exact leading exponent 1/2-3h = 0.485",
+        "  exact leading exponent -(1+A) = -1.505",
+        "  fitted exponents, R_theta^(0) = (-1.5050000000000359 -1.5049999999907766 -1.5049999984036138)"
+      ],
+      "output_lines": 51
+    },
+    "examples/mathematics_navier_stokes_stress_cone.esk": {
+      "source_sha256": "9f42d15e596b5ddd5bcde8624f6b3599a439834dffec0624f8a939f994f57e4c",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 2.11,
+        "passed": 21,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 2.04
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.21,
+        "passed": 21,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 3.23
+      },
+      "ctest": [
+        {
+          "name": "ns_cone_condition_equivalence_jit",
+          "status": "Passed",
+          "seconds": 3.9
+        },
+        {
+          "name": "ns_cone_condition_equivalence_aot",
+          "status": "Passed",
+          "seconds": 3.73
+        }
+      ],
+      "key_output": [
+        "  c_K     = 35/36",
+        "  gamma_K = 8279/5184",
+        "  P_K     = 2120256/57953",
+        "  T0 at X = 2                      = (8249212/173859 -1/4)",
+        "  v_s at X = 2                     = 265/128",
+        "PASS: the constructed stress lies in the admissible cone at every sampled radius"
+      ],
+      "output_lines": 59
+    },
+    "examples/mathematics_navier_stokes_viscosity_scaling.esk": {
+      "source_sha256": "abea7eaed518f1086cca52127da298fac84a25cb4e17a413854390b921ae257b",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.72,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.66
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.21,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.03,
+        "compile_exit": 0,
+        "compile_s": 2.26
+      },
+      "ctest": [
+        {
+          "name": "ns_viscosity_scaling_exact_jit",
+          "status": "Passed",
+          "seconds": 0.06
+        },
+        {
+          "name": "ns_viscosity_scaling_exact_aot",
+          "status": "Passed",
+          "seconds": 2.69
+        }
+      ],
+      "key_output": [
+        "PASS: residual scaling identity (10.22) holds exactly at every rational nu",
+        "  R_1(u,p) at (1/2,1/3,1/5,1/7), component 1 = -4957/23625",
+        "  R_4(u_4,p_4) at (1,2/3,2/5,1/7), component 1 = -9914/23625",
+        "  ratio of the two, exactly sqrt(nu) = 2 = 2",
+        "  their ratio, exactly nu^{5/2} = 32 = 32"
+      ],
+      "output_lines": 22
+    },
+    "examples/mathematics_presheaf_topos_internal_logic.esk": {
+      "source_sha256": "11fdc767fc44cda5f0be5a43a347e44463caa810b37d3634905d3c77110163b8",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 4.92,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 4.68
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.57,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.38,
+        "compile_exit": 0,
+        "compile_s": 8.82
+      },
+      "ctest": [
+        {
+          "name": "cat_presheaf_topos_internal_logic_jit",
+          "status": "Passed",
+          "seconds": 10.6
+        },
+        {
+          "name": "cat_presheaf_topos_internal_logic_aot",
+          "status": "Passed",
+          "seconds": 9.89
+        }
+      ],
+      "key_output": [
+        "  sizes of Omega(c): walking arrow, pseudocircle, square, BZ/2 = ((2 3) (2 2 5 5) (2 3 3 6) (2))",
+        "  classifier check (sub-presheaves, Nat(X, Omega), all chi natural, pullback of true recovers A, chi injective): walking arrow, pseudocircle = ((18 18 #t #t #t) (19 19 #t #t #t))",
+        "  Grothendieck topologies (count, all give LT topologies, distinct): walking arrow, pseudocircle, BZ/2 = ((4 #t #t) (16 #t #t) (2 #t #t))",
+        "  walking arrow: all natural endomorphisms of Omega satisfying the Lawvere-Tierney axioms, by exhaustion = 4"
+      ],
+      "output_lines": 21
+    },
+    "examples/mathematics_sheafification_descent_kan.esk": {
+      "source_sha256": "72aae0f72e6bb160b435055a394c7cd2f9651f72b7d8a9ba588786d291684a49",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 8.15,
+        "passed": 10,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 7.87
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.1,
+        "passed": 10,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.91,
+        "compile_exit": 0,
+        "compile_s": 19.43
+      },
+      "ctest": [
+        {
+          "name": "cat_sheafification_descent_kan_jit",
+          "status": "Passed",
+          "seconds": 21.48
+        },
+        {
+          "name": "cat_sheafification_descent_kan_aot",
+          "status": "Passed",
+          "seconds": 26.27
+        }
+      ],
+      "key_output": [
+        "  pseudocircle: matching families of the constant 2-set on the top cover and on the cover of {a,b} by {a} and {b}; Cech families on the generating covers = (2 4 2 4)",
+        "  pseudocircle: sizes of const, const^+, const^{++} on the 6 opens; pi_0 of each open = ((2 2 2 2 2 2) (2 2 2 2 2 4) (2 2 2 2 2 4) (1 1 1 1 1 2))",
+        "  universal property counts (Hom(F, G), Hom(aF, G)) for G locally constant: constant F, non-separated F = ((4 4) (2 2))"
+      ],
+      "output_lines": 22
+    },
+    "examples/mathematics_stacks_nonabelian_descent.esk": {
+      "source_sha256": "ec081828506dfeb2f49624d1dc0d6433da10330f60ae1e7d9a0690b00833d097",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 5.01,
+        "passed": 23,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 4.83
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.31,
+        "passed": 23,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.12,
+        "compile_exit": 0,
+        "compile_s": 11.93
+      },
+      "ctest": [
+        {
+          "name": "stacks_nonabelian_descent_jit",
+          "status": "Passed",
+          "seconds": 14.46
+        },
+        {
+          "name": "stacks_nonabelian_descent_aot",
+          "status": "Passed",
+          "seconds": 16.03
+        }
+      ],
+      "key_output": [
+        "  pseudocircle, Fun(S, BG) for S_3, D_4, Q_8, Z/3: (objects, classes, |Aut| multiset, cardinality) = ((6 3 (2 3 6) 1) (8 5 (4 4 4 8 8) 1) (8 5 (4 4 4 8 8) 1) (3 3 (3 3 3) 1))",
+        "  twisted product with the flip: H^*(K; Z) as (degree betti torsion) = ((0 1 ()) (1 1 ()) (2 0 (2)) (3 0 ()))",
+        "PASS: Z/3 separates the torus (9 flat bundles) from the Klein bottle (3)",
+        "PASS: the Klein bottle separates D_4 from Q_8: 40 flat bundles each and cardinality 5, but 20 classes against 16 (the torus gives 22 and 22)"
+      ],
+      "output_lines": 41
+    },
+    "examples/mathematics_turaev_viro_cyclotomic.esk": {
+      "source_sha256": "9d9112a7cec9c780980892c1ecf7545aea2350d3953af7e5edc7580d2e197fc4",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 10.72,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 10.54
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 2.62,
+        "passed": 9,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 2.38,
+        "compile_exit": 0,
+        "compile_s": 23.13
+      },
+      "ctest": [
+        {
+          "name": "tv_turaev_viro_cyclotomic_jit",
+          "status": "Passed",
+          "seconds": 23.12
+        },
+        {
+          "name": "tv_turaev_viro_cyclotomic_aot",
+          "status": "Passed",
+          "seconds": 28.84
+        }
+      ],
+      "key_output": [
+        "  TV_3(M)/TV_3(S^3) for RP^3, T^3, L(4,1), L(3,1), L(5,1), L(7,1), L(2,1) = (0 8 2 1 1 1 0)",
+        "  TV_4 separates L(5,1) from L(5,2)?  TV_5?  TV_4 separates L(7,1) from L(7,2)? = (#f #t #f)",
+        "  TV_3, TV_4, TV_5 of T^3 = (4 9 16)",
+        "PASS: TV_5 separates L(5,1) from L(5,2) (1/2 against 0) although TV_3 and TV_4 do not; TV_5(RP^3) = 0"
+      ],
+      "output_lines": 21
+    },
+    "examples/mathematics_two_descent_cech_nerves.esk": {
+      "source_sha256": "0a7ac6f1b5d1d364746801aa5f985fcc3b3da530ae55e804521f461bc7208985",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 45.47,
+        "passed": 12,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 45.11
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 27.38,
+        "passed": 12,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 23.06,
+        "compile_exit": 0,
+        "compile_s": 19.63
+      },
+      "ctest": [
+        {
+          "name": "descent_two_descent_cech_nerves_jit",
+          "status": "Passed",
+          "seconds": 40.23
+        },
+        {
+          "name": "descent_two_descent_cech_nerves_aot",
+          "status": "Passed",
+          "seconds": 42.74
+        }
+      ],
+      "key_output": [
+        "  T^3: nine Yetter values on the Cech nerve and on the Kuhn triangulation = ((2 4 8 8 8 5 27 27 27) (2 4 8 8 8 5 27 27 27))",
+        "PASS: mod-2 2-groups do not separate the torus model from the Klein bottle model (all six values 1, 2, 2, 2, 2, 2 on both); BZ/3 does, on the nerves and on the order complexes: 3 against 1",
+        "  pseudo-2-sphere: Map(C(U), BG) and Map(S^2, BG) for BZ/2, K(Z/2,2), Z/2->Z/2 = ((1/2 2 1) (1/2 4 2))",
+        "PASS: descent failure is invisible to the 1-type BZ/2 (1/2 on both sides, pi_1 S^2 = 0) and visible to K(Z/2,2) (nerve 2, space 4) and to the split 2-type (1 against 2)"
+      ],
+      "output_lines": 28
+    },
+    "examples/mathematics_two_groups_postnikov.esk": {
+      "source_sha256": "506ec63d21f893faf59f35ed1e17a65ecb2faf48d1a601ef00bc150b0a8c0f62",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 21.0,
+        "passed": 18,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 20.82
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 12.66,
+        "passed": 18,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 12.38,
+        "compile_exit": 0,
+        "compile_s": 6.89
+      },
+      "ctest": [
+        {
+          "name": "hocolim_two_groups_postnikov_jit",
+          "status": "Passed",
+          "seconds": 19.57
+        },
+        {
+          "name": "hocolim_two_groups_postnikov_aot",
+          "status": "Passed",
+          "seconds": 22.27
+        },
+        {
+          "name": "vm_mathematics_two_groups_postnikov",
+          "status": "Passed",
+          "seconds": 74.22
+        }
+      ],
+      "key_output": [
+        "  k-invariant values on the eight triples (a,b,c): split, twist with trivial action, twist with the sign action = ((0 0 0 0 0 0 0 0) (0 0 0 0 0 0 0 0) (0 0 0 0 0 0 0 2))",
+        "  dim H^n(-; Z/2), n = 0..3: K(Z/2,2) = (1 0 1 1)",
+        "  dim H^n(-; Z/2), n = 0..3: BZ/2 = (1 1 1 1)",
+        "  dim H^n(-; Z/2), n = 0..3: split 2-type = (1 1 2 3)",
+        "  dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, trivial action = (1 1 2)",
+        "  dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, sign action = (1 1 1)",
+        "PASS: three 2-types with pi_1 = pi_2 = Z/2: two are the product and one is not, and H^2(-; Z/2) tells them apart",
+        "  H_n(-; Z), n = 0..2: split, trivial-action twist, sign-action twist = (((0 1 ()) (1 0 (2)) (2 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 ())))"
+      ],
+      "output_lines": 37
+    },
+    "examples/mathematics_yetter_three_torus_finite_model.esk": {
+      "source_sha256": "3378acb1aa13827bc82f111bfd7a07049f902cf4115d09cf8f50866a2c702b75",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 99.44,
+        "passed": 11,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 94.48
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 48.6,
+        "passed": 11,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 47.33,
+        "compile_exit": 0,
+        "compile_s": 14.47
+      },
+      "ctest": [
+        {
+          "name": "yetter_three_torus_finite_model_jit",
+          "status": "Passed",
+          "seconds": 60.67
+        },
+        {
+          "name": "yetter_three_torus_finite_model_aot",
+          "status": "Passed",
+          "seconds": 68.98
+        }
+      ],
+      "key_output": [
+        "  (V, E, F, T) = (64 448 768 384)",
+        "  orders of H^*(T^3 model; Z/2) and (Z/3) = ((2 8 8 2) (3 27 27 3))",
+        "  Yetter on the 64-point model: K(Z/2,2), BZ/2, Z/2->Z/2, Z/4->Z/4 trivial, Z/4->Z/4 sign, Z/3->Z/2 sign, Z/3->Z/3, Z/9->Z/9 trivial, Z/9->Z/9 4^n = (2 4 8 8 8 5 27 27 27)",
+        "  fibration formula = (2 4 8 8 8 5 27 27 27)",
+        "  Smith normal forms computed = 12"
+      ],
+      "output_lines": 25
+    },
+    "examples/mathematics_yetter_two_group_invariants.esk": {
+      "source_sha256": "51777e8a49ad8535dea26ca65a9bc8c10f262fc287146a89087f5177720a065f",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 6.32,
+        "passed": 13,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 6.16
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.3,
+        "passed": 13,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.1,
+        "compile_exit": 0,
+        "compile_s": 10.6
+      },
+      "ctest": [
+        {
+          "name": "yetter_two_group_invariants_jit",
+          "status": "Passed",
+          "seconds": 13.7
+        },
+        {
+          "name": "yetter_two_group_invariants_aot",
+          "status": "Passed",
+          "seconds": 16.51
+        }
+      ],
+      "key_output": [
+        "  Yetter state sums, rows K(Z/2,2), BZ/2, Z/2->Z/2, Z/4->Z/4 trivial, Z/4->Z/4 sign, Z/3->Z/2 sign; columns S^3, RP^3, T^3 = ((2 2 2) (1/2 1 4) (1 2 8) (1 2 8) (1 1 8) (3/2 2 5))",
+        "  fibration formula, same layout = ((2 2 2) (1/2 1 4) (1 2 8) (1 2 8) (1 1 8) (3/2 2 5))",
+        "PASS: Z(S^3) = |pi_2| / |pi_1| for every 2-group: 2, 1/2, 1, 1, 1, 3/2",
+        "PASS: the k-invariant is detected on RP^3: Z/4->Z/4 with the sign action gives 1 where the trivial action gives 2; S^3 and T^3 cannot tell them apart (1 and 8)"
+      ],
+      "output_lines": 26
+    },
+    "examples/milli_mag_bohrification.esk": {
+      "source_sha256": "4db2c322e5e691e1173f460a758e34080efe4567e1cf4da3fac87ed1eb2348f5",
+      "jit": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 1.06,
+        "passed": 10,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 1.04
+      },
+      "aot": {
+        "status": "PASS",
+        "exit": 0,
+        "wall_s": 0.19,
+        "passed": 10,
+        "failed": 0,
+        "result_line": "RESULT: ALL PASS",
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 0.91
+      },
+      "ctest": [],
+      "key_output": [
+        "PASS: C(A_F) has two named contexts",
+        "PASS: scalar context is below full context",
+        "PASS: full context is maximal",
+        "PASS: Sigma of the scalar context is a singleton",
+        "PASS: Sigma of A_F has visible and dark points",
+        "PASS: visible point restricts to the scalar point",
+        "PASS: dark point restricts to the scalar point",
+        "PASS: minimal projections and sectors round-trip",
+        "PASS: K0 basis is generated by the spectrum points",
+        "PASS: milli-magnetic K-homology pairing vanishes on generators"
+      ],
+      "output_lines": 19
+    },
+    "examples/monte_carlo_pi.esk": {
+      "source_sha256": "60f0c491c44e57773f9ed875dd6d467637ef46caeafeeda0a9e308d1e85f0305",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.13,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 2.04
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.25,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.51,
+        "compile_exit": 0,
+        "compile_s": 0.79
+      },
+      "ctest": [],
+      "key_output": [
+        "Total samples:        1600000",
+        "π estimate:           3.1426375",
+        "Absolute error:       0.0010448464102070787"
+      ],
+      "output_lines": 14
+    },
+    "examples/neural_xor.esk": {
+      "source_sha256": "b8e3a8c248e547f4088706408b10589842ca6f7ae8ed1696fd324c7f71027e00",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.31,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.3
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.22,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.04,
+        "compile_exit": 0,
+        "compile_s": 1.46
+      },
+      "ctest": [],
+      "key_output": [
+        "Initial loss: 1.0964374696533552",
+        "  XOR(0,0) = target 0   model output 0.012623940674258071",
+        "  XOR(0,1) = target 1   model output 0.9838699657502117",
+        "  XOR(1,0) = target 1   model output 0.9837171562106782",
+        "  XOR(1,1) = target 0   model output 0.015442208665595411"
+      ],
+      "output_lines": 34
+    },
+    "examples/newton_method.esk": {
+      "source_sha256": "1040c89347b83e513ec75f85948ef2debc0cacd2dcd8bbce6530ef1cc3f162b2",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.18,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.15
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.25
+      },
+      "ctest": [],
+      "key_output": [
+        "  x^3 = 27         root ≈ 3    (converged in 5 iters)",
+        "  x^2 = 2          root ≈ 1.4142135623730951    (converged in 5 iters)",
+        "  x = cos(x)       root ≈ 0.7390851332151607    (converged in 4 iters)",
+        "  x^5 - 3x + 1=0   root ≈ 0.3347341419433527    (converged in 4 iters)"
+      ],
+      "output_lines": 18
+    },
+    "examples/parallel.esk": {
+      "source_sha256": "2ffc1e69b0e6d5121cc8dcf10922cdfa31e17bb40266ee525d208741e74a8e85",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.97,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.96
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.32,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.03,
+        "compile_exit": 0,
+        "compile_s": 0.74
+      },
+      "ctest": [],
+      "key_output": [
+        "Parallel results: (100 400 900)"
+      ],
+      "output_lines": 4
+    },
+    "examples/qng_vqe.esk": {
+      "source_sha256": "96f7bb3649796f3b2366d917426664b966282102546df5ae101f983e543241c4",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 2.27,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 2.22
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.34,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.04,
+        "compile_exit": 0,
+        "compile_s": 2.45
+      },
+      "ctest": [],
+      "key_output": [
+        "final QNG:     -1.1421706402882286 Ha",
+        "final vanilla: -1.1418227561668124 Ha",
+        "exact:         -1.142170640288229 Ha"
+      ],
+      "output_lines": 22,
+      "note": "Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON."
+    },
+    "examples/streaming_stats.esk": {
+      "source_sha256": "fd101dfcf7bf4cbe3364fd2a4f6baea167de332bb4fd8d13c913b0c7550d4c8b",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.22,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.2
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.28,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.1,
+        "compile_exit": 0,
+        "compile_s": 0.93
+      },
+      "ctest": [],
+      "key_output": [
+        "Count:           200000",
+        "Mean:            5.016184203579694",
+        "Variance:        0.20503429811555732",
+        "Min:             4.0007340189149865",
+        "Max:             6.000556046345771"
+      ],
+      "output_lines": 16
+    },
+    "examples/symbolic_diff.esk": {
+      "source_sha256": "ea87c06eb45a9eeea68adb57af8a401f6a2dee8b3b0db47671b32cf6fd5bb420",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.2,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.19
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.2,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.17
+      },
+      "ctest": [],
+      "key_output": [
+        "Function:  f(x) = sin(x^2) + 3*x",
+        "  0      3      3      3",
+        "  1      4.0806046117362795      4.0806046117362795      4.0806046117362795",
+        "  1.5      1.1154791318317825      1.1154791318317825      1.1154791318317825",
+        "  2      0.38542551654555224      0.38542551654555224      0.38542551654555224",
+        "All three modes agree to machine precision.  Symbolic AD is the"
+      ],
+      "output_lines": 26
+    },
+    "examples/tensors.esk": {
+      "source_sha256": "5a4705399968990fb792a18c471bebe43e3205543c63787793aad6df1c98a534",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.03,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.98
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.62,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.03,
+        "compile_exit": 0,
+        "compile_s": 0.85
+      },
+      "ctest": [],
+      "key_output": [
+        "A (2x3) @ B (3x2) = #((58 64) (139 154))",
+        "sum(A) = 21",
+        "mean(A) = 3.5",
+        "max(A) = 6",
+        "A + A = #((2 4 6) (8 10 12))"
+      ],
+      "output_lines": 24
+    },
+    "examples/vqe_h2.esk": {
+      "source_sha256": "16ee4266c13ea345e3a5210f65a511285f6c7c63be02d50c2d74b0c4f216975a",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.97,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.95
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.24,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.06,
+        "compile_exit": 0,
+        "compile_s": 1.93
+      },
+      "ctest": [],
+      "key_output": [
+        "Final VQE energy:   -1.1421333189606426 Ha",
+        "Exact ground state: -1.142170640288229 Ha"
+      ],
+      "output_lines": 24,
+      "note": "Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON."
+    },
+    "examples/wgsl_artifact/generate.esk": {
+      "source_sha256": "4598899b130bc9a1007309ac69007978d8c8ee18a1be8fa0b83b28740e8de1bb",
+      "jit": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 1.28,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 1.24
+      },
+      "aot": {
+        "status": "RAN-OK",
+        "exit": 0,
+        "wall_s": 0.19,
+        "passed": null,
+        "failed": null,
+        "result_line": null,
+        "cpu_s": 0.02,
+        "compile_exit": 0,
+        "compile_s": 1.26
+      },
+      "ctest": [],
+      "key_output": [
+        "// ad-grid-max-errors: 6.376787986539512e-11,3.5238751916466526e-09,1.7720019584999136e-07",
+        "AD_MODEL_PASS"
+      ],
+      "output_lines": 27,
+      "note": "`python3 examples/wgsl_artifact/build_artifact.py` at this SHA (1.9 s) prints `artifact PASS: native=VM`, with AD grid maxima 6.4e-11, 3.5e-09 and 1.8e-07 for value, first and second derivative, and reproduces `evaluator.wgsl` and the manifest's `source_sha256` and `wgsl_sha256` byte for byte; only the manifest's compiler provenance (`git_commit`, `native_binary_sha256`) differs, as it records the building compiler."
+    }
+  }
+}

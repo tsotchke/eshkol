@@ -113,3 +113,23 @@ Section 2, in the same numbering. Status vocabulary is exactly one of:
 | `ns_localization_smooth_extension` | `examples/mathematics_navier_stokes_localization.esk` |
 | `ns_energy_dissipation_bounds` | `examples/mathematics_navier_stokes_localization.esk` |
 | `ns_torus_corollary_scaling` | `examples/mathematics_navier_stokes_localization.esk` |
+
+## Programs not yet reflected in the ledger rows
+
+Five further `ESHKOL_NS_EXAMPLES` criteria are wired in CMakeLists.txt and pass
+in native JIT and AOT at the v1.3.6 release SHA `60f345def` (outcomes and
+computed values in [MATHEMATICS_EXAMPLES.md](../MATHEMATICS_EXAMPLES.md)), but
+no ledger row names them yet. The rows above still read ANALYTIC-ONLY with "no
+dedicated Navier-Stokes example program exercises this row" for the rows these
+programs touch; the YAML twin is the authority for status and has not been
+updated, so the counts above are unchanged. Reclassifying a row is a ledger
+change (YAML and this table together, checked by
+`scripts/check_ns_evidence_ledger.py`), listed here as the open item.
+
+| CTest / criterion id | example program | rows it exercises, and how |
+|---|---|---|
+| `ns_cone_condition_equivalence` | `examples/mathematics_navier_stokes_stress_cone.esk` | 16, 17, 18, 20: `t_s, v_s, P_c, J_c` from an exactly integrated base flow, the relaxed and admissible cone decided by exact rational sign tests on `2(P_c - v)^2 - (v - 2)J_c^2`, Lemma 4.5's equivalence at every sample, homogeneity in `T0`. Row 19 only on a finite parameter sample (exact threshold `P_K = 2120256/57953`), not on a compact set |
+| `ns_heat_exterior_exact` | `examples/mathematics_navier_stokes_heat_exterior.esk` | 27: an exact polynomial heat exterior solving the curvature-corrected radial heat equation, checked by AD. 22: Lemma A.1 for one exact 2x2 instance (`det B = 1/720`), not for general distinct exponents |
+| `ns_residual_order_n_vanishes` | `examples/mathematics_navier_stokes_residual_order_n.esk` | 40-44 as a scalar model of the order-by-order recursion only; the actual coefficient system needs the symbolic-series capability those rows plan |
+| `ns_oscillatory_zero_mode` | `examples/mathematics_navier_stokes_oscillatory_realization.esk` | 58, 59 (already EXACT through `ns_covariance_two_family_solve`) on a four-point auxiliary torus with `exact-solve` |
+| `ns_pulse_growth_crossover` | `examples/mathematics_navier_stokes_pulse_growth.esk` | Introduction [9] and Section 2.2 (the Craik-Criminale wavevector law and the amplification/damping crossover); no Section 2 pipeline row |
