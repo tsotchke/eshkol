@@ -462,7 +462,7 @@ The LLVM backend distributes code generation across 39 `*codegen*.cpp` translati
 | **Hash** | [`hash_codegen.cpp`](../../lib/backend/hash_codegen.cpp) | 743 | make-hash, hash-ref, hash-set!, hash-for-each |
 | **Complex** | [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp) | 624 | Complex number arithmetic (Smith's formula division) |
 
-The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 23,389 lines re-exported through the dispatcher above.
+The original `tensor_codegen.cpp` was decomposed in v1.2 into thirteen per-domain modules (`tensor_activation_codegen.cpp`, `tensor_arith_codegen.cpp`, `tensor_conv_codegen.cpp`, `tensor_creation_codegen.cpp`, `tensor_dataloader_codegen.cpp`, `tensor_extras_codegen.cpp`, `tensor_linalg_codegen.cpp`, `tensor_loss_codegen.cpp`, `tensor_reduce_codegen.cpp`, `tensor_shape_codegen.cpp`, `tensor_training_codegen.cpp`, `tensor_transformer_codegen.cpp`, `tensorcore_codegen.cpp`), totalling 23,413 lines re-exported through the dispatcher above.
 
 **Additional backend components (not in the module table above):**
 
@@ -528,7 +528,7 @@ The Metal shader source is embedded at build time via a CMake custom command tha
 
 ### Parallel Primitives
 
-**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,225 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,317 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
+**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,225 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,323 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
 
 Four parallel higher-order functions with work-stealing scheduling:
 
@@ -677,7 +677,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,712 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,729 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 
