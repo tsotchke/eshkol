@@ -5887,7 +5887,29 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 ctx_.builder().CreateBr(grad_rt_done);
 
                 ctx_.builder().SetInsertPoint(grad_rt_done);
-                return ctx_.builder().CreateLoad(ctx_.taggedValueType(), rt_result_slot);
+                return gradientInPointShape(
+                    ctx_.builder().CreateLoad(ctx_.taggedValueType(), rt_result_slot),
+                    point_val);
+}
+
+llvm::Value* AutodiffCodegen::gradientInPointShape(llvm::Value* result, llvm::Value* point) {
+    if (!result || !point || result->getType() != ctx_.taggedValueType() ||
+        point->getType() != ctx_.taggedValueType())
+        return result;
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* result_slot = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_shape_in");
+    llvm::Value* point_slot = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_shape_point");
+    llvm::Value* out_slot = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_shape_out");
+    b.CreateStore(result, result_slot);
+    b.CreateStore(point, point_slot);
+    llvm::FunctionCallee shape_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_gradient_in_point_shape",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
+    b.CreateCall(shape_fn, {ctx_.currentArena(), result_slot, point_slot, out_slot});
+    return b.CreateLoad(ctx_.taggedValueType(), out_slot, "grad_in_point_shape");
 }
 
 /**
@@ -8111,10 +8133,12 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         ctx_.builder().CreateStore(final_phi, grad_result_slot);
         ctx_.builder().CreateBr(grad_unified_exit);
         ctx_.builder().SetInsertPoint(grad_unified_exit);
-        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), grad_result_slot);
+        return gradientInPointShape(
+            ctx_.builder().CreateLoad(ctx_.taggedValueType(), grad_result_slot),
+            vector_val);
     }
 
-    return final_phi;
+    return gradientInPointShape(final_phi, vector_val);
 }
 
 
