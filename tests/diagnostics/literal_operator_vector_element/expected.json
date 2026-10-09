@@ -1,0 +1,9 @@
+{
+  "description": "#((1 2 3) (4 5 6)): each unquoted element is a call with an integer-literal operator. One source-located diagnostic per element, a nonzero compile exit, no binary, and no internal backtrace or abort.",
+  "compile": "fail",
+  "diagnostics": [
+    {"contains": "Cannot call an integer literal", "span": {"file": "input.esk", "line": 5, "col": 13}},
+    {"contains": "Cannot call an integer literal", "span": {"file": "input.esk", "line": 5, "col": 21}}
+  ],
+  "forbidden": ["requires variable or inline lambda", "eshkol-run  ", "fatal signal", "Abort"]
+}

@@ -12855,6 +12855,26 @@ private:
         return codegenClosureCall(func_result, call_args, "call-result-as-func");
     }
 
+    // Plain-language name for a non-procedure literal in operator position,
+    // used by the call diagnostic in codegenCallTask.
+    static const char* describeLiteralOperator(const eshkol_ast_t* head) {
+        switch (head ? head->type : ESHKOL_INVALID) {
+            case ESHKOL_UINT8: case ESHKOL_UINT16: case ESHKOL_UINT32:
+            case ESHKOL_UINT64: case ESHKOL_INT8: case ESHKOL_INT16:
+            case ESHKOL_INT32: case ESHKOL_INT64: case ESHKOL_BIGNUM_LITERAL:
+                return "an integer literal";
+            case ESHKOL_DOUBLE: return "a real-number literal";
+            case ESHKOL_STRING: return "a string literal";
+            case ESHKOL_CHAR: return "a character literal";
+            case ESHKOL_BOOL: return "a boolean literal";
+            case ESHKOL_NULL: return "the empty list";
+            case ESHKOL_SYMBOL: return "a symbol literal";
+            case ESHKOL_CONS: return "a list literal";
+            case ESHKOL_TENSOR: return "a vector literal";
+            default: return "this expression";
+        }
+    }
+
     Value* codegenCallOperationResultAsFunc(const eshkol_operations_t* op) {
         // Evaluate the operation to get the closure value
         Value* func_result = codegenAST(op->call_op.func);
@@ -13325,10 +13345,8 @@ private:
         // wrapped expression. Unwrap and re-dispatch rather than teaching each
         // head form about ascriptions: every case below (variable head, inline
         // lambda, nested call, operation-result) then works through a cast.
-        // Without this, `((the procedure f) 7)` reached the "Call expression
-        // requires variable or inline lambda" bail-out, which made the
-        // `procedure`/`closure`/`(-> a b)` ascriptions unusable in the one
-        // position where ascribing a callable is the point.
+        // Unwrapping keeps `((the procedure f) 7)` on the same static paths
+        // as `(f 7)` instead of the general computed-operator path below.
         if (op->call_op.func->type == ESHKOL_OP &&
             op->call_op.func->operation.op == ESHKOL_THE_OP &&
             op->call_op.func->operation.the_op.expr) {
@@ -13349,28 +13367,29 @@ private:
             co_return codegenCallResultAsFunc(op);
         }
 
-        // ((derivative f) x), ((gradient f) p), etc. — operations whose
-        // result is a closure that can then be called.
+        // ((derivative f) x), ((and #t f) x), ((case k ((1) f)) x), ... —
+        // any other operator expression. R7RS evaluates the operator position
+        // like every other operand and applies the resulting value, so every
+        // remaining operation head takes the one general path: evaluate it,
+        // then call the value through the runtime closure dispatcher, which
+        // raises a catchable condition when the value is not a procedure.
         if (op->call_op.func->type == ESHKOL_OP) {
-            eshkol_op_t inner_op = op->call_op.func->operation.op;
-            if (inner_op == ESHKOL_DERIVATIVE_OP || inner_op == ESHKOL_GRADIENT_OP ||
-                inner_op == ESHKOL_LAMBDA_OP || inner_op == ESHKOL_JACOBIAN_OP ||
-                inner_op == ESHKOL_COND_OP || inner_op == ESHKOL_IF_OP ||
-                inner_op == ESHKOL_LET_OP || inner_op == ESHKOL_LETREC_OP) {
-                co_return codegenCallOperationResultAsFunc(op);
-            }
+            co_return codegenCallOperationResultAsFunc(op);
         }
 
-        // Handle variable function references (existing code)
+        // A self-evaluating literal in operator position can never be a
+        // procedure. Report it at the literal's source position; the usual
+        // cause is a list written as data without a quote, e.g. an element
+        // `(1 2 3)` inside `#(...)` or a shape `(2 2)` passed to `tensor`.
         if (op->call_op.func->type != ESHKOL_VAR || !op->call_op.func->variable.id) {
-            ESHKOL_ERROR("Call expression requires variable or inline lambda (func type: %d, is OP: %d, op_type: %d)",
-                         op->call_op.func ? op->call_op.func->type : -1,
-                         op->call_op.func && op->call_op.func->type == ESHKOL_OP ? 1 : 0,
-                         op->call_op.func && op->call_op.func->type == ESHKOL_OP ? op->call_op.func->operation.op : -1);
-            eshkol_error_stacktrace();
+            codegen_error_at(op->call_op.func,
+                "Cannot call %s: the operator of a call must be a procedure "
+                "(to write a list as data, quote it or build it with `list`)",
+                describeLiteralOperator(op->call_op.func));
+            markFatalCodegenError();
             co_return nullptr;
         }
-        
+
         std::string func_name = op->call_op.func->variable.id;
 
         // Parser-private parameter helpers.  They are intentionally lowered
@@ -23720,7 +23739,11 @@ private:
     // Calls before(), then thunk(), then after(), returns thunk's result
     // before/after are also called during continuation jumps across dynamic-wind boundaries
     Value* codegenDynamicWind(const eshkol_operations_t* op) {
-        // Evaluate the three thunks
+        // Evaluate the three thunks. Each operand goes through
+        // ensureTaggedValue, the normalisation every other procedure operand
+        // gets: before/after are stored into tagged slots for the wind stack,
+        // so an operand that compiled to a raw scalar, or to no value at all
+        // because it already reported a diagnostic, must be tagged first.
         Value* before_val = codegenAST(op->dynamic_wind_op.before);
         // NORETURN SAFETY: If the expression computing the before thunk raised,
         // the block is terminated. Don't emit more instructions.
@@ -23735,6 +23758,9 @@ private:
         if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
+        before_val = ensureTaggedValue(before_val);
+        thunk_val = ensureTaggedValue(thunk_val);
+        after_val = ensureTaggedValue(after_val);
 
         // Push dynamic-wind entry onto the stack (stores before/after for unwinding)
         Function* push_wind_func = module->getFunction("eshkol_push_dynamic_wind");

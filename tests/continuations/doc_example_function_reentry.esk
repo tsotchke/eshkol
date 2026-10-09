@@ -1,0 +1,19 @@
+;; The re-entry example from docs/reference/language/continuations.md,
+;; docs/API_REFERENCE.md and docs/ESHKOL_LANGUAGE_GUIDE.md, exactly as
+;; written there.
+;;
+;; In a program file the continuation of a top-level form includes every
+;; top-level form after it, so re-invoking `k` returns into `(display (f))`
+;; and then runs the later forms again. The counter is a top-level binding,
+;; which is store rather than control state, so its updates survive each
+;; re-entry and bound the loop.
+;;
+;; EXPECTED on native JIT, native AOT and the bytecode VM: 2 / 11 / 21 / done.
+(define k #f)
+(define count 0)
+(define (f)
+  (+ 1 (call/cc (lambda (c) (set! k c) 1))))
+(display (f)) (newline)            ; 2, then 11 and 21 on the two re-entries
+(set! count (+ count 1))
+(if (< count 3) (k (* count 10)))  ; re-enter f's continuation after f returned
+(display "done") (newline)

@@ -176,6 +176,39 @@ llvm::Value* CollectionCodegen::cons(const eshkol_operations_t* op) {
  * @param op AST operation node; must have exactly 1 call argument.
  * @return Tagged value: the car of the pair (or element 0 of a vector/tensor).
  */
+void CollectionCodegen::branchOnSequenceNonEmpty(llvm::Value* obj_ptr,
+                                                 llvm::Value* is_vector_subtype,
+                                                 llvm::BasicBlock* non_empty_bb,
+                                                 llvm::BasicBlock* empty_bb,
+                                                 const char* prefix) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    const std::string pre(prefix);
+    llvm::BasicBlock* vec_len_bb = llvm::BasicBlock::Create(ctx_.context(), pre + "_vec_len", fn);
+    llvm::BasicBlock* tensor_len_bb = llvm::BasicBlock::Create(ctx_.context(), pre + "_tensor_len", fn);
+    llvm::BasicBlock* len_merge_bb = llvm::BasicBlock::Create(ctx_.context(), pre + "_len_merge", fn);
+    b.CreateCondBr(is_vector_subtype, vec_len_bb, tensor_len_bb);
+
+    // Scheme vector: element count is the first word of the object.
+    b.SetInsertPoint(vec_len_bb);
+    llvm::Value* vec_len = b.CreateLoad(ctx_.int64Type(), obj_ptr, pre + "_vec_count");
+    b.CreateBr(len_merge_bb);
+
+    // Tensor: total_elements (field 3) is zero exactly when some extent is
+    // zero, which is when there is no first element to read.
+    b.SetInsertPoint(tensor_len_bb);
+    llvm::Value* tensor_len = b.CreateLoad(ctx_.int64Type(),
+        b.CreateStructGEP(ctx_.tensorType(), obj_ptr, 3), pre + "_tensor_count");
+    b.CreateBr(len_merge_bb);
+
+    b.SetInsertPoint(len_merge_bb);
+    llvm::PHINode* count = b.CreatePHI(ctx_.int64Type(), 2, pre + "_count");
+    count->addIncoming(vec_len, vec_len_bb);
+    count->addIncoming(tensor_len, tensor_len_bb);
+    llvm::Value* non_empty = b.CreateICmpSGT(count, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    b.CreateCondBr(non_empty, non_empty_bb, empty_bb);
+}
+
 llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("CollectionCodegen::car - callbacks not set");
@@ -256,7 +289,14 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
             llvm::BasicBlock::Create(ctx_.context(), "car_heap_not_pair", current_func);
         llvm::BasicBlock* car_cons_check =
             llvm::BasicBlock::Create(ctx_.context(), "car_cons_check", current_func);
-        ctx_.builder().CreateCondBr(is_vector_or_tensor, vector_block, car_cons_check);
+        llvm::BasicBlock* car_seq_check =
+            llvm::BasicBlock::Create(ctx_.context(), "car_seq_check", current_func);
+        ctx_.builder().CreateCondBr(is_vector_or_tensor, car_seq_check, car_cons_check);
+
+        // A vector or tensor answers car/cdr only when it has a first element.
+        ctx_.builder().SetInsertPoint(car_seq_check);
+        branchOnSequenceNonEmpty(obj_ptr, is_vector_subtype, vector_block,
+                                 car_heap_raise, "car_seq");
 
         ctx_.builder().SetInsertPoint(car_cons_check);
         ctx_.builder().CreateCondBr(is_cons_probe, list_block, car_heap_raise);
@@ -726,6 +766,8 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
  *    dispatches on the cdr's own tagged type (double/cons/null/string/lambda
  *    S-expr/closure/bool/char/hash/int64) via arena_tagged_cons_get_* calls
  *    and repacks accordingly.
+ *  - An empty vector or tensor has no first element, so it raises like
+ *    any other non-pair (branchOnSequenceNonEmpty).
  *  - Any other subtype, or a non-HEAP_PTR operand: raises
  *    "cdr: argument is not a pair" via eshkol_raise_not_pair.
  *
@@ -811,7 +853,14 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
         // Route: vector/tensor → vector_block, cons → list_block, else → raise
         llvm::BasicBlock* cdr_cons_check =
             llvm::BasicBlock::Create(ctx_.context(), "cdr_cons_check", current_func);
-        ctx_.builder().CreateCondBr(is_vector_or_tensor, vector_block, cdr_cons_check);
+        llvm::BasicBlock* cdr_seq_check =
+            llvm::BasicBlock::Create(ctx_.context(), "cdr_seq_check", current_func);
+        ctx_.builder().CreateCondBr(is_vector_or_tensor, cdr_seq_check, cdr_cons_check);
+
+        // A vector or tensor answers car/cdr only when it has a first element.
+        ctx_.builder().SetInsertPoint(cdr_seq_check);
+        branchOnSequenceNonEmpty(obj_ptr, is_vector_subtype, vector_block,
+                                 cdr_heap_raise, "cdr_seq");
 
         ctx_.builder().SetInsertPoint(cdr_cons_check);
         ctx_.builder().CreateCondBr(is_cons_subtype, list_block, cdr_heap_raise);

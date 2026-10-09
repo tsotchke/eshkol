@@ -827,6 +827,18 @@ void eshkol_region_unwind_to(uint64_t mark, eshkol_tagged_value_t* vals, uint64_
 // and eshkol_promise_eval_unwind_to next to which it is called.
 void eshkol_region_unwind_for_continuation(void* state);
 
+// Host evaluation extents (lib/core/runtime_continuations.cpp). A host that
+// runs separately compiled top-level evaluations one after another brackets
+// each with enter/leave; `host_frame` is the frame address of the host code
+// making the call. A continuation whose stack image was captured during an
+// evaluation is admitted only while that evaluation is live:
+// eshkol_continuation_check_extent raises a catchable condition otherwise.
+// Batch hosts and AOT executables never call enter/leave, so every
+// continuation they capture is admitted.
+uint64_t eshkol_continuation_extent_enter(void* host_frame);
+void eshkol_continuation_extent_leave(uint64_t id);
+void eshkol_continuation_check_extent(void* state);
+
 // Surface entry points, shared verbatim by native codegen and the bytecode VM so
 // arity coercions and error text cannot diverge. Optional arguments are passed
 // as NULL pointers rather than sentinels.
