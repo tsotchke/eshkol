@@ -871,7 +871,8 @@ eshkol-run --no-stdlib program.esk -o program
 (display my-data)
 
 ; Type introspection
-(type-of x)  ; Returns type tag as integer
+(type-of x)    ; Returns the runtime type tag as an integer
+(type-name x)  ; Returns the type as a symbol: 'integer, 'string, 'pair, ...
 
 ; List inspection
 (null? lst)
@@ -1134,7 +1135,7 @@ eshkol> (require stdlib)
 eshkol> (sort < '(3 1 4 1 5 9))
 (1 1 3 4 5 9)
 eshkol> :type 42
-Integer
+Type: Int64
 eshkol> :quit
 ```
 

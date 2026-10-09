@@ -15,7 +15,7 @@ pattern are bound in the body.
 | `var` | anything, binds `var` |
 | literal (`5`, `"s"`) | that literal value |
 | `(list p …)` | a list of exactly that many elements, matching each `p` |
-| `(cons p1 p2)` | a pair, `p1` = car, `p2` = cdr |
+| `(cons p1 p2)` | a pair (as `pair?` decides; a string or vector is not one), `p1` = car, `p2` = cdr |
 | `(? pred)` | any value for which `(pred value)` is true |
 | `(? pred var)` | as above, and binds `var` |
 

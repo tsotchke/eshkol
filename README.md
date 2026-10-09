@@ -523,8 +523,8 @@ Each cons cell stores **complete type information** in both car and cdr position
 `type-of` returns the runtime type tag (`inc/eshkol/eshkol.h`, `eshkol_value_type_t`):
 `1` is `ESHKOL_VALUE_INT64`, `8` is `ESHKOL_VALUE_HEAP_PTR` (the string and the
 `#(...)` literal, told apart by the object header's subtype) and `9` is
-`ESHKOL_VALUE_CALLABLE`. Planned for v1.4: readable type names (`int64`,
-`string`, `closure`, ...) via a companion `type-name`.
+`ESHKOL_VALUE_CALLABLE`. `type-name` gives the readable name as a symbol:
+`(map type-name mixed-list)` is `(integer string procedure tensor)`.
 
 ### 3. Zero-Overhead Memory Safety
 
@@ -1008,8 +1008,11 @@ eshkol> (define (f v) (let ((x (vref v 0))) (* x x x)))
 eshkol> (gradient f (vector 2.0))
 #(12)
 
-eshkol> :type (gradient f (vector 2.0))
-Type: expression (gradient)
+eshkol> :type f
+Type: (-> Value Value)
+
+eshkol> :type (+ 1 2.0)
+Type: Float64
 
 eshkol> :ast (lambda (x) (* x x))
 AST Structure:
@@ -1021,9 +1024,12 @@ eshkol> :load my-program.esk
 Loaded 15 expressions from my-program.esk
 ```
 
-`:type` names the form it was given. Planned: `:type` reporting the inferred
-HoTT type (`Vector<Float64, 1>` for the gradient above), and `:ast` printing
-the form back as an S-expression (`(λ (x) (* x x))`). Piped input and
+`:type` prints the type the HoTT type checker infers for the form, with the
+session's own definitions in scope; a form the checker leaves gradual is
+`Value`, and one it cannot type at all (a builtin named as a value, an unbound
+name) is described by its syntactic kind. Planned: element- and shape-precise
+types through `gradient` (`Vector<Float64, 1>` for `(gradient f (vector 2.0))`),
+and `:ast` printing the form back as an S-expression (`(λ (x) (* x x))`). Piped input and
 `eshkol-repl --machine` are prompt-free, so the same session can be scripted.
 
 ### Standard Library

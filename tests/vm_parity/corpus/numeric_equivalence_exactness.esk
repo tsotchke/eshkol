@@ -1,0 +1,11 @@
+;; R7RS 6.1: equal? compares numbers with eqv?, which distinguishes exact
+;; from inexact numbers; = is numeric equality. Same answers on every engine.
+(define big (expt 2 100))
+(display (list (equal? 6 6.0) (eqv? 6 6.0) (= 6 6.0) (equal? 6 6) (equal? 2.5 2.5))) (newline)
+(display (list (equal? 0.0 -0.0) (eqv? 0.0 -0.0) (= 0.0 -0.0))) (newline)
+(display (list (equal? 1/2 0.5) (= 1/2 0.5) (equal? 1/2 (/ 2 4)))) (newline)
+(display (list (equal? big (expt 2 100)) (equal? big (exact->inexact big)) (= big (exact->inexact big)))) (newline)
+(display (list (equal? (make-rectangular 1.0 2.0) (make-rectangular 1.0 2.0))
+               (eqv? (make-rectangular 1.0 2.0) (make-rectangular 1.0 2.0)))) (newline)
+(display (list (equal? '(1 2) '(1.0 2.0)) (equal? (vector 1 2) (vector 1.0 2.0)) (equal? (vector 1 2) (vector 1 2)))) (newline)
+(display (list (member 2.0 '(1 2 3)) (member 2 '(1 2 3)) (assoc 2 '((2.0 . a) (2 . b))))) (newline)

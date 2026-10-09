@@ -1724,6 +1724,16 @@ typedef struct eshkol_exception_handler {
     uint8_t replay_active;      // set even for a zero-arity replay snapshot
     int64_t replay_count;       // live entries in replay_values
     int64_t replay_capacity;    // allocated entries
+    // with-exception-handler's handler procedure. raise-continuable calls it
+    // in the dynamic environment of the raise and returns its value, instead
+    // of transferring control to this frame. A guard frame has none.
+    eshkol_tagged_value_t handler_proc;
+    uint8_t has_handler_proc;
+    // Set while handler_proc runs for a raise-continuable. R7RS 6.11 calls a
+    // handler with the handlers outside its own installed, so a raise inside
+    // it passes over this frame; transferring control outward also leaves
+    // this frame's extent, so that raise retires the frame.
+    uint8_t handler_running;
 } eshkol_exception_handler_t;
 
 // Global exception state (thread-local in multi-threaded context)
@@ -1834,6 +1844,26 @@ void eshkol_push_exception_handler(void* jmp_buf_ptr);
  * @brief Pop the innermost exception handler frame, restoring the previous one.
  */
 void eshkol_pop_exception_handler(void);
+/**
+ * @brief Record @p proc as the handler procedure of the innermost handler
+ *        frame (with-exception-handler), for raise-continuable.
+ */
+void eshkol_set_exception_handler_procedure(const eshkol_tagged_value_t* proc);
+/**
+ * @brief Begin (raise-continuable *obj).
+ *
+ * When the current handler frame has a procedure, marks the frame running,
+ * writes the procedure to @p proc_out and returns the frame; the caller calls
+ * the procedure with *obj and then calls eshkol_raise_continuable_end(frame).
+ * Otherwise (a guard frame, or no handler) raises *obj as `raise` does and
+ * does not return.
+ */
+void* eshkol_raise_continuable_begin(const eshkol_tagged_value_t* obj,
+                                     eshkol_tagged_value_t* proc_out);
+/**
+ * @brief Finish a raise-continuable begun by eshkol_raise_continuable_begin.
+ */
+void eshkol_raise_continuable_end(void* frame);
 
 /**
  * @brief Number of exception handler frames currently installed.

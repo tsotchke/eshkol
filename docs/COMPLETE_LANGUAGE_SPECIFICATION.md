@@ -1590,7 +1590,9 @@ All comparison operators return booleans and support numeric type promotion.
 #### 4.4.3 `equal?` - Structural Equality
 **Signature:** `(equal? obj1 obj2)`
 
-**Semantics:** Deep recursive comparison
+**Semantics:** Deep recursive comparison; numbers are compared with `eqv?`,
+so an exact and an inexact number are never `equal?` (`(equal? 6 6.0)` is
+`#f`; use `=` for numeric equality)
 
 **Use for:** Lists, strings, compound structures
 
@@ -3097,7 +3099,7 @@ eshkol_tagged_value func(param1, param2, ..., capture1, capture2, ...)
 - `:quit`, `:q` - Exit REPL
 - `:clear` - Clear screen
 - `:env`, `:e` - Show defined symbols
-- `:type <expr>` - Show type of expression
+- `:type <expr>` - Show the type the HoTT type checker infers for the expression
 - `:doc <name>` - Show function documentation
 - `:ast <expr>` - Show AST structure
 - `:time <expr>` - Time execution
@@ -3790,7 +3792,12 @@ When a continuation crosses dynamic-wind boundaries:
 
 `(raise obj)` invokes the innermost exception handler established by `guard`. If no handler is active, the program terminates with an unhandled exception diagnostic.
 
-`(raise-continuable obj)` is not currently supported; all raises are non-continuable.
+`(raise-continuable obj)` (R7RS 6.11) calls the procedure of the innermost
+`with-exception-handler` with `obj`, in the dynamic environment of the
+`raise-continuable` call (no unwinding; `dynamic-wind` after-thunks have not
+run), with the handlers outside that one installed, and returns the handler's
+value. When the innermost handler is a `guard`, or there is none, `obj` is
+raised exactly as `raise` raises it. JIT, AOT and the bytecode VM agree.
 
 #### 16.3.3 Implementation
 

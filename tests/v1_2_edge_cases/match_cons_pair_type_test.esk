@@ -1,0 +1,26 @@
+;; match: a (cons h t) or (list ...) pattern matches pairs only. A string,
+;; vector or other heap object is not a pair and falls through to the next
+;; clause, as `pair?` would decide.
+(define pass 0) (define fail 0)
+(define (check name cond)
+  (if cond (begin (set! pass (+ pass 1)) (display "PASS: ") (display name) (newline))
+           (begin (set! fail (+ fail 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (head-of x) (match x ((cons h t) (list 'pair h t)) (_ 'other)))
+(check "cons matches a list"        (equal? (head-of (list 1 2)) '(pair 1 (2))))
+(check "cons matches a dotted pair" (equal? (head-of (cons 1 2)) '(pair 1 2)))
+(check "cons skips a string"        (eq? (head-of "abc") 'other))
+(check "cons skips a vector"        (eq? (head-of (vector 1 2)) 'other))
+(check "cons skips the empty list"  (eq? (head-of '()) 'other))
+(check "cons skips a number"        (eq? (head-of 5) 'other))
+(check "cons skips a hash table"    (eq? (head-of (make-hash-table)) 'other))
+
+(define (two x) (match x ((list a b) (list 'two a b)) (_ 'other)))
+(check "list matches two elements"  (equal? (two (list 1 2)) '(two 1 2)))
+(check "list skips a string"        (eq? (two "ab") 'other))
+
+(define (walk x) (match x ((cons (cons a b) t) (list 'nested a b)) ((cons h t) 'flat) (_ 'none)))
+(check "nested cons over a string car" (eq? (walk (list "s" 1)) 'flat))
+(check "nested cons over a pair car"   (equal? (walk (list (cons 1 2))) '(nested 1 2)))
+
+(display "pass=") (display pass) (display " fail=") (display fail) (newline)

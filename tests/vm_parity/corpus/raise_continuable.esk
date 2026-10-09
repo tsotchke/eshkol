@@ -1,0 +1,30 @@
+;; R7RS 6.11 raise-continuable: the handler runs in the dynamic environment of
+;; the raise with the outer handlers installed; its value is returned.
+(display (with-exception-handler
+           (lambda (con) (cond ((string? con) 1) (else 42)))
+           (lambda () (+ (raise-continuable 'oops) 23))))
+(newline)
+(define log '())
+(display (with-exception-handler
+           (lambda (c) (set! log (cons 'handler log)) 10)
+           (lambda ()
+             (dynamic-wind
+               (lambda () (set! log (cons 'before log)))
+               (lambda () (* 2 (raise-continuable 'x)))
+               (lambda () (set! log (cons 'after log)))))))
+(newline)
+(display (reverse log)) (newline)
+(display (with-exception-handler
+           (lambda (c) (list 'outer c))
+           (lambda ()
+             (with-exception-handler
+               (lambda (c) (list 'inner c (raise-continuable 'again)))
+               (lambda () (raise-continuable 'first))))))
+(newline)
+(display (guard (e (#t (list 'caught e))) (+ 1 (raise-continuable 'g)))) (newline)
+(display (guard (e ((symbol? e) (list 'outer-guard e)))
+           (with-exception-handler
+             (lambda (c) (raise 'from-handler))
+             (lambda () (raise-continuable 'c)))))
+(newline)
+(display (guard (e (#t (list 'ok e))) (raise 'later))) (newline)

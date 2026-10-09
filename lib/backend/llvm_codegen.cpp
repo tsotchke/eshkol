@@ -14621,15 +14621,20 @@ private:
             co_return tagged_->typeOf(arg);
         }
 
-        // type-name returns the human-readable type name as an Eshkol
-        // string.  Wires eshkol_format_value_type_tag (the single source
-        // of truth for "what does the user see in error messages?")
-        // through the existing intern-cstring-as-string runtime path.
-        // The same name registry is what eshkol_type_error_with_operand
-        // uses.  Tracked as ESH-0232 (.swarm/tasks/ESH-0232.json):
-        // codegen-side wiring still needs a safe cstr→string helper;
-        // deferring until the source-span stack trace work touches the
-        // same runtime surface.
+        // type-name returns the value's type as an interned symbol
+        // ('integer, 'real, 'string, 'pair, 'tensor, 'closure, ...). The
+        // spelling comes from the runtime's one type-name vocabulary
+        // (lib/core/value_type_names.h), shared with the bytecode VM and the
+        // REPL's machine-mode value_type field.
+        if (func_name == "type-name") {
+            if (op->call_op.num_vars != 1) {
+                eshkol_arity_error_current("type-name requires exactly 1 argument");
+                co_return nullptr;
+            }
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
+            co_return emitTypeNameTagged(typedValueToTaggedValue(tv));
+        }
 
         // String functions (dispatched to StringIOCodegen)
         if (func_name == "string-length") co_return strio_->stringLength(op);
@@ -15092,6 +15097,7 @@ private:
         if (func_name == "error-object-irritants")
             co_return codegenErrorObjectAccessor(op, "eshkol_error_object_irritants", "error-object-irritants");
         if (func_name == "with-exception-handler") co_return codegenWithExceptionHandler(op);
+        if (func_name == "raise-continuable") co_return codegenRaiseContinuable(op);
 
         // Handle file I/O operations
         if (func_name == "open-input-file") co_return strio_->openInputFile(op);
@@ -23889,6 +23895,21 @@ private:
         // Push exception handler
         builder->CreateCall(push_handler_func, {jmp_buf_alloc});
 
+        // Record the handler procedure on the frame, for raise-continuable,
+        // which calls it without unwinding to this frame.
+        {
+            Function* set_proc_func = module->getFunction("eshkol_set_exception_handler_procedure");
+            if (!set_proc_func) {
+                set_proc_func = Function::Create(
+                    FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                    Function::ExternalLinkage, "eshkol_set_exception_handler_procedure", module.get());
+            }
+            IRBuilder<> weh_entry(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+            AllocaInst* proc_slot = weh_entry.CreateAlloca(tagged_value_type, nullptr, "weh_handler_proc");
+            builder->CreateStore(ensureTaggedValue(handler_val), proc_slot);
+            builder->CreateCall(set_proc_func, {proc_slot});
+        }
+
         // Call setjmp - returns 0 on first call, non-zero when longjmp fires
         AdForwardSnapshot weh_ad_snapshot = snapshotAdForwardState();    // SW-229
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "weh_setjmp");
@@ -23954,6 +23975,51 @@ private:
         }
 
         return packNullToTaggedValue();
+    }
+
+    // ===== RAISE-CONTINUABLE (R7RS 6.11) =====
+    // (raise-continuable obj): call the current with-exception-handler's
+    // procedure with obj in the dynamic environment of the raise, the outer
+    // handlers installed, and return its value. With a guard (or no handler)
+    // as the current handler, the runtime raises obj as `raise` does.
+    Value* codegenRaiseContinuable(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_arity_error_current("raise-continuable requires exactly 1 argument");
+            return nullptr;
+        }
+        TypedValue obj_tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+            return UndefValue::get(tagged_value_type);
+        }
+        if (!obj_tv.llvm_value) return nullptr;
+        Value* obj = typedValueToTaggedValue(obj_tv);
+
+        Function* begin_func = module->getFunction("eshkol_raise_continuable_begin");
+        if (!begin_func) {
+            begin_func = Function::Create(
+                FunctionType::get(builder->getPtrTy(), {builder->getPtrTy(), builder->getPtrTy()}, false),
+                Function::ExternalLinkage, "eshkol_raise_continuable_begin", module.get());
+        }
+        Function* end_func = module->getFunction("eshkol_raise_continuable_end");
+        if (!end_func) {
+            end_func = Function::Create(
+                FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                Function::ExternalLinkage, "eshkol_raise_continuable_end", module.get());
+        }
+
+        Function* cur = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&cur->getEntryBlock(), cur->getEntryBlock().begin());
+        AllocaInst* obj_slot = entry_builder.CreateAlloca(tagged_value_type, nullptr, "rc_obj");
+        AllocaInst* proc_slot = entry_builder.CreateAlloca(tagged_value_type, nullptr, "rc_handler");
+        builder->CreateStore(obj, obj_slot);
+        Value* frame = builder->CreateCall(begin_func, {obj_slot, proc_slot}, "rc_frame");
+        Value* handler = builder->CreateLoad(tagged_value_type, proc_slot, "rc_handler_val");
+        std::vector<Value*> args = {obj};
+        Value* result = codegenClosureCall(handler, args, "raise-continuable-handler");
+        if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+            builder->CreateCall(end_func, {frame});
+        }
+        return result;
     }
 
     // ===== MULTIPLE RETURN VALUES OPERATIONS =====
@@ -24582,11 +24648,29 @@ private:
         return builder->CreateAnd(types_match, data_match, "values_equal");
     }
 
-    // Helper: Check if a value is a pair (cons cell)
+    // Helper: Check if a value is a pair (cons cell). HEAP_PTR alone also
+    // covers strings, vectors, records, ...; the object header's subtype is
+    // what makes it a pair, as for `pair?`. The header is read only for a
+    // non-null HEAP_PTR.
     Value* matchIsPair(Value* val) {
-        Value* type = getTaggedValueType(val);
-        return builder->CreateICmpEQ(type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR), "is_pair");
+        Value* is_heap = builder->CreateICmpEQ(getBaseType(getTaggedValueType(val)),
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_nonnull = builder->CreateICmpNE(unpackInt64FromTaggedValue(val),
+            ConstantInt::get(int64_type, 0));
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* entry_bb = builder->GetInsertBlock();
+        BasicBlock* subtype_bb = BasicBlock::Create(*context, "match_pair_subtype", func);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "match_pair_done", func);
+        builder->CreateCondBr(builder->CreateAnd(is_heap, is_nonnull), subtype_bb, done_bb);
+        builder->SetInsertPoint(subtype_bb);
+        Value* is_cons = tagged_->isCons(val);
+        BasicBlock* subtype_exit = builder->GetInsertBlock();
+        builder->CreateBr(done_bb);
+        builder->SetInsertPoint(done_bb);
+        PHINode* result = builder->CreatePHI(int1_type, 2, "is_pair");
+        result->addIncoming(ConstantInt::getFalse(*context), entry_bb);
+        result->addIncoming(is_cons, subtype_exit);
+        return result;
     }
 
     // Helper: Check if a value is null (empty list)
@@ -26703,6 +26787,25 @@ private:
 
         Value* result = builder->CreateCall(eshkol_deep_equal_func, {arg1_ptr, arg2_ptr});
         return packBoolToTaggedValue(result);
+    }
+
+    // (type-name v) on an already-tagged value: the runtime classifies it
+    // through the shared type-name vocabulary and returns an interned symbol.
+    Value* emitTypeNameTagged(Value* tagged) {
+        Function* f = module->getFunction("eshkol_type_name_into");
+        if (!f) {
+            FunctionType* ft = FunctionType::get(builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy()}, false);
+            f = Function::Create(ft, Function::ExternalLinkage,
+                "eshkol_type_name_into", module.get());
+        }
+        Function* cur = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&cur->getEntryBlock(), cur->getEntryBlock().begin());
+        AllocaInst* in = entry_builder.CreateAlloca(tagged_value_type, nullptr, "type_name_in");
+        AllocaInst* out = entry_builder.CreateAlloca(tagged_value_type, nullptr, "type_name_out");
+        builder->CreateStore(tagged, in);
+        builder->CreateCall(f, {in, out});
+        return builder->CreateLoad(tagged_value_type, out, "type_name");
     }
 
     // NOTE: codegenNewline has been migrated to StringIOCodegen (strio_->newline)
@@ -44849,7 +44952,7 @@ private:
             {"error-object-irritants", {1}},
             {"error-object-message", {1}}, {"inject-left", {1}}, {"inject-right", {1}},
             {"interaction-environment", {0}}, {"null-environment", {0}}, {"procedure-arity", {1}},
-            {"scheme-report-environment", {0}}, {"type-of", {1}}, {"void", {0}},
+            {"scheme-report-environment", {0}}, {"type-of", {1}}, {"type-name", {1}}, {"void", {0}},
             // Numerics (LE-16)
             {"%", {2}}, {"/rational", {2}}, {"angle", {1}},
             {"arithmetic-shift", {2}}, {"bit-count", {1}}, {"bit-shift-left", {2}},
@@ -46425,6 +46528,23 @@ void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value) {
  * invocation so a parse-only or codegen-error path can't leak a stale
  * value from the previous evaluation.
  */
+/* The HoTT type the type checker infers for one REPL form, printed by the
+ * shared type relation (TypeEnvironment::getTypeName) -- what `:type`
+ * reports. Functions the session has defined are in scope with the same
+ * signatures compilation gives them (seedTypeCheckerWithReplFunctions).
+ * Returns a malloc'd string the caller frees, or NULL when the checker
+ * cannot synthesize a type for the form. */
+char* eshkol_repl_infer_type_name(eshkol_ast_t* ast) {
+    if (!ast) return nullptr;
+    eshkol::hott::TypeEnvironment type_env;
+    eshkol::hott::TypeChecker type_checker(type_env, /*strict_types=*/false,
+                                           /*unsafe_mode=*/true);
+    seedTypeCheckerWithReplFunctions(type_checker, type_env);
+    eshkol::hott::TypeCheckResult result = type_checker.synthesize(ast);
+    if (!result.success) return nullptr;
+    return strdup(type_env.getTypeName(result.inferred_type).c_str());
+}
+
 void eshkol_repl_capture_last_value(const eshkol_tagged_value_t* v) {
     if (!v) {
         g_repl_last_value_set = false;

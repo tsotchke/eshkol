@@ -1,0 +1,48 @@
+;;; tests/r7rs/equivalence_exactness_test.esk
+;;; R7RS 6.1: equal? compares numbers with eqv?, and eqv? distinguishes exact
+;;; from inexact numbers; `=` is numeric equality. Covered across the numeric
+;;; tower (fixnum, bignum, rational, flonum, complex), inside structures, and
+;;; through member / assoc, which compare with equal?.
+(require stdlib)
+
+(define pass 0) (define fail 0)
+(define (chk label v)
+  (display "  [") (display (if v "PASS" "FAIL")) (display "] ") (display label) (newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+(define big (expt 2 100))
+
+(display "=== exact vs inexact ===") (newline)
+(chk "equal? 6 6.0 is #f"           (not (equal? 6 6.0)))
+(chk "eqv? 6 6.0 is #f"             (not (eqv? 6 6.0)))
+(chk "= 6 6.0 is #t"                (= 6 6.0))
+(chk "equal? 1/2 0.5 is #f"         (not (equal? 1/2 0.5)))
+(chk "= 1/2 0.5 is #t"              (= 1/2 0.5))
+(chk "equal? bignum vs its flonum"  (not (equal? big (exact->inexact big))))
+(chk "= bignum vs its flonum"       (= big (exact->inexact big)))
+
+(display "=== same exactness ===") (newline)
+(chk "equal? 6 6"                   (equal? 6 6))
+(chk "equal? 2.5 2.5"               (equal? 2.5 2.5))
+(chk "equal? 1/2 2/4"               (equal? 1/2 (/ 2 4)))
+(chk "equal? bignum bignum"         (equal? big (expt 2 100)))
+(chk "equal? complex complex"       (equal? (make-rectangular 1.0 2.0) (make-rectangular 1.0 2.0)))
+(chk "eqv? complex complex"         (eqv? (make-rectangular 1.0 2.0) (make-rectangular 1.0 2.0)))
+(chk "equal? 0.0 -0.0 is #f"        (not (equal? 0.0 -0.0)))
+(chk "eqv? 0.0 -0.0 is #f"          (not (eqv? 0.0 -0.0)))
+(chk "= 0.0 -0.0 is #t"             (= 0.0 -0.0))
+
+(display "=== inside structures ===") (newline)
+(chk "lists of exact vs inexact"    (not (equal? '(1 2) '(1.0 2.0))))
+(chk "lists of equal numbers"       (equal? (list 1 2.5 1/3) (list 1 2.5 1/3)))
+(chk "vectors of exact vs inexact"  (not (equal? (vector 1 2) (vector 1.0 2.0))))
+(chk "vectors of equal numbers"     (equal? (vector 1 2) (vector 1 2)))
+
+(display "=== member / assoc use equal? ===") (newline)
+(chk "member 2.0 in exact list"     (not (member 2.0 '(1 2 3))))
+(chk "member 2 in exact list"       (equal? (member 2 '(1 2 3)) '(2 3)))
+(chk "member string"                (equal? (member "b" '("a" "b")) '("b")))
+(chk "assoc skips inexact key"      (equal? (assoc 2 '((2.0 . a) (2 . b))) '(2 . b)))
+(chk "assoc list key"               (equal? (assoc '(1) '(((1) . x))) '((1) . x)))
+
+(display "pass=") (display pass) (display " fail=") (display fail) (newline)

@@ -6,7 +6,6 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2550/5479 public symbols documented (46.5%), 2929 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +15,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-413/840 symbols documented.
+417/844 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -25,11 +24,11 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
 | [`builtin_libraries.h`](builtin_libraries.md) | 4 | 1 |
-| [`eshkol.h`](eshkol.md) | 371 | 210 |
+| [`eshkol.h`](eshkol.md) | 374 | 213 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
-| [`llvm_backend.h`](llvm_backend.md) | 83 | 3 |
+| [`llvm_backend.h`](llvm_backend.md) | 84 | 4 |
 | [`logger.h`](logger.md) | 42 | 26 |
 | [`memory_abi_v2.h`](memory_abi_v2.md) | 20 | 15 |
 | [`model_io.h`](model_io.md) | 8 | 5 |
@@ -124,7 +123,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-293/595 symbols documented.
+294/596 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -141,7 +140,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/i128_runtime.h`](core/i128_runtime.md) | 12 | 0 |
 | [`core/image_io.h`](core/image_io.md) | 4 | 4 |
 | [`core/inference.h`](core/inference.md) | 19 | 7 |
-| [`core/introspection.h`](core/introspection.md) | 30 | 29 |
+| [`core/introspection.h`](core/introspection.md) | 31 | 30 |
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
 | [`core/logic.h`](core/logic.md) | 37 | 11 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |

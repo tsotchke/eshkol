@@ -271,7 +271,7 @@ All REPL commands start with `:`. Eshkol expressions are entered directly withou
 6765
 
 > :type (+ 1 2)
-Type: integer
+Type: Int64
 
 > :time (fib 30)
 832040

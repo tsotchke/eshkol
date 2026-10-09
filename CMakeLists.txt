@@ -2502,6 +2502,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/runtime_arena_cpp.cpp
   lib/core/runtime_frame_trace.cpp
   lib/core/runtime_gensym.cpp
+  lib/core/runtime_type_name.cpp
   lib/core/symbol_intern.cpp
   lib/core/threads.c
   lib/core/workspace.cpp
@@ -6355,6 +6356,16 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             PASS_REGULAR_EXPRESSION "PASS: REPL continuation"
+    # `:type` reports the type checker's inferred type.
+    if(NOT WIN32 AND TARGET eshkol-repl AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/type_command_inferred_type_test.sh")
+        add_test(
+            NAME repl_type_command_inferred_type_test
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/type_command_inferred_type_test.sh"
+        )
+        set_tests_properties(repl_type_command_inferred_type_test PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            PASS_REGULAR_EXPRESSION "PASS: :type"
             FAIL_REGULAR_EXPRESSION "^FAIL:")
     endif()
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
@@ -10699,8 +10710,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/too
     endif()
 endif()
 
-# ===== SDNC Paper Artifact: weight_matrices ===================================
-# The paper "The Self-Differentiating Neural Computer: Computable Transformers
+# ===== SDNC Paper Artifact: weight_matrices ============================# The paper "The Self-Differentiating Neural Computer: Computable Transformers
 # via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
 # transformer (d_model=128, n_layers=6, FFN=1024) whose weights ARE the Eshkol
 # VM's microcode. The verification suite runs the same programs three
@@ -10745,8 +10755,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
     endif()
 endif()
 
-# ===== SDNC training-mode module: weight-matrix backward pass =================
-# `lib/backend/qllm_backward.c` is the reverse-mode (backward) companion to the
+# ===== SDNC training-mode module: weight-matrix backward pass ==========# `lib/backend/qllm_backward.c` is the reverse-mode (backward) companion to the
 # analytical forward constructor in weight_matrices.c: it differentiates the
 # same six-layer computable-transformer weight matrices so they become
 # trainable. The math is precision-generic (`qllm_real`, default float => the
@@ -10789,8 +10798,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_backward.c")
     endif()
 endif()
 
-# ===== qLLM bridge end-to-end gate ===========================================
-# Proves the bridge is wired in the only way that counts: a real computation
+# ===== qLLM bridge end-to-end gate ====================================# Proves the bridge is wired in the only way that counts: a real computation
 # runs through the forward entry points in lib/bridge/qllm_bridge.cpp, is
 # backpropagated through the backward rules in lib/bridge/tensor_backward.cpp
 # (which shipped compiled but unreachable, because nothing created an
@@ -10819,8 +10827,7 @@ if(ESHKOL_BUILD_TESTS AND
     )
 endif()
 
-# ===== Bridge AD-node producer gradchecks ====================================
-# ad_tensor_embedding and ad_frechet_mean are the forward halves that were
+# ===== Bridge AD-node producer gradchecks =============================# ad_tensor_embedding and ad_frechet_mean are the forward halves that were
 # missing for AD_NODE_TENSOR_EMBEDDING and AD_NODE_FRECHET_MEAN: both backward
 # rules shipped and were gradchecked, but only against nodes the tests
 # assembled by hand, which cannot detect a producer that fills the contract
@@ -10851,8 +10858,7 @@ if(ESHKOL_BUILD_TESTS AND
     )
 endif()
 
-# ===== Geometric bridge backwards (SW-65) ====================================
-# ad_hyperbolic_distance / ad_poincare_exp_map / ad_poincare_log_map /
+# ===== Geometric bridge backwards (SW-65) =============================# ad_hyperbolic_distance / ad_poincare_exp_map / ad_poincare_log_map /
 # ad_geodesic_attention record tensor-valued AD nodes whose type numbers sit in
 # the band the dispatcher treated as scalar-only, so their absent backwards were
 # SILENT: every input gradient came back 0.0 with no diagnostic. This gate
@@ -10955,8 +10961,7 @@ if(ESHKOL_BUILD_TESTS AND
         PASS_REGULAR_EXPRESSION "Results: 4 passed, 0 failed")
 endif()
 
-# ===== Squared geodesic distance (SW-68) =====================================
-# The closed-form log-map rule is checked through the real producer and
+# ===== Squared geodesic distance (SW-68) ==============================# The closed-form log-map rule is checked through the real producer and
 # reverse sweep. Exact diagonal cases, independent identities, audit numeric
 # counterexamples, qLLM golden vectors, boundary refusals, and finite
 # differences cover the native bridge.
@@ -10979,8 +10984,7 @@ if(ESHKOL_BUILD_TESTS AND
         PASS_REGULAR_EXPRESSION "Results: 49 passed, 0 failed")
 endif()
 
-# ===== SDNC runtime tool: execute programs through the weight matrices ========
-# `lib/backend/qllm_interpreter.c` loads a QLMW v3 weight file (produced by the
+# ===== SDNC runtime tool: execute programs through the weight matrices =# `lib/backend/qllm_interpreter.c` loads a QLMW v3 weight file (produced by the
 # weight_matrices tool) and executes Eshkol bytecode by running the transformer
 # forward pass — the weights ARE the interpreter. Standalone main(); the
 # default build uses the portable C reference matmul (no external qLLM dep).
@@ -11022,8 +11026,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_interpreter.c")
     endif()
 endif()
 
-# ===== SDNC de-risking experiment: differentiable external memory head ========
-# Standalone prototype (its own main()) for a differentiable NTM/DNC-style
+# ===== SDNC de-risking experiment: differentiable external memory head =# Standalone prototype (its own main()) for a differentiable NTM/DNC-style
 # external memory addressing head — the keystone primitive that will later let
 # the SDNC lift its bounded 16-cell in-state arena to unbounded external memory
 # while staying differentiable. Not compiled into libeshkol-static.
