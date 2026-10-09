@@ -32,12 +32,9 @@
         (display " expected=") (display expected) (newline)
         (set! failed (+ failed 1)))))
 
-(define (as-dtype data dtype . dims)
-  (tensor-cast (apply reshape data dims) dtype))
-
 ;; bf16 above the binary16 range: 2^16 * 2 = 2^17.
-(define big-a (as-dtype (vector 65536.0 0.0 0.0 1.0) 'bf16 2 2))
-(define big-b (as-dtype (vector 2.0 0.0 0.0 3.0) 'bf16 2 2))
+(define big-a (tensor-cast (reshape (vector 65536.0 0.0 0.0 1.0) 2 2) 'bf16))
+(define big-b (tensor-cast (reshape (vector 2.0 0.0 0.0 3.0) 2 2) 'bf16))
 (define big-c (matmul big-a big-b))
 (check-dtype "bf16 product dtype" big-c 'bf16)
 (check-equal "bf16 large 00" (tensor-ref big-c 0) 131072.0)
@@ -47,17 +44,17 @@
 
 ;; bf16 below the binary16 range: 2^-30 * 2^-10 = 2^-40.
 (define tiny (expt 2.0 -30))
-(define tiny-a (as-dtype (vector tiny 0.0 0.0 1.0) 'bf16 2 2))
-(define tiny-b (as-dtype (vector (expt 2.0 -10) 0.0 0.0 1.0) 'bf16 2 2))
+(define tiny-a (tensor-cast (reshape (vector tiny 0.0 0.0 1.0) 2 2) 'bf16))
+(define tiny-b (tensor-cast (reshape (vector (expt 2.0 -10) 0.0 0.0 1.0) 2 2) 'bf16))
 (define tiny-c (matmul tiny-a tiny-b))
 (check-equal "bf16 small 00" (tensor-ref tiny-c 0) (expt 2.0 -40))
 (check-equal "bf16 small 11" (tensor-ref tiny-c 3) 1.0)
 
 ;; Batched bf16 (one strided launch on CUDA): each slice keeps its range.
 (define batch-a
-  (as-dtype (vector 65536.0 0.0 0.0 1.0   2.0 0.0 0.0 32768.0) 'bf16 2 2 2))
+  (tensor-cast (reshape (vector 65536.0 0.0 0.0 1.0   2.0 0.0 0.0 32768.0) 2 2 2) 'bf16))
 (define batch-b
-  (as-dtype (vector 4.0 0.0 0.0 1.0   1.0 0.0 0.0 8.0) 'bf16 2 2 2))
+  (tensor-cast (reshape (vector 4.0 0.0 0.0 1.0   1.0 0.0 0.0 8.0) 2 2 2) 'bf16))
 (define batch-c (batch-matmul batch-a batch-b))
 (check-equal "bf16 batched 0,00" (tensor-ref batch-c 0) 262144.0)
 (check-equal "bf16 batched 0,11" (tensor-ref batch-c 3) 1.0)
@@ -65,8 +62,8 @@
 (check-equal "bf16 batched 1,11" (tensor-ref batch-c 7) 262144.0)
 
 ;; f16 inside its own range is unchanged.
-(define half-a (as-dtype (vector 1.5 2.0 3.0 4.0) 'f16 2 2))
-(define half-b (as-dtype (vector 1.0 0.0 0.0 1.0) 'f16 2 2))
+(define half-a (tensor-cast (reshape (vector 1.5 2.0 3.0 4.0) 2 2) 'f16))
+(define half-b (tensor-cast (reshape (vector 1.0 0.0 0.0 1.0) 2 2) 'f16))
 (define half-c (matmul half-a half-b))
 (check-dtype "f16 product dtype" half-c 'f16)
 (check-equal "f16 00" (tensor-ref half-c 0) 1.5)
