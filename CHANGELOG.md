@@ -115,6 +115,30 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 - **Roadmap and branch portfolio distinguish patch work from experimental integration.**
   The active feature inventory records branch ownership, release scope and pending
   qualification for the separate integration build. (#728)
+- **Mathematics examples record measured outcomes and the results they reproduce.**
+  Every tracked example runs at the release commit under native JIT and AOT; all 46
+  mathematics programs pass. `scripts/build_example_catalogue.py --ingest` writes
+  `docs/examples/measurements.json`, bound to each source's SHA-256, and every
+  mathematics entry cites the published result it reproduces: AlphaTensor, FunSearch,
+  the Jacobian counterexample, the Navier–Stokes construction and the exact topology
+  and geometry programs. (#755)
+- **README, roadmap, security policy and vision papers describe v1.3.6.** The
+  technical white paper carries a section-by-section implementation status table, and
+  the paper-suite instructions match a fresh run (127/127 inline, 124/124 traced).
+  (#754)
+- **Reference documentation is complete for the release.** Moonlab integration,
+  ADR-0006, breakdown and design pages match the source, and every documentation page
+  is reachable from the index. (#756)
+- **Guides, tutorials and the language specification run as written.** All 141
+  tutorial examples and the upgrade guide pass under JIT and AOT, and
+  `docs/UPGRADING.md` covers v1.3.5-evolve to v1.3.6-evolve. (#757)
+- **The fixed-point and exact-accumulation interface is part of the documented public
+  surface.** 132 header symbols are curated, and `docs/reference/runtime/fixed-point.md`
+  describes the module with a compiled example. (#758)
+- **Test-harness, tooling and repository documentation match the release.** Test-suite
+  guides carry their measured results, `THIRD_PARTY_NOTICES.md` covers the opt-in and
+  vendored components, and the VS Code extension reports 1.3.6. (#759)
+- **Press materials, announcement and site describe v1.3.6.** (#753)
 
 ## [1.3.5-evolve] - 2026-09-22
 
