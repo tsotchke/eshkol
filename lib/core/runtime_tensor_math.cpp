@@ -7,6 +7,7 @@
  */
 
 #include "arena_memory.h"
+#include "taylor_opcodes.h"
 #include <eshkol/tensor_validation.h>
 
 #include <cmath>
@@ -276,6 +277,197 @@ extern "C" void eshkol_jet_tensor_sum(arena_t* arena, const eshkol_tensor_t* ten
         }
     }
     *out = acc;
+}
+
+extern "C" int64_t eshkol_broadcast_source_index(
+    int64_t flat, const int64_t* out_dims, int64_t out_ndim,
+    const int64_t* src_dims, int64_t src_ndim);
+extern "C" void eshkol_shape_error(const char* proc_name,
+                                   const int64_t* a_dims, int64_t a_ndim,
+                                   const int64_t* b_dims, int64_t b_ndim);
+extern "C" void eshkol_enforce_tensor_elements(int64_t num_elements);
+extern "C" int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_type);
+
+/* A forward-mode jet cannot be carried through a reverse-mode tape value: the
+ * reverse sweep accumulates f64 adjoints, so the jet's derivative would be
+ * dropped. One refusal, raised wherever the jet rule meets such an operand. */
+[[noreturn]] static void refuse_jet_meets_reverse(const char* name) {
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+        "%s: a forward-mode derivative cannot pass through a reverse-mode tensor "
+        "value (a nested derivative over a gradient through this operation has no "
+        "rule); differentiate the outer level with gradient or restructure the "
+        "computation", name);
+    std::abort();
+}
+
+/* One element of either tensor layout as a tagged number: a jet tensor's slot
+ * is already tagged; every other dtype stores f64 bit patterns. A slot holding
+ * a live reverse-mode node (a scalarised tensor recorded on the tape) is
+ * refused rather than read as a number. */
+static eshkol_tagged_value_t tensor_slot_tagged(const eshkol_tensor_t* t, int64_t index,
+                                                const arena_t* arena, const char* name) {
+    if (eshkol_tensor_dtype_is_tagged(t->dtype)) {
+        return reinterpret_cast<const eshkol_tagged_value_t*>(t->elements)[index];
+    }
+    uint64_t bits = 0;
+    std::memcpy(&bits, t->elements + index, sizeof(bits));
+    if (eshkol_ad_node_probe(arena, bits, -1)) refuse_jet_meets_reverse(name);
+    eshkol_tagged_value_t v{};
+    v.type = ESHKOL_VALUE_DOUBLE;
+    v.flags = ESHKOL_VALUE_INEXACT_FLAG;
+    std::memcpy(&v.data.double_val, &bits, sizeof(double));
+    return v;
+}
+
+/* Elementwise binary arithmetic over jet tensors (ADR-0020 amendment 2).
+ *
+ * The forward-mode rule for tensor-add/-sub/-mul/-div: when either operand is
+ * a jet tensor, every output slot is the language's own scalar operator
+ * applied to the two (broadcast) operand slots. The scalar operator is
+ * eshkol_taylor_binary_tagged, the one generic entry that already carries
+ * first-order 8-jets (with the mixed e1e2 and seed-derivative coefficients),
+ * Taylor towers and nested level carriers; a plain f64 operand is read as a
+ * constant. Shapes broadcast exactly as the numeric kernel's do (one
+ * authority, eshkol_tensor_broadcast_shape), and a pair that cannot broadcast
+ * raises the same located shape error. The result is a jet tensor.
+ *
+ * `op` is a binary op-code from taylor_recurrences.def. `reverse_operand` is
+ * nonzero when the caller already knows an operand is a dense reverse-mode
+ * node; that pairing, like a scalarised reverse operand found in a slot, is
+ * refused by name. */
+extern "C" eshkol_tensor_t* eshkol_jet_tensor_binary(arena_t* arena,
+                                                     const eshkol_tensor_t* a,
+                                                     const eshkol_tensor_t* b,
+                                                     int32_t op,
+                                                     int32_t reverse_operand,
+                                                     const char* op_name) {
+    if (!arena) arena = get_global_arena();
+    const char* name = op_name ? op_name : "tensor arithmetic";
+    if (reverse_operand) refuse_jet_meets_reverse(name);
+    if (!a || !b) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "%s: missing tensor operand", name);
+        return nullptr;
+    }
+    const auto* a_dims = reinterpret_cast<const int64_t*>(a->dimensions);
+    const auto* b_dims = reinterpret_cast<const int64_t*>(b->dimensions);
+    const int64_t a_ndim = (int64_t)a->num_dimensions;
+    const int64_t b_ndim = (int64_t)b->num_dimensions;
+    int64_t out_dims[16];
+    int64_t out_ndim = 0, out_total = 0;
+    if (!eshkol_tensor_broadcast_shape(a_dims, a_ndim, b_dims, b_ndim,
+                                       out_dims, &out_ndim, &out_total)) {
+        eshkol_shape_error(name, a_dims, a_ndim, b_dims, b_ndim);
+        return nullptr;
+    }
+    eshkol_enforce_tensor_elements(out_total);
+
+    auto* result = arena_allocate_tensor_with_header(arena);
+    if (!result) return nullptr;
+    result->dimensions = (uint64_t*)arena_allocate(arena, (size_t)out_ndim * sizeof(uint64_t));
+    result->elements = (int64_t*)arena_allocate(
+        arena, (size_t)(out_total ? out_total : 1) * sizeof(eshkol_tagged_value_t));
+    if (!result->dimensions || !result->elements) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: failed to allocate forward dual tensor", name);
+        return nullptr;
+    }
+    std::memcpy(result->dimensions, out_dims, (size_t)out_ndim * sizeof(uint64_t));
+    result->num_dimensions = (uint64_t)out_ndim;
+    result->total_elements = (uint64_t)out_total;
+    result->dtype = ESHKOL_TENSOR_DTYPE_DUAL;
+
+    auto* out = reinterpret_cast<eshkol_tagged_value_t*>(result->elements);
+    for (int64_t i = 0; i < out_total; ++i) {
+        const int64_t ia = eshkol_broadcast_source_index(i, out_dims, out_ndim, a_dims, a_ndim);
+        const int64_t ib = eshkol_broadcast_source_index(i, out_dims, out_ndim, b_dims, b_ndim);
+        if (ia < 0 || ib < 0) {
+            eshkol_shape_error(name, a_dims, a_ndim, b_dims, b_ndim);
+            return nullptr;
+        }
+        const eshkol_tagged_value_t x = tensor_slot_tagged(a, ia, arena, name);
+        const eshkol_tagged_value_t y = tensor_slot_tagged(b, ib, arena, name);
+        eshkol_taylor_binary_tagged(arena, &x, &y, op, &out[i]);
+    }
+    return result;
+}
+
+static bool tensor_product_checked(int64_t a, int64_t b, int64_t* out);
+
+/* Matmul over jet tensors: the forward-mode rule codegenMatmul dispatches to
+ * when either operand is a jet tensor. C[i,j] = sum_k A[i,k]*B[k,j], every
+ * product and sum taken by eshkol_taylor_binary_tagged (the same scalar ring
+ * as eshkol_jet_tensor_binary), so the mixed second-order jet coefficient and
+ * any Taylor tower pass through whole. The sum folds from the first product,
+ * as eshkol_jet_tensor_sum does. Requires 2-D operands with matching inner
+ * dimension; a dense reverse-mode operand (`reverse_operand`) or a scalarised
+ * one found in a slot is refused by name. */
+extern "C" eshkol_tensor_t* eshkol_jet_tensor_matmul(arena_t* arena,
+                                                     const eshkol_tensor_t* a,
+                                                     const eshkol_tensor_t* b,
+                                                     int32_t reverse_operand,
+                                                     const char* op_name) {
+    if (!arena) arena = get_global_arena();
+    const char* name = op_name ? op_name : "matmul";
+    if (reverse_operand) refuse_jet_meets_reverse(name);
+    if (!a || !b || a->num_dimensions != 2 || b->num_dimensions != 2 ||
+        a->dimensions[1] != b->dimensions[0]) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: forward-mode (jet) matmul requires 2-D operands with "
+                             "A.cols == B.rows", name);
+        return nullptr;
+    }
+    static const int op_mul = eshkol_taylor_binary_opcode("*");
+    static const int op_add = eshkol_taylor_binary_opcode("+");
+    const int64_t M = (int64_t)a->dimensions[0];
+    const int64_t K = (int64_t)a->dimensions[1];
+    const int64_t N = (int64_t)b->dimensions[1];
+    int64_t total = 0;
+    if (!tensor_product_checked(M, N, &total)) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "%s: result shape overflows", name);
+        return nullptr;
+    }
+    eshkol_enforce_tensor_elements(total);
+
+    auto* result = arena_allocate_tensor_with_header(arena);
+    if (!result) return nullptr;
+    result->dimensions = (uint64_t*)arena_allocate(arena, 2 * sizeof(uint64_t));
+    result->elements = (int64_t*)arena_allocate(
+        arena, (size_t)(total ? total : 1) * sizeof(eshkol_tagged_value_t));
+    if (!result->dimensions || !result->elements) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "%s: failed to allocate forward dual tensor", name);
+        return nullptr;
+    }
+    result->dimensions[0] = (uint64_t)M;
+    result->dimensions[1] = (uint64_t)N;
+    result->num_dimensions = 2;
+    result->total_elements = (uint64_t)total;
+    result->dtype = ESHKOL_TENSOR_DTYPE_DUAL;
+
+    auto* out = reinterpret_cast<eshkol_tagged_value_t*>(result->elements);
+    for (int64_t i = 0; i < M; ++i) {
+        for (int64_t j = 0; j < N; ++j) {
+            eshkol_tagged_value_t acc{};
+            acc.type = ESHKOL_VALUE_DOUBLE;
+            acc.flags = ESHKOL_VALUE_INEXACT_FLAG;
+            acc.data.double_val = 0.0;
+            for (int64_t k = 0; k < K; ++k) {
+                const eshkol_tagged_value_t x = tensor_slot_tagged(a, i * K + k, arena, name);
+                const eshkol_tagged_value_t y = tensor_slot_tagged(b, k * N + j, arena, name);
+                eshkol_tagged_value_t prod{};
+                eshkol_taylor_binary_tagged(arena, &x, &y, op_mul, &prod);
+                if (k == 0) {
+                    acc = prod;
+                } else {
+                    eshkol_tagged_value_t next{};
+                    eshkol_taylor_binary_tagged(arena, &acc, &prod, op_add, &next);
+                    acc = next;
+                }
+            }
+            out[i * N + j] = acc;
+        }
+    }
+    return result;
 }
 
 extern "C" eshkol_tensor_t* eshkol_tensor_layer_norm_dual(
