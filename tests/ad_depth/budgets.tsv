@@ -1,0 +1,16 @@
+# Per-probe wall-clock budgets for scripts/run_ad_depth.sh, in seconds.
+# Columns (tab-separated): file  jit  aot-compile  aot-run   ("-" = default:
+# jit 240, aot-compile 360, aot-run 90). Every row records the measurement
+# that set it; a budget is the slowest measured time with about 1.6x headroom.
+#
+# ad_depth_gradn_01.esk: nested `gradient` at a variable point compiles the
+# differentiand once per arm of the exact-tier route (exact tower, reverse
+# jet), so d nested levels emit 2^d - 1 lambda bodies: 255 functions and
+# 855,650 IR lines for one depth-8 cell, against 3 and 41,186 at depth 2. All
+# 40 checks pass; the time is compile time (the AOT binary runs in 0.04 s).
+# Measured 2026-10-09, Release, commit 88234560b, unloaded hosts:
+#   Linux x86_64 (gcc-13, LLVM 21): -r with the JIT cache (an AOT build in a
+#     child) 441 s; -r in process (ESHKOL_JIT_CACHE=0) 134 s; AOT compile
+#     550 s (92 s at -O0); AOT run 0.04 s; peak RSS 4.8 GB.
+#   macOS arm64 (LLVM 21): -r in process 68 s; AOT compile 537 s.
+ad_depth_gradn_01.esk	900	900	-
