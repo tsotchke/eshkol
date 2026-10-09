@@ -6289,6 +6289,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
     endif()
 
+    # A continuation captured in one REPL evaluation and invoked from a later
+    # one raises a catchable condition; the session continues.
+    if(NOT WIN32 AND TARGET eshkol-repl AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/continuation_finished_evaluation_test.sh")
+        add_test(
+            NAME repl_continuation_finished_evaluation_test
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/continuation_finished_evaluation_test.sh"
+        )
+        set_tests_properties(repl_continuation_finished_evaluation_test PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            PASS_REGULAR_EXPRESSION "PASS: REPL continuation"
+            FAIL_REGULAR_EXPRESSION "^FAIL:")
+    endif()
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
     # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
     # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently

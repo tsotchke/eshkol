@@ -24,9 +24,14 @@
 ;;; O(1) stack. A non-tail `(+ 1 (length (cdr lst)))` overflowed the stack
 ;;; (SIGBUS) near 10^6 elements. The nested-define self-tail-call below is
 ;;; TCO'd into a loop (same proven pattern used by iota), so it handles 10^7+.
+;;;
+;;; R7RS length takes a proper list. The walk stops at the first tail that is
+;;; not a pair, so any other operand (a vector, tensor, string, number, or a
+;;; list whose final cdr is not '()) raises a catchable error naming length,
+;;; the same condition the bytecode VM raises.
 (define (length lst)
   (define (loop rest n)
-    (if (null? rest)
-        n
-        (loop (cdr rest) (+ n 1))))
+    (cond ((null? rest) n)
+          ((pair? rest) (loop (cdr rest) (+ n 1)))
+          (else (error "length: argument is not a proper list"))))
   (loop lst 0))
