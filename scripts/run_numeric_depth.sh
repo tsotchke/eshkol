@@ -65,8 +65,11 @@ if [ ! -f "$MANIFEST" ]; then
 fi
 mkdir -p "$TRACE_DIR" "$(dirname "$REPORT")"
 
-# portable timeout: alarm N cmd...
-alarm() { perl -e 'my $t=shift; my $p=fork; if($p==0){exec @ARGV or exit 127} local $SIG{ALRM}=sub{kill "KILL",$p; exit 124}; alarm $t; waitpid $p,0; exit($?>>8)' "$@"; }
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+alarm() { eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 families="$(python3 -c 'import json,sys; print("\n".join(f["family"] for f in json.load(open(sys.argv[1]))["families"]))' "$MANIFEST")"
 

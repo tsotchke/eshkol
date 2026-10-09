@@ -16,10 +16,11 @@ RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-r7rs.XXXXXX")"
 cleanup() { rm -rf -- "$RUN_DIR"; }
 trap cleanup EXIT
 
-run_guarded() { # seconds command...
-    perl -e 'my $s=shift; eval { local $SIG{ALRM}=sub{ exit 124 }; alarm $s; exec @ARGV or exit 127; }' \
-        "$1" "${@:2}"
-}
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+. "$ROOT_DIR/scripts/lib/harness_outcome.sh"
+run_guarded() { eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 if [ ! -x "$ESHKOL_RUN" ]; then
     echo "eshkol-run missing under $BUILD_DIR" >&2

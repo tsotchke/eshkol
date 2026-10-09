@@ -3,7 +3,7 @@
 #
 # Runs every program listed in tests/stress/budgets.tsv under the JIT (-r)
 # and/or AOT with EXPLICIT budgets asserted by THIS runner (not the program):
-#   * wall-time ceiling  (perl alarm; macOS has no timeout(1))
+#   * wall-time ceiling  (scripts/lib/guarded_exec.pl; macOS has no timeout(1))
 #   * max-RSS ceiling    (/usr/bin/time -l "maximum resident set size")
 #   * exit code 0
 #   * required stdout substring
@@ -11,8 +11,8 @@
 # Verdicts per (file, mode):
 #   PASS      all budgets met, expected output present
 #   FAIL      exit != 0 (no signal) or expected output missing (wrong value)
-#   CRASH     killed by a signal other than SIGALRM (SIGSEGV/SIGILL/SIGBUS/…)
-#   HANG      killed by the alarm (SIGALRM) — wall-time ceiling exceeded
+#   CRASH     killed by a signal it received on its own (segmentation fault, illegal instruction, bus error, …)
+#   HANG      stopped by the wall-clock guard (exit 124) — wall-time ceiling exceeded
 #   OVER-RSS  ran fine but exceeded the RSS ceiling (unbounded-memory class)
 #   OVER-TIME finished under the alarm but past the wall-time ceiling
 #   XKNOWN    row is pinned to a documented-open bug (xknown column) and did
@@ -42,6 +42,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC
 STRESS_DIR="$REPO_ROOT/tests/stress"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/stress_smoke.jsonl"
@@ -107,7 +108,11 @@ run_budgeted() {
     # on macOS) to stderr → captured separately so program stderr stays with
     # the program output for diagnosis.
     # </dev/null: keep the budgets.tsv read-loop's stdin away from programs.
-    /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+    # The guard stops the program together with every process it started, so
+    # nothing it spawned outlives the ceiling holding this output file open;
+    # /usr/bin/time still reports the program's peak RSS through the guard,
+    # which waits for it.
+    /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
         "$tmo" "$@" > "${RB_OUT_FILE:?}" 2> "${RB_TIME_FILE:?}" < /dev/null
     RB_RC=$?
     t1=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
@@ -123,7 +128,7 @@ run_budgeted() {
 # classify <rc> <wall_s> <rss_mb> <timeout_s> <rss_ceiling_mb> <expect> <out_file>
 classify() {
     local rc="$1" wall="$2" rss="$3" tmo="$4" ceil="$5" expect="$6" out="$7"
-    if [ "$rc" -eq 142 ]; then echo "HANG"; return; fi          # 128+SIGALRM
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then echo "HANG"; return; fi
     if [ "$rc" -gt 128 ]; then echo "CRASH"; return; fi
     if [ "$rc" -ne 0 ]; then echo "FAIL"; return; fi
     if [ "$expect" != "-" ] && ! grep -qF -- "$expect" "$out"; then echo "FAIL"; return; fi
@@ -230,7 +235,7 @@ while IFS=$'\t' read -r file mode class timeout_s rss_r rss_aot quick xknown exp
         bin="$WORK/$(basename "$file" .esk).bin"; rm -f "$bin"
         run_budgeted "$timeout_s" "$ESHKOL_RUN" "$src" -o "$bin"
         if [ "$RB_RC" -ne 0 ] || [ ! -x "$bin" ]; then
-            v="FAIL"; [ "$RB_RC" -eq 142 ] && v="HANG"; [ "$RB_RC" -gt 128 ] && [ "$RB_RC" -ne 142 ] && v="CRASH"
+            v="FAIL"; { [ "$RB_RC" -eq 124 ] || [ "$RB_RC" -eq 142 ]; } && v="HANG"; [ "$RB_RC" -gt 128 ] && [ "$RB_RC" -ne 142 ] && v="CRASH"
             record "$file" "aot" "$v" "$xknown" "compile rc=$RB_RC wall=${RB_WALL_S}s :: $(snippet_of)"
         else
             verdict="PASS"; detail=""; ref_out=""
