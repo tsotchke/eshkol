@@ -1,5 +1,5 @@
 {
-  "schema": "eshkol.example-catalogue.v1",
+  "schema": "eshkol.example-catalogue.v2",
   "inventory_policy": "Every Git-tracked examples/**/*.esk program, including nested artifact generators. No untracked or missing paths.",
   "entries": [
     {
@@ -15,7 +15,6 @@
       "limitations": "An introductory output demonstration, not a convergence or performance benchmark.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -43,7 +42,13 @@
           "text": "(display \"d/dx(x^3) at x=5: \") (display (df-func 5.0)) (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [
+        {
+          "citation": "Eshkol guide to automatic differentiation, docs/guide/AUTOMATIC_DIFFERENTIATION.md.",
+          "verification": "repository"
+        }
+      ]
     },
     {
       "path": "examples/bayesian_diagnosis.esk",
@@ -58,7 +63,6 @@
       "limitations": "The source labels this a toy triage model; its fixed factors are not calibrated clinical evidence or a validated diagnosis system.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -86,7 +90,8 @@
           "text": "(display \"    that catalogue into a quantitative ranking.\")"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": []
     },
     {
       "path": "examples/consciousness.esk",
@@ -101,7 +106,6 @@
       "limitations": "Demonstrates selected interfaces, not a test of consciousness or proof that all advertised primitives are exercised.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -129,7 +133,8 @@
           "text": "(display \"Workspace step: \") (display (ws-step! ws)) (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": []
     },
     {
       "path": "examples/differentiable_physics.esk",
@@ -144,7 +149,6 @@
       "limitations": "Discrete landing termination and a fixed time step limit the model; no global optimizer, continuum accuracy bound or measured speed claim.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -172,7 +176,14 @@
           "text": "(display \"through the same loop the forward simulation runs.\") (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^Target distance",
+        "^Starting angle",
+        "^Initial landing x",
+        "^  step 125 "
+      ]
     },
     {
       "path": "examples/eagle_train.esk",
@@ -187,7 +198,6 @@
       "limitations": "The corpus is synthetic and two-dimensional; this does not train or validate a full Kimi/EAGLE model or establish large-model scalability.",
       "prerequisites": "Built eshkol-run/stdlib, agent.eagle module and the existing native eagle-linear FFI bridge; no runtime activation requested.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -215,7 +225,12 @@
           "text": "    (display \"native dW00 sample \") (display (eagle-linear-grad layer 0 0)) (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^final loss",
+        "^learned W"
+      ]
     },
     {
       "path": "examples/gradient_descent_demo.esk",
@@ -230,7 +245,6 @@
       "limitations": "The data table is fixed rather than generated by a documented noise distribution. Printed progress does not certify convergence or generalization.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -258,7 +272,13 @@
           "text": "(display \"any framework, runtime tape, or symbolic preprocessing step.\")"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^True parameters",
+        "^Final params",
+        "^Final loss"
+      ]
     },
     {
       "path": "examples/h2_vibrational.esk",
@@ -273,7 +293,6 @@
       "limitations": "“Exact derivative” refers to differentiating this code without finite differences, not exact-real arithmetic or basis-complete/experimental molecular accuracy.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -301,7 +320,13 @@
           "text": "(display \"  (exact 2nd derivative via Eshkol's Taylor tower; STO-3G, exp. ~4401)\") (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^equilibrium R\\*",
+        "^force constant",
+        "^vibrational frequency"
+      ]
     },
     {
       "path": "examples/h2_vibrational_full.esk",
@@ -316,7 +341,6 @@
       "limitations": "The parameter Hessian is not wholly AD-derived; model/backend and finite-difference approximation remain explicit.",
       "prerequisites": "Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -344,7 +368,15 @@
           "text": "(display \"  (geometry derivs: Eshkol Taylor tower; <P>, response, Hessian: Moonlab)\") (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^equilibrium R\\*",
+        "^frozen term",
+        "^quantum response",
+        "^force constant k",
+        "^vibrational frequency"
+      ]
     },
     {
       "path": "examples/h2_vibrational_quantum.esk",
@@ -359,7 +391,6 @@
       "limitations": "Accuracy depends on energy-surface smoothness and step size; no independent exact derivative or experimental validation is asserted.",
       "prerequisites": "Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -387,7 +418,13 @@
           "text": "(display \"   the FD is clean only because the PES fix made E(R) smooth.)\") (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^  E\\(0\\.72",
+        "^  force constant",
+        "^  omega"
+      ]
     },
     {
       "path": "examples/hello.esk",
@@ -402,7 +439,6 @@
       "limitations": "The version literal is historical example text, not the current release identity.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -418,7 +454,8 @@
           "text": "(display \"Version: v1.2.1-scale\") (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": []
     },
     {
       "path": "examples/mathematics_abelian_sheaves_finite_site.esk",
@@ -433,7 +470,6 @@
       "limitations": "Rational coefficients omit torsion. Dimensionwise checks of exactness/comparison must not be described as a machine proof of the general sheafification theorem.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -470,7 +506,36 @@
           "text": "(check \"pseudo-2-sphere: the derived limit gives (1, 0, 1, 0), while the only cover by maximal opens has the pseudocircle as its intersection (not acyclic), so both Cech routes give (1, 0, 0, 0) and miss H^2: the Leray condition fails, as in the finite-spaces and descent examples\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "On a finite T₀ space (Alexandrov topology), sheaves are the same as presheaves on the poset of points (McCord); sheafification a = (−)⁺⁺ is exact and left adjoint to the inclusion (Mac Lane–Moerdijk III.5); and sheaf cohomology equals the derived functors of the limit over the points, which Čech cohomology of a cover computes when the cover is Leray (Bredon III.4). The program computes all three statements over Q on the pseudocircle (the 4-point model of S¹) and the pseudo-2-sphere (the 6-point model of S²), including the case where the Leray hypothesis fails.",
+      "references": [
+        {
+          "citation": "M. C. McCord, \"Singular homology groups and homotopy groups of finite topological spaces\", Duke Math. J. 33 (1966).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "S. Mac Lane, I. Moerdijk, Sheaves in Geometry and Logic, Springer (1992).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. K. Bousfield, D. M. Kan, Homotopy Limits, Completions and Localizations, Lecture Notes in Mathematics 304, Springer (1972).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "G. E. Bredon, Sheaf Theory, 2nd ed., Graduate Texts in Mathematics 170, Springer (1997).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "C. A. Weibel, An Introduction to Homological Algebra, Cambridge University Press (1994).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  dims of a\\(Q\\)",
+        "^  H\\^\\*\\(pseudocircle; Q\\) three ways",
+        "^  H\\^\\*\\(pseudo-2-sphere; Q\\) three ways",
+        "^  H\\^\\*\\(pseudocircle; twisted Q\\)",
+        "^PASS: pseudo-2-sphere: the derived limit"
+      ]
     },
     {
       "path": "examples/mathematics_alphatensor_3x3_gf2.esk",
@@ -481,11 +546,10 @@
       "algorithm": "Contract U/V/W integer bit masks by parity of bitwise intersections.",
       "domain": "3×3 matrices over F₂; all 9×9 pairs of matrix units; fixed rank 23 witness.",
       "arithmetic": "Exact integers and reduction modulo 2.",
-      "validation": "Basis-pair expansion agrees with matrix-unit multiplication; bilinearity extends this complete tensor identity to every pair of 3×3 F₂ matrices.",
+      "validation": "Basis-pair expansion agrees with matrix-unit multiplication; bilinearity extends this complete tensor identity to every pair of 3×3 F₂ matrices. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it.",
       "limitations": "Certifies the supplied bilinear witness over F₂; does not search for it or prove rank optimality.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -513,7 +577,23 @@
           "text": "       (check-all 0))"
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Fawzi et al. (Nature, 2022) used reinforcement learning (AlphaTensor) to search for low-rank decompositions of matrix-multiplication tensors and published the decompositions they found. For 3×3 matrices the rank 23 they report over F₂ equals Laderman's 1976 bound; the program checks the public rank-23 factor matrices from the AlphaTensor repository, not a new bound.",
+      "references": [
+        {
+          "citation": "A. Fawzi, M. Balog, A. Huang et al., \"Discovering faster matrix multiplication algorithms with reinforcement learning\", Nature 610, 47–53 (2022).",
+          "link": "https://doi.org/10.1038/s41586-022-05172-4",
+          "verification": "checked"
+        },
+        {
+          "citation": "google-deepmind/alphatensor: published factorizations.",
+          "link": "https://github.com/google-deepmind/alphatensor",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^PASS: rank-23",
+        "^Basis pairs checked"
+      ]
     },
     {
       "path": "examples/mathematics_alphatensor_gf2.esk",
@@ -524,11 +604,10 @@
       "algorithm": "Contract the fixed rank-47 U/V/W bit-mask factors and compare with ordinary matrix multiplication.",
       "domain": "4×4 matrices over F₂; all 16×16 matrix-unit pairs plus a nontrivial sample.",
       "arithmetic": "Exact integer bitsets with parity reduction.",
-      "validation": "The complete basis expansion certifies the bilinear multiplication tensor for all inputs over F₂.",
+      "validation": "The complete basis expansion certifies the bilinear multiplication tensor for all inputs over F₂. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it.",
       "limitations": "No factorization search, field-independent rank claim, or rank-optimality proof is implemented.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -556,7 +635,24 @@
           "text": "(check \"nontrivial sample multiplication is exact over F2\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Fawzi et al. (Nature, 2022) report a rank-47 decomposition of the 4×4 matrix-multiplication tensor over F₂, below the rank 49 obtained by applying Strassen's 2×2 algorithm recursively — the first improvement on that bound for 4×4 matrices over a finite field. The program checks the published rank-47 factor matrices.",
+      "references": [
+        {
+          "citation": "A. Fawzi, M. Balog, A. Huang et al., \"Discovering faster matrix multiplication algorithms with reinforcement learning\", Nature 610, 47–53 (2022).",
+          "link": "https://doi.org/10.1038/s41586-022-05172-4",
+          "verification": "checked"
+        },
+        {
+          "citation": "google-deepmind/alphatensor: published factorizations.",
+          "link": "https://github.com/google-deepmind/alphatensor",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^PASS: rank-47",
+        "^PASS: nontrivial sample",
+        "^Basis pairs checked"
+      ]
     },
     {
       "path": "examples/mathematics_aoki_cycles_fermat_sextic.esk",
@@ -571,7 +667,6 @@
       "limitations": "A PASS receipt reports the computed gap for its parameters; it does not imply the gap is zero. Period and support conclusions use the cited geometric results.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -608,7 +703,37 @@
           "text": "(check \"receipt: the number of Hodge characters left uncovered by lines, C and Y on the Fermat sextic surface is recorded (0 means the three families generate NS over Q)\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "On the Fermat sextic surface X₆² ⊂ P³ the Picard number is 86 (85 primitive Hodge characters plus the hyperplane class). Shioda (1979) shows the 108 lines span only the 62-dimensional part carried by the 61 'standard' characters; Aoki (1987) constructs further curves (for p = 2 and p = 3) to reach the remaining characters, and Villaflor Loyola's period formula (Manuscripta Math.) identifies the primitive class of a complete-intersection curve with the class of a Jacobian determinant in the Griffiths Jacobian ring. The program computes, by that formula, the character support of each family and reports how many of the 85 nontrivial Hodge characters the lines and Aoki's two curve families cover together.",
+      "references": [
+        {
+          "citation": "R. Villaflor Loyola, \"Periods of complete intersection algebraic cycles\", Manuscripta Math. (published online 2021; the program header gives 2022), arXiv:1812.03964.",
+          "link": "https://doi.org/10.1007/s00229-021-01290-x",
+          "verification": "checked"
+        },
+        {
+          "citation": "T. Shioda, \"The Hodge conjecture for Fermat varieties\", Math. Ann. 245 (1979).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "N. Aoki, J. Math. Soc. Japan 39 (1987): Theorem 1-1 (lines), Remark 2-2 and Theorem 2-1 (the p = 2 and p = 3 curves).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "N. Aoki, T. Shioda, \"Generators of the Néron-Severi group of a Fermat surface\" (1983).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "P. A. Griffiths, \"On the periods of certain rational integrals\", Ann. of Math. 90 (1969).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^PASS: Shioda's Theorem 1-1",
+        "^PASS: all lines together",
+        "^  support of Aoki's curve",
+        "^  characters covered by lines",
+        "^GAP "
+      ]
     },
     {
       "path": "examples/mathematics_aoki_cycles_fermat_surfaces_sweep.esk",
@@ -623,7 +748,6 @@
       "limitations": "The Q-family decomposition is checked as an exact polynomial identity; the earlier modular screen was a discovery method. The bounded witness search reports no witness only within its configured bound, which does not imply that no algebraic cycle exists.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -684,7 +808,29 @@
           "text": "(define inductive-count (sum (map (lambda (r) (if (caddr r) (cadr r) 0)) orbit-reports)))"
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Aoki proves that for prime-power degree m the p-standard cycles (lines and his curve families) generate the Néron–Severi group of the Fermat surface X_m² over Q; for composite m his Theorem 1-3 also needs 'semi-standard' elements for which explicit subvarieties are known only in a few cases. The program measures the residual exactly for one chosen degree: the number of Hodge characters left uncovered by the supports of the lines and of the available curve families, each support computed from the Jacobian determinant of Villaflor Loyola's period formula.",
+      "references": [
+        {
+          "citation": "R. Villaflor Loyola, \"Periods of complete intersection algebraic cycles\", Manuscripta Math. (published online 2021; the program header gives 2022), arXiv:1812.03964.",
+          "link": "https://doi.org/10.1007/s00229-021-01290-x",
+          "verification": "checked"
+        },
+        {
+          "citation": "N. Aoki, J. Math. Soc. Japan 39 (1987): Theorem 1-1 (lines), Remark 2-2 and Theorem 2-1 (the p = 2 and p = 3 curves).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "T. Shioda, \"The Hodge conjecture for Fermat varieties\", Math. Ann. 245 (1979).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "P. A. Griffiths, \"On the periods of certain rational integrals\", Ann. of Math. 90 (1969).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^\\{\\\"schema\\\":\\\"eshkol\\.math\\.fermat_surface_aoki\\.v1\\\""
+      ]
     },
     {
       "path": "examples/mathematics_classifying_space_dijkgraaf_witten.esk",
@@ -699,7 +845,6 @@
       "limitations": "Finite supplied complexes and group/twist sets delimit the computation; no universal classification of arbitrary manifolds or gauge groups is executed.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -736,7 +881,29 @@
           "text": "(check \"negative control -- the trivial coloring's chain is a boundary (its class is zero)\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Dijkgraaf and Witten (1990) define a topological gauge theory for a finite group G twisted by a class ω ∈ H³(BG; U(1)) ≅ H³(BG; Q/Z), and give its partition function on a closed oriented 3-manifold as a state sum over flat G-connections weighted by ω evaluated on the tetrahedra; untwisted, Z(M) = |Hom(π₁M, G)|/|G|. The program computes the chain from the nerve of G (the bar construction, a model of BG) through integral homology and the twists to the state sums on S³, RP³ and T³, and checks each value against the closed formulas.",
+      "references": [
+        {
+          "citation": "R. Dijkgraaf, E. Witten, \"Topological gauge theories and group cohomology\", Comm. Math. Phys. 129 (1990).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Hatcher, Algebraic Topology, Cambridge University Press (2002).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "K. S. Brown, Cohomology of Groups, Graduate Texts in Mathematics 87, Springer (1982).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  H_k\\(B",
+        "^  \\|H\\^3\\(BG; Q/Z\\)\\|",
+        "^  Z\\(S\\^3\\) for",
+        "^  Z\\(RP\\^3\\):",
+        "^  Z\\(T\\^3\\):",
+        "^PASS: twice it is a boundary"
+      ]
     },
     {
       "path": "examples/mathematics_cohomology_rings_cup_products.esk",
@@ -751,7 +918,6 @@
       "limitations": "The finite degree computations support these stated relations; they are not an unlimited symbolic presentation proof for every degree or group.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -788,7 +954,28 @@
           "text": "(check \"negative control -- the zero cochain and the coboundary of a 2-cochain are Q/Z coboundaries\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "The classical ring structures H*(BZ/2; F₂) = F₂[x] and H*(BZ/p; F_p) = Λ[y] ⊗ F_p[x₂] for odd p, with x₂ = β(y) (Hatcher, Example 3.41 and §3.E), the Bockstein identity Sq¹ = β, and de Wild Propitius's identification (1995) of the type I, II, III Dijkgraaf–Witten cocycles on (Z/2)³ with cubic monomials, whose 7 independent classes give H³((Z/2)³; Q/Z) ≅ (Z/2)⁷.",
+      "references": [
+        {
+          "citation": "A. Hatcher, Algebraic Topology, Cambridge University Press (2002).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "K. S. Brown, Cohomology of Groups, Graduate Texts in Mathematics 87, Springer (1982).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. de Wild Propitius, \"Topological interactions in broken gauge theories\", PhD thesis (1995), Chapter 3.",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  dim H\\^n\\(BZ/2; Z/2\\)",
+        "^PASS: on Z/4, x cup x IS a coboundary",
+        "^PASS: y cup x_2 generates H\\^3",
+        "^PASS: x\\^3, x\\^2 y, x y\\^2, y\\^3 are independent",
+        "^PASS: none of the 127 nonzero combinations"
+      ]
     },
     {
       "path": "examples/mathematics_cohomology_rings_nonabelian.esk",
@@ -803,7 +990,6 @@
       "limitations": "Degree-limited computations do not independently establish every relation in the full infinite cohomology rings.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -840,7 +1026,24 @@
           "text": "(check \"negative control -- a 2-cochain with a single nonzero entry on D_4 is not a cocycle\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Adem and Milgram compute H*(D₈; F₂) = F₂[x, y, w]/(xy) with |x| = |y| = 1, |w| = 2, and H*(Q₈; F₂) = F₂[x, y, e]/(x² + xy + y², x²y + xy²) with |e| = 4. The two groups have the same abelianization and the same H¹, so the ring structure is what separates them; the program recovers the dimensions (1, 2, 3, 4) and (1, 2, 2, 1) through degree 3 and the two defining relations by cup products on the normalized bar complex.",
+      "references": [
+        {
+          "citation": "A. Adem, R. J. Milgram, Cohomology of Finite Groups, 2nd ed., Springer (2004), Chapter IV.2.",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Hatcher, Algebraic Topology, Cambridge University Press (2002).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  dim H\\^n\\(BD_4; Z/2\\)",
+        "^  dim H\\^n\\(BQ_8; Z/2\\)",
+        "^PASS: D_4: x cup y is a coboundary",
+        "^PASS: Q_8: x\\^2 \\+ xy \\+ y\\^2 is a coboundary",
+        "^  D_4: is beta\\(w\\) a coboundary"
+      ]
     },
     {
       "path": "examples/mathematics_cp2_symmetric_square_connected_sums.esk",
@@ -855,7 +1058,6 @@
       "limitations": "The quotient is a Delta-complex, not a simplicial complex or minimal triangulation. The topology identifications follow the cited source.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -892,7 +1094,32 @@
           "text": "(check \"the number of classes with x u x = 0 is 2^(b_2 - 1) for an odd form (a hyperplane, the kernel of the Wu class) and 2^b_2 for the even one\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "By Milnor (1958) and Whitehead (1949) the homotopy type of a simply connected closed 4-manifold is determined by its intersection form. S²×S² (even form) and CP²#CP² (odd form) have the same homology and the same 2-type K(Z², 2); the difference is Wu's class, the parity of the form. The program builds CP² combinatorially as the symmetric square Sym²(S²) of a tetrahedron boundary, forms connected sums, and shows that the mapping-space cardinality into the 3-type with π₂ = π₃ = Z/2 and k-invariant ι∪ι separates the two (1 against 1/2).",
+      "references": [
+        {
+          "citation": "J. Milnor, \"On simply connected 4-manifolds\" (1958).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. H. C. Whitehead (1949), on the homotopy type of simply connected 4-manifolds.",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "W. Kühnel, T. F. Banchoff, \"The 9-vertex complex projective plane\", Math. Intelligencer 5 (1983).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Hatcher, Algebraic Topology, Cambridge University Press (2002).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  S\\^2 x S\\^2 cells, Sym\\^2 cells",
+        "^  mod 2 Betti numbers",
+        "^  intersection forms mod 2",
+        "^  Map into the 3-type with k = iota u iota",
+        "^PASS: S\\^2 x S\\^2 and CP\\^2 # CP\\^2 have the same"
+      ]
     },
     {
       "path": "examples/mathematics_descent_hypercohomology.esk",
@@ -904,10 +1131,9 @@
       "domain": "16-point torus model, a two-open non-Leray cover, constant and (-1,+1) local systems; multiplication-by-0/1/2/3 sheaf complexes.",
       "arithmetic": "Exact integer matrices, Smith-form torsion and F₂/F₃ comparisons.",
       "validation": "D²=0, torus/descent results, twisted torsion and cone answers are asserted; dropping the total-complex sign is a negative control.",
-      "limitations": "The body check gives plain Cech H¹=0 for this cover, contrary to the header summary (Z,Z,0). The listed derived-section and torus-model checks use the body’s calculation.",
+      "limitations": "The program's header summary gives plain Čech cohomology of this cover as (Z, Z, 0); the body computes, and the measured run prints, (Z, 0): H¹ vanishes because both sections restrict onto the connected intersection. The checks use the body's calculation, and the doc follows the measured output. The listed derived-section and torus-model checks apply to the finite models computed.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -964,7 +1190,36 @@
           "text": "       (equal? descent (list (list 0 1 '()) (list 1 2 '()) (list 2 1 '()) (list 3 0 '()))))"
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Cohomological descent (Deligne, Théorie de Hodge III, §5.3): for any cover, the total complex of the Čech–sheaf double complex computes sheaf cohomology, whereas plain Čech cohomology does so only for a Leray cover. Hypercohomology of a complex of sheaves is invariant under quasi-isomorphism (Weibel §5.7). The program exhibits a non-Leray cover of the 16-point torus model on which plain Čech cohomology is wrong and descent is right, and computes hypercohomology of three two-term complexes.",
+      "references": [
+        {
+          "citation": "P. Deligne, \"Théorie de Hodge III\", Publ. Math. IHÉS 44 (1974), §5.3.",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "SGA 4, Exposé V.7 (hypercovers).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "K. S. Brown, Cohomology of Groups, Graduate Texts in Mathematics 87, Springer (1982).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "C. A. Weibel, An Introduction to Homological Algebra, Cambridge University Press (1994).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. K. Bousfield, D. M. Kan, Homotopy Limits, Completions and Localizations, Lecture Notes in Mathematics 304, Springer (1972).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  H\\^\\*\\(U1 cap U2; Z\\)",
+        "^  plain Cech H\\^\\* of the non-Leray cover",
+        "^  descent double complex H\\^\\*",
+        "^  descent H\\^\\* for the local system",
+        "^  hypercohomology of Z --2--> Z"
+      ]
     },
     {
       "path": "examples/mathematics_fermat_hodge_classes_sweep.esk",
@@ -979,7 +1234,6 @@
       "limitations": "Rank modulo p lower-bounds rational rank. A zero gap together with the stated geometric upper bound certifies spanning for that parameter case; a positive gap only bounds the missing dimension and is not an exact rational-rank result. The conclusion depends on valid parameters and the cited geometric formulas.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1016,7 +1270,28 @@
           "text": "(if (string=? verdict \"PASS\") (begin (display \"RESULT: ALL PASS\") (newline) (exit 0)) (begin (display \"RESULT: FAILURES DETECTED\") (newline) (exit 1)))"
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "For the Fermat variety X_m^n of even dimension n, the primitive Hodge numbers follow from Griffiths' Jacobian ring and, independently, from Shioda's character decomposition (1979); the rational Hodge classes are the Galois-closed characters of type (n/2, n/2) plus the power of the hyperplane class. Shioda's Theorem I shows the Hodge classes are algebraic when every Hodge character contains a pair aᵢ + aⱼ ≡ 0 (mod m). The program writes, for one (m, n), the Hodge dimension and the rank modulo a prime of the intersection matrix of the linear cycles xᵢ = ζxⱼ.",
+      "references": [
+        {
+          "citation": "P. A. Griffiths, \"On the periods of certain rational integrals\", Ann. of Math. 90 (1969).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "T. Shioda, \"The Hodge conjecture for Fermat varieties\", Math. Ann. 245 (1979).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "N. Aoki, T. Shioda, \"Generators of the Néron-Severi group of a Fermat surface\" (1983).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "W. Fulton, Intersection Theory, §6.3 (excess intersection).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^\\{\\\"schema\\\":\\\"eshkol\\.math\\.fermat_hodge_classes\\.v1\\\""
+      ]
     },
     {
       "path": "examples/mathematics_finite_categories_kan_extensions.esk",
@@ -1031,7 +1306,6 @@
       "limitations": "The source explicitly obtains a discrete opfibration for its covariant element construction; do not automatically relabel it a contravariant fibration. Presentation rewriting and universal-property claims are restricted to the supplied categories.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1068,7 +1342,40 @@
           "text": "(check \"lim^0 agrees with the limit of the constant functor computed categorically: one compatible family on each connected poset\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "The pointwise formulas for Kan extensions, Lan_F G(d) = colim over (c, Fc → d) of Gc and Ran_F G(d) = lim over (c, d → Fc) of Gc (Mac Lane X.3; Riehl §6.2), the unit/counit triangle identities of the adjunction Lan ⊣ F*, the Grothendieck construction of a presheaf of sets as a discrete fibration, and lim^n over a poset as the right derived functors of lim (Weibel §2.6). The program builds small categories from presentations and checks each statement on them.",
+      "references": [
+        {
+          "citation": "S. Mac Lane, Categories for the Working Mathematician, 2nd ed., Springer (1998).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "E. Riehl, Category Theory in Context, Dover (2016).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Grothendieck, SGA 1, Exposé VI.",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "C. A. Weibel, An Introduction to Homological Algebra, Cambridge University Press (1994).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. C. McCord, \"Singular homology groups and homotopy groups of finite topological spaces\", Duke Math. J. 33 (1966).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. A. Barmak, Algebraic Topology of Finite Topological Spaces and Applications, Lecture Notes in Mathematics 2032, Springer (2011).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  arrow counts",
+        "^  Lan and Ran along BZ/2 -> point",
+        "^  Lan and Ran along S -> cone\\(S\\)",
+        "^PASS: triangle identity",
+        "^  lim\\^n of the constant presheaf"
+      ]
     },
     {
       "path": "examples/mathematics_finite_model_three_torus_gauge_theory.esk",
@@ -1083,7 +1390,6 @@
       "limitations": "These are finite group/complex calculations; they do not implement continuous Yang–Mills dynamics or all possible gauge groups.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1120,7 +1426,28 @@
           "text": "(check \"negative control -- the delta-function weight changes under some single-vertex gauge change of some connection: a non-cocycle defines no invariant of the space\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "The untwisted Dijkgraaf–Witten invariant of T³ is |Hom(Z³, G)|/|G|, which for a cyclic group is |G|², and for a cyclic group every twist leaves it unchanged. McCord's theorem makes the product of three pseudocircles (a 64-point finite space) a model of T³ whose order complex triangulates it. The program evaluates the state sum on that 384-tetrahedron triangulation and checks it against the commuting-triple formula.",
+      "references": [
+        {
+          "citation": "R. Dijkgraaf, E. Witten, \"Topological gauge theories and group cohomology\", Comm. Math. Phys. 129 (1990).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. C. McCord, \"Singular homology groups and homotopy groups of finite topological spaces\", Duke Math. J. 33 (1966).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. A. Barmak, Algebraic Topology of Finite Topological Spaces and Applications, Lecture Notes in Mathematics 2032, Springer (2011).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  vertices, edges, triangles, tetrahedra",
+        "^  H\\^\\*\\(finite model of T\\^3; Z\\)",
+        "^  gauge-fixed flat connections",
+        "^  Z\\(T\\^3\\) on the finite model",
+        "^  state sum with the non-cocycle"
+      ]
     },
     {
       "path": "examples/mathematics_finite_site_sheafification.esk",
@@ -1135,7 +1462,6 @@
       "limitations": "The exhaustive quantifiers apply to this finite site. They are not a proof for arbitrary infinite sites.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1172,7 +1498,27 @@
           "text": "(check \"for the constant sheaf and for F^+ the cover computes (Z, Z): the sheafification restores H^1 of the circle\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Sheafification by the plus construction (Mac Lane–Moerdijk III.5): F⁺ is separated, F⁺⁺ is a sheaf, and one application suffices when F is already separated. The program verifies the sheaf and separatedness conditions on every cover of every open of the pseudocircle's open-set lattice, with free-abelian-group presheaves and integer restriction matrices, and shows that the constant presheaf Z (separated but not a sheaf) loses H¹ of the circle, which sheafification restores.",
+      "references": [
+        {
+          "citation": "S. Mac Lane, I. Moerdijk, Sheaves in Geometry and Logic, Springer (1992).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Grothendieck et al., SGA 4, Exposé II.3.",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. C. McCord, \"Singular homology groups and homotopy groups of finite topological spaces\", Duke Math. J. 33 (1966).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  number of covers",
+        "^  first cover on which the constant presheaf fails",
+        "^  ranks of F\\^\\+",
+        "^  Cech \\(H\\^0, H\\^1\\) of \\(U_c, U_d\\)"
+      ]
     },
     {
       "path": "examples/mathematics_finite_spaces_sheaf_cohomology.esk",
@@ -1187,7 +1533,6 @@
       "limitations": "The comparisons apply to the listed finite models and coefficient systems; non-Leray covers require the separate descent construction.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1224,7 +1569,33 @@
           "text": "(check \"negative control -- two of the four opens cover only 12 of the 16 points, and the Cech H^1 of that partial cover has rank 1 (an annulus), not 2\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "McCord (1966): a finite T₀ space is weakly equivalent to the order complex of its poset, so the pseudocircle (4 points) and the pseudo-2-sphere (6 points) have the cohomology of S¹ and S². Sheaf cohomology on a finite space is the derived limit over the poset (Bousfield–Kan XI.6–7), and Čech cohomology computes it on a Leray cover (Bredon III.4). The program computes these with integer coefficients, so torsion from local systems (monodromy −1) is visible.",
+      "references": [
+        {
+          "citation": "M. C. McCord, \"Singular homology groups and homotopy groups of finite topological spaces\", Duke Math. J. 33 (1966).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. A. Barmak, Algebraic Topology of Finite Topological Spaces and Applications, Lecture Notes in Mathematics 2032, Springer (2011).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. K. Bousfield, D. M. Kan, Homotopy Limits, Completions and Localizations, Lecture Notes in Mathematics 304, Springer (1972).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "G. E. Bredon, Sheaf Theory, 2nd ed., Graduate Texts in Mathematics 170, Springer (1997).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  H\\^\\*\\(pseudocircle; Z\\)",
+        "^  H\\^\\*\\(pseudo-2-sphere; Z\\)",
+        "^  H\\^\\*\\(torus model; Z\\) =",
+        "^  H\\^\\*\\(pseudocircle; Z twisted by -1\\)",
+        "^  H\\^\\*\\(torus model; Z twisted by \\(-1, \\+1\\)\\)",
+        "^  Cech H\\^\\*\\(torus model; Z\\) for"
+      ]
     },
     {
       "path": "examples/mathematics_four_manifolds_second_k_invariant.esk",
@@ -1239,7 +1610,6 @@
       "limitations": "The computation is bounded by the target 3-type and supplied finite complexes; the manifold/model identifications use the cited results.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1276,7 +1646,40 @@
           "text": "(check \"the second k-invariant is seen by RP^4 and only there: its value halves (x^2 fails to lift, since x^4 is not zero), S^4 and S^2 x S^2 keep their k = 0 values\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Serre (1953): H*(K(Z/2, n); Z/2) is polynomial on admissible Steenrod squares; in particular Sq²ι₂ = ι₂ ∪ ι₂ spans H⁴(K(Z/2, 2); Z/2), so the 3-type with π₂ = π₃ = Z/2 and k-invariant ι∪ι exists. A map X → P lifts a class x ∈ H²(X; Z/2) exactly when x∪x = 0 (Hatcher §4.3), so on a 4-manifold the second k-invariant sees the intersection form mod 2. The program computes the mapping-space cardinality by a cochain state sum and by the Postnikov fibration formula on S⁴, RP⁴ and S²×S².",
+      "references": [
+        {
+          "citation": "M. M. Postnikov (1951).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J.-P. Serre, \"Cohomologie modulo 2 des complexes d'Eilenberg-MacLane\", Comment. Math. Helv. 27 (1953).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Hatcher, Algebraic Topology, Cambridge University Press (2002).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Faria Martins, T. Porter, \"On Yetter's invariant and an extension of the Dijkgraaf-Witten invariant to categorical groups\", Theory Appl. Categ. 18 (2007).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. C. Baez, J. Dolan, \"From finite sets to Feynman diagrams\" (2001).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "S. Eilenberg, S. Mac Lane, \"On the groups H(Π, n)\" (1953–54).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  cells \\(V, E, F, T, P\\)",
+        "^  mod 2 Betti numbers",
+        "^  classes of x u x",
+        "^  k = 0: state sum",
+        "^  k = iota u iota: state sum"
+      ]
     },
     {
       "path": "examples/mathematics_funsearch_cap_set.esk",
@@ -1287,11 +1690,10 @@
       "algorithm": "Enumerate 3⁸ vectors, select the construction classes and test the third point on every affine line determined by an unordered cap-point pair.",
       "domain": "AG(8,3); fixed construction with 512 points and 130816 unordered pairs.",
       "arithmetic": "Exact integer coordinates modulo 3.",
-      "validation": "Ambient and cap cardinalities and exhaustive absence of a third cap point establish the finite no-three-collinear property.",
+      "validation": "Ambient and cap cardinalities and exhaustive absence of a third cap point establish the finite no-three-collinear property. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it.",
       "limitations": "This certifies the supplied set; it neither reruns FunSearch nor proves a maximum cap size.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -1319,7 +1721,24 @@
           "text": "(check \"512-point witness is a cap in AG(8,3)\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Romera-Paredes et al. (Nature, 2024) used FunSearch — an LLM-guided evolutionary search over programs — to find a cap set of size 512 in F₃⁸ (AG(8,3)), larger than the previously best known 496. A cap set has no three collinear points (no x, y, z distinct with x + y + z ≡ 0). The program rebuilds the published 512-point witness from its explicit construction and checks the cap property exhaustively.",
+      "references": [
+        {
+          "citation": "B. Romera-Paredes, M. Barekatain, A. Novikov et al., \"Mathematical discoveries from program search with large language models\", Nature 625, 468–475 (2024).",
+          "link": "https://doi.org/10.1038/s41586-023-06924-6",
+          "verification": "checked"
+        },
+        {
+          "citation": "google-deepmind/funsearch: published cap-set witnesses.",
+          "link": "https://github.com/google-deepmind/funsearch",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^PASS: explicit construction has 512 points",
+        "^PASS: 512-point witness is a cap",
+        "^Exact pair checks"
+      ]
     },
     {
       "path": "examples/mathematics_group_cohomology_order_eight.esk",
@@ -1334,7 +1753,6 @@
       "limitations": "The equal count 22 does not by itself prove equivalence of entire braided categories; expensive dense Smith forms have explicit source-versioned CTest budgets.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1371,7 +1789,28 @@
           "text": "(check \"negative control -- swapping two edges of one tetrahedron of S^3 breaks Z(S^3) = 1/8 for D_4 and for the type III theory\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "The integral homology of the five groups of order eight through degree 3 (Brown, Cohomology of Groups: Künneth, Schur multipliers, and the periodicity of Q₈), the resulting counts |H³(G; Q/Z)| = |H₃(G; Z)| of Dijkgraaf–Witten twists, and de Wild Propitius's observation that the type-III twist of (Z/2)³ produces a non-abelian twisted quantum double D^ω((Z/2)³) with 22 simple objects, the number for the untwisted doubles of D₄ and Q₈ (Dijkgraaf–Pasquier–Roche).",
+      "references": [
+        {
+          "citation": "K. S. Brown, Cohomology of Groups, Graduate Texts in Mathematics 87, Springer (1982).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "R. Dijkgraaf, V. Pasquier, P. Roche, \"Quasi Hopf algebras, group cohomology and orbifold models\", Nucl. Phys. B Proc. Suppl. 18B (1990).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. de Wild Propitius, \"Topological interactions in broken gauge theories\", PhD thesis (1995), Chapter 3.",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  H_\\*\\(B",
+        "^  \\|H\\^3\\(G; Q/Z\\)\\| = number of Dijkgraaf-Witten twists",
+        "^  Z\\(T\\^3\\) for \\(Z/2\\)\\^3",
+        "^  Z\\(T\\^3\\) for D_4, Q_8, S_3",
+        "^  Z\\(RP\\^3\\):"
+      ]
     },
     {
       "path": "examples/mathematics_group_cohomology_sweep.esk",
@@ -1382,11 +1821,10 @@
       "algorithm": "Parse a group specification, build its normalized bar complex and compute torsion/Betti data by dense bignum Smith elimination.",
       "domain": "MATH_GROUP defaults cyclic:2; cyclic:N, product:N,M[,K], dihedral:N (order 2N), quaternion, symmetric:3, alternating:4; MATH_DEGREE defaults 3.",
       "arithmetic": "Exact integer matrices and JSON integer/torsion fields.",
-      "validation": "Self-check verdict and H₀…H_degree data are emitted; |H₃| is reported when that degree is computed.",
-      "limitations": "Cost grows as (|G|−1)^k for the degree-k boundary; documentation does not promise runtimes or arbitrary-size feasibility. A receipt is parameter-specific, not a new execution claim.",
+      "validation": "Self-check verdict and H₀…H_degree data are emitted; |H₃| is reported when that degree is computed. How the verdict is read: the single output line is a JSON receipt whose `verdict` field is `PASS` or `FAIL`, and the exit status is 0 or 1 accordingly (2 for an unknown group spec); there is no `RESULT:` line, which is why the measured status is `RAN-OK` with the JSON quoted verbatim.",
+      "limitations": "Cost grows as (|G|−1)^k for the degree-k boundary; the header gives degree 3 as practical to order 9 and degree 2 to order 16 with the dense elimination. The measured run below is for the default parameters (cyclic:2, degree 3); a receipt for any other group is a separate run.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -1414,7 +1852,20 @@
           "text": "(exit (if ok 0 1))"
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Integral homology of the classifying space BG of a finite group, H_n(BG; Z) = H_n(G; Z), computed from the normalized bar resolution (Brown, Cohomology of Groups, I.5); |H₃(G; Z)| = |H³(G; Q/Z)| counts the Dijkgraaf–Witten twists of G. The program has no source-comment bibliography of its own; it is the parametric companion of the order-eight program, whose results it is compared against.",
+      "references": [
+        {
+          "citation": "K. S. Brown, Cohomology of Groups, Graduate Texts in Mathematics 87, Springer (1982).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "R. Dijkgraaf, E. Witten, \"Topological gauge theories and group cohomology\", Comm. Math. Phys. 129 (1990).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^\\{\\\"schema\\\":\\\"eshkol\\.math\\.group_homology\\.v1\\\""
+      ]
     },
     {
       "path": "examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk",
@@ -1429,7 +1880,6 @@
       "limitations": "For the fourfold the lower/upper-rank sandwich is a spanning certificate under the cited geometric formulas. It is not a proof of the Hodge conjecture for every variety; the sextic line gap is real.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1466,7 +1916,35 @@
           "text": "(check \"Griffiths and Shioda agree on the quartic, quintic and sextic surfaces: h^{2,0}, h^{1,1}_prim, h^{0,2} = (1, 19, 1), (4, 44, 4), (10, 85, 10)\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "For the Fermat quartic fourfold X₄⁴ ⊂ P⁵, Shioda's Theorem I (Math. Ann. 245, 1979) implies that every rational Hodge class is algebraic, because every Hodge character contains a pair aᵢ + aⱼ ≡ 0 (mod 4). The program makes this explicit: it computes the Hodge numbers twice (Griffiths' Jacobian ring and Shioda's characters), enumerates the 960 planes on X, computes their 960×960 intersection matrix from excess-intersection numbers, and shows its rank is 142 = dim of the space of rational Hodge classes, so the planes span every Hodge class. It repeats the line computation on the Fermat quartic, quintic and sextic surfaces.",
+      "references": [
+        {
+          "citation": "P. A. Griffiths, \"On the periods of certain rational integrals\", Ann. of Math. 90 (1969).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "T. Shioda, \"The Hodge conjecture for Fermat varieties\", Math. Ann. 245 (1979).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "N. Aoki, T. Shioda, \"Generators of the Néron-Severi group of a Fermat surface\" (1983).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "W. Fulton, Intersection Theory, §6.3 (excess intersection).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Weil (1949); N. Katz, P. Deligne, SGA 4½ (Fermat varieties and Jacobi sums).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  Fermat quartic fourfold: primitive Hodge numbers",
+        "^  plane 0: how many planes meet it",
+        "^  rank of the 960 x 960 Gram matrix",
+        "^  Fermat surfaces \\(degree, lines"
+      ]
     },
     {
       "path": "examples/mathematics_homotopy_colimits_grothendieck.esk",
@@ -1481,7 +1959,6 @@
       "limitations": "Finite degrees and supplied diagrams are computed; the general Thomason equivalence is a cited theorem rather than a new universal proof.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1518,7 +1995,31 @@
           "text": "(check \"negative control -- swapping the roles of the two actions fails: the free action's answer is not the trivial action's\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Thomason (1979): the nerve of the Grothendieck construction of a diagram of small categories is weakly equivalent to the homotopy colimit of their nerves. For a group acting on a space, the homotopy colimit over the one-object category is the Borel construction X_hG (Brown VII.7). The program computes suspensions and homotopy quotients of the pseudocircle this way and contrasts them with the strict colimits, which lose the topology.",
+      "references": [
+        {
+          "citation": "R. W. Thomason, \"Homotopy colimits in the category of small categories\", Math. Proc. Cambridge Philos. Soc. 85 (1979).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. K. Bousfield, D. M. Kan, Homotopy Limits, Completions and Localizations, Lecture Notes in Mathematics 304, Springer (1972).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Lurie, Higher Topos Theory, Annals of Mathematics Studies 170, Princeton University Press (2009).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "K. S. Brown, Cohomology of Groups, Graduate Texts in Mathematics 87, Springer (1982).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  H\\^\\*\\(hocolim of",
+        "^  H\\^\\*\\(BZ/2; Z\\) from the action category",
+        "^  H\\^\\*\\(S\\^1_\\{hZ/2\\}\\)",
+        "^PASS: the strict quotient poset of the free action is contractible"
+      ]
     },
     {
       "path": "examples/mathematics_ipm_velocity_expansion.esk",
@@ -1533,7 +2034,6 @@
       "limitations": "Checks a finite formal asymptotic expansion, not the full analytic error estimate, existence of singular solutions or an infinite-order convergence theorem. Normalization follows the cited source.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1570,7 +2070,21 @@
           "text": "(check \"negative control -- with an odd part added to f, u^3 is no longer odd\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Córdoba and Martínez-Zoroa (arXiv:2410.22920, v3 2025) prove finite-time singularity formation for smooth solutions of the 2D incompressible porous media equation with a smooth source. Section 2 expands the velocity operator V(w) = ∫ h₁/|h|² w(x+h) dh on an oscillatory density f(x) sin(N(bx₁ + ax₂) + Θ) in powers of 1/N, with constants c^s_{i,j}, c^c_{i,j} whose existence, parity (Remark 4) and two leading values (Lemma 2.6) the paper proves. The program obtains every constant in closed form from the Fourier symbol of V and checks the expansion order by order.",
+      "references": [
+        {
+          "citation": "D. Córdoba, L. Martínez-Zoroa, \"Finite time singularities of smooth solutions for the 2D incompressible porous media (IPM) equation with a smooth source\", arXiv:2410.22920 (v1 Oct 2024, v3 Feb 2025).",
+          "link": "https://arxiv.org/abs/2410.22920",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  kappa\\^",
+        "^  leading surviving order of Delta V\\^K",
+        "^  K = 2 failing term",
+        "^  leading surviving order of div u\\^K",
+        "^PASS: route 2 \\(order-by-order solve"
+      ]
     },
     {
       "path": "examples/mathematics_jacobian_counterexample.esk",
@@ -1581,11 +2095,10 @@
       "algorithm": "Compute P,Q,R and cubic/discriminant fiber data; use reverse AD through a closure factory and independent explicit partials on an exact degree grid.",
       "domain": "Three rational preimages of (-1/4,0,0); a 9×8×3 determinant grid with coordinate degree bounds (8,7,2); two Theorem-5.1 parameter cases.",
       "arithmetic": "Exact rational polynomial/fiber checks; AD carrier checks use tolerance 1e-9, including rational-input vectors.",
-      "validation": "The over-degree grid certifies the polynomial determinant identity globally, while the AD comparisons remain numerical. The supplied rational preimages are checked explicitly.",
+      "validation": "The over-degree grid certifies the polynomial determinant identity globally, while the AD comparisons remain numerical. The supplied rational preimages are checked explicitly. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it.",
       "limitations": "The exact degree-grid determinant certificate and tolerance-based AD comparisons have different scopes. Interpreting the construction as a real or complex Jacobian conjecture counterexample depends on the paper’s domain and hypotheses.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -1613,7 +2126,29 @@
           "text": "(check \"Theorem 5.1 family determinant lambda=-1,a=2,c=1\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "The research note \"A counterexample to the Jacobian conjecture\" (dated July 20, 2026) verifies that the polynomial map F = (P, Q, R): C³ → C³ with P = (1+xy)³z + y²(1+xy)(4+3xy), Q = y + 3x(1+xy)²z + 3xy²(4+3xy), R = 2x − 3x²y − x³z has det Jac F ≡ −2 (a Keller map) and that F(0, 0, −1/4) = F(1, −3/2, 13/2) = F(−1, 3/2, 13/2) = (−1/4, 0, 0) (Theorem 3.1), so F is not injective and hence not a polynomial automorphism; by stabilization this gives counterexamples in every dimension n ≥ 3. The note credits the explicit formula to an announcement by L. Alpöge. Theorem 5.1 gives a family F_{λ,a,c,H} with the same mechanism. The program checks the map, the three-point fiber, the binary-cubic fiber description, the discriminant fiber counts, the determinant identity and two members of the Theorem 5.1 family.",
+      "references": [
+        {
+          "citation": "\"A counterexample to the Jacobian conjecture\", research note dated July 20, 2026 (the extracted PDF text carries no author line).",
+          "link": "https://www.ulam.ai/research/jacobian.pdf",
+          "verification": "checked"
+        },
+        {
+          "citation": "O.-H. Keller, \"Ganze Cremona-Transformationen\", Monatsh. Math. Phys. 47 (1939) (the conjecture), as cited by the note.",
+          "verification": "checked"
+        },
+        {
+          "citation": "H. Bass, E. H. Connell, D. Wright, \"The Jacobian conjecture: reduction of degree and formal expansion of the inverse\", Bull. Amer. Math. Soc. 7 (1982), as cited by the note.",
+          "link": "https://doi.org/10.1090/S0273-0979-1982-15032-7",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^PASS: three rational preimages",
+        "^PASS: exact determinant is identically -2",
+        "^PASS: AD determinant is -2 at exact-rational vectors",
+        "^PASS: Theorem 5\\.1 family"
+      ]
     },
     {
       "path": "examples/mathematics_kan_complexes_horns.esk",
@@ -1628,7 +2163,6 @@
       "limitations": "The body’s 2-horn multiplicities are |M| (2,1,2,4), rather than the header’s |ker d|. horn-table forms horns from faces of an existing simplex; positive counts do not exhaust every compatible unfilled horn. Poset and low-homotopy checks are finite; broader Kan interpretations use the cited nerve theory.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1685,7 +2219,35 @@
           "text": "(check \"2-horns have exactly |M| fillers (the third edge ranges over a coset of the image of d, the 2-cell over its kernel): 2, 1, 2, 4\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "A simplicial set is a Kan complex when every horn has a filler (Kan 1958); it is a quasi-category when every inner horn does, and a quasi-category is Kan exactly when it is a groupoid (Joyal 2002). The nerve of a 2-groupoid has unique fillers for horns of dimension ≥ 3 (Duskin 2002), and Kan's combinatorial homotopy groups of the nerve of a crossed module M → N are π₁ = coker and π₂ = ker. The program counts horns and fillers on four 2-group nerves and on the nerve of the pseudocircle poset.",
+      "references": [
+        {
+          "citation": "D. M. Kan, \"A combinatorial definition of homotopy groups\", Ann. of Math. 67 (1958).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. P. May, Simplicial Objects in Algebraic Topology (1967).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Joyal, \"Quasi-categories and Kan complexes\", J. Pure Appl. Algebra 175 (2002).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Lurie, Higher Topos Theory, Annals of Mathematics Studies 170, Princeton University Press (2009).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Duskin, \"Simplicial matrices and the nerves of weak n-categories I\", Theory Appl. Categ. 9 (2002).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  horns of twisted: dimension 3",
+        "^PASS: 2-horns have exactly \\|M\\| fillers",
+        "^  pseudocircle nerve: outer 2-horns",
+        "^  \\|pi_1\\| and \\|pi_2\\| from Kan's definition"
+      ]
     },
     {
       "path": "examples/mathematics_lens_spaces_reidemeister_torsion.esk",
@@ -1700,7 +2262,6 @@
       "limitations": "The computed invariant plus cited classification criteria support the stated lens-space comparisons; do not infer arbitrary manifold classification or numerical root approximations.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1737,7 +2298,30 @@
           "text": "(check \"tau is invariant under the choice of root of unity up to Galois: each tau matches its own conjugate under zeta -> zeta^2\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Reidemeister (1935) and Franz (1935) classified lens spaces up to homeomorphism by torsion: L(p, q) ≅ L(p, q′) iff q′ ≡ ±q^{±1} (mod p), and τ(L(p, q)) = (ζ − 1)(ζ^r − 1) up to ±ζ^k with rq ≡ 1 (mod p) (Milnor, Whitehead torsion §12; Turaev, Thm. 2.2 and §10). L(7, 1) and L(7, 2) are homotopy equivalent but not homeomorphic — the classical example that torsion sees and homotopy invariants cannot. The program computes τ in Q(ζ_p) for seven lens complexes.",
+      "references": [
+        {
+          "citation": "K. Reidemeister, \"Homotopieringe und Linsenräume\", Abh. Math. Sem. Hamburg 11 (1935).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "W. Franz, \"Über die Torsion einer Überdeckung\", J. reine angew. Math. 185 (1935).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Milnor, \"Whitehead torsion\", Bull. Amer. Math. Soc. 72 (1966).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "V. Turaev, Introduction to Combinatorial Torsions, Birkhäuser (2001).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  norms N\\(tau\\) down to Q",
+        "^  torsion verdicts",
+        "^PASS: the classical pair"
+      ]
     },
     {
       "path": "examples/mathematics_lens_spaces_yetter.esk",
@@ -1752,7 +2336,6 @@
       "limitations": "Only the supplied spaces/modules are enumerated; homotopy/homeomorphism criteria remain cited topology, not a general classifier.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -1789,7 +2372,35 @@
           "text": "(check \"Z/4 -> Z/4 with the sign action: L(2,1) sees k (2 against 1), L(4,1) does not (2 and 2, since x^3 = 0 in H^3(L(4,1); Z/2)); both agree with the fibration formula\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Whitehead (1941): L(p, q) and L(p, q′) are homotopy equivalent iff qq′ is a square mod p, detected by the square class of the linking pairing ⟨x ∪ βx, [L]⟩. Yetter's invariant for a 2-group is the homotopy cardinality of the mapping space into its classifying space (Faria Martins–Porter 2007), so a nonzero k-invariant can obstruct lifts. The program computes the lens complexes' cohomology and Whitehead's square class, and Yetter's invariants for an order-three k-invariant, by a reduced state sum and by the Postnikov fibration formula.",
+      "references": [
+        {
+          "citation": "J. H. C. Whitehead, \"On incidence matrices, nuclei and homotopy types\", Ann. of Math. 42 (1941).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "E. J. Brody, \"The topological classification of the lens spaces\", Ann. of Math. 71 (1960).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Hatcher, Algebraic Topology, Cambridge University Press (2002).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "D. N. Yetter, \"TQFT's from homotopy 2-types\", J. Knot Theory Ramifications 2 (1993).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Faria Martins, T. Porter, \"On Yetter's invariant and an extension of the Dijkgraaf-Witten invariant to categorical groups\", Theory Appl. Categ. 18 (2007).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  square classes:",
+        "^  Yetter \\(reduced sum\\)",
+        "^  fibration formula, same layout",
+        "^  Z/4 -> Z/4 trivial and sign on L\\(2,1\\), L\\(4,1\\)"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_first_principles.esk",
@@ -1801,10 +2412,9 @@
       "domain": "Five exponent unknowns; admissible h inequalities; source-selected polynomial/profile truncations and z=0 residual samples.",
       "arithmetic": "Exact rational linear systems and coefficients; physical residual comparisons use the source’s stated numerical checks.",
       "validation": "Solved exponents, Kummer recurrence, leading vanishing and perturbed-profile negative controls are asserted.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -1841,8 +2451,26 @@
           "text": "(check \"the perturbed physical residual therefore diverges like tau^{-(1+A)}\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "2.1, 3.1, 4.1 ((4.9), (4.12), (4.13))"
+      "literature_review": "Sections 2.1, 3.1 and 4.1 of the reference construction state the scale laws and the leading profile equations (4.9), (4.11), (4.13), with A = 1/2 + h, D = 1/2 − h and 0 < h < 1/100. The program derives these rather than quoting them: the exponents from the balance requirements as an exact linear system with the admissible range of h, and the leading profile series from the leading balance operator, whose recurrences turn out to be Kummer's for ₁F₁.",
+      "paper_sections": "2.1, 3.1, 4.1 ((4.9), (4.12), (4.13))",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  a  \\(l_r",
+        "^  b  \\(l_z",
+        "^  c  \\(u_theta",
+        "^  core energy exponent",
+        "^  upper bound  ",
+        "^  azimuthal profile phi",
+        "^  axial profile U  ",
+        "^PASS: the derived azimuthal recurrence is the Kummer",
+        "^PASS: the derived axial recurrence is the Kummer"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_heat_exterior.esk",
@@ -1854,10 +2482,9 @@
       "domain": "Small finite polynomial case, power weights α=0,2 and a separately approximated transcendental contribution; t approaches 1 at fixed r.",
       "arithmetic": "Exact rational recursion/moment solve; transcendental moments and limiting samples are numerical.",
       "validation": "Heat residual, invertibility, moment reconstruction, bounded derivatives and colliding-weight/blow-up negative controls are asserted.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. The source explicitly refuses to call the transcendental moment exact.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1. The source explicitly refuses to call the transcendental moment exact.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -1894,8 +2521,22 @@
           "text": "(check \"negative control -- a candidate exterior carrying an inner-profile divergent factor is NOT bounded near t = 1\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "2.3, Appendix A, Lemma A.1"
+      "literature_review": "Section 2.3 and Appendix A of the reference construction: beyond the annulus the flow is purely azimuthal and solves the curvature-corrected radial heat equation exactly (the 'heat exterior'), with smooth limits at the singular time at every fixed positive radius; Lemma A.1 states that distinct power weights give an invertible moment matrix. The program solves the heat equation exactly by an odd polynomial in r (using L[rⁿ] = (n² − 1)r^{n−2}) and inverts a small exact moment matrix.",
+      "paper_sections": "2.3, Appendix A, Lemma A.1",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  moment matrix B =",
+        "^  det B =",
+        "^  correction coefficients \\(c1, c2\\)",
+        "^  transcendental moment \\(fine mesh\\)",
+        "^PASS: the heat exterior solves the curvature-corrected"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_localization.esk",
@@ -1907,10 +2548,9 @@
       "domain": "Source-defined support boxes/radii and period cell; three registered criteria for smooth extension, energy and torus scaling.",
       "arithmetic": "Rational finite-grid/cutoff data and AD; the discrete energy equality is asserted exactly.",
       "validation": "Support/period-cell agreement, torus averages, exact energy balance and oversized-radius/dropped-viscosity negative controls are asserted.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. The energy balance is a discrete model, not an independently proved continuum energy estimate.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1. The energy balance is a discrete model, not an independently proved continuum energy estimate.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -1963,8 +2603,21 @@
           "text": "(check \"negative control -- dropping the viscous term from the force breaks the identity\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "10, Proposition 10.1, Lemmas 10.2-10.4, Corollary 10.6"
+      "literature_review": "Section 10 of the reference construction (Proposition 10.1, Lemmas 10.2–10.4, (10.20)–(10.23), Corollary 10.6): the local solution is multiplied by smooth cutoffs to give a compactly supported force, the energy identity holds with the force defined as the residual, and compact support transports the construction to the torus T³ = R³/Z³. The program checks four ingredients: a cutoff that cancels a temporal pole, exact compact support, periodization within one cell, and the discrete energy identity.",
+      "paper_sections": "10, Proposition 10.1, Lemmas 10.2-10.4, Corollary 10.6",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  cutoff-field Taylor coefficients about t=1",
+        "^  uncut field at r=X1",
+        "^  torus-average-2d of the periodized field",
+        "^  KE'\\(t0\\) and the energy-identity RHS"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_mean_corrections.esk",
@@ -1976,10 +2629,9 @@
       "domain": "Five moments at λ=1; source-selected disjoint correction boxes and sample points.",
       "arithmetic": "Exact rational moment system; AD divergence/residual checks as implemented.",
       "validation": "Moment realization, support separation, divergence and wrong-support/oversized-cutoff negative controls are asserted.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -2016,8 +2668,21 @@
           "text": "(check \"the correctly sized bump really is zero at that point\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "8, Lemma 8.2 and Lemma 8.7"
+      "literature_review": "Section 8 of the reference construction (Proposition 8.1 through Lemma 8.8): compactly supported, divergence-free mean corrections are built as curls of compactly supported potentials, and five radial moment conditions (three azimuthal, two axial) are solved with geometric bump copies, which leads to a generalized Vandermonde system. The program verifies div(curl A) = 0 by AD on a piecewise-polynomial compactly supported potential and solves the five-moment system exactly at λ = 1.",
+      "paper_sections": "8, Lemma 8.2 and Lemma 8.7",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  azimuthal amplitudes \\(u0 u1 u2\\)",
+        "^  axial amplitudes \\(s0 s1\\)",
+        "^PASS: the solved azimuthal amplitudes cancel the defect exactly",
+        "^PASS: the realized correction field \\(solved amplitudes\\) is exactly divergence free"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_oscillatory_realization.esk",
@@ -2029,10 +2694,9 @@
       "domain": "Two distinct C/B flux ratios, in-cone target stresses and four-point torus average.",
       "arithmetic": "Exact trigonometric representation/torus products and rational exact_linalg solve.",
       "validation": "Zero means, distinct flux ratios, full rank two and positive solved weights are asserted; one-family rank-one failures are negative controls.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. The finite auxiliary-torus stress realization is distinct from full spatial oscillatory error estimates.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1. The finite auxiliary-torus stress realization is distinct from full spatial oscillatory error estimates.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -2069,8 +2733,22 @@
           "text": "(check \"negative control -- family 1 alone cannot realize a general 2-component target (exact-solve raises, not square)\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "6, 7, 2.2"
+      "literature_review": "Sections 6–7 and 2.2 of the reference construction: two families of pulses with different ratios of angular-momentum flux to axial-momentum flux are combined so that their averaged quadratic velocity products supply both components of the required leading stress, on an auxiliary torus. The program realizes the mechanism exactly on a four-point auxiliary torus, where cos and sin at kπ/2 are integers, and solves for positive in-cone family weights.",
+      "paper_sections": "6, 7, 2.2",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  mean angular-momentum flux, family 1",
+        "^  mean axial-momentum flux,   family 2",
+        "^  flux matrix =",
+        "^  weights \\(w1, w2\\)",
+        "^PASS: the stacked stress solve gives POSITIVE"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_pulse_growth.esk",
@@ -2082,10 +2760,9 @@
       "domain": "Source-selected simple-shear/viscosity parameters, finite sampled time range and zero-shear negative control.",
       "arithmetic": "Exact/rational wavevector and rate checks with AD; RK4/exp comparison uses 1e-3 relative tolerance and one-step peak tolerance.",
       "validation": "Derivative/rate agreement, interior maximum and growth-then-decay are asserted; zero shear removes amplification/crossover.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Finite integration and sampled tails do not by themselves certify every asymptotic statement.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1. Finite integration and sampled tails do not by themselves certify every asymptotic statement.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -2122,8 +2799,28 @@
           "text": "(check \"negative control -- with S = 0 there is no crossover: rate never exceeds 0 on the sampled range\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "Introduction ([9]), 2.2"
+      "literature_review": "The reference construction's Introduction (citing Craik–Criminale [9], exact finite-amplitude waves on affine background flows) and Section 2.2's description of the pulses: the background shear supplies growth, shortening the radial wavelength raises viscous damping, amplification dominates first and damping later. The program makes the Craik–Criminale wavevector law exact for simple shear and bisects the amplification/damping crossover of a representative growth-rate model to an exact rational bracket.",
+      "paper_sections": "Introduction ([9]), 2.2",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        },
+        {
+          "citation": "A. D. D. Craik, W. O. Criminale, \"Evolution of wavelike disturbances in shear flows: a class of exact solutions of the Navier-Stokes equations\", Proc. R. Soc. Lond. A 406 (1986), 13–26 (reference [9] of the construction).",
+          "link": "https://doi.org/10.1098/rspa.1986.0061",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  crossover bracket \\[lo, hi\\]",
+        "^  bracket width",
+        "^  integrated a\\(4\\)",
+        "^  exp\\(P\\(4\\)\\) closed form",
+        "^  numeric peak time",
+        "^  exact crossover \\(bracket mid\\)"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_pulse_stress.esk",
@@ -2135,10 +2832,9 @@
       "domain": "Source-defined two covariance directions and shear-mode trajectory/time grid.",
       "arithmetic": "Exact rational covariance/positivity checks; trajectory and growth comparisons are numerical.",
       "validation": "Zero angular means, nonzero fluxes, transversality, positive solve and interior growth/damping peak checks are asserted.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -2175,8 +2871,28 @@
           "text": "(check \"the amplitude peak follows the wavelength minimum, as the Orr mechanism requires\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "2.2, 3.2 (Figure 4), 3.3 and 7"
+      "literature_review": "Sections 2.2, 3.2, 3.3 and 7 of the reference construction: oscillatory ring pulses have zero angular mean but nonzero averaged momentum fluxes ⟨w_r w_θ⟩, ⟨w_r w_z⟩, and two pulse families with different flux ratios represent the required leading stress T = c₁v₁ + c₂v₂ with c₁, c₂ > 0; each pulse grows by shear amplification and then decays once viscosity wins (the Craik–Criminale / Orr mechanism). The program computes the averages, the 2×2 covariance solve, and one pulse mode's growth and decay.",
+      "paper_sections": "2.2, 3.2 (Figure 4), 3.3 and 7",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        },
+        {
+          "citation": "A. D. D. Craik, W. O. Criminale, \"Evolution of wavelike disturbances in shear flows: a class of exact solutions of the Navier-Stokes equations\", Proc. R. Soc. Lond. A 406 (1986), 13–26 (reference [9] of the construction).",
+          "link": "https://doi.org/10.1098/rspa.1986.0061",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  v1 \\(exact\\)",
+        "^  v2 \\(exact\\)",
+        "^  det \\[v1 v2\\]",
+        "^  weights \\(c1,c2\\) \\(exact\\)",
+        "^  amplification factor",
+        "^  time of maximum"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_residual_ladder.esk",
@@ -2188,10 +2904,9 @@
       "domain": "Three solved rungs; source-selected rational parameters; orders 1–3 vanish while order 4 may remain.",
       "arithmetic": "Exact rational/Taylor coefficient algebra.",
       "validation": "Each cancellation and raised vanishing order are asserted; omission of each rung leaves its coefficient nonzero.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. This scalar correction model is not the full nonlinear PDE iteration.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1. This scalar correction model is not the full nonlinear PDE iteration.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -2228,8 +2943,22 @@
           "text": "(check \"negative control -- the skipped order-3 coefficient equals the pre-rung-3 value exactly\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "9, (9.8), (9.18), Propositions 9.3 and 9.6"
+      "literature_review": "Section 9 of the reference construction, (9.8) and (9.18): the residual exponents climb the ladder σ₀ = 1/5, σ_{j+1} = σ_j + 1/10, with B_j = 1/2 + σ_j and C*_j = 1 + σ_j, each correction cycle (Proposition 9.6) raising the order to which the residual vanishes. The program checks the ladder in exact arithmetic and runs three rungs of a scalar model of the correction cycle, cancelling one Taylor coefficient per rung.",
+      "paper_sections": "9, (9.8), (9.18), Propositions 9.3 and 9.6",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  sigma_0 sigma_1 sigma_2 sigma_3",
+        "^  rung 1 -- solved c1",
+        "^  rung 2 -- solved c2",
+        "^  rung 3 -- solved c3",
+        "^  residual order-4 coefficient after three rungs"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_residual_order_n.esk",
@@ -2241,10 +2970,9 @@
       "domain": "N=4 in the supplied recursion and rational X samples; deliberately perturbed correction orders 0,2,3.",
       "arithmetic": "Exact Taylor-coefficient/rational equality checks.",
       "validation": "Orders below N cancel, the order-N residual remains nonzero generally, extraction routes agree and perturbations reintroduce exactly their order.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Finite truncation does not establish convergence or cancellation to infinitely many orders.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1. Finite truncation does not establish convergence or cancellation to infinitely many orders.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -2281,8 +3009,20 @@
           "text": "(check \"delta = 0 recovers the unperturbed (all lower orders vanish) case\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "5, 5.1, equations (5.1)-(5.6)"
+      "literature_review": "Section 5 of the reference construction, (5.1)–(5.6): with λ_n = 2nh every field coefficient is a formal series in q^{2h}; at each order the coefficients solve a linear system whose operator is the same at every order and whose source comes from lower orders (Proposition 5.3's induction). The program mechanizes that algebraic skeleton on a scalar model: substituting the order-N truncation, orders 0..N−1 of the residual vanish exactly and order N is the background residual beyond leading order.",
+      "paper_sections": "5, 5.1, equations (5.1)-(5.6)",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^PASS: orders 0\\.\\.N-1 of the substituted residual vanish exactly",
+        "^  taylor tower at X = 5/2, N = 4",
+        "^PASS: the background residual beyond order N-1 equals"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_similarity_scales.esk",
@@ -2294,10 +3034,9 @@
       "domain": "τ=1−t, h=0.005=1/200, A=1/2+h, D=1/2−h; source-defined coordinate samples over six decades in τ.",
       "arithmetic": "AD and floating-point fitted/physical quantities; source-specific tolerance comparisons.",
       "validation": "Incompressibility/pressure/coordinate relations and fitted energy/residual exponents are checked on the selected samples.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Fitted or sampled exponent behavior is distinguished from an exact general asymptotic proof.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1. Fitted or sampled exponent behavior is distinguished from an exact general asymptotic proof.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -2334,8 +3073,23 @@
           "text": "(check \"full angular residual, axial viscosity included, is within 2h of -(1+A)\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7))"
+      "literature_review": "Sections 2.1, 3.1 and 4.1 of the reference construction: with τ = 1 − t, A = 1/2 + h, D = 1/2 − h and similarity coordinates τ = q(1 − η²), z = q^D η, X = r²/(2q), the concentrating core has l_r ~ τ^{1/2}, l_z ~ τ^{1/2−h}, sup|u_θ|, sup|u_z| ~ τ^{−1/2−h}, sup|u_r| ~ τ^{−1/2}, and core kinetic energy ~ τ^{1/2−3h}; the background's momentum residual alone diverges like τ^{−(1+A)}, which is why the construction adds oscillatory pulses. The program builds an ansatz of that form and measures the exponents.",
+      "paper_sections": "2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7))",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  l_r  ",
+        "^  l_z  ",
+        "^  sup \\|u_theta\\|",
+        "^Core kinetic energy: exact leading exponent",
+        "^  exact leading exponent -\\(1\\+A\\)",
+        "^  fitted exponents, R_theta\\^\\(0\\)"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_stress_cone.esk",
@@ -2347,10 +3101,9 @@
       "domain": "Source-selected rational profile/radius samples, positive rescalings and relaxed connecting-interval cone cases.",
       "arithmetic": "Exact rational signs/integration and explicit sampled checks.",
       "validation": "Cone equivalence tests, homogeneity, constructed-stress acceptance and nonpositive/transverse-heavy rejection are asserted.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Acceptance on sampled radii must not be rewritten as an unchecked all-radius analytic bound.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1. Acceptance on sampled radii must not be rewritten as an unchecked all-radius analytic bound.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -2387,8 +3140,23 @@
           "text": "(check \"negative control -- a transverse-heavy stress leaves the cone\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "4.3, Lemma 4.5, Appendix C"
+      "literature_review": "Section 4.3 of the reference construction, Lemma 4.5 and (4.20)–(4.23), with Appendix C: the annular stress must lie in the positive span of the two covariance directions; with t_s = −b_s/a, v_s = a(1 + t_s²), P_c, J_c as in (4.20), the admissible cone is P_c > 2, v_s > 2 and v_s < U(P_c, J_c), and Lemma 4.5 replaces the square root in U by the polynomial test P_c > v_s, (v_s − 2)J_c² < 2(P_c − v_s)², with a uniform threshold P_K on compact parameter sets. The program decides the cone by exact rational sign tests and places a constructed stress inside it.",
+      "paper_sections": "4.3, Lemma 4.5, Appendix C",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^  c_K  ",
+        "^  gamma_K",
+        "^  P_K  ",
+        "^  T0 at X = 2",
+        "^  v_s at X = 2",
+        "^PASS: the constructed stress lies in the admissible cone"
+      ]
     },
     {
       "path": "examples/mathematics_navier_stokes_viscosity_scaling.esk",
@@ -2400,10 +3168,9 @@
       "domain": "ν=1/4,1,9/16,25/9,4 with rational square roots; ν=2 as an irrational numerical case.",
       "arithmetic": "Source asserts rational exact equalities for the rational cases; the ν=2 residual check uses 1e-9 tolerance.",
       "validation": "Divergence, residual identity and discrete ν^(5/2) energy/dissipation scaling are checked; omitted velocity/pressure factors fail.",
-      "limitations": "Covers the stated finite residual/scaling model, not the full analytic Navier–Stokes construction or a singularity theorem. Discrete quadrature/scaled-grid identities are not a new continuum integration theorem.",
+      "limitations": "Checks the stated finite model of one step of the reference construction; it does not reproduce the construction's analytic estimates, and nothing here is a machine proof of Theorem 1.1. Discrete quadrature/scaled-grid identities are not a new continuum integration theorem.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_NS_EXAMPLES",
@@ -2440,8 +3207,22 @@
           "text": "(check \"the rescaling leaves the time variable untouched\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem.",
-      "paper_sections": "3 (outline), 10.4 equations (10.22)-(10.23)"
+      "literature_review": "Section 10.4 of the reference construction, (10.22)–(10.23): if (u, p, f) solves the forced equations with viscosity 1, then u_ν(x, t) = √ν u(x/√ν, t), p_ν(x, t) = ν p(x/√ν, t), f_ν(x, t) = √ν f(x/√ν, t) solve them with viscosity ν, with ‖u_ν(t)‖₂² = ν^{5/2}‖u(t)‖₂² and ν‖∇u_ν‖₂² = ν^{5/2}‖∇u‖₂²; this transports the ν = 1 construction to every ν > 0. The program checks the rescaling identity for the full momentum residual, and the energy and dissipation scalings on a scaled grid, on an explicit divergence-free polynomial field, exactly at rational ν with rational square roots.",
+      "paper_sections": "3 (outline), 10.4 equations (10.22)-(10.23)",
+      "references": [
+        {
+          "citation": "OpenAI, \"Finite time blowup for Navier–Stokes\" (2026; the PDF carries no date line, the year is the one the program headers give). Theorem 1.1 constructs, for every viscosity ν > 0, a smooth force compactly supported in space and time and a smooth solution of the forced incompressible equations, starting from rest, whose kinetic energy stays bounded while its velocity becomes unbounded as t ↑ 1.",
+          "link": "https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf",
+          "verification": "checked"
+        }
+      ],
+      "key_output": [
+        "^PASS: residual scaling identity \\(10\\.22\\) holds exactly",
+        "^  R_1\\(u,p\\)",
+        "^  R_4\\(u_4,p_4\\)",
+        "^  ratio of the two",
+        "^  their ratio, exactly nu"
+      ]
     },
     {
       "path": "examples/mathematics_presheaf_topos_internal_logic.esk",
@@ -2456,7 +3237,6 @@
       "limitations": "The complete walking-arrow local-operator enumeration certifies that finite case; broader universal-property statements are restricted to the constructed inputs/cited theory.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -2493,7 +3273,27 @@
           "text": "(check \"Theorem V.1.2 by exhaustion on the walking arrow: the Lawvere-Tierney topologies (4, out of 108 endomorphisms of Omega) are exactly the ones induced by the 4 Grothendieck topologies\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "In a presheaf topos Set^{C^op} the subobject classifier Ω assigns to c the set of sieves on c, exponentials are Y^X(c) = Hom(y(c) × X, Y), Ω is an internal Heyting algebra, and Lawvere–Tierney topologies correspond bijectively to Grothendieck topologies on C (Mac Lane–Moerdijk I.4, I.6, III.5, Theorem V.1.2). The program constructs each on small categories and checks the universal properties by counting both sides.",
+      "references": [
+        {
+          "citation": "S. Mac Lane, I. Moerdijk, Sheaves in Geometry and Logic, Springer (1992).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "P. T. Johnstone, Sketches of an Elephant, Oxford (2002).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "F. W. Lawvere, \"Quantifiers and sheaves\" (1970).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  sizes of Omega\\(c\\)",
+        "^  classifier check",
+        "^  Grothendieck topologies \\(count",
+        "^  walking arrow: all natural endomorphisms of Omega"
+      ]
     },
     {
       "path": "examples/mathematics_sheafification_descent_kan.esk",
@@ -2508,7 +3308,6 @@
       "limitations": "The exhaustive site is finite; selected adjunction counts must not be promoted to a proof for arbitrary infinite sites or all presheaves.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -2545,7 +3344,34 @@
           "text": "(check \"a -| i: Hom(F, G) = Hom(aF, G) for the sheaf G = A^{pi_0}, for the constant presheaf and for the non-separated one\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Sheafification a = (−)⁺⁺ is left adjoint to the inclusion of sheaves (Mac Lane–Moerdijk Theorem III.5.1), and the sheaf condition for a covering sieve says that F(U) is the limit of F over the sieve — equivalently, the right Kan extension of F restricted to the sieve (Johnstone C2.2; Lurie 6.2.2). The program verifies the Grothendieck axioms for the canonical topology on two finite sites, counts matching families, computes the plus construction twice, and checks the reflector's universal property and the Kan-extension form of descent by counting.",
+      "references": [
+        {
+          "citation": "S. Mac Lane, I. Moerdijk, Sheaves in Geometry and Logic, Springer (1992).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "P. T. Johnstone, Sketches of an Elephant, Oxford (2002), C2.2.",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Lurie, Higher Topos Theory, Annals of Mathematics Studies 170, Princeton University Press (2009).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. C. McCord, \"Singular homology groups and homotopy groups of finite topological spaces\", Duke Math. J. 33 (1966).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. A. Barmak, Algebraic Topology of Finite Topological Spaces and Applications, Lecture Notes in Mathematics 2032, Springer (2011).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  pseudocircle: matching families",
+        "^  pseudocircle: sizes of const",
+        "^  universal property counts"
+      ]
     },
     {
       "path": "examples/mathematics_stacks_nonabelian_descent.esk",
@@ -2560,7 +3386,6 @@
       "limitations": "Finite torsor groupoids are calculated rather than a general stack theory solver; the underlying finite model identifications use the cited topology.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -2597,7 +3422,43 @@
           "text": "(check \"every groupoid cardinality in the program is an exact rational equal to |objects|/|G|\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "G-torsors on a space are classified by nonabelian H¹, i.e. Hom(π₁, G)/G with automorphisms the centralizers (Giraud), and the torsor stack satisfies descent along covers whose intersections are contractible (Hollander; Lurie 6.5.3–6.5.4). The program computes the groupoid of G-torsors on finite-space models of the circle, the torus and the Klein bottle directly as Fun(X, BG), checks Čech descent on covers by maximal opens, and shows that the Klein bottle separates D₄ from Q₈ (20 against 16 torsor classes) where the torus does not.",
+      "references": [
+        {
+          "citation": "J. Giraud, Cohomologie non abélienne, Grundlehren 179, Springer (1971).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "S. Hollander, \"A homotopy theory for stacks\", Israel J. Math. 163 (2008).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. F. Jardine, Local Homotopy Theory, Springer (2015), Ch. 9.",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Lurie, Higher Topos Theory, Annals of Mathematics Studies 170, Princeton University Press (2009).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. C. McCord, \"Singular homology groups and homotopy groups of finite topological spaces\", Duke Math. J. 33 (1966).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. A. Barmak, Algebraic Topology of Finite Topological Spaces and Applications, Lecture Notes in Mathematics 2032, Springer (2011).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J.-P. Serre, Trees, I.5.",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  pseudocircle, Fun\\(S, BG\\)",
+        "^  twisted product with the flip",
+        "^PASS: Z/3 separates the torus",
+        "^PASS: the Klein bottle separates D_4 from Q_8"
+      ]
     },
     {
       "path": "examples/mathematics_turaev_viro_cyclotomic.esk",
@@ -2612,7 +3473,6 @@
       "limitations": "Finite comparisons cover only the listed triangulations; Pachner-move invariance and normalization follow the cited theory.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -2649,7 +3509,31 @@
           "text": "(check \"TV_5 separates L(5,1) from L(5,2) (1/2 against 0) although TV_3 and TV_4 do not; TV_5(RP^3) = 0\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Turaev and Viro (1992) define 3-manifold invariants as state sums of quantum 6j-symbols; with Kauffman–Lins recoupling data at A = ζ_{4r} the state sum is TV_r(M) = η^V Σ ∏Δ ∏θ⁻¹ ∏Tet. TV_r is the squared norm of the Reshetikhin–Turaev invariant (Roberts 1995), TV_r(T³) counts simple objects of the Drinfeld centre ((r−1)² for SU(2)_{r−2}), and at level one (r = 3) the theory is the double semion, the Z/2 Dijkgraaf–Witten theory with the nontrivial cocycle. The program evaluates the state sums exactly in cyclotomic fields.",
+      "references": [
+        {
+          "citation": "V. G. Turaev, O. Y. Viro, \"State sum invariants of 3-manifolds and quantum 6j-symbols\", Topology 31 (1992).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "L. H. Kauffman, S. L. Lins, Temperley-Lieb Recoupling Theory and Invariants of 3-Manifolds, Annals of Mathematics Studies 134 (1994).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Roberts, \"Skein theory and Turaev-Viro invariants\", Topology 34 (1995).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. Levin, X.-G. Wen (2005), string-net models (the double semion).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  TV_3\\(M\\)/TV_3\\(S\\^3\\)",
+        "^  TV_3, TV_4, TV_5 of T\\^3",
+        "^PASS: TV_5 separates L\\(5,1\\) from L\\(5,2\\)",
+        "^  TV_4 separates L\\(5,1\\) from L\\(5,2\\)\\?"
+      ]
     },
     {
       "path": "examples/mathematics_two_descent_cech_nerves.esk",
@@ -2664,7 +3548,6 @@
       "limitations": "The intersection-component nerve used here is not the full topological Cech simplicial object in every context; its contractible-component hypotheses and finite target scope are explicit.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -2701,7 +3584,43 @@
           "text": "(check \"descent failure is invisible to the 1-type BZ/2 (1/2 on both sides, pi_1 S^2 = 0) and visible to K(Z/2,2) (nerve 2, space 4) and to the split 2-type (1 against 2)\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Descent for ∞-sheaves along Čech nerves and hypercovers (Lurie 6.5.3–6.5.4; Dugger–Hollander–Isaksen 2004) and the nerve theorem (Björner; McCord): when every component of every intersection of a cover is contractible, the Čech nerve is weakly equivalent to the space, so mapping spaces into a 2-group's classifying space have equal homotopy cardinality on both. The program computes these cardinalities (Faria Martins–Porter) on finite-space covers and exhibits a cover of the pseudo-2-sphere where descent fails for 2-types but not for 1-types.",
+      "references": [
+        {
+          "citation": "J. Lurie, Higher Topos Theory, Annals of Mathematics Studies 170, Princeton University Press (2009).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "D. Dugger, S. Hollander, D. C. Isaksen, \"Hypercovers and simplicial presheaves\", Math. Proc. Cambridge Philos. Soc. 136 (2004).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. F. Jardine, Local Homotopy Theory, Springer (2015), Ch. 9.",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Faria Martins, T. Porter, \"On Yetter's invariant and an extension of the Dijkgraaf-Witten invariant to categorical groups\", Theory Appl. Categ. 18 (2007).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Björner, \"Nerves, fibers and homotopy groups\", J. Combin. Theory Ser. A 102 (2003).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. C. McCord, \"Singular homology groups and homotopy groups of finite topological spaces\", Duke Math. J. 33 (1966).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. A. Barmak, Algebraic Topology of Finite Topological Spaces and Applications, Lecture Notes in Mathematics 2032, Springer (2011).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  T\\^3: nine Yetter values",
+        "^PASS: mod-2 2-groups do not separate the torus model",
+        "^  pseudo-2-sphere: Map\\(C\\(U\\), BG\\)",
+        "^PASS: descent failure is invisible to the 1-type"
+      ]
     },
     {
       "path": "examples/mathematics_two_groups_postnikov.esk",
@@ -2716,7 +3635,6 @@
       "limitations": "Finite-degree computations distinguish these presentations; equivalence of entire 2-types invokes the cited crossed-module/Postnikov theory.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -2753,7 +3671,35 @@
           "text": "(check \"negative control -- degree 1 cannot separate the 2-types: dim H^1 = 1 for all of them\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Strict 2-groups are crossed modules (Whitehead 1949); the classifying space of a crossed module d: M → N is a 2-type with π₁ = coker d and π₂ = ker d (Brown–Higgins–Sivera §2.5), classified by π₁, π₂ and a k-invariant in H³(π₁; π₂) (Baez–Lauda §8), with Z/4 → Z/4 (sign action) realizing the nontrivial class for π₁ = π₂ = Z/2. The program enumerates the nerves (Duskin's description) and shows that cohomology in degree 2 separates 2-types with equal homotopy groups.",
+      "references": [
+        {
+          "citation": "J. H. C. Whitehead, \"Combinatorial homotopy II\", Bull. Amer. Math. Soc. 55 (1949).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "R. Brown, P. J. Higgins, R. Sivera, Nonabelian Algebraic Topology, EMS (2011).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Duskin, \"Simplicial matrices and the nerves of weak n-categories I\", Theory Appl. Categ. 9 (2002).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. C. Baez, A. D. Lauda, \"Higher-dimensional algebra V: 2-groups\", Theory Appl. Categ. 12 (2004).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. P. May, Simplicial Objects in Algebraic Topology (1967), §23.",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  k-invariant values on the eight triples",
+        "^  dim H\\^n\\(-; Z/2\\)",
+        "^  H_n\\(-; Z\\), n = 0\\.\\.2: split",
+        "^PASS: three 2-types with pi_1 = pi_2 = Z/2"
+      ]
     },
     {
       "path": "examples/mathematics_yetter_three_torus_finite_model.esk",
@@ -2765,10 +3711,9 @@
       "domain": "64 vertices/448 edges/768 triangles/384 tetrahedra; nine supplied crossed modules; 8 or 27 holonomies.",
       "arithmetic": "Exact integer/modular Smith forms and rational normalizations, including denominator factors 2³⁸⁴ or 3³⁸⁴.",
       "validation": "The nine stated invariants and two routes agree exactly; source checks twelve reused Smith forms and twisted-coefficient orders.",
-      "limitations": "Avoids impossible brute-force edge enumeration using a source-derived gauge reduction; this catalogue claims neither runtime measurements nor new executions.",
+      "limitations": "Avoids impossible brute-force edge enumeration using a source-derived gauge reduction; the reduction is checked against full enumeration in the sibling lens-space program, not here. The measured outcome below records the run time at the release SHA; the program's own wall-time and peak-memory report goes to the compiler measurement stream, not to this catalogue.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -2805,7 +3750,36 @@
           "text": "(check \"twelve Smith normal forms serve the whole program: three untwisted coboundaries, delta^2 for the seven nontrivial characters, and delta^0, delta^1 for one of them (the first version needed 129)\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Yetter's 2-group invariants are topological, so on any triangulation of T³ they must equal the values computed on the one-vertex six-tetrahedron triangulation in the sibling program. The program recomputes nine of them on the 384-tetrahedron order complex of the 64-point finite model of T³ (McCord), where brute-force enumeration (|N|^385 labellings) is out of reach and the 1-gauge reduction is used, and checks them against the Postnikov fibration formula.",
+      "references": [
+        {
+          "citation": "D. N. Yetter, \"TQFT's from homotopy 2-types\", J. Knot Theory Ramifications 2 (1993).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "T. Porter, \"Topological quantum field theories from homotopy n-types\", J. London Math. Soc. 58 (1998).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Faria Martins, T. Porter, \"On Yetter's invariant and an extension of the Dijkgraaf-Witten invariant to categorical groups\", Theory Appl. Categ. 18 (2007).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. C. McCord, \"Singular homology groups and homotopy groups of finite topological spaces\", Duke Math. J. 33 (1966).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. A. Barmak, Algebraic Topology of Finite Topological Spaces and Applications, Lecture Notes in Mathematics 2032, Springer (2011).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  \\(V, E, F, T\\) =",
+        "^  orders of H\\^\\*\\(T\\^3 model; Z/2\\) and \\(Z/3\\)",
+        "^  Yetter on the 64-point model",
+        "^  fibration formula =",
+        "^  Smith normal forms computed"
+      ]
     },
     {
       "path": "examples/mathematics_yetter_two_group_invariants.esk",
@@ -2820,7 +3794,6 @@
       "limitations": "Counts apply to these finite complexes/modules; general topological invariance and mapping-space interpretations use cited theorems.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [
         {
           "family": "ESHKOL_IPM_EXAMPLES",
@@ -2857,7 +3830,39 @@
           "text": "(check \"Z/3 -> Z/2 with the sign action: (3/2, 2, 5); RP^3 is 3/2 + 1/2 from the untwisted and the twisted sector, T^3 is 3/2 + 7/2\""
         }
       ],
-      "literature_review": "Source citations retained; this entry describes the implemented calculation, not an independent review of every cited theorem."
+      "literature_review": "Yetter (1993) defines a 3-manifold invariant from a finite 2-group as a normalized count of simplicial maps into the nerve of the 2-group; Faria Martins and Porter (2007) identify it with the homotopy cardinality of the mapping space Map(X, BG), computable through the Postnikov fibration K(π₂, 2) → BG → Bπ₁ with the k-invariant as an obstruction and local coefficients twisted by π₁. The program computes both routes for six crossed modules on S³, RP³ and T³.",
+      "references": [
+        {
+          "citation": "D. N. Yetter, \"TQFT's from homotopy 2-types\", J. Knot Theory Ramifications 2 (1993).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "T. Porter, \"Topological quantum field theories from homotopy n-types\", J. London Math. Soc. 58 (1998).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. Faria Martins, T. Porter, \"On Yetter's invariant and an extension of the Dijkgraaf-Witten invariant to categorical groups\", Theory Appl. Categ. 18 (2007).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. C. Baez, J. Dolan, \"From finite sets to Feynman diagrams\" (2001).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. C. Baez, A. D. Lauda, \"Higher-dimensional algebra V: 2-groups\", Theory Appl. Categ. 12 (2004).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "A. Hatcher, Algebraic Topology, Cambridge University Press (2002).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^  Yetter state sums, rows",
+        "^  fibration formula, same layout",
+        "^PASS: Z\\(S\\^3\\) = \\|pi_2\\| / \\|pi_1\\|",
+        "^PASS: the k-invariant is detected on RP\\^3"
+      ]
     },
     {
       "path": "examples/milli_mag_bohrification.esk",
@@ -2872,7 +3877,6 @@
       "limitations": "The source explicitly calls this an executable sketch; it does not construct a physical magnetic model or a general operator-algebra/K-homology calculation.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -2900,7 +3904,11 @@
           "text": "(check \"milli-magnetic K-homology pairing vanishes on generators\""
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^PASS: "
+      ]
     },
     {
       "path": "examples/monte_carlo_pi.esk",
@@ -2915,7 +3923,6 @@
       "limitations": "Sampling error and host timing vary; this catalogue records no observed throughput or cross-platform performance result.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -2943,7 +3950,13 @@
           "text": "(display \" samples/sec\") (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^Total samples",
+        "^π estimate",
+        "^Absolute error"
+      ]
     },
     {
       "path": "examples/neural_xor.esk",
@@ -2958,7 +3971,6 @@
       "limitations": "A fixed small learning demonstration; printed convergence expectations are not new measured results or guarantees for arbitrary initialization/data.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -2986,7 +3998,12 @@
           "text": "(display \"graph object, no Python.\") (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^Initial loss",
+        "^  XOR\\("
+      ]
     },
     {
       "path": "examples/newton_method.esk",
@@ -3001,7 +4018,6 @@
       "limitations": "Convergence depends on the initial point and derivative; reaching an iteration cap is not a mathematical convergence certificate.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -3029,7 +4045,11 @@
           "text": "(display \"the compiler differentiated each function inline.\")"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "root ≈"
+      ]
     },
     {
       "path": "examples/parallel.esk",
@@ -3044,7 +4064,6 @@
       "limitations": "No throughput or determinism benchmark is implemented.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -3064,7 +4083,11 @@
           "text": "(display \"Worker threads: \") (display (thread-pool-info)) (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^Parallel results"
+      ]
     },
     {
       "path": "examples/qng_vqe.esk",
@@ -3079,7 +4102,6 @@
       "limitations": "A printed/introductory expectation of fewer iterations is not a measured result in this catalogue; regularization and the selected ansatz matter.",
       "prerequisites": "Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -3107,7 +4129,13 @@
           "text": "                       (display (vqe-energy ham tq)) (display \"   \") (display (vqe-energy ham tv)) (newline))"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^final QNG",
+        "^final vanilla",
+        "^exact:"
+      ]
     },
     {
       "path": "examples/streaming_stats.esk",
@@ -3122,7 +4150,6 @@
       "limitations": "Despite the header mentioning percentiles, the body has no percentile estimator. M₂/n is population variance, not the unbiased M₂/(n−1) estimate.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -3150,7 +4177,15 @@
           "text": "(display \"vector.  The full 200,000-sample stream was never stored.\") (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^Count:",
+        "^Mean:",
+        "^Variance:",
+        "^Min:",
+        "^Max:"
+      ]
     },
     {
       "path": "examples/symbolic_diff.esk",
@@ -3165,7 +4200,6 @@
       "limitations": "The displayed statement does not itself verify machine-precision agreement or establish universal memory/runtime costs for AD modes.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -3193,7 +4227,13 @@
           "text": "(display \"neural-network-shaped problems (many inputs, scalar loss).\") (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^Function:",
+        "^  (0|1|1\\.5|2) ",
+        "^All three modes agree"
+      ]
     },
     {
       "path": "examples/tensors.esk",
@@ -3208,7 +4248,6 @@
       "limitations": "The available backend controls dispatch; this program does not prove a GPU was used or benchmark SIMD/BLAS/GPU performance.",
       "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -3236,7 +4275,15 @@
           "text": "(display \"A + A = \") (display D) (newline)"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^A \\(2x3\\) @ B",
+        "^sum\\(A\\)",
+        "^mean\\(A\\)",
+        "^max\\(A\\)",
+        "^A \\+ A"
+      ]
     },
     {
       "path": "examples/vqe_h2.esk",
@@ -3251,7 +4298,6 @@
       "limitations": "The calculation depends on the supplied ansatz/backend and is not an experimental molecular result or convergence guarantee.",
       "prerequisites": "Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -3279,7 +4325,12 @@
           "text": "                       (display \"   E = \") (display (vqe-energy ham p)) (display \" Ha\") (newline))"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^Final VQE energy",
+        "^Exact ground state"
+      ]
     },
     {
       "path": "examples/wgsl_artifact/generate.esk",
@@ -3294,7 +4345,6 @@
       "limitations": "Nested generator is outside examples/*.esk discovery. Sampled AD errors, analytic remainder/conversion bounds and recorded-adapter GPU evidence are distinct; no new browser/GPU execution is claimed.",
       "prerequisites": "Built eshkol-run/stdlib; use examples/wgsl_artifact/build_artifact.py. The optional browser demo requires its existing Node/browser/WebGPU setup, not a new qualification hardware requirement.",
       "review_status": "source-inspected",
-      "execution_evidence": "No execution performed for this catalogue; checks and registrations describe source intent.",
       "registrations": [],
       "source_anchors": [
         {
@@ -3322,7 +4372,12 @@
           "text": "(display (if (and (< err-value 1e-9) (< err-first 1e-8) (< err-second 1e-6))"
         }
       ],
-      "literature_review": "The linked source is the reference for the implemented demonstration."
+      "literature_review": "The linked source is the reference for the implemented demonstration.",
+      "references": [],
+      "key_output": [
+        "^// ad-grid-max-errors",
+        "^AD_MODEL_PASS"
+      ]
     }
   ],
   "runner_contract": {
