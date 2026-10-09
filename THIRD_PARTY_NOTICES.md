@@ -42,3 +42,17 @@ by Eshkol.
 SQLite has been dedicated to the public domain by its authors. The staged
 SQLite notice records the public-domain declaration and the canonical upstream
 license page: <https://www.sqlite.org/copyright.html>.
+
+## Source-tree and opt-in build components
+
+These components are either vendored as source in this repository or linked
+only when a build turns on the matching CMake option. They are listed so the
+whole dependency surface is visible in one place.
+
+| Component | Where it enters the build | License |
+|---|---|---|
+| LLVM 21 | Compiler infrastructure for `eshkol-run`, `eshkol-repl` and the JIT; required major version pinned by `ESHKOL_REQUIRED_LLVM_MAJOR` in `cmake/LLVMToolchain.cmake` | Apache-2.0 WITH LLVM-exception |
+| OpenXLA PJRT C API header | Vendored at `deps/pjrt/pjrt_c_api.h`; compiled when `ESHKOL_XLA_ENABLED=ON` (the `*-xla` release packages) | Apache-2.0 (header notice retained in the file) |
+| StableHLO and MLIR | Linked only when `ESHKOL_XLA_ENABLED=ON` and `STABLEHLO_ROOT` points at a StableHLO build | Apache-2.0 WITH LLVM-exception |
+| Moonlab | Fetched only when `ESHKOL_QUANTUM_ENABLED=ON` (default `OFF`; repository set by `ESHKOL_MOONLAB_REPO`) | MIT |
+| TensorCore | Found with `find_package(tensorcore)` only when `ESHKOL_TENSORCORE_ENABLED=ON` (default `OFF`) | MIT |

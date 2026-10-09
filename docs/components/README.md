@@ -9,7 +9,7 @@ For detailed component documentation, see:
 **[Compiler Architecture](../breakdown/COMPILER_ARCHITECTURE.md)** - Complete pipeline documentation:
 - Frontend: Macro expansion, parsing, type checking
 - Backend: LLVM IR generation, optimization, native codegen
-- Modular architecture: 21 specialized codegen files with callback pattern
+- Modular architecture: 36 specialized `lib/backend/*_codegen.cpp` modules around `llvm_codegen.cpp`, with the callback pattern
 
 ## Implementation Components
 
@@ -17,7 +17,7 @@ For detailed component documentation, see:
 
 **Parser** - [`lib/frontend/parser.cpp`](../../lib/frontend/parser.cpp)
 - S-expression parsing (explicit continuation stack; stack use independent of nesting depth)
-- AST construction with 93 operators
+- AST construction over the `eshkol_op_t` operator set (113 members in `inc/eshkol/eshkol.h`)
 - Line/column tracking for error messages
 
 **Macro Expander** - [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp)
@@ -34,7 +34,7 @@ For detailed component documentation, see:
 
 **Type Structures** - [`lib/types/hott_types.cpp`](../../lib/types/hott_types.cpp)
 - Type expression manipulation
-- 35+ builtin types
+- 51 `BuiltinTypes` ids in `inc/eshkol/types/hott_types.h`, including the universes
 
 **Dependent Types** - [`lib/types/dependent.cpp`](../../lib/types/dependent.cpp)
 - Compile-time value tracking
@@ -44,7 +44,9 @@ For detailed component documentation, see:
 
 **Main Codegen** - [`lib/backend/llvm_codegen.cpp`](../../lib/backend/llvm_codegen.cpp)
 - AST → LLVM IR translation
-- Orchestrates 21 specialized modules
+- Orchestrates the specialized modules below (the tensor surface is split
+  further into `tensor_*_codegen.cpp` files: activation, arith, conv, creation,
+  dataloader, extras, linalg, loss, reduce, shape, training, transformer)
 
 **Specialized Modules**:
 - Arithmetic: [`arithmetic_codegen.cpp`](../../lib/backend/arithmetic_codegen.cpp)
@@ -66,7 +68,11 @@ For detailed component documentation, see:
 - Memory: [`memory_codegen.cpp`](../../lib/backend/memory_codegen.cpp)
 - Complex numbers: [`complex_codegen.cpp`](../../lib/backend/complex_codegen.cpp)
 - Parallel: [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp)
-- Tensor backward: [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp)
+- Tensor backward: [`tensor_backward.cpp`](../../lib/backend/tensor_backward.cpp), bridge rules in [`lib/bridge/tensor_backward.cpp`](../../lib/bridge/tensor_backward.cpp)
+- Logic/workspace builtins: [`logic_workspace_codegen.cpp`](../../lib/backend/logic_workspace_codegen.cpp)
+- Builtin factory: [`builtin_factory_codegen.cpp`](../../lib/backend/builtin_factory_codegen.cpp)
+- Module init and REPL symbol resolution: [`module_init_codegen.cpp`](../../lib/backend/module_init_codegen.cpp), [`repl_resolution_codegen.cpp`](../../lib/backend/repl_resolution_codegen.cpp)
+- TensorCore adapter (opt-in): [`tensorcore_codegen.cpp`](../../lib/backend/tensorcore_codegen.cpp)
 
 ### v1.1 Runtime Components
 

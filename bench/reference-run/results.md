@@ -1,5 +1,7 @@
 # Eshkol public benchmark results
 
+Measured at v1.3.4-evolve.
+
 Mode: FULL measurement run  
 Started: 2026-08-25T15:41:40.060976+00:00  
 Finished: 2026-08-25T15:47:08.267631+00:00
@@ -7,9 +9,9 @@ Finished: 2026-08-25T15:47:08.267631+00:00
 ## Environment
 
 - OS: Darwin 15.1 (kernel 24.1.0)
-- CPU: Apple M2 Ultra (24 physical / 24 logical cores)
-- GPU: Apple M2 Ultra
-- Memory: 192 GiB
+- CPU: Apple silicon, arm64 (24 physical / 24 logical cores)
+- GPU: integrated Apple GPU (Metal)
+- Memory: unified memory
 - Compiler: Homebrew clang version 21.1.7
 - LLVM: 21.1.7
 - BLAS: Apple Accelerate (vecLib/AMX)

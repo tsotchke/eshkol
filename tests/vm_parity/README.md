@@ -58,13 +58,20 @@ Seeded 2026-07-03 from the live extraction, hand-verified with probe runs on
 `SURFACE_BASELINE.tsv` ratchet: its historical 323 names now produce zero
 native-resolved/VM-missing divergences.
 
+At v1.3.6-evolve the stage-1 audit reports a codegen surface of 946 symbols
+(834 builtins + 112 ops), a VM surface of 1,636 names, and 962 manifest rows:
+622 `vm-supported`, 45 `native-only-justified`, 295 `gap`; 39 further symbols
+are on both surfaces and need no row. The audit also lists, as warnings, rows
+whose symbol has left both the codegen surface and the Scheme stdlib (the
+retired `dnc-*`/`sdnc-*` builtins among them).
+
 ## The differential gate
 
 `scripts/run_vm_parity.sh` (uses `BUILD_DIR`, default `build/`; needs
 `eshkol-run`, `stdlib`, `eshkol-vm-standalone-test`):
 
 * **stage 1** — the surface audit above;
-* **stage 2** — runs every program in `corpus/` (57 programs inside the VM's
+* **stage 2** — runs every program in `corpus/` (180 programs at v1.3.6-evolve, inside the VM's
   *verified* subset: arithmetic, floats, comparisons, recursion, TCO,
   closures + `set!`, let-family, named let, higher-order functions, lists,
   strings, `make-vector` vectors, `cond`/`case`/`when`/`unless`, flat `do`,
@@ -114,30 +121,39 @@ nothing past the fatal form (each probe ends with a `MUST-NOT-PRINT`
 sentinel). This is the fail-open ratchet: a fatal VM error may never again look
 like a successful run to a shell or to CI.
 
-## found/ — verified divergences (in-subset programs, wrong answers)
+## found/ — verified divergences (in-subset programs, differing answers)
 
 Every file is a minimal repro with native-vs-VM expected output in its
-header. Filed while building this gate, 2026-07:
+header. At v1.3.6-evolve one divergence remains filed here, alongside two `CONTROL`
+fixtures:
 
 | repro | divergence |
 |---|---|
-| `display_newline_per_call.esk` | display appends a newline per call |
-| `char_type_collapsed.esk` | chars display as integers |
-| `ad_gradient_wrong.esk` | `gradient`/`jacobian`/`hessian` silently wrong |
-| `logic_walk_unresolved.esk` | `walk` does not resolve bindings |
-| `float_display_1e10.esk` | large-float format `1e+10` vs `10000000000` |
-| `map_two_lists_eskb_route.esk` | multi-list `map` correct on vm-src, drops lists on the ESKB route (stale prelude cache) |
-| `consecutive_do_state_leak.esk` | consecutive top-level `do` loops corrupt each other |
-| `define_after_do_corrupted.esk` | a top-level `do` corrupts later top-level defines |
-| `do_composition_broken.esk` | nested `do` loses iterations; `do`+`when` spins forever |
-| `when_tail_call_no_tco.esk` | tail calls through `when` bodies are not TCO'd |
-| `bignum_exact_rational.esk` | historical exact bignum-rational limitation; superseded by the bignum-capable `inexact->exact` path |
-| `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |
-| `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
-| `error_object_irritants_roundtrip.esk` | error-object-irritants preserves ordered values, empty lists, first-class calls, and re-raise |
+| `display_newline_per_call.esk` | display appends a newline per call (the newline normalization above masks exactly this) |
+| `vm_tail_arity_ok.esk` | `CONTROL`: mutual tail calls between procedures of different arity are O(1) on the VM |
+| `vm_tail_indirect_ok.esk` | `CONTROL`: an indirect tail call through a procedure parameter is O(1) on the VM |
 
-Divergences where **native is the wrong side** (filed rather than "fixed" in
-the VM to match a native bug; native codegen is not VM-owned):
+The rest of the set filed while building this gate in 2026-07 has since
+converged, and each repro moved out of `found/`:
+
+| repro | divergence when filed | where it lives now |
+|---|---|---|
+| `char_type_collapsed.esk` | chars displayed as integers | `resolved/` |
+| `ad_gradient_wrong.esk` | `gradient`/`jacobian`/`hessian` disagreed with native | `resolved/` |
+| `logic_walk_unresolved.esk` | `walk` did not resolve bindings | retired; the logic-variable contract is asserted by value in `tests/logic/` |
+| `float_display_1e10.esk` | large-float format `1e+10` vs `10000000000` | `resolved/` |
+| `map_two_lists_eskb_route.esk` | multi-list `map` dropped lists on the ESKB route | `resolved/` |
+| `consecutive_do_state_leak.esk` | consecutive top-level `do` loops interfered | `resolved/` |
+| `define_after_do_corrupted.esk` | a top-level `do` disturbed later top-level defines | `resolved/` |
+| `do_composition_broken.esk` | nested `do` lost iterations | `resolved/` |
+| `when_tail_call_no_tco.esk` | tail calls through `when` bodies were not TCO'd | `resolved/` |
+| `bignum_exact_rational.esk` | exact bignum-rational conversion | `corpus/63_bignum_exact_rational.esk` |
+| `internal_define_then_body_form.esk` | internal `define` followed by a body form lost its slot | `corpus/73_internal_define_then_body_form.esk` |
+| `sqrt_exact_negative.esk` | `(sqrt -4)` returned `+nan.0` rather than the complex `+2i` | `resolved/` |
+| `error_object_irritants_roundtrip.esk` | `error-object-irritants` ordering, empty lists and re-raise | `corpus/error_object_irritants_roundtrip.esk` |
+
+Divergences where **native is the side that departs from the specified result**
+(filed rather than mirrored in the VM; native codegen is not VM-owned):
 
 | repro | divergence |
 |---|---|
@@ -148,10 +164,10 @@ in the VM, move its repro into `corpus/` and flip the manifest row to
 `vm-supported` — the gate then guards the fix forever. The mirror rule holds
 for the native side: when native is repaired, the repro is **promoted out of
 `found/`** into `corpus/` in the same change, so the table above never claims
-a defect the compiler no longer has. Retiring the file is part of the fix, not
+a divergence the compiler no longer has. Retiring the file is part of the fix, not
 follow-up work — a `found/` entry asserting a divergence that no longer
 reproduces is worse than no entry at all, because it tells the next reader to
-expect a bug that is gone.
+expect a divergence that is gone.
 
 Retired this way so far — `bignum_div_inexact_zero_native.esk` →
 `corpus/53_bignum_inexact_zero_division.esk`, `do_set_param_native.esk` →
@@ -173,10 +189,10 @@ and VM. A file whose outputs now agree is reported as stale and fails the
 gate until it is moved to `resolved/` with its measured result, or promoted
 into `corpus/` when it is now part of the supported parity contract. The
 recheck is deliberately separate from the corpus baseline so a filed claim
-cannot silently become either a false defect or an untracked regression.
+cannot silently become either an outdated divergence claim or an untracked regression.
 Control fixtures are marked `CONTROL` in their header and remain in `found/`
-when they document an intentionally one-sided or non-defect behavior; the
-gate reruns them but does not treat them as stale defects.
+when they document an intentionally one-sided behaviour that is not a
+divergence; the gate reruns them but does not treat them as outdated entries.
 
 ## Regenerating
 

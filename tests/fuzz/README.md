@@ -10,14 +10,14 @@ Three kinds of harness live here:
   libFuzzer, no coverage-guided mutation, any compiler. See
   `reader_fuzz_driver.cpp`'s header comment and
   `scripts/run_reader_fuzz.sh`.
-- **libFuzzer drivers** (`fuzz_parser`, and TODOs below) — standalone
+- **libFuzzer drivers** (`fuzz_parser`, and the planned harnesses below) — standalone
   libFuzzer binaries that exercise one parser/loader/validator in a
   tight loop under ASan+UBSan instrumentation, coverage-guided. Clang
   only.
 - **`eskm_model_fuzz_probe`** — a small out-of-process consumer for the
   public ESKM model/tensor loaders. `scripts/run_eskm_model_fuzz.py`
   generates grammar-aware mutations, checks exact materialized-value
-  digests, and classifies rejection, crash, timeout, or oracle drift.
+  digests, and classifies rejection, fatal signal, timeout, or oracle drift.
 
 ## Build
 
@@ -78,8 +78,10 @@ python3 scripts/run_eskm_model_fuzz.py --replay 37 --seed 0x5eed5eed \
 
 A successful ESKM campaign refreshes
 `scripts/icc_traces/eskm_model_fuzz.jsonl` with the
-`eshkol_smoke/eskm_model_fuzz_smoke=PASS` event consumed by the high-severity
-v1.3.5 release-readiness criterion. A failed campaign records `FAIL`; a run that
+`eshkol_smoke/eskm_model_fuzz_smoke=PASS` event consumed by a high-severity
+criterion of the `v1.3.5-evolve` target in `.icc/completion-oracles.yaml`. With
+`-DESHKOL_ENABLE_FUZZ=ON` the same smoke run is also the CTest entry
+`eskm_model_fuzz_smoke` (labels `fuzz;model-io;security`). A failed campaign records `FAIL`; a run that
 cannot start leaves no matching event. Use `--trace-file PATH` to redirect the
 event during isolated testing. Replay, reduced-count, uncapped sanitizer, and
 harness-self-test-free runs never publish release evidence.
@@ -87,7 +89,7 @@ harness-self-test-free runs never publish release evidence.
 Or invoke the binary directly once built:
 
 ```
-./build-fuzz/tests/fuzz/reader_fuzz --full --artifact-dir /tmp/reader-fuzz-artifacts
+./build-fuzz/tests/fuzz/reader_fuzz --full --artifact-dir build-fuzz/reader-fuzz-artifacts
 ```
 
 Every `reader_fuzz` case runs in a forked child with `RLIMIT_CORE=0`, a bounded
@@ -160,5 +162,5 @@ Current harnesses:
 | `reader_fuzz` | `eshkol_read_sexpr` (hosted S-expression reader / `(read)`) | landed |
 | `fuzz_parser` | `eshkol_parse_next_ast_from_stream` (frontend source parser) | landed |
 | `eskm_model_fuzz_probe` | public ESKM model/tensor checkpoint loaders | landed |
-| `fuzz_bitcode` | stdlib.bc loader | TODO |
-| `fuzz_json` | core.json reader | TODO |
+| `fuzz_bitcode` | stdlib.bc loader | Planned |
+| `fuzz_json` | core.json reader | Planned |

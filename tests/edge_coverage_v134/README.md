@@ -31,7 +31,7 @@ against, or asserted as a metamorphic identity.
 
 | Family (file prefix) | Surface | Axes | Execution axes |
 |---|---|---|---|
-| `nursery_` | nursery iter-scope, mutating define-loops / named-let ticks (ESH-0214e) | 6 barrier channels, escape-set size {1,4,16,64}, nested-loop depth 1..N (P6b) | JIT, AOT-O0, AOT-O2 |
+| `nursery_` | nursery iter-scope, mutating define-loops / named-let ticks | 6 barrier channels, escape-set size {1,4,16,64}, nested-loop depth 1..N (P6b) | JIT, AOT-O0, AOT-O2 |
 | `parallel_` | `parallel-map` / `parallel-execute` capturing closures returning collections (#331) | n at pool threshold {1,4,15,16,17,64,500}, closure shapes, scope-op-heavy workers, nesting depth 1..N (P6f) | JIT, AOT |
 | `gradient_` | exact gradient through a callable parameter + curried form (#330) | arity 1..5, list vs vector point, non-polynomial composition, in-loop repetition, composition depth 1..N (P6a) | JIT, AOT |
 | `i128_` | native 128-bit integer (#314) | boundary constructors, wraparound at ±2^127, conversion edges, arithmetic-chain depth 1..N (P6d) | JIT, AOT, **VM (differential)** |
@@ -42,10 +42,11 @@ against, or asserted as a metamorphic identity.
 ### Staged (not yet gated)
 
 * **`roundtrip`** asserts `number->string`∘`string->number` == identity. That
-  requires the shortest-round-trip printer, which is not yet on master
-  (`number->string` is still `%g`-lossy, so values needing >6 significant
-  digits do not round-trip). The generator is ready; enable with
-  `FAMILY=roundtrip scripts/run_edge_coverage_v134.sh` once the printer lands.
+  requires a shortest-round-trip printer, which `number->string` now is: at
+  v1.3.6-evolve `(number->string 0.1234567891)` prints `0.1234567891`, and
+  `FAMILY=roundtrip scripts/run_edge_coverage_v134.sh` reports
+  `total=4 PASS=4 BAD=0`. The family is still outside `DEFAULT_FAMILIES` in
+  the runner; adding it there is what turns it into a gated family.
 * **`matmul` on the VM**: the VM registers only flat arity-2 `tensor-ref`,
   arity-3 `tensor-set!`, arity-2 `reshape`, and arity-1 `arange`, so multi-dim
   tensor parity is native-only until the VM tensor surface lands. `matmul` IS
@@ -66,3 +67,7 @@ MODES="jit aot aot-O0 vm" MAX_DEPTH=6 SEED=20260723 scripts/run_edge_coverage_v1
 
 The full sweep (JIT + AOT-O0 + AOT-O2 + VM, depth 6) runs in well under a minute
 on a 4-core slice. The ICC smoke probe runs a reduced depth-4 sweep.
+
+At v1.3.6-evolve the default sweep (seed 20260723, depth 6) reports
+`total=119 PASS=119 BAD=0`: `nursery` 34, `parallel` 28, `gradient` 30,
+`i128` 18, `matmul` 6 and `adtape` 3 files×modes.

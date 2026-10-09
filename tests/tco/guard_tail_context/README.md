@@ -2,8 +2,8 @@
 
 Thirteen fixtures that answer that question by measurement rather than by reading,
 and one place to re-measure it. They exist because the tail-transfer dispatcher
-(ESH-0102c) *could* optimize a call in a `guard` body and it turned out that
-doing so naively changes the answer.
+*could* optimize a call in a `guard` body and it turned out that doing so
+naively changes the answer.
 
 ## The question
 
@@ -54,14 +54,16 @@ which is the only edit — Eshkol takes these forms without an import prologue.
 
 All thirteen, on the native JIT, the native AOT path and the bytecode VM alike.
 Gated by `scripts/run_guard_tail_context.sh`, which is run by
-`scripts/run_tco_tests.sh`.
+`scripts/run_tco_tests.sh`; at v1.3.6-evolve it reports `Passed: 39  Failed: 0`
+(13 fixtures × JIT, AOT and VM).
 
-Rows 01-03 passed even before SW-58 was fixed, because the innermost
-activation's own guard is the one that fires either way. Rows 04-07 are the ones
-that can tell the difference, and on the native engines they answered wrongly
-until SW-58: ESH-0222's self-tail transform through `guard` collapsed the
-activations into one loop iteration and drained the handler chain with them, so
-there was no enclosing guard left for a re-raise to find. The VM now uses the
+Rows 01-03 passed even before the handler chain was preserved, because the
+innermost activation's own guard is the one that fires either way. Rows 04-07
+are the ones that can tell the difference: on the native engines they once
+answered differently from the reference, because the self-tail transform
+through `guard` collapsed the activations into one loop iteration and drained
+the handler chain with them, so there was no enclosing guard left for a
+re-raise to find. The VM now uses the
 same direct self-tail lowering, with a growable handler chain and frame cleanup
 on return, so it is subject to the same value-level gate rather than being a
 non-TCO control case.

@@ -1,13 +1,16 @@
 # LLVM verifier coverage — audit notes
 
-`llvm::verifyModule(*module, &error_stream)` runs at three sites in the
-codebase, covering the three code paths that produce LLVM IR:
+`llvm::verifyModule` runs at three sites on the paths that produce program
+IR, plus one for the opt-in TensorCore adapter module. Sites are named by
+function rather than line number, because line numbers in `llvm_codegen.cpp`
+move with every change:
 
 | Site | Path | Always-on? | What it covers |
 |------|------|------------|----------------|
-| `lib/backend/llvm_codegen.cpp:2240` | `EshkolLLVMCodeGen::generateIR` | Yes | Every AOT/JIT/library IR-emit. The single canonical verifier — both `eshkol_generate_llvm_ir` (line 31611) and `eshkol_generate_llvm_ir_library` (line 31634) route through `generateIR()`, so this catches all IR before it leaves the codegen layer. |
-| `lib/backend/llvm_codegen.cpp:31804` | `eshkol_compile_llvm_ir_to_object` | Debug only (`#ifndef NDEBUG`) | Belt-and-braces re-verify before object emission. Redundant with site #1 because the IR isn't mutated between them, hence the NDEBUG gate is fine for release-build performance. |
-| `lib/repl/repl_jit.cpp:843` | REPL JIT path | Yes | Verifies modules generated for live-eval before they reach the LLJIT. Throws on failure (REPL doesn't want to silently mis-execute). |
+| `lib/backend/llvm_codegen.cpp`, `EshkolLLVMCodeGen::generateIR` | every IR emit | Yes | Every AOT/JIT/library IR-emit. The single canonical verifier — both `eshkol_generate_llvm_ir` and `eshkol_generate_llvm_ir_library` route through `generateIR()`, so this catches all IR before it leaves the codegen layer. On failure it reports `LLVM module verification failed: …`; with `ESHKOL_DUMP_IR_ON_VERIFY_FAIL` set it prints the whole module first. |
+| `lib/backend/llvm_codegen.cpp`, `eshkol_compile_llvm_ir_to_object` | object emission | Debug only (`#ifndef NDEBUG`) | Belt-and-braces re-verify before object emission. Redundant with site #1 because the IR isn't mutated between them, hence the NDEBUG gate is fine for release-build performance. |
+| `lib/repl/repl_jit.cpp`, `ReplJITContext::addModule` | REPL JIT path | Yes | Verifies modules generated for live-eval before they reach the LLJIT. Prints the module and fails on error (REPL doesn't want to silently mis-execute). |
+| `lib/backend/tensorcore_codegen.cpp`, `verifyTensorcoreAdapterModule` | TensorCore adapter (`ESHKOL_TENSORCORE_ENABLED=ON`) | Called by its test | Verifies the adapter module; exercised by `tests/backend/tensorcore_codegen_test.cpp`. |
 
 ## Coverage summary
 
@@ -34,8 +37,7 @@ disabled or moved):
 
 - malformed PHI (predecessor block list doesn't match incoming-value list)
 - `addIncoming(value, named_block)` where the block named is no longer
-  the actual predecessor (the floor/ceil/round/truncate class — see
-  `MEMORY.md`)
+  the actual predecessor (the floor/ceil/round/truncate class)
 - type mismatches in `InsertValue` / `ExtractValue` (the
   tagged-value-data-field-{4} class)
 - function definitions referencing values from other functions
@@ -51,6 +53,7 @@ Site #1 is the gatekeeper. Treat it as a load-bearing invariant:
   any PR that *removes* a `verifyModule` call should be flagged for
   review by the cross-file checker.
 - A future improvement: also call `verifyFunction(*func)` at the end of
-  every `codegen<X>` method, optionally gated behind
-  `ESHKOL_AGGRESSIVE_VERIFY=1` env var. This catches per-function bugs at
-  emission rather than at end-of-module.
+  every `codegen<X>` method, optionally gated behind an
+  `ESHKOL_AGGRESSIVE_VERIFY=1` env var (Planned; not implemented at
+  v1.3.6-evolve). This catches per-function faults at emission rather than at
+  end-of-module.
