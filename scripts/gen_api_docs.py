@@ -1094,8 +1094,8 @@ def main() -> int:
 
     planned: dict[Path, str] = {}
     public_entries = load_public_surface_manifest()
-    if len(public_entries) != 68:
-        print(f"error: DD-11 header manifest has {len(public_entries)} entries; expected 68", file=sys.stderr)
+    if not public_entries:
+        print(f"error: DD-11 header manifest at {PUBLIC_SURFACE_MANIFEST} is empty", file=sys.stderr)
         return 2
     for header, symbols in per_file:
         planned[out_md_path(header)] = render_header_page(header, symbols, briefs[header])

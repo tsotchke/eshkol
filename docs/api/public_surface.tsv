@@ -31,6 +31,19 @@ inc/eshkol/agent_http.h	51	extern_c	eshkol_http_stream_done	Reports whether an H
 inc/eshkol/agent_http.h	53	extern_c	eshkol_http_stream_close	Closes an HTTP event stream and releases its transport state.
 inc/eshkol/agent_http.h	58	extern_c	eshkol_sse_event_retry_ms	Returns the retry delay carried by an SSE event in milliseconds.
 inc/eshkol/agent_http.h	59	extern_c	eshkol_sse_event_free	Releases an SSE event returned by the streaming API.
+inc/eshkol/backend/gpu/gpu_memory.h	33	constant	ESHKOL_GPU_NONE	Selects the CPU-only GPU backend (no device acceleration).
+inc/eshkol/backend/gpu/gpu_memory.h	34	constant	ESHKOL_GPU_METAL	Selects the Apple Metal GPU backend (unified host/device memory).
+inc/eshkol/backend/gpu/gpu_memory.h	35	constant	ESHKOL_GPU_CUDA	Selects the NVIDIA CUDA GPU backend.
+inc/eshkol/backend/gpu/gpu_memory.h	36	constant	ESHKOL_GPU_VULKAN	Selects the Vulkan compute GPU backend.
+inc/eshkol/backend/gpu/gpu_memory.h	40	constant	ESHKOL_GPU_WEBGPU	Selects the browser WebGPU backend; f64 call sites fall back to the df32 (~48-bit) tier or CPU since WGSL has no native f64.
+inc/eshkol/backend/gpu/gpu_memory.h	44	constant	ESHKOL_MEM_HOST	Selects ordinary host (CPU) memory for a GPU buffer allocation.
+inc/eshkol/backend/gpu/gpu_memory.h	45	constant	ESHKOL_MEM_HOST_PINNED	Selects pinned host memory for a GPU buffer allocation, for faster host-to-device transfer.
+inc/eshkol/backend/gpu/gpu_memory.h	46	constant	ESHKOL_MEM_DEVICE	Selects device-only memory for a GPU buffer allocation.
+inc/eshkol/backend/gpu/gpu_memory.h	47	constant	ESHKOL_MEM_UNIFIED	Selects unified/shared memory for a GPU buffer allocation (Metal, or CUDA managed memory).
+inc/eshkol/backend/gpu/gpu_memory.h	51	constant	ESHKOL_SYNC_NONE	Requests no synchronization for a GPU buffer sync call.
+inc/eshkol/backend/gpu/gpu_memory.h	52	constant	ESHKOL_SYNC_HOST_TO_DEVICE	Requests a host-to-device copy for a GPU buffer sync call.
+inc/eshkol/backend/gpu/gpu_memory.h	53	constant	ESHKOL_SYNC_DEVICE_TO_HOST	Requests a device-to-host copy for a GPU buffer sync call.
+inc/eshkol/backend/gpu/gpu_memory.h	54	constant	ESHKOL_SYNC_BIDIRECTIONAL	Requests a full two-way sync for a GPU buffer sync call.
 inc/eshkol/backend/gpu/gpu_memory.h	289	constant	ESHKOL_ELEMWISE_NEG	Selects elementwise negation for the GPU elementwise dispatcher.
 inc/eshkol/backend/gpu/gpu_memory.h	290	constant	ESHKOL_ELEMWISE_ABS	Selects elementwise absolute value for the GPU elementwise dispatcher.
 inc/eshkol/backend/gpu/gpu_memory.h	291	constant	ESHKOL_ELEMWISE_EXP	Selects elementwise exponential for the GPU elementwise dispatcher.
@@ -62,8 +75,59 @@ inc/eshkol/tensorcore_adapter.h	53	extern_c	eshkol_tc_device_supports_bf16	Repor
 inc/eshkol/tensorcore_adapter.h	54	extern_c	eshkol_tc_device_supports_i8	Reports whether the device supports int8 operations.
 inc/eshkol/tensorcore_adapter.h	55	extern_c	eshkol_tc_device_supports_tensorops_m5	Reports whether the device supports TensorOps M5.
 inc/eshkol/tensorcore_adapter.h	97	extern_c	eshkol_tc_last_backend_code	Returns the last TensorCore backend status code.
+lib/math/fixed_point/eshkol_fixed_point.h	59	function	esk_i128_from_i64	Widens a signed 64-bit integer to esk_i128 (sign-extending).
+lib/math/fixed_point/eshkol_fixed_point.h	60	function	esk_i128_from_u64	Widens an unsigned 64-bit integer to esk_i128 (zero-extending).
+lib/math/fixed_point/eshkol_fixed_point.h	61	extern_c	esk_i128_from_parts	Constructs an esk_i128 from explicit high/low 64-bit limbs (little-endian limb order: hi:lo).
+lib/math/fixed_point/eshkol_fixed_point.h	64	extern_c	esk_i128_to_abi	Converts an esk_i128 to its stable two-u64 FFI marshalling struct (esk_i128_abi, little-endian lo-then-hi).
+lib/math/fixed_point/eshkol_fixed_point.h	65	extern_c	esk_i128_from_abi	Converts the stable two-u64 FFI marshalling struct (esk_i128_abi) back to an esk_i128.
+lib/math/fixed_point/eshkol_fixed_point.h	68	function	esk_i128_add	Adds two esk_i128 values with wrapping two's-complement semantics.
+lib/math/fixed_point/eshkol_fixed_point.h	69	function	esk_i128_sub	Subtracts two esk_i128 values with wrapping two's-complement semantics.
+lib/math/fixed_point/eshkol_fixed_point.h	70	function	esk_i128_mul	Multiplies two esk_i128 values with wrapping two's-complement semantics.
+lib/math/fixed_point/eshkol_fixed_point.h	71	function	esk_i128_neg	Negates an esk_i128 value with wrapping two's-complement semantics.
+lib/math/fixed_point/eshkol_fixed_point.h	74	function	esk_i128_shl	Shifts an esk_i128 value left by s bits (0 <= s < 128); vacated low bits are zero-filled.
+lib/math/fixed_point/eshkol_fixed_point.h	75	function	esk_i128_asr	Shifts an esk_i128 value right by s bits, sign-preserving (arithmetic shift).
+lib/math/fixed_point/eshkol_fixed_point.h	76	function	esk_i128_lsr	Shifts an esk_i128 value right by s bits, zero-filling the vacated high bits (logical shift).
+lib/math/fixed_point/eshkol_fixed_point.h	79	extern_c	esk_i128_cmp	Three-way compares two esk_i128 values; returns -1, 0, or +1.
+lib/math/fixed_point/eshkol_fixed_point.h	80	function	esk_i128_eq	Reports whether two esk_i128 values are bit-for-bit equal.
+lib/math/fixed_point/eshkol_fixed_point.h	84	extern_c	esk_i128_add_overflow	Adds two esk_i128 values, writes the wrapped two's-complement result to *out, and returns true if the mathematical sum overflowed 128 bits.
+lib/math/fixed_point/eshkol_fixed_point.h	85	extern_c	esk_i128_sub_overflow	Subtracts two esk_i128 values, writes the wrapped two's-complement result to *out, and returns true if the mathematical difference overflowed 128 bits.
+lib/math/fixed_point/eshkol_fixed_point.h	86	extern_c	esk_i128_mul_overflow	Multiplies two esk_i128 values, writes the wrapped two's-complement result to *out, and returns true if the mathematical product overflowed 128 bits.
+lib/math/fixed_point/eshkol_fixed_point.h	89	extern_c	esk_i128_widen_mul_i64	Computes the exact 128-bit product of two signed 64-bit integers; a product of this width never overflows.
+lib/math/fixed_point/eshkol_fixed_point.h	92	constant	ESK_I128_MAX	The maximum representable esk_i128 value, 2^127 - 1.
+lib/math/fixed_point/eshkol_fixed_point.h	93	constant	ESK_I128_MIN	The minimum representable esk_i128 value, -2^127.
+lib/math/fixed_point/eshkol_fixed_point.h	99	extern_c	esk_i128_to_string	Formats an esk_i128 as a NUL-terminated base-10 string into a caller buffer (needs >= 41 bytes); returns the number of characters written (excluding the NUL), or -1 if the buffer is too small.
+lib/math/fixed_point/eshkol_fixed_point.h	102	extern_c	esk_i128_from_string	Parses a base-10 signed integer literal into an esk_i128; returns true on success and sets *overflow to true if the literal does not fit in 128 bits.
+lib/math/fixed_point/eshkol_fixed_point.h	110	constant	ESK_ROUND_TRUNCATE	Rounding mode: truncate the fractional bits toward zero.
+lib/math/fixed_point/eshkol_fixed_point.h	111	constant	ESK_ROUND_NEAREST_EVEN	Rounding mode: round to nearest, ties to even.
+lib/math/fixed_point/eshkol_fixed_point.h	112	constant	ESK_ROUND_STOCHASTIC	Rounding mode: round up with probability equal to the fractional part, using the caller-supplied esk_rng stream.
+lib/math/fixed_point/eshkol_fixed_point.h	117	constant	ESK_OF_WRAP	Overflow policy: wrap the out-of-range result into the W-bit range with two's-complement wraparound.
+lib/math/fixed_point/eshkol_fixed_point.h	118	constant	ESK_OF_SATURATE	Overflow policy: clamp the out-of-range result to the [min, max] bounds of the W-bit range.
+lib/math/fixed_point/eshkol_fixed_point.h	132	function	esk_rng_seed	Seeds an esk_rng stream (SplitMix64) used for stochastic rounding; reproducible for a given seed.
+lib/math/fixed_point/eshkol_fixed_point.h	133	extern_c	esk_rng_next_u64	Advances an esk_rng stream and returns its next 64-bit output.
+lib/math/fixed_point/eshkol_fixed_point.h	136	extern_c	esk_fixed_make	Constructs a fixed<W,F> value from a raw integer, masking/checking it against the W-bit range.
+lib/math/fixed_point/eshkol_fixed_point.h	137	extern_c	esk_fixed_wmin	Returns the minimum representable raw value for a W-bit fixed-point range, -2^(W-1).
+lib/math/fixed_point/eshkol_fixed_point.h	138	extern_c	esk_fixed_wmax	Returns the maximum representable raw value for a W-bit fixed-point range, 2^(W-1) - 1.
+lib/math/fixed_point/eshkol_fixed_point.h	142	extern_c	esk_fixed_add	Adds two fixed<W,F> values of matching (W,F) exactly, applying the given overflow policy; reports overflow through the optional out-parameter.
+lib/math/fixed_point/eshkol_fixed_point.h	143	extern_c	esk_fixed_sub	Subtracts two fixed<W,F> values of matching (W,F) exactly, applying the given overflow policy; reports overflow through the optional out-parameter.
+lib/math/fixed_point/eshkol_fixed_point.h	144	extern_c	esk_fixed_neg	Negates a fixed<W,F> value, applying the given overflow policy; reports overflow through the optional out-parameter.
+lib/math/fixed_point/eshkol_fixed_point.h	151	extern_c	esk_fixed_mul	Multiplies two fixed<W,F> values of matching (W,F) via an exact widened product, then rounds per the given rounding mode and narrows under the given overflow policy.
+lib/math/fixed_point/eshkol_fixed_point.h	157	extern_c	esk_fixed_div	Divides one fixed<W,F> value by another of matching (W,F), rounding per the given mode and narrowing under the given overflow policy; returns false (result untouched) on division by zero.
+lib/math/fixed_point/eshkol_fixed_point.h	162	extern_c	esk_fixed_from_i64	Constructs a fixed<W,F> value from a signed 64-bit integer under the given overflow policy; reports exactness through the optional out-parameter.
+lib/math/fixed_point/eshkol_fixed_point.h	164	extern_c	esk_fixed_to_i64	Converts a fixed<W,F> value to a signed 64-bit integer, truncating the fractional part toward zero; reports exactness through the optional out-parameter.
+lib/math/fixed_point/eshkol_fixed_point.h	165	extern_c	esk_fixed_from_double	Constructs a fixed<W,F> value from a double under the given rounding mode and overflow policy; reports exactness through the optional out-parameter.
 lib/math/fixed_point/eshkol_fixed_point.h	168	extern_c	esk_fixed_to_double	Converts a fixed-point value to double and reports exactness when requested.
 lib/math/fixed_point/eshkol_fixed_point.h	169	extern_c	esk_fixed_from_f32	Constructs a fixed-point value from a float with explicit rounding and overflow policy.
 lib/math/fixed_point/eshkol_fixed_point.h	172	extern_c	esk_fixed_to_f32	Converts a fixed-point value to float and reports exactness when requested.
+lib/math/fixed_point/eshkol_fixed_point.h	175	extern_c	esk_fixed_convert	Requantizes a fixed<W,F> value to a different (W,F) under the given rounding mode and overflow policy; reports exactness through the optional out-parameter.
+lib/math/fixed_point/eshkol_fixed_point.h	181	extern_c	esk_fixed_to_string	Formats a fixed<W,F> value as an exact decimal string (it is always a dyadic rational) into a caller buffer; returns characters written (excluding the NUL), or -1 if the buffer is too small.
+lib/math/fixed_point/eshkol_fixed_point.h	195	function	esk_accum128_init	Resets an esk_accum128 running sum and its element count to zero.
 lib/math/fixed_point/eshkol_fixed_point.h	196	function	esk_accum128_add_i64	Adds an int64 value to an exact 128-bit accumulation and advances its count.
 lib/math/fixed_point/eshkol_fixed_point.h	197	function	esk_accum128_add_i128	Adds an int128 value to an exact 128-bit accumulation and advances its count.
+lib/math/fixed_point/eshkol_fixed_point.h	198	extern_c	esk_accum128_merge	Combines a partial esk_accum128 accumulator into another, summing both the running total and the element count.
+lib/math/fixed_point/eshkol_fixed_point.h	199	function	esk_accum128_value	Returns the current running-sum value held by an esk_accum128 accumulator.
+lib/math/fixed_point/eshkol_fixed_point.h	211	extern_c	esk_dot_exact_i8	Computes the block-scaled dot product of two int8 vectors (scale_a * scale_b * sum(a[i]*b[i])) as fixed<128,F>; the integer accumulation step is exact and order-independent. Reports exactness of the final scaling through the optional out-parameter.
+lib/math/fixed_point/eshkol_fixed_point.h	213	extern_c	esk_dot_exact_i16	Computes the block-scaled dot product of two int16 vectors (scale_a * scale_b * sum(a[i]*b[i])) as fixed<128,F>; the integer accumulation step is exact and order-independent. Reports exactness of the final scaling through the optional out-parameter.
+lib/math/fixed_point/eshkol_fixed_point.h	218	extern_c	esk_idot_i8	Computes the raw integer dot product sum(a[i]*b[i]) of two int8 vectors in esk_i128, with no scaling; exact and order-independent.
+lib/math/fixed_point/eshkol_fixed_point.h	219	extern_c	esk_idot_i16	Computes the raw integer dot product sum(a[i]*b[i]) of two int16 vectors in esk_i128, with no scaling; exact and order-independent.
+lib/math/fixed_point/eshkol_fixed_point.h	220	extern_c	esk_idot_i32	Computes the raw integer dot product sum(a[i]*b[i]) of two int32 vectors in esk_i128, with no scaling; exact and order-independent.
+lib/math/fixed_point/eshkol_fixed_point.h	230	extern_c	esk_imatmul_i32	Computes a row-major exact integer matrix product A[rows,inner] x B[inner,cols] into out, with every cell the two-u64 ABI form of an exact i128 sum; returns false without touching out if a required pointer is NULL or a size/index product would overflow size_t, and treats inner==0 as a valid all-zero no-op.
