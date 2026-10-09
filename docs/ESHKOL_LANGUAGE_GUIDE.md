@@ -277,7 +277,7 @@ Built-in operators for physics and engineering:
 (laplacian harmonic (vector 1.0 1.0))  ;; -> 0 (it's harmonic!)
 
 ;; Directional derivative: D_u f
-(directional-derivative f (vector 3.0 4.0) (vector 1.0 0.0))  ;; -> 6
+(directional-derivative harmonic (vector 3.0 4.0) (vector 1.0 0.0))  ;; -> 6
 ```
 
 ### Arbitrary-Order AD: Taylor Towers
@@ -362,6 +362,7 @@ holding. See
 
 ### Operations
 
+<!-- doc-example: skip fragment: v1/v2/A/B/M/signal/u/windowed-signal/kernel are assumed tensors from elsewhere on the page -->
 ```scheme
 ;; Element-wise arithmetic
 (tensor-add v1 v2)
@@ -587,6 +588,11 @@ Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, an
 (find-first even? (list 1 3 5 4 7))  ;; -> 4
 ```
 
+Re-entering a continuation while the frame that captured it is still live
+runs today. Planned for v1.4 on the JIT: re-entering it after the capturing
+procedure has returned, as below.
+
+<!-- doc-example: skip pseudo-code: planned capability for v1.4 on the JIT; re-entry after the capturing procedure has returned -->
 ```scheme
 ;; Re-entrant: the continuation outlives the frame that captured it
 (define k #f)
@@ -619,6 +625,7 @@ Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, an
 
 ### Structured Exception Handling
 
+<!-- doc-example: skip fragment: several independent illustrations in one fence; the with-exception-handler form, in particular, correctly terminates per R7RS (a handler for non-continuable `raise` must not return normally), so later lines in the fence never execute as one program -->
 ```scheme
 ;; guard provides try/catch-like exception handling
 (guard (exn
@@ -654,6 +661,7 @@ Eshkol v1.1 provides built-in parallel execution primitives that automatically d
 
 ### Parallel Map, Filter, Fold
 
+<!-- doc-example: skip fragment: file-list is an assumed binding for parallel-for-each -->
 ```scheme
 ;; parallel-map: apply function to list elements in parallel
 (parallel-map (lambda (x) (* x x)) (list 1 2 3 4 5 6 7 8))
@@ -673,6 +681,7 @@ Eshkol v1.1 provides built-in parallel execution primitives that automatically d
 
 ### Futures
 
+<!-- doc-example: skip fragment: heavy-computation-a/b are assumed functions -->
 ```scheme
 ;; future: spawn computation, force: wait for result
 (define f1 (future (lambda () (heavy-computation-a))))
@@ -684,6 +693,7 @@ Eshkol v1.1 provides built-in parallel execution primitives that automatically d
 
 ### Parallel Execute
 
+<!-- doc-example: skip fragment: train-model-a/b/c and data are assumed bindings -->
 ```scheme
 ;; Run multiple thunks concurrently
 (parallel-execute
@@ -720,6 +730,7 @@ The cost model uses measured peak throughput:
 
 ### Explicit GPU Operations
 
+<!-- doc-example: skip fragment: A/B/M/v are assumed tensors from elsewhere on the page -->
 ```scheme
 ;; Force GPU execution for specific operations
 (gpu-matmul A B)                    ;; GPU matrix multiply
@@ -773,6 +784,7 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 
 ### Knowledge Bases
 
+<!-- doc-example: skip fragment: `s` (last line, `(substitution? s)`) is an assumed substitution from elsewhere on the page -->
 ```scheme
 ;; Create a knowledge base and assert facts
 (define kb (make-kb))
@@ -796,6 +808,7 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 
 ### Factor Graphs and Probabilistic Inference
 
+<!-- doc-example: skip fragment: cpt-matrix, new-cpt and observations are assumed bindings -->
 ```scheme
 ;; Create a factor graph: 3 binary variables.
 ;; Signature: (make-factor-graph num-vars dims-tensor)
@@ -826,6 +839,7 @@ Eshkol v1.1 includes a built-in **active inference consciousness engine** implem
 
 ### Global Workspace
 
+<!-- doc-example: skip fragment: perception-module, memory-module and planning-module are assumed closures of the shape described in the comments -->
 ```scheme
 ;; Create a workspace (Global Workspace Theory).
 ;; Signature: (make-workspace dim max-modules).
@@ -892,6 +906,7 @@ Eshkol v1.1 includes a built-in signal processing library for spectral analysis,
 
 ### Windowing Functions
 
+<!-- doc-example: skip fragment: signal is an assumed tensor from elsewhere on the page -->
 ```scheme
 ;; Apply window functions before FFT to reduce spectral leakage
 (define n 1024)
@@ -904,6 +919,7 @@ Eshkol v1.1 includes a built-in signal processing library for spectral analysis,
 
 ### Digital Filters
 
+<!-- doc-example: skip fragment: signal is an assumed tensor from elsewhere on the page -->
 ```scheme
 ;; FIR filter (finite impulse response)
 (define coefficients #(0.1 0.2 0.4 0.2 0.1))
@@ -922,6 +938,7 @@ Eshkol v1.1 includes a built-in signal processing library for spectral analysis,
 
 ### Convolution
 
+<!-- doc-example: skip fragment: signal is an assumed tensor from elsewhere on the page -->
 ```scheme
 ;; Linear convolution
 (define kernel #(1.0 2.0 1.0))
@@ -945,6 +962,7 @@ eshkol-run program.esk --wasm -o program.wasm
 
 ### DOM API
 
+<!-- doc-example: skip platform-specific: compiles only under --wasm with a browser DOM; the native JIT/AOT engines have no window object -->
 ```scheme
 ;; Create and manipulate DOM elements
 (define heading (web-create-element "h1"))
@@ -959,6 +977,7 @@ eshkol-run program.esk --wasm -o program.wasm
 
 ### Canvas API
 
+<!-- doc-example: skip platform-specific: compiles only under --wasm with a browser DOM; the native JIT/AOT engines have no window object -->
 ```scheme
 ;; 2D canvas drawing
 (define canvas (web-canvas-create 800 600))
@@ -1047,6 +1066,7 @@ eshkol-run program.esk --wasm -o program.wasm
 
 ### Standard Library Combinators
 
+<!-- doc-example: skip fragment: `path/to/file.esk` is a placeholder path, and x/pred/f are assumed bindings for identity/negate/curry2 -->
 ```scheme
 ;; From stdlib (two equivalent forms)
 (require stdlib)
@@ -1493,6 +1513,7 @@ full account, with runnable examples and a guide to reading a diagnostic, is
   either way. Narrowing, widening, and moving between members of the numeric
   tower are all accepted.
 
+<!-- doc-example: skip fragment: mixed-list is an assumed binding illustrating the ascription rules -->
   ```scheme
   (the number (car mixed-list))   ; tell the checker this element is a number
   (the real 1)                    ; fine — the numeric tower is flat
@@ -1505,6 +1526,7 @@ full account, with runnable examples and a guide to reading a diagnostic, is
   `vector?`, and `procedure?`. Narrowing is honored across both `if` and `and`,
   and is **cancelled** at a `set!` of the narrowed variable.
 
+<!-- doc-example: skip fragment: x and p are assumed bindings illustrating narrowing -->
   ```scheme
   (if (number? x) (+ x 1) 0)      ; x is number in the then-branch
   (and (pair? p) (car p))         ; p is a pair for (car p)

@@ -34,6 +34,7 @@
 
 ## Control Flow
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings (condition, test1, result1) -->
 ```scheme
 (if condition then-expr else-expr)
 
@@ -78,6 +79,7 @@
 
 ## Lists
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 (list 1 2 3)              ;; create list
 (cons 1 (list 2 3))       ;; prepend
@@ -98,6 +100,7 @@
 
 ## Strings
 
+<!-- doc-example: skip fragment: `s` is an assumed string -->
 ```scheme
 (string-length s)               ;; codepoint count
 (string-byte-length s)          ;; byte count (differs from string-length on multibyte UTF-8)
@@ -115,6 +118,7 @@
 
 ## Higher-Order Functions
 
+<!-- doc-example: skip fragment: `f`/`lst`/`pred`/`sum` are assumed bindings -->
 ```scheme
 (map f lst)               ;; apply f to each element
 (filter pred lst)         ;; select matching elements
@@ -141,6 +145,7 @@
 
 ## Vectors & Tensors
 
+<!-- doc-example: skip fragment: `v`/`i`/`x`/`val` are assumed bindings -->
 ```scheme
 (vector 1 2 3)            ;; create vector (heterogeneous, 16-byte tagged)
 (vref v i)                ;; get element
@@ -184,6 +189,7 @@
 
 ## Automatic Differentiation
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 ;; Symbolic (compile-time)
 (diff (* x x) x)          ;; -> (* 2 x)
@@ -208,6 +214,7 @@
 See the [Automatic Differentiation guide](guide/AUTOMATIC_DIFFERENTIATION.md)
 for the full walkthrough.
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 ;; Core tower builtins (no require needed)
 (taylor f x k)                    ;; k+1 Taylor coefficients c[0..k] of f at x
@@ -288,6 +295,7 @@ Everything above answers identically on the native engine and the bytecode VM.
 
 ## Complex Numbers
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 ;; Creation
 (make-rectangular 3.0 4.0)    ;; 3+4i
@@ -313,6 +321,7 @@ Everything above answers identically on the native engine and the bytecode VM.
 
 ## Continuations & Exception Handling
 
+<!-- doc-example: skip fragment: illustrative call/cc shapes; the full-page examples above cover real uses -->
 ```scheme
 ;; First-class continuations
 (call/cc (lambda (k)       ;; capture continuation
@@ -366,6 +375,7 @@ Everything above answers identically on the native engine and the bytecode VM.
 
 ## Parallel Primitives
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 ;; Parallel versions of standard HOFs
 (parallel-map f lst)           ;; map across cores
@@ -385,6 +395,7 @@ Everything above answers identically on the native engine and the bytecode VM.
 
 ## GPU Acceleration
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 ;; Automatic dispatch (matmul selects SIMD/BLAS/GPU by cost model)
 (matmul A B)                   ;; fastest backend auto-selected
@@ -406,6 +417,7 @@ Everything above answers identically on the native engine and the bytecode VM.
 
 ## Consciousness Engine
 
+<!-- doc-example: skip fragment: `?y` and related bindings are assumed -->
 ```scheme
 ;; Logic variables and unification
 (define s (make-substitution))     ;; empty substitution
@@ -447,6 +459,7 @@ Everything above answers identically on the native engine and the bytecode VM.
 
 ## Signal Processing
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 ;; FFT / Inverse FFT
 (fft signal)                   ;; Fast Fourier Transform
@@ -471,6 +484,7 @@ Everything above answers identically on the native engine and the bytecode VM.
 
 ## Web Platform (WASM)
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 ;; Compile: eshkol-run prog.esk --wasm -o prog.wasm
 
@@ -493,6 +507,7 @@ Everything above answers identically on the native engine and the bytecode VM.
 
 ## Math Functions
 
+<!-- doc-example: skip pseudo-code: a bare list of builtin names, not code -->
 ```scheme
 ;; Arithmetic
 + - * / abs floor ceiling round truncate
@@ -519,6 +534,7 @@ reached with `(require core.ad.taylor_models)`.
 
 ## Type Predicates
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 (null? x)    (pair? x)     (list? x)
 (number? x)  (integer? x)  (real? x)
@@ -538,6 +554,7 @@ reached with `(require core.ad.taylor_models)`.
 
 ## Static Type Checking (strict mode)
 
+<!-- doc-example: skip fragment: `xs`/`s` are assumed bindings -->
 ```scheme
 ;; Checked ascription — trusted assertion to the checker, runtime no-op.
 ;; A provably impossible ascription is reported at compile time:
@@ -560,6 +577,7 @@ reached with `(require core.ad.taylor_models)`.
 
 ## I/O
 
+<!-- doc-example: skip fragment: `x`/`fmt`/`args`/`path` are assumed bindings -->
 ```scheme
 (display x)               ;; print value
 (newline)                 ;; print newline
@@ -577,6 +595,7 @@ reached with `(require core.ad.taylor_models)`.
 
 ## C Interop
 
+<!-- doc-example: skip pseudo-code: a grammar shape; return-type/name/param-types are metavariables -->
 ```scheme
 (extern return-type name param-types...)
 (extern void printf char* ...)
@@ -588,6 +607,7 @@ reached with `(require core.ad.taylor_models)`.
 
 ## Standard Library (require stdlib)
 
+<!-- doc-example: skip fragment: `f`/`g`/`x`/`pred` are assumed bindings -->
 ```scheme
 ;; Combinators
 (compose f g)             ;; (f (g x))
@@ -620,6 +640,7 @@ reached with `(require core.ad.taylor_models)`.
 
 ## Math Library
 
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 ```scheme
 ;; Linear algebra
 (det M n)                 ;; determinant
