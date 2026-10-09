@@ -103,7 +103,9 @@ a cap; it does not rerun FunSearch or bound the maximum cap size in `AG(8,3)`.
 Each program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:`
 counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`. The
 verdict is the program's `RESULT:` line, and the measured outcomes in the
-catalogue read it.
+catalogue read it. Each process also exits 0 on `RESULT: ALL PASS` and 1 on
+`RESULT: FAILURES DETECTED`, so a failing check is a nonzero exit as well as
+a printed line.
 
 The normal examples suite discovers these files automatically because the
 repository's examples convention is a flat set of `.esk` files:
