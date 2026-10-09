@@ -98,6 +98,23 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   baseline records the ESKM name-size accessor and eleven allocator sites in
   three test fixture files, with exact counts and review reasons. Lexical
   and semantic ratchets and injected-site negative controls remain enforced. (#752)
+- **`equal?` compares numbers with `eqv?` (R7RS 6.1).** An exact and an
+  inexact number are never `equal?` — `(equal? 6 6.0)` is `#f`, `(= 6 6.0)` is
+  `#t` — and flonums compare by representation, so `0.0` and `-0.0` differ.
+  `member` and `assoc` compare with `equal?`. A C `int` returned through
+  `extern` is an exact integer. JIT, AOT and the bytecode VM agree.
+- **`match` pair patterns test for a pair.** `(cons h t)` and `(list ...)`
+  patterns match only values `pair?` accepts; a string or vector falls
+  through to the next clause.
+- **`raise-continuable` (R7RS 6.11)** on JIT, AOT and the bytecode VM: the
+  current `with-exception-handler` procedure runs in the dynamic environment
+  of the raise with the outer handlers installed, and its value is returned.
+- **`type-name` is a builtin on every engine.** It answers with a symbol from
+  one shared type-name vocabulary (`lib/core/value_type_names.h`), which also
+  names the REPL machine-mode `value_type` field; every procedure is
+  `'procedure`.
+- **REPL `:type` prints the inferred HoTT type** of the form, with the
+  session's definitions in scope.
 - **Native AOT linking preserves C++ compiler-driver names.** A configured
   `clang++` symlink keeps its invocation name when resolved, so linking retains
   C++ runtime and exception support rather than dispatching as `clang`. (#750)
