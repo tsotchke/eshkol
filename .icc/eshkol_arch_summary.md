@@ -1,34 +1,37 @@
 # Architecture Summary
 
 - repo root: repository checkout root
-- files indexed: `1555`
-- total lines indexed: `989775`
-- languages: `{"eshkol": 777, "markdown": 302, "cpp": 107, "shell": 94, "c_header": 76, "text": 73, "c": 71, "html": 11, "cmake": 10, "json": 9, "python": 8, "dockerfile": 5, "jsonl": 3, "javascript": 3, "css": 2, "objcxx": 1, "ruby": 1, "powershell": 1, "typescript": 1}`
+- files indexed: `4304`
+- total lines indexed: `1043318`
+- languages: `{"eshkol": 2462, "markdown": 505, "shell": 265, "cpp": 263, "python": 190, "c_header": 157, "c": 115, "text": 113, "html": 92, "json": 65, "javascript": 21, "document": 18, "cmake": 17, "dockerfile": 6, "typescript": 5, "css": 2, "makefile": 1, "wgsl": 1, "objc": 1, "objcxx": 1, "ruby": 1, "powershell": 1, "toml": 1, "jsonl": 1}`
 
 ## Important Files
 
 - `CMakeLists.txt`
 - `CONTRIBUTING.md`
+- `Makefile`
 - `README.md`
+- `bench/README.md`
 - `docker/cuda/Dockerfile`
 - `docker/debian/debug/Dockerfile`
 - `docker/debian/release/Dockerfile`
 - `docker/ubuntu/release/Dockerfile`
 - `docker/xla/Dockerfile`
+- `docs/README.md`
+- `docs/api/README.md`
 - `docs/architecture/README.md`
 - `docs/breakdown/README.md`
 - `docs/components/README.md`
+- `docs/design/adr/README.md`
 - `docs/development/README.md`
 - `docs/platform/README.md`
-- `docs/private/README.md`
+- `docs/reports/README.md`
 - `docs/tutorials/README.md`
 - `docs/vision/README.md`
 - `examples/README.md`
-- `tests/fuzz/CMakeLists.txt`
-- `tests/fuzz/README.md`
-- `tests/stress/README.md`
-- `tools/icc_extras/README.md`
-- `tools/vscode-eshkol/package.json`
+- `examples/wgsl_artifact/README.md`
+- `nix/jetson/README.md`
+- `scripts/mesh/runner/Dockerfile`
 
 ## Project Manifests
 
@@ -40,139 +43,142 @@
 
 ## Public Module Roots
 
-- `lib/backend`
 - `lib/core`
+- `lib/backend`
 - `lib/agent`
 - `tools`
-- `lib/math`
-- `lib/quantum`
-- `lib/repl`
-- `lib/ml`
-- `lib/types`
 - `lib/frontend`
-- `lib`
-- `lib/signal`
-- `lib/web`
+- `lib/repl`
+- `lib/math`
 - `lib/bridge`
+- `lib/types`
+- `lib/quantum`
+- `lib`
+- `lib/ml`
+- `lib/signal`
 - `lib/ffi`
 - `lib/random`
 - `lib/tensor`
-- `lib/tsotchke`
+- `lib/web`
 
 ## Integration Surfaces
 
+- `docs/api/bridge/qllm_bridge.md`
+- `docs/api/bridge/space_form.md`
+- `docs/api/core/eval_bridge.md`
+- `docs/reference/stdlib/http_server.md`
 - `lib/agent/c/agent_http_client.c`
+- `lib/agent/c/agent_http_client_apple.m`
+- `lib/agent/c/agent_http_client_winhttp.c`
 - `lib/agent/c/agent_http_server.c`
 - `lib/agent/http_server.esk`
-- `lib/web/http.esk`
+- `lib/core/http_server.esk`
+- `docs/api/agent_http.md`
+- `docs/api/http_request_utils.md`
 - `exe/eshkol-server.cpp`
 - `inc/eshkol/bridge/qllm_bridge.h`
+- `inc/eshkol/bridge/space_form.h`
 - `inc/eshkol/core/eval_bridge.h`
+- `lib/bridge/qllm_bridge.cpp`
+- `lib/bridge/qllm_interop.cpp`
+- `lib/bridge/space_form_ad.cpp`
 - `lib/bridge/tensor_backward.cpp`
+- `lib/bridge/tensorcore_adapter.cpp`
 - `lib/core/eval_bridge.cpp`
 - `lib/repl/eval_bridge_impl.cpp`
-- `docs/API_REFERENCE.md`
-- `docs/breakdown/WEB_PLATFORM.md`
-- `docs/private/ESHKOL_QLLM_INTEGRATION_SPECIFICATION.md`
-- `docs/private/IDEAL_MIGRATION_STRATEGY_ANALYSIS.md`
-- `docs/private/LAMBDA_SEXPR_MIGRATION_PATH.md`
-- `docs/private/PHASE_2_MIGRATION_STRATEGY_COMPLETE.md`
-- `docs/private/PHASE_3_MIGRATION_STATUS.md`
-- `docs/private/SESSION_005_FIX_STRATEGY.md`
-- `docs/private/XLA_INTEGRATION_STRATEGY.md`
-- `docs/private/hott_llvm_integration.md`
-- `docs/tutorials/18_WEB_PLATFORM.md`
-- `inc/eshkol/http_request_utils.h`
-- `lib/agent/c/agent_sqlite.c`
-- `lib/agent/c/agent_watch.c`
-- `lib/agent/fs-watch.esk`
+- `lib/types/linear_check_bridge.cpp`
+- `tools/erepl_client.py`
 
 ## Eshkol Module Graph
 
-- modules: `777`
-- local require edges: `377`
+- modules: `2462`
+- local require edges: `899`
 - dependency hubs:
-  stdlib (260 inbound)
-  core.list.transform (15 inbound)
-  core.testing (8 inbound)
-  core.list.search (7 inbound)
-  core.strings (7 inbound)
-  core.list.query (6 inbound)
-  core.list.higher_order (5 inbound)
-  core.threads (4 inbound)
-  core.data.base64 (3 inbound)
-  core.data.csv (3 inbound)
+  stdlib (655 inbound)
+  core.list.transform (18 inbound)
+  core.strings (13 inbound)
+  core.testing (13 inbound)
+  agent.quantum (10 inbound)
+  core.capabilities (9 inbound)
+  core.list.search (9 inbound)
+  core.list.query (8 inbound)
+  core.threads (7 inbound)
+  core.list.higher_order (6 inbound)
 - unresolved/external requires:
-  NOESIS_ROOT/src/core/self_modify/self_modify.esk (1)
-  bug_BB_xfile_lib.esk (1)
-- intentional design-time requires (in examples/, won't resolve):
-  tsotchke/eshkol_stdlib/qllm_ffi.esk (2)
-  tsotchke/eshkol_stdlib/system_ffi.esk (2)
-  tsotchke/eshkol_stdlib/selene_ffi.esk (1)
-- public surface: total exports=921, top exporters: web.http(97), web.web(97), math.constants(40), core.list.compound(38), agent.terminal(34)
+  scheme (6)
+  base (6)
+  qllm_oracle_lib.esk (6)
+  prefix (5)
+  only (4)
+  test (3)
+  modules (3)
+  rename (3)
+  except (3)
+  mod_b (2)
+- public surface: total exports=1437, top exporters: web.web(97), core.distributed(68), core.ad.tape(49), core.blc(47), core.dbsp(40)
 
 ## Test Roots
 
+- `tests/edge_matrix/generated`
+- `tests/vm_parity/corpus`
 - `tests/lists`
-- `tests/v1_2_edge_cases`
-- `tests/vm`
-- `tests/autodiff`
-- `tests/ml`
-- `tests/features`
-- `tests/repl`
-- `tests/system`
-- `tests/types`
-- `tests/xla`
-- `tests/gpu`
-- `tests/parser`
-- `tests/stdlib`
-- `tests/control_flow`
-- `tests/toolchain`
 - `tests/typesystem`
-- `tests/error_handling`
-- `tests/numeric`
-- `tests/parallel`
-- `tests/logic`
+- `tests/v1_2_edge_cases`
+- `tests/toolchain`
+- `tests/vm`
+- `tests/ad`
+- `tests/core`
+- `tests/recursion_depth/generated`
+- `tests/memory`
+- `tests/autodiff`
+- `tests/differential/corpus`
+- `tests/ml`
+- `tests/ad_oracle/generated`
+- `tests/features`
+- `tests/sicp`
+- `tests/error_handling/guard_coverage`
+- `tests/reference-diff/corpus`
+- `tests/stress`
 
 ## Top Modules
 
-- `docs/private`: 165 files, 120969 lines, symbols=7001, tests=0, languages={"markdown": 165}
-- `tests/lists`: 129 files, 6719 lines, symbols=631, tests=129, languages={"eshkol": 129}
-- `examples-dep`: 102 files, 4401 lines, symbols=403, tests=0, languages={"eshkol": 101, "c": 1}
-- `lib/backend`: 94 files, 146963 lines, symbols=3614, tests=0, languages={"c": 45, "cpp": 43, "c_header": 6}
-- `tests/v1_2_edge_cases`: 89 files, 7555 lines, symbols=638, tests=89, languages={"eshkol": 77, "shell": 10, "python": 2}
-- `scripts`: 77 files, 14467 lines, symbols=199, tests=0, languages={"shell": 75, "python": 1, "powershell": 1}
-- `tests/vm`: 57 files, 3750 lines, symbols=337, tests=57, languages={"eshkol": 56, "cpp": 1}
-- `.`: 53 files, 429195 lines, symbols=1699, tests=0, languages={"text": 36, "markdown": 13, "cmake": 4}
-- `tests/autodiff`: 52 files, 2053 lines, symbols=162, tests=52, languages={"eshkol": 52}
-- `lib/core`: 50 files, 30236 lines, symbols=1699, tests=0, languages={"cpp": 22, "eshkol": 21, "c": 6, "c_header": 1}
-- `tests/ml`: 37 files, 2613 lines, symbols=114, tests=37, languages={"eshkol": 37}
-- `docs/breakdown`: 36 files, 21449 lines, symbols=1442, tests=0, languages={"markdown": 36}
-- `docs/tutorials`: 30 files, 4151 lines, symbols=227, tests=0, languages={"markdown": 30}
-- `inc/eshkol/backend`: 29 files, 8752 lines, symbols=2437, tests=0, languages={"c_header": 29}
-- `tests/features`: 24 files, 3673 lines, symbols=397, tests=24, languages={"eshkol": 24}
-- `tests/repl`: 23 files, 1080 lines, symbols=64, tests=23, languages={"eshkol": 20, "cpp": 2, "text": 1}
-- `lib/agent/c`: 17 files, 6959 lines, symbols=358, tests=0, languages={"c": 17}
-- `docs`: 15 files, 16544 lines, symbols=1121, tests=0, languages={"markdown": 15}
-- `docs/platform`: 15 files, 2603 lines, symbols=332, tests=0, languages={"markdown": 15}
-- `inc/eshkol/core`: 13 files, 2360 lines, symbols=393, tests=0, languages={"c_header": 13}
-- `tests/types`: 13 files, 3800 lines, symbols=314, tests=13, languages={"eshkol": 11, "cpp": 2}
-- `tests/xla`: 13 files, 919 lines, symbols=143, tests=13, languages={"eshkol": 12, "cpp": 1}
-- `examples`: 13 files, 1741 lines, symbols=123, tests=0, languages={"eshkol": 12, "markdown": 1}
-- `tests/system`: 13 files, 570 lines, symbols=40, tests=13, languages={"eshkol": 13}
-- `lib/agent`: 12 files, 1351 lines, symbols=146, tests=0, languages={"eshkol": 12}
-- `tests/gpu`: 12 files, 960 lines, symbols=130, tests=12, languages={"eshkol": 12}
-- `tests/parser`: 12 files, 1366 lines, symbols=98, tests=12, languages={"eshkol": 12}
-- `tests/stdlib`: 12 files, 748 lines, symbols=68, tests=12, languages={"eshkol": 11, "python": 1}
-- `tests/control_flow`: 10 files, 1485 lines, symbols=84, tests=10, languages={"eshkol": 10}
-- `tests/toolchain`: 9 files, 713 lines, symbols=53, tests=9, languages={"cpp": 6, "shell": 2, "eshkol": 1}
-- `tools/icc_extras`: 8 files, 14738 lines, symbols=615, tests=0, languages={"json": 4, "markdown": 2, "python": 2}
-- `inc/eshkol`: 8 files, 2996 lines, symbols=463, tests=0, languages={"c_header": 8}
-- `docs/vision`: 8 files, 5091 lines, symbols=321, tests=0, languages={"markdown": 8}
-- `lib/core/list`: 8 files, 469 lines, symbols=80, tests=0, languages={"eshkol": 8}
-- `tests/typesystem`: 8 files, 98 lines, symbols=10, tests=8, languages={"eshkol": 8}
-- `modules_test_outputs`: 8 files, 164 lines, symbols=0, tests=0, languages={"text": 8}
-- `tests/parallel`: 7 files, 275 lines, symbols=36, tests=7, languages={"eshkol": 7}
-- `tests/error_handling`: 7 files, 704 lines, symbols=28, tests=7, languages={"eshkol": 7}
-- `tests/numeric`: 7 files, 580 lines, symbols=12, tests=7, languages={"eshkol": 7}
-- `memory_test_outputs`: 7 files, 131 lines, symbols=0, tests=0, languages={"text": 7}
+- `tests/edge_matrix/generated`: 289 files, 14342 lines, symbols=3470, tests=289, languages={"eshkol": 288, "text": 1}
+- `scripts`: 264 files, 76092 lines, symbols=2862, tests=0, languages={"shell": 148, "python": 105, "javascript": 4, "text": 3, "json": 3, "powershell": 1}
+- `tests/vm_parity/corpus`: 181 files, 7770 lines, symbols=775, tests=181, languages={"eshkol": 180, "text": 1}
+- `lib/core`: 135 files, 68561 lines, symbols=3257, tests=0, languages={"cpp": 69, "eshkol": 35, "c": 20, "c_header": 10, "text": 1}
+- `tests/lists`: 129 files, 6716 lines, symbols=635, tests=129, languages={"eshkol": 129}
+- `tests/typesystem`: 126 files, 2794 lines, symbols=380, tests=126, languages={"eshkol": 125, "shell": 1}
+- `lib/backend`: 109 files, 215677 lines, symbols=4914, tests=0, languages={"c": 52, "cpp": 48, "c_header": 9}
+- `tests/v1_2_edge_cases`: 109 files, 10227 lines, symbols=833, tests=109, languages={"eshkol": 88, "shell": 19, "python": 2}
+- `site/static/content`: 89 files, 46610 lines, symbols=428, tests=0, languages={"html": 88, "json": 1}
+- `tests/vm`: 83 files, 8750 lines, symbols=758, tests=83, languages={"eshkol": 82, "cpp": 1}
+- `tests/toolchain`: 83 files, 14802 lines, symbols=665, tests=83, languages={"cpp": 32, "python": 22, "shell": 17, "eshkol": 8, "javascript": 4}
+- `tests/ad`: 76 files, 10354 lines, symbols=1072, tests=76, languages={"eshkol": 72, "shell": 2, "python": 2}
+- `docs/reference/stdlib`: 71 files, 11315 lines, symbols=1068, tests=0, languages={"markdown": 70, "text": 1}
+- `tests/core`: 71 files, 8999 lines, symbols=632, tests=71, languages={"eshkol": 38, "cpp": 29, "c": 2, "python": 1, "shell": 1}
+- `examples`: 67 files, 19589 lines, symbols=4068, tests=0, languages={"eshkol": 66, "markdown": 1}
+- `tests/recursion_depth/generated`: 64 files, 1085 lines, symbols=250, tests=64, languages={"eshkol": 63, "text": 1}
+- `tests/memory`: 60 files, 6426 lines, symbols=377, tests=60, languages={"eshkol": 43, "shell": 16, "python": 1}
+- `tests/autodiff`: 59 files, 3191 lines, symbols=342, tests=59, languages={"eshkol": 59}
+- `tests/differential/corpus`: 55 files, 1331 lines, symbols=197, tests=55, languages={"eshkol": 55}
+- `tests/ml`: 48 files, 4161 lines, symbols=240, tests=48, languages={"eshkol": 48}
+- `tests/ad_oracle/generated`: 45 files, 3819 lines, symbols=1531, tests=45, languages={"eshkol": 44, "text": 1}
+- `docs/api/backend`: 44 files, 19947 lines, symbols=1434, tests=0, languages={"markdown": 44}
+- `tests/sicp`: 44 files, 6166 lines, symbols=974, tests=44, languages={"eshkol": 44}
+- `inc/eshkol/backend`: 44 files, 19888 lines, symbols=600, tests=0, languages={"c_header": 44}
+- `tests/features`: 44 files, 6341 lines, symbols=547, tests=44, languages={"eshkol": 44}
+- `tests/error_handling/guard_coverage`: 38 files, 917 lines, symbols=80, tests=38, languages={"text": 19, "eshkol": 18, "markdown": 1}
+- `docs`: 37 files, 32401 lines, symbols=1827, tests=0, languages={"markdown": 37}
+- `docs/breakdown`: 37 files, 28203 lines, symbols=1614, tests=0, languages={"markdown": 37}
+- `tests/stress`: 36 files, 959 lines, symbols=139, tests=36, languages={"eshkol": 33, "markdown": 1, "text": 1, "shell": 1}
+- `tests/reference-diff/corpus`: 36 files, 358 lines, symbols=0, tests=36, languages={"text": 36}
+- `tests/tensor_collection_depth/generated/nested_list`: 32 files, 160 lines, symbols=32, tests=32, languages={"eshkol": 32}
+- `tests/tensor_collection_depth/generated/nested_vector`: 32 files, 160 lines, symbols=32, tests=32, languages={"eshkol": 32}
+- `docs/design/adr`: 31 files, 12492 lines, symbols=569, tests=0, languages={"markdown": 31}
+- `tests/parser`: 31 files, 1934 lines, symbols=163, tests=31, languages={"eshkol": 31}
+- `tests/vm_parity/resolved`: 31 files, 412 lines, symbols=36, tests=31, languages={"eshkol": 30, "markdown": 1}
+- `docs/tutorials`: 30 files, 4394 lines, symbols=227, tests=0, languages={"markdown": 30}
+- `tests/ad_adversarial/generated`: 29 files, 6457 lines, symbols=1488, tests=29, languages={"eshkol": 28, "text": 1}
+- `tests/stdlib`: 27 files, 3238 lines, symbols=357, tests=27, languages={"eshkol": 26, "python": 1}
+- `docs/reports`: 27 files, 2364 lines, symbols=195, tests=0, languages={"markdown": 26, "json": 1}
+- `tests/repl`: 27 files, 1184 lines, symbols=65, tests=27, languages={"eshkol": 22, "cpp": 2, "python": 1, "shell": 1, "text": 1}

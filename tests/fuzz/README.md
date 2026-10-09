@@ -15,7 +15,9 @@ Three kinds of harness live here:
   tight loop under ASan+UBSan instrumentation, coverage-guided. Clang
   only.
 - **`eskm_model_fuzz_probe`** — a small out-of-process consumer for the
-  public ESKM model/tensor loaders. `scripts/run_eskm_model_fuzz.py`
+  public ESKM model/tensor loaders (the proposed v2 container format has its
+  own exact-byte goldens in
+  [`tests/core/fixtures/eskm-v2/`](../core/fixtures/eskm-v2/README.md)). `scripts/run_eskm_model_fuzz.py`
   generates grammar-aware mutations, checks exact materialized-value
   digests, and classifies rejection, fatal signal, timeout, or oracle drift.
 
