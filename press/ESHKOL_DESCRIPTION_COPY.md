@@ -2,6 +2,18 @@
 
 ## A compiled Scheme with a constructive proof that a transformer is an interpreter
 
+Eshkol v1.3.6-evolve checks mathematics that machines discovered. That is not a
+metaphor. The FunSearch cap set, the AlphaTensor matrix multiplication
+decompositions over F₂, and a polynomial counterexample map to the Jacobian
+conjecture are rebuilt as Eshkol programs and verified completely with exact
+integer and rational arithmetic: every pair of points of the 512-point cap in
+AG(8,3) against the third point on its line, every pair of matrix units for the
+rank-23 3×3 and rank-47 4×4 factorizations, and the counterexample's constant
+Jacobian determinant of −2 on a grid larger than its degree in every variable,
+beside three distinct rational points that share one image. 130,816 exact pair
+checks.
+<!-- source: examples/mathematics_funsearch_cap_set.esk, examples/mathematics_alphatensor_3x3_gf2.esk, examples/mathematics_alphatensor_gf2.esk, examples/mathematics_jacobian_counterexample.esk; docs/AI_MATHEMATICS_EXAMPLES.md -->
+
 In Eshkol v1.3.5-evolve you can call a procedure that has already returned.
 That is not a metaphor. `call/cc` is multi-shot and re-entrant on all three
 engines the project ships — native JIT, native AOT, and the bytecode VM. A
@@ -14,10 +26,13 @@ three engines, eighteen byte-exact transcripts.
 <!-- source: tests/continuations/ (6 fixtures), scripts/run_continuation_tests.sh (runs each on -r, AOT, VM against tests/continuations/expected) -->
 
 Eshkol is a compiled programming language for mathematical and cognitive
-computing. The repository ships v1.3.5-evolve (September 2026) of the compiler.
-Alongside re-entrant continuations, the bytecode VM gains its own region
-evacuator, so `with-region` reclaims memory there the way it already does on
-native codegen: the same fixture holds flat at 33, 34 and 34 MB across 1,000,
+computing. The repository ships v1.3.6-evolve (October 2026) of the compiler,
+which documents every example program it carries — 67 of them, 46 mathematics —
+with each program's algorithm, arithmetic, executable checks and limits.
+<!-- source: docs/examples/catalogue.json (67 entries, 46 kind=mathematics); CHANGELOG.md §1.3.6-evolve (#742) -->
+Since v1.3.5-evolve, alongside re-entrant continuations, the bytecode VM has its
+own region evacuator, so `with-region` reclaims memory there the way it already
+does on native codegen: the same fixture holds flat at 33, 34 and 34 MB across 1,000,
 4,000 and 16,000 iterations, against 304 MB on the identical binary with
 reclamation switched off.
 <!-- source: ROADMAP.md §v1.3.5 flagship; docs/breakdown/RUNTIME_CONFIGURATION.md#bytecode-vm-region-reclamation -->
@@ -52,17 +67,18 @@ fit by gradient descent.
 ## Launch post
 
 ```
-Eshkol v1.3.5-evolve is out now.
+Eshkol v1.3.6-evolve is out now.
 
-∂ is now exhaustive by construction: the compiler will not build a program
-whose differentiation dispatch has a hole.
+It checks mathematics that machines discovered: the FunSearch cap set, the
+AlphaTensor decompositions, a Jacobian-conjecture counterexample. Exactly, and
+completely.
 
 https://github.com/tsotchke/eshkol
 ```
 
 ## Long-form article title
 
-`Eshkol v1.3.5-evolve: Multi-Shot Continuations in a Compiled Scheme`
+`Eshkol v1.3.6-evolve: Checking Machine-Discovered Mathematics in a Compiled Scheme`
 
 ---
 
@@ -81,7 +97,10 @@ no garbage collector; as of v1.3.5-evolve that reclamation runs on the bytecode
 VM as well as on native codegen. Continuations are multi-shot and re-entrant on
 every engine. The consciousness engine exposes twenty-two builtins covering
 unification, factor-graph belief propagation, free-energy minimisation, and
-global-workspace softmax competition.
+global-workspace softmax competition. As of v1.3.6-evolve the same language
+reproduces published results of AI-driven mathematical discovery with exact
+arithmetic, and its example catalogue documents 46 mathematics programs with the
+limits of what each establishes.
 
 The flagship demonstration is the SDNC paper artefact: a single shell invocation
 regenerates the 12.22M-parameter weight tensor and verifies that a reference C
@@ -93,6 +112,19 @@ compiler that hosts it.
 ---
 
 ## Advanced Mathematics
+
+- **Published AI-driven results, reproduced exactly (v1.3.6-evolve).** The
+  FunSearch construction of a 512-point cap in AG(8,3) is rebuilt from its four
+  construction classes and checked on all 130,816 unordered pairs. The
+  AlphaTensor rank-23 3×3 and rank-47 4×4 factorizations over F₂ are contracted
+  as exact bit masks on every pair of matrix units, 81 and 256 pairs, which is a
+  complete check because the map is bilinear. A polynomial counterexample map
+  to the Jacobian conjecture is checked through its three rational preimages of
+  (−1/4, 0, 0), its fiber-count discriminant cases, reverse-mode AD within a
+  stated `1e-9` tolerance, and an exact determinant identity on a 9 × 8 × 3
+  grid that exceeds the determinant's degree bounds. These reproduce public
+  witnesses; they do not claim to rediscover them. See
+  [AI mathematics witnesses](../docs/AI_MATHEMATICS_EXAMPLES.md).
 
 - **Exact rational linear algebra.** `core.exact_linalg` provides matrix
   multiplication, fraction-free determinants, solving, inversion, rank, and
@@ -154,6 +186,21 @@ compiler that hosts it.
 ## Differentiating capabilities
 
 Each item below cites the file or measurement that grounds the claim.
+
+- **Exact numbers in the browser (v1.3.6-evolve).** The browser LLVM/WASM host
+  keeps finite doubles as their exact integer or rational values in a checked
+  shared arena through arithmetic, comparisons, rounding, roots and formatting;
+  `number->string` preserves signed zero and readable non-finite forms, and
+  unsupported complex and exact Taylor paths refuse explicitly rather than
+  answering approximately. The website's example guides start and run on it.
+  <!-- source: CHANGELOG.md §1.3.6-evolve (#744); site/static/eshkol-runtime.js -->
+
+- **Rigorous intervals across exactness (v1.3.6-evolve).** Mixed exact/inexact
+  rigorous interval arithmetic converts exact rational endpoints outward until
+  exact comparisons certify containment, and indeterminate non-finite endpoint
+  cases fail closed. See
+  [certified enclosures](../docs/reference/stdlib/certified-enclosures.md).
+  <!-- source: CHANGELOG.md §1.3.6-evolve (#727); lib/core/ad/rigorous_interval.esk -->
 
 - **Multi-shot, re-entrant continuations on a compiled backend
   (v1.3.5-evolve).** A captured continuation can be invoked any number of
@@ -583,7 +630,7 @@ language's `derivative` primitive to fit `y = 2x` from five points.
 (newline)
 ```
 
-Observed output with the v1.3.5-evolve JIT:
+Observed output with the v1.3.6-evolve JIT (release-line build, commit `60f345def`):
 
 ```text
 2
@@ -601,7 +648,7 @@ Arbitrary-order AD with an exact seed and exact-preserving operations
 (newline)
 ```
 
-Observed output with the v1.3.5-evolve JIT:
+Observed output with the v1.3.6-evolve JIT (release-line build, commit `60f345def`):
 
 ```text
 67465815595294257109436307840000
@@ -621,7 +668,7 @@ rounding at any step:
 (newline)
 ```
 
-Observed output with the v1.3.5-evolve JIT:
+Observed output with the v1.3.6-evolve JIT (release-line build, commit `60f345def`):
 
 ```text
 16/3
@@ -658,7 +705,7 @@ This standalone example computes the gradient of `f(x,y) = x²y + y³`:
 (newline)
 ```
 
-Observed output with the v1.3.5-evolve JIT:
+Observed output with the v1.3.6-evolve JIT (release-line build, commit `60f345def`):
 
 ```text
 #(24 57)
@@ -667,7 +714,7 @@ Observed output with the v1.3.5-evolve JIT:
 Eshkol ships two production execution backends with the same language semantics
 and independent value representations. The LLVM backend compiles to native ARM64
 or x86-64 (or WebAssembly) and is the default for `eshkol-run`. The bytecode VM
-(*lib/backend/eshkol_vm.c* plus its 32 *vm_\*.c* modules) is a register-plus-stack
+(*lib/backend/eshkol_vm.c* plus its 38 *vm_\*.c* modules) is a register-plus-stack
 interpreter with more than 250 native call IDs, an ESKB binary file format with
 LEB128 encoding and CRC32 checksums, and full coverage of the language including
 multi-shot continuations, exception handling, tensors, complex / rational /
@@ -742,8 +789,8 @@ builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.3.5-evolve |
-| v1.3.5 shipment date | 22 September 2026 (builds on v1.3.4-evolve, 19 August 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
+| Version | v1.3.6-evolve |
+| Release status | Prepared for publication; intended release date 8 October 2026 (builds on v1.3.5-evolve, 22 September 2026; v1.3.4-evolve, 19 August 2026; v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
 | Implementation | C17 runtime, C++20 compiler |
 | Backend | LLVM. The source compiles against LLVM 18 through 24; a build pins one major version (21 by default, `ESHKOL_REQUIRED_LLVM_MAJOR`) and aborts on a mismatch |
 | Platforms | macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64 and ARM64 via Visual Studio 2022 + ClangCL |
