@@ -80,7 +80,7 @@ the last committed run.
 | composition | capture | max-correct-depth (baseline) | history |
 |---|---|---|---|
 | deriv | capnone / global / localparam / vecref | **8** (the full ladder) | was 2 (capnone/global) and 1 (localparam/vecref) when this pillar landed: nested `derivative` chains of depth ≥ 3 now route through the arbitrary-order Taylor tower, and captures flow through the tower call unchanged |
-| gradn | capnone | **3** | was 2 |
+| gradn | capnone | **3** | was 2; the `gradn` cells measure **8** under `-r` at v1.3.6-evolve (`ad_depth_gradn_01.esk` runs in about a minute) |
 | gradn | vecref | **3** | was 1; the higher-order `derivative` closure is now dual-transparent (it seeds and extracts its own perturbation level), so the capture form is no longer the limit; depth 4+ is bounded by the 8-jet's three perturbation slots |
 | gofd | vecref | **8** | was 1 |
 | jacod | vecref | **8** | was 0 (forward-over-reverse) |
