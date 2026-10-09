@@ -38,6 +38,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 
 BUILD_DIR="${BUILD_DIR:-build}"
 case "$BUILD_DIR" in
@@ -88,7 +89,7 @@ run_one() {
     local outfile="$WORK/out_${base}_n${n}.txt"
     local timefile="$WORK/time_${base}_n${n}.txt"
     ( cd "$rundir" && \
-      /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+      /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
         "$TIMEOUT_S" "$ESHKOL_RUN" -r "$variant" ) > "$outfile" 2> "$timefile"
     RB_RC=$?
     RB_RSS_MB=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$timefile")

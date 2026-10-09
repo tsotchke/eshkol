@@ -30,6 +30,10 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 
 GEN_DIR="$REPO_ROOT/tests/edge_matrix/generated"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
@@ -62,7 +66,7 @@ classify_output() {
     local fails passes
     fails=$(grep -c '^FAIL:' "$out" 2>/dev/null || true)
     passes=$(grep -c '^PASS:' "$out" 2>/dev/null || true)
-    if [ "$st" -eq 142 ]; then          # SIGALRM via perl alarm
+    if [ "$st" -eq 124 ] || [ "$st" -eq 142 ]; then   # wall-clock guard
         echo "HANG $passes/$expected timeout"
     elif [ "$st" -ge 128 ]; then
         echo "CRASH $passes/$expected signal=$((st - 128))"
@@ -89,25 +93,25 @@ run_one() {
     expected="${expected:-0}"
     out="$WORK_DIR/$base.$mode.out"
     if [ "$mode" = jit ]; then
-        perl -e "alarm $JIT_TIMEOUT; exec @ARGV" \
+        eshkol_outcome_guarded "$JIT_TIMEOUT" \
             "$ESHKOL_RUN" -r "$f" > "$out" 2>&1
         st=$?
         res=$(classify_output "$st" "$out" "$expected")
     else
         bin="$WORK_DIR/$base.bin"
-        perl -e "alarm $AOT_COMPILE_TIMEOUT; exec @ARGV" \
+        eshkol_outcome_guarded "$AOT_COMPILE_TIMEOUT" \
             "$ESHKOL_RUN" "$f" -o "$bin" > "$out" 2>&1
         st=$?
         if [ "$st" -ne 0 ] || [ ! -x "$bin" ]; then
             local err
             err=$(grep -m1 -iE 'error' "$out" | tr -d '"' | cut -c1-120)
-            if [ "$st" -eq 142 ]; then
+            if [ "$st" -eq 124 ] || [ "$st" -eq 142 ]; then
                 res="HANG 0/$expected compile-timeout"
             else
                 res="COMPILE-ERR 0/$expected exit=$st ${err:-link-or-compile-failed}"
             fi
         else
-            perl -e "alarm $AOT_RUN_TIMEOUT; exec @ARGV" "$bin" > "$out" 2>&1
+            eshkol_outcome_guarded "$AOT_RUN_TIMEOUT" "$bin" > "$out" 2>&1
             st=$?
             res=$(classify_output "$st" "$out" "$expected")
         fi

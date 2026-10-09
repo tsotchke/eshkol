@@ -38,6 +38,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 # shellcheck source=../../scripts/lib/checked_write.sh
 . "$REPO_ROOT/scripts/lib/checked_write.sh"
@@ -128,12 +129,12 @@ chmod +x "$BIN"
 # Run the AOT binary with the region-arena poison allocator enabled so a missed
 # interior pointer crashes at a 0xCB.. address rather than passing by luck.
 if [ "$TIME_MODE" = "bsd" ]; then
-    ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+    ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
         "$TIMEOUT_S" "$BIN" ) > "${RUN_OUT:?}" 2> "${TIME_LOG:?}"
     RUN_RC=$?
     RSS_MB=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$TIME_LOG")
 else
-    ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+    ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -v perl "$ESHKOL_GUARDED_EXEC" \
         "$TIMEOUT_S" "$BIN" ) > "${RUN_OUT:?}" 2> "${TIME_LOG:?}"
     RUN_RC=$?
     RSS_MB=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$TIME_LOG")
