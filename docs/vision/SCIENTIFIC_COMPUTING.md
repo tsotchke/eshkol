@@ -2,6 +2,18 @@
 
 This document details Eshkol's capabilities for scientific computing (the v1.0-foundation architectural baseline extended through v1.2.1-scale), focusing on the **arena memory management system**, **tensor operations**, and **numerical algorithms** actually implemented in the compiler and standard library.
 
+> **Status at v1.3.6-evolve (2026-10-09).** This page describes scientific
+> computing as of v1.2.1-scale. Since then the v1.3 line added certified
+> interval and Taylor-model enclosures, the exact tower with `core.exact_linalg`
+> (exact rational determinant, solve, inverse, rank and nullspace), automatic
+> per-iteration memory reclamation in resident loops, and `with-region`
+> reclamation on the bytecode VM. The 46 [mathematics examples](../MATHEMATICS_EXAMPLES.md)
+> use these facilities to compute exact and certified results. The tensor
+> (40-byte) and cons (32-byte) layouts quoted below match the current headers;
+> the arena struct quoted below lists its core fields, and the current one in
+> `lib/core/arena_memory.h` adds thread-safety, bounded-capacity and tape-arena
+> fields.
+
 ## The Scientific Computing Landscape
 
 Scientific computing demands:

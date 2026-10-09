@@ -7,7 +7,19 @@
 > and first-class continuations (call/cc, dynamic-wind). See [CHANGELOG.md](../../CHANGELOG.md)
 > and [V1.1 Scope](../V1.1_SCOPE.md).
 
-This directory contains vision documents tracing Eshkol's architectural baseline (v1.0-foundation through the current v1.2.1-scale production release), grounded in the actual compiler implementation.
+This directory contains vision documents tracing Eshkol's architectural baseline (v1.0-foundation through v1.2.1-scale, the release they were last revised against), grounded in the actual compiler implementation.
+
+> **Status at v1.3.6-evolve (2026-10-09).** The current release is v1.3.6-evolve
+> (prepared for publication; v1.3.5-evolve is the latest shipped tag). The v1.3
+> line added arbitrary-order exact AD, full R7RS conformance and the R7RS
+> library system, flat memory for resident loops, a parser with no recursion
+> budget, multi-shot continuations, certified enclosures, the exact tower, and
+> the 46 documented [mathematics examples](../MATHEMATICS_EXAMPLES.md); see the
+> [README](../../README.md) and [ROADMAP](../../ROADMAP.md). Figures below that
+> describe the v1.0/v1.1 baseline are kept as that record; structural facts are
+> stated in place as of `inc/eshkol/eshkol.h` at
+> `60f345def`. The [white paper](TECHNICAL_WHITE_PAPER.md) carries a
+> section-by-section implementation status table.
 
 ## What is Eshkol?
 
@@ -17,7 +29,7 @@ Eshkol is a **production-ready Scheme dialect** with a sophisticated LLVM-21 com
 - **Compiler-integrated automatic differentiation** (forward/reverse modes with nested gradient support)
 - **Arena-based memory management** (OALR - Ownership-Aware Lexical Regions)
 - **HoTT-inspired gradual type system** with bidirectional type checking
-- **R7RS Scheme compatibility** with 550+ language features
+- **R7RS Scheme compatibility** over a 1,116-construct canonical language surface (1,056 builtins; `tests/coverage/language_surface.json`)
 - **Interactive REPL** with LLVM ORC JIT compilation
 - **Quantum-inspired RNG** for high-quality stochastic computing
 
@@ -98,7 +110,7 @@ Clear v1.0-foundation baseline (what exists NOW) followed by realistic post-v1.0
 - Bump-pointer allocation in large blocks
 - Scope-based cleanup (lexical regions)
 - No garbage collection - deterministic timing
-- Global arena + region stack (MAX_DEPTH=16)
+- Global arena + region stack (`MAX_REGION_DEPTH` = 64 in `lib/core/arena_memory.h`; 16 at v1.0)
 
 **Escape Analysis:**
 - `NO_ESCAPE` → stack allocation
@@ -124,10 +136,10 @@ struct eshkol_tagged_value {
 }
 ```
 
-**Immediate Types (0-7):** NULL, INT64, DOUBLE, BOOL, CHAR, SYMBOL, DUAL_NUMBER
+**Immediate Types (0-7):** NULL, INT64, DOUBLE, BOOL, CHAR, SYMBOL, DUAL_NUMBER, COMPLEX
 
 **Consolidated Types (8-9):** 
-- HEAP_PTR (8) with subtypes: CONS, STRING, VECTOR, TENSOR, HASH, EXCEPTION, MULTI_VALUE
+- HEAP_PTR (8) with subtypes: CONS, STRING, VECTOR, TENSOR, HASH, EXCEPTION, MULTI_VALUE, and since v1.0 RECORD, BYTEVECTOR, PORT, SYMBOL, BIGNUM, RATIONAL, PROMISE, TAYLOR, PARAMETER, I128 and the logic/inference subtypes (`HEAP_SUBTYPE_*`, `inc/eshkol/eshkol.h`)
 - CALLABLE (9) with subtypes: CLOSURE, LAMBDA_SEXPR, AD_NODE, PRIMITIVE, CONTINUATION
 
 ### Closure System
@@ -137,6 +149,7 @@ struct eshkol_closure {
     uint64_t func_ptr;              // Lambda function pointer
     eshkol_closure_env_t* env;      // Captured variables
     uint64_t sexpr_ptr;             // S-expression for display
+    const char* name;               // Bound name, or NULL for anonymous lambdas
     uint8_t return_type;
     uint8_t input_arity;
     uint8_t flags;                  // Variadic, etc.
@@ -146,7 +159,7 @@ struct eshkol_closure {
 ```
 
 **Environment Encoding:**
-- `num_captures` field packs: actual captures | (fixed_params << 16) | (is_variadic << 63)
+- `num_captures` field packs: actual captures | (fixed_params << 32) | (is_variadic << 63) (`CLOSURE_ENV_GET_FIXED_PARAMS`, `inc/eshkol/eshkol.h`)
 - Flexible array of captured `eshkol_tagged_value_t` elements
 
 ## What v1.1-accelerate Added (Since v1.0)
@@ -159,15 +172,19 @@ struct eshkol_closure {
 - **First-class continuations** — `call/cc`, `dynamic-wind`, `guard`/`raise`
 - **ML framework** — 75+ builtins: activations, losses, optimizers, CNN layers, transformer ops
 - **XLA backend** — dual-mode StableHLO + LLVM-direct for tensor acceleration
-- **Web platform** — WASM compilation, 73 DOM API functions
+- **Web platform** — WASM compilation, 73 DOM API functions (97 `web-*` bindings in `lib/web/web.esk` at v1.3.6)
 - **Package manager** — `eshkol-pkg` with TOML manifest and registry support
 
-### Not Yet Implemented (Planned for Future Releases)
+### Not Yet Implemented at v1.1 — status at v1.3.6
 
-- Distributed computing (v1.2-scale)
-- Quantum computing primitives — qubits, gates, VQE (v2.0-starlight)
-- Built-in plotting/visualization
-- Full R7RS library system — `define-library`/`import` with renaming (v1.3-evolve)
+- Distributed computing — Planned: workstream W6, a PJRT/XLA spike at
+  v1.4.0-connection with native-mesh gates through v2.0-starlight
+- Quantum computing primitives — qubits, gates, VQE: opt-in differentiable
+  Moonlab VQE/CHSH and the linear `Qubit` type SHIPPED (v1.3.3, v1.3.4);
+  quantum circuit compilation remains v2.0-starlight
+- Built-in plotting/visualization — SHIPPED as the PNG plotting stdlib (v1.2)
+- Full R7RS library system — `define-library`/`import` with renaming —
+  SHIPPED (v1.3.0-evolve)
 
 See [Roadmap](../../ROADMAP.md) for planned development.
 
@@ -188,11 +205,11 @@ All vision documents in this directory:
 
 ## See Also
 
-- [`COMPLETE_LANGUAGE_SPECIFICATION.md`](../COMPLETE_LANGUAGE_SPECIFICATION.md) - Technical specification of all 300+ language features
+- [`COMPLETE_LANGUAGE_SPECIFICATION.md`](../COMPLETE_LANGUAGE_SPECIFICATION.md) - Technical specification of the language surface
 - [`docs/reference/language/INDEX.md`](../reference/language/INDEX.md) - User reference with examples
 - [`docs/breakdown/`](../breakdown/) - Component-specific technical documentation
 - [`docs/ESHKOL_V1_ARCHITECTURE.md`](../ESHKOL_V1_ARCHITECTURE.md) - Complete architecture overview
 
 ---
 
-*This directory documents the Eshkol compiler vision. The current production release is **v1.2.1-scale** (closed out 2026-05-20), shipping on top of the v1.1-accelerate baseline with the full exact-numeric tower (bignum / rational / complex), Metal + CUDA + XLA acceleration, the native agent FFI surface (HTTP / SQLite / subprocess / fs-watch), production-grade model serialisation, plus v1.2.1 hardening (stdlib `LinkOnceODR`, parser line tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation). The aggregate gate at release is **37/37 test suites, 528/528 self-reported tests, 87/87 v1.2 edge-case checks**.*
+*This directory documents the Eshkol compiler vision. The current release is **v1.3.6-evolve** (see the status note above). The pages were last revised against **v1.2.1-scale** (closed out 2026-05-20), shipping on top of the v1.1-accelerate baseline with the full exact-numeric tower (bignum / rational / complex), Metal + CUDA + XLA acceleration, the native agent FFI surface (HTTP / SQLite / subprocess / fs-watch), production-grade model serialisation, plus v1.2.1 hardening (stdlib `LinkOnceODR`, parser line tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation). The aggregate gate at release is **37/37 test suites, 528/528 self-reported tests, 87/87 v1.2 edge-case checks**.*

@@ -4,6 +4,66 @@
 
 This white paper presents Eshkol, a novel programming language designed to address the computational demands of scientific computing and artificial intelligence applications. Eshkol synthesizes the expressiveness of high-level languages with the performance characteristics of systems programming languages, while incorporating domain-specific features for numerical and symbolic computation. The language employs a gradual typing system that permits both static and dynamic type checking, facilitating the transition between rapid prototyping and production-ready code. A distinguishing feature of Eshkol is its arena-based memory management system, which provides deterministic performance without the unpredictable pauses associated with garbage collection. The language compiles to LLVM IR, enabling seamless interoperability with existing codebases and leveraging mature optimization techniques. This paper details Eshkol's architecture, implementation strategies, and technical innovations, presenting preliminary performance evaluations that demonstrate its efficacy for computationally intensive tasks. We conclude by discussing future research directions and potential applications in fields requiring both symbolic and numerical computation capabilities.
 
+
+> **Status at v1.3.6-evolve (2026-10-09).** This paper sets out the design Eshkol is
+> built toward, and much of it has since shipped. Where the paper describes
+> something that is not built yet, the claim stands as the target and the table
+> below marks it **Planned** with its [ROADMAP](../../ROADMAP.md) stage, or
+> **Research** where no release stage has been assigned. Four statements about
+> the implementation are brought up to date in place: the parser
+> (§2.1), the parameter-annotation spelling (§3.1), and the implementation
+> language, parser tooling and code-generation target (§5.1). A truncated
+> duplicate of §8.1 that preceded the complete §8 was removed. Evidence is
+> cited against the source at `60f345def`; the measured state of each subsystem
+> is in [docs/FEATURE_MATRIX.md](../FEATURE_MATRIX.md) and the
+> [implementation deep dive](ADDENDUM_TECHNICAL_WHITE_PAPER_V1.md).
+
+<a id="implementation-status-v136"></a>
+
+#### Implementation status at v1.3.6-evolve
+
+| § | Capability as described | Status | Evidence or stage |
+|---|---|---|---|
+| 2.1 | LLVM IR generation, native x86-64 and ARM64 code, `--dump-ir` | SHIPPED | `lib/backend/llvm_codegen.cpp` and 38 further codegen modules; `eshkol-run --dump-ir f.esk` writes `f.ll` |
+| 2.1, 5.1 | Hand-written tokenizer and parser | SHIPPED | `lib/frontend/parser.cpp`; parse driven by an explicit continuation stack (`lib/frontend/parser_task.h`, v1.3.5), not precedence climbing or a generated scanner |
+| 2.1, 6.3 | AST-level domain-specific optimization passes, fusion, PGO-guided inlining | Planned | General optimization is LLVM's pass pipeline; native PGO is a v1.5.0-intelligence item |
+| 2.2, 7.1 | Gradual typing: static checking where annotated, dynamic elsewhere | SHIPPED (static side) | HoTT checker `lib/types/type_checker.cpp`; a mismatch is a warning and compilation continues; a `Qubit` linearity violation is an error |
+| 2.2, 7.1 | Bidirectional checking | PARTIAL | Synthesis shipped; the checking direction for lambdas is planned for v1.9.0 under ADR-0004 (`TypeChecker::checkLambdaTask` synthesizes today, `lib/types/type_checker.cpp:4516`) |
+| 2.2, 7.1 | Runtime checks inserted at static/dynamic boundaries | Planned (v1.9.0-types) | Not inserted today: `(the integer "abc")` warns at compile time and returns `"abc"`; a `(x : integer)` parameter accepts `2.5` |
+| 2.3, 5.2, 7.2 | Arena allocation, lexical regions, deterministic reclamation | SHIPPED | OALR arenas and `with-region` on native and VM; automatic per-iteration nursery on native ([memory model](../reference/runtime/memory-model.md)) |
+| 2.3, 7.2 | Static lifetime analysis that rejects escaping references | PARTIAL | Escape analysis selects allocation strategy (`exe/eshkol-run.cpp`, `EscapeKind`); ownership forms are erased without a discharged proof (`BorrowChecker` has no production callers), ADR-0004, v1.9.0-types / v2.0 |
+| 2.4, 5.3 | Condition system with resumption (Common Lisp style) | Research | R7RS `guard`/`raise`/`with-exception-handler`/`dynamic-wind` and multi-shot continuations are shipped; restarts are not |
+| 2.4, 8.1 | C FFI, callbacks, embedding Eshkol in C | SHIPPED | `extern` declarations, `--shared-lib` with `__eshkol_lib_init__`, `inc/eshkol/eshkol_ffi.h`; packaged embedding SDK is v1.4.1 |
+| 3.1 | S-expression syntax, `match`, applicative order, `delay`/`force`, streams | SHIPPED | `lib/frontend/parser.cpp`; `HEAP_SUBTYPE_PROMISE` |
+| 3.1 | Optional infix notation; domain notation for matrices | Research | No infix reader exists; `#(...)` literals and tensor builtins are the current notation |
+| 3.1, 9.1 | Effects marked in the type system | Planned (v1.9.0-types) | Effect and algebraic-effect types |
+| 3.2 | Rest and keyword parameters, `case-lambda`, composition | SHIPPED | `#:name` keywords (`TOKEN_KEYWORD`), `case-lambda`, `compose` in `core.functional` |
+| 3.2 | Multiple dispatch and overloading by argument type | Research | No user-level dispatch on argument types; builtins dispatch on runtime tags |
+| 3.3 | Hygienic macros | SHIPPED | `syntax-rules` with nested ellipsis (`lib/frontend/syntax_rules.cpp`) |
+| 3.3 | Procedural and type-aware macros | Research | No procedural macro transformer is exposed |
+| 3.4 | Modules, export control, R7RS libraries, separate compilation, conditional compilation, package manager | SHIPPED | `provide`/`require`, `define-library`/`import`, `-c` and `--emit-depfile`, `cond-expand` with `-D`, `eshkol-pkg` (`tools/pkg/`) |
+| 4.1 | Dense vectors, matrices, N-dimensional tensors, BLAS-backed linear algebra | SHIPPED | `lib/backend/blas_backend.cpp`, tensor builtins, `core.exact_linalg` |
+| 4.1 | Sparse matrix types (CSR/COO); compile-time dimension checking | Research / Planned (v1.9.0-types) | Sparsity is shipped for AD (`sparse-hessian`); dimension-indexed types need dependent types |
+| 4.2 | Forward, reverse, nested and higher-order AD; Jacobians, Hessians, sparse derivatives | SHIPPED | `lib/backend/autodiff_codegen.cpp`; arbitrary-order Taylor towers (v1.3.0); `sparse-hessian` |
+| 4.3 | Automatic vectorization | SHIPPED | LLVM loop and SLP vectorizers; per-ISA runtime dispatch is Research |
+| 4.4 | Task and data parallelism on a work-stealing scheduler | SHIPPED | `parallel-map`, `parallel-fold`, `future`/`force`; Chase–Lev deques in `lib/backend/thread_pool.cpp` |
+| 4.4 | GPU computation | SHIPPED (built-in operations) | Metal and CUDA dispatch of tensor operations; user-defined kernels are Research; WebGPU is v1.4.0 |
+| 4.4 | Distributed computation | Planned (W6) | PJRT/XLA spike at v1.4.0, native-mesh gates through v2.0 |
+| 4.4 | Pipeline parallelism with backpressure | Research | Bounded channels exist (`make-channel`, `channel-send!`, `lib/agent/c/agent_concurrency.c`); no pipeline framework |
+| 6.1, 6.2 | Benchmark methodology and results | Research | The comparative results in §6.2 are design expectations, not published measurements; measured figures live in [docs/PARALLEL_MAP_PERFORMANCE_ANALYSIS.md](../PARALLEL_MAP_PERFORMANCE_ANALYSIS.md) and the high-precision GEMM design notes |
+| 7.2 | Bounds-checked indexing raising a structured error | SHIPPED | Collection and tensor accessors raise catchable errors |
+| 7.2 | Null-safe reference types | Research | No nullable/non-nullable distinction in the type system |
+| 7.3 | Message passing, mutexes, condition variables, atomics | SHIPPED (primitives) | `make-channel`, `make-mutex`, `make-condition-variable` (`lib/agent/c/agent_concurrency.c`); `atomic-load`/`atomic-store!` |
+| 7.3 | STM, lock-free persistent collections, static deadlock detection, ownership-checked message transfer | Research | Not built |
+| 8.1 | Header-parsing FFI binding generation; zero-copy C data access | Research / SHIPPED | No header parser; zero-copy NumPy tensors ship in the Python bindings (v1.2) |
+| 8.2 | Library ecosystem integrations | SHIPPED in part | BLAS, SQLite, HTTP, regex, image codecs and Python bindings ship; TensorFlow, PyTorch, OpenGL/Vulkan, FFTW and the others named are Research (Vulkan is listed for v1.8.0-platform) |
+| 8.3 | Tooling | SHIPPED in part | CMake integration (`cmake/EshkolCompile.cmake`), an LSP server (`tools/lsp`), a VS Code extension (`tools/vscode-eshkol`), `eshkol-pkg`, and the API reference generator `scripts/gen_api_docs.py` (shipped as `eshkol-doc`); an AD-aware debugger/profiler is v1.9.1 |
+| 9.1 | Dependent, linear and refinement types | Planned | Linear `Qubit` shipped (v1.3.4); linear handles v1.4.0-connection; dependent and refinement types (SMT) v1.9.0-types |
+| 9.1 | Quantum computing extensions | SHIPPED in part / Planned | Opt-in differentiable Moonlab VQE/CHSH (v1.3.3); quantum circuit compilation v2.0-starlight |
+| 9.2 | Self-hosting compiler; incremental and cross compilation | Research / SHIPPED in part | `--target TRIPLE` cross-targets LLVM; AOT/JIT caches invalidate on transitive dependencies; a self-hosted compiler has no stage; embedded cross-compilation is v1.8.0-platform |
+| 9.2 | JIT | SHIPPED | ORC LLJIT REPL (`lib/repl/repl_jit.cpp`), `eshkol-run -r` |
+| 9.3 | Package repository, documentation generator, testing framework, benchmark suite | SHIPPED in part | `eshkol-pkg`, `scripts/gen_api_docs.py`, `core.testing`, `benchmarks/`; a central package registry is Research |
+
 ## 1. Introduction
 
 ### 1.1 Motivation
@@ -44,9 +104,9 @@ By synthesizing these diverse influences, Eshkol represents an evolution in prog
 
 Eshkol employs a multi-stage compilation pipeline that transforms source code into executable machine code through a series of well-defined transformations. This architecture facilitates modular development of the compiler, enables sophisticated optimization techniques, and provides multiple points for static analysis and verification.
 
-The compilation process begins with lexical analysis, which converts the source text into a stream of tokens according to the language's lexical grammar. This phase handles tasks such as identifying keywords, operators, identifiers, and literals, while eliminating whitespace and comments. The lexical analyzer is implemented using a combination of hand-crafted code and generated state machines, optimizing for both performance and maintainability.
+The compilation process begins with lexical analysis, which converts the source text into a stream of tokens according to the language's lexical grammar. This phase handles tasks such as identifying keywords, operators, identifiers, and literals, while eliminating whitespace and comments. The lexical analyzer is hand-written (`lib/frontend/parser.cpp`), with no generated state machine.
 
-Following lexical analysis, the parsing phase constructs an abstract syntax tree (AST) that represents the hierarchical structure of the program. Eshkol employs a recursive descent parser with precedence climbing for expression parsing, which provides a balance between implementation simplicity and parsing efficiency. The resulting AST captures the syntactic structure of the program while abstracting away details of concrete syntax.
+Following lexical analysis, the parsing phase constructs an abstract syntax tree (AST) that represents the hierarchical structure of the program. Eshkol's parser is hand-written, and since v1.3.5 it is driven by an explicit continuation stack rather than native recursion: a child parse suspends into a heap-allocated coroutine frame, so native stack use is independent of grammar nesting (`lib/frontend/parser.cpp`, `lib/frontend/parser_task.h`). The resulting AST captures the syntactic structure of the program while abstracting away details of concrete syntax.
 
 Semantic analysis constitutes the third phase of compilation, encompassing type checking, inference, and validation of language constraints. This phase transforms the AST into an annotated form that includes type information, scope resolution, and validation of semantic rules. The gradual typing system is implemented at this stage, combining static type checking where annotations are present with preparation for runtime checks where types remain dynamic.
 
@@ -112,7 +172,7 @@ Throughout the runtime system, a principle of minimal overhead guides implementa
 
 Eshkol's syntax is founded on S-expressions, the canonical syntactic form of the Lisp family of languages. This choice provides a consistent and uniform representation of code that facilitates both human comprehension and programmatic manipulation. The fundamental syntactic unit in Eshkol is the expression, which may be an atom (such as a number, string, or identifier) or a list of expressions enclosed in parentheses. This recursive structure enables the representation of arbitrarily complex programs through composition of simpler elements.
 
-The language extends the basic S-expression syntax with several enhancements designed to improve readability and expressiveness for specific domains. Type annotations are integrated into the syntax through a concise notation that associates types with expressions without disrupting the overall structure. For example, a function parameter can be annotated with its expected type using a colon separator: `(define (square x:number) (* x x))`. This approach maintains the simplicity of S-expression syntax while enabling static type checking.
+The language extends the basic S-expression syntax with several enhancements designed to improve readability and expressiveness for specific domains. Type annotations are integrated into the syntax through a concise notation that associates types with expressions without disrupting the overall structure. For example, a function parameter can be annotated with its expected type using a colon separator inside the parameter form: `(define (square (x : number)) (* x x))`. (The colon is a separate token; `x:number` written without spaces is read as two parameters.) This approach maintains the simplicity of S-expression syntax while enabling static type checking.
 
 Pattern matching capabilities enhance the language's expressiveness for data manipulation tasks. Patterns can be used in binding forms to destructure complex data structures and in conditional expressions to select execution paths based on structural properties of values. The pattern matching syntax is integrated with the S-expression framework, maintaining syntactic consistency while providing powerful data manipulation capabilities.
 
@@ -246,13 +306,13 @@ Throughout the parallelism framework, a focus on safety and composability guides
 
 ### 5.1 Compiler Implementation
 
-The Eshkol compiler is implemented as a modular system that transforms source code through a series of well-defined intermediate representations, culminating in the generation of optimized C code. This implementation strategy balances development efficiency with performance optimization capabilities, leveraging existing compiler infrastructure where appropriate while implementing custom components for Eshkol-specific features.
+The Eshkol compiler is implemented as a modular system that transforms source code through a series of well-defined intermediate representations, culminating in the generation of LLVM IR, which LLVM compiles to native code (§9.2). This implementation strategy balances development efficiency with performance optimization capabilities, leveraging existing compiler infrastructure where appropriate while implementing custom components for Eshkol-specific features.
 
 The compiler is written primarily in C++, chosen for its combination of performance, expressiveness, and compatibility with key dependencies. At the core of the implementation is the LLVM compiler infrastructure, which provides sophisticated optimization frameworks and code generation capabilities for multiple target architectures. The LLVM integration enables Eshkol to benefit from continuous advancements in compiler technology while focusing development efforts on language-specific features.
 
-Utility components from the Boost C++ libraries are employed throughout the compiler implementation, providing robust implementations of data structures, algorithms, and system interfaces. These components enhance development productivity and code reliability without compromising performance in critical compiler paths.
+The compiler uses the C++20 standard library and LLVM's own support libraries for its data structures, algorithms, and system interfaces; it has no Boost dependency. The runtime is C17.
 
-Lexical analysis and parsing are implemented using a combination of Flex (for lexical analysis) and Bison (for parsing), supplemented with custom code for handling Eshkol-specific syntactic constructs. This approach leverages well-established parser generator tools while maintaining the flexibility needed for Eshkol's syntax, particularly for domain-specific extensions and type annotations.
+Lexical analysis and parsing are hand-written in C++ (`lib/frontend/parser.cpp`) rather than generated by Flex and Bison, which keeps full control over Eshkol-specific constructs such as type annotations, `#:` keywords and string interpolation, and lets the parser run on an explicit continuation stack.
 
 The gradual typing system is implemented as a custom component, designed specifically to support Eshkol's approach to combining static and dynamic typing. This implementation includes type checking algorithms, inference mechanisms, and runtime type representation, all integrated with the core compilation pipeline to provide seamless gradual typing capabilities.
 
@@ -387,20 +447,6 @@ Software transactional memory (STM) provides a mechanism for atomic operations o
 Lock-free algorithms and data structures provide efficient concurrent operations without the blocking characteristics of traditional synchronization mechanisms. These components use atomic operations and careful ordering constraints to ensure correctness without requiring exclusive access to shared resources. The standard library includes lock-free implementations of common data structures such as queues, stacks, and hash tables, optimized for different usage patterns and contention scenarios. These implementations employ techniques such as compare-and-swap loops, hazard pointers, and epoch-based reclamation to manage memory safety in the absence of locks. By avoiding blocking synchronization, lock-free algorithms improve scalability and eliminate the possibility of deadlocks, while providing progress guarantees even under high contention.
 
 Deadlock detection mechanisms identify potential deadlocks in concurrent code, both statically during compilation and dynamically at runtime. The static analyzer examines lock acquisition patterns across the program, constructing a lock order graph and identifying cycles that could lead to deadlocks. For dynamic detection, the runtime system maintains a resource allocation graph and monitors lock acquisition, detecting potential deadlock situations before they occur. When a potential deadlock is identified, the system can either report a warning, abort one of the involved transactions, or apply a resolution strategy such as lock timeout or priority inheritance. These mechanisms help developers identify and address deadlock risks early in the development process, improving the reliability of concurrent systems.
-
-## 8. Interoperability
-
-### 8.1 C Interoperability
-
-Eshkol provides comprehensive interoperability with C, enabling seamless integration with the vast ecosystem of C libraries and existing codebases. This interoperability is bidirectional, allowing both the use of C code from Eshkol and the embedding of Eshkol components in C applications.
-
-The foreign function interface (FFI) enables Eshkol programs to call C functions directly, with minimal overhead compared to native C calls. This interface handles the mapping between Eshkol's calling conventions and C's calling conventions, including parameter passing, return value handling, and error propagation. The FFI supports the full range of C types and calling conventions, including variadic functions, structure passing, and platform-specific calling conventions. Function calls through the FFI are type-checked at compile time, ensuring that the Eshkol code provides arguments of appropriate types and handles return values correctly. This type checking prevents many common interoperability errors, such as passing incompatible types or misinterpreting return values.
-
-Callback support enables C code to call back into Eshkol, allowing Eshkol functions to be used as event handlers, callbacks, or implementation of interfaces defined in C libraries. The callback mechanism generates appropriate C-compatible function pointers that, when called from C, invoke the corresponding Eshkol function with proper argument conversion and exception handling. This capability is essential for integrating with C libraries that use callback-based APIs, such as GUI toolkits, event loops, and plugin systems. The implementation ensures that Eshkol's memory safety guarantees are maintained across the language boundary, preventing C code from invalidating Eshkol's memory management assumptions.
-
-Data marshalling facilities handle the conversion between Eshkol and C data representations, ensuring type safety and memory safety when data crosses the language boundary. For simple types such as integers, floating-point numbers, and pointers, the conversion is often trivial due to compatible representations. For more complex types such as strings, arrays, and structures, the marshalling system performs the necessary transformations, such as converting between Eshkol's string representation and C's null-terminated strings. These conversions are optimized to minimize overhead, with special handling for common cases and efficient bulk conversion for large data structures.
-
-Header parsing capabilities enable automatic generation of FFI bindings from C header files, eliminating the need for manual declaration of C functions and types in Eshkol. The header parser understands the C type system, including typedefs, structures, unions, enumerations
 
 ## 8. Interoperability
 

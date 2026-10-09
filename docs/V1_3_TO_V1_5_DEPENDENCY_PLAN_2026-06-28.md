@@ -1,5 +1,7 @@
 # Eshkol v1.3 -> v1.5 Dependency Plan (2026-06-28)
 
+> **Status at v1.3.6-evolve (2026-10-09):** dated plan of 2026-06-28, kept as written. The v1.3 line has shipped through v1.3.5-evolve and v1.3.6-evolve is prepared for publication; the current dependency order (v1.4.0 → v1.4.1 → v1.4.5 → v1.5.0) is in the [release ladder](RELEASE_LADDER.md) and [ROADMAP](../ROADMAP.md).
+
 This plan uses the ICC dependency graph and the local source audit of Eshkol,
 Noesis, semiclassical_qllm, and attention.
 
