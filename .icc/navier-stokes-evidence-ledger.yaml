@@ -161,30 +161,27 @@ rows:
   paper_ref: (4.20)
   operation: Form t_s, v_s, P_c, J_c from the radial shear and integrated inviscid contribution
   gate: ns_cone_condition_equivalence
-  status: ANALYTIC-ONLY
-  programs: []
-  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
-    program exercises this row in v1.3.5
+  status: EXACT
+  programs: [ns_cone_condition_equivalence]
+  missing_capability: null
 - id: ns-evidence-017
   row: 17
   section: '2.3'
   paper_ref: (4.21)
   operation: Evaluate U(P_c,J_c) and test the relaxed cone condition
   gate: ns_cone_condition_equivalence
-  status: ANALYTIC-ONLY
-  programs: []
-  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
-    program exercises this row in v1.3.5
+  status: EXACT
+  programs: [ns_cone_condition_equivalence]
+  missing_capability: null
 - id: ns-evidence-018
   row: 18
   section: '2.3'
   paper_ref: Lemma 4.5; (4.22)
   operation: Certify the cone-condition equivalence via a quadratic root computation
   gate: ns_cone_condition_equivalence
-  status: ANALYTIC-ONLY
-  programs: []
-  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
-    program exercises this row in v1.3.5
+  status: EXACT
+  programs: [ns_cone_condition_equivalence]
+  missing_capability: null
 - id: ns-evidence-019
   row: 19
   section: '2.3'
@@ -201,10 +198,9 @@ rows:
   paper_ref: (4.23)
   operation: Rewrite the cone in stress coordinates, homogeneous in T0
   gate: ns_cone_condition_equivalence
-  status: ANALYTIC-ONLY
-  programs: []
-  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
-    program exercises this row in v1.3.5
+  status: EXACT
+  programs: [ns_cone_condition_equivalence]
+  missing_capability: null
 - id: ns-evidence-021
   row: 21
   section: '2.3'
@@ -220,11 +216,10 @@ rows:
   section: '2.4'
   paper_ref: Lemma A.1
   operation: Certify the moment matrix B_ij is invertible for distinct exponents
-  gate: ns_moment_matrix_invertible
-  status: ANALYTIC-ONLY
-  programs: []
-  missing_capability: symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection
-    build item)
+  gate: ns_heat_exterior_exact
+  status: EXACT
+  programs: [ns_heat_exterior_exact]
+  missing_capability: null
 - id: ns-evidence-023
   row: 23
   section: '2.4'
@@ -270,11 +265,10 @@ rows:
   section: '2.4'
   paper_ref: Lemma A.6; (A.33)-(A.38)
   operation: Build the heat exterior K(r,t) and verify its ODE and derivative values
-  gate: ns_heat_exterior_recurrence
-  status: ANALYTIC-ONLY
-  programs: []
-  missing_capability: the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example
-    program exercises this row in v1.3.5
+  gate: ns_heat_exterior_exact
+  status: EXACT
+  programs: [ns_heat_exterior_exact]
+  missing_capability: null
 - id: ns-evidence-028
   row: 28
   section: '2.4'

@@ -3758,6 +3758,45 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endif()
 endif()
 
+# AI-discovered-algorithm witness examples: each program is a compile-and-run
+# exact-verdict check reproducing a published machine-discovered construction
+# (AlphaTensor rank-47/rank-23 F2 matrix multiplication, a FunSearch cap-set
+# lower bound, and a Jacobian-conjecture counterexample's fiber geometry).
+# Same shape as the Navier-Stokes and mathematics-examples blocks above: each
+# program exits nonzero on any failed check and the CTest entries pin the
+# verdict line in JIT and AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(ESHKOL_AI_WITNESS_EXAMPLES
+        alphatensor_rank47_gf2           mathematics_alphatensor_gf2
+        alphatensor_rank23_gf2           mathematics_alphatensor_3x3_gf2
+        funsearch_cap_set_512            mathematics_funsearch_cap_set
+        jacobian_counterexample_fibers   mathematics_jacobian_counterexample)
+    list(LENGTH ESHKOL_AI_WITNESS_EXAMPLES _aiw_len)
+    math(EXPR _aiw_last "${_aiw_len} - 1")
+    foreach(_aiw_i RANGE 0 ${_aiw_last} 2)
+        math(EXPR _aiw_j "${_aiw_i} + 1")
+        list(GET ESHKOL_AI_WITNESS_EXAMPLES ${_aiw_i} _aiw_name)
+        list(GET ESHKOL_AI_WITNESS_EXAMPLES ${_aiw_j} _aiw_file)
+        set(_aiw_src "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_aiw_file}.esk")
+        if(EXISTS "${_aiw_src}")
+            add_test(NAME ${_aiw_name}_jit
+                COMMAND $<TARGET_FILE:eshkol-run> -r "${_aiw_src}")
+            set_tests_properties(${_aiw_name}_jit PROPERTIES
+                TIMEOUT 240
+                ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/ai-witness-jit-cache"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+            add_test(NAME ${_aiw_name}_aot
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_aiw_file}_aot' '${_aiw_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_aiw_file}_aot'")
+            set_tests_properties(${_aiw_name}_aot PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+        endif()
+    endforeach()
+endif()
+
 # Mathematics acceptance tests (tests/math_acceptance/README.md).
 #
 # Each entry states what a mathematics example needs from the compiler and
