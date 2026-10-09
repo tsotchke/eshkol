@@ -7783,11 +7783,20 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
         endif()
     endforeach()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py")
+        # The runtime half needs Node.js; without it the test runs the
+        # generator self-test and reports itself skipped (exit 77).
+        find_program(NODE_EXECUTABLE node)
+        set(_wasm_flat_ad_node_args)
+        if(NODE_EXECUTABLE)
+            set(_wasm_flat_ad_node_args --node ${NODE_EXECUTABLE})
+        endif()
         add_test(NAME wasm_flat_ad_import_test
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py)
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py
+                ${_wasm_flat_ad_node_args})
         set_tests_properties(wasm_flat_ad_import_test PROPERTIES
-            LABELS "toolchain;wasm;imports")
+            LABELS "toolchain;wasm;imports"
+            SKIP_RETURN_CODE 77)
     endif()
 endif()
 
