@@ -158,6 +158,22 @@ scalar):
 (gradient (lambda (x) (* x x)) 3.0)   ;; => 6
 ```
 
+The gradient has the shape of the point. At a rank-2 (or higher) tensor point
+the result is a tensor of that shape, so it combines elementwise with the
+parameter in an update step:
+
+```scheme
+(define W (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(define g (gradient (lambda (w) (tensor-sum (tensor-mul w w))) W))
+(tensor-shape g)                  ;; => (2 3)
+(tensor-sub W (tensor-scale g 0.1))
+;; => #((0.8 1.6 2.4) (3.2 4 4.8))
+```
+
+A vector, list, rank-1 tensor or scalar point keeps the result described
+above. The checks live in
+[`tests/autodiff/gradient_point_shape_test.esk`](../../../tests/autodiff/gradient_point_shape_test.esk).
+
 An input vector may contain exact integers and rationals. Each element is
 classified by its runtime tag before the gradient carrier is seeded, so an
 exact rational is converted by value rather than being read as the address of
@@ -205,6 +221,22 @@ prints with `#(…)` and inner rows print as bare `(…)` — `#((6 0) (0 8))` i
          (vector 1.0 2.0))
 ;; => #((2 1) (1 0))
 ```
+
+A loss that reshapes its point and runs `tensor-matmul` or elementwise
+`tensor-add`/`tensor-sub`/`tensor-mul`/`tensor-div` (broadcast operands
+included) has an exact Hessian: the forward pass carries a jet tensor through
+those operators, keeping the mixed second-order coefficient.
+
+```scheme
+(hessian (lambda (v) (tensor-sum (tensor-mul (reshape v 2 2) (reshape v 2 2))))
+         (vector 1.0 2.0 3.0 4.0))
+;; => #((2 0 0 0) (0 2 0 0) (0 0 2 0) (0 0 0 2))
+```
+
+A nested `gradient` whose outer level is forward mode and whose inner level
+records a reverse-mode tensor value (for example `tensor-mul` or `matmul` of the
+outer parameter with the inner one) raises a catchable error naming the
+operator, rather than returning a zero derivative.
 
 Every point form gives the same answer: `(vector 1.0 2.0)`, `(tensor 1.0 2.0)`
 and `#(1.0 2.0)` all return `#((2 1) (1 0))` for the second example. Points are
