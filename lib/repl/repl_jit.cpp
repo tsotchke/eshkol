@@ -3924,7 +3924,12 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
             incrementEvalCounter();
             typedef int32_t (*EvalFunc)(int32_t, char**);
             EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);
+            // Bracket the evaluation so a continuation captured in it is
+            // resumed only while it is live (see runtime_continuations.cpp).
+            const uint64_t extent =
+                eshkol_continuation_extent_enter(__builtin_frame_address(0));
             int32_t result_value = eval_func(0, nullptr);
+            eshkol_continuation_extent_leave(extent);
             result = new int64_t(result_value);
         }
     } else {
@@ -4467,7 +4472,11 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     typedef int32_t (*EvalFunc)(int32_t, char**);
     EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);
 
+    // Bracket the evaluation so a continuation captured in it is resumed only
+    // while it is live (see runtime_continuations.cpp).
+    const uint64_t extent = eshkol_continuation_extent_enter(__builtin_frame_address(0));
     int32_t result_value = eval_func(0, nullptr);
+    eshkol_continuation_extent_leave(extent);
 
     // CRITICAL: NOW capture s-expression values AFTER execution
     // The entry function has initialized these globals, so now they contain valid values

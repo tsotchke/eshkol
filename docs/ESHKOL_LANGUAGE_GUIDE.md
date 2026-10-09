@@ -594,11 +594,15 @@ procedure has returned, as below.
 
 <!-- doc-example: skip pseudo-code: planned capability for v1.4 on the JIT; re-entry after the capturing procedure has returned -->
 ```scheme
-;; Re-entrant: the continuation outlives the frame that captured it
+;; Re-entrant: the continuation outlives the frame that captured it.
+;; In a program file it includes the later top-level forms, so the
+;; counter stops the re-entry.
 (define k #f)
+(define count 0)
 (define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))
-(f)        ;; -> 2
-(k 10)     ;; -> 11, re-entering f after it returned
+(display (f)) (newline)            ;; prints 2, then 11 and 21 on re-entry
+(set! count (+ count 1))
+(if (< count 3) (k (* count 10)))  ;; re-enter f after it returned
 ```
 
 ### Dynamic Wind

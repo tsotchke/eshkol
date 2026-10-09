@@ -1,0 +1,8 @@
+{
+  "description": "(tensor (2 2) ...): the unquoted shape is a call with an integer-literal operator. A source-located diagnostic at the literal, a nonzero compile exit, no binary, and no internal backtrace.",
+  "compile": "fail",
+  "diagnostics": [
+    {"contains": "Cannot call an integer literal", "span": {"file": "input.esk", "line": 5, "col": 20}}
+  ],
+  "forbidden": ["requires variable or inline lambda", "eshkol-run  ", "fatal signal"]
+}

@@ -1,0 +1,37 @@
+;; `length` takes a proper list (R7RS 6.4). Any other operand raises a
+;; catchable condition naming `length`; it never walks past the list.
+;; car/cdr of an empty vector or tensor raise "not a pair", like any other
+;; non-pair.
+
+(define (check name got want)
+  (display name)
+  (if (equal? got want)
+      (display ": PASS")
+      (begin (display ": FAIL got ") (write got) (display " want ") (write want)))
+  (newline))
+
+(define (length-of x)
+  (guard (e ((error-object? e) (error-object-message e))
+            (#t 'raised))
+    (length x)))
+
+(define (try thunk)
+  (guard (e ((error-object? e) (error-object-message e))
+            (#t 'raised))
+    (thunk)))
+
+(check "proper list" (length-of '(1 2 3)) 3)
+(check "empty list" (length-of '()) 0)
+(check "tensor" (length-of (linspace -1 1 1000)) "length: argument is not a proper list")
+(check "tensor literal" (length-of #(1.0 2.0 3.0)) "length: argument is not a proper list")
+(check "vector" (length-of (vector 1 2 3)) "length: argument is not a proper list")
+(check "improper list" (length-of '(1 2 . 3)) "length: argument is not a proper list")
+(check "number" (length-of 5) "length: argument is not a proper list")
+(check "string" (length-of "abc") "length: argument is not a proper list")
+
+(check "cdr of empty vector" (try (lambda () (cdr (vector)))) "cdr: argument is not a pair")
+(check "car of empty vector" (try (lambda () (car (vector)))) "car: argument is not a pair")
+(check "cdr past a tensor's last element"
+       (try (lambda () (cdr (cdr #(1.0))))) "cdr: argument is not a pair")
+(check "car past a tensor's last element"
+       (try (lambda () (car (cdr #(1.0))))) "car: argument is not a pair")
