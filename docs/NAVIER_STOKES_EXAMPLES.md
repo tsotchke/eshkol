@@ -1,12 +1,18 @@
 # Navier-Stokes examples: residuals, scaling laws and similarity profiles
 
 <!-- example-catalogue:ns-summary:start -->
-The authored matrix contains **12 programs, 14 criteria and 28 CTest entries**, each with native JIT and AOT variants, under `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Localization supplies three criteria. The actual run supplies outcomes and timing; this documentation update reports source inspection only.
+The authored matrix contains **12 programs, 14 criteria and 28 CTest entries**, each with native JIT and AOT variants, under `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Localization supplies three criteria. Every one of these 12 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **12** completed in both modes; **12** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes. Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
 <!-- example-catalogue:ns-summary:end -->
 
 Source: an external reference construction for the three-dimensional
-Navier-Stokes equations,
+Navier-Stokes equations, OpenAI, "Finite time blowup for Navier–Stokes" (2026),
 <https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf>.
+Its Theorem 1.1 states that for every viscosity `nu > 0` there are a smooth force
+compactly supported in space and time, a compact set `K` and smooth velocity and
+pressure fields on `R^3 x [0, 1)`, starting from rest and supported in `K`,
+solving the forced incompressible equations with uniformly bounded kinetic
+energy while `||u(t)||_inf` is unbounded as `t -> 1`. The PDF carries no date
+line; the year is the one the program headers give.
 Section, equation and lemma numbers cited below (e.g. "Lemma 4.5", "(4.20)")
 refer to that source.
 
@@ -28,20 +34,20 @@ nonzero if any check failed.
 ## What each program covers
 
 <!-- example-catalogue:ns-table:start -->
-| Program | Paper sections | Implemented calculation | CTest criteria |
-|---|---|---|---|
-| [mathematics_navier_stokes_first_principles.esk](../examples/mathematics_navier_stokes_first_principles.esk#L1) | 2.1, 3.1, 4.1 ((4.9), (4.12), (4.13)) | Solve an exact exponent linear system with free h; interpolate the leading operator, solve finite profile recurrences and compare leading physical residuals. | `ns_leading_profile_balance` |
-| [mathematics_navier_stokes_heat_exterior.esk](../examples/mathematics_navier_stokes_heat_exterior.esk#L1) | 2.3, Appendix A, Lemma A.1 | Solve curvature-corrected radial heat coefficients by triangular recursion, invert a distinct-power moment matrix and inspect near-terminal-time behavior. | `ns_heat_exterior_exact` |
-| [mathematics_navier_stokes_localization.esk](../examples/mathematics_navier_stokes_localization.esk#L1) | 10, Proposition 10.1, Lemmas 10.2-10.4, Corollary 10.6 | Cancel a temporal pole with a cutoff polynomial, guard spatial bumps, periodize within one cell and differentiate a discrete energy model. | `ns_localization_smooth_extension`, `ns_energy_dissipation_bounds`, `ns_torus_corollary_scaling` |
-| [mathematics_navier_stokes_mean_corrections.esk](../examples/mathematics_navier_stokes_mean_corrections.esk#L1) | 8, Lemma 8.2 and Lemma 8.7 | Build supported divergence-free bump fields, compute a five-moment generalized Vandermonde matrix and solve amplitudes with exact_linalg. | `ns_five_moment_vandermonde` |
-| [mathematics_navier_stokes_oscillatory_realization.esk](../examples/mathematics_navier_stokes_oscillatory_realization.esk#L1) | 6, 7, 2.2 | Construct trigonometric polynomials on a four-point auxiliary torus, extract zero-mode fluxes and solve a two-component stress matrix. | `ns_oscillatory_zero_mode` |
-| [mathematics_navier_stokes_pulse_growth.esk](../examples/mathematics_navier_stokes_pulse_growth.esk#L1) | Introduction ([9]), 2.2 | Derive the affine-background wavevector law and log-amplitude rate, bisect the crossover and integrate the amplitude by RK4. | `ns_pulse_growth_crossover` |
-| [mathematics_navier_stokes_pulse_stress.esk](../examples/mathematics_navier_stokes_pulse_stress.esk#L1) | 2.2, 3.2 (Figure 4), 3.3 and 7 | Average angular products, solve a rational two-family covariance system and integrate one transverse mode on an affine background. | `ns_covariance_two_family_solve` |
-| [mathematics_navier_stokes_residual_ladder.esk](../examples/mathematics_navier_stokes_residual_ladder.esk#L1) | 9, (9.8), (9.18), Propositions 9.3 and 9.6 | Compute the rational exponent ladder and cancel three Taylor coefficients of the scalar residual with linear term 2w and quadratic w². | `ns_residual_exponent_ladder` |
-| [mathematics_navier_stokes_residual_order_n.esk](../examples/mathematics_navier_stokes_residual_order_n.esk#L1) | 5, 5.1, equations (5.1)-(5.6) | Apply a fixed linear correction operator to known lower-order forcing; compare Taylor coefficients with derivative-n/factorial extraction. | `ns_residual_order_n_vanishes` |
-| [mathematics_navier_stokes_similarity_scales.esk](../examples/mathematics_navier_stokes_similarity_scales.esk#L1) | 2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7)) | Build the self-similar axisymmetric ansatz, differentiate q’s implicit solve, fit scale exponents and evaluate core energy/physical residual scaling. | `ns_similarity_exponents_solved` |
-| [mathematics_navier_stokes_stress_cone.esk](../examples/mathematics_navier_stokes_stress_cone.esk#L1) | 4.3, Lemma 4.5, Appendix C | Use rational quadratic sign tests, integrate the radial profile equation and reuse an established threshold P_K on constructed stresses. | `ns_cone_condition_equivalence` |
-| [mathematics_navier_stokes_viscosity_scaling.esk](../examples/mathematics_navier_stokes_viscosity_scaling.esk#L1) | 3 (outline), 10.4 equations (10.22)-(10.23) | Assemble time/advection/Laplacian/pressure derivatives by AD for u=(1+t)(y²z,z²x,x²y), p=xyz+tx²; rescale fields and grids. | `ns_viscosity_scaling_exact` |
+| Program | Paper sections | Implemented calculation | CTest criteria | Measured JIT / AOT |
+|---|---|---|---|---|
+| [mathematics_navier_stokes_first_principles.esk](../examples/mathematics_navier_stokes_first_principles.esk#L1) | 2.1, 3.1, 4.1 ((4.9), (4.12), (4.13)) | Solve an exact exponent linear system with free h; interpolate the leading operator, solve finite profile recurrences and compare leading physical residuals. | `ns_leading_profile_balance` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-first-principles) |
+| [mathematics_navier_stokes_heat_exterior.esk](../examples/mathematics_navier_stokes_heat_exterior.esk#L1) | 2.3, Appendix A, Lemma A.1 | Solve curvature-corrected radial heat coefficients by triangular recursion, invert a distinct-power moment matrix and inspect near-terminal-time behavior. | `ns_heat_exterior_exact` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-heat-exterior) |
+| [mathematics_navier_stokes_localization.esk](../examples/mathematics_navier_stokes_localization.esk#L1) | 10, Proposition 10.1, Lemmas 10.2-10.4, Corollary 10.6 | Cancel a temporal pole with a cutoff polynomial, guard spatial bumps, periodize within one cell and differentiate a discrete energy model. | `ns_localization_smooth_extension`, `ns_energy_dissipation_bounds`, `ns_torus_corollary_scaling` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-localization) |
+| [mathematics_navier_stokes_mean_corrections.esk](../examples/mathematics_navier_stokes_mean_corrections.esk#L1) | 8, Lemma 8.2 and Lemma 8.7 | Build supported divergence-free bump fields, compute a five-moment generalized Vandermonde matrix and solve amplitudes with exact_linalg. | `ns_five_moment_vandermonde` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-mean-corrections) |
+| [mathematics_navier_stokes_oscillatory_realization.esk](../examples/mathematics_navier_stokes_oscillatory_realization.esk#L1) | 6, 7, 2.2 | Construct trigonometric polynomials on a four-point auxiliary torus, extract zero-mode fluxes and solve a two-component stress matrix. | `ns_oscillatory_zero_mode` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-oscillatory-realization) |
+| [mathematics_navier_stokes_pulse_growth.esk](../examples/mathematics_navier_stokes_pulse_growth.esk#L1) | Introduction ([9]), 2.2 | Derive the affine-background wavevector law and log-amplitude rate, bisect the crossover and integrate the amplitude by RK4. | `ns_pulse_growth_crossover` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-pulse-growth) |
+| [mathematics_navier_stokes_pulse_stress.esk](../examples/mathematics_navier_stokes_pulse_stress.esk#L1) | 2.2, 3.2 (Figure 4), 3.3 and 7 | Average angular products, solve a rational two-family covariance system and integrate one transverse mode on an affine background. | `ns_covariance_two_family_solve` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-pulse-stress) |
+| [mathematics_navier_stokes_residual_ladder.esk](../examples/mathematics_navier_stokes_residual_ladder.esk#L1) | 9, (9.8), (9.18), Propositions 9.3 and 9.6 | Compute the rational exponent ladder and cancel three Taylor coefficients of the scalar residual with linear term 2w and quadratic w². | `ns_residual_exponent_ladder` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-residual-ladder) |
+| [mathematics_navier_stokes_residual_order_n.esk](../examples/mathematics_navier_stokes_residual_order_n.esk#L1) | 5, 5.1, equations (5.1)-(5.6) | Apply a fixed linear correction operator to known lower-order forcing; compare Taylor coefficients with derivative-n/factorial extraction. | `ns_residual_order_n_vanishes` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-residual-order-n) |
+| [mathematics_navier_stokes_similarity_scales.esk](../examples/mathematics_navier_stokes_similarity_scales.esk#L1) | 2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7)) | Build the self-similar axisymmetric ansatz, differentiate q’s implicit solve, fit scale exponents and evaluate core energy/physical residual scaling. | `ns_similarity_exponents_solved` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-similarity-scales) |
+| [mathematics_navier_stokes_stress_cone.esk](../examples/mathematics_navier_stokes_stress_cone.esk#L1) | 4.3, Lemma 4.5, Appendix C | Use rational quadratic sign tests, integrate the radial profile equation and reuse an established threshold P_K on constructed stresses. | `ns_cone_condition_equivalence` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-stress-cone) |
+| [mathematics_navier_stokes_viscosity_scaling.esk](../examples/mathematics_navier_stokes_viscosity_scaling.esk#L1) | 3 (outline), 10.4 equations (10.22)-(10.23) | Assemble time/advection/Laplacian/pressure derivatives by AD for u=(1+t)(y²z,z²x,x²y), p=xyz+tx²; rescale fields and grids. | `ns_viscosity_scaling_exact` | [PASS / PASS](MATHEMATICS_EXAMPLES.md#mathematics-navier-stokes-viscosity-scaling) |
 <!-- example-catalogue:ns-table:end -->
 
 ## What the verdicts certify
@@ -287,6 +293,83 @@ exact crossover to within one integration step. The tail decays (`P(t)` very
 negative at large t). Negative control: zero shear collapses the model's
 amplification terms and gives pure viscous decay with no crossover.
 
+### `mathematics_navier_stokes_mean_corrections.esk`
+
+Section 8 builds compactly supported, divergence-free mean corrections and
+solves five radial moment conditions (Lemma 8.7). Two facts are mechanized and
+then tied together.
+
+- **Divergence-free by construction, checked rather than trusted.** A
+  compactly supported, piecewise-polynomial vector potential is built from
+  guarded bumps, its "curl" is written out, and `div` of the resulting field
+  is an exact zero by `derivative-n` at rational interior points of each
+  azimuthal and axial box, and far from a box. The support cutoff itself is
+  checked: the field is exactly zero outside every box and nonzero inside.
+- **The five-moment solve.** With geometric bump copies
+  `eta_j(x) = a_j^{-1} eta_0(x/a_j)`, `a_j = r^j`, whose power moments are
+  exactly `a_j^p`, the three azimuthal and two axial moment conditions at
+  `lambda = 1` (exponents `(2, -4, -2)` and `(1, -1)`) form generalized
+  Vandermonde systems. `exact-det` certifies them nonsingular and `exact-solve`
+  (`core.exact_linalg`) returns the amplitudes in exact rationals; at
+  `60f345def` they are `(u0 u1 u2) = (1949/945, -3260/189, 3776/945)` and
+  `(s0 s1) = (23/8, -21/8)`, and `M u + T = 0` holds exactly for both blocks.
+- The solved amplitudes weight the five bumps of the first part, so the
+  realized correction field is the one that cancels the defect; it is again
+  exactly divergence free by AD and still compactly supported. Negative
+  controls: a correction placed on the wrong support leaves the nonzero
+  residuals `(-3776/135, 295/8748, 236/1215)` and `(21/8, -7/16)`; an oversized
+  cutoff is nonzero where the correct one vanishes.
+
+### `mathematics_navier_stokes_residual_ladder.esk`
+
+Section 9 improves the residual stage by stage, with residual exponents on the
+ladder of (9.8) and (9.18).
+
+- **The exponent ladder** `sigma_0 = 1/5`, `sigma_{j+1} = sigma_j + 1/10`,
+  `B_j = 1/2 + sigma_j`, `C*_j = 1 + sigma_j` is checked in exact arithmetic for
+  `j = 0..5`, together with the closed form and strict, unbounded growth
+  (`sigma_20 > 2`); the run prints `sigma_0..sigma_3 = (1/5, 3/10, 2/5, 1/2)` and
+  `B_0..B_3 = (7/10, 4/5, 9/10, 1)`.
+- **The coefficient ladder** is a scalar model of the exact increment identity
+  `R(u_B + w, pi_B + p) = R(u_B, pi_B) + L_{u_B}(w, p) + div(w (x) w)`: a linear
+  operator `2w` and a quadratic remainder `w^2` play the roles of `L_{u_B}` and
+  `div(w (x) w)` against a base residual with nonzero coefficients through order
+  4. Each rung probes the map from the new correction coefficient to the
+  order-`j` Taylor coefficient at two points (it is affine, by the splitting
+  argument), interpolates the root exactly, and re-extracts the coefficient with
+  `taylor` to confirm it is the exact rational zero. The solved coefficients are
+  `c1 = 3/2`, `c2 = -1/8`, `c3 = 43/16`; after three rungs orders 1–3 vanish and
+  the order-4 coefficient `59/64` remains, as it should.
+- Negative controls skip each rung in turn and recover exactly the
+  pre-correction coefficient at that order.
+
+### `mathematics_navier_stokes_localization.esk`
+
+Section 10 localizes the construction with smooth cutoffs, proves the energy
+identity, and transports it to the torus (Corollary 10.6). Four independent
+facts, each with a negative control, supply three CTest criteria
+(`ns_localization_smooth_extension`, `ns_energy_dissipation_bounds`,
+`ns_torus_corollary_scaling`).
+
+- **A cutoff cancels a temporal pole.** The uncut field `V(r,t) = r^2/(1-t)^2`
+  has an order-2 pole at `t = 1`; the cutoff `chi(t) = (1-t)^3 (w^2-(t-1)^2)^2`
+  vanishes to order 3, so the product is a polynomial and its Taylor
+  coefficients about `t = 1` at `r = 3` are exact rationals, `(0, -9/16, 0, 9/2, 0)`.
+  The uncut field grows as `900, 90000, 9000000` at `t = 9/10, 99/100, 999/1000`;
+  an under-cancelling cutoff still leaks unbounded growth.
+- **Compact support.** The spatial part of the cutoff force is exactly zero
+  outside its box at every sampled time, nonzero inside, and zero at `t = 1`;
+  an oversized cutoff leaks outside the box.
+- **Periodization onto `T^3 = R^3/Z^3`.** For support radius `1/5 < 1/2` the
+  only nonzero translate inside the fundamental cell is the untranslated one,
+  checked exactly, and `torus-average-2d` (`core.exact_linalg`) gives the same
+  value, `1/3906250000`, for the periodized and the single-cell field; an
+  oversized radius lets aliased translates leak in.
+- **The energy identity.** For a discrete model with the force defined, as in
+  Proposition 10.1, to be the residual `f_k = d_t u_k + nu u_k`, the identity
+  `d/dt (1/2 sum u_k^2) = <f, u> - nu ||u||^2` holds exactly by AD in `t`:
+  both sides are `26/9` at `t0 = 1/3`; dropping the viscous term gives `338/135`.
+
 ## Running them
 
 <!-- example-catalogue:ns-commands:start -->
@@ -333,7 +416,7 @@ mkdir -p .scratch/example-manual
 ctest --test-dir build --output-on-failure -R '^ns_'
 ```
 
-The criterion table above declares `_jit` and `_aot` variants; it is not a receipt that either ran.
+The criterion table above lists the `_jit` and `_aot` variants; the measured outcome of each, at `60f345def`, is in the table's last column and in each program's entry in the [mathematics catalogue](MATHEMATICS_EXAMPLES.md).
 <!-- example-catalogue:ns-commands:end -->
 
 ## Exactness boundaries

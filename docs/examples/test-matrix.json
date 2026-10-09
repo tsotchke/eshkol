@@ -384,5 +384,9 @@
       "examples/wgsl_artifact/generate.esk"
     ]
   },
-  "execution_claim": "No new execution; source inventory and authored registrations only."
+  "execution_claim": {
+    "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+    "source": "docs/examples/measurements.json",
+    "summary": "Every one of these 67 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **67** completed in both modes; **46** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 21 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4."
+  }
 }

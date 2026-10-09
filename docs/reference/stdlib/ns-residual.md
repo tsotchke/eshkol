@@ -241,26 +241,46 @@ smoothness check: no stepping, no truncation error, just the tower.
 
 ```scheme
 (require stdlib)
-(define flow (ns-similarity-field E U V Pi A D h nu))    ; caller-supplied profiles
+;; Illustrative profiles of (X, eta); not the profiles of the reference construction.
+(define h 1/100)
+(define A (+ 1/2 h))
+(define D (- 1/2 h))
+(define (E X eta) (* X (exp (- X))))
+(define (U X eta) (exp (- X)))
+(define (V X eta) 0)
+(define (Pi X eta) (- (* 1/4 (exp (* -2 X)))))
+(define flow (ns-similarity-field E U V Pi A D h 1))
 (define orders (ns-singular-orders flow 1.2 0.3 1))
-(display orders) (newline)   ; e.g. #(0 #f 0) -- some components fail at tau=0
+(display orders) (newline)
+```
+```
+#(0 0 0)
 ```
 
-## Known defects worked around here (not fixed by this module)
+Every component is already nonzero at `tau = 0`: these profiles do not solve
+the equations at that point, which is what an ansatz search reads off. A
+component that vanished through the probed order would show `#f`.
 
-- **`derivative` at an exact rational seed** returns 0 when the
-  differentiand closes over a non-integer exact-rational captured
-  argument. Every single-variable partial in this module goes through
-  `derivative-n`, never bare `derivative` — see `nsr-d1`/`nsr-d2` in the
-  source.
-- **`derivative-n` on a seed-independent differentiand** can come back as
-  an inexact zero even at an exact rational seed. `nsr-dn` snaps that zero
-  back to exact.
-- **Nested AD beyond one order-2 level** (this module's own discovery —
-  see "AD-nesting limit" above): `ns-residual-tau-series` and
-  `ns-force-smoothness-probe` cap `order` at 1 rather than risk it.
-- `(expt 1/3 50)` returning `0` (repeated exact multiplication) and
-  `#(...)`-literal auto-promotion to f64 tensors are general Eshkol
-  pitfalls, not specific to this module — see
+## How this module calls AD
+
+Every single-variable partial in this module goes through `derivative-n`,
+never bare `derivative` — see `nsr-d1`/`nsr-d2` in the source — and `nsr-dn`
+returns a zero result as an exact `0`. Both exact-rational behaviours are
+pinned by `tests/ad/exact_rational_derivative_test.esk`. At `60f345def`,
+`(derivative (g 3/7) 2/5)` with `(define (g a) (lambda (x) (* a x x)))`
+prints `12/35`, and `(derivative-n (lambda (x) 5) 1/3 1)` prints an exact `0`.
+
+- **`derivative` at an exact rational seed** returns the exact derivative when
+  the differentiand closes over a non-integer exact-rational captured
+  argument (`12/35` above).
+- **`derivative-n` on a seed-independent differentiand** returns an exact
+  zero at an exact rational seed.
+- **Any order.** `ns-residual-tau-series` and `ns-force-smoothness-probe`
+  accept any `order`; the nesting described under "Nesting" above handles
+  it: `(ns-residual-tau-series flow 1 0 4)` for the `u_r = r^2 t`
+  example returns `(3/2 -5/2 2 0 0)` for the radial component.
+- `(expt 1/3 50)` returns the exact `1/717897987691852588770249` at
+  `60f345def`. `#(...)` literals of plain numbers auto-promote to f64 tensors
+  by design, so flows are built with `vector` — see
   `docs/breakdown/EXACT_ARITHMETIC.md` and `core.exact_linalg`'s own
-  documentation of the latter.
+  documentation.
