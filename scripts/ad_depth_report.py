@@ -58,11 +58,10 @@ BASELINE = {
     ("gradn", "vecref"): 3,
     ("gofd", "vecref"): 8,        # exact through the full generated ladder
     ("jacod", "vecref"): 8,       # forward-over-reverse fix, ESH-0120
-    ("hessod", "vecref"): 1,      # depth 1 fixed; deeper cells remain bounded
+    ("hessod", "vecref"): 8,      # exact through the full generated ladder
 }
 TRACK = {
     ("gradn", "vecref"): "ESH-0122",
-    ("hessod", "vecref"): "ESH-0121",
 }
 
 

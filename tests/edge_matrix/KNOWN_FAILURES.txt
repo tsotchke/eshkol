@@ -10,28 +10,9 @@
 # (by #117 quote-dispatch-family and #116 top-level eval-once). Their former
 # allowlist rows (pair005/006/007/008/009/010, pair070, pair082, pair096,
 # pair098/099/100/101, pair144-149) now PASS and have been pruned so a
-# regression would fail the sweep. Only EM-5 remains open.
-
-# EM-5: apply degrades char arguments to raw integers (still open;
-# repro tests/edge_matrix/found/EM5_apply_char_arg_becomes_int.esk).
-pair060_chars__first_class jit
-pair060_chars__first_class aot
-pair065_chars__variadic jit
-pair065_chars__variadic aot
-
-# EM-8 (tranche 2, ESH-0114): eqv?/equal? on rational + complex numbers
-# return #f for numerically identical operands (edge-chk uses equal?; the
-# numeric_tower rational_third producer trips it). Repro:
-# tests/edge_matrix/found/EM8_eqv_equal_rational_complex.esk
-pair156_numeric_tower__first_class jit
-pair156_numeric_tower__first_class aot
-pair157_numeric_tower__set_bang jit
-pair157_numeric_tower__set_bang aot
-pair158_numeric_tower__shadowing jit
-pair158_numeric_tower__shadowing aot
-pair159_numeric_tower__tail_position jit
-pair159_numeric_tower__tail_position aot
-pair160_numeric_tower__toplevel jit
-pair160_numeric_tower__toplevel aot
-pair161_numeric_tower__variadic jit
-pair161_numeric_tower__variadic aot
+# regression would fail the sweep.
+#
+# EM-5 (chars first_class/variadic, pair060/pair065) and EM-8 (numeric_tower
+# eqv?/equal? on rational + complex operands, pair156-161) have likewise
+# been re-verified as passing under both JIT and AOT and pruned from this
+# list; a regression in either family fails the sweep.

@@ -3656,6 +3656,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                     "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ns_file}_aot' '${_ns_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ns_file}_aot'")
             set_tests_properties(${_ns_name}_aot PROPERTIES
                 TIMEOUT 240
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
         endif()
@@ -3720,6 +3721,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                     "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot' '${_ipm_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot'")
             set_tests_properties(${_ipm_name}_aot PROPERTIES
                 TIMEOUT 240
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
         endif()
@@ -8702,7 +8704,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                     "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_vm_cohomology_example}.esk")
             set_tests_properties(vm_${_vm_cohomology_example} PROPERTIES
                 TIMEOUT 1800
-                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|FRAME OVERFLOW|ERROR:")
         endforeach()
