@@ -2,7 +2,7 @@
   "name": "eshkol",
   "displayName": "Eshkol",
   "description": "Language support for Eshkol — a compiled functional language with tensors, autodiff, and GPU acceleration",
-  "version": "1.1.0",
+  "version": "1.3.6",
   "publisher": "tsotchke",
   "license": "MIT",
   "engines": {

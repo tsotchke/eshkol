@@ -9,7 +9,7 @@ Two numbers, and neither is hardcoded in prose: the **live surface total** is
 whatever `language_surface.json` holds (regenerated from compiler sources, so it
 grows the moment a builtin lands), and the **enforced floor** is
 `coverage_policy.json`'s `minimum_covered`, which only ever increases and is
-1,078 as of the v1.3.4 line. A surface that has grown past the floor is not a
+1,116 at v1.3.6-evolve (with `minimum_covered_fraction` 1.0). A surface that has grown past the floor is not a
 failure — it is the next ratchet.
 
 ## Artifacts
@@ -28,6 +28,7 @@ Collect evidence and regenerate everything:
 
 ```sh
 python3 scripts/gen_language_surface.py     # -> language_surface.json
+python3 scripts/gen_language_surface.py --check   # manifest matches compiler source
 # With both a default test build and an opt-in quantum build present, this
 # creates fresh isolated traces, runs the complete deterministic corpus, and
 # proves the 100% policy without reusing evidence from an earlier shell:
@@ -63,7 +64,7 @@ regenerated after the last ratchet.
 
 ## How the manifest is built (ground truth)
 
-`gen_language_surface.py` parses four sources directly so the surface can never
+`gen_language_surface.py` parses five sources directly so the surface can never
 silently drift from the compiler:
 
 1. **Native first-class closure table** — `lib/backend/eshkol_compiler.c`
@@ -71,7 +72,8 @@ silently drift from the compiler:
 2. **Bytecode VM table** — `lib/backend/eshkol_vm.c` `BUILTINS[]`.
 3. **LLVM AOT dispatch** — every `func_name == "name"` in
    `lib/backend/llvm_codegen.cpp`. This is the AOT intrinsic surface and adds
-   ~299 builtins absent from the id-tables (R7RS IO/mutation, the NN/optimizer/
+   240 builtins absent from the id-tables at v1.3.6-evolve (`counts.builtins_aot_only`
+   in `language_surface.json`) (R7RS IO/mutation, the NN/optimizer/
    linalg surface, atomics, the extended numeric tower).
 4. **Special forms** — `lib/frontend/parser.cpp` `get_operator_type`
    (keyword → `eshkol_op_t`) plus the directly-dispatched forms
@@ -193,7 +195,7 @@ criterion. `--trace PATH` writes them as fresh JSONL evidence:
 ```json
 {"kind": "runtime_event", "event": "language_surface_coverage",
  "name": "language_surface_coverage", "value": "PASS",
- "covered_fraction": 1.0, "covered": 1078, "surface_total": 1078,
+ "covered_fraction": 1.0, "covered": 1116, "surface_total": 1116,
  "status": "PASSED"}
 ```
 

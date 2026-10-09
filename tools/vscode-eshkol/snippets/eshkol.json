@@ -68,9 +68,9 @@
   "Tensor": {
     "prefix": "tensor",
     "body": [
-      "(tensor (${1:dims}) ${0:values})"
+      "(reshape (tensor ${2:values}) ${1:dims})$0"
     ],
-    "description": "Create a tensor"
+    "description": "Create a tensor from its elements and reshape it to the given dimensions"
   },
   "Gradient": {
     "prefix": "grad",

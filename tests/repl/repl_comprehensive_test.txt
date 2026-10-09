@@ -359,16 +359,16 @@ y
 ; SECTION 13: Automatic Differentiation
 ; ============================================================================
 
-; TEST: Differentiate x^2
-(differentiate (lambda (x) (* x x)) 'x)
+; TEST: Differentiate x^2 (symbolic: expression, then variable, both unquoted)
+(diff (* x x) x)
 ; EXPECT: (* 2 x)
 
 ; TEST: Differentiate constant
-(differentiate (lambda (x) 5) 'x)
+(diff 5 x)
 ; EXPECT: 0
 
 ; TEST: Differentiate linear
-(differentiate (lambda (x) (* 3 x)) 'x)
+(diff (* 3 x) x)
 ; EXPECT: 3
 
 ; TEST: Forward-mode AD - derivative of x^2 at x=3
@@ -406,9 +406,9 @@ y
 ; SECTION 15: String Operations
 ; ============================================================================
 
-; TEST: String literal
+; TEST: String literal (the REPL displays a string result without quotes)
 "hello"
-; EXPECT: "hello"
+; EXPECT: hello
 
 ; TEST: String length
 (string-length "hello")
@@ -416,7 +416,7 @@ y
 
 ; TEST: String append
 (string-append "hello" " " "world")
-; EXPECT: "hello world"
+; EXPECT: hello world
 
 ; ============================================================================
 ; SECTION 16: Type Predicates
