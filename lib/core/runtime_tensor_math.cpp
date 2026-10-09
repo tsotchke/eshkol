@@ -470,6 +470,50 @@ extern "C" eshkol_tensor_t* eshkol_jet_tensor_matmul(arena_t* arena,
     return result;
 }
 
+/* The tensor a tagged value names, or nullptr (HEAP_PTR + TENSOR subtype). */
+static eshkol_tensor_t* tagged_tensor_or_null(const eshkol_tagged_value_t* v) {
+    if (!v || (uint8_t)(v->type & 0x0F) != ESHKOL_VALUE_HEAP_PTR || !v->data.ptr_val)
+        return nullptr;
+    void* ptr = (void*)(uintptr_t)v->data.ptr_val;
+    const eshkol_object_header_t* header = ESHKOL_GET_HEADER(ptr);
+    if (!header || header->subtype != HEAP_SUBTYPE_TENSOR) return nullptr;
+    return static_cast<eshkol_tensor_t*>(ptr);
+}
+
+/* A gradient has the shape of the point it is taken at: (gradient f W) for a
+ * (3 4) tensor W is a (3 4) tensor, so it combines elementwise with W (the
+ * update W - lr*grad). The gradient kernels accumulate the partials in
+ * row-major order over the point's elements; this gives that buffer the
+ * point's shape. The result is a fresh descriptor over the same elements, so
+ * no other holder of the gradient buffer sees its shape change. Points of
+ * rank 1, scalars, Scheme vectors and lists, and any result that is not a
+ * rank-1 tensor of the point's size, are returned unchanged. */
+extern "C" void eshkol_gradient_in_point_shape(arena_t* arena,
+                                               const eshkol_tagged_value_t* result,
+                                               const eshkol_tagged_value_t* point,
+                                               eshkol_tagged_value_t* out) {
+    if (!out) return;
+    if (!result) return;
+    *out = *result;
+    const eshkol_tensor_t* pt = tagged_tensor_or_null(point);
+    const eshkol_tensor_t* gt = tagged_tensor_or_null(result);
+    if (!pt || !gt || pt->num_dimensions <= 1 || gt->num_dimensions != 1 ||
+        gt->total_elements != pt->total_elements || !pt->dimensions)
+        return;
+    if (!arena) arena = get_global_arena();
+    auto* shaped = arena_allocate_tensor_with_header(arena);
+    if (!shaped) return;
+    const size_t dims_bytes = (size_t)pt->num_dimensions * sizeof(uint64_t);
+    shaped->dimensions = (uint64_t*)arena_allocate(arena, dims_bytes);
+    if (!shaped->dimensions) return;
+    std::memcpy(shaped->dimensions, pt->dimensions, dims_bytes);
+    shaped->num_dimensions = pt->num_dimensions;
+    shaped->elements = gt->elements;
+    shaped->total_elements = gt->total_elements;
+    shaped->dtype = gt->dtype;
+    out->data.ptr_val = (uint64_t)(uintptr_t)shaped;
+}
+
 extern "C" eshkol_tensor_t* eshkol_tensor_layer_norm_dual(
     const eshkol_tensor_t* input,
     const eshkol_tagged_value_t* gamma,
