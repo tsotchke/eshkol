@@ -537,7 +537,48 @@ workflow's independent exact-commit evidence and ICC ready/100 verdict. The rele
 includes shared native REPL input across line-editing backends, required native
 image I/O in release builds, certified mixed exact/inexact interval conversion,
 and the confirmed AOT loop memory fixes; experimental features remain in the
-separate integration build.
+separate integration build. The per-change record is the `[1.3.6-evolve]`
+section of [CHANGELOG.md](CHANGELOG.md); the conditional scope it started from
+is in the [release ladder](docs/RELEASE_LADDER.md).
+
+**Flagship: the mathematics examples are documented as what they establish —
+SHIPPED (#742).** `docs/examples/catalogue.json` covers all 67 example programs,
+46 of them mathematics programs, with algorithm, arithmetic, executable checks,
+prerequisites and limits, and generates [docs/EXAMPLES.md](docs/EXAMPLES.md) and
+[docs/MATHEMATICS_EXAMPLES.md](docs/MATHEMATICS_EXAMPLES.md). Each entry states
+whether its verdict is an exact finite construction, a bilinear or polynomial
+identity certificate, a finite formal expansion or a numerical comparison. The
+public AI-derived witnesses (the Jacobian-conjecture counterexample, AlphaTensor
+rank-23 and rank-47 over F₂, the FunSearch 512-cap in AG(8,3)) are narrated in
+[docs/AI_MATHEMATICS_EXAMPLES.md](docs/AI_MATHEMATICS_EXAMPLES.md), and the
+twelve Navier–Stokes programs (14 criteria, 28 native JIT/AOT CTest entries) in
+[docs/NAVIER_STOKES_EXAMPLES.md](docs/NAVIER_STOKES_EXAMPLES.md). The advanced
+mathematics press copy (#726) states the limits of each example.
+
+- [x] Mixed exact/inexact rigorous interval arithmetic preserves containment;
+      indeterminate non-finite endpoints fail closed (#727)
+- [x] AOT per-iteration RSS bounded for named-let exit, a discarded numeric
+      tensor and direct literal `tensor-dot`, with the original million-iteration
+      report as a regression fixture (#729, #735)
+- [x] Package contract documented: binary packages support generated-program
+      runtime linkage; compiler embedding requires a source build, and the
+      packaged embedding SDK stays a v1.4.1 deliverable (#729)
+- [x] Constructor and handler allocation failures checked, with scoped
+      failure injection and IR controls (#721)
+- [x] Hosted ESKM v2 available as a doubly gated experiment; ESKM v1 remains
+      the validated default (#722)
+- [x] Native executable `main` signature checked; nullary file-JIT entries keep
+      their identity (#724)
+- [x] Shared native REPL input across line-editing backends; native image I/O
+      required for release builds (#737)
+- [x] cuBLAS loaded only when GPU GEMM needs it (#740)
+- [x] Exact numeric browser runtime; site startup restored (#744)
+- [x] SHA-256/HMAC over complete UTF-8 inputs; closed output-string ports
+      release their buffers and registry slots (#748)
+- [x] Outside-contributor ARM64 CUDA tooling integrated; AOT linking keeps the
+      configured C++ driver name (#732, #750)
+- [x] Publication bound to complete source-bound measurements; coverage and
+      full measurements run as separate bounded steps (#742, #743, #746, #749)
 
 ## v1.3.5-evolve — the consolidation release - SHIPPED
 
@@ -1108,7 +1149,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 | **v1.3.0-evolve** | Jul 2026 | Evolve | **SHIPPED.** R7RS libraries, string interpolation; arbitrary-order AD **P0–P12 complete** (Taylor towers, exact coefficients, GUW multivariate, reverse-over-Taylor, tensor towers, Taylor models, sparse tensors — closes ESH-0118, delivered ahead of the original P1-only plan); full R7RS conformance (34/34 vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent adversarial-testing infrastructure |
 | **v1.3.1 → v1.3.4-evolve** | Jul-Aug 2026 | Evolve | **SHIPPED 2026-08-19** (tag `v1.3.4-evolve`, commit `694c3179`). v1.3.1: flat memory for resident/daemon loops, iterative reader. v1.3.2: thread-safe regions, deeper evacuation. v1.3.3: opt-in differentiable quantum computing (Moonlab VQE/CHSH), ML-KEM post-quantum crypto, `core.dbsp` incremental dataflow, 100% executable language coverage. v1.3.4: automatic per-iteration reclamation matching explicit regions (ESH-0214e), race-free `parallel-map`, exact gradients through every callable form on the LLVM backend (the bytecode VM's `divergence`/`curl` were still central-difference FD at the v1.3.4 cut; converted to exact forward duals in v1.3.5-evolve by #487), shortest-round-trip float printing, checked `(the <type> expr)` ascription + predicate narrowing, linear `Qubit`, high-precision numerics (Ozaki-II exact/fast GEMM, mixed-precision `linear-solve`, `i128`), Moonlab v1.2.0 (QGT/QNG), full hosted-VM tensor-matmul parity. Plus the consumer-hardening correctness wave: fatal compile diagnostics, tag-decided exactness on both engines, exact-point differentiation, same-unit `define-library` on all three back ends, a real `--shared-lib` (#377), the portable event loop, the fixed-point/`i128` accumulation engine, region handles, **the qLLM bridge implementation (#386/#392 — the completion the v1.1 line above claimed early)**, and embedding/Fréchet-mean backward passes. **Release gates** (RELEASE_NOTES.md, measured on the release cut): aggregate suite 45/45 suites / 770 tests; CTest 190/190 (remeasured 2026-08-25 against `4bf871a0`, `evidence/audit/07_ctest.log`; corrects the stale 183/183 figure); executable language coverage 1,106/1,106 (100.0%, canonical count — corrects the stale 1,091/1,091 figure, conformity audit item d3); SICP full-book gate 88/88; reference-Scheme differential 34/34 AGREE vs. chibi-scheme 0.12.0; VM parity differential 188/188 (remeasured 2026-08-25, `evidence/audit/06_vm_parity.log`; corrects "184/184", the corpus-differential count, not the full manifest) over a 956-row manifest (581/331/44) plus 328 further names in `tests/vm_parity/SURFACE_BASELINE.tsv` outside that ledger; qLLM oracle gate 10/10; ICC readiness 100, verdict `ready` |
 | **v1.3.5-evolve** | 2026-09-22 | Consolidation | **SHIPPED 2026-09-22** (tag `v1.3.5-evolve`). A parser with no recursion budget (16,000 levels on an 8 MiB stack, explicit continuation stack through parse, type check and codegen); dense tensor autodiff executing end to end (SW-48); `tensor-apply` calling the callable rather than a builtin name; the bytecode VM reclaiming memory under `with-region` (VM OALR Stage-1 evacuator, #461); multi-shot continuations on all three engines (#491); certified enclosures; one constant-curvature geometry implementation (#498, #499); validated ESKM v1 model I/O with atomic publication; compiler assurance measured against deliberate mutations; the exact tower and `core.exact_linalg`; every callable builtin first-class on both engines; EREPL v1; LLVM 18-24. CTest, parity and coverage are measured at the tagged commit and recorded in the release notes. |
-| **v1.3.6 (conditional)** | — | Evolve | Narrow post-tag correction only: #727 interval work on reproduction; published package documentation/contract correction for the failing cold embedding consumer; #721 allocation only after independent gates; #722 experimental. Full embedding SDK is a separate v1.4.1 deliverable. See [the reconciled release ladder](docs/RELEASE_LADDER.md). |
+| **v1.3.6-evolve** | 2026-10-08 | Evolve | **PREPARED FOR PUBLICATION.** The 46 mathematics examples documented with the scope of each result (#742); certified mixed exact/inexact intervals (#727); AOT loop RSS for the confirmed shapes (#729); the package contract documented (embedding SDK stays v1.4.1); checked allocation failures (#721); ESKM v2 as a gated experiment (#722); exact browser numerics (#744); UTF-8-complete hashing and reusable output-string ports (#748); on-demand cuBLAS (#740); measurement-bound publication. See [the reconciled release ladder](docs/RELEASE_LADDER.md). |
 | **v1.4.0-connection** | 2026-10-15 (prior target; review at joint rebaseline) | Systems profile | TCP/UDP/TLS, Unix sockets, HTTP/WebSocket, linear resource types; WebGPU dispatch (#562); the mesh as primary CI executor (#529); the nested-differentiation carrier rewrite (SW-154); W5 interop wave 2; ADR-0017 SBLC first slice; W6 PJRT spike and XLA multi-device single-host; native collectives over sockets pending owner R7 ruling |
 | **v1.4.1** | 2026-11-06 (prior target; review at joint rebaseline) | ABI | OALR ABI v2 Phase B, ADR-0012 object-ABI stages 3-6, PGO training workload, `vm_run.c` and `bignum.cpp` decomposition |
 | **v1.4.5-accelerate** | Joint rebaseline required (old target Q1 2027) | Device runtime | Nine XLA stages through accelerator training/inference; publish before v1.5.0; not shipped |
@@ -1301,7 +1342,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
 ---
 
-*Last Updated: 2026-09-28 (release ladder reconciliation — v1.3.6 conditional
+*Last Updated: 2026-10-09 (v1.3.6-evolve documentation pass — the v1.3.6
+section records what the release contains, each item with its pull request,
+and its timeline row replaces the conditional scope; the README headline view
+follows the publication order v1.4.0 → v1.4.1 → v1.4.5 → v1.5.0. Previously
+2026-09-28, release ladder reconciliation — v1.3.6 conditional
 scope, ADR-0000 attainment corrected to 2/14 + 1 partial, ADR-0012 remaining
 Stages 3-6, v1.4.5 publication before v1.5.0 with joint rebaseline, branch
 portfolio findings and gate/ICC gaps recorded. The v1.3.5 source was internally
@@ -1330,4 +1375,4 @@ quantum/formal-verification (v2.0) arc, and its successor, the unified
 `differentiate` primitive (W1), is the v2.0 endpoint. See
 [`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md).*
 
-*Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 and v1.1.13 additions (production VM, web platform, browser AD, Windows ARM64, mobile site). The v1.3 line runs through v1.3.5-evolve, internally released 2026-09-22 with its verification record bound to the tagged commit. The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), consolidation (v1.3.5), networking & resources (v1.4.0-connection), the ABI release (v1.4.1), accelerator device runtime (v1.4.5-accelerate), neuro-symbolic intelligence (v1.5.0-intelligence), symbolic reasoning (v1.6.0-reasoning), program synthesis (v1.7.0-synthesis), platform & hardware (v1.8.0-platform), advanced type theory (v1.9.0-types), and quantum computing with formal verification (v2.0-starlight). v1.4.5 must publish before v1.5.0; their previous target windows require joint rebaseline — W6's development work may proceed in parallel, but publication order is fixed.*
+*Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 and v1.1.13 additions (production VM, web platform, browser AD, Windows ARM64, mobile site). The v1.3 line runs through v1.3.5-evolve, internally released 2026-09-22 with its verification record bound to the tagged commit, and v1.3.6-evolve, prepared for publication with its measurements bound to the exact release commit. The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), consolidation (v1.3.5), networking & resources (v1.4.0-connection), the ABI release (v1.4.1), accelerator device runtime (v1.4.5-accelerate), neuro-symbolic intelligence (v1.5.0-intelligence), symbolic reasoning (v1.6.0-reasoning), program synthesis (v1.7.0-synthesis), platform & hardware (v1.8.0-platform), advanced type theory (v1.9.0-types), and quantum computing with formal verification (v2.0-starlight). v1.4.5 must publish before v1.5.0; their previous target windows require joint rebaseline — W6's development work may proceed in parallel, but publication order is fixed.*

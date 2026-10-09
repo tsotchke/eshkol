@@ -20,8 +20,8 @@ before a coordinated disclosure window has been agreed.
 
 | Version          | Security fixes                |
 | ---------------- | ----------------------------- |
-| v1.3.5 (current) | yes                           |
-| v1.3.0 - v1.3.4  | yes                           |
+| v1.3.6 (current) | yes                           |
+| v1.3.0 - v1.3.5  | yes                           |
 | v1.2.x           | yes (until v1.4 GA)           |
 | < v1.2           | no                            |
 
@@ -41,6 +41,17 @@ stdlib harden:
   guarded against shell injection (argv-based spawn), path traversal
   (`O_NOFOLLOW` on file_copy), and CRLF injection (HTTP URL/header
   sanitization).
+- **Digests and MACs**: the `agent.crypto` `sha256` and `hmac-sha256`
+  wrappers (`lib/agent/crypto.esk`) pass `string-byte-length`, not the
+  character count, for both data and key (v1.3.6-evolve, #748). Before this,
+  two different non-ASCII inputs could be hashed as the same truncated prefix.
+  Reference vectors cover ASCII, multibyte and supplementary-plane inputs and
+  keys (`tests/ffi/string_byte_length_test.esk`).
+- **Model files**: ESKM v1 is read and written through validated readers and
+  writers on both engines and published by same-directory rename. The ESKM v2
+  bounded transactional reader and atomic writer (v1.3.6-evolve, #722) are an
+  experiment that needs both a build option and a runtime opt-in; ordinary
+  builds read and write v1 only.
 - **Python FFI → Eshkol runtime**: `derivative` / `gradient`
   `func_source` must be a lambda expression (no string literals,
   balanced parens, no trailing code); `eval_file` path must not
@@ -129,6 +140,15 @@ need to coordinate resets.
   `inc/eshkol/exhaustive_dispatch.h`, with `scripts/gate_exhaustive_dispatch.py`
   re-deriving each enum's members from its own definition so a removed arming
   is reported rather than merely producing a build that no longer checks.
+- Allocation failure is a checked outcome in generated code (v1.3.6-evolve,
+  #721). Cons, vector and closure construction, selected collection, parallel
+  and FFT paths, captured environments and exception-handler frames test the
+  allocation result and refuse to publish an incomplete object, rather than
+  dereferencing a failed allocation. Scoped failure-injection controls and IR
+  checks exercise each guarded site.
+- A closed output-string port releases its buffer and its registry slot before
+  libc can reuse the address (v1.3.6-evolve, #748), so a newly opened port can
+  never return an earlier stream's text (`tests/io/string_port_test.esk`).
 - ThreadSanitizer is run nightly against the parallel runtime (the
   `concurrency-tsan` job in `.github/workflows/adversarial-nightly.yml`): the
   v1.3.4-evolve `parallel-map` fix took the arena data-race count to zero.
