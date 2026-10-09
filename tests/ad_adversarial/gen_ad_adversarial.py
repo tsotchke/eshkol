@@ -646,6 +646,16 @@ class Gen:
             # collapsed to all-zero. Now exact via the dual-tensor matmul path.
             ("mmsq", "(tensor-sum (tensor-matmul (reshape v 2 2) (reshape v 2 2)))",
              ["1.0", "2.0", "3.0", "4.0"]),
+            # Rectangular matmul and elementwise arithmetic over reshaped jet
+            # tensors (the forward-mode tensor rule), including a broadcast
+            # operand and a quotient.
+            ("mmrect", "(tensor-sum (tensor-matmul (reshape v 2 3) (reshape v 3 2)))",
+             ["0.5", "-1.2", "0.9", "1.4", "-0.3", "0.7"]),
+            ("ewise", "(let ((m (reshape v 2 2))) "
+                      "(tensor-sum (tensor-div (tensor-mul m (tensor-sub m "
+                      "(reshape (vector 0.5 -0.4) 1 2))) "
+                      "(tensor-add m (reshape (vector 3.0 3.0 3.0 3.0) 2 2)))))",
+             ["1.1", "0.6", "1.3", "0.8"]),
         ]
         for cid, body, comps in cases:
             n = len(comps)

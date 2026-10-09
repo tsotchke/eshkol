@@ -35835,19 +35835,12 @@ private:
             // ESH-0069: route the plain (non-AD) operand through the centralized
             // type-checked unpack so a vector/int/string raises a catchable type
             // error (or a numeric vector is coerced) instead of segfaulting on a
-            // misread struct.
+            // misread struct. That one facility also decides whether a tensor of
+            // forward-mode dual numbers may pass: matmul is listed as a dual
+            // carrier there because the dispatch below gives it an exact dual
+            // rule (dualTensorMatmul).
             builder->SetInsertPoint(plain_bb);
-            Value* mm_slot = builder->CreateAlloca(tagged_value_type, nullptr, "mm_operand_slot");
-            builder->CreateStore(input, mm_slot);
-            Function* mm_chk = module->getFunction("eshkol_tensor_operand_checked");
-            if (!mm_chk) {
-                FunctionType* mm_chk_ty = FunctionType::get(
-                    builder->getPtrTy(), {builder->getPtrTy(), builder->getPtrTy()}, false);
-                mm_chk = Function::Create(mm_chk_ty, Function::ExternalLinkage,
-                                          "eshkol_tensor_operand_checked", module.get());
-            }
-            Value* mm_name = builder->CreateGlobalString("matmul", "mm_op_name");
-            Value* plain_ptr = builder->CreateCall(mm_chk, {mm_slot, mm_name});
+            Value* plain_ptr = tensor_->unpackTensorOperandChecked(input, "matmul");
             BasicBlock* plain_exit = builder->GetInsertBlock();
             builder->CreateBr(merge_bb);
 
@@ -35903,7 +35896,9 @@ private:
             builder->CreateCondBr(any_dual, mm_dual_bb, mm_normal_bb);
 
             builder->SetInsertPoint(mm_dual_bb);
-            Value* dual_ptr = tensor_->dualTensorMatmul(ptr_a, ptr_b);
+            Value* dual_ptr = tensor_->dualTensorMatmul(ptr_a, ptr_b,
+                builder->CreateOr(builder->CreateIsNotNull(ad_node_a),
+                                  builder->CreateIsNotNull(ad_node_b)));
             mm_dual_result = packPtrToTaggedValue(dual_ptr, ESHKOL_VALUE_HEAP_PTR);
             mm_dual_exit = builder->GetInsertBlock();
             builder->CreateBr(mm_done_bb);
