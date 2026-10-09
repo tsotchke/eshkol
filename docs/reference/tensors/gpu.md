@@ -26,6 +26,18 @@ still decide whether a GPU kernel runs.
 `max`, or `min` operator and returns a scalar for a full reduction. A quoted
 operator is not accepted by these forms.
 
+On CUDA, `matmul` and `batch-matmul` of `f16` and `bf16` tensors run cuBLAS
+tensor-core GEMM at any size, in the tensor's own 16-bit format with f32
+accumulation: `f16` operands as binary16 and `bf16` operands as bfloat16. A
+`bf16` product therefore keeps f32's exponent range; values above 65504 or
+below about `6e-8` are not limited to the binary16 range. When the toolkit or
+device does not support a format (bfloat16 needs CUDA 11 and a device whose
+cuBLAS accepts bfloat16 GEMM), the product is computed on the f64 route; the
+device's refusal is recorded on the first call. Metal and the CPU compute
+reduced-dtype matmul in f64.
+[`tests/gpu/matmul_reduced_dtype_test.esk`](../../../tests/gpu/matmul_reduced_dtype_test.esk)
+checks both ranges on every GPU host.
+
 In the browser, the default `exact` tier uses sf64 kernels that perform
 binary64 arithmetic on integer words. Matmul and supported elementwise results
 match the CPU path bit for bit; reductions may differ because of block

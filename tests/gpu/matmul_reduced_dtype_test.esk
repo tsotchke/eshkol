@@ -1,0 +1,83 @@
+;; Reduced-dtype matmul keeps each dtype's own range on every backend.
+;;
+;; f16 and bf16 tensors take the CUDA tensor-core GemmEx path regardless of
+;; size. bfloat16 shares f32's 8-bit exponent, so bf16 values far outside the
+;; binary16 range (above 65504, below about 6e-8) must come back exactly, and
+;; a device that cannot run bfloat16 GemmEx must answer through the f64 route.
+;; Every operand and product below is a power of two or a small integer, so the
+;; exact answer is the same on CPU, Metal, CUDA f64 and CUDA tensor cores.
+;; scripts/run_gpu_tests.sh runs this file on every GPU host.
+
+(extern i32 gpu-init :real eshkol_gpu_init)
+(define gpu-ready (gpu-init))
+
+(define passed 0)
+(define failed 0)
+
+(define (check-equal name actual expected)
+  (if (= actual expected)
+      (set! passed (+ passed 1))
+      (begin
+        (display "FAIL: ") (display name)
+        (display " actual=") (display actual)
+        (display " expected=") (display expected) (newline)
+        (set! failed (+ failed 1)))))
+
+(define (check-dtype name t expected)
+  (if (eq? (tensor-dtype t) expected)
+      (set! passed (+ passed 1))
+      (begin
+        (display "FAIL: ") (display name)
+        (display " actual=") (display (tensor-dtype t))
+        (display " expected=") (display expected) (newline)
+        (set! failed (+ failed 1)))))
+
+(define (as-dtype data dtype . dims)
+  (tensor-cast (apply reshape data dims) dtype))
+
+;; bf16 above the binary16 range: 2^16 * 2 = 2^17.
+(define big-a (as-dtype (vector 65536.0 0.0 0.0 1.0) 'bf16 2 2))
+(define big-b (as-dtype (vector 2.0 0.0 0.0 3.0) 'bf16 2 2))
+(define big-c (matmul big-a big-b))
+(check-dtype "bf16 product dtype" big-c 'bf16)
+(check-equal "bf16 large 00" (tensor-ref big-c 0) 131072.0)
+(check-equal "bf16 large 01" (tensor-ref big-c 1) 0.0)
+(check-equal "bf16 large 10" (tensor-ref big-c 2) 0.0)
+(check-equal "bf16 large 11" (tensor-ref big-c 3) 3.0)
+
+;; bf16 below the binary16 range: 2^-30 * 2^-10 = 2^-40.
+(define tiny (expt 2.0 -30))
+(define tiny-a (as-dtype (vector tiny 0.0 0.0 1.0) 'bf16 2 2))
+(define tiny-b (as-dtype (vector (expt 2.0 -10) 0.0 0.0 1.0) 'bf16 2 2))
+(define tiny-c (matmul tiny-a tiny-b))
+(check-equal "bf16 small 00" (tensor-ref tiny-c 0) (expt 2.0 -40))
+(check-equal "bf16 small 11" (tensor-ref tiny-c 3) 1.0)
+
+;; Batched bf16 (one strided launch on CUDA): each slice keeps its range.
+(define batch-a
+  (as-dtype (vector 65536.0 0.0 0.0 1.0   2.0 0.0 0.0 32768.0) 'bf16 2 2 2))
+(define batch-b
+  (as-dtype (vector 4.0 0.0 0.0 1.0   1.0 0.0 0.0 8.0) 'bf16 2 2 2))
+(define batch-c (batch-matmul batch-a batch-b))
+(check-equal "bf16 batched 0,00" (tensor-ref batch-c 0) 262144.0)
+(check-equal "bf16 batched 0,11" (tensor-ref batch-c 3) 1.0)
+(check-equal "bf16 batched 1,00" (tensor-ref batch-c 4) 2.0)
+(check-equal "bf16 batched 1,11" (tensor-ref batch-c 7) 262144.0)
+
+;; f16 inside its own range is unchanged.
+(define half-a (as-dtype (vector 1.5 2.0 3.0 4.0) 'f16 2 2))
+(define half-b (as-dtype (vector 1.0 0.0 0.0 1.0) 'f16 2 2))
+(define half-c (matmul half-a half-b))
+(check-dtype "f16 product dtype" half-c 'f16)
+(check-equal "f16 00" (tensor-ref half-c 0) 1.5)
+(check-equal "f16 01" (tensor-ref half-c 1) 2.0)
+(check-equal "f16 10" (tensor-ref half-c 2) 3.0)
+(check-equal "f16 11" (tensor-ref half-c 3) 4.0)
+
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (if (= gpu-ready 0)
+        (begin (display "SKIP: no active GPU backend; CPU route checked") (newline) (exit 0))
+        (begin (display "PASS: matmul_reduced_dtype_test") (newline) (exit 0)))
+    (begin (display "FAIL: matmul_reduced_dtype_test") (newline) (exit 1)))
