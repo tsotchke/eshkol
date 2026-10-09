@@ -134,7 +134,11 @@ int main() {
 
     if (!deep_equal(make_int(130), make_int(130))) return fail("matching int64 values not equal");
     if (deep_equal(make_int(130), make_int(131))) return fail("different int64 values equal");
-    if (!deep_equal(make_int(130), make_double(130.0))) return fail("numeric int/double equality failed");
+    // R7RS 6.1: equal? compares numbers with eqv?, which distinguishes
+    // exactness; flonums compare by representation.
+    if (deep_equal(make_int(130), make_double(130.0))) return fail("exact 130 equal to inexact 130.0");
+    if (!deep_equal(make_double(2.5), make_double(2.5))) return fail("matching doubles not equal");
+    if (deep_equal(make_double(0.0), make_double(-0.0))) return fail("0.0 equal to -0.0");
     if (deep_equal(make_bool(true), make_bool(false))) return fail("different booleans equal");
 
     if (!deep_equal(make_bignum(arena, "9223372036854775808"),
