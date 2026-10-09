@@ -10,6 +10,8 @@ sources:
 
 # v1.4 Branch Portfolio
 
+> **Status at v1.3.6-evolve (2026-10-09):** this index is the 2026-09-28 snapshot and has not been re-audited for v1.3.6. The v1.3.6 rows it names were admitted as recorded in the [release ladder](RELEASE_LADDER.md); the mathematics programs already on `master` are documented in [MATHEMATICS_EXAMPLES.md](MATHEMATICS_EXAMPLES.md) (#742), separately from the `math/g1-ipm-residual` candidate below.
+
 Portfolio snapshot: `34fb71417df7273aba11889091a2c2542c8eedff` (2026-09-28); 1714 refs, 1083 unique heads, 169 worktrees.
 
 This is a read-only audit index, not an admission or merge record. A branch head is not accepted because it is listed here or because it is an ancestor. Evidence below has the limits stated for each candidate; bind any chosen work and its receipts to the exact source head before assigning release credit.

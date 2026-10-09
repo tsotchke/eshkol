@@ -51,7 +51,7 @@ See the [latest published release](https://github.com/tsotchke/eshkol/releases/l
   (if (= steps 0) w
     (train (- w (* lr (derivative loss w))) lr (- steps 1))))
 
-(display (train 0.0 0.01 200))  ;; => 2.0 (learned w = 2)
+(display (train 0.0 0.01 200))  ;; => 2 (learned w = 2)
 ```
 
 Eshkol brings **mathematical computing to Lisp** and delivers what other languages promise:
@@ -139,8 +139,14 @@ export PATH=$PATH:$(pwd)/build
 ```
 
 ```bash
-eshkol-run hello.esk
+eshkol-run -r hello.esk                  # JIT-run the file
+eshkol-run hello.esk -o hello && ./hello # or compile a native binary, then run it
 ```
+
+Run `eshkol-run` from the repository root (or an installed prefix) so that
+`(require ...)` finds the standard library sources; with no `-o`, it writes
+`a.out` and prints how to run it.
+
 ---
 
 ## Design Philosophy
@@ -217,8 +223,8 @@ The gradual type system, grounded in Homotopy Type Theory, enables compile-time 
 Eshkol is implemented as a **production compiler** written in C17/C++20, utilizing LLVM for native code generation. The implementation comprises:
 
 - **Parser driven by an explicit continuation stack** — a child parse suspends into a heap-allocated coroutine frame, so native stack consumption is independent of grammar nesting — with comprehensive macro expansion (syntax-rules)
-- **HoTT type checker** with bidirectional *inference* (the checking direction is a documented placeholder for lambdas — `TypeChecker::checkLambda` ignores its `expected` parameter, `lib/types/type_checker.cpp:3295-3304` — a build item under ADR-0004) and dependent type support — corrected 2026-08-25, conformity audit item f5
-- **LLVM backend** with 39 code generation modules totalling 120,154 lines (`find lib -iname '*codegen*.cpp'`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 47,353 lines — current source measurement
+- **HoTT type checker** with bidirectional *inference* (synthesis today; the checking direction for lambdas is planned for v1.9.0 under ADR-0004 — at v1.3.6 `TypeChecker::checkLambdaTask` synthesizes the lambda's type without consulting its `expected` parameter, `lib/types/type_checker.cpp:4516-4520`) and dependent type support
+- **LLVM backend** with 39 code generation modules totalling 120,420 lines (`find lib -iname '*codegen*.cpp'`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 47,407 lines — measured at the v1.3.6-evolve source (`60f345def`)
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
 
@@ -424,6 +430,8 @@ Complete multi-layer perceptron with automatic differentiation:
 Linear algebra and numerical methods implemented in pure Eshkol:
 
 ```scheme
+(require math)  ; lib/math.esk
+
 ;; Solve system of equations: Ax = b
 (define A (reshape (vector 4.0 1.0 2.0 3.0) 2 2))
 (define b (vector 7.0 10.0))
@@ -438,10 +446,13 @@ Linear algebra and numerical methods implemented in pure Eshkol:
           (lambda (x) (* 2.0 x))           ; f'(x) = 2x  
           1.0 1e-10 100))
 
-;; Eigenvalue estimation (power iteration)
-(define dominant-eigenvalue 
+;; Eigenvalue estimation (power iteration) over your own n×n matrix
+(define dominant-eigenvalue
   (power-iteration covariance-matrix n 1000 1e-12))
 ```
+
+The first three definitions run as written: `x` is `#(1.1 2.6)`, `area` is
+`4.000000000000001` and `sqrt-2` is `1.4142135623730951`.
 
 ### Vector Calculus
 
@@ -506,8 +517,14 @@ Each cons cell stores **complete type information** in both car and cdr position
 ```scheme
 ;; Each element retains full type information
 (define mixed-list (list 42 "hello" (lambda (x) x) #(1.0 2.0 3.0)))
-(map type-of mixed-list)  ; => (int64 string closure tensor)
+(map type-of mixed-list)  ; => (1 8 9 8)
 ```
+
+`type-of` returns the runtime type tag (`inc/eshkol/eshkol.h`, `eshkol_value_type_t`):
+`1` is `ESHKOL_VALUE_INT64`, `8` is `ESHKOL_VALUE_HEAP_PTR` (the string and the
+`#(...)` literal, told apart by the object header's subtype) and `9` is
+`ESHKOL_VALUE_CALLABLE`. Planned for v1.4: readable type names (`int64`,
+`string`, `closure`, ...) via a companion `type-name`.
 
 ### 3. Zero-Overhead Memory Safety
 
@@ -588,7 +605,7 @@ eshkol-repl
 
 ### First Program
 
-Create `hello.esk`:
+Create `gradient.esk`:
 
 ```scheme
 ;; gradient.esk - Gradient computation demonstration
@@ -603,12 +620,12 @@ Create `hello.esk`:
 (display "f'(3) = ") (display (derivative quadratic point)) (newline)
 
 ;; Expected output:
-;; f(x) = x² + 2x + 1  
-;; f(3) = 16.0
-;; f'(3) = 8.0
+;; f(x) = x² + 2x + 1
+;; f(3) = 16
+;; f'(3) = 8
 ```
 
-Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
+Execute: `eshkol-run gradient.esk -o gradient && ./gradient` (or `eshkol-run -r gradient.esk`)
 
 ---
 
@@ -663,6 +680,94 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **WASM library mode**: `--wasm` produces self-contained module without falling through to native link
 - **Hardening**: subprocess shell-injection fix, Python FFI AST-injection fix, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
 - **87-test edge/security suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, HTTP/server smoke behavior, and every fix in this release
+
+### v1.3.6-evolve Release
+
+**Hand the compiler a published mathematical claim — a counterexample to the
+Jacobian conjecture, a rank-23 recipe for multiplying 3×3 matrices over F₂, a
+512-point cap in eight-dimensional affine space over F₃ — and it checks the
+claim in its own exact arithmetic.** Not a plotting demo and not a
+floating-point approximation: the witness is reconstructed as integers,
+rationals and bit masks, every required identity is evaluated (with negative
+controls, where a program carries them, showing the check is not vacuous), and
+the program prints one `PASS:`/`FAIL:` line per check and a closing `RESULT:`
+verdict. Every program is now documented
+with what it computes, the arithmetic it uses, the checks it prints and the
+limits of what it establishes. **46.**
+
+- **AI-discovered witnesses, verified rather than rediscovered.**
+  `examples/mathematics_jacobian_counterexample.esk` recovers the three rational
+  preimages of `(-1/4, 0, 0)`, the discriminant's fiber counts, a Jacobian
+  determinant of `-2` by reverse-mode AD at double and exact-rational points,
+  and the exact determinant identity on a `9 × 8 × 3` grid that exceeds the
+  polynomial's degree bound in every variable — **12** checks. The AlphaTensor
+  rank-23 and rank-47 factorizations over F₂ are contracted on every pair of
+  matrix units (**81** and **256** pairs, a complete check because the map is
+  bilinear), and the FunSearch cap in AG(8,3) passes **130,816** exact pair
+  checks. See [AI-driven mathematics examples](docs/AI_MATHEMATICS_EXAMPLES.md).
+- **Exact algebraic topology and geometry, computed rather than quoted.** Finite
+  group cohomology rings with cup products and Bocksteins, Dijkgraaf–Witten,
+  Yetter and cyclotomic Turaev–Viro state sums, Reidemeister torsion and linking
+  data of lens complexes, sheaf cohomology, sheafification and nonabelian descent
+  on finite sites, Kan complexes and homotopy colimits, and algebraic cycles and
+  Hodge classes on Fermat hypersurfaces. Each verdict is exact for the finite
+  model the program builds; none is presented as a general theorem.
+- **The leading structure of a Navier–Stokes construction, mechanized.** Twelve
+  programs work through an external reference construction for the
+  three-dimensional equations: the residual operator is assembled from AD
+  partials, the similarity coordinates are differentiated through their own
+  implicit definition, the scale exponents are solved as an exact rational
+  linear system, and the viscosity-rescaling identity holds as an exact rational
+  equality at ν = 1/4, 1, 9/16, 25/9 and 4, with negative controls that omit one
+  rescaling factor. They compute leading structure; they do not reproduce the
+  source's full argument. See
+  [Navier–Stokes examples](docs/NAVIER_STOKES_EXAMPLES.md).
+- **The catalogue is the source.** `docs/examples/catalogue.json` describes all
+  67 example programs — algorithm, arithmetic, executable checks, prerequisites
+  and limits — and generates [EXAMPLES.md](docs/EXAMPLES.md) and the per-program
+  pages of [MATHEMATICS_EXAMPLES.md](docs/MATHEMATICS_EXAMPLES.md). The 41
+  programs registered with CTest (29 exact-verdict and 12 Navier–Stokes) each
+  run under native JIT and native AOT.
+- **Mixed exact and inexact interval arithmetic keeps containment.** Exact
+  rational endpoints are rounded outward until exact comparisons certify the
+  bounds, and an indeterminate non-finite endpoint fails closed.
+- **The browser speaks the exact tower.** The LLVM/WebAssembly host keeps a
+  finite double's exact integer or rational value in a checked shared arena,
+  and arithmetic, comparison, rounding, roots and `number->string` work on that
+  exact value (signed zero and non-finite forms print readably); unsupported
+  complex and exact Taylor paths refuse explicitly.
+- **Bytes are bytes.** SHA-256 and HMAC hash every byte of a UTF-8 input and
+  key, and a closed output-string port returns its buffer and registry slot so
+  a new port never inherits an old snapshot.
+- **Hardware is loaded when it is used.** A CUDA build loads cuBLAS the first
+  time GPU GEMM needs it, after validating its ABI and typed API, and keeps CPU
+  matrix multiplication if admission fails; CPU-only native, JIT and VM paths
+  never pay its memory footprint.
+- **Allocation failure is a checked outcome.** Generated cons, vector and
+  closure construction, and selected collection, parallel and FFT paths, test
+  their allocations; a failed capture environment or handler frame refuses to
+  publish an incomplete object.
+- **A native `main` has a checked signature.** An unsupported parameter list is
+  a diagnostic rather than an LLVM verifier failure, and a nullary file-JIT
+  entry keeps its own identity across internal renaming.
+- **Flat RSS, for the confirmed loop shapes.** AOT per-iteration memory is
+  bounded for named-let exit, a discarded numeric tensor, and a direct literal
+  `tensor-dot`; the original million-iteration report is kept as a regression
+  fixture. This does not claim flat RSS for every loop on every platform.
+- **One REPL input path.** Pipes and `--machine` mode are prompt-free whether
+  or not readline is present; interactive sessions keep their prompts. Release
+  builds require a native image I/O backend.
+- **Publication is bound to its measurements.** The release gate validates the
+  full configured <!-- release-record:ctest -->CTest **789/789**<!-- /release-record -->
+  and <!-- release-record:vm-parity -->VM parity differential **405/405**<!-- /release-record -->
+  against the exact source, workflow run and build cohort; coverage and
+  measurement run as separate bounded steps. Hosted ESKM v2 model I/O remains
+  explicitly experimental behind build- and run-time opt-in; ESKM v1 stays the
+  validated default.
+
+See [RELEASE_NOTES.md](RELEASE_NOTES.md) for the gate matrix and what this
+release does not claim, and [CHANGELOG.md](CHANGELOG.md) for the per-change
+record.
 
 ### v1.3.5-evolve Release
 
@@ -895,23 +1000,31 @@ The **REPL** provides full compilation and execution via LLVM JIT:
 
 ```
 $ eshkol-repl
-
-Welcome to Eshkol REPL v1.3.5-evolve
-Type :help for commands, :quit to exit
+  (banner)
+  Version 1.3.6-evolve | Type :help for commands | Type :examples for demos
+  Press Ctrl+D or type (exit) to quit
 
 eshkol> (define (f v) (let ((x (vref v 0))) (* x x x)))
 eshkol> (gradient f (vector 2.0))
 #(12)
 
 eshkol> :type (gradient f (vector 2.0))
-Vector<Float64, 1>
+Type: expression (gradient)
 
 eshkol> :ast (lambda (x) (* x x))
-(λ (x) (* x x))
+AST Structure:
+AST Node [OP]:
+  Operation: LAMBDA_OP
+    (No detailed printer for this operation)
 
 eshkol> :load my-program.esk
 Loaded 15 expressions from my-program.esk
 ```
+
+`:type` names the form it was given. Planned: `:type` reporting the inferred
+HoTT type (`Vector<Float64, 1>` for the gradient above), and `:ast` printing
+the form back as an S-expression (`(λ (x) (* x x))`). Piped input and
+`eshkol-repl --machine` are prompt-free, so the same session can be scripted.
 
 ### Standard Library
 
@@ -989,6 +1102,9 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 - **[Automatic Differentiation Guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)**: The full v1.3 AD surface — arbitrary order, exact, validated, tensor, sparse, checkpointed — example-driven
 
 ### For Researchers
+- **[Mathematics Examples](docs/MATHEMATICS_EXAMPLES.md)**: The 46 mathematics programs — what each computes, its arithmetic, its checks, and the scope of its verdict (exact, certified or numerical)
+- **[AI-Driven Mathematics](docs/AI_MATHEMATICS_EXAMPLES.md)**: The Jacobian-conjecture counterexample, AlphaTensor factorizations and the FunSearch cap set, verified in exact arithmetic
+- **[Navier–Stokes Examples](docs/NAVIER_STOKES_EXAMPLES.md)**: Residuals, scaling laws and similarity profiles of a reference construction, computed by AD and exact linear algebra
 - **[Automatic Differentiation](docs/breakdown/AUTODIFF.md)**: Mathematical foundations and implementation
 - **[Type System](docs/breakdown/TYPE_SYSTEM.md)**: HoTT theory and practical realization
 - **[Memory Architecture](docs/breakdown/MEMORY_MANAGEMENT.md)**: Arena allocation and OALR semantics
@@ -1015,13 +1131,24 @@ its headline view.
 - Model serialization, stable C FFI with Python/NumPy bindings, image I/O
 - Per-thread arenas, actionable error messages, WASM library mode
 
-### v1.4.0-connection (target: 2026-10-15) — Planned
+### v1.3-evolve (July–October 2026) — SHIPPED through v1.3.5; v1.3.6 PREPARED FOR PUBLICATION
+- Arbitrary-order exact AD, full R7RS conformance, flat memory for resident
+  loops, a parser with no recursion budget, multi-shot continuations, certified
+  enclosures and the exact tower (v1.3.0 → v1.3.5)
+- v1.3.6: the documented mathematics examples, exact browser numerics, and
+  measurement-bound publication
+
+### v1.4.0-connection (prior target 2026-10-15; under joint rebaseline) — Planned
 - TCP/UDP sockets, TLS, Unix domain sockets, HTTP/WebSocket on the shipped
   event loop, with linear resource types for every handle
 - WebGPU dispatch for the WASM target; the self-hosted mesh as the primary CI
   executor; the nested-differentiation carrier rewrite
 
-### v1.5.0-intelligence (target: 2026-12-05) — Planned
+### v1.4.1 (ABI) and v1.4.5-accelerate (device runtime) — Planned
+- OALR ABI v2 and the remaining object-ABI migration stages; the embedding SDK
+- Accelerator execution through PJRT/StableHLO, which must publish before v1.5.0
+
+### v1.5.0-intelligence (conditional on v1.4.5; under joint rebaseline) — Planned
 - The full neuro-symbolic logic system: symbol embeddings, soft unification,
   differentiable logic programs, attention over the knowledge base
 - `core.dbsp` GA — the incremental-dataflow spine that then threads through
@@ -1053,15 +1180,17 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding stan
 |---|---|
 | **[QUICKSTART](docs/QUICKSTART.md)** | 15-minute getting-started guide |
 | **[Tutorials](docs/tutorials/README.md)** | 27 step-by-step tutorials |
-| **[API Reference](docs/API_REFERENCE.md)** | Comprehensive function documentation over the 1,053-builtin canonical surface |
+| **[API Reference](docs/API_REFERENCE.md)** | Comprehensive function documentation over the 1,056-builtin canonical surface |
 | **[Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)** | Conceptual user guide |
 | **[Quick Reference](docs/ESHKOL_QUICK_REFERENCE.md)** | One-page cheat sheet |
 | **[Automatic Differentiation Guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)** | Arbitrary-order Taylor-tower AD walkthrough |
 | **[Complete Language Specification](docs/COMPLETE_LANGUAGE_SPECIFICATION.md)** | Full technical specification |
+| **[Examples](docs/EXAMPLES.md)** | All 67 example programs, generated from `docs/examples/catalogue.json` |
+| **[Mathematics Examples](docs/MATHEMATICS_EXAMPLES.md)** | The 46 mathematics programs and the scope of each result |
 | **[Standard Library API](docs/STDLIB_V1_2_API.md)** | Stdlib module surfaces, including infrastructure modules (Appendix B) |
 | **[Architecture deep-dives](docs/breakdown/README.md)** | Per-subsystem technical breakdowns (36 subsystem docs plus the index) |
 | **[FAQ](docs/FAQ.md)** | Installation, troubleshooting, common questions |
-| **[Test Coverage](docs/TEST_COVERAGE.md)** | What the 45-suite gate verifies |
+| **[Test Coverage](docs/TEST_COVERAGE.md)** | What the 46-suite gate verifies |
 | **[Known Issues](docs/KNOWN_ISSUES.md)** | Current limitations and tracked open items |
 | **[Testing & Adversarial Harnesses](docs/TESTING.md)** | SICP gate + the five adversarial harnesses and how to run them |
 | **[VM Parity](docs/VM_PARITY.md)** | Bytecode-VM vs native-codegen parity ratchet |
@@ -1086,7 +1215,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 @software{eshkol2026,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.3.5-evolve},
+  version = {1.3.6-evolve},
   year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}

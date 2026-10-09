@@ -26,7 +26,7 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
   - [Communication](#communication)
   - [Priority Areas for Contribution (v1.4+)](#priority-areas-for-contribution-v14)
     - [Immediate Priorities (v1.4-connection)](#immediate-priorities-v14-connection)
-    - [Near-Term (v1.5.0-intelligence - target 2026-12-05)](#near-term-v150-intelligence---target-2026-12-05)
+    - [Near-Term (v1.5.0-intelligence)](#near-term-v150-intelligence)
     - [Ongoing](#ongoing)
   - [Recognition](#recognition)
 
@@ -357,8 +357,9 @@ directory as a pass.
 
 **Release-blocking readiness.** Publishing a release is additionally gated by the
 `release-readiness-gate` job in `.github/workflows/release.yml`, which regenerates
-the oracle traces at the tagged SHA and runs `icc architecture-verify` +
-`icc readiness --target v1.3.5-evolve`. `publish-release` depends on it, so **no
+the oracle traces at the tagged SHA and runs `icc architecture-verify` + trace-aware
+`icc readiness` for the tag being released (`RELEASE_TARGET`, e.g. `v1.3.6-evolve`,
+through `scripts/run_v1_3_readiness.sh`). `publish-release` depends on it, so **no
 release asset is published unless readiness is ready/100** at the cut SHA. The gate
 requires ICC to be provisioned on the release runner via the `ICC_BIN` repository
 variable (a path to the ICC binary; optionally `ICC_REPO` for the registered index
@@ -632,7 +633,9 @@ consumer-hardening correctness wave (automatic per-iteration reclamation,
 race-free `parallel-map`, exact gradients through every callable form, R7RS
 exactness contagion on both engines). We welcome contributions for upcoming
 releases. v1.3.5-evolve integrates compiler/VM, AD, tensor and checkpoint
-correctness work; its release battery is recorded in `RELEASE_NOTES.md`.
+correctness work, and v1.3.6-evolve documents the 46 mathematics examples and
+binds publication to complete source-bound measurements; each release battery
+is recorded in `RELEASE_NOTES.md`.
 
 ### Immediate Priorities (v1.4-connection)
 1. **TCP/UDP Sockets**: Linear resource types with guaranteed close
@@ -646,7 +649,11 @@ IOCP) shipped in v1.3.4-evolve, `eshkol-doc` shipped in v1.3.2-evolve, and the
 linear-type machinery landed in v1.3.4-evolve as the linear `Qubit` type —
 extending it to handles is what remains.
 
-### Near-Term (v1.5.0-intelligence - target 2026-12-05)
+### Near-Term (v1.5.0-intelligence)
+
+v1.5.0 publishes after v1.4.5-accelerate; its earlier 2026-12-05 target is under
+joint rebaseline (see [ROADMAP.md](ROADMAP.md)).
+
 1. **Neural-Symbolic Search**: Differentiable logic programs (building on v1.1 consciousness engine)
 2. **Symbol Embeddings & Soft Unification**: Differentiable similarity over the knowledge base
 3. **LSTM/GRU Cells**: Standard recurrent neural architectures

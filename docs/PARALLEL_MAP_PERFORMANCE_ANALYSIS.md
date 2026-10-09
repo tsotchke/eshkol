@@ -1,5 +1,7 @@
 # `parallel-map` performance — root-cause analysis + AOT fix
 
+> **Status at v1.3.6-evolve (2026-10-09):** historical analysis from May 2026, kept as written. The flags-byte change it describes is in the current source, `ESHKOL_PARALLEL_DISABLE=1` remains the override, and the v1.3.4-evolve `parallel-map` race fix is recorded in [SECURITY.md](../SECURITY.md) and the CHANGELOG.
+
 **Update 2026-05-09:** REAL parallelism in BOTH AOT and JIT modes after
 fixing the worker tagged-value flags-byte bug. Default flipped to enable
 parallel codegen (override with `ESHKOL_PARALLEL_DISABLE=1`).

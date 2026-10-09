@@ -4,6 +4,18 @@
 
 This document provides a detailed technical analysis of the Eshkol compiler as it stands in the current v1.2.1-scale production release, building on the architectural baseline established in v1.0-foundation. It describes the actual production compiler, not aspirational features. For the broader vision, see [TECHNICAL_WHITE_PAPER.md](TECHNICAL_WHITE_PAPER.md).
 
+> **Status at v1.3.6-evolve (2026-10-09).** This deep dive was written against
+> v1.2.1-scale. Its structures were re-read against `inc/eshkol/eshkol.h`,
+> `lib/core/arena_memory.h` and `lib/frontend/parser.cpp` at `60f345def`. Five
+> structural statements are brought up to date in place: the tagged value has no `padding` field (§2.2), the
+> closure carries a `name` field (§5.1), the region stack is 64 deep (§4.3),
+> the backend has 39 codegen modules (§2.1), and the parser runs on an explicit
+> continuation stack (§1.2). Type tags and heap subtypes added since v1.2.1 are
+> listed where the original lists stop. Later capability (arbitrary-order AD,
+> multi-shot continuations, the VM region evacuator, the exact tower) is
+> described in [ESHKOL_V1_ARCHITECTURE.md](../ESHKOL_V1_ARCHITECTURE.md) and
+> the [README](../../README.md).
+
 ## Abstract
 
 Eshkol is a production-ready Scheme dialect compiler built on LLVM 21 infrastructure, featuring compiler-integrated automatic differentiation, deterministic arena memory management, and a HoTT-inspired gradual type system. The v1.0-foundation baseline established the modular LLVM backend, the tagged-value runtime, the AD implementation with nested-gradient support, and the ownership-aware lexical-region (OALR) memory model; v1.1-accelerate added GPU dispatch and work-stealing parallelism, and v1.2-scale (closed out as v1.2.1-scale) added the exact-numeric tower, the native agent FFI surface, and the v1.2.1 hardening pass. This paper examines that implementation architecture, focusing on how the compiler combines Scheme's homoiconicity with native-code performance while maintaining deterministic memory behaviour suitable for real-time applications.
@@ -52,6 +64,7 @@ enum TokenType {
     TOKEN_VECTOR_START,        // #(
     TOKEN_COLON,               // : for type annotations
     TOKEN_ARROW,               // -> for function types
+    TOKEN_KEYWORD,             // #:name self-quoting keyword (added after v1.2.1)
     TOKEN_EOF
 };
 ```
@@ -76,7 +89,11 @@ struct eshkol_ast {
 ```
 
 **Parsing Features:**
-- Recursive descent with operator precedence
+- Hand-written descent parser that runs on an explicit continuation stack
+  since v1.3.5: a child parse suspends into a heap-allocated coroutine frame
+  (`ParserTask`, `lib/frontend/parser_task.h`), so native stack use does not
+  grow with nesting depth; S-expressions need no
+  operator precedence
 - HoTT type expression parsing (arrow, forall, list, vector, tensor, pair, product, sum)
 - Pattern matching support (literal, variable, wildcard, cons, list, predicate, or)
 - Internal defines transformed to letrec automatically
@@ -189,7 +206,7 @@ struct ModuleNode {
 
 **File:** `lib/backend/llvm_codegen.cpp`
 
-The backend is organized into 21 specialized modules rather than monolithic generation:
+The backend is organized into specialized modules rather than monolithic generation — 21 when this deep dive was written, 39 `*codegen*.cpp` modules at v1.3.6 (`find lib -iname '*codegen*.cpp'`). The principal ones:
 
 ```cpp
 class EshkolLLVMCodeGen {
@@ -232,7 +249,8 @@ struct eshkol_tagged_value {
     uint8_t type;        // Type tag (0-255)
     uint8_t flags;       // Exactness, special flags
     uint16_t reserved;   // Future use
-    uint32_t padding;    // Alignment
+    // (4 bytes of implicit alignment padding: the union is 8-byte aligned;
+    //  there is no named padding field)
     union {
         int64_t int_val;     // INT64, BOOL, CHAR, SYMBOL
         double double_val;   // DOUBLE
@@ -253,7 +271,13 @@ struct eshkol_tagged_value {
 4: CHAR          - Unicode codepoint
 5: SYMBOL        - Interned symbol
 6: DUAL_NUMBER   - Forward-mode AD
+7: COMPLEX       - Complex number
 ```
+
+Since v1.2.1 the tag space also carries `10: LOGIC_VAR` (logic variable),
+`11: UNSPECIFIED` (the unspecified value, ADR-0024) and the reserved
+multimedia tags `16: HANDLE`, `17: BUFFER`, `18: STREAM` and `19: EVENT`
+(`eshkol_value_type_t`, `inc/eshkol/eshkol.h`).
 
 **Consolidated Types (8-9):** Subtype in object header
 ```
@@ -311,6 +335,23 @@ HEAP_SUBTYPE_EXCEPTION   = 6
 HEAP_SUBTYPE_RECORD      = 7
 HEAP_SUBTYPE_BYTEVECTOR  = 8
 HEAP_SUBTYPE_PORT        = 9
+// Added after v1.2.1 (inc/eshkol/eshkol.h):
+HEAP_SUBTYPE_SYMBOL         = 10
+HEAP_SUBTYPE_BIGNUM         = 11
+HEAP_SUBTYPE_SUBSTITUTION   = 12
+HEAP_SUBTYPE_FACT           = 13
+// 14 reserved (RULE)
+HEAP_SUBTYPE_KNOWLEDGE_BASE = 15
+HEAP_SUBTYPE_FACTOR_GRAPH   = 16
+HEAP_SUBTYPE_WORKSPACE      = 17
+HEAP_SUBTYPE_PROMISE        = 18
+HEAP_SUBTYPE_RATIONAL       = 19
+HEAP_SUBTYPE_PRNG           = 20
+HEAP_SUBTYPE_DNC            = 21
+HEAP_SUBTYPE_SDNC           = 22
+HEAP_SUBTYPE_TAYLOR         = 23
+HEAP_SUBTYPE_PARAMETER      = 24
+HEAP_SUBTYPE_I128           = 25
 ```
 
 **Callable Subtypes:**
@@ -503,6 +544,13 @@ ad_tape_t* __ad_tape_stack[MAX_TAPE_DEPTH];
 uint64_t __ad_tape_depth = 0;
 ```
 
+In the current source the constant is `ESHKOL_ARENA_MAX_TAPE_DEPTH` (32) and
+both the stack and its depth are `thread_local`
+(`lib/core/arena_memory.h`, `lib/core/runtime_autodiff.cpp`), so parallel
+workers keep isolated tapes. Each tape now also records its dedicated arena
+(`owner_arena`, `parent_arena`) and whether a reverse pass is reading it
+(`backward_active`).
+
 **Push/Pop Operations:**
 ```cpp
 void pushTapeContext() {
@@ -675,7 +723,7 @@ struct eshkol_region {
 
 **Region Stack (Global):**
 ```c
-#define MAX_REGION_DEPTH 16
+#define MAX_REGION_DEPTH 64   // lib/core/arena_memory.h
 eshkol_region_t* __region_stack[MAX_REGION_DEPTH];
 uint64_t __region_stack_depth = 0;
 ```
@@ -703,6 +751,7 @@ struct eshkol_closure {
     uint64_t func_ptr;              // Function pointer
     eshkol_closure_env_t* env;      // Captured environment
     uint64_t sexpr_ptr;             // S-expression for display
+    const char* name;               // Bound name, or NULL
     uint8_t return_type;            // Return type category
     uint8_t input_arity;            // Expected arguments
     uint8_t flags;                  // Variadic, etc.
