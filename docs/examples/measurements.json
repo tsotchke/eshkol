@@ -12,24 +12,7 @@
     "aot": "./build/eshkol-run -L./build <program> -o <binary> && <binary>",
     "ctest": "ctest --test-dir build -R '<criterion>_(jit|aot)$'"
   },
-  "gates": {
-    "general_runner": {
-      "command": "./scripts/run_examples_tests.sh",
-      "summary": "native AOT over the 66 flat programs: 62 working, 0 compile failures, 0 runtime failures, 0 runtime errors; the 4 quantum programs skipped because ESHKOL_QUANTUM_ENABLED is OFF in the release configuration; 827 s wall."
-    },
-    "math_ctest": {
-      "command": "ctest --test-dir build -R '^((<ESHKOL_NS_EXAMPLES and ESHKOL_IPM_EXAMPLES criteria>)_(jit|aot)|vm_mathematics_[a-z_]+)$'",
-      "summary": "90 entries (43 criteria in JIT and AOT, plus the 4 bytecode-VM cohomology entries). With ESHKOL_PATH=<source>/lib: 90 of 90 passed, 315 s with 6 parallel jobs. Without it, in a build directory that is not a child of the source tree, 47 of 90 pass: 39 AOT entries and the 4 VM entries stop at module resolution (`Unknown function: list-ref`, `module source not found: stdlib`), because those registrations locate the stdlib sources through `<build>/../lib`; set ESHKOL_PATH when the build directory is outside the source tree."
-    },
-    "wgsl_artifact": {
-      "command": "python3 examples/wgsl_artifact/build_artifact.py",
-      "summary": "artifact PASS: native=VM; evaluator.wgsl and the manifest's source and WGSL hashes reproduce byte for byte; 1.9 s."
-    },
-    "ai_witness_vm": {
-      "command": "ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test examples/<ai witness program>.esk",
-      "summary": "the four AI-witness programs print RESULT: ALL PASS with Failed: 0 on the hosted bytecode VM (12, 2, 3 and 3 checks)."
-    }
-  },
+  "gates": {},
   "records": {
     "examples/autodiff.esk": {
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
@@ -244,68 +227,69 @@
       "output_lines": 8
     },
     "examples/h2_vibrational_full.esk": {
-      "source_sha256": "3be1fcc934fc79cec88c4530de4a8c8a7506b22046e23e75ef137d5053e66a92",
+      "source_sha256": "8786ed83b7e1f5015dc1cb8d312fc3f6c7ee244bf48b05842f3862eb41cd8564",
       "jit": {
         "status": "RAN-OK",
         "exit": 0,
-        "wall_s": 19.59,
+        "wall_s": 6.21,
         "passed": null,
         "failed": null,
         "result_line": null,
-        "cpu_s": 19.21
+        "cpu_s": 5.07
       },
       "aot": {
         "status": "RAN-OK",
         "exit": 0,
-        "wall_s": 1.11,
+        "wall_s": 1.79,
         "passed": null,
         "failed": null,
         "result_line": null,
-        "cpu_s": 0.91,
+        "cpu_s": 0.97,
         "compile_exit": 0,
-        "compile_s": 4.61
+        "compile_s": 7.35
       },
       "ctest": [],
       "key_output": [
         "equilibrium R*        = 1.3886947151919553 bohr",
         "frozen term  sum g'' <P>  = 0.5144480462412556 Ha/bohr^2",
-        "quantum response          = +nan.0 Ha/bohr^2",
-        "force constant k          = +nan.0 Ha/bohr^2",
-        "vibrational frequency     = +nan.0 cm^-1"
+        "quantum response          = -0.03735325955590163 Ha/bohr^2",
+        "force constant k          = 0.477094786685354 Ha/bohr^2",
+        "vibrational frequency     = 5003.193122472319 cm^-1"
       ],
       "output_lines": 9,
-      "note": "Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON. At this SHA the program prints `+nan.0` for the quantum response, the force constant and the vibrational frequency (output quoted above); the source makes no assertion about these values. Planned: finite values for these three quantities."
+      "note": "Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON."
     },
     "examples/h2_vibrational_quantum.esk": {
       "source_sha256": "1afb2473ed1a79d281d24c71e0a3f429f6411cf86bdcf9cd8dd971b49f9474e5",
       "jit": {
-        "status": "RAN-OK",
-        "exit": 0,
-        "wall_s": 7.17,
+        "status": "FAIL",
+        "exit": 1,
+        "wall_s": 1.79,
         "passed": null,
         "failed": null,
         "result_line": null,
-        "cpu_s": 7.0
+        "cpu_s": 1.77
       },
       "aot": {
-        "status": "RAN-OK",
-        "exit": 0,
-        "wall_s": 0.2,
+        "status": "FAIL",
+        "exit": 1,
+        "wall_s": 0.22,
         "passed": null,
         "failed": null,
         "result_line": null,
         "cpu_s": 0.02,
         "compile_exit": 0,
-        "compile_s": 1.73
+        "compile_s": 1.74
       },
       "ctest": [],
-      "key_output": [
-        "  E(0.72,0.74,0.76 A) = -1.141989759265339 -1.1421829377925534 -1.1417128306116846",
-        "  force constant = 0.464347288414274 Ha/bohr^2",
-        "  omega          = 4935.900408038456 cm^-1"
-      ],
-      "output_lines": 8,
-      "note": "Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON."
+      "key_output": [],
+      "output_lines": 1,
+      "failure_excerpt": [
+        "[REPL] Discovered 791 functions, 964 globals, 23 variadic entries from stdlib.bc",
+        "[REPL] Loaded stdlib from cached object: /Users/tyr/Desktop/eshkol/.scratch/v136-docs-campaign/build/stdlib-jit-v4-6DB62049DCA1604B-arm64-apple-darwin24.1.0-abi1h8s0a8.o",
+        "Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)",
+        "Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)"
+      ]
     },
     "examples/hello.esk": {
       "source_sha256": "5532b55c4759c73f8f592fa8db70b8891287f9210b619a4b5f4ee25683c26aa7",
@@ -380,28 +364,39 @@
       "output_lines": 19
     },
     "examples/mathematics_alphatensor_3x3_gf2.esk": {
-      "source_sha256": "222712935cc60af1f734f817d22c2b6a8c9fbcca97e4d56d6bf383d2710b1006",
+      "source_sha256": "7f439ceb1a3ea82e8a500f5421320f53963909e2198cc3f358dd81fbd51ffdd5",
       "jit": {
         "status": "PASS",
         "exit": 0,
-        "wall_s": 1.37,
+        "wall_s": 2.04,
         "passed": 2,
         "failed": 0,
         "result_line": "RESULT: ALL PASS",
-        "cpu_s": 1.35
+        "cpu_s": 1.67
       },
       "aot": {
         "status": "PASS",
         "exit": 0,
-        "wall_s": 0.21,
+        "wall_s": 0.23,
         "passed": 2,
         "failed": 0,
         "result_line": "RESULT: ALL PASS",
         "cpu_s": 0.03,
         "compile_exit": 0,
-        "compile_s": 1.35
+        "compile_s": 1.98
       },
-      "ctest": [],
+      "ctest": [
+        {
+          "name": "alphatensor_rank23_gf2_jit",
+          "status": "Passed",
+          "seconds": 0.24
+        },
+        {
+          "name": "alphatensor_rank23_gf2_aot",
+          "status": "Passed",
+          "seconds": 2.22
+        }
+      ],
       "key_output": [
         "PASS: rank-23 factorization has 23 bilinear products",
         "PASS: rank-23 tensor expands to 3x3 multiplication over F2",
@@ -410,28 +405,39 @@
       "output_lines": 9
     },
     "examples/mathematics_alphatensor_gf2.esk": {
-      "source_sha256": "eb57351038fdc11718775948f85f98017cec9d0accd8a4ca89f1c8bac3fb9f1e",
+      "source_sha256": "97b4bebee4eba04141d1618cfac8fdada8ca1de719d26f7b36dc10ce150a5940",
       "jit": {
         "status": "PASS",
         "exit": 0,
-        "wall_s": 1.6,
+        "wall_s": 2.32,
         "passed": 3,
         "failed": 0,
         "result_line": "RESULT: ALL PASS",
-        "cpu_s": 1.58
+        "cpu_s": 1.88
       },
       "aot": {
         "status": "PASS",
         "exit": 0,
-        "wall_s": 0.35,
+        "wall_s": 0.42,
         "passed": 3,
         "failed": 0,
         "result_line": "RESULT: ALL PASS",
-        "cpu_s": 0.15,
+        "cpu_s": 0.19,
         "compile_exit": 0,
-        "compile_s": 1.51
+        "compile_s": 2.85
       },
-      "ctest": [],
+      "ctest": [
+        {
+          "name": "alphatensor_rank47_gf2_jit",
+          "status": "Passed",
+          "seconds": 0.56
+        },
+        {
+          "name": "alphatensor_rank47_gf2_aot",
+          "status": "Passed",
+          "seconds": 2.75
+        }
+      ],
       "key_output": [
         "PASS: rank-47 factorization has 47 bilinear products",
         "PASS: rank-47 tensor expands to 4x4 multiplication over F2",
@@ -1008,28 +1014,39 @@
       "output_lines": 20
     },
     "examples/mathematics_funsearch_cap_set.esk": {
-      "source_sha256": "dc27292115bb4bd49875557420807bfb0cd9ff5e7a58f5a26a1f89d6e9d43806",
+      "source_sha256": "45d91a4f2f3503bb752ee024d6dca7e50eb8e3fb2fe66cd46e598fbfe6b600a6",
       "jit": {
         "status": "PASS",
         "exit": 0,
-        "wall_s": 12.5,
+        "wall_s": 17.61,
         "passed": 3,
         "failed": 0,
         "result_line": "RESULT: ALL PASS",
-        "cpu_s": 12.33
+        "cpu_s": 12.16
       },
       "aot": {
         "status": "PASS",
         "exit": 0,
-        "wall_s": 6.88,
+        "wall_s": 10.54,
         "passed": 3,
         "failed": 0,
         "result_line": "RESULT: ALL PASS",
-        "cpu_s": 5.93,
+        "cpu_s": 6.8,
         "compile_exit": 0,
-        "compile_s": 1.61
+        "compile_s": 2.66
       },
-      "ctest": [],
+      "ctest": [
+        {
+          "name": "funsearch_cap_set_512_jit",
+          "status": "Passed",
+          "seconds": 8.95
+        },
+        {
+          "name": "funsearch_cap_set_512_aot",
+          "status": "Passed",
+          "seconds": 10.93
+        }
+      ],
       "key_output": [
         "PASS: explicit construction has 512 points",
         "PASS: 512-point witness is a cap in AG(8,3)",
@@ -1253,28 +1270,39 @@
       "output_lines": 42
     },
     "examples/mathematics_jacobian_counterexample.esk": {
-      "source_sha256": "51770f32f89bad44e6ea905881f4350f1245b3c8a3f710aefadf2fffac5181b1",
+      "source_sha256": "17695cfcfb489d40a4e842192c87e55dc218de708bad7bf380618eae1a2a0238",
       "jit": {
         "status": "PASS",
         "exit": 0,
-        "wall_s": 1.78,
+        "wall_s": 2.68,
         "passed": 12,
         "failed": 0,
         "result_line": "RESULT: ALL PASS",
-        "cpu_s": 1.73
+        "cpu_s": 2.09
       },
       "aot": {
         "status": "PASS",
         "exit": 0,
-        "wall_s": 0.19,
+        "wall_s": 0.22,
         "passed": 12,
         "failed": 0,
         "result_line": "RESULT: ALL PASS",
         "cpu_s": 0.02,
         "compile_exit": 0,
-        "compile_s": 2.44
+        "compile_s": 5.23
       },
-      "ctest": [],
+      "ctest": [
+        {
+          "name": "jacobian_counterexample_fibers_jit",
+          "status": "Passed",
+          "seconds": 0.17
+        },
+        {
+          "name": "jacobian_counterexample_fibers_aot",
+          "status": "Passed",
+          "seconds": 3.95
+        }
+      ],
       "key_output": [
         "PASS: three rational preimages share (-1/4,0,0)",
         "PASS: AD determinant is -2 at exact-rational vectors",
@@ -2456,33 +2484,34 @@
     "examples/qng_vqe.esk": {
       "source_sha256": "96f7bb3649796f3b2366d917426664b966282102546df5ae101f983e543241c4",
       "jit": {
-        "status": "RAN-OK",
-        "exit": 0,
-        "wall_s": 2.27,
+        "status": "FAIL",
+        "exit": 1,
+        "wall_s": 2.07,
         "passed": null,
         "failed": null,
         "result_line": null,
-        "cpu_s": 2.22
+        "cpu_s": 2.07
       },
       "aot": {
-        "status": "RAN-OK",
-        "exit": 0,
-        "wall_s": 0.34,
+        "status": "FAIL",
+        "exit": 1,
+        "wall_s": 0.2,
         "passed": null,
         "failed": null,
         "result_line": null,
-        "cpu_s": 0.04,
+        "cpu_s": 0.02,
         "compile_exit": 0,
-        "compile_s": 2.45
+        "compile_s": 2.34
       },
       "ctest": [],
-      "key_output": [
-        "final QNG:     -1.1421706402882286 Ha",
-        "final vanilla: -1.1418227561668124 Ha",
-        "exact:         -1.142170640288229 Ha"
-      ],
-      "output_lines": 22,
-      "note": "Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON."
+      "key_output": [],
+      "output_lines": 1,
+      "failure_excerpt": [
+        "[REPL] Discovered 791 functions, 964 globals, 23 variadic entries from stdlib.bc",
+        "[REPL] Loaded stdlib from cached object: /Users/tyr/Desktop/eshkol/.scratch/v136-docs-campaign/build/stdlib-jit-v4-6DB62049DCA1604B-arm64-apple-darwin24.1.0-abi1h8s0a8.o",
+        "Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)",
+        "Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)"
+      ]
     },
     "examples/streaming_stats.esk": {
       "source_sha256": "fd101dfcf7bf4cbe3364fd2a4f6baea167de332bb4fd8d13c913b0c7550d4c8b",
@@ -2584,32 +2613,34 @@
     "examples/vqe_h2.esk": {
       "source_sha256": "16ee4266c13ea345e3a5210f65a511285f6c7c63be02d50c2d74b0c4f216975a",
       "jit": {
-        "status": "RAN-OK",
-        "exit": 0,
-        "wall_s": 1.97,
+        "status": "FAIL",
+        "exit": 1,
+        "wall_s": 1.84,
         "passed": null,
         "failed": null,
         "result_line": null,
-        "cpu_s": 1.95
+        "cpu_s": 1.83
       },
       "aot": {
-        "status": "RAN-OK",
-        "exit": 0,
-        "wall_s": 0.24,
+        "status": "FAIL",
+        "exit": 1,
+        "wall_s": 0.2,
         "passed": null,
         "failed": null,
         "result_line": null,
-        "cpu_s": 0.06,
+        "cpu_s": 0.02,
         "compile_exit": 0,
-        "compile_s": 1.93
+        "compile_s": 1.73
       },
       "ctest": [],
-      "key_output": [
-        "Final VQE energy:   -1.1421333189606426 Ha",
-        "Exact ground state: -1.142170640288229 Ha"
-      ],
-      "output_lines": 24,
-      "note": "Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON."
+      "key_output": [],
+      "output_lines": 1,
+      "failure_excerpt": [
+        "[REPL] Discovered 791 functions, 964 globals, 23 variadic entries from stdlib.bc",
+        "[REPL] Loaded stdlib from cached object: /Users/tyr/Desktop/eshkol/.scratch/v136-docs-campaign/build/stdlib-jit-v4-6DB62049DCA1604B-arm64-apple-darwin24.1.0-abi1h8s0a8.o",
+        "Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)",
+        "Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)"
+      ]
     },
     "examples/wgsl_artifact/generate.esk": {
       "source_sha256": "4598899b130bc9a1007309ac69007978d8c8ee18a1be8fa0b83b28740e8de1bb",
@@ -2638,8 +2669,7 @@
         "// ad-grid-max-errors: 6.376787986539512e-11,3.5238751916466526e-09,1.7720019584999136e-07",
         "AD_MODEL_PASS"
       ],
-      "output_lines": 27,
-      "note": "`python3 examples/wgsl_artifact/build_artifact.py` at this SHA (1.9 s) prints `artifact PASS: native=VM`, with AD grid maxima 6.4e-11, 3.5e-09 and 1.8e-07 for value, first and second derivative, and reproduces `evaluator.wgsl` and the manifest's `source_sha256` and `wgsl_sha256` byte for byte; only the manifest's compiler provenance (`git_commit`, `native_binary_sha256`) differs, as it records the building compiler."
+      "output_lines": 27
     }
   }
 }

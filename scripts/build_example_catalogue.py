@@ -614,7 +614,9 @@ sources:
     no_criteria = [e for e in math if not e['registrations']]
     if no_criteria:
         names = ', '.join(f"`{Path(e['path']).stem}`" for e in no_criteria)
-        no_criteria_note = f" {len(no_criteria)} program{'s' if len(no_criteria) != 1 else ''} ({names}) have no dedicated criterion; they are run by the general examples runner."
+        verb = "have" if len(no_criteria) != 1 else "has"
+        pronoun = "they are" if len(no_criteria) != 1 else "it is"
+        no_criteria_note = f" {len(no_criteria)} program{'s' if len(no_criteria) != 1 else ''} ({names}) {verb} no dedicated criterion; {pronoun} run by the general examples runner."
     else:
         no_criteria_note = " Every mathematics program carries a dedicated criterion."
     math_text += ['\nRegistration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repeated criteria for one program are counted separately; the localization source has three NS criteria.' + no_criteria_note,
