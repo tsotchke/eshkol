@@ -16,13 +16,11 @@
 ;;  Genuine validated interval arithmetic needs *directed rounding*: compute
 ;;  each lower endpoint with the FPU rounding mode set toward -inf and each
 ;;  upper endpoint toward +inf (equivalently, nudge results with `nextafter`).
-;;  Eshkol today exposes NEITHER to Scheme:
-;;
-;;      $ grep -rn 'nextafter|fesetround|feclearexcept' lib/ include/   → (none)
-;;
-;;  (verified before writing this file). We therefore take the honest,
-;;  documented approach (a) from the task brief: a **conservative
-;;  epsilon-widening** model. Every primitive interval operation is evaluated in
+;;  Eshkol now ships that nudge as two runtime primitives, `fl-next-up` and
+;;  `fl-next-down` (thin wrappers over C99 `nextafter`), used by the proof-backed
+;;  layer core.ad.rigorous_interval below. This file keeps its original,
+;;  self-contained **epsilon-widening** model as the default (approach (a)
+;;  from the original task brief): every primitive interval operation is evaluated in
 ;;  ordinary round-to-nearest double precision, then its result is widened
 ;;  OUTWARD by
 ;;
@@ -51,10 +49,11 @@
 ;;  correctly rounded to within 16 ULP (they are within ~1 ULP in practice — we
 ;;  budget 16). This is a sound enclosure, not a heuristic: we never
 ;;  under-widen. It is NOT bit-level formally verified interval arithmetic
-;;  (that would require real directed rounding / nextafter, which the language
-;;  does not yet expose); when Eshkol grows an fesetround/nextafter FFI, swap
-;;  the pad for genuine directed rounding — approach (b) — for a strictly
-;;  tighter and fully rigorous result.
+;;  by itself (that needs real directed rounding via `fl-next-up`/`fl-next-down`);
+;;  the proof-backed version of that directed rounding — approach (b) — now
+;;  lives alongside this file in core.ad.rigorous_interval, and is also reachable
+;;  from here by passing the optional trailing `#t` flag on each primitive below
+;;  (see the `rigorous?` note just above the `require`).
 ;;
 ;;  ── Domain-guard policy ───────────────────────────────────────────────────
 ;;  interval-div signals an `error` when the denominator interval contains 0
