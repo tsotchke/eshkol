@@ -25,20 +25,28 @@ class CatalogueTests(unittest.TestCase):
         (self.root/'docs/examples').mkdir(parents=True)
         (self.root/'scripts').mkdir()
         (self.root/'examples').mkdir()
-        self.paths=['examples/mathematics_fixture_ns.esk','examples/mathematics_fixture_ipm.esk']
+        # Generic over module.FAMILIES (not hardcoded to a fixed count) so a
+        # new registration family is automatically covered by one fixture
+        # program instead of leaking the real CMakeLists registration list
+        # (and its real, untracked-by-this-fixture source files) into the
+        # sandbox.
+        aliases=[module.FAMILY_PREFIX[family] for family in module.FAMILIES]
+        self.paths=[f'examples/mathematics_fixture_{alias}.esk' for alias in aliases]
+        criteria=[f'{alias}_fixture' for alias in aliases]
         source=';; finite fixture\n(define x 2)\n(check "square" (= (* x x) 4))\n'
         for path in self.paths: (self.root/path).write_text(source)
         self.inventory=patch.object(module,'inventory',return_value=self.paths)
         self.inventory.start();self.addCleanup(self.inventory.stop)
         cmake=(ROOT/'CMakeLists.txt').read_text()
-        for family,criterion,stem in [('ESHKOL_NS_EXAMPLES','ns_fixture','mathematics_fixture_ns'),('ESHKOL_IPM_EXAMPLES','ipm_fixture','mathematics_fixture_ipm')]:
+        for family,criterion,path in zip(module.FAMILIES,criteria,self.paths):
+            stem=Path(path).stem
             cmake=re.sub(rf'\bset\({family}\s+[^)]*\)',f'set({family} {criterion} {stem})',cmake)
         (self.root/'CMakeLists.txt').write_text(cmake)
         shutil.copy(ROOT/'scripts/run_examples_tests.sh',self.root/'scripts/run_examples_tests.sh')
         catalogue=json.loads((ROOT/'docs/examples/catalogue.json').read_text())
         template=catalogue['entries'][0]
         self.entries=[]
-        for path,family,criterion in zip(self.paths,module.FAMILIES,['ns_fixture','ipm_fixture']):
+        for path,family,criterion in zip(self.paths,module.FAMILIES,criteria):
             entry=copy.deepcopy(template)
             entry.update(path=path,title='Finite fixture '+criterion,source_sha256=module.digest(self.root/path),kind='mathematics',
                 source_anchors=[{'line':1,'text':source.splitlines()[0]},{'line':3,'text':source.splitlines()[2]}],
@@ -72,7 +80,7 @@ class CatalogueTests(unittest.TestCase):
 
     def test_positive_write_is_idempotent_and_preserves_narrative(self):
         result=module.build(self.root,write=True)
-        self.assertEqual(result['programs'],2)
+        self.assertEqual(result['programs'],len(module.FAMILIES))
         before=self.snapshot()
         self.assertEqual(module.build(self.root,write=True)['changed'],[])
         self.assertEqual(module.build(self.root)['changed'],[])
