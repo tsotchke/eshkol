@@ -193,6 +193,20 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   guides carry their measured results, `THIRD_PARTY_NOTICES.md` covers the opt-in and
   vendored components, and the VS Code extension reports 1.3.6. (#759)
 - **Press materials, announcement and site describe v1.3.6.** (#753)
+- **The operator of a call may be any expression.** `((and #t car) xs)`,
+  `((case k ((1) f)) x)` and every other computed operator are evaluated and
+  applied; a value that is not a procedure raises a catchable condition. A
+  literal in operator position, such as an unquoted list inside `#(...)` or a
+  shape `(2 2)` passed to `tensor`, is a source-located compile diagnostic.
+- **`length` takes a proper list on native and on the bytecode VM.** Any other
+  operand raises `length: argument is not a proper list`; `car`/`cdr` of an
+  empty vector or tensor raise "not a pair". `dynamic-wind` operands that
+  report a diagnostic end compilation normally.
+- **The REPL resumes a continuation within the evaluation that captured it.**
+  Re-entry and multi-shot use inside one top-level form work as in a program
+  file; invoking a continuation saved by an earlier form raises a catchable
+  condition and the session continues. The documented re-entry examples run
+  as written in a program file.
 
 ## [1.3.5-evolve] - 2026-09-22
 
