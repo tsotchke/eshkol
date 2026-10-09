@@ -9,6 +9,7 @@ sources:
   - lib/frontend/macro_expander.cpp
   - lib/backend/vm_macro.c
   - tests/vm_parity/corpus/93_macro_hygiene_matrix.esk
+  - tests/macros/macro_expansion_depth_test.py
 ---
 # Macros: `define-syntax`, `let-syntax`, `letrec-syntax`, `syntax-rules`
 
@@ -165,6 +166,31 @@ Two rules follow from how hygiene is implemented and are part of the language:
   makes `counter` visible to the program.
 - A symbol a template quotes is data and keeps its spelling: a template
   `(let ((tmp 5)) (list 'tmp tmp))` produces `(tmp 5)`.
+
+## Expansion depth
+
+The native expander renames binders and their references at every nesting
+depth the source has: a `let`, `lambda`, `do` or `match` nested thousands of
+levels deep, or a macro use written deep inside one, expands and resolves like
+a shallow one. Expansion runs on the compiler's explicit continuation stack,
+and entering a scope costs nothing in proportion to the bindings already in
+scope, so neither stack nor memory grows with the depth beyond the program
+itself.
+
+The one depth that is limited is nesting that expansion itself creates. A
+template that places a further macro use inside its output, where expanding
+that use does the same again, has no bound in the source; after 1000 such
+nested expansions the compiler stops with
+`macro expansion depth limit exceeded (>1000)`:
+
+```scheme
+(define-syntax grow (syntax-rules () ((_ e) (list (grow e)))))
+(display (grow 1))   ; error: macro expansion depth limit exceeded (>1000)
+```
+
+The bytecode VM compiles expressions nested up to 1000 levels deep and refuses
+a deeper program with `expression nesting too deep (>1000)`; it does not run
+it.
 
 ## Notes on engines
 
