@@ -42,7 +42,7 @@ at the call site, (2) a first-class value bound to a variable, and (3) a value
 threaded through a higher-order wrapper — the three forms whose divergence was
 the ESH-0212 silent-zero regression.
 
-Current corpus: **21 files, 147 probes, 436 component checks**, run under BOTH
+Current corpus: **32 files, 189 probes, 674 component checks**, run under BOTH
 the JIT (`-r`) and AOT.
 
 The `vecpoint` family is a dedicated tracked repro of **ESH-0235** (found by
