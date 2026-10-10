@@ -1,7 +1,6 @@
 # icc_extras — Eshkol-specific tooling on top of `infinite_context_coder`
 
-The base `infinite_context_coder` (ICC, at `~/Desktop/infinite_context_coder`)
-gives us call-graph, include-graph, chunked symbol/file index, git-history memory,
+The base `infinite_context_coder` (ICC, invoked as `icc`) gives us call-graph, include-graph, chunked symbol/file index, git-history memory,
 and a regex-based `guard-diff`. That covers routing/scoping decisions for the
 v1.2 carry-forward and the mechanical extractions (#205).
 
@@ -14,9 +13,9 @@ What it does **not** cover, and what this directory adds:
 | LLVM-IR validity check on every emit | covered in the codegen layer (see `lib/backend/llvm_codegen.cpp` `verifyModule` calls); audit notes in `verifier_coverage.md` |
 
 These three artefacts are the v1.3 prep that goes in front of #206
-("v1.3 architectural codegen rewrite"). They catch the classes of bug that
-have actually bitten us — Bug F/G (parallel workers across modes), the 35-gap
-bignum audit, the tagged-value-data-field-{4} class, the
+("v1.3 architectural codegen rewrite"). They catch the failure classes that
+have actually reached users — parallel workers diverging across modes, the
+35-gap bignum audit, the tagged-value-data-field-{4} class, the
 findFreeVariablesImpl-coverage class, the closure-in-loop-PHI class — at
 audit time, not at runtime.
 
@@ -29,8 +28,9 @@ tools/icc_extras/
 ├── parity_ledger.json                 the ledger itself (committed; reviewed)
 ├── generate_parity_ledger.py          scrapes the codebase and emits the ledger
 ├── codegen_audit_rules.json           ICC guard-diff rules (regex + skip-context)
-├── codegen_audit.py                   runs the rules against the source tree and
-│                                      compares results against the saved baseline
+├── codegen_audit.py                   runs the rules (plus cross-file structural
+│                                      checks) against the source tree or a diff
+│                                      and compares results against the saved baseline
 ├── audit_baseline.json                the accepted baseline of known findings
 │                                      (deviations from this file fail the audit)
 └── verifier_coverage.md               audit of where verifyModule already runs
@@ -45,11 +45,21 @@ python3 tools/icc_extras/generate_parity_ledger.py \
     --out tools/icc_extras/parity_ledger.json
 
 # Audit a diff against the eshkol-codegen rules
-python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py guard-diff \
-    --repo eshkol_lang \
-    --rules tools/icc_extras/codegen_audit_rules.json \
-    --base origin/master
+python3 tools/icc_extras/codegen_audit.py --diff origin/master
+
+# Audit the whole tree, or a file list
+python3 tools/icc_extras/codegen_audit.py --all
+python3 tools/icc_extras/codegen_audit.py lib/backend/llvm_codegen.cpp
+
+# Print only the missing-VM / missing-AOT entries, writing nothing
+python3 tools/icc_extras/generate_parity_ledger.py --repo-root . --missing-only
 ```
+
+`codegen_audit.py` also takes `--severity {high,medium,low,all}`,
+`--format {text,json}`, `--no-cross-file`, `--no-baseline` and
+`--update-baseline`. ICC's own `icc guard-diff --repo <name>` runs ICC's
+policy-based guard over a diff; the rule set in this directory is consumed by
+`codegen_audit.py`.
 
 ## What "parity status" means
 
@@ -65,7 +75,8 @@ For each operation/builtin, the ledger records one of:
 - **`aot-partial`** — AOT implementation has a known limitation that
   the VM has worked around (rare; mainly older-AD-only ops).
 - **`divergent`** — Both implementations exist but produce different
-  results for some input. **Always a bug.** Refer to `notes` field.
+  results for some input. **Always something to fix.** Refer to `notes`
+  field.
 - **`unverified`** — Status not yet hand-checked. New entries default
   here until a maintainer audits and flips them.
 

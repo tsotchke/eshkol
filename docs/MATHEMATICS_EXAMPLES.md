@@ -118,7 +118,7 @@ Computed values (verbatim program output):
   H^*(pseudocircle; Q) three ways (lim^n over points, Cech of the point-route sections, Cech of a(Q) on the site) = ((1 1 0) (1 1 0) (1 1 0))
   H^*(pseudo-2-sphere; Q) three ways = ((1 0 1 0) (1 0 0 0) (1 0 0 0))
   H^*(pseudocircle; twisted Q) three ways = ((0 0 0) (0 0 0) (0 0 0))
-PASS: pseudo-2-sphere: the derived limit gives (1, 0, 1, 0), while the only cover by maximal opens has the pseudocircle as its intersection (not acyclic), so both Cech routes give (1, 0, 0, 0) and miss H^2: the Leray condition fails, as in 
+PASS: pseudo-2-sphere: the derived limit gives (1, 0, 1, 0), while the only cover by maximal opens has the pseudocircle as its intersection (not acyclic), so both Cech routes give (1, 0, 0, 0) and miss H^2: the Leray condition fails, as in
 ```
 
 Implementation/check anchors: [line 1](../examples/mathematics_abelian_sheaves_finite_site.esk#L1), [line 63](../examples/mathematics_abelian_sheaves_finite_site.esk#L63), [line 64](../examples/mathematics_abelian_sheaves_finite_site.esk#L64), [line 455](../examples/mathematics_abelian_sheaves_finite_site.esk#L455), [line 571](../examples/mathematics_abelian_sheaves_finite_site.esk#L571), [line 573](../examples/mathematics_abelian_sheaves_finite_site.esk#L573).

@@ -994,6 +994,7 @@ The low-level platform surface needs an escape hatch for compiler-recognized ope
 
 Add `target-intrinsic` as a typed LLVM intrinsic form:
 
+<!-- doc-example: skip pseudo-code: an ADR decision statement giving a primitive's grammar shape; return-type/arg-type/arg are metavariables -->
 ```scheme
 (target-intrinsic return-type "llvm.intrinsic.name" arg-type arg ...)
 ```
@@ -1056,6 +1057,7 @@ The low-level platform surface needs address arithmetic for MMIO register window
 
 Add `ptr-add` as the first pointer arithmetic primitive:
 
+<!-- doc-example: skip pseudo-code: an ADR decision statement giving a primitive's grammar shape; type/ptr/offset/ordering/value/expected/desired are metavariables -->
 ```scheme
 (ptr-add base offset)
 ```
@@ -1086,6 +1088,7 @@ After fences, volatile memory access, and byte-offset pointer arithmetic, the pl
 
 Add two typed atomic memory primitives:
 
+<!-- doc-example: skip pseudo-code: an ADR decision statement giving a primitive's grammar shape; type/ptr/offset/ordering/value/expected/desired are metavariables -->
 ```scheme
 (atomic-load type ptr ordering)
 (atomic-store! type ptr value ordering)
@@ -1165,6 +1168,7 @@ compare-exchange contract.
 
 Add a typed exchange primitive:
 
+<!-- doc-example: skip pseudo-code: an ADR decision statement giving a primitive's grammar shape; type/ptr/offset/ordering/value/expected/desired are metavariables -->
 ```scheme
 (atomic-exchange! type ptr value ordering)
 ```
@@ -1204,6 +1208,7 @@ strong policy, and a value/result shape for the observed load.
 
 Add two typed arithmetic read-modify-write primitives:
 
+<!-- doc-example: skip pseudo-code: an ADR decision statement giving a primitive's grammar shape; type/ptr/offset/ordering/value/expected/desired are metavariables -->
 ```scheme
 (atomic-fetch-add! type ptr value ordering)
 (atomic-fetch-sub! type ptr value ordering)
@@ -1247,6 +1252,7 @@ structured observed-value/success result and success/failure ordering rules.
 
 Add three typed bitwise read-modify-write primitives:
 
+<!-- doc-example: skip pseudo-code: an ADR decision statement giving a primitive's grammar shape; type/ptr/offset/ordering/value/expected/desired are metavariables -->
 ```scheme
 (atomic-fetch-and! type ptr value ordering)
 (atomic-fetch-or! type ptr value ordering)
@@ -1289,6 +1295,7 @@ expand the low-level surface more than this slice requires.
 
 Add a strong typed compare-exchange primitive:
 
+<!-- doc-example: skip pseudo-code: an ADR decision statement giving a primitive's grammar shape; type/ptr/offset/ordering/value/expected/desired are metavariables -->
 ```scheme
 (atomic-compare-exchange! type ptr expected desired success-order failure-order)
 ```

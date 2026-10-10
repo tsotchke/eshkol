@@ -106,7 +106,10 @@ has pre-existing byte drift.
 
 Pin on `eshkol_version` + `schema_version` in the JSON, not on a git SHA.
 `schema_version` is bumped when field names or nesting change; `eshkol_version`
-tracks `ESHKOL_VERSION` in the root `CMakeLists.txt`. If a consumer needs to
+tracks `ESHKOL_VERSION` in the root `CMakeLists.txt` at the time the file was
+generated. Because the runner never overwrites a committed golden, the
+committed files keep the version that produced them: all ten carry
+`"eshkol_version": "1.3.4"` at v1.3.6-evolve. If a consumer needs to
 know exactly which compiler produced a vector, record the Eshkol commit
 alongside its own test fixture — the exporters do not embed one, because the
 values are a property of the mathematics and the f64 format, not of the build.
@@ -117,7 +120,7 @@ The golden vectors were regenerated once on this branch, after a pre-existing
 reverse-mode AD regression that this instrument had detected and refused to
 paper over was fixed upstream.
 
-**What was wrong, and why regeneration was withheld earlier.** `(gradient f
+**What changed, and why regeneration was withheld earlier.** `(gradient f
 x)` mis-attributed derivatives when `f` selected a component of a vector that
 was freshly allocated and filled by `vector-set!` inside a loop — the write
 barrier that promotes escaping values out of a loop's nursery arena did not
@@ -125,9 +128,9 @@ recognize a tagged AD dual number as carrying an arena pointer, so the nursery
 reset on the loop's back edge recycled the dual's storage while the tangent
 was still live. Two of the five exporters here (`sphere_ops.esk`,
 `sheaf_ee_step.esk`) hit exactly this pattern through `jac-rows-ad`'s
-row-by-row Jacobian assembly, so on the broken build their self-check against
-finite differences failed. Regenerating anyway would have overwritten a known
-correct golden with a silently wrong one, so the suite was deliberately left
+row-by-row Jacobian assembly, so on that build their self-check against
+finite differences failed. Regenerating anyway would have overwritten a
+known-correct golden with silently different values, so the suite was deliberately left
 red (4/10) and the previously committed vectors — generated before the
 regression, and hand-verified against the closed-form Jacobian for
 `sphere_project.d2` — were kept as the reference.
@@ -170,9 +173,9 @@ regenerate all nine `golden/*.json` files.
 
 ### Regeneration provenance (2026-09-22): `squared_distance.json`
 
-`squared_distance.json` was regenerated after SW-222 (`6adb2890f`, the pole
-rule and the jet division recurrence) and SW-225 (`db05575c7`, the power step
-at a zero base) changed the last bit of some gradients. The
+`squared_distance.json` was regenerated after two forward-jet changes —
+`6adb2890f` (the pole rule and the jet division recurrence) and `db05575c7`
+(the power step at a zero base) — changed the last bit of some gradients. The
 `gauss_lemma_rel` and `radial_component` identities, which the exporter
 measures in binary64, went from about 1e-16 to 0. The new file was not
 certified by the code that produced it:
@@ -232,7 +235,7 @@ Two distinct failure modes, both fatal for a test oracle:
   gradient is **identically zero**. Finite differences report up to
   `5.8e+05` — they *invent* a gradient the operator does not have. Only
   `h = 1e-8`, small enough to keep both stencil points above the clamp,
-  agrees. A test built on FD here would chase a nonexistent bug.
+  agrees. A test built on FD here would chase a nonexistent divergence.
 
 "Best over the `h` grid" flatters FD: it is the error you get if you already
 know the answer. The honest column is `usable steps`, and it degrades
@@ -292,7 +295,7 @@ lands on the boundary and `log_x(exp_x(v)) ≠ v`:
 | `d8.c1.base0p999.geodesic_scaled` | 1000.5 | 0.5003 | 4.86e-14 |
 
 The geodesic-scaled companions (`‖v‖ ≈ 2/λ_x`) round-trip to 1e-14 at the
-same base radius. So this is not a defect in the formulas — it is a
+same base radius. So this is not a flaw in the formulas — it is a
 **step-size constraint on manifold residual updates**: A3 must scale tangents
 by `1/λ_x`, or equivalently cap `√c·λ_x·‖v‖/2`, or the residual stream leaves
 the manifold and the backward through `log_x` is meaningless. `exp_0` shows
@@ -352,27 +355,34 @@ Things that shaped these exporters and that a qLLM-side reader should know:
 - **`gradient` is reverse-mode over a flat vector point and returns a
   vector.** Vector-valued maps need one call per output component; that is
   what `jac-rows-ad` in `qllm_oracle_lib.esk` does, using a global row index.
-- **`gradient` requires inexact points.** Handed a vector of exact rationals
-  it returns pointer garbage rather than an exact gradient or an error. The
-  exact-capable operators are the forward Taylor tower — `derivative-n` and
-  `taylor` — which carry exact rationals end to end (verified: the exact leg
+- **`gradient` computes in binary64.** Handed a vector of exact rationals it
+  coerces the point at the AD entry and returns the binary64 gradient
+  (`(gradient (lambda (v) (* (vector-ref v 0) (vector-ref v 1))) (vector 1/2 1/3))`
+  prints `#(0.3333333333333333 0.5)`); an exact result from `gradient` and
+  `hessian` at an exact vector point is the open entry in
+  `tests/math_acceptance/nested_ad_exactness_test.esk`. The exact-capable
+  operators are the forward Taylor tower — `derivative-n` and `taylor` — which
+  carry exact rationals end to end (verified: the exact leg
   above returns `-1997001/2500000000` with `exact? = #t`). This is why the
   exact cross-check uses `derivative-n` along a ray rather than `gradient`.
   Every literal on that path must be exact (`(/ 1 4)`, not `0.25`) or the
   value silently demotes to f64.
-- **Do not capture a local parameter inside an AD lambda over a vector
-  point.** That is tracked open bug ESH-0097 (see `tests/ad_oracle/README.md`)
-  and fails the LLVM verifier on both `-r` and AOT. Every non-differentiated
-  operand in these exporters travels as a global; passing the *projection
-  function itself* as a parameter is fine, since the lambda captures nothing
-  local.
-- **Nested `gradient` needs an inline lambda** (ESH-0078/ESH-0096). Nothing
-  here nests, but a second-order extension would hit it.
+- **Capturing a local parameter inside an AD lambda over a vector point
+  works** on `-r`, AOT and the VM (`(define (mk k) (gradient (lambda (v) (* k
+  (vector-ref v 0) (vector-ref v 0))) (vector 2.0 1.0)))` gives `#(12 0)` for
+  `k = 3.0`; see `tests/ad_oracle/README.md`). These exporters were written
+  before that held, so every non-differentiated operand in them still travels
+  as a global; passing the *projection function itself* as a parameter is
+  fine either way.
+- **Nested `gradient` works through a named inner function as well as an
+  inline lambda** (the `nest.gofg.*` cells of `tests/ad_oracle`). Nothing here
+  nests, but a second-order extension can use either spelling.
 - `display` and `number->string` print binary64 to 17 significant digits, so
   values written by an exporter round-trip exactly.
-- File output is `open-output-file` / `display … port` / `close-output-port`.
-  `call-with-output-file` warns that `open-output-file` takes exactly one
-  argument and writes nothing.
+- File output in the exporters is `open-output-file` / `display … port` /
+  `close-output-port`. `call-with-output-file` also works
+  (`(call-with-output-file "f.txt" (lambda (p) (display "hi" p)))` writes the
+  file).
 
 ## Status of the bridge backwards (the oracle's work queue)
 
@@ -380,7 +390,7 @@ The qLLM campaign treats the unsupported-op error list in
 `lib/backend/tensor_backward.cpp` as this instrument's work queue. Two of the
 three entries are now implemented; the third is deliberately deferred.
 
-**Embedding — DONE (ESH-0230).** `tensor_embedding_backward` is the exact
+**Embedding — DONE.** `tensor_embedding_backward` is the exact
 indexed scatter-add `dW[idx[i],:] += dy[i,:]`. The blocker named in the ticket —
 the lookup-index tensor absent from the AD node — is closed by making
 `node->input2` the index operand, with `params` carrying
@@ -465,12 +475,12 @@ disc the arc-length coordinate is `t = 2·artanh(x)` and the weighted Fréchet m
 is the weighted average in `t`, so points at `±0.8` with weights `3:1` give
 exactly `0.5`, against a Euclidean average of `0.4`.
 
-**Attention — DONE (SW-12).** `ad_tensor_attention` retains the dense softmax
+**Attention — DONE.** `ad_tensor_attention` retains the dense softmax
 weights `A` and the causal flag on the node, and `tensor_attention_backward` runs
 the exact 5-step chain through `softmax(QKᵀ/√d)V` from them. Recomputing `A` in
 the backward was the alternative and was rejected: it would have to re-derive the
 softmax max-shift and the mask, and any drift between the two copies is precisely
-the silently-wrong-gradient class SW-12 exists to close. The causal case is
+the silently-divergent-gradient class this rule exists to close. The causal case is
 checked by scanning the retained weights for a non-zero above the diagonal —
 exact equality, not a tolerance.
 
@@ -481,8 +491,8 @@ in `lib/bridge/qllm_bridge.cpp`. Each is gradchecked *through the producer* —
 `ctest -R qllm_bridge_gradcheck` for attention — which is a different claim from
 the hand-built-node gradchecks that came first. A fixture assembled by hand
 agrees with the backward by construction, because it is written from the same
-contract; the one defect class it structurally cannot see is a producer that
-fills that contract wrongly.
+contract; the one failure class it structurally cannot see is a producer that
+fills that contract differently.
 
 **The remaining gap is Eshkol-language reachability, and it is NOT a one-site
 change.** The producers are reachable from C, which is the external-tensor bridge
@@ -490,7 +500,8 @@ path. They are not reachable from `(gradient (lambda (W) … (embedding idx W)))
 because no *compiled* Eshkol program can create an `AD_NODE_TENSOR_*` node at
 all. `lib/backend/autodiff_codegen.cpp` (see `denseTensorADNodesEnabled()` and its
 header comment in `inc/eshkol/backend/autodiff_codegen.h`) enumerates three independent unfinished pieces, and
-flipping the flag SIGSEGVs rather than producing a slower-but-correct gradient:
+flipping the flag today ends the run on a fatal signal rather than producing a
+slower gradient:
 
 1. `recordADNodeTensor` leaves `tensor_gradient` NULL, while the reverse pass
    *selects* the tensor backward by testing that field non-null — constructor and
@@ -509,7 +520,7 @@ described in `docs/reference/ad/architecture.md`. Its forward is nonetheless the
 *same code* the bridge producer runs — `inc/eshkol/backend/frechet_mean_core.h` —
 so the two cannot drift apart while that work is pending.
 
-### The geometric bridge ops had no backward at all (SW-65)
+### The geometric bridge ops had no backward at all
 
 Separate from the three above, and worse, because it was silent rather than
 merely missing. `ad_hyperbolic_distance`, `ad_poincare_exp_map`,
@@ -575,7 +586,8 @@ aborts naming itself instead of returning zero, while `LEAF` rows keep
 - `golden/*.json` — the committed golden vectors.
 
 Current corpus: **82 in-language checks across 6 exporters / 10 JSON files**,
-green under both the JIT and AOT lanes.
+green under both the JIT and AOT lanes (`qllm_oracle summary: total=12
+passed=12` at v1.3.6-evolve).
 
 ## `squared_distance.json` is a different kind of artifact
 

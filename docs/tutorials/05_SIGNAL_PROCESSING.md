@@ -39,6 +39,7 @@ system so you can differentiate through signal processing chains.
 Window functions reduce spectral leakage when analysing finite-length
 signals. Four are built in:
 
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 ```scheme
 ;; Generate a 64-sample window
 (define ham (hamming-window 64))
@@ -65,6 +66,7 @@ signals. Four are built in:
 
 Design and apply finite impulse response filters:
 
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 ```scheme
 ;; Create a simple moving-average FIR filter (5-tap)
 (define coeffs #(0.2 0.2 0.2 0.2 0.2))
@@ -77,6 +79,7 @@ Design and apply finite impulse response filters:
 
 ### Convolution
 
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 ```scheme
 ;; General convolution of two sequences
 (define result (convolve signal coeffs))
@@ -88,6 +91,7 @@ Design and apply finite impulse response filters:
 
 Design classic Butterworth filters for lowpass, highpass, or bandpass:
 
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 ```scheme
 ;; Design a 4th-order Butterworth lowpass filter.
 ;; Cutoffs are normalised so that 1.0 is the Nyquist frequency: a 100 Hz
@@ -108,6 +112,7 @@ computing poles on the Butterworth circle and mapping to the z-plane.
 
 All signal processing functions compose with Eshkol's autodiff:
 
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 ```scheme
 ;; How does the output power change with respect to filter cutoff?
 ;; This is differentiable because the filter design and the filter are

@@ -188,8 +188,58 @@ def load_catalogue(root, path, paths, matrix):
     return catalogue
 
 
-def _run_record(record, compiled):
+def _validate_run(record, compiled, context="run", require_log=False):
     if not isinstance(record, dict) or record.get("status") not in STATUSES:
+        raise CatalogueError(f"invalid {context} status")
+    status = record["status"]
+    exit_code = record.get("exit")
+    compile_exit = record.get("compile_exit")
+    result_line = record.get("result_line")
+    if status in {"PASS", "RAN-OK"}:
+        if exit_code != 0:
+            raise CatalogueError(f"{context}: {status} requires exit 0")
+        if status == "PASS":
+            if not isinstance(result_line, str) or "RESULT: ALL PASS" not in result_line:
+                raise CatalogueError(f"{context}: PASS requires a RESULT: ALL PASS receipt")
+            if result_line.startswith("RESULT: ALL PASS") and "Failed:" in result_line and not re.search(r"Failed:\s*0(?:\D|$)", result_line):
+                raise CatalogueError(f"{context}: PASS receipt reports failures")
+            if record.get("failed") is not None and record.get("failed") != 0:
+                raise CatalogueError(f"{context}: PASS receipt reports failed cases")
+        elif result_line is not None:
+            raise CatalogueError(f"{context}: RAN-OK must have no self-verdict line")
+        if status == "RAN-OK" and any(record.get(k) is not None for k in ("passed", "failed")):
+            raise CatalogueError(f"{context}: RAN-OK must not carry verdict counts")
+        if compiled and compile_exit != 0:
+            raise CatalogueError(f"{context}: successful AOT run requires compile exit 0")
+    elif status == "COMPILE-FAIL":
+        if not compiled or not isinstance(compile_exit, int) or compile_exit == 0:
+            raise CatalogueError(f"{context}: COMPILE-FAIL requires a nonzero compile exit")
+        if exit_code is not None:
+            raise CatalogueError(f"{context}: COMPILE-FAIL must not have a run exit")
+    elif status == "NOT-RUN":
+        return True
+    elif not isinstance(exit_code, int) or exit_code == 0:
+        raise CatalogueError(f"{context}: {status} requires a nonzero exit")
+    if require_log:
+        log = record.get("log")
+        compile_log = record.get("compile_log")
+        if status == "COMPILE-FAIL":
+            if not compile_log:
+                raise CatalogueError(f"{context}: missing compile log")
+        elif not log:
+            raise CatalogueError(f"{context}: missing run log")
+    numeric = ("wall_s", "cpu_s", "compile_s") if compiled else ("wall_s", "cpu_s")
+    if any(record.get(k) is not None and not isinstance(record[k], (int, float)) for k in numeric):
+        raise CatalogueError(f"{context}: invalid timing field")
+    return True
+
+
+def _run_record(record, compiled):
+    try:
+        _validate_run(record, compiled)
+    except CatalogueError:
+        return False
+    if not isinstance(record, dict):
         return False
     numeric = ("wall_s", "cpu_s", "compile_s") if compiled else ("wall_s", "cpu_s")
     return all(record.get(k) is None or isinstance(record[k], (int, float)) for k in numeric)
@@ -241,6 +291,25 @@ def _log_lines(path):
         return []
 
 
+def _receipt_log_lines(base, run, context):
+    """Read a required receipt log and reject absent or empty evidence."""
+    name = run.get("compile_log") if run.get("status") == "COMPILE-FAIL" else run.get("log")
+    if not name:
+        raise CatalogueError(f"{context}: missing required receipt log")
+    path = base / name
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise CatalogueError(f"{context}: cannot read receipt log {name}: {exc}") from exc
+    if not any(line.strip() for line in lines):
+        raise CatalogueError(f"{context}: receipt log {name} is empty")
+    if run.get("status") == "PASS":
+        expected = run.get("result_line")
+        if not any(line.strip() == expected.strip() for line in lines):
+            raise CatalogueError(f"{context}: declared PASS verdict is absent from receipt log {name}")
+    return lines
+
+
 def _select_key_lines(lines, patterns):
     # Loader banners, ICC trace echoes and GPU device banners are runtime
     # chatter, not program output (and device banners describe the host).
@@ -284,7 +353,14 @@ def ingest(root, receipts_path, junit_paths=(), gates_path=None, not_run=None, n
     if receipts.get("schema") != "eshkol.example-receipts.v1":
         raise CatalogueError("unsupported receipts schema")
     base = receipts_path.parent
-    by_path = {r["path"]: r for r in receipts["records"]}
+    raw_records = receipts.get("records")
+    if not isinstance(raw_records, list) or any(not isinstance(r, dict) or not isinstance(r.get("path"), str) for r in raw_records):
+        raise CatalogueError("receipts records must be a list of path records")
+    by_path = {}
+    for item in raw_records:
+        if item["path"] in by_path:
+            raise CatalogueError(f"duplicate receipt record: {item['path']}")
+        by_path[item["path"]] = item
     ctest = {}
     for junit in junit_paths:
         for case in ET.parse(junit).getroot().iter("testcase"):
@@ -306,8 +382,14 @@ def ingest(root, receipts_path, junit_paths=(), gates_path=None, not_run=None, n
         if rec["source_sha256"] != entry["source_sha256"]:
             raise CatalogueError(f"receipt measured different source bytes: {entry['path']}")
         jit, aot = rec.get("jit"), rec.get("aot")
+        _validate_run(jit, False, f"{entry['path']} JIT", require_log=True)
+        _validate_run(aot, True, f"{entry['path']} AOT", require_log=True)
+        logs = {}
+        for label, run in (("JIT", jit), ("AOT", aot)):
+            if run.get("status") != "NOT-RUN":
+                logs[label] = _receipt_log_lines(base, run, f"{entry['path']} {label}")
         primary = jit if jit and jit.get("status") in ("PASS", "RAN-OK") else (aot if aot and aot.get("log") else jit)
-        lines = _log_lines(base / primary["log"]) if primary and primary.get("log") else []
+        lines = logs.get("JIT", []) if primary is jit else logs.get("AOT", [])
         record = {"source_sha256": rec["source_sha256"], "jit": _run_summary(jit, False), "aot": _run_summary(aot, True),
                   "ctest": [ctest[n] for n in [f"{r['criterion']}_{m}" for r in entry["registrations"] for m in r["modes"]] + ["vm_" + Path(entry["path"]).stem] if n in ctest],
                   "key_output": _select_key_lines(lines, entry.get("key_output", [])),
@@ -395,7 +477,7 @@ def measured_text(entry, measurements):
     rows = [text]
     if record.get("key_output"):
         label = "Computed values (verbatim program output):" if entry.get("key_output") else "First lines of output (verbatim):"
-        rows.append(label + "\n\n```text\n" + "\n".join(record["key_output"]) + "\n```")
+        rows.append(label + "\n\n```text\n" + "\n".join(line.rstrip() for line in record["key_output"]) + "\n```")
     if record.get("note"):
         rows.append("**Measurement note:** " + record["note"])
     if record.get("failure_excerpt"):

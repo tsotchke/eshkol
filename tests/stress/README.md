@@ -2,9 +2,9 @@
 
 Two suites live here:
 
-1. **P4 extreme stress harness** (adversarial testing campaign, pillar P4 —
-   `.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md`): budget-asserted scale/resource
-   probes driven by `scripts/run_stress.sh` + `budgets.tsv`.
+1. **P4 extreme stress harness** (adversarial testing campaign, pillar P4):
+   budget-asserted scale/resource probes driven by `scripts/run_stress.sh` +
+   `budgets.tsv`.
 2. **Legacy soak harnesses** (`stress_alloc_loop.esk`,
    `stress_fd_exhaustion.esk`, `stress_parallel_at_scale.esk`): long-running
    exhaustion loops driven by `scripts/run_stress_tests.sh` (minutes–hours,
@@ -20,9 +20,9 @@ bash scripts/run_stress.sh --only sort  # substring filter
 ```
 
 Every row of `budgets.tsv` (file, mode, class, wall-time ceiling, per-mode
-max-RSS ceiling, expected stdout, XKNOWN ledger id) is executed under the JIT
+max-RSS ceiling, expected stdout, XKNOWN tracking id) is executed under the JIT
 and/or AOT and classified as `PASS / FAIL / CRASH / HANG / OVER-RSS /
-OVER-TIME`. RSS comes from `/usr/bin/time -l` (max resident set size);
+OVER-TIME` (plus `XKNOWN` / `XPASS` for rows that carry a tracking id). RSS comes from `/usr/bin/time -l` (max resident set size);
 timeouts use `perl alarm` (macOS has no `timeout(1)`). Reference baselines on
 macOS arm64: a trivial `-r` run is ~222MB RSS (stdlib object + LLVM), a
 trivial AOT binary ~28MB — ceilings are sized above those floors, and every
@@ -43,9 +43,9 @@ oracle in `.icc/completion-oracles.yaml` (summary event: `stress_suite_green`).
 
 ### Corpus layout
 
-- `rec_*` — recursion: TCO 10⁸ in O(1) stack, non-TCO at the documented safe
-  depth (250k; first failure ~270k), mutual recursion, 10k nested
-  dynamic-wind, 20k CPS chain (ESH-0080 class).
+- `rec_*` — recursion: TCO 10⁸ in O(1) stack, non-TCO at 200k (the passing
+  margin row) and 250k, mutual recursion, 10k nested dynamic-wind, 20k CPS
+  chain.
 - `parser_*` + `generated/parser_*` — 10k-deep parens, 10k quoted list, 1MB+
   of defines, 999-deep quasiquote template, 9.5k-char escape-mix literal.
 - `data_*` — 1M list build/reverse/count, 100k vector map, 50k sort, 200k-key
@@ -63,27 +63,35 @@ oracle in `.icc/completion-oracles.yaml` (summary event: `stress_suite_green`).
 Large mechanical sources are regenerated deterministically into `generated/`
 (gitignored) by `gen_stress_sources.sh`; the runner invokes it automatically.
 
-### found/ — minimal repros for bugs this harness discovered
+### found/ — minimal repros for divergences this harness discovered
 
-Each file's header records the measured numbers and thresholds; each has a
-`.swarm/tasks/ESH-NNNN.json` ledger entry and an XKNOWN row in `budgets.tsv`.
-XKNOWN failures don't gate; an XKNOWN row that starts PASSING is reported as
-XPASS and FAILS the gate so stale entries get promoted.
+Each file's header records the numbers measured when it was filed; the
+`budgets.tsv` row of each tracked one carries its tracking id in the `xknown`
+column. XKNOWN failures don't gate; an XKNOWN row that starts PASSING is
+reported as XPASS and FAILS the gate, so a fixed row is promoted to an
+ordinary row (its `xknown` column cleared) rather than left tolerated.
 
-| Repro | Ledger | One-liner |
+At v1.3.6-evolve every repro below produces its expected output under both
+the JIT (`-r`) and AOT, within its budget:
+
+| Repro | What it showed when filed | Status at v1.3.6-evolve |
 |---|---|---|
-| `closure_loop_global_set.esk` | ESH-0094 | lambda in named-let loop that `set!`s a global drops every write (prints 0, expected 3) |
-| `serialized_counter_10k.esk` | ESH-0094 | …so a mutex-serialized worker counter stays 0 instead of 10000 |
-| `quote_sugar_in_guard.esk` | ESH-0106 | `'sym` anywhere inside `(guard …)` compiles as a variable reference; `(quote sym)` works |
-| `nested_quasiquote.esk` | ESH-0107 | level≥2 quasiquote collapses to `()` |
-| `list_length_1m.esk` | ESH-0108 | stdlib `length`/`filter` non-tail: SIGILL, no diagnostic, ~500k+ lists |
-| `sort_100k.esk` | ESH-0098 | `sort` depth is O(n): 99999 SIGILLs, ≥100001 hits the depth guard |
-| `string_nul_long_literal.esk` | ESH-0099 | NUL-bearing literal >512 source bytes decodes to wrong length/content |
-| `parallel_worker_loop_20k.esk` | ESH-0100 | named-let loop in a parallel-map worker eats stack/iter: SIGBUS at ~8k iters |
-| `deep_recursion_270k_no_diagnostic.esk` | ESH-0101 / SW-81 | hard gate: default stack gives a stack-overflow diagnostic; `ESHKOL_STACK_SIZE=1G` completes 2M frames; JIT/AOT and worker variants are driven by `scripts/run_stack_overflow_diagnostic.sh` |
-| `jit_deep_expr_compile_growth.esk` | ESH-0103 | 10k-deep expr: JIT compile 35.8s/6.7GB + macro-depth spam; AOT 0.73s/93MB (doc file; enforced by the split `parser_nested_parens_10k` rows) |
-| `quasiquote_long_form.esk` | ESH-0104 | `(quasiquote x)`/`(unquote x)` long forms are inert; only `` ` ``/`,` sugar works |
-| `rational_bignum_exactness.esk` | ESH-0105 | exact rationals silently become doubles once a bignum appears (`(/ 1 (expt 10 19))` → `1e-19`) |
+| `closure_loop_global_set.esk` | lambda in named-let loop that `set!`s a global dropped every write (printed 0, expected 3) | `OK 3`, JIT and AOT |
+| `serialized_counter_10k.esk` | …so a mutex-serialized worker counter stayed 0 instead of 10000 | `OK 10000`, JIT and AOT |
+| `quote_sugar_in_guard.esk` | `'sym` anywhere inside `(guard …)` compiled as a variable reference; `(quote sym)` worked | ordinary gated row, PASS |
+| `nested_quasiquote.esk` | level≥2 quasiquote collapsed to `()` | ordinary gated row, PASS |
+| `list_length_1m.esk` | stdlib `length`/`filter` non-tail: stopped on a signal with no diagnostic at ~500k+ element lists | `OK 1000000`, JIT and AOT |
+| `sort_100k.esk` | `sort` depth was O(n): 99999 stopped on a signal, ≥100001 hit the depth guard | `OK 0`, JIT and AOT |
+| `string_nul_long_literal.esk` | NUL-bearing literal >512 source bytes decoded to a different length/content | ordinary gated row, PASS |
+| `parallel_worker_loop_20k.esk` | named-let loop in a parallel-map worker used stack per iteration: signal at ~8k iterations | `OK`, JIT and AOT |
+| `mutual_tail_1e7.esk` | 10⁷ mutual tail calls grew the stack; resolved 2026-07-04 by emitting mutual tail calls as LLVM `musttail` | ordinary gated row, PASS (O(1) stack) |
+| `deep_recursion_270k_no_diagnostic.esk` | hard gate: the default stack gives a stack-overflow diagnostic; `ESHKOL_STACK_SIZE=1G` completes 2M frames; JIT/AOT and worker variants are driven by `scripts/run_stack_overflow_diagnostic.sh` | gated by that script |
+| `jit_deep_expr_compile_growth.esk` | 10k-deep expr: JIT compile 35.8s/6.7GB + macro-depth messages; AOT 0.73s/93MB (doc file; enforced by the split `parser_nested_parens_10k` rows) | the `-r` row now completes inside its budget; AOT 0.22s / 10MB |
+| `quasiquote_long_form.esk` | `(quasiquote x)`/`(unquote x)` long forms were inert; only `` ` ``/`,` sugar worked | ordinary gated row, PASS |
+| `rational_bignum_exactness.esk` | exact rationals became doubles once a bignum appeared (`(/ 1 (expt 10 19))` → `1e-19`) | `OK rational-bignum-exact`, JIT and AOT |
+
+The non-TCO 250k row (`rec_deep_nontco_250k.esk`) likewise completes in both
+modes at v1.3.6-evolve.
 
 ### Adding a probe
 
@@ -92,9 +100,9 @@ XPASS and FAILS the gate so stale entries get promoted.
 2. Add a `budgets.tsv` row; measure first (`/usr/bin/time -l build/eshkol-run
    -r file.esk`), then set ceilings just above the measurement with a comment
    if they deviate from the defaults (384MB r / 128–160MB aot / 60s).
-3. If it pins an open bug: put the repro in `found/`, add the measured
-   numbers to its header, create the ledger task, and set the `xknown`
-   column.
+3. If it pins an open divergence: put the repro in `found/`, add the
+   measured numbers to its header, create the tracking entry, and set the
+   `xknown` column.
 
 ## Legacy soak harnesses
 

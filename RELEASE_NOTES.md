@@ -13,6 +13,29 @@ before publication.
 
 ### Changes
 
+- **Example outcomes are bound to their measured sources.** The catalogue
+  records native JIT and AOT outcomes for all 67 programs. All 46 mathematics
+  programs ran in both modes; 45 emitted their explicit all-pass result and
+  the group-cohomology sweep completed successfully. Published constructions,
+  arithmetic and finite computation limits are documented alongside them. (#755)
+- **Public documentation covers the release's implementation and interfaces.**
+  Guides, language reference, architecture and vision documents, test-harness
+  instructions and the paper artifact describe the current implementation.
+  Fixed-point, i128 and exact-accumulation APIs are documented and indexed;
+  site figures agree with the committed browser artifacts. (#753, #754, #756,
+  #757, #758, #759)
+- **XLA tensor results follow the active thread's region.** The XLA runtime
+  receives the current arena, and compiled run-cache entries include the GPU
+  dispatch threshold. Elementwise outputs avoid redundant zeroing; large-block
+  reuse preserves heap-limit enforcement. Coherent CUDA devices can use host
+  operands directly, with an explicit pinned-path override. The XLA CI lane
+  runs the region, cache and pool regressions. (#751, #752)
+- **Full release CTest runs with four workers.** The complete inventory,
+  per-test limits and source-bound receipts are retained. Source-mutating ABI
+  controls and timing-sensitive calibration checks remain serial. (#752)
+- **ABI inventory includes the integrated contributor sites.** Exact reviewed
+  accessor and test-allocator counts are recorded without relaxing other
+  lexical or semantic counts or negative controls. (#752)
 - **Native AOT linking preserves the configured C++ driver name.** A
   `clang++` symlink retains C++ runtime and exception linking instead of being
   invoked through its `clang` target. (#750)

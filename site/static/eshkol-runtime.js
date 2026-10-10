@@ -1079,7 +1079,31 @@ class EshkolRuntime {
                     mem[Number(buf) + len] = 0;
                     return buf;
                 },
-                arena_allocate_closure_with_header: () => rt._bump(64),
+                arena_allocate_closure_with_header: (_arena, funcPtr, packedInfo, sexprPtr, returnTypeInfo, namePtr) => {
+                    return exact.transaction(() => {
+                        const captures = Number(BigInt(packedInfo) & 0xffffffffn);
+                        const closure = exact.header(40, captures === 0 ? 1 : 0, 0);
+                        let env = 0;
+                        if (captures > 0) {
+                            env = rt._bump(8 + captures * 16);
+                            const envView = new DataView((rt.memory || rt._importedMemory).buffer);
+                            envView.setBigUint64(env, BigInt(packedInfo), true);
+                        }
+                        // _bump may grow linear memory; reacquire the view
+                        // after every allocation before touching the object.
+                        const dv = new DataView((rt.memory || rt._importedMemory).buffer);
+                        dv.setBigUint64(closure, BigInt(funcPtr), true);
+                        dv.setUint32(closure + 8, env, true);
+                        dv.setBigUint64(closure + 16, BigInt(sexprPtr), true);
+                        dv.setUint32(closure + 24, Number(namePtr) >>> 0, true);
+                        dv.setUint8(closure + 32, Number(BigInt(returnTypeInfo) & 0xffn));
+                        dv.setUint8(closure + 33, Number((BigInt(returnTypeInfo) >> 8n) & 0xffn));
+                        dv.setUint8(closure + 34, ((BigInt(packedInfo) >> 63n) ? 1 : 0) | (BigInt(namePtr) !== 0n ? 2 : 0));
+                        dv.setUint8(closure + 35, 0);
+                        dv.setUint32(closure + 36, Number((BigInt(returnTypeInfo) >> 16n) & 0xffffffffn), true);
+                        return closure;
+                    });
+                },
                 arena_tagged_cons_get_int64: () => 0n,
                 arena_tagged_cons_get_double: () => 0.0,
                 arena_tagged_cons_get_ptr: () => 0n,

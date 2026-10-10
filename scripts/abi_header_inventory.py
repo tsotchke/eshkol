@@ -678,7 +678,31 @@ def scan_lexical(root: Path) -> list[Site]:
 
 
 # ── Semantic detectors (libclang) ────────────────────────────────────────────
-def _toolchain_flags() -> list[str]:
+def _is_cxx_translation_unit(path: str, tokens: list[str]) -> bool:
+    """Classify a compile-db entry without overriding an explicit ``-x``.
+
+    A `.c` file can intentionally be compiled as C++ (and vice versa), so the
+    driver language switch wins over the filename suffix.  This classification
+    only controls the extra C++ standard-library search paths below; the
+    compile database's own flags remain untouched.
+    """
+    explicit: str | None = None
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "-x" and i + 1 < len(tokens):
+            explicit = tokens[i + 1]
+            i += 2
+            continue
+        if token.startswith("-x") and len(token) > 2:
+            explicit = token[2:]
+        i += 1
+    if explicit is not None:
+        return explicit in {"c++", "c++-header", "objective-c++", "cuda"}
+    return Path(path).suffix.lower() in {".cc", ".cpp", ".cxx", ".hpp", ".hh", ".mm", ".cu"}
+
+
+def _toolchain_flags(cxx: bool = True) -> list[str]:
     """Flags libclang needs that the compile database does not carry.
 
     compile_commands.json records the flags the *build* compiler was given. A
@@ -706,11 +730,13 @@ def _toolchain_flags() -> list[str]:
             flags += ["-resource-dir", rd.stdout.strip()]
             break
 
-    # libclang does not inherit the driver-selected libstdc++/GCC include
-    # search path from compile_commands.json.  Discover the active C++
-    # driver's system paths and pass them explicitly, otherwise a valid Linux
-    # C++ translation unit can be reported as an incomplete semantic scan
-    # merely because <fstream> or <stddef.h> is not found.
+    # libclang does not inherit the driver-selected C++ standard-library search
+    # path from compile_commands.json. Discover it only for C++ TUs: passing
+    # libc++/libstdc++ directories to a C TU can shadow the driver's C headers
+    # (notably stdatomic.h), producing false semantic failures such as an
+    # unknown atomic_int in a TU that the native compiler accepts.
+    if not cxx:
+        return flags
     cxx = shutil.which("c++") or shutil.which("g++")
     if cxx:
         try:
@@ -777,8 +803,6 @@ def scan_semantic(root: Path, compdb: Path) -> tuple[list[Site], str | None]:
         index = ci.Index.create()
     except Exception as exc:  # pragma: no cover - environment dependent
         return [], f"libclang unusable: {exc}"
-
-    extra_flags = _toolchain_flags()
 
     header_types = set(HEADER_TYPE_NAMES)
     sites: list[Site] = []
@@ -860,7 +884,7 @@ def scan_semantic(root: Path, compdb: Path) -> tuple[list[Site], str | None]:
             if tok == "-c" or tok == e["file"] or tok.endswith(".o"):
                 continue
             args.append(tok)
-        args += extra_flags
+        args += _toolchain_flags(_is_cxx_translation_unit(e["file"], toks))
         try:
             os.chdir(e["directory"])
             tu = index.parse(e["file"], args=args)

@@ -1108,6 +1108,7 @@ eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena);
 // Allocate tensor with dimensions and elements arrays in one call
 // Returns fully initialized tensor with dims and elements arrays allocated
 eshkol_tensor_t* arena_allocate_tensor_full(arena_t* arena, uint64_t num_dims, uint64_t total_elements);
+eshkol_tensor_t* arena_allocate_tensor_full_uninit(arena_t* arena, uint64_t num_dims, uint64_t total_elements);
 
 // Apply the logical tensor dtype's precision to one f64 value. Storage remains
 // f64; this is the scalar companion to eshkol_tensor_apply_dtype().

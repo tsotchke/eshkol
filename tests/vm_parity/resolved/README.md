@@ -2,12 +2,19 @@
 
 These programs were formerly filed under `tests/vm_parity/found/`. The
 execution-backed parity gate reran each on native LLVM and the standalone VM;
-their normalized outputs now agree, so retaining them as active divergence
-claims would be false. Their source comments preserve the original report and
+their normalized outputs now agree, so they are kept here as resolved records
+rather than active divergence claims. Their source comments preserve the original report and
 the measured expected values.
 
 The reclassified set is:
 
+- `ad_gradient_wrong.esk`
+- `char_type_collapsed.esk`
+- `error_object_irritants_empty.esk`
+- `tensor_shape_empty_native_is_right.esk`
+- `tensor_shape_empty_vector.esk`
+- `vm_tail_let_locals_no_tco.esk`
+- `when_tail_call_no_tco.esk`
 - `builtin_shadow_ignored_by_opcode_dispatch.esk`
 - `consecutive_do_state_leak.esk`
 - `define_after_do_corrupted.esk`

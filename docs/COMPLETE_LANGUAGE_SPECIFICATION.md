@@ -252,13 +252,15 @@ struct {
 - **Implementation:** Open addressing with linear probing
 - **Load Factor:** 0.75 (rehashes when exceeded)
 - **Initial Capacity:** 16 buckets
-- **Syntax:** `(make-hash-table)`, `(hash key1 val1 key2 val2 ...)`
+- **Syntax:** `(make-hash-table)`
 - **Operations:** `hash-set!`, `hash-ref`, `hash-has-key?`, `hash-remove!`, `hash-keys`, `hash-values`, `hash-count`, `hash-clear!`
 - **SRFI-125 aliases (also wired at `lib/backend/llvm_codegen.cpp:12694-12704`):**
-  `hash-table-ref`, `hash-table-ref/default`, `hash-table-set!`, `hash-table-contains?`, `hash-table-exists?`, `hash-table-delete!`, `hash-table-keys`, `hash-table-values`, `hash-table-size`, `hash-table-clear!`. The `hash-table-*` and `hash-*` names are interchangeable; tutorial 16 uses the SRFI-125 form.
-- **Example:** 
+  `hash-table-ref`, `hash-table-ref/default`, `hash-table-set!`, `hash-table-contains?`, `hash-table-exists?`, `hash-table-delete!`, `hash-table-keys`, `hash-table-values`, `hash-table-size`, `hash-table-clear!`. The `hash-table-*` and `hash-*` names are interchangeable; tutorial 16 uses the SRFI-125 form. There is no variadic `(hash key1 val1 ...)` literal constructor; build a table with `make-hash-table` and `hash-set!`.
+- **Example:**
   ```scheme
-  (define h (hash 'a 1 'b 2))
+  (define h (make-hash-table))
+  (hash-set! h 'a 1)
+  (hash-set! h 'b 2)
   (hash-ref h 'a)         ; => 1
   (hash-table-ref h 'a)   ; => 1 (SRFI-125 alias)
   ```
@@ -290,7 +292,7 @@ struct {
 - **Operations:** `guard`, `raise`
 - **Example:**
   ```scheme
-  (guard (e ((error? e) (display "Caught error")))
+  (guard (e ((error-object? e) (display "Caught error")))
     (error "Something went wrong"))
   ```
 
@@ -490,6 +492,7 @@ with `vector`, `make-vector` or `list->vector`
 
 #### 3.3.1 `define` - Variable Definition
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; name/value/param/body are metavariables -->
 ```scheme
 (define name value)                    ; Variable
 (define (name param...) body...)       ; Function
@@ -497,6 +500,7 @@ with `vector`, `make-vector` or `list->vector`
 ```
 
 **Type Annotations:**
+<!-- doc-example: skip pseudo-code: a grammar shape; `body` is a metavariable, not code -->
 ```scheme
 (define (f (x : int) (y : real)) : real body)  ; Typed parameters and return
 (define (g x y) : int body)                     ; Return type only
@@ -511,6 +515,7 @@ with `vector`, `make-vector` or `list->vector`
 
 #### 3.3.2 `lambda` - Anonymous Functions
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; params/body/x/y/type are metavariables -->
 ```scheme
 (lambda (params...) body...)           ; Regular
 (lambda (params... . rest) body)       ; Variadic
@@ -534,6 +539,7 @@ with `vector`, `make-vector` or `list->vector`
 
 #### 3.3.3 `let` - Local Bindings (Parallel)
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; var1/val1/body are metavariables -->
 ```scheme
 (let ((var1 val1) (var2 val2) ...) body...)
 (let name ((var init) ...) body...)  ; Named let (loop construct)
@@ -555,6 +561,7 @@ with `vector`, `make-vector` or `list->vector`
 
 #### 3.3.4 `let*` - Sequential Bindings
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; var1/val1/body are metavariables -->
 ```scheme
 (let* ((var1 val1) (var2 val2) ...) body...)
 ```
@@ -570,6 +577,7 @@ with `vector`, `make-vector` or `list->vector`
 
 #### 3.3.5 `letrec` - Recursive Bindings
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; var1/val1/body are metavariables -->
 ```scheme
 (letrec ((var1 val1) (var2 val2) ...) body...)
 ```
@@ -587,6 +595,7 @@ with `vector`, `make-vector` or `list->vector`
 
 #### 3.3.6 `set!` - Mutation
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; `variable`/`new-value` are metavariables -->
 ```scheme
 (set! variable new-value)
 ```
@@ -602,12 +611,14 @@ x  ; => 20
 
 #### 3.4.1 `if` - Conditional
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; `condition`/`then-expr`/`else-expr` are metavariables -->
 ```scheme
 (if condition then-expr else-expr)
 (if condition then-expr)  ; else defaults to unspecified
 ```
 
 **Examples:**
+<!-- doc-example: skip fragment: `x` and `lst` are assumed bindings from the surrounding discussion -->
 ```scheme
 (if (> x 0) "positive" "non-positive")
 (if (null? lst) (display "empty"))
@@ -615,6 +626,7 @@ x  ; => 20
 
 #### 3.4.2 `cond` - Multi-way Conditional
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; test1/expr1/exprN are metavariables -->
 ```scheme
 (cond (test1 expr1...)
       (test2 expr2...)
@@ -623,6 +635,7 @@ x  ; => 20
 ```
 
 **Example:**
+<!-- doc-example: skip fragment: `x` is an assumed binding -->
 ```scheme
 (cond ((< x 0) "negative")
       ((= x 0) "zero")
@@ -640,6 +653,7 @@ procedure `receiver`, whose result becomes the value of the `cond`:
 
 #### 3.4.3 `case` - Switch on Value
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; key/datum1/expr1 are metavariables -->
 ```scheme
 (case key
   ((datum1 datum2 ...) expr1...)
@@ -669,6 +683,7 @@ passed to a unary receiver procedure:
 
 #### 3.4.4 `match` - Pattern Matching
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; expr/pattern1/body1 are metavariables -->
 ```scheme
 (match expr
   (pattern1 body1...)
@@ -688,12 +703,14 @@ passed to a unary receiver procedure:
 **Example:**
 ```scheme
 (match (list 1 2)
-  ((list x y) (+ x y))  ; => 3
+  ((list x y) (+ x y))
   (_ 0))
+; => 3
 ```
 
 #### 3.4.5 `do` - Iteration Construct
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; var1/init1/step1/body are metavariables -->
 ```scheme
 (do ((var1 init1 step1)
      (var2 init2 step2)
@@ -711,12 +728,14 @@ passed to a unary receiver procedure:
 
 #### 3.4.6 `when` / `unless` - One-Armed Conditionals
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; test/expr are metavariables -->
 ```scheme
 (when test expr...)    ; Execute if test is true
 (unless test expr...)  ; Execute if test is false
 ```
 
 **Examples:**
+<!-- doc-example: skip fragment: `x` and `lst` are assumed bindings -->
 ```scheme
 (when (> x 0) (display "positive"))
 (unless (null? lst) (display "not empty"))
@@ -724,6 +743,7 @@ passed to a unary receiver procedure:
 
 #### 3.4.7 `and` / `or` - Short-Circuit Logic
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; expr1/expr2 are metavariables -->
 ```scheme
 (and expr1 expr2 ...)  ; Returns first false or last value
 (or expr1 expr2 ...)   ; Returns first true or last value
@@ -739,6 +759,7 @@ passed to a unary receiver procedure:
 
 #### 3.4.8 `begin` - Sequencing
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; expr1/exprN are metavariables -->
 ```scheme
 (begin expr1 expr2 ... exprN)
 ```
@@ -801,12 +822,14 @@ also work inside a `#(...)` vector literal under quasiquote:
 ```
 
 #### 3.6.2 Inline Parameter Types
+<!-- doc-example: skip pseudo-code: a grammar shape; `body` is a metavariable, not code -->
 ```scheme
 (define (f (x : int) (y : float)) body)
 (lambda ((x : int)) body)
 ```
 
 #### 3.6.3 Return Type Annotations
+<!-- doc-example: skip pseudo-code: a grammar shape; `body` is a metavariable, not code -->
 ```scheme
 (define (f x y) : int body)
 (lambda (x) : real body)
@@ -837,6 +860,7 @@ also work inside a `#(...)` vector literal under quasiquote:
 - `(forall (a b ...) type-expr)` - Universal quantification
 
 **Example:**
+<!-- doc-example: skip pseudo-code: a grammar shape; `...` is part of the forall syntax, not code -->
 ```scheme
 (define (map : (forall (a b) (-> (-> a b) (list a) (list b)))
          f lst) ...)
@@ -858,6 +882,7 @@ also work inside a `#(...)` vector literal under quasiquote:
 
 #### 3.6.6 Checked Ascription — `(the <type> expr)`
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; <type>/expr are metavariables -->
 ```scheme
 (the <type> expr)
 ```
@@ -888,6 +913,7 @@ The check is deliberately narrow, so the form stays useful:
 
 Only a genuine contradiction is reported:
 
+<!-- doc-example: skip fragment: `mixed-list` and `xs` are assumed bindings illustrating the ascription rules -->
 ```scheme
 (the number (car mixed-list))   ; the checker now treats this element as number
 (the (list real) xs)
@@ -918,6 +944,7 @@ value to that type. Narrowing is honored across `if` and `and`, and is
 `number?`, `integer?`, `string?`, `symbol?`, `pair?`, `null?`, `vector?`,
 `procedure?`.
 
+<!-- doc-example: skip fragment: `x` and `p` are assumed bindings illustrating narrowing -->
 ```scheme
 (if (number? x) (+ x 1) 0)      ; x : number in the then-branch
 (and (pair? p) (car p))         ; p : pair for (car p)
@@ -980,6 +1007,7 @@ exits nonzero and no artifact is written — in the default compilation mode, no
 only under `--strict-types`. This is what gives quantum-register operations a
 no-cloning guarantee at the type level rather than by convention.
 
+<!-- doc-example: skip pseudo-code: each form is a compile-time type error by design (see the trailing comments), not a program meant to execute -->
 ```scheme
 (define (bad-clone (q : Qubit)) (cons q q))   ; error: consumed more than once
 (define (bad-drop  (q : Qubit)) 42)           ; error: was not consumed
@@ -1075,6 +1103,7 @@ enforced set today:
   container is rejected outright. What remains is a qubit returned from a
   function whose return type is unannotated:
 
+<!-- doc-example: skip fragment: `q` is an assumed Qubit-typed binding from the surrounding discussion -->
   ```scheme
   (define (id x) x)
   (let ((a (id q))) (cons (h a) (h a)))      ; NOT diagnosed
@@ -1100,6 +1129,7 @@ alike, since both are defeated by the same aliasing shape).
 
 #### 3.7.1 `require` - Import Modules
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; module.name is a metavariable -->
 ```scheme
 (require module.name ...)
 ```
@@ -1120,6 +1150,7 @@ alike, since both are defeated by the same aliasing shape).
 
 #### 3.7.1b `load` - Load File (R7RS)
 **Syntax:**
+<!-- doc-example: skip pseudo-code: `path/to/file.esk` is a placeholder path -->
 ```scheme
 (load "path/to/file.esk")
 ```
@@ -1157,6 +1188,7 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
 
 #### 3.8.1 `guard` - Exception Handler
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; var/test1/handler1/body are metavariables -->
 ```scheme
 (guard (var
         (test1 handler1...)
@@ -1168,24 +1200,27 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
 **Example:**
 ```scheme
 (guard (e
-        ((error? e) (display "Error occurred"))
+        ((error-object? e) (display "Error occurred"))
         (else (display "Unknown exception")))
   (/ 1 0))  ; Division by zero
 ```
 
 #### 3.8.2 `raise` - Raise Exception
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; `exception-object` is a metavariable -->
 ```scheme
 (raise exception-object)
 ```
 
 **Example:**
+<!-- doc-example: skip pseudo-code: demonstrates an uncaught `raise`, which terminates the program by design (nonzero exit) -->
 ```scheme
 (raise (error "Something went wrong"))
 ```
 
 #### 3.8.3 `error` and the R7RS Condition-Object Family
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; message/irritant/obj/e are metavariables -->
 ```scheme
 (error message irritant ...)     ; raise an R7RS error object
 (error-object? obj)               ; #t iff obj was raised via (error ...)
@@ -1206,6 +1241,7 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
 
 #### 3.9.1 `values` - Return Multiple Values
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; expr1/expr2 are metavariables -->
 ```scheme
 (values expr1 expr2 ...)
 ```
@@ -1217,6 +1253,7 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
 
 #### 3.9.2 `call-with-values` - Consume Multiple Values
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; `producer`/`consumer` are metavariables -->
 ```scheme
 (call-with-values producer consumer)
 ```
@@ -1230,6 +1267,7 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
 
 #### 3.9.3 `let-values` - Bind Multiple Values
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; var1/producer1/body are metavariables -->
 ```scheme
 (let-values (((var1 var2 ...) producer1)
              ((var3 var4 ...) producer2)
@@ -1245,6 +1283,7 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
 
 #### 3.9.4 `let*-values` - Sequential Multiple Value Bindings
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; vars/producer/body are metavariables -->
 ```scheme
 (let*-values (((vars...) producer) ...)
   body...)
@@ -1254,6 +1293,7 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
 
 #### 3.10.1 `define-syntax` - Hygienic Macros
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; name/literal1/pattern1/template1 are metavariables -->
 ```scheme
 (define-syntax name
   (syntax-rules (literal1 literal2 ...)
@@ -1292,6 +1332,7 @@ extra ellipsis. Pattern matching tracks ellipsis depth explicitly, so
 
 #### 3.11.1 `extern` - Declare External Function
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; return-type/function-name/param-type are metavariables -->
 ```scheme
 (extern return-type function-name param-type...)
 (extern return-type function-name :real c-function-name param-type...)
@@ -1319,6 +1360,7 @@ All arithmetic operators are polymorphic (work on integers, floats, dual numbers
 
 #### 4.1.1 `+` - Addition
 **Signatures:**
+<!-- doc-example: skip pseudo-code: a grammar shape; num/num1/num2 are metavariables -->
 ```scheme
 (+ num)           ; Unary plus (identity)
 (+ num1 num2 ...) ; Variadic addition
@@ -1340,6 +1382,7 @@ Shapes broadcast NumPy-style, so "matching shape" means broadcast-compatible
 rather than identical; a pair that cannot be broadcast is a catchable error
 naming both shapes.
 
+<!-- doc-example: skip pseudo-code: demonstrates both successful broadcasts and the intentional errors in the trailing comments; the error lines terminate the program before later lines run -->
 ```scheme
 (* #(1 2) #(3 4))         ; => #(3 8)
 (* #(2.0) #(1.0 2.0 3.0)) ; => #(2 4 6)      (a dimension of 1 broadcasts)
@@ -1359,6 +1402,7 @@ naming both shapes.
 
 #### 4.1.2 `-` - Subtraction/Negation
 **Signatures:**
+<!-- doc-example: skip pseudo-code: a grammar shape; num/num1/num2 are metavariables -->
 ```scheme
 (- num)           ; Negation
 (- num1 num2 ...) ; Subtraction (left-associative)
@@ -1373,6 +1417,7 @@ naming both shapes.
 
 #### 4.1.3 `*` - Multiplication
 **Signatures:**
+<!-- doc-example: skip pseudo-code: a grammar shape; num1/num2 are metavariables -->
 ```scheme
 (* num1 num2 ...) ; Variadic multiplication
 ```
@@ -1385,6 +1430,7 @@ naming both shapes.
 
 #### 4.1.4 `/` - Division
 **Signatures:**
+<!-- doc-example: skip pseudo-code: a grammar shape; num1/num2 are metavariables -->
 ```scheme
 (/ num1 num2 ...) ; Left-associative division
 ```
@@ -1430,6 +1476,7 @@ naming both shapes.
 
 #### 4.1.10 `min` / `max` - Minimum/Maximum
 **Signatures:**
+<!-- doc-example: skip pseudo-code: a grammar shape; num1/num2 are metavariables -->
 ```scheme
 (min num1 num2 ...)
 (max num1 num2 ...)
@@ -1605,6 +1652,7 @@ All comparison operators return booleans and support numeric type promotion.
 
 #### 4.6.1 `map` - Apply to Each Element
 **Signatures:**
+<!-- doc-example: skip pseudo-code: a grammar shape; proc/list are metavariables -->
 ```scheme
 (map proc list)              ; Single list
 (map proc list1 list2 ...)   ; Multiple lists (parallel)
@@ -1870,7 +1918,7 @@ with a diagnostic, never a silent `()`.
   ```scheme
   (define p (open-output-string))
   (parameterize ((current-output-port p)) (display "hi") (newline))
-  (get-output-string p)   ; => "hi\n"
+  (write (get-output-string p))   ; => "hi\n"
   ```
 
 #### 4.13.4 File Operations
@@ -2170,6 +2218,7 @@ struct arena {
 
 #### 6.2.1 `with-region` - Lexical Memory Regions
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; body/name/size-hint are metavariables -->
 ```scheme
 (with-region body...)
 (with-region 'name body...)
@@ -2197,6 +2246,7 @@ handles remain bookkeeping-only on the VM (Stage-2).
 See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 
 **Example:**
+<!-- doc-example: skip fragment: `process` is an assumed function from the surrounding discussion -->
 ```scheme
 (with-region 'temp
   (define data (iota 1000))
@@ -2210,6 +2260,7 @@ See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 **Semantics:** Value must be consumed before scope exit
 
 **Example:**
+<!-- doc-example: skip fragment: `allocate-something` and `use-and-consume` are assumed functions -->
 ```scheme
 (define resource (owned (allocate-something)))
 (use-and-consume resource)  ; Must use exactly once
@@ -2233,6 +2284,7 @@ See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 
 #### 6.2.4 `borrow` - Temporary Access
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; value/body are metavariables -->
 ```scheme
 (borrow value body...)
 ```
@@ -2554,6 +2606,7 @@ struct eshkol_dual_number {
 
 #### 8.1.3 `derivative` - Compute Derivative
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; `function`/`point` are metavariables -->
 ```scheme
 (derivative function point)       ; Evaluate at point
 (derivative function)             ; Return derivative function
@@ -2592,6 +2645,7 @@ struct ad_tape {
 
 #### 8.2.3 `gradient` - Compute Gradient
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; `function`/`point` are metavariables -->
 ```scheme
 (gradient function point)         ; Scalar field: ℝⁿ → ℝ
 (gradient function)               ; Return gradient function
@@ -2627,8 +2681,8 @@ struct ad_tape {
   (vector (* (vref v 0) (cos (vref v 1)))
           (* (vref v 0) (sin (vref v 1)))))
 
-(jacobian polar-to-cartesian (vector 1.0 0.0))
-; => Jacobian at (r=1, θ=0)
+(display (jacobian polar-to-cartesian (vector 1.0 0.0)))
+; => #((1 0) (0 1))   (the Jacobian at r=1, θ=0)
 ```
 
 #### 8.3.2 `hessian` - Hessian Matrix
@@ -2725,7 +2779,10 @@ struct ad_tape {
 
 #### Nested Gradients
 Nested differentiation uses recursive Taylor levels, with depth limited by
-available memory. The reverse-mode tape stack has 32 slots:
+available memory. The reverse-mode tape stack has 32 slots. Nested
+`gradient` over scalar inner functions runs today. Planned for v1.4: nested
+`gradient` over a vector-valued inner closure, the form shown below.
+<!-- doc-example: skip pseudo-code: planned capability for v1.4; nested gradient over a vector-valued inner closure -->
 ```scheme
 (gradient 
   (lambda (x)
@@ -2746,6 +2803,7 @@ order `k` in a single pass. Full detail: the
 #### 8.5.1 `taylor` / `derivative-n` — Core Tower Builtins
 
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; `function`/`point`/`k` are metavariables -->
 ```scheme
 (taylor function point k)          ; List of k+1 Taylor coefficients c[0..k]
 (derivative-n function point k)    ; Scalar: the k-th derivative f^(k)(point)
@@ -2762,8 +2820,9 @@ monomorphization).
 
 **Example:**
 ```scheme
-(taylor (lambda (x) (exp x)) 0.5 4)
-; => (1.64872 1.64872 0.824361 0.274787 0.0686967)
+(display (taylor (lambda (x) (exp x)) 0.5 4))
+; => (1.6487212707001282 1.6487212707001282 0.8243606353500641 0.27478687845002137 0.06869671961250534)
+;    (approximately 1.64872, 1.64872, 0.824361, 0.274787, 0.0686967)
 
 (derivative-n (lambda (y) (* y y y)) 3.0 1)  ; => 27  (f'(x) = 3x^2 at x=3)
 ```
@@ -2771,6 +2830,7 @@ monomorphization).
 #### 8.5.2 `core.ad.guw` — Arbitrary-Order Multivariate Mixed Partials
 
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape following the `require`; `function`/`point`/etc. are metavariables -->
 ```scheme
 (require core.ad.guw)
 (taylor-propagate function point direction k)  ; Taylor coeffs of g(t) = f(point + t*direction)
@@ -2787,6 +2847,7 @@ direction vectors. `order` <= 2 continues to use the existing
 #### 8.5.3 `core.ad.taylor_models` — Validated AD
 
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape following the `require`; `function`/`center`/etc. are metavariables -->
 ```scheme
 (require core.ad.taylor_models)
 (taylor-model function center radius k)  ; polynomial + interval remainder
@@ -2802,6 +2863,7 @@ Pairs a Taylor polynomial with a rigorous interval-remainder bound so
 #### 8.5.4 `core.ad.sparse_guw` — Sparse High-Order Tensors
 
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape following the `require`; `function`/`point`/etc. are metavariables -->
 ```scheme
 (require core.ad.sparse_guw)
 (sparse-hessian function point)                        ; auto-probed sparsity structure
@@ -2821,6 +2883,7 @@ dimension. `sparse-mixed-partials` is order->=3 only.
 #### 8.5.5 `core.ad.taylor_numerics` — Tower-Based User Numerics
 
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape following the `require`; `coefficients`/`function`/etc. are metavariables -->
 ```scheme
 (require core.ad.taylor_numerics)
 (taylor-eval coefficients dt)                    ; Horner-evaluate a taylor coefficient list at offset dt
@@ -3241,7 +3304,9 @@ expressions (matching Racket/MIT/Guile/Chez), under these rules:
   (define (fill!) (vector-set! v 0 1.0) (vector-set! v 1 2.0))
   (fill!)                            ; runs here
   (define t (reshape v 1 2))         ; evaluated HERE, so it sees the filled v
-  (tensor-data t))                   ; => #(1 2)
+  (tensor-data t))
+
+(display (outer))                    ; => #(1 2)
 ```
 
 Reading a value define's variable **before** its source position yields the
@@ -3674,6 +3739,7 @@ When a continuation is invoked, `dynamic-wind` before/after thunks along the pat
 
 #### 16.2.1 Contract
 
+<!-- doc-example: skip pseudo-code: a grammar shape; `before`/`thunk`/`after` are metavariables -->
 ```scheme
 (dynamic-wind before thunk after)
 ```
@@ -3698,6 +3764,7 @@ When a continuation crosses dynamic-wind boundaries:
 
 #### 16.3.1 Exception Handling
 
+<!-- doc-example: skip pseudo-code: a grammar shape; var/test1/handler1/body are metavariables -->
 ```scheme
 (guard (var
         (test1 handler1 ...)
@@ -3942,6 +4009,7 @@ User-level parallel primitives (`parallel-map`, `parallel-for-each`, `future`) e
 
 #### 18.3.1 `future`
 
+<!-- doc-example: skip pseudo-code: a grammar shape; thunk is a metavariable -->
 ```scheme
 (future thunk)
 ```
@@ -3952,6 +4020,7 @@ Evaluates `thunk` (a zero-argument closure) eagerly in the thread pool. Returns 
 
 #### 18.3.2 `force`
 
+<!-- doc-example: skip pseudo-code: a grammar shape; f is a metavariable -->
 ```scheme
 (force f)
 ```
@@ -3962,6 +4031,7 @@ Blocks the calling thread until the future `f` has completed, then returns its r
 
 #### 18.3.3 `future-ready?`
 
+<!-- doc-example: skip pseudo-code: a grammar shape; f is a metavariable -->
 ```scheme
 (future-ready? f)
 ```
@@ -4085,6 +4155,7 @@ Cooley-Tukey radix-2 decimation-in-time (DIT) FFT:
 
 #### 20.1.2 Interface
 
+<!-- doc-example: skip pseudo-code: a grammar shape; `signal`/`spectrum` are metavariables -->
 ```scheme
 (fft signal)          ; Forward FFT, returns complex tensor
 (ifft spectrum)       ; Inverse FFT, returns complex tensor
@@ -4121,6 +4192,7 @@ where `I_0` is the zeroth-order modified Bessel function of the first kind, and 
 
 #### 20.2.2 Interface
 
+<!-- doc-example: skip pseudo-code: a grammar shape; `n`/`signal`/`window` are metavariables -->
 ```scheme
 (hamming-window n)          ; Returns N-element tensor
 (hann-window n)             ; Returns N-element tensor
@@ -4170,6 +4242,7 @@ Each section is implemented as a Direct Form II transposed structure to minimize
 
 #### 20.3.4 Interface
 
+<!-- doc-example: skip pseudo-code: a grammar shape; `order`/`cutoff-freq`/etc. are metavariables -->
 ```scheme
 (butterworth-lowpass order cutoff-freq sample-rate)  ; Returns filter coefficients
 (butterworth-highpass order cutoff-freq sample-rate)
@@ -4204,6 +4277,7 @@ For long filters, the overlap-save method is used:
 
 The convolution function automatically selects between direct and FFT-based methods:
 
+<!-- doc-example: skip pseudo-code: a grammar shape; `signal`/`filter` are metavariables -->
 ```scheme
 (convolve signal filter)  ; Automatic method selection
 ```
@@ -4676,6 +4750,7 @@ Programs encoded as neural network weights (`weight_matrices.c`):
 ### 28.6 `parameterize` (R7RS)
 
 **Syntax:**
+<!-- doc-example: skip pseudo-code: a grammar shape; param/value/body are metavariables -->
 ```scheme
 (parameterize ((param value) ...)
   body ...)

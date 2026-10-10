@@ -56,6 +56,7 @@ DEFAULT_TRACE_DIR = REPO_ROOT / "scripts" / "icc_traces"
 TRACE_BASENAME = "api_docs_gate.jsonl"
 PROBE_ID = "api_docs_clean"
 PUBLIC_SURFACE_MANIFEST = REPO_ROOT / "docs" / "api" / "public_surface.tsv"
+EXPECTED_PUBLIC_SURFACE_COUNT = 132
 
 
 def emit_trace(trace_dir: Path, status: str, snippet: str) -> Path:
@@ -1094,8 +1095,8 @@ def main() -> int:
 
     planned: dict[Path, str] = {}
     public_entries = load_public_surface_manifest()
-    if len(public_entries) != 68:
-        print(f"error: DD-11 header manifest has {len(public_entries)} entries; expected 68", file=sys.stderr)
+    if len(public_entries) != EXPECTED_PUBLIC_SURFACE_COUNT:
+        print(f"error: DD-11 header manifest has {len(public_entries)} entries; expected {EXPECTED_PUBLIC_SURFACE_COUNT}", file=sys.stderr)
         return 2
     for header, symbols in per_file:
         planned[out_md_path(header)] = render_header_page(header, symbols, briefs[header])

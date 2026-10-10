@@ -1156,6 +1156,7 @@ jobs:
     # already provisioned (see the toolchain preflight step further down).
     runs-on: [self-hosted, Linux, X64, eshkol]
     env:
+      CTEST_PARALLEL_LEVEL: '4'
       # Name intentionally distinct from ICC_BIN: the resolved binary path is
       # published to $GITHUB_ENV as ICC_BIN by the resolve step below, and a
       # job-level env of the same name would shadow that write in later steps.

@@ -2,8 +2,9 @@
 
 Eshkol has several execution paths that MUST agree on every deterministic
 program. Identical program + identical input => identical `(exit code,
-normalized stdout)` on every axis. **Any divergence is a compiler bug by
-definition** — no external oracle or hand-computed expectation is needed.
+normalized stdout)` on every axis. **Any divergence is, by definition,
+something the compiler must fix** — no external oracle or hand-computed
+expectation is needed.
 
 ## Axes
 
@@ -44,6 +45,9 @@ scripts/run_differential.sh tests/differential/corpus/
 # include the VM pair
 scripts/run_differential.sh --with-vm
 
+# JIT axes only (skip both AOT axes)
+scripts/run_differential.sh --no-aot
+
 # seeded random-program fuzzing with auto-shrinking
 scripts/run_differential_fuzz.sh --seed 42 --count 200
 ```
@@ -71,13 +75,13 @@ the first differing lines of each side. Divergence categories:
 - **all axes exit nonzero identically** — not a divergence, but corpus
   programs must be green, so the corpus runner still FAILs the file.
 
-Divergence does not tell you which path is *correct* — only that at least
-one is wrong. Triage by checking the R7RS-expected output by hand, then file
-an ESH task (`.swarm/tasks/`) carrying the minimal repro.
+Divergence does not tell you which path is *correct* — only that the paths
+disagree. Triage by checking the R7RS-expected output by hand, then file a
+tracking entry carrying the minimal repro.
 
 ## Corpus (`corpus/`)
 
-~40 deterministic programs, one feature cluster each: numeric tower
+55 deterministic programs at v1.3.6-evolve, one feature cluster each: numeric tower
 (int/rational/bignum/double/complex, inf/nan printing), strings (unicode,
 embedded NUL), chars, radix `string->number`/`number->string`, lists,
 vectors, hash tables, closures + `set!`, TCO loops, named let, mutual
@@ -96,7 +100,7 @@ Rules for adding a corpus entry:
    (a value computed by the feature reaches stdout).
 4. If a file exposes a real divergence, LEAVE IT IN THE CORPUS (it is the
    regression test for the eventual fix), add the hand- or auto-shrunk
-   minimal repro to `found/`, and file an ESH task. `differential-clean`
+   minimal repro to `found/`, and file a tracking entry. `differential-clean`
    stays red until the compiler is fixed — that is the point of the gate.
 
 ## Findings (`found/`)
@@ -105,6 +109,12 @@ Each `NNN_*.esk` is a minimal repro of a confirmed divergence, with a header
 comment giving per-axis behavior and provenance (corpus file or fuzz seed +
 program index). These files are evidence, not gate inputs: the corpus runner
 does not execute `found/`.
+
+At v1.3.6-evolve one finding is filed, `003_global_set_from_function_lost.esk`
+(a top-level global mutated by `set!` inside a defined function). It now prints
+`(a)` on the uncached JIT, the cached JIT and AOT `-O2`, so every axis agrees;
+the file is kept as the record of the original divergence and its header
+documents the per-axis behaviour when it was filed.
 
 ## Fuzzing + shrinking flow
 
@@ -122,5 +132,5 @@ written to `found/NNN_shrunk.esk`; duplicate shrunken programs (same bytes)
 are not re-saved. Re-run any finding directly:
 
 ```sh
-scripts/run_differential.sh tests/differential/found/   # expect FAILs: these are bugs
+scripts/run_differential.sh tests/differential/found/   # re-check every filed finding
 ```

@@ -12,6 +12,18 @@
     },
     "tutorials": {
       "marked": {
+        "docs/tutorials/04_CONSCIOUSNESS_ENGINE.md": {
+          "skip": 4
+        },
+        "docs/tutorials/05_SIGNAL_PROCESSING.md": {
+          "skip": 5
+        },
+        "docs/tutorials/10_MACROS.md": {
+          "skip": 1
+        },
+        "docs/tutorials/16_HASH_TABLES.md": {
+          "skip": 1
+        },
         "docs/tutorials/18_WEB_PLATFORM.md": {
           "skip": 3
         },
@@ -22,7 +34,7 @@
       "marked_total": {
         "known-defect": 0,
         "run-only": 1,
-        "skip": 3
+        "skip": 14
       }
     },
     "upgrading": {

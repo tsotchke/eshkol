@@ -16,6 +16,43 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Browser closure allocation follows the native WASM layout.** Both host
+  bundles initialize closure headers, captured environments and callable
+  metadata, retain valid views across linear-memory growth, and restore the
+  allocation position when capture storage cannot be reserved. Compiled
+  Chrome checks and the existing Node ABI suite cover these paths. (#752)
+- **Release interfaces and evidence are explicit.** The notes command lists
+  its proof-binding options directly; reviewed diagnostic artifacts retain
+  their measured validation records. Architecture source figures match
+  the integrated files. (#752)
+- **Example outcomes are bound to their measured sources.** The catalogue
+  records native JIT and AOT outcomes for all 67 programs. All 46 mathematics
+  programs ran in both modes; 45 emitted their explicit all-pass result and
+  the group-cohomology sweep completed successfully. Published constructions,
+  arithmetic and finite computation limits are documented alongside them. (#755)
+- **Public documentation covers the release's implementation and interfaces.**
+  Guides, language reference, architecture and vision documents, test-harness
+  instructions and the paper artifact describe the current implementation.
+  Fixed-point, i128 and exact-accumulation APIs are documented and indexed;
+  site figures agree with the committed browser artifacts. (#753, #754, #756,
+  #757, #758, #759, #760)
+- **XLA results respect the calling thread's active region.** All nine XLA
+  result allocation sites use the current arena, and the run cache includes
+  the compiled GPU dispatch threshold. Elementwise results avoid redundant
+  zeroing, bounded arena-block reuse preserves allocation accounting and heap
+  enforcement, and coherent CUDA devices can use host operands directly. (#751, #752)
+- **Release CTest uses four workers.** The full test inventory, per-test
+  limits and publication receipts are retained. The source-mutating ABI
+  negative control and timing-sensitive calibration checks run serially. (#752)
+- **Traced CI still verifies persistent run-cache invalidation.** The XLA
+  threshold cache probes isolate the tracing mode that bypasses caching;
+  tracing remains enabled for the surrounding suite. The macOS ARM64 and
+  quantum full suites receive the same four-hour job budget as the Linux
+  ARM64 and macOS Intel lanes, with every test and coverage check retained. (#752)
+- **ABI inventory accounts for the integrated contributor changes.** The
+  baseline records the ESKM name-size accessor and eleven allocator sites in
+  three test fixture files, with exact counts and review reasons. Lexical
+  and semantic ratchets and injected-site negative controls remain enforced. (#752)
 - **Native AOT linking preserves C++ compiler-driver names.** A configured
   `clang++` symlink keeps its invocation name when resolved, so linking retains
   C++ runtime and exception support rather than dispatching as `clang`. (#750)
@@ -116,8 +153,9 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   The active feature inventory records branch ownership, release scope and pending
   qualification for the separate integration build. (#728)
 - **Mathematics examples record measured outcomes and the results they reproduce.**
-  Every tracked example runs at the release commit under native JIT and AOT; all 46
-  mathematics programs pass. `scripts/build_example_catalogue.py --ingest` writes
+  Outcomes for all 67 tracked examples come from pinned native JIT and AOT runs;
+  all 46 mathematics programs completed in both modes, with 45 emitting their
+  explicit all-pass verdict. `scripts/build_example_catalogue.py --ingest` writes
   `docs/examples/measurements.json`, bound to each source's SHA-256, and every
   mathematics entry cites the published result it reproduces: AlphaTensor, FunSearch,
   the Jacobian counterexample, the Navier–Stokes construction and the exact topology

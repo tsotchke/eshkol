@@ -2,9 +2,9 @@
 
 Where the P3 AD oracle (`tests/ad_oracle`) tests a WIDE matrix at SHALLOW,
 fixed nesting (nesting depth <= 2), this pillar sweeps the **nesting depth
-itself**. Depth-dependent AD bugs — a composition correct at depth 1 or 2 but
-broken at depth 3+ — slipped through every earlier harness (see the meta-lesson
-in `.swarm/DEPTH_PARAMETRIC_TESTING.md`). Here every composable AD construct is
+itself**. Depth-dependent AD divergences — a composition correct at depth 1 or
+2 but not at depth 3+ — slipped through every earlier harness, which is the
+lesson this pillar encodes. Here every composable AD construct is
 generated PARAMETRICALLY at depth `d = 1..8` and checked against a ground-truth
 oracle that scales with depth, so we record the **max-correct-depth** of each
 construct and whether it FAILS (silent wrong value) or hits a clean LIMIT.
@@ -15,7 +15,7 @@ construct and whether it FAILS (silent wrong value) or hits a clean LIMIT.
 |---|---|---|
 | `deriv`  | `derivative^d` of a scalar function | 1 |
 | `gradn`  | `gradient^d` nested-reverse on a scalar | 3 |
-| `gofd`   | `gradient` (reverse) OVER `derivative^d`, vector param via `vector-ref` | 2 (ESH-0117 family) |
+| `gofd`   | `gradient` (reverse) OVER `derivative^d`, vector param via `vector-ref` | 2 |
 | `jacod`  | `jacobian` OVER `derivative^d`, vector field | 4 |
 | `hessod` | `hessian`  OVER `derivative^d`, scalar field | 4 |
 
@@ -36,7 +36,8 @@ in-language n-th central-difference stencil for `d <= 4` and checks it agrees.
 - analytic vs AD: `d<=2` rtol/atol 1e-6; `d<=4` 1e-5; `d>=5` 1e-4 (nested fp).
 - fd stencil: emitted only for `d <= 4` (order-n central difference is
   numerically dead beyond that: round-off ~ `eps/h^n`); `h=1e-2`, diagnostic.
-- Failures return an exact `0` (or garbage / SIGSEGV), far outside any band.
+- Failures return an exact `0`, an unrelated value, or stop on a signal — far
+  outside any band.
 
 ## Running
 
@@ -59,22 +60,32 @@ as an "improvement" and stays green.
 
 - `../../scripts/gen_ad_depth.py` — deterministic generator (byte-for-byte
   reproducible). Emits `generated/ad_depth_<comp>_NN.esk`, one-cell-per-file
-  `generated/ad_depth_hessod_xc_NN.esk` for the crashing hessian cells, and
+  `generated/ad_depth_hessod_xc_NN.esk` for the hessian cells that once
+  stopped on a signal, and
   `generated/cells.tsv` (cell registry consumed by the reporter).
 - `../../scripts/ad_depth_report.py` — parses the run log into the report +
-  ICC trace; holds the tracked baseline and ESH-task map.
+  ICC trace; holds the tracked baseline (`BASELINE`) and tracking map
+  (`TRACK`).
 - `../../scripts/run_ad_depth.sh` — JIT+AOT runner.
-- `found/` — hand-shrunk minimal repros for the bugs this oracle discovered
-  (acceptance tests of the referenced ESH tasks; not run by the gate).
+- `found/` — hand-shrunk minimal repros for the divergences this oracle
+  discovered (acceptance tests of their tracking entries; not run by the
+  gate).
 
-## Findings (max-correct-depth on master, -r and AOT identical)
+## Findings (max-correct-depth)
 
-| composition | capture | max-correct-depth | tracked |
+The tracked baseline in `scripts/ad_depth_report.py::BASELINE` is the gate
+contract; `docs/reports/AD_DEPTH_REPORT.md` carries the per-cell tables from
+the last committed run.
+
+| composition | capture | max-correct-depth (baseline) | history |
 |---|---|---|---|
-| deriv | capnone / global | **2** (d>=3 → exact 0) | ESH-0118 |
-| deriv | localparam / vecref | **1** (d2 → garbage ~2.2e13) | ESH-0122 |
-| gradn | capnone | **2** (d>=3 → 0) | ESH-0118 |
-| gradn | vecref | **1** (d2 → garbage) | ESH-0122 |
-| gofd  | vecref | **1** (d>=2 → 0) | ESH-0117 |
-| jacod | vecref | **0** (d1 already → 0) | ESH-0120 |
-| hessod | vecref | **0** (d1 → SIGSEGV) | ESH-0121 |
+| deriv | capnone / global / localparam / vecref | **8** (the full ladder) | was 2 (capnone/global) and 1 (localparam/vecref) when this pillar landed: nested `derivative` chains of depth ≥ 3 now route through the arbitrary-order Taylor tower, and captures flow through the tower call unchanged |
+| gradn | capnone | **3** | was 2; the `gradn` cells measure **8** under `-r` at v1.3.6-evolve (`ad_depth_gradn_01.esk` runs in about a minute) |
+| gradn | vecref | **3** | was 1; the higher-order `derivative` closure is now dual-transparent (it seeds and extracts its own perturbation level), so the capture form is no longer the limit; depth 4+ is bounded by the 8-jet's three perturbation slots |
+| gofd | vecref | **8** | was 1 |
+| jacod | vecref | **8** | was 0 (forward-over-reverse) |
+| hessod | vecref | **1** | was 0; the four `hessod.*.vecref` cells measure **8** at v1.3.6-evolve, above this baseline |
+
+The hand-shrunk repros in `found/` all print their expected values at
+v1.3.6-evolve (`d3 10752`, `jac-outer 1024`, `hess-outer 1024`,
+`d2-local 6092.800000000001`, i.e. 1.7 × 3584).

@@ -33,9 +33,10 @@ writeback, and Layer 5 AD gradient writeback. Layer 1 now loads bounded AD
 tape parent values before Layer 2 so `OP_AD_MUL` forward recording is also
 encoded as weights.
 
-Current artifact verification after the non-native opcode coverage slice:
-126/126 inline tests pass, 123/123 traced programs agree on PRINT output and
-full per-step state, opcode coverage is 82 weight-implemented / 0
+Current artifact verification after the non-native opcode coverage slice
+(re-verified at the v1.3.6 release SHA 60f345def on 2026-10-09):
+127/127 inline tests pass, 124/124 traced programs agree on PRINT output and
+full per-step state, opcode coverage is 83 weight-implemented / 0
 VM-native-delegated / 0 transformer-native-assisted in the exercised coverage
 set, and the QLMW export is d_model=256, FFN=2304, 12,220,422 parameters.
 The exercised trace set now has no `S_IS_NATIVE` postprocess assistance and
@@ -58,13 +59,17 @@ candidates or precision-contract decisions, not completed general encodings.
 
 ## 1. Problem statement
 
-The Eshkol VM is a 83-opcode bytecode machine. The Self-Differentiating Neural
+The SDNC weight-matrix layer is an 84-opcode bytecode machine (the shared
+`SdncOpCode` enum in `lib/backend/sdnc_isa.h`, base 0-63 plus a 19-opcode AD
+extension plus `OP_SWAP` appended at 83; the production Eshkol VM's own
+`OpCode` enum in `vm_core.c` is a separate, larger set unrelated to this
+artifact). The Self-Differentiating Neural
 Computer (SDNC) — `lib/backend/weight_matrices.c` — analytically constructs a
 6-layer transformer. Earlier reproducibility snapshots used a smaller
 state-vector and trace suite; the current bounded-arena artifact uses
-`d_model = 256`, FFN width 2304, and a 123-program traced suite.
+`d_model = 256`, FFN width 2304, and a 124-program traced suite.
 
-Historically, only part of the 83-opcode ISA executed end-to-end through
+Historically, only part of the 84-opcode ISA executed end-to-end through
 `Wx + b` matmul-plus-bias while the rest crossed an `IS_NATIVE` boundary marker.
 Current work has collapsed the
 artifact-exercised memory, closure/upvalue, tail-call, pack-rest, bounded
@@ -212,7 +217,7 @@ Layer 3's universal transient-clear loop (`weight_matrices.c §1394`).
 closure header + 4 upvalue cells = 5 cells, escape continuation = 4 cells}
 gives a working budget of, roughly, two simultaneous bounded vectors plus
 one closure plus a pair chain, which suffices for every program in the
-123-program traced suite. The exercised cases are: simple `(cons a b)` chains
+124-program traced suite. The exercised cases are: simple `(cons a b)` chains
 to length ≤ 12; vectors of declared length ≤ 4; strings of declared length ≤ 4;
 closures with up to 4 upvalues; one outstanding bounded escape continuation
 at a time. The bump pointer `S_ARENA_NEXT` increments by 1 per allocation
@@ -759,7 +764,7 @@ bump pointer `S_ARENA_NEXT` advances by $4 - n_{\text{fixed}}$.
 **Cost.** Per arena cell: 5 fields × 2 sign-conjugate neurons = 10
 Layer-4 neurons; four cells × 10 = 40 neurons, plus the
 indicator-pair budget at Layer 3 for the scratch population. Total
-≈ 80 neurons for `OP_PACK_REST`. The opcode appears in 4 of the 123
+≈ 80 neurons for `OP_PACK_REST`. The opcode appears in 4 of the 124
 traced programs (variadic-call tests). Unbounded rest-list lengths
 would require looping the dispatch — re-issuing `OP_PACK_REST` with
 an incremented register window — or expanding the
@@ -1205,7 +1210,13 @@ per-step state`**; the full narrative is in
 Acceptance after Stage 0 was 71/71 traced programs on both the
 output-agreement and the full-per-step-state-agreement metrics
 (commit `7301dc4`). Stages 1-4 then expanded the weight coverage
-while preserving both metrics, ending at the current 123/123 status.
+while preserving both metrics, ending at the then-current 123/123 status.
+A later change unified the producer's and consumer's opcode tables into the
+shared `lib/backend/sdnc_isa.h` and appended `OP_SWAP=83` to the ISA
+(outside stages 0-4's own scope); re-verified at the v1.3.6 release SHA
+60f345def on 2026-10-09, current coverage is 127/127 inline, 124/124 traced,
+83 weight-implemented opcodes (`docs/breakdown/COMPUTABLE_TRANSFORMER.md §5,
+§7`).
 
 The lesson encoded in this milestone — *bit-identity is a stronger
 contract than approximate agreement, and the agreement metric the

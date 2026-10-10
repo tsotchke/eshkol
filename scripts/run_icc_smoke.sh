@@ -652,6 +652,42 @@ probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES per
      ## re-runs the binary under ESHKOL_ARENA_POISON=1 (dangling-ptr tripwire).
      bash tests/memory/iter_scope_partial_reclaim_test.sh'
 
+probe pr751_regression_harness_controls 'ABI language flags and XLA/pool/cache harnesses reject misclassification, execution, result, status and toolchain failures' \
+    'cd "$REPO_ROOT";
+     python3 tests/toolchain/test_abi_header_inventory_flags.py &&
+     python3 tests/toolchain/test_pr751_regression_harnesses.py'
+
+probe release_documentation_controls 'Example verdicts require coherent receipts and public API manifests retain their reviewed inventory' \
+    'cd "$REPO_ROOT";
+     python3 tests/toolchain/test_docs_gate_hardening.py'
+
+probe xla_region_reclaim 'XLA/GPU tensor results made inside with-region are reclaimed at region exit (process arena stays near 4 MiB across 800 MiB of region-scoped temporaries)' \
+    'cd "$REPO_ROOT";
+     ## XLA runtime call sites used to allocate results in the raw
+     ## __global_arena slot, which with-region no longer redirects, so every
+     ## XLA-dispatched result leaked (895 MB retained on this fixture). In a
+     ## build without XLA the tensors take the inline CPU path and the gate
+     ## passes trivially.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/xla/xla_region_reclaim_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "PASS: xla_region_reclaim_test"'
+
+probe run_cache_xla_threshold_key 'the -r run cache is keyed on ESHKOL_XLA_THRESHOLD: a binary compiled under one GPU dispatch cutoff is never reused under another' \
+    'cd "$REPO_ROOT";
+     ## The threshold is a compile-time constant in the emitted code; before
+     ## the fix a CPU-threshold run silently executed the GPU binary.
+     ## Checks miss / miss / hit across threshold A, B, A.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/codegen/run_cache_xla_threshold_key_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "PASS: run_cache_xla_threshold_key_test"'
+
+probe arena_block_pool 'the large-block arena pool is invisible: identical results with the pool on, off and under ESHKOL_ARENA_POISON, and balanced heap accounting under ESHKOL_MAX_HEAP=256M' \
+    'cd "$REPO_ROOT";
+     ## A region-scoped loop over 8 MiB tensors allocates 4.8 GiB in total but
+     ## holds a few blocks at a time. If pooled blocks were still charged to
+     ## the heap tracker, or charged twice on reuse, the fail-closed 256 MiB
+     ## limit would stop the run.
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/arena_block_pool_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "PASS: arena_block_pool_test"'
+
 probe resident_longrun_flat 'SW-57: a guarded resident daemon loop retains EXACTLY zero arena bytes per tick across an 8x tick horizon on every barriered mutation channel; the publishing fixture stays pinned to its documented 240 bytes/tick' \
     'cd "$REPO_ROOT";
      ## SW-57. Every other flat-memory gate here stops at 100k ticks and asserts

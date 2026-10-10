@@ -1,0 +1,26 @@
+;;; xla_region_reclaim_test.esk — tensor temporaries made inside `with-region`
+;;; must be reclaimed when the region exits, including results produced by the
+;;; XLA runtime (tensors of >= ESHKOL_XLA_THRESHOLD elements, which a CUDA build
+;;; dispatches to the GPU).
+;;;
+;;; 200 iterations x 4 temporaries x 131072 f64 elements = 800 MiB of results.
+;;; Reclaimed, the process-global arena stays at a few MiB; leaked, it holds all
+;;; 800 MiB. xla_region_reclaim_test.sh reads ESHKOL_ARENA_REPORT and gates on it.
+
+(define N 131072)
+(define A (make-tensor (list N) 1.5))
+(define B (make-tensor (list N) 1.0000001))
+
+(define (chain x k)
+  (if (= k 0) x (chain (tensor-add (tensor-mul x B) A) (- k 1))))
+
+(define total
+  (let loop ((i 0) (acc 0.0))
+    (if (= i 200)
+        acc
+        (loop (+ i 1) (+ acc (with-region (tensor-sum (chain A 2))))))))
+
+;; each chain maps 1.5 -> 1.5*B+1.5 -> (1.5*B+1.5)*B+1.5, 4.50000045 per element
+(if (< (abs (- (/ total (* 200 N)) 4.50000045)) 1e-9)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL: wrong total ") (display total) (newline) (exit 1)))
