@@ -25,6 +25,10 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   its proof-binding options directly; reviewed diagnostic artifacts retain
   their measured validation records. Architecture source figures match
   the integrated files. (#752)
+- **Imported aliases preserve their lexical scope in JIT batches.** Direct
+  execution resolves imported names through nested sequences and quasiquotes,
+  while local bindings retain their own names. Focused tests exercise the
+  interactive REPL, direct JIT with its cache disabled, and AOT. (#761)
 - **Test suites record current expected behavior.** Stress, character/numeric
   edge-matrix and nested differentiation gates enforce the measured results.
   The edge-matrix generator matches the committed 300-pair corpus, and qLLM
