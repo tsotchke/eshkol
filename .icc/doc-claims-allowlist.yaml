@@ -959,3 +959,30 @@ entries:
   reason: dated audit-resolution ledger entry recording the measured line count on 2026-08-25; the
     doc text now reads "969 lines as of v1.3.6; 880 lines when this entry was written on 2026-08-25",
     so 880 is a correct historical measurement, not a claim about the current file.
+- claim_id: f761f4b7029a94c0
+  path: README.md
+  line: 227
+  claim_type: numeric
+  subject: lib/backend/llvm_codegen.cpp
+  value: 47407
+  disposition: EXEMPT-HISTORICAL
+  reason: README explicitly dates this source count to the v1.3.6-evolve source at 60f345def; `git show
+    60f345def:lib/backend/llvm_codegen.cpp | wc -l` returns 47,407. The candidate's later source is 47,433.
+- claim_id: 444b7f4c10fce64f
+  path: docs/V1.1_SCOPE.md
+  line: 3
+  claim_type: numeric
+  subject: lib/backend/llvm_codegen.cpp
+  value: 47407
+  disposition: EXEMPT-HISTORICAL
+  reason: The sentence identifies this as the historical v1.1.13-accelerate scope and explicitly dates
+    the measurement to 60f345def; `git show 60f345def:lib/backend/llvm_codegen.cpp | wc -l` returns
+    47,407. The candidate's later source is 47,433.
+- claim_id: e09239d0799e0e17
+  path: docs/V1.1_SCOPE.md
+  line: 3
+  claim_type: numeric
+  subject: lib/backend/eshkol_vm.c
+  value: 2905
+  disposition: EXEMPT-HISTORICAL
+  reason: The sentence identifies this as the historical v1.1.13-accelerate scope and dates the measurement to 60f345def; `git show 60f345def:lib/backend/eshkol_vm.c | wc -l` returns 2,905. The candidate source is now 2,906 lines.

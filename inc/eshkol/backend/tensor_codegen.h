@@ -242,25 +242,45 @@ public:
     llvm::Value* tensorSum(const eshkol_operations_t* op);
 
     /**
-     * ESH-0121 (matmul-reshape Hessian): exact matmul over dual tensors.
+     * Forward-mode rule for matmul over jet tensors (dtype DUAL).
      *
-     * Standard tensor-matmul flattens elements to plain doubles and (in AD mode)
-     * uses a reverse-mode-only tape, so a Hessian whose loss reshapes a vector of
-     * forward-mode DUAL_NUMBER jets into a 2-D tensor and matmuls loses the
-     * e1/e2/e1e2 slots and silently zeros every second derivative. This computes
-     * C[i,j] = sum_k A[i,k]*B[k,j] using the exact forward-mode dual product rule
-     * (dualAwareScalarBinOp), carrying the mixed second-order term through, and
-     * returns a dual tensor (dtype DUAL, tagged elements). Either operand may be a
-     * plain (f64) tensor; its elements are lifted to duals with zero tangent.
-     * Requires 2-D operands with A.cols == B.rows; otherwise raises a catchable
-     * error (never a silent zero). autodiff_ must be wired. Called from
-     * codegenMatmul's dual-tensor dispatch.
+     * C[i,j] = sum_k A[i,k]*B[k,j] computed by the runtime kernel
+     * eshkol_jet_tensor_matmul with the language's scalar operators, so every
+     * jet coefficient (including the mixed e1e2 term a Hessian reads) and any
+     * Taylor tower is carried through; the result is a jet tensor. Either
+     * operand may be a plain f64 tensor (read as constants). Requires 2-D
+     * operands with A.cols == B.rows, otherwise raises a catchable error.
+     * Called from codegenMatmul's jet dispatch.
      *
      * @param a_struct_ptr Pointer to operand A's eshkol_tensor struct.
      * @param b_struct_ptr Pointer to operand B's eshkol_tensor struct.
-     * @return Pointer to the result eshkol_tensor struct (dual tensor).
+     * @param reverse_operand Optional i1: an operand is a dense reverse-mode
+     *        node; the runtime refuses that pairing by name.
+     * @return Pointer to the result eshkol_tensor struct (jet tensor).
      */
-    llvm::Value* dualTensorMatmul(llvm::Value* a_struct_ptr, llvm::Value* b_struct_ptr);
+    llvm::Value* dualTensorMatmul(llvm::Value* a_struct_ptr, llvm::Value* b_struct_ptr,
+                                  llvm::Value* reverse_operand = nullptr);
+
+    /**
+     * Forward-mode rule for elementwise tensor arithmetic: when either operand
+     * is a jet tensor (dtype DUAL), each output slot is the language's scalar
+     * operator over the broadcast operand slots, via the runtime kernel
+     * eshkol_jet_tensor_binary. Supports add/sub/mul/div.
+     *
+     * @param a_struct_ptr Pointer to operand A's eshkol_tensor struct.
+     * @param b_struct_ptr Pointer to operand B's eshkol_tensor struct.
+     * @param operation    "add", "sub", "mul" or "div".
+     * @param reverse_operand Optional i1: an operand is a dense reverse-mode
+     *        node. The runtime refuses that pairing (and a scalarised reverse
+     *        operand it finds in a slot) by name.
+     * @return Tagged HEAP_PTR to the result jet tensor.
+     */
+    llvm::Value* jetTensorArithmetic(llvm::Value* a_struct_ptr, llvm::Value* b_struct_ptr,
+                                     const std::string& operation,
+                                     llvm::Value* reverse_operand = nullptr);
+
+    /** True for the elementwise operations jetTensorArithmetic has a rule for. */
+    static bool hasJetTensorArithmeticRule(const std::string& operation);
 
     /**
      * Mean of all elements: (tensor-mean tensor)

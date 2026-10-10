@@ -32,6 +32,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 # shellcheck source=../../scripts/lib/checked_write.sh
 . "$REPO_ROOT/scripts/lib/checked_write.sh"
@@ -112,12 +113,12 @@ timed_run() {
     local bin="$1" out="$2"; shift 2
     local tlog="$WORK/time.$$.log"
     if [ "$TIME_MODE" = "bsd" ]; then
-        ( cd "$WORK" && env "$@" /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec: $!\n"' \
+        ( cd "$WORK" && env "$@" /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
             "$TIMEOUT_S" "$bin" ) > "$out" 2> "$tlog"
         TR_RC=$?
         TR_RSS_MB=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$tlog")
     else
-        ( cd "$WORK" && env "$@" /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec: $!\n"' \
+        ( cd "$WORK" && env "$@" /usr/bin/time -v perl "$ESHKOL_GUARDED_EXEC" \
             "$TIMEOUT_S" "$bin" ) > "$out" 2> "$tlog"
         TR_RC=$?
         TR_RSS_MB=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$tlog")

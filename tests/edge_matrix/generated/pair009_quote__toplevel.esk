@@ -71,17 +71,17 @@
 
 ;; check quote_veclit_ref__in__toplevel_top_define
 (define tlvg174 (vector-ref #(9 8 7) 2))
-(define (edge-check-g174) (edge-chk "quote_veclit_ref__in__toplevel_top_define" tlvg174 7))
+(define (edge-check-g174) (edge-chk "quote_veclit_ref__in__toplevel_top_define" tlvg174 7.0))
 (edge-check-g174)
 
 ;; check quote_veclit_ref__in__toplevel_top_list_arg
 (define tllg175 (list (vector-ref #(9 8 7) 2)))
-(define (edge-check-g175) (edge-chk "quote_veclit_ref__in__toplevel_top_list_arg" (car tllg175) 7))
+(define (edge-check-g175) (edge-chk "quote_veclit_ref__in__toplevel_top_list_arg" (car tllg175) 7.0))
 (edge-check-g175)
 
 ;; check quote_veclit_ref__in__toplevel_top_vector_arg
 (define tlwg176 (vector (vector-ref #(9 8 7) 2)))
-(define (edge-check-g176) (edge-chk "quote_veclit_ref__in__toplevel_top_vector_arg" (vector-ref tlwg176 0) 7))
+(define (edge-check-g176) (edge-chk "quote_veclit_ref__in__toplevel_top_vector_arg" (vector-ref tlwg176 0) 7.0))
 (edge-check-g176)
 
 ;; check quote_qq_sugar__in__toplevel_top_define

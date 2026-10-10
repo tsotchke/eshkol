@@ -12855,6 +12855,26 @@ private:
         return codegenClosureCall(func_result, call_args, "call-result-as-func");
     }
 
+    // Plain-language name for a non-procedure literal in operator position,
+    // used by the call diagnostic in codegenCallTask.
+    static const char* describeLiteralOperator(const eshkol_ast_t* head) {
+        switch (head ? head->type : ESHKOL_INVALID) {
+            case ESHKOL_UINT8: case ESHKOL_UINT16: case ESHKOL_UINT32:
+            case ESHKOL_UINT64: case ESHKOL_INT8: case ESHKOL_INT16:
+            case ESHKOL_INT32: case ESHKOL_INT64: case ESHKOL_BIGNUM_LITERAL:
+                return "an integer literal";
+            case ESHKOL_DOUBLE: return "a real-number literal";
+            case ESHKOL_STRING: return "a string literal";
+            case ESHKOL_CHAR: return "a character literal";
+            case ESHKOL_BOOL: return "a boolean literal";
+            case ESHKOL_NULL: return "the empty list";
+            case ESHKOL_SYMBOL: return "a symbol literal";
+            case ESHKOL_CONS: return "a list literal";
+            case ESHKOL_TENSOR: return "a vector literal";
+            default: return "this expression";
+        }
+    }
+
     Value* codegenCallOperationResultAsFunc(const eshkol_operations_t* op) {
         // Evaluate the operation to get the closure value
         Value* func_result = codegenAST(op->call_op.func);
@@ -13325,10 +13345,8 @@ private:
         // wrapped expression. Unwrap and re-dispatch rather than teaching each
         // head form about ascriptions: every case below (variable head, inline
         // lambda, nested call, operation-result) then works through a cast.
-        // Without this, `((the procedure f) 7)` reached the "Call expression
-        // requires variable or inline lambda" bail-out, which made the
-        // `procedure`/`closure`/`(-> a b)` ascriptions unusable in the one
-        // position where ascribing a callable is the point.
+        // Unwrapping keeps `((the procedure f) 7)` on the same static paths
+        // as `(f 7)` instead of the general computed-operator path below.
         if (op->call_op.func->type == ESHKOL_OP &&
             op->call_op.func->operation.op == ESHKOL_THE_OP &&
             op->call_op.func->operation.the_op.expr) {
@@ -13349,28 +13367,29 @@ private:
             co_return codegenCallResultAsFunc(op);
         }
 
-        // ((derivative f) x), ((gradient f) p), etc. — operations whose
-        // result is a closure that can then be called.
+        // ((derivative f) x), ((and #t f) x), ((case k ((1) f)) x), ... —
+        // any other operator expression. R7RS evaluates the operator position
+        // like every other operand and applies the resulting value, so every
+        // remaining operation head takes the one general path: evaluate it,
+        // then call the value through the runtime closure dispatcher, which
+        // raises a catchable condition when the value is not a procedure.
         if (op->call_op.func->type == ESHKOL_OP) {
-            eshkol_op_t inner_op = op->call_op.func->operation.op;
-            if (inner_op == ESHKOL_DERIVATIVE_OP || inner_op == ESHKOL_GRADIENT_OP ||
-                inner_op == ESHKOL_LAMBDA_OP || inner_op == ESHKOL_JACOBIAN_OP ||
-                inner_op == ESHKOL_COND_OP || inner_op == ESHKOL_IF_OP ||
-                inner_op == ESHKOL_LET_OP || inner_op == ESHKOL_LETREC_OP) {
-                co_return codegenCallOperationResultAsFunc(op);
-            }
+            co_return codegenCallOperationResultAsFunc(op);
         }
 
-        // Handle variable function references (existing code)
+        // A self-evaluating literal in operator position can never be a
+        // procedure. Report it at the literal's source position; the usual
+        // cause is a list written as data without a quote, e.g. an element
+        // `(1 2 3)` inside `#(...)` or a shape `(2 2)` passed to `tensor`.
         if (op->call_op.func->type != ESHKOL_VAR || !op->call_op.func->variable.id) {
-            ESHKOL_ERROR("Call expression requires variable or inline lambda (func type: %d, is OP: %d, op_type: %d)",
-                         op->call_op.func ? op->call_op.func->type : -1,
-                         op->call_op.func && op->call_op.func->type == ESHKOL_OP ? 1 : 0,
-                         op->call_op.func && op->call_op.func->type == ESHKOL_OP ? op->call_op.func->operation.op : -1);
-            eshkol_error_stacktrace();
+            codegen_error_at(op->call_op.func,
+                "Cannot call %s: the operator of a call must be a procedure "
+                "(to write a list as data, quote it or build it with `list`)",
+                describeLiteralOperator(op->call_op.func));
+            markFatalCodegenError();
             co_return nullptr;
         }
-        
+
         std::string func_name = op->call_op.func->variable.id;
 
         // Parser-private parameter helpers.  They are intentionally lowered
@@ -14602,15 +14621,20 @@ private:
             co_return tagged_->typeOf(arg);
         }
 
-        // type-name returns the human-readable type name as an Eshkol
-        // string.  Wires eshkol_format_value_type_tag (the single source
-        // of truth for "what does the user see in error messages?")
-        // through the existing intern-cstring-as-string runtime path.
-        // The same name registry is what eshkol_type_error_with_operand
-        // uses.  Tracked as ESH-0232 (.swarm/tasks/ESH-0232.json):
-        // codegen-side wiring still needs a safe cstr→string helper;
-        // deferring until the source-span stack trace work touches the
-        // same runtime surface.
+        // type-name returns the value's type as an interned symbol
+        // ('integer, 'real, 'string, 'pair, 'tensor, 'closure, ...). The
+        // spelling comes from the runtime's one type-name vocabulary
+        // (lib/core/value_type_names.h), shared with the bytecode VM and the
+        // REPL's machine-mode value_type field.
+        if (func_name == "type-name") {
+            if (op->call_op.num_vars != 1) {
+                eshkol_arity_error_current("type-name requires exactly 1 argument");
+                co_return nullptr;
+            }
+            TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
+            if (!tv.llvm_value) co_return nullptr;
+            co_return emitTypeNameTagged(typedValueToTaggedValue(tv));
+        }
 
         // String functions (dispatched to StringIOCodegen)
         if (func_name == "string-length") co_return strio_->stringLength(op);
@@ -15073,6 +15097,7 @@ private:
         if (func_name == "error-object-irritants")
             co_return codegenErrorObjectAccessor(op, "eshkol_error_object_irritants", "error-object-irritants");
         if (func_name == "with-exception-handler") co_return codegenWithExceptionHandler(op);
+        if (func_name == "raise-continuable") co_return codegenRaiseContinuable(op);
 
         // Handle file I/O operations
         if (func_name == "open-input-file") co_return strio_->openInputFile(op);
@@ -20068,11 +20093,11 @@ private:
         Type* ret_type = result->getType();
         if (ret_type != tagged_value_type && !ret_type->isVoidTy()) {
             if (ret_type->isIntegerTy(32)) {
-                /* i32 → SIToFP to double → pack as tagged double.
-                 * Eshkol uses doubles as its native number type, so i32 error
-                 * codes and flags become comparable with = > < immediately. */
-                Value* dbl = builder->CreateSIToFP(result, double_type);
-                co_return packDoubleToTaggedValue(dbl);
+                /* i32 → sign-extend → pack as an exact integer. A C int
+                 * (an errno, a status, a count) is an exact integer, so it
+                 * is eqv?/equal? to the exact literal it is compared with. */
+                Value* wide = builder->CreateSExt(result, int64_type);
+                co_return packInt64ToTaggedValue(wide, true);
             } else if (ret_type->isIntegerTy(64)) {
                 /* i64 stays as tagged int — used for opaque handles passed
                  * between extern calls, not typically compared with = > <. */
@@ -23720,7 +23745,11 @@ private:
     // Calls before(), then thunk(), then after(), returns thunk's result
     // before/after are also called during continuation jumps across dynamic-wind boundaries
     Value* codegenDynamicWind(const eshkol_operations_t* op) {
-        // Evaluate the three thunks
+        // Evaluate the three thunks. Each operand goes through
+        // ensureTaggedValue, the normalisation every other procedure operand
+        // gets: before/after are stored into tagged slots for the wind stack,
+        // so an operand that compiled to a raw scalar, or to no value at all
+        // because it already reported a diagnostic, must be tagged first.
         Value* before_val = codegenAST(op->dynamic_wind_op.before);
         // NORETURN SAFETY: If the expression computing the before thunk raised,
         // the block is terminated. Don't emit more instructions.
@@ -23735,6 +23764,9 @@ private:
         if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
             return UndefValue::get(tagged_value_type);
         }
+        before_val = ensureTaggedValue(before_val);
+        thunk_val = ensureTaggedValue(thunk_val);
+        after_val = ensureTaggedValue(after_val);
 
         // Push dynamic-wind entry onto the stack (stores before/after for unwinding)
         Function* push_wind_func = module->getFunction("eshkol_push_dynamic_wind");
@@ -23863,6 +23895,21 @@ private:
         // Push exception handler
         builder->CreateCall(push_handler_func, {jmp_buf_alloc});
 
+        // Record the handler procedure on the frame, for raise-continuable,
+        // which calls it without unwinding to this frame.
+        {
+            Function* set_proc_func = module->getFunction("eshkol_set_exception_handler_procedure");
+            if (!set_proc_func) {
+                set_proc_func = Function::Create(
+                    FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                    Function::ExternalLinkage, "eshkol_set_exception_handler_procedure", module.get());
+            }
+            IRBuilder<> weh_entry(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+            AllocaInst* proc_slot = weh_entry.CreateAlloca(tagged_value_type, nullptr, "weh_handler_proc");
+            builder->CreateStore(ensureTaggedValue(handler_val), proc_slot);
+            builder->CreateCall(set_proc_func, {proc_slot});
+        }
+
         // Call setjmp - returns 0 on first call, non-zero when longjmp fires
         AdForwardSnapshot weh_ad_snapshot = snapshotAdForwardState();    // SW-229
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "weh_setjmp");
@@ -23928,6 +23975,51 @@ private:
         }
 
         return packNullToTaggedValue();
+    }
+
+    // ===== RAISE-CONTINUABLE (R7RS 6.11) =====
+    // (raise-continuable obj): call the current with-exception-handler's
+    // procedure with obj in the dynamic environment of the raise, the outer
+    // handlers installed, and return its value. With a guard (or no handler)
+    // as the current handler, the runtime raises obj as `raise` does.
+    Value* codegenRaiseContinuable(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_arity_error_current("raise-continuable requires exactly 1 argument");
+            return nullptr;
+        }
+        TypedValue obj_tv = codegenTypedAST(&op->call_op.variables[0]);
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+            return UndefValue::get(tagged_value_type);
+        }
+        if (!obj_tv.llvm_value) return nullptr;
+        Value* obj = typedValueToTaggedValue(obj_tv);
+
+        Function* begin_func = module->getFunction("eshkol_raise_continuable_begin");
+        if (!begin_func) {
+            begin_func = Function::Create(
+                FunctionType::get(builder->getPtrTy(), {builder->getPtrTy(), builder->getPtrTy()}, false),
+                Function::ExternalLinkage, "eshkol_raise_continuable_begin", module.get());
+        }
+        Function* end_func = module->getFunction("eshkol_raise_continuable_end");
+        if (!end_func) {
+            end_func = Function::Create(
+                FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                Function::ExternalLinkage, "eshkol_raise_continuable_end", module.get());
+        }
+
+        Function* cur = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&cur->getEntryBlock(), cur->getEntryBlock().begin());
+        AllocaInst* obj_slot = entry_builder.CreateAlloca(tagged_value_type, nullptr, "rc_obj");
+        AllocaInst* proc_slot = entry_builder.CreateAlloca(tagged_value_type, nullptr, "rc_handler");
+        builder->CreateStore(obj, obj_slot);
+        Value* frame = builder->CreateCall(begin_func, {obj_slot, proc_slot}, "rc_frame");
+        Value* handler = builder->CreateLoad(tagged_value_type, proc_slot, "rc_handler_val");
+        std::vector<Value*> args = {obj};
+        Value* result = codegenClosureCall(handler, args, "raise-continuable-handler");
+        if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+            builder->CreateCall(end_func, {frame});
+        }
+        return result;
     }
 
     // ===== MULTIPLE RETURN VALUES OPERATIONS =====
@@ -24556,11 +24648,29 @@ private:
         return builder->CreateAnd(types_match, data_match, "values_equal");
     }
 
-    // Helper: Check if a value is a pair (cons cell)
+    // Helper: Check if a value is a pair (cons cell). HEAP_PTR alone also
+    // covers strings, vectors, records, ...; the object header's subtype is
+    // what makes it a pair, as for `pair?`. The header is read only for a
+    // non-null HEAP_PTR.
     Value* matchIsPair(Value* val) {
-        Value* type = getTaggedValueType(val);
-        return builder->CreateICmpEQ(type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR), "is_pair");
+        Value* is_heap = builder->CreateICmpEQ(getBaseType(getTaggedValueType(val)),
+            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_nonnull = builder->CreateICmpNE(unpackInt64FromTaggedValue(val),
+            ConstantInt::get(int64_type, 0));
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* entry_bb = builder->GetInsertBlock();
+        BasicBlock* subtype_bb = BasicBlock::Create(*context, "match_pair_subtype", func);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "match_pair_done", func);
+        builder->CreateCondBr(builder->CreateAnd(is_heap, is_nonnull), subtype_bb, done_bb);
+        builder->SetInsertPoint(subtype_bb);
+        Value* is_cons = tagged_->isCons(val);
+        BasicBlock* subtype_exit = builder->GetInsertBlock();
+        builder->CreateBr(done_bb);
+        builder->SetInsertPoint(done_bb);
+        PHINode* result = builder->CreatePHI(int1_type, 2, "is_pair");
+        result->addIncoming(ConstantInt::getFalse(*context), entry_bb);
+        result->addIncoming(is_cons, subtype_exit);
+        return result;
     }
 
     // Helper: Check if a value is null (empty list)
@@ -26677,6 +26787,25 @@ private:
 
         Value* result = builder->CreateCall(eshkol_deep_equal_func, {arg1_ptr, arg2_ptr});
         return packBoolToTaggedValue(result);
+    }
+
+    // (type-name v) on an already-tagged value: the runtime classifies it
+    // through the shared type-name vocabulary and returns an interned symbol.
+    Value* emitTypeNameTagged(Value* tagged) {
+        Function* f = module->getFunction("eshkol_type_name_into");
+        if (!f) {
+            FunctionType* ft = FunctionType::get(builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy()}, false);
+            f = Function::Create(ft, Function::ExternalLinkage,
+                "eshkol_type_name_into", module.get());
+        }
+        Function* cur = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&cur->getEntryBlock(), cur->getEntryBlock().begin());
+        AllocaInst* in = entry_builder.CreateAlloca(tagged_value_type, nullptr, "type_name_in");
+        AllocaInst* out = entry_builder.CreateAlloca(tagged_value_type, nullptr, "type_name_out");
+        builder->CreateStore(tagged, in);
+        builder->CreateCall(f, {in, out});
+        return builder->CreateLoad(tagged_value_type, out, "type_name");
     }
 
     // NOTE: codegenNewline has been migrated to StringIOCodegen (strio_->newline)
@@ -35809,19 +35938,12 @@ private:
             // ESH-0069: route the plain (non-AD) operand through the centralized
             // type-checked unpack so a vector/int/string raises a catchable type
             // error (or a numeric vector is coerced) instead of segfaulting on a
-            // misread struct.
+            // misread struct. That one facility also decides whether a tensor of
+            // forward-mode dual numbers may pass: matmul is listed as a dual
+            // carrier there because the dispatch below gives it an exact dual
+            // rule (dualTensorMatmul).
             builder->SetInsertPoint(plain_bb);
-            Value* mm_slot = builder->CreateAlloca(tagged_value_type, nullptr, "mm_operand_slot");
-            builder->CreateStore(input, mm_slot);
-            Function* mm_chk = module->getFunction("eshkol_tensor_operand_checked");
-            if (!mm_chk) {
-                FunctionType* mm_chk_ty = FunctionType::get(
-                    builder->getPtrTy(), {builder->getPtrTy(), builder->getPtrTy()}, false);
-                mm_chk = Function::Create(mm_chk_ty, Function::ExternalLinkage,
-                                          "eshkol_tensor_operand_checked", module.get());
-            }
-            Value* mm_name = builder->CreateGlobalString("matmul", "mm_op_name");
-            Value* plain_ptr = builder->CreateCall(mm_chk, {mm_slot, mm_name});
+            Value* plain_ptr = tensor_->unpackTensorOperandChecked(input, "matmul");
             BasicBlock* plain_exit = builder->GetInsertBlock();
             builder->CreateBr(merge_bb);
 
@@ -35877,7 +35999,9 @@ private:
             builder->CreateCondBr(any_dual, mm_dual_bb, mm_normal_bb);
 
             builder->SetInsertPoint(mm_dual_bb);
-            Value* dual_ptr = tensor_->dualTensorMatmul(ptr_a, ptr_b);
+            Value* dual_ptr = tensor_->dualTensorMatmul(ptr_a, ptr_b,
+                builder->CreateOr(builder->CreateIsNotNull(ad_node_a),
+                                  builder->CreateIsNotNull(ad_node_b)));
             mm_dual_result = packPtrToTaggedValue(dual_ptr, ESHKOL_VALUE_HEAP_PTR);
             mm_dual_exit = builder->GetInsertBlock();
             builder->CreateBr(mm_done_bb);
@@ -44828,7 +44952,7 @@ private:
             {"error-object-irritants", {1}},
             {"error-object-message", {1}}, {"inject-left", {1}}, {"inject-right", {1}},
             {"interaction-environment", {0}}, {"null-environment", {0}}, {"procedure-arity", {1}},
-            {"scheme-report-environment", {0}}, {"type-of", {1}}, {"void", {0}},
+            {"scheme-report-environment", {0}}, {"type-of", {1}}, {"type-name", {1}}, {"void", {0}},
             // Numerics (LE-16)
             {"%", {2}}, {"/rational", {2}}, {"angle", {1}},
             {"arithmetic-shift", {2}}, {"bit-count", {1}}, {"bit-shift-left", {2}},
@@ -46404,6 +46528,23 @@ void eshkol_repl_register_sexpr(const char* sexpr_name, uint64_t sexpr_value) {
  * invocation so a parse-only or codegen-error path can't leak a stale
  * value from the previous evaluation.
  */
+/* The HoTT type the type checker infers for one REPL form, printed by the
+ * shared type relation (TypeEnvironment::getTypeName) -- what `:type`
+ * reports. Functions the session has defined are in scope with the same
+ * signatures compilation gives them (seedTypeCheckerWithReplFunctions).
+ * Returns a malloc'd string the caller frees, or NULL when the checker
+ * cannot synthesize a type for the form. */
+char* eshkol_repl_infer_type_name(eshkol_ast_t* ast) {
+    if (!ast) return nullptr;
+    eshkol::hott::TypeEnvironment type_env;
+    eshkol::hott::TypeChecker type_checker(type_env, /*strict_types=*/false,
+                                           /*unsafe_mode=*/true);
+    seedTypeCheckerWithReplFunctions(type_checker, type_env);
+    eshkol::hott::TypeCheckResult result = type_checker.synthesize(ast);
+    if (!result.success) return nullptr;
+    return strdup(type_env.getTypeName(result.inferred_type).c_str());
+}
+
 void eshkol_repl_capture_last_value(const eshkol_tagged_value_t* v) {
     if (!v) {
         g_repl_last_value_set = false;

@@ -13,6 +13,15 @@
 #include <stdint.h>
 #include <string.h>
 
+// eqv? on two inexact reals: equal bit patterns. Distinguishes 0.0 from -0.0
+// and lets a NaN equal itself, as the inline eqv? codegen does.
+static inline bool same_double_bits(double a, double b) {
+    uint64_t ba, bb;
+    memcpy(&ba, &a, sizeof ba);
+    memcpy(&bb, &b, sizeof bb);
+    return ba == bb;
+}
+
 // Runtime helper for deep structural equality of tagged values.
 // Takes pointers to avoid struct-by-value ABI issues.
 bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
@@ -99,12 +108,10 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
         return strcmp((const char*)val1->data.ptr_val, (const char*)val2->data.ptr_val) == 0;
     }
 
-    if ((type1 == ESHKOL_VALUE_INT64 && type2 == ESHKOL_VALUE_DOUBLE) ||
-        (type1 == ESHKOL_VALUE_DOUBLE && type2 == ESHKOL_VALUE_INT64)) {
-        double d1 = (type1 == ESHKOL_VALUE_DOUBLE) ? val1->data.double_val : (double)val1->data.int_val;
-        double d2 = (type2 == ESHKOL_VALUE_DOUBLE) ? val2->data.double_val : (double)val2->data.int_val;
-        return d1 == d2;
-    }
+    // R7RS 6.1: equal? compares numbers with eqv?, and eqv? is #f between an
+    // exact and an inexact number. An int64 and a double are therefore never
+    // equal? here, whatever their numeric values; `=` is numeric equality.
+    // Mixed int64/double pairs fall through to the type check below.
 
     auto is_bignum = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
         if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
@@ -190,13 +197,19 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
             }
             return true;
         }
+        // A double-dtype tensor stores bare doubles: the literal's exactness
+        // is not part of that representation, so its elements are compared
+        // with the vector's numeric elements by value (the same rule the VM
+        // applies across this boundary).
         const double* tensor_data = reinterpret_cast<const double*>(tensor->elements);
         for (int64_t i = 0; i < vector_len; ++i) {
-            eshkol_tagged_value_t numeric{};
-            numeric.type = ESHKOL_VALUE_DOUBLE;
-            numeric.flags = ESHKOL_VALUE_INEXACT_FLAG;
-            numeric.data.double_val = tensor_data[i];
-            if (!eshkol_deep_equal(&numeric, &vector_data[i])) return false;
+            const eshkol_tagged_value_t& item = vector_data[i];
+            const uint8_t item_type = get_base_type(item.type);
+            double numeric;
+            if (item_type == ESHKOL_VALUE_INT64) numeric = (double)item.data.int_val;
+            else if (item_type == ESHKOL_VALUE_DOUBLE) numeric = item.data.double_val;
+            else return false;
+            if (numeric != tensor_data[i]) return false;
         }
         return true;
     }
@@ -244,7 +257,10 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
         const eshkol_complex_number_t* c2 =
             (const eshkol_complex_number_t*)val2->data.ptr_val;
         if (!c1 || !c2) return c1 == c2;
-        return c1->real == c2->real && c1->imag == c2->imag;
+        // eqv? on each inexact component: same representation, so -0.0 and
+        // 0.0 stay distinct and a NaN component equals itself.
+        return same_double_bits(c1->real, c2->real) &&
+               same_double_bits(c1->imag, c2->imag);
     }
 
     if (type1 != type2) return false;
@@ -255,7 +271,9 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
             return val1->data.int_val == val2->data.int_val;
 
         case ESHKOL_VALUE_DOUBLE:
-            return val1->data.double_val == val2->data.double_val;
+            // eqv? on inexact reals compares representations (R7RS 6.1), the
+            // same bit comparison the inline eqv? emits.
+            return same_double_bits(val1->data.double_val, val2->data.double_val);
 
         case ESHKOL_VALUE_STRING_PTR:
             if (val1->data.ptr_val == val2->data.ptr_val) return true;

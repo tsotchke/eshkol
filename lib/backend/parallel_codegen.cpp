@@ -285,6 +285,7 @@ void eshkol_region_unwind_for_continuation(void* state);
 void eshkol_continuation_restore_handlers(void* state);
 void eshkol_continuation_resume(void* state);
 void eshkol_continuation_transfer_check(void* state);
+void eshkol_continuation_check_extent(void* state);
 }
 
 // Kept out of line: setjmp needs a frame with no live C++ objects.
@@ -325,13 +326,24 @@ static void run_in_boundary(parallel_worker_fn worker, void* task,
 // stack. The callback's extent is unwound to the boundary on this thread and
 // the transfer is recorded; the caller resumes it on its own thread after the
 // join, in element order, exactly like a recorded raise.
+//
+// When the continuation is to be resumed on this thread, it must also belong
+// to a host evaluation that is still live (eshkol_continuation_check_extent);
+// that check raises before any dynamic state is touched.
 extern "C" void eshkol_continuation_transfer_check(void* state_void) {
     ParallelBoundaryFrame* b = t_parallel_boundary;
     auto* state = static_cast<eshkol_continuation_state_t*>(state_void);
-    if (!b || !state) return;
+    if (!state) return;
+    if (!b) {
+        eshkol_continuation_check_extent(state);
+        return;
+    }
     const uintptr_t here = (uintptr_t)__builtin_frame_address(0);
     const uintptr_t capture = (uintptr_t)state->jmp_buf_ptr;
-    if (capture > here && capture < b->frame_addr) return;   // captured in this callback
+    if (capture > here && capture < b->frame_addr) {          // captured in this callback
+        eshkol_continuation_check_extent(state);
+        return;
+    }
     eshkol_tagged_value_t value = state->value;
     eshkol_exception_unwind_state_to_depth(b->handler_depth, &value);
     b->out->value = value;

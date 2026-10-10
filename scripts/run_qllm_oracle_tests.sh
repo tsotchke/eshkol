@@ -73,6 +73,13 @@ JIT_TIMEOUT="${JIT_TIMEOUT:-240}"
 AOT_COMPILE_TIMEOUT="${AOT_COMPILE_TIMEOUT:-300}"
 AOT_RUN_TIMEOUT="${AOT_RUN_TIMEOUT:-120}"
 
+# Golden JSON carries eshkol_version (see qllm_oracle_lib.esk and this
+# directory's README); derive it from the binary under test rather than a
+# hardcoded literal, so it tracks ESHKOL_VERSION in the root CMakeLists.txt
+# instead of drifting from the build.
+ESHKOL_ORACLE_VERSION="$("$ESHKOL_RUN" --features | sed -n 's/^version=//p')"
+export ESHKOL_ORACLE_VERSION
+
 # The exporters, in dependency order. qllm_oracle_lib.esk is a (load …)
 # library, not a probe, so it is deliberately not listed.
 EXPORTERS="
@@ -84,11 +91,11 @@ sheaf_ee_step.esk
 squared_distance.esk
 "
 
-# macOS has no `timeout(1)`; emulate with perl alarm (exit 142 on SIGALRM).
-run_guarded() {
-    perl -e 'my $seconds = shift; alarm $seconds; exec @ARGV; die "exec failed: $ARGV[0]: $!\n"' \
-        "$1" "${@:2}"
-}
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+run_guarded() { eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 json_escape() {
     printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'
@@ -106,7 +113,7 @@ emit_event() {
 # args: rc out -> echoes PASS|FAIL|CRASH|HANG
 verdict() {
     local rc="$1" out="$2"
-    if [ "$rc" -eq 142 ]; then echo HANG; return; fi
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then echo HANG; return; fi
     if [ "$rc" -ge 128 ] || printf '%s' "$out" | grep -q "fatal signal"; then
         echo CRASH; return
     fi
@@ -174,7 +181,7 @@ for f in $EXPORTERS; do
         cout=$(run_guarded "$AOT_COMPILE_TIMEOUT" "$ESHKOL_RUN" "$path" -o "$bin" 2>&1); crc=$?
         if [ "$crc" -ne 0 ] || [ ! -x "$bin" ] || printf '%s' "$cout" | grep -qE \
             "Failed to generate LLVM IR|LLVM module verification failed"; then
-            if [ "$crc" -eq 142 ]; then av=HANG; else av=CRASH; fi
+            if [ "$crc" -eq 124 ] || [ "$crc" -eq 142 ]; then av=HANG; else av=CRASH; fi
             printf '%s\n' "$cout" | tail -5 | sed 's/^/         /'
         else
             # By default the AOT lane writes to a scratch dir so the two lanes

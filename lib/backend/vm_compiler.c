@@ -811,9 +811,16 @@ static int compile_depth = 0;
 /** @brief Recursion-depth-guarded wrapper around compile_expr_impl():
  *         bumps/checks compile_depth (erroring past 1000 nested
  *         expressions) around the actual compilation call. */
+static void vm_compile_error(const char* message, const char* detail);
 static void compile_expr(FuncChunk* c, Node* node, int tail) {
     compile_depth++;
-    if (compile_depth > 1000) { fprintf(stderr, "ERROR: expression nesting too deep (>1000)\n"); compile_depth--; return; }
+    if (compile_depth > 1000) {
+        /* Fail closed: the subexpression emits no code, so the compilation
+         * must not produce a program. */
+        vm_compile_error("expression nesting too deep (>1000)", NULL);
+        compile_depth--;
+        return;
+    }
     compile_expr_impl(c, node, tail);
     compile_depth--;
 }
@@ -2739,38 +2746,48 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
 }
 
 /**
- * @brief Compile a `(with-exception-handler handler thunk)` special form:
- *        PUSH_HANDLER around a call to the 0-arg @p thunk, POP_HANDLER on
- *        normal exit; on exception, calls @p handler with the exception
- *        (read from the VM's current_exn register via OP_GET_EXN) as a
- *        regular (never tail) call, so the handler keeps its own frame
- *        for upvalue access (e.g. a captured call/cc continuation).
+ * @brief Compile a `(with-exception-handler handler thunk)` special form.
+ *
+ * The handler is evaluated first (R7RS evaluates both operands before the
+ * call) and stays on the operand stack just below the handler frame, so
+ * raise-continuable can call it in place (native 2244 marks the frame as
+ * having one). PUSH_HANDLER then guards a call to the 0-arg @p thunk;
+ * POP_HANDLER on normal exit, then the handler slot is dropped beneath the
+ * result. On a non-continuable raise the VM restores the stack to the
+ * frame's sp, leaving the handler on top: it is called with the exception
+ * (OP_GET_EXN) as a regular (never tail) call, so it keeps its own frame for
+ * upvalue access (e.g. a captured call/cc continuation), and if it returns,
+ * the R7RS secondary condition is raised.
  */
 static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
+    int saved_locals = c->n_locals;
+    compile_expr(c, node->children[1], 0);   /* the handler procedure */
+    add_local(c, "__handler__");
     int handler_patch = c->code_len;
     chunk_emit(c, OP_PUSH_HANDLER, 0);
+    chunk_emit(c, OP_NATIVE_CALL, 2244);     /* %handler-procedure! */
+    chunk_emit(c, OP_POP, 0);
 
     /* Call thunk (0-arg function) */
     compile_expr(c, node->children[2], 0);
     chunk_emit(c, OP_CALL, 0);
 
-    /* Normal exit */
+    /* Normal exit: drop the handler slot beneath the thunk's value. */
     chunk_emit(c, OP_POP_HANDLER, 0);
+    chunk_emit(c, OP_POPN, 1);
     int end_patch = c->code_len;
     chunk_emit(c, OP_JUMP, 0);
 
-    /* Exception handler: exn is in current_exn VM register.
-     * Call handler(exn). NEVER tail-call — the handler may need
-     * the enclosing frame for upvalue access (e.g., call/cc's k). */
+    /* Exception: the stack is back at the frame's sp, handler on top. */
     patch(c, handler_patch, OP_PUSH_HANDLER, c->code_len);
-    compile_expr(c, node->children[1], 0); /* push handler closure */
     chunk_emit(c, OP_GET_EXN, 0);           /* push exn from VM register */
     chunk_emit(c, OP_CALL, 1);
     chunk_emit(c, OP_RAISE_SECONDARY, 0);
 
     patch(c, end_patch, OP_JUMP, c->code_len);
+    c->n_locals = saved_locals;
     return;
 }
 
@@ -5834,6 +5851,19 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "raise") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0);
         chunk_emit(c, OP_NATIVE_CALL, 130); /* native raise */
+        return;
+    }
+
+    /* (raise-continuable expr) — call the current with-exception-handler's
+     * procedure in place and return its value (R7RS 6.11); a guard or no
+     * handler gets it as `raise` would. Native 2245 leaves
+     * [token handler obj] (or raises), CALL 1 runs the handler, native 2246
+     * clears the frame's running mark and leaves the handler's value. */
+    if (is_sym(head, "raise-continuable") && node->n_children == 2) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, 2245);
+        chunk_emit(c, OP_CALL, 1);
+        chunk_emit(c, OP_NATIVE_CALL, 2246);
         return;
     }
 

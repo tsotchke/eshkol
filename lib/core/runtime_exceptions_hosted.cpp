@@ -807,8 +807,18 @@ static void eshkol_restore_state_for_handler(eshkol_exception_handler_t* handler
 // one is still reported before eshkol_raise prints "Unhandled exception" and
 // exits. The condition is a program value either way; only the report depends
 // on whether someone is listening.
+// The handler a raise transfers to: the innermost frame whose handler is not
+// already running for a raise-continuable (R7RS 6.11: a handler runs with the
+// outer handlers installed).
+static eshkol_exception_handler_t* eshkol_current_handler_frame(void) {
+    eshkol_exception_handler_t* h = g_exception_handler_stack;
+    while (h && h->handler_running) h = h->prev;
+    return h;
+}
+
 extern "C" int eshkol_raise_will_be_handled(void) {
-    return g_exception_handler_stack && g_exception_handler_stack->jmp_buf_ptr ? 1 : 0;
+    eshkol_exception_handler_t* h = eshkol_current_handler_frame();
+    return h && h->jmp_buf_ptr ? 1 : 0;
 }
 
 extern "C" void eshkol_raise(eshkol_exception_t* exception) {
@@ -823,6 +833,12 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
         g_raised_tagged_value.data.ptr_val = (uint64_t)exception;
     }
     g_raised_value_set_by_user = false;  // Reset for next raise
+
+    // Control leaves the extent of every frame whose handler is running for a
+    // raise-continuable: retire those frames so the target is the top of the
+    // chain when its landing pad pops it.
+    while (g_exception_handler_stack && g_exception_handler_stack->handler_running)
+        eshkol_pop_exception_handler();
 
     if (g_exception_handler_stack && g_exception_handler_stack->jmp_buf_ptr) {
         // A longjmp skips generated normal-exit code.  Unwind dynamic-wind
@@ -961,6 +977,46 @@ extern "C" void eshkol_raise_secondary_exception(eshkol_exception_t* original) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// raise-continuable (R7RS 6.11).
+//
+// with-exception-handler records its handler procedure on the frame it pushes
+// (eshkol_set_exception_handler_procedure). (raise-continuable obj) then asks
+// eshkol_raise_continuable_begin for the current handler:
+//
+//   * a frame with a procedure: the frame is marked running and the procedure
+//     is handed back; generated code calls it with obj, in the dynamic
+//     environment of the raise, and the call's value is raise-continuable's
+//     value. eshkol_raise_continuable_end clears the mark afterwards. While it
+//     is set, raises inside the handler go to the handlers outside it.
+//   * a guard frame (no procedure), or no handler: obj is raised exactly as
+//     `raise` raises it -- the guard's clauses see obj, and with no handler
+//     at all the program reports it and exits. This call does not return.
+// ───────────────────────────────────────────────────────────────────────────
+extern "C" void eshkol_set_exception_handler_procedure(const eshkol_tagged_value_t* proc) {
+    if (!g_exception_handler_stack || !proc) return;
+    g_exception_handler_stack->handler_proc = *proc;
+    g_exception_handler_stack->has_handler_proc = 1;
+}
+
+extern "C" void* eshkol_raise_continuable_begin(const eshkol_tagged_value_t* obj,
+                                               eshkol_tagged_value_t* proc_out) {
+    eshkol_exception_handler_t* h = eshkol_current_handler_frame();
+    if (h && h->has_handler_proc && proc_out) {
+        h->handler_running = 1;
+        *proc_out = h->handler_proc;
+        return h;
+    }
+    eshkol_set_raised_value(obj);
+    eshkol_raise(eshkol_make_exception_with_header(ESHKOL_EXCEPTION_USER_DEFINED,
+                                                  "user exception"));
+    std::exit(1);   // eshkol_raise does not return
+}
+
+extern "C" void eshkol_raise_continuable_end(void* frame) {
+    if (frame) static_cast<eshkol_exception_handler_t*>(frame)->handler_running = 0;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // SW-57: HANDLER-FRAME STORAGE IS LIFO, SO ITS ALLOCATOR MUST BE.
 //
 // A `guard` frame's lifetime is exactly the dynamic extent of the guard: it is
@@ -1068,6 +1124,8 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
                             &handler->ad_mixed_record_count);
     handler->replay_active = 0;                   // SW-58: ordinary frame
     handler->replay_count = 0;
+    handler->has_handler_proc = 0;                // set by with-exception-handler
+    handler->handler_running = 0;
     handler->prev = g_exception_handler_stack;
     g_exception_handler_stack = handler;
     g_exception_handler_depth++;
@@ -1090,6 +1148,8 @@ extern "C" void eshkol_pop_exception_handler(void) {
         // one per iteration.
         popped->replay_active = 0;
         popped->replay_count = 0;
+        popped->has_handler_proc = 0;
+        popped->handler_running = 0;
         popped->prev = g_exception_handler_free_list;
         g_exception_handler_free_list = popped;
     }

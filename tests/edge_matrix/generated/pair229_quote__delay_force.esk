@@ -42,11 +42,11 @@
 (edge-check-g1985)
 
 ;; check quote_veclit_ref__in__delay_force_force_delay
-(define (edge-check-g1986) (edge-chk "quote_veclit_ref__in__delay_force_force_delay" (force (delay (vector-ref #(9 8 7) 2))) 7))
+(define (edge-check-g1986) (edge-chk "quote_veclit_ref__in__delay_force_force_delay" (force (delay (vector-ref #(9 8 7) 2))) 7.0))
 (edge-check-g1986)
 
 ;; check quote_veclit_ref__in__delay_force_force_twice
-(define (edge-check-g1987) (edge-chk "quote_veclit_ref__in__delay_force_force_twice" (let ((fpg1987 (delay (vector-ref #(9 8 7) 2)))) (force fpg1987) (force fpg1987)) 7))
+(define (edge-check-g1987) (edge-chk "quote_veclit_ref__in__delay_force_force_twice" (let ((fpg1987 (delay (vector-ref #(9 8 7) 2)))) (force fpg1987) (force fpg1987)) 7.0))
 (edge-check-g1987)
 
 ;; check quote_qq_sugar__in__delay_force_force_delay

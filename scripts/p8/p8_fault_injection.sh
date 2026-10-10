@@ -34,6 +34,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 QUICK=0
@@ -70,14 +71,10 @@ emit() { # id status snippet
     "$1" "$2" "$3" >> "$TRACE_FILE"
 }
 
-# perl alarm (macOS has no timeout(1)). The alarm timer survives exec, so
-# SIGALRM is delivered directly to the exec'd process on timeout (default action
-# terminate -> exit 142 = 128+SIGALRM). No fork/waitpid, so no reap/pipe hangs.
-# Mirrors the proven pattern in scripts/run_stress.sh.
-run_guarded() { # secs cmd...
-  local secs="$1"; shift
-  perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' "$secs" "$@"
-}
+# Shared wall-clock guard (scripts/lib/guarded_exec.pl; macOS has no
+# timeout(1)): exits 124 on timeout and stops the command together with every
+# process it started, so none of them can hold the output capture open.
+run_guarded() { eshkol_outcome_guarded "$@"; } # secs cmd...
 
 PASS=0; FAIL=0; XK=0; XP=0
 

@@ -259,7 +259,8 @@
 (define c2 #(10 20 30))
 (vector-copy! c2 0 (vector 1 "x"))
 (check "vector-copy! of a string promotes the destination"
-       (equal? (vector->list c2) (list 1.0 "x" 30.0)))
+       ;; the copied 1 keeps its exactness; the untouched slot is the f64 30.0
+       (equal? (vector->list c2) (list 1 "x" 30.0)))
 (define c3 (vector 0 0 0))
 (vector-copy! c3 0 #(1 2 3))
 (check "vector-copy! literal->vector" (equal? (vector->list c3) (list 1.0 2.0 3.0)))

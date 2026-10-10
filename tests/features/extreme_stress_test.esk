@@ -250,7 +250,7 @@
 ;; Tensor from Scheme vector with integers
 (define v1 (vector 1 2 3 4 5))
 (define v2 (vector 6 7 8 9 10))
-(check "Vector dot product" 130 (tensor-dot v1 v2))
+(check "Vector dot product" 130.0 (tensor-dot v1 v2))   ; tensor ops compute in f64
 
 ;; =============================================================================
 ;; SECTION 8: AUTOMATIC DIFFERENTIATION

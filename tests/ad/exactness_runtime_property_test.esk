@@ -251,11 +251,12 @@
 ;; a differentiand whose body may return a non-number keeps the jet path
 ;; entirely -- this is not a regression target, just confirmation that the
 ;; R -> R^n case (which the exact tier cannot represent) still answers
-;; correctly through the unchanged jet path rather than a wrong scalar.
+;; correctly through the unchanged jet path rather than a wrong scalar. The
+;; jet path computes in f64, so the components are the inexact 4.0 and 12.0.
 (define (rn t) (vector (* t t) (* t t t)))
 (let ((d (derivative rn 2)))
   (check-eq "neg: R->R^n differentiand still answers componentwise"
-            (list (vector-ref d 0) (vector-ref d 1)) (list 4 12)))
+            (list (vector-ref d 0) (vector-ref d 1)) (list 4.0 12.0)))
 
 ;; ---------------------------------------------------------------------
 (display "----") (newline)

@@ -42,11 +42,11 @@
 (edge-check-g120)
 
 ;; check quote_veclit_ref__in__shadowing_shadow_unused_builtin
-(define (edge-check-g121) (edge-chk "quote_veclit_ref__in__shadowing_shadow_unused_builtin" (let ((length 5)) (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g121) (edge-chk "quote_veclit_ref__in__shadowing_shadow_unused_builtin" (let ((length 5)) (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g121)
 
 ;; check quote_veclit_ref__in__shadowing_shadow_param_rebind
-(define (edge-check-g122) (edge-chk "quote_veclit_ref__in__shadowing_shadow_param_rebind" ((lambda (spg122) (let ((spg122 (vector-ref #(9 8 7) 2))) spg122)) 'outer) 7))
+(define (edge-check-g122) (edge-chk "quote_veclit_ref__in__shadowing_shadow_param_rebind" ((lambda (spg122) (let ((spg122 (vector-ref #(9 8 7) 2))) spg122)) 'outer) 7.0))
 (edge-check-g122)
 
 ;; check quote_qq_sugar__in__shadowing_shadow_unused_builtin

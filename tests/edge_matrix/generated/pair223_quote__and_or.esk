@@ -58,15 +58,15 @@
 (edge-check-g1905)
 
 ;; check quote_veclit_ref__in__and_or_and_pass
-(define (edge-check-g1906) (edge-chk "quote_veclit_ref__in__and_or_and_pass" (and #t (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g1906) (edge-chk "quote_veclit_ref__in__and_or_and_pass" (and #t (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g1906)
 
 ;; check quote_veclit_ref__in__and_or_or_pass
-(define (edge-check-g1907) (edge-chk "quote_veclit_ref__in__and_or_or_pass" (or #f (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g1907) (edge-chk "quote_veclit_ref__in__and_or_or_pass" (or #f (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g1907)
 
 ;; check quote_veclit_ref__in__and_or_if_or_else
-(define (edge-check-g1908) (edge-chk "quote_veclit_ref__in__and_or_if_or_else" (if (or #f #f) 'no (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g1908) (edge-chk "quote_veclit_ref__in__and_or_if_or_else" (if (or #f #f) 'no (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g1908)
 
 ;; check quote_qq_sugar__in__and_or_and_pass

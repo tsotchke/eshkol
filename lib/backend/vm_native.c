@@ -1,6 +1,7 @@
 #include "../../inc/eshkol/core/number_syntax.h"
 #include "../core/model_io_atomic.h"
 #include "../core/tensor_observation.h"
+#include "../core/value_type_names.h"
 
 /* Dense linear solver (lib/core/linear_solve.cpp): full-f64 Ax=b, row-major
  * f64 buffers, returns 0 on success or a nonzero catchable status code. */
@@ -7030,6 +7031,72 @@ static Value vm_parameter_invoke(VM* vm, Value parameter_value,
  * so a heap-boxed number compares by value rather than by box identity (SW-31). */
 static int vm_bignum_compare_vals(VM* vm, Value a, Value b);
 
+/**
+ * @brief `type-name`: classify a VM value as one of the shared runtime type
+ *        names (lib/core/value_type_names.h), so the VM and the native
+ *        runtime call every value by the same name.
+ */
+static eshkol_type_name_id_t vm_value_type_name_id(VM* vm, Value v) {
+    switch ((int)v.type) {
+        case VAL_NIL:          return ESHKOL_TYPE_NAME_NULL_LIST;
+        case VAL_VOID:         return ESHKOL_TYPE_NAME_UNSPECIFIED;
+        case VAL_INT:
+        case VAL_BIGNUM:       return ESHKOL_TYPE_NAME_INTEGER;
+        case VAL_RATIONAL:     return ESHKOL_TYPE_NAME_RATIONAL;
+        case VAL_FLOAT:        return ESHKOL_TYPE_NAME_REAL;
+        case VAL_COMPLEX:      return ESHKOL_TYPE_NAME_COMPLEX;
+        case VAL_I128:         return ESHKOL_TYPE_NAME_I128;
+        case VAL_DUAL:
+        case VAL_HYPER_DUAL:   return ESHKOL_TYPE_NAME_DUAL_NUMBER;
+        case VAL_BOOL:         return ESHKOL_TYPE_NAME_BOOLEAN;
+        case VAL_CHAR:         return ESHKOL_TYPE_NAME_CHAR;
+        case VAL_SYMBOL:       return ESHKOL_TYPE_NAME_SYMBOL;
+        case VAL_STRING:       return ESHKOL_TYPE_NAME_STRING;
+        case VAL_VECTOR:       return ESHKOL_TYPE_NAME_VECTOR;
+        case VAL_TENSOR:       return ESHKOL_TYPE_NAME_TENSOR;
+        case VAL_BYTEVECTOR:   return ESHKOL_TYPE_NAME_BYTEVECTOR;
+        case VAL_HASH:         return ESHKOL_TYPE_NAME_HASH_TABLE;
+        case VAL_MULTI_VALUE:  return ESHKOL_TYPE_NAME_VALUES;
+        case VAL_ERROR_OBJ:    return ESHKOL_TYPE_NAME_EXCEPTION;
+        case VAL_PORT:         return ESHKOL_TYPE_NAME_PORT;
+        case VAL_EOF:          return ESHKOL_TYPE_NAME_EOF_OBJECT;
+        case VAL_PARAMETER_OBJ: return ESHKOL_TYPE_NAME_PARAMETER;
+        case VAL_CLOSURE:      return ESHKOL_TYPE_NAME_PROCEDURE;
+        case VAL_CONTINUATION: return ESHKOL_TYPE_NAME_CONTINUATION;
+        case VAL_AD_TAPE:      return ESHKOL_TYPE_NAME_AD_TAPE;
+        case VAL_KB:           return ESHKOL_TYPE_NAME_KNOWLEDGE_BASE;
+        case VAL_FACTOR_GRAPH: return ESHKOL_TYPE_NAME_FACTOR_GRAPH;
+        case VAL_WORKSPACE:    return ESHKOL_TYPE_NAME_WORKSPACE;
+        case VAL_SUBST:        return ESHKOL_TYPE_NAME_SUBSTITUTION;
+        case VAL_MANIFOLD:     return ESHKOL_TYPE_NAME_MANIFOLD;
+        case VAL_FUTURE:       return ESHKOL_TYPE_NAME_FUTURE;
+        case VAL_RIEMANNIAN_ADAM_STATE: return ESHKOL_TYPE_NAME_HEAP_OBJECT;
+        case VAL_PAIR: {
+            /* VAL_PAIR also carries the logic heap objects; the heap
+             * object's own type says which. */
+            if (!is_valid_heap_ptr(vm, v.as.ptr)) return ESHKOL_TYPE_NAME_UNKNOWN;
+            switch ((int)vm->heap.objects[v.as.ptr]->type) {
+                case HEAP_CONS:      return ESHKOL_TYPE_NAME_PAIR;
+                case HEAP_FACT:      return ESHKOL_TYPE_NAME_FACT;
+                case HEAP_LOGIC_VAR: return ESHKOL_TYPE_NAME_LOGIC_VAR;
+                case HEAP_PROMISE:   return ESHKOL_TYPE_NAME_PROMISE;
+                default:             return ESHKOL_TYPE_NAME_HEAP_OBJECT;
+            }
+        }
+        default:               return ESHKOL_TYPE_NAME_UNKNOWN;
+    }
+}
+
+/* eqv? on two inexact reals (R7RS 6.1): equal representations, so 0.0 and
+ * -0.0 are distinct and a NaN equals itself -- the same bit comparison the
+ * native eqv? emits. Shared by eq?/eqv? and equal? on flonums. */
+static int vm_same_double_bits(double x, double y) {
+    uint64_t bx, by;
+    memcpy(&bx, &x, sizeof bx);
+    memcpy(&by, &y, sizeof by);
+    return bx == by;
+}
+
 static int vm_identity_equal(VM* vm, Value a, Value b) {
     if (a.type != b.type) return 0;
     switch ((int)a.type) {
@@ -7037,7 +7104,7 @@ static int vm_identity_equal(VM* vm, Value a, Value b) {
         case VAL_BOOL:  return a.as.b == b.as.b;
         case VAL_INT:   return a.as.i == b.as.i;
         case VAL_CHAR:  return a.as.i == b.as.i;
-        case VAL_FLOAT: return a.as.f == b.as.f;
+        case VAL_FLOAT: return vm_same_double_bits(a.as.f, b.as.f);
         case VAL_STRING: {
             VmString* as = vm_value_as_string(vm, a);
             VmString* bs = vm_value_as_string(vm, b);
@@ -7065,7 +7132,8 @@ static int vm_identity_equal(VM* vm, Value a, Value b) {
         case VAL_COMPLEX: {
             VmComplex* az = (VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
             VmComplex* bz = (VmComplex*)vm->heap.objects[b.as.ptr]->opaque.ptr;
-            return az && bz && az->real == bz->real && az->imag == bz->imag;
+            return az && bz && vm_same_double_bits(az->real, bz->real) &&
+                   vm_same_double_bits(az->imag, bz->imag);
         }
         default: return a.as.ptr == b.as.ptr;
     }
@@ -7111,7 +7179,7 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
         case VAL_BOOL:  return a.as.b == b.as.b;
         case VAL_INT:   return a.as.i == b.as.i;
         case VAL_CHAR:  return a.as.i == b.as.i;
-        case VAL_FLOAT: return a.as.f == b.as.f;
+        case VAL_FLOAT: return vm_same_double_bits(a.as.f, b.as.f);
         case VAL_STRING: {
             VmString* as = vm_value_as_string(vm, a);
             VmString* bs = vm_value_as_string(vm, b);
@@ -7183,6 +7251,9 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
                 if (at->data[i] != bt->data[i]) return 0;
             return 1;
         }
+        case VAL_COMPLEX:
+            /* equal? on numbers is eqv? (R7RS 6.1): by component value. */
+            return vm_identity_equal(vm, a, b);
         default:
             return a.as.ptr == b.as.ptr; /* eq? fallback for opaque types */
     }
@@ -7252,6 +7323,7 @@ static uint64_t vm_equal_hash(VM* vm, Value v, int depth) {
         case VAL_BIGNUM:
         case VAL_RATIONAL:
         case VAL_I128:
+        case VAL_COMPLEX:
             return h;
         default:
             return vm_hash_mix(h, (uint64_t)(uint32_t)v.as.ptr);   /* identity */
@@ -8640,6 +8712,10 @@ static void vm_escape_native_control(VM* vm) {
  * need to signal a catchable condition. */
 static void vm_dispatch_exception(VM* vm, Value exn) {
     vm->current_exception = exn;
+    /* Control leaves the extent of every handler running for a
+     * raise-continuable: retire those frames; the target is the next one. */
+    while (vm->n_handlers > 0 && vm->handler_stack[vm->n_handlers - 1].running)
+        vm_pop_handler(vm);
     if (vm->n_handlers > 0) {
         VmExceptionHandler handler = vm->handler_stack[vm->n_handlers - 1];
         int target_winds = handler.n_winds;
@@ -10011,6 +10087,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int len = 0;
         while (lst.type == VAL_PAIR) { len++; if (len > 1000000) { vm->error = 1; break; } lst = vm->heap.objects[lst.as.ptr]->cons.cdr; }
         if (vm->error) break;
+        /* R7RS length takes a proper list. Any other operand (a vector,
+         * tensor, string, number, or a list whose final cdr is not '())
+         * raises the same catchable condition native raises. */
+        if (lst.type != VAL_NIL) {
+            vm_raise_error_msg(vm, "length: argument is not a proper list");
+            break;
+        }
         vm_push(vm, INT_VAL(len));
         break;
     }
@@ -17051,6 +17134,40 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    /* raise-continuable (R7RS 6.11). with-exception-handler pushes its
+     * handler procedure, then PUSH_HANDLER, then native 2244 marks the frame
+     * as having a procedure at stack[frame.sp - 1]. (raise-continuable obj)
+     * compiles to: obj, native 2245, CALL 1, native 2246. */
+    case 2244: { /* %handler-procedure!: the innermost frame has a procedure */
+        if (vm->n_handlers > 0) vm->handler_stack[vm->n_handlers - 1].has_proc = 1;
+        vm_push(vm, (Value){.type = VAL_VOID});
+        break;
+    }
+    case 2245: { /* %raise-continuable-begin(obj) */
+        Value obj = vm_pop(vm);
+        int h = vm->n_handlers - 1;
+        while (h >= 0 && vm->handler_stack[h].running) h--;
+        VmExceptionHandler* frame = h >= 0 ? &vm->handler_stack[h] : NULL;
+        if (!frame || !frame->has_proc || frame->sp < 1) {
+            /* A guard, or no handler: raised as `raise` raises it. */
+            vm_dispatch_exception(vm, obj);
+            break;
+        }
+        frame->running = 1;
+        vm_push(vm, INT_VAL(h));                      /* token for 2246 */
+        vm_push(vm, vm->stack[frame->sp - 1]);         /* the handler */
+        vm_push(vm, obj);
+        break;
+    }
+    case 2246: { /* %raise-continuable-end(token, result) -> result */
+        Value result = vm_pop(vm);
+        Value token = vm_pop(vm);
+        if (token.type == VAL_INT && token.as.i >= 0 && token.as.i < vm->n_handlers)
+            vm->handler_stack[token.as.i].running = 0;
+        vm_push(vm, result);
+        break;
+    }
+
     case 132: { /* force: force a promise (thunk memoization) */
         Value promise = vm_pop(vm);
 #ifndef ESHKOL_VM_WASM
@@ -17899,6 +18016,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)name_v;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case 2243: { /* type-name(v): the value's type as a symbol */
+        Value v = vm_pop(vm);
+        VmString* name = vm_string_from_cstr(&vm->heap.regions,
+            eshkol_type_name_spelling(vm_value_type_name_id(vm, v)));
+        if (name) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_SYMBOL, name); }
+        else vm_push(vm, NIL_VAL);
         break;
     }
 

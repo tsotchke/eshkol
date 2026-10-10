@@ -307,6 +307,9 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
     static const char* const kDualTensorCarriers[] = {
         "tensor-sum", "tensor-get", "tensor-length", "tensor-shape", "reshape",
         "tensor-apply", "layer-norm", "scaled-dot-attention",
+        "matmul",  // dual rule: dualTensorMatmul (codegenMatmul's dual dispatch)
+        // dual rule: jetTensorArithmetic (tensorArithmeticInternal)
+        "tensor-add", "tensor-sub", "tensor-mul", "tensor-div",
     };
     bool carrier_aware = false;
     for (const char* name : kDualTensorCarriers) {

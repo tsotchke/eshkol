@@ -97,7 +97,8 @@
 (display (if (equal? (filter (lambda (x) #f) '(5)) '()) "PASS" "FAIL")) (display ": filter remove-all on single-element list is empty") (newline)
 
 ; 32. vector->list on single-element vector
-(display (if (equal? (vector->list #(7)) '(7)) "PASS" "FAIL")) (display ": vector->list of single-element vector") (newline)
+; (a numeric #(...) literal is an f64 tensor natively and an exact vector on the VM)
+(display (if (equal? (map exact (vector->list #(7))) '(7)) "PASS" "FAIL")) (display ": vector->list of single-element vector") (newline)
 
 ; 33. list->vector on single-element list
 (let ((v (list->vector '(99))))

@@ -1,7 +1,10 @@
 ;;; lib/core/reflection.esk — runtime reflection helpers (task #170)
 ;;;
-;;; Three primitives are provided:
+;;; The reflection surface:
 ;;;
+;;;   (type-name value)       — codegen builtin / VM native. The value's type
+;;;                             as a symbol, from the runtime's one type-name
+;;;                             vocabulary (lib/core/value_type_names.h).
 ;;;   (procedure-arity proc)  — codegen builtin (lib/backend/llvm_codegen.cpp).
 ;;;                             Returns the fixed parameter count of user,
 ;;;                             builtin, imported, and aliased procedures.
@@ -19,30 +22,7 @@
 
 (require core.list.transform)
 
-(provide describe type-name)
-
-;; ─────────────────────────────────────────────────────────────────────
-;; type-name — single-token type tag for a value.
-;;
-;; Returns one of: 'integer 'real 'string 'symbol 'boolean 'pair 'null
-;;                 'vector 'procedure 'char 'unknown
-;;
-;; Useful as a stand-alone classifier when callers don't want to write
-;; their own dispatch chain.
-
-(define (type-name value)
-  (cond
-    ((null? value)      'null)
-    ((boolean? value)   'boolean)
-    ((integer? value)   'integer)
-    ((real? value)      'real)
-    ((string? value)    'string)
-    ((symbol? value)    'symbol)
-    ((char? value)      'char)
-    ((pair? value)      'pair)
-    ((vector? value)    'vector)
-    ((procedure? value) 'procedure)
-    (else               'unknown)))
+(provide describe)
 
 ;; ─────────────────────────────────────────────────────────────────────
 ;; describe — string description of any value.

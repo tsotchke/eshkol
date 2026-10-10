@@ -69,12 +69,11 @@ trap cleanup EXIT
 # shellcheck source=lib/checked_write.sh
 . "$REPO_ROOT/scripts/lib/checked_write.sh"
 
-# macOS has no timeout(1); emulate with perl alarm (exit 124 on expiry) —
-# same idiom scripts/run_vm_parity.sh already uses for portability.
-run_guarded() { # seconds cmd...
-    perl -e 'my $s=shift; eval { local $SIG{ALRM}=sub{ exit 124 }; alarm $s; exec @ARGV or exit 127; }' \
-        "$1" "${@:2}"
-}
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+run_guarded() { eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 emit_event() { # name PASS|FAIL snippet
     python3 -c '

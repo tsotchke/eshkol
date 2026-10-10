@@ -7,8 +7,8 @@
 ;; After: `#b` / `#o` / `#d` / `#x` parse as integer literals in the
 ;; respective radix. Signs accepted. Exactness prefixes `#e` / `#i`
 ;; chain with radix (either order) — `#e#xFF`, `#x#e10`, `#i#b1010`.
-;; All radix literals are exact integers regardless of `#i` (R7RS
-;; allows this for integers that fit exactly).
+;; Radix literals are exact integers unless `#i` makes them inexact
+;; (R7RS 6.2.5): `#i#b1010` is the inexact 10.0.
 
 (define passed 0)
 (define failed 0)
@@ -57,10 +57,10 @@
 ;; ── Exactness prefix chains ──────────────────────────────────────
 (check "#e#xFF"         255           #e#xFF)
 (check "#x#eFF"         255           #x#eFF)
-(check "#i#b1010"       10            #i#b1010)
-(check "#b#i1010"       10            #b#i1010)
+(check "#i#b1010"       10.0          #i#b1010)
+(check "#b#i1010"       10.0          #b#i1010)
 (check "#e42"           42            #e42)
-(check "#i42"           42            #i42)
+(check "#i42"           42.0          #i42)
 
 ;; ── Arithmetic with radix literals ───────────────────────────────
 (check "#xFF + #x01"    256           (+ #xFF #x01))

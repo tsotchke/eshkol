@@ -227,25 +227,25 @@ implemented in `lib/backend/llvm_codegen.cpp` and not redefined here.
 ### Provided symbols
 
 ```scheme
-(provide describe type-name)
+(provide describe)
 ```
 
-(Source: `lib/core/reflection.esk:19`.)
-
-The codegen-builtin `procedure-arity` is documented alongside since it is part
-of the same v1.2 reflection surface (task #170) and is used by `describe`.
+`type-name` and `procedure-arity` are builtins (native codegen and bytecode
+VM) documented alongside, since they are part of the same reflection surface;
+`describe` uses `procedure-arity`.
 
 ### `(type-name value)` → symbol
 
-Returns one of: `'integer 'real 'string 'symbol 'boolean 'pair 'null
-'vector 'procedure 'char 'unknown`
-(source lines 30-42).
-
-Dispatch order is significant: `null?` is checked before `pair?` (because the
-empty list is a degenerate pair), and `boolean?` is checked before `integer?`
-(because `#f` is *not* counted as integer 0 in Eshkol). The last fallback
-`'unknown` is returned for heap subtypes the predicate chain doesn't recognise
-(hash-tables, complex numbers, bignums, PRNG handles, tagged AD nodes, etc.).
+Returns the value's type as a symbol from the runtime's one type-name
+vocabulary (`lib/core/value_type_names.h`), the same on JIT, AOT and the
+bytecode VM: `'integer` (fixnums and bignums), `'rational`, `'real`,
+`'complex`, `'boolean`, `'char`, `'string`, `'symbol`, `'pair`, `'null`,
+`'vector`, `'tensor`, `'bytevector`, `'hash-table`, `'procedure` (closures and
+builtins alike), `'continuation`, `'port`, `'promise`, `'parameter`,
+`'exception`, `'unspecified`, and the domain types (`'dual-number`,
+`'logic-var`, `'fact`, `'knowledge-base`, `'factor-graph`, `'workspace`, ...).
+A value outside the vocabulary answers `'unknown`. The REPL's machine-mode
+`value_type` field uses the same names.
 
 ```scheme
 (type-name 42)              ; → 'integer
@@ -257,6 +257,9 @@ empty list is a degenerate pair), and `boolean?` is checked before `integer?`
 (type-name (list 1 2))      ; → 'pair
 (type-name (vector 1 2 3))  ; → 'vector
 (type-name (lambda (x) x))  ; → 'procedure
+(type-name 1/3)             ; → 'rational
+(type-name (expt 2 100))    ; → 'integer
+(type-name (make-hash-table)) ; → 'hash-table
 ```
 
 ### `(describe value)` → string
@@ -1737,8 +1740,8 @@ by `stdlib`):
   `monotonic-time-ms`.
 - PRNG isolation: `make-prng`, `prng-random`, `prng-random-integer`, `prng?`,
   and the global `set-random-seed!`.
-- Reflection: `procedure-arity` (the `.esk`-level `describe` and `type-name`
-  in `core.reflection` use it).
+- Reflection: `procedure-arity` and `type-name` (the `.esk`-level `describe`
+  in `core.reflection` uses `procedure-arity`).
 - URL parser: `url-parse`.
 - Multi-value plumbing: `call-with-values`, `values`.
 

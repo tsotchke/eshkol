@@ -385,12 +385,10 @@ Physics and field theory operators.
 
 ## Part 6: Complete Example - Neural Network Training
 
-Here's a complete 2-layer neural network with backpropagation. Today
-`(gradient f w)` with respect to a 2-D tensor parameter returns the gradient
-flattened (shape `(12)` for a `(3 4)` weight matrix). Planned for v1.4: the
-gradient in the parameter's own shape, which the weight update below uses.
+Here's a complete 2-layer neural network with backpropagation. For a tensor
+parameter, `(gradient f w)` retains the parameter's dimensions: a `(3 4)`
+weight matrix has a `(3 4)` gradient, which the weight update below uses.
 
-<!-- doc-example: skip pseudo-code: planned capability for v1.4; the weight update uses gradients in the parameter's own shape -->
 ```scheme
 ; Network parameters
 (define input-size 3)
@@ -873,7 +871,8 @@ eshkol-run --no-stdlib program.esk -o program
 (display my-data)
 
 ; Type introspection
-(type-of x)  ; Returns type tag as integer
+(type-of x)    ; Returns the runtime type tag as an integer
+(type-name x)  ; Returns the type as a symbol: 'integer, 'string, 'pair, ...
 
 ; List inspection
 (null? lst)
@@ -1136,7 +1135,7 @@ eshkol> (require stdlib)
 eshkol> (sort < '(3 1 4 1 5 9))
 (1 1 3 4 5 9)
 eshkol> :type 42
-Integer
+Type: Int64
 eshkol> :quit
 ```
 

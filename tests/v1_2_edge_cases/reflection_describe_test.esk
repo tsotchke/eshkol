@@ -8,7 +8,7 @@
   (if cond (begin (set! pass (+ pass 1)) (display "PASS: ") (display name) (newline))
            (begin (set! fail (+ fail 1)) (display "FAIL: ") (display name) (newline))))
 
-;; type-name — returns a single-token symbol per type
+;; type-name — returns a single-token symbol per type (lib/core/value_type_names.h)
 (check "type-name integer"   (eq? (type-name 42) 'integer))
 (check "type-name real"      (eq? (type-name 3.14) 'real))
 (check "type-name string"    (eq? (type-name "hi") 'string))
@@ -18,6 +18,13 @@
 (check "type-name pair"      (eq? (type-name (list 1)) 'pair))
 (check "type-name vector"    (eq? (type-name (vector 1 2)) 'vector))
 (check "type-name procedure" (eq? (type-name (lambda () 0)) 'procedure))
+(check "type-name builtin procedure" (eq? (type-name car) 'procedure))
+(check "type-name char"      (eq? (type-name #\a) 'char))
+(check "type-name rational"  (eq? (type-name 1/3) 'rational))
+(check "type-name bignum"    (eq? (type-name (expt 2 100)) 'integer))
+(check "type-name complex"   (eq? (type-name (make-rectangular 1.0 2.0)) 'complex))
+(check "type-name hash-table" (eq? (type-name (make-hash-table)) 'hash-table))
+(check "type-name as a value" (equal? (map type-name (list 1 "a" 'b)) '(integer string symbol)))
 
 ;; describe — readable string
 (check "describe integer"   (string=? (describe 42) "integer: 42"))

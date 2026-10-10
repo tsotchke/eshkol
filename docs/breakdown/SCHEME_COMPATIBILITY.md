@@ -32,7 +32,7 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 
 **Implementation references:**
 - Parser: [parser.cpp](../../lib/frontend/parser.cpp) (11,698 lines)
-- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (47,407 lines)
+- Code generation: [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) (47,548 lines)
 - Type checker: [type_checker.cpp](../../lib/types/type_checker.cpp) (6,087 lines)
 
 ---
@@ -50,7 +50,7 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 | **4.2.4** Iteration | `do`, named `let` | Yes | `do` at [llvm_codegen.cpp](../../lib/backend/llvm_codegen.cpp) |
 | **4.2.5** Delayed evaluation | `delay`, `delay-force`, `force`, `make-promise`, `promise?` | Yes | Full iterative forcing; see [Promises](#promises) |
 | **4.2.6** Dynamic bindings | `make-parameter`, `parameterize` | Yes | Macro-transformed at parse time |
-| **4.2.7** Exception handling | `guard`, `raise`, `raise-continuable` | Note | `guard`/`raise` full; `raise-continuable` missing |
+| **4.2.7** Exception handling | `guard`, `raise`, `raise-continuable` | Yes | |
 | **4.2.8** Quasiquotation | `quasiquote`, `unquote`, `unquote-splicing` | Yes | |
 | **4.2.9** Case-lambda | `case-lambda` | Yes | Macro-transformed to variadic dispatch |
 | **4.3** Macros | `define-syntax`, `syntax-rules`, `let-syntax`, `letrec-syntax` | Yes | Hygienic; `syntax-case` not supported |
@@ -69,7 +69,7 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 | **6.8** Vectors | 10 vector procedures | Yes | Including `vector-for-each`, `vector-map`, `vector-fill!` |
 | **6.9** Bytevectors | 9 bytevector procedures | Yes | See [Bytevectors](#bytevectors) |
 | **6.10** Control | `procedure?`, `apply`, `map`, `for-each`, `call/cc`, `values`, `dynamic-wind` | Yes | See [Continuation Semantics](#continuation-semantics) |
-| **6.11** Exceptions | `with-exception-handler`, `raise`, `error` | Yes | `raise-continuable` missing |
+| **6.11** Exceptions | `with-exception-handler`, `raise`, `raise-continuable`, `error` | Yes | |
 | **6.12** Environments and eval | `eval`, `interaction-environment`, `scheme-report-environment` | Yes | See [Eval and Environments](#eval-and-environments) |
 | **6.13** I/O | Ports, read, write, display | Yes | 27+ I/O procedures |
 | **6.14** System interface | `features`, `command-line`, `exit` | Yes | |
@@ -77,7 +77,7 @@ Most well-formed R7RS Scheme programs compile and run in Eshkol without modifica
 ### Compliance Statistics
 
 - **Special forms and derived expressions**: 30/30 (supported subset for R7RS libraries)
-- **Standard procedures**: 232/244 (95%) — missing 12 procedures
+- **Standard procedures**: 233/244 (95%) — missing 11 procedures
 - **Overall R7RS-small compliance**: ~95%
 
 ---
@@ -985,7 +985,6 @@ Compile to WebAssembly with 73 DOM/Canvas/Event API bindings:
 
 | Feature | R7RS Section | Status | Notes |
 |:---|:---:|:---:|:---|
-| `raise-continuable` | 6.11 | Missing | `raise` works; continuable variant not needed for most programs |
 | `error-object?` | 6.11 | Missing | Error objects are strings; introspection API not yet implemented |
 | `error-object-message` | 6.11 | Missing | Use string operations on the error value directly |
 | `error-object-irritants` | 6.11 | Missing | |

@@ -158,10 +158,12 @@
 ;; Element-wise arithmetic on two operands of the same shape is the documented
 ;; contract and must be untouched by the guard.
 
-(check "vector * vector is element-wise" (* (vector 1 2) (vector 3 4)) (vector 3 8))
-(check "vector + vector is element-wise" (+ (vector 1 2) (vector 3 4)) (vector 4 6))
-(check "vector - vector is element-wise" (- (vector 5 5) (vector 1 2)) (vector 4 3))
-(check "vector / vector is element-wise" (/ (vector 8 6) (vector 2 2)) (vector 4 3))
+;; Element-wise arithmetic computes in f64, as tensor arithmetic does, so the
+;; results are inexact.
+(check "vector * vector is element-wise" (* (vector 1 2) (vector 3 4)) (vector 3.0 8.0))
+(check "vector + vector is element-wise" (+ (vector 1 2) (vector 3 4)) (vector 4.0 6.0))
+(check "vector - vector is element-wise" (- (vector 5 5) (vector 1 2)) (vector 4.0 3.0))
+(check "vector / vector is element-wise" (/ (vector 8 6) (vector 2 2)) (vector 4.0 3.0))
 (check "inexact vector * vector is element-wise"
        (* (vector 1.0 2.0) (vector 3.0 4.0)) (vector 3.0 8.0))
 (check "tensor-mul on two tensors still answers"

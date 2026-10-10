@@ -99,8 +99,9 @@
 
 (define (vec-tail) (let ((x 1)) #(1 2)))
 (define vt (vec-tail))
-(test-case "define + let + #(1 2) tail: ref 0" 1 (vector-ref vt 0))
-(test-case "define + let + #(1 2) tail: ref 1" 2 (vector-ref vt 1))
+;; a numeric #(...) literal is an f64 tensor natively: its elements are 1.0, 2.0
+(test-case "define + let + #(1 2) tail: ref 0" 1.0 (vector-ref vt 0))
+(test-case "define + let + #(1 2) tail: ref 1" 2.0 (vector-ref vt 1))
 
 ;; ============================================================
 ;; Multi-expression body ending in a quote

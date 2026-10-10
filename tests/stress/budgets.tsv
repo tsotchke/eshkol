@@ -2,7 +2,7 @@
 # TAB-separated. Lines starting with # are comments.
 # Columns:
 #   file      path relative to tests/stress/ (generated/ files are produced by
-#             gen_stress_sources.sh; found/ files are XKNOWN minimal repros)
+#             gen_stress_sources.sh; found/ files are minimal repros)
 #   mode      r | aot | both      (execution paths to test)
 #   class     run | jitcache | rep3
 #             run      - execute once per mode with budgets
@@ -26,14 +26,14 @@
 #
 # file	mode	class	timeout_s	rss_r_mb	rss_aot_mb	quick	xknown	expect
 rec_tco_1e8.esk	both	run	60	320	128	1	-	OK 100000000
-# rec_deep_nontco: non-tail native frames ~2KB each (real frame cost, not a leak). Sweep E (2026-07-03) re-calibrated the safe margin from 250k to 200k: the safe depth regressed (JIT 240k ok/250k SIGILL, AOT 200k ok/250k SIGILL) vs the 270k-first-fail calibration. 200k row is the passing margin; 250k row is the ESH-0112 crash pin.
+# rec_deep_nontco: non-tail native frames ~2KB each. Sweep E (2026-07-03) measured JIT completion at 240k and AOT completion at 200k, with SIGILL at 250k in both modes. Current measurements complete at 200k and 250k within the configured ceilings.
 rec_deep_nontco_200k.esk	both	run	60	640	640	1	-	OK 200000
-rec_deep_nontco_250k.esk	both	run	60	768	768	0	ESH-0112	OK 250000
+rec_deep_nontco_250k.esk	both	run	60	768	768	0	-	OK 250000
 rec_mutual.esk	both	run	60	768	768	1	-	OK ping 100000
 rec_dynamic_wind_10k.esk	both	run	60	384	160	1	-	OK 20000
 rec_cps_20k.esk	both	run	60	384	160	1	-	OK 451945
-# nested_parens_10k: JIT compile measured 35.8s / 6710MB + macro-depth ERROR spam (ESH-0103); AOT 0.73s / 93MB. r row XKNOWN until fixed.
-generated/parser_nested_parens_10k.esk	r	run	120	1024	-	0	ESH-0103	OK 10000
+# nested_parens_10k: JIT compile measured 35.8s / 6710MB; AOT 0.73s / 93MB. Both modes pass at current ceilings.
+generated/parser_nested_parens_10k.esk	r	run	120	1024	-	0	-	OK 10000
 generated/parser_nested_parens_10k.esk	aot	run	120	-	512	1	-	OK 10000
 # nested_parens_900: JIT compile of even 900-deep nesting measured 3.25s / 653MB (same ESH-0103 growth curve, below the spam limit); r ceiling pins it under 1GB.
 generated/parser_nested_parens_900.esk	both	run	60	1024	160	1	-	OK 900
@@ -67,17 +67,17 @@ path_empty.esk	both	run	60	384	160	1	-	-
 path_comments_only.esk	both	run	60	384	160	1	-	-
 path_unicode.esk	both	run	60	384	160	1	-	OK 100 14
 path_closures_10k.esk	both	run	120	768	512	1	-	OK closures-distinct
-found/closure_loop_global_set.esk	both	run	60	384	160	1	ESH-0094	OK 3
+found/closure_loop_global_set.esk	both	run	60	384	160	1	-	OK 3
 found/quote_sugar_in_guard.esk	both	run	60	384	160	1	-	OK quote-in-guard
 found/nested_quasiquote.esk	both	run	60	384	160	1	-	OK nested-quasiquote
-found/list_length_1m.esk	both	run	120	1024	1024	0	ESH-0108	OK 1000000
-found/sort_100k.esk	both	run	120	1024	1024	0	ESH-0098	OK 0
+found/list_length_1m.esk	both	run	120	1024	1024	0	-	OK 1000000
+found/sort_100k.esk	both	run	120	1024	1024	0	-	OK 0
 found/string_nul_long_literal.esk	both	run	60	384	160	1	-	OK 300
-found/parallel_worker_loop_20k.esk	both	run	120	1024	1024	1	ESH-0100	OK
-found/serialized_counter_10k.esk	both	run	120	1024	1024	0	ESH-0094	OK 10000
+found/parallel_worker_loop_20k.esk	both	run	120	1024	1024	1	-	OK
+found/serialized_counter_10k.esk	both	run	120	1024	1024	0	-	OK 10000
 # deep_recursion_270k_no_diagnostic is a two-sided hard gate (default failure
 # plus ESHKOL_STACK_SIZE=1G completion), so it is driven by
 # scripts/run_stack_overflow_diagnostic.sh rather than this success-only table.
 found/mutual_tail_1e7.esk	both	run	60	1024	1024	0	-	OK ping
 found/quasiquote_long_form.esk	both	run	60	384	160	1	-	OK quasiquote-long-form
-found/rational_bignum_exactness.esk	both	run	60	384	160	1	ESH-0105	OK rational-bignum-exact
+found/rational_bignum_exactness.esk	both	run	60	384	160	1	-	OK rational-bignum-exact

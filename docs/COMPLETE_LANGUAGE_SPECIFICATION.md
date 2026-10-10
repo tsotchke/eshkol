@@ -1377,6 +1377,9 @@ tensor against a SCALAR is a type error, in either operand order — scalar
 broadcast is a separate, explicitly named operator (`tensor-scale`), not an
 overload of the arithmetic operators. A vector and a rank-1 tensor are two
 spellings of one value, so a mixed pair is the element-wise result.
+Element-wise results are computed in f64, as tensor arithmetic is, so
+the elements of `(* (vector 1 2) (vector 3 4))` are the inexact 3.0 and 8.0:
+the result is `equal?` to `(vector 3.0 8.0)`, not to `(vector 3 8)`.
 
 Shapes broadcast NumPy-style, so "matching shape" means broadcast-compatible
 rather than identical; a pair that cannot be broadcast is a catchable error
@@ -1590,7 +1593,9 @@ All comparison operators return booleans and support numeric type promotion.
 #### 4.4.3 `equal?` - Structural Equality
 **Signature:** `(equal? obj1 obj2)`
 
-**Semantics:** Deep recursive comparison
+**Semantics:** Deep recursive comparison; numbers are compared with `eqv?`,
+so an exact and an inexact number are never `equal?` (`(equal? 6 6.0)` is
+`#f`; use `=` for numeric equality)
 
 **Use for:** Lists, strings, compound structures
 
@@ -3097,7 +3102,7 @@ eshkol_tagged_value func(param1, param2, ..., capture1, capture2, ...)
 - `:quit`, `:q` - Exit REPL
 - `:clear` - Clear screen
 - `:env`, `:e` - Show defined symbols
-- `:type <expr>` - Show type of expression
+- `:type <expr>` - Show the type the HoTT type checker infers for the expression
 - `:doc <name>` - Show function documentation
 - `:ast <expr>` - Show AST structure
 - `:time <expr>` - Time execution
@@ -3727,8 +3732,12 @@ operand stack and call frames, excluding the top-level binding slots, which
 are the store rather than the control state. Escape-only continuations —
 early return and exception-style unwinding — are recognised at compile time
 and keep the original zero-overhead `setjmp`/`longjmp` path, so the common
-case costs nothing. See `docs/reference/language/continuations.md` for the
-per-engine account, the ownership rule for continuations captured inside a
+case costs nothing. In a program file the continuation of a top-level form
+includes every later top-level form, so re-invoking it runs those forms again.
+In the interactive REPL, where each top-level form is its own evaluation, a
+continuation is resumed only while the evaluation that captured it is running;
+invoking one saved by an earlier form raises a catchable condition. See
+`docs/reference/language/continuations.md` for the per-engine account, the ownership rule for continuations captured inside a
 region, and the two remaining limits.
 
 #### 16.1.3 Interaction with Dynamic Wind
@@ -3786,7 +3795,12 @@ When a continuation crosses dynamic-wind boundaries:
 
 `(raise obj)` invokes the innermost exception handler established by `guard`. If no handler is active, the program terminates with an unhandled exception diagnostic.
 
-`(raise-continuable obj)` is not currently supported; all raises are non-continuable.
+`(raise-continuable obj)` (R7RS 6.11) calls the procedure of the innermost
+`with-exception-handler` with `obj`, in the dynamic environment of the
+`raise-continuable` call (no unwinding; `dynamic-wind` after-thunks have not
+run), with the handlers outside that one installed, and returns the handler's
+value. When the innermost handler is a `guard`, or there is none, `obj` is
+raised exactly as `raise` raises it. JIT, AOT and the bytecode VM agree.
 
 #### 16.3.3 Implementation
 
@@ -4773,7 +4787,7 @@ This document provides a **complete** specification of the Eshkol programming la
 
 **Total Coverage:** (counts from `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`, the machine sources the coverage gate reads)
 - All 116 special forms and 113 parser AST operations
-- All 1,056 built-in functions (1,115 declared constructs in total)
+- All 1,058 built-in functions (1,115 declared constructs in total)
 - 743 VM native-call IDs
 - 72-opcode bytecode VM with ESKB binary format
 - Complete type system (15+ types with 18+ heap subtypes)

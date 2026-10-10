@@ -1,0 +1,6 @@
+;; Diagnostic corpus case: a #(...) literal evaluates its elements, so an
+;; unquoted list element is a call whose operator is a number. The compiler
+;; reports it at the literal operator and does not build the program.
+
+(display #((1 2 3) (4 5 6)))
+(newline)

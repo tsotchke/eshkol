@@ -18,7 +18,7 @@
 (edge-check-g2135)
 
 ;; check quote_veclit_ref__in__regions_region_body
-(define (edge-check-g2136) (edge-chk "quote_veclit_ref__in__regions_region_body" (with-region 'rcg2136 (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g2136) (edge-chk "quote_veclit_ref__in__regions_region_body" (with-region 'rcg2136 (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g2136)
 
 (display "EDGE-MATRIX-DONE") (newline)
