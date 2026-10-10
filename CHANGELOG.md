@@ -25,6 +25,13 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   its proof-binding options directly; reviewed diagnostic artifacts retain
   their measured validation records. Architecture source figures match
   the integrated files. (#752)
+- **Test suites record current expected behavior.** Stress, character/numeric
+  edge-matrix and nested differentiation gates enforce the measured results.
+  The edge-matrix generator matches the committed 300-pair corpus, and qLLM
+  oracle metadata reads the version of the binary under test. NS/IPM AOT and
+  VM mathematics tests locate the source stdlib explicitly; parallel NS/IPM
+  criteria use distinct output executables. (#761)
+
 - **Example outcomes are bound to their measured sources.** The catalogue
   records native JIT and AOT outcomes for all 67 programs. All 46 mathematics
   programs ran in both modes; 45 emitted their explicit all-pass result and
