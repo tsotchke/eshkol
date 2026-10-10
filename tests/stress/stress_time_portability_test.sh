@@ -55,6 +55,51 @@ for fixture in missing invalid; do
     fi
 done
 
+# A missing time report is harness infrastructure failure even on a row whose
+# program failure is normally accepted as XKNOWN. Use a fake runner for the
+# documented-open row and a fake time executable that reports RSS during its
+# feature probe, then deliberately omits it for measured commands.
+mkdir -p "$WORK/fake-build"
+cat > "$WORK/fake-build/eshkol-run" <<'MOCK_RUNNER'
+#!/bin/sh
+printf 'OK 3\n'
+printf 'mock child stderr\n' >&2
+MOCK_RUNNER
+chmod +x "$WORK/fake-build/eshkol-run"
+cat > "$WORK/fake-time" <<'MOCK_TIME'
+#!/bin/sh
+if [ "$1" = "-l" ] && [ "${2:-}" = "true" ]; then
+    printf '1 maximum resident set size\n' >&2
+    exit 0
+fi
+if [ "$1" = "-v" ] && [ "${2:-}" = "true" ]; then
+    printf 'Maximum resident set size (kbytes): 1\n' >&2
+    exit 0
+fi
+[ "$1" = "-l" ] || exit 2
+shift
+"$@"
+MOCK_TIME
+chmod +x "$WORK/fake-time"
+TRACE_FILE="$WORK/xknown-infra.jsonl" \
+STRESS_SCRATCH_DIR="$WORK/harness-scratch" \
+STRESS_TIME_BIN="$WORK/fake-time" \
+BUILD_DIR="$WORK/fake-build" \
+    bash "$ROOT/scripts/run_stress.sh" --no-aot --only closure_loop_global_set \
+        > "$WORK/xknown-infra.log" 2>&1
+HARNESS_RC=$?
+[ "$HARNESS_RC" -ne 0 ] || fail 'missing RSS passed the XKNOWN harness control'
+grep -q 'INFRA .*closure_loop_global_set' "$WORK/xknown-infra.log" ||
+    fail 'missing RSS was not classified as infrastructure failure'
+grep -q 'execution classification=FAIL' "$WORK/xknown-infra.log" ||
+    fail 'underlying row execution classification was not preserved'
+grep -q 'mock child stderr' "$WORK/xknown-infra.log" || fail 'XKNOWN child stderr was lost'
+grep -q '"value":"INFRA"' "$WORK/xknown-infra.jsonl" ||
+    fail 'infrastructure failure was not written to the trace'
+if grep -q 'XKNOWN[[:space:]]\+tests/stress/found/closure_loop_global_set' "$WORK/xknown-infra.log"; then
+    fail 'missing RSS was swallowed by XKNOWN'
+fi
+
 eshkol_stress_time_run /usr/bin/time "$MODE" "$GUARD" 1 "$WORK/timeout.out" "$WORK/timeout.time" \
     /bin/sh -c 'sleep 3'
 RC=$?
