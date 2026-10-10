@@ -24,7 +24,7 @@
       "lib/core/runtime_tensor_alloc.cpp": 5,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
-      "lib/core/runtime_tensor_math.cpp": 1,
+      "lib/core/runtime_tensor_math.cpp": 2,
       "lib/core/runtime_vector_mutation.cpp": 1,
       "lib/core/sdnc_api.c": 4,
       "lib/core/sexp_to_ast.cpp": 3,
@@ -142,7 +142,7 @@
       "lib/core/runtime_string_ports_hosted.cpp": 3,
       "lib/core/runtime_taylor.c": 8,
       "lib/core/runtime_tensor_alloc.cpp": 2,
-      "lib/core/runtime_tensor_math.cpp": 1,
+      "lib/core/runtime_tensor_math.cpp": 4,
       "lib/core/sdnc_api.c": 3,
       "lib/core/system_builtins.c": 12,
       "lib/core/workspace.cpp": 3,
@@ -195,6 +195,7 @@
       "lib/core/runtime_tensor_alloc.cpp": 11,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
+      "lib/core/runtime_tensor_math.cpp": 2,
       "lib/core/sdnc_api.c": 5,
       "lib/core/sexp_to_ast.cpp": 3,
       "lib/core/symbol_intern.cpp": 4,
@@ -392,18 +393,41 @@
         "ctest -R continuation_host_extent_test",
         "ctest -R repl_continuation_finished_evaluation"
       ]
+    },
+    {
+      "after": {
+        "A_macro_api": 2,
+        "E_alloc_with_header": 4,
+        "G_header_field_write": 2
+      },
+      "before": {
+        "A_macro_api": 1,
+        "E_alloc_with_header": 1,
+        "G_header_field_write": 0
+      },
+      "class": "reviewed_additions",
+      "reason": "PR #766 adds three arena_allocate_tensor_with_header sites for forward dual tensor results and point-shaped tensor gradients, and two tensor subtype reads through ESHKOL_GET_HEADER for tagged tensor validation. Only the exact runtime_tensor_math.cpp counts are admitted; the detector and all other counts, semantic scan counts, and layout pins are unchanged.",
+      "source": "lib/core/runtime_tensor_math.cpp",
+      "source_sha256": "5f80d785307db1fa6c767eab860db8ea19b0b086a5d857281a16a0ca5cae7eba",
+      "verification": [
+        "python3 scripts/abi_header_inventory.py check",
+        "focused tensor AD gradcheck",
+        "Linux allocation-hardening test"
+      ]
+    }
+      ]
     }
   ],
   "schema": 1,
   "totals": {
-    "A_macro_api": 134,
+    "A_macro_api": 135,
     "B_header_type": 78,
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 47,
-    "E_alloc_with_header": 216,
+    "E_alloc_with_header": 219
     "F_parallel_header_decl": 2,
-    "G_header_field_write": 184,
+    "G_header_field_write": 186,
     "H_wasm_glue": 65,
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
