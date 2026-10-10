@@ -16,6 +16,17 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Construction examples enforce their check outcomes.**
+  The four witness programs exit nonzero on a failed verdict and have JIT
+  and AOT CTest entries. The example catalogue records this additional test
+  family, and the Navier–Stokes evidence ledger distinguishes the newly
+  checked exact computations from analytic-only obligations. (#764)
+- **Example and release tooling match their documented behavior.** The
+  quantum vibrational response resolves its degenerate parameter direction
+  to a minimum-norm value; the paper runner supports its quick mode. XLA
+  packages include the vendored PJRT header's license, editor language icons
+  resolve, and the codegen audit recognizes routed AST dispatch. (#764)
+
 - **CUDA bfloat16 matrix multiplication preserves its exponent range.**
   Single and batched products use the operands' declared f16 or bf16 format
   with f32 accumulation. Unsupported formats fall back to the f64 route;
