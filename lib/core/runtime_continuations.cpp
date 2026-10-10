@@ -100,33 +100,63 @@ static uintptr_t eshkol_stack_base(void) {
  * Liveness is decided by stack position as well as by membership: an entry
  * whose host frame is at or below the current frame belongs to an evaluation
  * that was left without reaching its leave call (a longjmp past it), and is
- * discarded. */
-#define ESHKOL_MAX_HOST_EXTENTS 64u
+ * discarded.
+ *
+ * The record of live evaluations grows with nesting depth; it has no fixed
+ * capacity. If it cannot grow (allocation failure), the evaluation being
+ * entered, and every evaluation nested inside it, is marked UNRECORDED: a
+ * capture taken there carries ESHKOL_EXTENT_UNRECORDED, which is never live,
+ * so such a continuation is refused at invocation rather than admitted
+ * without the check. Only 0 (no bracketed evaluation at all) is admitted
+ * unconditionally. */
 /* Bytes reserved in front of a stack image for its capture header. Kept a
  * multiple of 16 so the image itself stays 16-byte aligned. */
 #define ESHKOL_IMAGE_HEADER 16u
+/* Extent id of an evaluation whose entry could not be recorded. */
+#define ESHKOL_EXTENT_UNRECORDED UINT64_MAX
 
 namespace {
 struct HostExtent {
     uint64_t id;
     uintptr_t frame;      /* the host frame that entered the evaluation */
 };
-thread_local HostExtent t_host_extents[ESHKOL_MAX_HOST_EXTENTS];
-thread_local uint32_t t_host_extent_depth = 0;   /* may exceed the array */
-thread_local uint64_t t_next_host_extent = 1;
 
-/* Drop entries whose host frame is no longer on the stack. */
+/* Per-thread stack of live evaluations, innermost last. */
+struct HostExtentStack {
+    HostExtent* entries = nullptr;
+    size_t depth = 0;
+    size_t capacity = 0;
+    size_t unrecorded = 0;     /* evaluations entered after a failed growth */
+    uint64_t next_id = 1;
+    ~HostExtentStack() { free(entries); }
+
+    bool reserve_one() {
+        if (depth < capacity) return true;
+        const size_t want = capacity ? capacity * 2 : 16;
+        if (want < capacity || want > SIZE_MAX / sizeof(HostExtent)) return false;
+        auto* grown = (HostExtent*)realloc(entries, want * sizeof(HostExtent));
+        if (!grown) return false;
+        entries = grown;
+        capacity = want;
+        return true;
+    }
+};
+thread_local HostExtentStack t_host_extents;
+
+/* Drop recorded entries whose host frame is no longer on the stack. */
 void prune_host_extents(uintptr_t here) {
-    while (t_host_extent_depth > 0 && t_host_extent_depth <= ESHKOL_MAX_HOST_EXTENTS &&
-           t_host_extents[t_host_extent_depth - 1].frame <= here) {
-        t_host_extent_depth--;
+    HostExtentStack& st = t_host_extents;
+    if (st.unrecorded) return;   /* unrecorded entries carry no frame to test */
+    while (st.depth > 0 && st.entries[st.depth - 1].frame <= here) {
+        st.depth--;
     }
 }
 
-/* Innermost live evaluation, or 0 when none is tracked. */
+/* Innermost live evaluation; 0 when none is bracketed. */
 uint64_t current_host_extent(void) {
-    if (t_host_extent_depth == 0 || t_host_extent_depth > ESHKOL_MAX_HOST_EXTENTS) return 0;
-    return t_host_extents[t_host_extent_depth - 1].id;
+    const HostExtentStack& st = t_host_extents;
+    if (st.unrecorded) return ESHKOL_EXTENT_UNRECORDED;
+    return st.depth ? st.entries[st.depth - 1].id : 0;
 }
 
 uint64_t image_extent(const eshkol_continuation_state_t* state) {
@@ -138,25 +168,27 @@ uint64_t image_extent(const eshkol_continuation_state_t* state) {
 } // namespace
 
 extern "C" uint64_t eshkol_continuation_extent_enter(void* host_frame) {
+    HostExtentStack& st = t_host_extents;
     const uintptr_t frame = (uintptr_t)host_frame;
     prune_host_extents(frame);
-    const uint64_t id = t_next_host_extent++;
-    if (t_host_extent_depth < ESHKOL_MAX_HOST_EXTENTS) {
-        t_host_extents[t_host_extent_depth] = HostExtent{id, frame};
+    if (st.unrecorded || !st.reserve_one()) {
+        st.unrecorded++;
+        return ESHKOL_EXTENT_UNRECORDED;
     }
-    t_host_extent_depth++;
+    const uint64_t id = st.next_id++;
+    st.entries[st.depth++] = HostExtent{id, frame};
     return id;
 }
 
 extern "C" void eshkol_continuation_extent_leave(uint64_t id) {
-    if (t_host_extent_depth > ESHKOL_MAX_HOST_EXTENTS) {
-        t_host_extent_depth--;
+    HostExtentStack& st = t_host_extents;
+    if (id == ESHKOL_EXTENT_UNRECORDED) {
+        if (st.unrecorded) st.unrecorded--;
         return;
     }
     /* Pop through `id`, discarding any inner entry left behind by a jump. */
-    while (t_host_extent_depth > 0) {
-        const uint64_t top = t_host_extents[--t_host_extent_depth].id;
-        if (top == id) break;
+    while (st.depth > 0) {
+        if (st.entries[--st.depth].id == id) break;
     }
 }
 
@@ -167,10 +199,11 @@ extern "C" void eshkol_continuation_check_extent(void* state_void) {
     if (!captured) return;
     volatile char here = 0;
     prune_host_extents((uintptr_t)&here);
-    const uint32_t tracked = t_host_extent_depth < ESHKOL_MAX_HOST_EXTENTS
-        ? t_host_extent_depth : ESHKOL_MAX_HOST_EXTENTS;
-    for (uint32_t i = 0; i < tracked; i++) {
-        if (t_host_extents[i].id == captured) return;
+    const HostExtentStack& st = t_host_extents;
+    if (captured != ESHKOL_EXTENT_UNRECORDED) {
+        for (size_t i = 0; i < st.depth; i++) {
+            if (st.entries[i].id == captured) return;
+        }
     }
     eshkol_exception_t* exc = eshkol_make_exception_with_header(
         ESHKOL_EXCEPTION_ERROR,
