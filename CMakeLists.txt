@@ -7363,6 +7363,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/region_
         PASS_REGULAR_EXPRESSION "PASS: region promotion is all-or-nothing")
 endif()
 
+# REPL evaluation extents for native continuations hold at every nesting depth.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/continuation_host_extent_test.cpp")
+    find_package(Threads REQUIRED)
+    add_executable(continuation_host_extent_test tests/core/continuation_host_extent_test.cpp)
+    target_compile_features(continuation_host_extent_test PRIVATE cxx_std_17)
+    target_include_directories(continuation_host_extent_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(continuation_host_extent_test PRIVATE eshkol-runtime ${ESHKOL_EXTRA_LINK_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME continuation_host_extent_test COMMAND continuation_host_extent_test)
+    set_tests_properties(continuation_host_extent_test PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: continuation host extents hold"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_regions_test.cpp")
     add_executable(runtime_regions_test tests/core/runtime_regions_test.cpp)
     target_compile_features(runtime_regions_test PRIVATE cxx_std_17)
