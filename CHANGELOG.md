@@ -20,6 +20,11 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   Single and batched products use the operands' declared f16 or bf16 format
   with f32 accumulation. Unsupported formats fall back to the f64 route;
   Metal and CPU behavior is unchanged. (#762)
+
+- **Imported aliases follow lexical scope during file and REPL evaluation.**
+  Sequence evaluation resolves renamed and prefixed imports consistently;
+  lambda parameters and local bindings retain their own names under native
+  JIT and AOT execution. (#763)
 - **Browser closure allocation follows the native WASM layout.** Both host
   bundles initialize closure headers, captured environments and callable
   metadata, retain valid views across linear-memory growth, and restore the
