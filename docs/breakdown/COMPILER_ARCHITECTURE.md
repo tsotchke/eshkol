@@ -62,7 +62,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,820 lines)
+| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,312 lines)
 |    EXPANSION     |  Hygienic expansion via syntax-rules
 +------------------+
        |
