@@ -1,0 +1,9 @@
+;; Compile with the normal stdlib initialization and execute both host bundles.
+(display (tensor-ref (tensor-matmul
+    (reshape (tensor 4 1.0 2.0 3.0 4.0) 2 2)
+    (reshape (tensor 4 1.0 2.0 3.0 4.0) 2 2)) 0 0))
+(display (derivative (lambda (x)
+    (tensor-ref (tensor-mul (tensor 1 x) (tensor 1 x)) 0)) 3.0))
+(display (derivative (lambda (x)
+    (tensor-ref (tensor-matmul (reshape (tensor 1 x) 1 1)
+                               (reshape (tensor 1 x) 1 1)) 0 0)) 3.0))

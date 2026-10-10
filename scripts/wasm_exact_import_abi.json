@@ -1,4 +1,48 @@
 {
+  "arena_allocate_cons_with_header": [
+    "arena_ptr"
+  ],
+  "arena_allocate_multi_value": [
+    "arena_ptr",
+    "size_t"
+  ],
+  "arena_allocate_tape": [
+    "arena_ptr",
+    "size_t"
+  ],
+  "arena_allocate_vector_with_header": [
+    "arena_ptr",
+    "size_t"
+  ],
+  "arena_tape_add_node": [
+    "tape_ptr",
+    "ad_node_ptr"
+  ],
+  "arena_tape_get_node": [
+    "tape_ptr",
+    "size_t"
+  ],
+  "arena_tape_get_node_count": [
+    "tape_ptr"
+  ],
+  "arena_tape_reset": [
+    "tape_ptr"
+  ],
+  "eshkol_ad_copy_shape_to_home": [
+    "dimensions_ptr",
+    "i64"
+  ],
+  "eshkol_ad_dense_node_elements": [
+    "ad_node_ptr"
+  ],
+  "eshkol_ad_node_probe": [
+    "arena_ptr",
+    "i64",
+    "i32"
+  ],
+  "eshkol_ad_node_total_elements": [
+    "ad_node_ptr"
+  ],
   "eshkol_ad_point_is_exact_number": [
     "tagged_ptr"
   ],
@@ -118,6 +162,25 @@
   "eshkol_is_rational_tagged_ptr": [
     "tagged_ptr"
   ],
+  "eshkol_jet_tensor_binary": [
+    "arena_ptr",
+    "tensor_ptr",
+    "tensor_ptr",
+    "i32",
+    "i32",
+    "cstring_ptr"
+  ],
+  "eshkol_jet_tensor_matmul": [
+    "arena_ptr",
+    "tensor_ptr",
+    "tensor_ptr",
+    "i32",
+    "cstring_ptr"
+  ],
+  "eshkol_list_to_vector_sret": [
+    "tagged_out_ptr",
+    "tagged_ptr"
+  ],
   "eshkol_rational_binary_tagged_ptr": [
     "arena_ptr",
     "tagged_ptr",
@@ -208,6 +271,21 @@
     "rational_payload_ptr",
     "tagged_out_ptr"
   ],
+  "eshkol_tensor_from_collection": [
+    "arena_ptr",
+    "tagged_ptr"
+  ],
+  "eshkol_tensor_operand_carrier_checked": [
+    "tagged_ptr",
+    "cstring_ptr"
+  ],
+  "eshkol_unwrap_list_index": [
+    "tagged_ptr"
+  ],
+  "eshkol_vref_unwrap_index": [
+    "tagged_ptr",
+    "tagged_ptr"
+  ],
   "eshkol_wasm_numeric_abi_check": [
     "i32",
     "i32",
@@ -227,5 +305,20 @@
   "eshkol_write_value_to_port": [
     "tagged_ptr",
     "port_ptr"
+  ],
+  "memcpy": [
+    "memory_ptr",
+    "memory_ptr",
+    "byte_count"
+  ],
+  "memmove": [
+    "memory_ptr",
+    "memory_ptr",
+    "byte_count"
+  ],
+  "memset": [
+    "memory_ptr",
+    "i32",
+    "byte_count"
   ]
 }

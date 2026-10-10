@@ -7812,6 +7812,20 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
         set_tests_properties(wasm_flat_ad_import_test PROPERTIES
             LABELS "toolchain;wasm;imports"
             SKIP_RETURN_CODE 77)
+        find_program(ESHKOL_WASM_TEST_CLANG NAMES clang clang-21 clang-20
+            HINTS "${ESHKOL_LLVM_ROOT}/bin" "${LLVM_TOOLS_BINARY_DIR}")
+        set(_wasm_tensor_clang_args)
+        if(ESHKOL_WASM_TEST_CLANG)
+            set(_wasm_tensor_clang_args --clang ${ESHKOL_WASM_TEST_CLANG})
+        endif()
+        add_test(NAME wasm_tensor_jet_runtime_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_tensor_jet_runtime_test.py
+                --compiler $<TARGET_FILE:eshkol-run>
+                ${_wasm_flat_ad_node_args} ${_wasm_tensor_clang_args})
+        set_tests_properties(wasm_tensor_jet_runtime_test PROPERTIES
+            LABELS "toolchain;wasm;imports;autodiff"
+            TIMEOUT 120 SKIP_RETURN_CODE 77)
     endif()
 endif()
 
