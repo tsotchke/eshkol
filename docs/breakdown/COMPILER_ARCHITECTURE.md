@@ -528,7 +528,7 @@ The Metal shader source is embedded at build time via a CMake custom command tha
 
 ### Parallel Primitives
 
-**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,225 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,323 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
+**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,237 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,323 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
 
 Four parallel higher-order functions with work-stealing scheduling:
 
@@ -677,7 +677,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,822 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,831 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 

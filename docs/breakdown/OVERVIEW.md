@@ -276,7 +276,7 @@ Work-stealing thread pool with parallel higher-order functions:
 - `parallel-filter` — parallel predicate-based selection
 - `parallel-for-each` — parallel side-effecting iteration
 
-Implementation: [parallel_codegen.cpp](../../lib/backend/parallel_codegen.cpp) (1,225 lines), [parallel_llvm_codegen.cpp](../../lib/backend/parallel_llvm_codegen.cpp) (2,323 lines), [thread_pool.cpp](../../lib/backend/thread_pool.cpp) (1,530 lines). Worker functions use `LinkOnceODRLinkage` for safe parallel compilation.
+Implementation: [parallel_codegen.cpp](../../lib/backend/parallel_codegen.cpp) (1,237 lines), [parallel_llvm_codegen.cpp](../../lib/backend/parallel_llvm_codegen.cpp) (2,323 lines), [thread_pool.cpp](../../lib/backend/thread_pool.cpp) (1,530 lines). Worker functions use `LinkOnceODRLinkage` for safe parallel compilation.
 
 ### Signal Processing
 
@@ -529,7 +529,7 @@ Eshkol v1.2.1-scale represents a **mature, production-ready implementation** for
 
 ### Tooling
 
-- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,822 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
+- **REPL JIT** ([repl_jit.cpp](../../lib/repl/repl_jit.cpp), 4,831 lines): LLVM OrcJIT with stdlib preloading, 237 precompiled functions, 305 globals
 - **LSP server** ([eshkol_lsp.cpp](../../tools/lsp/eshkol_lsp.cpp), 954 lines): Completions, hover, go-to-definition, diagnostics, formatting
 - **VSCode extension** ([tools/vscode-eshkol/](../../tools/vscode-eshkol/)): Syntax highlighting, LSP integration, build tasks
 - **Package manager** ([eshkol_pkg.cpp](../../tools/pkg/eshkol_pkg.cpp), 876 lines): eshkol-pkg init/build/run/add/clean, TOML manifests, git-based registry
