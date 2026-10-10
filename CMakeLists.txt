@@ -3486,6 +3486,21 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/stress/stress_time_portability_test.sh")
+    add_test(
+        NAME stress_time_portability
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stress/stress_time_portability_test.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/guarded_exec.pl"
+                "${CMAKE_CURRENT_BINARY_DIR}/stress-time-portability-scratch"
+    )
+    set_tests_properties(stress_time_portability PROPERTIES
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "PASS: stress time portability and failure preservation"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/payload_validation_test.sh" AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/payload_validation_test.esk")
     add_test(
