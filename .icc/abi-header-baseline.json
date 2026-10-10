@@ -206,10 +206,12 @@
       "tests/ffi/sqlite_column_roundtrip_test.c": 5
     },
     "H_wasm_glue": {
-      "scripts/wasm_exact_runtime.fragment.js": 8,
-      "site/static/eshkol-runtime.js": 25,
+      "scripts/wasm_exact_imports.fragment.js": 2,
+      "scripts/wasm_exact_runtime.fragment.js": 22,
+      "site/static/eshkol-runtime.js": 39,
       "tests/toolchain/wasm_exact_runtime_test.js": 7,
-      "web/eshkol-repl.js": 25
+      "tests/toolchain/wasm_tensor_jet_runtime_test.js": 3,
+      "web/eshkol-repl.js": 39
     },
     "J_secondary_prefix_abi": {
       "lib/core/arena_memory.h": 5,
@@ -414,6 +416,31 @@
         "focused tensor AD gradcheck",
         "Linux allocation-hardening test"
       ]
+    },
+    {
+      "after": {
+        "scripts/wasm_exact_imports.fragment.js": 2,
+        "scripts/wasm_exact_runtime.fragment.js": 22,
+        "site/static/eshkol-runtime.js": 39,
+        "tests/toolchain/wasm_tensor_jet_runtime_test.js": 3,
+        "web/eshkol-repl.js": 39
+      },
+      "before": {
+        "scripts/wasm_exact_imports.fragment.js": 0,
+        "scripts/wasm_exact_runtime.fragment.js": 8,
+        "site/static/eshkol-runtime.js": 25,
+        "tests/toolchain/wasm_tensor_jet_runtime_test.js": 0,
+        "web/eshkol-repl.js": 25
+      },
+      "class": "H_wasm_glue",
+      "reason": "PR766 replaces browser tensor and collection placeholders with checked runtime operations. New subtype consumers and allocator bindings are inventoried here; production header construction and validation remain in the existing shared header/payload/subtype accessors. Both generated bundles embed that same source. The new test intentionally reads raw tensor and AD-node layouts and checks header size/subtype, growth, malformed pointers, cycles, variable-dependent refusal and allocation rollback; an independently compiled wasm32 C caller pins the tensor/tagged ABI. Only these five JavaScript class/file counts are admitted. Every native/semantic class and existing test count is unchanged.",
+      "source": "scripts/wasm_exact_runtime.fragment.js",
+      "verification": [
+        "python3 scripts/generate_wasm_import_glue.py --selftest",
+        "ctest --test-dir build --output-on-failure -R \"^(wasm_flat_ad_import_test|wasm_tensor_jet_runtime_test|wasm_geometry_guard_runtime_test)$\"",
+        "python3 scripts/check_wasm_imports.py --build-dir build",
+        "python3 scripts/abi_header_inventory.py selftest --repo ."
+      ]
     }
   ],
   "schema": 1,
@@ -426,7 +453,7 @@
     "E_alloc_with_header": 219,
     "F_parallel_header_decl": 2,
     "G_header_field_write": 186,
-    "H_wasm_glue": 65,
+    "H_wasm_glue": 112,
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
     "L_layout_in_prose": 86,
