@@ -209,16 +209,16 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   `((case k ((1) f)) x)` and every other computed operator are evaluated and
   applied; a value that is not a procedure raises a catchable condition. A
   literal in operator position, such as an unquoted list inside `#(...)` or a
-  shape `(2 2)` passed to `tensor`, is a source-located compile diagnostic.
+  shape `(2 2)` passed to `tensor`, is a source-located compile diagnostic. (#763)
 - **`length` takes a proper list on native and on the bytecode VM.** Any other
   operand raises `length: argument is not a proper list`; `car`/`cdr` of an
   empty vector or tensor raise "not a pair". `dynamic-wind` operands that
-  report a diagnostic end compilation normally.
+  report a diagnostic end compilation normally. (#763)
 - **The REPL resumes a continuation within the evaluation that captured it.**
   Re-entry and multi-shot use inside one top-level form work as in a program
   file; invoking a continuation saved by an earlier form raises a catchable
   condition and the session continues. The documented re-entry examples run
-  as written in a program file.
+  as written in a program file. (#763)
 
 ## [1.3.5-evolve] - 2026-09-22
 
