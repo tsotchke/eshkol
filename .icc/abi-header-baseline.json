@@ -128,7 +128,7 @@
       "lib/core/runtime_bytevector.cpp": 3,
       "lib/core/runtime_closure_alloc.cpp": 1,
       "lib/core/runtime_closure_reflection.cpp": 1,
-      "lib/core/runtime_continuations.cpp": 2,
+      "lib/core/runtime_continuations.cpp": 3,
       "lib/core/runtime_display_hosted.cpp": 1,
       "lib/core/runtime_exceptions_hosted.cpp": 6,
       "lib/core/runtime_gensym.cpp": 1,
@@ -373,6 +373,25 @@
         "scripts/abi_header_inventory.py check --clang",
         "scripts/abi_header_inventory.py selftest"
       ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_continuations.cpp": 3
+      },
+      "before": {
+        "lib/core/runtime_continuations.cpp": 2
+      },
+      "class": "E_alloc_with_header",
+      "reason": "PR763 raises a catchable condition when a continuation belongs to a completed or unrecorded host evaluation. The new eshkol_continuation_check_extent call uses the existing eshkol_make_exception_with_header constructor; it introduces no alternate header construction or layout. This admits only this reviewed constructor site; other lexical and semantic counts and negative controls remain enforced.",
+      "source": "cc61689734f9cd2a9a0f67727145856a96747766",
+      "source_sha256": "f989cfaa100545e31cf699dd5fcaba3b8e1b8af565e8d769611acec3dcf55e2a",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest",
+        "ctest -R continuation_host_extent_test",
+        "ctest -R repl_continuation_finished_evaluation"
+      ]
     }
   ],
   "schema": 1,
@@ -382,7 +401,7 @@
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 47,
-    "E_alloc_with_header": 215,
+    "E_alloc_with_header": 216,
     "F_parallel_header_decl": 2,
     "G_header_field_write": 184,
     "H_wasm_glue": 65,

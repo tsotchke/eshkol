@@ -60,6 +60,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
@@ -188,7 +189,7 @@ measure() {
     elif [ "$TIME_MODE" = "gnu" ]; then
         timer=(env ESHKOL_ARENA_REPORT=1 /usr/bin/time -v)
     fi
-    ( cd "$WORK" && "${timer[@]}" perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec: $!\n"' \
+    ( cd "$WORK" && "${timer[@]}" perl "$ESHKOL_GUARDED_EXEC" \
         "$TIMEOUT_S" "$bin" ) > "$out" 2> "$tlog"
     MEAS_RC=$?
     grep -q "^PASS$" "$out" 2>/dev/null || MEAS_RC=$(( MEAS_RC == 0 ? 126 : MEAS_RC ))

@@ -361,6 +361,45 @@
           ]
         }
       ]
+    },
+    "ESHKOL_AI_WITNESS_EXAMPLES": {
+      "criteria": 4,
+      "distinct_sources": 4,
+      "ctest_entries": 8,
+      "rows": [
+        {
+          "criterion": "alphatensor_rank47_gf2",
+          "source": "examples/mathematics_alphatensor_gf2.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "alphatensor_rank23_gf2",
+          "source": "examples/mathematics_alphatensor_3x3_gf2.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "funsearch_cap_set_512",
+          "source": "examples/mathematics_funsearch_cap_set.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "jacobian_counterexample_fibers",
+          "source": "examples/mathematics_jacobian_counterexample.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ]
     }
   },
   "general_runner": {
@@ -387,6 +426,6 @@
   "execution_claim": {
     "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
     "source": "docs/examples/measurements.json",
-    "summary": "Every one of these 67 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **67** completed in both modes; **46** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 21 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4."
+    "summary": "Every one of these 67 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **64** completed in both modes; **46** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 18 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Without a passing verdict at this SHA:** [H₂ frequency from quantum-backend geometry differences](#h2-vibrational-quantum), [Quantum natural-gradient comparison](#qng-vqe), [H₂ variational quantum optimization](#vqe-h2) (its entry shows the output). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4."
   }
 }

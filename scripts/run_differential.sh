@@ -91,11 +91,11 @@ mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 
 TIMEOUT_RUN="${DIFFERENTIAL_TIMEOUT:-90}"
 
-# macOS has no `timeout(1)`; emulate with perl alarm (exit 124 on expiry).
-run_guarded() { # seconds cmd...
-    perl -e 'my $s=shift; eval { local $SIG{ALRM}=sub{ exit 124 }; alarm $s; exec @ARGV or exit 127; }' \
-        "$1" "${@:2}"
-}
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
+run_guarded() { eshkol_outcome_guarded "$@"; } # seconds cmd...
 
 json_escape() {
     printf '%s' "$1" | perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r/\\r/g; s/\t/\\t/g; s/([\x00-\x08\x0b\x0c\x0e-\x1f])/sprintf("\\u%04x", ord($1))/ge'

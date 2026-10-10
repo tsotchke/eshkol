@@ -1,5 +1,5 @@
 {
-  "qllm_root": "/Users/tyr/Desktop/semiclassical_qllm",
+  "qllm_root": "<workspace>/semiclassical_qllm",
   "qllm_head": "e444e1c09ee10251d4c6fe469890c917a385f84c",
   "eshkol_base_head": "50ec82a186e8ef86748ab38669b9a2d4cea53422",
   "source_sha256": {

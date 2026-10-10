@@ -62,7 +62,8 @@ def main() -> int:
         "workflow_dispatch:",
         "statuses: write",
         "runs-on: [self-hosted, macOS, ARM64, eshkol, grid-controller]",
-        "/Users/tyr/EshkolGrid/controller/run_from_github_actions.sh",
+        "ESHKOL_GRID_ROOT: ${{ vars.ESHKOL_GRID_ROOT }}",
+        "$ESHKOL_GRID_ROOT/controller/run_from_github_actions.sh",
     )
     for needle in required:
         if needle not in local_grid:

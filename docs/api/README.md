@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2543/5460 public symbols documented (46.6%), 2917 undocumented.
+**Coverage:** 2547/5476 public symbols documented (46.5%), 2929 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -43,7 +43,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1314/3054 symbols documented.
+1315/3055 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -56,7 +56,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/cblas_compat.h`](backend/cblas_compat.md) | 7 | 0 |
 | [`backend/closure_capture_scope.h`](backend/closure_capture_scope.md) | 6 | 6 |
 | [`backend/codegen_context.h`](backend/codegen_context.md) | 195 | 51 |
-| [`backend/collection_codegen.h`](backend/collection_codegen.md) | 32 | 20 |
+| [`backend/collection_codegen.h`](backend/collection_codegen.md) | 33 | 21 |
 | [`backend/complex_codegen.h`](backend/complex_codegen.md) | 37 | 26 |
 | [`backend/control_flow_codegen.h`](backend/control_flow_codegen.md) | 32 | 12 |
 | [`backend/cpu_features.h`](backend/cpu_features.md) | 49 | 22 |
@@ -157,14 +157,14 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `frontend/`
 
-81/258 symbols documented.
+84/273 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`frontend/ast_strings.h`](frontend/ast_strings.md) | 15 | 11 |
 | [`frontend/binding_forms.h`](frontend/binding_forms.md) | 3 | 0 |
 | [`frontend/diagnostic.h`](frontend/diagnostic.md) | 8 | 0 |
-| [`frontend/macro_expander.h`](frontend/macro_expander.md) | 33 | 18 |
+| [`frontend/macro_expander.h`](frontend/macro_expander.md) | 48 | 21 |
 | [`frontend/node_identity.h`](frontend/node_identity.md) | 14 | 14 |
 | [`frontend/semantic_identity.h`](frontend/semantic_identity.md) | 75 | 0 |
 | [`frontend/shadowable_ops.h`](frontend/shadowable_ops.md) | 1 | 0 |

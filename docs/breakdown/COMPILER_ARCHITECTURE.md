@@ -62,7 +62,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
        |
        v
 +------------------+
-| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,820 lines)
+| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,312 lines)
 |    EXPANSION     |  Hygienic expansion via syntax-rules
 +------------------+
        |
@@ -102,7 +102,7 @@ The compiler executes a 5-phase pipeline. Source files (`.esk`) enter at Phase 1
 
 ### Macro System
 
-**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,241 lines)
+**Implementation:** [`lib/frontend/macro_expander.cpp`](../../lib/frontend/macro_expander.cpp) (1,312 lines)
 
 Hygienic macro expansion runs before parsing. The system supports:
 
@@ -528,7 +528,7 @@ The Metal shader source is embedded at build time via a CMake custom command tha
 
 ### Parallel Primitives
 
-**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,225 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,323 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
+**Implementation:** [`parallel_codegen.cpp`](../../lib/backend/parallel_codegen.cpp) (1,237 lines), [`parallel_llvm_codegen.cpp`](../../lib/backend/parallel_llvm_codegen.cpp) (2,323 lines), [`thread_pool.cpp`](../../lib/backend/thread_pool.cpp) (1,530 lines)
 
 Four parallel higher-order functions with work-stealing scheduling:
 
@@ -677,7 +677,7 @@ builder->CreateStore(new_counter, counter_ptr);
 
 ## JIT Compilation (REPL)
 
-**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,729 lines)
+**Implementation:** [`lib/repl/repl_jit.cpp`](../../lib/repl/repl_jit.cpp) (4,831 lines)
 
 The REPL uses **LLVM's LLJIT** (via OrcJIT v2) for interactive execution.
 

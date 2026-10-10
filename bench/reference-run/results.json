@@ -11,12 +11,12 @@
       "kernel": "24.1.0"
     },
     "cpu": {
-      "model": "Apple M2 Ultra",
+      "model": "Apple Silicon (24-core)",
       "physical_cores": 24,
       "logical_cores": 24
     },
     "memory_bytes": 206158430208,
-    "gpu_model": "Apple M2 Ultra",
+    "gpu_model": "Apple Silicon (integrated GPU)",
     "compiler": {
       "cc": "Homebrew clang version 21.1.7",
       "cxx": "Homebrew clang version 21.1.7",
@@ -30,7 +30,7 @@
     },
     "eshkol_version": "1.3.4-evolve",
     "build": {
-      "dir": "/Users/tyr/Desktop/eshkol/.worktrees/v135/benchmarks/build-quantum",
+      "dir": "<workspace>/build-quantum",
       "type": "Release",
       "quantum_enabled": "ON",
       "gpu_enabled": "ON"

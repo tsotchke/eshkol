@@ -84,6 +84,8 @@ ensure_examples_build() {
     fi
 }
 
+SKIP_REASON=""
+
 example_should_skip() {
     local test_name="$1"
 
@@ -93,6 +95,7 @@ example_should_skip() {
     case "$test_name" in
         vqe_h2.esk|h2_vibrational_quantum.esk|h2_vibrational_full.esk|qng_vqe.esk)
             if [ "${ESHKOL_QUANTUM_ENABLED:-OFF}" != "ON" ]; then
+                SKIP_REASON="quantum disabled"
                 return 0
             fi
             ;;
@@ -100,6 +103,7 @@ example_should_skip() {
 
     case "$test_name" in
         selene_*|qllm_*|agent.esk|consciousness_*)
+            SKIP_REASON="proprietary"
             return 0
             ;;
         *)
@@ -146,9 +150,10 @@ for test_file in examples/*.esk; do
     ((++CURRENT))
     test_name=$(basename "$test_file")
 
-    # Skip proprietary/unreleased examples
+    # Skip proprietary/unreleased examples, and quantum examples when the
+    # quantum lane is disabled in this build.
     if example_should_skip "$test_name"; then
-        printf "SKIP (proprietary)\n"
+        printf "SKIP (%s)\n" "$SKIP_REASON"
         continue
     fi
     printf "[%3d/%3d] %-50s " "$CURRENT" "$TOTAL" "$test_name"

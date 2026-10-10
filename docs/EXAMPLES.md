@@ -16,20 +16,13 @@ sources:
 
 This catalogue covers **67 tracked programs**, including **46 mathematics programs**. Each entry gives the reviewed source behavior, the authored test registrations and the outcome measured when the program was run at the release SHA.
 
-Every one of these 67 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **67** completed in both modes; **46** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 21 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
+Every one of these 67 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **64** completed in both modes; **46** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 18 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Without a passing verdict at this SHA:** [H₂ frequency from quantum-backend geometry differences](#h2-vibrational-quantum), [Quantum natural-gradient comparison](#qng-vqe), [H₂ variational quantum optimization](#vqe-h2) (its entry shows the output). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
 
 The [mathematics guide](MATHEMATICS_EXAMPLES.md) gives each mathematical program’s published result, references, algorithm, domain, arithmetic, checks, limits and measured values. The [Navier–Stokes guide](NAVIER_STOKES_EXAMPLES.md) and [AI mathematics guide](AI_MATHEMATICS_EXAMPLES.md) retain their explanatory narratives and references.
 
 The general [examples runner](../scripts/run_examples_tests.sh) discovers **66 flat programs** and compiles/runs them with native AOT. **4** require `ESHKOL_QUANTUM_ENABLED=ON`; **0** current paths match the existing proprietary/unreleased exclusion patterns. The **1 nested artifact generator** is outside that glob. A successful process is distinct from an asserted mathematical verdict: `PASS` below means the program printed its own `RESULT: ALL PASS` with `Failed: 0`; `RAN-OK` means a program without a self-verdict exited 0 with no runtime-error line.
 
 The NS/IPM CMake lists declare native JIT/AOT tests under `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. The bytecode VM runs four of the cohomology programs under its own CTest entries; VM support for the other examples is not claimed here.
-
-Whole-suite runs at the same SHA:
-
-- `ESHKOL_VM_NO_DISASM=1 ./build/eshkol-vm-standalone-test examples/<ai witness program>.esk`: the four AI-witness programs print RESULT: ALL PASS with Failed: 0 on the hosted bytecode VM (12, 2, 3 and 3 checks).
-- `./scripts/run_examples_tests.sh`: native AOT over the 66 flat programs: 62 working, 0 compile failures, 0 runtime failures, 0 runtime errors; the 4 quantum programs skipped because ESHKOL_QUANTUM_ENABLED is OFF in the release configuration; 827 s wall.
-- `ctest --test-dir build -R '^((<ESHKOL_NS_EXAMPLES and ESHKOL_IPM_EXAMPLES criteria>)_(jit|aot)|vm_mathematics_[a-z_]+)$'`: 90 entries (43 criteria in JIT and AOT, plus the 4 bytecode-VM cohomology entries). With ESHKOL_PATH=<source>/lib: 90 of 90 passed, 315 s with 6 parallel jobs. Without it, in a build directory that is not a child of the source tree, 47 of 90 pass: 39 AOT entries and the 4 VM entries stop at module resolution (`Unknown function: list-ref`, `module source not found: stdlib`), because those registrations locate the stdlib sources through `<build>/../lib`; set ESHKOL_PATH when the build directory is outside the source tree.
-- `python3 examples/wgsl_artifact/build_artifact.py`: artifact PASS: native=VM; evaluator.wgsl and the manifest's source and WGSL hashes reproduce byte for byte; 1.9 s.
 
 For manual AOT commands below, create `.scratch/example-manual` once from the repository root.
 
@@ -45,11 +38,11 @@ To check documentation drift: `python3 scripts/build_example_catalogue.py --chec
 | [gradient_descent_demo.esk](../examples/gradient_descent_demo.esk#L1) | [Quadratic regression with AD](EXAMPLES.md#gradient-descent-demo) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
 | [h2_vibrational.esk](../examples/h2_vibrational.esk#L1) | [H₂ harmonic frequency from Taylor AD](EXAMPLES.md#h2-vibrational) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
 | [h2_vibrational_full.esk](../examples/h2_vibrational_full.esk#L1) | [H₂ geometry AD and quantum response](EXAMPLES.md#h2-vibrational-full) | No NS/IPM criterion | Conditional quantum lane | RAN-OK / RAN-OK |
-| [h2_vibrational_quantum.esk](../examples/h2_vibrational_quantum.esk#L1) | [H₂ frequency from quantum-backend geometry differences](EXAMPLES.md#h2-vibrational-quantum) | No NS/IPM criterion | Conditional quantum lane | RAN-OK / RAN-OK |
+| [h2_vibrational_quantum.esk](../examples/h2_vibrational_quantum.esk#L1) | [H₂ frequency from quantum-backend geometry differences](EXAMPLES.md#h2-vibrational-quantum) | No NS/IPM criterion | Conditional quantum lane | FAIL / FAIL |
 | [hello.esk](../examples/hello.esk#L1) | [Hello and a historical version string](EXAMPLES.md#hello) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
 | [mathematics_abelian_sheaves_finite_site.esk](../examples/mathematics_abelian_sheaves_finite_site.esk#L1) | [Abelian sheaves on finite sites](MATHEMATICS_EXAMPLES.md#mathematics-abelian-sheaves-finite-site) | `cat_abelian_sheaves_finite_site` (JIT/AOT) | Flat discovery | PASS / PASS |
-| [mathematics_alphatensor_3x3_gf2.esk](../examples/mathematics_alphatensor_3x3_gf2.esk#L1) | [Rank-23 matrix multiplication over F₂](MATHEMATICS_EXAMPLES.md#mathematics-alphatensor-3x3-gf2) | No NS/IPM criterion | Flat discovery | PASS / PASS |
-| [mathematics_alphatensor_gf2.esk](../examples/mathematics_alphatensor_gf2.esk#L1) | [Rank-47 matrix multiplication over F₂](MATHEMATICS_EXAMPLES.md#mathematics-alphatensor-gf2) | No NS/IPM criterion | Flat discovery | PASS / PASS |
+| [mathematics_alphatensor_3x3_gf2.esk](../examples/mathematics_alphatensor_3x3_gf2.esk#L1) | [Rank-23 matrix multiplication over F₂](MATHEMATICS_EXAMPLES.md#mathematics-alphatensor-3x3-gf2) | `alphatensor_rank23_gf2` (JIT/AOT) | Flat discovery | PASS / PASS |
+| [mathematics_alphatensor_gf2.esk](../examples/mathematics_alphatensor_gf2.esk#L1) | [Rank-47 matrix multiplication over F₂](MATHEMATICS_EXAMPLES.md#mathematics-alphatensor-gf2) | `alphatensor_rank47_gf2` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_aoki_cycles_fermat_sextic.esk](../examples/mathematics_aoki_cycles_fermat_sextic.esk#L1) | [Cycle supports on the Fermat sextic surface](MATHEMATICS_EXAMPLES.md#mathematics-aoki-cycles-fermat-sextic) | `hodge_aoki_cycles_fermat_sextic` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_aoki_cycles_fermat_surfaces_sweep.esk](../examples/mathematics_aoki_cycles_fermat_surfaces_sweep.esk#L1) | [Aoki cycle supports by surface degree](MATHEMATICS_EXAMPLES.md#mathematics-aoki-cycles-fermat-surfaces-sweep) | `hodge_aoki_surface_sweep_default` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_classifying_space_dijkgraaf_witten.esk](../examples/mathematics_classifying_space_dijkgraaf_witten.esk#L1) | [Finite-group classifying spaces and state sums](MATHEMATICS_EXAMPLES.md#mathematics-classifying-space-dijkgraaf-witten) | `dw_classifying_space_state_sums` (JIT/AOT) | Flat discovery | PASS / PASS |
@@ -63,13 +56,13 @@ To check documentation drift: `python3 scripts/build_example_catalogue.py --chec
 | [mathematics_finite_site_sheafification.esk](../examples/mathematics_finite_site_sheafification.esk#L1) | [Integral plus construction on a finite site](MATHEMATICS_EXAMPLES.md#mathematics-finite-site-sheafification) | `sheaf_finite_site_sheafification` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_finite_spaces_sheaf_cohomology.esk](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L1) | [Sheaf cohomology of finite spaces](MATHEMATICS_EXAMPLES.md#mathematics-finite-spaces-sheaf-cohomology) | `sheaf_finite_spaces_cech_descent` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_four_manifolds_second_k_invariant.esk](../examples/mathematics_four_manifolds_second_k_invariant.esk#L1) | [Cup-square obstruction in four-manifold models](MATHEMATICS_EXAMPLES.md#mathematics-four-manifolds-second-k-invariant) | `postnikov_four_manifolds_second_k` (JIT/AOT) | Flat discovery | PASS / PASS |
-| [mathematics_funsearch_cap_set.esk](../examples/mathematics_funsearch_cap_set.esk#L1) | [Explicit 512-cap in AG(8,3)](MATHEMATICS_EXAMPLES.md#mathematics-funsearch-cap-set) | No NS/IPM criterion | Flat discovery | PASS / PASS |
+| [mathematics_funsearch_cap_set.esk](../examples/mathematics_funsearch_cap_set.esk#L1) | [Explicit 512-cap in AG(8,3)](MATHEMATICS_EXAMPLES.md#mathematics-funsearch-cap-set) | `funsearch_cap_set_512` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_group_cohomology_order_eight.esk](../examples/mathematics_group_cohomology_order_eight.esk#L1) | [Integral homology and twists of order-eight groups](MATHEMATICS_EXAMPLES.md#mathematics-group-cohomology-order-eight) | `dw_group_cohomology_order_eight` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_group_cohomology_sweep.esk](../examples/mathematics_group_cohomology_sweep.esk#L1) | [Parametric finite-group homology receipts](MATHEMATICS_EXAMPLES.md#mathematics-group-cohomology-sweep) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
 | [mathematics_hodge_classes_fermat_quartic_fourfold.esk](../examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk#L1) | [Exhibited cycles on the Fermat quartic fourfold](MATHEMATICS_EXAMPLES.md#mathematics-hodge-classes-fermat-quartic-fourfold) | `hodge_fermat_quartic_fourfold` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_homotopy_colimits_grothendieck.esk](../examples/mathematics_homotopy_colimits_grothendieck.esk#L1) | [Grothendieck constructions and homotopy colimits](MATHEMATICS_EXAMPLES.md#mathematics-homotopy-colimits-grothendieck) | `hocolim_grothendieck_borel` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_ipm_velocity_expansion.esk](../examples/mathematics_ipm_velocity_expansion.esk#L1) | [Local oscillatory IPM velocity expansion](MATHEMATICS_EXAMPLES.md#mathematics-ipm-velocity-expansion) | `ipm_velocity_expansion_closes` (JIT/AOT) | Flat discovery | PASS / PASS |
-| [mathematics_jacobian_counterexample.esk](../examples/mathematics_jacobian_counterexample.esk#L1) | [Polynomial Jacobian map and fibers](MATHEMATICS_EXAMPLES.md#mathematics-jacobian-counterexample) | No NS/IPM criterion | Flat discovery | PASS / PASS |
+| [mathematics_jacobian_counterexample.esk](../examples/mathematics_jacobian_counterexample.esk#L1) | [Polynomial Jacobian map and fibers](MATHEMATICS_EXAMPLES.md#mathematics-jacobian-counterexample) | `jacobian_counterexample_fibers` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_kan_complexes_horns.esk](../examples/mathematics_kan_complexes_horns.esk#L1) | [Horn fillers and low homotopy groups](MATHEMATICS_EXAMPLES.md#mathematics-kan-complexes-horns) | `hocolim_kan_complexes_horns` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_lens_spaces_reidemeister_torsion.esk](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L1) | [Cyclotomic Reidemeister torsion of lens complexes](MATHEMATICS_EXAMPLES.md#mathematics-lens-spaces-reidemeister-torsion) | `torsion_lens_spaces_reidemeister` (JIT/AOT) | Flat discovery | PASS / PASS |
 | [mathematics_lens_spaces_yetter.esk](../examples/mathematics_lens_spaces_yetter.esk#L1) | [Lens-space linking data and 2-group invariants](MATHEMATICS_EXAMPLES.md#mathematics-lens-spaces-yetter) | `yetter_lens_spaces` (JIT/AOT) | Flat discovery | PASS / PASS |
@@ -98,11 +91,11 @@ To check documentation drift: `python3 scripts/build_example_catalogue.py --chec
 | [neural_xor.esk](../examples/neural_xor.esk#L1) | [Small XOR neural network](EXAMPLES.md#neural-xor) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
 | [newton_method.esk](../examples/newton_method.esk#L1) | [Newton iteration with AD](EXAMPLES.md#newton-method) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
 | [parallel.esk](../examples/parallel.esk#L1) | [Parallel thunks and thread-pool information](EXAMPLES.md#parallel) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
-| [qng_vqe.esk](../examples/qng_vqe.esk#L1) | [Quantum natural-gradient comparison](EXAMPLES.md#qng-vqe) | No NS/IPM criterion | Conditional quantum lane | RAN-OK / RAN-OK |
+| [qng_vqe.esk](../examples/qng_vqe.esk#L1) | [Quantum natural-gradient comparison](EXAMPLES.md#qng-vqe) | No NS/IPM criterion | Conditional quantum lane | FAIL / FAIL |
 | [streaming_stats.esk](../examples/streaming_stats.esk#L1) | [Online mean and variance](EXAMPLES.md#streaming-stats) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
 | [symbolic_diff.esk](../examples/symbolic_diff.esk#L1) | [Symbolic, forward and reverse differentiation](EXAMPLES.md#symbolic-diff) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
 | [tensors.esk](../examples/tensors.esk#L1) | [Tensor multiplication and reductions](EXAMPLES.md#tensors) | No NS/IPM criterion | Flat discovery | RAN-OK / RAN-OK |
-| [vqe_h2.esk](../examples/vqe_h2.esk#L1) | [H₂ variational quantum optimization](EXAMPLES.md#vqe-h2) | No NS/IPM criterion | Conditional quantum lane | RAN-OK / RAN-OK |
+| [vqe_h2.esk](../examples/vqe_h2.esk#L1) | [H₂ variational quantum optimization](EXAMPLES.md#vqe-h2) | No NS/IPM criterion | Conditional quantum lane | FAIL / FAIL |
 | [generate.esk](../examples/wgsl_artifact/generate.esk#L1) | [Bounded strain-energy WGSL generator](EXAMPLES.md#generate) | No NS/IPM criterion | Nested artifact pipeline | RAN-OK / RAN-OK |
 
 
@@ -393,7 +386,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## H₂ geometry AD and quantum response
 
-Source: [h2_vibrational_full.esk](../examples/h2_vibrational_full.esk#L1). SHA-256: `3be1fcc934fc79cec88c4530de4a8c8a7506b22046e23e75ef137d5053e66a92`.
+Source: [h2_vibrational_full.esk](../examples/h2_vibrational_full.esk#L1). SHA-256: `8786ed83b7e1f5015dc1cb8d312fc3f6c7ee244bf48b05842f3862eb41cd8564`.
 
 **Purpose:** Combine Pauli-coefficient geometry derivatives with quantum-state response.
 
@@ -409,21 +402,21 @@ Source: [h2_vibrational_full.esk](../examples/h2_vibrational_full.esk#L1). SHA-2
 
 **Prerequisites:** Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **RAN-OK** (exit 0; 19.6 s); native AOT **RAN-OK** (exit 0; compile 4.61 s, run 1.11 s).
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **RAN-OK** (exit 0; 6.21 s); native AOT **RAN-OK** (exit 0; compile 7.35 s, run 1.79 s).
 
 Computed values (verbatim program output):
 
 ```text
 equilibrium R*        = 1.3886947151919553 bohr
 frozen term  sum g'' <P>  = 0.5144480462412556 Ha/bohr^2
-quantum response          = +nan.0 Ha/bohr^2
-force constant k          = +nan.0 Ha/bohr^2
-vibrational frequency     = +nan.0 cm^-1
+quantum response          = -0.03735325955590163 Ha/bohr^2
+force constant k          = 0.477094786685354 Ha/bohr^2
+vibrational frequency     = 5003.193122472319 cm^-1
 ```
 
-**Measurement note:** Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON. At this SHA the program prints `+nan.0` for the quantum response, the force constant and the vibrational frequency (output quoted above); the source makes no assertion about these values. Planned: finite values for these three quantities.
+**Measurement note:** Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON.
 
-Implementation/check anchors: [line 1](../examples/h2_vibrational_full.esk#L1), [line 20](../examples/h2_vibrational_full.esk#L20), [line 21](../examples/h2_vibrational_full.esk#L21), [line 185](../examples/h2_vibrational_full.esk#L185), [line 186](../examples/h2_vibrational_full.esk#L186), [line 187](../examples/h2_vibrational_full.esk#L187).
+Implementation/check anchors: [line 1](../examples/h2_vibrational_full.esk#L1), [line 20](../examples/h2_vibrational_full.esk#L20), [line 21](../examples/h2_vibrational_full.esk#L21), [line 204](../examples/h2_vibrational_full.esk#L204), [line 205](../examples/h2_vibrational_full.esk#L205), [line 206](../examples/h2_vibrational_full.esk#L206).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -452,17 +445,16 @@ Source: [h2_vibrational_quantum.esk](../examples/h2_vibrational_quantum.esk#L1).
 
 **Prerequisites:** Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **RAN-OK** (exit 0; 7.17 s); native AOT **RAN-OK** (exit 0; compile 1.73 s, run 0.20 s).
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **FAIL** (exit 1; 1.79 s); native AOT **FAIL** (exit 1; compile 1.74 s, run 0.22 s).
 
-Computed values (verbatim program output):
+**Output at this SHA:**
 
 ```text
-  E(0.72,0.74,0.76 A) = -1.141989759265339 -1.1421829377925534 -1.1417128306116846
-  force constant = 0.464347288414274 Ha/bohr^2
-  omega          = 4935.900408038456 cm^-1
+[REPL] Discovered 791 functions, 964 globals, 23 variadic entries from stdlib.bc
+[REPL] Loaded stdlib from cached object: /Users/tyr/Desktop/eshkol/.scratch/v136-docs-campaign/build/stdlib-jit-v4-6DB62049DCA1604B-arm64-apple-darwin24.1.0-abi1h8s0a8.o
+Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)
+Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)
 ```
-
-**Measurement note:** Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON.
 
 Implementation/check anchors: [line 1](../examples/h2_vibrational_quantum.esk#L1), [line 8](../examples/h2_vibrational_quantum.esk#L8), [line 10](../examples/h2_vibrational_quantum.esk#L10), [line 24](../examples/h2_vibrational_quantum.esk#L24), [line 25](../examples/h2_vibrational_quantum.esk#L25), [line 26](../examples/h2_vibrational_quantum.esk#L26).
 
@@ -734,17 +726,16 @@ Source: [qng_vqe.esk](../examples/qng_vqe.esk#L1). SHA-256: `96f7bb3649796f3b236
 
 **Prerequisites:** Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **RAN-OK** (exit 0; 2.27 s); native AOT **RAN-OK** (exit 0; compile 2.45 s, run 0.34 s).
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **FAIL** (exit 1; 2.07 s); native AOT **FAIL** (exit 1; compile 2.34 s, run 0.20 s).
 
-Computed values (verbatim program output):
+**Output at this SHA:**
 
 ```text
-final QNG:     -1.1421706402882286 Ha
-final vanilla: -1.1418227561668124 Ha
-exact:         -1.142170640288229 Ha
+[REPL] Discovered 791 functions, 964 globals, 23 variadic entries from stdlib.bc
+[REPL] Loaded stdlib from cached object: /Users/tyr/Desktop/eshkol/.scratch/v136-docs-campaign/build/stdlib-jit-v4-6DB62049DCA1604B-arm64-apple-darwin24.1.0-abi1h8s0a8.o
+Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)
+Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)
 ```
-
-**Measurement note:** Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON.
 
 Implementation/check anchors: [line 1](../examples/qng_vqe.esk#L1), [line 17](../examples/qng_vqe.esk#L17), [line 20](../examples/qng_vqe.esk#L20), [line 88](../examples/qng_vqe.esk#L88), [line 91](../examples/qng_vqe.esk#L91), [line 92](../examples/qng_vqe.esk#L92).
 
@@ -899,16 +890,16 @@ Source: [vqe_h2.esk](../examples/vqe_h2.esk#L1). SHA-256: `16ee4266c13ea345e3a52
 
 **Prerequisites:** Built eshkol-run/stdlib, agent.quantum and the existing Moonlab quantum backend; the general examples suite requires ESHKOL_QUANTUM_ENABLED=ON for this file.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **RAN-OK** (exit 0; 1.97 s); native AOT **RAN-OK** (exit 0; compile 1.93 s, run 0.24 s).
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **FAIL** (exit 1; 1.84 s); native AOT **FAIL** (exit 1; compile 1.73 s, run 0.20 s).
 
-Computed values (verbatim program output):
+**Output at this SHA:**
 
 ```text
-Final VQE energy:   -1.1421333189606426 Ha
-Exact ground state: -1.142170640288229 Ha
+[REPL] Discovered 791 functions, 964 globals, 23 variadic entries from stdlib.bc
+[REPL] Loaded stdlib from cached object: /Users/tyr/Desktop/eshkol/.scratch/v136-docs-campaign/build/stdlib-jit-v4-6DB62049DCA1604B-arm64-apple-darwin24.1.0-abi1h8s0a8.o
+Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)
+Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)
 ```
-
-**Measurement note:** Measured with a quantum-enabled build of the same SHA (ESHKOL_QUANTUM_ENABLED=ON, Moonlab backend), JIT and AOT. In the default configuration (OFF) the program raises `Moonlab quantum support not enabled in this build`, which is why the general runner skips the four quantum programs unless the variable is ON.
 
 Implementation/check anchors: [line 1](../examples/vqe_h2.esk#L1), [line 25](../examples/vqe_h2.esk#L25), [line 26](../examples/vqe_h2.esk#L26), [line 49](../examples/vqe_h2.esk#L49), [line 52](../examples/vqe_h2.esk#L52), [line 53](../examples/vqe_h2.esk#L53).
 
@@ -947,8 +938,6 @@ Computed values (verbatim program output):
 // ad-grid-max-errors: 6.376787986539512e-11,3.5238751916466526e-09,1.7720019584999136e-07
 AD_MODEL_PASS
 ```
-
-**Measurement note:** `python3 examples/wgsl_artifact/build_artifact.py` at this SHA (1.9 s) prints `artifact PASS: native=VM`, with AD grid maxima 6.4e-11, 3.5e-09 and 1.8e-07 for value, first and second derivative, and reproduces `evaluator.wgsl` and the manifest's `source_sha256` and `wgsl_sha256` byte for byte; only the manifest's compiler provenance (`git_commit`, `native_binary_sha256`) differs, as it records the building compiler.
 
 Implementation/check anchors: [line 1](../examples/wgsl_artifact/generate.esk#L1), [line 4](../examples/wgsl_artifact/generate.esk#L4), [line 5](../examples/wgsl_artifact/generate.esk#L5), [line 70](../examples/wgsl_artifact/generate.esk#L70), [line 71](../examples/wgsl_artifact/generate.esk#L71), [line 72](../examples/wgsl_artifact/generate.esk#L72).
 

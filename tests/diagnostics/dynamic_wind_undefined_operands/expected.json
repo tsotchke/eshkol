@@ -1,0 +1,10 @@
+{
+  "description": "dynamic-wind with unbound before/thunk/after operands: one 'Undefined variable' diagnostic per operand at its own span, a nonzero compile exit, no binary, and no fatal signal from the compiler.",
+  "compile": "fail",
+  "diagnostics": [
+    {"contains": "Undefined variable: before", "span": {"file": "input.esk", "line": 5, "col": 15}},
+    {"contains": "Undefined variable: thunk", "span": {"file": "input.esk", "line": 5, "col": 22}},
+    {"contains": "Undefined variable: after", "span": {"file": "input.esk", "line": 5, "col": 28}}
+  ],
+  "forbidden": ["fatal signal", "Stack dump"]
+}

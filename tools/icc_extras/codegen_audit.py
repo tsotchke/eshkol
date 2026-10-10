@@ -308,6 +308,15 @@ def cross_file_findFreeVariables_coverage() -> list[dict[str, Any]]:
 
     body = "\n".join(cg_lines[start : end + 1])
     handled = set(re.findall(r"case (ESHKOL_[A-Z0-9_]+_OP)\b", body))
+    # Some dispatch sites (this function among them) route many ESHKOL_*_OP
+    # values onto a smaller AstRoute enum through eshkol::routeAstOperation's
+    # eshkol::AstRouteGroup<AstRoute::X, OP1, OP2, ...> template-argument
+    # lists (lib/backend/{llvm_codegen,autodiff_codegen}.cpp both use this
+    # convention) instead of a literal `case OP:` label. Every op named
+    # inside such a group IS structurally handled; a plain `case` search
+    # alone would flag all of them as uncovered.
+    for group in re.findall(r"AstRouteGroup<[^>]*>", body):
+        handled.update(re.findall(r"ESHKOL_[A-Z0-9_]+_OP", group))
 
     missing = [
         op for op in parser_ops
