@@ -108,9 +108,11 @@ RB_TIME_FILE="$WORK/time.txt"
 : "${RB_TIME_FILE:?RB_TIME_FILE must be set}"
 RB_RSS_VALID=0
 RB_RSS_ERROR="peak RSS unavailable"
+RB_MEASURE_ATTEMPTED=0
 run_budgeted() {
     local tmo="$1"; shift
     local t0 t1
+    RB_MEASURE_ATTEMPTED=1
     t0=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
     # Keep time's resource report separate from program stdout/stderr.
     # </dev/null: keep the budgets.tsv read-loop's stdin away from programs.
@@ -155,7 +157,21 @@ declare -a fail_lines=()
 record() {
     local file="$1" mode="$2" v="$3" xk="$4" detail="$5"
     local base; base=$(basename "$file" .esk)
+    local execution_verdict="$v"
+    if [ "$RB_MEASURE_ATTEMPTED" -eq 1 ] && [ "$RB_RSS_VALID" -ne 1 ]; then
+        v="INFRA"
+        detail="$detail; $RB_RSS_ERROR (execution classification=$execution_verdict, rc=$RB_RC)"
+    fi
+    RB_MEASURE_ATTEMPTED=0
     total=$((total+1))
+    if [ "$v" = "INFRA" ]; then
+        failed=$((failed+1))
+        emit_event "stress_${base}_${mode}" "INFRA" "$file $mode -> INFRA $detail"
+        printf '  INFRA   tests/stress/%s::%s  (%s)\n' "$file" "$mode" "$detail"
+        echo "FAILED tests/stress/$file::$mode"
+        fail_lines+=("INFRA $file::$mode $detail")
+        return
+    fi
     if [ "$xk" != "-" ]; then
         if [ "$v" = "PASS" ]; then
             xpassed=$((xpassed+1))
