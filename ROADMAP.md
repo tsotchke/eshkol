@@ -310,7 +310,7 @@ a `gap` row). **BUILD ITEM:** VM Taylor-tower builtins, target v1.4.1
 - [x] Terminal plotting (`sparkline`, `bar-chart` in pure Eshkol stdlib)
 - [x] Codegen modularisation: the v1.2 split reduced the tensor codegen
       monolith by 94% across 13 focused per-domain files;
-      `tensor_codegen.cpp` is 2,066 lines in the current source tree (the file grew with
+      `tensor_codegen.cpp` is 2,069 lines in the current source tree (the file grew with
       subsequent feature work — the 94% reduction was a point-in-time
       measurement, not an invariant). The
       remaining `llvm_codegen.cpp` extractions are complete: the
