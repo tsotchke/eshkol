@@ -29,6 +29,8 @@
 # exit-code set to swallow a real FAIL, or by making FAIL retry), this test
 # fails.
 set -u
+# The byte-oriented Perl controls use a locale available on macOS and Linux.
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/harness_outcome.sh"
