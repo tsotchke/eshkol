@@ -413,9 +413,9 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         if (type === 8) {
             const q = v.getBigUint64(p + 8, true);
             if (!q || q > 0xffffffffn) fail('invalid heap tensor slot pointer', 'ESH_NUMERIC_ABI');
-            const subtype = view().getUint8(span(Number(q) - 8, 8));
-            if (subtype === 23) fail('Taylor towers are unsupported in browser tensor arithmetic', 'ESH_AD_UNSUPPORTED');
-            if (subtype === 22) fail('reverse-mode nodes cannot enter forward-mode tensor arithmetic', 'ESH_AD_UNSUPPORTED');
+            const sub = subtype(Number(q));
+            if (sub === 23) fail('Taylor towers are unsupported in browser tensor arithmetic', 'ESH_AD_UNSUPPORTED');
+            if (sub === 22) fail('reverse-mode nodes cannot enter forward-mode tensor arithmetic', 'ESH_AD_UNSUPPORTED');
             return { num: read(p) };
         }
         if (type === 1 || type === 2) return { num: read(p) };
@@ -463,10 +463,8 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
     };
     const tensorView = (p, legacy = false) => {
         p = span(p, 40, 8);
-        if (!legacy) span(p - 8, 8);
+        if (!legacy) payload(p, 3, 40);
         const v = view();
-        if (!legacy && (v.getUint8(p - 8) !== 3 || v.getUint32(p - 4, true) < 40))
-            fail('invalid tensor object in forward-mode arithmetic', 'ESH_NUMERIC_ABI');
         const rank64 = v.getBigUint64(p + 8, true), total64 = v.getBigUint64(p + 24, true);
         const dims = BigInt(v.getUint32(p, true)), elements = BigInt(v.getUint32(p + 16, true));
         const dtype = v.getBigUint64(p + 32, true);
@@ -861,10 +859,8 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
     });
     const adNodeShape = p => {
         if (!adNodeSet().has(p)) return null;
-        span(p, 144, 8); span(p - 8, 8);
+        payload(p, 2, 144);
         const v = view();
-        if (v.getUint8(p - 8) !== 2 || v.getUint32(p - 4, true) < 144)
-            fail('invalid browser AD node object header', 'ESH_NUMERIC_ABI');
         const value = v.getUint32(p + 40, true), shapePtr = v.getUint32(p + 120, true);
         const rank64 = v.getBigUint64(p + 128, true);
         if (!value) return { value: 0, shape: [], total: 0 };
