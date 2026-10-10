@@ -103,6 +103,8 @@ def registration_matrix(root, paths):
             raise CatalogueError(f"unrecognized source/verdict registration contract: {family}")
         if f'COMMAND $<TARGET_FILE:eshkol-run> -r "${{_{prefix}_src}}"' not in block or f"'${{_{prefix}_src}}' && '${{CMAKE_CURRENT_BINARY_DIR}}/${{_{prefix}_name}}_aot'" not in block:
             raise CatalogueError(f"native JIT/AOT command routing changed: {family}")
+        if f'ENVIRONMENT "ESHKOL_PATH=${{CMAKE_CURRENT_SOURCE_DIR}}/lib"' not in block[block.find(f'set_tests_properties(${{_{prefix}_name}}_aot'):]:
+            raise CatalogueError(f"AOT stdlib environment missing: {family}")
         if f'list(GET {family} ${{_{prefix}_i}} _{prefix}_name)' not in block or f'list(GET {family} ${{_{prefix}_j}} _{prefix}_file)' not in block:
             raise CatalogueError(f"criterion/source routing changed: {family}")
         rows, names = [], set()
