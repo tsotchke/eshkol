@@ -1398,7 +1398,10 @@ jobs:
           || contains(needs.changes.outputs.active_lanes, '|quantum-macos|'))
     runs-on: macos-14
     continue-on-error: true
-    timeout-minutes: 120
+    # Run 38002220309 reached the two-hour job cap during the complete
+    # traced corpus. Keep the full corpus and coverage ratchet, with the
+    # same overall budget as the other hosted full-suite macOS lanes.
+    timeout-minutes: 240
 
     steps:
       - uses: actions/checkout@v6

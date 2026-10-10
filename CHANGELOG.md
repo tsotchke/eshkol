@@ -46,9 +46,9 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   negative control and timing-sensitive calibration checks run serially. (#752)
 - **Traced CI still verifies persistent run-cache invalidation.** The XLA
   threshold cache probes isolate the tracing mode that bypasses caching;
-  tracing remains enabled for the surrounding suite. The macOS ARM64 full
-  suite receives the same job budget as the Linux ARM64 and macOS Intel
-  lanes after its two-hour limit interrupted passing tests. (#752)
+  tracing remains enabled for the surrounding suite. The macOS ARM64 and
+  quantum full suites receive the same four-hour job budget as the Linux
+  ARM64 and macOS Intel lanes, with every test and coverage check retained. (#752)
 - **ABI inventory accounts for the integrated contributor changes.** The
   baseline records the ESKM name-size accessor and eleven allocator sites in
   three test fixture files, with exact counts and review reasons. Lexical
