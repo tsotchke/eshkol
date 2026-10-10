@@ -7,6 +7,9 @@ where each clause is `(pattern body …)`. Clauses are tried top-to-bottom; the
 body of the first matching pattern is evaluated and returned. Variables in the
 pattern are bound in the body.
 
+`match` is supported by the native JIT and AOT backends. The bytecode VM does not
+currently support `match`; a VM attempt fails with an undefined-variable error.
+
 ## Supported patterns
 
 | Pattern | Matches |

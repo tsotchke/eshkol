@@ -6,6 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
+**Coverage:** 2555/5484 public symbols documented (46.6%), 2929 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 

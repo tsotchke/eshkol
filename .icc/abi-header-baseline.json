@@ -1,5 +1,5 @@
 {
-  "commit": "e301e277cfcc8afc5b7923419860e01e056d687e",
+  "commit": "7c97bf656b09c462e1013872cce1d8bac02eed8b",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 33,
@@ -8,7 +8,7 @@
       "lib/core/dnc_api.c": 2,
       "lib/core/i128_runtime.cpp": 2,
       "lib/core/inference.cpp": 4,
-      "lib/core/introspection.cpp": 6,
+      "lib/core/introspection.cpp": 4,
       "lib/core/kb_persistence.cpp": 4,
       "lib/core/logic.cpp": 7,
       "lib/core/model_io.cpp": 2,
@@ -25,6 +25,7 @@
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
       "lib/core/runtime_tensor_math.cpp": 2,
+      "lib/core/runtime_type_name.cpp": 2,
       "lib/core/runtime_vector_mutation.cpp": 1,
       "lib/core/sdnc_api.c": 4,
       "lib/core/sexp_to_ast.cpp": 3,
@@ -130,7 +131,7 @@
       "lib/core/runtime_closure_reflection.cpp": 1,
       "lib/core/runtime_continuations.cpp": 3,
       "lib/core/runtime_display_hosted.cpp": 1,
-      "lib/core/runtime_exceptions_hosted.cpp": 6,
+      "lib/core/runtime_exceptions_hosted.cpp": 7,
       "lib/core/runtime_gensym.cpp": 1,
       "lib/core/runtime_hash_table.cpp": 3,
       "lib/core/runtime_list_helpers.cpp": 7,
@@ -178,7 +179,7 @@
       "lib/core/dnc_api.c": 3,
       "lib/core/i128_runtime.cpp": 3,
       "lib/core/inference.cpp": 6,
-      "lib/core/introspection.cpp": 10,
+      "lib/core/introspection.cpp": 4,
       "lib/core/kb_persistence.cpp": 7,
       "lib/core/logic.cpp": 10,
       "lib/core/runtime_autodiff.cpp": 8,
@@ -196,6 +197,7 @@
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
       "lib/core/runtime_tensor_math.cpp": 2,
+      "lib/core/runtime_type_name.cpp": 6,
       "lib/core/sdnc_api.c": 5,
       "lib/core/sexp_to_ast.cpp": 3,
       "lib/core/symbol_intern.cpp": 4,
@@ -414,6 +416,61 @@
         "focused tensor AD gradcheck",
         "Linux allocation-hardening test"
       ]
+    },
+    {
+      "after": {
+        "A_macro_api": 4,
+        "G_header_field_write": 4
+      },
+      "before": {
+        "A_macro_api": 6,
+        "G_header_field_write": 10
+      },
+      "class": "reviewed_additions",
+      "reason": "The type classifier was extracted to runtime_type_name.cpp; these exact two ESHKOL_GET_HEADER accessor calls and six subtype field reads move to the new translation unit. No raw header offset or parallel header layout was added.",
+      "source": "lib/core/introspection.cpp",
+      "source_sha256": "38f9469ef29dfa34c1b3d48e8606f87a82398e9d91da525e666affd09e02ec34",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest",
+        "focused type-name/equality/raise-continuable tests (JIT/AOT/VM)"
+      ]
+    },
+    {
+      "after": {
+        "A_macro_api": 2,
+        "G_header_field_write": 6
+      },
+      "before": {},
+      "class": "reviewed_additions",
+      "reason": "The shared type-name classifier uses ESHKOL_GET_HEADER for the two object-header reads, then validates and reads only declared subtype values. This records the measured sites moved out of introspection.cpp.",
+      "source": "lib/core/runtime_type_name.cpp",
+      "source_sha256": "03b200a93e6516f8f1aa4b5db160fd735d0f888e1beaa2ebd3c9192af108091d",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest",
+        "focused type-name/equality/raise-continuable tests (JIT/AOT/VM)"
+      ]
+    },
+    {
+      "after": {
+        "E_alloc_with_header": 7
+      },
+      "before": {
+        "E_alloc_with_header": 6
+      },
+      "class": "reviewed_additions",
+      "reason": "raise-continuable adds one fallback exception construction through eshkol_make_exception_with_header when no handler is installed; no direct header construction or layout access is introduced.",
+      "source": "lib/core/runtime_exceptions_hosted.cpp",
+      "source_sha256": "57ceb05a172f6e23c8a79f6e16a5c6dbff31801d55f8c206cc393b430d540099",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest",
+        "focused type-name/equality/raise-continuable tests (JIT/AOT/VM)"
+      ]
     }
   ],
   "schema": 1,
@@ -423,7 +480,7 @@
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 47,
-    "E_alloc_with_header": 219,
+    "E_alloc_with_header": 220,
     "F_parallel_header_decl": 2,
     "G_header_field_write": 186,
     "H_wasm_glue": 65,

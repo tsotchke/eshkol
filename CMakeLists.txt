@@ -6356,6 +6356,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             PASS_REGULAR_EXPRESSION "PASS: REPL continuation"
+            FAIL_REGULAR_EXPRESSION "^FAIL:")
+    endif()
     # `:type` reports the type checker's inferred type.
     if(NOT WIN32 AND TARGET eshkol-repl AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/type_command_inferred_type_test.sh")
         add_test(
