@@ -21,7 +21,7 @@ function(eshkol_allocation_test target)
 endfunction()
 eshkol_allocation_test(runtime_allocation_hardening_test tests/core/runtime_allocation_hardening_test.cpp)
 target_link_options(runtime_allocation_hardening_test PRIVATE -Wl,--wrap=malloc -Wl,--wrap=calloc
-    -Wl,--wrap=arena_allocate_aligned)
+    -Wl,--wrap=arena_allocate -Wl,--wrap=arena_allocate_aligned)
 function(eshkol_allocation_aot target source shim)
     set(object "${CMAKE_CURRENT_BINARY_DIR}/${target}.o")
     add_custom_command(OUTPUT "${object}" BYPRODUCTS "${object}.ll"

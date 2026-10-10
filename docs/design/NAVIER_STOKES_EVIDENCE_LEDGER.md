@@ -11,7 +11,7 @@ Section 2, in the same numbering. Status vocabulary is exactly one of:
 - **ANALYTIC-ONLY** -- no computable content exercising this row exists in v1.3.5; the missing
   capability is named.
 
-**Counts:** EXACT 25, VALIDATED 0, ANALYTIC-ONLY 59, total 84.
+**Counts:** EXACT 31, VALIDATED 0, ANALYTIC-ONLY 53, total 84.
 
 | id | row | section | paper ref | operation | status | program(s) / missing capability |
 |---|---|---|---|---|---|---|
@@ -30,18 +30,18 @@ Section 2, in the same numbering. Status vocabulary is exactly one of:
 | ns-evidence-013 | 13 | 2.2 | (4.15) | Form the five cumulative radial integrals M, I, J, S, C_p | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
 | ns-evidence-014 | 14 | 2.2 | Lemma 4.3; (4.16) | Reduce Q_s, N_s to closed expressions in (M,I,J,S,Pi) | ANALYTIC-ONLY | symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection build item) |
 | ns-evidence-015 | 15 | 2.2 | Lemma 4.4(i) | Certify the joining rule at the joining radius X_h | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
-| ns-evidence-016 | 16 | 2.3 | (4.20) | Form t_s, v_s, P_c, J_c from the radial shear and integrated inviscid contribution | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
-| ns-evidence-017 | 17 | 2.3 | (4.21) | Evaluate U(P_c,J_c) and test the relaxed cone condition | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
-| ns-evidence-018 | 18 | 2.3 | Lemma 4.5; (4.22) | Certify the cone-condition equivalence via a quadratic root computation | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
+| ns-evidence-016 | 16 | 2.3 | (4.20) | Form t_s, v_s, P_c, J_c from the radial shear and integrated inviscid contribution | EXACT | ns_cone_condition_equivalence |
+| ns-evidence-017 | 17 | 2.3 | (4.21) | Evaluate U(P_c,J_c) and test the relaxed cone condition | EXACT | ns_cone_condition_equivalence |
+| ns-evidence-018 | 18 | 2.3 | Lemma 4.5; (4.22) | Certify the cone-condition equivalence via a quadratic root computation | EXACT | ns_cone_condition_equivalence |
 | ns-evidence-019 | 19 | 2.3 | Lemma 4.5, second assertion | Produce the uniform threshold P_K on a compact parameter set | ANALYTIC-ONLY | rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item) |
-| ns-evidence-020 | 20 | 2.3 | (4.23) | Rewrite the cone in stress coordinates, homogeneous in T0 | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
+| ns-evidence-020 | 20 | 2.3 | (4.23) | Rewrite the cone in stress coordinates, homogeneous in T0 | EXACT | ns_cone_condition_equivalence |
 | ns-evidence-021 | 21 | 2.3 | Theorem 4.6 | Assemble the leading-profile theorem from rows 10-20 and 22-33 | ANALYTIC-ONLY | composite of multiple rows with no single Eshkol primitive or build item; assembled only once its constituent rows are mechanized |
-| ns-evidence-022 | 22 | 2.4 | Lemma A.1 | Certify the moment matrix B_ij is invertible for distinct exponents | ANALYTIC-ONLY | symbolic multivariate polynomial and series values / polynomial-valued duals (v1.4.0-connection build item) |
+| ns-evidence-022 | 22 | 2.4 | Lemma A.1 | Certify the moment matrix B_ij is invertible for distinct exponents | EXACT | ns_heat_exterior_exact |
 | ns-evidence-023 | 23 | 2.4 | (A.1) | Quantify the loss when exponents collide (det B formula) | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
 | ns-evidence-024 | 24 | 2.4 | Lemma A.2; (A.2)-(A.3) | Solve the quadratic moment system by contraction | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
 | ns-evidence-025 | 25 | 2.4 | Corollary A.3; (A.4) | Normalize the five moments and split into U/E blocks with distinct powers | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
 | ns-evidence-026 | 26 | 2.4 | Proposition A.4 | Construct the reference outer profile and read off Pi(0,eta) | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
-| ns-evidence-027 | 27 | 2.4 | Lemma A.6; (A.33)-(A.38) | Build the heat exterior K(r,t) and verify its ODE and derivative values | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
+| ns-evidence-027 | 27 | 2.4 | Lemma A.6; (A.33)-(A.38) | Build the heat exterior K(r,t) and verify its ODE and derivative values | EXACT | ns_heat_exterior_exact |
 | ns-evidence-028 | 28 | 2.4 | Lemma A.6, monotonicity | Certify K_r<0 and the ratio bound on ZH'/H | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
 | ns-evidence-029 | 29 | 2.4 | Proposition A.7 | Restore the pressure integral after replacing the power tail by the heat flow | ANALYTIC-ONLY | the underlying Eshkol primitive is shipped, but no dedicated Navier-Stokes example program exercises this row in v1.3.5 |
 | ns-evidence-030 | 30 | 2.4 | Lemma A.8; Proposition A.10 | Under exact moment conditions conclude the leading tangential stresses vanish | ANALYTIC-ONLY | rigorous (directed-rounding) enclosures and a proved Taylor-model remainder, in place of the current validated/sampled bound (v1.5.0-intelligence / v2.0-starlight build item) |

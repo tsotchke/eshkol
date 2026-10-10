@@ -1,0 +1,7 @@
+;; Diagnostic corpus case: an unquoted shape list passed to `tensor` is a
+;; call whose operator is a number. The current constructor forms are
+;; (tensor x ...), (tensor (list ...)) and (make-tensor (list d ...) fill).
+
+(define t (tensor (2 2) 1.0 2.0 3.0 4.0))
+(display t)
+(newline)

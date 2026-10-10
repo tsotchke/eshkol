@@ -483,6 +483,39 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
     DenseInput a = normalise(arg1, "dense_arith_a");
     DenseInput c = normalise(arg2, "dense_arith_b");
 
+    /* A jet tensor operand (forward mode, dtype DUAL) has no dense f64
+     * buffer: it takes the forward jet rule, which refuses a dense node
+     * operand (eshkol_jet_tensor_binary).  Every exit of the dense lowering
+     * below goes through `finish`, which joins the two paths. */
+    llvm::Value* jet_result_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                                  "dense_arith_jet_result");
+    llvm::BasicBlock* jet_join = llvm::BasicBlock::Create(
+        ctx_.context(), "dense_arith_jet_join", fn);
+    auto finish = [&](llvm::Value* value) -> llvm::Value* {
+        b.CreateStore(value, jet_result_slot);
+        b.CreateBr(jet_join);
+        b.SetInsertPoint(jet_join);
+        return b.CreateLoad(ctx_.taggedValueType(), jet_result_slot);
+    };
+    {
+        llvm::Value* any_jet = b.CreateOr(isDualTensor(a.tensor), isDualTensor(c.tensor),
+                                          "dense_arith_any_jet");
+        llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_jet", fn);
+        llvm::BasicBlock* dense_bb = llvm::BasicBlock::Create(
+            ctx_.context(), "dense_arith_dense", fn);
+        b.CreateCondBr(any_jet, jet_bb, dense_bb);
+
+        b.SetInsertPoint(jet_bb);
+        llvm::Value* any_node = b.CreateOr(b.CreateIsNotNull(a.node),
+                                           b.CreateIsNotNull(c.node));
+        b.CreateStore(jetTensorArithmetic(a.tensor, c.tensor, operation, any_node),
+                      jet_result_slot);
+        b.CreateBr(jet_join);
+
+        b.SetInsertPoint(dense_bb);
+    }
+
     auto load_field = [&](llvm::Value* tensor, unsigned index) {
         return b.CreateLoad(ctx_.ptrType(),
             b.CreateStructGEP(tensor_type, tensor, index));
@@ -506,7 +539,7 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
         a.node, a_elems, a_total, a_dims, a_ndim, &a_dense, "dense_arith_a_operand");
     llvm::Value* c_parent = autodiff_->emitDenseTensorOperand(
         c.node, c_elems, c_total, c_dims, c_ndim, &c_dense, "dense_arith_b_operand");
-    if (!a_parent || !c_parent || !a_dense || !c_dense) return tagged_.packNull();
+    if (!a_parent || !c_parent || !a_dense || !c_dense) return finish(tagged_.packNull());
 
     // Build numeric-only tensor views. The arithmetic kernel receives these
     // explicitly, so its single numeric accessor cannot fall back to the
@@ -577,7 +610,7 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
         base_id, a_parent, c_parent, nullptr, nullptr,
         result_elems, saved, llvm::ConstantInt::get(ctx_.int64Type(), 2),
         result_dims, result_ndim);
-    if (!dense_node) return tagged_.packNull();
+    if (!dense_node) return finish(tagged_.packNull());
     b.CreateStore(b.CreateSelect(same_shape,
                                  llvm::ConstantInt::get(ctx_.int32Type(), base_id),
                                  llvm::ConstantInt::get(ctx_.int32Type(), broadcast_id)),
@@ -614,7 +647,7 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
         b.CreateBr(after_bb);
         b.SetInsertPoint(after_bb);
     }
-    return tagged_.packPtr(dense_node, ESHKOL_VALUE_CALLABLE);
+    return finish(tagged_.packPtr(dense_node, ESHKOL_VALUE_CALLABLE));
 }
 
 // Main entry point: dispatches based on type (VECTOR_PTR vs TENSOR_PTR)
@@ -774,6 +807,23 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
         llvm::Value* a2_ptr = unpackTensorOperandChecked(arg2, arith_name.c_str());
         arg1 = tagged_.packHeapPtr(a1_ptr);
         arg2 = tagged_.packHeapPtr(a2_ptr);
+
+        // Forward mode: a jet tensor operand (dtype DUAL) takes the jet rule;
+        // the numeric kernels below read f64 slots only.
+        if (autodiff_ && hasJetTensorArithmeticRule(operation)) {
+            llvm::Value* any_jet = ctx_.builder().CreateOr(
+                isDualTensor(a1_ptr), isDualTensor(a2_ptr), "arith_any_jet");
+            llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "arith_jet", current_func);
+            llvm::BasicBlock* numeric_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "arith_not_jet", current_func);
+            ctx_.builder().CreateCondBr(any_jet, jet_bb, numeric_bb);
+            ctx_.builder().SetInsertPoint(jet_bb);
+            ctx_.builder().CreateStore(
+                jetTensorArithmetic(a1_ptr, a2_ptr, operation), result_alloca);
+            ctx_.builder().CreateBr(merge_block);
+            ctx_.builder().SetInsertPoint(numeric_bb);
+        }
     }
 
 #ifdef ESHKOL_XLA_ENABLED

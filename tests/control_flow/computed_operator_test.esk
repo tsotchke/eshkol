@@ -1,0 +1,25 @@
+;; The operator position of a call is an ordinary expression: whatever form
+;; computes it, its value is applied. A value that is not a procedure raises
+;; a catchable condition at the call.
+
+(define (check name got want)
+  (display name)
+  (if (equal? got want)
+      (display ": PASS")
+      (begin (display ": FAIL got ") (write got) (display " want ") (write want)))
+  (newline))
+
+(define k 1)
+(check "and head" ((and #t car) (list 5 6)) 5)
+(check "or head" ((or #f cdr) (list 5 6)) '(6))
+(check "case head" ((case k ((1) car) (else cdr)) (list 7 8)) 7)
+(check "when head" ((when #t length) (list 1 2 3)) 3)
+(check "let* head" ((let* ((g +) (h g)) h) 2 3) 5)
+(check "guard head" ((guard (e (#t car)) (raise 'x)) (list 9)) 9)
+(check "if head" ((if (> k 0) - +) 10 4) 6)
+(check "vector-ref head" ((vector-ref (vector car cdr) 1) (list 1 2)) '(2))
+
+(define (non-procedure-call)
+  (guard (e (#t 'raised))
+    ((and #t 42) 1)))
+(check "non-procedure head raises" (non-procedure-call) 'raised)

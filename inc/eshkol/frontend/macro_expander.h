@@ -19,6 +19,7 @@
 #define ESHKOL_FRONTEND_MACRO_EXPANDER_H
 
 #include <eshkol/eshkol.h>
+#include <eshkol/util/continuation_task.h>
 #include <string>
 #include <map>
 #include <set>
@@ -102,9 +103,32 @@ private:
     std::map<const eshkol_macro_def_t*, MacroBinding> definition_bindings_;
     std::map<std::string, const eshkol_macro_def_t*> macro_aliases_;
     std::map<const eshkol_macro_def_t*, std::string> macro_alias_names_;
-    // Lexical value bindings in scope: source (possibly colored) name ->
-    // the unique name the binder was renamed to.
-    std::map<std::string, std::string> value_renames_;
+    /**
+     * Lexical value bindings in scope: source (possibly colored) name -> the
+     * unique name the binder was renamed to. Binding forms nest, so a form
+     * takes a mark() on entry and restore()s it on exit, which undoes exactly
+     * the names it bound. Entering a scope therefore costs nothing in
+     * proportion to the bindings already visible, and the environment stays
+     * linear in the number of binders however deeply they nest.
+     */
+    class RenameEnv {
+    public:
+        using Map = std::map<std::string, std::string>;
+        size_t mark() const { return log_.size(); }
+        void bind(const std::string& name, const std::string& renamed);
+        void erase(const std::string& name);
+        void restore(size_t mark);
+        Map::const_iterator find(const std::string& name) const { return map_.find(name); }
+        Map::const_iterator end() const { return map_.end(); }
+        size_t count(const std::string& name) const { return map_.count(name); }
+        /** The bindings in scope now, e.g. to record a definition environment. */
+        const Map& bindings() const { return map_; }
+    private:
+        struct Undo { std::string name; bool had_binding; std::string previous; };
+        Map map_;
+        std::vector<Undo> log_;
+    };
+    RenameEnv value_renames_;
     uint64_t rename_counter_ = 0;
 
     // ── Hygiene (ADR-0026) ──────────────────────────────────────────────
@@ -122,7 +146,9 @@ private:
     // Look up a macro in the scope stack (inner scopes shadow outer)
     eshkol_macro_def_t* lookupMacro(const std::string& name) const;
     const MacroBinding* lookupBinding(const std::string& name) const;
-    eshkol_ast_t expandQuasiquoted(const eshkol_ast_t& ast, unsigned depth);
+    /** Expands the unquoted parts of a quasiquoted template at nesting
+     *  @p depth (1 = the escapes of the outermost quasiquote). */
+    ContinuationTask<eshkol_ast_t> expandQuasiquotedTask(eshkol_ast_t ast, unsigned depth);
 
     /** A fresh unique spelling for a binder written @p name. */
     std::string freshValueName(const std::string& name);
@@ -144,9 +170,15 @@ private:
                               const std::vector<std::map<std::string, eshkol_macro_def_t*>>& env);
 
     /**
-     * Expand a single AST node.
+     * Expand a single AST node. Every pass over the form's structure runs as a
+     * ContinuationTask on an explicit continuation stack (the facility the
+     * parser, type checker and code generator share), so expansion depth is
+     * not bounded by the native stack.
      */
     eshkol_ast_t expandNode(const eshkol_ast_t& ast);
+    ContinuationTask<eshkol_ast_t> expandNodeTask(eshkol_ast_t ast);
+    ContinuationTask<bool> expandChildTask(eshkol_ast_t*& child);
+    ContinuationTask<bool> expandArrayTask(eshkol_ast_t*& items, uint64_t count);
 
     /** Expand a top-level form (R7RS 5.1): a macro use there expands in
      *  top-level parse mode, so an expansion to (begin (define ...) ...)

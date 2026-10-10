@@ -24,7 +24,7 @@
       "lib/core/runtime_tensor_alloc.cpp": 5,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
-      "lib/core/runtime_tensor_math.cpp": 1,
+      "lib/core/runtime_tensor_math.cpp": 2,
       "lib/core/runtime_vector_mutation.cpp": 1,
       "lib/core/sdnc_api.c": 4,
       "lib/core/sexp_to_ast.cpp": 3,
@@ -128,7 +128,7 @@
       "lib/core/runtime_bytevector.cpp": 3,
       "lib/core/runtime_closure_alloc.cpp": 1,
       "lib/core/runtime_closure_reflection.cpp": 1,
-      "lib/core/runtime_continuations.cpp": 2,
+      "lib/core/runtime_continuations.cpp": 3,
       "lib/core/runtime_display_hosted.cpp": 1,
       "lib/core/runtime_exceptions_hosted.cpp": 6,
       "lib/core/runtime_gensym.cpp": 1,
@@ -142,7 +142,7 @@
       "lib/core/runtime_string_ports_hosted.cpp": 3,
       "lib/core/runtime_taylor.c": 8,
       "lib/core/runtime_tensor_alloc.cpp": 2,
-      "lib/core/runtime_tensor_math.cpp": 1,
+      "lib/core/runtime_tensor_math.cpp": 4,
       "lib/core/sdnc_api.c": 3,
       "lib/core/system_builtins.c": 12,
       "lib/core/workspace.cpp": 3,
@@ -195,6 +195,7 @@
       "lib/core/runtime_tensor_alloc.cpp": 11,
       "lib/core/runtime_tensor_fill.cpp": 1,
       "lib/core/runtime_tensor_index.cpp": 7,
+      "lib/core/runtime_tensor_math.cpp": 2,
       "lib/core/sdnc_api.c": 5,
       "lib/core/sexp_to_ast.cpp": 3,
       "lib/core/symbol_intern.cpp": 4,
@@ -205,10 +206,12 @@
       "tests/ffi/sqlite_column_roundtrip_test.c": 5
     },
     "H_wasm_glue": {
-      "scripts/wasm_exact_runtime.fragment.js": 8,
-      "site/static/eshkol-runtime.js": 25,
+      "scripts/wasm_exact_imports.fragment.js": 2,
+      "scripts/wasm_exact_runtime.fragment.js": 22,
+      "site/static/eshkol-runtime.js": 39,
       "tests/toolchain/wasm_exact_runtime_test.js": 7,
-      "web/eshkol-repl.js": 25
+      "tests/toolchain/wasm_tensor_jet_runtime_test.js": 3,
+      "web/eshkol-repl.js": 39
     },
     "J_secondary_prefix_abi": {
       "lib/core/arena_memory.h": 5,
@@ -373,19 +376,84 @@
         "scripts/abi_header_inventory.py check --clang",
         "scripts/abi_header_inventory.py selftest"
       ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_continuations.cpp": 3
+      },
+      "before": {
+        "lib/core/runtime_continuations.cpp": 2
+      },
+      "class": "E_alloc_with_header",
+      "reason": "PR763 raises a catchable condition when a continuation belongs to a completed or unrecorded host evaluation. The new eshkol_continuation_check_extent call uses the existing eshkol_make_exception_with_header constructor; it introduces no alternate header construction or layout. This admits only this reviewed constructor site; other lexical and semantic counts and negative controls remain enforced.",
+      "source": "cc61689734f9cd2a9a0f67727145856a96747766",
+      "source_sha256": "f989cfaa100545e31cf699dd5fcaba3b8e1b8af565e8d769611acec3dcf55e2a",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest",
+        "ctest -R continuation_host_extent_test",
+        "ctest -R repl_continuation_finished_evaluation"
+      ]
+    },
+    {
+      "after": {
+        "A_macro_api": 2,
+        "E_alloc_with_header": 4,
+        "G_header_field_write": 2
+      },
+      "before": {
+        "A_macro_api": 1,
+        "E_alloc_with_header": 1,
+        "G_header_field_write": 0
+      },
+      "class": "reviewed_additions",
+      "reason": "PR #766 adds three arena_allocate_tensor_with_header sites for forward dual tensor results and point-shaped tensor gradients, and two tensor subtype reads through ESHKOL_GET_HEADER for tagged tensor validation. Only the exact runtime_tensor_math.cpp counts are admitted; the detector and all other counts, semantic scan counts, and layout pins are unchanged.",
+      "source": "lib/core/runtime_tensor_math.cpp",
+      "source_sha256": "5f80d785307db1fa6c767eab860db8ea19b0b086a5d857281a16a0ca5cae7eba",
+      "verification": [
+        "python3 scripts/abi_header_inventory.py check",
+        "focused tensor AD gradcheck",
+        "Linux allocation-hardening test"
+      ]
+    },
+    {
+      "after": {
+        "scripts/wasm_exact_imports.fragment.js": 2,
+        "scripts/wasm_exact_runtime.fragment.js": 22,
+        "site/static/eshkol-runtime.js": 39,
+        "tests/toolchain/wasm_tensor_jet_runtime_test.js": 3,
+        "web/eshkol-repl.js": 39
+      },
+      "before": {
+        "scripts/wasm_exact_imports.fragment.js": 0,
+        "scripts/wasm_exact_runtime.fragment.js": 8,
+        "site/static/eshkol-runtime.js": 25,
+        "tests/toolchain/wasm_tensor_jet_runtime_test.js": 0,
+        "web/eshkol-repl.js": 25
+      },
+      "class": "H_wasm_glue",
+      "reason": "PR766 replaces browser tensor and collection placeholders with checked runtime operations. New subtype consumers and allocator bindings are inventoried here; production header construction and validation remain in the existing shared header/payload/subtype accessors. Both generated bundles embed that same source. The new test intentionally reads raw tensor and AD-node layouts and checks header size/subtype, growth, malformed pointers, cycles, variable-dependent refusal and allocation rollback; an independently compiled wasm32 C caller pins the tensor/tagged ABI. Only these five JavaScript class/file counts are admitted. Every native/semantic class and existing test count is unchanged.",
+      "source": "scripts/wasm_exact_runtime.fragment.js",
+      "verification": [
+        "python3 scripts/generate_wasm_import_glue.py --selftest",
+        "ctest --test-dir build --output-on-failure -R \"^(wasm_flat_ad_import_test|wasm_tensor_jet_runtime_test|wasm_geometry_guard_runtime_test)$\"",
+        "python3 scripts/check_wasm_imports.py --build-dir build",
+        "python3 scripts/abi_header_inventory.py selftest --repo ."
+      ]
     }
   ],
   "schema": 1,
   "totals": {
-    "A_macro_api": 134,
+    "A_macro_api": 135,
     "B_header_type": 78,
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 47,
-    "E_alloc_with_header": 215,
+    "E_alloc_with_header": 219,
     "F_parallel_header_decl": 2,
-    "G_header_field_write": 184,
-    "H_wasm_glue": 65,
+    "G_header_field_write": 186,
+    "H_wasm_glue": 112,
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
     "L_layout_in_prose": 86,

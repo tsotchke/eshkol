@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import shutil
 import sys
 
@@ -48,6 +49,11 @@ WINDOWS_EIGEN_LICENSE = LicenseSpec(
 
 CURL_LICENSE = LicenseSpec("curl-COPYING.txt", "eshkol_curl-src/COPYING")
 
+# The PJRT C API header is vendored directly in the source tree (deps/pjrt/),
+# not fetched via CMake FetchContent, so its license lives next to it rather
+# than under the build directory's _deps/ cache.
+PJRT_LICENSE = LicenseSpec("pjrt-LICENSE.txt", "pjrt/LICENSE")
+
 SQLITE_PUBLIC_DOMAIN_NOTICE = """SQLite public-domain notice
 
 The author disclaims copyright to the SQLite source code. In place of a legal
@@ -65,6 +71,16 @@ public domain. Canonical terms: https://www.sqlite.org/copyright.html
 def _regular_nonempty(path: Path, description: str) -> None:
     if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
         raise ValueError(f"{description} is missing, empty, or symlinked: {path}")
+
+
+def _xla_enabled(build_dir: Path) -> bool:
+    """Whether this build configured ESHKOL_XLA_ENABLED=ON (the *-xla release
+    packages), read from the build directory's own CMakeCache.txt."""
+    cache = build_dir / "CMakeCache.txt"
+    if not cache.is_file():
+        return False
+    text = cache.read_text(encoding="utf-8", errors="replace")
+    return re.search(r"^ESHKOL_XLA_ENABLED:BOOL=ON$", text, re.M) is not None
 
 
 def stage_licenses(
@@ -116,6 +132,16 @@ def stage_licenses(
         _regular_nonempty(eigen_source, "Eigen MPL-2.0 license")
         target = licenses_dir / WINDOWS_EIGEN_LICENSE.output_name
         shutil.copyfile(eigen_source, target)
+        staged.append(target)
+
+    # *-xla packages compile the vendored Apache-2.0 PJRT C API header
+    # (deps/pjrt/pjrt_c_api.h) into the runtime; other packages never include
+    # an XLA backend and do not need this notice.
+    if _xla_enabled(build_dir):
+        pjrt_source = ROOT / "deps" / PJRT_LICENSE.source_relative
+        _regular_nonempty(pjrt_source, "PJRT Apache-2.0 license")
+        target = licenses_dir / PJRT_LICENSE.output_name
+        shutil.copyfile(pjrt_source, target)
         staged.append(target)
 
     for path in staged:

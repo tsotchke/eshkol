@@ -29,6 +29,8 @@
 # exit-code set to swallow a real FAIL, or by making FAIL retry), this test
 # fails.
 set -u
+# The byte-oriented Perl controls use a locale available on macOS and Linux.
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/harness_outcome.sh"
@@ -145,6 +147,53 @@ check "retry_guarded returns the real FAIL's own exit code (rc=$rc)" \
     "$([ "$rc" -eq 1 ] && echo 0 || echo 1)"
 check "retry_guarded NEVER retries a real FAIL (ran exactly once, ran $attempts times)" \
     "$([ "$attempts" = "1" ] && echo 0 || echo 1)"
+
+# ── 7. a timeout stops everything the command started ──
+# eshkol-run starts processes of its own (the program build, the built
+# binary), and they inherit the harness's output pipe. The capture below
+# returns only when every writer of that pipe has exited, so it measures
+# exactly what a harness reading the command's output experiences: if a
+# descendant outlived the timeout, the capture would wait for its full
+# 30-second sleep.
+start=$(date +%s)
+out=$(eshkol_outcome_guarded 1 sh -c 'sleep 30 & sleep 30; echo unreachable')
+rc=$?
+elapsed=$(( $(date +%s) - start ))
+check "a timed-out command's background process does not hold the output pipe (elapsed=${elapsed}s < 10s)" \
+    "$([ "$elapsed" -lt 10 ] && echo 0 || echo 1)"
+check "a timed-out command with descendants still reports 124 (rc=$rc)" \
+    "$([ "$rc" -eq 124 ] && echo 0 || echo 1)"
+start=$(date +%s)
+out=$(eshkol_outcome_guarded 20 sh -c 'sleep 30 & echo done; exit 0')
+rc=$?
+elapsed=$(( $(date +%s) - start ))
+check "a process left behind by a completed command does not hold the output pipe (elapsed=${elapsed}s < 10s)" \
+    "$([ "$elapsed" -lt 10 ] && echo 0 || echo 1)"
+check "a completed command keeps its own exit status and output (rc=$rc, out=$out)" \
+    "$([ "$rc" -eq 0 ] && [ "$out" = done ] && echo 0 || echo 1)"
+# The same wrapper as a standalone program, the form a harness puts under
+# /usr/bin/time.
+start=$(date +%s)
+out=$(perl "$REPO_ROOT/scripts/lib/guarded_exec.pl" 1 sh -c 'sleep 30 & sleep 30')
+rc=$?
+elapsed=$(( $(date +%s) - start ))
+check "guarded_exec.pl run directly stops the whole group (rc=$rc, elapsed=${elapsed}s < 10s)" \
+    "$([ "$rc" -eq 124 ] && [ "$elapsed" -lt 10 ] && echo 0 || echo 1)"
+# Interrupting the harness stops the command's group too, so an operator's
+# Ctrl-C or a CI cancel does not orphan it.
+marker="$WORK/interrupted-child.pid"
+perl "$REPO_ROOT/scripts/lib/guarded_exec.pl" 60 sh -c 'echo $$ > "$1"; sleep 30 & wait' sh "$marker" &
+wrapper=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$marker" ] && break; sleep 0.2; done
+kill -INT "$wrapper"
+wait "$wrapper"
+rc=$?
+sleep 0.5
+child_pid=$(cat "$marker" 2>/dev/null || echo 0)
+gone=0
+[ "$child_pid" -gt 0 ] && kill -0 "$child_pid" 2>/dev/null && gone=1
+check "an interrupted wrapper exits 130 and stops its command (rc=$rc)" \
+    "$([ "$rc" -eq 130 ] && [ "$gone" -eq 0 ] && echo 0 || echo 1)"
 
 echo
 echo "harness_outcome_taxonomy_test.sh: $pass passed, $fail failed"

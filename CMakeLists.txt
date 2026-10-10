@@ -3486,6 +3486,21 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/stress/stress_time_portability_test.sh")
+    add_test(
+        NAME stress_time_portability
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stress/stress_time_portability_test.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/guarded_exec.pl"
+                "${CMAKE_CURRENT_BINARY_DIR}/stress-time-portability-scratch"
+    )
+    set_tests_properties(stress_time_portability PROPERTIES
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "PASS: stress time portability and failure preservation"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/payload_validation_test.sh" AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/payload_validation_test.esk")
     add_test(
@@ -3756,6 +3771,46 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         set_tests_properties(yetter_three_torus_finite_model_jit PROPERTIES TIMEOUT 900)
         set_tests_properties(yetter_three_torus_finite_model_aot PROPERTIES TIMEOUT 900)
     endif()
+endif()
+
+# AI-discovered-algorithm witness examples: each program is a compile-and-run
+# exact-verdict check reproducing a published machine-discovered construction
+# (AlphaTensor rank-47/rank-23 F2 matrix multiplication, a FunSearch cap-set
+# lower bound, and a Jacobian-conjecture counterexample's fiber geometry).
+# Same shape as the Navier-Stokes and mathematics-examples blocks above: each
+# program exits nonzero on any failed check and the CTest entries pin the
+# verdict line in JIT and AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(ESHKOL_AI_WITNESS_EXAMPLES
+        alphatensor_rank47_gf2           mathematics_alphatensor_gf2
+        alphatensor_rank23_gf2           mathematics_alphatensor_3x3_gf2
+        funsearch_cap_set_512            mathematics_funsearch_cap_set
+        jacobian_counterexample_fibers   mathematics_jacobian_counterexample)
+    list(LENGTH ESHKOL_AI_WITNESS_EXAMPLES _aiw_len)
+    math(EXPR _aiw_last "${_aiw_len} - 1")
+    foreach(_aiw_i RANGE 0 ${_aiw_last} 2)
+        math(EXPR _aiw_j "${_aiw_i} + 1")
+        list(GET ESHKOL_AI_WITNESS_EXAMPLES ${_aiw_i} _aiw_name)
+        list(GET ESHKOL_AI_WITNESS_EXAMPLES ${_aiw_j} _aiw_file)
+        set(_aiw_src "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_aiw_file}.esk")
+        if(EXISTS "${_aiw_src}")
+            add_test(NAME ${_aiw_name}_jit
+                COMMAND $<TARGET_FILE:eshkol-run> -r "${_aiw_src}")
+            set_tests_properties(${_aiw_name}_jit PROPERTIES
+                TIMEOUT 240
+                ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/ai-witness-jit-cache"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+            add_test(NAME ${_aiw_name}_aot
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_aiw_name}_aot' '${_aiw_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_aiw_name}_aot'")
+            set_tests_properties(${_aiw_name}_aot PROPERTIES
+                TIMEOUT 300
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
+        endif()
+    endforeach()
 endif()
 
 # Mathematics acceptance tests (tests/math_acceptance/README.md).
@@ -6289,6 +6344,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
     endif()
 
+    # A continuation captured in one REPL evaluation and invoked from a later
+    # one raises a catchable condition; the session continues.
+    if(NOT WIN32 AND TARGET eshkol-repl AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/continuation_finished_evaluation_test.sh")
+        add_test(
+            NAME repl_continuation_finished_evaluation_test
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/continuation_finished_evaluation_test.sh"
+        )
+        set_tests_properties(repl_continuation_finished_evaluation_test PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            PASS_REGULAR_EXPRESSION "PASS: REPL continuation"
+            FAIL_REGULAR_EXPRESSION "^FAIL:")
+    endif()
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
     # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
     # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently
@@ -7350,6 +7418,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/region_
         PASS_REGULAR_EXPRESSION "PASS: region promotion is all-or-nothing")
 endif()
 
+# REPL evaluation extents for native continuations hold at every nesting depth.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/continuation_host_extent_test.cpp")
+    find_package(Threads REQUIRED)
+    add_executable(continuation_host_extent_test tests/core/continuation_host_extent_test.cpp)
+    target_compile_features(continuation_host_extent_test PRIVATE cxx_std_17)
+    target_include_directories(continuation_host_extent_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(continuation_host_extent_test PRIVATE eshkol-runtime ${ESHKOL_EXTRA_LINK_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME continuation_host_extent_test COMMAND continuation_host_extent_test)
+    set_tests_properties(continuation_host_extent_test PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: continuation host extents hold"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_regions_test.cpp")
     add_executable(runtime_regions_test tests/core/runtime_regions_test.cpp)
     target_compile_features(runtime_regions_test PRIVATE cxx_std_17)
@@ -7716,11 +7798,34 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
         endif()
     endforeach()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py")
+        # The runtime half needs Node.js; without it the test runs the
+        # generator self-test and reports itself skipped (exit 77).
+        find_program(NODE_EXECUTABLE node)
+        set(_wasm_flat_ad_node_args)
+        if(NODE_EXECUTABLE)
+            set(_wasm_flat_ad_node_args --node ${NODE_EXECUTABLE})
+        endif()
         add_test(NAME wasm_flat_ad_import_test
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py)
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py
+                ${_wasm_flat_ad_node_args})
         set_tests_properties(wasm_flat_ad_import_test PROPERTIES
-            LABELS "toolchain;wasm;imports")
+            LABELS "toolchain;wasm;imports"
+            SKIP_RETURN_CODE 77)
+        find_program(ESHKOL_WASM_TEST_CLANG NAMES clang clang-21 clang-20
+            HINTS "${ESHKOL_LLVM_ROOT}/bin" "${LLVM_TOOLS_BINARY_DIR}")
+        set(_wasm_tensor_clang_args)
+        if(ESHKOL_WASM_TEST_CLANG)
+            set(_wasm_tensor_clang_args --clang ${ESHKOL_WASM_TEST_CLANG})
+        endif()
+        add_test(NAME wasm_tensor_jet_runtime_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_tensor_jet_runtime_test.py
+                --compiler $<TARGET_FILE:eshkol-run>
+                ${_wasm_flat_ad_node_args} ${_wasm_tensor_clang_args})
+        set_tests_properties(wasm_tensor_jet_runtime_test PROPERTIES
+            LABELS "toolchain;wasm;imports;autodiff"
+            TIMEOUT 120 SKIP_RETURN_CODE 77)
     endif()
 endif()
 
@@ -12305,6 +12410,21 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
     set_tests_properties(macro_hygiene_matrix PROPERTIES
         TIMEOUT 600 LABELS "macros;parity;regression"
         PASS_REGULAR_EXPRESSION "PASS: [0-9]+ hygiene checks agree")
+endif()
+
+# Expansion renames binders and their references at every nesting depth, and
+# limits only the nesting that expansion itself introduces.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
+   AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME macro_expansion_depth
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_expansion_depth_test.py
+            --native $<TARGET_FILE:eshkol-run>
+            --vm $<TARGET_FILE:eshkol-vm-standalone-test>)
+    set_tests_properties(macro_expansion_depth PROPERTIES
+        TIMEOUT 600 LABELS "macros"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        PASS_REGULAR_EXPRESSION "PASS: [0-9]+ macro expansion depth checks")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-repl)

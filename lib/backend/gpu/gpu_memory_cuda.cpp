@@ -47,6 +47,9 @@ static bool gpu_verbose(void) {
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 11000
+#include <cuda_bf16.h>
+#endif
 #include <vector>
 #include <cstdint>
 #include <utility>
@@ -692,59 +695,154 @@ static int cuda_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
     return (status == CUBLAS_STATUS_SUCCESS) ? 0 : -1;
 }
 
-// f16 cuBLAS GemmEx (tensor cores) — the GPU-LLM fast path (ESH-0021).
-// Tensor storage is f64 bit patterns even for f16-dtype tensors, so we convert
-// f64 -> half on the host (CUDA __float2half is host-callable), run GemmEx with
-// 16F operands and 32F accumulate (the standard LLM combo), then convert the
-// f16 result back to f64. Mirrors cuda_matmul_f32's column-major swap: row-major
-// C = A·B is computed as cuBLAS column-major C^T(N×M) = B^T·A^T.
-// Returns 0 on success; any failure returns -1 so the caller falls back to f64.
-static int cuda_matmul_f16_from_f64(const double* A, const double* B, double* C,
-                                    uint64_t M, uint64_t K, uint64_t N) {
+// 16-bit cuBLAS GemmEx (tensor cores) — the GPU-LLM fast path.
+// Tensor storage is f64 bit patterns even for f16/bf16-dtype tensors, so the
+// operands are converted f64 -> 16-bit on the host, GemmEx runs with 16-bit
+// operands and 32F accumulate (the standard LLM combo), and the 16-bit result is
+// converted back to f64. Each logical dtype runs in its own binary format:
+// binary16 and bfloat16 have different exponent ranges (binary16 overflows above
+// 65504, bfloat16 shares f32's 8-bit exponent), so a bf16 tensor is never
+// computed through the binary16 converter. Mirrors cuda_matmul_f32's
+// column-major swap: row-major C = A·B is computed as cuBLAS column-major
+// C^T(N×M) = B^T·A^T.
+enum class Cuda16Format { Half, BFloat16 };
+
+/** @brief The cuBLAS data type for a 16-bit storage format, or false when this
+ *         CUDA toolkit predates it (bfloat16 needs CUDA 11). */
+static bool cuda16_data_type(Cuda16Format format, cudaDataType_t* out) {
+    if (format == Cuda16Format::Half) { *out = CUDA_R_16F; return true; }
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 11000
+    *out = CUDA_R_16BF;
+    return true;
+#else
+    return false;
+#endif
+}
+
+/** @brief Round an f64 value to the 16-bit format's bit pattern
+ *         (round-to-nearest-even, via the CUDA host conversions). */
+static uint16_t cuda16_encode(Cuda16Format format, double value) {
+    uint16_t bits = 0;
+    if (format == Cuda16Format::Half) {
+        const __half h = __float2half(static_cast<float>(value));
+        static_assert(sizeof(h) == sizeof(bits), "binary16 is 16 bits");
+        std::memcpy(&bits, &h, sizeof(bits));
+    } else {
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 11000
+        const __nv_bfloat16 b = __float2bfloat16(static_cast<float>(value));
+        static_assert(sizeof(b) == sizeof(bits), "bfloat16 is 16 bits");
+        std::memcpy(&bits, &b, sizeof(bits));
+#endif
+    }
+    return bits;
+}
+
+/** @brief Widen a 16-bit bit pattern of the given format to f64 (exact). */
+static double cuda16_decode(Cuda16Format format, uint16_t bits) {
+    if (format == Cuda16Format::Half) {
+        __half h;
+        std::memcpy(&h, &bits, sizeof(bits));
+        return static_cast<double>(__half2float(h));
+    }
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 11000
+    __nv_bfloat16 b;
+    std::memcpy(&b, &bits, sizeof(bits));
+    return static_cast<double>(__bfloat162float(b));
+#else
+    return std::nan("");
+#endif
+}
+
+// A device whose cuBLAS rejects a 16-bit format (for example bfloat16 GemmEx
+// before compute capability 8.0) answers NOT_SUPPORTED or ARCH_MISMATCH. That
+// answer is a property of the device, so it is recorded once and later calls go
+// straight to the f64 route instead of re-converting operands to be refused.
+static std::atomic<bool> g_cuda16_rejected[2] = {{false}, {false}};
+
+static bool cuda16_rejected(Cuda16Format format) {
+    return g_cuda16_rejected[format == Cuda16Format::Half ? 0 : 1].load(
+        std::memory_order_acquire);
+}
+
+static void cuda16_note_status(Cuda16Format format, cublasStatus_t status) {
+    if (status == CUBLAS_STATUS_NOT_SUPPORTED || status == CUBLAS_STATUS_ARCH_MISMATCH) {
+        g_cuda16_rejected[format == Cuda16Format::Half ? 0 : 1].store(
+            true, std::memory_order_release);
+        GPU_LOG("cuBLAS rejected %s GemmEx on this device (status %d); "
+                "matmul of that dtype uses the f64 route",
+                format == Cuda16Format::Half ? "binary16" : "bfloat16", (int)status);
+    }
+}
+
+/** @brief Run `batch` independent row-major GEMMs C[b] = A[b]·B[b] with 16-bit
+ *         operands and 32F accumulation. batch == 1 uses GemmEx; batch > 1 uses
+ *         one GemmStridedBatchedEx launch for all of them (the MoE multi-expert
+ *         case). Returns 0 on success; any failure returns -1 so the
+ *         caller falls back to the f64 route. */
+static int cuda_matmul_16bit_from_f64(const double* a, const double* b, double* c,
+                                      int64_t batch, int64_t M, int64_t K, int64_t N,
+                                      Cuda16Format format) {
+    cudaDataType_t data_type;
+    if (!cuda16_data_type(format, &data_type) || cuda16_rejected(format)) return -1;
     std::lock_guard<std::mutex> gemm_lock(g_gpu_init_mutex);
     const auto* cublas = cuda_prepare_cublas_locked();
     if (!cublas) return -1;
-    if (!A || !B || !C) return -1;
+    if (!a || !b || !c || batch <= 0 || M <= 0 || K <= 0 || N <= 0) return -1;
     // P1: cuBLAS takes the dims and leading dimensions as int; reject sizes that
-    // would silently truncate on the (int) casts below (wrong-shape GEMM).
-    if (M > (uint64_t)0x7fffffff || K > (uint64_t)0x7fffffff || N > (uint64_t)0x7fffffff) return -1;
-    const size_t aN = (size_t)M * K, bN = (size_t)K * N, cN = (size_t)M * N;
+    // would truncate on the (int) casts below and change the GEMM shape.
+    if (M > 0x7fffffff || K > 0x7fffffff || N > 0x7fffffff || batch > 0x7fffffff) return -1;
+    const size_t aN = (size_t)batch * M * K;
+    const size_t bN = (size_t)batch * K * N;
+    const size_t cN = (size_t)batch * M * N;
 
-    // P1: these host-side half buffers can throw std::bad_alloc for large GEMMs.
+    // P1: these host-side buffers can throw std::bad_alloc for large GEMMs.
     // This function is reached across an extern "C" boundary, where an uncaught
     // C++ exception is undefined behavior (std::terminate) instead of the
     // documented "-1 → CPU f64 fallback". Catch and return -1.
-    std::vector<__half> hA, hB, hC;
+    std::vector<uint16_t> hA, hB, hC;
     try {
         hA.resize(aN); hB.resize(bN); hC.resize(cN);
     } catch (...) { return -1; }
-    for (size_t i = 0; i < aN; i++) hA[i] = __float2half((float)A[i]);
-    for (size_t i = 0; i < bN; i++) hB[i] = __float2half((float)B[i]);
+    for (size_t i = 0; i < aN; i++) hA[i] = cuda16_encode(format, a[i]);
+    for (size_t i = 0; i < bN; i++) hB[i] = cuda16_encode(format, b[i]);
 
-    __half *dA = nullptr, *dB = nullptr, *dC = nullptr;
+    uint16_t *dA = nullptr, *dB = nullptr, *dC = nullptr;
     int rc = -1;
     do {
-        if (cudaMalloc(&dA, aN * sizeof(__half)) != cudaSuccess) break;
-        if (cudaMalloc(&dB, bN * sizeof(__half)) != cudaSuccess) break;
-        if (cudaMalloc(&dC, cN * sizeof(__half)) != cudaSuccess) break;
-        if (cudaMemcpy(dA, hA.data(), aN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
-        if (cudaMemcpy(dB, hB.data(), bN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
+        if (cudaMalloc(&dA, aN * sizeof(uint16_t)) != cudaSuccess) break;
+        if (cudaMalloc(&dB, bN * sizeof(uint16_t)) != cudaSuccess) break;
+        if (cudaMalloc(&dC, cN * sizeof(uint16_t)) != cudaSuccess) break;
+        if (cudaMemcpy(dA, hA.data(), aN * sizeof(uint16_t), cudaMemcpyHostToDevice) != cudaSuccess) break;
+        if (cudaMemcpy(dB, hB.data(), bN * sizeof(uint16_t), cudaMemcpyHostToDevice) != cudaSuccess) break;
 
         const float alpha = 1.0f, beta = 0.0f;
-        cublasStatus_t st = cublas->gemm_ex(
-            g_cublas_loader.handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-            (int)N, (int)M, (int)K,
-            &alpha,
-            dB, CUDA_R_16F, (int)N,
-            dA, CUDA_R_16F, (int)K,
-            &beta,
-            dC, CUDA_R_16F, (int)N,
-            CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-        if (st != CUBLAS_STATUS_SUCCESS) break;
+        cublasStatus_t st;
+        if (batch == 1) {
+            st = cublas->gemm_ex(
+                g_cublas_loader.handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+                (int)N, (int)M, (int)K,
+                &alpha,
+                dB, data_type, (int)N,
+                dA, data_type, (int)K,
+                &beta,
+                dC, data_type, (int)N,
+                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+        } else {
+            st = cublas->gemm_strided_batched_ex(
+                g_cublas_loader.handle(), CUBLAS_OP_N, CUBLAS_OP_N,
+                (int)N, (int)M, (int)K,
+                &alpha,
+                dB, data_type, (int)N, (long long)(K * N),
+                dA, data_type, (int)K, (long long)(M * K),
+                &beta,
+                dC, data_type, (int)N, (long long)(M * N),
+                (int)batch, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+        }
+        if (st != CUBLAS_STATUS_SUCCESS) { cuda16_note_status(format, st); break; }
         if (cudaStreamSynchronize(g_cuda_stream) != cudaSuccess) break;
-        if (cudaMemcpy(hC.data(), dC, cN * sizeof(__half), cudaMemcpyDeviceToHost) != cudaSuccess) break;
+        if (cudaMemcpy(hC.data(), dC, cN * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess) break;
 
-        for (size_t i = 0; i < cN; i++) C[i] = (double)__half2float(hC[i]);
+        for (size_t i = 0; i < cN; i++) c[i] = cuda16_decode(format, hC[i]);
         rc = 0;
     } while (0);
 
@@ -754,63 +852,13 @@ static int cuda_matmul_f16_from_f64(const double* A, const double* B, double* C,
     return rc;
 }
 
-// Batched f16 cuBLAS GemmEx (tensor cores) — the MoE multi-expert win
-// (ESH-0024). Computes `batch` independent row-major GEMMs C[b]=A[b]·B[b] in a
-// single cublasGemmStridedBatchedEx launch (16F operands, 32F accumulate),
-// beating one launch per expert. Same f64<->half conversion + column-major swap
-// as cuda_matmul_f16_from_f64. Returns 0 on success, -1 on failure (caller
-// falls back to the CPU batched f64 path).
-static int cuda_batch_matmul_f16_from_f64(const double* a, const double* b, double* c,
-                                          int64_t batch, int64_t M, int64_t K, int64_t N) {
-    std::lock_guard<std::mutex> gemm_lock(g_gpu_init_mutex);
-    const auto* cublas = cuda_prepare_cublas_locked();
-    if (!cublas) return -1;
-    if (!a || !b || !c || batch <= 0) return -1;
-    // P1: cuBLAS strided-batched takes int dims; reject sizes that truncate.
-    if (M > 0x7fffffff || K > 0x7fffffff || N > 0x7fffffff || batch > 0x7fffffff) return -1;
-    const size_t aN = (size_t)batch * M * K;
-    const size_t bN = (size_t)batch * K * N;
-    const size_t cN = (size_t)batch * M * N;
-
-    // P1: catch std::bad_alloc — uncaught across the extern "C" boundary is UB.
-    std::vector<__half> hA, hB, hC;
-    try {
-        hA.resize(aN); hB.resize(bN); hC.resize(cN);
-    } catch (...) { return -1; }
-    for (size_t i = 0; i < aN; i++) hA[i] = __float2half((float)a[i]);
-    for (size_t i = 0; i < bN; i++) hB[i] = __float2half((float)b[i]);
-
-    __half *dA = nullptr, *dB = nullptr, *dC = nullptr;
-    int rc = -1;
-    do {
-        if (cudaMalloc(&dA, aN * sizeof(__half)) != cudaSuccess) break;
-        if (cudaMalloc(&dB, bN * sizeof(__half)) != cudaSuccess) break;
-        if (cudaMalloc(&dC, cN * sizeof(__half)) != cudaSuccess) break;
-        if (cudaMemcpy(dA, hA.data(), aN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
-        if (cudaMemcpy(dB, hB.data(), bN * sizeof(__half), cudaMemcpyHostToDevice) != cudaSuccess) break;
-
-        const float alpha = 1.0f, beta = 0.0f;
-        cublasStatus_t st = cublas->gemm_strided_batched_ex(
-            g_cublas_loader.handle(), CUBLAS_OP_N, CUBLAS_OP_N,
-            (int)N, (int)M, (int)K,
-            &alpha,
-            dB, CUDA_R_16F, (int)N, (long long)(K * N),
-            dA, CUDA_R_16F, (int)K, (long long)(M * K),
-            &beta,
-            dC, CUDA_R_16F, (int)N, (long long)(M * N),
-            (int)batch, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
-        if (st != CUBLAS_STATUS_SUCCESS) break;
-        if (cudaStreamSynchronize(g_cuda_stream) != cudaSuccess) break;
-        if (cudaMemcpy(hC.data(), dC, cN * sizeof(__half), cudaMemcpyDeviceToHost) != cudaSuccess) break;
-
-        for (size_t i = 0; i < cN; i++) c[i] = (double)__half2float(hC[i]);
-        rc = 0;
-    } while (0);
-
-    if (dA) cudaFree(dA);
-    if (dB) cudaFree(dB);
-    if (dC) cudaFree(dC);
-    return rc;
+/** @brief The 16-bit storage format a logical tensor dtype computes in on the
+ *         tensor-core path, or false for dtypes that take the f64 route.
+ *         dtype codes: 2=f16, 3=bf16 (see eshkol_tensor_dtype_t). */
+static bool cuda16_format_for_dtype(int32_t dtype, Cuda16Format* out) {
+    if (dtype == 2) { *out = Cuda16Format::Half; return true; }
+    if (dtype == 3) { *out = Cuda16Format::BFloat16; return true; }
+    return false;
 }
 
 /** @brief Wrap an existing host pointer for zero-copy GPU access: tries
@@ -1172,14 +1220,17 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
     }
 
     // GPU-LLM fast path (ESH-0021): f16/bf16-dtype operands go through cuBLAS
-    // GemmEx (16F operands, 32F accumulate, tensor cores). Tensor-core GEMM
-    // wins even at modest sizes, so this bypasses the f64 element threshold.
-    // dtype codes: 2=f16, 3=bf16 (see eshkol_tensor_dtype_t).
-    if ((dtype == 2 || dtype == 3) && g_active_backend == ESHKOL_GPU_CUDA) {
-        if (cuda_matmul_f16_from_f64(A, B, C, M, K, N) == 0) {
+    // GemmEx in their own 16-bit format (32F accumulate, tensor cores).
+    // Tensor-core GEMM wins even at modest sizes, so this bypasses the f64
+    // element threshold.
+    Cuda16Format format;
+    if (g_active_backend == ESHKOL_GPU_CUDA && cuda16_format_for_dtype(dtype, &format)) {
+        if (cuda_matmul_16bit_from_f64(A, B, C, 1, (int64_t)M, (int64_t)K, (int64_t)N,
+                                       format) == 0) {
             return;
         }
-        // GemmEx failed — fall through to the f64 path below.
+        // GemmEx failed or the device rejects the format — fall through to the
+        // f64 path below.
     }
 
     if (eshkol_gpu_should_use(num_elements)) {
@@ -1218,11 +1269,13 @@ extern "C" void eshkol_batch_matmul_f64(const double*, const double*, double*,
 void eshkol_batch_matmul_dispatch(const double* a, const double* b, double* c,
                                   int64_t batch, int64_t M, int64_t K, int64_t N,
                                   int32_t dtype) {
-    if ((dtype == 2 || dtype == 3) && g_active_backend == ESHKOL_GPU_CUDA) {
-        if (cuda_batch_matmul_f16_from_f64(a, b, c, batch, M, K, N) == 0) {
+    Cuda16Format format;
+    if (g_active_backend == ESHKOL_GPU_CUDA && cuda16_format_for_dtype(dtype, &format)) {
+        if (cuda_matmul_16bit_from_f64(a, b, c, batch, M, K, N, format) == 0) {
             return;
         }
-        // GemmStridedBatched failed — fall through to the f64 path.
+        // GemmStridedBatched failed or the device rejects the format — fall
+        // through to the f64 path.
     }
     eshkol_batch_matmul_f64(a, b, c, batch, M, K, N);
 }

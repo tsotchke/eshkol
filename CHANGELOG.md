@@ -16,6 +16,39 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Construction examples enforce their check outcomes.**
+  The four witness programs exit nonzero on a failed verdict and have JIT
+  and AOT CTest entries. The example catalogue records this additional test
+  family, and the Navier–Stokes evidence ledger distinguishes the newly
+  checked exact computations from analytic-only obligations. (#764)
+- **Example and release tooling match their documented behavior.** The
+  quantum vibrational response resolves its degenerate parameter direction
+  to a minimum-norm value; the paper runner supports its quick mode. XLA
+  packages include the vendored PJRT header's license, editor language icons
+  resolve, and the codegen audit recognizes routed AST dispatch. (#764)
+- **Macro expansion retains bindings through deeply nested forms.** The
+  traversal uses an explicit work stack for nested expressions. Test harnesses
+  apply one wall-clock guard to each complete process group, and AD probes
+  use their recorded per-program budgets. (#765)
+- **Stress measurements use the host platform’s time utility.** BSD and GNU
+  resident-memory units are converted to MiB; incomplete measurements remain
+  failing infrastructure results, including known-result rows. Timeout controls
+  select a portable locale, and the WASM import test uses the configured Node
+  runtime. (#765)
+
+- **Forward tensor operations preserve complete derivative values.** Matrix
+  multiplication and elementwise arithmetic carry their derivative components
+  through tensor kernels, including higher-order tensor compositions. (#766)
+- **Tensor gradients retain the dimensions of their evaluation point.** The
+  gradient can be used directly in a matching weight update; allocation failures
+  while creating its shaped descriptor raise an allocation condition. The
+  complete neural-network quickstart runs under JIT and AOT. (#766)
+
+- **CUDA bfloat16 matrix multiplication preserves its exponent range.**
+  Single and batched products use the operands' declared f16 or bf16 format
+  with f32 accumulation. Unsupported formats fall back to the f64 route;
+  Metal and CPU behavior is unchanged. (#762)
+
 - **Browser closure allocation follows the native WASM layout.** Both host
   bundles initialize closure headers, captured environments and callable
   metadata, retain valid views across linear-memory growth, and restore the
@@ -131,6 +164,13 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   provisions browser/semantic test dependencies, and reads actual CTest failure
   records. The reviewed browser ABI consumers are explicitly inventoried; the
   value-position sweep emits progress for timeout diagnosis. (#744)
+
+- **Browser tensor arithmetic preserves forward derivatives.** Both LLVM/WASM
+  host bundles implement elementwise arithmetic and matrix multiplication for
+  all eight flat dual coefficients, retain exact scalar slots, and use checked
+  tensor allocation across memory growth. Taylor carriers and mixed reverse-mode
+  inputs refuse explicitly. Compiler-emitted programs and an independent wasm32
+  ABI caller exercise both production bundles. (#766)
 - **Example documentation follows the implementations.** The catalogue covers all
   67 programs, including 46 mathematics examples, with algorithms, arithmetic,
   executable checks, prerequisites and limits. Navier–Stokes registration is
@@ -189,6 +229,20 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   guides carry their measured results, `THIRD_PARTY_NOTICES.md` covers the opt-in and
   vendored components, and the VS Code extension reports 1.3.6. (#759)
 - **Press materials, announcement and site describe v1.3.6.** (#753)
+- **The operator of a call may be any expression.** `((and #t car) xs)`,
+  `((case k ((1) f)) x)` and every other computed operator are evaluated and
+  applied; a value that is not a procedure raises a catchable condition. A
+  literal in operator position, such as an unquoted list inside `#(...)` or a
+  shape `(2 2)` passed to `tensor`, is a source-located compile diagnostic. (#763)
+- **`length` takes a proper list on native and on the bytecode VM.** Any other
+  operand raises `length: argument is not a proper list`; `car`/`cdr` of an
+  empty vector or tensor raise "not a pair". `dynamic-wind` operands that
+  report a diagnostic end compilation normally. (#763)
+- **The REPL resumes a continuation within the evaluation that captured it.**
+  Re-entry and multi-shot use inside one top-level form work as in a program
+  file; invoking a continuation saved by an earlier form raises a catchable
+  condition and the session continues. The documented re-entry examples run
+  as written in a program file. (#763)
 
 ## [1.3.5-evolve] - 2026-09-22
 

@@ -183,6 +183,21 @@ private:
     TaggedValueCodegen& tagged_;
     MemoryCodegen& mem_;
 
+    /**
+     * Branch on whether a vector or tensor operand of car/cdr has a first
+     * element. car/cdr treat a non-empty vector or tensor as a sequence whose
+     * first element is its car; an empty one has no car and no cdr, so it
+     * takes the same "not a pair" exit as any other non-pair.
+     *
+     * @param obj_ptr          object data pointer (just past the header)
+     * @param is_vector_subtype i1: true for a Scheme vector, false for a tensor
+     * @param non_empty_bb     taken when the sequence has at least one element
+     * @param empty_bb         taken when it has none
+     */
+    void branchOnSequenceNonEmpty(llvm::Value* obj_ptr, llvm::Value* is_vector_subtype,
+                                  llvm::BasicBlock* non_empty_bb,
+                                  llvm::BasicBlock* empty_bb, const char* prefix);
+
     // Callback for AST code generation
     using CodegenASTFunc = llvm::Value* (*)(const void* ast, void* context);
     using CodegenTypedASTFunc = void* (*)(const void* ast, void* context);
