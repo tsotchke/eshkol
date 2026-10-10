@@ -100,7 +100,7 @@ def registration_matrix(root, paths):
                 raise CatalogueError(f"missing/duplicate authored {mode} registration for {family}")
         if f'"${{CMAKE_CURRENT_SOURCE_DIR}}/examples/${{_{prefix}_file}}.esk"' not in block or 'PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"' not in block:
             raise CatalogueError(f"unrecognized source/verdict registration contract: {family}")
-        if f'COMMAND $<TARGET_FILE:eshkol-run> -r "${{_{prefix}_src}}"' not in block or f"'${{_{prefix}_src}}' && '${{CMAKE_CURRENT_BINARY_DIR}}/${{_{prefix}_file}}_aot'" not in block:
+        if f'COMMAND $<TARGET_FILE:eshkol-run> -r "${{_{prefix}_src}}"' not in block or f"'${{_{prefix}_src}}' && '${{CMAKE_CURRENT_BINARY_DIR}}/${{_{prefix}_name}}_aot'" not in block:
             raise CatalogueError(f"native JIT/AOT command routing changed: {family}")
         if f'list(GET {family} ${{_{prefix}_i}} _{prefix}_name)' not in block or f'list(GET {family} ${{_{prefix}_j}} _{prefix}_file)' not in block:
             raise CatalogueError(f"criterion/source routing changed: {family}")
@@ -182,7 +182,7 @@ def load_catalogue(root, path, paths, matrix):
         raise CatalogueError("invalid general runner discovery/mode")
     skip = text.split("example_should_skip() {", 1)[-1].split("print_empty_examples_summary()", 1)[0]
     quantum = re.search(r"\n\s*([a-z0-9_.|]+)\)\s*\n\s*if \[.*ESHKOL_QUANTUM_ENABLED", skip)
-    excluded = re.search(r"\n\s*(selene_[^\n]+)\)\s*\n\s*return 0", skip)
+    excluded = re.search(r"\n\s*(selene_[^\n]+)\)\s*\n(?:\s*SKIP_REASON=[^\n]*\n)?\s*return 0", skip)
     if not quantum or not excluded or runner.get("quantum_sources") != ["examples/" + p for p in quantum[1].split("|")] or runner.get("excluded_patterns") != excluded[1].split("|") or runner.get("quantum_condition") != "ESHKOL_QUANTUM_ENABLED=ON":
         raise CatalogueError("general runner conditional/exclusion scope disagrees with review")
     return catalogue

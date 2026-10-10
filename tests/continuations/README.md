@@ -29,6 +29,7 @@ The script is part of `scripts/run_all_tests.sh`. At v1.3.6-evolve it reports
 | fixture | what it pins |
 | --- | --- |
 | `doc_example_multishot.esk` | the documented top-level multi-shot example (bytecode VM re-entry) |
+| `doc_example_function_reentry.esk` | the documented re-entry into a function after it returned, with the top-level counter that bounds it |
 | `reentry_after_function_return.esk` | re-entry after the capturing frame returned (native re-entry) |
 | `generator_coroutine.esk` | a generator that captures its return continuation once, inside the producer |
 | `generator_multishot.esk` | a correctly structured generator, re-capturing per request |

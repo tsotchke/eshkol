@@ -1,0 +1,64 @@
+; Imported aliases follow lexical binding scope in REPL batches and AOT.
+(import (rename (test modules mod_b) (func-b imported-b)))
+(import (prefix (only (test modules mod_b) func-b) pref-))
+
+(define checks 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (set! checks (+ checks 1)) (display "PASS: ") (display name) (newline))
+      (begin
+        (display "FAIL: ") (display name) (display " expected ")
+        (display expected) (display " got ") (display actual) (newline)
+        (error "import alias lexical-scope check failed"))))
+
+(check "renamed alias remains provider binding" 22 (imported-b 11))
+(check "prefixed alias remains provider binding" 24 (pref-func-b 12))
+(check "free imported alias in lambda body" 22
+       ((lambda (x) (imported-b x)) 11))
+(check "lambda parameter shadows imported alias" 12
+       ((lambda (imported-b) (imported-b 11)) (lambda (x) (+ x 1))))
+(check "lambda set! target remains parameter" 11
+       ((lambda (imported-b)
+          (set! imported-b (+ imported-b 1))
+          imported-b)
+        10))
+(define (local-function imported-b)
+  (set! imported-b (+ imported-b 1))
+  imported-b)
+(check "function define parameter shadows imported alias" 11
+       (local-function 10))
+(check "LET initializer sees outer imported alias" 12
+       (let ((imported-b (imported-b 6))) imported-b))
+(check "LET local function shadows imported alias" 12
+       (let ((imported-b (lambda (x) (+ x 1)))) (imported-b 11)))
+(check "LET set! target remains local" 11
+       (let ((imported-b 10))
+         (set! imported-b (+ imported-b 1))
+         imported-b))
+(check "LET* later initializer sees earlier local" 12
+       (let* ((imported-b (lambda (x) (+ x 1)))
+              (answer (imported-b 11)))
+         answer))
+(check "LETREC initializer and body are local" 2
+       (letrec ((imported-b
+                  (lambda (n)
+                    (if (= n 0) 0 (+ 1 (imported-b (- n 1)))))))
+         (imported-b 2)))
+(check "LETREC* initializer and body are local" 2
+       (letrec* ((imported-b
+                   (lambda (n)
+                     (if (= n 0) 0 (+ 1 (imported-b (- n 1)))))))
+         (imported-b 2)))
+(check "named LET loop name shadows imported alias" 7
+       (let imported-b ((n 1))
+         (if (= n 0) 7 (imported-b (- n 1)))))
+(check "named LET initializer sees outer imported alias" 12
+       (let imported-b ((value (imported-b 6))) value))
+(check "nested sequence AND OR alias" 26
+       (begin #f (and #t (or #f (pref-func-b 13)))))
+(check "quoted alias symbol stays data" #t
+       (string=? (symbol->string 'imported-b) "imported-b"))
+
+(if (= checks 16)
+    (begin (display "PASS: import alias lexical scope (16 checks)") (newline))
+    (error "import alias lexical-scope check count"))

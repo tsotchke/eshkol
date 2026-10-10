@@ -31,10 +31,13 @@ jobs:
       PATH: /opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ESHKOL_GATE_SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
-      ESHKOL_MESH_ROOT: /Users/tyr/EshkolGrid/computer_mesh
-      ESHKOL_ARTIFACT_ROOT: /Users/tyr/EshkolArtifacts
+      # Runner-local directories, configured as repository/organization
+      # variables on the self-hosted grid controller (never checked in here).
+      ESHKOL_GRID_ROOT: ${{ vars.ESHKOL_GRID_ROOT }}
+      ESHKOL_MESH_ROOT: ${{ vars.ESHKOL_MESH_ROOT }}
+      ESHKOL_ARTIFACT_ROOT: ${{ vars.ESHKOL_ARTIFACT_ROOT }}
       ESHKOL_ARTIFACT_BASE_URL: ${{ vars.ESHKOL_ARTIFACT_BASE_URL }}
     steps:
       - name: Run trusted 18-cell local-grid gate
         shell: bash
-        run: /Users/tyr/EshkolGrid/controller/run_from_github_actions.sh
+        run: "$ESHKOL_GRID_ROOT/controller/run_from_github_actions.sh"

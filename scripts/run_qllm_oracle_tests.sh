@@ -73,6 +73,13 @@ JIT_TIMEOUT="${JIT_TIMEOUT:-240}"
 AOT_COMPILE_TIMEOUT="${AOT_COMPILE_TIMEOUT:-300}"
 AOT_RUN_TIMEOUT="${AOT_RUN_TIMEOUT:-120}"
 
+# Golden JSON carries eshkol_version (see qllm_oracle_lib.esk and this
+# directory's README); derive it from the binary under test rather than a
+# hardcoded literal, so it tracks ESHKOL_VERSION in the root CMakeLists.txt
+# instead of drifting from the build.
+ESHKOL_ORACLE_VERSION="$("$ESHKOL_RUN" --features | sed -n 's/^version=//p')"
+export ESHKOL_ORACLE_VERSION
+
 # The exporters, in dependency order. qllm_oracle_lib.esk is a (load …)
 # library, not a probe, so it is deliberately not listed.
 EXPORTERS="

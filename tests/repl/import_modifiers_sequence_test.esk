@@ -1,0 +1,25 @@
+; Imported provider names remain available throughout sequence expressions.
+(import (only (test modules mod_b) func-b))
+(import (rename (test modules mod_b) (func-b renamed-b)))
+(import (prefix (only (test modules mod_b) func-b) pref-))
+(import (prefix (test modules mod_b) all-))
+
+(define checks 0)
+(define side-effects 0)
+(define (check value)
+  (if value
+      (set! checks (+ checks 1))
+      (error "import modifier sequence check failed")))
+
+(check (and (= (func-b 6) 12) (= (renamed-b 7) 14)))
+(check (or #f (= (pref-func-b 8) 16)))
+(check (begin #f (and #t (= (all-func-b 9) 18))))
+(check (and #t (or #f (= (renamed-b 10) 20))))
+(check (not (and #f (begin (set! side-effects 1) (= (renamed-b 1) 2)))))
+(check (or #t (begin (set! side-effects 2) (= (pref-func-b 1) 2))))
+(check (= side-effects 0))
+(check (equal? (symbol->string 'renamed-b) "renamed-b"))
+
+(if (= checks 8)
+    (begin (display "PASS: import modifiers in sequences (8 checks)") (newline))
+    (error "import modifier sequence check count"))

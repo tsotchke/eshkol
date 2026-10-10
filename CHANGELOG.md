@@ -16,6 +16,11 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **CUDA bfloat16 matrix multiplication preserves its exponent range.**
+  Single and batched products use the operands' declared f16 or bf16 format
+  with f32 accumulation. Unsupported formats fall back to the f64 route;
+  Metal and CPU behavior is unchanged. (#762)
+
 - **Browser closure allocation follows the native WASM layout.** Both host
   bundles initialize closure headers, captured environments and callable
   metadata, retain valid views across linear-memory growth, and restore the
@@ -25,6 +30,18 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   its proof-binding options directly; reviewed diagnostic artifacts retain
   their measured validation records. Architecture source figures match
   the integrated files. (#752)
+- **Imported aliases preserve their lexical scope in JIT batches.** Direct
+  execution resolves imported names through nested sequences and quasiquotes,
+  while local bindings retain their own names. Focused tests exercise the
+  interactive REPL, direct JIT with its cache disabled, and AOT. (#761)
+- **Test suites record current expected behavior.** Stress, character/numeric
+  edge-matrix and nested differentiation gates enforce the measured results.
+  The edge-matrix generator matches the committed 300-pair corpus, and qLLM
+  oracle metadata reads the version of the binary under test. NS/IPM AOT and
+  VM mathematics tests locate the source stdlib explicitly; parallel NS/IPM
+  criteria use distinct output executables. Mutation controls report whether
+  the expected outcome occurred while retaining each gate's raw exit code. (#761)
+
 - **Example outcomes are bound to their measured sources.** The catalogue
   records native JIT and AOT outcomes for all 67 programs. All 46 mathematics
   programs ran in both modes; 45 emitted their explicit all-pass result and
@@ -177,6 +194,20 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   guides carry their measured results, `THIRD_PARTY_NOTICES.md` covers the opt-in and
   vendored components, and the VS Code extension reports 1.3.6. (#759)
 - **Press materials, announcement and site describe v1.3.6.** (#753)
+- **The operator of a call may be any expression.** `((and #t car) xs)`,
+  `((case k ((1) f)) x)` and every other computed operator are evaluated and
+  applied; a value that is not a procedure raises a catchable condition. A
+  literal in operator position, such as an unquoted list inside `#(...)` or a
+  shape `(2 2)` passed to `tensor`, is a source-located compile diagnostic. (#763)
+- **`length` takes a proper list on native and on the bytecode VM.** Any other
+  operand raises `length: argument is not a proper list`; `car`/`cdr` of an
+  empty vector or tensor raise "not a pair". `dynamic-wind` operands that
+  report a diagnostic end compilation normally. (#763)
+- **The REPL resumes a continuation within the evaluation that captured it.**
+  Re-entry and multi-shot use inside one top-level form work as in a program
+  file; invoking a continuation saved by an earlier form raises a catchable
+  condition and the session continues. The documented re-entry examples run
+  as written in a program file. (#763)
 
 ## [1.3.5-evolve] - 2026-09-22
 

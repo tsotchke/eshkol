@@ -811,8 +811,8 @@ class Gen:
             lines.append(f"(define fd{u}_{i} "
                          f"{self.fd1_comp(f'g{u}', 'v', comps, i)})")
             lines.append(self.chk(f"{pid}[{i}]", f"(vref ad{u} {i})",
-                                  f"fd{u}_{i}", xc="ESH-0093"))
-        self.add("nest", pid, lines, 2, xc="ESH-0093")
+                                  f"fd{u}_{i}"))
+        self.add("nest", pid, lines, 2)
         u = self.uid()
         comps = P2
         lines = [
@@ -826,8 +826,8 @@ class Gen:
             lines.append(f"(define fd{u}_{i} "
                          f"{self.fd1_comp(f'g{u}', 'v', comps, i)})")
             lines.append(self.chk(f"{pid}[{i}]", f"(vref ad{u} {i})",
-                                  f"fd{u}_{i}", xc="ESH-0093"))
-        self.add("nest", pid, lines, 2, xc="ESH-0093")
+                                  f"fd{u}_{i}"))
+        self.add("nest", pid, lines, 2)
         # gradient-of-gradient, VECTOR param — found by this oracle: ESH-0096
         u = self.uid()
         lines = [

@@ -281,7 +281,16 @@
 
 ;; Standard header written by every exporter. `generator` is the .esk path
 ;; relative to the repository root; `reference` is the qLLM source of truth.
-(define ESHKOL-VERSION "1.3.4")
+;; `eshkol_version` tracks ESHKOL_VERSION in the root CMakeLists.txt (see
+;; this directory's README, "Version pinning for qLLM consumers"); the
+;; runner (scripts/run_qllm_oracle_tests.sh) reads it straight from the
+;; `eshkol-run` binary under test via `--features` and exports it as
+;; ESHKOL_ORACLE_VERSION, so this file never hardcodes a release number
+;; that can drift from the build. A direct JIT/AOT invocation outside the
+;; runner falls back to the version this file was last stamped with.
+(define ESHKOL-VERSION
+  (let ((e (get-environment-variable "ESHKOL_ORACLE_VERSION")))
+    (if (string? e) e "1.3.6-evolve")))
 (define SCHEMA-VERSION 1)
 
 (define (json-header primitive generator reference formula)
