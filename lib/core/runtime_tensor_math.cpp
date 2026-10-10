@@ -553,10 +553,14 @@ extern "C" void eshkol_gradient_in_point_shape(arena_t* arena,
         return;
     if (!arena) arena = get_global_arena();
     auto* shaped = arena_allocate_tensor_with_header(arena);
-    if (!shaped) return;
+    if (!shaped) {
+        eshkol_raise_allocation_failure("gradient shape descriptor", 0);
+    }
     const size_t dims_bytes = (size_t)pt->num_dimensions * sizeof(uint64_t);
     shaped->dimensions = (uint64_t*)arena_allocate(arena, dims_bytes);
-    if (!shaped->dimensions) return;
+    if (!shaped->dimensions) {
+        eshkol_raise_allocation_failure("gradient shape dimensions", dims_bytes);
+    }
     std::memcpy(shaped->dimensions, pt->dimensions, dims_bytes);
     shaped->num_dimensions = pt->num_dimensions;
     shaped->elements = gt->elements;
