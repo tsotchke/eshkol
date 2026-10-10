@@ -17,7 +17,7 @@ sources:
 # Eshkol System Architecture Reference
 
 **Version**: v1.3.6-evolve
-**Release**: v1.3.6-evolve (prepared for publication; line counts measured at `60f345def`)
+**Release**: v1.3.6-evolve (prepared for publication)
 **Date**: October 2026
 **Status**: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic
 
