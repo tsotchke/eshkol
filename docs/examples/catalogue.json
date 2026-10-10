@@ -4382,7 +4382,7 @@
   ],
   "runner_contract": {
     "path": "scripts/run_examples_tests.sh",
-    "source_sha256": "54af42a95ffea531aa8b2a23c76d3de40a69d39dca852e2f5f5fca044b6270a4",
+    "source_sha256": "3beccf4c117b78b6f98ac1d353f653f4f6d6fb1216c28281ad8db70e5ae6a68a",
     "discovery": "examples/*.esk",
     "mode": "aot",
     "quantum_condition": "ESHKOL_QUANTUM_ENABLED=ON",

@@ -8,7 +8,7 @@
   "execution": {
     "argv": [
       "/opt/homebrew/Caskroom/miniconda/base/bin/python3",
-      "/Users/tyr/Desktop/eshkol/.worktrees/v135-ad-carriers/.scratch/tmp/eshkol-assurance-crao_2rv/scripts/gate_exhaustive_dispatch.py",
+      "scripts/gate_exhaustive_dispatch.py",
       "--format",
       "json",
       "--no-trace"

@@ -3653,9 +3653,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
             add_test(NAME ${_ns_name}_aot
                 COMMAND sh -c
-                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ns_file}_aot' '${_ns_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ns_file}_aot'")
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ns_name}_aot' '${_ns_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ns_name}_aot'")
             set_tests_properties(${_ns_name}_aot PROPERTIES
                 TIMEOUT 240
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
         endif()
@@ -3717,9 +3718,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
             add_test(NAME ${_ipm_name}_aot
                 COMMAND sh -c
-                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot' '${_ipm_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_file}_aot'")
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_name}_aot' '${_ipm_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_ipm_name}_aot'")
             set_tests_properties(${_ipm_name}_aot PROPERTIES
                 TIMEOUT 240
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
         endif()
@@ -6219,6 +6221,74 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: piped REPL"
             FAIL_REGULAR_EXPRESSION "^FAIL:")
     endif()
+    # Exercise ORC directly: the run-cache shortcut uses a different import path.
+    add_test(
+        NAME repl_import_modifiers_sequence_test
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_JIT_CACHE=0"
+            "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            "ESHKOL_LIB_DIR=$<TARGET_FILE_DIR:eshkol-run>"
+            $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_modifiers_sequence_test.esk"
+            "-L${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(repl_import_modifiers_sequence_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: import modifiers in sequences"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:")
+    add_test(
+        NAME repl_import_alias_lexical_scope_test
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_JIT_CACHE=0"
+            "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            "ESHKOL_LIB_DIR=$<TARGET_FILE_DIR:eshkol-run>"
+            $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_scope_alias_test.esk"
+            "-L${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(repl_import_alias_lexical_scope_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: import alias lexical scope"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
+    add_test(
+        NAME repl_import_alias_lexical_scope_aot_test
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_scope_alias_aot_test.sh"
+    )
+    set_tests_properties(repl_import_alias_lexical_scope_aot_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 180
+        ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        PASS_REGULAR_EXPRESSION "PASS: import alias lexical scope"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
+    if(NOT WIN32 AND TARGET eshkol-repl)
+        add_test(
+            NAME repl_import_modifiers_interactive_test
+            COMMAND sh -c "\"$1\" < \"$2\"" --
+                $<TARGET_FILE:eshkol-repl>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_modifiers_sequence_test.esk"
+        )
+        set_tests_properties(repl_import_modifiers_interactive_test PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            TIMEOUT 120
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=$<TARGET_FILE_DIR:eshkol-run>"
+            PASS_REGULAR_EXPRESSION "PASS: import modifiers in sequences"
+            FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
+        add_test(
+            NAME repl_import_alias_lexical_scope_interactive_test
+            COMMAND sh -c "\"$1\" < \"$2\"" --
+                $<TARGET_FILE:eshkol-repl>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_scope_alias_test.esk"
+        )
+        set_tests_properties(repl_import_alias_lexical_scope_interactive_test PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            TIMEOUT 120
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=$<TARGET_FILE_DIR:eshkol-run>"
+            PASS_REGULAR_EXPRESSION "PASS: import alias lexical scope"
+            FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
+    endif()
+
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
     # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
     # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently
@@ -8702,7 +8772,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
                     "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_vm_cohomology_example}.esk")
             set_tests_properties(vm_${_vm_cohomology_example} PROPERTIES
                 TIMEOUT 1800
-                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|FRAME OVERFLOW|ERROR:")
         endforeach()

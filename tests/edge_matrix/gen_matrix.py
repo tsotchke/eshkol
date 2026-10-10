@@ -30,7 +30,7 @@ Design rules (do not break these when extending):
     producer/context combos are skipped and counted.
 
 Usage:
-  python3 tests/edge_matrix/gen_matrix.py                 # priority sweep (150 pairs)
+  python3 tests/edge_matrix/gen_matrix.py                 # priority sweep (300 pairs; the committed corpus)
   python3 tests/edge_matrix/gen_matrix.py --max-pairs 0   # ALL pairs
   python3 tests/edge_matrix/gen_matrix.py --list-axes
   python3 tests/edge_matrix/gen_matrix.py --emit-features # regenerate FEATURES.md
@@ -655,7 +655,7 @@ def emit_features(path):
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--max-pairs", type=int, default=150,
+    ap.add_argument("--max-pairs", type=int, default=300,
                     help="cap on pairs (priority order); 0 = all pairs")
     ap.add_argument("--outdir", default=os.path.join(here, "generated"))
     ap.add_argument("--list-axes", action="store_true")

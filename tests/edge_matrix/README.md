@@ -59,7 +59,8 @@ target in `.icc/completion-oracles.yaml` consumes these events.
 2. `python3 tests/edge_matrix/gen_matrix.py --emit-features` to refresh
    FEATURES.md, then regenerate the corpus and commit both.
 3. Widen the sweep over time: `--max-pairs 0` emits ALL ordered pairs
-   (~1000); the default 150 covers every pair touching a high-risk axis.
+   (~1000); the default 300 is the committed corpus and covers every pair
+   touching a high-risk axis.
 
 ## Triaging a non-PASS
 
