@@ -36,6 +36,14 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   select a portable locale, and the WASM import test uses the configured Node
   runtime. (#765)
 
+- **Forward tensor operations preserve complete derivative values.** Matrix
+  multiplication and elementwise arithmetic carry their derivative components
+  through tensor kernels, including higher-order tensor compositions. (#766)
+- **Tensor gradients retain the dimensions of their evaluation point.** The
+  gradient can be used directly in a matching weight update; allocation failures
+  while creating its shaped descriptor raise an allocation condition. The
+  complete neural-network quickstart runs under JIT and AOT. (#766)
+
 - **CUDA bfloat16 matrix multiplication preserves its exponent range.**
   Single and batched products use the operands' declared f16 or bf16 format
   with f32 accumulation. Unsupported formats fall back to the f64 route;
