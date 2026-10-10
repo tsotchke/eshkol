@@ -210,7 +210,6 @@ bench/results/
 .icc/runtime-traces/compiler-capabilities.jsonl
 
 # ICC doc-intelligence snapshot: regenerate locally via
-# `icc doc-intelligence --repo eshkol_lang --format markdown`. Publishes
-# risk grades of this project's own documentation/announcements, so it
-# stays local rather than in the public tree.
+# `icc doc-intelligence --repo eshkol_lang --format markdown`.
+# Generated workspace reports remain local.
 .icc/eshkol_doc_intel.md

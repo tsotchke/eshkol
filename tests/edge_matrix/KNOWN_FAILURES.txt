@@ -15,4 +15,4 @@
 # EM-5 (chars first_class/variadic, pair060/pair065) and EM-8 (numeric_tower
 # eqv?/equal? on rational + complex operands, pair156-161) have likewise
 # been re-verified as passing under both JIT and AOT and pruned from this
-# list; a regression in either family fails the sweep.
+# list; either family must continue to pass the sweep.

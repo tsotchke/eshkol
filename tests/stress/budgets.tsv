@@ -26,7 +26,7 @@
 #
 # file	mode	class	timeout_s	rss_r_mb	rss_aot_mb	quick	xknown	expect
 rec_tco_1e8.esk	both	run	60	320	128	1	-	OK 100000000
-# rec_deep_nontco: non-tail native frames ~2KB each (real frame cost, not a leak). Sweep E (2026-07-03) re-calibrated the safe margin from 250k to 200k: the safe depth regressed (JIT 240k ok/250k SIGILL, AOT 200k ok/250k SIGILL) vs the 270k-first-fail calibration. 200k and 250k both pass at current ceilings.
+# rec_deep_nontco: non-tail native frames ~2KB each. Sweep E (2026-07-03) measured JIT completion at 240k and AOT completion at 200k, with SIGILL at 250k in both modes. Current measurements complete at 200k and 250k within the configured ceilings.
 rec_deep_nontco_200k.esk	both	run	60	640	640	1	-	OK 200000
 rec_deep_nontco_250k.esk	both	run	60	768	768	0	-	OK 250000
 rec_mutual.esk	both	run	60	768	768	1	-	OK ping 100000

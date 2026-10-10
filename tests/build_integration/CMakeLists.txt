@@ -2,7 +2,7 @@
 # tracking.  build_integration_demo compiles main.esk, which (load)s
 # dep.esk.  The case this fixture exercises: previously the custom command
 # that compiles main.esk -> main.esk.o only DEPENDS'd on main.esk itself,
-# so editing dep.esk left the object (and the linked executable) stale
+# so editing dep.esk did not update the object or linked executable
 # until a downstream user ran `rm` + `ninja` two or three times.
 # eshkol-run's new --emit-depfile now lets the custom command's DEPFILE
 # track dep.esk too, so a single `ninja` invocation after editing dep.esk
