@@ -101,9 +101,10 @@
 ;; Vector literals
 (define vec1 #(1 2 3 4 5))
 (test-case "vector length" 5 (vector-length vec1))
-(test-case "vector-ref 0" 1 (vector-ref vec1 0))
-(test-case "vector-ref 2" 3 (vector-ref vec1 2))
-(test-case "vector-ref 4" 5 (vector-ref vec1 4))
+;; a numeric #(...) literal is an f64 tensor natively: its elements are inexact
+(test-case "vector-ref 0" 1.0 (vector-ref vec1 0))
+(test-case "vector-ref 2" 3.0 (vector-ref vec1 2))
+(test-case "vector-ref 4" 5.0 (vector-ref vec1 4))
 (test-case "vector? true" #t (vector? vec1))
 (test-case "vector? list" #f (vector? '(1 2 3)))
 
