@@ -160,7 +160,7 @@ in `vm_run.c`, so this structural change does not alter behavior.
 
 ## Memory Architecture (OALR)
 
-**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (18,367 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (1,255 lines)
+**Implementation**: [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) and its `runtime_arena_*` / `runtime_regions` / `runtime_*_alloc` siblings (18,367 lines total), against the [`lib/core/arena_memory.h`](../lib/core/arena_memory.h) interface (1,267 lines)
 
 ### Core Principles
 
@@ -973,7 +973,7 @@ __test_modules_mod_a__helper
 
 ## REPL/JIT System
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,822 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,750 lines)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,831 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,750 lines)
 
 ### Architecture
 
@@ -1322,7 +1322,7 @@ Where n = number of operations.
 
 ## Build System
 
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (12,503 lines)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (12,530 lines)
 
 ### Requirements
 
@@ -1445,11 +1445,11 @@ These features are **designed but not implemented**. See roadmap documents for d
 ### Primary Source Files (analyzed in detail)
 
 - [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,786 lines)
-- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (47,407 lines)
+- [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (47,433 lines)
 - [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (1,368 lines; 4,259 across all `runtime_*` memory modules)
 - [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,698 lines)
 - [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (6,087 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,822 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,831 lines)
 - [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,167 lines)
 - [`lib/types/type_relation.cpp`](../lib/types/type_relation.cpp) - Gradual type relation (433 lines)
 
