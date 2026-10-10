@@ -6237,6 +6237,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         TIMEOUT 120
         PASS_REGULAR_EXPRESSION "PASS: import modifiers in sequences"
         FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:")
+    add_test(
+        NAME repl_import_alias_lexical_scope_test
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_JIT_CACHE=0"
+            "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            "ESHKOL_LIB_DIR=$<TARGET_FILE_DIR:eshkol-run>"
+            $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_scope_alias_test.esk"
+            "-L${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(repl_import_alias_lexical_scope_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: import alias lexical scope"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
+    add_test(
+        NAME repl_import_alias_lexical_scope_aot_test
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_scope_alias_aot_test.sh"
+    )
+    set_tests_properties(repl_import_alias_lexical_scope_aot_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 180
+        ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        PASS_REGULAR_EXPRESSION "PASS: import alias lexical scope"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
     if(NOT WIN32 AND TARGET eshkol-repl)
         add_test(
             NAME repl_import_modifiers_interactive_test
@@ -6249,6 +6274,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 120
             ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=$<TARGET_FILE_DIR:eshkol-run>"
             PASS_REGULAR_EXPRESSION "PASS: import modifiers in sequences"
+            FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
+        add_test(
+            NAME repl_import_alias_lexical_scope_interactive_test
+            COMMAND sh -c "\"$1\" < \"$2\"" --
+                $<TARGET_FILE:eshkol-repl>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_scope_alias_test.esk"
+        )
+        set_tests_properties(repl_import_alias_lexical_scope_interactive_test PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            TIMEOUT 120
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=$<TARGET_FILE_DIR:eshkol-run>"
+            PASS_REGULAR_EXPRESSION "PASS: import alias lexical scope"
             FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
     endif()
 
