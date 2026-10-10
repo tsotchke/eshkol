@@ -3409,35 +3409,100 @@ static void update_ast_references(eshkol_ast_t* ast,
                     }
                     break;
 
-                case ESHKOL_DEFINE_OP:
+                case ESHKOL_DEFINE_OP: {
                     // Don't rename the definition name itself - that's handled separately
                     // But do update references in the body
-                    update_ast_references(ast->operation.define_op.value, rename_map);
+                    const auto& def = ast->operation.define_op;
+                    auto scoped_renames = rename_map;
+                    if (def.is_function) {
+                        for (uint64_t i = 0; def.parameters && i < def.num_params; i++) {
+                            if (def.parameters[i].type == ESHKOL_VAR &&
+                                def.parameters[i].variable.id) {
+                                scoped_renames.erase(def.parameters[i].variable.id);
+                            }
+                        }
+                        if (def.is_variadic && def.rest_param) {
+                            scoped_renames.erase(def.rest_param);
+                        }
+                    }
+                    update_ast_references(def.value, scoped_renames);
                     break;
+                }
 
-                case ESHKOL_LAMBDA_OP:
-                    update_ast_references(ast->operation.lambda_op.body, rename_map);
+                case ESHKOL_LAMBDA_OP: {
+                    const auto& lambda = ast->operation.lambda_op;
+                    auto scoped_renames = rename_map;
+                    for (uint64_t i = 0; lambda.parameters && i < lambda.num_params; i++) {
+                        if (lambda.parameters[i].type == ESHKOL_VAR &&
+                            lambda.parameters[i].variable.id) {
+                            scoped_renames.erase(lambda.parameters[i].variable.id);
+                        }
+                    }
+                    if (lambda.is_variadic && lambda.rest_param) {
+                        scoped_renames.erase(lambda.rest_param);
+                    }
+                    update_ast_references(lambda.body, scoped_renames);
                     break;
+                }
 
                 case ESHKOL_LET_OP:
                 case ESHKOL_LET_STAR_OP:
                 case ESHKOL_LETREC_OP:
-                case ESHKOL_LETREC_STAR_OP:  // R7RS letrec* - used for internal defines
-                    // Each binding is a CONS cell: (var . value)
-                    for (uint64_t i = 0; i < ast->operation.let_op.num_bindings; i++) {
-                        eshkol_ast_t* binding = &ast->operation.let_op.bindings[i];
-                        if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
-                            // Update references in the value part
-                            update_ast_references(binding->cons_cell.cdr, rename_map);
-                        } else {
-                            // Fallback: treat entire binding as expression
-                            update_ast_references(binding, rename_map);
+                case ESHKOL_LETREC_STAR_OP: {  // R7RS letrec* - used for internal defines
+                    const auto& let = ast->operation.let_op;
+                    auto body_renames = rename_map;
+                    auto erase_binding_name = [](auto& scoped, const eshkol_ast_t& binding) {
+                        if (binding.type == ESHKOL_CONS && binding.cons_cell.car &&
+                            binding.cons_cell.car->type == ESHKOL_VAR &&
+                            binding.cons_cell.car->variable.id) {
+                            scoped.erase(binding.cons_cell.car->variable.id);
+                        }
+                    };
+                    const bool recursive = ast->operation.op == ESHKOL_LETREC_OP ||
+                                           ast->operation.op == ESHKOL_LETREC_STAR_OP;
+                    const bool sequential = ast->operation.op == ESHKOL_LET_STAR_OP;
+
+                    if (recursive) {
+                        for (uint64_t i = 0; i < let.num_bindings; ++i) {
+                            erase_binding_name(body_renames, let.bindings[i]);
+                        }
+                        for (uint64_t i = 0; i < let.num_bindings; ++i) {
+                            eshkol_ast_t* binding = &let.bindings[i];
+                            if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                                update_ast_references(binding->cons_cell.cdr, body_renames);
+                            } else {
+                                update_ast_references(binding, body_renames);
+                            }
+                        }
+                    } else if (sequential) {
+                        auto initializer_renames = rename_map;
+                        for (uint64_t i = 0; i < let.num_bindings; ++i) {
+                            eshkol_ast_t* binding = &let.bindings[i];
+                            if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                                update_ast_references(binding->cons_cell.cdr,
+                                                      initializer_renames);
+                            } else {
+                                update_ast_references(binding, initializer_renames);
+                            }
+                            erase_binding_name(initializer_renames, *binding);
+                        }
+                        body_renames = std::move(initializer_renames);
+                    } else {
+                        // Ordinary and named LET initializers are outside the new scope.
+                        for (uint64_t i = 0; i < let.num_bindings; ++i) {
+                            eshkol_ast_t* binding = &let.bindings[i];
+                            if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                                update_ast_references(binding->cons_cell.cdr, rename_map);
+                            } else {
+                                update_ast_references(binding, rename_map);
+                            }
+                            erase_binding_name(body_renames, *binding);
                         }
                     }
-                    if (ast->operation.let_op.body) {
-                        update_ast_references(ast->operation.let_op.body, rename_map);
-                    }
+                    if (let.name) body_renames.erase(let.name);
+                    if (let.body) update_ast_references(let.body, body_renames);
                     break;
+                }
 
                 case ESHKOL_SEQUENCE_OP:
                     for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
@@ -3543,7 +3608,6 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_UNLESS_OP:
                 case ESHKOL_DO_OP:
                 case ESHKOL_CASE_OP:
-                case ESHKOL_QUOTE_OP:
                 case ESHKOL_QUASIQUOTE_OP:
                 case ESHKOL_UNQUOTE_OP:
                 case ESHKOL_UNQUOTE_SPLICING_OP:
@@ -3553,6 +3617,10 @@ static void update_ast_references(eshkol_ast_t* ast,
                     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
                         update_ast_references(&ast->operation.call_op.variables[i], rename_map);
                     }
+                    break;
+
+                case ESHKOL_QUOTE_OP:
+                    // Quoted symbols are data and must retain their spelling.
                     break;
 
                 // Control flow operations

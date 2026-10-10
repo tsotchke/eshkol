@@ -170,11 +170,36 @@ def runtime(root, binary, out):
     return report
 
 
+def execution_event(row):
+    """Grade a control against its expected exit while retaining the raw result."""
+    dose=row['dose']
+    expected_exit=0 if dose==0 else 1 if dose in (1,2) else None
+    raw=row.get('execution',{})
+    valid=False
+    try:
+        parsed=json.loads(raw['stdout'])
+        observed=sum(len(item['findings']) for item in parsed['results'])
+        valid=(not parsed.get('error') and not row.get('parse_error')
+               and observed==row['score']
+               and (observed==0 if dose==0 else observed>0))
+    except (KeyError,TypeError,ValueError):
+        pass
+    passed=valid and expected_exit is not None and raw.get('exit_code')==expected_exit
+    return {'kind':'compiler_assurance_execution','name':'closed_enum_dispatch',
+            'value':'PASS' if passed else 'FAIL','execution_id':row['execution_id'],
+            'dose':dose,'expected_exit_code':expected_exit,
+            'actual_exit_code':raw.get('exit_code'),
+            'raw_gate_verdict':'PASS' if raw.get('exit_code')==0 else 'FAIL',
+            'control':'baseline' if dose==0 else 'removed-enum-case'}
+
+
 def self_test():
     rows=[{'dose':d,'score':d,'execution_id':str(uuid.uuid4()),'execution':{'exit_code':0 if d==0 else 1,
                  'stdout':json.dumps({'results':[{'findings':['missing']*d}]})}}
           for d in (0,1,2) for _ in range(4)]
     if validate(rows)['status']!='PASS': raise AssertionError('valid controls rejected')
+    if any(execution_event(row)['value']!='PASS' for row in rows):
+        raise AssertionError('expected control outcomes rejected')
     import copy
     for defect in ('empty','constant','noise','duplicates','failed-baseline','parse-error','forged-score'):
         bad=copy.deepcopy(rows)
@@ -189,7 +214,23 @@ def self_test():
         elif defect=='parse-error': bad[0]['parse_error']='malformed output'
         else: bad[0]['score']=8
         if validate(bad)['status']!='FAIL': raise AssertionError(f'{defect} survived')
-    return {'status':'PASS','controls':7}
+    for defect in ('baseline-exit','surviving-treatment','signal','timeout',
+                   'parse-error','forged-score','missing-findings'):
+        bad=copy.deepcopy(next(row for row in rows if row['dose']==1))
+        if defect=='baseline-exit':
+            bad=copy.deepcopy(rows[0]);bad['execution']['exit_code']=1
+        elif defect=='surviving-treatment': bad['execution']['exit_code']=0
+        elif defect=='signal': bad['execution']['exit_code']=-11
+        elif defect=='timeout': bad['execution']['exit_code']=124
+        elif defect=='parse-error': bad['execution']['stdout']='not JSON'
+        elif defect=='forged-score': bad['score']=8
+        else: bad['execution']['stdout']=json.dumps({'results':[]});bad['score']=0
+        if execution_event(bad)['value']!='FAIL':
+            raise AssertionError(f'{defect} event reported success')
+    event=execution_event(next(row for row in rows if row['dose']==1))
+    if (event['expected_exit_code'],event['actual_exit_code'],event['raw_gate_verdict'])!=(1,1,'FAIL'):
+        raise AssertionError('raw rejection evidence was lost')
+    return {'status':'PASS','controls':7,'event_controls':7}
 
 
 def main():
@@ -224,9 +265,7 @@ def main():
     trace.parent.mkdir(parents=True,exist_ok=True)
     events=[{'kind':'compiler_assurance','name':'compiler_gate_sensitivity','value':report['status'],
              'evidence':str(a.output),'timestamp':time.time()}] if not a.runtime_only else []
-    events += [{'kind':'compiler_assurance_execution','name':'closed_enum_dispatch',
-                'value':'PASS' if r['execution']['exit_code']==0 else 'FAIL',
-                'execution_id':r['execution_id'],'dose':r['dose']} for r in rows]
+    events += [execution_event(r) for r in rows]
     if a.binary: events.append({'kind':'compiler_assurance','name':'compiler_runtime_capabilities','value':report['runtime']['status']})
     text=''.join(json.dumps(e)+'\n' for e in events)
     trace.write_text(text)

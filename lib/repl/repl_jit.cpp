@@ -217,13 +217,100 @@ static void rewrite_repl_import_bindings(
     }
     if (ast->type != ESHKOL_OP) return;
     switch (ast->operation.op) {
-    case ESHKOL_DEFINE_OP:
-        rewrite_repl_import_bindings(ast->operation.define_op.value, bindings);
+    case ESHKOL_DEFINE_OP: {
+        auto scoped_bindings = bindings;
+        const auto& def = ast->operation.define_op;
+        if (def.is_function) {
+            for (uint64_t i = 0; def.parameters && i < def.num_params; ++i) {
+                if (def.parameters[i].type == ESHKOL_VAR &&
+                    def.parameters[i].variable.id) {
+                    scoped_bindings.erase(def.parameters[i].variable.id);
+                }
+            }
+            if (def.is_variadic && def.rest_param) {
+                scoped_bindings.erase(def.rest_param);
+            }
+        }
+        rewrite_repl_import_bindings(def.value, scoped_bindings);
         break;
-    case ESHKOL_LAMBDA_OP:
-        rewrite_repl_import_bindings(ast->operation.lambda_op.body, bindings);
+    }
+    case ESHKOL_LAMBDA_OP: {
+        auto scoped_bindings = bindings;
+        const auto& lambda = ast->operation.lambda_op;
+        for (uint64_t i = 0; i < lambda.num_params; ++i) {
+            if (lambda.parameters && lambda.parameters[i].type == ESHKOL_VAR &&
+                lambda.parameters[i].variable.id) {
+                scoped_bindings.erase(lambda.parameters[i].variable.id);
+            }
+        }
+        if (lambda.is_variadic && lambda.rest_param) {
+            scoped_bindings.erase(lambda.rest_param);
+        }
+        rewrite_repl_import_bindings(lambda.body, scoped_bindings);
         break;
+    }
+    case ESHKOL_LET_OP:
+    case ESHKOL_LET_STAR_OP:
+    case ESHKOL_LETREC_OP:
+    case ESHKOL_LETREC_STAR_OP: {
+        const auto& let = ast->operation.let_op;
+        auto body_bindings = bindings;
+        auto erase_binding_name = [&](auto& scoped, const eshkol_ast_t& binding) {
+            if (binding.type == ESHKOL_CONS && binding.cons_cell.car &&
+                binding.cons_cell.car->type == ESHKOL_VAR &&
+                binding.cons_cell.car->variable.id) {
+                scoped.erase(binding.cons_cell.car->variable.id);
+            }
+        };
+
+        if (ast->operation.op == ESHKOL_LETREC_OP ||
+            ast->operation.op == ESHKOL_LETREC_STAR_OP) {
+            for (uint64_t i = 0; i < let.num_bindings; ++i) {
+                erase_binding_name(body_bindings, let.bindings[i]);
+            }
+            for (uint64_t i = 0; i < let.num_bindings; ++i) {
+                eshkol_ast_t& binding = let.bindings[i];
+                if (binding.type == ESHKOL_CONS && binding.cons_cell.cdr) {
+                    rewrite_repl_import_bindings(binding.cons_cell.cdr,
+                                                 body_bindings);
+                } else {
+                    rewrite_repl_import_bindings(&binding, body_bindings);
+                }
+            }
+        } else if (ast->operation.op == ESHKOL_LET_STAR_OP) {
+            auto initializer_bindings = bindings;
+            for (uint64_t i = 0; i < let.num_bindings; ++i) {
+                eshkol_ast_t& binding = let.bindings[i];
+                if (binding.type == ESHKOL_CONS && binding.cons_cell.cdr) {
+                    rewrite_repl_import_bindings(binding.cons_cell.cdr,
+                                                 initializer_bindings);
+                } else {
+                    rewrite_repl_import_bindings(&binding,
+                                                 initializer_bindings);
+                }
+                erase_binding_name(initializer_bindings, binding);
+            }
+            body_bindings = std::move(initializer_bindings);
+        } else {
+            // Ordinary and named LET initializers are outside the new scope.
+            for (uint64_t i = 0; i < let.num_bindings; ++i) {
+                eshkol_ast_t& binding = let.bindings[i];
+                if (binding.type == ESHKOL_CONS && binding.cons_cell.cdr) {
+                    rewrite_repl_import_bindings(binding.cons_cell.cdr,
+                                                 bindings);
+                } else {
+                    rewrite_repl_import_bindings(&binding, bindings);
+                }
+                erase_binding_name(body_bindings, binding);
+            }
+        }
+        if (let.name) body_bindings.erase(let.name);
+        rewrite_repl_import_bindings(let.body, body_bindings);
+        break;
+    }
     case ESHKOL_SEQUENCE_OP:
+    case ESHKOL_AND_OP:
+    case ESHKOL_OR_OP:
         for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; ++i)
             rewrite_repl_import_bindings(&ast->operation.sequence_op.expressions[i], bindings);
         break;
@@ -3537,6 +3624,12 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
         }
     }
 
+    // File evaluation uses batches after processing its imports. Resolve the
+    // same provider spellings used by single-form execution before codegen.
+    for (auto& ast_item : asts) {
+        rewrite_repl_import_bindings(&ast_item, import_bindings_);
+    }
+
     // Pre-register all lambda variables so they're tracked
     for (auto& ast_item : asts) {
         if (ast_item.type == ESHKOL_OP && ast_item.operation.op == ESHKOL_DEFINE_OP) {
@@ -3831,7 +3924,12 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
             incrementEvalCounter();
             typedef int32_t (*EvalFunc)(int32_t, char**);
             EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);
+            // Bracket the evaluation so a continuation captured in it is
+            // resumed only while it is live (see runtime_continuations.cpp).
+            const uint64_t extent =
+                eshkol_continuation_extent_enter(__builtin_frame_address(0));
             int32_t result_value = eval_func(0, nullptr);
+            eshkol_continuation_extent_leave(extent);
             result = new int64_t(result_value);
         }
     } else {
@@ -4374,7 +4472,11 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     typedef int32_t (*EvalFunc)(int32_t, char**);
     EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);
 
+    // Bracket the evaluation so a continuation captured in it is resumed only
+    // while it is live (see runtime_continuations.cpp).
+    const uint64_t extent = eshkol_continuation_extent_enter(__builtin_frame_address(0));
     int32_t result_value = eval_func(0, nullptr);
+    eshkol_continuation_extent_leave(extent);
 
     // CRITICAL: NOW capture s-expression values AFTER execution
     // The entry function has initialized these globals, so now they contain valid values

@@ -34,7 +34,8 @@ class CatalogueError(ValueError):
     pass
 
 
-FAMILIES = ("ESHKOL_NS_EXAMPLES", "ESHKOL_IPM_EXAMPLES")
+FAMILIES = ("ESHKOL_NS_EXAMPLES", "ESHKOL_IPM_EXAMPLES", "ESHKOL_AI_WITNESS_EXAMPLES")
+FAMILY_PREFIX = {"ESHKOL_NS_EXAMPLES": "ns", "ESHKOL_IPM_EXAMPLES": "ipm", "ESHKOL_AI_WITNESS_EXAMPLES": "aiw"}
 FIELDS = ("title", "purpose", "algorithm", "domain", "arithmetic", "validation", "limitations", "prerequisites", "literature_review")
 AI_NAMES = {"mathematics_jacobian_counterexample", "mathematics_alphatensor_gf2", "mathematics_alphatensor_3x3_gf2", "mathematics_funsearch_cap_set"}
 CATALOGUE_SCHEMA = "eshkol.example-catalogue.v2"
@@ -91,7 +92,7 @@ def registration_matrix(root, paths):
         prior_if = text.rfind("if(", 0, matches[0].start())
         if prior_if < 0 or not text[prior_if:].startswith("if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)"):
             raise CatalogueError(f"authored build/target condition changed: {family}")
-        prefix = "ns" if family == "ESHKOL_NS_EXAMPLES" else "ipm"
+        prefix = FAMILY_PREFIX[family]
         start = matches[0].end()
         loop_end = text.find("endforeach()", start)
         block = text[start:loop_end] if loop_end >= 0 else ""
@@ -100,8 +101,10 @@ def registration_matrix(root, paths):
                 raise CatalogueError(f"missing/duplicate authored {mode} registration for {family}")
         if f'"${{CMAKE_CURRENT_SOURCE_DIR}}/examples/${{_{prefix}_file}}.esk"' not in block or 'PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"' not in block:
             raise CatalogueError(f"unrecognized source/verdict registration contract: {family}")
-        if f'COMMAND $<TARGET_FILE:eshkol-run> -r "${{_{prefix}_src}}"' not in block or f"'${{_{prefix}_src}}' && '${{CMAKE_CURRENT_BINARY_DIR}}/${{_{prefix}_file}}_aot'" not in block:
+        if f'COMMAND $<TARGET_FILE:eshkol-run> -r "${{_{prefix}_src}}"' not in block or f"'${{_{prefix}_src}}' && '${{CMAKE_CURRENT_BINARY_DIR}}/${{_{prefix}_name}}_aot'" not in block:
             raise CatalogueError(f"native JIT/AOT command routing changed: {family}")
+        if f'ENVIRONMENT "ESHKOL_PATH=${{CMAKE_CURRENT_SOURCE_DIR}}/lib"' not in block[block.find(f'set_tests_properties(${{_{prefix}_name}}_aot'):]:
+            raise CatalogueError(f"AOT stdlib environment missing: {family}")
         if f'list(GET {family} ${{_{prefix}_i}} _{prefix}_name)' not in block or f'list(GET {family} ${{_{prefix}_j}} _{prefix}_file)' not in block:
             raise CatalogueError(f"criterion/source routing changed: {family}")
         rows, names = [], set()
@@ -182,7 +185,7 @@ def load_catalogue(root, path, paths, matrix):
         raise CatalogueError("invalid general runner discovery/mode")
     skip = text.split("example_should_skip() {", 1)[-1].split("print_empty_examples_summary()", 1)[0]
     quantum = re.search(r"\n\s*([a-z0-9_.|]+)\)\s*\n\s*if \[.*ESHKOL_QUANTUM_ENABLED", skip)
-    excluded = re.search(r"\n\s*(selene_[^\n]+)\)\s*\n\s*return 0", skip)
+    excluded = re.search(r"\n\s*(selene_[^\n]+)\)\s*\n(?:\s*SKIP_REASON=[^\n]*\n)?\s*return 0", skip)
     if not quantum or not excluded or runner.get("quantum_sources") != ["examples/" + p for p in quantum[1].split("|")] or runner.get("excluded_patterns") != excluded[1].split("|") or runner.get("quantum_condition") != "ESHKOL_QUANTUM_ENABLED=ON":
         raise CatalogueError("general runner conditional/exclusion scope disagrees with review")
     return catalogue
@@ -610,7 +613,15 @@ sources:
     for family, group in matrix.items():
         matrix_rows.append(f"| `{family}` | {group['distinct_sources']} | {group['criteria']} | {group['ctest_entries']} |")
     math_text[-1] += '\n' + '\n'.join(matrix_rows)
-    math_text += ['\nRegistration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repeated criteria for one program are counted separately; the localization source has three NS criteria. Six programs (the four AI-witness programs and the two parametric sweeps of group homology and Aoki cycles) have no dedicated criterion; they are run by the general examples runner.',
+    no_criteria = [e for e in math if not e['registrations']]
+    if no_criteria:
+        names = ', '.join(f"`{Path(e['path']).stem}`" for e in no_criteria)
+        verb = "have" if len(no_criteria) != 1 else "has"
+        pronoun = "they are" if len(no_criteria) != 1 else "it is"
+        no_criteria_note = f" {len(no_criteria)} program{'s' if len(no_criteria) != 1 else ''} ({names}) {verb} no dedicated criterion; {pronoun} run by the general examples runner."
+    else:
+        no_criteria_note = " Every mathematics program carries a dedicated criterion."
+    math_text += ['\nRegistration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repeated criteria for one program are counted separately; the localization source has three NS criteria.' + no_criteria_note,
         '| Program | Measured JIT / AOT | Dedicated criteria |\n|---|---|---|' + ''.join(f"\n| [{e['title']}](#{anchor(e)}) | {status_pair(e, measurements)} | {', '.join('`'+r['criterion']+'`' for r in e['registrations']) or 'general runner only'} |" for e in math)]
     math_text += [entry_text(e, measurements) for e in math]
     ns_entries = [e for e in entries if any(r['family']=='ESHKOL_NS_EXAMPLES' for r in e['registrations'])]
@@ -634,7 +645,7 @@ sources:
     ai=marker(ai,'ai-inventory',ai_block)
     readme=(root/'examples/README.md').read_text()
     overview=[f"The reviewed catalogue covers **{len(entries)} programs**, including **{len(math)} mathematics programs**. Start with the [complete guide](../docs/EXAMPLES.md) or the [mathematics guide](../docs/MATHEMATICS_EXAMPLES.md) for published results, references, algorithms, domains, arithmetic, checks, limits, measured outcomes and per-program commands.",
-        f"The general runner discovers **{len(flat)} flat sources** for native AOT, with **{len(quantum)} quantum-conditional programs** and the existing declared exclusions. The nested [WGSL generator](wgsl_artifact/README.md) follows its artifact pipeline. Dedicated mathematics registration contains NS **{matrix['ESHKOL_NS_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_NS_EXAMPLES']['criteria']}/{matrix['ESHKOL_NS_EXAMPLES']['ctest_entries']}** and IPM **{matrix['ESHKOL_IPM_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_IPM_EXAMPLES']['criteria']}/{matrix['ESHKOL_IPM_EXAMPLES']['ctest_entries']}** programs/criteria/JIT-AOT entries, under the authored build condition.",
+        f"The general runner discovers **{len(flat)} flat sources** for native AOT, with **{len(quantum)} quantum-conditional programs** and the existing declared exclusions. The nested [WGSL generator](wgsl_artifact/README.md) follows its artifact pipeline. Dedicated mathematics registration contains NS **{matrix['ESHKOL_NS_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_NS_EXAMPLES']['criteria']}/{matrix['ESHKOL_NS_EXAMPLES']['ctest_entries']}**, IPM **{matrix['ESHKOL_IPM_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_IPM_EXAMPLES']['criteria']}/{matrix['ESHKOL_IPM_EXAMPLES']['ctest_entries']}** and AI-witness **{matrix['ESHKOL_AI_WITNESS_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_AI_WITNESS_EXAMPLES']['criteria']}/{matrix['ESHKOL_AI_WITNESS_EXAMPLES']['ctest_entries']}** programs/criteria/JIT-AOT entries, under the authored build condition.",
         outcome_summary(entries, measurements, "programs").replace("](#", "](../docs/EXAMPLES.md#") if measurements is None else
         outcome_summary(entries, measurements, "programs").replace("](#mathematics-", "](../docs/MATHEMATICS_EXAMPLES.md#mathematics-").replace("](#", "](../docs/EXAMPLES.md#"),
         "Each entry distinguishes asserted checks from printed diagnostics. Cross-host byte equality and backend dispatch need their own measured evidence.",
