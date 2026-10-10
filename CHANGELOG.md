@@ -164,6 +164,13 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   provisions browser/semantic test dependencies, and reads actual CTest failure
   records. The reviewed browser ABI consumers are explicitly inventoried; the
   value-position sweep emits progress for timeout diagnosis. (#744)
+
+- **Browser tensor arithmetic preserves forward derivatives.** Both LLVM/WASM
+  host bundles implement elementwise arithmetic and matrix multiplication for
+  all eight flat dual coefficients, retain exact scalar slots, and use checked
+  tensor allocation across memory growth. Taylor carriers and mixed reverse-mode
+  inputs refuse explicitly. Compiler-emitted programs and an independent wasm32
+  ABI caller exercise both production bundles. (#766)
 - **Example documentation follows the implementations.** The catalogue covers all
   67 programs, including 46 mathematics examples, with algorithms, arithmetic,
   executable checks, prerequisites and limits. Navier–Stokes registration is

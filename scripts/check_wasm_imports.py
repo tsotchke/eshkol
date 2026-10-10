@@ -122,6 +122,7 @@ def validate_wasm_abi_geometry(js_text: str) -> list[str]:
 # Smoke programs — each picks a different runtime surface. Add new programs
 # here when a new runtime helper is introduced and you want CI to exercise it.
 SMOKE_PROGRAMS = {
+    "tensor_forward_jets": (REPO_ROOT / "tests/toolchain/wasm_tensor_jet_browser.esk").read_text(),
     "symbols": "(define x 'foo) (display (eq? x 'foo)) (newline)",
     "arena_lists": "(define xs (list 1 2 3)) (display (length xs)) (newline)",
     "math_tensor": "(define v (vector 1.0 2.0 3.0)) (display (vector-length v)) (newline)",
