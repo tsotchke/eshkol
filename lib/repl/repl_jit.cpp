@@ -224,6 +224,8 @@ static void rewrite_repl_import_bindings(
         rewrite_repl_import_bindings(ast->operation.lambda_op.body, bindings);
         break;
     case ESHKOL_SEQUENCE_OP:
+    case ESHKOL_AND_OP:
+    case ESHKOL_OR_OP:
         for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; ++i)
             rewrite_repl_import_bindings(&ast->operation.sequence_op.expressions[i], bindings);
         break;
@@ -3535,6 +3537,12 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
             throw std::runtime_error(
                 "failed to establish explicit JIT batch source context");
         }
+    }
+
+    // File evaluation uses batches after processing its imports. Resolve the
+    // same provider spellings used by single-form execution before codegen.
+    for (auto& ast_item : asts) {
+        rewrite_repl_import_bindings(&ast_item, import_bindings_);
     }
 
     // Pre-register all lambda variables so they're tracked

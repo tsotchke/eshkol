@@ -6221,6 +6221,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: piped REPL"
             FAIL_REGULAR_EXPRESSION "^FAIL:")
     endif()
+    # Exercise ORC directly: the run-cache shortcut uses a different import path.
+    add_test(
+        NAME repl_import_modifiers_sequence_test
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_JIT_CACHE=0"
+            "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            "ESHKOL_LIB_DIR=$<TARGET_FILE_DIR:eshkol-run>"
+            $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_modifiers_sequence_test.esk"
+            "-L${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(repl_import_modifiers_sequence_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: import modifiers in sequences"
+        FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:")
+    if(NOT WIN32 AND TARGET eshkol-repl)
+        add_test(
+            NAME repl_import_modifiers_interactive_test
+            COMMAND sh -c "\"$1\" < \"$2\"" --
+                $<TARGET_FILE:eshkol-repl>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/import_modifiers_sequence_test.esk"
+        )
+        set_tests_properties(repl_import_modifiers_interactive_test PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            TIMEOUT 120
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=$<TARGET_FILE_DIR:eshkol-run>"
+            PASS_REGULAR_EXPRESSION "PASS: import modifiers in sequences"
+            FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
+    endif()
+
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
     # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
     # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently
