@@ -109,8 +109,11 @@ def main():
     p.add_argument('--allow-pending', action='store_true')
     p.add_argument('--role', choices=('preparation', 'candidate-proof', 'tag-publication'))
     p.add_argument('--record', default='tests/coverage/release_record.json')
-    for option in ('evidence-root', 'receipt', 'workspace', 'sha', 'target'):
-        p.add_argument('--' + option)
+    p.add_argument('--evidence-root')
+    p.add_argument('--receipt')
+    p.add_argument('--workspace')
+    p.add_argument('--sha')
+    p.add_argument('--target')
     p.add_argument('--run-id', type=int)
     p.add_argument('--run-attempt', type=int)
     args = parser.parse_args()

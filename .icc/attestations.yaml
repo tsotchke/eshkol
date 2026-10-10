@@ -1160,3 +1160,95 @@ attestations:
     encoding="utf-8")'
   stable_key: b012d1f6e33c1c0b60f5f00ee7e6596e0949f25ba3b8fe2e946e5304c4cf9d1a
   hmac: e394f1efb40c50c2787a163c893ac55660f71fec38fba882722f3c4a887a0869
+- finding_key: cce96fb434cf752980a1ecb7a2a6b22db25036094dcdace411fb712f955dff62
+  path: scripts/check_self_verdicts.py
+  line: 413
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:divergence
+  severity: low
+  reason: Isolated self-test fixture consumed by scan_manifest in the same self-test.
+    The manifest control requires exactly one contradiction for this fixture and verifies
+    the named lane; the measured self-test passes. This file is test input rather
+    than a delivered artifact.
+  attested_by: tsotchke
+  attested_at: '2026-10-10T02:53:51Z'
+  valid_until: null
+  evidence_link: scripts/check_self_verdicts.py --self-test; measured 2026-10-10 at
+    d2a62b77a
+  line_text: '        div_log = _write(tmp_dir, "divergence.log", "native: 42\nvm:
+    41\nDIVERGENCE: values differ\n")'
+  stable_key: e273e05d57d10397ecc125fc4b544b010e11adf12ed08ce1739d7d959eb31868
+  hmac: 75f209f569c7742e79241c2aa8ccfa01b2cb7b83b821c4cb1f462466aecd580b
+- finding_key: 2b90e7167a149c5a7d14299ebe610949aa0566499f4b9d18f40627e717f7ced4
+  path: scripts/ci_equivalent_head.py
+  line: 356
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:feature
+  severity: low
+  reason: Isolated self-test Git fixture. Byte-identical feature payloads on the original,
+    recommitted and rebased branches exercise the equivalence predicates; the self-test
+    verifies those cases and a distinct-payload control. No product artifact is produced
+    by these fixture writes.
+  attested_by: tsotchke
+  attested_at: '2026-10-10T02:54:13Z'
+  valid_until: null
+  evidence_link: scripts/ci_equivalent_head.py --self-test; measured 2026-10-10 at
+    d2a62b77a
+  line_text: '    (root / "feature.txt").write_text("feature payload\n")'
+  stable_key: 7af5e5c5dfe52bcd82cae78d39ff04e474e56830fd01706dd461183a30bad86a
+  hmac: c878e73b6355779268e7d80add71868fde0e0b6ca2142f22dbacc9a76ed1564e
+- finding_key: 8389a6a35e6a5327309c0348ef74f2aa951e4444f56aec9d68afc85a3dac2a63
+  path: scripts/ci_equivalent_head.py
+  line: 371
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:feature
+  severity: low
+  reason: Isolated self-test Git fixture containing a distinct payload. The measured
+    self-test verifies that this content is not equivalent to the original, alongside
+    the byte-identical positive cases. The file is retained only within the self-test
+    temporary repository.
+  attested_by: tsotchke
+  attested_at: '2026-10-10T02:54:35Z'
+  valid_until: null
+  evidence_link: scripts/ci_equivalent_head.py --self-test; measured 2026-10-10 at
+    d2a62b77a
+  line_text: '    (root / "feature.txt").write_text("a different payload entirely\n")'
+  stable_key: 2eeefa483e0334ec15690d345c5befc9e7ed81b07abb51476268836455ee4481
+  hmac: b801c5fb2c92cecdaea6e293e7efb7c0840697afc8db99805842f6266e25db90
+- finding_key: 6aeafc83400ca32af0d0a27330e6c0f42d6b85daef4fa0d8b749960ee9f98c06
+  path: scripts/run_compiler_assurance.py
+  line: 169
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:runtime
+  severity: low
+  reason: Diagnostic runtime report from four executed compiler probes with independent
+    expected outputs. runtime() records exit codes and output comparisons, verifies
+    the binary digest remains unchanged, and main propagates any unsuccessful probe
+    through its exit status and compiler_runtime_capabilities trace. The measured
+    producer completed all four probes; this retained report is an audit artifact,
+    not an unvalidated product input.
+  attested_by: tsotchke
+  attested_at: '2026-10-10T03:42:09Z'
+  valid_until: null
+  evidence_link: scripts/run_compiler_assurance.py --runtime-only; four probes PASS
+    2026-10-10, compiler sha256 98e5b215bf031bbfc05d48451578010b26f6b948747d3a6663e12fdd2c824537
+  line_text: '    write(out/''runtime.json'',report)'
+  stable_key: fff61aa933c7b911f08490d9fcdf9f8c3fa1aaf64824770d7054535783ed452d
+  hmac: e3912d1c8170f49b247a50cdac66c2af5c086b4a915eafcf87975c6afd33ea59
+- finding_key: 4c4a43bc0160b3c2fb35f6851bfa9feb7b5d08d74045583670fc40d34a122f6d
+  path: scripts/wasm_exact_browser_smoke.py
+  line: 140
+  pattern: contract-gap:artifact_without_test_or_trace:Artifact:browser_values
+  severity: low
+  reason: Browser audit receipt is written only after compiled WASM values, formatter
+    controls, scalar AD and explicit refusal checks complete for both shipped host
+    bundles. Exact fractions and IEEE bit patterns are computed independently in Python.
+    The real Chrome run completed 48 compiled values and 11 formatter controls per
+    bundle; the receipt binds compiler, fixture and WASM digests. This file retains
+    validated observations rather than providing an unchecked product input.
+  attested_by: tsotchke
+  attested_at: '2026-10-10T04:19:55Z'
+  valid_until: null
+  evidence_link: scripts/wasm_exact_browser_smoke.py canonical CPU/WASM profile; both
+    bundles PASS 2026-10-10, plus Chrome closure controls and CI-registered Node ABI
+    controls
+  line_text: '    (evidence / "browser-values.json").write_text(json.dumps(receipt,
+    indent=2) + "\n")'
+  stable_key: ac5b575195328d89d34a36f1371719a144c02e4463dd9ec666ad20869ecf8e4e
+  hmac: 92a13103561fa1ef32f8e63ceb4b4381ddc8c0d96fff0bf46be8567f68bbfef7

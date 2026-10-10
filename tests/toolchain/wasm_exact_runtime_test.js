@@ -54,6 +54,28 @@ async function run(file, className) {
     assert.deepEqual(abi.eshkol_rational_floor_tagged,['arena_ptr','rational_payload_ptr','tagged_out_ptr']);
     assert.deepEqual(abi.eshkol_rational_compare_tagged_ptr,['arena_ptr','tagged_ptr','tagged_ptr','i32','tagged_out_ptr']);
     const memory = rt.memory || rt._importedMemory;
+    const closure = (imports, funcPtr, packedInfo, sexprPtr, returnTypeInfo, namePtr) =>
+        imports.arena_allocate_closure_with_header(1, funcPtr, packedInfo, sexprPtr, returnTypeInfo, namePtr);
+    const assertClosure = (p, packedInfo, subtype, namePtr, variadic) => {
+        const v = new DataView(memory.buffer);
+        assert.ok(p > 0 && (p & 7) === 0 && p + 40 <= memory.buffer.byteLength);
+        assert.equal(v.getUint8(p - 8), subtype);
+        assert.equal(v.getUint32(p - 4, true), 40);
+        assert.equal(v.getBigUint64(p, true), 0x1234n);
+        assert.equal(v.getBigUint64(p + 16, true), 0x5678n);
+        assert.equal(v.getUint32(p + 24, true), Number(namePtr & 0xffffffffn));
+        assert.equal(v.getUint8(p + 32), 1);
+        assert.equal(v.getUint8(p + 33), 2);
+        assert.equal(v.getUint8(p + 34), (variadic ? 1 : 0) | (namePtr !== 0n ? 2 : 0));
+        assert.equal(v.getUint8(p + 35), 0);
+        assert.equal(v.getUint32(p + 36, true), 0x9abcdef0);
+        const env = v.getUint32(p + 8, true);
+        if (packedInfo === 0n) assert.equal(env, 0);
+        else {
+            assert.ok(env && (env & 7) === 0 && env + 8 + Number(packedInfo & 0xffffffffn) * 16 <= memory.buffer.byteLength);
+            assert.equal(new DataView(memory.buffer).getBigUint64(env, true), packedInfo);
+        }
+    };
     const instance = await WebAssembly.instantiate(wasm, { env });
     const dv = () => new DataView(memory.buffer), out = 4096;
     const readBig = p => {
@@ -84,6 +106,34 @@ async function run(file, className) {
     const formatBuffer=env.arena_allocate_string_with_header(1,48);
     assert.equal(dv().getUint8(formatBuffer-8),1);
     assert.equal(dv().getUint32(formatBuffer-4,true),49);
+    // Closure ABI controls: zero captures, metadata/name/variadic boundaries,
+    // and a capture allocation that crosses the linear-memory growth boundary.
+    const typeInfo = 0x9abcdef00201n;
+    const zeroClosure = closure(env, 0x1234n, 0n, 0x5678n, typeInfo, 0x12345678n);
+    assertClosure(zeroClosure, 0n, 1, 0x12345678n, false);
+    const packedClosure = (0x3n << 32n) | 2n;
+    const beforeGrowth = memory.buffer;
+    const freeBeforeGrowth = memory.buffer.byteLength - rt._bumpPtr;
+    rt._bump(freeBeforeGrowth - 48);
+    const grownClosure = closure(env, 0x1234n, packedClosure, 0x5678n, typeInfo, 0x12345678n);
+    assert.notEqual(memory.buffer, beforeGrowth, `${file}: closure capture allocation grows memory safely`);
+    assertClosure(grownClosure, packedClosure, 0, 0x12345678n, false);
+    const variadicPacked = (1n << 63n) | (0xffffn << 32n) | 1n;
+    const variadicClosure = closure(env, 0x1234n, variadicPacked, 0x5678n, typeInfo, 0xfeedbeefn);
+    assertClosure(variadicClosure, variadicPacked, 0, 0xfeedbeefn, true);
+    // A fixed one-page memory cannot grow. The closure header fits exactly,
+    // but its capture environment is refused; transaction rollback must leave
+    // the bump pointer at the pre-call checkpoint.
+    const limitedRuntime = load(file, className);
+    if (className === 'EshkolRepl') limitedRuntime.memory = new WebAssembly.Memory({initial: 3, maximum: 3});
+    else limitedRuntime._importedMemory = new WebAssembly.Memory({initial: 20, maximum: 20});
+    limitedRuntime.prepareWasm(wasm);
+    const limitedEnv = limitedRuntime.createImports().env;
+    const limitedMemory = limitedRuntime.memory || limitedRuntime._importedMemory;
+    limitedRuntime._bump(limitedMemory.buffer.byteLength - limitedRuntime._bumpPtr - 48);
+    const checkpointClosure = limitedRuntime._bumpPtr;
+    assert.throws(() => closure(limitedEnv, 0x1234n, packedClosure, 0x5678n, typeInfo, 0n), /arena exhausted/);
+    assert.equal(limitedRuntime._bumpPtr, checkpointClosure, `${file}: failed closure allocation rolls back`);
     const check = d => {
         assert.equal(bits(Number(rt._exact.format({double:d}))),bits(d),'finite decimal readback preserves IEEE bits');
         assert.equal(env.eshkol_format_double(formatBuffer,48,d),rt._exact.format({double:d}).length);

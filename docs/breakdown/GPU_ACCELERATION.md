@@ -1123,7 +1123,7 @@ are then set to `nil` in order.
 
 ### Implementation Scope
 
-The CUDA backend (`lib/backend/gpu/gpu_memory_cuda.cpp`, 1,595 lines) is a
+The CUDA backend (`lib/backend/gpu/gpu_memory_cuda.cpp`, 1,629 lines) is a
 fully functional GPU acceleration path for NVIDIA hardware. Unlike the Metal
 backend which requires SF64 software emulation, CUDA provides native f64
 hardware, so no precision emulation is needed.

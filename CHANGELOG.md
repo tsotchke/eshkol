@@ -16,6 +16,15 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Browser closure allocation follows the native WASM layout.** Both host
+  bundles initialize closure headers, captured environments and callable
+  metadata, retain valid views across linear-memory growth, and restore the
+  allocation position when capture storage cannot be reserved. Compiled
+  Chrome checks and the existing Node ABI suite cover these paths. (#752)
+- **Release interfaces and evidence are explicit.** The notes command lists
+  its proof-binding options directly; reviewed diagnostic artifacts retain
+  their measured validation records. Architecture source figures match
+  the integrated files. (#752)
 - **Example outcomes are bound to their measured sources.** The catalogue
   records native JIT and AOT outcomes for all 67 programs. All 46 mathematics
   programs ran in both modes; 45 emitted their explicit all-pass result and
@@ -42,7 +51,7 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   lanes after its two-hour limit interrupted passing tests. (#752)
 - **ABI inventory accounts for the integrated contributor changes.** The
   baseline records the ESKM name-size accessor and eleven allocator sites in
-  three regression-test files, with exact counts and review reasons. Lexical
+  three test fixture files, with exact counts and review reasons. Lexical
   and semantic ratchets and injected-site negative controls remain enforced. (#752)
 - **Native AOT linking preserves C++ compiler-driver names.** A configured
   `clang++` symlink keeps its invocation name when resolved, so linking retains
