@@ -26,6 +26,15 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   to a minimum-norm value; the paper runner supports its quick mode. XLA
   packages include the vendored PJRT header's license, editor language icons
   resolve, and the codegen audit recognizes routed AST dispatch. (#764)
+- **Macro expansion retains bindings through deeply nested forms.** The
+  traversal uses an explicit work stack for nested expressions. Test harnesses
+  apply one wall-clock guard to each complete process group, and AD probes
+  use their recorded per-program budgets. (#765)
+- **Stress measurements use the host platform’s time utility.** BSD and GNU
+  resident-memory units are converted to MiB; incomplete measurements remain
+  failing infrastructure results, including known-result rows. Timeout controls
+  select a portable locale, and the WASM import test uses the configured Node
+  runtime. (#765)
 
 - **CUDA bfloat16 matrix multiplication preserves its exponent range.**
   Single and batched products use the operands' declared f16 or bf16 format
