@@ -22,7 +22,11 @@ bash scripts/run_stress.sh --only sort  # substring filter
 Every row of `budgets.tsv` (file, mode, class, wall-time ceiling, per-mode
 max-RSS ceiling, expected stdout, XKNOWN tracking id) is executed under the JIT
 and/or AOT and classified as `PASS / FAIL / CRASH / HANG / OVER-RSS /
-OVER-TIME` (plus `XKNOWN` / `XPASS` for rows that carry a tracking id). RSS comes from `/usr/bin/time -l` (max resident set size);
+OVER-TIME / INFRA` (plus `XKNOWN` / `XPASS` for rows that carry a tracking id).
+RSS comes from BSD `/usr/bin/time -l` on macOS or GNU `/usr/bin/time -v` on Linux,
+with bytes or KiB converted to MiB. Missing or invalid RSS measurements produce
+`INFRA` and fail the gate, including rows with a known-result allowance.
+The execution result and child diagnostics remain in the report;
 timeouts use `scripts/lib/guarded_exec.pl` (macOS has no `timeout(1)`), which
 stops the program together with every process it started. Reference baselines on
 macOS arm64: a trivial `-r` run is ~222MB RSS (stdlib object + LLVM), a
@@ -99,7 +103,7 @@ modes at v1.3.6-evolve.
 1. Drop a self-checking `.esk` in `tests/stress/` (print a unique `OK …`
    token) or a generator stanza in `gen_stress_sources.sh`.
 2. Add a `budgets.tsv` row; measure first (`/usr/bin/time -l build/eshkol-run
-   -r file.esk`), then set ceilings just above the measurement with a comment
+   -r file.esk` on macOS, or `-v` instead of `-l` on Linux), then set ceilings just above the measurement with a comment
    if they deviate from the defaults (384MB r / 128–160MB aot / 60s).
 3. If it pins an open divergence: put the repro in `found/`, add the
    measured numbers to its header, create the tracking entry, and set the
