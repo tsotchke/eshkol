@@ -30,7 +30,8 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   The edge-matrix generator matches the committed 300-pair corpus, and qLLM
   oracle metadata reads the version of the binary under test. NS/IPM AOT and
   VM mathematics tests locate the source stdlib explicitly; parallel NS/IPM
-  criteria use distinct output executables. (#761)
+  criteria use distinct output executables. Mutation controls report whether
+  the expected outcome occurred while retaining each gate's raw exit code. (#761)
 
 - **Example outcomes are bound to their measured sources.** The catalogue
   records native JIT and AOT outcomes for all 67 programs. All 46 mathematics
