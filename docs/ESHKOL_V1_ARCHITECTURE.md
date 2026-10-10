@@ -1322,11 +1322,7 @@ Where n = number of operations.
 
 ## Build System
 
-<<<<<<< HEAD
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (12,530 lines)
-=======
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (12,472 lines)
->>>>>>> df9290ce5 (Record tooling coverage and current build references)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (12,570 lines)
 
 ### Requirements
 

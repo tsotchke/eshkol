@@ -3788,9 +3788,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
             add_test(NAME ${_aiw_name}_aot
                 COMMAND sh -c
-                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_aiw_file}_aot' '${_aiw_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_aiw_file}_aot'")
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_aiw_name}_aot' '${_aiw_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_aiw_name}_aot'")
             set_tests_properties(${_aiw_name}_aot PROPERTIES
                 TIMEOUT 300
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
         endif()
