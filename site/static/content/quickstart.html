@@ -199,13 +199,13 @@ eshkol-run hello.esk -o hello
 <p>N-dimensional arrays for numerical computing.</p>
 <pre class="scheme"><code>; Create tensors
 (define v (vector 1.0 2.0 3.0))         ; 1D vector
-(define M #((1 2 3) (4 5 6)))           ; 2D matrix (literal syntax)
+(define M #(#(1 2 3) #(4 5 6)))         ; 2D matrix (literal syntax: a vector of row vectors)
 
 ; Tensor creation functions
 (zeros 5)           ; =&gt; #(0.0 0.0 0.0 0.0 0.0)
 (ones 2 3)          ; =&gt; #((1.0 1.0 1.0) (1.0 1.0 1.0))
-(eye 3)             ; =&gt; 3×3 identity matrix
-(arange 0.0 1.0 0.2) ; =&gt; #(0.0 0.2 0.4 0.6 0.8)
+(eye 3)             ; =&gt; #((1 0 0) (0 1 0) (0 0 1))  (a 3x3 identity matrix)
+(arange 0.0 1.0 0.2) ; =&gt; #(0 0.2 0.4 0.6000000000000001 0.8)  (step accumulates in floating point)
 
 ; Element access
 (vref v 0)          ; =&gt; 1.0
@@ -216,8 +216,8 @@ eshkol-run hello.esk -o hello
 (tensor-mul v v)                ; =&gt; #(1.0 4.0 9.0)
 
 ; Linear algebra
-(define A #((1 2) (3 4)))
-(define B #((5 6) (7 8)))
+(define A #(#(1 2) #(3 4)))
+(define B #(#(5 6) #(7 8)))
 (matmul A B)        ; =&gt; #((19 22) (43 50))
 (transpose A)       ; =&gt; #((1 3) (2 4))
 (trace A)           ; =&gt; 5.0
@@ -257,6 +257,7 @@ eshkol-run hello.esk -o hello
 <hr />
 <h3 id="reverse-mode-ad-backpropagation">Reverse-Mode AD (Backpropagation)</h3>
 <p>Efficient for functions ℝⁿ → ℝ (many inputs, single output). Essential for machine learning.</p>
+<!-- doc-example: skip fragment: a sketch of a training step; weights, data and targets are assumed, not constructed here -->
 <pre class="scheme"><code>; Gradient of scalar function
 (define (f v) 
   (+ (* (vref v 0) (vref v 0))
@@ -295,14 +296,12 @@ eshkol-run hello.esk -o hello
 (jacobian F #(3.0 4.0))  ; =&gt; #((2.0 0.0) (1.0 1.0))
 
 ; Hessian (curvature)
-(hessian f #(1.0 1.0))  ; =&gt; #((2.0 0.0) (0.0 2.0))</code></pre>
+(hessian u #(1.0 1.0))  ; =&gt; #((2.0 0.0) (0.0 2.0))</code></pre>
 <p><strong>Applications</strong>: Physics simulations, optimization, PDE solvers</p>
 <hr />
 <h2 id="part-6-complete-example---neural-network-training">Part 6: Complete Example - Neural Network Training</h2>
-<p>Here’s a complete 2-layer neural network with backpropagation:</p>
-<pre class="scheme"><code>(require core.functional)
-
-; Network parameters
+<p>Here’s a complete 2-layer neural network with backpropagation. For a tensor parameter, <code>(gradient f w)</code> retains the parameter’s dimensions: a <code>(3 4)</code> weight matrix has a <code>(3 4)</code> gradient, which the weight update below uses.</p>
+<pre class="scheme"><code>; Network parameters
 (define input-size 3)
 (define hidden-size 4)
 (define output-size 2)
@@ -358,8 +357,8 @@ eshkol-run hello.esk -o hello
          (grad-w2 (gradient (lambda (w) (loss-fn W1 w)) W2)))
     
     ; Update weights: W := W - α∇L
-    (set! W1 (tensor-sub W1 (tensor-mul learning-rate grad-w1)))
-    (set! W2 (tensor-sub W2 (tensor-mul learning-rate grad-w2)))
+    (set! W1 (tensor-sub W1 (* (vector learning-rate) grad-w1)))
+    (set! W2 (tensor-sub W2 (* (vector learning-rate) grad-w2)))
     
     ; Return current loss
     (loss-fn W1 W2)))
@@ -399,7 +398,9 @@ eshkol-run hello.esk -o hello
 
 ; Manipulate code
 (define (get-lambda-params code)
-  (cadr code))  ; =&gt; (x)
+  (cadr code))
+(display (get-lambda-params code))  ; =&gt; (x)
+(newline)
 
 ; Display shows source structure
 (display (lambda (x) (* x 2)))
@@ -409,8 +410,8 @@ eshkol-run hello.esk -o hello
 <pre class="scheme"><code>(define (classify x)
   (match x
     ((? number?) &#39;is-number)
-    ((a b c) &#39;is-triple)
-    ((h . t) &#39;is-pair)
+    ((list a b c) &#39;is-triple)
+    ((cons h t) &#39;is-pair)
     (_ &#39;unknown)))
 
 (classify 42)           ; =&gt; is-number
@@ -430,7 +431,7 @@ eshkol-run hello.esk -o hello
 <hr />
 <h3 id="4-exception-handling">4. <strong>Exception Handling</strong></h3>
 <pre class="scheme"><code>(guard (exn
-         ((divide-by-zero? exn) &#39;infinity)
+         ((error-object? exn) &#39;infinity)
          (else &#39;unknown-error))
   (/ 1 0))
 ; =&gt; infinity</code></pre>
@@ -463,7 +464,7 @@ eshkol-run hello.esk -o hello
   (define (step i)
     (if (&lt; i iterations)
         (let* ((grad (gradient f point))
-               (update (tensor-mul learning-rate grad))
+               (update (* (vector learning-rate) grad))
                (new-point (tensor-sub point update)))
           
           ; Print progress
@@ -506,9 +507,7 @@ f(optimum) = 8.4e-7</code></pre>
 <hr />
 <h2 id="physics-example-heat-equation">Physics Example: Heat Equation</h2>
 <p>Solve the 1D heat equation: ∂u/∂t = α∇²u</p>
-<pre class="scheme"><code>(require core.functional)
-
-; Discretized Laplacian (finite differences)
+<pre class="scheme"><code>; Discretized Laplacian (finite differences)
 (define (discrete-laplacian u dx)
   (let* ((n (vector-length u))
          (result (make-vector n 0.0)))
@@ -526,7 +525,7 @@ f(optimum) = 8.4e-7</code></pre>
 ; Time step
 (define (heat-step u alpha dt dx)
   (let ((lap (discrete-laplacian u dx)))
-    (tensor-add u (tensor-mul (* alpha dt) lap))))
+    (tensor-add u (* (vector (* alpha dt)) lap))))
 
 ; Simulation
 (define (simulate-heat u0 alpha dt dx steps)
@@ -554,6 +553,7 @@ f(optimum) = 8.4e-7</code></pre>
 <hr />
 <h2 id="quick-reference-card">Quick Reference Card</h2>
 <h3 id="essential-syntax">Essential Syntax</h3>
+<!-- doc-example: skip pseudo-code: a cheat-sheet of grammar shapes; value/new-value/etc. are metavariables -->
 <pre class="scheme"><code>; Comments
 ; Single-line comment
 
@@ -605,7 +605,9 @@ f(optimum) = 8.4e-7</code></pre>
 <pre class="scheme"><code>; Import modules
 (require core.list.higher_order)  ; fold, filter, any, every
 (require core.list.sort)           ; sort, merge
-(require core.functional)          ; compose, curry, flip
+(require core.functional.compose)  ; compose, compose3, identity, constantly
+(require core.functional.curry)    ; curry2, curry3, partial, partial2, partial3
+(require core.functional.flip)     ; flip
 (require core.strings)             ; String utilities
 (require core.json)                ; JSON parsing
 
@@ -666,6 +668,7 @@ eshkol-run --no-stdlib program.esk -o program</code></pre>
 <hr />
 <h2 id="tips--tricks">Tips &amp; Tricks</h2>
 <h3 id="performance">Performance</h3>
+<!-- doc-example: skip fragment: (big-computation) names an assumed function, illustrating the let-caching idiom rather than a complete program -->
 <pre class="scheme"><code>; Use let for cached computations
 (let ((expensive-calc (big-computation)))
   (+ expensive-calc expensive-calc))  ; Computed once
@@ -680,11 +683,13 @@ eshkol-run --no-stdlib program.esk -o program</code></pre>
   (sum 1000000 0))  ; No stack overflow!</code></pre>
 <hr />
 <h3 id="debugging">Debugging</h3>
+<!-- doc-example: skip fragment: my-data, x and lst are assumed bindings illustrating the debugging idioms, not a complete program -->
 <pre class="scheme"><code>; Display shows structure
 (display my-data)
 
 ; Type introspection
-(type-of x)  ; Returns type tag as integer
+(type-of x)    ; Returns the runtime type tag as an integer
+(type-name x)  ; Returns the type as a symbol: &#39;integer, &#39;string, &#39;pair, ...
 
 ; List inspection
 (null? lst)
@@ -804,6 +809,7 @@ ar rcs libmylib.a mylib.o</code></pre>
 ESHKOL_GPU_VERBOSE=1 eshkol-run my_program.esk   # See dispatch decisions</code></pre>
 <hr />
 <h3 id="parallel-programming">Parallel Programming</h3>
+<!-- doc-example: skip fragment: expensive-computation-1/2 name assumed functions illustrating future/force usage -->
 <pre class="scheme"><code>;; Parallel map — distributes work across threads
 (parallel-map (lambda (x) (* x x)) &#39;(1 2 3 4 5))  ; =&gt; (1 4 9 16 25)
 
@@ -826,7 +832,7 @@ ESHKOL_GPU_VERBOSE=1 eshkol-run my_program.esk   # See dispatch decisions</code>
 (kb-assert! kb (make-fact &#39;parent &#39;alice &#39;bob))
 (kb-assert! kb (make-fact &#39;parent &#39;bob &#39;charlie))
 (kb-query kb (make-fact &#39;parent ?who &#39;charlie))
-;; =&gt; list of substitutions where ?who = bob
+;; =&gt; ({?who -&gt; bob})  (one substitution: ?who bound to bob)
 
 ;; Active inference with factor graphs
 (define fg (make-factor-graph 2 #(2 2)))   ; 2 binary variables
@@ -835,7 +841,8 @@ ESHKOL_GPU_VERBOSE=1 eshkol-run my_program.esk   # See dispatch decisions</code>
 (free-energy fg #(1.0 0.0))               ; variational free energy</code></pre>
 <hr />
 <h3 id="signal-processing">Signal Processing</h3>
-<pre class="scheme"><code>(require signal)
+<pre class="scheme"><code>(require signal.fft)
+(require signal.filters)
 
 ;; FFT — Cooley-Tukey radix-2 (input length must be power of 2)
 (define signal #(1.0 0.0 1.0 0.0 1.0 0.0 1.0 0.0))
@@ -864,7 +871,7 @@ eshkol&gt; (require stdlib)
 eshkol&gt; (sort &lt; &#39;(3 1 4 1 5 9))
 (1 1 3 4 5 9)
 eshkol&gt; :type 42
-Integer
+Type: Int64
 eshkol&gt; :quit</code></pre>
 <p><strong>REPL Features</strong>: Cross-eval persistence, hot code reload, stdlib support, type introspection.</p>
 <hr />
@@ -933,8 +940,9 @@ entry = &quot;src/main.esk&quot;
 <p>Compile Eshkol to WebAssembly for browser deployment:</p>
 <pre class="bash"><code># Compile to WASM
 eshkol-run --wasm app.esk -o app.wasm</code></pre>
+<!-- doc-example: skip platform-specific: compiles only under --wasm with a browser DOM; the native JIT/AOT engines have no window object -->
 <pre class="scheme"><code>;; app.esk — interactive web application
-(require web)
+(require web.web)
 
 ;; Get DOM handles
 (define body (web-get-body))

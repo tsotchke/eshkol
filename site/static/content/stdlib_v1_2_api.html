@@ -255,12 +255,10 @@
 <p><strong>Source</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/reflection.esk" target="_blank" rel="noopener noreferrer"><code>lib/core/reflection.esk</code></a>. <strong>Auto-loaded</strong>: yes, via <code>(require stdlib)</code>. <strong>Direct import</strong>: <code>(require core.reflection)</code>.</p>
 <p>Runtime reflection primitives. The module exposes two Scheme-level helpers; a third primitive, <code>(procedure-arity proc)</code>, is a <em>codegen</em> builtin implemented in <code>lib/backend/llvm_codegen.cpp</code> and not redefined here.</p>
 <h3 id="provided-symbols-1">Provided symbols</h3>
-<pre class="scheme"><code>(provide describe type-name)</code></pre>
-<p>(Source: <code>lib/core/reflection.esk:19</code>.)</p>
-<p>The codegen-builtin <code>procedure-arity</code> is documented alongside since it is part of the same v1.2 reflection surface (task #170) and is used by <code>describe</code>.</p>
+<pre class="scheme"><code>(provide describe)</code></pre>
+<p><code>type-name</code> and <code>procedure-arity</code> are builtins (native codegen and bytecode VM) documented alongside, since they are part of the same reflection surface; <code>describe</code> uses <code>procedure-arity</code>.</p>
 <h3 id="type-name-value--symbol"><code>(type-name value)</code> → symbol</h3>
-<p>Returns one of: <code>'integer 'real 'string 'symbol 'boolean 'pair 'null 'vector 'procedure 'char 'unknown</code> (source lines 30-42).</p>
-<p>Dispatch order is significant: <code>null?</code> is checked before <code>pair?</code> (because the empty list is a degenerate pair), and <code>boolean?</code> is checked before <code>integer?</code> (because <code>#f</code> is <em>not</em> counted as integer 0 in Eshkol). The last fallback <code>'unknown</code> is returned for heap subtypes the predicate chain doesn’t recognise (hash-tables, complex numbers, bignums, PRNG handles, tagged AD nodes, etc.).</p>
+<p>Returns the value’s type as a symbol from the runtime’s one type-name vocabulary (<code>lib/core/value_type_names.h</code>), the same on JIT, AOT and the bytecode VM: <code>'integer</code> (fixnums and bignums), <code>'rational</code>, <code>'real</code>, <code>'complex</code>, <code>'boolean</code>, <code>'char</code>, <code>'string</code>, <code>'symbol</code>, <code>'pair</code>, <code>'null</code>, <code>'vector</code>, <code>'tensor</code>, <code>'bytevector</code>, <code>'hash-table</code>, <code>'procedure</code> (closures and builtins alike), <code>'continuation</code>, <code>'port</code>, <code>'promise</code>, <code>'parameter</code>, <code>'exception</code>, <code>'unspecified</code>, and the domain types (<code>'dual-number</code>, <code>'logic-var</code>, <code>'fact</code>, <code>'knowledge-base</code>, <code>'factor-graph</code>, <code>'workspace</code>, …). A value outside the vocabulary answers <code>'unknown</code>. The REPL’s machine-mode <code>value_type</code> field uses the same names.</p>
 <pre class="scheme"><code>(type-name 42)              ; → &#39;integer
 (type-name 3.14)            ; → &#39;real
 (type-name &quot;hello&quot;)         ; → &#39;string
@@ -269,7 +267,10 @@
 (type-name &#39;())             ; → &#39;null
 (type-name (list 1 2))      ; → &#39;pair
 (type-name (vector 1 2 3))  ; → &#39;vector
-(type-name (lambda (x) x))  ; → &#39;procedure</code></pre>
+(type-name (lambda (x) x))  ; → &#39;procedure
+(type-name 1/3)             ; → &#39;rational
+(type-name (expt 2 100))    ; → &#39;integer
+(type-name (make-hash-table)) ; → &#39;hash-table</code></pre>
 <h3 id="describe-value--string"><code>(describe value)</code> → string</h3>
 <p>Returns a one-line human-readable description (source 62-91). The output format is fixed (regression-tested by <code>tests/v1_2_edge_cases/reflection_describe_test.esk</code>):</p>
 <table>
@@ -1464,7 +1465,7 @@
 <ul>
 <li>Time API: <code>current-time-ns</code>, <code>current-timestamp</code>, <code>format-iso8601</code>, <code>parse-iso8601</code>, <code>format-relative</code>, <code>local-timezone-offset</code>, <code>monotonic-time-ms</code>.</li>
 <li>PRNG isolation: <code>make-prng</code>, <code>prng-random</code>, <code>prng-random-integer</code>, <code>prng?</code>, and the global <code>set-random-seed!</code>.</li>
-<li>Reflection: <code>procedure-arity</code> (the <code>.esk</code>-level <code>describe</code> and <code>type-name</code> in <code>core.reflection</code> use it).</li>
+<li>Reflection: <code>procedure-arity</code> and <code>type-name</code> (the <code>.esk</code>-level <code>describe</code> in <code>core.reflection</code> uses <code>procedure-arity</code>).</li>
 <li>URL parser: <code>url-parse</code>.</li>
 <li>Multi-value plumbing: <code>call-with-values</code>, <code>values</code>.</li>
 </ul>

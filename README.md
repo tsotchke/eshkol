@@ -1186,7 +1186,7 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding stan
 |---|---|
 | **[QUICKSTART](docs/QUICKSTART.md)** | 15-minute getting-started guide |
 | **[Tutorials](docs/tutorials/README.md)** | 27 step-by-step tutorials |
-| **[API Reference](docs/API_REFERENCE.md)** | Comprehensive function documentation over the 1,056-builtin canonical surface |
+| **[API Reference](docs/API_REFERENCE.md)** | Comprehensive function documentation over the 1,058-builtin canonical surface |
 | **[Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)** | Conceptual user guide |
 | **[Quick Reference](docs/ESHKOL_QUICK_REFERENCE.md)** | One-page cheat sheet |
 | **[Automatic Differentiation Guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)** | Arbitrary-order Taylor-tower AD walkthrough |

@@ -17,8 +17,8 @@
 >   Noesis-readiness view, tracked separately because Noesis has a
 >   distinct downstream cadence.
 > - [`docs/RELEASE_LADDER.md`](docs/RELEASE_LADDER.md) — the reconciled
->   v1.3.6 → v1.4.0 → v1.4.1 → v1.4.5 → v1.5.0 scope, dependency, ownership,
->   producer, acceptance, blocker, and snapshot-status table.
+>   v1.3.6 → v1.4.0 → v1.4.1 → v1.4.2 → v1.4.3 → v1.4.4 → v1.4.5 → v1.5.0
+>   scope, dependency, ownership, producer, acceptance, blocker, and snapshot-status table.
 > - [`docs/V14_BRANCH_PORTFOLIO.md`](docs/V14_BRANCH_PORTFOLIO.md) — the
 >   searchable index of 19 audited v1.4 branch candidates, exact heads,
 >   caveats, and admission gates.
