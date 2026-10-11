@@ -127,7 +127,7 @@ Eight criteria are wired this way (since v1.3.4). Five read CTest directly — t
 harnesses that judge the same cut: `vm_surface_regression_suite` (kind
 `vm_surface`), `vm_parity_gate` (kind `vm_parity`) and `event_loop_works`
 (kind `eshkol_smoke`). Publication requires independent final-source release
-evidence of <!-- release-record:ctest -->CTest **789/789**<!-- /release-record -->; the
+evidence of <!-- release-record:ctest -->CTest **819/819**<!-- /release-record -->; the
 value-position and compound-accessor regression is green. Superseded CTest
 figures that older documents quote: 541/541 and 198/198, each measured on an
 earlier commit; and 183/183, superseded by 190/190 for the v1.3.4-evolve cut
@@ -246,7 +246,7 @@ VM-vs-native differential over `tests/vm_parity/corpus/` then keeps shared
 symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 
 For v1.3.6-evolve, full preparation recorded
-<!-- release-record:vm-parity -->VM parity differential **405/405**<!-- /release-record -->.
+<!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->.
 The release workflow rechecks parity at the final SHA. The v1.3.5-evolve
 differential passed 388 checks. The current manifest has **962 rows — 622
 `vm-supported`, 45 `native-only-justified`, 295 `gap`**; verified behavioral divergences are

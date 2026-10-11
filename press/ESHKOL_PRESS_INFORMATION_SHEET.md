@@ -20,7 +20,7 @@ the SDNC paper artefact it carries.
 | Project | Eshkol |
 | Version | v1.3.6-evolve |
 | Release status | Prepared for publication (release record, `tests/coverage/release_record.json`) |
-| Intended release date | 8 October 2026 |
+| Intended release date | 12 October 2026 |
 | Builds on | v1.3.5-evolve (22 September 2026), v1.3.4-evolve (19 August 2026), v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
@@ -244,9 +244,9 @@ every runtime change is pinned by the gate its pull request added.
 - **Publication requires complete, source-bound measurements.** The release
   gate validates the full configured CTest and VM parity results against
   committed metadata and the exact source, workflow run and build cohort; the
-  final contract is CTest 789/789 and VM parity 405/405 with no failed, skipped
-  or infrastructure-only checks. Earlier preparation passed all 787 configured
-  CTest cases and all 405 VM parity cases. (#742, #747, #749)
+  final contract is <!-- release-record:ctest -->CTest **819/819**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record --> with no failed, skipped
+  or infrastructure-only checks. [Source-bound preparation](https://github.com/tsotchke/eshkol/actions/runs/38161249190) passed all 819 configured
+  CTest cases and all 411 VM parity cases. (#742, #747, #749)
 
 Contributors: Kristoffer Josefsson (Linux ARM64 CUDA tooling, #732); Gabriel
 Kahen (allocation-checked constructors and handlers, #721; gated ESKM v2, #722).
