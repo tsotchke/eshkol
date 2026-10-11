@@ -811,9 +811,16 @@ static int compile_depth = 0;
 /** @brief Recursion-depth-guarded wrapper around compile_expr_impl():
  *         bumps/checks compile_depth (erroring past 1000 nested
  *         expressions) around the actual compilation call. */
+static void vm_compile_error(const char* message, const char* detail);
 static void compile_expr(FuncChunk* c, Node* node, int tail) {
     compile_depth++;
-    if (compile_depth > 1000) { fprintf(stderr, "ERROR: expression nesting too deep (>1000)\n"); compile_depth--; return; }
+    if (compile_depth > 1000) {
+        /* Fail closed: the subexpression emits no code, so the compilation
+         * must not produce a program. */
+        vm_compile_error("expression nesting too deep (>1000)", NULL);
+        compile_depth--;
+        return;
+    }
     compile_expr_impl(c, node, tail);
     compile_depth--;
 }

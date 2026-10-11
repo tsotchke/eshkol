@@ -68,9 +68,24 @@ if [ "$REGEN" -eq 1 ] || ! ls "$GEN_DIR"/ad_depth_*.esk >/dev/null 2>&1; then
     python3 "$REPO_ROOT/scripts/gen_ad_depth.py" --max-depth "$MAXD" || exit 2
 fi
 
+# Wall-clock budgets in seconds. A probe listed in tests/ad_depth/budgets.tsv
+# (file, jit, aot-compile, aot-run; "-" keeps the default) gets the budget
+# measured for it there; a value exported in the environment applies to every
+# probe and overrides both.
+JIT_TIMEOUT_ENV="${JIT_TIMEOUT:-}"
+AOT_COMPILE_TIMEOUT_ENV="${AOT_COMPILE_TIMEOUT:-}"
+AOT_RUN_TIMEOUT_ENV="${AOT_RUN_TIMEOUT:-}"
 JIT_TIMEOUT="${JIT_TIMEOUT:-240}"
 AOT_COMPILE_TIMEOUT="${AOT_COMPILE_TIMEOUT:-360}"
 AOT_RUN_TIMEOUT="${AOT_RUN_TIMEOUT:-90}"
+BUDGETS="$REPO_ROOT/tests/ad_depth/budgets.tsv"
+budget_for() { # file column(2=jit 3=aot-compile 4=aot-run) default env-override
+    local value=""
+    if [ -n "$4" ]; then printf '%s\n' "$4"; return; fi
+    [ -r "$BUDGETS" ] && value="$(awk -F'\t' -v f="$1" -v c="$2" \
+        '$0 !~ /^#/ && $1 == f { print $c; exit }' "$BUDGETS")"
+    case "$value" in ''|-) printf '%s\n' "$3" ;; *) printf '%s\n' "$value" ;; esac
+}
 
 # Shared guarded-timeout wrapper (scripts/lib/harness_outcome.sh) — see
 # run_recursion_depth.sh for why the local exec-then-alarm one-liner this
@@ -107,7 +122,10 @@ echo "== depth-parametric AD oracle (JIT$([ "$DO_AOT" -eq 1 ] && echo '+AOT')) =
 for f in $files; do
     base="$(basename "$f")"
     # ---- JIT (-r) ----
-    out="$(run_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" -r "$f" 2>&1)"; rc=$?
+    jit_s="$(budget_for "$base" 2 "$JIT_TIMEOUT" "$JIT_TIMEOUT_ENV")"
+    aotc_s="$(budget_for "$base" 3 "$AOT_COMPILE_TIMEOUT" "$AOT_COMPILE_TIMEOUT_ENV")"
+    aotr_s="$(budget_for "$base" 4 "$AOT_RUN_TIMEOUT" "$AOT_RUN_TIMEOUT_ENV")"
+    out="$(run_guarded "$jit_s" "$ESHKOL_RUN" -r "$f" 2>&1)"; rc=$?
     cr=0; is_crash "$rc" "$out" && cr=1
     record "jit" "$base" "$rc" "$cr" "$out"
     jsum="$(printf '%s' "$out" | grep -c '^RESULT ')"
@@ -116,14 +134,14 @@ for f in $files; do
     [ "$DO_AOT" -eq 0 ] && continue
     # ---- AOT ----
     bin="$(mktemp "${TMPDIR:-/tmp}/ad_depth_bin.XXXXXX")"
-    cout="$(run_guarded "$AOT_COMPILE_TIMEOUT" "$ESHKOL_RUN" "$f" -o "$bin" 2>&1)"; crc=$?
+    cout="$(run_guarded "$aotc_s" "$ESHKOL_RUN" "$f" -o "$bin" 2>&1)"; crc=$?
     if [ "$crc" -ne 0 ] || [ ! -x "$bin" ]; then
         # compile failed => whole file is a LIMIT under AOT
         record "aot" "$base" "$crc" "1" "$cout"
         printf '  %-34s aot  COMPILE-FAIL rc=%s\n' "$base" "$crc"
         rm -f "$bin"; continue
     fi
-    aout="$(run_guarded "$AOT_RUN_TIMEOUT" "$bin" 2>&1)"; arc=$?
+    aout="$(run_guarded "$aotr_s" "$bin" 2>&1)"; arc=$?
     acr=0; is_crash "$arc" "$aout" && acr=1
     record "aot" "$base" "$arc" "$acr" "$aout"
     asum="$(printf '%s' "$aout" | grep -c '^RESULT ')"

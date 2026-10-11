@@ -40,6 +40,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 # shellcheck source=../../scripts/lib/checked_write.sh
 . "$REPO_ROOT/scripts/lib/checked_write.sh"
 
@@ -184,7 +185,7 @@ run_case() {
     # it still reports peak RSS for the whole subtree.
     ( cd "$WORK" && ESHKOL_PATH="$REPO_ROOT/lib" \
         /usr/bin/time $( [ "$TIME_MODE" = "bsd" ] && echo -l || echo -v ) \
-        perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+        perl "$ESHKOL_GUARDED_EXEC" \
         "$TIMEOUT_S" "$@" ) > "$run_out" 2> "$time_log"
     rc=$?
 

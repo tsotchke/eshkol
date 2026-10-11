@@ -35,6 +35,10 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+# Shared wall-clock guard (scripts/lib/harness_outcome.sh): exits 124 on
+# timeout and stops the command together with every process it started,
+# so none of them can keep the output pipe open after the deadline.
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"
 
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/edge_coverage_v134.jsonl"
@@ -97,7 +101,7 @@ classify() {   # exit_status out_file expected
     local st="$1" out="$2" expected="$3" fails passes
     fails=$(grep -c '^FAIL:' "$out" 2>/dev/null || true)
     passes=$(grep -c '^PASS:' "$out" 2>/dev/null || true)
-    if [ "$st" -eq 142 ]; then
+    if [ "$st" -eq 124 ] || [ "$st" -eq 142 ]; then
         echo "HANG $passes/$expected timeout"
     elif [ "$st" -ge 128 ]; then
         echo "CRASH $passes/$expected signal=$((st - 128))"
@@ -121,25 +125,25 @@ run_one() {
     out="$WORK_DIR/$base.$mode.out"
     case "$mode" in
       jit)
-        perl -e "alarm $JIT_TIMEOUT; exec @ARGV" "$ESHKOL_RUN" -r "$f" > "$out" 2>&1
+        eshkol_outcome_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" -r "$f" > "$out" 2>&1
         res=$(classify "$?" "$out" "$expected") ;;
       aot|aot-O0)
         bin="$WORK_DIR/$base.$mode.bin"
         local optflag=""; [ "$mode" = aot-O0 ] && optflag="-O0"
-        perl -e "alarm $AOT_COMPILE_TIMEOUT; exec @ARGV" \
+        eshkol_outcome_guarded "$AOT_COMPILE_TIMEOUT" \
             "$ESHKOL_RUN" $optflag "$f" -o "$bin" > "$out" 2>&1
         st=$?
         if [ "$st" -ne 0 ] || [ ! -x "$bin" ]; then
             local err; err=$(grep -m1 -iE 'error' "$out" | tr -d '"' | cut -c1-120)
-            [ "$st" -eq 142 ] && res="HANG 0/$expected compile-timeout" \
+            { [ "$st" -eq 124 ] || [ "$st" -eq 142 ]; } && res="HANG 0/$expected compile-timeout" \
                               || res="COMPILE-ERR 0/$expected exit=$st ${err:-compile-failed}"
         else
-            perl -e "alarm $AOT_RUN_TIMEOUT; exec @ARGV" "$bin" > "$out" 2>&1
+            eshkol_outcome_guarded "$AOT_RUN_TIMEOUT" "$bin" > "$out" 2>&1
             res=$(classify "$?" "$out" "$expected")
         fi
         rm -f "$bin" ;;
       vm)
-        ESHKOL_VM_NO_DISASM=1 perl -e "alarm $VM_TIMEOUT; exec @ARGV" \
+        ESHKOL_VM_NO_DISASM=1 eshkol_outcome_guarded "$VM_TIMEOUT" \
             "$ESHKOL_VM" "$f" > "$out" 2>&1
         res=$(classify "$?" "$out" "$expected") ;;
     esac

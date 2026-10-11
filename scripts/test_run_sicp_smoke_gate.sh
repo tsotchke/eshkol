@@ -48,6 +48,10 @@ setup_fake_repo() {
         || fail "copy test_isolation.sh"
     cp "$ROOT/scripts/lib/durable_work_root.sh" "$FAKE/scripts/lib/durable_work_root.sh" \
         || fail "copy durable_work_root.sh"
+    cp "$ROOT/scripts/lib/harness_outcome.sh" "$FAKE/scripts/lib/harness_outcome.sh" \
+        || fail "copy harness_outcome.sh"
+    cp "$ROOT/scripts/lib/guarded_exec.pl" "$FAKE/scripts/lib/guarded_exec.pl" \
+        || fail "copy guarded_exec.pl"
 
     cat > "$FAKE/tests/sicp/ch1_newton.esk" <<'ESK'
 (display "fake sicp probe") (newline)

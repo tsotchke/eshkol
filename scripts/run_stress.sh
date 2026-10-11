@@ -3,16 +3,16 @@
 #
 # Runs every program listed in tests/stress/budgets.tsv under the JIT (-r)
 # and/or AOT with EXPLICIT budgets asserted by THIS runner (not the program):
-#   * wall-time ceiling  (perl alarm; macOS has no timeout(1))
-#   * max-RSS ceiling    (/usr/bin/time -l "maximum resident set size")
+#   * wall-time ceiling  (scripts/lib/guarded_exec.pl; macOS has no timeout(1))
+#   * max-RSS ceiling    (BSD time -l or GNU time -v)
 #   * exit code 0
 #   * required stdout substring
 #
 # Verdicts per (file, mode):
 #   PASS      all budgets met, expected output present
 #   FAIL      exit != 0 (no signal) or expected output missing (wrong value)
-#   CRASH     killed by a signal other than SIGALRM (SIGSEGV/SIGILL/SIGBUS/…)
-#   HANG      killed by the alarm (SIGALRM) — wall-time ceiling exceeded
+#   CRASH     killed by a signal it received on its own (segmentation fault, illegal instruction, bus error, …)
+#   HANG      stopped by the wall-clock guard (exit 124) — wall-time ceiling exceeded
 #   OVER-RSS  ran fine but exceeded the RSS ceiling (unbounded-memory class)
 #   OVER-TIME finished under the alarm but past the wall-time ceiling
 #   XKNOWN    row is pinned to a documented-open bug (xknown column) and did
@@ -42,9 +42,11 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC
+. "$REPO_ROOT/scripts/lib/stress_time.sh"
 STRESS_DIR="$REPO_ROOT/tests/stress"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
-TRACE_FILE="$TRACE_DIR/stress_smoke.jsonl"
+TRACE_FILE="${TRACE_FILE:-$TRACE_DIR/stress_smoke.jsonl}"
 mkdir -p "$TRACE_DIR"
 : "${TRACE_FILE:?TRACE_FILE must be set}"
 : > "$TRACE_FILE"
@@ -74,12 +76,17 @@ WARM_CEILING_S="${STRESS_WARM_CEILING_S:-5}"
 JITCACHE_RUNS=50
 [ "$QUICK" -eq 1 ] && JITCACHE_RUNS=5
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-stress.XXXXXX")"
+STRESS_SCRATCH_DIR="${STRESS_SCRATCH_DIR:-$REPO_ROOT/.scratch}"
+mkdir -p "$STRESS_SCRATCH_DIR"
+WORK="$(mktemp -d "$STRESS_SCRATCH_DIR/stress.XXXXXX")"
 : "${WORK:?WORK must be set}"
 trap 'rm -rf "$WORK"' EXIT
 # Fresh, harness-private JIT cache: first -r per file is genuinely cold.
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache"
 mkdir -p "$ESHKOL_JIT_CACHE_DIR"
+
+TIME_BIN="${STRESS_TIME_BIN:-/usr/bin/time}"
+TIME_MODE=$(eshkol_stress_time_detect "$TIME_BIN" "$WORK/time-probe") || exit $?
 
 # Regenerate the large generated sources (deterministic).
 bash "$STRESS_DIR/gen_stress_sources.sh" >/dev/null
@@ -99,34 +106,45 @@ RB_OUT_FILE="$WORK/out.txt"
 RB_TIME_FILE="$WORK/time.txt"
 : "${RB_OUT_FILE:?RB_OUT_FILE must be set}"
 : "${RB_TIME_FILE:?RB_TIME_FILE must be set}"
+RB_RSS_VALID=0
+RB_RSS_ERROR="peak RSS unavailable"
+RB_MEASURE_ATTEMPTED=0
 run_budgeted() {
     local tmo="$1"; shift
     local t0 t1
+    RB_MEASURE_ATTEMPTED=1
     t0=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
-    # /usr/bin/time -l writes rusage (incl. "maximum resident set size", bytes
-    # on macOS) to stderr → captured separately so program stderr stays with
-    # the program output for diagnosis.
+    # Keep time's resource report separate from program stdout/stderr.
     # </dev/null: keep the budgets.tsv read-loop's stdin away from programs.
-    /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
-        "$tmo" "$@" > "${RB_OUT_FILE:?}" 2> "${RB_TIME_FILE:?}" < /dev/null
+    # The guard stops the program together with every process it started, so
+    # nothing it spawned outlives the ceiling holding this output file open;
+    # /usr/bin/time still reports the program's peak RSS through the guard,
+    # which waits for it.
+    eshkol_stress_time_run "$TIME_BIN" "$TIME_MODE" "$ESHKOL_GUARDED_EXEC" \
+        "$tmo" "${RB_OUT_FILE:?}" "${RB_TIME_FILE:?}" "$@"
     RB_RC=$?
     t1=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
     RB_WALL_S=$(perl -e 'printf "%.2f", $ARGV[1]-$ARGV[0]' "$t0" "$t1")
-    RB_RSS_MB=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$RB_TIME_FILE")
-    [ -n "$RB_RSS_MB" ] || RB_RSS_MB=0
-    # program stderr (compile errors etc.) is interleaved into time file; keep
-    # the non-rusage part with the output for the failure snippet.
-    grep -vE 'real .*user .*sys|maximum resident set size|average .* size|page reclaims|page faults|swaps|block .* operations|messages (sent|received)|signals received|context switches|instructions retired|cycles elapsed|peak memory footprint' \
-        "$RB_TIME_FILE" >> "${RB_OUT_FILE:?}" 2>/dev/null || true
+    if RB_RSS_MB=$(eshkol_stress_time_rss_mb "$TIME_MODE" "$RB_TIME_FILE"); then
+        RB_RSS_VALID=1
+        RB_RSS_ERROR=""
+    else
+        RB_RSS_MB=""
+        RB_RSS_VALID=0
+        RB_RSS_ERROR="peak RSS measurement missing or invalid"
+    fi
+    # Keep child stderr (including compiler diagnostics) in the failure snippet.
+    eshkol_stress_time_append_program_stderr "$TIME_MODE" "$RB_TIME_FILE" "$RB_OUT_FILE"
 }
 
 # classify <rc> <wall_s> <rss_mb> <timeout_s> <rss_ceiling_mb> <expect> <out_file>
 classify() {
     local rc="$1" wall="$2" rss="$3" tmo="$4" ceil="$5" expect="$6" out="$7"
-    if [ "$rc" -eq 142 ]; then echo "HANG"; return; fi          # 128+SIGALRM
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 142 ]; then echo "HANG"; return; fi
     if [ "$rc" -gt 128 ]; then echo "CRASH"; return; fi
     if [ "$rc" -ne 0 ]; then echo "FAIL"; return; fi
     if [ "$expect" != "-" ] && ! grep -qF -- "$expect" "$out"; then echo "FAIL"; return; fi
+    if [ "$RB_RSS_VALID" -ne 1 ]; then echo "FAIL"; return; fi
     if [ "$ceil" != "-" ] && [ "$rss" -gt "$ceil" ]; then echo "OVER-RSS"; return; fi
     if perl -e 'exit(($ARGV[0] > $ARGV[1]) ? 0 : 1)' "$wall" "$tmo"; then echo "OVER-TIME"; return; fi
     echo "PASS"
@@ -139,7 +157,21 @@ declare -a fail_lines=()
 record() {
     local file="$1" mode="$2" v="$3" xk="$4" detail="$5"
     local base; base=$(basename "$file" .esk)
+    local execution_verdict="$v"
+    if [ "$RB_MEASURE_ATTEMPTED" -eq 1 ] && [ "$RB_RSS_VALID" -ne 1 ]; then
+        v="INFRA"
+        detail="$detail; $RB_RSS_ERROR (execution classification=$execution_verdict, rc=$RB_RC)"
+    fi
+    RB_MEASURE_ATTEMPTED=0
     total=$((total+1))
+    if [ "$v" = "INFRA" ]; then
+        failed=$((failed+1))
+        emit_event "stress_${base}_${mode}" "INFRA" "$file $mode -> INFRA $detail"
+        printf '  INFRA   tests/stress/%s::%s  (%s)\n' "$file" "$mode" "$detail"
+        echo "FAILED tests/stress/$file::$mode"
+        fail_lines+=("INFRA $file::$mode $detail")
+        return
+    fi
     if [ "$xk" != "-" ]; then
         if [ "$v" = "PASS" ]; then
             xpassed=$((xpassed+1))
@@ -193,7 +225,7 @@ while IFS=$'\t' read -r file mode class timeout_s rss_r rss_aot quick xknown exp
             ESHKOL_JIT_CACHE_DIR="$cache" run_budgeted "$lim" "$ESHKOL_RUN" -r "$src"
             v=$(classify "$RB_RC" "$RB_WALL_S" "$RB_RSS_MB" "$lim" "$rss_r" "$expect" "$RB_OUT_FILE")
             if [ "$v" != "PASS" ]; then
-                verdict="$v"; detail="run $i/$JITCACHE_RUNS: rc=$RB_RC wall=${RB_WALL_S}s rss=${RB_RSS_MB}MB limit=${lim}s :: $(snippet_of)"
+                verdict="$v"; detail="run $i/$JITCACHE_RUNS: rc=$RB_RC wall=${RB_WALL_S}s rss=${RB_RSS_MB:-unavailable}MB ${RB_RSS_ERROR} limit=${lim}s :: $(snippet_of)"
                 break
             fi
             [ "$i" -eq 1 ] && detail="cold=${RB_WALL_S}s"
@@ -213,7 +245,7 @@ while IFS=$'\t' read -r file mode class timeout_s rss_r rss_aot quick xknown exp
         for rep in $(seq 1 "$reps"); do
             run_budgeted "$timeout_s" "$ESHKOL_RUN" -r "$src"
             v=$(classify "$RB_RC" "$RB_WALL_S" "$RB_RSS_MB" "$timeout_s" "$rss_r" "$expect" "$RB_OUT_FILE")
-            detail="rc=$RB_RC wall=${RB_WALL_S}s rss=${RB_RSS_MB}MB"
+            detail="rc=$RB_RC wall=${RB_WALL_S}s rss=${RB_RSS_MB:-unavailable}MB ${RB_RSS_ERROR}"
             if [ "$v" != "PASS" ]; then verdict="$v"; detail="$detail :: $(snippet_of)"; break; fi
             if [ "$reps" -gt 1 ]; then
                 if [ "$rep" -eq 1 ]; then ref_out=$(cat "$RB_OUT_FILE")
@@ -229,15 +261,15 @@ while IFS=$'\t' read -r file mode class timeout_s rss_r rss_aot quick xknown exp
     if [ "$DO_AOT" -eq 1 ] && { [ "$mode" = "aot" ] || [ "$mode" = "both" ]; }; then
         bin="$WORK/$(basename "$file" .esk).bin"; rm -f "$bin"
         run_budgeted "$timeout_s" "$ESHKOL_RUN" "$src" -o "$bin"
-        if [ "$RB_RC" -ne 0 ] || [ ! -x "$bin" ]; then
-            v="FAIL"; [ "$RB_RC" -eq 142 ] && v="HANG"; [ "$RB_RC" -gt 128 ] && [ "$RB_RC" -ne 142 ] && v="CRASH"
-            record "$file" "aot" "$v" "$xknown" "compile rc=$RB_RC wall=${RB_WALL_S}s :: $(snippet_of)"
+        if [ "$RB_RC" -ne 0 ] || [ ! -x "$bin" ] || [ "$RB_RSS_VALID" -ne 1 ]; then
+            v="FAIL"; { [ "$RB_RC" -eq 124 ] || [ "$RB_RC" -eq 142 ]; } && v="HANG"; [ "$RB_RC" -gt 128 ] && [ "$RB_RC" -ne 142 ] && v="CRASH"
+            record "$file" "aot" "$v" "$xknown" "compile rc=$RB_RC wall=${RB_WALL_S}s rss=${RB_RSS_MB:-unavailable}MB ${RB_RSS_ERROR} :: $(snippet_of)"
         else
             verdict="PASS"; detail=""; ref_out=""
             for rep in $(seq 1 "$reps"); do
                 run_budgeted "$timeout_s" "$bin"
                 v=$(classify "$RB_RC" "$RB_WALL_S" "$RB_RSS_MB" "$timeout_s" "$rss_aot" "$expect" "$RB_OUT_FILE")
-                detail="rc=$RB_RC wall=${RB_WALL_S}s rss=${RB_RSS_MB}MB"
+                detail="rc=$RB_RC wall=${RB_WALL_S}s rss=${RB_RSS_MB:-unavailable}MB ${RB_RSS_ERROR}"
                 if [ "$v" != "PASS" ]; then verdict="$v"; detail="$detail :: $(snippet_of)"; break; fi
                 if [ "$reps" -gt 1 ]; then
                     if [ "$rep" -eq 1 ]; then ref_out=$(cat "$RB_OUT_FILE")

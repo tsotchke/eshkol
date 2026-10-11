@@ -3486,6 +3486,21 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/stress/stress_time_portability_test.sh")
+    add_test(
+        NAME stress_time_portability
+        COMMAND bash
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stress/stress_time_portability_test.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/lib/guarded_exec.pl"
+                "${CMAKE_CURRENT_BINARY_DIR}/stress-time-portability-scratch"
+    )
+    set_tests_properties(stress_time_portability PROPERTIES
+        TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "PASS: stress time portability and failure preservation"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/payload_validation_test.sh" AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/payload_validation_test.esk")
     add_test(
@@ -7783,11 +7798,20 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
         endif()
     endforeach()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py")
+        # The runtime half needs Node.js; without it the test runs the
+        # generator self-test and reports itself skipped (exit 77).
+        find_program(NODE_EXECUTABLE node)
+        set(_wasm_flat_ad_node_args)
+        if(NODE_EXECUTABLE)
+            set(_wasm_flat_ad_node_args --node ${NODE_EXECUTABLE})
+        endif()
         add_test(NAME wasm_flat_ad_import_test
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py)
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_flat_ad_import_test.py
+                ${_wasm_flat_ad_node_args})
         set_tests_properties(wasm_flat_ad_import_test PROPERTIES
-            LABELS "toolchain;wasm;imports")
+            LABELS "toolchain;wasm;imports"
+            SKIP_RETURN_CODE 77)
     endif()
 endif()
 
@@ -12372,6 +12396,21 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
     set_tests_properties(macro_hygiene_matrix PROPERTIES
         TIMEOUT 600 LABELS "macros;parity;regression"
         PASS_REGULAR_EXPRESSION "PASS: [0-9]+ hygiene checks agree")
+endif()
+
+# Expansion renames binders and their references at every nesting depth, and
+# limits only the nesting that expansion itself introduces.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
+   AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME macro_expansion_depth
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_expansion_depth_test.py
+            --native $<TARGET_FILE:eshkol-run>
+            --vm $<TARGET_FILE:eshkol-vm-standalone-test>)
+    set_tests_properties(macro_expansion_depth PROPERTIES
+        TIMEOUT 600 LABELS "macros"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        PASS_REGULAR_EXPRESSION "PASS: [0-9]+ macro expansion depth checks")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-repl)

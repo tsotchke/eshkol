@@ -37,6 +37,7 @@ set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
+. "$REPO_ROOT/scripts/lib/harness_outcome.sh"   # ESHKOL_GUARDED_EXEC: wall-clock guard that stops the whole process group
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
 BUILD_DIR="${BUILD_DIR:-build}"
@@ -112,13 +113,13 @@ run_case() { # tag env...
     tag="$1"; shift
     if [ "$TIME_MODE" = bsd ]; then
         env "$@" ESHKOL_VM_NO_DISASM=1 ESHKOL_VM_HEAP_BUDGET_MB=0 ESHKOL_VM_REGION_QUIET=1 \
-            /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+            /usr/bin/time -l perl "$ESHKOL_GUARDED_EXEC" \
             "$TIMEOUT_S" "$VM" "$SRC" >"$WORK/$tag.out" 2>"$WORK/$tag.time"
         RUN_RC=$?
         RSS_MB=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$WORK/$tag.time")
     else
         env "$@" ESHKOL_VM_NO_DISASM=1 ESHKOL_VM_HEAP_BUDGET_MB=0 ESHKOL_VM_REGION_QUIET=1 \
-            /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
+            /usr/bin/time -v perl "$ESHKOL_GUARDED_EXEC" \
             "$TIMEOUT_S" "$VM" "$SRC" >"$WORK/$tag.out" 2>"$WORK/$tag.time"
         RUN_RC=$?
         RSS_MB=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$WORK/$tag.time")

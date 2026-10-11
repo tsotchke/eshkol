@@ -81,7 +81,10 @@
 #     therefore still caught (nothing here disables or widens the alarm) —
 #     it is just reported as a fact about the CLOCK, not folded into the
 #     child's own exit-code space where it is indistinguishable from a
-#     signal the program under test raised on its own.
+#     signal the program under test raised on its own. The child leads its
+#     own process group and the stop reaches the whole group, so processes
+#     it started (eshkol-run's build and run subprocesses) stop with it and
+#     release the output pipe the harness is reading.
 #
 #   eshkol_outcome_classify_exit <exit_code>
 #     Prints exactly one of PASS / FAIL / INFRA for a raw exit code already
@@ -183,37 +186,13 @@ fi
 ESHKOL_HARNESS_OUTCOME_SH_LOADED=1
 
 # ── eshkol_outcome_guarded ──────────────────────────────────────────────
+# The implementation is scripts/lib/guarded_exec.pl, a standalone program so
+# that a harness can also run it under /usr/bin/time. It runs the command in
+# its own process group and stops the whole group on timeout, so processes
+# the command started cannot outlive it and hold the harness's output pipe.
+ESHKOL_GUARDED_EXEC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/guarded_exec.pl"
 eshkol_outcome_guarded() { # seconds cmd...
-    local secs="$1"; shift
-    perl -e '
-        use POSIX ":sys_wait_h";
-        my $secs = shift @ARGV;
-        my $pid = fork();
-        if (!defined $pid) { exit 125; }
-        if ($pid == 0) {
-            exec { $ARGV[0] } @ARGV or exit 127;
-        }
-        my $timed_out = 0;
-        local $SIG{ALRM} = sub {
-            $timed_out = 1;
-            kill("TERM", $pid);
-            select(undef, undef, undef, 0.5);
-            kill("KILL", $pid);
-        };
-        alarm($secs);
-        my $reaped = waitpid($pid, 0);
-        alarm(0);
-        my $status = $?;
-        if ($reaped != $pid) { exit 125; }
-        if ($timed_out) { exit 124; }
-        if (($status & 127) != 0) {
-            # Child died from a signal we did not send ourselves: a real
-            # crash, not a timeout. Preserve the signal in the exit code
-            # (128+N) rather than folding it into 124.
-            exit (128 + ($status & 127));
-        }
-        exit ($status >> 8);
-    ' "$secs" "$@"
+    perl "$ESHKOL_GUARDED_EXEC" "$@"
 }
 
 # ── eshkol_outcome_classify_exit ─────────────────────────────────────────
