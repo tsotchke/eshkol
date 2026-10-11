@@ -3,9 +3,9 @@
 <!-- example-catalogue:examples-overview:start -->
 The reviewed catalogue covers **67 programs**, including **46 mathematics programs**. Start with the [complete guide](../docs/EXAMPLES.md) or the [mathematics guide](../docs/MATHEMATICS_EXAMPLES.md) for published results, references, algorithms, domains, arithmetic, checks, limits, measured outcomes and per-program commands.
 
-The general runner discovers **66 flat sources** for native AOT, with **4 quantum-conditional programs** and the existing declared exclusions. The nested [WGSL generator](wgsl_artifact/README.md) follows its artifact pipeline. Dedicated mathematics registration contains NS **12/14/28** and IPM **29/29/58** programs/criteria/JIT-AOT entries, under the authored build condition.
+The general runner discovers **66 flat sources** for native AOT, with **4 quantum-conditional programs** and the existing declared exclusions. The nested [WGSL generator](wgsl_artifact/README.md) follows its artifact pipeline. Dedicated mathematics registration contains NS **12/14/28**, IPM **29/29/58** and AI-witness **4/4/8** programs/criteria/JIT-AOT entries, under the authored build condition.
 
-Every one of these 67 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **67** completed in both modes; **46** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 21 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
+Every one of these 67 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **64** completed in both modes; **46** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 18 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Without a passing verdict at this SHA:** [H₂ frequency from quantum-backend geometry differences](../docs/EXAMPLES.md#h2-vibrational-quantum), [Quantum natural-gradient comparison](../docs/EXAMPLES.md#qng-vqe), [H₂ variational quantum optimization](../docs/EXAMPLES.md#vqe-h2) (its entry shows the output). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
 
 Each entry distinguishes asserted checks from printed diagnostics. Cross-host byte equality and backend dispatch need their own measured evidence.
 
@@ -28,7 +28,7 @@ mkdir -p .scratch/example-manual
 | [gradient_descent_demo.esk](gradient_descent_demo.esk#L1) | Fit a quadratic to the checked-in data table. | RAN-OK / RAN-OK | [Quadratic regression with AD](../docs/EXAMPLES.md#gradient-descent-demo) |
 | [h2_vibrational.esk](h2_vibrational.esk#L1) | Compute molecular curvature through the source’s Gaussian-integral energy model. | RAN-OK / RAN-OK | [H₂ harmonic frequency from Taylor AD](../docs/EXAMPLES.md#h2-vibrational) |
 | [h2_vibrational_full.esk](h2_vibrational_full.esk#L1) | Combine Pauli-coefficient geometry derivatives with quantum-state response. | RAN-OK / RAN-OK | [H₂ geometry AD and quantum response](../docs/EXAMPLES.md#h2-vibrational-full) |
-| [h2_vibrational_quantum.esk](h2_vibrational_quantum.esk#L1) | Compute curvature of the backend energy surface by three-point differencing. | RAN-OK / RAN-OK | [H₂ frequency from quantum-backend geometry differences](../docs/EXAMPLES.md#h2-vibrational-quantum) |
+| [h2_vibrational_quantum.esk](h2_vibrational_quantum.esk#L1) | Compute curvature of the backend energy surface by three-point differencing. | FAIL / FAIL | [H₂ frequency from quantum-backend geometry differences](../docs/EXAMPLES.md#h2-vibrational-quantum) |
 | [hello.esk](hello.esk#L1) | Show display/newline syntax. | RAN-OK / RAN-OK | [Hello and a historical version string](../docs/EXAMPLES.md#hello) |
 | [mathematics_abelian_sheaves_finite_site.esk](mathematics_abelian_sheaves_finite_site.esk#L1) | Compare sheafification and cohomology routes on finite Alexandrov sites. | PASS / PASS | [Abelian sheaves on finite sites](../docs/MATHEMATICS_EXAMPLES.md#mathematics-abelian-sheaves-finite-site) |
 | [mathematics_alphatensor_3x3_gf2.esk](mathematics_alphatensor_3x3_gf2.esk#L1) | Verify a supplied public AlphaTensor factorization. | PASS / PASS | [Rank-23 matrix multiplication over F₂](../docs/MATHEMATICS_EXAMPLES.md#mathematics-alphatensor-3x3-gf2) |
@@ -81,11 +81,11 @@ mkdir -p .scratch/example-manual
 | [neural_xor.esk](neural_xor.esk#L1) | Train a fixed two-layer network using compiler AD. | RAN-OK / RAN-OK | [Small XOR neural network](../docs/EXAMPLES.md#neural-xor) |
 | [newton_method.esk](newton_method.esk#L1) | Find several numerical roots using the same derivative-based iteration. | RAN-OK / RAN-OK | [Newton iteration with AD](../docs/EXAMPLES.md#newton-method) |
 | [parallel.esk](parallel.esk#L1) | Introduce parallel-execute. | RAN-OK / RAN-OK | [Parallel thunks and thread-pool information](../docs/EXAMPLES.md#parallel) |
-| [qng_vqe.esk](qng_vqe.esk#L1) | Compare regularized natural-gradient and ordinary-gradient updates from identical parameters. | RAN-OK / RAN-OK | [Quantum natural-gradient comparison](../docs/EXAMPLES.md#qng-vqe) |
+| [qng_vqe.esk](qng_vqe.esk#L1) | Compare regularized natural-gradient and ordinary-gradient updates from identical parameters. | FAIL / FAIL | [Quantum natural-gradient comparison](../docs/EXAMPLES.md#qng-vqe) |
 | [streaming_stats.esk](streaming_stats.esk#L1) | Accumulate bounded-state statistics over a synthetic stream. | RAN-OK / RAN-OK | [Online mean and variance](../docs/EXAMPLES.md#streaming-stats) |
 | [symbolic_diff.esk](symbolic_diff.esk#L1) | Display differentiation routes alongside an analytic derivative. | RAN-OK / RAN-OK | [Symbolic, forward and reverse differentiation](../docs/EXAMPLES.md#symbolic-diff) |
 | [tensors.esk](tensors.esk#L1) | Show basic tensor creation and linear algebra calls. | RAN-OK / RAN-OK | [Tensor multiplication and reductions](../docs/EXAMPLES.md#tensors) |
-| [vqe_h2.esk](vqe_h2.esk#L1) | Exercise reverse-mode optimization through a backend quantum energy function. | RAN-OK / RAN-OK | [H₂ variational quantum optimization](../docs/EXAMPLES.md#vqe-h2) |
+| [vqe_h2.esk](vqe_h2.esk#L1) | Exercise reverse-mode optimization through a backend quantum energy function. | FAIL / FAIL | [H₂ variational quantum optimization](../docs/EXAMPLES.md#vqe-h2) |
 | [wgsl_artifact/generate.esk](wgsl_artifact/generate.esk#L1) | Generate value and two derivative evaluators from one Taylor model. | RAN-OK / RAN-OK | [Bounded strain-energy WGSL generator](../docs/EXAMPLES.md#generate) |
 <!-- example-catalogue:examples-overview:end -->
 

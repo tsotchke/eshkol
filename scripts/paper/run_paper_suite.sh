@@ -9,9 +9,28 @@
 #   bash scripts/paper/run_paper_suite.sh           # full suite
 #   bash scripts/paper/run_paper_suite.sh --quick   # skip heavy comparisons
 #
+# --quick still exports the weights, still runs the full verification suite
+# with both trace flags (so every number in the paper still gets re-proved),
+# and still writes vm-traces.jsonl / transformer-traces.jsonl. It skips the
+# fieldwise VM-vs-transformer trace comparison (compare_traces.py) and the
+# paper-table regeneration that consumes that comparison's output, since
+# those are the two steps whose cost scales with trace size rather than with
+# the fixed 71-program suite.
+#
 # Expected wall time on 2023 M2 Max: under 5 minutes for full suite.
 
 set -euo pipefail
+
+QUICK=0
+for arg in "$@"; do
+    case "$arg" in
+        --quick) QUICK=1 ;;
+        *)
+            echo "usage: $0 [--quick]" >&2
+            exit 2
+            ;;
+    esac
+done
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
@@ -28,7 +47,13 @@ echo "Output dir:  $OUTPUT_DIR"
 echo "=============================================="
 echo
 
-echo "[1/4] Export weights + dump VM and matrix-forward traces (single run)..."
+if [[ "$QUICK" -eq 1 ]]; then
+    STEP_TOTAL=2
+else
+    STEP_TOTAL=4
+fi
+
+echo "[1/$STEP_TOTAL] Export weights + dump VM and matrix-forward traces (single run)..."
 # A single weight_matrices invocation runs the verification suite once and emits
 # both per-step traces. This is faster than calling dump_vm_trace.sh and
 # dump_transformer_trace.sh separately (each of which runs the full suite).
@@ -52,14 +77,31 @@ echo "    $passed/$passed verification passes with trace flags."
 echo "    vm-traces:          $(wc -l < "$OUTPUT_DIR/vm-traces.jsonl" | tr -d ' ') lines"
 echo "    transformer-traces: $(wc -l < "$OUTPUT_DIR/transformer-traces.jsonl" | tr -d ' ') lines"
 
-echo "[2/4] Compare traces (fieldwise + ordinal output match)..."
+if [[ "$QUICK" -eq 1 ]]; then
+    echo "[2/$STEP_TOTAL] --quick: skipping compare_traces.py and paper-table regeneration."
+    echo
+    echo "=============================================="
+    echo "Quick suite complete (verification + traces only). Output checksums:"
+    echo "=============================================="
+    for f in "$OUTPUT_DIR"/weights.qlmw "$OUTPUT_DIR"/*.jsonl; do
+        if [[ -f "$f" ]]; then
+            shasum -a 256 "$f"
+        fi
+    done
+    echo
+    echo "Re-run without --quick for the fieldwise trace comparison and regenerated paper tables."
+    echo "Done."
+    exit 0
+fi
+
+echo "[2/$STEP_TOTAL] Compare traces (fieldwise + ordinal output match)..."
 python3 scripts/paper/compare_traces.py \
     --vm "$OUTPUT_DIR/vm-traces.jsonl" \
     --transformer "$OUTPUT_DIR/transformer-traces.jsonl" \
     --out "$OUTPUT_DIR/comparison-report.json" \
     --coverage-out "$OUTPUT_DIR/opcode-coverage.json"
 
-echo "[3/4] Regenerate paper tables..."
+echo "[3/$STEP_TOTAL] Regenerate paper tables..."
 mkdir -p "$OUTPUT_DIR/tables"
 python3 scripts/paper/gen_paper_tables.py \
     --comparison "$OUTPUT_DIR/comparison-report.json" \
@@ -67,7 +109,7 @@ python3 scripts/paper/gen_paper_tables.py \
     --weights "$OUTPUT_DIR/weights.qlmw" \
     --out-dir "$OUTPUT_DIR/tables"
 
-echo "[4/4] Done."
+echo "[4/$STEP_TOTAL] Done."
 echo
 echo "=============================================="
 echo "Suite complete. Output checksums:"

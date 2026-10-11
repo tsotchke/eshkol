@@ -1,0 +1,286 @@
+{
+  "run": {
+    "id": 38058052157,
+    "run_number": 2682,
+    "run_attempt": 1,
+    "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5",
+    "name": "CI",
+    "status": "completed",
+    "conclusion": "success"
+  },
+  "jobs": {
+    "total_count": 30,
+    "jobs": [
+      {
+        "id": 114230454175,
+        "name": "surface-manifest",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230454195,
+        "name": "changes",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230454229,
+        "name": "mesh-gate-advisory (advisory, no-op)",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230454298,
+        "name": "assurance-gates",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230454983,
+        "name": "llvm-sdk-cache-keepalive (${{ matrix.arch }})",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "skipped",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496400,
+        "name": "rosette-oracle (advisory)",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496446,
+        "name": "prefetch-windows-llvm-archives (x64)",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496456,
+        "name": "hosted experimental allocation",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496457,
+        "name": "quantum-macos (advisory)",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496460,
+        "name": "pillars-fast",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496492,
+        "name": "bench-smoke (not a measurement)",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496493,
+        "name": "prefetch-windows-llvm-archives (arm64)",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496534,
+        "name": "wasm-execute-diff",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496682,
+        "name": "linux-x64-cuda",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496686,
+        "name": "macos-x64-lite",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496692,
+        "name": "linux-arm64-lite",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496704,
+        "name": "linux-x64-xla",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496711,
+        "name": "macos-arm64-xla",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496715,
+        "name": "linux-x64-lite",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496716,
+        "name": "macos-x64-xla",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496724,
+        "name": "linux-x64-debug",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496731,
+        "name": "linux-arm64-xla",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496759,
+        "name": "macos-arm64-lite",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496760,
+        "name": "linux-arm64-cuda",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230496811,
+        "name": "linux-x64-asan-ubsan",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230497785,
+        "name": "matrix.name",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "skipped",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230554468,
+        "name": "windows-arm64-xla",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230554487,
+        "name": "windows-x64-cuda",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114230554517,
+        "name": "windows-arm64-lite",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      },
+      {
+        "id": 114235195720,
+        "name": "pillars-readiness",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "run_id": 38058052157,
+        "head_sha": "e5ffe87b7d8abb4d00329e7acc848ba0db0ce8e5"
+      }
+    ]
+  }
+}

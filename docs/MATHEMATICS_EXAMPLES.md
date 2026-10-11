@@ -26,15 +26,16 @@ Each entry gives: the published result being reproduced and its references; what
 |---|---:|---:|---:|
 | `ESHKOL_NS_EXAMPLES` | 12 | 14 | 28 |
 | `ESHKOL_IPM_EXAMPLES` | 29 | 29 | 58 |
+| `ESHKOL_AI_WITNESS_EXAMPLES` | 4 | 4 | 8 |
 
 
-Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repeated criteria for one program are counted separately; the localization source has three NS criteria. Six programs (the four AI-witness programs and the two parametric sweeps of group homology and Aoki cycles) have no dedicated criterion; they are run by the general examples runner.
+Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repeated criteria for one program are counted separately; the localization source has three NS criteria. 1 program (`mathematics_group_cohomology_sweep`) has no dedicated criterion; it is run by the general examples runner.
 
 | Program | Measured JIT / AOT | Dedicated criteria |
 |---|---|---|
 | [Abelian sheaves on finite sites](#mathematics-abelian-sheaves-finite-site) | PASS / PASS | `cat_abelian_sheaves_finite_site` |
-| [Rank-23 matrix multiplication over F₂](#mathematics-alphatensor-3x3-gf2) | PASS / PASS | general runner only |
-| [Rank-47 matrix multiplication over F₂](#mathematics-alphatensor-gf2) | PASS / PASS | general runner only |
+| [Rank-23 matrix multiplication over F₂](#mathematics-alphatensor-3x3-gf2) | PASS / PASS | `alphatensor_rank23_gf2` |
+| [Rank-47 matrix multiplication over F₂](#mathematics-alphatensor-gf2) | PASS / PASS | `alphatensor_rank47_gf2` |
 | [Cycle supports on the Fermat sextic surface](#mathematics-aoki-cycles-fermat-sextic) | PASS / PASS | `hodge_aoki_cycles_fermat_sextic` |
 | [Aoki cycle supports by surface degree](#mathematics-aoki-cycles-fermat-surfaces-sweep) | PASS / PASS | `hodge_aoki_surface_sweep_default` |
 | [Finite-group classifying spaces and state sums](#mathematics-classifying-space-dijkgraaf-witten) | PASS / PASS | `dw_classifying_space_state_sums` |
@@ -48,13 +49,13 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Integral plus construction on a finite site](#mathematics-finite-site-sheafification) | PASS / PASS | `sheaf_finite_site_sheafification` |
 | [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology) | PASS / PASS | `sheaf_finite_spaces_cech_descent` |
 | [Cup-square obstruction in four-manifold models](#mathematics-four-manifolds-second-k-invariant) | PASS / PASS | `postnikov_four_manifolds_second_k` |
-| [Explicit 512-cap in AG(8,3)](#mathematics-funsearch-cap-set) | PASS / PASS | general runner only |
+| [Explicit 512-cap in AG(8,3)](#mathematics-funsearch-cap-set) | PASS / PASS | `funsearch_cap_set_512` |
 | [Integral homology and twists of order-eight groups](#mathematics-group-cohomology-order-eight) | PASS / PASS | `dw_group_cohomology_order_eight` |
 | [Parametric finite-group homology receipts](#mathematics-group-cohomology-sweep) | RAN-OK / RAN-OK | general runner only |
 | [Exhibited cycles on the Fermat quartic fourfold](#mathematics-hodge-classes-fermat-quartic-fourfold) | PASS / PASS | `hodge_fermat_quartic_fourfold` |
 | [Grothendieck constructions and homotopy colimits](#mathematics-homotopy-colimits-grothendieck) | PASS / PASS | `hocolim_grothendieck_borel` |
 | [Local oscillatory IPM velocity expansion](#mathematics-ipm-velocity-expansion) | PASS / PASS | `ipm_velocity_expansion_closes` |
-| [Polynomial Jacobian map and fibers](#mathematics-jacobian-counterexample) | PASS / PASS | general runner only |
+| [Polynomial Jacobian map and fibers](#mathematics-jacobian-counterexample) | PASS / PASS | `jacobian_counterexample_fibers` |
 | [Horn fillers and low homotopy groups](#mathematics-kan-complexes-horns) | PASS / PASS | `hocolim_kan_complexes_horns` |
 | [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion) | PASS / PASS | `torsion_lens_spaces_reidemeister` |
 | [Lens-space linking data and 2-group invariants](#mathematics-lens-spaces-yetter) | PASS / PASS | `yetter_lens_spaces` |
@@ -134,7 +135,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Rank-23 matrix multiplication over F₂
 
-Source: [mathematics_alphatensor_3x3_gf2.esk](../examples/mathematics_alphatensor_3x3_gf2.esk#L1). SHA-256: `222712935cc60af1f734f817d22c2b6a8c9fbcca97e4d56d6bf383d2710b1006`.
+Source: [mathematics_alphatensor_3x3_gf2.esk](../examples/mathematics_alphatensor_3x3_gf2.esk#L1). SHA-256: `7f439ceb1a3ea82e8a500f5421320f53963909e2198cc3f358dd81fbd51ffdd5`.
 
 **Published result:** Fawzi et al. (Nature, 2022) used reinforcement learning (AlphaTensor) to search for low-rank decompositions of matrix-multiplication tensors and published the decompositions they found. For 3×3 matrices the rank 23 they report over F₂ equals Laderman's 1976 bound; the program checks the public rank-23 factor matrices from the AlphaTensor repository, not a new bound.
 
@@ -151,13 +152,13 @@ Source: [mathematics_alphatensor_3x3_gf2.esk](../examples/mathematics_alphatenso
 
 **Arithmetic:** Exact integers and reduction modulo 2.
 
-**Checks in the source:** Basis-pair expansion agrees with matrix-unit multiplication; bilinearity extends this complete tensor identity to every pair of 3×3 F₂ matrices. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it.
+**Checks in the source:** Basis-pair expansion agrees with matrix-unit multiplication; bilinearity extends this complete tensor identity to every pair of 3×3 F₂ matrices. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it. The process also exits 0 on `RESULT: ALL PASS` and 1 on `RESULT: FAILURES DETECTED`, so a failing check is a nonzero exit as well as a printed line.
 
 **Limits:** Certifies the supplied bilinear witness over F₂; does not search for it or prove rank optimality.
 
 **Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 2, Failed: 0; 1.37 s); native AOT **PASS** (Passed: 2, Failed: 0; compile 1.35 s, run 0.21 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 2, Failed: 0; 2.04 s); native AOT **PASS** (Passed: 2, Failed: 0; compile 1.98 s, run 0.23 s). CTest: `alphatensor_rank23_gf2_jit` Passed (0.24 s), `alphatensor_rank23_gf2_aot` Passed (2.22 s). Verdict line: `RESULT: ALL PASS`.
 
 Computed values (verbatim program output):
 
@@ -180,7 +181,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Rank-47 matrix multiplication over F₂
 
-Source: [mathematics_alphatensor_gf2.esk](../examples/mathematics_alphatensor_gf2.esk#L1). SHA-256: `eb57351038fdc11718775948f85f98017cec9d0accd8a4ca89f1c8bac3fb9f1e`.
+Source: [mathematics_alphatensor_gf2.esk](../examples/mathematics_alphatensor_gf2.esk#L1). SHA-256: `97b4bebee4eba04141d1618cfac8fdada8ca1de719d26f7b36dc10ce150a5940`.
 
 **Published result:** Fawzi et al. (Nature, 2022) report a rank-47 decomposition of the 4×4 matrix-multiplication tensor over F₂, below the rank 49 obtained by applying Strassen's 2×2 algorithm recursively — the first improvement on that bound for 4×4 matrices over a finite field. The program checks the published rank-47 factor matrices.
 
@@ -197,13 +198,13 @@ Source: [mathematics_alphatensor_gf2.esk](../examples/mathematics_alphatensor_gf
 
 **Arithmetic:** Exact integer bitsets with parity reduction.
 
-**Checks in the source:** The complete basis expansion certifies the bilinear multiplication tensor for all inputs over F₂. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it.
+**Checks in the source:** The complete basis expansion certifies the bilinear multiplication tensor for all inputs over F₂. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it. The process also exits 0 on `RESULT: ALL PASS` and 1 on `RESULT: FAILURES DETECTED`, so a failing check is a nonzero exit as well as a printed line.
 
 **Limits:** No factorization search, field-independent rank claim, or rank-optimality proof is implemented.
 
 **Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 3, Failed: 0; 1.60 s); native AOT **PASS** (Passed: 3, Failed: 0; compile 1.51 s, run 0.35 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 3, Failed: 0; 2.32 s); native AOT **PASS** (Passed: 3, Failed: 0; compile 2.85 s, run 0.42 s). CTest: `alphatensor_rank47_gf2_jit` Passed (0.56 s), `alphatensor_rank47_gf2_aot` Passed (2.75 s). Verdict line: `RESULT: ALL PASS`.
 
 Computed values (verbatim program output):
 
@@ -875,7 +876,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Explicit 512-cap in AG(8,3)
 
-Source: [mathematics_funsearch_cap_set.esk](../examples/mathematics_funsearch_cap_set.esk#L1). SHA-256: `dc27292115bb4bd49875557420807bfb0cd9ff5e7a58f5a26a1f89d6e9d43806`.
+Source: [mathematics_funsearch_cap_set.esk](../examples/mathematics_funsearch_cap_set.esk#L1). SHA-256: `45d91a4f2f3503bb752ee024d6dca7e50eb8e3fb2fe66cd46e598fbfe6b600a6`.
 
 **Published result:** Romera-Paredes et al. (Nature, 2024) used FunSearch — an LLM-guided evolutionary search over programs — to find a cap set of size 512 in F₃⁸ (AG(8,3)), larger than the previously best known 496. A cap set has no three collinear points (no x, y, z distinct with x + y + z ≡ 0). The program rebuilds the published 512-point witness from its explicit construction and checks the cap property exhaustively.
 
@@ -892,13 +893,13 @@ Source: [mathematics_funsearch_cap_set.esk](../examples/mathematics_funsearch_ca
 
 **Arithmetic:** Exact integer coordinates modulo 3.
 
-**Checks in the source:** Ambient and cap cardinalities and exhaustive absence of a third cap point establish the finite no-three-collinear property. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it.
+**Checks in the source:** Ambient and cap cardinalities and exhaustive absence of a third cap point establish the finite no-three-collinear property. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it. The process also exits 0 on `RESULT: ALL PASS` and 1 on `RESULT: FAILURES DETECTED`, so a failing check is a nonzero exit as well as a printed line.
 
 **Limits:** This certifies the supplied set; it neither reruns FunSearch nor proves a maximum cap size.
 
 **Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 3, Failed: 0; 12.5 s); native AOT **PASS** (Passed: 3, Failed: 0; compile 1.61 s, run 6.88 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 3, Failed: 0; 17.6 s); native AOT **PASS** (Passed: 3, Failed: 0; compile 2.66 s, run 10.5 s). CTest: `funsearch_cap_set_512_jit` Passed (8.95 s), `funsearch_cap_set_512_aot` Passed (10.9 s). Verdict line: `RESULT: ALL PASS`.
 
 Computed values (verbatim program output):
 
@@ -1172,7 +1173,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Polynomial Jacobian map and fibers
 
-Source: [mathematics_jacobian_counterexample.esk](../examples/mathematics_jacobian_counterexample.esk#L1). SHA-256: `51770f32f89bad44e6ea905881f4350f1245b3c8a3f710aefadf2fffac5181b1`.
+Source: [mathematics_jacobian_counterexample.esk](../examples/mathematics_jacobian_counterexample.esk#L1). SHA-256: `17695cfcfb489d40a4e842192c87e55dc218de708bad7bf380618eae1a2a0238`.
 
 **Published result:** The research note "A counterexample to the Jacobian conjecture" (dated July 20, 2026) verifies that the polynomial map F = (P, Q, R): C³ → C³ with P = (1+xy)³z + y²(1+xy)(4+3xy), Q = y + 3x(1+xy)²z + 3xy²(4+3xy), R = 2x − 3x²y − x³z has det Jac F ≡ −2 (a Keller map) and that F(0, 0, −1/4) = F(1, −3/2, 13/2) = F(−1, 3/2, 13/2) = (−1/4, 0, 0) (Theorem 3.1), so F is not injective and hence not a polynomial automorphism; by stabilization this gives counterexamples in every dimension n ≥ 3. The note credits the explicit formula to an announcement by L. Alpöge. Theorem 5.1 gives a family F_{λ,a,c,H} with the same mechanism. The program checks the map, the three-point fiber, the binary-cubic fiber description, the discriminant fiber counts, the determinant identity and two members of the Theorem 5.1 family.
 
@@ -1190,13 +1191,13 @@ Source: [mathematics_jacobian_counterexample.esk](../examples/mathematics_jacobi
 
 **Arithmetic:** Exact rational polynomial/fiber checks; AD carrier checks use tolerance 1e-9, including rational-input vectors.
 
-**Checks in the source:** The over-degree grid certifies the polynomial determinant identity globally, while the AD comparisons remain numerical. The supplied rational preimages are checked explicitly. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it.
+**Checks in the source:** The over-degree grid certifies the polynomial determinant identity globally, while the AD comparisons remain numerical. The supplied rational preimages are checked explicitly. How the verdict is read: the program prints one `PASS:`/`FAIL:` line per check, `Passed:`/`Failed:` counts and a final `RESULT: ALL PASS` or `RESULT: FAILURES DETECTED`; the verdict is the program's `RESULT:` line, and the measurements below read it. The process also exits 0 on `RESULT: ALL PASS` and 1 on `RESULT: FAILURES DETECTED`, so a failing check is a nonzero exit as well as a printed line.
 
 **Limits:** The exact degree-grid determinant certificate and tolerance-based AD comparisons have different scopes. Interpreting the construction as a real or complex Jacobian conjecture counterexample depends on the paper’s domain and hypotheses.
 
 **Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 12, Failed: 0; 1.78 s); native AOT **PASS** (Passed: 12, Failed: 0; compile 2.44 s, run 0.19 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 12, Failed: 0; 2.68 s); native AOT **PASS** (Passed: 12, Failed: 0; compile 5.23 s, run 0.22 s). CTest: `jacobian_counterexample_fibers_jit` Passed (0.17 s), `jacobian_counterexample_fibers_aot` Passed (3.95 s). Verdict line: `RESULT: ALL PASS`.
 
 Computed values (verbatim program output):
 

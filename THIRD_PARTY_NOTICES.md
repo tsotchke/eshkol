@@ -24,6 +24,7 @@ artifact verifier.
 | Yoga 3.2.1 | `042f5013152eb81c1552dec945b88f7b95ca350f` | MIT |
 | curl (Linux packages only) | `a05f34973e6c4bb629d018f7cb51487be1c904d8` | curl license |
 | Eigen 5.0.1 (native Windows BLAS provider) | `bc3b39870ecb690a623a3f49149a358b95c5781d` | MPL-2.0 |
+| OpenXLA PJRT C API header, `deps/pjrt/pjrt_c_api.h` (XLA packages only) | PJRT API 0.114 (vendored from `openxla/xla`) | Apache-2.0 |
 | libpng (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | libpng license |
 | libjpeg-turbo (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | IJG/BSD-3-Clause/zlib licenses as distributed upstream |
 | libwebp (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | BSD-3-Clause |

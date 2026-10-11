@@ -101,5 +101,5 @@
 (display "Passed: ") (display pass-count) (newline)
 (display "Failed: ") (display fail-count) (newline)
 (if (= fail-count 0)
-    (begin (display "RESULT: ALL PASS") (newline))
-    (begin (display "RESULT: FAILURES DETECTED") (newline)))
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

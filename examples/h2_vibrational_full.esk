@@ -99,26 +99,43 @@
                       (* (vector-ref u 2)(vector-ref v 2))(* (vector-ref u 3)(vector-ref v 3))))
 (define (perturb th b e) (let ((o (vector (vector-ref th 0)(vector-ref th 1)(vector-ref th 2)(vector-ref th 3))))
                            (vector-set! o b (+ (vector-ref th b) e)) o))
-;; solve 4x4 A x = b ; A = vector of 4 row-vectors (mutated), b a 4-vector
+;; solve 4x4 A x = b ; A = vector of 4 row-vectors (mutated), b a 4-vector.
+;;
+;; A is used below to solve a VQE parameter-space response system (the
+;; theta-Hessian against the mixed energy/geometry gradient); a hardware-
+;; efficient ansatz commonly carries one or more GAUGE directions -- parameter
+;; components the energy of a given Hamiltonian does not depend on at all, so
+;; the Hessian row/column AND the gradient component for that direction are
+;; both structurally zero (verified by the chain rule, not by chance: if
+;; theta_i never changes E(theta), both d^2E/dtheta_i dtheta_j and dE/dtheta_i
+;; vanish identically). That makes A singular but the system CONSISTENT: the
+;; degenerate direction is unconstrained, and its minimum-norm resolution is
+;; x_i = 0, which also makes it drop out of any downstream bilinear form
+;; b^T x. A plain elimination without this guard divides a (near-)zero
+;; diagonal into a (near-)zero remainder and produces 0/0 = NaN instead of the
+;; mathematically correct 0. DIAG-EPS is the near-zero threshold.
+(define solve4-diag-eps 1.0e-10)
 (define (solve4 A b)
   (let ((x (make-vector 4 0.0)))
     ;; forward elimination
     (let cols ((c 0))
       (if (< c 4)
           (let ((diag (vector-ref (vector-ref A c) c)))
-            (let rows ((r (+ c 1)))
-              (if (< r 4)
-                  (let ((f (/ (vector-ref (vector-ref A r) c) diag)))
-                    (let cc ((k c))
-                      (if (< k 4)
-                          (begin
-                            (vector-set! (vector-ref A r) k
-                              (- (vector-ref (vector-ref A r) k) (* f (vector-ref (vector-ref A c) k))))
-                            (cc (+ k 1)))
-                          #f))
-                    (vector-set! b r (- (vector-ref b r) (* f (vector-ref b c))))
-                    (rows (+ r 1)))
-                  #f))
+            (if (< (abs diag) solve4-diag-eps)
+                #f ;; degenerate pivot column: nothing to eliminate with, leave rows below untouched
+                (let rows ((r (+ c 1)))
+                  (if (< r 4)
+                      (let ((f (/ (vector-ref (vector-ref A r) c) diag)))
+                        (let cc ((k c))
+                          (if (< k 4)
+                              (begin
+                                (vector-set! (vector-ref A r) k
+                                  (- (vector-ref (vector-ref A r) k) (* f (vector-ref (vector-ref A c) k))))
+                                (cc (+ k 1)))
+                              #f))
+                        (vector-set! b r (- (vector-ref b r) (* f (vector-ref b c))))
+                        (rows (+ r 1)))
+                      #f)))
             (cols (+ c 1)))
           #f))
     ;; back substitution
@@ -131,7 +148,9 @@
                     (set! s (- s (* (vector-ref (vector-ref A i) j) (vector-ref x j))))
                     (jj (+ j 1)))
                   #f))
-            (vector-set! x i (/ s (vector-ref (vector-ref A i) i)))
+            (if (< (abs (vector-ref (vector-ref A i) i)) solve4-diag-eps)
+                (vector-set! x i 0.0) ;; degenerate direction: minimum-norm resolution
+                (vector-set! x i (/ s (vector-ref (vector-ref A i) i))))
             (back (- i 1)))
           #f))
     x))

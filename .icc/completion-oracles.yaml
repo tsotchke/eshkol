@@ -2594,77 +2594,6 @@ oracles:
         action: ./scripts/run_icc_smoke.sh
 
   # ─────────────────────────────────────────────────────────────────
-  # Navier-Stokes residual mechanization — docs/design/
-  # NAVIER_STOKES_RESIDUAL_MECHANIZATION.md Section 4.2's proposed oracle.
-  # Registered here (created by the "wave 2" evidence-ledger lane; not present
-  # on origin at the time this branch was cut) with the criteria that have
-  # real, currently-wired evidence: the ns_* CTest entries the mechanization
-  # doc's Section 3.2 example-program family and the evidence-ledger's EXACT
-  # rows actually run, plus the evidence-ledger self-consistency criterion
-  # itself. Criteria for BUILD ITEM rows (ANALYTIC-ONLY in the ledger) are
-  # deliberately NOT listed here — an oracle criterion with no script in the
-  # tree is exactly the false-evidence pattern Section 4.2 warns against.
-  # docs/design/NAVIER_STOKES_EVIDENCE_LEDGER.md is the authority on what is and
-  # is not mechanized; this oracle only asserts what that ledger claims
-  # EXACT, plus its own internal consistency.
-  # ─────────────────────────────────────────────────────────────────
-  - name: navier-stokes-mechanization
-    aliases: [navier-stokes, ns-residual, ns-mechanization]
-    requires:
-      - test_evidence: true
-        severity: high
-        label: "Similarity exponents (rows 1,2,7,8) solved exactly over rationals"
-        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_similarity_scales.esk
-
-      - test_evidence: true
-        severity: high
-        label: "Viscosity-scaling residual identity (rows 9,71,83) closes to exact zero"
-        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_viscosity_scaling.esk
-
-      - test_evidence: true
-        severity: high
-        label: "Leading-order profile balance (rows 3,5,6,43) derived by exact Taylor-coefficient collection"
-        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_first_principles.esk
-
-      - test_evidence: true
-        severity: high
-        label: "Pulse momentum-flux averages and the two-family stress solve (rows 58,59,62)"
-        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_stress.esk
-
-      - test_evidence: true
-        severity: high
-        label: "Compactly supported mean corrections and the five-moment Vandermonde solve (rows 64-66,68)"
-        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_mean_corrections.esk
-
-      - test_evidence: true
-        severity: high
-        label: "Residual-exponent ladder and the coefficient-order improvement cycle (rows 71,73,75,76)"
-        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_residual_ladder.esk
-
-      - test_evidence: true
-        severity: high
-        label: "Smooth cutoff and compactly supported forcing (rows 79,80)"
-        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
-
-      - test_evidence: true
-        severity: high
-        label: "Discrete-model energy identity, Proposition 10.1 / Lemma 10.4 (row 81)"
-        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
-
-      - test_evidence: true
-        severity: high
-        label: "Torus periodization, Corollary 10.6 (row 84)"
-        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
-
-      - runtime_event:
-          event_kinds: [eshkol_smoke]
-          event_names: ["navier_stokes_evidence_ledger_consistent"]
-          event_values: ["PASS"]
-        severity: high
-        label: The evidence ledger is internally consistent with the CTest surface and the mechanization doc's row table
-        action: ./scripts/check_ns_evidence_ledger.py
-
-  # ─────────────────────────────────────────────────────────────────
   # No-regression gate — used after a refactor or codegen change to
   # confirm the fix didn't break anything. Lower bar than full release.
   # ─────────────────────────────────────────────────────────────────
@@ -4064,7 +3993,8 @@ oracles:
         label: WASM execute-and-diff gate (Eshkol-compiled WASM output byte-matches native `eshkol-run -r` on the VM-supported subset; out-of-subset programs fail cleanly / are excluded with reasons)
         action: ./scripts/run_wasm_differential.sh
   # ─────────────────────────────────────────────────────────────────
-  # Navier-Stokes residual mechanization family
+  # Navier-Stokes residual mechanization family — docs/design/
+  # NAVIER_STOKES_RESIDUAL_MECHANIZATION.md Section 4.2's oracle
   # (examples/mathematics_navier_stokes_*.esk, docs/AI_MATHEMATICS_EXAMPLES.md).
   # Each program below is its own compile-and-run executable check with an
   # internal pass/fail ledger over many individually named verdicts and
@@ -4073,7 +4003,10 @@ oracles:
   # _ns_probe helper runs each program under JIT (`eshkol-run -r`) and writes
   # kind:"eshkol_smoke" name:<id> value:"PASS"/"FAIL"; the CTest entries
   # ns_*_jit / ns_*_aot in CMakeLists.txt additionally pin the same verdict
-  # line on both engines for regular CI.
+  # line on both engines for regular CI. Covers all 13 ns_* CTest entries
+  # plus the evidence-ledger self-consistency criterion; docs/design/
+  # NAVIER_STOKES_EVIDENCE_LEDGER.md is the authority on what is and is not
+  # mechanized.
   # ─────────────────────────────────────────────────────────────────
   - name: navier-stokes-mechanization
     aliases: [navier-stokes, ns-residual, ns-mechanization]
@@ -4149,6 +4082,54 @@ oracles:
         severity: high
         label: 'mathematics_navier_stokes_pulse_growth.esk: ALL PASS (Introduction [9], Section 2.2)'
         action: ./build/eshkol-run -r examples/mathematics_navier_stokes_pulse_growth.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_five_moment_vandermonde"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_mean_corrections.esk: ALL PASS (compactly supported mean corrections, five-moment Vandermonde solve)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_mean_corrections.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_residual_exponent_ladder"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_residual_ladder.esk: ALL PASS (residual-exponent ladder, coefficient-order improvement cycle)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_residual_ladder.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_localization_smooth_extension"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_localization.esk: ALL PASS (smooth cutoff and compactly supported forcing)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_energy_dissipation_bounds"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_localization.esk: ALL PASS (discrete-model energy identity, Proposition 10.1 / Lemma 10.4)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ns_torus_corollary_scaling"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'mathematics_navier_stokes_localization.esk: ALL PASS (torus periodization, Corollary 10.6)'
+        action: ./build/eshkol-run -r examples/mathematics_navier_stokes_localization.esk
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["navier_stokes_evidence_ledger_consistent"]
+          event_values: ["PASS"]
+        severity: high
+        label: The evidence ledger is internally consistent with the CTest surface and the mechanization doc's row table
+        action: ./scripts/check_ns_evidence_ledger.py
 
   # ─────────────────────────────────────────────────────────────────
   # Mathematics examples: the local velocity expansion for the 2D

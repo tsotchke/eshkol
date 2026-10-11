@@ -1,6 +1,6 @@
 # SDNC paper artifact outputs are regenerated on demand by
 # scripts/paper/run_paper_suite.sh. They are not committed because:
-#   - weights.qlmw is 10.6 MB (regenerated bit-identically from the ISA spec)
+#   - weights.qlmw is 48.9 MB (regenerated bit-identically from the ISA spec)
 #   - the trace JSONLs are large (~MB each)
 #   - the README's "Expected checksums" section is the canonical contract;
 #     deviation between regenerated outputs and those checksums is the bug
