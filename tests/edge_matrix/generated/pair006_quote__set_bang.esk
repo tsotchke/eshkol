@@ -58,15 +58,15 @@
 (edge-check-g103)
 
 ;; check quote_veclit_ref__in__set_bang_store_read
-(define (edge-check-g104) (edge-chk "quote_veclit_ref__in__set_bang_store_read" (let ((svg104 #f)) (set! svg104 (vector-ref #(9 8 7) 2)) svg104) 7))
+(define (edge-check-g104) (edge-chk "quote_veclit_ref__in__set_bang_store_read" (let ((svg104 #f)) (set! svg104 (vector-ref #(9 8 7) 2)) svg104) 7.0))
 (edge-check-g104)
 
 ;; check quote_veclit_ref__in__set_bang_lambda_store
-(define (edge-check-g105) (edge-chk "quote_veclit_ref__in__set_bang_lambda_store" (let ((slg105 #f)) ((lambda () (set! slg105 (vector-ref #(9 8 7) 2)))) slg105) 7))
+(define (edge-check-g105) (edge-chk "quote_veclit_ref__in__set_bang_lambda_store" (let ((slg105 #f)) ((lambda () (set! slg105 (vector-ref #(9 8 7) 2)))) slg105) 7.0))
 (edge-check-g105)
 
 ;; check quote_veclit_ref__in__set_bang_set_twice
-(define (edge-check-g106) (edge-chk "quote_veclit_ref__in__set_bang_set_twice" (let ((szg106 0)) (set! szg106 (vector-ref #(9 8 7) 2)) (set! szg106 szg106) szg106) 7))
+(define (edge-check-g106) (edge-chk "quote_veclit_ref__in__set_bang_set_twice" (let ((szg106 0)) (set! szg106 (vector-ref #(9 8 7) 2)) (set! szg106 szg106) szg106) 7.0))
 (edge-check-g106)
 
 ;; check quote_qq_sugar__in__set_bang_store_read

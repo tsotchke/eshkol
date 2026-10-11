@@ -210,20 +210,26 @@ native path.
       (lambda () (raise 'warn)))))
 ```
 
-### `raise-continuable` is not implemented
+### `(raise-continuable obj)`
 
-`raise-continuable` is **not available on any substrate** — not the native LLVM
-path and not the bytecode VM. It appears in no builtin table, no special-form
-dispatch and no prelude; the name occurs exactly once in the compiler, as an
-entry in an iteration-scope blacklist, which is not an implementation.
-`docs/COMPLETE_LANGUAGE_SPECIFICATION.md` has this right ("all raises are
-non-continuable"); earlier revisions of *this* page and of
-[INDEX.md](INDEX.md) said it was "VM-only", which was never true of any build.
-The correction is ledgered as `SW-80b`, and implementing it is a build item, not
-a documented limitation.
+R7RS 6.11. Calls the procedure of the innermost `with-exception-handler` with
+`obj` **in the dynamic environment of the raise** — nothing is unwound, so
+`dynamic-wind` after-thunks have not run — with the handlers outside that one
+installed, and returns the handler's value to the `raise-continuable` call.
+A `raise` or `raise-continuable` inside the handler therefore reaches the next
+handler out. When the innermost handler is a `guard`, or no handler is
+installed, `obj` is raised exactly as `raise` raises it. JIT, AOT and the
+bytecode VM give the same answers (`tests/vm_parity/corpus/raise_continuable.esk`).
 
-`with-exception-handler` itself **works** in the native path, combined with a
-plain (non-continuable, escaping) `raise` — including under an enclosing
+```scheme
+(display
+  (with-exception-handler
+    (lambda (con) (cond ((string? con) 1) (else 42)))
+    (lambda () (+ (raise-continuable 'oops) 23))))   ; => 65
+```
+
+`with-exception-handler` also **works** with a plain (non-continuable,
+escaping) `raise` — including under an enclosing
 `guard`, which the guard coverage gate checks on every engine.
 
 ## The capability-denied signal

@@ -26,7 +26,7 @@
 (edge-check-g2002)
 
 ;; check quote_veclit_ref__in__guard_raise_guard_pass
-(define (edge-check-g2003) (edge-chk "quote_veclit_ref__in__guard_raise_guard_pass" (guard (gpg2003 (#t 'err)) (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g2003) (edge-chk "quote_veclit_ref__in__guard_raise_guard_pass" (guard (gpg2003 (#t 'err)) (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g2003)
 
 ;; check quote_qq_sugar__in__guard_raise_guard_pass

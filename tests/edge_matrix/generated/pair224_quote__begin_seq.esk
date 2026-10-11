@@ -42,11 +42,11 @@
 (edge-check-g1922)
 
 ;; check quote_veclit_ref__in__begin_seq_begin_tail
-(define (edge-check-g1923) (edge-chk "quote_veclit_ref__in__begin_seq_begin_tail" (begin 'bfirst (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g1923) (edge-chk "quote_veclit_ref__in__begin_seq_begin_tail" (begin 'bfirst (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g1923)
 
 ;; check quote_veclit_ref__in__begin_seq_begin_only
-(define (edge-check-g1924) (edge-chk "quote_veclit_ref__in__begin_seq_begin_only" (begin (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g1924) (edge-chk "quote_veclit_ref__in__begin_seq_begin_only" (begin (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g1924)
 
 ;; check quote_qq_sugar__in__begin_seq_begin_tail

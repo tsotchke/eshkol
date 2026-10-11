@@ -74,19 +74,19 @@
 (edge-check-g2063)
 
 ;; check quote_veclit_ref__in__let_family_let_bind
-(define (edge-check-g2064) (edge-chk "quote_veclit_ref__in__let_family_let_bind" (let ((lxg2064 (vector-ref #(9 8 7) 2))) lxg2064) 7))
+(define (edge-check-g2064) (edge-chk "quote_veclit_ref__in__let_family_let_bind" (let ((lxg2064 (vector-ref #(9 8 7) 2))) lxg2064) 7.0))
 (edge-check-g2064)
 
 ;; check quote_veclit_ref__in__let_family_letstar_chain
-(define (edge-check-g2065) (edge-chk "quote_veclit_ref__in__let_family_letstar_chain" (let* ((lyg2065 (vector-ref #(9 8 7) 2)) (lzg2065 lyg2065)) lzg2065) 7))
+(define (edge-check-g2065) (edge-chk "quote_veclit_ref__in__let_family_letstar_chain" (let* ((lyg2065 (vector-ref #(9 8 7) 2)) (lzg2065 lyg2065)) lzg2065) 7.0))
 (edge-check-g2065)
 
 ;; check quote_veclit_ref__in__let_family_letrec_thunk
-(define (edge-check-g2066) (edge-chk "quote_veclit_ref__in__let_family_letrec_thunk" (letrec ((lfg2066 (lambda () (vector-ref #(9 8 7) 2)))) (lfg2066)) 7))
+(define (edge-check-g2066) (edge-chk "quote_veclit_ref__in__let_family_letrec_thunk" (letrec ((lfg2066 (lambda () (vector-ref #(9 8 7) 2)))) (lfg2066)) 7.0))
 (edge-check-g2066)
 
 ;; check quote_veclit_ref__in__let_family_named_let_carry
-(define (edge-check-g2067) (edge-chk "quote_veclit_ref__in__let_family_named_let_carry" (let nlg2067 ((i 0) (acc #f)) (if (= i 1) acc (nlg2067 (+ i 1) (vector-ref #(9 8 7) 2)))) 7))
+(define (edge-check-g2067) (edge-chk "quote_veclit_ref__in__let_family_named_let_carry" (let nlg2067 ((i 0) (acc #f)) (if (= i 1) acc (nlg2067 (+ i 1) (vector-ref #(9 8 7) 2)))) 7.0))
 (edge-check-g2067)
 
 ;; check quote_qq_sugar__in__let_family_let_bind

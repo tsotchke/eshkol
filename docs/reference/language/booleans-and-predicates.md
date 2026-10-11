@@ -77,16 +77,23 @@ LLVM-inline builtins in the native path.
 ## Equality
 
 - `eq?` — identity / pointer equality (interned symbols, small integers, booleans).
-- `eqv?` — like `eq?` but reliable across numbers and characters.
-- `equal?` — deep structural equality (recurses into pairs, strings, vectors).
+- `eqv?` — like `eq?` but reliable across numbers and characters. Numbers are
+  `eqv?` when they have the same exactness and the same value: `(eqv? 6 6.0)`
+  is `#f`, and so is `(eqv? 0.0 -0.0)`.
+- `equal?` — deep structural equality (recurses into pairs, strings, vectors);
+  numbers, at any depth, are compared with `eqv?` (R7RS 6.1). `member` and
+  `assoc` compare with `equal?`.
+- `=` — numeric equality across exactness: `(= 6 6.0)` is `#t`.
 
 ```scheme
 (display (eq? 'a 'a)) (newline)
 (display (equal? '(1 2 3) (list 1 2 3))) (newline)
 (display (equal? "abc" "abc")) (newline)
+(display (list (equal? 6 6.0) (= 6 6.0))) (newline)
 ```
 ```
 #t
 #t
 #t
+(#f #t)
 ```

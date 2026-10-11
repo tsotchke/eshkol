@@ -13,14 +13,13 @@ description: >
   Verified by `icc architecture-verify --repo eshkol --model
   .icc/architecture-model.yaml`.
 
-  Ground truth: tests/coverage/language_surface.json (1,116 constructs including
+  Ground truth: tests/coverage/language_surface.json (1,118 constructs including
   22 opt-in Agent FFI quantum APIs, 116 special forms, 113 AST ops) and
-  scripts/language_coverage.py (dynamic exposure-engine coverage tracker). 1,116
-  is the enforced floor in tests/coverage/coverage_policy.json (baseline_surface_total),
-  confirmed by a fresh run of scripts/run_language_coverage.sh at commit afbaaf5b
-  on 2026-08-26; the surface was re-baselined up from 1,056 when the i128 tower,
-  linear-solve, and the string/pointer conversions landed, and has grown further
-  since. scripts/check_surface_counts.py fails CI if this file drifts from the
+  scripts/language_coverage.py (dynamic execution-backed coverage tracker). 1,118
+  is the enforced floor in tests/coverage/coverage_policy.json (baseline_surface_total).
+  The latest additions are raise-continuable and type-name. Release qualification
+  requires fresh execution evidence for the complete surface at the candidate
+  commit. scripts/check_surface_counts.py fails CI if this file drifts from the
   manifest again.
 
   FIDELITY HONESTY: ICC's C symbol index does not AST-resolve C/C++ the way it

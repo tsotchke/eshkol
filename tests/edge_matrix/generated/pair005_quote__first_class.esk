@@ -74,19 +74,19 @@
 (edge-check-g79)
 
 ;; check quote_veclit_ref__in__first_class_thunk_in_list
-(define (edge-check-g80) (edge-chk "quote_veclit_ref__in__first_class_thunk_in_list" ((car (list (lambda () (vector-ref #(9 8 7) 2))))) 7))
+(define (edge-check-g80) (edge-chk "quote_veclit_ref__in__first_class_thunk_in_list" ((car (list (lambda () (vector-ref #(9 8 7) 2))))) 7.0))
 (edge-check-g80)
 
 ;; check quote_veclit_ref__in__first_class_apply_id
-(define (edge-check-g81) (edge-chk "quote_veclit_ref__in__first_class_apply_id" (apply (lambda (fa) fa) (list (vector-ref #(9 8 7) 2))) 7))
+(define (edge-check-g81) (edge-chk "quote_veclit_ref__in__first_class_apply_id" (apply (lambda (fa) fa) (list (vector-ref #(9 8 7) 2))) 7.0))
 (edge-check-g81)
 
 ;; check quote_veclit_ref__in__first_class_map_hole
-(define (edge-check-g82) (edge-chk "quote_veclit_ref__in__first_class_map_hole" (car (map (lambda (fi) (vector-ref #(9 8 7) 2)) (list 0))) 7))
+(define (edge-check-g82) (edge-chk "quote_veclit_ref__in__first_class_map_hole" (car (map (lambda (fi) (vector-ref #(9 8 7) 2)) (list 0))) 7.0))
 (edge-check-g82)
 
 ;; check quote_veclit_ref__in__first_class_fn_arg_call
-(define (edge-check-g83) (edge-chk "quote_veclit_ref__in__first_class_fn_arg_call" ((lambda (ff) (ff)) (lambda () (vector-ref #(9 8 7) 2))) 7))
+(define (edge-check-g83) (edge-chk "quote_veclit_ref__in__first_class_fn_arg_call" ((lambda (ff) (ff)) (lambda () (vector-ref #(9 8 7) 2))) 7.0))
 (edge-check-g83)
 
 ;; check quote_qq_sugar__in__first_class_thunk_in_list

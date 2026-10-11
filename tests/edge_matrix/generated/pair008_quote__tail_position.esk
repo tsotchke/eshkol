@@ -99,24 +99,24 @@
 
 ;; check quote_veclit_ref__in__tail_position_define_tail
 (define (tpg147) (vector-ref #(9 8 7) 2))
-(define (edge-check-g147) (edge-chk "quote_veclit_ref__in__tail_position_define_tail" (tpg147) 7))
+(define (edge-check-g147) (edge-chk "quote_veclit_ref__in__tail_position_define_tail" (tpg147) 7.0))
 (edge-check-g147)
 
 ;; check quote_veclit_ref__in__tail_position_let_tail_in_define
 (define (tqg148) (let ((tu 1)) (vector-ref #(9 8 7) 2)))
-(define (edge-check-g148) (edge-chk "quote_veclit_ref__in__tail_position_let_tail_in_define" (tqg148) 7))
+(define (edge-check-g148) (edge-chk "quote_veclit_ref__in__tail_position_let_tail_in_define" (tqg148) 7.0))
 (edge-check-g148)
 
 ;; check quote_veclit_ref__in__tail_position_if_tail
-(define (edge-check-g149) (edge-chk "quote_veclit_ref__in__tail_position_if_tail" (if (> 2 1) (vector-ref #(9 8 7) 2) 'wrong) 7))
+(define (edge-check-g149) (edge-chk "quote_veclit_ref__in__tail_position_if_tail" (if (> 2 1) (vector-ref #(9 8 7) 2) 'wrong) 7.0))
 (edge-check-g149)
 
 ;; check quote_veclit_ref__in__tail_position_begin_tail
-(define (edge-check-g150) (edge-chk "quote_veclit_ref__in__tail_position_begin_tail" (begin 'first (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g150) (edge-chk "quote_veclit_ref__in__tail_position_begin_tail" (begin 'first (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g150)
 
 ;; check quote_veclit_ref__in__tail_position_cond_else_tail
-(define (edge-check-g151) (edge-chk "quote_veclit_ref__in__tail_position_cond_else_tail" (cond ((= 1 2) 'wrong) (else (vector-ref #(9 8 7) 2))) 7))
+(define (edge-check-g151) (edge-chk "quote_veclit_ref__in__tail_position_cond_else_tail" (cond ((= 1 2) 'wrong) (else (vector-ref #(9 8 7) 2))) 7.0))
 (edge-check-g151)
 
 ;; check quote_qq_sugar__in__tail_position_define_tail

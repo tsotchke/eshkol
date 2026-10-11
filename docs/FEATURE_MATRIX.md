@@ -5,7 +5,7 @@
 This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the "Final verification" section of [RELEASE_NOTES.md](../RELEASE_NOTES.md), and is bound to the tagged commit.
 
 **Language surface count (canonical):** the declared language surface is
-**1,116** constructs — 1,056 builtins, 116 special forms, 113 AST ops and 16
+**1,118** constructs — 1,058 builtins, 116 special forms, 113 AST ops and 16
 prelude entries, deduplicated by name with internal-only helpers excluded.
 Older cited figures — 1,107, 1,091 and 1,106 here and in
 `docs/COMPILER_ROADMAP.md`, 1,078 in `.icc/architecture-model.yaml`,
@@ -15,13 +15,13 @@ gate has ratcheted upward since. The "1,058 in ADR-0011 §2.1" citation from
 the previous reconciliation pass was itself wrong: ADR-0011 is the
 guest-collector adapter design and contains no surface-count section — there
 is no §2.1 that states 1,058. The only correct citation for this number is
-the coverage manifest itself: `tests/coverage/language_surface.json` (1,056
+the coverage manifest itself: `tests/coverage/language_surface.json` (1,058
 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by
 name and with internal-only helpers excluded exactly the way
 `scripts/language_coverage.py` already deduplicates it to compute the
 number the coverage gate enforces: `tests/coverage/coverage_policy.json`
 `baseline_surface_total` = `tests/coverage/execution_deficit.json`
-`surface_total` = **1,116**, confirmed by regenerating
+`surface_total` = **1,118**, confirmed by regenerating
 `tests/coverage/language_surface.json` at the release commit. This
 is the figure this doc, README.md, and `.icc/architecture-model.yaml` use;
 `scripts/check_surface_counts.py` fails CI if any of them drift from the
@@ -277,7 +277,7 @@ manifest again.
 | S-expression parser | Yes | Explicit continuation stack | Stack use independent of nesting depth; gated at 16,000 levels on an 8 MiB stack |
 | Macro system | Yes | Hygienic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
-| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,428 lines |
+| LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,548 lines |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
 | **Optimizations** |
@@ -491,7 +491,7 @@ manifest again.
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,056 builtins across a 1,116-construct declared surface (canonical count, see below) |
+| API Reference | Yes | Complete | 1,058 builtins across a 1,118-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -854,7 +854,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (116 special forms, 1,056 builtins — 1,116-construct canonical surface, see "Language surface count" below)
+- Core language (116 special forms, 1,058 builtins — 1,118-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)

@@ -3,14 +3,14 @@
 **Source**: [`lib/core/reflection.esk`](../../../lib/core/reflection.esk)
 **Require**: auto-loaded via `(require stdlib)`; or individually `(require core.reflection)`
 
-Runtime introspection helpers (task #170). `type-name` classifies a value with a single symbol; `describe` produces a human-readable string. Both dispatch over the standard type predicates.
+Runtime introspection helpers (task #170). `type-name` classifies a value with a single symbol; `describe` produces a human-readable string by dispatching over the standard type predicates.
 
-Related: `procedure-arity` is **not** defined here — it is a codegen builtin implemented in `lib/backend/llvm_codegen.cpp` (see `codegenProcedureArity`, dispatched at ~line 13447). It returns the fixed parameter count of a procedure and is used internally by `describe`. `record-fields` is documented in the source as **deferred** (field names are not embedded in runtime record values) and is not provided.
+`type-name` is a builtin (native codegen and bytecode VM, available without any `require`); it is listed here because it belongs to the same reflection surface. Related: `procedure-arity` is **not** defined here — it is a codegen builtin implemented in `lib/backend/llvm_codegen.cpp` (see `codegenProcedureArity`, dispatched at ~line 13447). It returns the fixed parameter count of a procedure and is used internally by `describe`. `record-fields` is documented in the source as **deferred** (field names are not embedded in runtime record values) and is not provided.
 
 ## Functions
 
 ### `(type-name value)`
-Returns one type-tag symbol: `null`, `boolean`, `integer`, `real`, `string`, `symbol`, `char`, `pair`, `vector`, `procedure`, or `unknown`. Note the dispatch order puts `null` and `boolean` before the numeric checks.
+Returns the value's type as a symbol from the runtime's one type-name vocabulary (`lib/core/value_type_names.h`), identical on JIT, AOT and the bytecode VM: `integer` (fixnum or bignum), `rational`, `real`, `complex`, `boolean`, `char`, `string`, `symbol`, `pair`, `null`, `vector`, `tensor`, `bytevector`, `hash-table`, `procedure` (any closure or builtin), `continuation`, `port`, `promise`, `parameter`, `exception`, `unspecified`, the domain types (`dual-number`, `logic-var`, `fact`, `knowledge-base`, `factor-graph`, `workspace`, ...), and `unknown` for a value outside the vocabulary. It is a builtin, so it is also a first-class procedure: `(map type-name (list 1 "a" 'b))` is `(integer string symbol)`. A numeric literal vector `#(1.0 2.0)` is a tensor in the native compiler and answers `tensor` there.
 
 ```scheme
 ;; reflection.esk
