@@ -42,11 +42,11 @@
 (edge-check-g2020)
 
 ;; check quote_veclit_ref__in__hof_fold_last
-(define (edge-check-g2021) (edge-chk "quote_veclit_ref__in__hof_fold_last" (fold-left (lambda (facc fx) fx) #f (list (vector-ref #(9 8 7) 2))) 7))
+(define (edge-check-g2021) (edge-chk "quote_veclit_ref__in__hof_fold_last" (fold-left (lambda (facc fx) fx) #f (list (vector-ref #(9 8 7) 2))) 7.0))
 (edge-check-g2021)
 
 ;; check quote_veclit_ref__in__hof_for_each_capture
-(define (edge-check-g2022) (edge-chk "quote_veclit_ref__in__hof_for_each_capture" (let ((fcg2022 #f)) (for-each (lambda (fe) (set! fcg2022 fe)) (list (vector-ref #(9 8 7) 2))) fcg2022) 7))
+(define (edge-check-g2022) (edge-chk "quote_veclit_ref__in__hof_for_each_capture" (let ((fcg2022 #f)) (for-each (lambda (fe) (set! fcg2022 fe)) (list (vector-ref #(9 8 7) 2))) fcg2022) 7.0))
 (edge-check-g2022)
 
 ;; check quote_qq_sugar__in__hof_fold_last

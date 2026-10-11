@@ -752,6 +752,14 @@ typedef struct {
     int saved_value_count;
     uint64_t owner_generation;
     uint8_t tail_retained;
+    /* with-exception-handler: the handler procedure sits on the operand
+     * stack at stack[sp - 1], below this frame's sp. raise-continuable calls
+     * it in place instead of transferring control here. A guard has none. */
+    uint8_t has_proc;
+    /* Set while that procedure runs for a raise-continuable (R7RS 6.11: a
+     * handler runs with the outer handlers installed). A raise inside it
+     * passes over this frame and, leaving its extent, retires it. */
+    uint8_t running;
 } VmExceptionHandler;
 
 #define VM_INITIAL_HANDLER_CAP 16

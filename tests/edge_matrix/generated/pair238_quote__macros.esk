@@ -51,12 +51,12 @@
 
 ;; check quote_veclit_ref__in__macros_identity_macro
 (define-syntax img2098 (syntax-rules () ((_ e) e)))
-(define (edge-check-g2098) (edge-chk "quote_veclit_ref__in__macros_identity_macro" (img2098 (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g2098) (edge-chk "quote_veclit_ref__in__macros_identity_macro" (img2098 (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g2098)
 
 ;; check quote_veclit_ref__in__macros_second_macro
 (define-syntax smg2099 (syntax-rules () ((_ a b) b)))
-(define (edge-check-g2099) (edge-chk "quote_veclit_ref__in__macros_second_macro" (smg2099 'skip (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g2099) (edge-chk "quote_veclit_ref__in__macros_second_macro" (smg2099 'skip (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g2099)
 
 ;; check quote_qq_sugar__in__macros_identity_macro

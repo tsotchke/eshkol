@@ -26,7 +26,7 @@
 (edge-check-g2130)
 
 ;; check quote_veclit_ref__in__parallel_map_pmap_hole
-(define (edge-check-g2131) (edge-chk "quote_veclit_ref__in__parallel_map_pmap_hole" (car (parallel-map (lambda (pi) (vector-ref #(9 8 7) 2)) (list 0))) 7))
+(define (edge-check-g2131) (edge-chk "quote_veclit_ref__in__parallel_map_pmap_hole" (car (parallel-map (lambda (pi) (vector-ref #(9 8 7) 2)) (list 0))) 7.0))
 (edge-check-g2131)
 
 ;; check quote_qq_sugar__in__parallel_map_pmap_hole

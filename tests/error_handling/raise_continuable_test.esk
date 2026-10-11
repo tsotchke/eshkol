@@ -1,0 +1,63 @@
+;;; tests/error_handling/raise_continuable_test.esk
+;;; R7RS 6.11 raise-continuable: the current with-exception-handler's
+;;; procedure is called in the dynamic environment of the raise, with the
+;;; outer handlers installed, and its value is raise-continuable's value.
+(define pass 0) (define fail 0)
+(define (chk label v)
+  (display "  [") (display (if v "PASS" "FAIL")) (display "] ") (display label) (newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+;; The R7RS 6.11 example.
+(chk "handler value returns to the raise"
+     (= 65 (with-exception-handler
+             (lambda (con) (cond ((string? con) 1) (else 42)))
+             (lambda () (+ (raise-continuable 'oops) 23)))))
+
+;; No unwinding: the handler runs inside the dynamic-wind extent.
+(define log '())
+(chk "handler runs before the after-thunk"
+     (and (= 20 (with-exception-handler
+                  (lambda (c) (set! log (cons 'handler log)) 10)
+                  (lambda ()
+                    (dynamic-wind
+                      (lambda () (set! log (cons 'before log)))
+                      (lambda () (* 2 (raise-continuable 'x)))
+                      (lambda () (set! log (cons 'after log)))))))
+          (equal? (reverse log) '(before handler after))))
+
+;; Inside the handler, the outer handler is the current one.
+(chk "nested raise-continuable reaches the outer handler"
+     (equal? '(inner first (outer again))
+             (with-exception-handler
+               (lambda (c) (list 'outer c))
+               (lambda ()
+                 (with-exception-handler
+                   (lambda (c) (list 'inner c (raise-continuable 'again)))
+                   (lambda () (raise-continuable 'first)))))))
+
+(chk "guard catches raise-continuable"
+     (equal? '(caught g) (guard (e (#t (list 'caught e))) (+ 1 (raise-continuable 'g)))))
+
+(chk "a raise from inside the handler goes outward"
+     (equal? '(outer-guard from-handler)
+             (guard (e ((symbol? e) (list 'outer-guard e)))
+               (with-exception-handler
+                 (lambda (c) (raise 'from-handler))
+                 (lambda () (raise-continuable 'c))))))
+
+(chk "handlers are intact afterwards"
+     (equal? '(ok later) (guard (e (#t (list 'ok e))) (raise 'later))))
+
+(define (loop n acc)
+  (if (= n 0) acc
+      (loop (- n 1)
+            (+ acc (with-exception-handler (lambda (c) c)
+                                           (lambda () (raise-continuable n)))))))
+(chk "repeated raise-continuable" (= 500500 (loop 1000 0)))
+
+(chk "raise still treats a returning handler as an error"
+     (eq? 'secondary
+          (guard (e ((error-object? e) 'secondary))
+            (with-exception-handler (lambda (c) 0) (lambda () (raise 'boom))))))
+
+(display "pass=") (display pass) (display " fail=") (display fail) (newline)

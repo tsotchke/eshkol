@@ -26,11 +26,11 @@
 (edge-check-g1639)
 
 ;; check tensors_lit_int_ref__in__shadowing_shadow_unused_builtin
-(define (edge-check-g1640) (edge-chk "tensors_lit_int_ref__in__shadowing_shadow_unused_builtin" (let ((length 5)) (vector-ref #(9 8 7) 0)) 9))
+(define (edge-check-g1640) (edge-chk "tensors_lit_int_ref__in__shadowing_shadow_unused_builtin" (let ((length 5)) (vector-ref #(9 8 7) 0)) 9.0))
 (edge-check-g1640)
 
 ;; check tensors_lit_int_ref__in__shadowing_shadow_param_rebind
-(define (edge-check-g1641) (edge-chk "tensors_lit_int_ref__in__shadowing_shadow_param_rebind" ((lambda (spg1641) (let ((spg1641 (vector-ref #(9 8 7) 0))) spg1641)) 'outer) 9))
+(define (edge-check-g1641) (edge-chk "tensors_lit_int_ref__in__shadowing_shadow_param_rebind" ((lambda (spg1641) (let ((spg1641 (vector-ref #(9 8 7) 0))) spg1641)) 'outer) 9.0))
 (edge-check-g1641)
 
 (display "EDGE-MATRIX-DONE") (newline)

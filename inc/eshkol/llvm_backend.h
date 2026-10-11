@@ -373,6 +373,14 @@ void eshkol_repl_capture_last_value(const eshkol_tagged_value_t* v);
  */
 bool eshkol_repl_get_last_value(eshkol_tagged_value_t* out);
 
+/**
+ * @brief The HoTT type the type checker infers for @p ast, as `:type` prints it.
+ *
+ * Session-defined functions are in scope. Returns a malloc'd string the
+ * caller frees, or NULL when no type can be synthesized for the form.
+ */
+char* eshkol_repl_infer_type_name(eshkol_ast_t* ast);
+
 /*
  * REPL Mode: Clear the thread-local last-value slot. Should be called by
  * the host before starting a new evaluation so a parse/codegen failure on

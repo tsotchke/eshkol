@@ -978,3 +978,11 @@ entries:
   reason: The sentence identifies this as the historical v1.1.13-accelerate scope and explicitly dates
     the measurement to 60f345def; `git show 60f345def:lib/backend/llvm_codegen.cpp | wc -l` returns
     47,407. The candidate's later source is 47,433.
+- claim_id: e09239d0799e0e17
+  path: docs/V1.1_SCOPE.md
+  line: 3
+  claim_type: numeric
+  subject: lib/backend/eshkol_vm.c
+  value: 2905
+  disposition: EXEMPT-HISTORICAL
+  reason: The sentence identifies this as the historical v1.1.13-accelerate scope and dates the measurement to 60f345def; `git show 60f345def:lib/backend/eshkol_vm.c | wc -l` returns 2,905. The candidate source is now 2,906 lines.

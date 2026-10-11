@@ -46,15 +46,17 @@
 ; ── ESH-0225: vector-copy on tensor-backed `#(...)` literals ────────────
 ; #(...) vector literals lower to a homogeneous-double tensor representation
 ; internally, but R7RS says #(...) IS a vector, so vector-copy must accept it
-; and return a fresh copy of that same representation.
+; and return a fresh copy of that same representation. A numeric #(...) is
+; an f64 tensor natively and an exact vector on the VM, so the elements are
+; compared through `exact`.
 (check "vector-copy on vector literal start..end slice"
-  (equal? '(2 3 4) (vector->list (vector-copy #(1 2 3 4 5) 1 4))))
+  (equal? '(2 3 4) (map exact (vector->list (vector-copy #(1 2 3 4 5) 1 4)))))
 
 (check "vector-copy on vector literal whole vector"
-  (equal? '(1 2 3) (vector->list (vector-copy #(1 2 3)))))
+  (equal? '(1 2 3) (map exact (vector->list (vector-copy #(1 2 3))))))
 
 (check "vector-copy on vector literal from start"
-  (equal? '(30 40) (vector->list (vector-copy #(10 20 30 40) 2))))
+  (equal? '(30 40) (map exact (vector->list (vector-copy #(10 20 30 40) 2)))))
 
 (check "vector-copy on vector literal empty slice"
   (equal? '() (vector->list (vector-copy #(1 2 3) 1 1))))
