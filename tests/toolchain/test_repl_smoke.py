@@ -90,7 +90,9 @@ class ReplSmokeTests(unittest.TestCase):
                 "print('partial stdout', flush=True)\n"
                 "print('partial stderr', file=sys.stderr, flush=True)\n"
                 "import time; time.sleep(10)\n",
-                timeout=0.1,
+                # Allow Python startup on a busy Windows runner before the
+                # intentional ten-second stall exercises timeout capture.
+                timeout=2.0,
             )
         self.assertIn("timed out", str(raised.exception))
         self.assertIn("partial stdout", raised.exception.stdout)
