@@ -17,6 +17,7 @@
   "eshkol_ad_point_is_exact_scalar",
   "eshkol_ad_point_is_scalar",
   "eshkol_ad_point_to_double",
+  "eshkol_ad_refuse_perturbed_operand",
   "eshkol_ad_seed_flag",
   "eshkol_ad_seed_to_double",
   "eshkol_ad_tower_carry_result",

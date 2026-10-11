@@ -5923,6 +5923,76 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    # Reverse-over-forward nested AD regression. Keep both native engines in
+    # CTest so the outer reverse tape is checked through the JIT and AOT paths.
+    add_test(
+        NAME nested_reverse_jet_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_jet_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(nested_reverse_jet_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "Passed: 4"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Failed: [1-9][0-9]*|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    add_test(
+        NAME nested_reverse_jet_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_reverse_jet_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_jet_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_reverse_jet_aot'"
+    )
+    set_tests_properties(nested_reverse_jet_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "Passed: 4"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Failed: [1-9][0-9]*|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    # The three reverse-over-reverse shapes below are intentionally unsupported.
+    # Their harness requires both a nonzero execution and the precise refusal;
+    # a silent zero or an unrelated startup failure cannot satisfy the test.
+    foreach(_nested_refusal IN ITEMS tensor_tensor svec_tensor derivative_tensor)
+        if(_nested_refusal STREQUAL "tensor_tensor")
+            set(_nested_refusal_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_tensor_tensor_refusal_test.esk")
+            set(_nested_refusal_diagnostic "reverse arithmetic: a nested reverse-mode derivative cannot consume an outer reverse-mode value; differentiate the outer level with forward mode or restructure the computation")
+        elseif(_nested_refusal STREQUAL "svec_tensor")
+            set(_nested_refusal_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_svec_tensor_refusal_test.esk")
+            set(_nested_refusal_diagnostic "gradient: a nested reverse-mode derivative cannot consume an outer reverse-mode value; differentiate the outer level with forward mode or restructure the computation")
+        else()
+            set(_nested_refusal_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_derivative_tensor_refusal_test.esk")
+            set(_nested_refusal_diagnostic "gradient: a nested reverse-mode derivative cannot consume an outer reverse-mode value; differentiate the outer level with forward mode or restructure the computation")
+        endif()
+        foreach(_nested_refusal_engine IN ITEMS jit aot)
+            set(_nested_refusal_test "nested_reverse_${_nested_refusal}_refusal_${_nested_refusal_engine}")
+            add_test(
+                NAME ${_nested_refusal_test}
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_refusal_test.sh"
+                        "$<TARGET_FILE:eshkol-run>"
+                        "${_nested_refusal_source}"
+                        "${CMAKE_CURRENT_BINARY_DIR}"
+                        "${_nested_refusal_engine}"
+                        "${_nested_refusal_diagnostic}"
+            )
+            set_tests_properties(${_nested_refusal_test}
+                PROPERTIES
+                    TIMEOUT 600
+                    ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+                    PASS_REGULAR_EXPRESSION "PASS: nested reverse refusal"
+                    FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error")
+        endforeach()
+    endforeach()
+    add_test(
+        NAME nested_reverse_refusal_harness_selftest
+        COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_refusal_harness_test.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_refusal_test.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_reverse_tensor_tensor_refusal_test.esk"
+                "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(nested_reverse_refusal_harness_selftest
+        PROPERTIES
+            TIMEOUT 30
+            PASS_REGULAR_EXPRESSION "PASS: refusal harness rejects zero-result, unrelated-failure, and signal controls"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
     # ESH-0394: the exact-coefficient Taylor tier is the ORACLE the exact tier
     # routes `derivative`/`gradient`/`hessian` to at an exact point, so a
     # regression in it is a regression in all three. It was unwired -- nothing in

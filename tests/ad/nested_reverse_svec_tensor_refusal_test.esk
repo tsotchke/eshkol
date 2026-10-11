@@ -1,0 +1,9 @@
+;;; A tensor-point reverse gradient inside a vector-point gradient is explicitly unsupported.
+(gradient
+ (lambda (w)
+   (vector-ref
+    (gradient
+     (lambda (x) (* (vector-ref w 0) (vector-ref x 0)))
+     #(1 2))
+    0))
+ (vector 3.0 4.0))

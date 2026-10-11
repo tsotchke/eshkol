@@ -6175,6 +6175,68 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         // direct packing
         vector_val = tagged_.packInt64(vector_val_raw, true); // Pack other types
     }
+
+    // Tensor-point reverse gradients cannot nest under a live reverse tape:
+    // the inner f64 adjoints would silently erase the outer dependency. A
+    // forward perturbation without a reverse tape is also unsupported here.
+    // Reject those two boundaries before creating the inner tape; vector
+    // points keep their established nested-gradient path.
+    {
+        Function* guard_fn = ctx_.builder().GetInsertBlock()->getParent();
+        BasicBlock* guard_heap = BasicBlock::Create(ctx_.context(),
+            "gradient_guard_heap", guard_fn);
+        BasicBlock* guard_nonheap = BasicBlock::Create(ctx_.context(),
+            "gradient_guard_nonheap", guard_fn);
+        BasicBlock* guard_class = BasicBlock::Create(ctx_.context(),
+            "gradient_guard_class", guard_fn);
+        BasicBlock* guard_refuse = BasicBlock::Create(ctx_.context(),
+            "gradient_refuse_forward_tensor", guard_fn);
+        BasicBlock* guard_continue = BasicBlock::Create(ctx_.context(),
+            "gradient_forward_tensor_continue", guard_fn);
+        Value* guard_base = tagged_.getBaseType(tagged_.getType(vector_val));
+        Value* guard_is_heap = ctx_.builder().CreateICmpEQ(guard_base,
+            ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+        ctx_.builder().CreateCondBr(guard_is_heap, guard_heap, guard_nonheap);
+        ctx_.builder().SetInsertPoint(guard_heap);
+        Value* guard_is_tensor = tagged_.checkHeapSubtype(
+            vector_val, HEAP_SUBTYPE_TENSOR);
+        ctx_.builder().CreateBr(guard_class);
+        BasicBlock* guard_heap_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(guard_nonheap);
+        Value* guard_false = ConstantInt::getFalse(ctx_.context());
+        ctx_.builder().CreateBr(guard_class);
+        BasicBlock* guard_nonheap_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(guard_class);
+        PHINode* guard_tensor = ctx_.builder().CreatePHI(ctx_.int1Type(), 2,
+            "gradient_guard_is_tensor");
+        guard_tensor->addIncoming(guard_is_tensor, guard_heap_exit);
+        guard_tensor->addIncoming(guard_false, guard_nonheap_exit);
+        Value* guard_level = adPertLevelLoad();
+        Value* guard_forward = ctx_.builder().CreateICmpUGT(guard_level,
+            ConstantInt::get(ctx_.int64Type(), 0));
+        Value* guard_tape = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
+        Value* guard_no_tape = ctx_.builder().CreateICmpEQ(guard_tape,
+            ConstantPointerNull::get(ctx_.ptrType()));
+        Value* guard_forward_without_tape = ctx_.builder().CreateAnd(
+            guard_forward, guard_no_tape);
+        Value* guard_has_outer_tape = ctx_.builder().CreateNot(guard_no_tape);
+        Value* guard_unsupported = ctx_.builder().CreateAnd(guard_tensor,
+            ctx_.builder().CreateOr(guard_forward_without_tape,
+                                    guard_has_outer_tape));
+        ctx_.builder().CreateCondBr(guard_unsupported,
+            guard_refuse, guard_continue);
+        ctx_.builder().SetInsertPoint(guard_refuse);
+        FunctionCallee refuse = ctx_.module().getOrInsertFunction(
+            "eshkol_ad_refuse_perturbed_operand",
+            FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false));
+        Value* refusal_op = ctx_.builder().CreateSelect(guard_no_tape,
+            ctx_.builder().CreateGlobalString("gradient"),
+            ctx_.builder().CreateGlobalString("reverse arithmetic"));
+        ctx_.builder().CreateCall(refuse,
+            {refusal_op});
+        ctx_.builder().CreateUnreachable();
+        ctx_.builder().SetInsertPoint(guard_continue);
+    }
     
     // ════════════════════════════════════════════════════════════════════
     // ESH-0070: forward-mode jet fast path for SCALAR single-variable gradient.
@@ -6789,6 +6851,19 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         ConstantInt::get(ctx_.int64Type(), 8));
     Value* svec_dual_result_elems = ctx_.builder().CreatePointerCast(svec_dual_result_elems8, ctx_.ptrType());
 
+    // When this forward vector gradient runs under an outer reverse pass, the
+    // mixed coefficient must be put back on that tape.  Keep a flag so the
+    // level-0 return can select the vector carrying recorded AD nodes only when
+    // at least one component actually depends on the published seed.
+    llvm::AllocaInst* svec_mixed_recorded = nullptr;
+    {
+        llvm::IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                        current_func->getEntryBlock().begin());
+        svec_mixed_recorded = entry_builder.CreateAlloca(ctx_.int1Type(), nullptr,
+                                                          "svec_mixed_recorded");
+    }
+    ctx_.builder().CreateStore(ConstantInt::getFalse(ctx_.context()), svec_mixed_recorded);
+
     // Get arena for dual vector allocation
     Value* arena_svec = ctx_.currentArena();
 
@@ -6955,6 +7030,10 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // ESH-0096: the mixed e1e2 coefficient (a12) is the 2nd-order term
     // ∂²f/∂vᵢ∂vⱼ carried through when nested; used only by an outer gradient.
     Value* svec_dual_mixed = dualField(ctx_, svec_result_dual, 3);
+    // The reverse seed companion uses the independent ep dimension.  Its
+    // e1·ep coefficient is field 5 in the 8-jet and is the mixed partial that
+    // must be recorded on an enclosing reverse tape.
+    Value* svec_dual_reverse_mixed = dualField(ctx_, svec_result_dual, 5);
     ctx_.builder().CreateBr(svec_merge_bb);
     BasicBlock* svec_dual_exit = ctx_.builder().GetInsertBlock();
 
@@ -6972,6 +7051,10 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     PHINode* svec_mixed = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "grad_svec_mixed");
     svec_mixed->addIncoming(svec_dual_mixed, svec_dual_exit);
     svec_mixed->addIncoming(svec_zero_deriv, svec_const_exit);
+    PHINode* svec_reverse_mixed = ctx_.builder().CreatePHI(ctx_.doubleType(), 2,
+        "grad_svec_reverse_mixed");
+    svec_reverse_mixed->addIncoming(svec_dual_reverse_mixed, svec_dual_exit);
+    svec_reverse_mixed->addIncoming(svec_zero_deriv, svec_const_exit);
 
     // Store derivative in result tensor (plain double — the level-0 result)
     Value* svec_result_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), svec_typed_result_elems, svec_i);
@@ -6983,9 +7066,50 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Value* svec_zero_c = ConstantFP::get(ctx_.doubleType(), 0.0);
     Value* svec_comp_dual = makeDual4(ctx_, svec_deriv, svec_mixed, svec_zero_c, svec_zero_c);
     Value* svec_comp_dual_tagged = packDualToTagged(svec_comp_dual);
+
+    // Reverse-over-forward composition uses the same exact local
+    // linearisation as scalar derivative extraction.  A null result means
+    // there is no live outer seed or this component has zero dependence, so
+    // retain the ordinary dual representation for that component.
+    llvm::FunctionCallee svec_mixed_record = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_mixed_record",
+        llvm::FunctionType::get(ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(), ctx_.doubleType()}, false));
+    // The svec gradient itself owns an inner tape while it is executing.  If
+    // an enclosing reverse pass is live, the mixed result belongs on that
+    // enclosing tape and must use its published seed; recording on the inner
+    // tape disconnects the outer dependency and reads back as zero.
+    llvm::FunctionCallee svec_outer_tape_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_outer_tape",
+        llvm::FunctionType::get(ctx_.ptrType(), {}, false));
+    llvm::FunctionCallee svec_outer_seed_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_outer_seed",
+        llvm::FunctionType::get(ctx_.ptrType(), {}, false));
+    llvm::FunctionCallee svec_seed_swap = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_seed_swap",
+        llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
+    Value* svec_tape = ctx_.builder().CreateCall(svec_outer_tape_fn, {});
+    Value* svec_outer_seed = ctx_.builder().CreateCall(svec_outer_seed_fn, {});
+    Value* svec_saved_seed = ctx_.builder().CreateCall(svec_seed_swap, {svec_outer_seed});
+    Value* svec_reverse_live = ctx_.builder().CreateICmpNE(svec_tape,
+        llvm::ConstantPointerNull::get(ctx_.ptrType()));
+    Value* svec_record_dseed = ctx_.builder().CreateSelect(
+        svec_reverse_live, svec_reverse_mixed, svec_mixed);
+    Value* svec_mixed_node = ctx_.builder().CreateCall(svec_mixed_record,
+        {getArenaPtr(), svec_tape, svec_deriv, svec_record_dseed});
+    ctx_.builder().CreateCall(svec_seed_swap, {svec_saved_seed});
+    Value* svec_node_ok = ctx_.builder().CreateICmpNE(svec_mixed_node,
+        llvm::ConstantPointerNull::get(ctx_.ptrType()));
+    Value* svec_mixed_tagged = tagged_.packCallable(svec_mixed_node);
+    Value* svec_component_tagged = ctx_.builder().CreateSelect(
+        svec_node_ok, svec_mixed_tagged, svec_comp_dual_tagged,
+        "svec_mixed_component");
+    Value* svec_recorded_before = ctx_.builder().CreateLoad(ctx_.int1Type(), svec_mixed_recorded);
+    ctx_.builder().CreateStore(ctx_.builder().CreateOr(svec_recorded_before, svec_node_ok),
+                               svec_mixed_recorded);
     Value* svec_dual_res_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(),
         svec_dual_result_elems, svec_i);
-    ctx_.builder().CreateStore(svec_comp_dual_tagged, svec_dual_res_ptr);
+    ctx_.builder().CreateStore(svec_component_tagged, svec_dual_res_ptr);
 
     ctx_.builder().CreateStore(ctx_.builder().CreateAdd(svec_i, ConstantInt::get(ctx_.int64Type(), 1)), svec_dim_i);
     ctx_.builder().CreateBr(svec_dim_cond);
@@ -6999,8 +7123,11 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     Value* svec_result_int = ctx_.builder().CreatePtrToInt(svec_typed_result, ctx_.int64Type());
     Value* svec_dual_vec_int = ctx_.builder().CreatePtrToInt(svec_dual_result_vec, ctx_.int64Type());
     // Select the pointer BEFORE packing (avoid a select over the tagged struct).
-    Value* svec_chosen_int = ctx_.builder().CreateSelect(svec_lvl0,
-        svec_result_int, svec_dual_vec_int);
+    Value* svec_has_mixed = ctx_.builder().CreateLoad(ctx_.int1Type(), svec_mixed_recorded);
+    Value* svec_use_dual = ctx_.builder().CreateOr(
+        ctx_.builder().CreateNot(svec_lvl0), svec_has_mixed);
+    Value* svec_chosen_int = ctx_.builder().CreateSelect(svec_use_dual,
+        svec_dual_vec_int, svec_result_int);
     Value* scheme_vector_tagged = tagged_.packPtr(svec_chosen_int, ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateBr(grad_done);  // Skip reverse-mode AD, go directly to done
     BasicBlock* scheme_vector_exit = ctx_.builder().GetInsertBlock();
