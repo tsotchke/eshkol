@@ -19,7 +19,7 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 - **Windows REPL initialization uses the JIT's LLVM instance.** Native SDK
   builds link static target initializers with the static compiler and ORC JIT.
   Windows CI and staged release packages execute a machine-mode arithmetic
-  check and require its result and protocol frames. (issue #767)
+  check and require its result and protocol frames. (#771; issue #767)
 - **CI reuse requires an identical Git tree and complete passing evidence.**
   The reference label fits GitHub's name limit. Verification includes advisory
   lanes and retained results from partial retries; missing or failed lookups
