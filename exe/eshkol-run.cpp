@@ -622,12 +622,26 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     hashUpdate(hash, "unsafe", std::to_string(unsafe_mode));
     hashUpdate(hash, "opt-level", std::to_string(opt_level));
     hashUpdate(hash, "target-triple", target_triple ? target_triple : "");
-    // ESHKOL_XLA_THRESHOLD is read at compile time and baked into the code as
-    // the GPU dispatch cutoff, so a binary compiled under one value must not be
-    // handed back under another.
-    {
-        const char* xla_threshold = std::getenv("ESHKOL_XLA_THRESHOLD");
-        hashUpdate(hash, "xla-threshold", xla_threshold ? xla_threshold : "");
+    // Environment the compiler reads while it generates code. Each variable
+    // changes the emitted program (the XLA dispatch cutoff is baked in as a
+    // constant, the others select a lowering or the target), so a binary
+    // compiled under one setting must not be handed back under another. Unset
+    // and set-to-empty are distinct, as ESHKOL_TARGET_FEATURES treats them.
+    // A compile-time environment read added to the backend belongs here.
+    static constexpr const char* kCodegenEnvironment[] = {
+        "ESHKOL_XLA_THRESHOLD",
+        "ESHKOL_DENSE_TENSOR_AD_NODES",
+        "ESHKOL_NO_ITER_SCOPE",
+        "ESHKOL_TAIL_TRANSFER_ONLY",
+        "ESHKOL_TARGET_CPU",
+        "ESHKOL_TARGET_FEATURES",
+        "ESHKOL_PARALLEL_ENABLE",
+        "ESHKOL_PARALLEL_DISABLE",
+    };
+    for (const char* name : kCodegenEnvironment) {
+        const char* value = std::getenv(name);
+        hashUpdate(hash, std::string("env:") + name,
+                   value ? std::string("=") + value : std::string("unset"));
     }
 
     const auto stdlib_bc = findBuildArtifact("stdlib.bc");
@@ -700,8 +714,11 @@ static bool copyNonEmptyFileAtomically(const std::filesystem::path& source,
         (size = std::filesystem::file_size(source, ec)) == 0 || ec) {
         return false;
     }
-    std::filesystem::create_directories(destination.parent_path(), ec);
-    if (ec) return false;
+    const auto destination_parent = destination.parent_path();
+    if (!destination_parent.empty()) {
+        std::filesystem::create_directories(destination_parent, ec);
+        if (ec) return false;
+    }
     const auto process_id =
 #ifdef _WIN32
         static_cast<unsigned long long>(_getpid());
@@ -5592,6 +5609,9 @@ int main(int argc, char **argv)
             } else {
                 obj_filename = module_name + ".o";
             }
+            const std::string bc_filename = output
+                ? std::string(output) + ".bc"
+                : module_name + ".bc";
 
             const bool module_cache_enabled =
                 !debug_mode && !debug_info && !dump_ir && !dump_ast;
@@ -5625,7 +5645,7 @@ int main(int argc, char **argv)
                 !cache_ec;
             if (cached_bitcode_ready &&
                 copyNonEmptyFileAtomically(cached_object, obj_filename) &&
-                copyNonEmptyFileAtomically(cached_bitcode, obj_filename + ".bc")) {
+                copyNonEmptyFileAtomically(cached_bitcode, bc_filename)) {
                 aotModuleCacheTrace("hit", module_cache_key);
                 eshkol_info("AOT module cache hit: %s", module_cache_key.c_str());
                 if (depfile_path && !source_files.empty() &&
@@ -5650,13 +5670,12 @@ int main(int argc, char **argv)
             esh0103_report("emit-object", esh0103_t_obj0, esh0103_now());
 
             // Also emit bitcode for REPL JIT loading (avoids ABI mismatch with addObjectFile)
-            std::string bc_filename;
-            if (output) {
-                bc_filename = std::string(output) + ".bc";
-            } else {
-                bc_filename = module_name + ".bc";
+            if (eshkol_compile_llvm_ir_to_bitcode(llvm_module, bc_filename.c_str()) != 0) {
+                eshkol_error("Bitcode file compilation failed");
+                eshkol_dispose_llvm_module(llvm_module);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
             }
-            eshkol_compile_llvm_ir_to_bitcode(llvm_module, bc_filename.c_str());
 
             if (!cached_object.empty() && !cached_bitcode.empty()) {
                 copyNonEmptyFileAtomically(obj_filename, cached_object);

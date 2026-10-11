@@ -12,6 +12,10 @@
 #   1. threshold 100000        -> miss (compiles)
 #   2. threshold 10^12         -> must MISS (a hit is the bug)
 #   3. threshold 100000 again  -> must HIT  (the cache still works)
+# then the same for a second entry of the codegen-environment table in
+# eshkol-run's cache key, so the table, not one variable, is what is checked:
+#   4. ESHKOL_NO_ITER_SCOPE=1  -> must MISS
+#   5. ESHKOL_NO_ITER_SCOPE unset again -> must HIT
 #
 # Usage: tests/codegen/run_cache_xla_threshold_key_test.sh   (BUILD_DIR, default: build)
 set -u
@@ -33,14 +37,17 @@ cat > "$WORK/prog.esk" <<'ESK'
 (newline)
 ESK
 
-run() {  # label threshold -> require successful program and exactly one valid cache status
-    local label=$1 threshold=$2
-    # Language-coverage collection intentionally bypasses the persistent cache.
-    # Isolate only these cache probes from a traced parent suite; all other
-    # tests retain the caller's trace directory and still exercise tracing.
-    ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR= \
-    ESHKOL_JIT_CACHE_DIR="$WORK/cache" ESHKOL_JIT_CACHE_TRACE=1 ESHKOL_XLA_THRESHOLD="$threshold" \
-        eshkol_test_timeout 300 "$ESHKOL_RUN" -r "$WORK/prog.esk" -L"$B" > "$WORK/$label.out" 2>&1 || {
+run() {  # label threshold [VAR=value] -> require successful program and exactly one valid cache status
+    local label=$1 threshold=$2 extra=${3:-}
+    (
+        unset ESHKOL_NO_ITER_SCOPE
+        if [ -n "$extra" ]; then export "$extra"; fi
+        # Cache probes bypass persistence during language-coverage collection.
+        # Clear only this variable for the probes, leaving the parent intact.
+        ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR= \
+        ESHKOL_JIT_CACHE_DIR="$WORK/cache" ESHKOL_JIT_CACHE_TRACE=1 ESHKOL_XLA_THRESHOLD="$threshold" \
+            eshkol_test_timeout 300 "$ESHKOL_RUN" -r "$WORK/prog.esk" -L"$B"
+    ) > "$WORK/$label.out" 2>&1 || {
             echo "FAIL: $label execution failed" >&2
             sed 's/^/  /' "$WORK/$label.out" >&2
             return 1
@@ -67,6 +74,8 @@ run() {  # label threshold -> require successful program and exactly one valid c
 first=$(run first 100000) || exit 1
 second=$(run second 1000000000000) || exit 1
 third=$(run third 100000) || exit 1
+fourth=$(run fourth 100000 ESHKOL_NO_ITER_SCOPE=1) || exit 1
+fifth=$(run fifth 100000) || exit 1
 if [ "$first" != "miss" ]; then
     echo "FAIL: run_cache_xla_threshold_key_test: first run reported '$first', expected a miss (is the run cache enabled?)"
     exit 1
@@ -79,8 +88,16 @@ if [ "$third" != "hit" ]; then
     echo "FAIL: run_cache_xla_threshold_key_test: rerun under the original threshold reported '$third', expected a hit"
     exit 1
 fi
+if [ "$fourth" = "hit" ]; then
+    echo "FAIL: run_cache_xla_threshold_key_test: a binary compiled without ESHKOL_NO_ITER_SCOPE was reused under ESHKOL_NO_ITER_SCOPE=1"
+    exit 1
+fi
+if [ "$fifth" != "hit" ]; then
+    echo "FAIL: run_cache_xla_threshold_key_test: rerun with ESHKOL_NO_ITER_SCOPE unset reported '$fifth', expected a hit"
+    exit 1
+fi
 if ! eshkol_test_toolchain_verify "$B"; then
     echo "FAIL: run_cache_xla_threshold_key_test: toolchain changed during run" >&2
     exit 1
 fi
-echo "PASS: run_cache_xla_threshold_key_test: miss / $second / hit"
+echo "PASS: run_cache_xla_threshold_key_test: miss / $second / hit / $fourth / hit"

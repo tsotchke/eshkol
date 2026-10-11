@@ -54,6 +54,11 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   instead of returning a zero gradient; the browser host exposes the same
   refusal boundary. (#769)
 
+- **Sanitizer and compiler caches preserve their runtime contracts.** Pooled
+  allocator metadata remains accessible while freed payloads stay poisoned.
+  Run-cache keys account for XLA thresholds, and AOT cache hits produce the
+  requested object and bitcode outputs with explicit or default names. (#770)
+
 - **CUDA bfloat16 matrix multiplication preserves its exponent range.**
   Single and batched products use the operands' declared f16 or bf16 format
   with f32 accumulation. Unsupported formats fall back to the f64 route;

@@ -19,8 +19,13 @@ launches.
   path **and source bytes**, the Eshkol version, the LLVM version, the
   `eshkol-run` binary fingerprint (size + mtime), the relevant flags
   (`--no-stdlib`, `--strict-types`, `--unsafe`, `-O`, `--target`), the
-  `stdlib.bc`/`stdlib.o` fingerprints, and all include/lib/linked-lib flags. Any
-  change to any of these misses the cache and recompiles.
+  environment variables the compiler reads while generating code
+  (`ESHKOL_XLA_THRESHOLD`, `ESHKOL_DENSE_TENSOR_AD_NODES`, `ESHKOL_NO_ITER_SCOPE`,
+  `ESHKOL_TAIL_TRANSFER_ONLY`, `ESHKOL_TARGET_CPU`, `ESHKOL_TARGET_FEATURES`,
+  `ESHKOL_PARALLEL_ENABLE`, `ESHKOL_PARALLEL_DISABLE`; unset and empty are
+  distinct), the `stdlib.bc`/`stdlib.o` fingerprints, and all
+  include/lib/linked-lib flags. Any change to any of these misses the cache and
+  recompiles. The module cache for AOT builds uses the same key.
 - **Bypass**: the cache is skipped when disabled, when the source uses `eval` or
   `compile` (these need the in-process JIT bridge that a plain AOT binary lacks),
   when the self path can't be found, or when the cache dir can't be created.
