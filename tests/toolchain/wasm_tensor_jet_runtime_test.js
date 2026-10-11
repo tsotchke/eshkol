@@ -7,6 +7,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '../..');
 const program = fs.readFileSync(process.argv[2]);
 const abi = fs.readFileSync(process.argv[3]);
+const refusalAbi = fs.readFileSync(process.argv[4]);
 function load(file, name, limited = false) {
     const output=[];
     const hostConsole={...console, log: (...values)=>output.push(values.join(' '))};
@@ -99,6 +100,17 @@ async function run(file, name) {
         assert.deepEqual(observed, ['7','6','6'], `${file}: compiled ordinary matmul and tensor derivatives`);
     }
     assert.ok(compiledCalls >= 4 && grownCalls >= 2, `${file}: both actual compiler routes executed`);
+    const refusalRuntime = load(file, name), refusalModule = await instance(refusalRuntime, refusalAbi);
+    const forwardJet = tensor(refusalRuntime, [1], [[5, 1, 0, 0, 0, 0, 0, 0]]);
+    const forwardJetData = view(refusalRuntime).getUint32(forwardJet + 16, true);
+    assert.equal(view(refusalRuntime).getUint8(forwardJetData), 6, 'negative control carries a dual-number operand');
+    const ordinaryNumber = refusalRuntime._bump(16);
+    view(refusalRuntime).setUint8(ordinaryNumber, 2); // ESHKOL_VALUE_DOUBLE
+    assert.doesNotThrow(() => refusalModule.exports.check_perturbed_operand(ordinaryNumber),
+        `${file}: ordinary numeric operands remain accepted`);
+    assert.throws(() => refusalModule.exports.check_perturbed_operand(forwardJetData),
+        /nested reverse-mode derivative cannot consume an outer reverse-mode value/,
+        `${file}: browser host refuses a perturbed operand in reverse mode`);
     const rt = load(file, name), {exports: call, env} = await instance(rt, abi);
     const multiple=env.arena_allocate_multi_value(1,3);
     assert.equal(view(rt).getUint8(multiple-8),4);

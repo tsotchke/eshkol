@@ -13,7 +13,11 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
+
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type,
+                                      const char* fmt, ...);
 
 extern "C" {
 
@@ -147,6 +151,20 @@ thread_local uint64_t __outer_ad_node_depth = 0;
 // needed: the outer gradient's per-component loop already runs one pass per
 // theta_i, and each pass only requires the partial w.r.t. its own seed.
 thread_local void* __ad_active_seed_node = nullptr;
+/* While a nested reverse pass is active, retain the enclosing pass's seed so
+ * forward jet lifting can still recognize the outer dependency.  The current
+ * seed remains authoritative for the inner tape; seed_flag deliberately sees
+ * both levels during the nested interval. */
+thread_local void* __ad_seed_by_depth[ESHKOL_ARENA_MAX_TAPE_DEPTH] = {nullptr};
+
+
+[[noreturn]] void eshkol_ad_refuse_perturbed_operand(const char* op) {
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+        "%s: a nested reverse-mode derivative cannot consume an outer reverse-mode value; "
+        "differentiate the outer level with forward mode or restructure the computation",
+        op ? op : "arithmetic");
+    std::abort();
+}
 
 void eshkol_ad_state_capture(unsigned char* mode_active, uint64_t* tape_depth,
                              void** current_tape, void** seed_node,
@@ -178,13 +196,42 @@ void eshkol_ad_state_restore(unsigned char mode_active, uint64_t tape_depth,
 // save/restore around nested gradient passes.
 void* eshkol_ad_seed_swap(void* node) {
     void* old = __ad_active_seed_node;
+    if (__ad_tape_depth < ESHKOL_ARENA_MAX_TAPE_DEPTH)
+        __ad_seed_by_depth[__ad_tape_depth] = old;
     __ad_active_seed_node = node;
     return old;
 }
 
+/* The tape/seed pair immediately outside the currently active nested pass.
+ * These accessors keep code generation independent of the TLS layout while
+ * allowing a forward inner gradient to publish its mixed result on the
+ * enclosing reverse tape. */
+void* eshkol_ad_outer_tape(void) {
+    /* AOT's direct reverse route keeps the current tape live without using
+     * the nested tape-depth stack; mode_active is the corresponding marker. */
+    if (__ad_mode_active && __current_ad_tape) return __current_ad_tape;
+    if (__ad_tape_depth == 1) return __current_ad_tape;
+    if (__ad_tape_depth <= 1) return nullptr;
+    return __ad_tape_stack[__ad_tape_depth - 1];
+}
+
+void* eshkol_ad_outer_seed(void) {
+    if (__ad_mode_active && __current_ad_tape) return __ad_active_seed_node;
+    if (__ad_tape_depth == 1) return __ad_active_seed_node;
+    if (__ad_tape_depth == 0 || __ad_tape_depth >= ESHKOL_ARENA_MAX_TAPE_DEPTH)
+        return nullptr;
+    return __ad_seed_by_depth[__ad_tape_depth];
+}
+
 // 1.0 iff `node` is the active seed for the current gradient pass.
 double eshkol_ad_seed_flag(void* node) {
-    return (node && node == __ad_active_seed_node) ? 1.0 : 0.0;
+    if (!node) return 0.0;
+    if (node == __ad_active_seed_node) return 1.0;
+    for (uint64_t d = 1; d < __ad_tape_depth &&
+         d < ESHKOL_ARENA_MAX_TAPE_DEPTH; ++d) {
+        if (node == __ad_seed_by_depth[d]) return 1.0;
+    }
+    return 0.0;
 }
 
 static bool ad_exact_number(const eshkol_tagged_value_t* value) {

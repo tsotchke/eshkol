@@ -1,0 +1,11 @@
+;;; A scalar forward derivative cannot wrap a tensor-point reverse gradient.
+(define (show x) (display x) (newline))
+(show
+ (derivative
+  (lambda (s)
+    (vector-ref
+     (gradient
+      (lambda (x) (* s (vector-ref x 0) (vector-ref x 0)))
+      #(2.0 1.0))
+     0))
+  3.0))

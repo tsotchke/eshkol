@@ -355,6 +355,27 @@ llvm::Value* ArithmeticCodegen::convertToADNode(llvm::Value* operand, llvm::Valu
     // Not an AD node - create constant node from any numeric type
     // Use extractAsDouble which handles DOUBLE, INT64, HEAP_PTR(bignum), CALLABLE(AD)
     ctx_.builder().SetInsertPoint(not_ad_bb);
+    // A live forward perturbation must never be coerced to an AD constant:
+    // extractAsDouble intentionally reads only the primal and would silently
+    // discard the tangent.  The jet-carrying rule is not available on this
+    // reverse path yet, so fail closed with the shared runtime refusal.
+    llvm::Function* convert_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* perturbed_bb = llvm::BasicBlock::Create(
+        ctx_.context(), "ad_refuse_perturbed", convert_func);
+    llvm::BasicBlock* numeric_bb = llvm::BasicBlock::Create(
+        ctx_.context(), "ad_numeric_operand", convert_func);
+    llvm::Value* is_dual = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    ctx_.builder().CreateCondBr(is_dual, perturbed_bb, numeric_bb);
+
+    ctx_.builder().SetInsertPoint(perturbed_bb);
+    llvm::FunctionCallee refuse = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_refuse_perturbed_operand",
+        llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false));
+    ctx_.builder().CreateCall(refuse, {ctx_.builder().CreateGlobalString("arithmetic")});
+    ctx_.builder().CreateUnreachable();
+
+    ctx_.builder().SetInsertPoint(numeric_bb);
     llvm::Value* val = extractAsDouble(operand);
     // extractAsDouble creates blocks internally, recapture exit block
     llvm::Value* ad_const = autodiff_.createADConstant(val);
