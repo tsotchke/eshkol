@@ -535,8 +535,8 @@ extracting notes. Preparation dispatch accepts well-formed incomplete metadata
 and emits no qualifying receipt. Removing a pending marker alone grants no
 publication authority; the autopilot waits for deliberate complete preparation.
 
-The full suite's added runtime is presently unmeasured. Preserve the existing
-720-minute job ceiling and 360-minute phase step ceilings. Before dispatching a
+The final strict workflow must fit the existing 1,080-minute readiness job
+ceiling and 360-minute phase step ceilings. Before dispatching a
 fresh qualification, use retained actual phase/full-CTest timing receipts to
 confirm baseline and total job fit those limits with headroom, or explicitly
 review a budget/placement adjustment. Do not silently raise a timeout, run the
