@@ -21,6 +21,8 @@ import sys
 import tempfile
 from typing import NoReturn
 
+from repl_smoke import ReplSmokeError, verify_repl_smoke
+
 
 DEFAULT_TIMEOUT_SECONDS = 900
 EXPECTED_SMOKE_OUTPUT = "hello from windows smoke"
@@ -418,6 +420,18 @@ def main() -> int:
         env["LOCALAPPDATA"] = str(state_dir / "local-app-data")
         env["ESHKOL_JIT_CACHE_DIR"] = str(cache_dir)
         env["ESHKOL_JIT_CACHE_TRACE"] = "1"
+
+        if windows:
+            repl_env = env.copy()
+            repl_env["ESHKOL_PATH"] = str(package_dir / "share" / "eshkol" / "lib")
+            try:
+                verify_repl_smoke([str(repl)], cwd=package_dir, env=repl_env)
+            except ReplSmokeError as exc:
+                fail(
+                    f"packaged eshkol-repl machine smoke failed: {exc}",
+                    stdout=exc.stdout,
+                    stderr=exc.stderr,
+                )
 
         verify_cache_run(
             runner,

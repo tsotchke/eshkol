@@ -1322,7 +1322,7 @@ Where n = number of operations.
 
 ## Build System
 
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (12,709 lines)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (12,697 lines)
 
 ### Requirements
 
