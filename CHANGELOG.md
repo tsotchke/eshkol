@@ -16,6 +16,10 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **CI reuse requires an identical Git tree and complete passing evidence.**
+  The reference label fits GitHub's name limit. Verification includes advisory
+  lanes and retained results from partial retries; missing or failed lookups
+  keep the normal matrix path. (#764)
 - **Construction examples enforce their check outcomes.**
   The four witness programs exit nonzero on a failed verdict and have JIT
   and AOT CTest entries. The example catalogue records this additional test

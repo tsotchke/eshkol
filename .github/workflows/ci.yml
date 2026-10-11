@@ -158,8 +158,9 @@ jobs:
           # rather than to a string typed twice.
           GITHUB_WORKFLOW_NAME: ${{ github.workflow }}
         run: |
-          # NOTE the missing `-e`. Intentional, and the whole point — see the
-          # job comment. Nothing in this step may abort the job.
+          # GitHub invokes bash with -e; explicitly disable it so failed
+          # classification or reference lookups fall back to the full matrix.
+          set +e
           set -uo pipefail
 
           changed_files=""
@@ -294,20 +295,18 @@ jobs:
           # a change that was already verified. When the maintainer marks a
           # PR with the label
           #
-          #     ci-equivalent:<40-hex sha>
+          #     ci-tree:<40-hex sha>
           #
           # this step may collapse the whole matrix — but ONLY when BOTH of
           # two independent facts hold, neither of which the label itself
           # asserts:
           #
           #   1. CONTENT. scripts/ci_equivalent_head.py proves, in pure git,
-          #      that this head is the same content as the referenced commit
-          #      — identical trees, or the same `git patch-id --stable`
-          #      relative to each commit's own merge-base with the base
-          #      branch. Nothing about GitHub is involved.
-          #   2. VERIFICATION. The GitHub API says the referenced SHA
-          #      actually has a COMPLETED, SUCCESSFUL run of this workflow.
-          #      Equivalence to a commit that never passed is worth nothing.
+          #      that both commits have the same Git tree. Patch similarity
+          #      alone is not sufficient to reuse a CI result.
+          #   2. VERIFICATION. The latest attempt of the referenced SHA's
+          #      CI workflow completed successfully and every actual job,
+          #      including the advisory gate, passed.
           #
           # The label is a POINTER, never a permission: if either fact fails
           # to hold, this falls through to the class the classifier computed
@@ -324,7 +323,7 @@ jobs:
           if [[ "$EVENT_NAME" == "pull_request" && -n "${PR_NUMBER:-}" ]]; then
             pr_labels="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.labels[].name' 2>/dev/null)"
             candidate="$(printf '%s\n' "$pr_labels" \
-                          | sed -n 's/^ci-equivalent:\([0-9a-fA-F]\{40\}\)$/\1/p' \
+                          | sed -n 's/^ci-tree:\([0-9a-fA-F]\{40\}\)$/\1/p' \
                           | head -n 1)"
             if [[ -n "$candidate" ]]; then
               echo "Found equivalence label pointing at $candidate"
@@ -341,19 +340,41 @@ jobs:
                 equivalent="$(printf '%s' "$equivalence_json" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["equivalent"]).lower())' 2>/dev/null || echo false)"
                 equivalence_kind="$(printf '%s' "$equivalence_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["kind"])' 2>/dev/null || echo none)"
               fi
-              verified_runs="$(gh api "repos/$REPO/actions/runs?head_sha=$candidate&status=success&per_page=100" \
-                                 --jq "[.workflow_runs[] | select(.name == \"$GITHUB_WORKFLOW_NAME\" and .status == \"completed\" and .conclusion == \"success\")] | length" 2>/dev/null || echo 0)"
-              [[ "$verified_runs" =~ ^[0-9]+$ ]] || verified_runs=0
-              if [[ "$equivalent" == "true" && "$verified_runs" -gt 0 ]]; then
+              reference_verified="false"
+              verification_reason="no successful reference workflow attempt"
+              verification_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/ci-reference.XXXXXX" 2>/dev/null)"
+              if [[ -n "$verification_dir" ]] \
+                 && gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$candidate&per_page=100" \
+                      --paginate --slurp > "$verification_dir/runs.json" 2>/dev/null; then
+                selected_run="$(python3 scripts/ci_reference_run.py \
+                                    --runs-json "$verification_dir/runs.json" \
+                                    --head-sha "$candidate" \
+                                    --workflow-name "$GITHUB_WORKFLOW_NAME" 2>/dev/null)"
+                run_id="$(printf '%s' "$selected_run" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("run_id") or "")' 2>/dev/null)"
+                run_attempt="$(printf '%s' "$selected_run" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("run_attempt") or "")' 2>/dev/null)"
+                if [[ "$run_id" =~ ^[0-9]+$ && "$run_attempt" =~ ^[0-9]+$ ]] \
+                   && gh api "repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" \
+                        --paginate --slurp > "$verification_dir/jobs.json" 2>/dev/null; then
+                  verification="$(python3 scripts/ci_reference_run.py \
+                                      --runs-json "$verification_dir/runs.json" \
+                                      --jobs-json "$verification_dir/jobs.json" \
+                                      --head-sha "$candidate" \
+                                      --workflow-name "$GITHUB_WORKFLOW_NAME" 2>/dev/null)"
+                  reference_verified="$(printf '%s' "$verification" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["verified"]).lower())' 2>/dev/null || echo false)"
+                  verification_reason="$(printf '%s' "$verification" | python3 -c 'import json,sys; print(json.load(sys.stdin)["reason"])' 2>/dev/null || echo 'reference job verification failed')"
+                fi
+              fi
+              [[ -z "$verification_dir" ]] || rm -rf "$verification_dir"
+              if [[ "$equivalent" == "true" && "$equivalence_kind" == "tree" && "$reference_verified" == "true" ]]; then
                 impact="equivalent"
                 equivalent_to="$candidate"
-                equivalence_note="Equivalent to verified head ${candidate} (${equivalence_kind} identity); matrix skipped"
+                equivalence_note="Equivalent tree to verified head ${candidate}; matrix skipped"
                 echo "$equivalence_note"
               else
-                if [[ "$equivalent" != "true" ]]; then
-                  equivalence_note="Equivalence label names ${candidate}, but this head is NOT content-identical to it (${equivalence_kind}); running the normal ${impact} path"
+                if [[ "$equivalent" != "true" || "$equivalence_kind" != "tree" ]]; then
+                  equivalence_note="Tree identity with ${candidate} was not established (${equivalence_kind}); running the normal ${impact} path"
                 else
-                  equivalence_note="Equivalence label names ${candidate}, which has no completed successful ${GITHUB_WORKFLOW_NAME} run; running the normal ${impact} path"
+                  equivalence_note="Reference ${candidate} is not fully verified (${verification_reason}); running the normal ${impact} path"
                 fi
                 echo "::warning title=changes: equivalence label not honoured::${equivalence_note}"
               fi
@@ -638,6 +659,7 @@ jobs:
           python3 tests/toolchain/test_cublas_fake_windows_outputs.py
           python3 scripts/ci_lane_plan.py --self-test
           python3 scripts/ci_equivalent_head.py --self-test
+          python3 tests/toolchain/test_ci_reference_run.py
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test

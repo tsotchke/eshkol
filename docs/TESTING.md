@@ -1037,65 +1037,48 @@ impact class in turn (`docs`, `non-build`, `tests-only`, `full`,
 adding a class to one and not the other fails a build instead of
 blocking a merge.
 
-## CI: skipping a head that is already verified
+## CI: reusing verification for an identical Git tree
 
-Status: SHIPPED.
-
-A rebase, a re-cut onto a fresh base, or a cherry-pick into a new PR
-changes the head SHA without changing the content. Every required context
-then has to be produced again for a change that was already verified,
-which is the single largest avoidable cost in this repo's queue.
-
-The maintainer can mark such a PR with a label:
+The maintainer can mark a PR whose entire Git tree already passed CI with:
 
 ```
-ci-equivalent:<40-hex sha>
+ci-tree:<40-hex sha>
 ```
 
-The `changes` job honours it only when BOTH of two independent facts
-hold, neither of which the label itself asserts:
+The label is 48 characters, within GitHub's 50-character limit. The
+`changes` job reads labels live from the API, so rerunning CI after applying
+one uses the current label even though the original event payload is retained.
 
-1. **Content.** `scripts/ci_equivalent_head.py` proves, in pure git, that
-   the PR head is the same content as the referenced commit — either
-   **tree identity** (`git rev-parse <sha>^{tree}` equal, so the two
-   checkouts are byte-identical) or **patch identity** (`git diff
-   <merge-base(base, sha)> <sha> | git patch-id --stable` equal for both,
-   the same test `git rebase` uses to recognise an already-applied
-   commit). Nothing about GitHub is involved.
-2. **Verification.** The GitHub API confirms the referenced SHA has a
-   COMPLETED, SUCCESSFUL run of this workflow. Equivalence to a commit
-   that never passed CI is worth nothing.
+Reuse requires both of these checks:
 
-Only then does `impact` become `equivalent`, which gates exactly like
-`docs`: the heavy matrix is skipped at the job level and
-`docs-only-required-context-stubs` reports every required context. The
-summary states `Equivalent to verified head <sha> (tree|patch identity);
-matrix skipped`. If either fact fails to hold, the run falls through to
-the class the classifier computed and says so, as a warning, in the
-summary — the label is a POINTER, never a permission.
+1. **Tree identity.** `scripts/ci_equivalent_head.py` must report identical
+   Git trees for the current PR head and the reference commit. A matching
+   patch ID across different trees is insufficient.
+2. **Complete verification.** `scripts/ci_reference_run.py` checks the latest
+   run of this CI workflow for the reference SHA. It must have completed
+   successfully, with the full set of 28 required and advisory jobs passing.
+   Only the two standing conditional job records, `matrix.name` and
+   `llvm-sdk-cache-keepalive (${{ matrix.arch }})`, may be skipped. API pages
+   must be complete, and job records must belong to that run and commit.
+   A partial retry may retain earlier successful jobs from the same run;
+   every latest job result must still pass. An incomplete, failed, cancelled,
+   or reuse-only reference run cannot qualify.
 
-Labels are read live from the API rather than from the event payload, so
-labelling a PR and re-running CI is enough; a re-run replays the original
-payload, in which a newly-added label does not exist.
+The verified path sets `impact=equivalent`. The matrix is skipped and the
+existing required-context stubs run; these are reference-based checks, not
+new test executions. Always-on fast checks still execute on the current
+head. The summary names the verified reference tree. Failed lookups or proof
+checks fall back to the normal impact classification and matrix plan.
 
-Rules for using it:
+For the v1.3.6 release, apply a label only after reviewing the full-tree
+proof and all reference lane outcomes. Remove it before changing source.
+Every merge still requires a fresh exact-commit ICC exam and an expected-head
+merge guard. Reusing CI does not qualify the final release packages or
+replace the strict release dry run.
 
-- Only the maintainer sets this label, and only for a rebase or a re-cut
-  whose CONTENT is unchanged. It is not a way to wave through a change
-  that "looks the same".
-- The referenced SHA must be a commit that really has a green CI run —
-  which the job verifies, so a wrong SHA costs a full matrix run, not a
-  false green.
-- A push to the PR after labelling re-evaluates naturally: the head SHA
-  changes, equivalence is recomputed against the new content, and a real
-  edit stops matching.
-
-Both scripts carry `--self-test` (`python3 scripts/ci_lane_plan.py
---self-test`, `python3 scripts/ci_equivalent_head.py --self-test`), both
-run in the `assurance-gates` job on every PR, and both are registered as
-ctest entries (`ci_lane_plan_selftest`, `ci_equivalent_head_selftest`).
-The equivalence self-test builds throwaway git repositories under
-`.scratch/` and proves tree identity, patch identity across different
-bases, and a negative case, including that its rebase fixture really does
-have a different tree so the patch-identity case is not silently proving
-the tree path twice.
+The assurance job runs the lane-plan and equivalence self-tests, plus
+`python3 tests/toolchain/test_ci_reference_run.py`. The reference tests use a
+compact recorded full-run fixture and negative controls for skipped lanes,
+advisory failures, incomplete or mismatched jobs, truncated API pages, and
+lookup failures under the runner's Bash settings. Patch identity remains
+available in the standalone equivalence helper for diagnostics only.

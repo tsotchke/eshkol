@@ -27,10 +27,9 @@ and it answers it two ways, in decreasing strength:
          and `git cherry` use to recognise "already applied" commits, and
          `--stable` makes the id independent of diff ordering. Weaker than
          tree identity -- the two BASES may differ, so the resulting trees
-         can differ -- which is why it is reported as its own `kind` and
-         why the caller is expected to pair it with proof that the
-         reference itself passed CI on a base that is an ancestor of the
-         current one.
+         can differ -- which is why it is reported as its own `kind`.
+         The CI reuse gate accepts only `tree`; patch identity remains
+         available for diagnostics and its offline self-test.
 
   none   neither holds. The two commits are not known to be equivalent.
          This is also the answer whenever anything could not be computed
