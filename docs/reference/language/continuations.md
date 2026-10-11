@@ -34,13 +34,39 @@ compiler, and the bytecode VM.
 
 ```scheme
 (define k #f)
+(define count 0)
 (define (f)
   (+ 1 (call/cc (lambda (c) (set! k c) 1))))
-(display (f)) (newline)          ; 2 — f returns normally
-(display (k 10)) (newline)       ; re-enters f's continuation after f returned
+(display (f)) (newline)            ; 2, then 11 and 21 on the two re-entries
+(set! count (+ count 1))
+(if (< count 3) (k (* count 10)))  ; re-enter f's continuation after f returned
+(display "done") (newline)
+```
+```
+2
+11
+21
+done
 ```
 
+In a program file, the continuation of a top-level form includes every
+top-level form after it. Re-invoking `k` returns the new value into
+`(display (f))` and then runs the later forms again, so a program that
+re-invokes a saved continuation at top level needs a condition that stops it,
+like the counter above. Top-level bindings are the store, not control state,
+so `count` keeps its updates across each re-entry. Written without the
+counter, `(k 10)` at top level re-runs itself forever, on every engine.
+
+In the interactive REPL each top-level form is its own evaluation, and a
+continuation is resumed only while the evaluation that captured it is still
+running. Re-entry, multi-shot use and generators inside one form behave as
+above. Invoking a continuation saved by an earlier form raises a catchable
+condition (`continuation cannot be resumed: it was captured during an earlier
+top-level evaluation that has already returned ...`) and the session
+continues.
+
 The classic shapes are exercised as fixtures in `tests/continuations/`:
+`doc_example_function_reentry.esk` (the example above),
 `generator_multishot.esk` (a producer/consumer generator resumed repeatedly),
 `amb_backtracking.esk` (McCarthy's `amb`, re-entering each choice point once
 per alternative), `reentry_after_function_return.esk`, and

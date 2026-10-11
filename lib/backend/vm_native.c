@@ -10011,6 +10011,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int len = 0;
         while (lst.type == VAL_PAIR) { len++; if (len > 1000000) { vm->error = 1; break; } lst = vm->heap.objects[lst.as.ptr]->cons.cdr; }
         if (vm->error) break;
+        /* R7RS length takes a proper list. Any other operand (a vector,
+         * tensor, string, number, or a list whose final cdr is not '())
+         * raises the same catchable condition native raises. */
+        if (lst.type != VAL_NIL) {
+            vm_raise_error_msg(vm, "length: argument is not a proper list");
+            break;
+        }
         vm_push(vm, INT_VAL(len));
         break;
     }

@@ -789,7 +789,7 @@ inline const std::vector<FunctionDoc>& get_function_docs() {
         {"directional-derivative", "(directional-derivative f point dir)", "Derivative in direction dir", "(directional-derivative f pt dir)"},
 
         // Tensor operations
-        {"tensor", "(tensor dims data)", "Create a tensor with given dimensions", "(tensor '(2 3) '(1 2 3 4 5 6))"},
+        {"tensor", "(tensor (list elems...))", "Create a tensor; its shape comes from the nesting", "(tensor (list (list 1 2 3) (list 4 5 6)))"},
         {"tensor-shape", "(tensor-shape t)", "Get dimensions of tensor", "(tensor-shape t) => (2 3)"},
         {"tensor-rank", "(tensor-rank t)", "Get number of dimensions", "(tensor-rank t) => 2"},
         {"tensor-ref", "(tensor-ref t idx ...)", "Get element at indices", "(tensor-ref t 0 1) => 2"},

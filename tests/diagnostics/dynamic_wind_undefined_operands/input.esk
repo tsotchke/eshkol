@@ -1,0 +1,5 @@
+;; Diagnostic corpus case: dynamic-wind whose three operands are unbound.
+;; Each operand is reported at its own position and the program does not
+;; build; the compiler finishes normally after the diagnostics.
+
+(dynamic-wind before thunk after)

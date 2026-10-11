@@ -76,6 +76,146 @@ static uintptr_t eshkol_stack_base(void) {
     return g_stack_base_hook ? (uintptr_t)g_stack_base_hook() : (uintptr_t)0;
 }
 
+/* ── Host evaluation extents ────────────────────────────────────────────────
+ *
+ * A stack image runs from the capture point up to the thread's stack base, so
+ * it also contains the frames of the host code that entered the compiled
+ * program. A batch host (`eshkol-run`, an AOT executable) enters the program
+ * once, and those host frames stay live for as long as any continuation can
+ * be invoked. An interactive host enters separately compiled top-level
+ * evaluations one after another. Once an evaluation has returned, the host
+ * frames recorded in an image taken during it describe a call that is over:
+ * their locals were destroyed and their heap storage released. Restoring them
+ * would resume host code on released state.
+ *
+ * Such a host brackets each evaluation with eshkol_continuation_extent_enter()
+ * and eshkol_continuation_extent_leave(). A capture records the innermost live
+ * evaluation in a small header in front of its stack image, and the invoke
+ * admission check (eshkol_continuation_check_extent) accepts the continuation
+ * only while that evaluation is still live on this thread. Otherwise it raises
+ * a catchable condition before any dynamic state is touched. A capture taken
+ * outside every bracketed evaluation records 0 and is always admitted, which
+ * is the batch-host and AOT case.
+ *
+ * Liveness is decided by stack position as well as by membership: an entry
+ * whose host frame is at or below the current frame belongs to an evaluation
+ * that was left without reaching its leave call (a longjmp past it), and is
+ * discarded.
+ *
+ * The record of live evaluations grows with nesting depth; it has no fixed
+ * capacity. If it cannot grow (allocation failure), the evaluation being
+ * entered, and every evaluation nested inside it, is marked UNRECORDED: a
+ * capture taken there carries ESHKOL_EXTENT_UNRECORDED, which is never live,
+ * so such a continuation is refused at invocation rather than admitted
+ * without the check. Only 0 (no bracketed evaluation at all) is admitted
+ * unconditionally. */
+/* Bytes reserved in front of a stack image for its capture header. Kept a
+ * multiple of 16 so the image itself stays 16-byte aligned. */
+#define ESHKOL_IMAGE_HEADER 16u
+/* Extent id of an evaluation whose entry could not be recorded. */
+#define ESHKOL_EXTENT_UNRECORDED UINT64_MAX
+
+namespace {
+struct HostExtent {
+    uint64_t id;
+    uintptr_t frame;      /* the host frame that entered the evaluation */
+};
+
+/* Per-thread stack of live evaluations, innermost last. */
+struct HostExtentStack {
+    HostExtent* entries = nullptr;
+    size_t depth = 0;
+    size_t capacity = 0;
+    size_t unrecorded = 0;     /* evaluations entered after a failed growth */
+    uint64_t next_id = 1;
+    ~HostExtentStack() { free(entries); }
+
+    bool reserve_one() {
+        if (depth < capacity) return true;
+        const size_t want = capacity ? capacity * 2 : 16;
+        if (want < capacity || want > SIZE_MAX / sizeof(HostExtent)) return false;
+        auto* grown = (HostExtent*)realloc(entries, want * sizeof(HostExtent));
+        if (!grown) return false;
+        entries = grown;
+        capacity = want;
+        return true;
+    }
+};
+thread_local HostExtentStack t_host_extents;
+
+/* Drop recorded entries whose host frame is no longer on the stack. */
+void prune_host_extents(uintptr_t here) {
+    HostExtentStack& st = t_host_extents;
+    if (st.unrecorded) return;   /* unrecorded entries carry no frame to test */
+    while (st.depth > 0 && st.entries[st.depth - 1].frame <= here) {
+        st.depth--;
+    }
+}
+
+/* Innermost live evaluation; 0 when none is bracketed. */
+uint64_t current_host_extent(void) {
+    const HostExtentStack& st = t_host_extents;
+    if (st.unrecorded) return ESHKOL_EXTENT_UNRECORDED;
+    return st.depth ? st.entries[st.depth - 1].id : 0;
+}
+
+uint64_t image_extent(const eshkol_continuation_state_t* state) {
+    if (!state->saved_stack || !state->saved_len) return 0;
+    uint64_t id = 0;
+    memcpy(&id, (const char*)state->saved_stack - ESHKOL_IMAGE_HEADER, sizeof(id));
+    return id;
+}
+} // namespace
+
+extern "C" uint64_t eshkol_continuation_extent_enter(void* host_frame) {
+    HostExtentStack& st = t_host_extents;
+    const uintptr_t frame = (uintptr_t)host_frame;
+    prune_host_extents(frame);
+    if (st.unrecorded || !st.reserve_one()) {
+        st.unrecorded++;
+        return ESHKOL_EXTENT_UNRECORDED;
+    }
+    const uint64_t id = st.next_id++;
+    st.entries[st.depth++] = HostExtent{id, frame};
+    return id;
+}
+
+extern "C" void eshkol_continuation_extent_leave(uint64_t id) {
+    HostExtentStack& st = t_host_extents;
+    if (id == ESHKOL_EXTENT_UNRECORDED) {
+        if (st.unrecorded) st.unrecorded--;
+        return;
+    }
+    /* Pop through `id`, discarding any inner entry left behind by a jump. */
+    while (st.depth > 0) {
+        if (st.entries[--st.depth].id == id) break;
+    }
+}
+
+extern "C" void eshkol_continuation_check_extent(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    const uint64_t captured = image_extent(state);
+    if (!captured) return;
+    volatile char here = 0;
+    prune_host_extents((uintptr_t)&here);
+    const HostExtentStack& st = t_host_extents;
+    if (captured != ESHKOL_EXTENT_UNRECORDED) {
+        for (size_t i = 0; i < st.depth; i++) {
+            if (st.entries[i].id == captured) return;
+        }
+    }
+    eshkol_exception_t* exc = eshkol_make_exception_with_header(
+        ESHKOL_EXCEPTION_ERROR,
+        "continuation cannot be resumed: it was captured during an earlier "
+        "top-level evaluation that has already returned, and this host resumes "
+        "a continuation only within the evaluation that captured it");
+    if (exc) eshkol_raise(exc);   /* does not return */
+    eshkol_error("continuation captured by a finished top-level evaluation was invoked, "
+                 "and the condition object could not be allocated");
+    exit(1);
+}
+
 /**
  * @brief Snapshot the live C stack above the capturing `call/cc` frame.
  *
@@ -101,9 +241,14 @@ extern "C" void eshkol_continuation_capture_stack(void* arena_void, void* state_
     if (lo >= base) return;                /* not the stack we think it is */
 
     size_t len = (size_t)(base - lo);
-    void* copy = arena_allocate_aligned((arena_t*)arena_void, len, 16);
-    if (!copy) return;                     /* escape-only rather than half-captured */
+    char* block = (char*)arena_allocate_aligned((arena_t*)arena_void,
+                                                len + ESHKOL_IMAGE_HEADER, 16);
+    if (!block) return;                    /* escape-only rather than half-captured */
 
+    /* Header: the host evaluation this image belongs to (see above). */
+    const uint64_t extent = current_host_extent();
+    memcpy(block, &extent, sizeof(extent));
+    char* copy = block + ESHKOL_IMAGE_HEADER;
     memcpy(copy, (const void*)lo, len);
     state->stack_lo = (void*)lo;
     state->stack_hi = (void*)base;

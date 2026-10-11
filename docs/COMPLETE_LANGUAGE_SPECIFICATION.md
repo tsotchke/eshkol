@@ -3727,8 +3727,12 @@ operand stack and call frames, excluding the top-level binding slots, which
 are the store rather than the control state. Escape-only continuations —
 early return and exception-style unwinding — are recognised at compile time
 and keep the original zero-overhead `setjmp`/`longjmp` path, so the common
-case costs nothing. See `docs/reference/language/continuations.md` for the
-per-engine account, the ownership rule for continuations captured inside a
+case costs nothing. In a program file the continuation of a top-level form
+includes every later top-level form, so re-invoking it runs those forms again.
+In the interactive REPL, where each top-level form is its own evaluation, a
+continuation is resumed only while the evaluation that captured it is running;
+invoking one saved by an earlier form raises a catchable condition. See
+`docs/reference/language/continuations.md` for the per-engine account, the ownership rule for continuations captured inside a
 region, and the two remaining limits.
 
 #### 16.1.3 Interaction with Dynamic Wind

@@ -15,7 +15,10 @@ Returns the number of elements for which `(pred elt)` is truthy.
 Returns the first element satisfying `pred`, or `#f` if none match.
 
 ### `(length lst)`
-Returns the number of elements in a proper list.
+Returns the number of elements in a proper list. Any other operand — a vector,
+tensor, string, number, or a list whose final cdr is not `'()` — raises a
+catchable error, `length: argument is not a proper list`, on native and on the
+bytecode VM. Use `vector-length` for vectors and `tensor-shape` for tensors.
 
 ```scheme
 ;; query.esk

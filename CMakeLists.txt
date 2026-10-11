@@ -6289,6 +6289,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             FAIL_REGULAR_EXPRESSION "Unhandled exception|FAIL:|undefined function")
     endif()
 
+    # A continuation captured in one REPL evaluation and invoked from a later
+    # one raises a catchable condition; the session continues.
+    if(NOT WIN32 AND TARGET eshkol-repl AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/continuation_finished_evaluation_test.sh")
+        add_test(
+            NAME repl_continuation_finished_evaluation_test
+            COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/continuation_finished_evaluation_test.sh"
+        )
+        set_tests_properties(repl_continuation_finished_evaluation_test PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            PASS_REGULAR_EXPRESSION "PASS: REPL continuation"
+            FAIL_REGULAR_EXPRESSION "^FAIL:")
+    endif()
     # SW-163: a QUOTED bignum or bignum-rational literal must be the same
     # runtime value an evaluated one is. codegenQuotedAST() (lib/backend/
     # llvm_codegen.cpp) had no case for ESHKOL_BIGNUM_LITERAL and silently
@@ -7348,6 +7361,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/region_
     set_tests_properties(region_promotion_failure_test PROPERTIES
         ENVIRONMENT "ESHKOL_ARENA_POISON=1"
         PASS_REGULAR_EXPRESSION "PASS: region promotion is all-or-nothing")
+endif()
+
+# REPL evaluation extents for native continuations hold at every nesting depth.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/continuation_host_extent_test.cpp")
+    find_package(Threads REQUIRED)
+    add_executable(continuation_host_extent_test tests/core/continuation_host_extent_test.cpp)
+    target_compile_features(continuation_host_extent_test PRIVATE cxx_std_17)
+    target_include_directories(continuation_host_extent_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(continuation_host_extent_test PRIVATE eshkol-runtime ${ESHKOL_EXTRA_LINK_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME continuation_host_extent_test COMMAND continuation_host_extent_test)
+    set_tests_properties(continuation_host_extent_test PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: continuation host extents hold"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_regions_test.cpp")
