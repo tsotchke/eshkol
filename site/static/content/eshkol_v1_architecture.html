@@ -1,7 +1,10 @@
 <h1 id="eshkol-system-architecture-reference">Eshkol System Architecture Reference</h1>
-<p><strong>Version</strong>: v1.3.5-evolve <strong>Release</strong>: v1.3.5-evolve <strong>Date</strong>: September 2026 <strong>Status</strong>: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic</p>
+<p><strong>Version</strong>: v1.3.6-evolve <strong>Release</strong>: v1.3.6-evolve (prepared for publication) <strong>Date</strong>: October 2026 <strong>Status</strong>: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic</p>
 <blockquote>
 <p><strong>Note</strong>: This document describes the <strong>actual implemented system</strong> based on comprehensive code analysis. Features marked as “planned” or “future” are documented separately in roadmap documents.</p>
+</blockquote>
+<blockquote>
+<p><strong>Since v1.3.6.</strong> Each of the following is detailed in the <code>[1.3.6-evolve]</code> section of <a href="/docs#page=changelog" data-url="/content/changelog.html">CHANGELOG.md</a>: generated cons, vector and closure construction and exception-handler frames check their allocations (#721); a native executable <code>main</code> has a checked signature (#724); CUDA builds admit cuBLAS lazily, on the first GPU GEMM (#740); the output-string port registry retires closed slots (#748); the browser LLVM/WASM host carries exact integer and rational values for finite doubles (#744); and native REPL input is one reader across line-editing backends (#737).</p>
 </blockquote>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
@@ -177,7 +180,7 @@
 <p>The neighboring modules retain their existing ownership boundaries: builtin trampolines and native dispatch are in <code>vm_native.c</code>, error-object support is in <code>vm_error.c</code>, and coverage hooks plus public ESKB/VM entry points are in <code>eshkol_vm.c</code>. The unity hub includes the extracted modules before <code>vm_run.c</code>, after the native and region-evacuation components they call. Handlers whose threaded and switch paths intentionally differ remain inline in <code>vm_run.c</code>, so this structural change does not alter behavior.</p>
 <hr />
 <h2 id="memory-architecture-oalr">Memory Architecture (OALR)</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> and its <code>runtime_arena_*</code> / <code>runtime_regions</code> / <code>runtime_*_alloc</code> siblings (18,367 lines total), against the <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/arena_memory.h" target="_blank" rel="noopener noreferrer"><code>lib/core/arena_memory.h</code></a> interface (1,253 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> and its <code>runtime_arena_*</code> / <code>runtime_regions</code> / <code>runtime_*_alloc</code> siblings (18,367 lines total), against the <a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/arena_memory.h" target="_blank" rel="noopener noreferrer"><code>lib/core/arena_memory.h</code></a> interface (1,267 lines)</p>
 <h3 id="core-principles">Core Principles</h3>
 <p>Eshkol uses <strong>Ownership-Aware Lexical Regions</strong> (OALR) instead of garbage collection:</p>
 <ul>
@@ -254,7 +257,7 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);</code></pre>
 <h2 id="type-system-triple-layer">Type System (Triple-Layer)</h2>
 <p>Eshkol uses <strong>three layers</strong> of type information for different purposes:</p>
 <h3 id="layer-1-runtime-types-tagged-values">Layer 1: Runtime Types (Tagged Values)</h3>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> (3,786 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> (3,816 lines)</p>
 <pre class="c"><code>typedef struct eshkol_tagged_value {
     uint8_t type;        // eshkol_value_type_t (0-255)
     uint8_t flags;       // Exactness, indirection flags
@@ -408,7 +411,7 @@ DimensionChecker::Result checkMatMulDimensions(
 <p><strong>Usage</strong>: Tensor operations use dependent types to verify dimension compatibility.</p>
 <hr />
 <h2 id="automatic-differentiation">Automatic Differentiation</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a> (15,512 lines), with reverse-mode AD dispatch sites inside <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a></p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/autodiff_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/autodiff_codegen.cpp</code></a> (15,666 lines), with reverse-mode AD dispatch sites inside <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a></p>
 <p>Eshkol provides <strong>three modes</strong> of automatic differentiation, each optimized for different use cases:</p>
 <h3 id="mode-1-symbolic-differentiation">Mode 1: Symbolic Differentiation</h3>
 <p><strong>Compile-time AST transformation</strong>:</p>
@@ -691,7 +694,7 @@ int64_t wrong = static_cast&lt;int64_t&gt;(value);  // → 3 (loses precision!)<
 <p><strong>Pattern Matching</strong>: Recursive patterns with <code>match</code></p>
 <hr />
 <h2 id="module-system">Module System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> (6,092 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> (6,186 lines)</p>
 <h3 id="architecture">Architecture</h3>
 <pre><code>┌─────────────────────────────────────────────────────────────────┐
 │ ModuleDependencyResolver (DFS-based cycle detection)            │
@@ -738,7 +741,7 @@ __test_modules_mod_a__helper</code></pre>
 <p><strong>stdlib.o linking</strong>: - Compiler detects <code>(require stdlib)</code> or <code>(require core.*)</code> - Auto-links pre-compiled stdlib.o if found - Skips recompiling modules present in .o file - External declarations for exported symbols</p>
 <hr />
 <h2 id="repljit-system">REPL/JIT System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,712 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-repl.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-repl.cpp</code></a> (1,755 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,831 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-repl.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-repl.cpp</code></a> (1,754 lines)</p>
 <h3 id="architecture-1">Architecture</h3>
 <pre><code>┌─────────────────────────────────────────────────────────────────┐
 │                    Interactive REPL                             │
@@ -1103,7 +1106,7 @@ llvm::Value* arg_value = codegen_ast_callback_(ast, callback_context_);</code></
 <p><strong>Bottleneck</strong>: LLVM optimization passes (can be reduced with -O0)</p>
 <hr />
 <h2 id="build-system">Build System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (12,263 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/CMakeLists.txt" target="_blank" rel="noopener noreferrer"><code>CMakeLists.txt</code></a> (12,709 lines)</p>
 <h3 id="requirements">Requirements</h3>
 <ul>
 <li><strong>CMake</strong>: 3.14 or higher</li>
@@ -1238,13 +1241,13 @@ target_link_options(eshkol-static PUBLIC
 <h2 id="references">References</h2>
 <h3 id="primary-source-files-analyzed-in-detail">Primary Source Files (analyzed in detail)</h3>
 <ul>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> - Main system header (3,786 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a> - Core codegen (47,353 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> - Arena runtime core (1282 lines; 4,259 across all <code>runtime_*</code> memory modules)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/inc/eshkol/eshkol.h" target="_blank" rel="noopener noreferrer"><code>inc/eshkol/eshkol.h</code></a> - Main system header (3,816 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>lib/backend/llvm_codegen.cpp</code></a> - Core codegen (47,548 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> - Arena runtime core (1,391 lines; 4,259 across all <code>runtime_*</code> memory modules)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> - S-expr parser (11,698 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> - Type inference (6,087 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (4,712 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> - Compiler executable (6,092 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (4,831 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> - Compiler executable (6,186 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> - Gradual type relation (433 lines)</li>
 </ul>
 <h3 id="forward-looking-design-documents">Forward-looking design documents</h3>
@@ -1498,6 +1501,6 @@ GPU offload            ← element count ≥ 100,000</code></pre>
 <p><strong>Consciousness Engine in the Runtime Layer.</strong> The consciousness engine (logic inference, active inference, and global workspace) integrates into the runtime as a set of 22 builtin functions backed by three C++ modules: <code>logic.h/logic.cpp</code> (unification, substitution, knowledge base), <code>inference.h/inference.cpp</code> (factor graph belief propagation, free energy minimization), and <code>workspace.h/workspace.cpp</code> (module registration, softmax competition). These are not separate subsystems – they use the same arena allocator and tagged value representation as the core runtime, with dedicated heap subtypes (SUBSTITUTION=12, FACT=13, KNOWLEDGE_BASE=15, FACTOR_GRAPH=16, WORKSPACE=17) and a logic variable type tag (ESHKOL_VALUE_LOGIC_VAR=10). The <code>?x</code> syntax for logic variables is parsed as <code>ESHKOL_LOGIC_VAR_OP</code>, remaining compatible with R7RS since <code>?</code> is a valid identifier start character. Workspace stepping (<code>ws-step!</code>) uses <code>codegenClosureCall</code> in LLVM IR to invoke module closures, while C runtime helpers handle tensor wrapping and softmax broadcast.</p>
 <p><strong>GPU Dispatch in the Compilation Pipeline.</strong> GPU acceleration is transparent to the compilation pipeline. The LLVM codegen emits calls to XLA C runtime functions (e.g., <code>eshkol_xla_matmul</code>, <code>eshkol_xla_elementwise</code>) when tensor sizes exceed the XLA threshold (default 100K elements). These runtime functions internally probe GPU availability via <code>eshkol_gpu_should_use()</code> and wrap host pointers into Metal buffers using <code>newBufferWithBytesNoCopy</code> for zero-copy access on Apple Silicon’s unified memory. The cost model in <code>blas_backend.cpp</code> selects between scalar, SIMD (NEON 4x4 micro-kernel / AVX 4x8 micro-kernel), cBLAS (Apple Accelerate AMX at ~1100 GFLOPS), and GPU (Metal sf64 compute shaders at ~200 GFLOPS) based on estimated execution time. GPU dispatch adds 200 microseconds of overhead per operation, so it is reserved for matrices exceeding ~1 billion output elements. The decision is entirely runtime – the compiled binary contains all code paths, and environment variables (<code>ESHKOL_BLAS_PEAK_GFLOPS</code>, <code>ESHKOL_GPU_PEAK_GFLOPS</code>, <code>ESHKOL_GPU_MATMUL_THRESHOLD</code>) allow tuning without recompilation.</p>
 <p><strong>Parallel Execution in the Memory Model.</strong> Eshkol’s arena-based memory model supports parallel execution through per-worker arena allocation and <code>LinkOnceODRLinkage</code> for parallel worker functions to prevent duplicate symbol conflicts at link time. The parallel primitives (<code>parallel-map</code>, <code>parallel-for</code>, etc.) partition work across OS threads, each operating on independent arena segments. Tensor operations that internally parallelize (e.g., GPU compute kernels, cBLAS) are safe because they operate on pre-allocated contiguous buffers – the arena allocator is only invoked to allocate result tensors before the parallel kernel launches. The REPL JIT uses <code>-force_load</code> / <code>--whole-archive</code> on the static library and matches the compilation’s <code>CodeGenOptLevel::None</code> to avoid ABI divergence in struct passing on ARM64, which is critical for correct tagged value transmission across the JIT boundary.</p>
-<p><strong>Exact Arithmetic in the Numeric Tower.</strong> The numeric tower extends from fixnums through bignums, rationals, and complex to tensors, with all transitions handled by the tagged value system’s 16-byte <code>{type:8, flags:8, reserved:16, padding:32, data:64}</code> representation. Bignum operations dispatch through C runtime functions (<code>eshkol_bignum_binary_tagged</code>, <code>eshkol_bignum_compare_tagged</code>) that examine the type tag at index 0 and operate on GMP-backed arbitrary-precision integers stored as heap pointers. R7RS exactness semantics are preserved: mixed exact/inexact operations promote to inexact (e.g., bignum + double returns double), while <code>expt</code> with exact integer arguments and non-negative exponent uses repeated squaring (<code>eshkol_bignum_pow</code>) to return an exact bignum result. The rational type stores numerator/denominator bignums and dispatches through <code>eshkol_rational_compare_tagged_ptr</code> for comparisons. All numeric types are checked in <code>ArithmeticCodegen::compare()</code>, <code>abs()</code>, <code>min/max</code>, and <code>pow()</code> to prevent precision loss from fallthrough to double paths.</p>
+<p><strong>Exact Arithmetic in the Numeric Tower.</strong> The numeric tower extends from fixnums through bignums, rationals, and complex to tensors, with all transitions handled by the tagged value system’s 16-byte <code>{type:8, flags:8, reserved:16, data:64}</code> representation (the 32 bits between <code>reserved</code> and <code>data</code> are implicit alignment padding, not a field). Bignum operations dispatch through C runtime functions (<code>eshkol_bignum_binary_tagged</code>, <code>eshkol_bignum_compare_tagged</code>) that examine the type tag at index 0 and operate on GMP-backed arbitrary-precision integers stored as heap pointers. R7RS exactness semantics are preserved: mixed exact/inexact operations promote to inexact (e.g., bignum + double returns double), while <code>expt</code> with exact integer arguments and non-negative exponent uses repeated squaring (<code>eshkol_bignum_pow</code>) to return an exact bignum result. The rational type stores numerator/denominator bignums and dispatches through <code>eshkol_rational_compare_tagged_ptr</code> for comparisons. All numeric types are checked in <code>ArithmeticCodegen::compare()</code>, <code>abs()</code>, <code>min/max</code>, and <code>pow()</code> to prevent precision loss from fallthrough to double paths.</p>
 <hr />
-<p><em>This document reflects the v1.3.5-evolve release. All claims are verified against actual source code. For questions or corrections, see <a href="/docs#page=contributing" data-url="/content/contributing.html"><code>CONTRIBUTING.md</code></a>.</em></p>
+<p><em>This document reflects the v1.3.6-evolve release. All claims are verified against actual source code. For questions or corrections, see <a href="/docs#page=contributing" data-url="/content/contributing.html"><code>CONTRIBUTING.md</code></a>.</em></p>

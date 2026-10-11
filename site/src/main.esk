@@ -449,7 +449,7 @@
           (web-add-class sub "hero-sub"))
 
         ;; Generated surface and ledger counts; runtime behavior is measured by release gates.
-        (let ((proof (create-text "p" "1,116 declared language constructs   ·   8 differential operators   ·   zero GC   ·   962 parity rows" left)))
+        (let ((proof (create-text "p" "1,118 declared language constructs   ·   8 differential operators   ·   zero GC   ·   962 parity rows" left)))
           (style! proof "color" "#a78bfa")
           (style! proof "fontSize" "0.82rem")
           (style! proof "fontFamily" "JetBrains Mono,monospace")
@@ -735,7 +735,7 @@
 
       (render-feature-card grid
         "Declared language surface"
-        "The generated language-surface manifest declares 1,116 constructs. Required execution-backed coverage is 1,116/1,116 declared constructs at the final release commit; the candidate verification remains pending.")
+        "The generated language-surface manifest declares 1,118 constructs. Required execution-backed coverage is 1,118/1,118 declared constructs at the final release commit; the candidate verification remains pending.")
 
       (render-feature-card grid
         "Portable release packages"
@@ -1491,12 +1491,12 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "352KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "354KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))
         (web-add-class s2 "text-center")
-        (let ((v (create-text "div" "1351KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "1354KB" s2))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "VM WASM" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-card stats)))

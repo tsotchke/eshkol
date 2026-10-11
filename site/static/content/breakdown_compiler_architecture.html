@@ -37,7 +37,7 @@
        |
        v
 +------------------+
-| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,820 lines)
+| 1. MACRO         |  lib/frontend/macro_expander.cpp (1,312 lines)
 |    EXPANSION     |  Hygienic expansion via syntax-rules
 +------------------+
        |
@@ -71,7 +71,7 @@
 <hr />
 <h2 id="frontend-parsing-and-macro-expansion">Frontend: Parsing and Macro Expansion</h2>
 <h3 id="macro-system">Macro System</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/macro_expander.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/macro_expander.cpp</code></a> (1,241 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/macro_expander.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/macro_expander.cpp</code></a> (1,312 lines)</p>
 <p>Hygienic macro expansion runs before parsing. The system supports:</p>
 <ul>
 <li>Pattern matching with ellipsis (<code>...</code>) for repetition</li>
@@ -569,7 +569,7 @@ HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEA
 </tr>
 </tbody>
 </table>
-<p>The original <code>tensor_codegen.cpp</code> was decomposed in v1.2 into thirteen per-domain modules (<code>tensor_activation_codegen.cpp</code>, <code>tensor_arith_codegen.cpp</code>, <code>tensor_conv_codegen.cpp</code>, <code>tensor_creation_codegen.cpp</code>, <code>tensor_dataloader_codegen.cpp</code>, <code>tensor_extras_codegen.cpp</code>, <code>tensor_linalg_codegen.cpp</code>, <code>tensor_loss_codegen.cpp</code>, <code>tensor_reduce_codegen.cpp</code>, <code>tensor_shape_codegen.cpp</code>, <code>tensor_training_codegen.cpp</code>, <code>tensor_transformer_codegen.cpp</code>, <code>tensorcore_codegen.cpp</code>), totalling 23,389 lines re-exported through the dispatcher above.</p>
+<p>The original <code>tensor_codegen.cpp</code> was decomposed in v1.2 into thirteen per-domain modules (<code>tensor_activation_codegen.cpp</code>, <code>tensor_arith_codegen.cpp</code>, <code>tensor_conv_codegen.cpp</code>, <code>tensor_creation_codegen.cpp</code>, <code>tensor_dataloader_codegen.cpp</code>, <code>tensor_extras_codegen.cpp</code>, <code>tensor_linalg_codegen.cpp</code>, <code>tensor_loss_codegen.cpp</code>, <code>tensor_reduce_codegen.cpp</code>, <code>tensor_shape_codegen.cpp</code>, <code>tensor_training_codegen.cpp</code>, <code>tensor_transformer_codegen.cpp</code>, <code>tensorcore_codegen.cpp</code>), totalling 23,413 lines re-exported through the dispatcher above.</p>
 <p><strong>Additional backend components (not in the module table above):</strong></p>
 <table>
 <colgroup>
@@ -730,7 +730,7 @@ HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEA
 <p><strong>Cost model calibration:</strong> Measured values are <code>blas_peak_gflops=1100</code> (Apple AMX) and <code>gpu_peak_gflops=200</code> (SF64). Configurable via environment variables <code>ESHKOL_BLAS_PEAK_GFLOPS</code> and <code>ESHKOL_GPU_PEAK_GFLOPS</code>.</p>
 <p>The Metal shader source is embedded at build time via a CMake custom command that converts <code>metal_softfloat.h</code> into a C string literal (<code>metal_sf64_embedded.inc</code>), ensuring the GPU kernel and host code stay in sync.</p>
 <h3 id="parallel-primitives">Parallel Primitives</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_codegen.cpp</code></a> (1,225 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_llvm_codegen.cpp</code></a> (2,317 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/thread_pool.cpp" target="_blank" rel="noopener noreferrer"><code>thread_pool.cpp</code></a> (1,530 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_codegen.cpp</code></a> (1,237 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/parallel_llvm_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>parallel_llvm_codegen.cpp</code></a> (2,323 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/thread_pool.cpp" target="_blank" rel="noopener noreferrer"><code>thread_pool.cpp</code></a> (1,530 lines)</p>
 <p>Four parallel higher-order functions with work-stealing scheduling:</p>
 <pre class="scheme"><code>(parallel-map f vec)        ; Apply f to each element in parallel
 (parallel-fold f init vec)  ; Associative reduction with work distribution
@@ -747,7 +747,7 @@ HEAP_SUBTYPE_I128           = 25,  // Native fixed-width 128-bit integer    [LEA
 <p><code>ws-step!</code> is fully implemented: LLVM codegen generates a loop that calls registered module closures via <code>codegenClosureCall</code>, then C runtime helpers (<code>eshkol_ws_make_content_tensor</code>, <code>eshkol_ws_step_finalize</code>) handle tensor wrapping and softmax broadcast for competitive attention.</p>
 <p>Logic variables use syntax <code>?x</code> (parsed as <code>ESHKOL_LOGIC_VAR_OP</code>), which is R7RS-compatible since <code>?</code> is a valid identifier start character in Scheme.</p>
 <h3 id="exact-arithmetic-dispatch">Exact Arithmetic Dispatch</h3>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>arithmetic_codegen.cpp</code></a> (4,830 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/arithmetic_codegen.cpp" target="_blank" rel="noopener noreferrer"><code>arithmetic_codegen.cpp</code></a> (4,851 lines)</p>
 <p>The full R7RS numeric tower with automatic precision promotion:</p>
 <pre><code>int64 -&gt; bignum -&gt; rational -&gt; double -&gt; complex
          (overflow)  (exact div)  (inexact)  (make-rectangular)</code></pre>
@@ -855,7 +855,7 @@ builder-&gt;CreateStore(new_counter, counter_ptr);
 <p><strong>Block Capture After IR-Generating Calls:</strong> Any function that may create basic blocks (e.g., <code>extractDoubleFromTagged</code>, <code>packDoubleToTaggedValue</code>, <code>isHeapSubtype</code>) can shift the builder’s insert point. Code that creates PHI nodes or conditional branches must capture the actual exit block with <code>builder-&gt;GetInsertBlock()</code> after such calls, not before.</p>
 <hr />
 <h2 id="jit-compilation-repl">JIT Compilation (REPL)</h2>
-<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,712 lines)</p>
+<p><strong>Implementation:</strong> <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,831 lines)</p>
 <p>The REPL uses <strong>LLVM’s LLJIT</strong> (via OrcJIT v2) for interactive execution.</p>
 <h3 id="jit-architecture">JIT Architecture</h3>
 <pre><code>User Input: &quot;(+ 1 2)&quot;

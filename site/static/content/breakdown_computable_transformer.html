@@ -8,7 +8,7 @@
 <h2 id="2-the-constructive-proof-argument">2. The constructive-proof argument</h2>
 <p>Most claims that a particular neural architecture is “Turing complete” are existence proofs: a universal approximation theorem or a machine-construction argument that takes parameters as free variables. The SDNC takes the constructive route that has been pioneered by RASP (Weiss et al. 2021), Tracr (Lindner et al. 2023), Looped Transformers (Giannou et al. 2023), and Differentiable Forth (Bošnjak et al. 2017): one exhibits a concrete weight assignment and proves that the resulting forward pass evaluates a specified semantics. The novelties here, relative to the prior art, are:</p>
 <ol type="1">
-<li><strong>The semantics is a <em>real</em> bytecode</strong>, not a DSL chosen to make the compilation easy. The 83-opcode ISA comes from the production Eshkol compiler (<code>lib/backend/vm_core.c</code>) and is the same one consumed by the reference C interpreter (<code>lib/backend/vm_run.c</code>, computed-goto dispatch).</li>
+<li><strong>The semantics is a <em>real</em> bytecode</strong>, not a DSL chosen to make the compilation easy. The base 64 opcodes come from the production Eshkol compiler (<code>lib/backend/vm_core.c</code>) and are the same ones consumed by the reference C interpreter (<code>lib/backend/vm_run.c</code>, computed-goto dispatch); the full 84-opcode ISA this artifact targets adds a 19-opcode AD extension plus <code>OP_SWAP</code>, both specific to the shared weight-matrix <code>SdncOpCode</code> enum (<code>lib/backend/sdnc_isa.h</code>).</li>
 <li><strong>Reverse-mode AD is in the ISA</strong>. Nineteen opcodes (<code>OP_AD_VAR=64 … OP_AD_COS=82</code>) record nodes onto a 64-dimensional in-state tape, walk it backwards, and accumulate gradients via the same weight matrices. Differentiating a program is one extra dispatch state (<code>S_AD_IS_BACKWARD=1</code>), not a separate engine.</li>
 <li><strong>Bit-identity in float32</strong>, not approximate agreement. Every step of every program in the verifier set has every byte of its 256-float state vector equal across three implementations (reference C, simulated weights, and matrix matmul). The proof is empirical at this point but is supported by an analytic gate-saturation argument (<code>lib/backend/weight_matrices.c §SCALE comment lines 59-84</code>).</li>
 <li><strong>One transformer block iterated against itself.</strong> Layers 0-5 are fixed; the dispatch loop runs <code>forward_with_weights</code> (forward mode) or <code>backward_with_weights</code> (backward mode) repeatedly until <code>S_HALT=1</code>. This puts the construction in the same family as the Looped Transformers result of Giannou et al., but with the loop unrolled at the bytecode level rather than buried in a learned position counter.</li>
@@ -179,8 +179,8 @@ $$</span></p>
 </table>
 <p>The “two state vectors” framing — that <code>x</code> is <em>both</em> a VM state and a transformer residual stream — is more than a notational trick. Persistent dimensions (Zones A, A_t, B, C, E) must survive one forward pass; transient dimensions (A’, D, E’) must be zeroed at each cycle. The zeroing is mechanised by Layer 3’s universal reset pass at lines 1390-1394: each transient dimension <span class="math inline"><em>d</em></span> has its current value <span class="math inline"><em>x</em>[<em>d</em>]</span> subtracted off in the residual update, so the post-cycle state has those dimensions at zero. This is the same “clear with residual” pattern that classical Tracr uses (Lindner et al. 2023 §3.2), but applied to a much larger transient slice (Eshkol’s per-cycle scratch spans 96 of 256 dimensions).</p>
 <p>The Zone E arena, added when the artifact moved from <span class="math inline"><em>d</em><sub>model</sub> = 128</span> to <span class="math inline"><em>d</em><sub>model</sub> = 256</span>, is the construction that makes <code>cons</code>, <code>car</code>, <code>cdr</code>, vector and string reads, and bounded closures into matrix operations. Each of 16 cells stores <code>[kind, car_value, cdr_value, car_type, cdr_type]</code> (16 × 5 = 80 dims). The free-list pointer <code>S_ARENA_NEXT</code> (dimension 208) is a bump allocator: <code>OP_CONS</code> writes into <code>state[S_ARENA_NEXT..S_ARENA_NEXT+4]</code> and increments by 5. <code>OP_CAR</code>/<code>OP_CDR</code> are content-addressed reads via a SCALE-saturated indicator over the cell index in <code>S_TOS</code>. The full encoding scheme is the subject of <code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §5</code>.</p>
-<h2 id="5-the-83-opcode-isa">5. The 83-opcode ISA</h2>
-<p>The canonical numbering — used by the production C compiler, the reference interpreter, the weight constructor, and the qLLM loader — is the enum at <code>lib/backend/vm_core.c §5-92</code> (<code>OP_NOP=0</code> through <code>OP_VOID=63</code>, <code>OP_COUNT=64</code> for the base set) and at <code>lib/backend/weight_matrices.c §102-131</code> (the 19-opcode AD extension <code>OP_AD_VAR=64</code> through <code>OP_AD_COS=82</code>, <code>OP_COUNT=83</code>).</p>
+<h2 id="5-the-84-opcode-isa">5. The 84-opcode ISA</h2>
+<p>The canonical numbering — used by the production C compiler, the reference interpreter, the weight constructor, and the qLLM loader — is the enum at <code>lib/backend/vm_core.c §5-92</code> (<code>OP_NOP=0</code> through <code>OP_VOID=63</code>, <code>OP_COUNT=64</code> for the base set). The weight-matrix layer’s own 84-opcode ISA (base 0-63, a 19-opcode AD extension 64-82, plus <code>OP_SWAP=83</code> appended after the AD band) is now the single shared <code>SdncOpCode</code> enum in <code>lib/backend/sdnc_isa.h §74-108</code> (<code>OP_AD_VAR=64</code> through <code>OP_AD_COS=82</code>, <code>OP_SWAP=83</code>, <code>OP_COUNT=84</code>), included by both <code>weight_matrices.c</code> (producer) and <code>qllm_interpreter.c</code> (consumer) so the two halves of the serialization boundary cannot drift out of sync again (<code>OP_SWAP</code> previously existed only in the producer’s private copy while the consumer’s <code>OP_COUNT</code> stopped at 83, decoding a valid SWAP as out-of-range).</p>
 <p>The opcode families and the count per family:</p>
 <table>
 <colgroup>
@@ -337,14 +337,20 @@ $$</span></p>
 <td><code>AD_BACKWARD, AD_GRAD</code></td>
 </tr>
 <tr>
+<td>Swap (post-AD)</td>
+<td>83</td>
+<td>1</td>
+<td><code>SWAP</code> (exchanges TOS&lt;-&gt;SOS; base stack op, not AD)</td>
+</tr>
+<tr>
 <td><strong>Total</strong></td>
-<td><strong>0–82</strong></td>
-<td><strong>83</strong></td>
-<td>(= 64 base + 19 AD)</td>
+<td><strong>0–83</strong></td>
+<td><strong>84</strong></td>
+<td>(= 64 base + 19 AD + 1 swap)</td>
 </tr>
 </tbody>
 </table>
-<p>Of these 83, the current artifact weight-encodes 82. <code>opcode-coverage.json</code> from <code>artifacts/paper/outputs/</code> lists exactly opcodes <span class="math inline">{0, 1, …, 36, 38, 39, …, 82}</span> as weight-implemented and zero opcodes as native-delegated; the missing index is 37, <code>OP_NATIVE_CALL</code>. This is the deliberate external boundary for host runtime services (the Eshkol runtime uses native IDs in the 300+ range for cons, display, tensor ops, the consciousness engine, geometric manifolds, and AD subsystem entry points; see <code>lib/backend/eshkol_compiler.c</code> and the <code>vm_native.c</code> dispatcher).</p>
+<p>Of these 84, the current artifact weight-encodes 83. <code>opcode-coverage.json</code> from <code>artifacts/paper/outputs/</code> lists exactly opcodes <span class="math inline">{0, 1, …, 36, 38, 39, …, 83}</span> as weight-implemented and zero opcodes as native-delegated; the missing index is 37, <code>OP_NATIVE_CALL</code>. This is the deliberate external boundary for host runtime services (the Eshkol runtime uses native IDs in the 300+ range for cons, display, tensor ops, the consciousness engine, geometric manifolds, and AD subsystem entry points; see <code>lib/backend/eshkol_compiler.c</code> and the <code>vm_native.c</code> dispatcher).</p>
 <h2 id="6-two-tiers-of-execution">6. Two tiers of execution</h2>
 <h3 id="61-tier-1--weight-encoded">6.1 Tier 1 — Weight-encoded</h3>
 <p>The arithmetic family, comparison family, control flow, type predicates, stack housekeeping, arena pair ops, bounded vector ops, bounded string reads, bounded closures, bounded escape continuations, the forward AD tape (record + unary saved-derivative table), and the full reverse-mode walk are computed by matrix multiplication alone. “Bounded” means: live-cell count ≤ 16, vector/string inline length ≤ 4, tape length ≤ 8, MEM register count = 4, escape-continuation arena cells = 4, integer divisor ≤ 16, modulus ∈ {3,4}, AD trig input ∈ [-4, 4], AD power base ≤ 8, exponent ≤ 4. The artifact’s verifier suite is constructed within these bounds and exercises every weight-implemented opcode.</p>
@@ -396,15 +402,15 @@ $$</span></p>
 <li><strong><code>run_simulated</code></strong> (around line 2570): C functions (<code>layer0_attention</code>, <code>layer1_ffn</code>, <code>layer2_ffn</code>, <code>layer3_ffn</code>, <code>layer4_ffn</code>, <code>layer5_ffn</code> for backward) that mirror what each weight-matrix layer computes, but execute it as plain arithmetic rather than going through matrix multiplication. Used as a diagnostic to isolate whether a divergence is in the <em>logic</em> of the layer functions or in the <em>encoding</em> of those logic functions into weights.</li>
 <li><strong><code>run_with_weights</code></strong> (line 5347, <code>forward_with_weights</code>): the real <span class="math inline"><em>W</em> ⋅ <em>x</em> + <em>b</em></span> matrix forward pass through the <code>InterpreterWeights</code> struct. Calls <code>apply_ffn_layer</code> and the Layer-0 attention block.</li>
 </ol>
-<p>For each test program, <code>test()</code> (line 5487) executes all three runners from a freshly reset state and compares the printed output to a hand- coded expectation. The pass count after a clean run is <strong>126 inline tests, 0 failed</strong> (from <code>scripts/paper/run_paper_suite.sh</code> log: see <code>build-paper.suite_trace.log</code> line 174).</p>
+<p>For each test program, <code>test()</code> (line 5487) executes all three runners from a freshly reset state and compares the printed output to a hand- coded expectation. The pass count after a clean run is <strong>127 inline tests, 0 failed</strong> (from <code>scripts/paper/run_paper_suite.sh</code> log: see <code>build-paper.suite_trace.log</code>; re-verified at the v1.3.6 release SHA 60f345def on 2026-10-09 via the shared build’s <code>tools/weight_matrices</code>).</p>
 <p>For per-step state agreement, the same binary writes JSONL trace files via <code>--trace-vm</code> and <code>--trace-transformer</code> flags. <code>compare_traces.py</code> (at <code>scripts/paper/compare_traces.py</code>) groups records by <code>(program_id, program, step)</code>, compares the eight fields <code>{pc, sp, tos, sos, registers, memory, tape, flags}</code> bit-identically for each weight-implemented step, and reports two metrics:</p>
 <pre class="json"><code>{
   &quot;status&quot;: &quot;ok&quot;,
-  &quot;total_programs&quot;: 123,
-  &quot;output_agreeing_programs&quot;: 123,
-  &quot;fully_agreeing_programs&quot;: 123
+  &quot;total_programs&quot;: 124,
+  &quot;output_agreeing_programs&quot;: 124,
+  &quot;fully_agreeing_programs&quot;: 124
 }</code></pre>
-<p>The 123-program traced suite is a subset of the 126 inline tests; the three excluded are inline-only diagnostics that do not produce a traceable program sequence.</p>
+<p>The 124-program traced suite is a subset of the 127 inline tests; the three excluded are inline-only diagnostics that do not produce a traceable program sequence.</p>
 <h2 id="8-qlmw-binary-format">8. QLMW binary format</h2>
 <p>After the verifier passes, the same binary serialises the <code>InterpreterWeights</code> struct to the path in <code>ESHKOL_WEIGHTS_OUT</code> via <code>export_weights_binary</code> (<code>weight_matrices.c §5462-5478</code>). The on-disk layout is fixed-endian little-endian, no padding:</p>
 <pre class="text"><code>offset  bytes  field
@@ -460,7 +466,7 @@ $$</span></p>
 <h2 id="12-cross-references">12. Cross-references</h2>
 <ul>
 <li><code>docs/SDNC.md</code> — the readable entrypoint to the paper artifact; what the SDNC is, how to reproduce it, and the bit-identity bug history.</li>
-<li><code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md</code> — the per-opcode-class encoding spec; what each of the 82 weight-encoded opcodes computes inside the gated FFN.</li>
+<li><code>docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md</code> — the per-opcode-class encoding spec; what each of the 83 weight-encoded opcodes computes inside the gated FFN.</li>
 <li><code>docs/breakdown/BYTECODE_VM.md</code> — the ISA reference, with each opcode’s small-step semantics.</li>
 <li><code>docs/breakdown/AUTODIFF.md</code> — the reverse-mode AD design that the 19 AD opcodes implement.</li>
 <li><code>docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md</code> — a shorter, user-facing version of this document.</li>
@@ -583,7 +589,7 @@ $$</span></p>
 <tr>
 <td><code>artifacts/paper/outputs/comparison-report.json</code></td>
 <td style="text-align: right;">4K</td>
-<td>Agreement report (123/123)</td>
+<td>Agreement report (124/124)</td>
 </tr>
 <tr>
 <td><code>artifacts/paper/outputs/opcode-coverage.json</code></td>

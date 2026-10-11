@@ -315,7 +315,7 @@ cmake .. &amp;&amp; make -j8
 </tbody>
 </table>
 <h3 id="1053-built-in-functions">1,053 Built-in Functions</h3>
-<p>Eshkol provides 1,056 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.</p>
+<p>Eshkol provides 1,058 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.</p>
 <p><strong>Arithmetic:</strong> <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>abs</code>, <code>floor</code>, <code>ceiling</code>, <code>round</code>, <code>truncate</code>, <code>modulo</code>, <code>remainder</code>, <code>quotient</code>, <code>gcd</code>, <code>lcm</code>, <code>min</code>, <code>max</code>, <code>expt</code>, <code>exact-&gt;inexact</code>, <code>inexact-&gt;exact</code></p>
 <p><strong>Math:</strong> <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, <code>sinh</code>, <code>cosh</code>, <code>tanh</code>, <code>exp</code>, <code>log</code>, <code>log10</code>, <code>sqrt</code>, <code>pow</code>, <code>fl-next-up</code>, <code>fl-next-down</code> (directed rounding — the next representable double above / below its argument; the primitive beneath certified enclosures)</p>
 <p><strong>Comparison:</strong> <code>&lt;</code>, <code>&gt;</code>, <code>=</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>eq?</code>, <code>eqv?</code>, <code>equal?</code></p>
@@ -386,7 +386,7 @@ cmake .. &amp;&amp; make -j8
 (laplacian harmonic (vector 1.0 1.0))  ;; -&gt; 0 (it&#39;s harmonic!)
 
 ;; Directional derivative: D_u f
-(directional-derivative f (vector 3.0 4.0) (vector 1.0 0.0))  ;; -&gt; 6</code></pre>
+(directional-derivative harmonic (vector 3.0 4.0) (vector 1.0 0.0))  ;; -&gt; 6</code></pre>
 <h3 id="arbitrary-order-ad-taylor-towers">Arbitrary-Order AD: Taylor Towers</h3>
 <p>Everything above differentiates once (or, with nesting, a small fixed number of times). The Taylor-tower engine computes <strong>every</strong> derivative up to an arbitrary order <code>k</code> in a single pass, exactly where the arithmetic allows it. See the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> for the full walkthrough of all 13 phases (P0-P12: no-heap monomorphization, multivariate mixed partials, reverse-over-Taylor, exact bignum/rational coefficients, tensor towers, validated Taylor models, sparse tensors, differentiable control flow, checkpointed reverse-mode, and tower-based numerics).</p>
 <pre class="scheme"><code>;; The k-th derivative of f at x, for any order k -- no require needed
@@ -425,6 +425,7 @@ cmake .. &amp;&amp; make -j8
 (make-tensor (list 4096 4096) 0.0)  ;; 4096x4096 matrix filled with 0.0
 (rand 100 100)                  ;; 100x100 random matrix</code></pre>
 <h3 id="operations">Operations</h3>
+<!-- doc-example: skip fragment: v1/v2/A/B/M/signal/u/windowed-signal/kernel are assumed tensors from elsewhere on the page -->
 <pre class="scheme"><code>;; Element-wise arithmetic
 (tensor-add v1 v2)
 (tensor-sub v1 v2)
@@ -579,11 +580,17 @@ cmake .. &amp;&amp; make -j8
     #f)))
 
 (find-first even? (list 1 3 5 4 7))  ;; -&gt; 4</code></pre>
-<pre class="scheme"><code>;; Re-entrant: the continuation outlives the frame that captured it
+<p>Re-entering a continuation while the frame that captured it is still live runs today. Planned for v1.4 on the JIT: re-entering it after the capturing procedure has returned, as below.</p>
+<!-- doc-example: skip pseudo-code: planned capability for v1.4 on the JIT; re-entry after the capturing procedure has returned -->
+<pre class="scheme"><code>;; Re-entrant: the continuation outlives the frame that captured it.
+;; In a program file it includes the later top-level forms, so the
+;; counter stops the re-entry.
 (define k #f)
+(define count 0)
 (define (f) (+ 1 (call/cc (lambda (c) (set! k c) 1))))
-(f)        ;; -&gt; 2
-(k 10)     ;; -&gt; 11, re-entering f after it returned</code></pre>
+(display (f)) (newline)            ;; prints 2, then 11 and 21 on re-entry
+(set! count (+ count 1))
+(if (&lt; count 3) (k (* count 10)))  ;; re-enter f after it returned</code></pre>
 <h3 id="dynamic-wind">Dynamic Wind</h3>
 <pre class="scheme"><code>;; dynamic-wind guarantees before/after thunks execute
 ;; even across continuation invocations
@@ -603,6 +610,7 @@ cmake .. &amp;&amp; make -j8
       (lambda () (thunk port))
       (lambda () (close-port port)))))</code></pre>
 <h3 id="structured-exception-handling">Structured Exception Handling</h3>
+<!-- doc-example: skip fragment: several independent illustrations in one fence; the with-exception-handler form, in particular, correctly terminates per R7RS (a handler for non-continuable `raise` must not return normally), so later lines in the fence never execute as one program -->
 <pre class="scheme"><code>;; guard provides try/catch-like exception handling
 (guard (exn
         ((string? exn) (string-append &quot;caught: &quot; exn))
@@ -631,6 +639,7 @@ cmake .. &amp;&amp; make -j8
 <h2 id="parallel-primitives">Parallel Primitives</h2>
 <p>Eshkol v1.1 provides built-in parallel execution primitives that automatically distribute work across available CPU cores. No threading libraries or manual synchronization required.</p>
 <h3 id="parallel-map-filter-fold">Parallel Map, Filter, Fold</h3>
+<!-- doc-example: skip fragment: file-list is an assumed binding for parallel-for-each -->
 <pre class="scheme"><code>;; parallel-map: apply function to list elements in parallel
 (parallel-map (lambda (x) (* x x)) (list 1 2 3 4 5 6 7 8))
 ;; -&gt; (1 4 9 16 25 36 49 64)
@@ -646,6 +655,7 @@ cmake .. &amp;&amp; make -j8
   (lambda (file) (process-data file))
   file-list)</code></pre>
 <h3 id="futures">Futures</h3>
+<!-- doc-example: skip fragment: heavy-computation-a/b are assumed functions -->
 <pre class="scheme"><code>;; future: spawn computation, force: wait for result
 (define f1 (future (lambda () (heavy-computation-a))))
 (define f2 (future (lambda () (heavy-computation-b))))
@@ -653,6 +663,7 @@ cmake .. &amp;&amp; make -j8
 ;; Both computations run concurrently
 (define result (+ (force f1) (force f2)))</code></pre>
 <h3 id="parallel-execute">Parallel Execute</h3>
+<!-- doc-example: skip fragment: train-model-a/b/c and data are assumed bindings -->
 <pre class="scheme"><code>;; Run multiple thunks concurrently
 (parallel-execute
   (lambda () (train-model-a data))
@@ -671,6 +682,7 @@ cmake .. &amp;&amp; make -j8
 (define C (matmul A B))  ;; dispatches to BLAS (~1.2 TFLOPS on Apple Silicon AMX)</code></pre>
 <p>The cost model uses measured peak throughput: - <strong>SIMD</strong>: Small matrices, low overhead - <strong>Apple Accelerate (AMX)</strong>: ~1.1 TFLOPS measured, best for most matrix sizes - <strong>Metal (macOS)</strong>: ~200 GFLOPS in simulated float64, used when GPU genuinely outperforms - <strong>CUDA (Linux)</strong>: Native float64 on NVIDIA GPUs</p>
 <h3 id="explicit-gpu-operations">Explicit GPU Operations</h3>
+<!-- doc-example: skip fragment: A/B/M/v are assumed tensors from elsewhere on the page -->
 <pre class="scheme"><code>;; Force GPU execution for specific operations
 (gpu-matmul A B)                    ;; GPU matrix multiply
 (gpu-elementwise * A B)             ;; Element-wise GPU op: + - * /
@@ -707,6 +719,7 @@ cmake .. &amp;&amp; make -j8
 (unify 1 2 s)              ;; -&gt; #f
 (unify ?x (list ?x) s)     ;; -&gt; #f  (occurs check)</code></pre>
 <h3 id="knowledge-bases">Knowledge Bases</h3>
+<!-- doc-example: skip fragment: `s` (last line, `(substitution? s)`) is an assumed substitution from elsewhere on the page -->
 <pre class="scheme"><code>;; Create a knowledge base and assert facts
 (define kb (make-kb))
 (kb-assert! kb (make-fact &#39;parent &#39;alice &#39;bob))
@@ -726,6 +739,7 @@ cmake .. &amp;&amp; make -j8
 (substitution? s)           ;; -&gt; #t
 (kb? kb)                    ;; -&gt; #t</code></pre>
 <h3 id="factor-graphs-and-probabilistic-inference">Factor Graphs and Probabilistic Inference</h3>
+<!-- doc-example: skip fragment: cpt-matrix, new-cpt and observations are assumed bindings -->
 <pre class="scheme"><code>;; Create a factor graph: 3 binary variables.
 ;; Signature: (make-factor-graph num-vars dims-tensor)
 (define fg (make-factor-graph 3 #(2 2 2)))
@@ -752,6 +766,7 @@ cmake .. &amp;&amp; make -j8
 (fact? f)                   ;; -&gt; #t
 (factor-graph? fg)          ;; -&gt; #t</code></pre>
 <h3 id="global-workspace">Global Workspace</h3>
+<!-- doc-example: skip fragment: perception-module, memory-module and planning-module are assumed closures of the shape described in the comments -->
 <pre class="scheme"><code>;; Create a workspace (Global Workspace Theory).
 ;; Signature: (make-workspace dim max-modules).
 ;; dim is the content-vector dimensionality; max-modules is the capacity.
@@ -803,6 +818,7 @@ cmake .. &amp;&amp; make -j8
 ;; Power spectrum
 (define power (tensor-mul spectrum spectrum))</code></pre>
 <h3 id="windowing-functions">Windowing Functions</h3>
+<!-- doc-example: skip fragment: signal is an assumed tensor from elsewhere on the page -->
 <pre class="scheme"><code>;; Apply window functions before FFT to reduce spectral leakage
 (define n 1024)
 (define hamming-win (hamming-window n))
@@ -811,6 +827,7 @@ cmake .. &amp;&amp; make -j8
 (define windowed-signal (tensor-mul signal hamming-win))
 (define spectrum (fft windowed-signal))</code></pre>
 <h3 id="digital-filters">Digital Filters</h3>
+<!-- doc-example: skip fragment: signal is an assumed tensor from elsewhere on the page -->
 <pre class="scheme"><code>;; FIR filter (finite impulse response)
 (define coefficients #(0.1 0.2 0.4 0.2 0.1))
 (define filtered (fir-filter coefficients signal))
@@ -825,6 +842,7 @@ cmake .. &amp;&amp; make -j8
 (define order 4)
 (define lp-filter (butterworth-lowpass order cutoff))</code></pre>
 <h3 id="convolution">Convolution</h3>
+<!-- doc-example: skip fragment: signal is an assumed tensor from elsewhere on the page -->
 <pre class="scheme"><code>;; Linear convolution
 (define kernel #(1.0 2.0 1.0))
 (define result (convolve signal kernel))</code></pre>
@@ -837,6 +855,7 @@ eshkol-run program.esk --wasm -o program.wasm
 
 # Generates: program.wasm + program.js (loader)</code></pre>
 <h3 id="dom-api">DOM API</h3>
+<!-- doc-example: skip platform-specific: compiles only under --wasm with a browser DOM; the native JIT/AOT engines have no window object -->
 <pre class="scheme"><code>;; Create and manipulate DOM elements
 (define heading (web-create-element &quot;h1&quot;))
 (web-set-text-content heading &quot;Hello from Eshkol!&quot;)
@@ -847,6 +866,7 @@ eshkol-run program.esk --wasm -o program.wasm
   (lambda (event)
     (web-set-text-content heading &quot;Clicked!&quot;)))</code></pre>
 <h3 id="canvas-api">Canvas API</h3>
+<!-- doc-example: skip platform-specific: compiles only under --wasm with a browser DOM; the native JIT/AOT engines have no window object -->
 <pre class="scheme"><code>;; 2D canvas drawing
 (define canvas (web-canvas-create 800 600))
 (web-canvas-fill-rect canvas 10 10 100 50 &quot;blue&quot;)
@@ -917,6 +937,7 @@ eshkol-run program.esk --wasm -o program.wasm
 (square-then-double 3)  ;; -&gt; 18 (3^2 * 2)
 (double-then-square 3)  ;; -&gt; 36 ((3 * 2)^2)</code></pre>
 <h3 id="standard-library-combinators">Standard Library Combinators</h3>
+<!-- doc-example: skip fragment: `path/to/file.esk` is a placeholder path, and x/pred/f are assumed bindings for identity/negate/curry2 -->
 <pre class="scheme"><code>;; From stdlib (two equivalent forms)
 (require stdlib)
 (load &quot;path/to/file.esk&quot;)  ;; R7RS-compatible file loading (alias for require)
@@ -1328,13 +1349,19 @@ Goodbye!</code></pre>
 <p>On top of the runtime tagged-value system, Eshkol has an optional static type checker (gradual typing: warnings, not errors — programs run regardless). Strict mode accepts idiomatic dynamic-but-validated code without escape hatches. The full account, with runnable examples and a guide to reading a diagnostic, is <a href="/docs#page=guide_gradual_typing" data-url="/content/guide_gradual_typing.html">the gradual typing guide</a>:</p>
 <ul>
 <li><p><strong>Checked ascription <code>(the &lt;type&gt; expr)</code>.</strong> Asserts that <code>expr</code> has type <code>&lt;type&gt;</code> as a <strong>trusted assertion to the checker</strong> — it narrows the checker’s view of <code>expr</code> to <code>&lt;type&gt;</code>. It is a pure <strong>runtime no-op</strong>: the emitted IR is byte-identical to <code>expr</code> alone (no runtime tag check, no cost), so <code>(the &lt;type&gt; expr)</code> and <code>expr</code> compute exactly the same value.</p>
-<p>Trusted is not unexamined. The checker still derives the type of <code>expr</code>, and if it is <strong>provably disjoint</strong> from <code>&lt;type&gt;</code> — no value inhabits both — it reports the ascription instead of adopting it: a warning under gradual typing, fatal under <code>--strict-types</code>, and nothing extra in the emitted code either way. Narrowing, widening, and moving between members of the numeric tower are all accepted.</p>
+<p>Trusted is not unexamined. The checker still derives the type of <code>expr</code>, and if it is <strong>provably disjoint</strong> from <code>&lt;type&gt;</code> — no value inhabits both — it reports the ascription instead of adopting it: a warning under gradual typing, fatal under <code>--strict-types</code>, and nothing extra in the emitted code either way. Narrowing, widening, and moving between members of the numeric tower are all accepted.</p></li>
+</ul>
+<!-- doc-example: skip fragment: mixed-list is an assumed binding illustrating the ascription rules -->
 <pre class="scheme"><code>(the number (car mixed-list))   ; tell the checker this element is a number
 (the real 1)                    ; fine — the numeric tower is flat
-(the string (+ 1 2))            ; reported: no value is both Int64 and String</code></pre></li>
-<li><p><strong>Predicate-guarded narrowing.</strong> Inside a branch guarded by one of eight type predicates, the checker narrows the tested value to that type. The eight predicates are <code>number?</code>, <code>integer?</code>, <code>string?</code>, <code>symbol?</code>, <code>pair?</code>, <code>null?</code>, <code>vector?</code>, and <code>procedure?</code>. Narrowing is honored across both <code>if</code> and <code>and</code>, and is <strong>cancelled</strong> at a <code>set!</code> of the narrowed variable.</p>
+(the string (+ 1 2))            ; reported: no value is both Int64 and String</code></pre>
+<ul>
+<li><strong>Predicate-guarded narrowing.</strong> Inside a branch guarded by one of eight type predicates, the checker narrows the tested value to that type. The eight predicates are <code>number?</code>, <code>integer?</code>, <code>string?</code>, <code>symbol?</code>, <code>pair?</code>, <code>null?</code>, <code>vector?</code>, and <code>procedure?</code>. Narrowing is honored across both <code>if</code> and <code>and</code>, and is <strong>cancelled</strong> at a <code>set!</code> of the narrowed variable.</li>
+</ul>
+<!-- doc-example: skip fragment: x and p are assumed bindings illustrating narrowing -->
 <pre class="scheme"><code>(if (number? x) (+ x 1) 0)      ; x is number in the then-branch
-(and (pair? p) (car p))         ; p is a pair for (car p)</code></pre></li>
+(and (pair? p) (car p))         ; p is a pair for (car p)</code></pre>
+<ul>
 <li><p><strong>Checking reaches every control form.</strong> A call is checked against its callee’s annotations wherever it is written: in a <code>cond</code> or <code>case</code> clause, a <code>match</code> body, a <code>when</code> or <code>unless</code>, every part of a <code>do</code>, a <code>guard</code> body or handler, an <code>and</code>/<code>or</code> operand, a <code>set!</code> value, a quasiquote escape, the thunks of <code>dynamic-wind</code>, the producer and consumer of <code>call-with-values</code>, a <code>with-region</code> body, a computed callee, and every non-final expression of a body. The diagnostic is the one the same call gets at top level.</p>
 <pre class="scheme"><code>(define (area (w : number) (h : number)) (* w h))
 (define (describe flag)

@@ -1,5 +1,5 @@
 <h1 id="eshkol-quick-reference-card">Eshkol Quick Reference Card</h1>
-<p><strong>1,056 built-in functions</strong></p>
+<p><strong>1,058 built-in functions</strong></p>
 <h2 id="basics">Basics</h2>
 <pre class="scheme"><code>;; Variables
 (define x 42)
@@ -27,6 +27,7 @@
 (require core.list.transform)
 (require signal.fft)</code></pre>
 <h2 id="control-flow">Control Flow</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings (condition, test1, result1) -->
 <pre class="scheme"><code>(if condition then-expr else-expr)
 
 (cond ((test1) result1)
@@ -63,6 +64,7 @@
     ((_ (a ...) ...) (list a ... ...))))
 (my-flatten (1 2) (3 4 5))        ;; -&gt; (1 2 3 4 5)</code></pre>
 <h2 id="lists">Lists</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>(list 1 2 3)              ;; create list
 (cons 1 (list 2 3))       ;; prepend
 (car lst)                 ;; first element
@@ -79,6 +81,7 @@
 (take lst n)              ;; first n elements
 (drop lst n)              ;; skip first n elements</code></pre>
 <h2 id="strings">Strings</h2>
+<!-- doc-example: skip fragment: `s` is an assumed string -->
 <pre class="scheme"><code>(string-length s)               ;; codepoint count
 (string-byte-length s)          ;; byte count (differs from string-length on multibyte UTF-8)
 (substring s start)              ;; from start to end of string (2-arg R7RS form)
@@ -92,6 +95,7 @@
 (string-&gt;number &quot;#xFF&quot;)        ;; -&gt; 255
 1+0i                            ;; -&gt; exact integer 1</code></pre>
 <h2 id="higher-order-functions">Higher-Order Functions</h2>
+<!-- doc-example: skip fragment: `f`/`lst`/`pred`/`sum` are assumed bindings -->
 <pre class="scheme"><code>(map f lst)               ;; apply f to each element
 (filter pred lst)         ;; select matching elements
 (fold f init lst)         ;; reduce left
@@ -114,6 +118,7 @@
 (define sum +)
 (apply sum &#39;(1 2 3))           ;; -&gt; 6 (variadic builtin used as a value)</code></pre>
 <h2 id="vectors--tensors">Vectors &amp; Tensors</h2>
+<!-- doc-example: skip fragment: `v`/`i`/`x`/`val` are assumed bindings -->
 <pre class="scheme"><code>(vector 1 2 3)            ;; create vector (heterogeneous, 16-byte tagged)
 (vref v i)                ;; get element
 (vector-set! v i x)       ;; set element
@@ -153,6 +158,7 @@
 (flatten M)               ;; flatten to 1D
 (tensor-shape M)          ;; get dimensions</code></pre>
 <h2 id="automatic-differentiation">Automatic Differentiation</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>;; Symbolic (compile-time)
 (diff (* x x) x)          ;; -&gt; (* 2 x)
 
@@ -171,6 +177,7 @@
 (directional-derivative f v dir)</code></pre>
 <h3 id="arbitrary-order-ad-taylor-towers">Arbitrary-Order AD (Taylor Towers)</h3>
 <p>See the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> for the full walkthrough.</p>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>;; Core tower builtins (no require needed)
 (taylor f x k)                    ;; k+1 Taylor coefficients c[0..k] of f at x
 (derivative-n f x k)              ;; the k-th derivative f^(k)(x), any order
@@ -242,6 +249,7 @@
 (derivative (lambda (x) (* x x)) 1/3)    ;; -&gt; 2/3   exact</code></pre>
 <p>Everything above answers identically on the native engine and the bytecode VM.</p>
 <h2 id="complex-numbers">Complex Numbers</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>;; Creation
 (make-rectangular 3.0 4.0)    ;; 3+4i
 (make-polar 5.0 0.927)        ;; r*e^(i*theta)
@@ -263,6 +271,7 @@
 (complex? z)               ;; -&gt; #t
 (number? z)                ;; -&gt; #t</code></pre>
 <h2 id="continuations--exception-handling">Continuations &amp; Exception Handling</h2>
+<!-- doc-example: skip fragment: illustrative call/cc shapes; the full-page examples above cover real uses -->
 <pre class="scheme"><code>;; First-class continuations
 (call/cc (lambda (k)       ;; capture continuation
   (+ 1 (k 42))))           ;; -&gt; 42
@@ -312,6 +321,7 @@
   (lambda () (values 1 2))
   +)                        ;; -&gt; 3</code></pre>
 <h2 id="parallel-primitives">Parallel Primitives</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>;; Parallel versions of standard HOFs
 (parallel-map f lst)           ;; map across cores
 (parallel-filter pred lst)     ;; filter across cores
@@ -327,6 +337,7 @@
 
 ;; Auto falls back to sequential for small inputs</code></pre>
 <h2 id="gpu-acceleration">GPU Acceleration</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>;; Automatic dispatch (matmul selects SIMD/BLAS/GPU by cost model)
 (matmul A B)                   ;; fastest backend auto-selected
 
@@ -344,6 +355,7 @@
 ;; Backends: SIMD | Apple Accelerate AMX (~1.1 TFLOPS)
 ;;           | Metal (macOS, sf64) | CUDA (Linux, native f64)</code></pre>
 <h2 id="consciousness-engine">Consciousness Engine</h2>
+<!-- doc-example: skip fragment: `?y` and related bindings are assumed -->
 <pre class="scheme"><code>;; Logic variables and unification
 (define s (make-substitution))     ;; empty substitution
 (define s1 (unify ?x 42 s))       ;; bind ?x to 42
@@ -381,6 +393,7 @@
 (ws-step! ws)                                    ;; competition + broadcast (1 arg)
 (workspace? ws)                                  ;; -&gt; #t</code></pre>
 <h2 id="signal-processing">Signal Processing</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>;; FFT / Inverse FFT
 (fft signal)                   ;; Fast Fourier Transform
 (ifft spectrum)                ;; Inverse FFT
@@ -401,6 +414,7 @@
 ;; Filter design
 (butterworth-lowpass order cutoff)     ;; Butterworth lowpass</code></pre>
 <h2 id="web-platform-wasm">Web Platform (WASM)</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>;; Compile: eshkol-run prog.esk --wasm -o prog.wasm
 
 ;; DOM manipulation
@@ -419,6 +433,7 @@
 (web-canvas-fill-text ctx text x y)           ;; draw text
 (web-request-animation-frame callback)</code></pre>
 <h2 id="math-functions">Math Functions</h2>
+<!-- doc-example: skip pseudo-code: a bare list of builtin names, not code -->
 <pre class="scheme"><code>;; Arithmetic
 + - * / abs floor ceiling round truncate
 modulo remainder quotient gcd lcm min max expt
@@ -436,6 +451,7 @@ fl-next-up fl-next-down</code></pre>
 (fl-next-down 1.0)    ;; -&gt; 0.9999999999999999</code></pre>
 <p>The primitive beneath certified enclosures — <code>ia+</code>/<code>ia*</code>/<code>ia-sqrt</code>/… and the rigorous Taylor models <code>tm-var</code>/<code>tm+</code>/<code>tm*</code>/<code>tm-bound</code>/<code>tm-prove-bound</code>, all reached with <code>(require core.ad.taylor_models)</code>.</p>
 <h2 id="type-predicates">Type Predicates</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>(null? x)    (pair? x)     (list? x)
 (number? x)  (integer? x)  (real? x)
 (complex? x) (rational? x)
@@ -451,6 +467,7 @@ fl-next-up fl-next-down</code></pre>
 (kb? x)            (fact? x)
 (factor-graph? x)  (workspace? x)</code></pre>
 <h2 id="static-type-checking-strict-mode">Static Type Checking (strict mode)</h2>
+<!-- doc-example: skip fragment: `xs`/`s` are assumed bindings -->
 <pre class="scheme"><code>;; Checked ascription — trusted assertion to the checker, runtime no-op.
 ;; A provably impossible ascription is reported at compile time:
 ;;   (the string (+ 1 2))  ;; warning (fatal under --strict-types)
@@ -469,6 +486,7 @@ fl-next-up fl-next-down</code></pre>
 ;; Linear Qubit — must be used exactly once
 (define (h (q : Qubit)) ...)      ;; use-exactly-once enforced</code></pre>
 <h2 id="io">I/O</h2>
+<!-- doc-example: skip fragment: `x`/`fmt`/`args`/`path` are assumed bindings -->
 <pre class="scheme"><code>(display x)               ;; print value
 (newline)                 ;; print newline
 (printf fmt args...)      ;; formatted print
@@ -482,6 +500,7 @@ fl-next-up fl-next-down</code></pre>
 (write-string str port)
 (close-port port)</code></pre>
 <h2 id="c-interop">C Interop</h2>
+<!-- doc-example: skip pseudo-code: a grammar shape; return-type/name/param-types are metavariables -->
 <pre class="scheme"><code>(extern return-type name param-types...)
 (extern void printf char* ...)
 (extern double sin double)
@@ -489,6 +508,7 @@ fl-next-up fl-next-down</code></pre>
 ;; With aliasing
 (extern void log :real printf char* ...)</code></pre>
 <h2 id="standard-library-require-stdlib">Standard Library (require stdlib)</h2>
+<!-- doc-example: skip fragment: `f`/`g`/`x`/`pred` are assumed bindings -->
 <pre class="scheme"><code>;; Combinators
 (compose f g)             ;; (f (g x))
 (identity x)              ;; x
@@ -517,6 +537,7 @@ fl-next-up fl-next-down</code></pre>
 ;; ML utilities
 (gradient-descent loss params lr steps)</code></pre>
 <h2 id="math-library">Math Library</h2>
+<!-- doc-example: skip fragment: cheat-sheet entries using assumed bindings/handles (lst, x, v, z, M, A, B, canvas, f, etc.), not a complete program -->
 <pre class="scheme"><code>;; Linear algebra
 (det M n)                 ;; determinant
 (inv M n)                 ;; inverse

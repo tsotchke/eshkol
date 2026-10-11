@@ -212,11 +212,13 @@
 <li><p><strong>Implementation:</strong> Open addressing with linear probing</p></li>
 <li><p><strong>Load Factor:</strong> 0.75 (rehashes when exceeded)</p></li>
 <li><p><strong>Initial Capacity:</strong> 16 buckets</p></li>
-<li><p><strong>Syntax:</strong> <code>(make-hash-table)</code>, <code>(hash key1 val1 key2 val2 ...)</code></p></li>
+<li><p><strong>Syntax:</strong> <code>(make-hash-table)</code></p></li>
 <li><p><strong>Operations:</strong> <code>hash-set!</code>, <code>hash-ref</code>, <code>hash-has-key?</code>, <code>hash-remove!</code>, <code>hash-keys</code>, <code>hash-values</code>, <code>hash-count</code>, <code>hash-clear!</code></p></li>
-<li><p><strong>SRFI-125 aliases (also wired at <code>lib/backend/llvm_codegen.cpp:12694-12704</code>):</strong> <code>hash-table-ref</code>, <code>hash-table-ref/default</code>, <code>hash-table-set!</code>, <code>hash-table-contains?</code>, <code>hash-table-exists?</code>, <code>hash-table-delete!</code>, <code>hash-table-keys</code>, <code>hash-table-values</code>, <code>hash-table-size</code>, <code>hash-table-clear!</code>. The <code>hash-table-*</code> and <code>hash-*</code> names are interchangeable; tutorial 16 uses the SRFI-125 form.</p></li>
+<li><p><strong>SRFI-125 aliases (also wired at <code>lib/backend/llvm_codegen.cpp:12694-12704</code>):</strong> <code>hash-table-ref</code>, <code>hash-table-ref/default</code>, <code>hash-table-set!</code>, <code>hash-table-contains?</code>, <code>hash-table-exists?</code>, <code>hash-table-delete!</code>, <code>hash-table-keys</code>, <code>hash-table-values</code>, <code>hash-table-size</code>, <code>hash-table-clear!</code>. The <code>hash-table-*</code> and <code>hash-*</code> names are interchangeable; tutorial 16 uses the SRFI-125 form. There is no variadic <code>(hash key1 val1 ...)</code> literal constructor; build a table with <code>make-hash-table</code> and <code>hash-set!</code>.</p></li>
 <li><p><strong>Example:</strong></p>
-<pre class="scheme"><code>(define h (hash &#39;a 1 &#39;b 2))
+<pre class="scheme"><code>(define h (make-hash-table))
+(hash-set! h &#39;a 1)
+(hash-set! h &#39;b 2)
 (hash-ref h &#39;a)         ; =&gt; 1
 (hash-table-ref h &#39;a)   ; =&gt; 1 (SRFI-125 alias)</code></pre></li>
 </ul>
@@ -247,7 +249,7 @@
 </ul></li>
 <li><p><strong>Operations:</strong> <code>guard</code>, <code>raise</code></p></li>
 <li><p><strong>Example:</strong></p>
-<pre class="scheme"><code>(guard (e ((error? e) (display &quot;Caught error&quot;)))
+<pre class="scheme"><code>(guard (e ((error-object? e) (display &quot;Caught error&quot;)))
   (error &quot;Something went wrong&quot;))</code></pre></li>
 </ul>
 <h4 id="222-callable---consolidated-callable-objects-type-9">2.2.2 <code>CALLABLE</code> - Consolidated Callable Objects (Type 9)</h4>
@@ -406,11 +408,11 @@
 <p>Both kinds of literal are mutable through the vector API, and both obey one store rule: a value stored into a slot is a value of the slot’s declared representation. A vector slot holds any value. A tensor slot holds a real number, so <code>(vector-set! v 0 99)</code> on <code>(define v #(10 20 30))</code> stores 99 and <code>(vector-set! v 0 1/2)</code> stores <code>0.5</code> — the same conversion tensor construction applies to each element — while a value with no real-number representation (a string, boolean, character, symbol, pair, vector or procedure) raises a catchable error and leaves the tensor unchanged. <code>vector-fill!</code>, <code>vector-copy!</code> and <code>tensor-set!</code> follow the same rule. A heterogeneous mutable vector is built with <code>vector</code>, <code>make-vector</code> or <code>list-&gt;vector</code> (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0020-container-slot-store-boundary.md" target="_blank" rel="noopener noreferrer">ADR-0020</a>).</p>
 <h3 id="33-variable-definition-and-binding">3.3 Variable Definition and Binding</h3>
 <h4 id="331-define---variable-definition">3.3.1 <code>define</code> - Variable Definition</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; name/value/param/body are metavariables --></p>
 <pre class="scheme"><code>(define name value)                    ; Variable
 (define (name param...) body...)       ; Function
 (define (name param... . rest) body)   ; Variadic function</code></pre>
-<p><strong>Type Annotations:</strong></p>
+<p><strong>Type Annotations:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; `body` is a metavariable, not code --></p>
 <pre class="scheme"><code>(define (f (x : int) (y : real)) : real body)  ; Typed parameters and return
 (define (g x y) : int body)                     ; Return type only</code></pre>
 <p><strong>Examples:</strong></p>
@@ -418,7 +420,7 @@
 (define (square n) (* n n))
 (define (variadic-sum . args) (fold + 0 args))</code></pre>
 <h4 id="332-lambda---anonymous-functions">3.3.2 <code>lambda</code> - Anonymous Functions</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; params/body/x/y/type are metavariables --></p>
 <pre class="scheme"><code>(lambda (params...) body...)           ; Regular
 (lambda (params... . rest) body)       ; Variadic
 (lambda args body)                     ; All args as list
@@ -430,7 +432,7 @@
 (lambda args (fold + 0 args))</code></pre>
 <p><strong>Features:</strong> - Lexical scoping - Automatic closure creation for captured variables - Homoiconic (can be displayed as source) - First-class (can be passed, returned, stored)</p>
 <h4 id="333-let---local-bindings-parallel">3.3.3 <code>let</code> - Local Bindings (Parallel)</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; var1/val1/body are metavariables --></p>
 <pre class="scheme"><code>(let ((var1 val1) (var2 val2) ...) body...)
 (let name ((var init) ...) body...)  ; Named let (loop construct)</code></pre>
 <p><strong>Semantics:</strong> Bindings evaluated in parallel (cannot reference each other)</p>
@@ -444,7 +446,7 @@
       acc
       (loop (- n 1) (+ acc n))))  ; =&gt; 55</code></pre>
 <h4 id="334-let---sequential-bindings">3.3.4 <code>let*</code> - Sequential Bindings</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; var1/val1/body are metavariables --></p>
 <pre class="scheme"><code>(let* ((var1 val1) (var2 val2) ...) body...)</code></pre>
 <p><strong>Semantics:</strong> Bindings evaluated left-to-right (later bindings can reference earlier ones)</p>
 <p><strong>Example:</strong></p>
@@ -452,7 +454,7 @@
        (y (+ x 1)))  ; y can use x
   (+ x y))  ; =&gt; 11</code></pre>
 <h4 id="335-letrec---recursive-bindings">3.3.5 <code>letrec</code> - Recursive Bindings</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; var1/val1/body are metavariables --></p>
 <pre class="scheme"><code>(letrec ((var1 val1) (var2 val2) ...) body...)</code></pre>
 <p><strong>Semantics:</strong> All bindings visible to all values (supports mutual recursion)</p>
 <p><strong>Example:</strong></p>
@@ -462,7 +464,7 @@
                  (if (= n 0) #f (even? (- n 1))))))
   (even? 42))  ; =&gt; #t</code></pre>
 <h4 id="336-set---mutation">3.3.6 <code>set!</code> - Mutation</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; `variable`/`new-value` are metavariables --></p>
 <pre class="scheme"><code>(set! variable new-value)</code></pre>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(define x 10)
@@ -470,19 +472,19 @@
 x  ; =&gt; 20</code></pre>
 <h3 id="34-control-flow">3.4 Control Flow</h3>
 <h4 id="341-if---conditional">3.4.1 <code>if</code> - Conditional</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; `condition`/`then-expr`/`else-expr` are metavariables --></p>
 <pre class="scheme"><code>(if condition then-expr else-expr)
 (if condition then-expr)  ; else defaults to unspecified</code></pre>
-<p><strong>Examples:</strong></p>
+<p><strong>Examples:</strong> <!-- doc-example: skip fragment: `x` and `lst` are assumed bindings from the surrounding discussion --></p>
 <pre class="scheme"><code>(if (&gt; x 0) &quot;positive&quot; &quot;non-positive&quot;)
 (if (null? lst) (display &quot;empty&quot;))</code></pre>
 <h4 id="342-cond---multi-way-conditional">3.4.2 <code>cond</code> - Multi-way Conditional</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; test1/expr1/exprN are metavariables --></p>
 <pre class="scheme"><code>(cond (test1 expr1...)
       (test2 expr2...)
       ...
       (else exprN...))</code></pre>
-<p><strong>Example:</strong></p>
+<p><strong>Example:</strong> <!-- doc-example: skip fragment: `x` is an assumed binding --></p>
 <pre class="scheme"><code>(cond ((&lt; x 0) &quot;negative&quot;)
       ((= x 0) &quot;zero&quot;)
       ((&gt; x 0) &quot;positive&quot;))</code></pre>
@@ -491,7 +493,7 @@ x  ; =&gt; 20</code></pre>
       (else 0))
 ; =&gt; 10  (assv returns (1 . 10); cdr of that is 10)</code></pre>
 <h4 id="343-case---switch-on-value">3.4.3 <code>case</code> - Switch on Value</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; key/datum1/expr1 are metavariables --></p>
 <pre class="scheme"><code>(case key
   ((datum1 datum2 ...) expr1...)
   ((datum3) expr2...)
@@ -509,7 +511,7 @@ x  ; =&gt; 20</code></pre>
   (else 0))
 ; =&gt; 50</code></pre>
 <h4 id="344-match---pattern-matching">3.4.4 <code>match</code> - Pattern Matching</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; expr/pattern1/body1 are metavariables --></p>
 <pre class="scheme"><code>(match expr
   (pattern1 body1...)
   (pattern2 body2...)
@@ -517,10 +519,11 @@ x  ; =&gt; 20</code></pre>
 <p><strong>Patterns:</strong> - <strong>Literal:</strong> <code>42</code>, <code>"hello"</code>, <code>#t</code> - <strong>Variable:</strong> <code>x</code>, <code>y</code> (binds the value) - <strong>Wildcard:</strong> <code>_</code> (matches anything, doesn’t bind) - <strong>Cons:</strong> <code>(cons car-pat cdr-pat)</code> - <strong>List:</strong> <code>(list pat1 pat2 ...)</code> - <strong>Predicate:</strong> <code>(? pred-expr)</code> - <strong>Or:</strong> <code>(or pat1 pat2 ...)</code></p>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(match (list 1 2)
-  ((list x y) (+ x y))  ; =&gt; 3
-  (_ 0))</code></pre>
+  ((list x y) (+ x y))
+  (_ 0))
+; =&gt; 3</code></pre>
 <h4 id="345-do---iteration-construct">3.4.5 <code>do</code> - Iteration Construct</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; var1/init1/step1/body are metavariables --></p>
 <pre class="scheme"><code>(do ((var1 init1 step1)
      (var2 init2 step2)
      ...)
@@ -531,14 +534,14 @@ x  ; =&gt; 20</code></pre>
      (sum 0 (+ sum i)))
     ((= i 10) sum))  ; =&gt; 45</code></pre>
 <h4 id="346-when--unless---one-armed-conditionals">3.4.6 <code>when</code> / <code>unless</code> - One-Armed Conditionals</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; test/expr are metavariables --></p>
 <pre class="scheme"><code>(when test expr...)    ; Execute if test is true
 (unless test expr...)  ; Execute if test is false</code></pre>
-<p><strong>Examples:</strong></p>
+<p><strong>Examples:</strong> <!-- doc-example: skip fragment: `x` and `lst` are assumed bindings --></p>
 <pre class="scheme"><code>(when (&gt; x 0) (display &quot;positive&quot;))
 (unless (null? lst) (display &quot;not empty&quot;))</code></pre>
 <h4 id="347-and--or---short-circuit-logic">3.4.7 <code>and</code> / <code>or</code> - Short-Circuit Logic</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; expr1/expr2 are metavariables --></p>
 <pre class="scheme"><code>(and expr1 expr2 ...)  ; Returns first false or last value
 (or expr1 expr2 ...)   ; Returns first true or last value</code></pre>
 <p><strong>Examples:</strong></p>
@@ -547,7 +550,7 @@ x  ; =&gt; 20</code></pre>
 (or #f #f #t)    ; =&gt; #t
 (or 1 2 3)       ; =&gt; 1 (first truthy)</code></pre>
 <h4 id="348-begin---sequencing">3.4.8 <code>begin</code> - Sequencing</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; expr1/exprN are metavariables --></p>
 <pre class="scheme"><code>(begin expr1 expr2 ... exprN)</code></pre>
 <p><strong>Returns:</strong> Value of last expression</p>
 <p><strong>Example:</strong></p>
@@ -579,16 +582,18 @@ x  ; =&gt; 20</code></pre>
 <h4 id="361-type-annotation-syntax">3.6.1 Type Annotation Syntax</h4>
 <pre class="scheme"><code>(: name type)  ; Standalone type declaration</code></pre>
 <h4 id="362-inline-parameter-types">3.6.2 Inline Parameter Types</h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; `body` is a metavariable, not code -->
 <pre class="scheme"><code>(define (f (x : int) (y : float)) body)
 (lambda ((x : int)) body)</code></pre>
 <h4 id="363-return-type-annotations">3.6.3 Return Type Annotations</h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; `body` is a metavariable, not code -->
 <pre class="scheme"><code>(define (f x y) : int body)
 (lambda (x) : real body)</code></pre>
 <h4 id="364-type-expressions">3.6.4 Type Expressions</h4>
 <p><strong>Primitive Types:</strong> - <code>integer</code>, <code>int</code>, <code>int64</code> - <code>real</code>, <code>float</code>, <code>double</code>, <code>float64</code> - <code>boolean</code>, <code>bool</code> - <code>string</code>, <code>str</code> - <code>char</code>, <code>character</code> - <code>symbol</code> - <code>null</code>, <code>nil</code> - <code>any</code> (top type) - <code>nothing</code>, <code>never</code> (bottom type)</p>
 <p><strong>Compound Types:</strong> - <code>(list element-type)</code> - Homogeneous list - <code>(vector element-type)</code> - Homogeneous vector - <code>(tensor element-type)</code> - Homogeneous tensor - <code>(pair left-type right-type)</code> - Pair type - <code>(-&gt; param-types... return-type)</code> - Function type - <code>(* type1 type2)</code> - Product type - <code>(+ type1 type2)</code> - Sum type</p>
 <p><strong>Polymorphic Types:</strong> - <code>(forall (a b ...) type-expr)</code> - Universal quantification</p>
-<p><strong>Example:</strong></p>
+<p><strong>Example:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; `...` is part of the forall syntax, not code --></p>
 <pre class="scheme"><code>(define (map : (forall (a b) (-&gt; (-&gt; a b) (list a) (list b)))
          f lst) ...)</code></pre>
 <h4 id="365-define-type---type-aliases">3.6.5 <code>define-type</code> - Type Aliases</h4>
@@ -600,7 +605,7 @@ x  ; =&gt; 20</code></pre>
 (define-type (Maybe a) (+ a null))
 (define-type (List a) (list a))</code></pre>
 <h4 id="366-checked-ascription--the-type-expr">3.6.6 Checked Ascription — <code>(the &lt;type&gt; expr)</code></h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; <type>/expr are metavariables --></p>
 <pre class="scheme"><code>(the &lt;type&gt; expr)</code></pre>
 <p>Asserts to the type checker that <code>expr</code> has type <code>&lt;type&gt;</code>. It is a <strong>trusted assertion</strong>: the checker adopts <code>&lt;type&gt;</code> as the type of the whole form and does not re-derive it from <code>expr</code>. It is a pure <strong>runtime no-op</strong> — the emitted IR is byte-identical to <code>expr</code> alone (no runtime tag check, no cost), so <code>(the &lt;type&gt; expr)</code> evaluates to exactly the same value as <code>expr</code>.</p>
 <p>Trusted does not mean unexamined. The checker still synthesizes <code>expr</code>, and if the type it finds is <strong>provably disjoint</strong> from <code>&lt;type&gt;</code> — no value inhabits both — it reports the ascription rather than adopting it. That is a compile-time diagnostic only: a warning under gradual typing, fatal under <code>--strict-types</code> (§ <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/eshkol-run.md" target="_blank" rel="noopener noreferrer"><code>--strict-types</code></a>), and in neither case does it add anything to the emitted code.</p>
@@ -612,6 +617,7 @@ x  ; =&gt; 20</code></pre>
 <li><strong>Numeric-tower ascriptions are always accepted.</strong> <code>integer</code>, <code>rational</code>, <code>real</code> and <code>complex</code> are siblings under <code>number</code> in this type graph rather than a chain, so no subtyping relation holds between them in either direction; <code>(the real 1)</code> and <code>(the float64 (+ 1 2))</code> are ordinary.</li>
 </ul>
 <p>Only a genuine contradiction is reported:</p>
+<!-- doc-example: skip fragment: `mixed-list` and `xs` are assumed bindings illustrating the ascription rules -->
 <pre class="scheme"><code>(the number (car mixed-list))   ; the checker now treats this element as number
 (the (list real) xs)
 (the real 1)                    ; fine — moving inside the numeric tower
@@ -620,6 +626,7 @@ x  ; =&gt; 20</code></pre>
 <h4 id="367-predicate-guarded-narrowing">3.6.7 Predicate-Guarded Narrowing</h4>
 <p>Inside a branch guarded by a type predicate, the checker narrows the tested value to that type. Narrowing is honored across <code>if</code> and <code>and</code>, and is <strong>cancelled</strong> at a <code>set!</code> of the narrowed variable. The narrowing predicates are:</p>
 <p><code>number?</code>, <code>integer?</code>, <code>string?</code>, <code>symbol?</code>, <code>pair?</code>, <code>null?</code>, <code>vector?</code>, <code>procedure?</code>.</p>
+<!-- doc-example: skip fragment: `x` and `p` are assumed bindings illustrating narrowing -->
 <pre class="scheme"><code>(if (number? x) (+ x 1) 0)      ; x : number in the then-branch
 (and (pair? p) (car p))         ; p : pair for (car p)</code></pre>
 <p>Additionally: <strong>sum-type annotations are honored on <code>named-let</code> parameters</strong>, and a <strong>numeric-tower join</strong> gives a recursive accumulator the least-upper-bound of the numeric types that flow into it (so an integer accumulator that later takes a rational or real value is accepted rather than rejected).</p>
@@ -634,6 +641,7 @@ x  ; =&gt; 20</code></pre>
 </ol>
 <h4 id="368-linear-types--qubit">3.6.8 Linear Types — <code>Qubit</code></h4>
 <p><code>Qubit</code> is a first-class <strong>linear</strong> type: its values must be used exactly once. A <code>define</code> or <code>lambda</code> parameter, or a <code>let</code>-family binding, may declare a linear type, and the checker enforces the use-exactly-once discipline. Both double-use (a clone) and drop are <strong>compile-time type errors</strong>: the compile exits nonzero and no artifact is written — in the default compilation mode, not only under <code>--strict-types</code>. This is what gives quantum-register operations a no-cloning guarantee at the type level rather than by convention.</p>
+<!-- doc-example: skip pseudo-code: each form is a compile-time type error by design (see the trailing comments), not a program meant to execute -->
 <pre class="scheme"><code>(define (bad-clone (q : Qubit)) (cons q q))   ; error: consumed more than once
 (define (bad-drop  (q : Qubit)) 42)           ; error: was not consumed
 (define (ok-thread (q : Qubit)) : Qubit (h (h q)))   ; fine: used exactly once</code></pre>
@@ -739,19 +747,19 @@ here (body contains a named let loop body that may run any number of times);
 use-exactly-once is NOT enforced for it</code></pre>
 <p>Refusing to rule is deliberate. Under-approximating misses a clone; over- approximating rejects a correct quantum program, and that is the failure this must not have. The note names the form that stopped the analysis, so the boundary is visible in the build log and not only here. The shapes outside the enforced set today:</p>
 <ul>
-<li><p><strong>Loops that use the binding.</strong> A named <code>let</code> or a <code>do</code> whose loop-carried region names the qubit runs an unknown number of times, so a single-path use count says nothing about it: one use in the body is one use <em>per iteration</em>. A loop that does not name the binding contributes zero uses whatever its trip count, and stays enforced. Closing the rest needs loop-carried linear accounting.</p></li>
-<li><p><strong>A <code>guard</code> whose handler names the binding.</strong> An exception can be raised at any point in the body, including after the body already consumed the resource, so the handler’s use is a second use on some paths and the first on others. Charging both would reject a correct program; charging the maximum would miss a double consumption.</p></li>
-<li><p><strong><code>call/cc</code> and <code>dynamic-wind</code>.</strong> A captured continuation can re-enter the body, which is dynamic duplication a static count cannot see.</p></li>
-<li><p><strong>Laundering through a separately defined unannotated function.</strong> Tracking is keyed by NAME, and a name is tracked only where the checker can see a linear type on it. Direct <code>let</code> aliases, alias chains, immediately applied lambdas, and <code>set!</code> moves are all followed now, and a bare reference handed to a container is rejected outright. What remains is a qubit returned from a function whose return type is unannotated:</p>
+<li><strong>Loops that use the binding.</strong> A named <code>let</code> or a <code>do</code> whose loop-carried region names the qubit runs an unknown number of times, so a single-path use count says nothing about it: one use in the body is one use <em>per iteration</em>. A loop that does not name the binding contributes zero uses whatever its trip count, and stays enforced. Closing the rest needs loop-carried linear accounting.</li>
+<li><strong>A <code>guard</code> whose handler names the binding.</strong> An exception can be raised at any point in the body, including after the body already consumed the resource, so the handler’s use is a second use on some paths and the first on others. Charging both would reject a correct program; charging the maximum would miss a double consumption.</li>
+<li><strong><code>call/cc</code> and <code>dynamic-wind</code>.</strong> A captured continuation can re-enter the body, which is dynamic duplication a static count cannot see.</li>
+<li><strong>Laundering through a separately defined unannotated function.</strong> Tracking is keyed by NAME, and a name is tracked only where the checker can see a linear type on it. Direct <code>let</code> aliases, alias chains, immediately applied lambdas, and <code>set!</code> moves are all followed now, and a bare reference handed to a container is rejected outright. What remains is a qubit returned from a function whose return type is unannotated:</li>
+</ul>
+<!-- doc-example: skip fragment: `q` is an assumed Qubit-typed binding from the surrounding discussion -->
 <pre class="scheme"><code>(define (id x) x)
 (let ((a (id q))) (cons (h a) (h a)))      ; NOT diagnosed</code></pre>
-<p>Deciding that requires the return type inferred interprocedurally. It is the same shape that defeats the ownership analyzer’s name-keyed move tracking (<code>(define alias x)</code> after a <code>move</code> compiles clean), and it is what ADR-0004’s <strong>PlaceId/FlowEnv</strong> design exists to close: tracking keyed by <em>place</em> rather than by name, so an alias is the same place whatever binder it passed through.</p></li>
-<li><p><strong>Dynamic duplication.</strong> A closure that captures a qubit once and is then invoked many times is one static use; the analysis is static, not a use-count at runtime.</p></li>
-</ul>
+<p>Deciding that requires the return type inferred interprocedurally. It is the same shape that defeats the ownership analyzer’s name-keyed move tracking (<code>(define alias x)</code> after a <code>move</code> compiles clean), and it is what ADR-0004’s <strong>PlaceId/FlowEnv</strong> design exists to close: tracking keyed by <em>place</em> rather than by name, so an alias is the same place whatever binder it passed through. - <strong>Dynamic duplication.</strong> A closure that captures a qubit once and is then invoked many times is one static use; the analysis is static, not a use-count at runtime.</p>
 <p>Closing these is tracked work (conformity-audit item a7, ADR-0004): loop-carried linear accounting, once-closures / affine closure typing, and replacing the remaining name-keyed inference with ADR-0004’s place-keyed PlaceId/FlowEnv (which closes the laundering residue for linear types and for ownership <code>move</code> alike, since both are defeated by the same aliasing shape).</p>
 <h3 id="37-module-system">3.7 Module System</h3>
 <h4 id="371-require---import-modules">3.7.1 <code>require</code> - Import Modules</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; module.name is a metavariable --></p>
 <pre class="scheme"><code>(require module.name ...)</code></pre>
 <p><strong>Module Resolution:</strong> 1. The requiring file’s own directory 2. The project root (current directory) 3. <code>-I</code> directories and <code>$ESHKOL_PATH</code> — the explicit override 4. The installed <code>lib/</code> directory: beside the running compiler first, then the system prefixes (<code>&lt;prefix&gt;/share/eshkol/lib</code>)</p>
 <p><strong>Examples:</strong></p>
@@ -759,7 +767,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 (require core.functional.compose)
 (require core.list.higher_order)</code></pre>
 <h4 id="371b-load---load-file-r7rs">3.7.1b <code>load</code> - Load File (R7RS)</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: `path/to/file.esk` is a placeholder path --></p>
 <pre class="scheme"><code>(load &quot;path/to/file.esk&quot;)</code></pre>
 <p>Alias for <code>require</code> with automatic path conversion. Slashes are converted to dots, and <code>.esk</code> suffix is stripped: - <code>(load "core/list/transform.esk")</code> → <code>(require core.list.transform)</code></p>
 <h4 id="372-provide---export-symbols">3.7.2 <code>provide</code> - Export Symbols</h4>
@@ -777,7 +785,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <pre class="scheme"><code>(import &quot;lib/utils.esk&quot;)</code></pre>
 <h3 id="38-exception-handling">3.8 Exception Handling</h3>
 <h4 id="381-guard---exception-handler">3.8.1 <code>guard</code> - Exception Handler</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; var/test1/handler1/body are metavariables --></p>
 <pre class="scheme"><code>(guard (var
         (test1 handler1...)
         (test2 handler2...)
@@ -785,16 +793,16 @@ use-exactly-once is NOT enforced for it</code></pre>
   body...)</code></pre>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(guard (e
-        ((error? e) (display &quot;Error occurred&quot;))
+        ((error-object? e) (display &quot;Error occurred&quot;))
         (else (display &quot;Unknown exception&quot;)))
   (/ 1 0))  ; Division by zero</code></pre>
 <h4 id="382-raise---raise-exception">3.8.2 <code>raise</code> - Raise Exception</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; `exception-object` is a metavariable --></p>
 <pre class="scheme"><code>(raise exception-object)</code></pre>
-<p><strong>Example:</strong></p>
+<p><strong>Example:</strong> <!-- doc-example: skip pseudo-code: demonstrates an uncaught `raise`, which terminates the program by design (nonzero exit) --></p>
 <pre class="scheme"><code>(raise (error &quot;Something went wrong&quot;))</code></pre>
 <h4 id="383-error-and-the-r7rs-condition-object-family">3.8.3 <code>error</code> and the R7RS Condition-Object Family</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; message/irritant/obj/e are metavariables --></p>
 <pre class="scheme"><code>(error message irritant ...)     ; raise an R7RS error object
 (error-object? obj)               ; #t iff obj was raised via (error ...)
 (error-object-message e)          ; the message string
@@ -807,19 +815,19 @@ use-exactly-once is NOT enforced for it</code></pre>
 (guard (e (#t (error-object? e))) (raise &quot;plain-string&quot;))  ; =&gt; #f</code></pre>
 <h3 id="39-multiple-return-values">3.9 Multiple Return Values</h3>
 <h4 id="391-values---return-multiple-values">3.9.1 <code>values</code> - Return Multiple Values</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; expr1/expr2 are metavariables --></p>
 <pre class="scheme"><code>(values expr1 expr2 ...)</code></pre>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(values 1 2 3)  ; Returns 3 values</code></pre>
 <h4 id="392-call-with-values---consume-multiple-values">3.9.2 <code>call-with-values</code> - Consume Multiple Values</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; `producer`/`consumer` are metavariables --></p>
 <pre class="scheme"><code>(call-with-values producer consumer)</code></pre>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(call-with-values
   (lambda () (values 1 2))
   +)  ; =&gt; 3</code></pre>
 <h4 id="393-let-values---bind-multiple-values">3.9.3 <code>let-values</code> - Bind Multiple Values</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; var1/producer1/body are metavariables --></p>
 <pre class="scheme"><code>(let-values (((var1 var2 ...) producer1)
              ((var3 var4 ...) producer2)
              ...)
@@ -828,12 +836,12 @@ use-exactly-once is NOT enforced for it</code></pre>
 <pre class="scheme"><code>(let-values (((x y) (values 1 2)))
   (+ x y))  ; =&gt; 3</code></pre>
 <h4 id="394-let-values---sequential-multiple-value-bindings">3.9.4 <code>let*-values</code> - Sequential Multiple Value Bindings</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; vars/producer/body are metavariables --></p>
 <pre class="scheme"><code>(let*-values (((vars...) producer) ...)
   body...)</code></pre>
 <h3 id="310-macros">3.10 Macros</h3>
 <h4 id="3101-define-syntax---hygienic-macros">3.10.1 <code>define-syntax</code> - Hygienic Macros</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; name/literal1/pattern1/template1 are metavariables --></p>
 <pre class="scheme"><code>(define-syntax name
   (syntax-rules (literal1 literal2 ...)
     ((pattern1) template1)
@@ -853,7 +861,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 (my-flatten (1 2) (3 4 5))  ; =&gt; (1 2 3 4 5)</code></pre>
 <h3 id="311-external-ffi">3.11 External FFI</h3>
 <h4 id="3111-extern---declare-external-function">3.11.1 <code>extern</code> - Declare External Function</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; return-type/function-name/param-type are metavariables --></p>
 <pre class="scheme"><code>(extern return-type function-name param-type...)
 (extern return-type function-name :real c-function-name param-type...)</code></pre>
 <p><strong>Example:</strong></p>
@@ -867,12 +875,13 @@ use-exactly-once is NOT enforced for it</code></pre>
 <h3 id="41-arithmetic-operators">4.1 Arithmetic Operators</h3>
 <p>All arithmetic operators are polymorphic (work on integers, floats, dual numbers, AD nodes, and tensors).</p>
 <h4 id="411----addition">4.1.1 <code>+</code> - Addition</h4>
-<p><strong>Signatures:</strong></p>
+<p><strong>Signatures:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; num/num1/num2 are metavariables --></p>
 <pre class="scheme"><code>(+ num)           ; Unary plus (identity)
 (+ num1 num2 ...) ; Variadic addition</code></pre>
 <p><strong>Type Promotion:</strong> - <code>int + int</code> =&gt; <code>int</code> - <code>int + float</code> =&gt; <code>float</code> - <code>float + float</code> =&gt; <code>float</code></p>
-<p><strong>Tensor Support:</strong> Element-wise for vectors/tensors. The element-wise contract is BINARY: both operands must be vectors/tensors of matching shape. A vector or tensor against a SCALAR is a type error, in either operand order — scalar broadcast is a separate, explicitly named operator (<code>tensor-scale</code>), not an overload of the arithmetic operators. A vector and a rank-1 tensor are two spellings of one value, so a mixed pair is the element-wise result.</p>
+<p><strong>Tensor Support:</strong> Element-wise for vectors/tensors. The element-wise contract is BINARY: both operands must be vectors/tensors of matching shape. A vector or tensor against a SCALAR is a type error, in either operand order — scalar broadcast is a separate, explicitly named operator (<code>tensor-scale</code>), not an overload of the arithmetic operators. A vector and a rank-1 tensor are two spellings of one value, so a mixed pair is the element-wise result. Element-wise results are computed in f64, as tensor arithmetic is, so the elements of <code>(* (vector 1 2) (vector 3 4))</code> are the inexact 3.0 and 8.0: the result is <code>equal?</code> to <code>(vector 3.0 8.0)</code>, not to <code>(vector 3 8)</code>.</p>
 <p>Shapes broadcast NumPy-style, so “matching shape” means broadcast-compatible rather than identical; a pair that cannot be broadcast is a catchable error naming both shapes.</p>
+<!-- doc-example: skip pseudo-code: demonstrates both successful broadcasts and the intentional errors in the trailing comments; the error lines terminate the program before later lines run -->
 <pre class="scheme"><code>(* #(1 2) #(3 4))         ; =&gt; #(3 8)
 (* #(2.0) #(1.0 2.0 3.0)) ; =&gt; #(2 4 6)      (a dimension of 1 broadcasts)
 (* #(1 2) 2)              ; ERROR: Type error in tensor-mul: expected tensor, got integer
@@ -885,7 +894,7 @@ use-exactly-once is NOT enforced for it</code></pre>
                ;          without a decimal point — see 3.1 Numeric Tower)
 (+ 1 2 3 4 5)  ; =&gt; 15</code></pre>
 <h4 id="412-----subtractionnegation">4.1.2 <code>-</code> - Subtraction/Negation</h4>
-<p><strong>Signatures:</strong></p>
+<p><strong>Signatures:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; num/num1/num2 are metavariables --></p>
 <pre class="scheme"><code>(- num)           ; Negation
 (- num1 num2 ...) ; Subtraction (left-associative)</code></pre>
 <p><strong>Examples:</strong></p>
@@ -893,13 +902,13 @@ use-exactly-once is NOT enforced for it</code></pre>
 (- 10 3)   ; =&gt; 7
 (- 10 3 2) ; =&gt; 5</code></pre>
 <h4 id="413----multiplication">4.1.3 <code>*</code> - Multiplication</h4>
-<p><strong>Signatures:</strong></p>
+<p><strong>Signatures:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; num1/num2 are metavariables --></p>
 <pre class="scheme"><code>(* num1 num2 ...) ; Variadic multiplication</code></pre>
 <p><strong>Examples:</strong></p>
 <pre class="scheme"><code>(* 3 4)     ; =&gt; 12
 (* 2 3 4)   ; =&gt; 24</code></pre>
 <h4 id="414----division">4.1.4 <code>/</code> - Division</h4>
-<p><strong>Signatures:</strong></p>
+<p><strong>Signatures:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; num1/num2 are metavariables --></p>
 <pre class="scheme"><code>(/ num1 num2 ...) ; Left-associative division</code></pre>
 <p><strong>Examples:</strong></p>
 <pre class="scheme"><code>(/ 10 2)    ; =&gt; 5
@@ -924,7 +933,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <p><strong>Signature:</strong> <code>(expt base exponent)</code></p>
 <p><strong>Example:</strong> <code>(expt 2 10)</code> =&gt; <code>1024</code></p>
 <h4 id="4110-min--max---minimummaximum">4.1.10 <code>min</code> / <code>max</code> - Minimum/Maximum</h4>
-<p><strong>Signatures:</strong></p>
+<p><strong>Signatures:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; num1/num2 are metavariables --></p>
 <pre class="scheme"><code>(min num1 num2 ...)
 (max num1 num2 ...)</code></pre>
 <p><strong>Examples:</strong></p>
@@ -1008,7 +1017,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <p><strong>Use for:</strong> Numbers, characters, symbols</p>
 <h4 id="443-equal---structural-equality">4.4.3 <code>equal?</code> - Structural Equality</h4>
 <p><strong>Signature:</strong> <code>(equal? obj1 obj2)</code></p>
-<p><strong>Semantics:</strong> Deep recursive comparison</p>
+<p><strong>Semantics:</strong> Deep recursive comparison; numbers are compared with <code>eqv?</code>, so an exact and an inexact number are never <code>equal?</code> (<code>(equal? 6 6.0)</code> is <code>#f</code>; use <code>=</code> for numeric equality)</p>
 <p><strong>Use for:</strong> Lists, strings, compound structures</p>
 <p><strong>Implementation:</strong> Uses <code>eshkol_deep_equal()</code> C runtime function</p>
 <p><strong>Example:</strong></p>
@@ -1061,7 +1070,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 </ul>
 <h3 id="46-higher-order-functions">4.6 Higher-Order Functions</h3>
 <h4 id="461-map---apply-to-each-element">4.6.1 <code>map</code> - Apply to Each Element</h4>
-<p><strong>Signatures:</strong></p>
+<p><strong>Signatures:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; proc/list are metavariables --></p>
 <pre class="scheme"><code>(map proc list)              ; Single list
 (map proc list1 list2 ...)   ; Multiple lists (parallel)</code></pre>
 <p><strong>Examples:</strong></p>
@@ -1297,7 +1306,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <li><p><code>(current-input-port)</code>, <code>(current-output-port)</code>, <code>(current-error-port)</code> - Parameter objects (R7RS 6.13.1) holding the current standard ports; <code>parameterize</code> rebinds them, and every read or write that names no port uses the port they hold, on native and the VM:</p>
 <pre class="scheme"><code>(define p (open-output-string))
 (parameterize ((current-output-port p)) (display &quot;hi&quot;) (newline))
-(get-output-string p)   ; =&gt; &quot;hi\n&quot;</code></pre></li>
+(write (get-output-string p))   ; =&gt; &quot;hi\n&quot;</code></pre></li>
 </ul>
 <h4 id="4134-file-operations">4.13.4 File Operations</h4>
 <ul>
@@ -1563,13 +1572,13 @@ use-exactly-once is NOT enforced for it</code></pre>
 </ul>
 <h3 id="62-oalr-ownership-aware-lexical-regions">6.2 OALR (Ownership-Aware Lexical Regions)</h3>
 <h4 id="621-with-region---lexical-memory-regions">6.2.1 <code>with-region</code> - Lexical Memory Regions</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; body/name/size-hint are metavariables --></p>
 <pre class="scheme"><code>(with-region body...)
 (with-region &#39;name body...)
 (with-region (&#39;name size-hint) body...)</code></pre>
 <p><strong>Semantics:</strong> - Creates a dedicated arena for the body - Memory freed when region exits, and the body result is deep-copied out so it survives (<strong>native engine</strong>) - Supports nesting (stack of regions)</p>
 <p><strong>Substrate note.</strong> Both engines implement these semantics, by different mechanisms. On the <strong>bytecode VM</strong> all three spellings evaluate the body identically and return the same value — the form is value- and effect-transparent — <strong>and reclaim</strong>, through the Stage-1 region evacuator (<code>lib/backend/vm_region_evac.c</code>): measured flat at 26 MB across 1 000/4 000/16 000 iterations against 793 MB with the evacuator disabled and 704 MB for an unwrapped control (commit <code>487c2a62</code>, #461). The VM sweeps at arena-block granularity rather than copying the escaping subgraph, so an escaping value with an out-of-line payload retains a little more there. Outside a region the VM heap still grows monotonically, and says so when the growth crosses a heap budget. The user-reachable <code>region-open</code> / <code>region-close</code> handles remain bookkeeping-only on the VM (Stage-2). See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/memory-model.md#which-engine-reclaims" target="_blank" rel="noopener noreferrer">memory model</a>.</p>
-<p><strong>Example:</strong></p>
+<p><strong>Example:</strong> <!-- doc-example: skip fragment: `process` is an assumed function from the surrounding discussion --></p>
 <pre class="scheme"><code>(with-region &#39;temp
   (define data (iota 1000))
   (process data))
@@ -1577,7 +1586,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <h4 id="622-owned---mark-ownership">6.2.2 <code>owned</code> - Mark Ownership</h4>
 <p><strong>Syntax:</strong> <code>(owned expr)</code></p>
 <p><strong>Semantics:</strong> Value must be consumed before scope exit</p>
-<p><strong>Example:</strong></p>
+<p><strong>Example:</strong> <!-- doc-example: skip fragment: `allocate-something` and `use-and-consume` are assumed functions --></p>
 <pre class="scheme"><code>(define resource (owned (allocate-something)))
 (use-and-consume resource)  ; Must use exactly once</code></pre>
 <h4 id="623-move---transfer-ownership">6.2.3 <code>move</code> - Transfer Ownership</h4>
@@ -1589,7 +1598,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 (define y (move x))
 ; x is now invalid, y owns the list</code></pre>
 <h4 id="624-borrow---temporary-access">6.2.4 <code>borrow</code> - Temporary Access</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; value/body are metavariables --></p>
 <pre class="scheme"><code>(borrow value body...)</code></pre>
 <p><strong>Semantics:</strong> Temporary read-only access during body</p>
 <p><strong>Example:</strong></p>
@@ -1792,7 +1801,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <li><code>(a, a') / (b, b')</code> = <code>(a/b, (a'*b - a*b')/b²)</code></li>
 </ul>
 <h4 id="813-derivative---compute-derivative">8.1.3 <code>derivative</code> - Compute Derivative</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; `function`/`point` are metavariables --></p>
 <pre class="scheme"><code>(derivative function point)       ; Evaluate at point
 (derivative function)             ; Return derivative function</code></pre>
 <p><strong>Examples:</strong></p>
@@ -1817,7 +1826,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <li><strong>Tape Nesting:</strong> The reverse-mode tape stack has 32 slots. Forward differentiation passes use recursive Taylor level carriers and can nest to arbitrary depth, subject to available memory. See <a href="/docs#page=adr_0027_recursive_taylor" data-url="/content/adr_0027_recursive_taylor.html">ADR-0027</a>.</li>
 </ul>
 <h4 id="823-gradient---compute-gradient">8.2.3 <code>gradient</code> - Compute Gradient</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; `function`/`point` are metavariables --></p>
 <pre class="scheme"><code>(gradient function point)         ; Scalar field: ℝⁿ → ℝ
 (gradient function)               ; Return gradient function</code></pre>
 <p><strong>Returns:</strong> Vector of partial derivatives</p>
@@ -1838,8 +1847,8 @@ use-exactly-once is NOT enforced for it</code></pre>
   (vector (* (vref v 0) (cos (vref v 1)))
           (* (vref v 0) (sin (vref v 1)))))
 
-(jacobian polar-to-cartesian (vector 1.0 0.0))
-; =&gt; Jacobian at (r=1, θ=0)</code></pre>
+(display (jacobian polar-to-cartesian (vector 1.0 0.0)))
+; =&gt; #((1 0) (0 1))   (the Jacobian at r=1, θ=0)</code></pre>
 <h4 id="832-hessian---hessian-matrix">8.3.2 <code>hessian</code> - Hessian Matrix</h4>
 <p><strong>Syntax:</strong> <code>(hessian function point)</code></p>
 <p><strong>Domain:</strong> Scalar field ℝⁿ → ℝ</p>
@@ -1901,7 +1910,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 <li><code>__current_ad_tape</code> - Current tape for graph recording</li>
 </ul>
 <h4 id="nested-gradients">Nested Gradients</h4>
-<p>Nested differentiation uses recursive Taylor levels, with depth limited by available memory. The reverse-mode tape stack has 32 slots:</p>
+<p>Nested differentiation uses recursive Taylor levels, with depth limited by available memory. The reverse-mode tape stack has 32 slots. Nested <code>gradient</code> over scalar inner functions runs today. Planned for v1.4: nested <code>gradient</code> over a vector-valued inner closure, the form shown below. <!-- doc-example: skip pseudo-code: planned capability for v1.4; nested gradient over a vector-valued inner closure --></p>
 <pre class="scheme"><code>(gradient 
   (lambda (x)
     (gradient 
@@ -1912,24 +1921,25 @@ use-exactly-once is NOT enforced for it</code></pre>
 <h3 id="85-arbitrary-order-ad-taylor-towers">8.5 Arbitrary-Order AD: Taylor Towers</h3>
 <p>A second, orthogonal AD engine computes every derivative up to an arbitrary order <code>k</code> in a single pass. Full detail: the <a href="/docs#page=guide_automatic_differentiation" data-url="/content/guide_automatic_differentiation.html">Automatic Differentiation guide</a> and <code>docs/design/AD_TAYLOR_TOWER.md</code>.</p>
 <h4 id="851-taylor--derivative-n--core-tower-builtins">8.5.1 <code>taylor</code> / <code>derivative-n</code> — Core Tower Builtins</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; `function`/`point`/`k` are metavariables --></p>
 <pre class="scheme"><code>(taylor function point k)          ; List of k+1 Taylor coefficients c[0..k]
 (derivative-n function point k)    ; Scalar: the k-th derivative f^(k)(point)</code></pre>
 <p>Coefficient <code>c[n] = f^(n)(point)/n!</code>. Stored on a new heap subtype (<code>HEAP_SUBTYPE_TAYLOR</code>). When <code>point</code> is exact (integer/rational) and <code>function</code> uses only exact-preserving arithmetic (<code>+ - * /</code>, non-negative integer <code>expt</code>), the coefficients are returned as exact bignum/rational values instead of <code>double</code> (automatic demotion to <code>double</code> on overflow or on the first transcendental call). When <code>k</code> is a compile-time literal, the tower may be compiled with zero heap allocation (compile-time-K monomorphization).</p>
 <p><strong>Example:</strong></p>
-<pre class="scheme"><code>(taylor (lambda (x) (exp x)) 0.5 4)
-; =&gt; (1.64872 1.64872 0.824361 0.274787 0.0686967)
+<pre class="scheme"><code>(display (taylor (lambda (x) (exp x)) 0.5 4))
+; =&gt; (1.6487212707001282 1.6487212707001282 0.8243606353500641 0.27478687845002137 0.06869671961250534)
+;    (approximately 1.64872, 1.64872, 0.824361, 0.274787, 0.0686967)
 
 (derivative-n (lambda (y) (* y y y)) 3.0 1)  ; =&gt; 27  (f&#39;(x) = 3x^2 at x=3)</code></pre>
 <h4 id="852-coreadguw--arbitrary-order-multivariate-mixed-partials">8.5.2 <code>core.ad.guw</code> — Arbitrary-Order Multivariate Mixed Partials</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape following the `require`; `function`/`point`/etc. are metavariables --></p>
 <pre class="scheme"><code>(require core.ad.guw)
 (taylor-propagate function point direction k)  ; Taylor coeffs of g(t) = f(point + t*direction)
 (mixed-partial function point multi-index)     ; scalar D^beta f(point)
 (gradient-n function point order)              ; order&gt;=3 symmetric derivative tensor</code></pre>
 <p><code>multi-index</code> is a list of variable indices with repetition, e.g. <code>(0 0 1)</code> denotes <code>d^3f/dx0^2 dx1</code>. Implemented via Griewank-Utke-Walther (GUW) directional propagation of univariate towers along principal-lattice direction vectors. <code>order</code> &lt;= 2 continues to use the existing <code>gradient</code>/<code>hessian</code> jet path.</p>
 <h4 id="853-coreadtaylor_models--validated-ad">8.5.3 <code>core.ad.taylor_models</code> — Validated AD</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape following the `require`; `function`/`center`/etc. are metavariables --></p>
 <pre class="scheme"><code>(require core.ad.taylor_models)
 (taylor-model function center radius k)  ; polynomial + interval remainder
 (tm-range tm)                            ; guaranteed range enclosure (lo . hi)
@@ -1938,7 +1948,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 (tm-order tm) (tm-coeffs tm) (tm-center tm) (tm-radius tm) (tm-remainder tm) (tm-domain tm)</code></pre>
 <p>Pairs a Taylor polynomial with a rigorous interval-remainder bound so <code>tm-range</code>/<code>tm-eval</code> are provable enclosures, not point estimates.</p>
 <h4 id="854-coreadsparse_guw--sparse-high-order-tensors">8.5.4 <code>core.ad.sparse_guw</code> — Sparse High-Order Tensors</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape following the `require`; `function`/`point`/etc. are metavariables --></p>
 <pre class="scheme"><code>(require core.ad.sparse_guw)
 (sparse-hessian function point)                        ; auto-probed sparsity structure
 (sparse-hessian-pat function point pattern)            ; explicit hyperedge pattern
@@ -1949,7 +1959,7 @@ use-exactly-once is NOT enforced for it</code></pre>
 (sparse-mixed-partials-ref sp multi-index) (sparse-mixed-partials-entries sp)</code></pre>
 <p>Recovers a sparse Hessian/mixed-partial tensor via greedy distance-2 (star) graph coloring plus one reverse-over-Taylor Hessian-vector product per color, so cost scales with variable-interaction bandwidth rather than dimension. <code>sparse-mixed-partials</code> is order-&gt;=3 only.</p>
 <h4 id="855-coreadtaylor_numerics--tower-based-user-numerics">8.5.5 <code>core.ad.taylor_numerics</code> — Tower-Based User Numerics</h4>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape following the `require`; `coefficients`/`function`/etc. are metavariables --></p>
 <pre class="scheme"><code>(require core.ad.taylor_numerics)
 (taylor-eval coefficients dt)                    ; Horner-evaluate a taylor coefficient list at offset dt
 (taylor-ode-solve function y0 t0 t1 k n)         ; order-k, n-step fixed-step scalar IVP solver
@@ -2076,7 +2086,7 @@ LLVM IR → Object File (.o) → Executable</code></pre>
 <li><code>:quit</code>, <code>:q</code> - Exit REPL</li>
 <li><code>:clear</code> - Clear screen</li>
 <li><code>:env</code>, <code>:e</code> - Show defined symbols</li>
-<li><code>:type &lt;expr&gt;</code> - Show type of expression</li>
+<li><code>:type &lt;expr&gt;</code> - Show the type the HoTT type checker infers for the expression</li>
 <li><code>:doc &lt;name&gt;</code> - Show function documentation</li>
 <li><code>:ast &lt;expr&gt;</code> - Show AST structure</li>
 <li><code>:time &lt;expr&gt;</code> - Time execution</li>
@@ -2210,7 +2220,9 @@ LLVM IR → Object File (.o) → Executable</code></pre>
   (define (fill!) (vector-set! v 0 1.0) (vector-set! v 1 2.0))
   (fill!)                            ; runs here
   (define t (reshape v 1 2))         ; evaluated HERE, so it sees the filled v
-  (tensor-data t))                   ; =&gt; #(1 2)</code></pre>
+  (tensor-data t))
+
+(display (outer))                    ; =&gt; #(1 2)</code></pre>
 <p>Reading a value define’s variable <strong>before</strong> its source position yields the unset slot rather than the eventual value; as in Racket and R6RS, that is a program error, not a supported forward reference.</p>
 <hr />
 <h2 id="13-runtime-architecture">13. Runtime Architecture</h2>
@@ -2401,11 +2413,12 @@ result_imag = (b - a * r) / denom</code></pre>
 <p><strong>Type Identification:</strong> - <strong>Type tag:</strong> <code>ESHKOL_VALUE_CALLABLE</code> (9) - <strong>Callable subtype:</strong> <code>CALLABLE_SUBTYPE_CONTINUATION</code> (4)</p>
 <h4 id="1612-invocation-semantics">16.1.2 Invocation Semantics</h4>
 <p>Invoking a captured continuation <code>k</code> with value <code>v</code>: 1. Abandons the current continuation. 2. Restores the captured continuation’s dynamic extent. 3. Returns <code>v</code> as the result of the original <code>call/cc</code> expression.</p>
-<p><strong>Multi-shot:</strong> A captured continuation may be invoked any number of times, from any dynamic extent, including after the procedure that captured it has returned. This holds on the native LLVM backend (both the <code>-r</code> JIT and the AOT compiler) and on the bytecode VM. Native gives a continuation that may outlive its frame a durable copy of the C stack it needs and restores those bytes to their original addresses before jumping; the VM snapshots its own operand stack and call frames, excluding the top-level binding slots, which are the store rather than the control state. Escape-only continuations — early return and exception-style unwinding — are recognised at compile time and keep the original zero-overhead <code>setjmp</code>/<code>longjmp</code> path, so the common case costs nothing. See <code>docs/reference/language/continuations.md</code> for the per-engine account, the ownership rule for continuations captured inside a region, and the two remaining limits.</p>
+<p><strong>Multi-shot:</strong> A captured continuation may be invoked any number of times, from any dynamic extent, including after the procedure that captured it has returned. This holds on the native LLVM backend (both the <code>-r</code> JIT and the AOT compiler) and on the bytecode VM. Native gives a continuation that may outlive its frame a durable copy of the C stack it needs and restores those bytes to their original addresses before jumping; the VM snapshots its own operand stack and call frames, excluding the top-level binding slots, which are the store rather than the control state. Escape-only continuations — early return and exception-style unwinding — are recognised at compile time and keep the original zero-overhead <code>setjmp</code>/<code>longjmp</code> path, so the common case costs nothing. In a program file the continuation of a top-level form includes every later top-level form, so re-invoking it runs those forms again. In the interactive REPL, where each top-level form is its own evaluation, a continuation is resumed only while the evaluation that captured it is running; invoking one saved by an earlier form raises a catchable condition. See <code>docs/reference/language/continuations.md</code> for the per-engine account, the ownership rule for continuations captured inside a region, and the two remaining limits.</p>
 <h4 id="1613-interaction-with-dynamic-wind">16.1.3 Interaction with Dynamic Wind</h4>
 <p>When a continuation is invoked, <code>dynamic-wind</code> before/after thunks along the path from the current dynamic extent to the captured extent are called in the correct order (see 16.2).</p>
 <h3 id="162-dynamic-wind">16.2 <code>dynamic-wind</code></h3>
 <h4 id="1621-contract">16.2.1 Contract</h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; `before`/`thunk`/`after` are metavariables -->
 <pre class="scheme"><code>(dynamic-wind before thunk after)</code></pre>
 <p><strong>Semantics:</strong> 1. <code>before</code> is called (with zero arguments) upon entry to the dynamic extent of <code>thunk</code>. 2. <code>thunk</code> is called (with zero arguments); its result is the result of the <code>dynamic-wind</code> expression. 3. <code>after</code> is called (with zero arguments) upon exit from the dynamic extent, whether by normal return or continuation invocation.</p>
 <p><strong>Invariant:</strong> For any dynamic-wind frame, <code>before</code> and <code>after</code> are called in matched pairs. If the extent is exited N times (via continuations), <code>after</code> is called N times.</p>
@@ -2418,6 +2431,7 @@ result_imag = (b - a * r) / denom</code></pre>
 <p><strong>Compliance:</strong> R7RS 6.10. The implementation maintains a linked list of active dynamic-wind frames on the C stack, traversed during continuation invocation.</p>
 <h3 id="163-guard--raise">16.3 <code>guard</code> / <code>raise</code></h3>
 <h4 id="1631-exception-handling">16.3.1 Exception Handling</h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; var/test1/handler1/body are metavariables -->
 <pre class="scheme"><code>(guard (var
         (test1 handler1 ...)
         (test2 handler2 ...)
@@ -2426,7 +2440,7 @@ result_imag = (b - a * r) / denom</code></pre>
 <p><strong>Semantics (R7RS 6.11):</strong> 1. A continuation is captured at the <code>guard</code> form. 2. <code>body</code> is evaluated. 3. If <code>(raise obj)</code> is called during evaluation of <code>body</code>, execution transfers to the <code>guard</code> handler. 4. <code>var</code> is bound to <code>obj</code>. 5. Cond clauses <code>(test handler ...)</code> are evaluated in the dynamic environment of the <code>guard</code> form (not the <code>raise</code> site). 6. If a test succeeds, its handler expressions are evaluated and the result is returned from the <code>guard</code> form. 7. If no test succeeds and there is no <code>else</code> clause, the exception is re-raised to the next enclosing handler.</p>
 <h4 id="1632-raise-semantics">16.3.2 <code>raise</code> Semantics</h4>
 <p><code>(raise obj)</code> invokes the innermost exception handler established by <code>guard</code>. If no handler is active, the program terminates with an unhandled exception diagnostic.</p>
-<p><code>(raise-continuable obj)</code> is not currently supported; all raises are non-continuable.</p>
+<p><code>(raise-continuable obj)</code> (R7RS 6.11) calls the procedure of the innermost <code>with-exception-handler</code> with <code>obj</code>, in the dynamic environment of the <code>raise-continuable</code> call (no unwinding; <code>dynamic-wind</code> after-thunks have not run), with the handlers outside that one installed, and returns the handler’s value. When the innermost handler is a <code>guard</code>, or there is none, <code>obj</code> is raised exactly as <code>raise</code> raises it. JIT, AOT and the bytecode VM agree.</p>
 <h4 id="1633-implementation">16.3.3 Implementation</h4>
 <p>Exception handling uses the C <code>setjmp</code>/<code>longjmp</code> mechanism: - <code>guard</code> calls <code>setjmp</code> to establish a return point. - <code>raise</code> calls <code>longjmp</code> to transfer control. - A global <code>g_current_exception</code> pointer holds the raised object. - Handler stack is maintained for nested <code>guard</code> forms.</p>
 <hr />
@@ -2590,14 +2604,17 @@ result_imag = (b - a * r) / denom</code></pre>
 <p><strong>Invariant:</strong> Parallel execution is observationally equivalent to sequential execution for pure functions. Side effects within parallel tasks are unordered.</p>
 <h3 id="183-future-semantics">18.3 Future Semantics</h3>
 <h4 id="1831-future">18.3.1 <code>future</code></h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; thunk is a metavariable -->
 <pre class="scheme"><code>(future thunk)</code></pre>
 <p>Evaluates <code>thunk</code> (a zero-argument closure) eagerly in the thread pool. Returns a future object immediately.</p>
 <p><strong>Type:</strong> Future objects are opaque heap-allocated values. The internal structure contains a mutex, condition variable, result slot, and completion flag.</p>
 <h4 id="1832-force">18.3.2 <code>force</code></h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; f is a metavariable -->
 <pre class="scheme"><code>(force f)</code></pre>
 <p>Blocks the calling thread until the future <code>f</code> has completed, then returns its result value. If <code>f</code> has already completed, returns immediately.</p>
 <p><strong>Invariant:</strong> <code>force</code> is idempotent. Multiple calls to <code>(force f)</code> return the same value.</p>
 <h4 id="1833-future-ready">18.3.3 <code>future-ready?</code></h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; f is a metavariable -->
 <pre class="scheme"><code>(future-ready? f)</code></pre>
 <p>Non-blocking predicate. Returns <code>#t</code> if the future has completed, <code>#f</code> otherwise. Does not synchronize or block.</p>
 <hr />
@@ -2730,6 +2747,7 @@ x[j] = x[j] + t</code></pre></li>
 <p><strong>Complexity:</strong> O(N log N) for N-point transform.</p>
 <p><strong>Constraint:</strong> Input length <code>N</code> must be a power of 2. Non-power-of-2 inputs should be zero-padded by the caller.</p>
 <h4 id="2012-interface">20.1.2 Interface</h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; `signal`/`spectrum` are metavariables -->
 <pre class="scheme"><code>(fft signal)          ; Forward FFT, returns complex tensor
 (ifft spectrum)       ; Inverse FFT, returns complex tensor</code></pre>
 <p>The result is a tensor of complex numbers (pairs of doubles: real and imaginary parts interleaved).</p>
@@ -2746,6 +2764,7 @@ x[j] = x[j] + t</code></pre></li>
 <pre><code>w(n) = I_0(beta * sqrt(1 - ((2n/(N-1)) - 1)^2)) / I_0(beta)</code></pre>
 <p>where <code>I_0</code> is the zeroth-order modified Bessel function of the first kind, and <code>beta</code> controls the trade-off between main-lobe width and side-lobe attenuation.</p>
 <h4 id="2022-interface">20.2.2 Interface</h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; `n`/`signal`/`window` are metavariables -->
 <pre class="scheme"><code>(hamming-window n)          ; Returns N-element tensor
 (hann-window n)             ; Returns N-element tensor
 (blackman-window n)         ; Returns N-element tensor
@@ -2768,6 +2787,7 @@ x[j] = x[j] + t</code></pre></li>
 <pre><code>H(z) = prod_k [ (b0_k + b1_k*z^-1 + b2_k*z^-2) / (1 + a1_k*z^-1 + a2_k*z^-2) ]</code></pre>
 <p>Each section is implemented as a Direct Form II transposed structure to minimize coefficient sensitivity.</p>
 <h4 id="2034-interface">20.3.4 Interface</h4>
+<!-- doc-example: skip pseudo-code: a grammar shape; `order`/`cutoff-freq`/etc. are metavariables -->
 <pre class="scheme"><code>(butterworth-lowpass order cutoff-freq sample-rate)  ; Returns filter coefficients
 (butterworth-highpass order cutoff-freq sample-rate)
 (apply-filter coefficients signal)                   ; Apply IIR filter to signal</code></pre>
@@ -2788,6 +2808,7 @@ x[j] = x[j] + t</code></pre></li>
 <p><strong>Complexity:</strong> O(N log N) where <code>N</code> is the padded length.</p>
 <h4 id="2043-automatic-selection">20.4.3 Automatic Selection</h4>
 <p>The convolution function automatically selects between direct and FFT-based methods:</p>
+<!-- doc-example: skip pseudo-code: a grammar shape; `signal`/`filter` are metavariables -->
 <pre class="scheme"><code>(convolve signal filter)  ; Automatic method selection</code></pre>
 <p><strong>Heuristic:</strong> If <code>m &gt; 64</code> or <code>n * m &gt; 4 * (n + m) * log2(n + m)</code>, FFT-based convolution is used. Otherwise, direct convolution is preferred.</p>
 <hr />
@@ -3037,7 +3058,7 @@ tests/                   # Test suites
 <h3 id="284-weight-matrix-transformer">28.4 Weight Matrix Transformer</h3>
 <p>Programs encoded as neural network weights (<code>weight_matrices.c</code>): - Architecture: d_model=256, 6 layers, FFN_DIM=2304, 12.22M parameters - 82 canonical opcodes in weights; <code>OP_NATIVE_CALL</code> remains the external dispatch boundary - 3-way verification: reference interpreter = simulated transformer = matrix-based forward pass - Exports QLMW binary format for qLLM loading</p>
 <h3 id="286-parameterize-r7rs">28.6 <code>parameterize</code> (R7RS)</h3>
-<p><strong>Syntax:</strong></p>
+<p><strong>Syntax:</strong> <!-- doc-example: skip pseudo-code: a grammar shape; param/value/body are metavariables --></p>
 <pre class="scheme"><code>(parameterize ((param value) ...)
   body ...)</code></pre>
 <p>Dynamic binding of parameter objects. Parameters created with <code>make-parameter</code> are thread-local and restored on scope exit.</p>
@@ -3048,4 +3069,4 @@ tests/                   # Test suites
 <hr />
 <h2 id="conclusion">Conclusion</h2>
 <p>This document provides a <strong>complete</strong> specification of the Eshkol programming language, documenting <strong>every</strong> feature, function, operator, and capability found in the implementation.</p>
-<p><strong>Total Coverage:</strong> (counts from <code>tests/coverage/language_surface.json</code> and <code>tests/coverage/coverage_policy.json</code>, the machine sources the coverage gate reads) - All 116 special forms and 113 parser AST operations - All 1,056 built-in functions (1,115 declared constructs in total) - 743 VM native-call IDs - 72-opcode bytecode VM with ESKB binary format - Complete type system (15+ types with 18+ heap subtypes) - Full memory management system (OALR arenas) - Entire standard library (40 modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>) - Dual backend architecture (LLVM + bytecode VM) - Weight matrix transformer (3-way verified) - Module system with <code>require</code>, <code>provide</code>, <code>load</code> - REPL JIT with precompiled stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24; major pinned per build, default 21) - Runtime architecture - Exact arithmetic (bignum, rational, numeric tower) - Complex number type with overflow-safe division - First-class continuations, dynamic-wind, and exception handling - Consciousness engine (logic programming, active inference, global workspace) - Parallel execution model (thread pool, futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal processing (FFT, windows, filters, convolution)</p>
+<p><strong>Total Coverage:</strong> (counts from <code>tests/coverage/language_surface.json</code> and <code>tests/coverage/coverage_policy.json</code>, the machine sources the coverage gate reads) - All 116 special forms and 113 parser AST operations - All 1,058 built-in functions (1,115 declared constructs in total) - 743 VM native-call IDs - 72-opcode bytecode VM with ESKB binary format - Complete type system (15+ types with 18+ heap subtypes) - Full memory management system (OALR arenas) - Entire standard library (40 modules) - Complete autodiff system (forward, reverse, symbolic, 83 AD node types declared in <code>inc/eshkol/ad_node_registry.def</code>) - Dual backend architecture (LLVM + bytecode VM) - Weight matrix transformer (3-way verified) - Module system with <code>require</code>, <code>provide</code>, <code>load</code> - REPL JIT with precompiled stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 18-24; major pinned per build, default 21) - Runtime architecture - Exact arithmetic (bignum, rational, numeric tower) - Complex number type with overflow-safe division - First-class continuations, dynamic-wind, and exception handling - Consciousness engine (logic programming, active inference, global workspace) - Parallel execution model (thread pool, futures, memory safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal processing (FFT, windows, filters, convolution)</p>

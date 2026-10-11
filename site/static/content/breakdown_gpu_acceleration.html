@@ -961,7 +961,7 @@ target = min(target, 4096);</code></pre>
 <hr />
 <h2 id="12-cuda-backend-status">12. CUDA Backend Status</h2>
 <h3 id="implementation-scope">Implementation Scope</h3>
-<p>The CUDA backend (<code>lib/backend/gpu/gpu_memory_cuda.cpp</code>, 1,577 lines) is a fully functional GPU acceleration path for NVIDIA hardware. Unlike the Metal backend which requires SF64 software emulation, CUDA provides native f64 hardware, so no precision emulation is needed.</p>
+<p>The CUDA backend (<code>lib/backend/gpu/gpu_memory_cuda.cpp</code>, 1,682 lines) is a fully functional GPU acceleration path for NVIDIA hardware. Unlike the Metal backend which requires SF64 software emulation, CUDA provides native f64 hardware, so no precision emulation is needed.</p>
 <h3 id="what-is-fully-implemented">What Is Fully Implemented</h3>
 <p><strong>Initialization</strong> (<code>gpu_memory_cuda.cpp</code>): Device enumeration via <code>cudaGetDeviceCount</code>, device 0 selection, CUDA stream creation, cuBLAS handle creation and stream binding. Thread-safe via <code>std::mutex</code> + double-check pattern in <code>eshkol_gpu_init</code> (<code>gpu_memory_cuda.cpp</code>).</p>
 <p><strong>Memory management</strong> (<code>gpu_memory_cuda.cpp</code>): Three allocation modes: - <code>ESHKOL_MEM_UNIFIED</code>: <code>cudaMallocManaged()</code> – automatic page migration between host and device - <code>ESHKOL_MEM_DEVICE</code>: <code>cudaMalloc()</code> – device-only, maximum throughput - <code>ESHKOL_MEM_HOST_PINNED</code>: <code>cudaMallocHost()</code> – pinned host memory for async DMA</p>
