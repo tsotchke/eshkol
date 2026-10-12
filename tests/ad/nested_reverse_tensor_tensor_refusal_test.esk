@@ -1,0 +1,13 @@
+;;; A nested reverse gradient with tensor points is explicitly unsupported.
+(display
+ (gradient
+  (lambda (w)
+    (vector-ref
+     (gradient
+      (lambda (x)
+        (+ (tensor-sum (tensor-mul x x))
+           (* (vector-ref w 0) (vector-ref x 0))))
+      #(1 2))
+     0))
+  #(3 4)))
+(newline)

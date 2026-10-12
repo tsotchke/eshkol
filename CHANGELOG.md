@@ -48,6 +48,12 @@ requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
   while creating its shaped descriptor raise an allocation condition. The
   complete neural-network quickstart runs under JIT and AOT. (#766)
 
+- **Supported nested vector gradients retain their reverse dependencies.**
+  Seeds and derivative values survive the supported JIT and AOT compositions.
+  Unsupported nested tensor and perturbed-operand forms report a diagnostic
+  instead of returning a zero gradient; the browser host exposes the same
+  refusal boundary. (#769)
+
 - **CUDA bfloat16 matrix multiplication preserves its exponent range.**
   Single and batched products use the operands' declared f16 or bf16 format
   with f32 accumulation. Unsupported formats fall back to the f64 route;

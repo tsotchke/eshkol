@@ -1,0 +1,48 @@
+;;; Nested reverse/forward carrier controls for the reverse-jet lane.
+;;; The tensor-point case exercises the outer reverse tape in both JIT and AOT.
+(define pass 0)
+(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-9))
+(define (check label got want)
+  (if (approx= got want)
+      (begin (display "PASS: ") (display label) (newline) (set! pass (+ pass 1)))
+      (begin (display "FAIL: ") (display label) (display " got=") (display got)
+             (display " want=") (display want) (newline) (set! fail (+ fail 1)))))
+(define (check0 label value want)
+  (check label (vector-ref value 0) want))
+
+;; Outer tensor reverse tape, inner Scheme-vector forward gradient.
+(check0 "tensor over svec"
+        (gradient (lambda (w)
+                    (vector-ref
+                     (gradient (lambda (x) (* (vector-ref w 0) (vector-ref x 0)))
+                               (vector 1.0 2.0)) 0))
+                  #(3 4))
+        1.0)
+
+;; Existing forward nested-vector support remains active.
+(check0 "svec over svec"
+        (gradient (lambda (w)
+                    (vector-ref
+                     (gradient (lambda (x) (* (vector-ref w 0) (vector-ref x 0)))
+                               (vector 1.0 2.0)) 0))
+                  (vector 3.0 4.0))
+        1.0)
+
+;; Tensor reverse tape over a scalar forward derivative.
+(check0 "tensor over derivative"
+        (gradient (lambda (w)
+                    (derivative (lambda (x) (* (vector-ref w 0) x x)) 2.0))
+                  #(3 4))
+        4.0)
+
+;; Scalar forward derivative over a scalar forward gradient.
+(check "derivative over scalar gradient"
+       (derivative (lambda (s)
+                     (gradient (lambda (x) (* s x x)) 2.0))
+                   3.0)
+       4.0)
+
+(display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (> fail 0) (error "nested_reverse_jet_test FAILED"))

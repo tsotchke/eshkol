@@ -24,13 +24,16 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="wasm-tensor-jets-") as directory:
         out = Path(directory)
         program, abi = out / "program.wasm", out / "abi.wasm"
+        refusal_abi = out / "refusal-abi.wasm"
         commands = [
             [str(args.compiler.resolve()), "--wasm", str(ROOT / "tests/toolchain/wasm_tensor_jet_browser.esk"), "-o", str(program)],
             # Like Eshkol's WASM output, this is a raw object with exported
             # functions and imported memory. No external linker is involved.
             [args.clang, "--target=wasm32-unknown-unknown", "-ffreestanding", "-O2", "-c",
              str(ROOT / "tests/toolchain/wasm_tensor_jet_abi.c"), "-o", str(abi)],
-            [args.node, str(ROOT / "tests/toolchain/wasm_tensor_jet_runtime_test.js"), str(program), str(abi)],
+            [args.clang, "--target=wasm32-unknown-unknown", "-ffreestanding", "-O2", "-c",
+             str(ROOT / "tests/toolchain/wasm_tensor_jet_refusal_abi.c"), "-o", str(refusal_abi)],
+            [args.node, str(ROOT / "tests/toolchain/wasm_tensor_jet_runtime_test.js"), str(program), str(abi), str(refusal_abi)],
         ]
         for command in commands:
             result = subprocess.run(command, cwd=ROOT, env=env, check=False)
