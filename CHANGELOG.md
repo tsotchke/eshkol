@@ -17,6 +17,10 @@ independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Release artifacts and documentation reflect the integrated compiler.**
+  Refresh browser site and VM bundles, sync measured test totals and release
+  facts, recount current source sizes, and document the v1.4.0–v1.4.5 ladder.
+  (#772)
 - **Windows REPL initialization uses the JIT's LLVM instance.** Native SDK
   builds link static target initializers with the static compiler and ORC JIT.
   Windows CI and staged release packages execute a machine-mode arithmetic
