@@ -30,6 +30,27 @@ void eshkol_arena_block_pool_unlock(void);
 extern "C" int eshkol_arena_poison_enabled(void);
 extern "C" size_t eshkol_arena_block_pool_cap(void);
 
+// AddressSanitizer builds mark a pooled block's memory as unaddressable for as
+// long as it sits in the large-block pool, so a read or write through a pointer
+// into a released region is still reported, as it would be had the block gone
+// back to free().
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define ESHKOL_ARENA_POOL_ASAN 1
+#  endif
+#endif
+#if !defined(ESHKOL_ARENA_POOL_ASAN) && defined(__SANITIZE_ADDRESS__)
+#  define ESHKOL_ARENA_POOL_ASAN 1
+#endif
+#if defined(ESHKOL_ARENA_POOL_ASAN)
+#include <sanitizer/asan_interface.h>
+#  define ESHKOL_POOL_POISON(ptr, size) ASAN_POISON_MEMORY_REGION((ptr), (size))
+#  define ESHKOL_POOL_UNPOISON(ptr, size) ASAN_UNPOISON_MEMORY_REGION((ptr), (size))
+#else
+#  define ESHKOL_POOL_POISON(ptr, size) ((void)(ptr), (void)(size))
+#  define ESHKOL_POOL_UNPOISON(ptr, size) ((void)(ptr), (void)(size))
+#endif
+
 // Default alignment for memory allocations
 #define DEFAULT_ALIGNMENT 8
 
@@ -108,7 +129,7 @@ extern "C" int eshkol_alloc_failpoint_fire(int site) {
 // and reports measure what arenas hold, not what the pool keeps warm.
 // ESHKOL_ARENA_BLOCK_POOL_MB sets the cap (default 1024; 0 disables). The pool
 // is off under ESHKOL_ARENA_POISON, whose point is that freed memory is not
-// reused.
+// reused; under AddressSanitizer a pooled block is poisoned until it is reused.
 // ---------------------------------------------------------------------------
 namespace {
 constexpr size_t kBlockPoolMinSize = (size_t)1 << 20;
@@ -141,6 +162,7 @@ arena_block_t* block_pool_take(size_t size) {
     g_block_pool_bytes -= b->size;
     b->next = nullptr;
     b->used = 0;
+    ESHKOL_POOL_UNPOISON(b->memory, b->size);
     return b;
 }
 
@@ -155,6 +177,7 @@ bool block_pool_put(arena_block_t* b) {
     b->next = g_block_pool;
     g_block_pool = b;
     g_block_pool_bytes += b->size;
+    ESHKOL_POOL_POISON(b->memory, b->size);
     return true;
 }
 }  // namespace

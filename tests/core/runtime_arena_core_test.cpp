@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cerrno>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -13,12 +14,58 @@
 #include <unistd.h>
 #endif
 
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define ARENA_TEST_ASAN 1
+#  endif
+#endif
+#if !defined(ARENA_TEST_ASAN) && defined(__SANITIZE_ADDRESS__)
+#  define ARENA_TEST_ASAN 1
+#endif
+#if defined(ARENA_TEST_ASAN)
+#include <sanitizer/asan_interface.h>
+#endif
+
+extern "C" int eshkol_arena_poison_enabled(void);
+extern "C" size_t eshkol_arena_block_pool_cap(void);
+
 namespace {
 
 int fail(const char* message) {
     std::cerr << "FAIL: " << message << '\n';
     return 1;
 }
+
+class ScopedEnvironment {
+public:
+    explicit ScopedEnvironment(const char* name) : name_(name) {
+        const char* current = std::getenv(name_.c_str());
+        was_set_ = current != nullptr;
+        if (was_set_) previous_ = current;
+    }
+
+    bool set(const char* value) {
+#if defined(_WIN32)
+        return _putenv_s(name_.c_str(), value) == 0;
+#else
+        return setenv(name_.c_str(), value, 1) == 0;
+#endif
+    }
+
+    ~ScopedEnvironment() {
+#if defined(_WIN32)
+        (void)_putenv_s(name_.c_str(), was_set_ ? previous_.c_str() : "");
+#else
+        if (was_set_) (void)setenv(name_.c_str(), previous_.c_str(), 1);
+        else (void)unsetenv(name_.c_str());
+#endif
+    }
+
+private:
+    std::string name_;
+    std::string previous_;
+    bool was_set_ = false;
+};
 
 bool is_aligned(const void* ptr, uintptr_t alignment) {
     return (reinterpret_cast<uintptr_t>(ptr) % alignment) == 0;
@@ -112,9 +159,92 @@ int run_heap_limit_pool_process_regression() {
 }
 #endif
 
+#if defined(ARENA_TEST_ASAN)
+int verify_asan_pool_addressability() {
+    ScopedEnvironment pool_cap("ESHKOL_ARENA_BLOCK_POOL_MB");
+    ScopedEnvironment arena_poison("ESHKOL_ARENA_POISON");
+    if (!pool_cap.set("16") || !arena_poison.set("0")) {
+        return fail("could not set test-local arena-pool environment");
+    }
+    if (eshkol_arena_poison_enabled() != 0) {
+        return fail("arena poison mode remained enabled in the ASan pool test");
+    }
+    if (eshkol_arena_block_pool_cap() < ((size_t)2 << 20)) {
+        return fail("ASan pool test has no capacity for its 2 MiB block");
+    }
+
+    arena_t* first = arena_create((size_t)2 << 20);
+    if (!first) return fail("asan pool arena_create returned null");
+    arena_block_t* pooled_header = first->current_block;
+    auto* inside = static_cast<unsigned char*>(arena_allocate(first, 64));
+    if (!inside) return fail("asan pool allocation returned null");
+    if (__asan_address_is_poisoned(inside)) return fail("live arena payload is poisoned");
+    std::memset(inside, 0x5a, 64);
+    arena_destroy(first);
+    if (__asan_address_is_poisoned(pooled_header)) {
+        return fail("pooled arena block header is poisoned");
+    }
+    if (!__asan_address_is_poisoned(inside)) {
+        return fail("a pooled payload is addressable while it sits in the pool");
+    }
+
+    arena_t* second = arena_create((size_t)2 << 20);
+    if (!second) return fail("asan pool reuse arena_create returned null");
+    if (__asan_address_is_poisoned(second) ||
+        __asan_address_is_poisoned(second->current_block)) {
+        return fail("reused arena or block header is poisoned");
+    }
+    if (second->current_block != pooled_header) {
+        return fail("ASan pool test did not reuse the same block header");
+    }
+    auto* reused = static_cast<unsigned char*>(arena_allocate(second, 64));
+    if (!reused) return fail("asan pool reuse allocation returned null");
+    if (reused != inside) return fail("ASan pool test did not reuse the poisoned block");
+    if (__asan_address_is_poisoned(reused)) {
+        return fail("reused arena payload is still poisoned");
+    }
+    std::memset(reused, 0xa5, 64);
+    if (reused[0] != 0xa5 || reused[63] != 0xa5) {
+        return fail("reused arena payload was not writable");
+    }
+    arena_destroy(second);
+    return 0;
+}
+
+#if !defined(_WIN32)
+int run_asan_pool_addressability_process() {
+    const pid_t child = fork();
+    if (child < 0) return fail("ASan pool regression fork failed");
+    if (child == 0) _exit(verify_asan_pool_addressability() == 0 ? 0 : 1);
+
+    int status = 0;
+    for (;;) {
+        if (waitpid(child, &status, 0) >= 0) break;
+        if (errno != EINTR) return fail("ASan pool regression waitpid failed");
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return fail("ASan pooled-block addressability regression failed in child");
+    }
+    std::cout << "PASS: ASan pool payload poison, block-header accessibility, and same-block reuse\n" << std::flush;
+    return 0;
+}
+#else
+int run_asan_pool_addressability_process() {
+    if (verify_asan_pool_addressability() != 0) return 1;
+    std::cout << "PASS: ASan pool payload poison, block-header accessibility, and same-block reuse\n" << std::flush;
+    return 0;
+}
+#endif
+#endif
+
 }  // namespace
 
 int main() {
+#if defined(ARENA_TEST_ASAN)
+    // Use a fresh pool and initialize its cached settings in a child, leaving
+    // the parent test process and its environment unchanged.
+    if (run_asan_pool_addressability_process() != 0) return 1;
+#endif
 #if defined(_WIN32)
     // The process-isolated enforcement regression is POSIX-only; the rest of
     // this arena test remains portable.

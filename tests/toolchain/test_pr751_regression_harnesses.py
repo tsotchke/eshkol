@@ -28,9 +28,11 @@ if [ "${FAKE_KIND:-}" = cache ]; then
         unknown-second:2) echo '[jit-cache] strange' ;;
         empty-second:2|store-only:1) echo '[jit-cache] store KEY' ;;
         duplicate-lookup:1) echo '[jit-cache] miss KEY'; echo '[jit-cache] hit KEY' ;;
-        positive:1|wrong-result:1|mutate:1|failed-second:1|unknown-second:1|empty-second:1) echo '[jit-cache] miss KEY'; echo '[jit-cache] store KEY' ;;
-        positive:2|wrong-result:2|mutate:2|failed-second:3|unknown-second:3|empty-second:3) echo '[jit-cache] miss KEY'; echo '[jit-cache] store KEY' ;;
-        positive:3|wrong-result:3|mutate:3|failed-second:4|unknown-second:4|empty-second:4) echo '[jit-cache] hit KEY' ;;
+        positive:1|wrong-result:1|mutate:1|env-hit:1|failed-second:1|unknown-second:1|empty-second:1) echo '[jit-cache] miss KEY'; echo '[jit-cache] store KEY' ;;
+        positive:2|wrong-result:2|mutate:2|env-hit:2|failed-second:3|unknown-second:3|empty-second:3) echo '[jit-cache] miss KEY'; echo '[jit-cache] store KEY' ;;
+        positive:3|wrong-result:3|mutate:3|env-hit:3|env-hit:4|env-hit:5|failed-second:4|unknown-second:4|empty-second:4) echo '[jit-cache] hit KEY' ;;
+        positive:4|mutate:4) echo '[jit-cache] miss KEY'; echo '[jit-cache] store KEY' ;;
+        positive:5|mutate:5) echo '[jit-cache] hit KEY' ;;
     esac
     [ "${FAKE_MODE:-}" = wrong-result ] && echo 3 || echo 24
     if [ "${FAKE_MODE:-}" = mutate ] && [ "$n" -eq 1 ]; then
@@ -148,6 +150,11 @@ class HarnessControls(unittest.TestCase):
             {"ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR": str(self.work / "coverage")})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("miss / miss / hit", result.stdout)
+
+    def test_cache_reuse_across_codegen_environment_is_rejected(self):
+        result = self.invoke("tests/codegen/run_cache_xla_threshold_key_test.sh", "env-hit")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ESHKOL_NO_ITER_SCOPE", result.stdout + result.stderr)
 
     def test_cache_failed_second_run_is_rejected(self):
         result = self.invoke("tests/codegen/run_cache_xla_threshold_key_test.sh", "failed-second")

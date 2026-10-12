@@ -7763,6 +7763,17 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_arena_core_test COMMAND runtime_arena_core_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/aot_module_cache_output_test.sh")
+    add_test(NAME aot_module_cache_output_test
+        COMMAND ${CMAKE_COMMAND} -E env
+            "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "ESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "ESHKOL_TEST_TMP_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/.scratch"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/aot_module_cache_output_test.sh")
+    set_tests_properties(aot_module_cache_output_test PROPERTIES TIMEOUT 90)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_arena_cpp_test.cpp")
     add_executable(runtime_arena_cpp_test tests/core/runtime_arena_cpp_test.cpp)
     target_compile_features(runtime_arena_cpp_test PRIVATE cxx_std_17)

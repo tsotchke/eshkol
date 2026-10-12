@@ -902,7 +902,7 @@ compilation:
 
 ## Module System
 
-**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (6,167 lines)
+**Implementation**: [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) (6,186 lines)
 
 ### Architecture
 
@@ -1322,7 +1322,7 @@ Where n = number of operations.
 
 ## Build System
 
-**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (12,698 lines)
+**Implementation**: [`CMakeLists.txt`](../CMakeLists.txt) (12,709 lines)
 
 ### Requirements
 
@@ -1446,11 +1446,11 @@ These features are **designed but not implemented**. See roadmap documents for d
 
 - [`inc/eshkol/eshkol.h`](../inc/eshkol/eshkol.h) - Main system header (3,816 lines)
 - [`lib/backend/llvm_codegen.cpp`](../lib/backend/llvm_codegen.cpp) - Core codegen (47,548 lines)
-- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (1,368 lines; 4,259 across all `runtime_*` memory modules)
+- [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (1,391 lines; 4,259 across all `runtime_*` memory modules)
 - [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,698 lines)
 - [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (6,087 lines)
 - [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,831 lines)
-- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,167 lines)
+- [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,186 lines)
 - [`lib/types/type_relation.cpp`](../lib/types/type_relation.cpp) - Gradual type relation (433 lines)
 
 ### Forward-looking design documents
