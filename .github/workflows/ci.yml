@@ -2951,6 +2951,11 @@ jobs:
               throw "Required precompiled stdlib artifact is empty: $artifact"
             }
           }
+          $repl = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-repl.exe'
+          python scripts/repl_smoke.py --repl $repl --cwd .
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows REPL machine-mode smoke failed (exit $LASTEXITCODE)"
+          }
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\eshkol-test-logs" | Out-Null
           & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}' *>&1 |
             Tee-Object -FilePath "$env:RUNNER_TEMP\eshkol-test-logs\${{ matrix.name }}.log"

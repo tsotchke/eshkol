@@ -803,6 +803,13 @@ else()
         # library via LLVM_AVAILABLE_LIBS, but the "all" pseudo-component does
         # not expand reliably outside LLVM's own build tree.
         set(LLVM_LIBS_LIST ${LLVM_AVAILABLE_LIBS})
+        # The C++ compiler and ORC JIT use the SDK's static LLVM components.
+        # LLVM-C imports the same target initializers from a DLL with its own
+        # TargetRegistry; initializing that copy leaves the static JIT empty.
+        # Keep initialization and code generation in one LLVM instance, and
+        # make the public headers declare static rather than dllimport APIs.
+        list(REMOVE_ITEM LLVM_LIBS_LIST LLVM-C)
+        add_compile_definitions(LLVM_BUILD_STATIC)
         if(NOT ESHKOL_WINDOWS_LLVM_HAS_LIBXML2)
             list(REMOVE_ITEM LLVM_LIBS_LIST LLVMWindowsManifest)
         endif()
@@ -3148,26 +3155,6 @@ if(REPL_SRC)
 
     target_link_libraries(eshkol-repl PRIVATE eshkol-repl-lib ${ESHKOL_EXTRA_LINK_LIBS})
 
-    if(WIN32)
-      set(_eshkol_llvm_c_dll "${ESHKOL_LLVM_ROOT}/bin/LLVM-C.dll")
-      if(EXISTS "${_eshkol_llvm_c_dll}")
-        add_custom_command(TARGET eshkol-repl POST_BUILD
-          COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                  "${_eshkol_llvm_c_dll}"
-                  "$<TARGET_FILE_DIR:eshkol-repl>/LLVM-C.dll"
-          COMMENT "Copying LLVM-C.dll for native Windows REPL"
-        )
-      endif()
-
-      # LLVM target initialization is supplied by the LLVM linkage selected by
-      # LLVMConfig.cmake.  The official Windows SDK exposes those entry points
-      # through LLVM-C.dll while also listing static C++ components. Explicitly
-      # force-loading the overlapping LLVMX86*/LLVMAArch64* target archives
-      # defines LLVMInitialize* twice. The bounded Eshkol runtime .def below
-      # retains and exports the JIT host ABI; it must not be conflated with LLVM
-      # component retention.
-    endif()
-
     # Force-load ALL symbols from eshkol-static into the REPL binary.
     # Without this, the macOS linker dead-strips archive members that aren't
     # directly referenced (e.g. XLA runtime) but ARE needed by JIT-compiled
@@ -3253,8 +3240,8 @@ if(REPL_SRC)
   elseif(WIN32 AND ESHKOL_USING_MSVC)
     # The bounded /DEF table attached after the agent target exists performs
     # both precise archive retention and PE export.  Do not /WHOLEARCHIVE the
-    # compiler archives: that defeats the bounded design and can pull static
-    # LLVM target definitions that overlap LLVM-C.dll.
+    # compiler archives: that defeats the bounded design. LLVM target
+    # initializers are ordinary references to the same static LLVM instance.
   elseif(WIN32)
     # MSYS2/MinGW GNU driver: mirror the macOS/Linux path so the in-process
     # JIT (used by `-r` and -e/--eval) can resolve every host runtime symbol.
@@ -7882,6 +7869,7 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
             test_v1_3_release_evidence_recipe
             test_release_probe_receipts
             test_release_harness_paths
+            test_repl_smoke
             test_native_image_io_contract)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_release_invariant_test}.py")
             add_test(NAME ${_release_invariant_test}
