@@ -12,7 +12,8 @@ sources:
 # Release ladder: v1.3.6 through v1.5.0
 
 This is the single reconciled near-term release ladder for the roadmap and
-compiler roadmap. Statuses below are checked against the repository at
+compiler roadmap. The publication order below includes every planned release.
+The gate-inventory statuses retain their dated repository evidence at
 `34fb71417df7273aba11889091a2c2542c8eedff` (master, 2026-09-28). A planned
 producer or oracle name is not evidence that its script, target, or receipt
 exists. The v1.3.5 source was released internally on 2026-09-22 and published
@@ -23,7 +24,28 @@ date. Owners are left unassigned where this snapshot records no named lane.
 > and the release is PREPARED FOR PUBLICATION per the release record; its
 > contents, each with its pull request, are in the
 > [ROADMAP v1.3.6 section](../ROADMAP.md#v136-evolve--runtime-fixes---prepared-for-publication).
-> The v1.4.0 through v1.5.0 rows still describe the 2026-09-28 snapshot.
+> The gate-inventory rows for v1.4.0 through v1.5.0 retain the 2026-09-28 snapshot.
+
+## Publication order and scope (2026-10-10)
+
+The publication order is v1.3.6, v1.4.0, v1.4.1, v1.4.2, v1.4.3,
+v1.4.4, v1.4.5, then v1.5.0. There is no v1.3.7 release. Engineering
+can proceed concurrently; publication requires each preceding release and
+the executable acceptance evidence for the current release. These scopes
+do not change the remaining acceptance requirements for v1.3.6.
+
+| Release | Scope | Acceptance focus |
+|---|---|---|
+| **v1.3.6-evolve** | The current runtime, language, tooling, documentation and release-integration queue. | The integrated source, all CI lanes, package and cross-platform qualification, and release readiness. |
+| **v1.4.0-connection** | The connection, concurrency, resource and language work assigned to this release, including the recursive differentiation carrier and complete REPL AST presentation; the PJRT interface slice remains limited to its declared scope. | Bound producers and runtime evidence for the connection and language contracts. |
+| **v1.4.1-ABI** | Remaining ABI migration and the complete compiler-embedding SDK. | Layout and persisted-format compatibility, packaged public artifacts, and cold consumer tests. |
+| **v1.4.2** | Parser, language and runtime correctness: explicit-stack parsing, bounded compilation, macro/import binding semantics, tensor shape validation and remaining unique correctness work after v1.3.6 integration. | Direct JIT, AOT and VM agreement, precise conditions for unsupported operations, and resource bounds. |
+| **v1.4.3** | Exact numerics and certified bounds: numeric-tower coverage, directed rounding, independently checked enclosures, and bignum/rational lifetime. | Exact-value and enclosure oracles, backend agreement, and lifetime checks. |
+| **v1.4.4** | Portable execution and delivery qualification: cross-engine parity, checkpoint round trips and atomic recovery, reproducible packages, installation and upgrades, and resource-ownership baselines. | Recorded platform and recovery tests on the integrated ABI and numeric contracts. |
+| **v1.4.5-accelerate** | Full XLA production acceptance and the accelerator device runtime, including device gradients, sharding, bounded bf16 and end-to-end training/inference. | Executed device-stage gates and end-to-end accelerator evidence. |
+| **v1.5.0-intelligence** | The intelligence and native-mesh work already assigned to this release. | A dedicated release oracle and the required feature and native-mesh evidence. |
+
+## Gate inventory and dated evidence
 
 | Release | Scope and dependency | Owner lane | Producer / trace | Acceptance and blocker | Snapshot status |
 |---|---|---|---|---|---|

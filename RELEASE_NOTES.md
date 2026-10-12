@@ -1,17 +1,55 @@
 # Eshkol v1.3.6-evolve — Release Notes
 
 **Status:** PREPARED FOR PUBLICATION.
-**Intended release date:** Thursday, October 8, 2026.
+**Intended release date:** Monday, October 12, 2026.
 
-Final publication requires **CTest 789/789** and **VM parity 405/405**, with no
-failed, skipped or infrastructure-only checks. Earlier preparation passed all
-787 configured CTest cases and all 405 serialized VM parity cases. The
-[verified preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
+Final publication requires **CTest 819/819** and **VM parity 411/411**, with no
+failed, skipped or infrastructure-only checks. Full source-bound preparation
+passed all 819 configured CTest cases and all 411 serialized VM parity cases.
+The [verified preparation run](https://github.com/tsotchke/eshkol/actions/runs/38161249190)
 binds both measurements to one source commit and build cohort. The release
 workflow independently qualifies the final commit and requires ICC ready/100
 before publication.
 
 ### Changes
+
+- **Windows REPL target initialization shares the static JIT registry.** Native
+  SDK builds use static LLVM components and matching header declarations.
+  Windows CI and staged Windows packages execute an arithmetic evaluation and
+  require its result and machine-protocol frames. (#771)
+- **Calls and continuations enforce their runtime boundaries.** Computed
+  operators are evaluated and applied; nonprocedures raise a catchable condition.
+  List operations reject invalid operands. Native REPL continuations support
+  re-entry within their capturing evaluation and reject use from an earlier
+  top-level form. (#763)
+- **Language semantics agree across engines.** `equal?` distinguishes exact
+  from inexact numbers, native `match` pair patterns require pairs, and
+  `raise-continuable` returns the handler's value with outer handlers installed.
+  `type-name` uses a shared vocabulary; REPL `:type` reports the inferred type
+  with session definitions in scope. (#768)
+- **Tensor differentiation preserves derivative values and shapes.** Forward
+  tensor arithmetic and matrix multiplication carry derivative components.
+  Gradients retain their evaluation point's dimensions. Supported nested vector
+  gradients preserve reverse dependencies; unsupported nested tensor and
+  perturbed-operand forms report a diagnostic. (#766, #769)
+- **CUDA bfloat16 products preserve their declared format.** Single and
+  batched matrix multiplication distinguish f16 from bf16 and accumulate in
+  f32; unsupported formats use the existing f64 fallback. (#762)
+- **Deep macro expansion and test timeouts are bounded explicitly.** Macro
+  traversal uses a work stack, harness deadlines cover complete process groups,
+  and stress measurements account for platform time utilities and units. (#765)
+- **Construction examples enforce their verdicts.** Four witness programs
+  fail on a failed check and have native JIT and AOT CTest entries. Example,
+  quantum, paper, licensing and editor tooling follow their documented behavior.
+  (#764)
+- **Allocator and compiler caches preserve their contracts.** Sanitizer pool
+  metadata remains accessible while freed payloads stay poisoned. Cache keys
+  include XLA thresholds, and AOT cache hits produce the requested object and
+  bitcode outputs. (#770)
+- **Imported names retain lexical scope.** JIT batches resolve imported aliases
+  through nested forms while preserving local bindings. Test gates record
+  current expected outcomes and keep mutation verdicts separate from raw exit
+  codes. (#761)
 
 - **Example outcomes are bound to their measured sources.** The catalogue
   records native JIT and AOT outcomes for all 67 programs. All 46 mathematics

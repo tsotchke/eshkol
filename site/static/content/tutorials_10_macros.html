@@ -56,6 +56,7 @@
 <hr />
 <h2 id="part-4-hygiene">Part 4: Hygiene</h2>
 <p>Hygienic macros prevent accidental variable capture. The <code>tmp</code> in <code>swap!</code> above cannot conflict with user code:</p>
+<!-- doc-example: skip fragment: depends on the `swap!` macro defined earlier on this page -->
 <pre class="scheme"><code>(define tmp 42)
 (define a 1)
 (define b 2)

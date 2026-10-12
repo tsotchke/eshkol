@@ -137,7 +137,7 @@ eshkol-run file.esk -o binary # ahead-of-time (AOT) compile to a native binary</
 </tr>
 <tr>
 <td>ESH-0109 (part)</td>
-<td>Curried <code>define</code> sugar <code>(define ((f x) y) …)</code> is a parse error, and <code>raise-continuable</code> is <strong>unimplemented on every substrate</strong> — the native path and the bytecode VM alike (the earlier “it exists in the bytecode VM” claim here was never true of any build; corrected under <code>SW-80b</code>). The <code>cond</code>/<code>case</code>/<code>guard</code> <code>=&gt;</code> and <code>define-values</code> parts of that ledger entry are done — <code>=&gt;</code> inside <code>guard</code>, and <code>=&gt;</code> on the VM at all, landed with the guard coverage gate (<code>SW-78</code>).</td>
+<td>Curried <code>define</code> sugar <code>(define ((f x) y) …)</code> is a parse error. The <code>cond</code>/<code>case</code>/<code>guard</code> <code>=&gt;</code>, <code>define-values</code> and <code>raise-continuable</code> parts of that ledger entry are done — <code>=&gt;</code> inside <code>guard</code>, and <code>=&gt;</code> on the VM at all, are checked by the guard coverage gate; <code>raise-continuable</code> is described in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/error-handling.md#raise-continuable-obj" target="_blank" rel="noopener noreferrer">error-handling.md</a>.</td>
 </tr>
 <tr>
 <td>—</td>

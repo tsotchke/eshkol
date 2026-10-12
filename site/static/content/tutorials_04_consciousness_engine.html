@@ -45,6 +45,7 @@
 (display (walk ?a s4))  ;; =&gt; alice
 (display (walk ?b s4))  ;; =&gt; bob</code></pre>
 <h3 id="type-predicates">Type Predicates</h3>
+<!-- doc-example: skip fragment: kb/s1 are assumed bindings from earlier on the page -->
 <pre class="scheme"><code>(logic-var? ?x)           ;; =&gt; #t  (bare ?x, no quote)
 (logic-var? &#39;hello)       ;; =&gt; #f
 (substitution? s1)        ;; =&gt; #t
@@ -74,6 +75,7 @@
 <p>After <code>fg-infer!</code>, each variable’s belief vector is converged (modulo the iteration bound). The runtime stores beliefs internally; you read them out indirectly through <code>free-energy</code> and <code>expected-free-energy</code>, or directly through <code>fg-marginal</code> (a system builtin, not in the core 22).</p>
 <h3 id="free-energy">Free Energy</h3>
 <p>Free energy quantifies surprise — how much the model’s predictions diverge from the observed evidence:</p>
+<!-- doc-example: skip fragment: fg is an assumed factor graph from earlier on the page -->
 <pre class="scheme"><code>;; Observations are encoded as #(var-index observed-state) pairs.
 ;; Passing a single 2-element tensor #(0 0) is read as: variable 0 was
 ;; observed in state 0.
@@ -93,6 +95,7 @@
 <p>The pair format keeps observation specifications terse: a state vector over every variable would force you to encode “unobserved” with a sentinel, whereas a list of pairs only mentions the variables that were actually clamped.</p>
 <h3 id="learning-with-cpt-updates">Learning with CPT Updates</h3>
 <p><code>fg-update-cpt!</code> rewrites the CPT of an existing factor (referenced by its insertion index — the same order in which <code>fg-add-factor!</code> was called). After updating a factor, the message cache is reset so the next <code>fg-infer!</code> reconverges from the new CPT.</p>
+<!-- doc-example: skip fragment: fg is an assumed factor graph from earlier on the page -->
 <pre class="scheme"><code>;; Update factor 0&#39;s CPT in light of new evidence.
 (fg-update-cpt! fg 0 #(0.95 0.05 0.15 0.85))
 
@@ -127,6 +130,7 @@
 ;; eshkol_ws_make_content_tensor before the cycle.
 (ws-step! ws)</code></pre>
 <h3 id="type-predicates-1">Type Predicates</h3>
+<!-- doc-example: skip fragment: fg/ws are assumed bindings from earlier on the page -->
 <pre class="scheme"><code>(factor-graph? fg)   ;; =&gt; #t
 (workspace? ws)      ;; =&gt; #t</code></pre>
 <hr />

@@ -24,7 +24,7 @@
 <p>Eshkol is a <strong>compiled Scheme-family language</strong> that implements approximately 95% of the R7RS-small standard while extending it with automatic differentiation, tensor computing, a consciousness engine, GPU acceleration, and other scientific computing capabilities. The compiler translates R7RS programs to native code via LLVM, producing standalone binaries with no runtime interpreter overhead.</p>
 <p>The R7RS-small standard defines 244 standard procedures and ~30 special forms. Eshkol implements 232 of these procedures and all essential special forms. The missing procedures are concentrated in a small set of error introspection functions (<code>error-object?</code>, <code>error-object-message</code>, <code>error-object-irritants</code>) and one arithmetic function (<code>exact-integer-sqrt</code>). R7RS <code>define-library</code> and <code>import</code> forms lower through the existing <code>require</code>/<code>provide</code> module system, with strict library isolation still tracked as future module-privacy work.</p>
 <p>Most well-formed R7RS Scheme programs compile and run in Eshkol without modification.</p>
-<p><strong>Implementation references:</strong> - Parser: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer">parser.cpp</a> (11,698 lines) - Code generation: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a> (47,353 lines) - Type checker: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer">type_checker.cpp</a> (6,087 lines)</p>
+<p><strong>Implementation references:</strong> - Parser: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer">parser.cpp</a> (11,698 lines) - Code generation: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/backend/llvm_codegen.cpp" target="_blank" rel="noopener noreferrer">llvm_codegen.cpp</a> (47,548 lines) - Type checker: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer">type_checker.cpp</a> (6,087 lines)</p>
 <hr />
 <h2 id="r7rs-small-compliance-summary">R7RS-small Compliance Summary</h2>
 <h3 id="section-by-section-compliance-matrix">Section-by-Section Compliance Matrix</h3>
@@ -89,8 +89,8 @@
 <tr>
 <td style="text-align: left;"><strong>4.2.7</strong> Exception handling</td>
 <td style="text-align: left;"><code>guard</code>, <code>raise</code>, <code>raise-continuable</code></td>
-<td style="text-align: center;">Note</td>
-<td style="text-align: left;"><code>guard</code>/<code>raise</code> full; <code>raise-continuable</code> missing</td>
+<td style="text-align: center;">Yes</td>
+<td style="text-align: left;"></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>4.2.8</strong> Quasiquotation</td>
@@ -202,9 +202,9 @@
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.11</strong> Exceptions</td>
-<td style="text-align: left;"><code>with-exception-handler</code>, <code>raise</code>, <code>error</code></td>
+<td style="text-align: left;"><code>with-exception-handler</code>, <code>raise</code>, <code>raise-continuable</code>, <code>error</code></td>
 <td style="text-align: center;">Yes</td>
-<td style="text-align: left;"><code>raise-continuable</code> missing</td>
+<td style="text-align: left;"></td>
 </tr>
 <tr>
 <td style="text-align: left;"><strong>6.12</strong> Environments and eval</td>
@@ -229,7 +229,7 @@
 <h3 id="compliance-statistics">Compliance Statistics</h3>
 <ul>
 <li><strong>Special forms and derived expressions</strong>: 30/30 (supported subset for R7RS libraries)</li>
-<li><strong>Standard procedures</strong>: 232/244 (95%) — missing 12 procedures</li>
+<li><strong>Standard procedures</strong>: 233/244 (95%) — missing 11 procedures</li>
 <li><strong>Overall R7RS-small compliance</strong>: ~95%</li>
 </ul>
 <hr />
@@ -919,12 +919,6 @@ x
 </tr>
 </thead>
 <tbody>
-<tr>
-<td style="text-align: left;"><code>raise-continuable</code></td>
-<td style="text-align: center;">6.11</td>
-<td style="text-align: center;">Missing</td>
-<td style="text-align: left;"><code>raise</code> works; continuable variant not needed for most programs</td>
-</tr>
 <tr>
 <td style="text-align: left;"><code>error-object?</code></td>
 <td style="text-align: center;">6.11</td>

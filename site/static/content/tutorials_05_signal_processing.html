@@ -26,6 +26,7 @@
 <hr />
 <h2 id="part-2-window-functions">Part 2: Window Functions</h2>
 <p>Window functions reduce spectral leakage when analysing finite-length signals. Four are built in:</p>
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 <pre class="scheme"><code>;; Generate a 64-sample window
 (define ham (hamming-window 64))
 (define han (hann-window 64))
@@ -70,6 +71,7 @@
 <hr />
 <h2 id="part-3-fir-filters">Part 3: FIR Filters</h2>
 <p>Design and apply finite impulse response filters:</p>
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 <pre class="scheme"><code>;; Create a simple moving-average FIR filter (5-tap)
 (define coeffs #(0.2 0.2 0.2 0.2 0.2))
 
@@ -78,11 +80,13 @@
 (display filtered)
 (newline)</code></pre>
 <h3 id="convolution">Convolution</h3>
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 <pre class="scheme"><code>;; General convolution of two sequences
 (define result (convolve signal coeffs))</code></pre>
 <hr />
 <h2 id="part-4-iir--butterworth-filters">Part 4: IIR / Butterworth Filters</h2>
 <p>Design classic Butterworth filters for lowpass, highpass, or bandpass:</p>
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 <pre class="scheme"><code>;; Design a 4th-order Butterworth lowpass filter.
 ;; Cutoffs are normalised so that 1.0 is the Nyquist frequency: a 100 Hz
 ;; cutoff at a 1000 Hz sample rate (Nyquist 500 Hz) is 100/500 = 0.2.
@@ -95,6 +99,7 @@
 <hr />
 <h2 id="part-5-integration-with-autodiff">Part 5: Integration with Autodiff</h2>
 <p>All signal processing functions compose with Eshkol’s autodiff:</p>
+<!-- doc-example: skip fragment: signal is an assumed tensor from earlier on the page -->
 <pre class="scheme"><code>;; How does the output power change with respect to filter cutoff?
 ;; This is differentiable because the filter design and the filter are
 ;; smooth operations on floats.

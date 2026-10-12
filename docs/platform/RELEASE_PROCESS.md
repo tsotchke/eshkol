@@ -119,11 +119,12 @@ is published as a prerelease.
 
 The release notes are produced by
 `scripts/release_readiness_guard.py notes`. It takes everything above the first
-horizontal rule in `RELEASE_NOTES.md`, requires the heading to be
-`# Eshkol <tag> — Release Notes`, and fails when the text still contains the
-marker `RELEASE_EVIDENCE_PENDING`. Only a dispatch passes `--allow-pending`, so
-a dry run can be rehearsed before the evidence is final while a tag push
-cannot publish notes that still promise evidence.
+horizontal rule in `RELEASE_NOTES.md` and requires the heading to be
+`# Eshkol <tag> — Release Notes`. Preparation mode can render intended notes
+before qualification. A strict dispatch validates the notes with its own
+`candidate-proof`; a tag run validates them with its fresh `tag-publication`
+proof. Both strict roles require complete source-bound evidence and a receipt,
+and reject the marker `RELEASE_EVIDENCE_PENDING`.
 
 ### Homebrew tap bump
 
@@ -469,12 +470,13 @@ checklist, in order:
    python3 scripts/gen_api_docs.py --check
    python3 scripts/check_disclosure.py --base origin/master --head HEAD
    python3 scripts/release_readiness_guard.py notes --notes RELEASE_NOTES.md \
-       --tag <tag> --output <scratch>/release-notes.md
+       --tag <tag> --role preparation --output <scratch>/release-notes.md
    ```
 
-   The last command succeeds without `--allow-pending` only when the release
-   notes carry no pending-evidence marker. Then dispatch the strict dry run on
-   the merged commit and wait for the bound receipt.
+   The last command validates the intended publication metadata and prepares
+   the notes; it does not qualify the release. Dispatch the strict dry run on
+   the merged commit. Its proof and publication jobs validate the notes against
+   that run's complete evidence and bound receipt before publication.
 5. **Tag.** Create the annotated tag on the commit the receipt names and push
    it. The tag push runs the same workflow with the gate blocking, publishes
    the release, and bumps the tap.
@@ -535,8 +537,8 @@ extracting notes. Preparation dispatch accepts well-formed incomplete metadata
 and emits no qualifying receipt. Removing a pending marker alone grants no
 publication authority; the autopilot waits for deliberate complete preparation.
 
-The full suite's added runtime is presently unmeasured. Preserve the existing
-720-minute job ceiling and 360-minute phase step ceilings. Before dispatching a
+The final strict workflow must fit the existing 1,080-minute readiness job
+ceiling and 360-minute phase step ceilings. Before dispatching a
 fresh qualification, use retained actual phase/full-CTest timing receipts to
 confirm baseline and total job fit those limits with headroom, or explicitly
 review a budget/placement adjustment. Do not silently raise a timeout, run the

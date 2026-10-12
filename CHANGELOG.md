@@ -7,15 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.6-evolve] - 2026-10-08
+## [1.3.6-evolve] - 2026-10-12
 
-PREPARED FOR PUBLICATION. Intended release date: Thursday, October 8, 2026.
-The final measurement contract requires CTest 789/789 and VM parity 405/405.
-Earlier preparation passed 787 configured CTest cases and 405 VM parity cases. Publication
-requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)
+PREPARED FOR PUBLICATION. Intended release date: Monday, October 12, 2026.
+The final measurement contract requires <!-- release-record:ctest -->CTest **819/819**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->.
+Full source-bound preparation passed 819 configured CTest cases and 411 VM parity cases
+([run](https://github.com/tsotchke/eshkol/actions/runs/38161249190)). Publication requires
+independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Release artifacts and documentation reflect the integrated compiler.**
+  Refresh browser site and VM bundles, sync measured test totals and release
+  facts, recount current source sizes, and document the v1.4.0–v1.4.5 ladder.
+  (#772)
 - **Windows REPL initialization uses the JIT's LLVM instance.** Native SDK
   builds link static target initializers with the static compiler and ORC JIT.
   Windows CI and staged release packages execute a machine-mode arithmetic

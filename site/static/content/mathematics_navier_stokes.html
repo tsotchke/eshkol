@@ -1,17 +1,18 @@
 <h1 id="navier-stokes-examples-residuals-scaling-laws-and-similarity-profiles">Navier-Stokes examples: residuals, scaling laws and similarity profiles</h1>
 <!-- example-catalogue:ns-summary:start -->
-<p>The authored matrix contains <strong>12 programs, 14 criteria and 28 CTest entries</strong>, each with native JIT and AOT variants, under <code>ESHKOL_BUILD_TESTS AND TARGET eshkol-run</code>. Localization supplies three criteria. The actual run supplies outcomes and timing; this documentation update reports source inspection only. <!-- example-catalogue:ns-summary:end --></p>
-<p>Source: an external reference construction for the three-dimensional Navier-Stokes equations, <a href="https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf" class="uri">https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf</a>. Section, equation and lemma numbers cited below (e.g. “Lemma 4.5”, “(4.20)”) refer to that source.</p>
+<p>The authored matrix contains <strong>12 programs, 14 criteria and 28 CTest entries</strong>, each with native JIT and AOT variants, under <code>ESHKOL_BUILD_TESTS AND TARGET eshkol-run</code>. Localization supplies three criteria. Every one of these 12 programs was run at release SHA <code>60f345def</code> (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. <strong>12</strong> completed in both modes; <strong>12</strong> of those printed their own verdict <code>RESULT: ALL PASS</code> with <code>Failed: 0</code> in both modes. Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4. <!-- example-catalogue:ns-summary:end --></p>
+<p>Source: an external reference construction for the three-dimensional Navier-Stokes equations, OpenAI, “Finite time blowup for Navier–Stokes” (2026), <a href="https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf" class="uri">https://cdn.openai.com/pdf/32d9f210-8b73-45e0-91bc-82a30aef8a9a/navier-stokes.pdf</a>. Its Theorem 1.1 states that for every viscosity <code>nu &gt; 0</code> there are a smooth force compactly supported in space and time, a compact set <code>K</code> and smooth velocity and pressure fields on <code>R^3 x [0, 1)</code>, starting from rest and supported in <code>K</code>, solving the forced incompressible equations with uniformly bounded kinetic energy while <code>||u(t)||_inf</code> is unbounded as <code>t -&gt; 1</code>. The PDF carries no date line; the year is the one the program headers give. Section, equation and lemma numbers cited below (e.g. “Lemma 4.5”, “(4.20)”) refer to that source.</p>
 <p>These programs do not reproduce the source’s full argument. They compute the <em>leading structure</em> of the construction mechanically, where a reader would otherwise differentiate, rescale and balance powers by hand: the residual operator is assembled from AD partials, the similarity coordinates are differentiated through their own implicit definition, the scale exponents are solved as a linear system in exact rational arithmetic, and the leading profile series is derived from the leading balance operator rather than quoted. Every number printed is computed by the program. The only literal constants that appear in a comparison are the exact values the paper states, and each such comparison is either an exact rational equality or carries a stated tolerance.</p>
 <p>Each program prints one <code>PASS:</code>/<code>FAIL:</code> line per check, a <code>Passed:</code>/<code>Failed:</code> count, a <code>RESULT: ALL PASS</code> or <code>RESULT: FAILURES DETECTED</code> verdict, and exits nonzero if any check failed.</p>
 <h2 id="what-each-program-covers">What each program covers</h2>
 <!-- example-catalogue:ns-table:start -->
 <table>
 <colgroup>
-<col style="width: 25%" />
-<col style="width: 25%" />
-<col style="width: 25%" />
-<col style="width: 25%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
 </colgroup>
 <thead>
 <tr>
@@ -19,6 +20,7 @@
 <th>Paper sections</th>
 <th>Implemented calculation</th>
 <th>CTest criteria</th>
+<th>Measured JIT / AOT</th>
 </tr>
 </thead>
 <tbody>
@@ -27,72 +29,84 @@
 <td>2.1, 3.1, 4.1 ((4.9), (4.12), (4.13))</td>
 <td>Solve an exact exponent linear system with free h; interpolate the leading operator, solve finite profile recurrences and compare leading physical residuals.</td>
 <td><code>ns_leading_profile_balance</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-first-principles" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_heat_exterior.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_heat_exterior.esk</a></td>
 <td>2.3, Appendix A, Lemma A.1</td>
 <td>Solve curvature-corrected radial heat coefficients by triangular recursion, invert a distinct-power moment matrix and inspect near-terminal-time behavior.</td>
 <td><code>ns_heat_exterior_exact</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-heat-exterior" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_localization.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_localization.esk</a></td>
 <td>10, Proposition 10.1, Lemmas 10.2-10.4, Corollary 10.6</td>
 <td>Cancel a temporal pole with a cutoff polynomial, guard spatial bumps, periodize within one cell and differentiate a discrete energy model.</td>
 <td><code>ns_localization_smooth_extension</code>, <code>ns_energy_dissipation_bounds</code>, <code>ns_torus_corollary_scaling</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-localization" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_mean_corrections.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_mean_corrections.esk</a></td>
 <td>8, Lemma 8.2 and Lemma 8.7</td>
 <td>Build supported divergence-free bump fields, compute a five-moment generalized Vandermonde matrix and solve amplitudes with exact_linalg.</td>
 <td><code>ns_five_moment_vandermonde</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-mean-corrections" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_oscillatory_realization.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_oscillatory_realization.esk</a></td>
 <td>6, 7, 2.2</td>
 <td>Construct trigonometric polynomials on a four-point auxiliary torus, extract zero-mode fluxes and solve a two-component stress matrix.</td>
 <td><code>ns_oscillatory_zero_mode</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-oscillatory-realization" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_pulse_growth.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_pulse_growth.esk</a></td>
 <td>Introduction ([9]), 2.2</td>
 <td>Derive the affine-background wavevector law and log-amplitude rate, bisect the crossover and integrate the amplitude by RK4.</td>
 <td><code>ns_pulse_growth_crossover</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-pulse-growth" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_pulse_stress.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_pulse_stress.esk</a></td>
 <td>2.2, 3.2 (Figure 4), 3.3 and 7</td>
 <td>Average angular products, solve a rational two-family covariance system and integrate one transverse mode on an affine background.</td>
 <td><code>ns_covariance_two_family_solve</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-pulse-stress" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_residual_ladder.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_residual_ladder.esk</a></td>
 <td>9, (9.8), (9.18), Propositions 9.3 and 9.6</td>
 <td>Compute the rational exponent ladder and cancel three Taylor coefficients of the scalar residual with linear term 2w and quadratic w².</td>
 <td><code>ns_residual_exponent_ladder</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-residual-ladder" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_residual_order_n.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_residual_order_n.esk</a></td>
 <td>5, 5.1, equations (5.1)-(5.6)</td>
 <td>Apply a fixed linear correction operator to known lower-order forcing; compare Taylor coefficients with derivative-n/factorial extraction.</td>
 <td><code>ns_residual_order_n_vanishes</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-residual-order-n" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_similarity_scales.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_similarity_scales.esk</a></td>
 <td>2.1, 3.1, 4.1 (Lemma 4.1, (3.2), (4.3), (4.7))</td>
 <td>Build the self-similar axisymmetric ansatz, differentiate q’s implicit solve, fit scale exponents and evaluate core energy/physical residual scaling.</td>
 <td><code>ns_similarity_exponents_solved</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-similarity-scales" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_stress_cone.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_stress_cone.esk</a></td>
 <td>4.3, Lemma 4.5, Appendix C</td>
 <td>Use rational quadratic sign tests, integrate the radial profile equation and reuse an established threshold P_K on constructed stresses.</td>
 <td><code>ns_cone_condition_equivalence</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-stress-cone" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/examples/mathematics_navier_stokes_viscosity_scaling.esk#L1" target="_blank" rel="noopener noreferrer">mathematics_navier_stokes_viscosity_scaling.esk</a></td>
 <td>3 (outline), 10.4 equations (10.22)-(10.23)</td>
 <td>Assemble time/advection/Laplacian/pressure derivatives by AD for u=(1+t)(y²z,z²x,x²y), p=xyz+tx²; rescale fields and grids.</td>
 <td><code>ns_viscosity_scaling_exact</code></td>
+<td><a href="/docs#page=mathematics_examples&amp;mathematics-navier-stokes-viscosity-scaling" data-url="/content/mathematics_examples.html">PASS / PASS</a></td>
 </tr>
 </tbody>
 </table>
@@ -149,6 +163,31 @@
 <p>Two pulse families are built as trigonometric polynomials on a 4-point auxiliary torus, where <code>cos</code>/<code>sin</code> of the sample angles <code>k pi/2</code> are the exact integers <code>{1,0,-1,0}</code>/<code>{0,1,0,-1}</code> (a lookup table — no transcendental call anywhere in this file). Each family’s radial, azimuthal and axial components are in-phase with distinct amplitude ratios, matching Section 2.2’s “different ratios of radial angular-momentum flux to radial axial-momentum flux”: each family’s velocity has exactly zero angular mean (<code>torus-average</code>), and the quadratic momentum-flux products’ zero mode — extracted BY <code>torus-average</code>, not asserted — matches <code>A*B/2</code> and <code>A*C/2</code> exactly. The stacked 2x2 flux matrix is exactly invertible, and <code>core.exact_linalg</code>’s <code>exact-solve</code> finds POSITIVE weights realizing a prescribed target stress (both families contributing constructively, i.e. inside the cone). Negative controls: one family alone has <code>exact-rank</code> 1, and being non-square cannot realize a general two-component target (<code>exact-solve</code> raises rather than fabricating a value).</p>
 <h3 id="mathematics_navier_stokes_pulse_growthesk"><code>mathematics_navier_stokes_pulse_growth.esk</code></h3>
 <p>For a simple-shear background <code>U = (Sy, 0)</code>, the Craik-Criminale wavevector equation <code>dk/dt = -(grad U)^T k</code> gives <code>k_theta</code> constant and <code>k_r(t) = k_r(0) - S k_theta t</code> exactly affine in t — verified against the CL ODE by AD at five sampled t, with a negative control on a perturbed law. A representative growth-rate model <code>rate(t) = G0 - lambda t - nu|k(t)|^2</code> (amplification proportional to shear, weakened linearly by the changing orientation, opposed by viscous dissipation growing with <code>|k(t)|^2</code>) is positive initially and eventually negative, monotonically decreasing, with the crossover bisected to an exact rational bracket under <code>1e-9</code> width — no square root, no <code>exp</code>. The log-amplitude <code>P(t)</code>, an exact rational cubic, is verified to be the exact AD antiderivative of <code>rate(t)</code>, and <code>exp(P(t))</code> is cross-checked against an independently RK4-integrated amplitude curve to <code>1e-3</code> relative, with the numerically-integrated curve’s peak matching the exact crossover to within one integration step. The tail decays (<code>P(t)</code> very negative at large t). Negative control: zero shear collapses the model’s amplification terms and gives pure viscous decay with no crossover.</p>
+<h3 id="mathematics_navier_stokes_mean_correctionsesk"><code>mathematics_navier_stokes_mean_corrections.esk</code></h3>
+<p>Section 8 builds compactly supported, divergence-free mean corrections and solves five radial moment conditions (Lemma 8.7). Two facts are mechanized and then tied together.</p>
+<ul>
+<li><strong>Divergence-free by construction, checked rather than trusted.</strong> A compactly supported, piecewise-polynomial vector potential is built from guarded bumps, its “curl” is written out, and <code>div</code> of the resulting field is an exact zero by <code>derivative-n</code> at rational interior points of each azimuthal and axial box, and far from a box. The support cutoff itself is checked: the field is exactly zero outside every box and nonzero inside.</li>
+<li><strong>The five-moment solve.</strong> With geometric bump copies <code>eta_j(x) = a_j^{-1} eta_0(x/a_j)</code>, <code>a_j = r^j</code>, whose power moments are exactly <code>a_j^p</code>, the three azimuthal and two axial moment conditions at <code>lambda = 1</code> (exponents <code>(2, -4, -2)</code> and <code>(1, -1)</code>) form generalized Vandermonde systems. <code>exact-det</code> certifies them nonsingular and <code>exact-solve</code> (<code>core.exact_linalg</code>) returns the amplitudes in exact rationals; at <code>60f345def</code> they are <code>(u0 u1 u2) = (1949/945, -3260/189, 3776/945)</code> and <code>(s0 s1) = (23/8, -21/8)</code>, and <code>M u + T = 0</code> holds exactly for both blocks.</li>
+<li>The solved amplitudes weight the five bumps of the first part, so the realized correction field is the one that cancels the defect; it is again exactly divergence free by AD and still compactly supported. Negative controls: a correction placed on the wrong support leaves the nonzero residuals <code>(-3776/135, 295/8748, 236/1215)</code> and <code>(21/8, -7/16)</code>; an oversized cutoff is nonzero where the correct one vanishes.</li>
+</ul>
+<h3 id="mathematics_navier_stokes_residual_ladderesk"><code>mathematics_navier_stokes_residual_ladder.esk</code></h3>
+<p>Section 9 improves the residual stage by stage, with residual exponents on the ladder of (9.8) and (9.18).</p>
+<ul>
+<li><strong>The exponent ladder</strong> <code>sigma_0 = 1/5</code>, <code>sigma_{j+1} = sigma_j + 1/10</code>, <code>B_j = 1/2 + sigma_j</code>, <code>C*_j = 1 + sigma_j</code> is checked in exact arithmetic for <code>j = 0..5</code>, together with the closed form and strict, unbounded growth (<code>sigma_20 &gt; 2</code>); the run prints <code>sigma_0..sigma_3 = (1/5, 3/10, 2/5, 1/2)</code> and <code>B_0..B_3 = (7/10, 4/5, 9/10, 1)</code>.</li>
+<li><strong>The coefficient ladder</strong> is a scalar model of the exact increment identity <code>R(u_B + w, pi_B + p) = R(u_B, pi_B) + L_{u_B}(w, p) + div(w (x) w)</code>: a linear operator <code>2w</code> and a quadratic remainder <code>w^2</code> play the roles of <code>L_{u_B}</code> and <code>div(w (x) w)</code> against a base residual with nonzero coefficients through order
+<ol start="4" type="1">
+<li>Each rung probes the map from the new correction coefficient to the order-<code>j</code> Taylor coefficient at two points (it is affine, by the splitting argument), interpolates the root exactly, and re-extracts the coefficient with <code>taylor</code> to confirm it is the exact rational zero. The solved coefficients are <code>c1 = 3/2</code>, <code>c2 = -1/8</code>, <code>c3 = 43/16</code>; after three rungs orders 1–3 vanish and the order-4 coefficient <code>59/64</code> remains, as it should.</li>
+</ol></li>
+<li>Negative controls skip each rung in turn and recover exactly the pre-correction coefficient at that order.</li>
+</ul>
+<h3 id="mathematics_navier_stokes_localizationesk"><code>mathematics_navier_stokes_localization.esk</code></h3>
+<p>Section 10 localizes the construction with smooth cutoffs, proves the energy identity, and transports it to the torus (Corollary 10.6). Four independent facts, each with a negative control, supply three CTest criteria (<code>ns_localization_smooth_extension</code>, <code>ns_energy_dissipation_bounds</code>, <code>ns_torus_corollary_scaling</code>).</p>
+<ul>
+<li><strong>A cutoff cancels a temporal pole.</strong> The uncut field <code>V(r,t) = r^2/(1-t)^2</code> has an order-2 pole at <code>t = 1</code>; the cutoff <code>chi(t) = (1-t)^3 (w^2-(t-1)^2)^2</code> vanishes to order 3, so the product is a polynomial and its Taylor coefficients about <code>t = 1</code> at <code>r = 3</code> are exact rationals, <code>(0, -9/16, 0, 9/2, 0)</code>. The uncut field grows as <code>900, 90000, 9000000</code> at <code>t = 9/10, 99/100, 999/1000</code>; an under-cancelling cutoff still leaks unbounded growth.</li>
+<li><strong>Compact support.</strong> The spatial part of the cutoff force is exactly zero outside its box at every sampled time, nonzero inside, and zero at <code>t = 1</code>; an oversized cutoff leaks outside the box.</li>
+<li><strong>Periodization onto <code>T^3 = R^3/Z^3</code>.</strong> For support radius <code>1/5 &lt; 1/2</code> the only nonzero translate inside the fundamental cell is the untranslated one, checked exactly, and <code>torus-average-2d</code> (<code>core.exact_linalg</code>) gives the same value, <code>1/3906250000</code>, for the periodized and the single-cell field; an oversized radius lets aliased translates leak in.</li>
+<li><strong>The energy identity.</strong> For a discrete model with the force defined, as in Proposition 10.1, to be the residual <code>f_k = d_t u_k + nu u_k</code>, the identity <code>d/dt (1/2 sum u_k^2) = &lt;f, u&gt; - nu ||u||^2</code> holds exactly by AD in <code>t</code>: both sides are <code>26/9</code> at <code>t0 = 1/3</code>; dropping the viscous term gives <code>338/135</code>.</li>
+</ul>
 <h2 id="running-them">Running them</h2>
 <!-- example-catalogue:ns-commands:start -->
 <p>Prerequisites and scope are stated in the <a href="/docs#page=mathematics_examples" data-url="/content/mathematics_examples.html">complete mathematics catalogue</a>. Run from the repository root after building the compiler and stdlib.</p>
@@ -190,7 +229,7 @@
 ./build/eshkol-run -L./build examples/mathematics_navier_stokes_viscosity_scaling.esk -o .scratch/example-manual/mathematics_navier_stokes_viscosity_scaling &amp;&amp; .scratch/example-manual/mathematics_navier_stokes_viscosity_scaling
 
 ctest --test-dir build --output-on-failure -R &#39;^ns_&#39;</code></pre>
-<p>The criterion table above declares <code>_jit</code> and <code>_aot</code> variants; it is not a receipt that either ran. <!-- example-catalogue:ns-commands:end --></p>
+<p>The criterion table above lists the <code>_jit</code> and <code>_aot</code> variants; the measured outcome of each, at <code>60f345def</code>, is in the table’s last column and in each program’s entry in the <a href="/docs#page=mathematics_examples" data-url="/content/mathematics_examples.html">mathematics catalogue</a>. <!-- example-catalogue:ns-commands:end --></p>
 <h2 id="exactness-boundaries">Exactness boundaries</h2>
 <ul>
 <li>Exact arithmetic here is mostly <strong>scalar</strong>. Most exact systems in this family — the exponent solve, the Vandermonde interpolation, the profile-coefficient solve, the stress-cone threshold and identities — are written out over the scalar exact tower on Scheme lists of rationals. The oscillatory-realization, mean-correction and localization programs also use <code>core.exact_linalg</code> for their exact solves or torus averages. Its <code>exact-solve</code>/<code>exact-rank</code>/<code>torus-average</code> operations are scalar-exact — Eshkol tensors remain f64-backed, so <code>exact_linalg</code>’s matrices are vectors of row-vectors, never tensors.</li>
