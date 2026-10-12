@@ -596,6 +596,14 @@ public:
     llvm::Value* gradientHigherOrder(const eshkol_operations_t* op);
 
     /**
+     * Give a gradient result the shape of the point it was taken at
+     * (runtime helper eshkol_gradient_in_point_shape): a rank-k tensor point
+     * yields a rank-k gradient tensor over the same row-major partials. Every
+     * gradient exit routes its result through this one rule.
+     */
+    llvm::Value* gradientInPointShape(llvm::Value* result, llvm::Value* point);
+
+    /**
      * Emit the exact-AD gradient of a RUNTIME closure value at an
      * already-evaluated, tagged runtime point. Shared by the direct
      * runtime-parameter path in gradient() and the higher-order closure body

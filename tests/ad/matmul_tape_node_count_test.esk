@@ -59,12 +59,13 @@
 
 ;; Every element of grad must match `expected` (a list), elementwise.
 (define (grad-equals? g expected tol)
-  (let loop ((i 0) (e expected))
-    (if (pair? e)
-        (if (close? (vector-ref g i) (car e) tol)
-            (loop (+ i 1) (cdr e))
-            #f)
-        #t)))
+  (let ((flat (tensor->vector (flatten g))))
+    (let loop ((i 0) (e expected))
+      (if (pair? e)
+          (if (close? (vector-ref flat i) (car e) tol)
+              (loop (+ i 1) (cdr e))
+              #f)
+          #t))))
 
 ;; Run one matmul gradient, report its node count, and require the exact dense
 ;; count. The four nodes are the two input packs, matmul, and sum.
@@ -80,6 +81,8 @@
     (display ": tape_nodes=") (display n)
     (display " expected=") (display expected-nodes)
     (newline)
+    (check (string-append label ": gradient keeps the point shape")
+           (equal? (tensor-shape g) (tensor-shape x)))
     (check (string-append label ": gradient is exact")
            (grad-equals? g expected 1.0e-9))
     (check (string-append label ": gradient still routes through the tape")

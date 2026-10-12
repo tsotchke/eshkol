@@ -385,12 +385,10 @@ Physics and field theory operators.
 
 ## Part 6: Complete Example - Neural Network Training
 
-Here's a complete 2-layer neural network with backpropagation. Today
-`(gradient f w)` with respect to a 2-D tensor parameter returns the gradient
-flattened (shape `(12)` for a `(3 4)` weight matrix). Planned for v1.4: the
-gradient in the parameter's own shape, which the weight update below uses.
+Here's a complete 2-layer neural network with backpropagation. For a tensor
+parameter, `(gradient f w)` retains the parameter's dimensions: a `(3 4)`
+weight matrix has a `(3 4)` gradient, which the weight update below uses.
 
-<!-- doc-example: skip pseudo-code: planned capability for v1.4; the weight update uses gradients in the parameter's own shape -->
 ```scheme
 ; Network parameters
 (define input-size 3)

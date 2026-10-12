@@ -45,9 +45,9 @@ at the call site, (2) a first-class value bound to a variable, and (3) a value
 threaded through a higher-order wrapper — three forms that once diverged from
 one another with a silent zero.
 
-Current corpus (v1.3.6-evolve, `generated/MANIFEST.txt`): **28 files, 185
-probes, 570 component checks**, run under BOTH the JIT (`-r`) and AOT, so a full
-sweep grades 56 file×mode cells.
+Current corpus (v1.3.6-evolve, `generated/MANIFEST.txt`): **32 files, 189
+probes, 674 component checks**, run under BOTH the JIT (`-r`) and AOT, so a full
+sweep grades 64 file×mode cells.
 
 The `vecpoint` family was added when this harness found that a tensor-op loss
 differentiated at a `(vector …)`-constructed point returned an all-zero
