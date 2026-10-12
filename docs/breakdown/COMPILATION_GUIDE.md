@@ -369,7 +369,7 @@ eshkol> (derivative (lambda (x) (* x x)) 3.0)
 6.0
 
 eshkol> :type (+ 1 2)
-integer
+Type: Int64
 
 eshkol> :time (factorial 1000)
 [result]
@@ -387,7 +387,7 @@ eshkol> :quit
 | `:cancel` | `:c` | Cancel multi-line input |
 | `:clear` | | Clear the screen |
 | `:env` | `:e` | Show defined symbols in environment |
-| `:type <expr>` | `:t` | Show type of an expression |
+| `:type <expr>` | `:t` | Show the type the HoTT type checker infers for an expression |
 | `:doc <name>` | `:d` | Show documentation for a function |
 | `:ast <expr>` | | Show AST for an expression |
 | `:time <expr>` | | Time execution of an expression |

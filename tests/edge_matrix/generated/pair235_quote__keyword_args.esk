@@ -31,7 +31,7 @@
 
 ;; check quote_veclit_ref__in__keyword_args_kw_pass
 (define (kwcg2045 #:v v) v)
-(define (edge-check-g2045) (edge-chk "quote_veclit_ref__in__keyword_args_kw_pass" (kwcg2045 #:v (vector-ref #(9 8 7) 2)) 7))
+(define (edge-check-g2045) (edge-chk "quote_veclit_ref__in__keyword_args_kw_pass" (kwcg2045 #:v (vector-ref #(9 8 7) 2)) 7.0))
 (edge-check-g2045)
 
 ;; check quote_qq_sugar__in__keyword_args_kw_pass

@@ -910,6 +910,7 @@ static const BuiltinDef BUILTINS[] = {
      * intercept, so it could not be passed as a value at all. */
     {"integer?", 1717, 1},
     {"type-of", 740, 1},
+    {"type-name", 2243, 1},
     /* Error objects — IDs 711-714.
      * These three were misbound by one slot: native 711 is error-MESSAGE and
      * 712 is error-TYPE, so R7RS `error-object?` answered the message string

@@ -356,16 +356,27 @@ eshkol_tagged_value_t eshkol_eval_string(const char* str, void* arena);
 // ============================================================================
 
 /**
- * @brief Get the type of a value.
+ * @brief Get the type of a value as a symbol -- what `type-name` returns.
  *
- * Returns a symbol representing the value's type:
- * 'integer, 'real, 'boolean, 'string, 'symbol, 'pair, 'vector,
- * 'procedure, 'closure, 'primitive, 'null, 'void, etc.
+ * The spelling comes from the runtime's one type-name vocabulary
+ * (lib/core/value_type_names.h), shared with the bytecode VM:
+ * 'integer, 'rational, 'real, 'complex, 'boolean, 'char, 'string, 'symbol,
+ * 'pair, 'null, 'vector, 'tensor, 'hash-table, 'procedure, 'continuation,
+ * 'unspecified, ... and 'unknown for a value outside the vocabulary.
+ * Defined in lib/core/runtime_type_name.cpp (runtime archive).
  *
  * @param value Value to inspect
  * @return Type symbol
  */
 eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value);
+
+/**
+ * @brief `type-name` entry point for generated code: writes
+ *        eshkol_type_of(*value) to @p out. Pointer arguments keep the tagged
+ *        value off the by-value struct ABI.
+ */
+void eshkol_type_name_into(const eshkol_tagged_value_t* value,
+                           eshkol_tagged_value_t* out);
 
 /**
  * @brief Get source location information for a procedure.

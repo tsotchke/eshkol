@@ -15,6 +15,7 @@
 #include "../lib/repl/repl_utils.h"
 
 #include <eshkol/core/introspection.h>
+#include <eshkol/llvm_backend.h>
 
 #include <iostream>
 #include <fstream>
@@ -656,7 +657,10 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
                 try {
                     eshkol_ast_t ast = parse_string(expr, &repl_ctx);
                     if (ast.type != ESHKOL_INVALID) {
-                        std::string type_str = get_ast_type_string(&ast);
+                        // The HoTT type checker's inferred type for the form.
+                        char* inferred = eshkol_repl_infer_type_name(&ast);
+                        std::string type_str = inferred ? inferred : get_ast_type_string(&ast);
+                        std::free(inferred);
                         std::cout << color::type() << "Type: " << color::reset();
                         std::cout << color::bright_cyan() << type_str << color::reset() << "\n";
                         eshkol_ast_clean(&ast);

@@ -26,7 +26,7 @@
 (edge-check-g1995)
 
 ;; check quote_veclit_ref__in__dynamic_wind_dw_body
-(define (edge-check-g1996) (edge-chk "quote_veclit_ref__in__dynamic_wind_dw_body" (dynamic-wind (lambda () 'dwb) (lambda () (vector-ref #(9 8 7) 2)) (lambda () 'dwa)) 7))
+(define (edge-check-g1996) (edge-chk "quote_veclit_ref__in__dynamic_wind_dw_body" (dynamic-wind (lambda () 'dwb) (lambda () (vector-ref #(9 8 7) 2)) (lambda () 'dwa)) 7.0))
 (edge-check-g1996)
 
 ;; check quote_qq_sugar__in__dynamic_wind_dw_body

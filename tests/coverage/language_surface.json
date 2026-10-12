@@ -15,11 +15,11 @@
     }
   },
   "counts": {
-    "builtins_total": 1056,
+    "builtins_total": 1058,
     "builtins_in_native_closure_table": 435,
-    "builtins_in_vm_table": 789,
-    "builtins_in_llvm_aot_dispatch": 797,
-    "builtins_aot_only": 240,
+    "builtins_in_vm_table": 790,
+    "builtins_in_llvm_aot_dispatch": 799,
+    "builtins_aot_only": 241,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -33,14 +33,14 @@
     "geometry": 56,
     "list_pair": 53,
     "io_port": 52,
+    "misc": 42,
     "string_char": 42,
-    "misc": 41,
     "consciousness": 37,
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
     "misc_core": 13,
-    "control_flow": 5,
+    "control_flow": 6,
     "memory_region": 4
   },
   "special_forms_by_category": {
@@ -9049,6 +9049,16 @@
       "category": "numeric"
     },
     {
+      "name": "raise-continuable",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
+    },
+    {
       "name": "rand",
       "ids": [],
       "arity": null,
@@ -12267,6 +12277,19 @@
         "native_llvm"
       ],
       "category": "ffi_system"
+    },
+    {
+      "name": "type-name",
+      "ids": [
+        2243
+      ],
+      "arity": 1,
+      "min_arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "type-of",

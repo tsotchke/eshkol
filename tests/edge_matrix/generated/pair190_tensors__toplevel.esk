@@ -41,17 +41,17 @@
 
 ;; check tensors_lit_int_ref__in__toplevel_top_define
 (define tlvg1663 (vector-ref #(9 8 7) 0))
-(define (edge-check-g1663) (edge-chk "tensors_lit_int_ref__in__toplevel_top_define" tlvg1663 9))
+(define (edge-check-g1663) (edge-chk "tensors_lit_int_ref__in__toplevel_top_define" tlvg1663 9.0))
 (edge-check-g1663)
 
 ;; check tensors_lit_int_ref__in__toplevel_top_list_arg
 (define tllg1664 (list (vector-ref #(9 8 7) 0)))
-(define (edge-check-g1664) (edge-chk "tensors_lit_int_ref__in__toplevel_top_list_arg" (car tllg1664) 9))
+(define (edge-check-g1664) (edge-chk "tensors_lit_int_ref__in__toplevel_top_list_arg" (car tllg1664) 9.0))
 (edge-check-g1664)
 
 ;; check tensors_lit_int_ref__in__toplevel_top_vector_arg
 (define tlwg1665 (vector (vector-ref #(9 8 7) 0)))
-(define (edge-check-g1665) (edge-chk "tensors_lit_int_ref__in__toplevel_top_vector_arg" (vector-ref tlwg1665 0) 9))
+(define (edge-check-g1665) (edge-chk "tensors_lit_int_ref__in__toplevel_top_vector_arg" (vector-ref tlwg1665 0) 9.0))
 (edge-check-g1665)
 
 (display "EDGE-MATRIX-DONE") (newline)

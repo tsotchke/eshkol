@@ -51,12 +51,12 @@
 
 ;; check quote_veclit_ref__in__internal_define_def_then_use
 (define (idcg2035) (define it (vector-ref #(9 8 7) 2)) it)
-(define (edge-check-g2035) (edge-chk "quote_veclit_ref__in__internal_define_def_then_use" (idcg2035) 7))
+(define (edge-check-g2035) (edge-chk "quote_veclit_ref__in__internal_define_def_then_use" (idcg2035) 7.0))
 (edge-check-g2035)
 
 ;; check quote_veclit_ref__in__internal_define_def_chain
 (define (iddg2036) (define iu (vector-ref #(9 8 7) 2)) (define iv iu) iv)
-(define (edge-check-g2036) (edge-chk "quote_veclit_ref__in__internal_define_def_chain" (iddg2036) 7))
+(define (edge-check-g2036) (edge-chk "quote_veclit_ref__in__internal_define_def_chain" (iddg2036) 7.0))
 (edge-check-g2036)
 
 ;; check quote_qq_sugar__in__internal_define_def_then_use

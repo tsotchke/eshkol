@@ -26,7 +26,7 @@
 (edge-check-g2009)
 
 ;; check quote_veclit_ref__in__hash_tables_store_lookup
-(define (edge-check-g2010) (edge-chk "quote_veclit_ref__in__hash_tables_store_lookup" (let ((htg2010 (make-hash-table))) (hash-table-set! htg2010 'ck (vector-ref #(9 8 7) 2)) (hash-table-ref htg2010 'ck)) 7))
+(define (edge-check-g2010) (edge-chk "quote_veclit_ref__in__hash_tables_store_lookup" (let ((htg2010 (make-hash-table))) (hash-table-set! htg2010 'ck (vector-ref #(9 8 7) 2)) (hash-table-ref htg2010 'ck)) 7.0))
 (edge-check-g2010)
 
 ;; check quote_qq_sugar__in__hash_tables_store_lookup

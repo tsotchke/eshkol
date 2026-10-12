@@ -341,6 +341,8 @@ static void vm_exec_push_handler(VM* vm, int32_t operand) {
     vm->handler_stack[vm->n_handlers].region_bracket_mark = vm->n_region_brackets;
     vm->handler_stack[vm->n_handlers].owner_generation = vm_current_frame_generation(vm);
     vm->handler_stack[vm->n_handlers].tail_retained = 0;
+    vm->handler_stack[vm->n_handlers].has_proc = 0;
+    vm->handler_stack[vm->n_handlers].running = 0;
     if (!vm_capture_handler_values(vm, &vm->handler_stack[vm->n_handlers])) {
         vm->error = 1;
         return;

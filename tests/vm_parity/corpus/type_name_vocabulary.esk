@@ -1,0 +1,7 @@
+;; type-name answers from one shared vocabulary on every engine.
+(display (map type-name
+              (list 42 3.5 "s" 'sym (list 1) '() (vector 1) #t #\a 1/3
+                    (expt 2 100) (make-rectangular 1.0 2.0) (make-hash-table)
+                    (lambda (x) x))))
+(newline)
+(display (eq? (type-name "x") 'string)) (newline)

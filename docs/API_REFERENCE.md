@@ -6882,7 +6882,7 @@ A visual live coding environment with JIT compilation, tab completion, and crash
 | `:cancel` | `:c` | Cancel multi-line input |
 | `:clear` | | Clear the screen |
 | `:env` | `:e` | Show defined symbols in environment |
-| `:type EXPR` | `:t` | Show type of an expression |
+| `:type EXPR` | `:t` | Show the type the HoTT type checker infers for an expression |
 | `:doc NAME` | `:d` | Show documentation for a function |
 | `:ast EXPR` | | Show AST for an expression |
 | `:time EXPR` | | Time execution of an expression |
