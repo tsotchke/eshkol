@@ -244,9 +244,13 @@ SURFACE_PROBES = (
             "(string=? \"abc\" \"abc\")",
             "(string<? \"abc\" \"abd\")",
             "(string>? \"abd\" \"abc\")",
-            "(equal? (vector->list #(1 2 3)) '(1 2 3))",
-            "(let ((v (vector 1 2 3))) (vector-fill! v 7) (equal? v #(7 7 7)))",
-            "(let ((v (vector 1 2 3))) (vector-copy! v 1 #(8 9)) (equal? v #(1 8 9)))",
+            # Eshkol's plain numeric #(...) literal is an f64 tensor.
+            # Use Scheme vectors here so exact element equality is portable.
+            "(equal? (vector->list (vector 1 2 3)) '(1 2 3))",
+            "(let ((v (vector 1 2 3))) (vector-fill! v 7) "
+            "(equal? v (vector 7 7 7)))",
+            "(let ((v (vector 1 2 3))) (vector-copy! v 1 (vector 8 9)) "
+            "(equal? v (vector 1 8 9)))",
             "(and (vector? #(1)) (string? \"x\") (char? #\\x) (symbol? 'x) "
             "(number? 1) (integer? 1) (real? 1) (procedure? (lambda (x) x)))",
         ),

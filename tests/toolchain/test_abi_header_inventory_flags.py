@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Focused language-selection tests for the ABI semantic scanner."""
 
-import json
 from pathlib import Path
 import sys
 import unittest
@@ -25,10 +24,13 @@ class ToolchainFlagSelectionTests(unittest.TestCase):
         self.assertNotIn("-isystem", inventory._toolchain_flags(False))
 
     def test_real_vm_model_c_entry_is_classified_as_c(self):
-        compdb = ROOT / ".scratch" / "native-xla-review" / "compile_commands.json"
-        entries = json.loads(compdb.read_text())
-        entry = next(e for e in entries if e["file"].endswith("vm_model_io_fail_closed_test.c"))
-        self.assertFalse(inventory._is_cxx_translation_unit(entry["file"], entry["command"].split()))
+        # Exercise the actual C translation unit used by the VM model I/O
+        # fail-closed target. Keep this unit test independent of generated,
+        # ignored compile databases from a particular scratch build.
+        source = ROOT / "tests" / "backend" / "vm_model_io_fail_closed_test.c"
+        self.assertTrue(source.is_file(), f"missing C translation unit: {source}")
+        command = ["cc", "-I", str(ROOT / "inc"), "-c", str(source)]
+        self.assertFalse(inventory._is_cxx_translation_unit(str(source), command))
 
 
 if __name__ == "__main__":
