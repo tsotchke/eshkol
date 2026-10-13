@@ -56,6 +56,11 @@ import os
 import re
 import sys
 
+SCRIPTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, SCRIPTS_DIR)
+import gen_language_surface
+
 DOC_HDR = re.compile(r"^#+\s*`\(([a-z][a-zA-Z0-9!?*+<>=./_%-]*)")
 PROVIDE = re.compile(r"\(provide\s+([^)]*)\)", re.S)
 # Public module bindings include ordinary defines, uppercase/asterisk
@@ -178,22 +183,52 @@ def collect_modules(root):
     return provided, defined
 
 
+def collect_vm_compiler_lowerings_from_source(source):
+    """Names with a VM compiler call-around-internal-native lowering.
+
+    A bare `is_sym(head, ...)` branch can reject a form or only special-case
+    part of it. Count only the implemented call protocol that brackets a
+    procedure CALL with VM-internal native calls. This is the VM implementation
+    of raise-continuable; unrelated compiler recognizers remain unsupported
+    unless their manifest backend says otherwise.
+    """
+    source = gen_language_surface._strip_c_comments(source)
+    branch = re.compile(
+        r'if\s*\(\s*is_sym\s*\(\s*head\s*,\s*"([^"\\]+)"\s*\)'
+        r'\s*&&\s*node->n_children\s*==\s*2\s*\)\s*\{([^{}]*)\}', re.S)
+    call_around = re.compile(
+        r'chunk_emit\s*\(\s*c\s*,\s*OP_NATIVE_CALL\s*,\s*\d+\s*\)\s*;'
+        r'\s*chunk_emit\s*\(\s*c\s*,\s*OP_CALL\s*,\s*1\s*\)\s*;'
+        r'\s*chunk_emit\s*\(\s*c\s*,\s*OP_NATIVE_CALL\s*,\s*\d+\s*\)\s*;')
+    return {name for name, body in branch.findall(source)
+            if call_around.search(body)}
+
+
+def collect_vm_compiler_lowerings(root):
+    """Read narrowly recognized direct VM lowerings from compiler source."""
+    return collect_vm_compiler_lowerings_from_source(
+        read(os.path.join(root, "lib/backend/vm_compiler.c")))
+
+
 def compute_disagreements(root):
     docs = collect_docs(root)
     manifest, backends, mirrors, syntax, prelude = collect_manifest(root)
     provided, defined = collect_modules(root)
     return cross_check(docs, manifest, backends, mirrors, syntax, prelude,
-                       provided, defined)
+                       provided, defined,
+                       collect_vm_compiler_lowerings(root))
 
 
 def cross_check(docs, manifest, backends, mirrors, syntax, prelude,
-                provided, defined):
+                provided, defined, vm_lowerings=None):
     """The five-way comparison itself, over already-collected surfaces.
 
     Separated from collection so self_test() can drive it with synthetic
     surfaces and assert the resolution rules directly, rather than inferring
     them from whatever the repository happens to contain today.
     """
+
+    vm_lowerings = vm_lowerings or set()
 
     def native_reaches(nm, bk=None):
         """Can a program running on the NATIVE engine call `nm`?
@@ -234,7 +269,7 @@ def cross_check(docs, manifest, backends, mirrors, syntax, prelude,
         has_native = native_reaches(nm, bk)
         if not has_native and nm in mirrors:
             has_native = native_reaches(mirrors[nm])
-        has_vm = "vm" in bk
+        has_vm = "vm" in bk or nm in vm_lowerings
         # agent_ffi-only builtins are intentionally native-only host bridges.
         if bk == {"agent_ffi"}:
             continue
@@ -265,6 +300,14 @@ def self_test():
         args.update(kw)
         return set(cross_check(**args)[0])
 
+    wrapped_vm_call = '''
+        if (is_sym(head, "widget") && node->n_children == 2) {
+            chunk_emit(c, OP_NATIVE_CALL, 2245);
+            chunk_emit(c, OP_CALL, 1);
+            chunk_emit(c, OP_NATIVE_CALL, 2246);
+            return;
+        }
+    '''
     vm_only = {"widget": {"vm"}}
     cases = [
         ("a vm-only builtin with no native vehicle disagrees",
@@ -273,6 +316,23 @@ def self_test():
          run(backends=vm_only, syntax={"widget"}), set()),
         ("a prelude definition is natively reachable",
          run(backends=vm_only, prelude={"widget"}), set()),
+        ("a source-backed VM compiler lowering counts as VM support",
+         run(backends={"widget": {"native_llvm"}},
+             vm_lowerings=collect_vm_compiler_lowerings_from_source(
+                 wrapped_vm_call)),
+         set()),
+        ("an unrecognized native-only builtin remains VM-missing",
+         run(backends={"widget": {"native_llvm"}}),
+         {"vm_missing::widget"}),
+        ("a VM recognizer that emits an error remains VM-missing",
+         run(backends={"widget": {"native_llvm"}},
+             vm_lowerings=collect_vm_compiler_lowerings_from_source(
+                 'if (is_sym(head, "widget") && node->n_children == 2) '
+                 '{ report_compile_error(c); return; }')),
+         {"vm_missing::widget"}),
+        ("VM lowering does not invent native support",
+         run(backends={"widget": {"vm"}}, vm_lowerings={"widget"}),
+         {"native_missing::widget"}),
         ("a module definition is natively reachable",
          run(backends=vm_only, defined={"widget"}), set()),
         ("mirrors resolves to a natively reachable public name",
