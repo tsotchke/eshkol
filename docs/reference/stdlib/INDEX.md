@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 63** (plus `stdlib` itself and the module system page) — **provided symbols: 856** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 64** (plus `stdlib` itself and the module system page) — **provided symbols: 861** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -40,6 +40,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.dnc`](../../../lib/core/dnc.esk) | no | [dnc.md](dnc.md) | `make-dnc-memory` `dnc-content-address` `dnc-loc-address` `dnc-read` `dnc-write!` `dnc-alloc-weights` `dnc-read-grad` `dnc-memory?` |
 | [`core.exact_linalg`](../../../lib/core/exact_linalg.esk) | yes | [exact_linalg.md](exact_linalg.md) | `exact-matrix?` `exact-matrix-ref` `exact-matrix-mul` `exact-matrix-transpose` `exact-det` `exact-solve` `exact-inverse` `exact-rank` `exact-nullspace` `torus-average` `torus-average-2d` |
 | [`core.files`](../../../lib/core/files.esk) | yes | [files.md](files.md) | `path-directory` `with-atomic-output-file` `atomic-write-file` |
+| [`core.exact_psd`](../../../lib/core/exact_psd.esk) | no | [exact_psd.md](exact_psd.md) | `exact-psd-factor` `psd-factor?` `psd-factor-rows` `psd-factor-weights` `psd-negative-direction` |
 | [`core.functional.compose`](../../../lib/core/functional/compose.esk) | yes | [functional_compose.md](functional_compose.md) | `compose` `compose3` `identity` `constantly` |
 | [`core.functional.curry`](../../../lib/core/functional/curry.esk) | yes | [functional_curry.md](functional_curry.md) | `curry2` `curry3` `uncurry2` `partial1` `partial2` `partial3` `partial` |
 | [`core.functional.flip`](../../../lib/core/functional/flip.esk) | yes | [functional_flip.md](functional_flip.md) | `flip` |
