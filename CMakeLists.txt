@@ -12782,4 +12782,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "PASS: exact_affine_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    add_test(NAME exact_psd_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_psd_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME exact_psd_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_psd_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/exact_psd_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(exact_psd_jit exact_psd_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: exact_psd_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()
