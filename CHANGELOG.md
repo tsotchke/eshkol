@@ -17,6 +17,11 @@ independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Release qualification isolates harness controls and preserves diagnostics.**
+  Fake harness invocations no longer claim the durable directories used by real
+  XLA, cache, and arena probes. Windows builds fetch the same pinned Eigen
+  source through a checksum-verified archive, and readiness diagnostics upload
+  separately before the full raw evidence archive. (#781)
 - **Release artifacts and documentation reflect the integrated compiler.**
   Refresh browser site and VM bundles, sync measured test totals and release
   facts, recount current source sizes, and document the v1.4.0–v1.4.5 ladder.
