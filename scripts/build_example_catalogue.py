@@ -544,7 +544,9 @@ def outcome_summary(group, measurements, noun):
     verdict = sum(r["jit"].get("status") == "PASS" and r["aot"].get("status") == "PASS" for r in records)
     not_run = [e for e, r in zip(group, records) if r["jit"].get("status") == "NOT-RUN" and r["aot"].get("status") == "NOT-RUN"]
     failed = [e for e, r in zip(group, records) if e not in not_run and not (r["jit"].get("status") in ok and r["aot"].get("status") in ok)]
-    text = (f"Every one of these {len(group)} {noun} was run at release SHA `{sha}` ({measurements.get('compiler_version')}, "
+    scope = (f"Measurement snapshot for these {len(group)} {noun} at release SHA" if not_run
+             else f"Every one of these {len(group)} {noun} was run at release SHA")
+    text = (f"{scope} `{sha}` ({measurements.get('compiler_version')}, "
             f"{measurements.get('build_type')} build, {measurements.get('platform')}, measured {measurements.get('measured_on')}) in native JIT and native AOT. "
             f"**{both}** completed in both modes; **{verdict}** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes")
     quiet = both - verdict

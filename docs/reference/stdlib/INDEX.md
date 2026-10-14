@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 63** (plus `stdlib` itself and the module system page) — **provided symbols: 856** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 64** (plus `stdlib` itself and the module system page) — **provided symbols: 873** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -32,6 +32,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.channels`](../../../lib/core/channels.esk) | no | [channels.md](channels.md) | `make-channel` `channel?` `channel-capacity` `channel-len` `channel-closed?` `channel-send!` `channel-recv!` `channel-try-send!` `channel-try-recv!` `channel-close!` `channel-closed-sentinel` |
 | [`core.collections`](../../../lib/core/collections.esk) | no | [collections.md](collections.md) | `make-pq` `pq-push!` `pq-pop!` `pq-peek` `pq-size` `pq-empty?` `make-set` `set-add!` `set-remove!` `set-contains?` `set-size` `set->list` `set-clear!` `set-union` `set-intersect` `set-difference` `make-deque` `deque-push-front!` `deque-push-back!` `deque-pop-front!` `deque-pop-back!` `deque-peek-front` `deque-peek-back` `deque-size` `deque-empty?` `deque->list` |
 | [`core.control.trampoline`](../../../lib/core/control/trampoline.esk) | yes | [control_trampoline.md](control_trampoline.md) | `trampoline` `bounce` `done` |
+| [`core.cyclotomic`](../../../lib/core/cyclotomic.esk) | no | [cyclotomic.md](cyclotomic.md) | `make-cyclotomic-field` `cyclotomic-order` `cyclotomic-degree` `cyclotomic-polynomial` `cyclotomic-element` `cyclotomic-coefficients` `cyclotomic-root` `cyclotomic-add` `cyclotomic-sub` `cyclotomic-scale` `cyclotomic-mul` `cyclotomic-inverse` `cyclotomic-zero?` `cyclotomic-equal?` `cyclotomic-rational` `cyclotomic-galois` `cyclotomic-norm` |
 | [`core.data.base64`](../../../lib/core/data/base64.esk) | yes | [data_base64.md](data_base64.md) | `base64-encode` `base64-decode` `base64-encode-string` `base64-decode-string` `string->bytes` `bytes->string` `base64-char-at` `base64-value` `string->bytes-helper` `base64-encode-helper` `base64-decode-helper` `base64-remove-padding` |
 | [`core.data.csv`](../../../lib/core/data/csv.esk) | yes | [data_csv.md](data_csv.md) | `csv-parse` `csv-parse-file` `csv-stringify` `csv-write-file` `csv-parse-line` `csv-parse-lines` `csv-split-fields` `csv-stringify-row` |
 | [`core.data.dataframe`](../../../lib/core/data/dataframe.esk) | yes | [data_dataframe.md](data_dataframe.md) | `csv-parse-typed` `csv-header` `csv-rows` `csv-column` `csv-column-idx` `csv-select` `csv-filter` `csv-map-column` `csv-row-count` `csv-col-count` `csv-describe` |

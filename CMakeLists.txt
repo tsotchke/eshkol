@@ -3666,6 +3666,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# Shared exact cyclotomic arithmetic; the two consumers remain gated below.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME cyclotomic_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/cyclotomic_test.esk")
+    add_test(NAME cyclotomic_aot
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/cyclotomic_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/cyclotomic_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/cyclotomic_aot'")
+    set_tests_properties(cyclotomic_jit cyclotomic_aot PROPERTIES
+        TIMEOUT 240
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: cyclotomic_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
@@ -3729,6 +3743,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
         endif()
     endforeach()
+    # These consumers now require the shared field module from this checkout.
+    set_property(TEST torsion_lens_spaces_reidemeister_jit tv_turaev_viro_cyclotomic_jit
+        APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # The order-eight program eliminates five 343 x 2401 integer matrices;
     # about 90 s on an arm64 laptop, so it gets its own budget.
     if(TEST dw_group_cohomology_order_eight_jit)
