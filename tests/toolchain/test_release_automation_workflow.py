@@ -329,6 +329,14 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         cleanup_index = next(i for i, step in enumerate(self.job["steps"]) if step.get("name") == "Reclaim build trees")
         upload_index = next(i for i, step in enumerate(self.job["steps"]) if step.get("name") == "Upload readiness evidence")
         self.assertLess(upload_index, cleanup_index)
+        diagnostics_index = next(i for i, step in enumerate(self.job["steps"]) if step.get("name") == "Upload readiness diagnostics")
+        self.assertLess(diagnostics_index, upload_index)
+        diagnostics = self.steps["Upload readiness diagnostics"]
+        self.assertEqual(diagnostics["if"], "always()")
+        self.assertEqual(diagnostics["with"]["include-hidden-files"], "true")
+        self.assertIn("/smoke/icc-smoke/probe-logs/", diagnostics["with"]["path"])
+        self.assertIn("scripts/icc_traces/", diagnostics["with"]["path"])
+        self.assertNotEqual(diagnostics["with"]["name"], upload["with"]["name"])
         self.assertNotIn(".scratch/v1-3-readiness", upload["with"]["path"])
         self.assertNotIn(".scratch/v1-3-readiness", self.steps["Reclaim build trees"]["run"])
 

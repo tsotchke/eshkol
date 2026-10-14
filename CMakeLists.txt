@@ -1564,13 +1564,15 @@ if(ESHKOL_BLAS_ENABLED)
         set(EIGEN_BUILD_DEMOS OFF CACHE BOOL "Build Eigen demos" FORCE)
         set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "Build Eigen pkg-config metadata" FORCE)
         set(EIGEN_BUILD_CMAKE_PACKAGE OFF CACHE BOOL "Build Eigen CMake package metadata" FORCE)
+        if(POLICY CMP0135)
+            cmake_policy(SET CMP0135 NEW)
+        endif()
         FetchContent_Declare(eshkol_eigen
-            # The pinned commit is reachable from refs/heads/5.0 and refs/tags/5.0.1
-            # on the official GitLab repository; the GitHub eigenteam mirror no
-            # longer advertises it, so a fresh node cannot fetch it there.
-            GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-            GIT_TAG bc3b39870ecb690a623a3f49149a358b95c5781d
-            GIT_SHALLOW FALSE
+            # Keep the same 5.0.1 commit without cloning GitLab's full history.
+            # Its archive endpoint remains available when git-upload-pack is
+            # load-shed. Verify the bytes before extracting any source.
+            URL https://gitlab.com/libeigen/eigen/-/archive/bc3b39870ecb690a623a3f49149a358b95c5781d/eigen-bc3b39870ecb690a623a3f49149a358b95c5781d.tar.gz
+            URL_HASH SHA256=5f6557d1aca6e959a4b955c55f2935261fd30de59c0c79e35bc6d5cbe1de22d1
         )
         FetchContent_MakeAvailable(eshkol_eigen)
         if(NOT TARGET Eigen3::Eigen)
