@@ -5546,6 +5546,25 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: certified_enclosures_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Sparse signed rows -> tensor changes -> finite matrix-product updates.
+    # Both legs import the module from this checkout, never the installed lib/.
+    add_test(
+        NAME dbsp_tensor_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_tensor_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_test(
+        NAME dbsp_tensor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/dbsp_tensor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/dbsp_tensor_aot'"
+    )
+    set_tests_properties(dbsp_tensor_runtime_smoke dbsp_tensor_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: dbsp_tensor_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # These runtime tests import modules from the source-tree standard library.
     # `-L` is a native linker search path; it is not an Eshkol module path.
     # Keep the test environment explicit so CTest exercises the same modules as

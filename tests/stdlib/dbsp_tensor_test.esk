@@ -1,0 +1,206 @@
+;;; core.dbsp.tensor: sparse changes versus independent dense native oracles.
+;;; Run through scripts/run_dbsp_gate.sh (JIT and AOT).
+
+(require core.dbsp.tensor)
+
+(define passed 0)
+(define failed 0)
+(define (check name ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display name) (newline))
+
+(define (raises? thunk)
+  (guard (e (#t (error-object? e))) (thunk) #f))
+
+(define (tensor-near? a b)
+  (and (equal? (tensor-shape a) (tensor-shape b))
+       (let ((n (fold-left * 1 (tensor-shape a))))
+         (let loop ((i 0))
+           (or (= i n)
+               (and (<= (abs (- (tensor-ref a i) (tensor-ref b i)))
+                        (* 1e-10 (+ 1.0 (abs (tensor-ref b i)))))
+                    (loop (+ i 1))))))))
+
+;; Constructor normalization, layout admission, and list ownership.
+(define normalized
+  (tensor-delta '(2 2) '(((1 1) 4) ((0 1) 3) ((1 1) -4) ((0 1) 2))))
+(check "sparse entries consolidate and remove cancellation"
+       (equal? (tensor-delta-entries normalized) '(((0 1) 5))))
+(check "empty change retains its layout"
+       (equal? (tensor-delta-shape (tensor-delta '(2 3) '())) '(2 3)))
+(define owned-shape (list 2 2))
+(define owned-coordinates (list 1 0))
+(define owned (tensor-delta owned-shape (list (list owned-coordinates 7))))
+(set-car! owned-shape 9)
+(set-car! owned-coordinates 0)
+(define exposed-shape (tensor-delta-shape owned))
+(define exposed-entries (tensor-delta-entries owned))
+(set-car! exposed-shape 8)
+(set-car! (car (car exposed-entries)) 0)
+(check "constructor and observers do not alias caller lists"
+       (and (equal? (tensor-delta-shape owned) '(2 2))
+            (equal? (tensor-delta-entries owned) '(((1 0) 7)))))
+
+(check "negative dimension is rejected"
+       (raises? (lambda () (tensor-delta '(2 -1) '()))))
+(check "inexact dimension is rejected"
+       (raises? (lambda () (tensor-delta '(2 2.0) '()))))
+(check "native index overflow is rejected"
+       (raises? (lambda () (tensor-delta '(4294967296 4294967296) '()))))
+(check "empty shape is rejected"
+       (raises? (lambda () (tensor-delta '() '()))))
+(check "coordinate rank is checked"
+       (raises? (lambda () (tensor-delta '(2 2) '(((0) 1))))))
+(check "coordinate bounds are checked"
+       (raises? (lambda () (tensor-delta '(2 2) '(((0 2) 1))))))
+(check "inexact coordinate is rejected"
+       (raises? (lambda () (tensor-delta '(2) '(((0.0) 1))))))
+(check "malformed entry is rejected"
+       (raises? (lambda () (tensor-delta '(2) '(((0) 1 extra))))))
+(check "nonnumeric amount is rejected"
+       (raises? (lambda () (tensor-delta '(2) '(((0) #t))))))
+
+;; Weighted scatter supports any nonempty rank. Collisions sum, not overwrite.
+(define vector-rows (zset-from-weighted '((2 (1 3)) (-1 (1 1)) (1 (0 7)))))
+(define vector-change
+  (zset-project-tensor vector-rows '(2) (lambda (r) (list (car r))) cadr))
+(check "weighted rows project to a vector"
+       (tensor-near? (tensor-apply-delta (zeros 2) vector-change) #(7.0 5.0)))
+(define cube-change
+  (zset-project-tensor (zset-from-weighted '((1 (0 1 1 5)) (-1 (1 0 0 2))))
+                       '(2 2 2) (lambda (r) (list (car r) (cadr r) (caddr r)))
+                       cadddr))
+(check "rank-three projection retains signed coordinates"
+       (equal? (tensor-delta-entries cube-change) '(((0 1 1) 5) ((1 0 0) -2))))
+(check "projection validates every coordinate"
+       (raises? (lambda ()
+                  (zset-project-tensor (zset-from-weighted '((1 (3 2)))) '(2)
+                                       (lambda (r) (list (car r))) cadr))))
+(check "projection rejects nonnumeric fields before weighting"
+       (raises? (lambda ()
+                  (zset-project-tensor (zset-from-weighted '((1 (0 #t)))) '(2)
+                                       (lambda (r) (list (car r))) cadr))))
+(define original (reshape #(1.0 2.0 3.0 4.0) 2 2))
+(define integrated (tensor-apply-delta original owned))
+(check "integration leaves the old tensor intact"
+       (and (= (tensor-ref original 2) 3.0) (= (tensor-ref integrated 2) 10.0)))
+(tensor-set! integrated 0 99.0)
+(check "integrated tensor does not alias the old tensor"
+       (= (tensor-ref original 0) 1.0))
+(check "integration checks layout before writing"
+       (raises? (lambda () (tensor-apply-delta original (tensor-delta '(4) '())))))
+(check "zero-sized tensor accepts only an empty change"
+       (and (equal? (tensor-shape
+                     (tensor-apply-delta (zeros 2 0) (tensor-delta '(2 0) '()))) '(2 0))
+            (raises? (lambda () (tensor-delta '(2 0) '(((0 0) 1)))))))
+
+;; Minimal cross-term witness: old 1*1, new (1+1)*(1+2), so delta is 5, not 3.
+(define one (reshape #(1.0) 1 1))
+(define cross (tensor-matmul-delta one one (tensor-delta '(1 1) '(((0 0) 1)))
+                                 (tensor-delta '(1 1) '(((0 0) 2)))))
+(check "simultaneous matrix edits include the cross term"
+       (= (tensor-ref (tensor-apply-delta (zeros 1 1) cross) 0) 5.0))
+(define dx (tensor-delta '(2 2) '(((0 0) 2) ((1 1) -1))))
+(define square-delta (tensor-matmul-delta original original dx dx))
+(define changed-original (tensor-apply-delta original dx))
+(check "a shared operand changes on both sides"
+       (tensor-near? (tensor-apply-delta (matmul original original) square-delta)
+                     (matmul changed-original changed-original)))
+(check "matrix delta rejects rank-one operands"
+       (raises? (lambda ()
+                  (tensor-matmul-delta #(1.0) one (tensor-delta '(1) '())
+                                       (tensor-delta '(1 1) '())))))
+(check "matrix delta rejects incompatible inner dimensions"
+       (raises? (lambda ()
+                  (tensor-matmul-delta original (zeros 3 2) (tensor-delta '(2 2) '())
+                                       (tensor-delta '(3 2) '())))))
+(check "matrix delta checks both change layouts"
+       (raises? (lambda ()
+                  (tensor-matmul-delta original original (tensor-delta '(2 2) '())
+                                       (tensor-delta '(4) '())))))
+(check "empty inner dimension produces no output change"
+       (null? (tensor-delta-entries
+               (tensor-matmul-delta (zeros 2 0) (zeros 0 3)
+                                    (tensor-delta '(2 0) '()) (tensor-delta '(0 3) '())))))
+
+;; A full projection oracle: read all integrated rows into a fresh dense matrix.
+;; It deliberately does not call zset-project-tensor or tensor-apply-delta.
+(define (dense-table rows)
+  (let ((out (zeros 2 3)))
+    (for-each
+     (lambda (entry)
+       (let* ((r (cadr entry)) (index (+ (* (car r) 3) (cadr r))))
+         (tensor-set! out index (+ (tensor-ref out index) (* (car entry) (caddr r))))))
+     (zset-entries rows))
+    out))
+
+(define table (zset-from-weighted '((1 (0 0 1)) (1 (0 1 2)) (1 (1 2 3)))))
+(define table-a (dense-table table))
+(define table-b (reshape #(1.0 2.0 3.0 4.0 5.0 6.0) 3 2))
+(define table-y (matmul table-a table-b))
+(define row-updates
+  (list (zset-from-weighted '((-1 (0 1 2)) (1 (1 0 4)) (1 (0 0 7))))
+        (zset-from-weighted '((-1 (0 0 1)) (1 (0 2 5))))
+        (zset-from-weighted '((1 (1 1 9)) (-1 (1 1 9))))
+        (zset-from-weighted '((-1 (1 2 3)) (-1 (1 0 4)) (-1 (0 0 7)) (-1 (0 2 5))))
+        (zset-from-weighted '((1 (0 1 8))))))
+(define weight-updates
+  (list (tensor-delta '(3 2) '(((1 0) 2) ((2 1) -1)))
+        (tensor-delta '(3 2) '(((0 1) -2)))
+        (tensor-delta '(3 2) '(((2 1) 3) ((2 1) -3)))
+        (tensor-delta '(3 2) '(((1 1) 1)))
+        (tensor-delta '(3 2) '(((0 0) -1)))))
+
+(let loop ((rs row-updates) (ws weight-updates))
+  (if (not (null? rs))
+      (let* ((da (zset-project-tensor (car rs) '(2 3)
+                                     (lambda (r) (list (car r) (cadr r))) caddr))
+             (dy (tensor-matmul-delta table-a table-b da (car ws))))
+        (set! table-y (tensor-apply-delta table-y dy))
+        (set! table-a (tensor-apply-delta table-a da))
+        (set! table-b (tensor-apply-delta table-b (car ws)))
+        (set! table (zset-add table (car rs)))
+        (check "table replacement/retraction tick equals independent full recomputation"
+               (and (tensor-near? table-a (dense-table table))
+                    (tensor-near? table-y (matmul (dense-table table) table-b))))
+        (loop (cdr rs) (cdr ws)))))
+
+;; Many sequential rectangular updates exercise cache transfer, matching and
+;; nonmatching cross terms, negative changes, and floating-point readout.
+(define seq-a (reshape #(0.1 0.2 0.3 0.4 0.5 0.6) 2 3))
+(define seq-b (reshape #(0.7 0.8 0.9 1.0 1.1 1.2) 3 2))
+(define seq-y (matmul seq-a seq-b))
+(let loop ((t 0))
+  (if (< t 24)
+      (let* ((da (tensor-delta '(2 3)
+                               (list (list (list (modulo t 2) (modulo t 3))
+                                           (if (even? t) 0.25 -0.125)))))
+             (db (tensor-delta '(3 2)
+                               (list (list (list (modulo (+ t 1) 3) (modulo t 2)) 0.1))))
+             (dy (tensor-matmul-delta seq-a seq-b da db)))
+        (set! seq-y (tensor-apply-delta seq-y dy))
+        (set! seq-a (tensor-apply-delta seq-a da))
+        (set! seq-b (tensor-apply-delta seq-b db))
+        (check "sequential finite updates match native full matmul"
+               (tensor-near? seq-y (matmul seq-a seq-b)))
+        (loop (+ t 1)))))
+
+(for-each
+ (lambda (rows)
+   (let* ((a (make-tensor (list rows 4) 1.0)) (b (make-tensor '(4 3) 1.0))
+          (da (tensor-delta (list rows 4) '(((1 2) 5))))
+          (dy (tensor-matmul-delta a b da (tensor-delta '(4 3) '()))))
+     (check "one edited cell emits only the three affected output cells"
+            (and (= (length (tensor-delta-entries dy)) 3)
+                 (tensor-near? (tensor-apply-delta (matmul a b) dy)
+                               (matmul (tensor-apply-delta a da) b))))))
+ '(16 512))
+
+(display "core.dbsp.tensor: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: dbsp_tensor_test") (newline)
+           (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
