@@ -17,6 +17,14 @@ independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Sparse tensor changes bridge DBSP rows to native matrix products.**
+  Add opt-in `core.dbsp.tensor`, validated fixed-shape deltas, nonmutating
+  application, and finite matrix updates including the simultaneous-edit
+  cross term. Native tensor arithmetic retains floating-point semantics. (#782)
+- **Mathematics examples share exact cyclotomic field arithmetic.**
+  Add opt-in `core.cyclotomic` with exact rational coefficients, inversion,
+  Galois conjugation, and norms; migrate the Turaev–Viro and Reidemeister
+  examples and retain historical measurement provenance separately. (#783)
 - **Release qualification isolates harness controls and preserves diagnostics.**
   Fake harness invocations no longer claim the durable directories used by real
   XLA, cache, and arena probes. Windows builds fetch the same pinned Eigen
