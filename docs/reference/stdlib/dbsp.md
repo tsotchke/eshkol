@@ -164,3 +164,73 @@ cancellation produces no boundary event.
 Tick 0 emits the insertion of the even row 2; tick 1 emits its retraction and
 the insertion of 4 — exactly the change in the query's output, never a
 recomputation of the whole relation.
+
+## Optional sparse tensor bridge
+
+`(require core.dbsp.tensor)` adds finite numeric changes over the existing
+Z-set carrier and native tensors. It is a library-level bridge, with no
+compiler changes or standing circuit runtime. Run
+`bash scripts/run_dbsp_gate.sh` for both relational and tensor JIT/AOT gates.
+
+| Procedure | Contract |
+|-----------|----------|
+| `(tensor-delta shape entries)` | Construct a sparse additive change from `(((coordinate ...) amount) ...)`; consolidate duplicate coordinates and drop zeros. |
+| `(tensor-delta? value)` | Recognize the sparse change representation. |
+| `(tensor-delta-shape delta)` | Return a fresh shape list. |
+| `(tensor-delta-entries delta)` | Return fresh coordinate/amount lists in row-major order. |
+| `(tensor-apply-delta old delta)` | Return a fresh native tensor containing `old + delta`; never mutate `old`. |
+| `(zset-project-tensor rows shape coordinates value)` | Scatter each row's `weight * (value row)` at `(coordinates row)`, returning a sparse tensor delta. |
+| `(tensor-matmul-delta A B dA dB)` | Return the sparse change of the rank-two product when both old operands change in one tick. |
+
+Shapes are nonempty lists of nonnegative exact integers. Coordinates are
+zero-based exact integers with one coordinate per dimension. Layout stays
+fixed; changing it requires a new baseline. Missing cells contribute zero,
+collisions sum, and row order never determines coordinates. Projection works
+on either a full Z-set or a signed delta. Replacement retracts the old row and
+inserts the new row in the same batch, including when its coordinates move.
+Negative group-valued contributions are permitted; a database requiring
+nonnegative bag counts must enforce that at its own boundary.
+
+```scheme
+(require core.dbsp.tensor)
+
+(define A (zeros 2 3))
+(define B (reshape #(1.0 2.0 3.0 4.0 5.0 6.0) 3 2))
+(define Y (matmul A B))
+(define rows (zset-from-weighted '((1 (0 1 5)) (1 (1 2 3)))))
+(define dA (zset-project-tensor rows '(2 3)
+             (lambda (row) (list (car row) (cadr row))) caddr))
+(define dB (tensor-delta '(3 2) '(((1 0) 2))))
+(define dY (tensor-matmul-delta A B dA dB))
+(define next-Y (tensor-apply-delta Y dY))
+;; next-Y = #((25 20) (15 18))
+;; Advance A and B only after deriving dY from BOTH old snapshots.
+(define next-A (tensor-apply-delta A dA))
+(define next-B (tensor-apply-delta B dB))
+```
+
+The finite bilinear rule is `d(AB) = dA B + A dB + dA dB`. The final term
+is required for simultaneous edits and for a shared operand such as `A*A`;
+this is a finite update, not a first-order numeric derivative.
+
+Changes use ordinary Scheme values with a versioned internal tag, copied list
+structure and no native pointers. Treat returned changes as immutable rather
+than mutating their underlying vector. Projection and delta consolidation
+sort the contributed coordinates; matmul reads affected rows/columns, and its
+sparse cross term currently compares every pair of changed coordinates.
+Dense fan-out can produce a dense output change. `tensor-apply-delta` explicitly
+allocates and copies the full native tensor, even for an empty change. This
+slice therefore makes no end-to-end sparse-update speedup or GPU claim.
+
+Delta amounts may be exact reals, but native tensor cells are doubles.
+Integration and products involving native cells round; repeated updates may
+accumulate drift. Exact zero consolidation uses no tolerance. The regression
+suite uses independent dense projection/native matmul oracles with an explicit
+floating comparison tolerance after every update. Database delivery identity,
+changefeed cursors, atomic publication, durable checkpoints, named-axis
+contractions and native circuit ownership remain outside this bridge.
+
+`(tensor-reader shape ref)` supplies a pure flat-index read procedure to the
+existing `tensor-matmul-delta` kernel. Native operands remain accepted.
+`core.dbsp.tensor_snapshot` supplies this adapter for persistent block storage;
+no dense operand materialization is required. Reader results must be real.

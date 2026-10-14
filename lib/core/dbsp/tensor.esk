@@ -1,0 +1,196 @@
+;;; Sparse finite changes bridging core.dbsp rows and native numeric tensors.
+;;; Usage: (require core.dbsp.tensor)
+;;;
+;;; This is a library-level change algebra, not a standing circuit runtime.
+;;; Shapes are fixed, coordinates are zero-based, and collisions add. Values
+;;; returned here are treated as immutable, like core.dbsp's Z-sets. Constructors
+;;; and observers copy their list structure; native tensors are never mutated.
+
+(require core.dbsp)
+
+(provide tensor-delta tensor-delta? tensor-delta-shape tensor-delta-entries
+         tensor-apply-delta zset-project-tensor tensor-matmul-delta tensor-reader)
+
+;; Read-only operand protocol, allowing persistent storage to participate in
+;; the same finite matrix kernel without materializing a dense native tensor.
+;; REF receives one flat row-major index and must be pure, returning a real.
+(define (tensor-reader shape ref)
+  (dbsp-td-check-shape shape)
+  (if (not (procedure? ref)) (error "Tensor reader requires a procedure"))
+  (vector 'dbsp-tensor-reader-v1 (map (lambda (n) n) shape) ref))
+(define (dbsp-td-reader? x)
+  (and (vector? x) (= (vector-length x) 3)
+       (eq? (vector-ref x 0) 'dbsp-tensor-reader-v1)))
+(define (dbsp-td-operand-shape x)
+  (if (dbsp-td-reader? x) (vector-ref x 1) (tensor-shape x)))
+(define (dbsp-td-operand-ref x i)
+  (let ((value (if (dbsp-td-reader? x) ((vector-ref x 2) i) (tensor-ref x i))))
+    (if (not (real? value)) (error "Tensor reader returned a nonreal value")) value))
+
+;; Private representation: #(dbsp-tensor-delta-v1 shape ((flat-index amount) ...)).
+;; Entries are sorted, consolidated, and nonzero. No dense delta is allocated.
+(define (tensor-delta? x)
+  (and (vector? x) (= (vector-length x) 3)
+       (eq? (vector-ref x 0) 'dbsp-tensor-delta-v1)))
+
+(define (dbsp-td-check delta)
+  (if (not (tensor-delta? delta)) (error "Expected a tensor delta" delta)))
+
+(define (dbsp-td-size shape)
+  (fold-left * 1 shape))
+
+(define (dbsp-td-check-shape shape)
+  (if (or (not (list? shape)) (null? shape))
+      (error "Tensor delta shape must be a nonempty list" shape))
+  (for-each
+   (lambda (n)
+     (if (not (and (integer? n) (exact? n) (>= n 0)
+                   (<= n 9223372036854775807)))
+         (error "Tensor delta dimensions must be nonnegative exact integers" n)))
+   shape)
+  (if (> (dbsp-td-size shape) 9223372036854775807)
+      (error "Tensor delta size exceeds the native index range" shape)))
+
+(define (dbsp-td-ravel coordinates shape)
+  (if (or (not (list? coordinates))
+          (not (= (length coordinates) (length shape))))
+      (error "Tensor delta coordinate rank mismatch" coordinates shape))
+  (let loop ((cs coordinates) (ds shape) (index 0))
+    (if (null? ds)
+        index
+        (let ((c (car cs)) (d (car ds)))
+          (if (not (and (integer? c) (exact? c) (>= c 0) (< c d)))
+              (error "Tensor delta coordinate outside shape" coordinates shape))
+          (loop (cdr cs) (cdr ds) (+ (* index d) c))))))
+
+(define (dbsp-td-unravel index shape)
+  (let loop ((ds (reverse shape)) (i index) (out '()))
+    (if (null? ds)
+        out
+        (loop (cdr ds) (quotient i (car ds))
+              (cons (modulo i (car ds)) out)))))
+
+(define (dbsp-td-merge index amount rest out)
+  (if (null? rest)
+      (reverse (if (= amount 0) out (cons (list index amount) out)))
+      (let ((next (car rest)))
+        (if (= index (car next))
+            (dbsp-td-merge index (+ amount (cadr next)) (cdr rest) out)
+            (dbsp-td-merge (car next) (cadr next) (cdr rest)
+                          (if (= amount 0) out (cons (list index amount) out)))))))
+
+(define (dbsp-td-from-flat shape entries)
+  (let* ((sorted (sort entries (lambda (a b) (< (car a) (car b)))))
+         (merged (if (null? sorted) '()
+                     (dbsp-td-merge (car (car sorted)) (cadr (car sorted))
+                                   (cdr sorted) '()))))
+    (vector 'dbsp-tensor-delta-v1 (map (lambda (n) n) shape) merged)))
+
+;; ENTRIES is (((coordinate ...) amount) ...), with additive real amounts.
+(define (tensor-delta shape entries)
+  (dbsp-td-check-shape shape)
+  (if (not (list? entries)) (error "Tensor delta entries must be a list" entries))
+  (dbsp-td-from-flat
+   shape
+   (map (lambda (entry)
+          (if (not (and (list? entry) (= (length entry) 2)))
+              (error "Expected (coordinates amount) tensor delta entry" entry))
+          (if (not (real? (cadr entry)))
+              (error "Tensor delta amount must be real" (cadr entry)))
+          (list (dbsp-td-ravel (car entry) shape) (cadr entry)))
+        entries)))
+
+(define (tensor-delta-shape delta)
+  (dbsp-td-check delta)
+  (map (lambda (n) n) (vector-ref delta 1)))
+
+(define (tensor-delta-entries delta)
+  (dbsp-td-check delta)
+  (map (lambda (entry)
+         (list (dbsp-td-unravel (car entry) (vector-ref delta 1)) (cadr entry)))
+       (vector-ref delta 2)))
+
+;; Explicit dense observation/integration boundary: O(number of tensor cells).
+;; Validate layout before allocating, then copy into a fresh native tensor.
+(define (tensor-apply-delta value delta)
+  (dbsp-td-check delta)
+  (let ((shape (vector-ref delta 1)))
+    (if (not (equal? (tensor-shape value) shape))
+        (error "Tensor delta shape mismatch" shape (tensor-shape value)))
+    (let ((out (make-tensor shape 0.0)) (n (dbsp-td-size shape)))
+      (let loop ((i 0))
+        (if (< i n)
+            (begin (tensor-set! out i (tensor-ref value i)) (loop (+ i 1)))))
+      (for-each
+       (lambda (entry)
+         (let ((i (car entry)))
+           (tensor-set! out i (+ (tensor-ref out i) (cadr entry)))))
+       (vector-ref delta 2))
+      out)))
+
+;; Linear weighted scatter. Works on either a full Z-set or a signed row delta.
+;; COORDINATES and VALUE are pure row procedures; insertion order is irrelevant.
+(define (zset-project-tensor rows shape coordinates value)
+  (if (not (zset? rows)) (error "Expected a Z-set for tensor projection" rows))
+  (tensor-delta
+   shape
+   (map (lambda (entry)
+          (let* ((row (cadr entry)) (amount (value row)))
+            (if (not (real? amount))
+                (error "Tensor projection value must be real" amount))
+            (list (coordinates row) (* (car entry) amount))))
+        (zset-entries rows))))
+
+(define (dbsp-td-product entries index left right)
+  (let ((amount (* left right)))
+    (if (= amount 0) entries (cons (list index amount) entries))))
+
+;; Exact finite algebraic rule, rather than the first-order numeric AD rule:
+;;   d(AB) = dA B + A dB + dA dB.
+;; A and B are BOTH the old snapshots. Only affected rows/columns are read;
+;; the cross term compares changed coordinates, never all stored matrix cells.
+(define (tensor-matmul-delta a b da db)
+  (dbsp-td-check da)
+  (dbsp-td-check db)
+  (let ((sa (dbsp-td-operand-shape a)) (sb (dbsp-td-operand-shape b)))
+    (if (not (and (= (length sa) 2) (= (length sb) 2)))
+        (error "Tensor matmul delta requires rank-two operands" sa sb))
+    (if (not (and (equal? sa (vector-ref da 1))
+                  (equal? sb (vector-ref db 1)) (= (cadr sa) (car sb))))
+        (error "Tensor matmul delta operand shapes do not agree" sa sb))
+    (let ((m (car sa)) (k (cadr sa)) (n (cadr sb)) (out '()))
+      (dbsp-td-check-shape (list m n))
+      ;; dA B: each changed A[i,l] affects output row i.
+      (for-each
+       (lambda (entry)
+         (let ((i (quotient (car entry) k)) (l (modulo (car entry) k)))
+           (let loop ((j 0))
+             (if (< j n)
+                 (begin
+                   (set! out (dbsp-td-product out (+ (* i n) j) (cadr entry)
+                                             (dbsp-td-operand-ref b (+ (* l n) j))))
+                   (loop (+ j 1)))))))
+       (vector-ref da 2))
+      ;; A dB: each changed B[l,j] affects output column j.
+      (for-each
+       (lambda (entry)
+         (let ((l (quotient (car entry) n)) (j (modulo (car entry) n)))
+           (let loop ((i 0))
+             (if (< i m)
+                 (begin
+                   (set! out (dbsp-td-product out (+ (* i n) j)
+                                             (dbsp-td-operand-ref a (+ (* i k) l)) (cadr entry)))
+                   (loop (+ i 1)))))))
+       (vector-ref db 2))
+      ;; dA dB, essential when both operands (or a shared operand) change.
+      (for-each
+       (lambda (left)
+         (let ((i (quotient (car left) k)) (l (modulo (car left) k)))
+           (for-each
+            (lambda (right)
+              (if (= l (quotient (car right) n))
+                  (set! out (dbsp-td-product out (+ (* i n) (modulo (car right) n))
+                                            (cadr left) (cadr right)))))
+            (vector-ref db 2))))
+       (vector-ref da 2))
+      (dbsp-td-from-flat (list m n) out))))
