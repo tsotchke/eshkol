@@ -52,6 +52,7 @@ class StdlibAotRunnerTest(unittest.TestCase):
     def test_failed_compiler_diagnostic_overrides_zero_exit(self):
         self.assertNotEqual(self.invoke("RESULT: PASS", compile_output="LLVM module verification failed").returncode, 0)
 
+
     def test_missing_local_stdlib_object_fails_before_compiler(self):
         result = self.invoke("RESULT: PASS", missing_artifact="stdlib.o")
         self.assertNotEqual(result.returncode, 0)
