@@ -43,3 +43,6 @@ cross terms, signed cancellation, ownership, nested gradients and refusals.
 closed-form scans, excluding initialization/oracle from the inner timing and
 counting actual row visits. Set `ESHKOL_POLYNOMIAL_MODE=incremental` or `full`
 and `ESHKOL_POLYNOMIAL_ROWS=16`, `128` or `512`.
+
+`algebraic-incremental-moment-ref` returns an owned value for a compiled
+row-exponent vector. Missing, malformed or inexact exponent queries refuse.

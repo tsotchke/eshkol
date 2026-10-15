@@ -39,3 +39,7 @@ hyperdual and three-level derivatives against independently derived formulas.
 
 `algebraic-factor-solve-transpose` reuses the retained LU for `A^T*x=b`,
 including nested coefficient recurrences and a full transposed residual.
+
+`algebraic-factor-positive-definite?` checks full-domain symmetry and selected-real
+positive bottom-field LU pivots with identity permutation. It reuses the
+verified factorization; exact sign refinement can refuse on budget exhaustion.

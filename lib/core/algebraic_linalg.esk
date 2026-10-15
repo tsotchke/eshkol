@@ -1,6 +1,6 @@
 ;;; One bottom-field LU, reused through every enclosing coefficient recurrence.
 (require core.algebraic_domain)
-(provide algebraic-factor algebraic-factor-solve algebraic-factor-solve-transpose algebraic-factor-summary
+(provide algebraic-factor algebraic-factor-solve algebraic-factor-solve-transpose algebraic-factor-positive-definite? algebraic-factor-summary
          algebraic-matrix-mul algebraic-solve)
 
 (define (al-matrix domain matrix)
@@ -181,3 +181,19 @@
 
 (define (algebraic-factor-solve factor rhs) (al-factor-solve factor rhs #f))
 (define (algebraic-factor-solve-transpose factor rhs) (al-factor-solve factor rhs #t))
+
+;;; Sylvester admission from the already-verified symmetric LU: SPD implies
+;;; identity pivot permutation and strictly positive Schur-complement pivots.
+(define (algebraic-factor-positive-definite? factor)
+  (al-factor-check factor)
+  (let* ((domain (vector-ref factor 1)) (matrix (vector-ref factor 2)) (n (vector-length matrix))
+         (equal? (algebraic-domain-ref domain 'equal?)))
+    (and (let rows ((i 0)) (or (= i n)
+      (and (let cols ((j 0)) (or (= j i)
+        (and (equal? (al-ref matrix i j) (al-ref matrix j i)) (cols (+ j 1))))) (rows (+ i 1)))))
+      (let bottom ((f factor))
+        (if (vector-ref f 4) (bottom (vector-ref f 4))
+          (let ((lu (vector-ref (vector-ref f 3) 0)) (permutation (vector-ref (vector-ref f 3) 1)))
+            (let pivots ((i 0)) (or (= i n)
+              (and (= (vector-ref permutation i) i) (= (algebraic-sign (al-ref lu i i)) 1)
+                   (pivots (+ i 1)))))))))))
