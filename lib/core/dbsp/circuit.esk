@@ -2,7 +2,7 @@
 (require core.dbsp)
 (require core.data.radix)
 (provide make-dbsp-circuit dbsp-circuit-step dbsp-circuit-output
-         dbsp-circuit-input dbsp-circuit-work dbsp-circuit-checkpoint-state)
+         dbsp-circuit-input dbsp-circuit-input-weight dbsp-circuit-work dbsp-circuit-checkpoint-state)
 
 ;; Persistent collision buckets over the shared radix owner. Canonical key
 ;; encoding is core.dbsp's; equality remains equal?, never hash equality.
@@ -175,6 +175,10 @@
 (define (dbsp-circuit-input runtime name)
   (dc-check runtime)
   (dc-observe (vector-ref (dc-state (vector-ref runtime 4) (dc-lookup (vector-ref runtime 2) name)) 0)))
+(define (dbsp-circuit-input-weight runtime name row)
+  (dc-check runtime)
+  (dc-get (vector-ref (dc-state (vector-ref runtime 4)
+    (dc-lookup (vector-ref runtime 2) name)) 0) row 0))
 (define (dbsp-circuit-work runtime)
   (dc-check runtime) (vector-copy (vector-ref runtime 5)))
 

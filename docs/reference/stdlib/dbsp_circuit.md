@@ -20,6 +20,13 @@ dictionary index writes. These are structural counters, not allocation bounds.
 Hot-key buckets and affected outputs can be large; scheduling a large dirty
 cone uses an ordered list. No whole-update constant-time claim is made.
 
+`(dbsp-circuit-input-weight snapshot input-name row)` reads one signed input
+multiplicity through the persistent index, returning zero for an absent row.
+It does not materialize the full input and still compares colliding keys by
+`equal?`. Unknown input names refuse. The nested-clock
+[`core.dbsp.recursive`](dbsp_recursive.md) wrapper uses this observer to admit
+signed retractions without scanning the complete base relation.
+
 Rows must be immutable and callbacks pure. A failed step publishes no new
 snapshot and leaves historical/forked snapshots usable; external callback
 effects are outside this guarantee. This initial slice has no recursive

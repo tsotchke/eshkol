@@ -12771,3 +12771,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND ESHKOL_PYTHON3_EXECUTABLE)
     set_tests_properties(dbsp_checkpoint_process PROPERTIES TIMEOUT 180
         FIXTURES_REQUIRED dbsp_checkpoint_native ENVIRONMENT "${STDLIB_CODEGEN_ENV}")
 endif()
+
+# Wave 2 acceptance: dbsp_recursive
+if(ESHKOL_BUILD_TESTS)
+    add_test(NAME dbsp_recursive_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_recursive_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_recursive_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_recursive_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_recursive_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_recursive_jit dbsp_recursive_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
