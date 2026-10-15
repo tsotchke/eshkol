@@ -7,16 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.6-evolve] - 2026-10-12
+## [1.3.6-evolve] - 2026-10-15
 
-PREPARED FOR PUBLICATION. Intended release date: Monday, October 12, 2026.
-The final measurement contract requires <!-- release-record:ctest -->CTest **819/819**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->.
-Full source-bound preparation passed 819 configured CTest cases and 411 VM parity cases
-([run](https://github.com/tsotchke/eshkol/actions/runs/38161249190)). Publication requires
+PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.
+The final measurement contract requires <!-- release-record:ctest -->CTest **823/823**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->.
+Full source-bound preparation passed 823 configured CTest cases and 411 VM parity cases
+([run](https://github.com/tsotchke/eshkol/actions/runs/38657799489)). Publication requires
 independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Sparse tensor changes bridge DBSP rows to native matrix products.**
+  Add opt-in `core.dbsp.tensor`, validated fixed-shape deltas, nonmutating
+  application, and finite matrix updates including the simultaneous-edit
+  cross term. Native tensor arithmetic retains floating-point semantics. (#782)
+- **Mathematics examples share exact cyclotomic field arithmetic.**
+  Add opt-in `core.cyclotomic` with exact rational coefficients, inversion,
+  Galois conjugation, and norms; migrate the Turaev–Viro and Reidemeister
+  examples and retain historical measurement provenance separately. (#783)
+- **Release qualification isolates harness controls and preserves diagnostics.**
+  Fake harness invocations no longer claim the durable directories used by real
+  XLA, cache, and arena probes. Windows builds fetch the same pinned Eigen
+  source through a checksum-verified archive, and readiness diagnostics upload
+  separately before the full raw evidence archive. The Windows surface gate
+  verifies the archive commit and checksum pins. (#781, #784)
 - **Release artifacts and documentation reflect the integrated compiler.**
   Refresh browser site and VM bundles, sync measured test totals and release
   facts, recount current source sizes, and document the v1.4.0–v1.4.5 ladder.

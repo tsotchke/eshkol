@@ -1,7 +1,7 @@
 <h1 id="eshkol-standard-library--v135-api-reference-index">Eshkol Standard Library — v1.3.5 API Reference Index</h1>
 <p>Complete module-by-function map of the Eshkol standard library. Every symbol below links to a per-module reference page in this directory; every documented function was verified by compiling and running it with <code>eshkol-run … -r</code>.</p>
 <p>See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/module-system.md" target="_blank" rel="noopener noreferrer">module-system.md</a> for how <code>require</code> resolution, <code>(require stdlib)</code>, and <code>stdlib.o</code> precompilation work. The v1.2-scale surface notes remain in <a href="/docs#page=stdlib_v1_2_api" data-url="/content/stdlib_v1_2_api.html">../../STDLIB_V1_2_API.md</a>.</p>
-<p><strong>Modules: 63</strong> (plus <code>stdlib</code> itself and the module system page) — <strong>provided symbols: 856</strong> (plus stdlib-level helpers in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/stdlib_extras.md" target="_blank" rel="noopener noreferrer">stdlib_extras.md</a>).</p>
+<p><strong>Modules: 65</strong> (plus <code>stdlib</code> itself and the module system page) — <strong>provided symbols: 880</strong> (plus stdlib-level helpers in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/stdlib_extras.md" target="_blank" rel="noopener noreferrer">stdlib_extras.md</a>).</p>
 <p><em>Auto</em> = loaded automatically by <code>(require stdlib)</code>; otherwise the module must be required individually.</p>
 <p>The interval and Taylor-model family — <code>core.ad.interval</code>, <code>core.ad.taylor_models</code> and the proof-backed <code>core.ad.rigorous_interval</code> / <code>core.ad.rigorous_taylor_models</code> beneath them, all reached through <code>(require core.ad.taylor_models)</code> — is documented together in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md" target="_blank" rel="noopener noreferrer">certified-enclosures.md</a>; its symbols are listed in the shipped-exports table further down this page. The directed-rounding primitives <code>fl-next-up</code> and <code>fl-next-down</code> that layer rests on are <strong>runtime builtins</strong> on both engines, so they need no <code>require</code>; see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/certified-enclosures.md#1-directed-rounding-primitives-runtime" target="_blank" rel="noopener noreferrer">certified-enclosures.md §1</a> and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/numeric-tower.md#exact-roots-and-exact-expt" target="_blank" rel="noopener noreferrer">the numeric tower</a>.</p>
 <table>
@@ -69,6 +69,12 @@
 <td><code>trampoline</code> <code>bounce</code> <code>done</code></td>
 </tr>
 <tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/cyclotomic.esk" target="_blank" rel="noopener noreferrer"><code>core.cyclotomic</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/cyclotomic.md" target="_blank" rel="noopener noreferrer">cyclotomic.md</a></td>
+<td><code>make-cyclotomic-field</code> <code>cyclotomic-order</code> <code>cyclotomic-degree</code> <code>cyclotomic-polynomial</code> <code>cyclotomic-element</code> <code>cyclotomic-coefficients</code> <code>cyclotomic-root</code> <code>cyclotomic-add</code> <code>cyclotomic-sub</code> <code>cyclotomic-scale</code> <code>cyclotomic-mul</code> <code>cyclotomic-inverse</code> <code>cyclotomic-zero?</code> <code>cyclotomic-equal?</code> <code>cyclotomic-rational</code> <code>cyclotomic-galois</code> <code>cyclotomic-norm</code></td>
+</tr>
+<tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/data/base64.esk" target="_blank" rel="noopener noreferrer"><code>core.data.base64</code></a></td>
 <td>yes</td>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/data_base64.md" target="_blank" rel="noopener noreferrer">data_base64.md</a></td>
@@ -91,6 +97,12 @@
 <td>no</td>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/dbsp.md" target="_blank" rel="noopener noreferrer">dbsp.md</a></td>
 <td><code>zset-empty</code> <code>zset?</code> <code>zset-singleton</code> <code>zset-from-weighted</code> <code>zset-weight</code> <code>zset-add</code> <code>zset-negate</code> <code>zset-sub</code> <code>zset-scale</code> <code>zset-consolidate</code> <code>zset-empty?</code> <code>zset-positive?</code> <code>zset=?</code> <code>zset-entries</code> <code>zset-rows</code> <code>zset-size</code> <code>zset-map</code> <code>zset-filter</code> <code>zset-project</code> <code>zset-union</code> <code>zset-join</code> <code>zset-distinct</code> <code>zset-count</code> <code>zset-sum</code> <code>stream-zero</code> <code>stream-delay</code> <code>dbsp-delay</code> <code>stream-D</code> <code>stream-I</code> <code>stream-add</code> <code>stream-negate</code> <code>stream-lift</code> <code>dbsp-compose</code> <code>dbsp-incrementalize</code> <code>incremental-map</code> <code>incremental-filter</code> <code>incremental-project</code> <code>incremental-union</code> <code>incremental-join</code> <code>incremental-distinct</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/dbsp/tensor.esk" target="_blank" rel="noopener noreferrer"><code>core.dbsp.tensor</code></a></td>
+<td>no</td>
+<td><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/dbsp.md#optional-sparse-tensor-bridge" target="_blank" rel="noopener noreferrer">dbsp.md</a></td>
+<td><code>tensor-delta</code> <code>tensor-delta?</code> <code>tensor-delta-shape</code> <code>tensor-delta-entries</code> <code>tensor-apply-delta</code> <code>zset-project-tensor</code> <code>tensor-matmul-delta</code></td>
 </tr>
 <tr>
 <td><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/distributed.esk" target="_blank" rel="noopener noreferrer"><code>core.distributed</code></a></td>

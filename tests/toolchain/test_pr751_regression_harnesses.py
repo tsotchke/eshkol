@@ -74,6 +74,11 @@ class HarnessControls(unittest.TestCase):
         cls.fake = cls.build / "eshkol-run"
         cls.fake.write_text(FAKE_RUN)
         cls.fake.chmod(0o755)
+        cls.invocation = 0
+        cls.durable = None
+        if os.environ.get("ESHKOL_DURABLE_WORK_ROOT"):
+            cls.durable = Path(os.environ["ESHKOL_DURABLE_WORK_ROOT"]) / "pr751-harness-controls"
+            cls.durable.mkdir()
 
     @classmethod
     def tearDownClass(cls):
@@ -90,8 +95,41 @@ class HarnessControls(unittest.TestCase):
             env.update(FAKE_KIND="cache", FAKE_MODE=mode, FAKE_STATE=str(state))
         if extra_env:
             env.update(extra_env)
+        # Each fake execution is a distinct experiment. Never claim the real
+        # release probe's durable name, or reuse an earlier negative control's
+        # evidence. Keep the shell helper's refusal of stale roots intact.
+        durable = self.durable
+        if extra_env and extra_env.get("ESHKOL_DURABLE_WORK_ROOT"):
+            durable = Path(extra_env["ESHKOL_DURABLE_WORK_ROOT"])
+        if durable is not None:
+            type(self).invocation += 1
+            child = durable / f"invocation-{type(self).invocation}"
+            child.mkdir()
+            env["ESHKOL_DURABLE_WORK_ROOT"] = str(child)
         return subprocess.run(["bash", str(ROOT / script)], cwd=ROOT, env=env,
                               text=True, capture_output=True, timeout=30)
+
+    def test_durable_controls_leave_real_probe_names_available(self):
+        durable = self.work / "durable-controls"
+        durable.mkdir()
+        extra = {"ESHKOL_DURABLE_WORK_ROOT": str(durable)}
+        script = "tests/codegen/run_cache_xla_threshold_key_test.sh"
+        for _ in range(2):
+            result = self.invoke(script, "positive", extra)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The real probe must still be able to claim its top-level name.
+        env = os.environ.copy()
+        env.update(BUILD_DIR=str(self.build), ESHKOL_RUN=str(self.fake),
+                   ESHKOL_DURABLE_WORK_ROOT=str(durable), FAKE_KIND="cache",
+                   FAKE_MODE="positive", FAKE_STATE=str(self.work / "real.state"),
+                   PATH=f"{self.bin}:{env['PATH']}")
+        real = subprocess.run(["bash", str(ROOT / script)], cwd=ROOT, env=env,
+                              text=True, capture_output=True, timeout=30)
+        self.assertEqual(real.returncode, 0, real.stdout + real.stderr)
+        repeated = subprocess.run(["bash", str(ROOT / script)], cwd=ROOT, env=env,
+                                  text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(repeated.returncode, 0)
+        self.assertIn("durable evidence target already exists", repeated.stderr)
 
     def test_timeout_helper_propagates_success_timeout_and_failure(self):
         helper = ROOT / "scripts/lib/test_isolation.sh"

@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.3.6-evolve
+sources:
+  - lib/core/cyclotomic.esk
+  - tests/stdlib/cyclotomic_test.esk
+---
+
 # `core.cyclotomic` — exact cyclotomic number fields
 
 **Source:** [cyclotomic.esk](../../../lib/core/cyclotomic.esk).
