@@ -12834,3 +12834,8 @@ endif()
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_ridge "tests/stdlib/algebraic_ridge_test.esk")
 endif()
+
+# Next frontier acceptance: algebraic_qp
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_qp "tests/stdlib/algebraic_qp_test.esk")
+endif()
