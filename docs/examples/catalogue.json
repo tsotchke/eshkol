@@ -3,6 +3,49 @@
   "inventory_policy": "Every Git-tracked examples/**/*.esk program, including nested artifact generators. No untracked or missing paths.",
   "entries": [
     {
+      "path": "examples/algebraic_ad.esk",
+      "source_sha256": "75623281baa24793f65abd9fc9d0d3092916cc40299e699af5e48b158f1366df",
+      "title": "Exact algebraic automatic differentiation",
+      "kind": "example",
+      "purpose": "Differentiate a local algebraic branch exactly over Q(cuberoot(2)).",
+      "algorithm": "Lift the simple root of y^3=2+t through a fourth-order Taylor carrier using bounded nilpotent Newton steps; retain hyperdual derivatives of a zero-primal field relation.",
+      "domain": "One selected cubic real field; Taylor order four and a four-coefficient hyperdual carrier.",
+      "arithmetic": "Exact rational power-basis field coefficients and nilpotent AD operations; no floating approximation or finite differences.",
+      "validation": "Six assertions check the entire cubic equation, independently derived first/second/fourth derivatives, nonzero derivatives of a zero-primal relation and zero finite-difference evaluations; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "The supplied simple root is already in the selected field; no scalar root search, new field extension, general transcendental AD or arbitrary-function compiler transformation. Existing exact scalar arithmetic limits apply.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic and core.algebraic_field.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact AD over Q(cuberoot(2)): the local branch y(t)^3 = 2+t."
+        },
+        {
+          "line": 8,
+          "text": "(define root (algebraic-ad-root context"
+        },
+        {
+          "line": 14,
+          "text": "  (algebraic-ad-mul (algebraic-ad-mul root root) root) parameter))"
+        },
+        {
+          "line": 23,
+          "text": "(check \"field relation retains nonzero derivatives\""
+        },
+        {
+          "line": 29,
+          "text": "(display \"Taylor coefficients in the basis (1, alpha, alpha^2):\") (newline)"
+        }
+      ],
+      "literature_review": "The linked module reference specifies the finite coefficient algebra and supplied-root residual contract.",
+      "references": [],
+      "key_output": [
+        "^Taylor coefficients in the basis",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/autodiff.esk",
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
       "title": "Scalar automatic differentiation",

@@ -44,7 +44,7 @@ class CatalogueTests(unittest.TestCase):
         (self.root/'CMakeLists.txt').write_text(cmake)
         shutil.copy(ROOT/'scripts/run_examples_tests.sh',self.root/'scripts/run_examples_tests.sh')
         catalogue=json.loads((ROOT/'docs/examples/catalogue.json').read_text())
-        template=catalogue['entries'][0]
+        template=next(entry for entry in catalogue['entries'] if entry['kind']=='mathematics')
         self.entries=[]
         for path,family,criterion in zip(self.paths,module.FAMILIES,criteria):
             entry=copy.deepcopy(template)

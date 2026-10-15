@@ -13060,3 +13060,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_dbsp_acceptance(dbsp_ad "tests/stdlib/dbsp_ad_test.esk" "PASS")
     eshkol_add_dbsp_acceptance(streaming_least_squares "examples/streaming_least_squares.esk" "ALL PASS")
 endif()
+
+# Exact field-valued AD uses the shared strict library AOT driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    function(eshkol_add_algebraic_ad_acceptance name source)
+        add_test(NAME ${name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${name}_jit ${name}_aot PROPERTIES TIMEOUT 900
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    endfunction()
+    eshkol_add_algebraic_ad_acceptance(algebraic_ad "tests/stdlib/algebraic_ad_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_ad_example "examples/algebraic_ad.esk")
+endif()
