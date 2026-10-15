@@ -46,10 +46,12 @@ are visited; emitted-row collisions consolidate normally. Group state advances
 even when the emitted output delta cancels. Declarations and the group operation
 vector are copied at construction. `#f` can itself be a nonidentity group value.
 
-`core.dbsp.ad` supplies a numeric vector group and an existing-tape AD lift;
-see [dbsp_ad.md](dbsp_ad.md). Run CTest with `-R 'dbsp_aggregate|dbsp_ad'` for
-signed-prefix batch equivalence, large weights, key/emission collisions,
-callback failure, captured declarations and cold-state locality checks.
+`(dbsp-circuit-input-weight snapshot input-name row)` reads one signed input
+multiplicity through the persistent index, returning zero for an absent row.
+It does not materialize the full input and still compares colliding keys by
+`equal?`. Unknown input names refuse. The nested-clock
+[`core.dbsp.recursive`](dbsp_recursive.md) wrapper uses this observer to admit
+signed retractions without scanning the complete base relation.
 
 Rows must be immutable and callbacks pure. A failed step publishes no new
 snapshot and leaves historical/forked snapshots usable; external callback

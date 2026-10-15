@@ -1,0 +1,74 @@
+;;; Nested-clock maintenance of positive recursive circuit bodies.
+(require core.dbsp.circuit)
+(provide make-dbsp-recursive dbsp-recursive-step dbsp-recursive-output dbsp-recursive-work)
+
+;; Body inputs are 'base and 'recur. The ordinary circuit constructor admits
+;; only positive map/filter/project/union/join/distinct nodes. Pure callbacks
+;; must preserve immutable rows. Starting at empty gives the least fixed point
+;; whenever these monotone finite approximants converge within the budget.
+(define (make-dbsp-recursive declarations output . options)
+  (if (> (length options) 1) (error "recursive circuit accepts one round budget"))
+  (let ((budget (if (null? options) 256 (car options))))
+    (if (not (and (integer? budget) (exact? budget) (> budget 0) (<= budget 1024)))
+        (error "recursive round budget must be 1..1024"))
+    (vector 'dbsp-recursive-v1 (make-dbsp-circuit '(base recur) declarations output)
+            budget '() '() (zset-empty) (vector 0 0 0 0 0 0))))
+(define (dr-check state)
+  (if (not (and (vector? state) (= (vector-length state) 7)
+                (eq? (vector-ref state 0) 'dbsp-recursive-v1)))
+      (error "expected a recursive DBSP snapshot")))
+(define (dr-last values fallback)
+  (if (null? values) fallback
+      (let loop ((xs values)) (if (null? (cdr xs)) (car xs) (loop (cdr xs))))))
+(define (dr-nonnegative? value)
+  (let loop ((xs (zset-entries value)))
+    (or (null? xs) (and (>= (caar xs) 0) (loop (cdr xs))))))
+(define (dbsp-recursive-output state)
+  (dr-check state) (zset-from-weighted (zset-entries (vector-ref state 5))))
+(define (dbsp-recursive-work state)
+  (dr-check state) (vector-copy (vector-ref state 6)))
+
+;; Returns #(successor output-delta work). No publication on failure. One
+;; retained ordinary circuit per inner clock k receives the same outer base
+;; delta and the change to its previous approximant. Newly needed columns start
+;; from the old steady column, whose base and recursive input already match.
+(define (dbsp-recursive-step state change)
+  (dr-check state)
+  (if (not (zset? change)) (error "recursive update requires a Z-set"))
+  (let* ((delta (zset-consolidate change)) (template (vector-ref state 1))
+         (old-columns (vector-ref state 3)) (old-trace (vector-ref state 4))
+         (old-final (vector-ref state 5)) (work (vector 0 0 0 0 0 0))
+         (first (if (null? old-columns) template (car old-columns)))
+         (steady (dr-last old-columns template)))
+    ;; Check only touched rows using the standing input index. Signed deltas
+    ;; are allowed; the integrated base bag must remain nonnegative.
+    (for-each (lambda (entry)
+      (vector-set! work 1 (+ (vector-ref work 1) 1))
+      (if (< (+ (dbsp-circuit-input-weight first 'base (cadr entry)) (car entry)) 0)
+          (error "recursive retraction exceeds integrated base"))) (zset-entries delta))
+    (if (zset-empty? delta)
+      (vector (vector 'dbsp-recursive-v1 template (vector-ref state 2)
+                      old-columns old-trace old-final work) (zset-empty) (vector-copy work))
+      (let rounds ((k 0) (columns old-columns) (trace old-trace)
+                   (old-previous (zset-empty)) (new-previous (zset-empty))
+                   (next-columns '()) (next-trace '()))
+        (if (= k (vector-ref state 2)) (error "recursive circuit did not converge within its round budget"))
+        (let* ((old-current (if (null? trace) old-final (car trace)))
+               (column (if (null? columns) steady (car columns)))
+               (recur-delta (zset-sub new-previous old-previous))
+               (step (dbsp-circuit-step column (list (list 'base delta) (list 'recur recur-delta))))
+               (next-column (car step)) (new-current (zset-add old-current (cdr step)))
+               (node-work (dbsp-circuit-work next-column))
+               (nc (cons next-column next-columns)) (nt (cons new-current next-trace)))
+          (vector-set! work 0 (+ k 1))
+          (let add ((i 0)) (if (< i 4)
+            (begin (vector-set! work (+ i 2) (+ (vector-ref work (+ i 2)) (vector-ref node-work i)))
+                   (add (+ i 1)))))
+          (if (not (dr-nonnegative? new-current)) (error "recursive body produced a negative approximant"))
+          (if (zset=? new-current new-previous)
+              (let* ((output-delta (zset-sub new-current old-final))
+                     (successor (vector 'dbsp-recursive-v1 template (vector-ref state 2)
+                                        (reverse nc) (reverse nt) new-current work)))
+                (vector successor output-delta (vector-copy work)))
+              (rounds (+ k 1) (if (null? columns) '() (cdr columns))
+                      (if (null? trace) '() (cdr trace)) old-current new-current nc nt)))))))
