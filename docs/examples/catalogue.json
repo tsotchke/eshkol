@@ -4038,6 +4038,54 @@
       ]
     },
     {
+      "path": "examples/nested_algebraic_fields.esk",
+      "source_sha256": "df073d7c01bfb3c3baf9239c0a06be2c1e87a665c9d399ceb35e6a226baafb97",
+      "title": "Nested exact differentiation over a certified combined field",
+      "kind": "example",
+      "purpose": "Compose selected quadratic/cubic fields and independent derivative scopes in one exact calculation.",
+      "algorithm": "Certify a primitive element and both real embeddings, then recursively interpret the existing Taylor/inverse/root kernels with enclosing carriers as coefficients.",
+      "domain": "Q(sqrt(2),cuberoot(2)), degree six; two independent order-two Taylor levels, including a moving implicit cubic branch.",
+      "arithmetic": "Exact rational power-basis coefficients and nilpotent arithmetic; explicit transports and lifts; no floating approximation or finite differences.",
+      "validation": "Seven assertions check degree, both source relations, primitive generator, mixed reciprocal derivative against 24/(a+b)^5, moving-root derivative against -20/(3(a+1)^7), and zero finite-difference evaluations; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "Coprime source degrees only; selected roots, scalar exactness and explicit budgets constrain admission. Nested scopes are bounded to three levels; no compiler AD transformation, arbitrary-depth or general transcendental claim.",
+      "prerequisites": "Built eshkol-run and stdlib with source-tree core.algebraic_field and core.ad.algebraic.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Combine two certified fields, then differentiate with independent scopes."
+        },
+        {
+          "line": 6,
+          "text": "(define composition (make-algebraic-compositum quadratic cubic))"
+        },
+        {
+          "line": 13,
+          "text": "(define mixed (call-with-algebraic-derivative field"
+        },
+        {
+          "line": 26,
+          "text": "(check \"primitive generator\" (algebraic-equal? (algebraic-generator field) (algebraic-add alpha beta)))"
+        },
+        {
+          "line": 37,
+          "text": "              (list (algebraic-ad-sub (algebraic-ad-constant inner 0) b) 0 0 1) root))) point 2))) alpha 2))"
+        },
+        {
+          "line": 42,
+          "text": "(display \"Primitive polynomial: \") (display (algebraic-field-polynomial field)) (newline)"
+        }
+      ],
+      "literature_review": "The module references specify coprime-field certification and explicit finite coefficient-domain differentiation.",
+      "references": [],
+      "key_output": [
+        "^Primitive polynomial:",
+        "^Exact mixed derivative coefficients:",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/neural_xor.esk",
       "source_sha256": "b8e3a8c248e547f4088706408b10589842ca6f7ae8ed1696fd324c7f71027e00",
       "title": "Small XOR neural network",

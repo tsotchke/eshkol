@@ -35,7 +35,44 @@ nonzero signs. Default budget is 256; exhaustion and arithmetic demotion raise.
 polynomial and the selected real interval, returning a checked transport
 procedure. Wrong conjugates and foreign source values refuse.
 
-No implicit field coercion, general compositum, complex embedding, native
-tensor cell type or AD dispatch is added. Run CTest with
-`-R 'polynomial_exact|algebraic_field|cyclotomic'`; inverse coefficients are
-cross-checked against independent exact Gaussian solves.
+## Certified coprime composita
+
+`(make-algebraic-compositum left right [degree-budget [candidate-budget
+[refinement-budget]]])` returns `(vector field embed-left embed-right)`.
+The two procedures explicitly transport elements of the selected source fields
+into the resulting field. Composing the same field object returns that object
+and checked copying transports. Distinct sources require coprime degrees;
+noncoprime composition refuses rather than guessing an intersection.
+
+For distinct sources the constructor forms their exact tensor-product basis
+and searches primitive elements `gamma = alpha + c*beta`, starting at `c=1`.
+It verifies a full power basis, guards every inverse coefficient for exactness,
+and checks the entire matrix inverse residual. The resulting monic polynomial
+must have integer coefficients. Coprime certified source degrees and the full
+power basis certify the combined extension; admission does not pretend to have
+found another modular irreducibility prime. Both source polynomial relations
+and selected real embeddings must pass before either transport is returned.
+Interval refinement selects the target root and checks the images against the
+original source intervals.
+
+Defaults are combined degree 16, eight primitive candidates and 128 interval
+refinements; maxima are 16, 16 and 256 respectively. Budgets must be nonnegative
+exact integers. Exhaustion, arithmetic demotion, singular candidate bases or
+uncertified real embeddings never return an unchecked field. The same-object
+identity case still observes the degree budget and needs no search/refinement.
+
+`(algebraic-field-certificate field)` returns copied public provenance:
+`(modular-prime prime polynomial interval)` for modular admission, or
+`(coprime-compositum degree multiplier left-description right-description
+polynomial interval)` for composition. Nested descriptions contain copies;
+this observer is not a serialized-certificate loader or an unchecked factory.
+
+The [joint example](../../../examples/nested_algebraic_fields.esk) constructs
+`Q(sqrt(2),cuberoot(2))` and uses both checked transports with
+[nested exact AD](ad_algebraic.md). Composition remains explicit; general
+noncoprime composita, complex embeddings and native tensor cells are outside
+this module's admitted surface.
+
+Run CTest with `-R 'polynomial_exact|algebraic_field|algebraic_compositum|cyclotomic'`.
+Inverse coefficients and source images are checked against independently
+derived exact formulas as well as full defining residuals.
