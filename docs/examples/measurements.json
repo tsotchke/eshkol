@@ -1355,45 +1355,61 @@
       "output_lines": 27
     },
     "examples/mathematics_lens_spaces_reidemeister_torsion.esk": {
-      "source_sha256": "63219178f66793b91a3425d159e83f6551cbef183dd8b7ed1ceef6919cae2c05",
+      "source_sha256": "6871db3d6b49084da6cc1c6aae6824663a4e49e239cfdf8bd1d387aa2c3f8198",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 5.7,
-        "passed": 7,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 5.61
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 0.3,
-        "passed": 7,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 0.1,
-        "compile_exit": 0,
-        "compile_s": 21.31
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "torsion_lens_spaces_reidemeister_jit",
-          "status": "Passed",
-          "seconds": 24.11
-        },
-        {
-          "name": "torsion_lens_spaces_reidemeister_aot",
-          "status": "Passed",
-          "seconds": 26.52
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.cyclotomic and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "63219178f66793b91a3425d159e83f6551cbef183dd8b7ed1ceef6919cae2c05",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 5.7,
+            "passed": 7,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 5.61
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 0.3,
+            "passed": 7,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 0.1,
+            "compile_exit": 0,
+            "compile_s": 21.31
+          },
+          "ctest": [
+            {
+              "name": "torsion_lens_spaces_reidemeister_jit",
+              "status": "Passed",
+              "seconds": 24.11
+            },
+            {
+              "name": "torsion_lens_spaces_reidemeister_aot",
+              "status": "Passed",
+              "seconds": 26.52
+            }
+          ],
+          "key_output": [
+            "  norms N(tau) down to Q = (25 25 25 49 49 49 49)",
+            "  torsion verdicts for L(5,1)~L(5,2), L(5,2)~L(5,3), L(5,1)~L(5,3), L(7,1)~L(7,2), L(7,2)~L(7,4), L(7,1)~L(7,6), L(7,1)~L(7,4) = (#f #t #f #f #t #t #f)",
+            "PASS: the classical pair: L(7,1) and L(7,2) are homotopy equivalent (same square class in the sibling example) but not homeomorphic (torsions differ by a non-unit for every Galois conjugate)"
+          ],
+          "output_lines": 17
         }
-      ],
-      "key_output": [
-        "  norms N(tau) down to Q = (25 25 25 49 49 49 49)",
-        "  torsion verdicts for L(5,1)~L(5,2), L(5,2)~L(5,3), L(5,1)~L(5,3), L(7,1)~L(7,2), L(7,2)~L(7,4), L(7,1)~L(7,6), L(7,1)~L(7,4) = (#f #t #f #f #t #t #f)",
-        "PASS: the classical pair: L(7,1) and L(7,2) are homotopy equivalent (same square class in the sibling example) but not homeomorphic (torsions differ by a non-unit for every Galois conjugate)"
-      ],
-      "output_lines": 17
+      }
     },
     "examples/mathematics_lens_spaces_yetter.esk": {
       "source_sha256": "5b2658d592be50e427b8187400091377c6e409602893e7263a53bae5335c2a3a",
@@ -2104,46 +2120,62 @@
       "output_lines": 41
     },
     "examples/mathematics_turaev_viro_cyclotomic.esk": {
-      "source_sha256": "9d9112a7cec9c780980892c1ecf7545aea2350d3953af7e5edc7580d2e197fc4",
+      "source_sha256": "2cf86521c497eaadc4582fc47967d642a118458cbe42e7b90cbedb812447b279",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 10.72,
-        "passed": 9,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 10.54
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 2.62,
-        "passed": 9,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 2.38,
-        "compile_exit": 0,
-        "compile_s": 23.13
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "tv_turaev_viro_cyclotomic_jit",
-          "status": "Passed",
-          "seconds": 23.12
-        },
-        {
-          "name": "tv_turaev_viro_cyclotomic_aot",
-          "status": "Passed",
-          "seconds": 28.84
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.cyclotomic and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "9d9112a7cec9c780980892c1ecf7545aea2350d3953af7e5edc7580d2e197fc4",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 10.72,
+            "passed": 9,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 10.54
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 2.62,
+            "passed": 9,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 2.38,
+            "compile_exit": 0,
+            "compile_s": 23.13
+          },
+          "ctest": [
+            {
+              "name": "tv_turaev_viro_cyclotomic_jit",
+              "status": "Passed",
+              "seconds": 23.12
+            },
+            {
+              "name": "tv_turaev_viro_cyclotomic_aot",
+              "status": "Passed",
+              "seconds": 28.84
+            }
+          ],
+          "key_output": [
+            "  TV_3(M)/TV_3(S^3) for RP^3, T^3, L(4,1), L(3,1), L(5,1), L(7,1), L(2,1) = (0 8 2 1 1 1 0)",
+            "  TV_4 separates L(5,1) from L(5,2)?  TV_5?  TV_4 separates L(7,1) from L(7,2)? = (#f #t #f)",
+            "  TV_3, TV_4, TV_5 of T^3 = (4 9 16)",
+            "PASS: TV_5 separates L(5,1) from L(5,2) (1/2 against 0) although TV_3 and TV_4 do not; TV_5(RP^3) = 0"
+          ],
+          "output_lines": 21
         }
-      ],
-      "key_output": [
-        "  TV_3(M)/TV_3(S^3) for RP^3, T^3, L(4,1), L(3,1), L(5,1), L(7,1), L(2,1) = (0 8 2 1 1 1 0)",
-        "  TV_4 separates L(5,1) from L(5,2)?  TV_5?  TV_4 separates L(7,1) from L(7,2)? = (#f #t #f)",
-        "  TV_3, TV_4, TV_5 of T^3 = (4 9 16)",
-        "PASS: TV_5 separates L(5,1) from L(5,2) (1/2 against 0) although TV_3 and TV_4 do not; TV_5(RP^3) = 0"
-      ],
-      "output_lines": 21
+      }
     },
     "examples/mathematics_two_descent_cech_nerves.esk": {
       "source_sha256": "0a7ac6f1b5d1d364746801aa5f985fcc3b3da530ae55e804521f461bc7208985",

@@ -1,0 +1,177 @@
+;;; Exact cyclotomic arithmetic, with independent rational matrix oracles.
+(require core.cyclotomic)
+(require core.exact_linalg)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display label) (newline))
+(define (raises? thunk)
+  (guard (e (#t (error-object? e))) (thunk) #f))
+(define (all? pred xs)
+  (or (null? xs) (and (pred (car xs)) (all? pred (cdr xs)))))
+(define (range n)
+  (let loop ((i 0) (out '()))
+    (if (= i n) (reverse out) (loop (+ i 1) (cons i out)))))
+(define (exact-coefficients? a)
+  (all? (lambda (x) (and (rational? x) (exact? x)))
+        (vector->list (cyclotomic-coefficients a))))
+
+;; Coefficients from known Phi_n formulas, independent of the constructor.
+(define known-polynomials
+  '((1 -1 1) (2 1 1) (3 1 1 1) (4 1 0 1) (5 1 1 1 1 1)
+    (6 1 -1 1) (8 1 0 0 0 1) (12 1 0 -1 0 1)
+    (15 1 -1 0 1 -1 1 0 -1 1) (16 1 0 0 0 0 0 0 0 1)
+    (20 1 0 -1 0 1 0 -1 0 1) (30 1 1 0 -1 -1 -1 0 1 1)))
+(for-each
+ (lambda (row)
+   (check "known prime/composite cyclotomic polynomial"
+          (equal? (vector->list (cyclotomic-polynomial (make-cyclotomic-field (car row))))
+                  (cdr row))))
+ known-polynomials)
+
+(define orders '(1 2 3 4 5 6 8 9 10 12 15 16 20 24 30))
+(for-each
+ (lambda (n)
+   (let* ((F (make-cyclotomic-field n)) (one (cyclotomic-element F 1))
+          (z (cyclotomic-root F 1))
+          (a (cyclotomic-element F '(2 1)))
+          (b (cyclotomic-element F '(1/2 -1/3 1/5)))
+          (c (cyclotomic-element F '(-3 0 1)))
+          (inverse (cyclotomic-inverse a))
+          (relation (make-vector (+ n 1) 0)))
+     (vector-set! relation 0 -1)
+     (vector-set! relation n 1)
+     (check "x^n - 1 reduces exactly to zero"
+            (cyclotomic-zero? (cyclotomic-element F relation)))
+     (check "the generator has primitive order n"
+            (and (cyclotomic-equal? (cyclotomic-root F n) one)
+                 (all? (lambda (k) (or (= k 0)
+                                      (not (cyclotomic-equal? (cyclotomic-root F k) one))))
+                       (range n))))
+     (check "exact field laws and inverse residual"
+            (and
+             (cyclotomic-equal? (cyclotomic-add a b) (cyclotomic-add b a))
+             (cyclotomic-equal? (cyclotomic-add (cyclotomic-add a b) c)
+                                (cyclotomic-add a (cyclotomic-add b c)))
+             (cyclotomic-equal? (cyclotomic-mul a b) (cyclotomic-mul b a))
+             (cyclotomic-equal? (cyclotomic-mul (cyclotomic-mul a b) c)
+                                (cyclotomic-mul a (cyclotomic-mul b c)))
+             (cyclotomic-equal? (cyclotomic-mul a (cyclotomic-add b c))
+                                (cyclotomic-add (cyclotomic-mul a b) (cyclotomic-mul a c)))
+             (cyclotomic-equal? (cyclotomic-mul a inverse) one)
+             (exact-coefficients? inverse)))
+     (check "complex conjugation is an exact involutive homomorphism"
+            (and (cyclotomic-equal? (cyclotomic-galois z -1) (cyclotomic-root F -1))
+                 (cyclotomic-equal? (cyclotomic-galois (cyclotomic-galois a -1) -1) a)
+                 (cyclotomic-equal? (cyclotomic-galois (cyclotomic-mul a b) -1)
+                                    (cyclotomic-mul (cyclotomic-galois a -1)
+                                                    (cyclotomic-galois b -1)))))
+     ;; Finite updates remain a ring law over exact algebraic coefficients.
+     (check "finite product updates retain their cross term exactly"
+            (cyclotomic-equal?
+             (cyclotomic-sub (cyclotomic-mul (cyclotomic-add a z) (cyclotomic-add b c))
+                              (cyclotomic-mul a b))
+             (cyclotomic-add (cyclotomic-add (cyclotomic-mul z b) (cyclotomic-mul a c))
+                              (cyclotomic-mul z c))))))
+ orders)
+
+;; Multiplication matrices provide a separate inverse/norm algorithm. Their
+;; entries stay in ordinary exact row-vectors, never f64 native tensors.
+(define (multiplication-matrix F a)
+  (let* ((d (cyclotomic-degree F)) (matrix (make-vector d 0)))
+    (let init ((i 0))
+      (if (< i d)
+          (begin (vector-set! matrix i (make-vector d 0)) (init (+ i 1)))))
+    (let columns ((j 0))
+      (if (< j d)
+          (let ((basis (make-vector d 0)))
+            (vector-set! basis j 1)
+            (let ((column (cyclotomic-coefficients
+                           (cyclotomic-mul a (cyclotomic-element F basis)))))
+              (let rows ((i 0))
+                (if (< i d)
+                    (begin (vector-set! (vector-ref matrix i) j (vector-ref column i))
+                           (rows (+ i 1))))))
+            (columns (+ j 1)))))
+    matrix))
+(for-each
+ (lambda (n)
+   (let* ((F (make-cyclotomic-field n)) (a (cyclotomic-element F '(2 1)))
+          (matrix (multiplication-matrix F a))
+          (rhs (make-vector (cyclotomic-degree F) 0)))
+     (vector-set! rhs 0 1)
+     (check "Euclid inverse equals independent exact Gaussian solve"
+            (cyclotomic-equal? (cyclotomic-inverse a)
+                               (cyclotomic-element F (exact-solve matrix rhs))))
+     (check "Galois norm equals independent Bareiss determinant"
+            (let ((norm (cyclotomic-norm a)))
+              (and (exact? norm) (= norm (exact-det matrix)))))))
+ '(3 4 5 8 12 15 20))
+
+(define F4 (make-cyclotomic-field 4))
+(define imaginary-unit (cyclotomic-root F4 1))
+(check "i^2 = -1 with no floating approximation"
+       (= (cyclotomic-rational (cyclotomic-mul imaginary-unit imaginary-unit)) -1))
+(check "rational descent refuses a nonrational element"
+       (eq? (cyclotomic-rational imaginary-unit) #f))
+(check "zero and negative rational norms descend correctly"
+       (and (= (cyclotomic-norm (cyclotomic-element F4 0)) 0)
+            (= (cyclotomic-norm (cyclotomic-element (make-cyclotomic-field 1) -2)) -2)))
+(for-each
+ (lambda (p)
+   (let* ((F (make-cyclotomic-field p)) (a (cyclotomic-sub (cyclotomic-element F 1)
+                                                               (cyclotomic-root F 1))))
+     (check "prime cyclotomic norm of 1-zeta equals p"
+            (= (cyclotomic-norm a) p))))
+ '(3 5 7))
+
+;; Constructor and observer ownership; no ambient interning is required.
+(define source-coefficients (vector 1 2))
+(define owned (cyclotomic-element F4 source-coefficients))
+(vector-set! source-coefficients 0 99)
+(define projected (cyclotomic-coefficients owned))
+(vector-set! projected 1 99)
+(define polynomial-copy (cyclotomic-polynomial F4))
+(vector-set! polynomial-copy 0 99)
+(check "coefficient and modulus observations are defensive copies"
+       (and (equal? (vector->list (cyclotomic-coefficients owned)) '(1 2))
+            (equal? (vector->list (cyclotomic-polynomial F4)) '(1 0 1))))
+(check "independently constructed canonical orders are compatible"
+       (cyclotomic-equal? (cyclotomic-add imaginary-unit
+                                         (cyclotomic-root (make-cyclotomic-field 4) 1))
+                          (cyclotomic-scale imaginary-unit 2)))
+(check "empty coefficients mean exact zero"
+       (cyclotomic-zero? (cyclotomic-element F4 '())))
+(check "bignum coefficients remain exact"
+       (let* ((large 1000000000000000000000000)
+              (a (cyclotomic-element F4 large)) (square (cyclotomic-mul a a)))
+         (and (exact-coefficients? square) (= (cyclotomic-rational square) (* large large)))))
+
+(check "zero order is rejected" (raises? (lambda () (make-cyclotomic-field 0))))
+(check "inexact order is rejected" (raises? (lambda () (make-cyclotomic-field 4.0))))
+(check "default order budget is enforced" (raises? (lambda () (make-cyclotomic-field 257))))
+(check "caller order budget is enforced" (raises? (lambda () (make-cyclotomic-field 9 8))))
+(check "explicit admitted order budget works" (= (cyclotomic-degree (make-cyclotomic-field 8 8)) 4))
+(check "extra budget arguments are rejected" (raises? (lambda () (make-cyclotomic-field 4 8 16))))
+(check "floating coefficients are rejected" (raises? (lambda () (cyclotomic-element F4 '(1 0.5)))))
+(check "floating scales are rejected" (raises? (lambda () (cyclotomic-scale owned 0.5))))
+(check "zero has no inverse" (raises? (lambda () (cyclotomic-inverse (cyclotomic-element F4 0)))))
+(check "inexact root exponents are rejected" (raises? (lambda () (cyclotomic-root F4 2.0))))
+(check "nonunit Galois exponents are rejected"
+       (raises? (lambda () (cyclotomic-galois (cyclotomic-root (make-cyclotomic-field 12) 1) 2))))
+(check "different orders refuse implicit addition and multiplication"
+       (let ((a (cyclotomic-root (make-cyclotomic-field 3) 1))
+             (b (cyclotomic-root (make-cyclotomic-field 6) 1)))
+         (and (raises? (lambda () (cyclotomic-add a b)))
+              (raises? (lambda () (cyclotomic-mul a b)))
+              (raises? (lambda () (cyclotomic-equal? a b))))))
+
+(display "core.cyclotomic: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: cyclotomic_test") (newline) (display "RESULT: ALL PASS") (newline))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

@@ -16,7 +16,7 @@ sources:
 
 **46 programs**, each reproducing a published or classical result by computation. Exact finite constructions, bilinear/polynomial identity certificates, finite formal expansions and numerical comparisons have different scopes, stated per entry under **Arithmetic** and **Limits**.
 
-Every one of these 46 programs was run at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **46** completed in both modes; **45** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 1 prints diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
+Measurement snapshot for these 46 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **44** completed in both modes; **43** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 1 prints diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Not run:** [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
 
 Each entry gives: the published result being reproduced and its references; what the program computes and by which algorithm; the domain and parameters; the arithmetic and its scope; the checks the source asserts; the honest limits; and the measured outcome at the release SHA with the computed values that matter, quoted verbatim from the program's output. A reference marked *as cited in the program's source comments* is taken from the program header; *(citation unverified)* marks one whose bibliographic details could not be confirmed.
 
@@ -57,7 +57,7 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Local oscillatory IPM velocity expansion](#mathematics-ipm-velocity-expansion) | PASS / PASS | `ipm_velocity_expansion_closes` |
 | [Polynomial Jacobian map and fibers](#mathematics-jacobian-counterexample) | PASS / PASS | `jacobian_counterexample_fibers` |
 | [Horn fillers and low homotopy groups](#mathematics-kan-complexes-horns) | PASS / PASS | `hocolim_kan_complexes_horns` |
-| [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion) | PASS / PASS | `torsion_lens_spaces_reidemeister` |
+| [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion) | NOT-RUN / NOT-RUN | `torsion_lens_spaces_reidemeister` |
 | [Lens-space linking data and 2-group invariants](#mathematics-lens-spaces-yetter) | PASS / PASS | `yetter_lens_spaces` |
 | [Derived similarity exponents and leading profiles](#mathematics-navier-stokes-first-principles) | PASS / PASS | `ns_leading_profile_balance` |
 | [Azimuthal heat exterior and moments](#mathematics-navier-stokes-heat-exterior) | PASS / PASS | `ns_heat_exterior_exact` |
@@ -74,7 +74,7 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Internal logic of finite presheaf categories](#mathematics-presheaf-topos-internal-logic) | PASS / PASS | `cat_presheaf_topos_internal_logic` |
 | [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan) | PASS / PASS | `cat_sheafification_descent_kan` |
 | [Torsors and nonabelian descent on finite spaces](#mathematics-stacks-nonabelian-descent) | PASS / PASS | `stacks_nonabelian_descent` |
-| [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) | PASS / PASS | `tv_turaev_viro_cyclotomic` |
+| [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) | NOT-RUN / NOT-RUN | `tv_turaev_viro_cyclotomic` |
 | [Cech nerves and 2-descent](#mathematics-two-descent-cech-nerves) | PASS / PASS | `descent_two_descent_cech_nerves` |
 | [Crossed-module nerves and Postnikov data](#mathematics-two-groups-postnikov) | PASS / PASS | `hocolim_two_groups_postnikov` |
 | [Yetter invariants on the 64-point torus](#mathematics-yetter-three-torus-finite-model) | PASS / PASS | `yetter_three_torus_finite_model` |
@@ -1272,7 +1272,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Cyclotomic Reidemeister torsion of lens complexes
 
-Source: [mathematics_lens_spaces_reidemeister_torsion.esk](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L1). SHA-256: `63219178f66793b91a3425d159e83f6551cbef183dd8b7ed1ceef6919cae2c05`.
+Source: [mathematics_lens_spaces_reidemeister_torsion.esk](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L1). SHA-256: `6871db3d6b49084da6cc1c6aae6824663a4e49e239cfdf8bd1d387aa2c3f8198`.
 
 **Published result:** Reidemeister (1935) and Franz (1935) classified lens spaces up to homeomorphism by torsion: L(p, q) ≅ L(p, q′) iff q′ ≡ ±q^{±1} (mod p), and τ(L(p, q)) = (ζ − 1)(ζ^r − 1) up to ±ζ^k with rq ≡ 1 (mod p) (Milnor, Whitehead torsion §12; Turaev, Thm. 2.2 and §10). L(7, 1) and L(7, 2) are homotopy equivalent but not homeomorphic — the classical example that torsion sees and homotopy invariants cannot. The program computes τ in Q(ζ_p) for seven lens complexes.
 
@@ -1285,29 +1285,21 @@ Source: [mathematics_lens_spaces_reidemeister_torsion.esk](../examples/mathemati
 
 **Purpose:** Separate selected lens spaces that homology or homotopy checks do not separate.
 
-**Implemented algorithm:** Build twisted boundary matrices, greedily choose pivot blocks, multiply alternating determinants and compare torsions under units, inversion and Galois conjugation.
+**Implemented algorithm:** Use shared exact cyclotomic coefficients; build twisted boundary matrices, greedily choose pivot blocks, multiply alternating determinants and compare torsions under units, inversion and Galois conjugation.
 
 **Domain and parameters:** Seven lens cases (5,1),(5,2),(5,3),(7,1),(7,2),(7,4),(7,6).
 
-**Arithmetic:** Exact rational coefficient vectors in Q(ζ_p).
+**Arithmetic:** Exact rational power-basis arithmetic through core.cyclotomic; every scalar result is checked for exactness.
 
 **Checks in the source:** Acyclicity, norms p² or p⁻², agreement with the implemented lens formula and distinctions among the cases are asserted.
 
 **Limits:** The computed invariant plus cited classification criteria support the stated lens-space comparisons; do not infer arbitrary manifold classification or numerical root approximations.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib including core.cyclotomic; native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 7, Failed: 0; 5.70 s); native AOT **PASS** (Passed: 7, Failed: 0; compile 21.3 s, run 0.30 s). CTest: `torsion_lens_spaces_reidemeister_jit` Passed (24.1 s), `torsion_lens_spaces_reidemeister_aot` Passed (26.5 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.cyclotomic and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  norms N(tau) down to Q = (25 25 25 49 49 49 49)
-  torsion verdicts for L(5,1)~L(5,2), L(5,2)~L(5,3), L(5,1)~L(5,3), L(7,1)~L(7,2), L(7,2)~L(7,4), L(7,1)~L(7,6), L(7,1)~L(7,4) = (#f #t #f #f #t #t #f)
-PASS: the classical pair: L(7,1) and L(7,2) are homotopy equivalent (same square class in the sibling example) but not homeomorphic (torsions differ by a non-unit for every Galois conjugate)
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L1), [line 50](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L50), [line 51](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L51), [line 468](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L468), [line 470](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L470), [line 472](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L472).
+Implementation/check anchors: [line 1](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L1), [line 50](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L50), [line 51](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L51), [line 440](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L440), [line 442](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L442), [line 444](../examples/mathematics_lens_spaces_reidemeister_torsion.esk#L444).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -2090,7 +2082,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Exact cyclotomic Turaev–Viro state sums
 
-Source: [mathematics_turaev_viro_cyclotomic.esk](../examples/mathematics_turaev_viro_cyclotomic.esk#L1). SHA-256: `9d9112a7cec9c780980892c1ecf7545aea2350d3953af7e5edc7580d2e197fc4`.
+Source: [mathematics_turaev_viro_cyclotomic.esk](../examples/mathematics_turaev_viro_cyclotomic.esk#L1). SHA-256: `2cf86521c497eaadc4582fc47967d642a118458cbe42e7b90cbedb812447b279`.
 
 **Published result:** Turaev and Viro (1992) define 3-manifold invariants as state sums of quantum 6j-symbols; with Kauffman–Lins recoupling data at A = ζ_{4r} the state sum is TV_r(M) = η^V Σ ∏Δ ∏θ⁻¹ ∏Tet. TV_r is the squared norm of the Reshetikhin–Turaev invariant (Roberts 1995), TV_r(T³) counts simple objects of the Drinfeld centre ((r−1)² for SU(2)_{r−2}), and at level one (r = 3) the theory is the double semion, the Z/2 Dijkgraaf–Witten theory with the nontrivial cocycle. The program evaluates the state sums exactly in cyclotomic fields.
 
@@ -2103,30 +2095,21 @@ Source: [mathematics_turaev_viro_cyclotomic.esk](../examples/mathematics_turaev_
 
 **Purpose:** Evaluate recoupling state sums and compare selected triangulations and theories.
 
-**Implemented algorithm:** Build cyclotomic polynomials/field inverses, quantum integers, theta/tetrahedral nets and admissible edge-coloring sums.
+**Implemented algorithm:** Use core.cyclotomic for coefficient reduction and Euclid inversion; build quantum integers, theta/tetrahedral nets and admissible edge-coloring sums.
 
 **Domain and parameters:** A=ζ₄r; r=3,4,5 on supplied S³/RP³/T³ and lens complexes, with specified level restrictions per comparison.
 
-**Arithmetic:** Exact rational cyclotomic field arithmetic.
+**Arithmetic:** Exact rational power-basis arithmetic through core.cyclotomic; every scalar result is checked for exactness.
 
 **Checks in the source:** Quantum relations, alternative triangulation agreement, selected homeomorphic lens values, double-semion comparison and torus counts 4/9/16 are asserted.
 
 **Limits:** Finite comparisons cover only the listed triangulations; Pachner-move invariance and normalization follow the cited theory.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib including core.cyclotomic; native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 9, Failed: 0; 10.7 s); native AOT **PASS** (Passed: 9, Failed: 0; compile 23.1 s, run 2.62 s). CTest: `tv_turaev_viro_cyclotomic_jit` Passed (23.1 s), `tv_turaev_viro_cyclotomic_aot` Passed (28.8 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.cyclotomic and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  TV_3(M)/TV_3(S^3) for RP^3, T^3, L(4,1), L(3,1), L(5,1), L(7,1), L(2,1) = (0 8 2 1 1 1 0)
-  TV_4 separates L(5,1) from L(5,2)?  TV_5?  TV_4 separates L(7,1) from L(7,2)? = (#f #t #f)
-  TV_3, TV_4, TV_5 of T^3 = (4 9 16)
-PASS: TV_5 separates L(5,1) from L(5,2) (1/2 against 0) although TV_3 and TV_4 do not; TV_5(RP^3) = 0
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_turaev_viro_cyclotomic.esk#L1), [line 58](../examples/mathematics_turaev_viro_cyclotomic.esk#L58), [line 59](../examples/mathematics_turaev_viro_cyclotomic.esk#L59), [line 502](../examples/mathematics_turaev_viro_cyclotomic.esk#L502), [line 511](../examples/mathematics_turaev_viro_cyclotomic.esk#L511), [line 513](../examples/mathematics_turaev_viro_cyclotomic.esk#L513).
+Implementation/check anchors: [line 1](../examples/mathematics_turaev_viro_cyclotomic.esk#L1), [line 57](../examples/mathematics_turaev_viro_cyclotomic.esk#L57), [line 58](../examples/mathematics_turaev_viro_cyclotomic.esk#L58), [line 459](../examples/mathematics_turaev_viro_cyclotomic.esk#L459), [line 468](../examples/mathematics_turaev_viro_cyclotomic.esk#L468), [line 470](../examples/mathematics_turaev_viro_cyclotomic.esk#L470).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
