@@ -2726,6 +2726,18 @@
       "ctest": [],
       "key_output": [],
       "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
+    },
+    "examples/algebraic_frontiers.esk": {
+      "source_sha256": "1d7ee24f1d77b48899c75708938a3d138229ebce0508025815ab10de23392497",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
     }
   }
 }

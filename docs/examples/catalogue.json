@@ -46,6 +46,53 @@
       ]
     },
     {
+      "path": "examples/algebraic_frontiers.esk",
+      "source_sha256": "1d7ee24f1d77b48899c75708938a3d138229ebce0508025815ab10de23392497",
+      "title": "Exact algebraic computation across matrices, constraints and live rows",
+      "kind": "example",
+      "purpose": "Connect certified field composition, matrix calculus, coupled implicit roots, packed multiplication, sparse curvature and live exact parameter gradients.",
+      "algorithm": "Use the shared coefficient-domain adapter and retained exact residuals; polynomial sufficient statistics absorb signed row edits while explicit Taylor carriers differentiate live parameters.",
+      "domain": "Selected degree-six Q(sqrt(2),cuberoot(2)); two-variable coupled constraints, second-order jets and a two-parameter squared affine loss.",
+      "arithmetic": "Exact rational power-basis and nilpotent coefficients; preflighted native integer products; no floating approximation or finite differences.",
+      "validation": "Eight assertions compare exact matrix/root/product/curvature/loss/gradient formulas and zero row replay/finite-difference counts; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "Bounded reference constructions; supplied simple roots, complete declared sparsity and polynomial-only maintained plans. Packed products require certified signed-32-bit admission. No global nonlinear solver, arbitrary loss transformation or flat-RSS claim.",
+      "prerequisites": "Built eshkol-run and source-tree exact algebraic modules.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Certified constants, matrix calculus, coupled roots, packed products,"
+        },
+        {
+          "line": 15,
+          "text": "(define cubic (make-algebraic-field '(-2 0 0 1) 7 0))"
+        },
+        {
+          "line": 24,
+          "text": "(define context (make-algebraic-taylor field 2))"
+        },
+        {
+          "line": 33,
+          "text": "(define packed (algebraic-batch-mul (make-algebraic-multiplication-plan context)"
+        },
+        {
+          "line": 41,
+          "text": "(check \"sparse mixed curvature remains exact\" (= (algebraic-rational (algebraic-sparse-hessian-ref sparse 0 1)) 1))"
+        },
+        {
+          "line": 48,
+          "text": "(define residual (algebraic-sub (algebraic-add (algebraic-scale (algebraic-add alpha (algebraic-element field 1)) 2) beta)"
+        }
+      ],
+      "literature_review": "The linked module references specify selected-field admission, coefficient recurrences, nilpotent lifting and polynomial moment maintenance.",
+      "references": [],
+      "key_output": [
+        "^Exact maintained loss coefficients:",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/autodiff.esk",
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
       "title": "Scalar automatic differentiation",
