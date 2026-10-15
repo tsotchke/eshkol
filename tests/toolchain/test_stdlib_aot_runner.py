@@ -9,7 +9,7 @@ import unittest
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("cmake"), "POSIX fake-executable fixture")
 class StdlibAotRunnerTest(unittest.TestCase):
-    def invoke(self, output, compile_status=0, compile_output="", missing_artifact=None):
+    def invoke(self, output, compile_status=0, compile_output="", missing_artifact=None, verdict=None):
         with tempfile.TemporaryDirectory(prefix="aot controls with spaces ") as temporary:
             root = Path(temporary)
             compiler = root / "fake compiler"
@@ -28,9 +28,12 @@ class StdlibAotRunnerTest(unittest.TestCase):
                 if artifact != missing_artifact:
                     (root / artifact).write_text("fixture")
             runner = Path(__file__).resolve().parents[2] / "scripts/run_stdlib_aot.cmake"
+            command = ["cmake", f"-DESHKOL_RUN={compiler}", f"-DESHKOL_SOURCE={root / 'input.esk'}",
+                       f"-DESHKOL_BINARY={root / 'output program'}", f"-DESHKOL_LINK_DIR={root}"]
+            if verdict is not None:
+                command.append(f"-DESHKOL_VERDICT={verdict}")
             result = subprocess.run(
-                ["cmake", f"-DESHKOL_RUN={compiler}", f"-DESHKOL_SOURCE={root / 'input.esk'}",
-                 f"-DESHKOL_BINARY={root / 'output program'}", f"-DESHKOL_LINK_DIR={root}", "-P", str(runner)],
+                command + ["-P", str(runner)],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=20,
             )
             result.compiler_called = invocation_marker.exists()
@@ -51,6 +54,13 @@ class StdlibAotRunnerTest(unittest.TestCase):
 
     def test_failed_compiler_diagnostic_overrides_zero_exit(self):
         self.assertNotEqual(self.invoke("RESULT: PASS", compile_output="LLVM module verification failed").returncode, 0)
+
+    def test_catalogue_verdict_requires_explicit_selection(self):
+        self.assertNotEqual(self.invoke("RESULT: ALL PASS").returncode, 0)
+        self.assertEqual(self.invoke("RESULT: ALL PASS", verdict="ALL PASS").returncode, 0)
+
+    def test_unrecognized_verdict_cannot_relax_acceptance(self):
+        self.assertNotEqual(self.invoke("anything", verdict=".*").returncode, 0)
 
 
     def test_missing_local_stdlib_object_fails_before_compiler(self):

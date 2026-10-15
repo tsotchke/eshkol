@@ -1,0 +1,41 @@
+;; Maintain grouped least-squares loss and gradients at a fixed parameter point.
+;; Row replacements retract the old sample and insert the new sample atomically.
+(require stdlib)
+(require core.dbsp.ad)
+(define (loss tape p row)
+  (let* ((a (tape-mul tape (car p) (tape-const tape (list-ref row 2))))
+         (b (tape-mul tape (cadr p) (tape-const tape (list-ref row 3))))
+         (prediction (tape-add tape a b))
+         (residual (tape-sub tape prediction (tape-const tape (list-ref row 4)))))
+    (tape-square tape residual)))
+(define lift (dbsp-ad-lift (vector 0.5 -1.0) loss))
+(define circuit (make-dbsp-circuit '(samples) (list
+  (list 'aggregate 'objective 'samples cadr lift (dbsp-vector-group 3)
+    (lambda (cohort value) (cons cohort (vector->list value))))) 'objective))
+(define first (dbsp-circuit-step circuit (list (list 'samples
+  (zset-from-weighted '((1 (0 training 2 3 4)) (1 (1 training 1 0 0)) (1 (2 test 0 1 0))))))))
+(define expected-first (zset-from-weighted '((1 (training 36.25 -23 -36)) (1 (test 1 0 -2)))))
+(define replaced (dbsp-circuit-step (car first) (list (list 'samples
+  (zset-from-weighted '((-1 (0 training 2 3 4)) (1 (0 training 2 3 3))))))))
+(define expected-next (zset-from-weighted '((1 (training 25.25 -19 -30)) (1 (test 1 0 -2)))))
+(define removed (dbsp-circuit-step (car replaced) (list (list 'samples
+  (zset-from-weighted '((-1 (0 training 2 3 3)) (-1 (1 training 1 0 0))))))))
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(check "grouped AD loss and gradient" (zset=? (dbsp-circuit-output (car first)) expected-first))
+(check "row replacement updates only its cohort" (zset=? (dbsp-circuit-output (car replaced)) expected-next))
+(check "replacement delta retracts old and inserts new summary"
+  (zset=? (cdr replaced) (zset-sub expected-next expected-first)))
+(check "deleting a cohort removes its identity summary"
+  (zset=? (dbsp-circuit-output (car removed)) (zset-singleton '(test 1 0 -2) 1)))
+(check "historical view still valid" (zset=? (dbsp-circuit-output (car first)) expected-first))
+(check "analytic AD path" (= (ad-finite-difference-evals) 0))
+(display "training/test: (cohort loss dL/dw0 dL/dw1)") (newline)
+(display (zset-entries (dbsp-circuit-output (car replaced)))) (newline)
+(display "Passed: ") (display passes) (newline)
+(display "Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
+(display "RESULT: ALL PASS") (newline)

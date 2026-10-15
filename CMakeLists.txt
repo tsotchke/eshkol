@@ -13038,3 +13038,25 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/arc
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/v14_connection_gate_status_test.sh")
     set_tests_properties(v14_connection_gate_status_test PROPERTIES TIMEOUT 30)
 endif()
+
+# Keyed aggregates and fixed-parameter AD consumers use the same strict driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    function(eshkol_add_dbsp_acceptance name source verdict)
+        add_test(NAME ${name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_VERDICT=${verdict}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${name}_jit ${name}_aot PROPERTIES TIMEOUT 900
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: ${verdict}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    endfunction()
+    eshkol_add_dbsp_acceptance(dbsp_aggregate "tests/stdlib/dbsp_aggregate_test.esk" "PASS")
+    eshkol_add_dbsp_acceptance(dbsp_ad "tests/stdlib/dbsp_ad_test.esk" "PASS")
+    eshkol_add_dbsp_acceptance(streaming_least_squares "examples/streaming_least_squares.esk" "ALL PASS")
+endif()
