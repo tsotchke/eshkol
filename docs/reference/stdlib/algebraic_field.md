@@ -66,3 +66,48 @@ this module's admitted surface.
 Run CTest with `-R 'polynomial_exact|algebraic_field|algebraic_compositum|cyclotomic'`.
 Inverse coefficients and source images are checked against independently
 derived exact formulas as well as full defining residuals.
+
+## Certified mixed radicals
+
+`(make-multiquadratic-field radicands [refinement-budget])` returns
+`#(field images)`, where `images[i]` is the positive square root of the corresponding
+input integer in the existing algebraic-element representation.
+
+```scheme
+(define result (make-multiquadratic-field '(2 3 8 6)))
+(define field (vector-ref result 0))
+(define roots (vector-ref result 1))
+(define sum (algebraic-add (vector-ref roots 0) (vector-ref roots 1)))
+;; sum = sqrt(2)+sqrt(3), minimal polynomial x^4-10*x^2+1.
+;; roots[2] = 2*roots[0]; roots[3] = roots[0]*roots[1].
+```
+
+The constructor accepts up to eight positive exact integer radicands, each at
+most 65535, with at most four independent square classes (field degree at most
+16). For each new radicand it checks every product of the retained basis classes
+with exact integer square-root arithmetic. A square product supplies the exact
+transport; otherwise the new class is independent. No factorization heuristic
+or floating equality decides a dependency.
+
+The product basis has dimension `2^rank`. The primitive generator is the sum of
+the independent positive radicals. Its powers are related to the product basis
+by an exactly verified inverse. This derives the monic integer polynomial and
+all input images. Rational interval subdivision then isolates its selected real
+root and proves the independent images positive. Every input image is rechecked
+against its exact square equation. This supplies a square-class field admission
+route separate from modular-prime and coprime-degree admission, while reusing the
+same field arithmetic, embeddings and nested AD.
+
+All-rational or empty inputs return a degree-one rational field with generator
+zero. Its enclosures are exact points and its existing compositum transports
+remain usable. Negative square roots can be selected explicitly by scaling an
+image by -1. There is no arbitrary algebraic compositum or radical-expression
+parser. Inexact, nonpositive and over-budget inputs refuse. Refinement defaults
+to 128 steps, maximum 256; arithmetic loss of exactness also refuses. Allowed
+sizes are ceilings, not a promise that every instance fits the rational runtime.
+
+`algebraic-field-certificate` returns copied multiquadratic provenance, including
+the independent radicands, polynomial and isolating interval. It is an inspection
+receipt, not a certificate loader. Treat the declared field owner as immutable,
+as with the existing algebraic API. Tests exercise identities involving two or three independent radicals, dependent radicals, real conjugates, rational transports,
+maximum degree, nested Taylor inverses, ownership and refusal controls.
