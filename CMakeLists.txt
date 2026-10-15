@@ -12769,3 +12769,7 @@ endif()
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_linalg "tests/stdlib/algebraic_linalg_test.esk")
 endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_implicit "tests/stdlib/algebraic_implicit_test.esk")
+endif()

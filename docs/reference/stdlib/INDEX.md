@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 69** (plus `stdlib` itself and the module system page) — **provided symbols: 924** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 70** (plus `stdlib` itself and the module system page) — **provided symbols: 926** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -25,6 +25,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|
 | [`core.ad.algebraic`](../../../lib/core/ad/algebraic.esk) | no | [ad_algebraic.md](ad_algebraic.md) | `make-algebraic-taylor` `make-algebraic-hyperdual` `algebraic-ad-value` `algebraic-ad-constant` `algebraic-ad-seed` `algebraic-ad-coefficients` `algebraic-ad-add` `algebraic-ad-sub` `algebraic-ad-mul` `algebraic-ad-inverse` `algebraic-ad-equal?` `algebraic-ad-derivative` `algebraic-ad-root` `algebraic-ad-context` `call-with-algebraic-derivative` |
+| [`core.ad.algebraic_implicit`](../../../lib/core/ad/algebraic_implicit.esk) | no | [ad_algebraic_implicit.md](ad_algebraic_implicit.md) | `algebraic-ad-system-root` `algebraic-ad-system-residual` |
 | [`core.ad.tape`](../../../lib/core/ad/tape.esk) | no | [ad_tape.md](ad_tape.md) | `ad-tape-new` `ad-const` `ad-var` `ad-add` `ad-sub` `ad-mul` `ad-div` `ad-sin` `ad-cos` `ad-exp` `ad-log` `ad-sqrt` `ad-neg` `ad-abs` `ad-relu` `ad-sigmoid` `ad-tanh` `ad-backward` `ad-gradient` `ad-node-value` `with-tape` `current-tape` `make-tape` `tape-input` `tape-const` `node-value` `node-grad` `record-op!` `record-fd-op!` `tape-add` `tape-sub` `tape-mul` `tape-div` `tape-sin` `tape-cos` `tape-exp` `tape-log` `tape-neg` `tape-square` `tape-sqrt` `tape-tanh` `tape-sigmoid` `tape-relu` `tape-pow` `tape-gradient` `tape-snapshot` `tape-restore` |
 | [`core.algebraic_domain`](../../../lib/core/algebraic_domain.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-domain` `algebraic-domain-ref` |
 | [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` |
