@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 78** (plus `stdlib` itself and the module system page) — **provided symbols: 973** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 79** (plus `stdlib` itself and the module system page) — **provided symbols: 980** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -37,6 +37,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.algebraic_domain`](../../../lib/core/algebraic_domain.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-domain` `algebraic-domain-ref` |
 | [`core.algebraic_field`](../../../lib/core/algebraic_field.esk) | no | [algebraic_field.md](algebraic_field.md) | `make-algebraic-field` `algebraic-field-degree` `algebraic-field-polynomial` `algebraic-generator` `algebraic-element` `algebraic-coefficients` `algebraic-add` `algebraic-sub` `algebraic-scale` `algebraic-mul` `algebraic-inverse` `algebraic-zero?` `algebraic-equal?` `algebraic-rational` `algebraic-enclosure` `algebraic-sign` `make-algebraic-embedding` `make-algebraic-compositum` `algebraic-field-certificate` |
 | [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-solve-transpose` `algebraic-factor-positive-definite?` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` |
+| [`core.algebraic_update`](../../../lib/core/algebraic_update.esk) | no | [algebraic_update.md](algebraic_update.md) | `algebraic-update-factor` `algebraic-update` `algebraic-update-symmetric` `algebraic-update-solve` `algebraic-update-solve-transpose` `algebraic-update-pullback` `algebraic-update-info` |
 | [`core.alist`](../../../lib/core/alist.esk) | yes | [alist.md](alist.md) | `alist-ref` `alist-ref-or` `alist-set` |
 | [`core.argparse`](../../../lib/core/argparse.esk) | no | [argparse.md](argparse.md) | `parse-args` `arg-get` `arg-positional` `arg-has?` `argparse-help` |
 | [`core.cache`](../../../lib/core/cache.esk) | no | [cache.md](cache.md) | `make-lru-cache` `lru-get` `lru-get/default` `lru-set!` `lru-has?` `lru-delete!` `lru-size` `lru-capacity` `lru-clear!` `memoize` `memoize/cap` `memoize1` `memoize1/cap` `memoize2` `memoize2/cap` |
