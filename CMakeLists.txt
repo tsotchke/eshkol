@@ -13183,6 +13183,11 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_ridge_example "examples/algebraic_ridge.esk")
 endif()
 
+# Certified bounded quadratic programs share the exact AD acceptance driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_qp "tests/stdlib/algebraic_qp_test.esk")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_update "tests/stdlib/algebraic_update_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_update_example "examples/algebraic_updates.esk")
