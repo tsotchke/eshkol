@@ -12758,3 +12758,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_ad "tests/stdlib/algebraic_ad_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_ad_example "examples/algebraic_ad.esk")
 endif()
+
+# Composed fields and explicit nested scopes share the exact AD acceptance driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_compositum "tests/stdlib/algebraic_compositum_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_ad_nested "tests/stdlib/algebraic_ad_nested_test.esk")
+    eshkol_add_algebraic_ad_acceptance(nested_algebraic_fields "examples/nested_algebraic_fields.esk")
+endif()

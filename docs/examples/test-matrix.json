@@ -1,7 +1,7 @@
 {
   "schema": "eshkol.example-test-matrix.v1",
   "authored_condition": "ESHKOL_BUILD_TESTS AND TARGET eshkol-run",
-  "programs": 68,
+  "programs": 69,
   "mathematics_programs": 46,
   "families": {
     "ESHKOL_NS_EXAMPLES": {
@@ -405,7 +405,7 @@
   "general_runner": {
     "discovery": "examples/*.esk",
     "mode": "aot",
-    "flat_programs": 67,
+    "flat_programs": 68,
     "quantum_sources": [
       "examples/vqe_h2.esk",
       "examples/h2_vibrational_quantum.esk",
@@ -426,6 +426,6 @@
   "execution_claim": {
     "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
     "source": "docs/examples/measurements.json",
-    "summary": "Measurement snapshot for these 68 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **62** completed in both modes; **44** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 18 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Without a passing verdict at this SHA:** [H₂ frequency from quantum-backend geometry differences](#h2-vibrational-quantum), [Quantum natural-gradient comparison](#qng-vqe), [H₂ variational quantum optimization](#vqe-h2) (its entry shows the output). **Not run:** [Exact algebraic automatic differentiation](#algebraic-ad), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4."
+    "summary": "Measurement snapshot for these 69 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **62** completed in both modes; **44** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 18 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Without a passing verdict at this SHA:** [H₂ frequency from quantum-backend geometry differences](#h2-vibrational-quantum), [Quantum natural-gradient comparison](#qng-vqe), [H₂ variational quantum optimization](#vqe-h2) (its entry shows the output). **Not run:** [Exact algebraic automatic differentiation](#algebraic-ad), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic), [Nested exact differentiation over a certified combined field](#nested-algebraic-fields) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4."
   }
 }
