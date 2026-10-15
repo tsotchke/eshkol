@@ -12,7 +12,8 @@ with `(tape input-node-vector)` and returns `#(value pullback summary)`.
 sequential calls reset adjoints, retain the same forward invocation, and never
 record additional nodes. Summary is `(input-count node-count op-count 1)`.
 The point is a vector of at most 1024 coefficients. Recording is explicitly
-sealed after the function returns. Raw tape/node storage is opaque; mutation
+sealed after the function returns. Exact tape snapshots own their values;
+restoring a sealed exact recorder refuses. Raw tape/node storage is opaque; mutation
 through generic low-level recorder observers is outside this contract.
 
 The algebraic operations take the tape explicitly:
