@@ -36,3 +36,6 @@ AD transformation in this module.
 Run `ctest --test-dir build --output-on-failure -R algebraic_linalg`.
 The suite compares irrational inverse columns, a Hilbert solve and Taylor,
 hyperdual and three-level derivatives against independently derived formulas.
+
+`algebraic-factor-solve-transpose` reuses the retained LU for `A^T*x=b`,
+including nested coefficient recurrences and a full transposed residual.
