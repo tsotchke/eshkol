@@ -14,6 +14,8 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <stdexcept>
+#include <cstdint>
 // Forward declarations for LLVM types
 namespace llvm {
     class LLVMContext;
@@ -36,6 +38,30 @@ void eshkol_parser_seed_macro_names(std::istream& stream,
                                     const std::set<std::string>& names);
 
 namespace eshkol {
+
+// Raised only after a native REPL entry has returned through the narrow host
+// recovery boundary. `kind` is "interrupted", "crash", or "exception".
+class ReplEvalError : public std::runtime_error {
+public:
+    ReplEvalError(const char* kind, int signal_number = 0)
+        : std::runtime_error(kind), kind_(kind), signal_number_(signal_number) {}
+    const char* kind() const noexcept { return kind_; }
+    int signalNumber() const noexcept { return signal_number_; }
+private:
+    const char* kind_;
+    int signal_number_;
+};
+
+// Host trampoline in eshkol-repl.cpp. Signals may jump only while this is
+// invoking already-compiled native code; compilation remains ordinary C++.
+using ReplNativeEvalFunction = int32_t (*)(int32_t, char**);
+using ReplNativeEvalBoundary = int (*)(ReplNativeEvalFunction, int32_t*, int*);
+using ReplCompileHook = void (*)();
+extern "C" void eshkol_repl_set_native_eval_boundary(ReplNativeEvalBoundary boundary);
+extern "C" int eshkol_repl_invoke_native(ReplNativeEvalFunction function,
+                                          int32_t* result, int* signal_number);
+extern "C" void eshkol_repl_set_compile_hook(ReplCompileHook hook);
+extern "C" void eshkol_repl_run_compile_hook();
 
 // Forward declarations
 class CodeGenerator;

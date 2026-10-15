@@ -40,6 +40,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -336,7 +337,15 @@ def _self_test(binary: str) -> int:
 
     check = _Check()
     client = EReplClient(binary)
-    ready = client.start()
+    prior_compile_barrier = os.environ.get("ESHKOL_REPL_TEST_COMPILE_BARRIER")
+    os.environ["ESHKOL_REPL_TEST_COMPILE_BARRIER"] = "1"
+    try:
+        ready = client.start()
+    finally:
+        if prior_compile_barrier is None:
+            os.environ.pop("ESHKOL_REPL_TEST_COMPILE_BARRIER", None)
+        else:
+            os.environ["ESHKOL_REPL_TEST_COMPILE_BARRIER"] = prior_compile_barrier
     check(ready.get("protocol_version") == 1, "ready frame announces protocol_version 1",
           repr(ready))
     check(isinstance(ready.get("pid"), int) and ready["pid"] > 0,
@@ -400,18 +409,64 @@ def _self_test(binary: str) -> int:
         # -- reset -----------------------------------------------------------
         check(client.reset() is True, "reset() acknowledges ok")
 
-        # -- interrupt: abort a runaway evaluation, session stays usable ----
+        # -- interrupt while the C++ compile path is open -------------------
+        compile_result: dict = {}
+
+        def run_compile_probe():
+            compile_result["result"] = client.execute("(+ 314159 271828)", timeout=60.0)
+
+        t = threading.Thread(target=run_compile_probe)
+        t.start()
+        deadline = time.monotonic() + 30.0
+        compile_entered = False
+        while time.monotonic() < deadline and t.is_alive():
+            with client._lock:
+                compile_entered = any(
+                    "EREPL TEST COMPILE ENTERED" in line
+                    for line in client._stderr_diag_buf
+                )
+            if compile_entered:
+                break
+            time.sleep(0.005)
+        check(compile_entered,
+              "the compile-interrupt probe reaches its deterministic barrier")
+        if compile_entered:
+            client.interrupt()
+        t.join(timeout=30.0)
+        r = compile_result.get("result")
+        check(not t.is_alive() and r is not None and r["error"] is not None and
+              r["error"]["kind"] == "interrupted",
+              "SIGINT during the compile path is deferred and reported as interrupted",
+              repr(r))
+        r = client.execute("(+ 19 23)")
+        check(r["error"] is None and r["value"] == "42",
+              "the session remains usable after a compile-path interrupt", repr(r))
+
+        # -- interrupt: abort a confirmed-running evaluation -----------------
         result_box: dict = {}
 
         def run_infinite_loop():
             result_box["result"] = client.execute(
-                "(let loop () (loop))", timeout=60.0
+                '(begin (display "EREPL LOOP ENTERED" (current-error-port)) '
+                '(newline (current-error-port)) '
+                '(flush-output-port (current-error-port)) (let loop () (loop)))',
+                timeout=60.0
             )
 
         t = threading.Thread(target=run_infinite_loop)
         t.start()
-        t.join(timeout=2.0)  # give the loop time to actually start spinning
-        client.interrupt()
+        deadline = time.monotonic() + 30.0
+        loop_entered = False
+        while time.monotonic() < deadline and t.is_alive():
+            with client._lock:
+                loop_entered = any("EREPL LOOP ENTERED" in line
+                                   for line in client._stderr_diag_buf)
+            if loop_entered:
+                break
+            time.sleep(0.005)
+        check(loop_entered, "the runtime-interrupt probe entered its generated loop")
+        if loop_entered:
+            client.interrupt()
         t.join(timeout=30.0)
         check(not t.is_alive(), "an interrupted infinite loop returns rather than hanging")
         r = result_box.get("result")
@@ -423,6 +478,57 @@ def _self_test(binary: str) -> int:
         r = client.execute("(+ 40 2)")
         check(r["error"] is None and r["value"] == "42",
               "the session evaluates normally again after an interrupt", repr(r))
+
+        r = client.execute("(car (quote ()))")
+        check(r["error"] is not None and r["error"]["kind"] == "type-error",
+              "structured language errors still work after interruption", repr(r))
+
+        r = client.execute("(define erepl-interrupt-saved 41)")
+        check(r["error"] is None, "a definition before interruption succeeds", repr(r))
+        r = client.execute("(define erepl-interrupt-cleanup 0)")
+        check(r["error"] is None, "the cleanup counter is defined", repr(r))
+        second_result: dict = {}
+
+        def run_second_infinite_loop():
+            second_result["result"] = client.execute(
+                '(guard (e (else #f)) '
+                '(dynamic-wind (lambda () #t) '
+                '(lambda () (display "EREPL SECOND LOOP" (current-error-port)) '
+                '(newline (current-error-port)) '
+                '(flush-output-port (current-error-port)) (let loop () (loop))) '
+                '(lambda () (set! erepl-interrupt-cleanup '
+                '(+ erepl-interrupt-cleanup 1)))))',
+                timeout=60.0
+            )
+
+        t = threading.Thread(target=run_second_infinite_loop)
+        t.start()
+        deadline = time.monotonic() + 30.0
+        second_loop_entered = False
+        while time.monotonic() < deadline and t.is_alive():
+            with client._lock:
+                second_loop_entered = any("EREPL SECOND LOOP" in line
+                                          for line in client._stderr_diag_buf)
+            if second_loop_entered:
+                break
+            time.sleep(0.005)
+        check(second_loop_entered, "the second runtime-interrupt probe entered its loop")
+        if second_loop_entered:
+            client.interrupt()
+        t.join(timeout=30.0)
+        r = second_result.get("result")
+        check(not t.is_alive() and r is not None and r["error"] is not None and
+              r["error"]["kind"] == "interrupted",
+              "a second native interruption also recovers cleanly", repr(r))
+        r = client.execute("(+ 20 22)")
+        check(r["error"] is None and r["value"] == "42",
+              "the session remains usable after the second interruption", repr(r))
+        r = client.execute("(+ erepl-interrupt-saved 1)")
+        check(r["error"] is None and r["value"] == "42",
+              "session definitions survive interruption", repr(r))
+        r = client.execute("erepl-interrupt-cleanup")
+        check(r["error"] is None and r["value"] == "1",
+              "interruption unwinds dynamic-wind through nested guard once", repr(r))
     finally:
         client.shutdown()
 
