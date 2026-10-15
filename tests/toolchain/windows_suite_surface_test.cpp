@@ -162,8 +162,11 @@ int main(int argc, char** argv) {
          expect_contains(cmake, "if(WIN32 AND ESHKOL_USING_MSVC)",
                          "Windows native dependency branch is explicit") &&
          expect_contains(cmake,
-                         "GIT_TAG bc3b39870ecb690a623a3f49149a358b95c5781d",
-                         "Windows Eigen provider is pinned by immutable commit") &&
+                         "URL https://gitlab.com/libeigen/eigen/-/archive/bc3b39870ecb690a623a3f49149a358b95c5781d/eigen-bc3b39870ecb690a623a3f49149a358b95c5781d.tar.gz",
+                         "Windows Eigen archive is pinned by immutable commit") &&
+         expect_contains(cmake,
+                         "URL_HASH SHA256=5f6557d1aca6e959a4b955c55f2935261fd30de59c0c79e35bc6d5cbe1de22d1",
+                         "Windows Eigen archive bytes are checksum verified") &&
          expect_contains(cmake, "set(ESHKOL_BLAS_USAGE_TARGET Eigen3::Eigen)",
                          "Windows BLAS compilation uses Eigen's native target") &&
          expect_contains(cmake, "add_compile_definitions(ESHKOL_BLAS_EIGEN)",
