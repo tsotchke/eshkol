@@ -13353,6 +13353,44 @@ if(ESHKOL_BUILD_TESTS)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()
 
+# Wave 3 acceptance: mixed-radical algebraic fields.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME multiquadratic_field_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/multiquadratic_field_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME multiquadratic_field_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/multiquadratic_field_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/multiquadratic_field_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(multiquadratic_field_jit multiquadratic_field_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME multiquadratic_field_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/multiquadratic_field_test.esk")
+    set_tests_properties(multiquadratic_field_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(multiquadratic_field_independent
+        "tests/stdlib/multiquadratic_field_independent_test.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME multiquadratic_field_independent_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/multiquadratic_field_independent_test.esk")
+    set_tests_properties(multiquadratic_field_independent_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
 # The root-branch fixture must execute on the VM, not a renamed AOT driver.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
     add_test(NAME root_branch_vm

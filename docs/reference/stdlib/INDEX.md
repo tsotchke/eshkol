@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 94** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1060** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 94** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1061** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -41,7 +41,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.channels`](../../../lib/core/channels.esk) | no | [channels.md](channels.md) | `make-channel` `channel?` `channel-capacity` `channel-len` `channel-closed?` `channel-send!` `channel-recv!` `channel-try-send!` `channel-try-recv!` `channel-close!` `channel-closed-sentinel` |
 | [`core.collections`](../../../lib/core/collections.esk) | no | [collections.md](collections.md) | `make-pq` `pq-push!` `pq-pop!` `pq-peek` `pq-size` `pq-empty?` `make-set` `set-add!` `set-remove!` `set-contains?` `set-size` `set->list` `set-clear!` `set-union` `set-intersect` `set-difference` `make-deque` `deque-push-front!` `deque-push-back!` `deque-pop-front!` `deque-pop-back!` `deque-peek-front` `deque-peek-back` `deque-size` `deque-empty?` `deque->list` |
 | [`core.polynomial_exact`](../../../lib/core/polynomial_exact.esk) | no | [polynomial_exact.md](polynomial_exact.md) | `exact-poly` `exact-poly-zero?` `exact-poly-sub` `exact-poly-scale` `exact-poly-mul` `exact-poly-divmod` `exact-poly-inverse-mod` `exact-poly-eval` `exact-poly-real-root-count` `exact-poly-isolate` |
-| [`core.algebraic_field`](../../../lib/core/algebraic_field.esk) | no | [algebraic_field.md](algebraic_field.md) | `make-algebraic-field` `algebraic-field-degree` `algebraic-field-polynomial` `algebraic-generator` `algebraic-element` `algebraic-coefficients` `algebraic-add` `algebraic-sub` `algebraic-scale` `algebraic-mul` `algebraic-inverse` `algebraic-zero?` `algebraic-equal?` `algebraic-rational` `algebraic-enclosure` `algebraic-sign` `make-algebraic-embedding` `make-algebraic-compositum` `algebraic-field-certificate` |
+| [`core.algebraic_field`](../../../lib/core/algebraic_field.esk) | no | [algebraic_field.md](algebraic_field.md) | `make-algebraic-field` `algebraic-field-degree` `algebraic-field-polynomial` `algebraic-generator` `algebraic-element` `algebraic-coefficients` `algebraic-add` `algebraic-sub` `algebraic-scale` `algebraic-mul` `algebraic-inverse` `algebraic-zero?` `algebraic-equal?` `algebraic-rational` `algebraic-enclosure` `algebraic-sign` `make-algebraic-embedding` `make-algebraic-compositum` `algebraic-field-certificate` `make-multiquadratic-field` |
 | [`core.algebraic_domain`](../../../lib/core/algebraic_domain.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-domain` `algebraic-domain-ref` |
 | [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-solve-transpose` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` `algebraic-factor-positive-definite?` |
 | [`core.algebraic_update`](../../../lib/core/algebraic_update.esk) | no | [algebraic_update.md](algebraic_update.md) | `algebraic-update-factor` `algebraic-update` `algebraic-update-symmetric` `algebraic-update-solve` `algebraic-update-solve-transpose` `algebraic-update-pullback` `algebraic-update-info` |
@@ -161,6 +161,7 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.algebraic_field` | `make-algebraic-embedding` | [make-algebraic-embedding](shipped_exports.md#make-algebraic-embedding) |
 | `core.algebraic_field` | `make-algebraic-compositum` | [make-algebraic-compositum](shipped_exports.md#make-algebraic-compositum) |
 | `core.algebraic_field` | `algebraic-field-certificate` | [algebraic-field-certificate](shipped_exports.md#algebraic-field-certificate) |
+| `core.algebraic_field` | `make-multiquadratic-field` | [make-multiquadratic-field](shipped_exports.md#make-multiquadratic-field) |
 | `core.algebraic_linalg` | `algebraic-factor` | [algebraic-factor](shipped_exports.md#algebraic-factor) |
 | `core.algebraic_linalg` | `algebraic-factor-solve` | [algebraic-factor-solve](shipped_exports.md#algebraic-factor-solve) |
 | `core.algebraic_linalg` | `algebraic-factor-solve-transpose` | [algebraic-factor-solve-transpose](shipped_exports.md#algebraic-factor-solve-transpose) |
