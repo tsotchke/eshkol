@@ -4174,6 +4174,33 @@
       ]
     },
     {
+      "path": "examples/streaming_least_squares.esk",
+      "source_sha256": "d247ace99d0c5ba65b69830cda8df301f2b14d3e398e33af05c4cbd6113546aa",
+      "title": "Maintained grouped AD loss and gradients",
+      "kind": "example",
+      "purpose": "Maintain fixed-parameter least-squares loss and both parameter derivatives under signed row updates.",
+      "algorithm": "Build each row loss on the existing reverse AD tape and combine contributions with a persistent keyed additive-group aggregate.",
+      "domain": "Two fixed parameters (0.5, -1.0), finite real sample coordinates/targets, and signed integer row weights.",
+      "arithmetic": "Numeric AD with floating seeds; dyadic demonstration values compare exactly. General floating accumulation may round.",
+      "validation": "Six explicit assertions cover grouped loss/gradients, atomic replacement deltas, cohort deletion, historical views and zero finite-difference evaluations.",
+      "limitations": "No parameter-changing incrementalization, general training speedup, durable restart or total allocation bound.",
+      "prerequisites": "Built compiler/stdlib and checkout-owned core.dbsp.circuit/core.dbsp.ad modules.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Maintain grouped least-squares loss and gradients at a fixed parameter point."
+        },
+        {
+          "line": 4,
+          "text": "(require core.dbsp.ad)"
+        }
+      ],
+      "literature_review": "Repository ADR 0009 supplies the incremental-dataflow design; the source demonstrates the bounded fixed-parameter AD composition.",
+      "references": []
+    },
+    {
       "path": "examples/streaming_stats.esk",
       "source_sha256": "fd101dfcf7bf4cbe3364fd2a4f6baea167de332bb4fd8d13c913b0c7550d4c8b",
       "title": "Online mean and variance",
