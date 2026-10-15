@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/eshkol.h>
+#include "arena_memory.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -32,12 +33,10 @@ const char* eshkol_runtime_ffi_surface_bytes(void) {
     return bytes;
 }
 
-extern void* arena_allocate_string_with_header(void* arena, uint64_t byte_len);
-
 /* The one string allocation of this file: a header-tagged buffer of
  * @p byte_len bytes plus the terminator (the allocator owns the header). */
 static char* eshkol_string_buffer(void* arena, uint64_t byte_len) {
-    return static_cast<char*>(arena_allocate_string_with_header(arena, byte_len));
+    return arena_allocate_string_with_header(static_cast<arena_t*>(arena), byte_len);
 }
 
 /* Raising entry points, declared here to keep this translation unit's include
@@ -214,6 +213,42 @@ static int64_t decode_utf8_codepoint(const char** s) {
         *s += 1;
     }
     return cp;
+}
+
+/** Linear, header-length-aware string->list. Fresh cells share the caller's
+ * arena, so linking them cannot publish a pointer into a shorter-lived region.
+ * The caller checks the string type before entering this runtime helper. */
+void* eshkol_runtime_string_to_list(void* arena, const char* s) {
+    const int64_t length = eshkol_string_byte_length(s);
+    const char* cursor = s;
+    const char* end = s + length;
+    arena_tagged_cons_cell_t* head = nullptr;
+    arena_tagged_cons_cell_t* tail = nullptr;
+    while (cursor < end) {
+        // Bound the decoder even for a truncated byte sequence received from
+        // an external source. Valid Eshkol strings take the shared decode path.
+        const unsigned char lead = static_cast<unsigned char>(*cursor);
+        const int width = lead < 0x80 ? 1 : (lead & 0xE0) == 0xC0 ? 2 :
+                          (lead & 0xF0) == 0xE0 ? 3 : (lead & 0xF8) == 0xF0 ? 4 : 1;
+        int64_t cp;
+        if (end - cursor < width) { cp = 0xFFFD; ++cursor; }
+        else cp = decode_utf8_codepoint(&cursor);
+        auto* cell = arena_allocate_cons_with_header(static_cast<arena_t*>(arena));
+        if (!cell) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "string->list: allocation failed");
+            return nullptr;
+        }
+        std::memset(cell, 0, sizeof(*cell));
+        cell->car.type = ESHKOL_VALUE_CHAR;
+        cell->car.data.int_val = cp;
+        cell->cdr.type = ESHKOL_VALUE_NULL;
+        if (tail) {
+            tail->cdr.type = ESHKOL_VALUE_HEAP_PTR;
+            tail->cdr.data.ptr_val = reinterpret_cast<uint64_t>(cell);
+        } else head = cell;
+        tail = cell;
+    }
+    return head;
 }
 
 /**
