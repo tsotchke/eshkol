@@ -12733,3 +12733,125 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 AND UNIX AND ESHKOL
             $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test> --self-test)
     set_tests_properties(eskm_v2_engine_parity_test PROPERTIES TIMEOUT 180)
 endif()
+
+# Focused library acceptance: source-tree imports and both native modes.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME polynomial_exact_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/polynomial_exact_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME polynomial_exact_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/polynomial_exact_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/polynomial_exact_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(polynomial_exact_jit polynomial_exact_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: polynomial_exact_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    add_test(NAME algebraic_field_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_field_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME algebraic_field_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_field_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/algebraic_field_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(algebraic_field_jit algebraic_field_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: algebraic_field_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Exact field-valued AD uses the shared strict library AOT driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    function(eshkol_add_algebraic_ad_acceptance name source)
+        add_test(NAME ${name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${name}_jit ${name}_aot PROPERTIES TIMEOUT 900
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    endfunction()
+    eshkol_add_algebraic_ad_acceptance(algebraic_ad "tests/stdlib/algebraic_ad_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_ad_example "examples/algebraic_ad.esk")
+endif()
+
+# Composed fields and explicit nested scopes share the exact AD acceptance driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_compositum "tests/stdlib/algebraic_compositum_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_ad_nested "tests/stdlib/algebraic_ad_nested_test.esk")
+    eshkol_add_algebraic_ad_acceptance(nested_algebraic_fields "examples/nested_algebraic_fields.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_linalg "tests/stdlib/algebraic_linalg_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_implicit "tests/stdlib/algebraic_implicit_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_batch "tests/stdlib/algebraic_batch_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_batch_bench "bench/algebraic_batch.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_sparse "tests/stdlib/algebraic_sparse_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(hessian_sparsity "tests/stdlib/hessian_sparsity_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_incremental "tests/stdlib/algebraic_incremental_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_incremental_bench "bench/algebraic_incremental.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_frontiers "examples/algebraic_frontiers.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_reverse "tests/stdlib/algebraic_reverse_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_pullback "tests/stdlib/algebraic_pullback_test.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_ridge "tests/stdlib/algebraic_ridge_test.esk")
+endif()
+
+# Next frontier acceptance: algebraic_spectral
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_spectral "tests/stdlib/algebraic_spectral_test.esk")
+endif()
+
+# Wave 3 acceptance: algebraic_subspace
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME algebraic_subspace_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_subspace_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME algebraic_subspace_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_subspace_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/algebraic_subspace_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(algebraic_subspace_jit algebraic_subspace_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
