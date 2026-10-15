@@ -1,7 +1,7 @@
 ;;; Bounded polynomial systems: a supplied branch, a derived Jacobian and a
 ;;; single primal factorization. No user Jacobian or extra perturbation level.
 (require core.algebraic_linalg)
-(provide algebraic-ad-system-root algebraic-ad-system-residual)
+(provide algebraic-ad-system-root algebraic-ad-system-residual algebraic-system-linearization)
 
 (define (ais-pow domain value exponent)
   (let ((mul (algebraic-domain-ref domain 'mul)))
@@ -104,3 +104,22 @@
                           (vector-set! next i (sub (vector-ref values i) (algebraic-ad-value context cells)))
                           (rows (+ i 1)))))
                       (iterate next (- remaining 1)))))))))))
+
+;;; Shared formal linearization, including coefficient sensitivities.
+(define (algebraic-system-linearization owner equations values)
+  (let* ((domain (algebraic-domain owner)) (values (ais-values domain values)) (n (vector-length values))
+         (equations (ais-equations domain equations n)) (jacobian (make-vector n #f))
+         (monomials (make-vector n #f)) (mul (algebraic-domain-ref domain 'mul)))
+    (let rows ((i 0)) (if (< i n)
+      (begin (vector-set! jacobian i (make-vector n #f))
+        (vector-set! monomials i (map (lambda (term)
+          (let variables ((j 0) (out (algebraic-domain-ref domain 'one)))
+            (if (= j n) out (variables (+ j 1) (mul out (ais-pow domain
+              (vector-ref values j) (vector-ref (cadr term) j))))))) (vector-ref equations i)))
+        (rows (+ i 1)))))
+    (let columns ((j 0)) (if (< j n)
+      (let ((column (ais-evaluate domain equations values j)))
+        (let rows ((i 0)) (if (< i n)
+          (begin (vector-set! (vector-ref jacobian i) j (vector-ref column i)) (rows (+ i 1)))))
+        (columns (+ j 1)))))
+    (vector (ais-evaluate domain equations values -1) jacobian monomials)))

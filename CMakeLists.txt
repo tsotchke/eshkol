@@ -13137,4 +13137,5 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_reverse_example "examples/algebraic_reverse.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_pullback "tests/stdlib/algebraic_pullback_test.esk")
 endif()

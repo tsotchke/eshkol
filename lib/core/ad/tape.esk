@@ -34,7 +34,7 @@
          ;; stateful op-recording tape + custom ops
          with-tape current-tape make-tape
          tape-input tape-const node-value node-grad
-         record-op! record-fd-op!
+         record-op! record-multi-op! record-fd-op!
          tape-add tape-sub tape-mul tape-div
          tape-sin tape-cos tape-exp tape-log tape-neg
          tape-square tape-sqrt tape-tanh tape-sigmoid tape-relu tape-pow
@@ -151,6 +151,14 @@
   (let ((out (tape-new-node t out-value)))
     (tape-record! t out inputs backward)
     out))
+
+ ;; A coupled operation retains all output cotangents for one backward call.
+(define (record-multi-op! t inputs values backward)
+  (if (and (tape-protocol t) (vector-ref t 3)) (error "Tape is sealed"))
+  (tape-for-each (lambda (n) (tape-check-node t n)) inputs)
+  (let ((outputs (tape-map1 (lambda (v) (tape-new-node t v)) values)))
+    (vector-set! t 0 (cons (list 'multiple outputs inputs backward) (tape-ops t)))
+    outputs))
 
 ;; ── Finite-difference custom op ──
 ;; record-fd-op! records a custom op whose backward is computed by CENTRAL finite
@@ -302,10 +310,18 @@
     (node-grad-set! output seed)
     (tape-for-each
       (lambda (op)
-        (let ((g (node-grad (car op))))
-          (if (if ops (not ((vector-ref ops 4) g))
-                  (or (vector? g) (not (= g 0.0))))
-              (tape-distribute! t (cadr op) ((caddr op) g)))))
+        (if (eq? (car op) 'multiple)
+            (let ((grads (tape-map1 node-grad (cadr op))))
+              (if (let nonzero ((rest grads))
+                    (and (pair? rest)
+                      (or (if ops (not ((vector-ref ops 4) (car rest)))
+                              (or (vector? (car rest)) (not (= (car rest) 0.0))))
+                          (nonzero (cdr rest)))))
+                  (tape-distribute! t (caddr op) ((cadddr op) grads))))
+            (let ((g (node-grad (car op))))
+              (if (if ops (not ((vector-ref ops 4) g))
+                      (or (vector? g) (not (= g 0.0))))
+                  (tape-distribute! t (cadr op) ((caddr op) g))))))
       (tape-ops t))
     (tape-map1 (lambda (n) (tape-copy t (node-grad n))) targets)))
 (define (tape-gradient t output targets)
