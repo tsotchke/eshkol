@@ -2,7 +2,7 @@
 #
 # core.dbsp acceptance gate (ADR 0009, v1.5.0 incremental-dataflow slice).
 #
-# Runs tests/stdlib/dbsp_test.esk under BOTH execution modes:
+# Runs the relational and tensor bridge suites under BOTH execution modes:
 #   1. JIT  : eshkol-run -r <test>
 #   2. AOT  : eshkol-run -o <bin> <test> && <bin>
 #
@@ -19,7 +19,7 @@ cd "$PROJECT_ROOT"
 
 BUILD_DIR="${BUILD_DIR:-build}"
 RUN="$BUILD_DIR/eshkol-run"
-TEST="tests/stdlib/dbsp_test.esk"
+TESTS=("tests/stdlib/dbsp_test.esk" "tests/stdlib/dbsp_tensor_test.esk")
 
 # Resolve (require core.dbsp) against THIS checkout's lib/, which matters when
 # the eshkol-run binary lives in a different checkout (e.g. a git worktree).
@@ -70,6 +70,10 @@ dbsp_check_output() {
         echo "$label: FAIL (no output — absence of a verdict is not a pass)"
         return 1
     fi
+    if ! grep -qx 'RESULT: PASS' "$DBSP_OUT"; then
+        echo "$label: FAIL (missing explicit RESULT: PASS verdict)"
+        return 1
+    fi
     return 0
 }
 
@@ -77,8 +81,9 @@ echo "========================================="
 echo "  core.dbsp acceptance gate (ADR 0009)"
 echo "========================================="
 
+for TEST in "${TESTS[@]}"; do
 echo ""
-echo "--- [1/2] JIT (-r) -----------------------"
+echo "--- $TEST: JIT (-r) ----------------------"
 eshkol_require_output_file_path "$DBSP_OUT"
 if "$RUN" -r "$TEST" > "$DBSP_OUT" 2>&1; then
     cat "$DBSP_OUT"
@@ -94,7 +99,7 @@ else
 fi
 
 echo ""
-echo "--- [2/2] AOT (compile + run) ------------"
+echo "--- $TEST: AOT (compile + run) -----------"
 AOT_BIN="$ESHKOL_TEST_TMPDIR/dbsp_aot"
 if "$RUN" -o "$AOT_BIN" "$TEST"; then
     eshkol_require_output_file_path "$DBSP_OUT"
@@ -115,6 +120,7 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 rm -f -- "${AOT_BIN:?}"
+done
 
 echo ""
 echo "========================================="
