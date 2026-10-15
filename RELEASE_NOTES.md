@@ -1,18 +1,31 @@
 # Eshkol v1.3.6-evolve — Release Notes
 
 **Status:** PREPARED FOR PUBLICATION.
-**Intended release date:** Monday, October 12, 2026.
+**Intended release date:** Thursday, October 15, 2026.
 
 Final publication requires **CTest 819/819** and **VM parity 411/411**, with no
 failed, skipped or infrastructure-only checks. Full source-bound preparation
-passed all 819 configured CTest cases and all 411 serialized VM parity cases.
-The [verified preparation run](https://github.com/tsotchke/eshkol/actions/runs/38161249190)
+passed all 823 configured CTest cases and all 411 serialized VM parity cases.
+The [verified preparation run](https://github.com/tsotchke/eshkol/actions/runs/38657799489)
 binds both measurements to one source commit and build cohort. The release
 workflow independently qualifies the final commit and requires ICC ready/100
 before publication.
 
 ### Changes
 
+- **Sparse tensor deltas connect signed DBSP rows to native matrix products.**
+  The opt-in `core.dbsp.tensor` module validates fixed shapes, consolidates
+  edits, and retains the simultaneous-update cross term. Applying a delta
+  copies the dense baseline; native cells retain floating-point semantics.
+  (#782)
+- **Exact cyclotomic arithmetic is shared by the mathematics examples.**
+  The opt-in `core.cyclotomic` module provides exact rational field
+  arithmetic, inversion, Galois conjugation, and norms, with refusal when
+  arithmetic loses exactness. (#783)
+- **Qualification isolates harness controls and pins dependency bytes.**
+  Windows fetches the same Eigen commit through a checksum-verified archive;
+  durable smoke controls use separate roots and preserve failure diagnostics.
+  (#781, #784)
 - **Windows REPL target initialization shares the static JIT registry.** Native
   SDK builds use static LLVM components and matching header declarations.
   Windows CI and staged Windows packages execute an arithmetic evaluation and
