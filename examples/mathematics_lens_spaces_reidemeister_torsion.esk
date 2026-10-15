@@ -18,7 +18,8 @@
 ;; are the S_i, and tau is the alternating product of their determinants.
 ;; Q(zeta) is implemented here on exact rationals: an element is its
 ;; coefficient vector on 1, zeta, ..., zeta^(p-2), products are reduced by
-;; the cyclotomic polynomial, inverses come from the multiplication matrix.
+;; the cyclotomic polynomial, inverses come from exact polynomial Euclid in
+;; core.cyclotomic.
 ;;
 ;;   1. Acyclicity: the twisted complexes of L(p,q) for (5,1), (5,2), (5,3),
 ;;      (7,1), (7,2), (7,4), (7,6) have boundary ranks (V, E - V, T).
@@ -34,11 +35,10 @@
 ;;      and L(7,2) are not, although the sibling example showed them
 ;;      homotopy equivalent.
 ;;
-;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed. Cyclotomic
-;; arithmetic is written by hand on exact rationals; a cyclotomic field
-;; type in the exact tower would remove ~60 lines from programs like this.
+;; Exact coefficient arithmetic is shared through core.cyclotomic.
 
 (require stdlib)
+(require core.cyclotomic)
 
 (define pass-count 0)
 (define fail-count 0)
@@ -315,59 +315,31 @@
                    (list->vector (append (list (cons 2 2)) (map (lambda (i) (cons 1 2)) (range p)) (list (cons 0 1) (cons 0 1)) (map (lambda (i) (cons 0 2)) (range p))))
                    (append (map (lambda (i) (list 0 1 2 2 (+ 1 p) (ce i) (ce (+ i 1)) (b i) (b (+ i 1)) 0)) (range p))
                            (map (lambda (i) (list 0 1 2 2 (+ 2 p) (ce i) (ce (+ i 1)) (b (- i q)) (b (+ (- i q) 1)) 0)) (range p))))))
-;; --- Q(zeta_p) on exact rationals ----------------------------------------------------------------------
-;; an element is a vector of p-1 rationals: the coefficients of 1, zeta, ..., zeta^(p-2)
-(define (cy-zero p) (make-vector (- p 1) 0))
-(define (cy-one p) (let ((v (cy-zero p))) (vector-set! v 0 1) v))
-(define (cy-zeta-power p k)                      ;; zeta^k, with zeta^(p-1) = -(1 + zeta + ... + zeta^(p-2))
-  (let ((k (modulo k p)) (v (cy-zero p)))
-    (if (= k (- p 1)) (let loop ((j 0)) (if (< j (- p 1)) (begin (vector-set! v j -1) (loop (+ j 1))))) (vector-set! v k 1))
-    v))
-(define (cy-add a b) (let ((v (make-vector (vector-length a) 0))) (let loop ((i 0)) (if (< i (vector-length a)) (begin (vector-set! v i (+ (vector-ref a i) (vector-ref b i))) (loop (+ i 1))))) v))
-(define (cy-sub a b) (let ((v (make-vector (vector-length a) 0))) (let loop ((i 0)) (if (< i (vector-length a)) (begin (vector-set! v i (- (vector-ref a i) (vector-ref b i))) (loop (+ i 1))))) v))
-(define (cy-scale a c) (let ((v (make-vector (vector-length a) 0))) (let loop ((i 0)) (if (< i (vector-length a)) (begin (vector-set! v i (* c (vector-ref a i))) (loop (+ i 1))))) v))
+;; --- Q(zeta_p), delegated to the shared exact field owner ----------------------
+;; These are the two coefficient fields used by this finite witness. Construct
+;; them once; the library itself owns no global cache or implicit field registry.
+(define lens-fields (list (cons 5 (make-cyclotomic-field 5))
+                         (cons 7 (make-cyclotomic-field 7))))
+(define (cy-field p)
+  (let ((entry (assoc p lens-fields)))
+    (if entry (cdr entry) (make-cyclotomic-field p))))
+(define (cy-zero p) (cyclotomic-element (cy-field p) 0))
+(define (cy-one p) (cyclotomic-element (cy-field p) 1))
+(define (cy-zeta-power p k) (cyclotomic-root (cy-field p) k))
+(define (cy-add a b) (cyclotomic-add a b))
+(define (cy-sub a b) (cyclotomic-sub a b))
+(define (cy-scale a c) (cyclotomic-scale a c))
 (define (cy-mul p a b)
-  (let ((v (cy-zero p)))
-    (let loop-i ((i 0))
-      (if (< i (- p 1))
-          (begin
-            (if (not (= 0 (vector-ref a i)))
-                (let loop-j ((j 0))
-                  (if (< j (- p 1))
-                      (begin
-                        (if (not (= 0 (vector-ref b j)))
-                            (let ((c (* (vector-ref a i) (vector-ref b j))) (d (modulo (+ i j) p)))
-                              (if (= d (- p 1))
-                                  (let sub ((k 0)) (if (< k (- p 1)) (begin (vector-set! v k (- (vector-ref v k) c)) (sub (+ k 1)))))
-                                  (vector-set! v d (+ (vector-ref v d) c)))))
-                        (loop-j (+ j 1))))))
-            (loop-i (+ i 1)))))
-    v))
-(define (cy-zero? a) (all? (lambda (i) (= 0 (vector-ref a i))) (range (vector-length a))))
-(define (cy-equal? a b) (cy-zero? (cy-sub a b)))
-;; inverse: solve sum_j x_j (a zeta^j) = 1 by Gaussian elimination over Q on the multiplication matrix
+  (if (not (= p (cyclotomic-order a))) (error "Wrong lens-space coefficient field"))
+  (cyclotomic-mul a b))
+(define (cy-zero? a) (cyclotomic-zero? a))
+(define (cy-equal? a b) (cyclotomic-equal? a b))
 (define (cy-inv p a)
-  (let* ((n (- p 1)) (cols (map (lambda (j) (cy-mul p a (cy-zeta-power p j))) (range n)))
-         (M (make-vector n 0)))
-    (let loop ((i 0)) (if (< i n) (begin (vector-set! M i (let ((row (make-vector (+ n 1) 0))) (let fill ((j 0) (cs cols)) (if (< j n) (begin (vector-set! row j (vector-ref (car cs) i)) (fill (+ j 1) (cdr cs))))) (vector-set! row n (if (= i 0) 1 0)) row)) (loop (+ i 1)))))
-    (let elim ((c 0))
-      (if (< c n)
-          (let ((piv (let find ((r c)) (cond ((= r n) (error "not invertible")) ((not (= 0 (vector-ref (vector-ref M r) c))) r) (else (find (+ r 1)))))))
-            (let ((t (vector-ref M c))) (vector-set! M c (vector-ref M piv)) (vector-set! M piv t))
-            (let* ((prow (vector-ref M c)) (inv (/ 1 (vector-ref prow c))))
-              (let norm ((j 0)) (if (<= j n) (begin (vector-set! prow j (* inv (vector-ref prow j))) (norm (+ j 1)))))
-              (let rows ((r 0))
-                (if (< r n)
-                    (begin (if (and (not (= r c)) (not (= 0 (vector-ref (vector-ref M r) c))))
-                               (let ((f (vector-ref (vector-ref M r) c)) (row (vector-ref M r)))
-                                 (let sub ((j 0)) (if (<= j n) (begin (vector-set! row j (- (vector-ref row j) (* f (vector-ref prow j)))) (sub (+ j 1)))))))
-                           (rows (+ r 1))))))
-            (elim (+ c 1)))))
-    (let ((x (cy-zero p))) (let loop ((i 0)) (if (< i n) (begin (vector-set! x i (vector-ref (vector-ref M i) n)) (loop (+ i 1))))) x)))
-(define (cy-galois p r a)                        ;; zeta -> zeta^r
-  (let loop ((j 0) (acc (cy-zero p))) (if (= j (- p 1)) acc (loop (+ j 1) (cy-add acc (cy-scale (cy-zeta-power p (* j r)) (vector-ref a j)))))))
-(define (cy-norm p a) (let loop ((r 1) (acc (cy-one p))) (if (= r p) acc (loop (+ r 1) (cy-mul p acc (cy-galois p r a))))))
-(define (cy-rational a) (and (all? (lambda (i) (= 0 (vector-ref a i))) (cdr (range (vector-length a)))) (vector-ref a 0)))
+  (if (not (= p (cyclotomic-order a))) (error "Wrong lens-space coefficient field"))
+  (cyclotomic-inverse a))
+(define (cy-galois p r a)
+  (if (not (= p (cyclotomic-order a))) (error "Wrong lens-space coefficient field"))
+  (cyclotomic-galois a r))
 (define (cy-unit? p a) (any? (lambda (k) (or (cy-equal? a (cy-zeta-power p k)) (cy-equal? a (cy-scale (cy-zeta-power p k) -1)))) (range p)))
 ;; matrices over Q(zeta): vectors of rows; rank and determinant by elimination
 (define (cyq-rows A) (vector-length A))
@@ -451,7 +423,7 @@
        (all2? (lambda (pq r) (equal? r (list 3 (* 2 (car pq)) (* 2 (car pq))))) lens-params rank-lists))
 (define taus (map3 (lambda (pq X rho) (with-region (torsion X (car pq) rho))) lens-params lenses labellings))
 (show "tau(L(p,q)) as coefficient vectors on 1, zeta, ..., zeta^(p-2)" taus)
-(define norms (map (lambda (pq t) (cy-rational (cy-norm (car pq) t))) lens-params taus))
+(define norms (map (lambda (pq t) (cyclotomic-norm t)) lens-params taus))
 (show "norms N(tau) down to Q" norms)
 (check "N(tau) = p^2 or p^-2 for every lens space (the norm of (zeta - 1)(zeta^r - 1) is p^2)"
        (all2? (lambda (pq n) (and n (or (= n (* (car pq) (car pq))) (= n (/ 1 (* (car pq) (car pq))))))) lens-params norms))

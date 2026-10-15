@@ -2287,16 +2287,16 @@
     },
     {
       "path": "examples/mathematics_lens_spaces_reidemeister_torsion.esk",
-      "source_sha256": "63219178f66793b91a3425d159e83f6551cbef183dd8b7ed1ceef6919cae2c05",
+      "source_sha256": "6871db3d6b49084da6cc1c6aae6824663a4e49e239cfdf8bd1d387aa2c3f8198",
       "title": "Cyclotomic Reidemeister torsion of lens complexes",
       "kind": "mathematics",
       "purpose": "Separate selected lens spaces that homology or homotopy checks do not separate.",
-      "algorithm": "Build twisted boundary matrices, greedily choose pivot blocks, multiply alternating determinants and compare torsions under units, inversion and Galois conjugation.",
+      "algorithm": "Use shared exact cyclotomic coefficients; build twisted boundary matrices, greedily choose pivot blocks, multiply alternating determinants and compare torsions under units, inversion and Galois conjugation.",
       "domain": "Seven lens cases (5,1),(5,2),(5,3),(7,1),(7,2),(7,4),(7,6).",
-      "arithmetic": "Exact rational coefficient vectors in Q(ζ_p).",
+      "arithmetic": "Exact rational power-basis arithmetic through core.cyclotomic; every scalar result is checked for exactness.",
       "validation": "Acyclicity, norms p² or p⁻², agreement with the implemented lens formula and distinctions among the cases are asserted.",
       "limitations": "The computed invariant plus cited classification criteria support the stated lens-space comparisons; do not infer arbitrary manifold classification or numerical root approximations.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib including core.cyclotomic; native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2322,15 +2322,15 @@
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 468,
+          "line": 440,
           "text": "(check \"Reidemeister: L(5,2) ~ L(5,3), L(7,2) ~ L(7,4), L(7,1) ~ L(7,6) (q' = +-q^(+-1)); L(5,1), L(5,2), L(5,3) otherwise distinct; L(7,1) is not L(7,2) nor L(7,4)\""
         },
         {
-          "line": 470,
+          "line": 442,
           "text": "(check \"the classical pair: L(7,1) and L(7,2) are homotopy equivalent (same square class in the sibling example) but not homeomorphic (torsions differ by a non-unit for every Galois conjugate)\""
         },
         {
-          "line": 472,
+          "line": 444,
           "text": "(check \"tau is invariant under the choice of root of unity up to Galois: each tau matches its own conjugate under zeta -> zeta^2\""
         }
       ],
@@ -3498,16 +3498,16 @@
     },
     {
       "path": "examples/mathematics_turaev_viro_cyclotomic.esk",
-      "source_sha256": "9d9112a7cec9c780980892c1ecf7545aea2350d3953af7e5edc7580d2e197fc4",
+      "source_sha256": "2cf86521c497eaadc4582fc47967d642a118458cbe42e7b90cbedb812447b279",
       "title": "Exact cyclotomic Turaev–Viro state sums",
       "kind": "mathematics",
       "purpose": "Evaluate recoupling state sums and compare selected triangulations and theories.",
-      "algorithm": "Build cyclotomic polynomials/field inverses, quantum integers, theta/tetrahedral nets and admissible edge-coloring sums.",
+      "algorithm": "Use core.cyclotomic for coefficient reduction and Euclid inversion; build quantum integers, theta/tetrahedral nets and admissible edge-coloring sums.",
       "domain": "A=ζ₄r; r=3,4,5 on supplied S³/RP³/T³ and lens complexes, with specified level restrictions per comparison.",
-      "arithmetic": "Exact rational cyclotomic field arithmetic.",
+      "arithmetic": "Exact rational power-basis arithmetic through core.cyclotomic; every scalar result is checked for exactness.",
       "validation": "Quantum relations, alternative triangulation agreement, selected homeomorphic lens values, double-semion comparison and torus counts 4/9/16 are asserted.",
       "limitations": "Finite comparisons cover only the listed triangulations; Pachner-move invariance and normalization follow the cited theory.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib including core.cyclotomic; native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -3525,23 +3525,23 @@
           "text": ";; Turaev-Viro invariants computed exactly in cyclotomic fields: the"
         },
         {
-          "line": 58,
+          "line": 57,
           "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
         },
         {
-          "line": 59,
+          "line": 58,
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 502,
+          "line": 459,
           "text": "(check \"level one is the double semion, the Z/2 Dijkgraaf-Witten theory with the nontrivial cocycle: ratios 0, 8, 2, 1, 1, 1, 0\""
         },
         {
-          "line": 511,
+          "line": 468,
           "text": "(check \"TV_r(T^3) is the number of simple objects of the Drinfeld centre, (r-1)^2: 4, 9, 16 (the dimension of the torus state space)\""
         },
         {
-          "line": 513,
+          "line": 470,
           "text": "(check \"TV_5 separates L(5,1) from L(5,2) (1/2 against 0) although TV_3 and TV_4 do not; TV_5(RP^3) = 0\""
         }
       ],
