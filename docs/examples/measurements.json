@@ -2670,6 +2670,20 @@
         "AD_MODEL_PASS"
       ],
       "output_lines": 27
+    },
+    "examples/streaming_least_squares.esk": {
+      "source_sha256": "d247ace99d0c5ba65b69830cda8df301f2b14d3e398e33af05c4cbd6113546aa",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "New source pending configured release qualification. Focused local native evidence is recorded separately; historical release measurements are unchanged.",
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
     }
   }
 }
