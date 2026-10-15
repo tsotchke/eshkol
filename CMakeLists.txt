@@ -12765,3 +12765,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_ad_nested "tests/stdlib/algebraic_ad_nested_test.esk")
     eshkol_add_algebraic_ad_acceptance(nested_algebraic_fields "examples/nested_algebraic_fields.esk")
 endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_linalg "tests/stdlib/algebraic_linalg_test.esk")
+endif()
