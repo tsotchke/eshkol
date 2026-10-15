@@ -131,7 +131,7 @@ Verification snapshot:
 | v1.2.x | scale | May 2026 | Model I/O + Noesis M0 closeout |
 | v1.3.0-evolve through v1.3.4-evolve | evolve | Jul-Aug 2026 — **SHIPPED** (v1.3.4-evolve tagged 2026-08-19, commit `694c3179`) | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12) on the LLVM backend, 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
 | v1.3.5-evolve | evolve | **SHIPPED 2026-09-22** | Consolidation: parser with no recursion budget, dense tensor autodiff, VM region reclamation, multi-shot continuations, certified enclosures, validated ESKM v1 |
-| v1.3.6-evolve | evolve | **PREPARED FOR PUBLICATION** (intended 2026-10-12) | #727 interval containment; the documented package contract; #721 allocation checks; #722 as a gated experiment; the documented mathematics examples; exact browser numerics. Full SDK is v1.4.1. |
+| v1.3.6-evolve | evolve | **PREPARED FOR PUBLICATION** (intended 2026-10-15) | #727 interval containment; the documented package contract; #721 allocation checks; #722 as a gated experiment; the documented mathematics examples; exact browser numerics. Full SDK is v1.4.1. |
 | v1.4.0 | connection | 2026-10-15 (prior target; joint rebaseline review) | Networking + concurrency + linear types; SBLC first slice; PJRT CPU spike and XLA multi-device single-host; native collectives over sockets pending owner R7 ruling |
 | v1.4.1 | ABI | 2026-11-06 (prior target; joint rebaseline review) | OALR ABI v2 Phase B, ADR-0012 stages 3-6, full embedding SDK |
 | v1.4.5 | accelerate | Joint rebaseline required (old target Q1 2027) | Device runtime on accelerator silicon; must publish before v1.5.0 |
