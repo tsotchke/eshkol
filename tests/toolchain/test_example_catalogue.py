@@ -104,6 +104,15 @@ class CatalogueTests(unittest.TestCase):
         (self.root/self.paths[0]).write_text(';; changed algorithm\n(define x 99)\n')
         self.reject_without_write()
 
+    def test_pending_measurements_do_not_claim_every_source_ran(self):
+        measurements={'release_sha':'a'*40, 'records':{
+            e['path']:{'jit':{'status':'NOT-RUN'}, 'aot':{'status':'NOT-RUN'}}
+            for e in self.entries}}
+        summary=module.outcome_summary(self.entries,measurements,'programs')
+        self.assertNotIn('Every one',summary)
+        self.assertIn('**0** completed in both modes',summary)
+        self.assertIn('**Not run:**',summary)
+
     def test_inventory_catalogue_omissions_extras_duplicates_and_wrong_schema_reject(self):
         original=copy.deepcopy(self.catalogue)
         for change in ['missing','extra','duplicate','schema','execution']:

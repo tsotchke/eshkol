@@ -668,7 +668,7 @@ probe xla_region_reclaim 'XLA/GPU tensor results made inside with-region are rec
      ## XLA-dispatched result leaked (895 MB retained on this fixture). In a
      ## build without XLA the tensors take the inline CPU path and the gate
      ## passes trivially.
-     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/xla/xla_region_reclaim_test.sh 2>&1) || exit 1;
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/xla/xla_region_reclaim_test.sh 2>&1) || { printf "%s\n" "$out"; exit 1; };
      printf "%s" "$out" | grep -q "PASS: xla_region_reclaim_test"'
 
 probe run_cache_xla_threshold_key 'the -r run cache is keyed on ESHKOL_XLA_THRESHOLD: a binary compiled under one GPU dispatch cutoff is never reused under another' \
@@ -676,7 +676,7 @@ probe run_cache_xla_threshold_key 'the -r run cache is keyed on ESHKOL_XLA_THRES
      ## The threshold is a compile-time constant in the emitted code; before
      ## the fix a CPU-threshold run silently executed the GPU binary.
      ## Checks miss / miss / hit across threshold A, B, A.
-     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/codegen/run_cache_xla_threshold_key_test.sh 2>&1) || exit 1;
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/codegen/run_cache_xla_threshold_key_test.sh 2>&1) || { printf "%s\n" "$out"; exit 1; };
      printf "%s" "$out" | grep -q "PASS: run_cache_xla_threshold_key_test"'
 
 probe arena_block_pool 'the large-block arena pool is invisible: identical results with the pool on, off and under ESHKOL_ARENA_POISON, and balanced heap accounting under ESHKOL_MAX_HEAP=256M' \
@@ -685,7 +685,7 @@ probe arena_block_pool 'the large-block arena pool is invisible: identical resul
      ## holds a few blocks at a time. If pooled blocks were still charged to
      ## the heap tracker, or charged twice on reuse, the fail-closed 256 MiB
      ## limit would stop the run.
-     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/arena_block_pool_test.sh 2>&1) || exit 1;
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/arena_block_pool_test.sh 2>&1) || { printf "%s\n" "$out"; exit 1; };
      printf "%s" "$out" | grep -q "PASS: arena_block_pool_test"'
 
 probe resident_longrun_flat 'SW-57: a guarded resident daemon loop retains EXACTLY zero arena bytes per tick across an 8x tick horizon on every barriered mutation channel; the publishing fixture stays pinned to its documented 240 bytes/tick' \

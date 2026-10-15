@@ -1564,13 +1564,15 @@ if(ESHKOL_BLAS_ENABLED)
         set(EIGEN_BUILD_DEMOS OFF CACHE BOOL "Build Eigen demos" FORCE)
         set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "Build Eigen pkg-config metadata" FORCE)
         set(EIGEN_BUILD_CMAKE_PACKAGE OFF CACHE BOOL "Build Eigen CMake package metadata" FORCE)
+        if(POLICY CMP0135)
+            cmake_policy(SET CMP0135 NEW)
+        endif()
         FetchContent_Declare(eshkol_eigen
-            # The pinned commit is reachable from refs/heads/5.0 and refs/tags/5.0.1
-            # on the official GitLab repository; the GitHub eigenteam mirror no
-            # longer advertises it, so a fresh node cannot fetch it there.
-            GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-            GIT_TAG bc3b39870ecb690a623a3f49149a358b95c5781d
-            GIT_SHALLOW FALSE
+            # Keep the same 5.0.1 commit without cloning GitLab's full history.
+            # Its archive endpoint remains available when git-upload-pack is
+            # load-shed. Verify the bytes before extracting any source.
+            URL https://gitlab.com/libeigen/eigen/-/archive/bc3b39870ecb690a623a3f49149a358b95c5781d/eigen-bc3b39870ecb690a623a3f49149a358b95c5781d.tar.gz
+            URL_HASH SHA256=5f6557d1aca6e959a4b955c55f2935261fd30de59c0c79e35bc6d5cbe1de22d1
         )
         FetchContent_MakeAvailable(eshkol_eigen)
         if(NOT TARGET Eigen3::Eigen)
@@ -3666,6 +3668,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# Shared exact cyclotomic arithmetic; the two consumers remain gated below.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME cyclotomic_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/cyclotomic_test.esk")
+    add_test(NAME cyclotomic_aot
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/cyclotomic_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/cyclotomic_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/cyclotomic_aot'")
+    set_tests_properties(cyclotomic_jit cyclotomic_aot PROPERTIES
+        TIMEOUT 240
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: cyclotomic_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
@@ -3729,6 +3745,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAILURES DETECTED|LLVM module verification failed|fatal signal")
         endif()
     endforeach()
+    # These consumers now require the shared field module from this checkout.
+    set_property(TEST torsion_lens_spaces_reidemeister_jit tv_turaev_viro_cyclotomic_jit
+        APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # The order-eight program eliminates five 343 x 2401 integer matrices;
     # about 90 s on an arm64 laptop, so it gets its own budget.
     if(TEST dw_group_cohomology_order_eight_jit)
@@ -5543,6 +5562,25 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: certified_enclosures_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Sparse signed rows -> tensor changes -> finite matrix-product updates.
+    # Both legs import the module from this checkout, never the installed lib/.
+    add_test(
+        NAME dbsp_tensor_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_tensor_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_test(
+        NAME dbsp_tensor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/dbsp_tensor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/dbsp_tensor_aot'"
+    )
+    set_tests_properties(dbsp_tensor_runtime_smoke dbsp_tensor_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: dbsp_tensor_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # These runtime tests import modules from the source-tree standard library.
     # `-L` is a native linker search path; it is not an Eshkol module path.

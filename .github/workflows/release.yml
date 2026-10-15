@@ -1671,6 +1671,22 @@ jobs:
           fi
           echo "receipt_created=true" >> "$GITHUB_OUTPUT"
 
+      # Publish small verdicts and probe logs first. The complete durable
+      # scratch upload below includes large binaries and may stall in transit;
+      # that must not also erase the diagnostics needed to repair a failed gate.
+      - name: Upload readiness diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-readiness-diagnostics
+          include-hidden-files: true
+          path: |
+            scripts/icc_traces/
+            .icc/runtime-traces/
+            .icc/runtime-traces-oracle-view/
+            .scratch/release-evidence-${{ github.run_id }}-${{ github.run_attempt }}/smoke/icc-smoke/probe-logs/
+          if-no-files-found: ignore
+
       - name: Upload readiness evidence
         if: always()
         uses: actions/upload-artifact@v7
