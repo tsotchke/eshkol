@@ -13468,3 +13468,14 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
     set_tests_properties(net_close_concurrency_test PROPERTIES TIMEOUT 30
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
+
+
+# Wave 3 acceptance: certified_nonlinear
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certified_nonlinear_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_nonlinear_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(certified_nonlinear_jit PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
