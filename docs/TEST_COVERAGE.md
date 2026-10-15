@@ -3,7 +3,7 @@
 ## v1.3.6-evolve final-source qualification contract
 
 Publication requires
-<!-- release-record:ctest -->CTest **819/819**<!-- /release-record --> and
+<!-- release-record:ctest -->CTest **823/823**<!-- /release-record --> and
 <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->
 at the final source commit, with independent exact-commit evidence and an
 ICC ready/100 verdict.
@@ -11,8 +11,8 @@ ICC ready/100 verdict.
 The [earlier verified preparation run](https://github.com/tsotchke/eshkol/actions/runs/37562959029)
 passed all 787 configured CTest cases and all 405 VM parity cases on its own
 frozen source and build cohort. Those historical preparation measurements do
-not qualify the expanded integration source. The [current source-bound preparation run](https://github.com/tsotchke/eshkol/actions/runs/38161249190)
-passed all 819 configured CTest cases and all 411 VM parity cases on its own
+not qualify the expanded integration source. The [current source-bound preparation run](https://github.com/tsotchke/eshkol/actions/runs/38657799489)
+passed all 823 configured CTest cases and all 411 VM parity cases on its own
 frozen source and build cohort. Final qualification independently measures
 the final release commit.
 
@@ -109,7 +109,7 @@ comprehensive test suite:
 |------|--------|-------------|
 | `scripts/run_vm_tests.sh` | 50/50 source tests | Standalone VM source programs with verified output capture |
 | `build/test_vm_c_api` | 81/81 checks | Public C ABI, in-memory chunks, host native callbacks, futures |
-| `ctest --test-dir build` | <!-- release-record:ctest-cell -->819/819 tests<!-- /release-record --> required | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
+| `ctest --test-dir build` | <!-- release-record:ctest-cell -->823/823 tests<!-- /release-record --> required | The whole CTest suite, including the VM standalone smoke target; gated by `scripts/run_ctest_gate.sh` and read by the release oracle |
 
 Primary test command:
 ```bash
