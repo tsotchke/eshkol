@@ -20,8 +20,9 @@ int main(int argc, char** argv) {
           "native primitive kernel with compiled parent indices");
     check(source.find("(vector 5 6 2 3)") != std::string::npos, "graph shape receipt");
     check(source.find("(vector 2 3 )") != std::string::npos, "deduplicated repeated-edge consumers");
-    check(source.find("eqv? old value") != std::string::npos, "change detection preserves exactness and floating signed zero");
-    check(source.find("__ig_minimum") != std::string::npos, "ordered sparse work queue");
+    check(source.find("__eshkol_incremental_check") != std::string::npos, "shared finite-value admission gateway");
+    check(source.find("__eshkol_incremental_state") != std::string::npos && source.find("letrec") == std::string::npos,
+          "shared state runtime is not duplicated per initializer");
     check(source.find("(gradient") == std::string::npos && source.find("eval") == std::string::npos,
           "incremental program contains neither AD invocation nor source interpreter");
     auto invalid = graph; invalid.nodes[2].inputs[0] = 4;

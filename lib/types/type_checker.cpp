@@ -1784,6 +1784,15 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
     if (!func_expr) {
         co_return TypeCheckResult::ok(BuiltinTypes::Value);
     }
+    if (func_expr->node_id == eshkol::frontend::incremental_state_gateway_node ||
+        func_expr->node_id == eshkol::frontend::incremental_check_gateway_node) {
+        for (uint64_t i = 0; i < call.num_vars; ++i) {
+            auto argument = co_await synthesizeTask(&call.variables[i]);
+            if (!argument.success) co_return argument;
+        }
+        co_return TypeCheckResult::ok(func_expr->node_id == eshkol::frontend::incremental_state_gateway_node
+            ? BuiltinTypes::Function : BuiltinTypes::Value);
+    }
 
     // A compiler region is not an ordinary call to its marker spelling.
     // The graph pass owns admission of the function and synthetic helpers;

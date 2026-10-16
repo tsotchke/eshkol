@@ -13395,6 +13395,35 @@ private:
 
         std::string func_name = op->call_op.func->variable.id;
 
+        // Compiler-private calls to the separately compiled Eshkol runtime.
+        // Identity, not source spelling or the caller's lexical environment,
+        // selects these internal-ABI entry points.
+        if (op->call_op.func->node_id == eshkol::frontend::incremental_state_gateway_node ||
+            op->call_op.func->node_id == eshkol::frontend::incremental_check_gateway_node) {
+            const bool state = op->call_op.func->node_id == eshkol::frontend::incremental_state_gateway_node;
+            const unsigned arity = state ? 2 : 1;
+            if (op->call_op.num_vars != arity) {
+                codegen_error_at(op->call_op.func, "invalid incremental runtime gateway");
+                markFatalCodegenError(); co_return nullptr;
+            }
+            std::vector<Value*> arguments;
+            for (unsigned i = 0; i < arity; ++i) {
+                auto* value = co_await codegenASTTask(&op->call_op.variables[i]);
+                if (!value) co_return nullptr;
+                arguments.push_back(ensureTaggedValue(value));
+            }
+            auto* type = FunctionType::get(tagged_value_type, std::vector<Type*>(arity, tagged_value_type), false);
+            const std::string runtime_name = state ? "__eshkol_compiler_incremental_state" : "__eshkol_compiler_incremental_check";
+            if (auto* owner = module->getNamedValue(runtime_name)) {
+                auto* function = dyn_cast<Function>(owner);
+                if (!function || !function->hasFnAttribute("eshkol.compiler-runtime"))
+                    owner->setName(runtime_name + "__source");
+            }
+            auto function = module->getOrInsertFunction(runtime_name, type);
+            cast<Function>(function.getCallee())->addFnAttr("eshkol.compiler-runtime");
+            co_return builder->CreateCall(function, arguments);
+        }
+
         // Compiler graph extraction follows macro expansion and shared binding
         // resolution. No caller expression is evaluated before admission.
         if (op->call_op.func->node_id == eshkol::frontend::differentiation_gateway_node ||
@@ -13453,6 +13482,9 @@ private:
                 location.node_id = error.origin.node_id; location.source_file_id = error.origin.file_id;
                 location.line = error.origin.line; location.column = error.origin.column;
                 codegen_error_at(&location, "%s", error.what());
+                markFatalCodegenError(); co_return nullptr;
+            } catch (const std::exception& error) {
+                codegen_error_at(&op->call_op.variables[0], "incremental compiler planning failed: %s", error.what());
                 markFatalCodegenError(); co_return nullptr;
             }
         }
