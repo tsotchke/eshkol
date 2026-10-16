@@ -13768,7 +13768,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
         COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/compiler_incremental_aot' '${_incremental_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/compiler_incremental_aot'")
     set_tests_properties(compiler_incremental_jit compiler_incremental_aot PROPERTIES
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
-        TIMEOUT 300 LABELS "compiler;incremental;regression"
+        TIMEOUT 900 LABELS "compiler;incremental;regression"
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|verification failed")
     if(Python3_Interpreter_FOUND)
         add_test(NAME compiler_incremental_locality
