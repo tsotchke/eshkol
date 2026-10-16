@@ -19,10 +19,11 @@
 #include <string>
 
 int main(int argc, char** argv) {
-    if (argc != 5) {
-        llvm::errs() << "usage: bootstrap_object INPUT.bc OUTPUT.o INIT_PREFIX ENTRY_OR_DASH\n";
+    if (argc != 5 && argc != 6) {
+        llvm::errs() << "usage: bootstrap_object INPUT.bc OUTPUT.o INIT_PREFIX ENTRY_OR_DASH [THUNK_SYMBOL]\n";
         return 2;
     }
+    const std::string thunk_name = argc == 6 ? argv[5] : "eshkol_incremental_plan_call";
     llvm::LLVMContext context;
     llvm::SMDiagnostic diagnostic;
     auto module = llvm::parseIRFile(argv[1], diagnostic, context);
@@ -53,11 +54,11 @@ int main(int argc, char** argv) {
         }
         auto* pointer = llvm::PointerType::getUnqual(context);
         auto* type = llvm::FunctionType::get(llvm::Type::getVoidTy(context), {pointer, pointer}, false);
-        if (module->getNamedValue("eshkol_incremental_plan_call")) {
+        if (module->getNamedValue(thunk_name)) {
             llvm::errs() << "compiler pass thunk symbol already exists\n"; return 1;
         }
         auto* thunk = llvm::Function::Create(type, llvm::GlobalValue::ExternalLinkage,
-                                            "eshkol_incremental_plan_call", *module);
+                                            thunk_name, *module);
         llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "entry", thunk));
         auto* argument = builder.CreateLoad(tagged, thunk->getArg(0));
         auto* result = builder.CreateCall(entry, {argument});
@@ -68,7 +69,7 @@ int main(int argc, char** argv) {
     // thunks and builtin wrappers must not be interposed by a user's object.
     for (auto& function : *module) {
         if (function.isDeclaration()) continue;
-        const bool exported = function.getName() == "eshkol_incremental_plan_call" ||
+        const bool exported = function.getName() == thunk_name ||
             function.getName() == "__eshkol_compiler_incremental_state" ||
             function.getName() == "__eshkol_compiler_incremental_check";
         function.setLinkage(exported ? llvm::GlobalValue::ExternalLinkage : llvm::GlobalValue::InternalLinkage);

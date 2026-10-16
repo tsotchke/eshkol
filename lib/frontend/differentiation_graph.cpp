@@ -1,5 +1,6 @@
 /* Copyright (C) tsotchke. SPDX-License-Identifier: MIT */
 #include <eshkol/frontend/differentiation_graph.h>
+#include <eshkol/frontend/scalar_lowering.h>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -185,6 +186,7 @@ const DifferentiationRule& differentiation_rule(DifferentiationOperation operati
 DifferentiationGraph DifferentiationGraph::build(const eshkol_ast_t& function,
         const std::function<bool(const eshkol_ast_t&)>& binding) { return Builder{binding}.build(function); }
 std::string DifferentiationGraph::numeric_source() const {
+    const auto lowered = scalar_lower(*this);
     std::ostringstream out;
     out << "(lambda (__dg_point) (if (not (and (vector? __dg_point) (= (vector-length __dg_point) "
         << parameters.size() << "))) (error \"differentiate numeric point width mismatch\")) "
@@ -193,13 +195,9 @@ std::string DifferentiationGraph::numeric_source() const {
         << "(if (not (and (real? __dg_value) (or (exact? __dg_value) (finite? __dg_value)))) "
         << "(error \"differentiate numeric requires finite real inputs\")) (__dg_check (+ __dg_i 1))))) "
         << "(gradient (lambda (__dg_inputs) (let* (";
-    for (size_t i = 0; i < nodes.size(); ++i) {
-        const auto& node = nodes[i];
-        if (!differentiation_rule(node.operation).numeric) throw std::logic_error("missing numeric graph rule");
+    for (size_t i = 0; i < lowered.bindings.size(); ++i) {
         out << "(__dg_" << i << ' ';
-        if (node.operation == Op::Input) out << "(vector-ref __dg_inputs " << node.input_index << ')';
-        else if (node.operation == Op::Constant) out << node.literal;
-        else out << '(' << differentiation_rule(node.operation).spelling << " __dg_" << node.inputs[0] << " __dg_" << node.inputs[1] << ')';
+        write_scalar_core(out, lowered.bindings[i], *this, "__dg_inputs", "__dg_");
         out << ')';
     }
     out << ") __dg_" << output << ")) __dg_point))";

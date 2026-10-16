@@ -13484,7 +13484,7 @@ private:
                 codegen_error_at(&location, "%s", error.what());
                 markFatalCodegenError(); co_return nullptr;
             } catch (const std::exception& error) {
-                codegen_error_at(&op->call_op.variables[0], "incremental compiler planning failed: %s", error.what());
+                codegen_error_at(&op->call_op.variables[0], "scalar compiler pass failed: %s", error.what());
                 markFatalCodegenError(); co_return nullptr;
             }
         }
