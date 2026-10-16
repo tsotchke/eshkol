@@ -1,6 +1,7 @@
 ;;; Versioned declarative DBSP templates and atomic process-restart checkpoints.
 (require core.dbsp.circuit)
 (require core.files)
+(require core.sexp)
 (require agent.crypto)
 (provide make-dbsp-resumable dbsp-resumable-step dbsp-resumable-output
          dbsp-resumable-tick dbsp-resumable-checkpoint dbsp-resumable-restore
@@ -67,9 +68,9 @@
     (walk value 0)))
 (define (bc-freeze data) (bc-decode (bc-encode data)))
 (define (bc-render data)
-  (let ((port (open-output-string)))
-    (write data port)
-    (let ((bytes (get-output-string port))) (close-port port) bytes)))
+  ;; All arbitrary strings/symbols/chars were encoded as code-point lists.
+  ;; The only raw string in the envelope is the hexadecimal digest.
+  (sexp->canonical-string data))
 (define (bc-digest data)
   (let ((digest (sha256 (bc-render (bc-encode data)))))
     (if (not digest) (error "Checkpoint SHA-256 unavailable")) digest))
