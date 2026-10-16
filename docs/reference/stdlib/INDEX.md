@@ -24,6 +24,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|
+| [`core.ad.algebraic_farkas`](../../../lib/core/ad/algebraic_farkas.esk) | no | [ad_algebraic_farkas.md](ad_algebraic_farkas.md) | `algebraic-farkas-search` `algebraic-farkas-verify` |
 | [`core.ad.algebraic`](../../../lib/core/ad/algebraic.esk) | no | [ad_algebraic.md](ad_algebraic.md) | `make-algebraic-taylor` `make-algebraic-hyperdual` `algebraic-ad-value` `algebraic-ad-constant` `algebraic-ad-seed` `algebraic-ad-coefficients` `algebraic-ad-add` `algebraic-ad-sub` `algebraic-ad-mul` `algebraic-ad-inverse` `algebraic-ad-equal?` `algebraic-ad-derivative` `algebraic-ad-root` `algebraic-ad-context` `call-with-algebraic-derivative` |
 | [`core.ad.algebraic_implicit`](../../../lib/core/ad/algebraic_implicit.esk) | no | [ad_algebraic_implicit.md](ad_algebraic_implicit.md) | `algebraic-ad-system-root` `algebraic-ad-system-residual` `algebraic-system-linearization` |
 | [`core.ad.algebraic_incremental`](../../../lib/core/ad/algebraic_incremental.esk) | no | [ad_algebraic_incremental.md](ad_algebraic_incremental.md) | `make-algebraic-incremental-plan` `algebraic-incremental-new` `algebraic-incremental-step` `algebraic-incremental-output` `algebraic-incremental-info` `algebraic-incremental-moment-ref` |
