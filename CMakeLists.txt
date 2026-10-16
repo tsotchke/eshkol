@@ -2101,6 +2101,7 @@ add_custom_command(
 # Get all the source code recursively.
 file(GLOB_RECURSE EXE_SRC RELATIVE ${CMAKE_SOURCE_DIR} "exe/*.cpp")
 file(GLOB_RECURSE LIB_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/*.c*")
+list(REMOVE_ITEM LIB_SRC lib/frontend/incremental_plan_host.cpp)
 
 # Exclude REPL sources from main library (REPL will be separate)
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/repl/.*")
@@ -2788,6 +2789,7 @@ target_link_libraries(eshkol-runtime PUBLIC eshkol-qllm-abi)
 # hosted reader/runtime support but no LLVM libraries or code-generation TU.
 add_library(eshkol-workspace STATIC
   lib/frontend/parser.cpp
+  lib/frontend/differentiation_graph.cpp
   lib/frontend/ast_strings.cpp
   lib/frontend/source_paths.cpp
   lib/frontend/node_identity.cpp
@@ -2971,6 +2973,69 @@ foreach (exe ${EXE_SRC})
       add_dependencies(${exename} eshkol-runtime)
   endif()
 endforeach ()
+
+# ===== Reproducible Eshkol compiler-pass bootstrap =====
+option(ESHKOL_SELF_HOSTED_INCREMENTAL "Use the Eshkol-written incremental planner in native tools" ON)
+if(CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR "The compiler-pass bootstrap requires a native host build; cross-compiling the compiler is not supported")
+endif()
+add_executable(eshkol-bootstrap EXCLUDE_FROM_ALL exe/eshkol-run.cpp)
+target_compile_options(eshkol-bootstrap PRIVATE ${LLVM_CXXFLAGS_LIST} ${ESHKOL_EXE_COMPILE_FLAGS})
+target_compile_definitions(eshkol-bootstrap PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+target_include_directories(eshkol-bootstrap PRIVATE inc/)
+eshkol_target_llvm_includes(eshkol-bootstrap)
+if(LLVM_LIBRARY_DIRS)
+    target_link_directories(eshkol-bootstrap PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+target_link_libraries(eshkol-bootstrap PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+
+add_executable(eshkol-bootstrap-object EXCLUDE_FROM_ALL tools/compiler/bootstrap_object.cpp)
+target_compile_features(eshkol-bootstrap-object PRIVATE cxx_std_20)
+eshkol_target_llvm_includes(eshkol-bootstrap-object)
+if(LLVM_LIBRARY_DIRS)
+    target_link_directories(eshkol-bootstrap-object PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+target_link_libraries(eshkol-bootstrap-object PRIVATE ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+
+set(_incremental_bootstrap_dir "${CMAKE_CURRENT_BINARY_DIR}/compiler-bootstrap")
+set(_incremental_plan_object "${_incremental_bootstrap_dir}/incremental-plan.o")
+set(_incremental_runtime_object "${_incremental_bootstrap_dir}/incremental-runtime.o")
+foreach(_part IN ITEMS plan runtime)
+    set(_seed "${_incremental_bootstrap_dir}/incremental-${_part}-seed")
+    set(_object "${_incremental_bootstrap_dir}/incremental-${_part}.o")
+    if(_part STREQUAL "plan")
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tools/compiler/incremental_plan_entry.esk")
+        set(_entry eshkol_incremental_plan_entry)
+    else()
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/compiler/incremental_runtime.esk")
+        set(_entry -)
+    endif()
+    add_custom_command(OUTPUT "${_object}"
+        BYPRODUCTS "${_seed}.o" "${_seed}.bc"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${_incremental_bootstrap_dir}"
+        COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            "ESHKOL_TARGET_CPU=generic" "ESHKOL_TARGET_FEATURES="
+            $<TARGET_FILE:eshkol-bootstrap> --no-stdlib --strict-types --shared-lib -c -O1 -o "${_seed}" "${_source}"
+        COMMAND $<TARGET_FILE:eshkol-bootstrap-object> "${_seed}.bc" "${_object}"
+            "__eshkol_incremental_${_part}" "${_entry}"
+        DEPENDS eshkol-bootstrap eshkol-bootstrap-object "${_source}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/compiler/incremental_plan.esk"
+        VERBATIM)
+    set_source_files_properties("${_object}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+endforeach()
+add_custom_target(eshkol-incremental-bootstrap DEPENDS "${_incremental_plan_object}" "${_incremental_runtime_object}")
+target_sources(eshkol-runtime PRIVATE "${_incremental_runtime_object}")
+
+# Final tools explicitly register the compiled pass at startup. Missing
+# bootstrap artifacts are hard build errors, never a silent fallback.
+foreach(_native_tool IN LISTS EXES)
+    target_sources(${_native_tool} PRIVATE "${_incremental_runtime_object}")
+    if(ESHKOL_SELF_HOSTED_INCREMENTAL)
+        target_sources(${_native_tool} PRIVATE lib/frontend/incremental_plan_host.cpp "${_incremental_plan_object}")
+        target_compile_features(${_native_tool} PRIVATE cxx_std_20)
+        target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_INCREMENTAL)
+    endif()
+endforeach()
 
 # ===== Pre-compiled Standard Library =====
 # Compile stdlib.esk to stdlib.o/stdlib.bc for faster loading of user programs
@@ -12732,4 +12797,139 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 AND UNIX AND ESHKOL
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v2_engine_parity.py
             $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test> --self-test)
     set_tests_properties(eskm_v2_engine_parity_test PROPERTIES TIMEOUT 180)
+endif()
+
+if(TARGET eshkol-repl-lib)
+    target_link_libraries(eshkol-bootstrap PRIVATE eshkol-repl-lib)
+endif()
+foreach(_native_tool IN ITEMS eshkol-repl)
+    if(TARGET ${_native_tool})
+        target_sources(${_native_tool} PRIVATE "${_incremental_runtime_object}")
+        if(ESHKOL_SELF_HOSTED_INCREMENTAL)
+            target_sources(${_native_tool} PRIVATE lib/frontend/incremental_plan_host.cpp "${_incremental_plan_object}")
+            target_compile_features(${_native_tool} PRIVATE cxx_std_20)
+            target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_INCREMENTAL)
+        endif()
+    endif()
+endforeach()
+
+# Shared differentiation graph: this unit has no LLVM or runtime dependency.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(differentiation_graph_test tests/frontend/differentiation_graph_test.cpp
+        lib/frontend/differentiation_graph.cpp)
+    target_include_directories(differentiation_graph_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_features(differentiation_graph_test PRIVATE cxx_std_20)
+    add_test(NAME differentiation_graph_test COMMAND differentiation_graph_test)
+    set_tests_properties(differentiation_graph_test PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_differentiation_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/compiler_differentiation_test.esk")
+    add_test(NAME compiler_differentiation_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> --strict-types -r "${_differentiation_test}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME compiler_differentiation_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot' '${_differentiation_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot'")
+    set_tests_properties(compiler_differentiation_jit compiler_differentiation_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        TIMEOUT 180 LABELS "compiler;ad;regression"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|verification failed")
+    if(Python3_Interpreter_FOUND)
+        set(_differentiation_vm_args)
+        if(TARGET eshkol-vm-standalone-test)
+            list(APPEND _differentiation_vm_args --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>)
+        endif()
+        add_test(NAME compiler_differentiation_diagnostics
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/differentiation_diagnostics.py
+                --runner $<TARGET_FILE:eshkol-run> --link-dir ${CMAKE_CURRENT_BINARY_DIR} ${_differentiation_vm_args})
+        set_tests_properties(compiler_differentiation_diagnostics PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            TIMEOUT 300 LABELS "compiler;ad;regression")
+    endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    foreach(_planner_test IN ITEMS seed_incremental_plan_test selfhost_incremental_test)
+        add_executable(${_planner_test} tests/frontend/selfhost_incremental_test.cpp)
+        target_include_directories(${_planner_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_compile_features(${_planner_test} PRIVATE cxx_std_20)
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(${_planner_test} PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(${_planner_test} PRIVATE eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        if(_planner_test STREQUAL "selfhost_incremental_test")
+            target_sources(${_planner_test} PRIVATE lib/frontend/incremental_plan_host.cpp
+                "${_incremental_plan_object}" "${_incremental_runtime_object}")
+            eshkol_target_llvm_includes(${_planner_test})
+            target_compile_definitions(${_planner_test} PRIVATE ESHKOL_EXPECT_SELFHOST)
+        endif()
+        add_test(NAME ${_planner_test} COMMAND ${_planner_test})
+        set_tests_properties(${_planner_test} PROPERTIES TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endforeach()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_plan_test_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/compiler/incremental_plan_test.esk")
+    add_test(NAME incremental_plan_jit COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+        $<TARGET_FILE:eshkol-run> --strict-types -r "${_plan_test_source}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME incremental_plan_aot COMMAND sh -c
+        "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/incremental_plan_aot' '${_plan_test_source}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/incremental_plan_aot'")
+    set_tests_properties(incremental_plan_jit incremental_plan_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib" TIMEOUT 180
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME incremental_plan_vm COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1
+            $<TARGET_FILE:eshkol-vm-standalone-test> "${_plan_test_source}")
+        set_tests_properties(incremental_plan_vm PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib" TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endif()
+    if(Python3_Interpreter_FOUND)
+        set(_selfhost_repl_args)
+        if(TARGET eshkol-repl)
+            list(APPEND _selfhost_repl_args --repl-runner $<TARGET_FILE:eshkol-repl>)
+        endif()
+        add_test(NAME selfhost_incremental_bootstrap COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/selfhost_incremental_bootstrap.py
+            --runner $<TARGET_FILE:eshkol-run> --seed $<TARGET_FILE:eshkol-bootstrap>
+            --packager $<TARGET_FILE:eshkol-bootstrap-object>
+            --plan-test $<TARGET_FILE:selfhost_incremental_test> --seed-test $<TARGET_FILE:seed_incremental_plan_test>
+            --link-dir ${CMAKE_CURRENT_BINARY_DIR} ${_selfhost_repl_args})
+        set_tests_properties(selfhost_incremental_bootstrap PROPERTIES TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endif()
+endif()
+
+# Finite incremental interpretation of the same admitted compiler graph.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(incrementalize_test tests/frontend/incrementalize_test.cpp
+        lib/frontend/differentiation_graph.cpp lib/frontend/incrementalize.cpp lib/frontend/incremental_plan_seed.cpp)
+    target_include_directories(incrementalize_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_features(incrementalize_test PRIVATE cxx_std_20)
+    add_test(NAME incrementalize_test COMMAND incrementalize_test)
+    set_tests_properties(incrementalize_test PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_incremental_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/incremental/compiler_incremental_test.esk")
+    add_test(NAME compiler_incremental_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> --strict-types -r "${_incremental_test}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME compiler_incremental_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/compiler_incremental_aot' '${_incremental_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/compiler_incremental_aot'")
+    set_tests_properties(compiler_incremental_jit compiler_incremental_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        TIMEOUT 900 LABELS "compiler;incremental;regression"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|verification failed")
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME compiler_incremental_locality
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/incrementalize_locality.py
+                --runner $<TARGET_FILE:eshkol-run> --link-dir ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(compiler_incremental_locality PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            TIMEOUT 1200 LABELS "compiler;incremental;regression")
+    endif()
 endif()
