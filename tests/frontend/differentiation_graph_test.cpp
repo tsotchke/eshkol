@@ -49,6 +49,12 @@ bool refuses(const eshkol_ast_t& function, const char* message) {
 }
 }
 int main() {
+    check(eshkol::frontend::differentiation_gateway_node != ESHKOL_NODE_ID_NONE &&
+          (eshkol::frontend::differentiation_gateway_node & ESHKOL_NODE_ID_MAX_INDEX) == 0,
+          "private gateway cannot equal a source identity or exhausted NONE");
+    check(eshkol::frontend::differentiation_incremental_gateway_node != eshkol::frontend::differentiation_gateway_node &&
+          (eshkol::frontend::differentiation_incremental_gateway_node & ESHKOL_NODE_ID_MAX_INDEX) == 0,
+          "interpretations carry distinct reserved identities independent of spelling");
     AstArena a;
     auto square = a.call("*", {a.var("x"), a.var("x")});
     auto graph = DifferentiationGraph::build(a.lambda({a.var("x")}, a.call("+", {square, square})));

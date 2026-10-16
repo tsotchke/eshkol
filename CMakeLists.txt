@@ -13728,9 +13728,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
     set(_differentiation_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/compiler_differentiation_test.esk")
     add_test(NAME compiler_differentiation_jit
         COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
-            $<TARGET_FILE:eshkol-run> -r "${_differentiation_test}" -L${CMAKE_CURRENT_BINARY_DIR})
+            $<TARGET_FILE:eshkol-run> --strict-types -r "${_differentiation_test}" -L${CMAKE_CURRENT_BINARY_DIR})
     add_test(NAME compiler_differentiation_aot
-        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot' '${_differentiation_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot'")
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot' '${_differentiation_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot'")
     set_tests_properties(compiler_differentiation_jit compiler_differentiation_aot PROPERTIES
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
         TIMEOUT 180 LABELS "compiler;ad;regression"
