@@ -76,6 +76,46 @@
 #include <tuple>
 #include <cctype>
 #include <algorithm>
+#include <csignal>
+
+namespace {
+eshkol::ReplNativeEvalBoundary g_native_eval_boundary = nullptr;
+eshkol::ReplCompileHook g_compile_hook = nullptr;
+
+class ContinuationExtentGuard {
+public:
+    explicit ContinuationExtentGuard(void* frame)
+        : id_(eshkol_continuation_extent_enter(frame)) {}
+    ~ContinuationExtentGuard() { eshkol_continuation_extent_leave(id_); }
+    ContinuationExtentGuard(const ContinuationExtentGuard&) = delete;
+    ContinuationExtentGuard& operator=(const ContinuationExtentGuard&) = delete;
+private:
+    uint64_t id_;
+};
+}
+
+extern "C" void eshkol_repl_set_native_eval_boundary(
+    eshkol::ReplNativeEvalBoundary boundary) {
+    g_native_eval_boundary = boundary;
+}
+
+extern "C" int eshkol_repl_invoke_native(
+    eshkol::ReplNativeEvalFunction function, int32_t* result, int* signal_number) {
+    if (g_native_eval_boundary) {
+        return g_native_eval_boundary(function, result, signal_number);
+    }
+    *result = function(0, nullptr);
+    if (signal_number) *signal_number = 0;
+    return 0;
+}
+
+extern "C" void eshkol_repl_set_compile_hook(eshkol::ReplCompileHook hook) {
+    g_compile_hook = hook;
+}
+
+extern "C" void eshkol_repl_run_compile_hook() {
+    if (g_compile_hook) g_compile_hook();
+}
 
 static constexpr char eshkol_path_separator =
 #ifdef _WIN32
@@ -3926,10 +3966,19 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
             EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);
             // Bracket the evaluation so a continuation captured in it is
             // resumed only while it is live (see runtime_continuations.cpp).
-            const uint64_t extent =
-                eshkol_continuation_extent_enter(__builtin_frame_address(0));
-            int32_t result_value = eval_func(0, nullptr);
-            eshkol_continuation_extent_leave(extent);
+            ContinuationExtentGuard extent(__builtin_frame_address(0));
+            const int64_t handler_depth = eshkol_exception_handler_depth();
+            int32_t result_value = 0;
+            int signal_number = 0;
+            const int status = eshkol_repl_invoke_native(
+                eval_func, &result_value, &signal_number);
+            if (status != 0) {
+                eshkol_exception_handlers_unwind_to(handler_depth);
+                if (status == 1) throw ReplEvalError("interrupted", SIGINT);
+                if (status == 2) throw ReplEvalError("crash", signal_number);
+                if (status == 3) throw ReplEvalError("exception");
+                throw std::runtime_error("native REPL evaluation failed");
+            }
             result = new int64_t(result_value);
         }
     } else {
@@ -4222,6 +4271,10 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                             persistent_macro_asts_.end());
     }
     codegen_asts.push_back(*ast);
+    // Optional host test rendezvous. It is a no-op in production and lets the
+    // EREPL self-test deterministically request SIGINT while this C++ compile
+    // path is active, before generated code can be entered.
+    eshkol_repl_run_compile_hook();
     // Call the existing compiler to generate LLVM IR from the complete
     // interactive macro environment plus the current form.
     LLVMModuleRef c_module = eshkol_generate_llvm_ir(
@@ -4474,9 +4527,19 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
 
     // Bracket the evaluation so a continuation captured in it is resumed only
     // while it is live (see runtime_continuations.cpp).
-    const uint64_t extent = eshkol_continuation_extent_enter(__builtin_frame_address(0));
-    int32_t result_value = eval_func(0, nullptr);
-    eshkol_continuation_extent_leave(extent);
+    ContinuationExtentGuard extent(__builtin_frame_address(0));
+    const int64_t handler_depth = eshkol_exception_handler_depth();
+    int32_t result_value = 0;
+    int signal_number = 0;
+    const int status = eshkol_repl_invoke_native(
+        eval_func, &result_value, &signal_number);
+    if (status != 0) {
+        eshkol_exception_handlers_unwind_to(handler_depth);
+        if (status == 1) throw ReplEvalError("interrupted", SIGINT);
+        if (status == 2) throw ReplEvalError("crash", signal_number);
+        if (status == 3) throw ReplEvalError("exception");
+        throw std::runtime_error("native REPL evaluation failed");
+    }
 
     // CRITICAL: NOW capture s-expression values AFTER execution
     // The entry function has initialized these globals, so now they contain valid values

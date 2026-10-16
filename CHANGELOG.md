@@ -17,6 +17,10 @@ independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **REPL sessions recover safely after interrupted evaluation.** Defer interrupts
+  during native compilation, restore runtime state at the native execution
+  boundary, and preserve subsequent evaluation, definitions, structured errors,
+  and nested `dynamic-wind` cleanup after repeated interrupts. (#802)
 - **Sparse tensor changes bridge DBSP rows to native matrix products.**
   Add opt-in `core.dbsp.tensor`, validated fixed-shape deltas, nonmutating
   application, and finite matrix updates including the simultaneous-edit

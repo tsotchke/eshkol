@@ -30,6 +30,7 @@
 #include <cctype>
 #include <csignal>
 #include <chrono>
+#include <thread>
 #include <iomanip>
 #include <setjmp.h>
 
@@ -43,6 +44,7 @@
 #define ESHKOL_CLOSE_FD(fd) _close(fd)
 #else
 #include <unistd.h>
+#include <pthread.h>
 #define ESHKOL_GETPID() getpid()
 #define ESHKOL_FILENO(f) fileno(f)
 #define ESHKOL_DUP(fd) dup(fd)
@@ -84,9 +86,6 @@ using namespace eshkol::repl;
 #include <sanitizer/lsan_interface.h>
 #endif
 
-// Jump buffer for exception handling during JIT execution
-static jmp_buf g_repl_exception_jmp_buf;
-
 // Jump buffer for signal-based crash recovery (segfaults, etc.)
 #ifdef _WIN32
 using crash_jmp_buf_t = jmp_buf;
@@ -98,12 +97,24 @@ using crash_jmp_buf_t = sigjmp_buf;
 #define ESHKOL_SIGLONGJMP(env, value) siglongjmp(env, value)
 #endif
 
-static crash_jmp_buf_t g_crash_jmp_buf;
-static volatile sig_atomic_t g_in_jit = 0;
-static volatile sig_atomic_t g_crash_signal = 0;
+static thread_local crash_jmp_buf_t g_crash_jmp_buf;
+static constexpr sig_atomic_t kNativeEvalIdle = 0;
+static constexpr sig_atomic_t kNativeEvalActive = 1;
+static constexpr sig_atomic_t kNativeEvalRecovering = 2;
+static thread_local volatile sig_atomic_t g_native_eval_state = kNativeEvalIdle;
+static thread_local volatile int64_t g_native_boundary_depth = 0;
+static thread_local volatile sig_atomic_t g_crash_signal = 0;
+
+#ifndef _WIN32
+// Immutable after handler installation. A process-directed SIGINT can land on
+// an LLVM worker; forward it to the thread that owns the REPL execution frame.
+static pthread_t g_repl_thread;
+static thread_local volatile sig_atomic_t g_is_repl_thread = 0;
+#endif
 
 // Global flag for Ctrl+C handling
 volatile sig_atomic_t g_interrupted = 0;
+static volatile sig_atomic_t g_compile_test_armed = 0;
 
 // Global state for REPL
 static std::string g_last_loaded_file;
@@ -111,22 +122,21 @@ static std::vector<std::string> g_defined_symbols;
 
 // Signal handler for Ctrl+C.
 //
-// Outside a JIT-executing form this is the original behavior: set a flag the
-// read loop notices between lines. While a form IS executing (g_in_jit, the
-// same flag crash_handler below already uses), Ctrl+C -- or, in --machine
-// mode, an EREPL client sending SIGINT to abort a hung evaluation -- instead
-// aborts the evaluation right away via the same longjmp path crash_handler
-// uses, so a runaway `(let loop () (loop))` can be interrupted without
-// killing the process. g_crash_signal is left as SIGINT so both the legacy
-// crash-recovery message and the machine-mode structured error can tell an
-// interrupt apart from an actual crash.
+// Defer SIGINT everywhere except the narrow native-entry trampoline below.
+// In particular, LLVM compilation and ORC linking must return normally.
 void sigint_handler(int sig) {
     (void)sig;
-    if (g_in_jit) {
+#ifndef _WIN32
+    if (!g_is_repl_thread) {
+        pthread_kill(g_repl_thread, SIGINT);
+        return;
+    }
+#endif
+    if (g_native_eval_state == kNativeEvalActive) {
         g_crash_signal = SIGINT;
         ESHKOL_SIGLONGJMP(g_crash_jmp_buf, 1);
     }
-    g_interrupted = 1;
+    if (g_native_eval_state == kNativeEvalIdle) g_interrupted = 1;
 }
 
 // Forward decl — defined later, but repl_clean_exit references it.
@@ -161,13 +171,85 @@ void save_readline_history();
 
 // Signal handler for crashes during JIT execution (SIGSEGV, SIGFPE, SIGBUS)
 void crash_handler(int sig) {
-    if (g_in_jit) {
+    if (g_native_eval_state == kNativeEvalActive) {
         g_crash_signal = sig;
         ESHKOL_SIGLONGJMP(g_crash_jmp_buf, 1);
     } else {
         signal(sig, SIG_DFL);
         raise(sig);
     }
+}
+
+extern "C" void eshkol_exception_unwind_state_to_depth(
+    int64_t depth, eshkol_tagged_value_t* inflight);
+
+static void repl_compile_test_hook() {
+    if (!g_compile_test_armed) return;
+    g_compile_test_armed = 0;
+    std::fputs("EREPL TEST COMPILE ENTERED\n", stderr);
+    std::fflush(stderr);
+    while (!g_interrupted) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+// Keep the non-local signal recovery wholly inside the already-compiled
+// native entry call. REPL parsing, LLVM code generation, and ORC linking all
+// return through ordinary C++ frames before this boundary is entered.
+static int repl_native_eval_boundary(eshkol::ReplNativeEvalFunction function,
+                                     int32_t* result, int* signal_number) {
+    if (g_interrupted) {
+        g_interrupted = 0;
+        if (signal_number) *signal_number = SIGINT;
+        return 1;
+    }
+
+    jmp_buf language_jmp_buf;
+    volatile sig_atomic_t status = 0;
+    volatile sig_atomic_t result_value = 0;
+    g_native_eval_state = kNativeEvalIdle;
+    if (ESHKOL_SIGSETJMP(g_crash_jmp_buf) == 0) {
+        eshkol_push_exception_handler(&language_jmp_buf);
+        g_native_boundary_depth = eshkol_exception_handler_depth();
+        if (setjmp(language_jmp_buf) == 0) {
+            // The signal target and language-exception target are both live
+            // before the gate opens. A signal during compilation or handler
+            // setup is merely recorded and consumed at this safe point.
+            if (g_interrupted) {
+                g_interrupted = 0;
+                status = 1;
+            } else {
+                g_native_eval_state = kNativeEvalActive;
+                if (g_interrupted) {
+                    g_interrupted = 0;
+                    status = 1;
+                } else {
+                    result_value = function(0, nullptr);
+                }
+                g_native_eval_state = kNativeEvalIdle;
+            }
+        } else {
+            g_native_eval_state = kNativeEvalRecovering;
+            status = 3; // Eshkol exception; caller preserves g_current_exception.
+        }
+        eshkol_pop_exception_handler();
+        g_native_eval_state = kNativeEvalIdle;
+    } else {
+        g_native_eval_state = kNativeEvalRecovering;
+        status = 2; // SIGINT, SIGSEGV, SIGFPE, or SIGBUS in native code.
+        // Discard nested handler frames that point into the abandoned native
+        // stack before dynamic-wind cleanup can run user after-thunks.
+        eshkol_exception_handlers_unwind_to(g_native_boundary_depth);
+        eshkol_exception_unwind_state_to_depth(g_native_boundary_depth, nullptr);
+        eshkol_pop_exception_handler();
+        signal(g_crash_signal,
+               (g_crash_signal == SIGINT) ? sigint_handler : crash_handler);
+        g_native_eval_state = kNativeEvalIdle;
+        if (signal_number) *signal_number = g_crash_signal;
+    }
+    if (status == 0) *result = static_cast<int32_t>(result_value);
+    if (status == 2 && signal_number && g_crash_signal == SIGINT) return 1;
+    return static_cast<int>(status);
 }
 
 // Get human-readable message for crash signal
@@ -1299,6 +1381,13 @@ static void handle_eval_request(const std::string& id, const std::string& code,
         return;
     }
 
+    // Deterministic self-test rendezvous, disabled unless explicitly enabled
+    // in the child process. The test interrupts only after seeing the marker.
+    if (std::getenv("ESHKOL_REPL_TEST_COMPILE_BARRIER") &&
+        code == "(+ 314159 271828)") {
+        g_compile_test_armed = 1;
+    }
+
     try {
         eshkol_ast_t ast = parse_string(code, &repl_ctx);
         if (ast.type == ESHKOL_INVALID) {
@@ -1313,27 +1402,17 @@ static void handle_eval_request(const std::string& id, const std::string& code,
         const char* synthetic_kind = nullptr;
 
         // Captures exactly the bytes this evaluation writes to stdout (see
-        // StdoutCapture above); constructed before the setjmp span so it is
-        // never itself skipped by a longjmp out of a crash or an interrupt.
+        // StdoutCapture above). Native signal recovery is contained in the
+        // JIT entry trampoline, after compilation has completed.
         StdoutCapture stdout_capture;
 
-        g_in_jit = 1;
-        if (ESHKOL_SIGSETJMP(g_crash_jmp_buf) == 0) {
-            eshkol_push_exception_handler(&g_repl_exception_jmp_buf);
-            if (setjmp(g_repl_exception_jmp_buf) == 0) {
-                tv = repl_ctx.executeTagged(&ast);
-            } else {
-                had_error = true; // g_current_exception is set
-            }
-            eshkol_pop_exception_handler();
-        } else {
+        try {
+            tv = repl_ctx.executeTagged(&ast);
+        } catch (const eshkol::ReplEvalError& e) {
             had_error = true;
-            synthetic_kind = (g_crash_signal == SIGINT) ? "interrupted" : "crash";
-            // Re-install the correct handler for the signal that fired --
-            // the legacy path below needs the identical fix (see main()).
-            signal(g_crash_signal, (g_crash_signal == SIGINT) ? sigint_handler : crash_handler);
+            if (std::string(e.kind()) != "exception") synthetic_kind = e.kind();
+            g_crash_signal = e.signalNumber();
         }
-        g_in_jit = 0;
 
         std::string captured_stdout = stdout_capture.finish();
 
@@ -1356,7 +1435,6 @@ static void handle_eval_request(const std::string& id, const std::string& code,
         }
         eshkol_ast_clean(&ast);
     } catch (const std::exception& e) {
-        g_in_jit = 0;
         std::fflush(stdout);
         std::fputs(EREPL_FAIL, stderr);
         std::fflush(stderr);
@@ -1446,6 +1524,11 @@ int main(int argc, char** argv) {
     g_interactive = eshkol::platform::stdin_isatty();
     if (machine_mode) g_interactive = false; // Force machine framing path
 
+    // Record the owner before installing handlers or creating JIT workers.
+#ifndef _WIN32
+    g_repl_thread = pthread_self();
+    g_is_repl_thread = 1;
+#endif
     // Install signal handlers.
     signal(SIGINT, sigint_handler);
     signal(SIGSEGV, crash_handler);
@@ -1453,6 +1536,8 @@ int main(int argc, char** argv) {
 #ifdef SIGBUS
     signal(SIGBUS, crash_handler);
 #endif
+    eshkol::eshkol_repl_set_native_eval_boundary(repl_native_eval_boundary);
+    eshkol::eshkol_repl_set_compile_hook(repl_compile_test_hook);
 
     // Initialize readline with completion and history (only if interactive)
     if (g_interactive) {
@@ -1684,44 +1769,24 @@ int main(int argc, char** argv) {
             // Wrap expressions with display
             bool should_display = !is_definition_statement(ast);
 
-            // Execute using JIT with crash recovery and exception handling
+            // Execute using the JIT's narrow native-entry recovery boundary.
             void* result = nullptr;
             bool had_error = false;
-
-            // Outer layer: catch crashes (SIGSEGV, SIGFPE, etc.)
-            g_in_jit = 1;
-            if (ESHKOL_SIGSETJMP(g_crash_jmp_buf) == 0) {
-                // Inner layer: catch Eshkol exceptions
-                eshkol_push_exception_handler(&g_repl_exception_jmp_buf);
-
-                if (setjmp(g_repl_exception_jmp_buf) == 0) {
-                    // Normal execution path
-                    result = repl_run_form(repl_ctx, &ast, should_display);
-                } else {
-                    // Exception was raised - handle it
-                    had_error = true;
-                    eshkol_exception_t* exc = g_current_exception;
-                    if (exc) {
-                        display_exception(exc);
-                    } else {
-                        print_error("Unknown runtime error");
-                    }
-                }
-
-                eshkol_pop_exception_handler();
-            } else {
-                // Crash, OR an interrupt delivered mid-evaluation (see
-                // sigint_handler above -- both longjmp here and are told
-                // apart by g_crash_signal) - display error and continue.
+            try {
+                result = repl_run_form(repl_ctx, &ast, should_display);
+            } catch (const eshkol::ReplEvalError& e) {
                 had_error = true;
-                print_error("Runtime error", crash_signal_message(g_crash_signal));
-                // Re-install the handler for whichever signal fired so the
-                // REPL can continue: SIGINT must get sigint_handler back
-                // (not crash_handler), or a second Ctrl+C / interrupt would
-                // be treated as a crash instead of aborting cleanly again.
-                signal(g_crash_signal, (g_crash_signal == SIGINT) ? sigint_handler : crash_handler);
+                if (std::string(e.kind()) == "interrupted") {
+                    print_error("Runtime error", "Evaluation interrupted");
+                } else if (std::string(e.kind()) == "crash") {
+                    print_error("Runtime error", crash_signal_message(e.signalNumber()));
+                } else if (g_current_exception) {
+                    display_exception(g_current_exception);
+                    std::cout << "\n";
+                } else {
+                    print_error("Unknown runtime error");
+                }
             }
-            g_in_jit = 0;
 
             // Clean up
             eshkol_ast_clean(&ast);
