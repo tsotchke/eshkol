@@ -38,15 +38,36 @@ Snapshots and forks remain valid. The owner itself retains the existing immutabl
 owner contract; public coefficient observations are copied.
 
 Work is `#(refreshed-forward-operations refreshed-reverse-operations changed-edges
-copied-vector-slots scanned-nodes)`. Each refreshed forward operation builds a
-small local tape. State vectors are shallow-copied and both graph orders are
-scanned, so total bookkeeping remains linear in graph size even when refreshed
-arithmetic is local. Dense output observation also costs its output width.
-There is no flat-RSS, sparse-total-time, arbitrary-function or wall-clock speedup
-claim. Exact coefficients can grow; arithmetic demotion refuses through the
-existing owner checks.
+copied-vector-slots processed-work-nodes trie-visits unique-enqueues)`.
+The first three fields retain their meanings. Field 3 now counts constructed or
+copied state/queue trie slots, four-slot node records, and stored partial/edge
+vectors. Field 4 counts work-set removals, including input leaves in the reverse
+set. Fields 5 and 6 expose trie traversal and distinct scheduling work. This is
+an explicit receipt format extension from five to seven fields; callers which
+assumed the previous length must adapt.
+
+Construction still evaluates/scans the full graph and builds an immutable
+baseline. Successors share it and path-copy private 11-level binary tries for
+node overrides and work sets. The fixed height covers the admitted 1088 nodes.
+Forward work removes the smallest scheduled index; reverse work removes the
+largest, so all changed parents/children are ready before an operation runs.
+No tick copies or scans an N-slot state or dirty vector. Only touched nodes,
+consumer edges, bounded input/seed batches and public output widths are visited.
+An unchanged value still schedules its refreshed local partial for reverse work.
+There is no unbounded overlay-chain lookup or periodic hidden compaction.
+
+The counters exclude coefficient arithmetic/size, short-lived local tape
+allocations, change consolidation lists, consumer-list iteration and returned
+observation/delta vectors. They are neither total allocations nor wall-clock
+predictions. Each refreshed forward operation builds the existing small local
+tape. Dense observation costs its declared output/input width. Growing fan-out
+and exact coefficient sizes can still dominate; there is no flat-RSS or general
+speedup claim. Arithmetic demotion/nonunit refusal uses the existing owner.
 
 Tests compare every simultaneous input/seed prefix with a fresh existing reverse
-sweep and independent analytic gradients, integrate both reported deltas, retain
-history/forks, check nested derivatives and inverse refusal, and distinguish
-constant refreshed arithmetic from growing container/scan work.
+sweep and independent analytic gradients, integrate both deltas, retain
+history/forks, check nested derivatives and inverse refusal, and compare one hot
+branch surrounded by 1 versus 1000 cold nodes. Cold graph growth adds no copied
+state slots or processed work nodes; trie lookup counts remain bounded by their
+fixed height. A 64-tick sparse witness checks values, cotangents and bounded
+bookkeeping at every prefix, including shared/repeated parents and targets.
