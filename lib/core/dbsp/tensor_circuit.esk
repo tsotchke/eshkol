@@ -1,7 +1,7 @@
 ;;; Fixed-shape named-axis expressions over persistent tensor snapshots.
 (require core.dbsp.tensor_snapshot)
 (provide make-tensor-circuit tensor-circuit-step tensor-circuit-output
-         tensor-circuit-ref tensor-circuit-work)
+         tensor-circuit-ref tensor-circuit-work tensor-circuit-visit)
 
 ;; Nodes: op, children, parameters, logical axes, logical shape, consumers.
 ;; State: immutable graph/baseline plus path-copied node overrides. Rows are
@@ -277,3 +277,21 @@
 (define (tensor-circuit-ref state coordinates)
   (tc-check state) (tc-ref (tc-state state (vector-ref state 3)) coordinates))
 (define (tensor-circuit-work state) (tc-check state) (vector-copy (vector-ref state 6)))
+
+;; Read-only structural visitor for consumers such as reverse-mode recording.
+;; Descriptors own their lists; value access is scalar-only through a closure.
+;; No graph node, mutable tensor or internal snapshot is exposed to the visitor.
+(define (tensor-circuit-visit state visitor)
+  (tc-check state)
+  (if (not (procedure? visitor)) (error "Expected tensor circuit visitor"))
+  (let* ((graph (vector-ref state 1)) (n (vector-length graph)))
+    (let visit ((id 0)) (if (< id n)
+      (let* ((node (vector-ref graph id)) (value (tc-state state id))
+             (op (vector-ref node 0))
+             (names (map car (filter (lambda (pair) (= (cdr pair) id)) (vector-ref state 2))))
+             (params (if (eq? op 'project) (list (map (lambda (x) x) (car (vector-ref node 2))) (cadr (vector-ref node 2))) '())))
+        (visitor id op (map (lambda (x) x) (vector-ref node 1)) params
+          (map (lambda (x) x) (vector-ref node 3)) (map (lambda (x) x) (vector-ref node 4)) names
+          (lambda (coordinates) (if (eq? op 'rows) (error "Rows have no tensor scalar accessor") (tc-ref value coordinates))))
+        (visit (+ id 1)))))
+    (vector n (vector-ref state 3))))

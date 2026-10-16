@@ -50,3 +50,10 @@ Run CTest with `-R 'tensor_circuit|tensor_snapshot|dbsp_tensor'`. The acceptance
 suite checks every streamed prefix against independent dense products,
 simultaneous updates, shared operands, batch axes, reductions, retractions,
 ownership, failed ticks and fixed sparse work at growing payload sizes.
+
+`tensor-circuit-visit state visitor` is the read-only graph consumer seam.
+The callback receives `(id op children parameters axes shape input-names ref)`
+in topological order; structural lists are fresh and `ref` reads one logical
+coordinate as a scalar. Row nodes have no tensor reader. The return value is
+`#(node-count root-id)`. It does not expose internal graph/snapshot storage.
+The [maintained pullback](ad_tensor_circuit_reverse.md) uses this seam.
