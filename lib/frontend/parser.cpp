@@ -9366,7 +9366,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                                          "real?", "exact?", "finite?", "<", "+"};
                 constexpr size_t helper_count = sizeof(helpers) / sizeof(helpers[0]);
                 ast.operation.call_op.num_vars = 2 + helper_count;
-                ast.operation.call_op.variables = new eshkol_ast_t[2 + helper_count];
+                ast.operation.call_op.variables = new eshkol_ast_t[2 + helper_count]{};
                 ast.operation.call_op.variables[0] = function;
                 ast.operation.call_op.variables[1] = point;
                 for (size_t i = 0; i < helper_count; ++i) {
