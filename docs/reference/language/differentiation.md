@@ -139,8 +139,9 @@ Consumer vectors are increasing and duplicate-free; repeated operands still
 count separately in the operand-edge total. The native adapter independently
 checks the complete returned relation and metadata against the original graph.
 
-This is a structural compiler pass. Literal values, primitive binding admission,
-source identities and arithmetic lowering remain with the existing frontend.
+This is a structural compiler pass. Literal values, primitive binding admission
+and source identities remain with the existing frontend. The separate scalar
+lowering pass described below owns the graph's arithmetic core expressions.
 The pass neither evaluates the program nor changes arithmetic order. Its
 temporary values live in a private compiler arena; only owned C++ plan data
 survives the call, and the caller's memory context is restored after success or
@@ -171,6 +172,47 @@ corpus, recompiles both Eshkol modules with the seed and final compilers, and
 requires byte-identical packaged objects. It also executes mixed numeric and
 incremental programs with deliberately colliding source names and macros.
 This is a reproducible bootstrap of the selected pass, not a Futamura projection.
+
+### Eshkol-written scalar arithmetic lowering
+
+Both numeric bindings and incremental kernel bodies are lowered by
+[`core.compiler.scalar_lower`](../../../lib/core/compiler/scalar_lower.esk),
+available with `(require core.compiler.scalar_lower)`. It consumes
+`(vector 1 width output nodes)`, where a node is `(vector opcode input-slot operands)`
+and opcodes are input (0), literal (1), add (2), subtract (3), multiply (4),
+and divide (5). Unlike the scheduling pass, it retains each arithmetic operation.
+The result is `(vector 1 width output bindings kernels)`.
+
+Each core term is `(vector kind payload children)`. Kinds are input (0), opaque
+literal slot (1), primitive call (2), prior binding (3), kernel read (4), and
+absent kernel (5). Primitive payloads are add/subtract/multiply/divide (0..3).
+Binding position `i` defines compiler-owned slot `i` and refers to source node
+`i`; no user identifier is passed to the lowering module. The two operands of
+each primitive retain their original order and multiplicity. Constants remain
+references to owned source literal text, preserving exact rationals, bignums
+and signed floating zero without converting or evaluating them.
+
+The native boundary checks the complete output against the admitted source
+graph: every binding, literal slot, operation, operand, scope, kernel, and output
+identity. Decoding is bounded to the shallow core grammar. Only owned core terms
+survive the private compiler arena. A generic core renderer supplies the existing
+compiler-owned wrapper names; numeric AD and the incremental state algorithm
+are unchanged. Unused nodes remain in source order and no arithmetic is folded
+or reassociated. This is a selected scalar lowering pass, not LLVM instruction
+selection or a general syntax/IR self-hosting framework.
+
+CMake bootstraps this module with the retained C++ seed and explicitly installs
+it in the final native tools. `ESHKOL_SELF_HOSTED_SCALAR_LOWERING=OFF` selects the
+seed independently of the scheduling-pass option. Once a pass is installed,
+refusal is propagated without a seed retry. The compiler archive and analysis
+CLI retain their seed path; the analysis CLI remains LLVM-free.
+
+`seed_scalar_lowering_test`, `selfhost_scalar_lowering_test`,
+`selfhost_scalar_bootstrap`, and `scalar_lower_(jit|aot|vm)` check independent
+term rendering, complete seed/self-hosted receipts, corrupted-boundary refusal,
+temporary arena ownership, compiler threads, reproducible packaged objects,
+and mixed numeric/incremental execution with colliding source names. The pure
+pass runs on the VM; the compiled graph frontend remains native-only.
 
 Build `eshkol-run`, `stdlib`, `differentiation_graph_test`, `incrementalize_test`,
 `seed_incremental_plan_test`, `selfhost_incremental_test` and

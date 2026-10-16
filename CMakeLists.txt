@@ -2101,7 +2101,7 @@ add_custom_command(
 # Get all the source code recursively.
 file(GLOB_RECURSE EXE_SRC RELATIVE ${CMAKE_SOURCE_DIR} "exe/*.cpp")
 file(GLOB_RECURSE LIB_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/*.c*")
-list(REMOVE_ITEM LIB_SRC lib/frontend/incremental_plan_host.cpp)
+list(REMOVE_ITEM LIB_SRC lib/frontend/incremental_plan_host.cpp lib/frontend/scalar_lowering_host.cpp)
 
 # Exclude REPL sources from main library (REPL will be separate)
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/repl/.*")
@@ -2790,6 +2790,7 @@ target_link_libraries(eshkol-runtime PUBLIC eshkol-qllm-abi)
 add_library(eshkol-workspace STATIC
   lib/frontend/parser.cpp
   lib/frontend/differentiation_graph.cpp
+  lib/frontend/scalar_lowering.cpp
   lib/frontend/ast_strings.cpp
   lib/frontend/source_paths.cpp
   lib/frontend/node_identity.cpp
@@ -2976,6 +2977,7 @@ endforeach ()
 
 # ===== Reproducible Eshkol compiler-pass bootstrap =====
 option(ESHKOL_SELF_HOSTED_INCREMENTAL "Use the Eshkol-written incremental planner in native tools" ON)
+option(ESHKOL_SELF_HOSTED_SCALAR_LOWERING "Use Eshkol-written scalar arithmetic lowering in native tools" ON)
 if(CMAKE_CROSSCOMPILING)
     message(FATAL_ERROR "The compiler-pass bootstrap requires a native host build; cross-compiling the compiler is not supported")
 endif()
@@ -3000,15 +3002,22 @@ target_link_libraries(eshkol-bootstrap-object PRIVATE ${LLVM_LIBS_LIST} ${LLVM_S
 set(_incremental_bootstrap_dir "${CMAKE_CURRENT_BINARY_DIR}/compiler-bootstrap")
 set(_incremental_plan_object "${_incremental_bootstrap_dir}/incremental-plan.o")
 set(_incremental_runtime_object "${_incremental_bootstrap_dir}/incremental-runtime.o")
-foreach(_part IN ITEMS plan runtime)
+set(_scalar_lower_object "${_incremental_bootstrap_dir}/incremental-scalar.o")
+foreach(_part IN ITEMS plan runtime scalar)
     set(_seed "${_incremental_bootstrap_dir}/incremental-${_part}-seed")
     set(_object "${_incremental_bootstrap_dir}/incremental-${_part}.o")
     if(_part STREQUAL "plan")
         set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tools/compiler/incremental_plan_entry.esk")
         set(_entry eshkol_incremental_plan_entry)
+        set(_thunk eshkol_incremental_plan_call)
+    elseif(_part STREQUAL "scalar")
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tools/compiler/scalar_lower_entry.esk")
+        set(_entry eshkol_scalar_lower_entry)
+        set(_thunk eshkol_scalar_lower_call)
     else()
         set(_source "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/compiler/incremental_runtime.esk")
         set(_entry -)
+        set(_thunk eshkol_incremental_plan_call)
     endif()
     add_custom_command(OUTPUT "${_object}"
         BYPRODUCTS "${_seed}.o" "${_seed}.bc"
@@ -3017,13 +3026,14 @@ foreach(_part IN ITEMS plan runtime)
             "ESHKOL_TARGET_CPU=generic" "ESHKOL_TARGET_FEATURES="
             $<TARGET_FILE:eshkol-bootstrap> --no-stdlib --strict-types --shared-lib -c -O1 -o "${_seed}" "${_source}"
         COMMAND $<TARGET_FILE:eshkol-bootstrap-object> "${_seed}.bc" "${_object}"
-            "__eshkol_incremental_${_part}" "${_entry}"
+            "__eshkol_incremental_${_part}" "${_entry}" "${_thunk}"
         DEPENDS eshkol-bootstrap eshkol-bootstrap-object "${_source}"
             "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/compiler/incremental_plan.esk"
+            "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/compiler/scalar_lower.esk"
         VERBATIM)
     set_source_files_properties("${_object}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
 endforeach()
-add_custom_target(eshkol-incremental-bootstrap DEPENDS "${_incremental_plan_object}" "${_incremental_runtime_object}")
+add_custom_target(eshkol-incremental-bootstrap DEPENDS "${_incremental_plan_object}" "${_incremental_runtime_object}" "${_scalar_lower_object}")
 target_sources(eshkol-runtime PRIVATE "${_incremental_runtime_object}")
 
 # Final tools explicitly register the compiled pass at startup. Missing
@@ -3034,6 +3044,11 @@ foreach(_native_tool IN LISTS EXES)
         target_sources(${_native_tool} PRIVATE lib/frontend/incremental_plan_host.cpp "${_incremental_plan_object}")
         target_compile_features(${_native_tool} PRIVATE cxx_std_20)
         target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_INCREMENTAL)
+    endif()
+    if(ESHKOL_SELF_HOSTED_SCALAR_LOWERING)
+        target_sources(${_native_tool} PRIVATE lib/frontend/scalar_lowering_host.cpp "${_scalar_lower_object}")
+        target_compile_features(${_native_tool} PRIVATE cxx_std_20)
+        target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_SCALAR_LOWERING)
     endif()
 endforeach()
 
@@ -12810,13 +12825,18 @@ foreach(_native_tool IN ITEMS eshkol-repl)
             target_compile_features(${_native_tool} PRIVATE cxx_std_20)
             target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_INCREMENTAL)
         endif()
+        if(ESHKOL_SELF_HOSTED_SCALAR_LOWERING)
+            target_sources(${_native_tool} PRIVATE lib/frontend/scalar_lowering_host.cpp "${_scalar_lower_object}")
+            target_compile_features(${_native_tool} PRIVATE cxx_std_20)
+            target_compile_definitions(${_native_tool} PRIVATE ESHKOL_SELF_HOSTED_SCALAR_LOWERING)
+        endif()
     endif()
 endforeach()
 
 # Shared differentiation graph: this unit has no LLVM or runtime dependency.
 if(ESHKOL_BUILD_TESTS)
     add_executable(differentiation_graph_test tests/frontend/differentiation_graph_test.cpp
-        lib/frontend/differentiation_graph.cpp)
+        lib/frontend/differentiation_graph.cpp lib/frontend/scalar_lowering.cpp)
     target_include_directories(differentiation_graph_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_compile_features(differentiation_graph_test PRIVATE cxx_std_20)
     add_test(NAME differentiation_graph_test COMMAND differentiation_graph_test)
@@ -12903,10 +12923,58 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
     endif()
 endif()
 
+# Scalar DAG-to-core lowering: seed, compiled Eshkol, and native integration.
+if(ESHKOL_BUILD_TESTS)
+    foreach(_lower_test IN ITEMS seed_scalar_lowering_test selfhost_scalar_lowering_test)
+        add_executable(${_lower_test} tests/frontend/selfhost_scalar_test.cpp)
+        target_include_directories(${_lower_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_compile_features(${_lower_test} PRIVATE cxx_std_20)
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(${_lower_test} PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(${_lower_test} PRIVATE eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        if(_lower_test STREQUAL "selfhost_scalar_lowering_test")
+            target_sources(${_lower_test} PRIVATE lib/frontend/scalar_lowering_host.cpp "${_scalar_lower_object}")
+            target_compile_definitions(${_lower_test} PRIVATE ESHKOL_EXPECT_SELFHOST)
+        endif()
+        add_test(NAME ${_lower_test} COMMAND ${_lower_test})
+        set_tests_properties(${_lower_test} PROPERTIES TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endforeach()
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_scalar_test_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/compiler/scalar_lower_test.esk")
+    add_test(NAME scalar_lower_jit COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+        $<TARGET_FILE:eshkol-run> --strict-types -r "${_scalar_test_source}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME scalar_lower_aot COMMAND sh -c
+        "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/scalar_lower_aot' '${_scalar_test_source}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/scalar_lower_aot'")
+    set_tests_properties(scalar_lower_jit scalar_lower_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib" TIMEOUT 180
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME scalar_lower_vm COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1
+            $<TARGET_FILE:eshkol-vm-standalone-test> "${_scalar_test_source}")
+        set_tests_properties(scalar_lower_vm PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib" TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endif()
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME selfhost_scalar_bootstrap COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/selfhost_scalar_bootstrap.py
+            --runner $<TARGET_FILE:eshkol-run> --seed $<TARGET_FILE:eshkol-bootstrap>
+            --packager $<TARGET_FILE:eshkol-bootstrap-object>
+            --lower-test $<TARGET_FILE:selfhost_scalar_lowering_test> --seed-test $<TARGET_FILE:seed_scalar_lowering_test>
+            --link-dir ${CMAKE_CURRENT_BINARY_DIR} ${_selfhost_repl_args})
+        set_tests_properties(selfhost_scalar_bootstrap PROPERTIES TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+    endif()
+endif()
+
 # Finite incremental interpretation of the same admitted compiler graph.
 if(ESHKOL_BUILD_TESTS)
     add_executable(incrementalize_test tests/frontend/incrementalize_test.cpp
-        lib/frontend/differentiation_graph.cpp lib/frontend/incrementalize.cpp lib/frontend/incremental_plan_seed.cpp)
+        lib/frontend/differentiation_graph.cpp lib/frontend/incrementalize.cpp lib/frontend/incremental_plan_seed.cpp lib/frontend/scalar_lowering.cpp)
     target_include_directories(incrementalize_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_compile_features(incrementalize_test PRIVATE cxx_std_20)
     add_test(NAME incrementalize_test COMMAND incrementalize_test)

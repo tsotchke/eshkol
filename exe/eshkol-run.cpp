@@ -7,6 +7,9 @@
 #ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
 #include <eshkol/frontend/incrementalize.h>
 #endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+#include <eshkol/frontend/scalar_lowering.h>
+#endif
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/logger.h>
@@ -4267,6 +4270,9 @@ int main(int argc, char **argv)
 {
 #ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
     eshkol::frontend::enable_self_hosted_incremental();
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+    eshkol::frontend::enable_self_hosted_scalar_lowering();
 #endif
     // First local, so it is destroyed last: every AST consumer in main() has
     // finished before the AST string owner is released (ADR-0021).

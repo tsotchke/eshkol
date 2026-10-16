@@ -1,5 +1,6 @@
 /* Copyright (C) tsotchke. SPDX-License-Identifier: MIT */
 #include <eshkol/frontend/incrementalize.h>
+#include <eshkol/frontend/scalar_lowering.h>
 #include <algorithm>
 #include <sstream>
 
@@ -44,8 +45,8 @@ void verify_incremental_plan(const DifferentiationGraph& graph, const Incrementa
 }
 
 std::string IncrementalizePass::source(const DifferentiationGraph& graph) {
-    using Op = DifferentiationOperation;
     const auto plan = incremental_plan(graph);
+    const auto lowered = scalar_lower(graph);
     const size_t count = graph.nodes.size(), width = graph.parameters.size();
     const auto& consumers = plan.consumers;
     const auto capacity = plan.capacity, height = plan.height;
@@ -60,10 +61,13 @@ std::string IncrementalizePass::source(const DifferentiationGraph& graph) {
         << "(if (not (and (vector? __ig_point) (= (vector-length __ig_point) " << width
         << "))) (error \"differentiate incremental point width mismatch\")) "
         << "(let* ((__ig_base (make-vector " << count << " 0)) (__ig_kernels (vector ";
-    for (const auto& node : graph.nodes) {
-        if (node.inputs.empty()) out << "#f ";
-        else out << "(lambda (__ig_get) (" << differentiation_rule(node.operation).spelling
-                 << " (__ig_get " << node.inputs[0] << ") (__ig_get " << node.inputs[1] << "))) ";
+    for (const auto& kernel : lowered.kernels) {
+        if (kernel.kind == ScalarCoreKind::Absent) out << "#f ";
+        else {
+            out << "(lambda (__ig_get) ";
+            write_scalar_core(out, kernel, graph, "__ig_point", "__ig_");
+            out << ") ";
+        }
     }
     out << ")) (__ig_children (vector ";
     for (const auto& list : consumers) {
@@ -79,12 +83,8 @@ std::string IncrementalizePass::source(const DifferentiationGraph& graph) {
     // every node; ticks path-copy trie branches and execute queued kernels.
     out << "(let* (";
     for (size_t i = 0; i < count; ++i) {
-        const auto& node = graph.nodes[i];
         out << "(__ig_" << i << " (__eshkol_incremental_check ";
-        if (node.operation == Op::Input) out << "(vector-ref __ig_point " << node.input_index << ')';
-        else if (node.operation == Op::Constant) out << node.literal;
-        else out << '(' << differentiation_rule(node.operation).spelling
-                 << " __ig_" << node.inputs[0] << " __ig_" << node.inputs[1] << ')';
+        write_scalar_core(out, lowered.bindings[i], graph, "__ig_point", "__ig_");
         out << "))";
     }
     out << ") ";
