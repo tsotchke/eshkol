@@ -9337,7 +9337,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             if (expression.type == ESHKOL_OP && expression.operation.op == ESHKOL_QUOTE_OP &&
                 expression.operation.call_op.num_vars == 1 && expression.operation.call_op.variables)
                 interpretation = &expression.operation.call_op.variables[0];
-            const bool explicit_mode = head_token.value == "differentiate" && interpretation &&
+            const bool explicit_mode = first_symbol == "differentiate" && interpretation &&
                 (interpretation->type == ESHKOL_SYMBOL || interpretation->type == ESHKOL_VAR) &&
                 interpretation->str_val.ptr &&
                 (std::strcmp(interpretation->str_val.ptr, "numeric") == 0 ||
@@ -9357,8 +9357,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.call_op.func->variable.id = eshkol_ast_string_copy(mode == "numeric"
                     ? eshkol::frontend::differentiation_numeric_marker
                     : eshkol::frontend::differentiation_incremental_marker);
-                // Zero NodeId identifies this parser-owned gateway, never an
-                // ordinary user call with the same spelling.
+                // A reserved identity distinguishes the parser-owned gateway
+                // from source calls, including calls whose NodeId is exhausted.
+                ast.operation.call_op.func->node_id = mode == "numeric"
+                    ? eshkol::frontend::differentiation_gateway_node
+                    : eshkol::frontend::differentiation_incremental_gateway_node;
                 const char* helpers[] = {"vector?", "vector-length", "vector-ref", "not", "=", "error", "make-rational",
                                          "real?", "exact?", "finite?", "<", "+"};
                 constexpr size_t helper_count = sizeof(helpers) / sizeof(helpers[0]);

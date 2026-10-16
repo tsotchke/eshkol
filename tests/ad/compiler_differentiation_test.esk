@@ -44,11 +44,17 @@
 (define (inside point) (differentiate 'numeric (lambda (x) (+ (* x x) 1)) point))
 (check "form works inside a user function" (near? (vector-ref (inside (vector 7.0)) 0) 14))
 (define-syntax graph-square (syntax-rules () ((_ a) (* a a))))
+(define-syntax graph-numeric (syntax-rules () ((_ f point) (differentiate 'numeric f point))))
+(check "macro may generate the interpretation form" (near? (vector-ref
+  (graph-numeric (lambda (x) (* x x)) (vector 4.0)) 0) 8))
 (check "graph extraction follows macro expansion" (near? (vector-ref
   (differentiate 'numeric (lambda (x) (graph-square x)) (vector 3.0)) 0) 6))
 (define (__eshkol_graph_numeric function point) 23)
 (check "ordinary marker spelling has no compiler authority"
   (= (__eshkol_graph_numeric (lambda (x) (* x x)) (vector 3)) 23))
+(check "lexical marker spelling cannot rename the compiler form"
+  (let ((__eshkol_graph_numeric (lambda (function point) 99)))
+    (near? (vector-ref (differentiate 'numeric (lambda (x) (* x x)) (vector 3.0)) 0) 6)))
 ;; Historical symbolic syntax still returns a derivative S-expression.
 (check "legacy symbolic differentiate retained" (= (differentiate (* 2 x) x) 2))
 (check "legacy quoted symbolic refusal retained" (raises? (lambda () (differentiate '(* x x) x))))

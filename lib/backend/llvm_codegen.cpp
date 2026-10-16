@@ -13396,9 +13396,8 @@ private:
 
         // Compiler graph extraction follows macro expansion and shared binding
         // resolution. No caller expression is evaluated before admission.
-        if (op->call_op.func->node_id == ESHKOL_NODE_ID_NONE &&
-            (func_name == eshkol::frontend::differentiation_numeric_marker ||
-             func_name == eshkol::frontend::differentiation_incremental_marker)) {
+        if (op->call_op.func->node_id == eshkol::frontend::differentiation_gateway_node ||
+            op->call_op.func->node_id == eshkol::frontend::differentiation_incremental_gateway_node) {
             if (op->call_op.num_vars < 2) {
                 codegen_error_at(op->call_op.func, "invalid differentiation compiler gateway");
                 markFatalCodegenError(); co_return nullptr;
@@ -13433,7 +13432,7 @@ private:
                     [&](const eshkol_ast_t& call) {
                         return call.operation.call_op.func && primitive(*call.operation.call_op.func);
                     });
-                if (func_name != eshkol::frontend::differentiation_numeric_marker) {
+                if (op->call_op.func->node_id == eshkol::frontend::differentiation_incremental_gateway_node) {
                     codegen_error_at(&function, "incremental interpretation requires the incremental compiler pass");
                     markFatalCodegenError(); co_return nullptr;
                 }
