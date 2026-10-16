@@ -17,6 +17,7 @@
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/frontend/semantic_identity.h>
 #include <eshkol/frontend/differentiation_graph.h>
+#include <eshkol/frontend/incrementalize.h>
 #include <eshkol/frontend/diagnostic.h>
 #include <eshkol/frontend/shadowable_ops.h>
 #include <eshkol/frontend/syntax_color.h>
@@ -13432,12 +13433,10 @@ private:
                     [&](const eshkol_ast_t& call) {
                         return call.operation.call_op.func && primitive(*call.operation.call_op.func);
                     });
-                if (op->call_op.func->node_id == eshkol::frontend::differentiation_incremental_gateway_node) {
-                    codegen_error_at(&function, "incremental interpretation requires the incremental compiler pass");
-                    markFatalCodegenError(); co_return nullptr;
-                }
+                const auto source = op->call_op.func->node_id == eshkol::frontend::differentiation_gateway_node
+                    ? graph.numeric_source() : eshkol::frontend::IncrementalizePass::source(graph);
                 differentiation_asts_.push_back(std::make_unique<eshkol_ast_t>(
-                    eshkol::frontend::parse_generated_differentiation(graph.numeric_source(),
+                    eshkol::frontend::parse_generated_differentiation(source,
                     eshkol::frontend::DifferentiationOrigin{function.node_id, function.source_file_id, function.line, function.column})));
                 auto* wrapper = differentiation_asts_.back().get();
                 if (wrapper->type == ESHKOL_INVALID) {

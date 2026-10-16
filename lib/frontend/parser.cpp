@@ -9362,9 +9362,13 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.call_op.func->node_id = mode == "numeric"
                     ? eshkol::frontend::differentiation_gateway_node
                     : eshkol::frontend::differentiation_incremental_gateway_node;
-                const char* helpers[] = {"vector?", "vector-length", "vector-ref", "not", "=", "error", "make-rational",
-                                         "real?", "exact?", "finite?", "<", "+"};
-                constexpr size_t helper_count = sizeof(helpers) / sizeof(helpers[0]);
+                std::vector<const char*> helpers = {"vector?", "vector-length", "vector-ref", "not", "=", "error", "make-rational",
+                                                    "real?", "exact?", "finite?", "<", "+"};
+                if (mode == "incremental") {
+                    const char* extra[] = {"vector", "make-vector", "vector-set!", "quotient", "-", "eq?", "eqv?", "type-name"};
+                    helpers.insert(helpers.end(), std::begin(extra), std::end(extra));
+                }
+                const size_t helper_count = helpers.size();
                 ast.operation.call_op.num_vars = 2 + helper_count;
                 ast.operation.call_op.variables = new eshkol_ast_t[2 + helper_count];
                 ast.operation.call_op.variables[0] = function;

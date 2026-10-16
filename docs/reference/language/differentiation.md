@@ -44,10 +44,73 @@ source identities/locations. It has no LLVM or runtime-value dependency. The
 frontend caps the graph at 1,024 nodes, traversal at 8,192 expressions and syntax
 depth at 128. These are admission limits, not silent truncation.
 
-`differentiate 'incremental` is reserved for the incremental compiler pass and
-currently emits an explicit unavailable-pass diagnostic. The graph's rule table
-records the finite arithmetic interpretation alongside the numeric one so both
-passes can consume the same admitted program.
+The graph's rule table records both numeric and finite arithmetic interpretations.
+`IncrementalizePass` consumes this same admitted graph for persistent execution.
+
+## Finite incremental interpretation
+
+```scheme
+(define state
+  (differentiate 'incremental (lambda (x y) (+ (* x y) (* x x)))
+    (vector 2 3)))
+(state 'output #f) ; 10
+(define step (state 'step (vector 1 2)))
+(define next (vector-ref step 0))
+(next 'output #f) ; 24
+(vector-ref step 1) ; 14, the finite output change
+(state 'output #f) ; 10, the original state remains readable
+```
+
+The result is an opaque two-argument state closure. Its actions are:
+
+| Action | Payload | Result |
+|---|---|---|
+| `'output` | ignored | Current scalar output |
+| `'step` | Dense delta vector in input order | `#(successor output-change work)` |
+| `'work` | ignored | Fresh copy of the last work receipt |
+| `'info` | ignored | Fresh `#(nodes operand-edges inputs trie-height)` |
+
+The initializer evaluates the point once and stores its own baseline. A step
+adds each delta slot to the corresponding retained input, processes affected
+arithmetic nodes in topological order, and returns an immutable successor.
+Neither the point/delta vectors nor observation vectors alias private state.
+Histories may be forked and used independently. Invalid width, nonnumeric values,
+division by zero, nonfinite results or a nonfinite output change raise without
+modifying the input state. Ordinary integers, bignums, rationals and finite
+floating values are admitted; complex values, library-defined carriers and
+active AD/dual/Taylor values are refused. This pass does not persist AD tapes.
+
+Each arithmetic node becomes a native primitive closure with compiled parent
+indices. The initializer is a compiled primal let spine. The runtime does not
+interpret source expressions or graph opcodes. Updated values use a persistent
+binary trie over the immutable baseline, and the work queue is another trie
+whose minimum index is always the next topologically ready node. Consumer lists
+deduplicate repeated edges; queued nodes execute once after their parents.
+There is no per-tick graph-wide array copy or graph-order scan.
+
+Change detection uses `eqv?`, retaining exactness changes and floating signed
+zero. An unchanged intermediate stops propagation. Touched arithmetic computes
+its fresh value from updated cached parents, which retains finite product cross
+terms and avoids rebuilding a floating snapshot as `old + output-change`.
+For exact arithmetic the output changes telescope exactly. For floating
+arithmetic the returned snapshot is authoritative: rounded output changes need
+not telescope bit-for-bit, and no certified error bound is claimed.
+
+The six work fields are `#(kernels changed-values trie-visits copied-trie-slots
+enqueue-attempts input-slots)`. Trie visits include value reads, path writes and
+queue minimum traversal; copied slots count newly allocated two-slot internal
+trie nodes for values and queue. Each tick scans the bounded input width, not
+the graph width. Kernel/edge work is proportional to touched nodes/consumer
+lists, and trie operations add a logarithmic graph-size factor. These counters
+exclude scalar/rational arithmetic cost, constant-size receipt/closure/tick
+allocation, context initialization, allocator behavior and global RSS. The
+initializer receipt counts initial kernels/values/inputs and zero trie work.
+Scalar output observation takes one trie lookup.
+
+The context, retained values and closures use existing native region escape
+promotion. No new ownership ABI, native index, checkpoint format or background
+scheduler is introduced. Graph storage is bounded by admission; retained history
+consumes additional path storage until its owning region is released.
 
 ## Existing symbolic syntax
 
@@ -62,11 +125,11 @@ ABIs and a bytecode graph frontend remain separate work.
 
 ## Verification
 
-Build `eshkol-run`, `stdlib` and `differentiation_graph_test`, then run:
+Build `eshkol-run`, `stdlib`, `differentiation_graph_test` and `incrementalize_test`, then run:
 
 ```sh
 ctest --test-dir build --output-on-failure \
-  -R '^(differentiation_graph_test|compiler_differentiation_(jit|aot|diagnostics))$'
+  -R '^(differentiation_graph_test|incrementalize_test|compiler_differentiation_(jit|aot|diagnostics)|compiler_incremental_(jit|aot|locality))$'
 ```
 
 The standalone graph test checks topology, sharing, lexical scope, literal
@@ -75,3 +138,10 @@ compares independent analytic partials and the existing gradient engine, and
 checks point evaluation, generated-name isolation and legacy symbolic behavior.
 Diagnostics tests require compile failure with no executable for inadmissible
 programs and explicitly check bytecode refusal.
+
+The incremental native suite compares every rational prefix with an independent
+batch formula, checks forks/ownership, failure atomicity, floating cancellation,
+signed zero/exactness changes, macros and region escape. The locality witness
+grows cold branches to 36/132/516 graph nodes and checks every one of 64 ticks in
+both native modes: exactly two kernels, three changed values, two enqueue
+attempts, two inspected inputs, and explicit logarithmic trie-work/copy bounds.
