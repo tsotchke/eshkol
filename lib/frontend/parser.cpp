@@ -43,6 +43,8 @@
 #endif
 
 /* ── Parse context for diagnostic messages ── */
+// Only the compiler-owned generated-source parser can mint runtime gateways.
+static thread_local bool g_parse_compiler_runtime = false;
 static thread_local std::string g_parse_filename = "<unknown>";
 /* Interned id of g_parse_filename, stamped onto every top-level form so a
  * diagnostic can name the file the form really came from rather than whichever
@@ -10773,6 +10775,12 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.func->variable.id =
                 eshkol_ast_string_copy(colored_head.empty() ? first_symbol : colored_head);
             ast.operation.call_op.func->variable.data = nullptr;
+            if (g_parse_compiler_runtime) {
+                if (first_symbol == "__eshkol_incremental_state")
+                    ast.operation.call_op.func->node_id = eshkol::frontend::incremental_state_gateway_node;
+                else if (first_symbol == "__eshkol_incremental_check")
+                    ast.operation.call_op.func->node_id = eshkol::frontend::incremental_check_gateway_node;
+            }
             // Keep a reference to this call's reader syntax (ADR-0026): if
             // the expander finds the head is a macro keyword the parser did
             // not know about, it re-reads the call from the tape.
@@ -11754,8 +11762,18 @@ namespace eshkol::frontend {
 eshkol_ast_t parse_generated_differentiation(const std::string& source, DifferentiationOrigin location) {
     struct ContextGuard {
         uint32_t file_id = g_parse_filename_id;
-        ~ContextGuard() { g_parse_filename_id = file_id; }
+        bool compiler_runtime = g_parse_compiler_runtime;
+        decltype(g_parser_macro_names) macro_names = g_parser_macro_names;
+        ~ContextGuard() {
+            g_parse_filename_id = file_id;
+            g_parse_compiler_runtime = compiler_runtime;
+            g_parser_macro_names = macro_names;
+        }
     } guard;
+    g_parse_compiler_runtime = true;
+    // The emitted wrapper is already core syntax. Ambient user macro names
+    // must not turn a private helper or primitive into a macro-use placeholder.
+    g_parser_macro_names = nullptr;
     if (location.file_id) g_parse_filename_id = location.file_id;
     EshkolAstBirthLocationScope birth(location.line, location.column);
     SchemeTokenizer generated(source, location.line, location.column);

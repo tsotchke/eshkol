@@ -20,6 +20,9 @@
  *   - JSON-only /compile requests to block simple cross-site form posts
  */
 
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+#include <eshkol/frontend/incrementalize.h>
+#endif
 #include "eshkol/eshkol.h"
 #include "eshkol/http_request_utils.h"
 #include <eshkol/llvm_backend.h>
@@ -686,6 +689,9 @@ void print_usage() {
 }
 
 int main(int argc, char** argv) {
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+    eshkol::frontend::enable_self_hosted_incremental();
+#endif
     int port = 8080;
     const char* env_token = std::getenv("ESHKOL_SERVER_TOKEN");
     if (env_token && env_token[0] != '\0') {

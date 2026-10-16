@@ -61,6 +61,8 @@ inline constexpr const char* differentiation_incremental_marker = "__eshkol_grap
 // even when exhaustion degrades ordinary source identities to NONE.
 inline constexpr eshkol_node_id_t differentiation_gateway_node = ESHKOL_NODE_ID_TAG << 24;
 inline constexpr eshkol_node_id_t differentiation_incremental_gateway_node = (ESHKOL_NODE_ID_TAG ^ 1u) << 24;
+inline constexpr eshkol_node_id_t incremental_state_gateway_node = (ESHKOL_NODE_ID_TAG ^ 2u) << 24;
+inline constexpr eshkol_node_id_t incremental_check_gateway_node = (ESHKOL_NODE_ID_TAG ^ 3u) << 24;
 static_assert(differentiation_gateway_node != ESHKOL_NODE_ID_NONE &&
               differentiation_incremental_gateway_node != ESHKOL_NODE_ID_NONE);
 eshkol_ast_t parse_generated_differentiation(const std::string& source,

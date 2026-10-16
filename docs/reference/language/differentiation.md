@@ -125,11 +125,60 @@ ABIs and a bytecode graph frontend remain separate work.
 
 ## Verification
 
-Build `eshkol-run`, `stdlib`, `differentiation_graph_test` and `incrementalize_test`, then run:
+### Eshkol-written planning and shared state runtime
+
+Native tools use an ahead-of-time compiled Eshkol pass to turn the validated
+scalar graph into its consumer relation, ordered scheduling metadata and trie
+shape. The pass is [`core.compiler.incremental_plan`](../../../lib/core/compiler/incremental_plan.esk),
+available with `(require core.compiler.incremental_plan)`. Its version-1 input
+is `(vector 1 input-count output-index nodes)`, where each node is
+`(vector kind input-index operands)` and kind is 0 (input), 1 (constant), or 2
+(binary primitive). Its result is
+`(vector 1 capacity height operand-edges kernel-count consumers)`.
+Consumer vectors are increasing and duplicate-free; repeated operands still
+count separately in the operand-edge total. The native adapter independently
+checks the complete returned relation and metadata against the original graph.
+
+This is a structural compiler pass. Literal values, primitive binding admission,
+source identities and arithmetic lowering remain with the existing frontend.
+The pass neither evaluates the program nor changes arithmetic order. Its
+temporary values live in a private compiler arena; only owned C++ plan data
+survives the call, and the caller's memory context is restored after success or
+refusal.
+
+CMake builds `eshkol-bootstrap` using the C++ seed planner, compiles the Eshkol
+planner and shared state runtime, and packages those objects before linking the
+final tools. The packager derives a pointer-based C++ calling thunk from the
+compiled pass's actual LLVM signature, checks its tagged layout, and gives each
+library initializer a distinct name. Final native tools explicitly install the
+Eshkol pass at startup. Once installed, a failed pass is an error; it does not
+retry through the seed planner. `ESHKOL_SELF_HOSTED_INCREMENTAL=OFF` explicitly
+selects the seed planner in final tools for reference builds. The standalone
+compiler archive retains the seed; this milestone concerns the native tools,
+not a self-hosted embedding SDK or a compiler that compiles its entire source.
+The bootstrap currently requires a 64-bit native host build.
+
+The persistent state helpers are ordinary Eshkol in
+[`incremental_runtime.esk`](../../../lib/core/compiler/incremental_runtime.esk),
+compiled once into the generated-program runtime archive. Each graph emits only
+its kernels, initial values, consumer metadata and private runtime calls. A tick
+executes the same persistent trie/ordered queue algorithm; planning is not
+repeated per tick. Private node identities select the calls, and ambient user
+macros and same-named source bindings cannot replace them.
+
+The bootstrap gate compares the seed and Eshkol planners on the same graph
+corpus, recompiles both Eshkol modules with the seed and final compilers, and
+requires byte-identical packaged objects. It also executes mixed numeric and
+incremental programs with deliberately colliding source names and macros.
+This is a reproducible bootstrap of the selected pass, not a Futamura projection.
+
+Build `eshkol-run`, `stdlib`, `differentiation_graph_test`, `incrementalize_test`,
+`seed_incremental_plan_test`, `selfhost_incremental_test` and
+`eshkol-vm-standalone-test`, then run:
 
 ```sh
 ctest --test-dir build --output-on-failure \
-  -R '^(differentiation_graph_test|incrementalize_test|compiler_differentiation_(jit|aot|diagnostics)|compiler_incremental_(jit|aot|locality))$'
+  -R '^(differentiation_graph_test|incrementalize_test|seed_incremental_plan_test|selfhost_incremental_test|selfhost_incremental_bootstrap|incremental_plan_(jit|aot|vm)|compiler_differentiation_(jit|aot|diagnostics)|compiler_incremental_(jit|aot|locality))$'
 ```
 
 The standalone graph test checks topology, sharing, lexical scope, literal
