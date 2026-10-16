@@ -24,6 +24,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|
+| [`core.dbsp.window`](../../../lib/core/dbsp/window.esk) | no | [dbsp_window.md](dbsp_window.md) | `make-dbsp-window` `dbsp-window-step` `dbsp-window-output` `dbsp-window-info` |
 | [`core.ad.tape`](../../../lib/core/ad/tape.esk) | no | [ad_tape.md](ad_tape.md) | `ad-tape-new` `ad-const` `ad-var` `ad-add` `ad-sub` `ad-mul` `ad-div` `ad-sin` `ad-cos` `ad-exp` `ad-log` `ad-sqrt` `ad-neg` `ad-abs` `ad-relu` `ad-sigmoid` `ad-tanh` `ad-backward` `ad-gradient` `ad-node-value` `with-tape` `current-tape` `make-tape` `tape-input` `tape-const` `node-value` `node-grad` `record-op!` `record-fd-op!` `tape-add` `tape-sub` `tape-mul` `tape-div` `tape-sin` `tape-cos` `tape-exp` `tape-log` `tape-neg` `tape-square` `tape-sqrt` `tape-tanh` `tape-sigmoid` `tape-relu` `tape-pow` `tape-gradient` `tape-snapshot` `tape-restore` |
 | [`core.alist`](../../../lib/core/alist.esk) | yes | [alist.md](alist.md) | `alist-ref` `alist-ref-or` `alist-set` |
 | [`core.argparse`](../../../lib/core/argparse.esk) | no | [argparse.md](argparse.md) | `parse-args` `arg-get` `arg-positional` `arg-has?` `argparse-help` |
