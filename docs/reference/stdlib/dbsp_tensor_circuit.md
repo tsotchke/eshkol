@@ -57,3 +57,56 @@ in topological order; structural lists are fresh and `ref` reads one logical
 coordinate as a scalar. Row nodes have no tensor reader. The return value is
 `#(node-count root-id)`. It does not expose internal graph/snapshot storage.
 The [maintained pullback](ad_tensor_circuit_reverse.md) uses this seam.
+
+## Explicit execution strategies
+
+`(tensor-circuit-step snapshot changes [strategy])` accepts `incremental`
+(the compatible default), `recompute`, or `auto`. Strategies apply to affected
+contractions; they do not rescan the whole graph. Forced incremental uses the
+existing finite-delta kernels. Recompute uses the existing native
+`tensor-matmul` for ordinary matrices and direct named-axis contraction for
+shared batch axes/general ranks. A recomputed node installs its fresh snapshot
+itself. Downstream operations rebuild from fresh child values, avoiding
+`old+(fresh-old)` cancellation when a delta cannot represent the fresh value.
+Input integration and row projections retain their existing delta semantics.
+Snapshots and the read-only visitor remain compatible with maintained reverse
+consumers. Reverse sweeps do not automatically become sparse.
+
+`tensor-circuit-work` and the step's three-field receipt retain their layout.
+Dense products there are logical contraction product counts, not measured BLAS
+instructions. New `tensor-circuit-plan-work` returns an owned
+`#(incremental-contractions recomputed-contractions sparse-estimate
+recompute-estimate materialized-cells)` for the most recent tick. Initial states
+return zeros. Estimates are sums over executed contractions only. Materialized
+cells include dense operands for native matrix multiplication and two output
+passes (construction plus snapshot copy); rebuilt linear descendants add their
+operand passes and three output passes (zero tensor, baseline snapshot and
+applied snapshot). Sparse snapshot block-copy cells remain in the legacy
+receipt, independently of these dense materializations.
+
+For each contraction, the sparse operation proxy is
+`|dA|*freeB + |dB|*freeA + |dA|*|dB|`. The last term charges every sparse
+cross-pair examination, including unmatched pairs. The recompute proxy counts
+all union-axis products plus dense materializations. Auto recomputes when its
+proxy is no greater than the sparse proxy, or when a freshly recomputed
+upstream operand requires propagation from its authoritative value. These dimensionless estimates omit
+queue/list handling, delta consolidation, allocation, cache effects and BLAS
+throughput. They are deliberately inspectable, untuned estimates, not a
+per-machine runtime optimizer or a guarantee of the fastest strategy.
+
+Native f64 deltas cannot always integrate bit-for-bit after cancellation. The
+fresh snapshot is authoritative on a recomputed path; applications requiring
+its full value should observe that snapshot. Incremental paths retain ordinary
+floating drift. Tests compare all three modes with independent native products
+under an explicit absolute tolerance, verify both choices, general batch axes,
+old snapshots, strict failure and a large cancellation through reduction.
+The existing forward and reverse regression suites remain required.
+
+`tests/benchmarks/tensor_circuit_planner_bench.esk` is an informational CPU
+witness with warm kernels, 8x8 matrices, four densities and eight ticks per
+sample. It reports elapsed nanoseconds, strategy and estimates. Run it through
+a configured native compiler in JIT or AOT mode with the source-tree library
+path and one BLAS thread. The observed crossover depends on host and batch;
+automatic mode can miss a profitable intermediate-density recomputation.
+Timings are never an admission gate, and no GPU/performance-portability claim
+is made.

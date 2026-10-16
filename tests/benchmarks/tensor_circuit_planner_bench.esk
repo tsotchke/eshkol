@@ -1,0 +1,19 @@
+;;; Informational CPU crossover witness; timings are never an admission gate.
+(require stdlib)
+(require core.dbsp.tensor_circuit)
+(define n 8)
+(define a (make-tensor (list n n) 1.0))
+(define initial (make-tensor-circuit (list (list 'a '(i k) a) (list 'b '(k j) a)) '(contract a b (k))))
+(for-each (lambda (count)
+  (define entries (map (lambda (i) (list (list (quotient i n) (modulo i n)) 0.125)) (iota count)))
+  (define changes (list (list 'a (tensor-delta (list n n) entries)) (list 'b (tensor-delta (list n n) entries))))
+  (for-each (lambda (strategy)
+    ;; Warm the selected kernel, then retain every tick only as the next state.
+    (tensor-circuit-step initial changes strategy)
+    (let ((start (current-time-ns)) (state initial) (iterations 8))
+      (let ticks ((i 0)) (if (< i iterations)
+        (begin (set! state (vector-ref (tensor-circuit-step state changes strategy) 0)) (ticks (+ i 1)))))
+      (let ((elapsed (- (current-time-ns) start)))
+        (display "SAMPLE ") (write (list n count strategy iterations elapsed
+          (vector->list (tensor-circuit-plan-work state)))) (newline)))) '(incremental recompute auto))) '(1 4 16 64))
+(display "RESULT: PASS\n")
