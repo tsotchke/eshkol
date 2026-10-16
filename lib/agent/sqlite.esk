@@ -6,7 +6,7 @@
 (require core.strings)        ; string-contains (SQL-injection guard in sqlite-exec-safe)
 
 (provide sqlite-exec-safe sqlite-open sqlite-close sqlite-exec
-         sqlite-prepare sqlite-step sqlite-reset sqlite-finalize
+         sqlite-prepare sqlite-step sqlite-step-code sqlite-step-checked sqlite-reset sqlite-finalize
          sqlite-bind-text sqlite-bind-int sqlite-bind-double sqlite-bind-null
          sqlite-column-text sqlite-column-int sqlite-column-double
          sqlite-column-count sqlite-column-name sqlite-column-type
@@ -95,6 +95,14 @@
 ;; truthy in Scheme — so the canonical (let loop () (if (sqlite-step s) ... (loop)))
 ;; would never terminate. Map to a boolean so the step-loop idiom works.
 (define (sqlite-step stmt) (= (sqlite-step-raw stmt) SQLITE_ROW))
+;; Preserve the compatibility boolean API; transactional readers must distinguish
+;; normal exhaustion from BUSY, CONSTRAINT, I/O errors and interrupted stepping.
+(define (sqlite-step-code stmt) (sqlite-step-raw stmt))
+(define (sqlite-step-checked stmt)
+  (let ((code (sqlite-step-code stmt)))
+    (cond ((= code SQLITE_ROW) #t) ((= code SQLITE_DONE) #f)
+          (else (error "SQLite statement failed while stepping" code)))))
+
 (define (sqlite-reset stmt) (sqlite-reset-raw stmt))
 (define (sqlite-finalize stmt) (sqlite-finalize-raw stmt))
 
