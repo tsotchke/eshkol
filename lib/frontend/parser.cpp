@@ -11,6 +11,7 @@
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
+#include <eshkol/frontend/differentiation_graph.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/symbol_syntax.h>
 #include <eshkol/core/number_syntax.h>
@@ -9330,6 +9331,50 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
             
+            // Explicit interpretations use one validated compiler graph. Keep
+            // the legacy (differentiate expression variable) symbolic route.
+            const eshkol_ast_t* interpretation = nullptr;
+            if (expression.type == ESHKOL_OP && expression.operation.op == ESHKOL_QUOTE_OP &&
+                expression.operation.call_op.num_vars == 1 && expression.operation.call_op.variables)
+                interpretation = &expression.operation.call_op.variables[0];
+            const bool explicit_mode = head_token.value == "differentiate" && interpretation &&
+                (interpretation->type == ESHKOL_SYMBOL || interpretation->type == ESHKOL_VAR) &&
+                interpretation->str_val.ptr &&
+                (std::strcmp(interpretation->str_val.ptr, "numeric") == 0 ||
+                 std::strcmp(interpretation->str_val.ptr, "incremental") == 0);
+            if (explicit_mode) {
+                const std::string mode = interpretation->str_val.ptr;
+                eshkol_ast_t function = (co_await parse_expression(tokenizer));
+                eshkol_ast_t point = (co_await parse_expression(tokenizer));
+                Token close = tokenizer.nextToken();
+                if (function.type == ESHKOL_INVALID || point.type == ESHKOL_INVALID || close.type != TOKEN_RPAREN) {
+                    PARSE_ERROR_AT(head_token, "differentiate interpretation requires an inline lambda and one point vector");
+                    co_return {.type = ESHKOL_INVALID};
+                }
+                ast.operation.op = ESHKOL_CALL_OP;
+                ast.operation.call_op.func = new eshkol_ast_t{};
+                ast.operation.call_op.func->type = ESHKOL_VAR;
+                ast.operation.call_op.func->variable.id = eshkol_ast_string_copy(mode == "numeric"
+                    ? eshkol::frontend::differentiation_numeric_marker
+                    : eshkol::frontend::differentiation_incremental_marker);
+                // Zero NodeId identifies this parser-owned gateway, never an
+                // ordinary user call with the same spelling.
+                const char* helpers[] = {"vector?", "vector-length", "vector-ref", "not", "=", "error", "make-rational",
+                                         "real?", "exact?", "finite?", "<", "+"};
+                constexpr size_t helper_count = sizeof(helpers) / sizeof(helpers[0]);
+                ast.operation.call_op.num_vars = 2 + helper_count;
+                ast.operation.call_op.variables = new eshkol_ast_t[2 + helper_count];
+                ast.operation.call_op.variables[0] = function;
+                ast.operation.call_op.variables[1] = point;
+                for (size_t i = 0; i < helper_count; ++i) {
+                    auto& helper = ast.operation.call_op.variables[2 + i];
+                    helper.type = ESHKOL_VAR;
+                    helper.variable.id = eshkol_ast_string_copy(helpers[i]);
+                    stamp_node(helper, head_token.line, head_token.column);
+                }
+                co_return ast;
+            }
+
             // Parse the variable to differentiate with respect to
             token = tokenizer.nextToken();
             // Accept both bare symbol and quoted symbol: (diff expr x) or (diff expr 'x)
@@ -10717,6 +10762,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Create function name AST node
             ast.operation.call_op.func = new eshkol_ast_t;
             ast.operation.call_op.func->type = ESHKOL_VAR;
+            stamp_node(*ast.operation.call_op.func, head_token.line, head_token.column);
             ast.operation.call_op.func->variable.id =
                 eshkol_ast_string_copy(colored_head.empty() ? first_symbol : colored_head);
             ast.operation.call_op.func->variable.data = nullptr;
@@ -11695,4 +11741,19 @@ extern "C" int eshkol_parse_had_error(void) {
 eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file)
 {
     return eshkol_parse_next_ast_from_stream(in_file);
+}
+
+namespace eshkol::frontend {
+eshkol_ast_t parse_generated_differentiation(const std::string& source, DifferentiationOrigin location) {
+    struct ContextGuard {
+        uint32_t file_id = g_parse_filename_id;
+        ~ContextGuard() { g_parse_filename_id = file_id; }
+    } guard;
+    if (location.file_id) g_parse_filename_id = location.file_id;
+    EshkolAstBirthLocationScope birth(location.line, location.column);
+    SchemeTokenizer generated(source, location.line, location.column);
+    eshkol_ast_t result = parse_expression(generated).run();
+    if (generated.nextToken().type != TOKEN_EOF) result.type = ESHKOL_INVALID;
+    return result;
+}
 }
