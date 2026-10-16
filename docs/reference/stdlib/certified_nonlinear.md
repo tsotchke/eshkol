@@ -50,3 +50,9 @@ callback enclosure premises are outside this slice. Exact arithmetic overflow
 refuses. Tests include independent irrational and rational roots/derivatives,
 whole-box and strict-boundary controls, singular systems, source/receipt tampering,
 input ownership and independent value/Jacobian containment probes.
+
+The compiled system also accepts `family-box` with unknown interval vectors
+and parameter interval vectors. Both values and symbolic derivatives come
+from the same admitted source through `derived-operator-enclosure`. This is
+used by [adaptive continuation](ad_certified_continuation.md); fixed-parameter
+root certificate semantics above are unchanged.
