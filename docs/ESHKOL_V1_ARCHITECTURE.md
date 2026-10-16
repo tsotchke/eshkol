@@ -973,7 +973,7 @@ __test_modules_mod_a__helper
 
 ## REPL/JIT System
 
-**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,831 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,754 lines)
+**Implementation**: [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) (4,894 lines), [`exe/eshkol-repl.cpp`](../exe/eshkol-repl.cpp) (1,819 lines)
 
 ### Architecture
 
@@ -1449,7 +1449,7 @@ These features are **designed but not implemented**. See roadmap documents for d
 - [`lib/core/runtime_arena_core.cpp`](../lib/core/runtime_arena_core.cpp) - Arena runtime core (1,391 lines; 6,212 across the same 8 arena, region, and allocation source files)
 - [`lib/frontend/parser.cpp`](../lib/frontend/parser.cpp) - S-expr parser (11,698 lines)
 - [`lib/types/type_checker.cpp`](../lib/types/type_checker.cpp) - Type inference (6,087 lines)
-- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,831 lines)
+- [`lib/repl/repl_jit.cpp`](../lib/repl/repl_jit.cpp) - JIT compiler (4,894 lines)
 - [`exe/eshkol-run.cpp`](../exe/eshkol-run.cpp) - Compiler executable (6,186 lines)
 - [`lib/types/type_relation.cpp`](../lib/types/type_relation.cpp) - Gradual type relation (433 lines)
 
