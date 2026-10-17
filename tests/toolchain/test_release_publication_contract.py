@@ -116,6 +116,19 @@ class PublicationContractTests(unittest.TestCase):
             with self.subTest(text=text[:120]), self.assertRaises(contract.ContractError):
                 contract.validate_notes(text, value, value["tag"], "tag-publication")
 
+    def test_committed_release_notes_match_committed_record_for_strict_roles(self):
+        """Exercise the publication gate against the files it actually ships."""
+        record_path = ROOT / "tests/coverage/release_record.json"
+        notes_path = ROOT / "RELEASE_NOTES.md"
+        committed = contract.load_record(record_path)
+        text = notes_path.read_text(encoding="utf-8")
+        roles = ("preparation",)
+        if committed["status"] == "PREPARED FOR PUBLICATION":
+            roles = ("candidate-proof", "tag-publication")
+        for role in roles:
+            with self.subTest(role=role):
+                contract.validate_notes(text, committed, committed["tag"], role)
+
     def test_notes_reject_every_marker_heading_date_and_count_poison(self):
         for extra in ("RELEASE_EVIDENCE_PENDING", "<!--RELEASE_EVIDENCE_PENDING-->",
                       "# Eshkol v1.3.7-evolve — Release Notes", "**Planned release date:** bananas.",
