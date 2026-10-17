@@ -1,0 +1,243 @@
+(require stdlib)
+(require core.ad.algebraic)
+(require core.exact_linalg)
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define (matches context value expected)
+  (let ((actual (algebraic-ad-coefficients value))
+        (wanted (algebraic-ad-coefficients (algebraic-ad-value context expected))))
+    (let cells ((i 0)) (or (= i (vector-length actual))
+      (and (algebraic-equal? (vector-ref actual i) (vector-ref wanted i)) (cells (+ i 1)))))))
+(define q (make-algebraic-field '(-2 0 1) 3 1))
+(define s (algebraic-generator q))
+(define h (make-algebraic-hyperdual q))
+(define t4 (make-algebraic-taylor q 4))
+(define x (algebraic-ad-seed h s))
+(define one (algebraic-ad-constant h 1))
+(define two (algebraic-ad-constant h 2))
+(check "a field relation cannot erase the derivatives of a variable"
+  (matches h (algebraic-ad-sub (algebraic-ad-mul x x) two)
+           (list 0 (algebraic-scale s 2) (algebraic-scale s 2) 2)))
+(define inverse (algebraic-ad-inverse x))
+(check "reciprocal hyperdual has exact algebraic value/tangents/curvature"
+  (matches h inverse (list (algebraic-scale s 1/2) -1/2 -1/2 (algebraic-scale s 1/2))))
+(check "entire hyperdual inverse residual vanishes"
+  (algebraic-ad-equal? (algebraic-ad-mul x inverse) one))
+(define target (algebraic-ad-seed h 2))
+(define square-root (algebraic-ad-root h
+  (list (algebraic-ad-sub (algebraic-ad-constant h 0) target) 0 1) s))
+(check "square-root hyperdual uses the selected algebraic branch"
+  (matches h square-root (list s (algebraic-scale s 1/4) (algebraic-scale s 1/4) (algebraic-scale s -1/16))))
+(check "square-root has zero full polynomial residual"
+  (algebraic-ad-equal? (algebraic-ad-mul square-root square-root) target))
+(define mixed-target (algebraic-ad-value h '(2 3 5 7)))
+(define mixed-root (algebraic-ad-root h
+  (list (algebraic-ad-sub (algebraic-ad-constant h 0) mixed-target) 0 1) s))
+(check "mixed seed propagates both chain-rule terms"
+  (algebraic-equal? (vector-ref (algebraic-ad-coefficients mixed-root) 3) (algebraic-scale s 13/16)))
+(define sqrt-taylor (algebraic-ad-root t4
+  (list (algebraic-ad-sub (algebraic-ad-constant t4 0) (algebraic-ad-seed t4 2)) 0 1) s))
+(check "fourth-order sqrt coefficients match the independent binomial series"
+  (matches t4 sqrt-taylor (map (lambda (c) (algebraic-scale s c)) '(1 1/4 -1/32 1/128 -5/2048))))
+(check "Taylor coefficients use factorial normalization"
+  (algebraic-equal? (algebraic-ad-derivative sqrt-taylor 2)
+                   (vector-ref (algebraic-ad-coefficients square-root) 3)))
+(check "zeroth derivative owns the selected primal"
+  (algebraic-equal? (algebraic-ad-derivative sqrt-taylor 0) s))
+
+;; Two independently seeded variables, not two copies of a diagonal seed.
+(define a (algebraic-ad-value h (list s 1 0 0)))
+(define b0 (algebraic-add s (algebraic-element q 1)))
+(define b (algebraic-ad-value h (list b0 0 1 0)))
+(define polynomial (algebraic-ad-add (algebraic-ad-mul (algebraic-ad-mul a a) b)
+                                      (algebraic-ad-mul a (algebraic-ad-mul b b))))
+(check "bivariate polynomial has independently differentiated gradient and mixed derivative"
+  (matches h polynomial (list
+    (algebraic-add (algebraic-mul (algebraic-mul s s) b0) (algebraic-mul s (algebraic-mul b0 b0)))
+    (algebraic-add (algebraic-scale (algebraic-mul s b0) 2) (algebraic-mul b0 b0))
+    (algebraic-add (algebraic-mul s s) (algebraic-scale (algebraic-mul s b0) 2))
+    (algebraic-scale (algebraic-add s b0) 2))))
+
+;; Both real branches of y^3 - 2y = t through +/-sqrt(2).
+(for-each (lambda (index)
+  (let* ((field (make-algebraic-field '(-2 0 1) 3 index)) (root (algebraic-generator field))
+         (context (make-algebraic-taylor field 4)) (parameter (algebraic-ad-seed context 0))
+         (result (algebraic-ad-root context
+           (list (algebraic-ad-sub (algebraic-ad-constant context 0) parameter) -2 0 1) root)))
+    (check "implicit cubic first derivative from differentiated equation"
+      (= (algebraic-rational (algebraic-ad-derivative result 1)) 1/4))
+    (check "implicit cubic second derivative from differentiated equation"
+      (algebraic-equal? (algebraic-ad-derivative result 2) (algebraic-scale root -3/32)))
+    (check "implicit cubic normalized third coefficient"
+      (= (algebraic-rational (vector-ref (algebraic-ad-coefficients result) 3)) 1/32))
+    (check "implicit cubic whole defining equation"
+      (algebraic-ad-equal? (algebraic-ad-sub
+        (algebraic-ad-mul (algebraic-ad-mul result result) result)
+        (algebraic-ad-mul (algebraic-ad-constant context 2) result)) parameter)))) '(0 1))
+(define cubic (make-algebraic-field '(-2 0 0 1) 7 0))
+(define alpha (algebraic-generator cubic))
+(define c4 (make-algebraic-taylor cubic 4))
+(define cube-target (algebraic-ad-seed c4 2))
+(define cube-root (algebraic-ad-root c4
+  (list (algebraic-ad-sub (algebraic-ad-constant c4 0) cube-target) 0 0 1) alpha))
+(check "cubic field fourth-order root jet matches independent binomial coefficients"
+  (matches c4 cube-root (map (lambda (c) (algebraic-scale alpha c)) '(1 1/6 -1/36 5/648 -5/1944))))
+(check "cubic field entire root equation"
+  (algebraic-ad-equal? (algebraic-ad-mul (algebraic-ad-mul cube-root cube-root) cube-root) cube-target))
+(define ch (make-algebraic-hyperdual cubic))
+(check "cubic coefficient reciprocal hyperdual matches independent rational-function derivatives"
+  (matches ch (algebraic-ad-inverse (algebraic-ad-seed ch alpha))
+    (list (algebraic-element cubic '(0 0 1/2)) (algebraic-scale alpha -1/2) (algebraic-scale alpha -1/2) 1)))
+(for-each (lambda (index)
+  (let* ((field (make-algebraic-field '(-1 -1 0 0 1) 2 index)) (root (algebraic-generator field))
+         (context (make-algebraic-taylor field 3)) (parameter (algebraic-ad-seed context 1))
+         (result (algebraic-ad-root context
+           (list (algebraic-ad-sub (algebraic-ad-constant context 0) parameter) -1 0 0 1) root))
+         (d (algebraic-element field '(-1 0 0 4))) (inv (algebraic-inverse d)))
+    (check "quartic first derivative is 1/(4a^3-1) on both real branches"
+      (algebraic-equal? (algebraic-ad-derivative result 1) inv))
+    (check "quartic normalized second coefficient is -6a^2/(4a^3-1)^3"
+      (algebraic-equal? (vector-ref (algebraic-ad-coefficients result) 2)
+        (algebraic-scale (algebraic-mul (algebraic-mul root root)
+          (algebraic-mul inv (algebraic-mul inv inv))) -6)))
+    (check "quartic whole defining equation"
+      (let ((square (algebraic-ad-mul result result)))
+        (algebraic-ad-equal? (algebraic-ad-sub (algebraic-ad-mul square square) result) parameter))))) '(0 1))
+
+;; Independent rational inverse recurrence, not the production geometric series.
+(for-each (lambda (order)
+  (let* ((context (make-algebraic-taylor q order)) (coeff (make-vector (+ order 1) 0))
+         (oracle (make-vector (+ order 1) 0)))
+    (vector-set! coeff 0 3)
+    (let fill ((i 1))
+      (if (<= i order) (begin (vector-set! coeff i (+ i 1)) (fill (+ i 1)))))
+    (vector-set! oracle 0 1/3)
+    (let coefficients ((k 1))
+      (if (<= k order)
+          (begin (vector-set! oracle k
+            (let sum ((i 1) (out 0))
+              (if (> i k) (- (/ out 3))
+                  (sum (+ i 1) (+ out (* (vector-ref coeff i) (vector-ref oracle (- k i))))))))
+            (coefficients (+ k 1)))))
+    (check "Taylor inverse matches an independent rational recurrence"
+      (matches context (algebraic-ad-inverse (algebraic-ad-value context coeff)) oracle)))) '(0 1 2 4 6))
+
+;; Independent block-Toeplitz multiplication matrix, solved by exact Gaussian
+;; elimination, cross-checks inversion over fields of degrees 2 through 5.
+(define (inverse-oracle field coefficients)
+  (let* ((degree (algebraic-field-degree field)) (width (length coefficients)) (size (* degree width))
+         (matrix (make-vector size #f)) (rhs (make-vector size 0)))
+    (vector-set! rhs 0 1)
+    (let rows ((i 0))
+      (if (< i size) (begin (vector-set! matrix i (make-vector size 0)) (rows (+ i 1)))))
+    (let columns ((column 0))
+      (if (< column size)
+          (let* ((shift (quotient column degree)) (basis (make-vector degree 0)))
+            (vector-set! basis (modulo column degree) 1)
+            (let blocks ((k shift))
+              (if (< k width)
+                  (let ((product (algebraic-coefficients (algebraic-mul
+                    (list-ref coefficients (- k shift)) (algebraic-element field basis)))))
+                    (let cells ((i 0))
+                      (if (< i degree) (begin (vector-set! (vector-ref matrix (+ (* k degree) i)) column
+                        (vector-ref product i)) (cells (+ i 1)))))
+                    (blocks (+ k 1)))))
+            (columns (+ column 1)))))
+    (exact-solve matrix rhs)))
+(for-each (lambda (fixture)
+  (let* ((field (make-algebraic-field (car fixture) (cadr fixture) (caddr fixture)))
+         (context (make-algebraic-taylor field 2)) (root (algebraic-generator field))
+         (coefficients (list (algebraic-add root (algebraic-element field 1))
+                              (algebraic-element field 2) root))
+         (value (algebraic-ad-value context coefficients))
+         (actual (algebraic-ad-coefficients (algebraic-ad-inverse value)))
+         (expected (inverse-oracle field coefficients))
+         (flat (apply append (map (lambda (c) (vector->list (algebraic-coefficients c))) (vector->list actual)))))
+    (check "field jet inverse matches independent exact block linear solve"
+      (equal? flat (vector->list expected)))
+    (check "field jet distributivity"
+      (algebraic-ad-equal? (algebraic-ad-mul value (algebraic-ad-add value (algebraic-ad-constant context 3)))
+        (algebraic-ad-add (algebraic-ad-mul value value)
+                         (algebraic-ad-mul value (algebraic-ad-constant context 3)))))
+    (check "dual seed implements independently differentiated cubic"
+      (let* ((dual (make-algebraic-taylor field 1)) (seed (algebraic-ad-seed dual root))
+             (result (algebraic-ad-add (algebraic-ad-mul (algebraic-ad-mul seed seed) seed)
+                                      (algebraic-ad-mul (algebraic-ad-constant dual 2) seed))))
+        (algebraic-equal? (algebraic-ad-derivative result 1)
+          (algebraic-add (algebraic-scale (algebraic-mul root root) 3) (algebraic-element field 2)))))))
+ '(((-2 0 1) 3 1) ((-2 0 0 1) 7 0) ((-2 0 0 0 1) 5 1) ((-2 0 0 0 0 1) 11 0)))
+
+;; Caller vectors and nested field coefficients must not alias stored/observed values.
+(define source-point (algebraic-generator q))
+(define source (vector source-point 1 1 0))
+(define owned (algebraic-ad-value h source))
+(vector-set! source 1 99)
+(vector-set! (vector-ref source-point 2) 1 99)
+(define observed (algebraic-ad-coefficients owned))
+(vector-set! (vector-ref (vector-ref observed 0) 2) 1 88)
+(vector-set! observed 1 (algebraic-element q 88))
+(check "constructor and observer own nested coefficient storage" (matches h owned (list s 1 1 0)))
+(define successor (algebraic-ad-add owned one))
+(check "arithmetic preserves historical operands" (and (matches h owned (list s 1 1 0))
+  (matches h successor (list (algebraic-add s (algebraic-element q 1)) 1 1 0))))
+(check "Taylor order sixteen is admitted" (= (vector-length
+  (algebraic-ad-coefficients (algebraic-ad-seed (make-algebraic-taylor q 16) s))) 17))
+(check "order zero has no perturbation and constant inverse works"
+  (let ((context (make-algebraic-taylor q 0)))
+    (matches context (algebraic-ad-inverse (algebraic-ad-seed context s)) (list (algebraic-scale s 1/2)))))
+(define maximum (make-algebraic-taylor q 16))
+(define epsilon (algebraic-ad-seed maximum 0))
+(define top-power (let power ((k 16) (out (algebraic-ad-constant maximum 1)))
+  (if (= k 0) out (power (- k 1) (algebraic-ad-mul out epsilon)))))
+(check "maximum-order derivative retains exact factorial normalization"
+  (= (algebraic-rational (algebraic-ad-derivative top-power 16)) 20922789888000))
+(check "maximum-order truncation discards only the next power"
+  (algebraic-ad-equal? (algebraic-ad-mul top-power epsilon) (algebraic-ad-constant maximum 0)))
+(check "maximum-order inverse agrees with closed-form alternating coefficients"
+  (let ((expected (make-vector 17 0)))
+    (let fill ((i 0)) (if (< i 17) (begin (vector-set! expected i (if (even? i) 1 -1)) (fill (+ i 1)))))
+    (matches maximum (algebraic-ad-inverse (algebraic-ad-add (algebraic-ad-constant maximum 1) epsilon)) expected)))
+(check "linear implicit root propagates all supplied coefficients"
+  (algebraic-ad-equal? (algebraic-ad-root h (list (algebraic-ad-sub (algebraic-ad-constant h 0) mixed-target) 1) 2)
+                      mixed-target))
+(define degree-context (make-algebraic-taylor q 2))
+(define degree-parameter (algebraic-ad-seed degree-context 1))
+(define degree-polynomial (make-vector 33 0))
+(vector-set! degree-polynomial 0 (algebraic-ad-sub (algebraic-ad-constant degree-context 0) degree-parameter))
+(vector-set! degree-polynomial 32 1)
+(define degree-root (algebraic-ad-root degree-context (vector->list degree-polynomial) 1))
+(check "maximum polynomial degree agrees with independent binomial coefficients"
+  (matches degree-context degree-root '(1 1/32 -31/2048)))
+(check "maximum polynomial degree has zero full defining residual"
+  (let power ((k 32) (out (algebraic-ad-constant degree-context 1)))
+    (if (= k 0) (algebraic-ad-equal? out degree-parameter)
+        (power (- k 1) (algebraic-ad-mul out degree-root)))))
+(for-each (lambda (thunk) (check "invalid domain/ownership/order/root explicitly refuses" (raises? thunk)))
+  (list
+    (lambda () (make-algebraic-taylor q -1))
+    (lambda () (make-algebraic-taylor q 17))
+    (lambda () (make-algebraic-taylor q 1.0))
+    (lambda () (make-algebraic-taylor #f 1))
+    (lambda () (algebraic-ad-value h '(1 2)))
+    (lambda () (algebraic-ad-value h '(1 0.5 0 0)))
+    (lambda () (algebraic-ad-constant h alpha))
+    (lambda () (algebraic-ad-add x (algebraic-ad-seed (make-algebraic-hyperdual q) s)))
+    (lambda () (algebraic-ad-add x (algebraic-ad-seed t4 s)))
+    (lambda () (algebraic-ad-inverse (algebraic-ad-value h '(0 1 1 0))))
+    (lambda () (algebraic-ad-derivative x 1))
+    (lambda () (algebraic-ad-derivative sqrt-taylor 5))
+    (lambda () (algebraic-ad-derivative sqrt-taylor -1))
+    (lambda () (algebraic-ad-root h '(-2 0 1) 1))
+    (lambda () (algebraic-ad-root h '(0 0 1) 0))
+    (lambda () (algebraic-ad-root h (list (algebraic-ad-seed t4 0) 1) 0))
+    (lambda () (algebraic-ad-root h '(-2 0 1) alpha))
+    (lambda () (algebraic-ad-root h '(1) 0))
+    (lambda () (algebraic-ad-root h (vector->list (make-vector 34 0)) 0))))
+(check "exact algebraic AD uses no finite differences" (= (ad-finite-difference-evals) 0))
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "RESULT: PASS") (newline)
