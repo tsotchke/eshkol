@@ -12733,3 +12733,21 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 AND UNIX AND ESHKOL
             $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test> --self-test)
     set_tests_properties(eskm_v2_engine_parity_test PROPERTIES TIMEOUT 180)
 endif()
+
+# Unicode string->list uses the same self-asserting fixture in native modes.
+if(ESHKOL_BUILD_TESTS)
+    add_test(NAME string_to_list_unicode_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/string_to_list_unicode_test.esk"
+            -L"${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME string_to_list_unicode_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/string_to_list_unicode_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/string_to_list_unicode_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(string_to_list_unicode_jit string_to_list_unicode_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        TIMEOUT 600 PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
