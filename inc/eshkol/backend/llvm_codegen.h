@@ -274,6 +274,7 @@ private:
 
     // Type system (manages all LLVM types)
     std::unique_ptr<eshkol::TypeSystem> types;
+    std::vector<std::unique_ptr<eshkol_ast_t>> differentiation_asts_;
 
     // Function cache (lazy-loaded C library functions)
     std::unique_ptr<eshkol::FunctionCache> funcs;

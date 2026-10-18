@@ -16,6 +16,7 @@
 #include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
 #include <eshkol/frontend/semantic_identity.h>
+#include <eshkol/frontend/differentiation_graph.h>
 #include <eshkol/frontend/diagnostic.h>
 #include <eshkol/frontend/shadowable_ops.h>
 #include <eshkol/frontend/syntax_color.h>
@@ -1702,6 +1703,7 @@ private:
 
     // Type system (manages all LLVM types)
     std::unique_ptr<eshkol::TypeSystem> types;
+    std::vector<std::unique_ptr<eshkol_ast_t>> differentiation_asts_;
 
     // Function cache (lazy-loaded C library functions)
     std::unique_ptr<eshkol::FunctionCache> funcs;
@@ -13391,6 +13393,70 @@ private:
         }
 
         std::string func_name = op->call_op.func->variable.id;
+
+        // Compiler graph extraction follows macro expansion and shared binding
+        // resolution. No caller expression is evaluated before admission.
+        if (op->call_op.func->node_id == eshkol::frontend::differentiation_gateway_node ||
+            op->call_op.func->node_id == eshkol::frontend::differentiation_incremental_gateway_node) {
+            if (op->call_op.num_vars < 2) {
+                codegen_error_at(op->call_op.func, "invalid differentiation compiler gateway");
+                markFatalCodegenError(); co_return nullptr;
+            }
+            auto primitive = [&](const eshkol_ast_t& reference) {
+                if (reference.type != ESHKOL_VAR || !reference.variable.id) return false;
+                const std::string name = reference.variable.id;
+                eshkol_binding_info_t info{};
+                const auto id = eshkol_binding_id_for_node(reference.node_id);
+                if (eshkol_binding_info(id, &info) && info.kind != ESHKOL_BINDING_BUILTIN) return false;
+                // Some enclosing AST owners (e.g. guard) are intentionally not
+                // walked by BindingResolver yet. Check the authoritative native
+                // call scope too, using the same visible-name keys as codegenCall.
+                if (symbol_table.count(name) || symbol_table.count(name + "_func") ||
+                    global_symbol_table.count(name) || global_symbol_table.count(name + "_func")) return false;
+                if (g_repl_mode_enabled) {
+                    std::lock_guard<std::mutex> lock(g_repl_mutex);
+                    if (g_repl_user_function_names.count(name) || g_repl_user_variable_names.count(name)) return false;
+                }
+                return true;
+            };
+            for (uint64_t i = 2; i < op->call_op.num_vars; ++i) {
+                if (!primitive(op->call_op.variables[i])) {
+                    codegen_error_at(&op->call_op.variables[i], "differentiation compiler helper '%s' is shadowed",
+                                     op->call_op.variables[i].variable.id);
+                    markFatalCodegenError(); co_return nullptr;
+                }
+            }
+            try {
+                const auto& function = op->call_op.variables[0];
+                const auto graph = eshkol::frontend::DifferentiationGraph::build(function,
+                    [&](const eshkol_ast_t& call) {
+                        return call.operation.call_op.func && primitive(*call.operation.call_op.func);
+                    });
+                if (op->call_op.func->node_id == eshkol::frontend::differentiation_incremental_gateway_node) {
+                    codegen_error_at(&function, "incremental interpretation requires the incremental compiler pass");
+                    markFatalCodegenError(); co_return nullptr;
+                }
+                differentiation_asts_.push_back(std::make_unique<eshkol_ast_t>(
+                    eshkol::frontend::parse_generated_differentiation(graph.numeric_source(),
+                    eshkol::frontend::DifferentiationOrigin{function.node_id, function.source_file_id, function.line, function.column})));
+                auto* wrapper = differentiation_asts_.back().get();
+                if (wrapper->type == ESHKOL_INVALID) {
+                    markFatalCodegenError(); co_return nullptr;
+                }
+                eshkol_ast_t call{};
+                call.type = ESHKOL_OP; call.operation.op = ESHKOL_CALL_OP;
+                call.operation.call_op.func = wrapper;
+                call.operation.call_op.variables = &op->call_op.variables[1];
+                call.operation.call_op.num_vars = 1;
+                co_return (co_await codegenASTTask(&call));
+            } catch (const eshkol::frontend::DifferentiationError& error) {
+                eshkol_ast_t location{};
+                location.node_id = error.origin.node_id; location.source_file_id = error.origin.file_id;
+                location.line = error.origin.line; location.column = error.origin.column;
+                codegen_error_at(&location, "%s", error.what());
+                markFatalCodegenError(); co_return nullptr;
+            }
+        }
 
         // Parser-private parameter helpers.  They are intentionally lowered
         // here instead of exposed as Scheme-library procedures: this keeps the
