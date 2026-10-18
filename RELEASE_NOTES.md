@@ -3,7 +3,7 @@
 **Status:** PREPARED FOR PUBLICATION.
 **Intended release date:** Thursday, October 15, 2026.
 
-Final publication requires **CTest 819/819** and **VM parity 411/411**, with no
+Final publication requires **CTest 823/823** and **VM parity 411/411**, with no
 failed, skipped or infrastructure-only checks. Full source-bound preparation
 passed all 823 configured CTest cases and all 411 serialized VM parity cases.
 The [verified preparation run](https://github.com/tsotchke/eshkol/actions/runs/38657799489)
@@ -779,18 +779,19 @@ state cannot certify the tag.
 - **Platform matrix.** Fifteen packages across macOS x64 and ARM64, Linux x64
   and ARM64, and Windows x64 and ARM64, in the lite, XLA and CUDA
   configurations. Each is built and tested on its target platform.
-- **Test suites.** The aggregate suite at **46/46** suites and **1,020/1,020**
-  individual tests, and <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->.
-- **VM and engine parity.** <!-- release-record:vm-parity -->VM parity differential **388/388**<!-- /release-record -->
-  over a 962-row manifest: 620 `vm-supported`, 46 `native-only-justified` and
-  296 `gap`, every gap row carrying a live reproducer and a disposition. The
+- **Test suites.** The aggregate suite reports **46/46** suites, and
+  <!-- release-record:ctest -->the full CTest suite<!-- /release-record -->.
+- **VM and engine parity.** <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->
+  over a 962-row manifest: 622 `vm-supported`, 45 `native-only-justified` and
+  295 `gap`, every gap row carrying a live reproducer and a disposition. The
   engine differential holds its recorded floors of 321 of 1,139 constructs and
-  155 of 473 high-risk constructs, with five dispositioned divergences and no
-  new one, and **2,000** surface-parity probes report no divergence.
-- **Language-surface coverage.** Execution-backed coverage of **1,116/1,116**
+  155 of 473 high-risk constructs. Its committed baseline records five
+  dispositioned divergent programs; this qualification observed three and no
+  new divergent program. All **2,025** surface-parity probes report no divergence.
+- **Language-surface coverage.** Execution-backed coverage of **1,118/1,118**
   declared constructs, with no high-risk construct uncovered in any category,
   and frontend span coverage at 99.5% against a 99.48% floor.
-- **Probes and oracles.** Runtime smoke probes **87/87**; Taylor
+- **Probes and oracles.** Runtime smoke probes **92/92**; Taylor
   monomorphization equivalence **441/441** under both JIT and AOT; the qLLM
   geometric gradient oracle **12/12** across six exporters.
 - **Package and site checks.** Every package is checked against its manifest

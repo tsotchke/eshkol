@@ -17,6 +17,11 @@ independent exact-commit evidence and an ICC ready/100 verdict. (#747)
 
 ### Changed
 
+- **Release notes agree with measured qualification totals.** Correct the
+  CTest, VM parity, language coverage, manifest categories, and probe totals;
+  distinguish recorded divergence baselines from current observations; remove
+  an unsupported aggregate assertion count; and check the committed notes
+  against the release record before the full publication qualification. (#835)
 - **REPL sessions recover safely after interrupted evaluation.** Defer interrupts
   during native compilation, restore runtime state at the native execution
   boundary, and preserve subsequent evaluation, definitions, structured errors,
