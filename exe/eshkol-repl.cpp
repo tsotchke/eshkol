@@ -6,6 +6,12 @@
 // Eshkol Interactive REPL - A visual live coding experience
 //
 
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+#include <eshkol/frontend/incrementalize.h>
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+#include <eshkol/frontend/scalar_lowering.h>
+#endif
 #include <eshkol/eshkol.h>
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/platform_runtime.h>
@@ -1494,6 +1500,12 @@ static void handle_json_request(const std::string& line, eshkol::ReplJITContext&
 // don't need a forward declaration).
 
 int main(int argc, char** argv) {
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+    eshkol::frontend::enable_self_hosted_incremental();
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+    eshkol::frontend::enable_self_hosted_scalar_lowering();
+#endif
     // Parse command-line arguments
     bool load_stdlib = false;
     bool machine_mode = false;

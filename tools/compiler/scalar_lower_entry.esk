@@ -1,0 +1,5 @@
+;;; Copyright (C) tsotchke. SPDX-License-Identifier: MIT
+;;; Refusal is returned across the native boundary without unwinding C++ frames.
+(require core.compiler.scalar_lower)
+(define (eshkol_scalar_lower_entry graph)
+  (guard (condition (#t #f)) (scalar-lower graph)))
