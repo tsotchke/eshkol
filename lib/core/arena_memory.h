@@ -460,6 +460,19 @@ eshkol_memctx_t* eshkol_memctx_current(void);
  */
 arena_t* eshkol_current_arena(void);
 
+// Scoped resident owner ABI. Root holders are private one-cell pairs used by
+// core.dbsp.resident; raw arena values must not escape a borrowed operation.
+int64_t eshkol_resident_open(int64_t threshold);
+void eshkol_resident_close(int64_t owner);
+void eshkol_resident_enter(int64_t owner);
+void eshkol_resident_leave(int64_t owner);
+int64_t eshkol_resident_hold(int64_t owner, const arena_tagged_cons_cell_t* holder);
+void eshkol_resident_get(int64_t owner, int64_t root, arena_tagged_cons_cell_t* holder);
+void eshkol_resident_export(int64_t owner, arena_tagged_cons_cell_t* holder);
+void eshkol_resident_release(int64_t owner, int64_t root);
+void eshkol_resident_compact(int64_t owner, int force);
+int64_t eshkol_resident_stat(int64_t owner, int field);
+
 // Tape allocation and management
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);

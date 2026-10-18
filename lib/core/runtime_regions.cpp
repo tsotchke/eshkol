@@ -26,6 +26,7 @@
 #include <utility>
 #include <atomic>
 #include <mutex>
+#include <array>
 
 void eshkol_arena_global_once(void (*init)(void));
 
@@ -1135,6 +1136,14 @@ struct EvacState {
     // here rather than forked into a second evacuator that would drift.
     const arena_t* span_arena = nullptr;   // non-null => arena-span mode
     const arena_scope_t* span_scope = nullptr;  // mark; null => the whole arena
+    // Explicit resident exports can reach both persistent owner storage and
+    // the current tick nursery. Existing region/span callers leave this null.
+    const arena_t* second_span_arena = nullptr;
+    std::vector<const arena_t*> resident_sources;
+    const arena_scope_t* resident_destination_mark = nullptr;
+    const arena_t* resident_preserved_arena = nullptr;
+    bool resident_copy_mutable = false;
+    bool abort_on_refusal = false;
 
     // SW-164: set when this evacuation met something it must not MOVE.
     //
@@ -1225,7 +1234,15 @@ struct EvacState {
     }
 
     bool owns(const void* p) const {
-        if (span_arena) return arena_scope_span_contains(span_arena, span_scope, p) != 0;
+        // Visible caller arenas can also be the export destination. Only their
+        // pre-transaction objects are sources; never recursively recopy a copy.
+        if (resident_destination_mark && arena_scope_span_contains(target, resident_destination_mark, p))
+            return false;
+        if (resident_preserved_arena && arena_contains(resident_preserved_arena, p)) return false;
+        for (const auto* source : resident_sources)
+            if (arena_scope_span_contains(source, nullptr, p)) return true;
+        if (span_arena) return arena_scope_span_contains(span_arena, span_scope, p) != 0 ||
+            (second_span_arena && arena_scope_span_contains(second_span_arena, nullptr, p) != 0);
         return region_index_owning(p) > boundary_idx;
     }
 };
@@ -1324,13 +1341,20 @@ static EvacKind evac_kind_for(EvacState& st, const eshkol_tagged_value_t& v, con
     const uint8_t type = v.type;
     const bool is_port = ((type & ESHKOL_PORT_ANY_FLAG) != 0) &&
                          ((type & ESHKOL_VALUE_HEAP_PTR) == ESHKOL_VALUE_HEAP_PTR);
-    if (is_port) return EVAC_LEAF;
+    if (is_port) { if (st.abort_on_refusal) st.refuse(); return EVAC_LEAF; }
 
     const auto* h = (const eshkol_object_header_t*)
         ((const uint8_t*)old_data - sizeof(eshkol_object_header_t));
     const uint8_t sub = h->subtype;
 
     if (ESHKOL_IS_ANY_CALLABLE_TYPE(type)) {
+        const bool zero_capture_closure = sub == CALLABLE_SUBTYPE_LAMBDA_SEXPR &&
+            h->size == sizeof(eshkol_closure_t) &&
+            static_cast<const eshkol_closure_t*>(old_data)->env == nullptr;
+        if (st.abort_on_refusal && sub != CALLABLE_SUBTYPE_CLOSURE && !zero_capture_closure) {
+            st.refuse();
+            eshkol_warn("resident evacuation refuses callable subtype %u", (unsigned)sub);
+        }
         // An exhaustive switch rather than an if-chain, for the same reason as
         // the heap-subtype switch below: an if-chain's fallthrough is a default
         // wearing different syntax, and a new callable subtype would inherit
@@ -1340,6 +1364,11 @@ static EvacKind evac_kind_for(EvacState& st, const eshkol_tagged_value_t& v, con
         case CALLABLE_SUBTYPE_CLOSURE:
             return EVAC_CLOSURE;
         case CALLABLE_SUBTYPE_LAMBDA_SEXPR:
+            // The current allocator uses this subtype for a compiled closure
+            // with no captures, not only legacy lambda-as-data. Residence
+            // admits exactly that declared layout and walks name/source fields.
+            if (st.abort_on_refusal && zero_capture_closure) return EVAC_CLOSURE;
+            break;
         case CALLABLE_SUBTYPE_PRIMITIVE:
         case CALLABLE_SUBTYPE_CONTINUATION:
             break;  // handled below
@@ -1365,6 +1394,17 @@ static EvacKind evac_kind_for(EvacState& st, const eshkol_tagged_value_t& v, con
         return EVAC_LEAF;
     }
 
+    // Explicit residence admits value graphs and ordinary immutable closures,
+    // not handles whose runtime-side aliases cannot be rewritten by this walk.
+    if (st.abort_on_refusal &&
+        !(sub == HEAP_SUBTYPE_CONS || sub == HEAP_SUBTYPE_VECTOR || sub == HEAP_SUBTYPE_RECORD ||
+          sub == HEAP_SUBTYPE_MULTI_VALUE || sub == HEAP_SUBTYPE_TENSOR || sub == HEAP_SUBTYPE_EXCEPTION ||
+          sub == HEAP_SUBTYPE_RATIONAL || sub == HEAP_SUBTYPE_TAYLOR || sub == HEAP_SUBTYPE_STRING ||
+          sub == HEAP_SUBTYPE_SYMBOL || sub == HEAP_SUBTYPE_BIGNUM || sub == HEAP_SUBTYPE_BYTEVECTOR ||
+          sub == HEAP_SUBTYPE_I128)) {
+        st.refuse();
+        eshkol_warn("resident evacuation refuses heap subtype %u", (unsigned)sub);
+    }
     switch ((heap_subtype_t)sub) {
         case HEAP_SUBTYPE_CONS:        return EVAC_CONS;
         case HEAP_SUBTYPE_VECTOR:      return EVAC_VECTOR;   // records are vectors too
@@ -1499,7 +1539,7 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
 
     auto* h = (eshkol_object_header_t*)((uint8_t*)old_data - sizeof(eshkol_object_header_t));
     const size_t total = sizeof(eshkol_object_header_t) + h->size;
-    if (h->size == 0) return old_data;  // nothing to copy; leave in place
+    if (h->size == 0) { if (st.abort_on_refusal) st.refuse(); return old_data; }
     // Plausibility guard: every live producer of tagged heap values allocates
     // through the *_with_header paths, but a handful of legacy helpers
     // (arena_allocate_tagged_cons_cell, arena_create_*_cons) emit HEADERLESS
@@ -1603,7 +1643,20 @@ static eshkol_tagged_value_t evac_value(EvacState& st, eshkol_tagged_value_t v) 
 
     void* p = (void*)(uintptr_t)v.data.ptr_val;
     if (!p) return v;
-    if (!st.owns(p)) return v;  // stable relative to dst
+    bool copy_literal = false;
+    if (st.resident_copy_mutable && type == ESHKOL_VALUE_HEAP_PTR &&
+        !(st.resident_preserved_arena && arena_contains(st.resident_preserved_arena, p)) &&
+        !(st.resident_destination_mark && arena_scope_span_contains(st.target, st.resident_destination_mark, p))) {
+        // Mutable language literals can occupy LLVM read-only globals rather
+        // than any arena. Imports/observations still need independent storage.
+        // Existing owner nodes remain shared during a tick; compaction retains
+        // its ordinary ownership predicate and moves all declared roots once.
+        const uint8_t sub = ESHKOL_GET_SUBTYPE(p);
+        copy_literal = sub == HEAP_SUBTYPE_CONS || sub == HEAP_SUBTYPE_VECTOR ||
+            sub == HEAP_SUBTYPE_RECORD || sub == HEAP_SUBTYPE_TENSOR ||
+            sub == HEAP_SUBTYPE_STRING || sub == HEAP_SUBTYPE_BYTEVECTOR;
+    }
+    if (!st.owns(p) && !copy_literal) return v;
 
     // Headerless fixed-size payload (dual number / complex): a flat copy is the
     // whole object. evac_raw forwards, so two tagged values sharing one payload
@@ -1718,6 +1771,10 @@ static EvacOutcome evac_transaction(EvacState& st, eshkol_tagged_value_t* roots,
     arena_push_scope(target);
     arena_scope_t* const mark =
         (target->current_scope != before) ? target->current_scope : nullptr;
+    if (st.abort_on_refusal) {
+        if (!mark) { out.ok = false; return out; }
+        st.resident_destination_mark = mark;
+    }
 
     // Results are staged so the roots themselves change only on commit.
     eshkol_tagged_value_t one;
@@ -1735,6 +1792,7 @@ static EvacOutcome evac_transaction(EvacState& st, eshkol_tagged_value_t* roots,
         st.fail(0);
     }
 
+    if (st.abort_on_refusal && st.refused) st.fail(0);
     if (!st.failed) {
         if (mark) arena_commit_scope(target);
         for (uint64_t i = 0; i < n; ++i) roots[i] = staged[i];
@@ -1856,7 +1914,7 @@ static void evac_drain(EvacState& st) {
             }
             case EVAC_TENSOR: {
                 auto* t = (eshkol_tensor_t*)nd;
-                if (t->dimensions && st.owns(t->dimensions))
+                if (t->dimensions && (st.resident_copy_mutable || st.owns(t->dimensions)))
                     t->dimensions = (uint64_t*)evac_raw(
                         st, t->dimensions, (size_t)t->num_dimensions * sizeof(uint64_t));
                 // A tagged-element carrier (a dual tensor, or a vector
@@ -1864,7 +1922,7 @@ static void evac_drain(EvacState& st) {
                 // tagged values that can point into the dying region, so its
                 // buffer is wider and each slot is walked.
                 if (eshkol_tensor_dtype_is_tagged(t->dtype)) {
-                    if (t->elements && st.owns(t->elements))
+                    if (t->elements && (st.resident_copy_mutable || st.owns(t->elements)))
                         t->elements = (int64_t*)evac_raw(
                             st, t->elements,
                             (size_t)t->total_elements * sizeof(eshkol_tagged_value_t));
@@ -1878,7 +1936,7 @@ static void evac_drain(EvacState& st) {
                     }
                     break;
                 }
-                if (t->elements && st.owns(t->elements))
+                if (t->elements && (st.resident_copy_mutable || st.owns(t->elements)))
                     t->elements = (int64_t*)evac_raw(
                         st, t->elements, (size_t)t->total_elements * sizeof(int64_t));
                 break;
@@ -1961,6 +2019,13 @@ static void evac_drain(EvacState& st) {
                 }
                 if (c->name && st.owns(c->name))
                     c->name = (const char*)evac_raw(st, c->name, std::strlen(c->name) + 1);
+                if (st.abort_on_refusal && c->sexpr_ptr && st.owns((void*)(uintptr_t)c->sexpr_ptr) &&
+                    !arena_contains(eshkol_literal_arena(), (void*)(uintptr_t)c->sexpr_ptr)) {
+                    eshkol_tagged_value_t source{};
+                    source.type = ESHKOL_VALUE_HEAP_PTR;
+                    source.data.ptr_val = c->sexpr_ptr;
+                    c->sexpr_ptr = evac_value(st, source).data.ptr_val;
+                }
                 break;
             }
             case EVAC_AD_NODE: {
@@ -3182,4 +3247,204 @@ extern "C" void eshkol_region_open_p_builtin(eshkol_tagged_value_t* out,
     const bool live = handle && handle->type == ESHKOL_VALUE_INT64 &&
                       eshkol_region_handle_live(handle->data.int_val) != 0;
     out->data.int_val = live ? 1 : 0;
+}
+
+// Explicit, thread-bound resident arenas. Only scoped library wrappers expose
+// these primitives: user snapshots are generation-checked integers, never raw
+// pointers into a compactable arena. Borrowed roots exist only during an active
+// operation; observations are copied back to the caller's allocation domain.
+namespace {
+struct ResidentRoot { uint64_t token = 0; eshkol_tagged_value_t value{}; };
+struct ResidentOwner {
+    uint64_t token = 0;
+    arena_t* arena = nullptr;
+    arena_t* saved_domain = nullptr;
+    arena_t* outside = nullptr;
+    uint64_t mark = 0;
+    uint64_t threshold = 0;
+    uint64_t compactions = 0;
+    uint64_t copied = 0;
+    bool active = false;
+    std::vector<ResidentRoot> roots;
+    ~ResidentOwner() { if (arena) arena_destroy(arena); }
+};
+static thread_local std::array<ResidentOwner, 32> resident_owners;
+static std::atomic<uint64_t> resident_owner_generation{1};
+static std::atomic<uint64_t> resident_root_generation{1};
+static ResidentOwner* resident_find(uint64_t token) {
+    const uint64_t slot = token & 255u;
+    if (!slot || slot > resident_owners.size()) return nullptr;
+    auto& owner = resident_owners[slot - 1];
+    return owner.arena && owner.token == token ? &owner : nullptr;
+}
+static ResidentRoot* resident_root(ResidentOwner* owner, uint64_t token) {
+    const uint64_t slot = token & 4095u;
+    if (!owner || !slot || slot > owner->roots.size()) return nullptr;
+    auto& root = owner->roots[slot - 1];
+    return root.token == token ? &root : nullptr;
+}
+static bool resident_any_active() {
+    for (const auto& owner : resident_owners) if (owner.active) return true;
+    return false;
+}
+static bool resident_copy(arena_t* target, const arena_t* source,
+                          const arena_t* second, eshkol_tagged_value_t* values, uint64_t n,
+                          bool import_or_export = false, const arena_t* preserved = nullptr) {
+    if (source == target && !second) return true;
+    try {
+        EvacFwdMap forwards;
+        EvacState state;
+        state.target = target; state.boundary_idx = 0;
+        state.span_arena = source; state.second_span_arena = second;
+        state.abort_on_refusal = true; state.fwd = &forwards;
+        state.resident_preserved_arena = preserved;
+        state.resident_copy_mutable = import_or_export;
+        if (import_or_export) {
+            // Copy data even when it predates the caller's immediate nursery.
+            // Otherwise an exported nested string could still alias a retained
+            // row, or an imported row could borrow a caller-owned mutable value.
+            state.resident_sources.push_back(get_global_arena_shared());
+            state.resident_sources.push_back(eshkol_literal_arena());
+            for (uint64_t i = 0; i < __region_stack_depth; ++i)
+                state.resident_sources.push_back(__region_stack[i]->arena);
+        }
+        return evac_transaction(state, values, n).ok;
+    } catch (const std::bad_alloc&) { return false; }
+}
+// Helpers return before a language error is raised: longjmp never skips a C++
+// vector/map destructor. Failed imports and compactions publish no root changes.
+static uint64_t resident_hold_impl(ResidentOwner* owner, eshkol_tagged_value_t value) {
+    try {
+        size_t slot = 0;
+        while (slot < owner->roots.size() && owner->roots[slot].token) ++slot;
+        if (slot == owner->roots.size()) {
+            if (slot == 4095) return 0;
+            owner->roots.emplace_back();
+        }
+        const uint64_t generation = resident_root_generation.fetch_add(1);
+        if (generation >= (uint64_t{1} << 51)) return 0;
+        const arena_t* source = eshkol_current_arena();
+        if (!resident_copy(owner->arena, source, nullptr, &value, 1, true, owner->arena)) return 0;
+        const uint64_t token = (generation << 12) | (slot + 1);
+        owner->roots[slot].value = value; owner->roots[slot].token = token;
+        return token;
+    } catch (const std::bad_alloc&) { return 0; }
+}
+static bool resident_compact_impl(ResidentOwner* owner) {
+    arena_t* fresh = arena_create(65536);
+    if (!fresh) return false;
+    bool ok = false;
+    try {
+        std::vector<eshkol_tagged_value_t> values;
+        for (const auto& root : owner->roots) if (root.token) values.push_back(root.value);
+        ok = resident_copy(fresh, owner->arena, nullptr, values.data(), values.size());
+        if (ok) {
+            size_t i = 0;
+            for (auto& root : owner->roots) if (root.token) root.value = values[i++];
+            arena_t* old = owner->arena; owner->arena = fresh; fresh = nullptr;
+            ++owner->compactions; owner->copied += arena_get_used_memory(owner->arena);
+            arena_destroy(old);
+        }
+    } catch (const std::bad_alloc&) { ok = false; }
+    if (fresh) arena_destroy(fresh);
+    return ok;
+}
+static void resident_error(const char* message) {
+    // A refusal can itself occur while exporting an exception. Build its
+    // replacement condition in the caller's domain so it cannot dangle after
+    // owner compaction/closure. Public wrappers leave the borrow on every exit.
+    arena_t* saved = t_memctx.allocation_domain;
+    for (const auto& owner : resident_owners)
+        if (owner.active) { t_memctx.allocation_domain = owner.outside; break; }
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "DBSP resident: %s", message);
+    t_memctx.allocation_domain = saved;
+}
+}
+extern "C" int64_t eshkol_resident_open(int64_t threshold) {
+    if (threshold < 65536 || threshold > 1073741824 || resident_any_active() ||
+        __ad_tape_depth || __current_ad_tape) {
+        resident_error("invalid compaction threshold or active borrowed/tape context"); return 0;
+    }
+    for (size_t i = 0; i < resident_owners.size(); ++i) {
+        auto& owner = resident_owners[i];
+        if (owner.arena) continue;
+        const uint64_t generation = resident_owner_generation.fetch_add(1);
+        if (generation >= (uint64_t{1} << 55)) break;
+        owner.arena = arena_create(65536);
+        if (!owner.arena) break;
+        owner.token = (generation << 8) | (i + 1); owner.threshold = threshold;
+        owner.compactions = 0; owner.copied = 0; owner.roots.clear();
+        return static_cast<int64_t>(owner.token);
+    }
+    resident_error("owner allocation failed or 32-owner limit reached"); return 0;
+}
+extern "C" void eshkol_resident_close(int64_t token) {
+    auto* owner = resident_find(token);
+    if (!owner || owner->active) { resident_error("stale owner or close during borrowed operation"); return; }
+    arena_destroy(owner->arena); owner->arena = nullptr; owner->token = 0;
+    std::vector<ResidentRoot>().swap(owner->roots);
+}
+extern "C" void eshkol_resident_enter(int64_t token) {
+    auto* owner = resident_find(token);
+    if (!owner || resident_any_active() || __ad_tape_depth || __current_ad_tape ||
+        s_parallel_depth.load(std::memory_order_acquire) || arena_is_worker_thread()) {
+        resident_error("invalid owner, reentrant borrow, parallel context or active tape"); return;
+    }
+    owner->outside = eshkol_current_arena();
+    owner->saved_domain = t_memctx.allocation_domain; owner->mark = __region_stack_depth;
+    owner->active = true; t_memctx.allocation_domain = owner->arena;
+}
+extern "C" void eshkol_resident_leave(int64_t token) {
+    auto* owner = resident_find(token);
+    if (!owner || !owner->active) { resident_error("leave without active owner"); return; }
+    eshkol_region_unwind_to(owner->mark, nullptr, 0);
+    t_memctx.allocation_domain = owner->saved_domain; owner->active = false;
+}
+extern "C" int64_t eshkol_resident_hold(int64_t token, const arena_tagged_cons_cell_t* holder) {
+    auto* owner = resident_find(token);
+    if (!owner || !holder || __ad_tape_depth || __current_ad_tape ||
+        (!owner->active && resident_any_active())) {
+        resident_error("invalid root import context"); return 0;
+    }
+    const uint64_t root = resident_hold_impl(owner, holder->car);
+    if (!root) resident_error("root limit, unsupported movable value or allocation failure");
+    return static_cast<int64_t>(root);
+}
+extern "C" void eshkol_resident_get(int64_t token, int64_t root_token, arena_tagged_cons_cell_t* holder) {
+    auto* owner = resident_find(token); auto* root = resident_root(owner, root_token);
+    if (!root || !holder || !owner->active) { resident_error("stale root or read outside borrowed operation"); return; }
+    holder->car = root->value;
+}
+extern "C" void eshkol_resident_export(int64_t token, arena_tagged_cons_cell_t* holder) {
+    auto* owner = resident_find(token);
+    if (!owner || !owner->active || !holder) { resident_error("export outside borrowed operation"); return; }
+    eshkol_tagged_value_t value = holder->car;
+    const bool ok = resident_copy(owner->outside, owner->arena, eshkol_current_arena(), &value, 1, true);
+    if (!ok) { resident_error("unsupported observation or export allocation failure"); return; }
+    holder->car = value;
+}
+extern "C" void eshkol_resident_release(int64_t token, int64_t root_token) {
+    auto* owner = resident_find(token); auto* root = resident_root(owner, root_token);
+    if (!root) { resident_error("stale or foreign snapshot handle"); return; }
+    root->token = 0; root->value = {};
+}
+extern "C" void eshkol_resident_compact(int64_t token, int force) {
+    auto* owner = resident_find(token);
+    if (!owner || resident_any_active() || __ad_tape_depth || __current_ad_tape) {
+        resident_error("compaction requires an idle owner and no active tape"); return;
+    }
+    if (!force && arena_get_used_memory(owner->arena) <= owner->threshold) return;
+    if (!resident_compact_impl(owner)) resident_error("compaction refused; retained snapshots remain valid");
+}
+extern "C" int64_t eshkol_resident_stat(int64_t token, int field) {
+    auto* owner = resident_find(token);
+    if (!owner) { resident_error("stale owner handle"); return 0; }
+    switch (field) {
+    case 0: { int64_t count = 0; for (const auto& root : owner->roots) if (root.token) ++count; return count; }
+    case 1: return static_cast<int64_t>(arena_get_used_memory(owner->arena));
+    case 2: return static_cast<int64_t>(owner->compactions);
+    case 3: return static_cast<int64_t>(owner->copied);
+    case 4: return static_cast<int64_t>(owner->threshold);
+    default: resident_error("unknown statistic"); return 0;
+    }
 }

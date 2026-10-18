@@ -1821,6 +1821,16 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_rational_binary_tagged_ptr);
     ADD_SYMBOL(eshkol_rational_compare_tagged_ptr);
     ADD_SYMBOL(eshkol_bignum_compare_tagged);
+    ADD_SYMBOL(eshkol_resident_open);
+    ADD_SYMBOL(eshkol_resident_close);
+    ADD_SYMBOL(eshkol_resident_enter);
+    ADD_SYMBOL(eshkol_resident_leave);
+    ADD_SYMBOL(eshkol_resident_hold);
+    ADD_SYMBOL(eshkol_resident_get);
+    ADD_SYMBOL(eshkol_resident_export);
+    ADD_SYMBOL(eshkol_resident_release);
+    ADD_SYMBOL(eshkol_resident_compact);
+    ADD_SYMBOL(eshkol_resident_stat);
     ADD_SYMBOL(eshkol_utf8_strlen);
     ADD_SYMBOL(eshkol_string_byte_length);
     ADD_SYMBOL(eshkol_utf8_ref);
