@@ -2429,6 +2429,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/logger.cpp
   lib/core/platform_runtime.cpp
   lib/core/resource_limits.cpp
+  lib/core/runtime_handle.cpp
   lib/core/runtime_arena_diagnostics_hosted.cpp
   lib/core/runtime_arena_sync_hosted.cpp
   lib/core/runtime_display_hosted.cpp
@@ -7274,6 +7275,31 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     endif()
     target_link_libraries(runtime_shutdown_hooks_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME runtime_shutdown_hooks_test COMMAND runtime_shutdown_hooks_test)
+endif()
+
+# The managed-resource registry has no LLVM or arena dependency. Exercise its
+# lifecycle and concurrency contract without linking the compiler aggregate.
+if(ESHKOL_BUILD_TESTS)
+    find_package(Threads REQUIRED)
+    add_executable(handle_lifecycle_test
+        tests/core/handle_lifecycle_test.cpp
+        lib/core/runtime_handle.cpp)
+    target_compile_features(handle_lifecycle_test PRIVATE cxx_std_17)
+    target_include_directories(handle_lifecycle_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(handle_lifecycle_test PRIVATE Threads::Threads)
+    add_test(NAME handle_lifecycle_test COMMAND handle_lifecycle_test)
+    set_tests_properties(handle_lifecycle_test PROPERTIES
+        TIMEOUT 30 LABELS "resource;ownership;concurrency")
+    # A C caller must link against the C++ hosted implementation unchanged.
+    add_executable(handle_c_api_test
+        tests/core/handle_c_api_test.c
+        lib/core/runtime_handle.cpp)
+    target_compile_features(handle_c_api_test PRIVATE c_std_11 cxx_std_17)
+    target_include_directories(handle_c_api_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(handle_c_api_test PRIVATE Threads::Threads)
+    add_test(NAME handle_c_api_test COMMAND handle_c_api_test)
+    set_tests_properties(handle_c_api_test PROPERTIES
+        TIMEOUT 30 LABELS "resource;ffi")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/resource_limits_test.cpp")
