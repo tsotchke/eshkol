@@ -1,3 +1,4 @@
+#include <cstdio>
 /*
  * Copyright (C) tsotchke
  *
@@ -4258,6 +4259,33 @@ static char** intern_driver_module_name_array(const std::string& name) {
     return storage.back().data();
 }
 
+// Own only scratch objects that this driver creates for a later native link.
+// In particular, entries in compiled_files may be caller-owned object files.
+struct OwnedLinkTemporaryObjects {
+    std::vector<std::string> paths;
+
+    bool reserve(const std::string& path) {
+        // Exclusive creation also protects a caller's pre-existing <output>.tmp.o.
+        FILE* file = std::fopen(path.c_str(), "wbx");
+        if (!file) {
+            return false;
+        }
+        paths.push_back(path);
+        std::fclose(file);
+        return true;
+    }
+
+    void cleanup() {
+        for (const auto& path : paths) {
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
+        paths.clear();
+    }
+
+    ~OwnedLinkTemporaryObjects() { cleanup(); }
+};
+
 
 
 int main(int argc, char **argv)
@@ -4316,6 +4344,7 @@ int main(int argc, char **argv)
 
     std::vector<char*> source_files;
     std::vector<char*> compiled_files;
+    OwnedLinkTemporaryObjects owned_link_temp_objects;
     std::vector<char*> linked_libs;
     std::vector<char*> lib_paths;
     std::vector<char*> include_paths;
@@ -4621,7 +4650,6 @@ int main(int argc, char **argv)
     // way instead of quietly emitting one of the two.
     bool emit_shared_library = false;
     std::string shared_library_path;
-    std::string shared_library_temp_object;
     if (shared_lib) {
         if (wasm_output) {
             fprintf(stderr, "--shared-lib cannot be combined with --wasm\n");
@@ -5729,6 +5757,10 @@ int main(int argc, char **argv)
                 shared_library_output_path(output, module_name);
             shared_library_path = library_path;
             const std::string temp_obj = library_path + ".tmp.o";
+            if (!owned_link_temp_objects.reserve(temp_obj)) {
+                eshkol_error("Cannot reserve temporary object %s; existing files are not overwritten", temp_obj.c_str());
+                return 1;
+            }
 
             eshkol_info("Compiling shared-library object: %s", temp_obj.c_str());
             auto esh0103_t_shared0 = esh0103_now();
@@ -5738,7 +5770,6 @@ int main(int argc, char **argv)
                 return 1;
             }
             esh0103_report("emit-object", esh0103_t_shared0, esh0103_now());
-            shared_library_temp_object = temp_obj;
             compiled_files.push_back(
                 const_cast<char*>(intern_driver_string(temp_obj)));
             output = const_cast<char*>(intern_driver_string(library_path));
@@ -5769,6 +5800,10 @@ int main(int argc, char **argv)
             if (!compiled_files.empty()) {
                 // Compile main program to temp .o, then link with stdlib.o etc.
                 std::string temp_obj = exe_name + ".tmp.o";
+                if (!owned_link_temp_objects.reserve(temp_obj)) {
+                    eshkol_error("Cannot reserve temporary object %s; existing files are not overwritten", temp_obj.c_str());
+                    return 1;
+                }
                 eshkol_info("Compiling to temp object: %s", temp_obj.c_str());
                 if (eshkol_compile_llvm_ir_to_object(llvm_module, temp_obj.c_str()) != 0) {
                     eshkol_error("Object file compilation failed");
@@ -6078,20 +6113,10 @@ int main(int argc, char **argv)
         int result = eshkol::pkg::run_subprocess(
             link_args, nullptr, link_subprocess_timeout_seconds());
 
-        // Clean up temp object files (mkstemp-created files in TMPDIR)
-        for (const auto &compiled_file : compiled_files) {
-            std::string file(compiled_file);
-            if (file.find("eshkol_") != std::string::npos && file.find(".o") != std::string::npos) {
-                std::remove(file.c_str());
-            }
-        }
-        // The shared-library scratch object is named after the library, not
-        // after an mkstemp template, so remove it explicitly (on failure too —
-        // a stale .tmp.o must never be mistaken for the artifact).
-        if (!shared_library_temp_object.empty()) {
-            std::error_code temp_object_ec;
-            std::filesystem::remove(shared_library_temp_object, temp_object_ec);
-        }
+        // Remove only scratch objects this driver created. `compiled_files`
+        // also contains caller-owned objects such as stdlib.o and named -l
+        // inputs, whose path or directory may happen to contain "eshkol_".
+        owned_link_temp_objects.cleanup();
 
         // When this process is the AOT-build child of a `-r` cache miss, report
         // a LINK-stage failure with a distinct sentinel so the parent treats it

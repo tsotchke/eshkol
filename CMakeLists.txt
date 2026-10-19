@@ -7014,6 +7014,15 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: jit_cache_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_owned_temp_cleanup_test.sh")
+        add_test(
+            NAME aot_owned_temp_cleanup
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_owned_temp_cleanup_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(aot_owned_temp_cleanup PROPERTIES TIMEOUT 300)
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/transitive_ffi_link_test.sh")
         # Generated-program native-dependency discovery must walk the SAME
         # transitive source closure as compilation (load/import/require, at any
