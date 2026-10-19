@@ -14,12 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and per-borrow leases reject stale accesses; callbacks can re-enter without
   holding the registry lock. Compiler-enforced ownership and public Scheme
   resource integration remain planned work. (#836)
+- **Exact rational affine solves preserve complete solution families.** Add
+  `core.exact_linalg` support for rectangular, singular, and overdetermined
+  systems, returning a particular solution with a complete nullspace basis;
+  reject inconsistent or inexact inputs. ([#785](https://github.com/tsotchke/eshkol/pull/785))
+- **Rational PSD decisions return checkable certificates.** Add optional
+  `core.exact_psd` weighted Gram factors for positive semidefinite matrices and
+  explicit negative directions for indefinite matrices. ([#786](https://github.com/tsotchke/eshkol/pull/786))
 
 ### Fixed
 
 - Native linking removes only scratch objects exclusively reserved by the
   compiler. Caller objects, packaged stdlib objects and pre-existing files
   with temporary-looking names survive successful and failed links. (#836)
+
 
 ## [1.3.6-evolve] - 2026-10-15
 
