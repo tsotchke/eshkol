@@ -1,3 +1,16 @@
+---
+kind: project
+status: current
+owner-area: runtime
+since: v1.4.0-connection
+sources:
+  - docs/design/adr/0000-unified-trajectory.md
+  - docs/design/adr/0004-type-system-trajectory.md
+  - inc/eshkol/core/handle.h
+  - lib/core/runtime_handle.cpp
+  - tests/core/handle_lifecycle_test.cpp
+---
+
 # v1.4-connection development start
 
 Starting point: released `v1.3.6-evolve`, source
