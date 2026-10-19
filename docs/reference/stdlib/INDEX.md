@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 67** (plus `stdlib` itself and the module system page) — **provided symbols: 886** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 66** (plus `stdlib` itself and the module system page) — **provided symbols: 886** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
