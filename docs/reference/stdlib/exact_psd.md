@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/exact_psd.esk
+  - tests/stdlib/exact_psd_test.esk
+---
+
 # `core.exact_psd` — exact rational PSD certificates
 
 Require `(require core.exact_psd)`. Matrices use generic vectors of row vectors,

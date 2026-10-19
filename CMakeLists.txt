@@ -12771,6 +12771,13 @@ endif()
 
 # Focused library acceptance: source-tree imports and both native modes.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME exact_foundations_local_stdlib
+        COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/require_local_stdlib.cmake")
+    set_tests_properties(exact_foundations_local_stdlib PROPERTIES
+        FIXTURES_SETUP exact_foundations_local_stdlib)
+
     add_test(NAME exact_affine_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_affine_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME exact_affine_aot COMMAND ${CMAKE_COMMAND}
         "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
@@ -12779,7 +12786,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
     set_tests_properties(exact_affine_jit exact_affine_aot PROPERTIES TIMEOUT 900
-        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
         PASS_REGULAR_EXPRESSION "PASS: exact_affine_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 
@@ -12791,8 +12799,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
     set_tests_properties(exact_psd_jit exact_psd_aot PROPERTIES TIMEOUT 900
-        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0"
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
         PASS_REGULAR_EXPRESSION "PASS: exact_psd_test"
-        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()

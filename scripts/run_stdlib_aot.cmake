@@ -4,6 +4,7 @@ foreach(required ESHKOL_RUN ESHKOL_SOURCE ESHKOL_BINARY ESHKOL_LINK_DIR)
         message(FATAL_ERROR "Missing ${required}")
     endif()
 endforeach()
+include("${CMAKE_CURRENT_LIST_DIR}/require_local_stdlib.cmake")
 execute_process(COMMAND "${ESHKOL_RUN}" -O 1 -o "${ESHKOL_BINARY}" "${ESHKOL_SOURCE}" "-L${ESHKOL_LINK_DIR}"
     RESULT_VARIABLE compile_status OUTPUT_VARIABLE compile_output ERROR_VARIABLE compile_error TIMEOUT 720)
 message("${compile_output}${compile_error}")
