@@ -87,7 +87,16 @@ eshkol_fp_git_sha() {
     fi
 
     if [ -n "$source_root" ] && [ -d "$source_root" ]; then
-        git -C "$source_root" rev-parse HEAD 2>/dev/null || printf '%s' "unknown"
+        local source_toplevel=""
+        source_toplevel="$(git -C "$source_root" rev-parse --show-toplevel 2>/dev/null || true)"
+        # An unpacked source directory can also live inside an unrelated Git
+        # workspace. CMake's path must identify the checkout itself, rather
+        # than inherit a revision from an enclosing repository.
+        if [ -n "$source_toplevel" ] && [ "$(cd "$source_toplevel" && pwd -P)" = "$(cd "$source_root" && pwd -P)" ]; then
+            git -C "$source_root" rev-parse HEAD 2>/dev/null || printf '%s' "unknown"
+        else
+            printf '%s' "unknown"
+        fi
         return 0
     fi
 

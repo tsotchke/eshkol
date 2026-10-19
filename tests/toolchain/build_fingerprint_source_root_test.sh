@@ -41,6 +41,18 @@ if [ "$RECORDED" != "$SOURCE_HEAD" ] || [ "$RECORDED" = "$OUTER_HEAD" ]; then
     exit 1
 fi
 
+# A configured but unversioned source tree must not inherit OUTER_HEAD either.
+UNVERSIONED_SOURCE="$OUTER/unversioned-source"
+mkdir -p "$UNVERSIONED_SOURCE"
+printf 'CMAKE_HOME_DIRECTORY:INTERNAL=%s\n' "$UNVERSIONED_SOURCE" > "$BUILD/CMakeCache.txt"
+UNVERSIONED_TRACE="$TEMP_ROOT/unversioned-trace"
+eshkol_emit_build_fingerprint_event "$UNVERSIONED_TRACE" source-root-regression "$BUILD" eshkol-run >/dev/null 2>&1
+UNVERSIONED_RECORDED="$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["git_sha"])' "$UNVERSIONED_TRACE/build_fingerprint.jsonl")"
+if [ "$UNVERSIONED_RECORDED" != "unknown" ]; then
+    echo "FAIL: unversioned configured source inherited enclosing HEAD $UNVERSIONED_RECORDED"
+    exit 1
+fi
+
 # With no CMake source root and no checkout at the build directory itself,
 # fail closed instead of walking upward and recording OUTER_HEAD.
 NO_CACHE_BUILD="$OUTER/no-cache-build"
