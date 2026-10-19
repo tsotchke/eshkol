@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Begin v1.4-connection's managed-resource substrate with a hosted C API for
+  exclusive borrowing and exactly-once close attempts. Generation-tagged IDs
+  and per-borrow leases reject stale accesses; callbacks can re-enter without
+  holding the registry lock. Compiler-enforced ownership and public Scheme
+  resource integration remain planned work.
+
+### Fixed
+
+- Native linking removes only scratch objects exclusively reserved by the
+  compiler. Caller objects, packaged stdlib objects and pre-existing files
+  with temporary-looking names survive successful and failed links.
+
 ## [1.3.6-evolve] - 2026-10-15
 
 PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.
