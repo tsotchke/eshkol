@@ -58,21 +58,52 @@ typedef enum {
 /* Zero means success; nonzero is reported as ECLOSE. */
 typedef int (*eshkol_handle_close_fn)(eshkol_handle_kind_t kind,
                                       uintptr_t native_value, void *user_data);
+/** @brief Create an empty hosted registry, or return NULL on allocation failure. */
 eshkol_handle_registry_t *eshkol_handle_registry_create(void);
-/* If busy, leaves registry alive. Otherwise frees it after closing open entries. */
+/**
+ * @brief Close all remaining owners and free a registry without allocating.
+ * @return OK or ECLOSE after freeing; EBUSY leaves the registry alive when a
+ * borrow or close is outstanding. NULL is EINVAL. The caller synchronizes
+ * registry lifetime against external operations. Callbacks may re-enter.
+ */
 int eshkol_handle_registry_destroy(eshkol_handle_registry_t *registry);
-/* close_fn is required. On success, the registry becomes the sole owner of
- * native_value and invokes close_fn exactly once. */
+/**
+ * @brief Adopt sole ownership of a native resource with a required close callback.
+ * @param native_value Opaque pointer or descriptor, valid for the supplied kind.
+ * @param user_data Caller context kept alive until the close callback completes.
+ * @param out_id Receives the registry-local identity only on success.
+ * @return OK transfers ownership; every failure leaves ownership with the caller.
+ */
 int eshkol_handle_create(eshkol_handle_registry_t *registry,
     eshkol_handle_kind_t kind, uintptr_t native_value,
     eshkol_handle_close_fn close_fn, void *user_data, eshkol_handle_id_t *out_id);
-/* Outputs are written only on success. Borrow lease values are registry-local. */
+/**
+ * @brief Exclusively borrow an open owner until its matching lease is released.
+ * @param out_native_value Native resource, usable only during this borrow.
+ * @param out_lease Unique lease required by release; keep outputs distinct.
+ * @return OK, EBUSY for an active borrow/close, or an invalid/exhausted identity
+ * error. Failure leaves both outputs untouched.
+ */
 int eshkol_handle_borrow(eshkol_handle_registry_t *registry,
     eshkol_handle_id_t id, uintptr_t *out_native_value, uint64_t *out_lease);
-/* Release must present the lease returned by that specific borrow. */
+/**
+ * @brief End the specific borrow identified by the owner and its lease.
+ * @return OK or an error without ending another borrow. A stale or repeated
+ * release cannot release a newer borrower. Stop using the native value first.
+ */
 int eshkol_handle_release(eshkol_handle_registry_t *registry,
     eshkol_handle_id_t id, uint64_t lease);
+/**
+ * @brief Attempt an open owner's close callback exactly once, outside the lock.
+ * @return OK or ECLOSE leaves the identity terminally closed; EBUSY leaves an
+ * outstanding borrower/closer intact. Invalid or previously closed IDs are ENOENT.
+ */
 int eshkol_handle_close(eshkol_handle_registry_t *registry, eshkol_handle_id_t id);
+/**
+ * @brief Query state without borrowing or exposing the native resource.
+ * @return OK for a known identity, including CLOSED before slot reuse. Invalid
+ * or stale identities return ENOENT without changing the output.
+ */
 int eshkol_handle_get_state(eshkol_handle_registry_t *registry,
     eshkol_handle_id_t id, eshkol_handle_state_t *out_state);
 #ifdef __cplusplus
