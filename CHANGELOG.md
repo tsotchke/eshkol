@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional `core.dbsp.tensor_snapshot` with block-level copy-on-write updates,
   historical reads, and matrix read views that reuse finite delta products.
   ([#787](https://github.com/tsotchke/eshkol/pull/787))
-- **v1.4 evidence gates validate analytic, HTTP, and resource-limit results.** Add a JIT/AOT order-8 GUW oracle gate, bind HTTP loopback receipts to the registered source and fresh build evidence, and make resource-limit enforcement fail closed when its VM test binary is unavailable.
+- **v1.4 evidence gates validate analytic, HTTP, and resource-limit results.** Add a JIT/AOT order-8 GUW oracle gate, bind HTTP loopback receipts to the registered source and fresh build evidence, make resource-limit enforcement fail closed when its VM test binary is unavailable, and read build fingerprints from CMake's configured source checkout.
 
 ### Fixed
 

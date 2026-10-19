@@ -7055,6 +7055,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         )
         set_tests_properties(aot_owned_temp_cleanup PROPERTIES TIMEOUT 300)
     endif()
+    if(UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/build_fingerprint_source_root_test.sh")
+        add_test(
+            NAME build_fingerprint_source_root_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/build_fingerprint_source_root_test.sh"
+        )
+        set_tests_properties(build_fingerprint_source_root_test PROPERTIES
+            TIMEOUT 30
+            PASS_REGULAR_EXPRESSION "PASS: build fingerprint uses CMAKE_HOME_DIRECTORY"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/transitive_ffi_link_test.sh")
         # Generated-program native-dependency discovery must walk the SAME
         # transitive source closure as compilation (load/import/require, at any

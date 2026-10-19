@@ -72,13 +72,39 @@ eshkol_fp_sha256() {
     printf '%s' "unavailable"
 }
 
-# HEAD sha of the checkout containing $1 (a file or directory), or "unknown".
+# HEAD sha of the configured source checkout for $1's build directory.
+# Build directories can be siblings of a nested checkout (for example under
+# a workspace .scratch directory). Walking upward from the binary directory
+# then finds the workspace's unrelated outer repository. Prefer CMake's
+# explicit source root, and fail closed when it is unavailable.
 eshkol_fp_git_sha() {
-    local at="$1"
-    local dir
-    dir="$at"
-    [ -d "$dir" ] || dir="$(dirname "$dir")"
-    git -C "$dir" rev-parse HEAD 2>/dev/null || printf '%s' "unknown"
+    local build_dir="$1"
+    local source_root=""
+    local cache_file="$build_dir/CMakeCache.txt"
+
+    if [ -f "$cache_file" ]; then
+        source_root="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$cache_file" | tail -n 1)"
+    fi
+
+    if [ -n "$source_root" ] && [ -d "$source_root" ]; then
+        git -C "$source_root" rev-parse HEAD 2>/dev/null || printf '%s' "unknown"
+        return 0
+    fi
+
+    # A build directory may itself be a checkout in non-CMake workflows. Do
+    # not let git discover an enclosing repository from an ordinary sibling
+    # build directory: without an explicit source root, the identity is
+    # unknown rather than the outer workspace's HEAD.
+    if [ -e "$build_dir/.git" ]; then
+        local toplevel=""
+        toplevel="$(git -C "$build_dir" rev-parse --show-toplevel 2>/dev/null || true)"
+        if [ -n "$toplevel" ] && [ -d "$toplevel" ] && [ "$(cd "$toplevel" && pwd -P)" = "$(cd "$build_dir" && pwd -P)" ]; then
+            git -C "$build_dir" rev-parse HEAD 2>/dev/null || printf '%s' "unknown"
+            return 0
+        fi
+    fi
+
+    printf '%s' "unknown"
 }
 
 # Append one build-fingerprint event.
