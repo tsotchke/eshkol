@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `core.exact_psd` weighted Gram factors for positive semidefinite matrices and
   explicit negative directions for indefinite matrices. ([#786](https://github.com/tsotchke/eshkol/pull/786))
 
+- **Sparse tensor snapshots share unchanged storage across versions.** Add
+  optional `core.dbsp.tensor_snapshot` with block-level copy-on-write updates,
+  historical reads, and matrix read views that reuse finite delta products.
+  ([#787](https://github.com/tsotchke/eshkol/pull/787))
+
 ### Fixed
 
 - Native linking removes only scratch objects exclusively reserved by the
