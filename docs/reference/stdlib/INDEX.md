@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 88** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1013** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 89** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1019** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -29,6 +29,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.ad.algebraic_pullback`](../../../lib/core/ad/algebraic_pullback.esk) | no | [ad_algebraic_pullback.md](ad_algebraic_pullback.md) | `algebraic-solve-with-pullback` `algebraic-factor-with-pullback` `algebraic-system-with-pullback` `algebraic-reverse-solve` `algebraic-reverse-system` |
 | [`core.ad.algebraic_qp`](../../../lib/core/ad/algebraic_qp.esk) | no | [ad_algebraic_qp.md](ad_algebraic_qp.md) | `algebraic-qp-solve` `algebraic-qp-solution` `algebraic-qp-info` `algebraic-qp-verify` `algebraic-qp-pullback` |
 | [`core.ad.algebraic_ridge`](../../../lib/core/ad/algebraic_ridge.esk) | no | [ad_algebraic_ridge.md](ad_algebraic_ridge.md) | `algebraic-ridge-new` `algebraic-ridge-step` `algebraic-ridge-output` `algebraic-ridge-info` `algebraic-ridge-pullback` |
+| [`core.ad.derived_operator`](../../../lib/core/ad/derived_operator.esk) | no | [ad_derived_operator.md](ad_derived_operator.md) | `make-derived-operator` `derived-operator-value` `derived-operator-jvp` `derived-operator-vjp` `derived-operator-delta` `derived-operator-info` |
 | [`core.ad.algebraic_spectral`](../../../lib/core/ad/algebraic_spectral.esk) | no | [ad_algebraic_spectral.md](ad_algebraic_spectral.md) | `algebraic-characteristic` `algebraic-eigenvalue-with-pullback` `algebraic-eigenvalue-lift` |
 | [`core.alist`](../../../lib/core/alist.esk) | yes | [alist.md](alist.md) | `alist-ref` `alist-ref-or` `alist-set` |
 | [`core.argparse`](../../../lib/core/argparse.esk) | no | [argparse.md](argparse.md) | `parse-args` `arg-get` `arg-positional` `arg-has?` `argparse-help` |
@@ -241,6 +242,12 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.ad.algebraic_qp` | `algebraic-qp-info` | [`algebraic-qp-info`](shipped_exports.md#algebraic-qp-info) |
 | `core.ad.algebraic_qp` | `algebraic-qp-verify` | [`algebraic-qp-verify`](shipped_exports.md#algebraic-qp-verify) |
 | `core.ad.algebraic_qp` | `algebraic-qp-pullback` | [`algebraic-qp-pullback`](shipped_exports.md#algebraic-qp-pullback) |
+| `core.ad.derived_operator` | `make-derived-operator` | [`make-derived-operator`](shipped_exports.md#make-derived-operator) |
+| `core.ad.derived_operator` | `derived-operator-value` | [`derived-operator-value`](shipped_exports.md#derived-operator-value) |
+| `core.ad.derived_operator` | `derived-operator-jvp` | [`derived-operator-jvp`](shipped_exports.md#derived-operator-jvp) |
+| `core.ad.derived_operator` | `derived-operator-vjp` | [`derived-operator-vjp`](shipped_exports.md#derived-operator-vjp) |
+| `core.ad.derived_operator` | `derived-operator-delta` | [`derived-operator-delta`](shipped_exports.md#derived-operator-delta) |
+| `core.ad.derived_operator` | `derived-operator-info` | [`derived-operator-info`](shipped_exports.md#derived-operator-info) |
 | `core.ad.algebraic_spectral` | `algebraic-characteristic` | [`algebraic-characteristic`](shipped_exports.md#algebraic-characteristic) |
 | `core.ad.algebraic_spectral` | `algebraic-eigenvalue-with-pullback` | [`algebraic-eigenvalue-with-pullback`](shipped_exports.md#algebraic-eigenvalue-with-pullback) |
 | `core.ad.algebraic_spectral` | `algebraic-eigenvalue-lift` | [`algebraic-eigenvalue-lift`](shipped_exports.md#algebraic-eigenvalue-lift) |

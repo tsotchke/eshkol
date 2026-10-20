@@ -177,3 +177,9 @@ lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-verify
 lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-pullback
 lib/core/certified_solve.esk	2	provide	certify-linear-solve
 lib/core/certified_solve.esk	2	provide	verify-linear-solve-certificate
+lib/core/ad/derived_operator.esk	3	provide	make-derived-operator
+lib/core/ad/derived_operator.esk	3	provide	derived-operator-value
+lib/core/ad/derived_operator.esk	3	provide	derived-operator-jvp
+lib/core/ad/derived_operator.esk	3	provide	derived-operator-vjp
+lib/core/ad/derived_operator.esk	3	provide	derived-operator-delta
+lib/core/ad/derived_operator.esk	3	provide	derived-operator-info

@@ -890,3 +890,30 @@ Computes an exact a-posteriori componentwise error enclosure for a received cand
 ### `verify-linear-solve-certificate`
 
 Recomputes the receipt from caller-supplied sources; true means the record matches, even when its status is `unknown`. Callers must separately require `proved` before using boxes as an enclosure.
+## `core.ad.derived_operator`
+
+Source: `lib/core/ad/derived_operator.esk`. The restricted syntax, exact finite-change identity, derivative contract and refusal limits are documented in [ad_derived_operator.md](ad_derived_operator.md).
+
+### `make-derived-operator`
+
+Compiles one bounded pure scalar polynomial and its symbolic partials and shifted finite-change polynomial.
+
+### `derived-operator-value`
+
+Evaluates the admitted polynomial at a fixed-width point.
+
+### `derived-operator-jvp`
+
+Computes the gradient paired with a direction at the point.
+
+### `derived-operator-vjp`
+
+Computes the formal polynomial transpose of the gradient scaled by a seed.
+
+### `derived-operator-delta`
+
+Computes the exact polynomial difference between the point plus an increment and the point.
+
+### `derived-operator-info`
+
+Returns immutable arity, degree and conservative term-work metadata.
