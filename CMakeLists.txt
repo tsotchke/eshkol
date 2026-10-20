@@ -3013,6 +3013,39 @@ file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/lib/ml/*.esk"
      "${CMAKE_CURRENT_SOURCE_DIR}/lib/math.esk")
 
+# The stdlib's identity travels inside stdlib.o and stdlib.bc, so every
+# package path carries it automatically with the artifacts. Fingerprint the
+# complete source closure (including relative paths) and effective object ABI;
+# reconfigure when any input changes so the compiler and generated artifacts
+# agree about the expected identity.
+set(_stdlib_identity_inputs "${STDLIB_SOURCE};${STDLIB_TRANSITIVE_SOURCES}")
+set(_stdlib_identity_source_material "")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+     ${_stdlib_identity_inputs})
+foreach(_stdlib_input IN LISTS _stdlib_identity_inputs)
+  file(SHA256 "${_stdlib_input}" _stdlib_input_sha256)
+  file(RELATIVE_PATH _stdlib_input_relative
+       "${CMAKE_CURRENT_SOURCE_DIR}" "${_stdlib_input}")
+  string(APPEND _stdlib_identity_source_material
+         "${_stdlib_input_relative}:${_stdlib_input_sha256}\n")
+endforeach()
+string(SHA256 ESHKOL_STDLIB_SOURCE_FINGERPRINT
+       "${_stdlib_identity_source_material}")
+if(ESHKOL_MEMORY_ABI_V2)
+  set(ESHKOL_STDLIB_IDENTITY_ABI "object-abi-v2")
+else()
+  set(ESHKOL_STDLIB_IDENTITY_ABI "object-abi-v1")
+endif()
+set(ESHKOL_STDLIB_RELEASE_STRING "${ESHKOL_VERSION}-evolve")
+string(REGEX REPLACE "[^A-Za-z0-9_]" "_" ESHKOL_STDLIB_IDENTITY_RELEASE
+       "${ESHKOL_STDLIB_RELEASE_STRING}")
+string(REGEX REPLACE "[^A-Za-z0-9_]" "_" ESHKOL_STDLIB_IDENTITY_ABI_SYMBOL
+       "${ESHKOL_STDLIB_IDENTITY_ABI}")
+set(ESHKOL_STDLIB_IDENTITY_SYMBOL
+    "eshkol_stdlib_identity_release_${ESHKOL_STDLIB_IDENTITY_RELEASE}_abi_${ESHKOL_STDLIB_IDENTITY_ABI_SYMBOL}_source_${ESHKOL_STDLIB_SOURCE_FINGERPRINT}")
+configure_file(cmake/stdlib_identity.h.in
+    "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/stdlib_identity_config.h" @ONLY)
+
 if(WIN32)
   set(STDLIB_CODEGEN_LAUNCHER)
 else()
@@ -3033,7 +3066,8 @@ add_custom_command(
   # thread stack at link time).
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
           ${STDLIB_CODEGEN_LAUNCHER}
-          $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
+          $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib"
+          --embed-stdlib-identity=${ESHKOL_STDLIB_IDENTITY_SYMBOL} "${STDLIB_SOURCE}"
           # -c pins the library-mode OBJECT flavour: stdlib.o/stdlib.bc are
           # linked into every user binary and loaded by the REPL JIT, so this
           # edge wants a relocatable object, not the loadable shared library
@@ -3045,6 +3079,19 @@ add_custom_command(
 )
 
 add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+  add_test(NAME stdlib_identity_compatibility
+      COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/stdlib_identity_test.sh"
+          "$<TARGET_FILE:eshkol-run>"
+          "${ESHKOL_STDLIB_IDENTITY_SYMBOL}"
+          "${ESHKOL_STDLIB_IDENTITY_RELEASE}"
+          "${ESHKOL_STDLIB_IDENTITY_ABI_SYMBOL}"
+          "${ESHKOL_STDLIB_SOURCE_FINGERPRINT}"
+          "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(stdlib_identity_compatibility PROPERTIES TIMEOUT 180)
+endif()
 
 # Install stdlib artifacts to lib directory.  The REPL prefers stdlib.bc so
 # stdlib and later REPL batches share the same ORC IR compilation pipeline;

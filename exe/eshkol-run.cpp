@@ -14,6 +14,7 @@
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/stdlib_identity.h>
 #include <eshkol/pkg/subprocess.h>
 
 #include <eshkol/llvm_backend.h>
@@ -1299,6 +1300,7 @@ static struct option long_options[] = {
     {"require-vm-entry-zero-arg", required_argument, nullptr, 263},
     {"features", no_argument, nullptr, 264},
     {"abi-fingerprint", no_argument, nullptr, 266},
+    {"embed-stdlib-identity", required_argument, nullptr, 267},
     {0, 0, 0, 0}
 };
 
@@ -2623,8 +2625,25 @@ static std::string find_stdlib_object(const std::vector<char*>& lib_paths)
     const auto resolved = eshkol::platform::resolve_install_artifact(
         eshkol::platform::install_library_roots(explicit_library_dirs(lib_paths)),
         {"stdlib.o"});
-    // stdlib.o carries no build stamp (it is generated Eshkol code, not a
-    // stamped archive), so only its origin is reportable.
+    if (resolved.found()) {
+        auto buffer = llvm::MemoryBuffer::getFile(resolved.path);
+        if (!buffer) {
+            eshkol_warn("rejecting precompiled stdlib object %s: could not read object (%s); rebuild or reinstall the matching Eshkol package",
+                        resolved.path.c_str(), buffer.getError().message().c_str());
+            return {};
+        }
+        std::string found_identity;
+        if (!eshkol::stdlib_identity::matches_object(
+                (*buffer)->getMemBufferRef(), found_identity)) {
+            eshkol_warn("rejecting precompiled stdlib object %s: %s; expected %s. Rebuild or reinstall the matching Eshkol package",
+                        resolved.path.c_str(),
+                        found_identity.c_str(),
+                        ESHKOL_STDLIB_IDENTITY_SYMBOL);
+            return {};
+        }
+    }
+    // Origin is still useful after identity validation; foreign artifacts are
+    // rejected above before they can enter the link command.
     report_artifact_resolution("precompiled stdlib object", resolved,
                                /*verify_version=*/false);
     return resolved.path;
@@ -4363,6 +4382,7 @@ int main(int argc, char **argv)
     std::vector<std::string> required_vm_entries;
     std::vector<std::string> required_zero_arg_vm_entries;
     const char* depfile_path = nullptr;  // --emit-depfile PATH (ESH-0215)
+    const char* stdlib_identity_symbol = nullptr;
 
     if (argc == 1) print_help(1);
 
@@ -4522,6 +4542,9 @@ int main(int argc, char **argv)
             printf("runtime_header_size=%zu\n", eshkol_abi_runtime_header_size());
             return 0;
         }
+        case 267:
+            stdlib_identity_symbol = optarg;
+            break;
         case 'f':
             /* Native AOT object emission is configured with Reloc::PIC_. */
             break;
@@ -5569,6 +5592,17 @@ int main(int argc, char **argv)
             // does not fall back to the in-process JIT and run the program we
             // just refused; see kCacheBuildDiagnosticRejectExit.
             return running_as_cache_build_child() ? kCacheBuildDiagnosticRejectExit : 1;
+        }
+
+        if (stdlib_identity_symbol) {
+            const bool stdlib_source = source_files.size() == 1 &&
+                std::filesystem::path(source_files[0]).filename() == "stdlib.esk";
+            if (!library_codegen || !compile_only || wasm_output || !stdlib_source ||
+                eshkol_add_stdlib_identity(llvm_module, stdlib_identity_symbol) != 0) {
+                eshkol_error("--embed-stdlib-identity is valid only while compiling the standard library object");
+                eshkol_dispose_llvm_module(llvm_module);
+                return 1;
+            }
         }
 
         // Handle different output modes

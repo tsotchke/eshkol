@@ -38,6 +38,11 @@ LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts,
  */
 LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t num_asts, const char* module_name);
 
+/* Add a stable external identity global to an emitted library module. The
+ * stdlib build uses this before writing either stdlib.o or stdlib.bc so both
+ * package artifacts carry the same identity in their own format. */
+int eshkol_add_stdlib_identity(LLVMModuleRef module, const char* symbol);
+
 /*
  * Generate a module with an explicit, call-scoped source context. This is the
  * provenance-safe entry point for nested JIT module/import compilation: the

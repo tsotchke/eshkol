@@ -12,6 +12,7 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/stdlib_identity.h>
 #include <eshkol/runtime_exports.h>
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
@@ -2696,10 +2697,9 @@ static std::string findStdlibObject() {
  * @param buffer The object file's bytes.
  * @param foreign Set to the guard symbol the object actually names, when it
  *        names one that is not ours.
- * @return true if the object may be loaded: it either names this build's guard
- *         symbol, or names none at all (an object predating the guard, or one
- *         whose symbol table could not be read — neither is evidence of a
- *         mismatch, and refusing on absence would break existing installs).
+ * @return true if the object may be loaded by the ABI check: it either names
+ *         this build's guard symbol or names none. The stdlib identity check
+ *         runs separately and rejects unstamped stdlib objects before load.
  */
 static bool objectMatchesRunningAbi(llvm::MemoryBufferRef buffer,
                                     std::string& foreign) {
@@ -3117,27 +3117,37 @@ bool ReplJITContext::loadStdlib() {
                 buffer_or_err->get()->getMemBufferRef(), *module_context);
             if (mod_or_err) {
                 std::unique_ptr<Module> stdlib_module = std::move(*mod_or_err);
-                if (stdlib_module->getDataLayout().isDefault()) {
-                    stdlib_module->setDataLayout(jit_->getDataLayout());
-                }
-                eshkol::prepare_jit_module_for_target(
-                    *stdlib_module, jit_->getTargetTriple());
-
-                auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
-                auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
-                if (auto err = jit_->addIRModule(std::move(tsm))) {
-                    std::string err_msg;
-                    raw_string_ostream err_stream(err_msg);
-                    err_stream << err;
-                    std::cerr << "Warning: Failed to load stdlib.bc (" << err_msg
-                              << "), falling back to stdlib.o" << std::endl;
+                std::string found_identity;
+                if (!eshkol::stdlib_identity::matches_module(
+                        *stdlib_module, found_identity)) {
+                    std::cerr << "Warning: rejecting stdlib.bc " << stdlib_bc_path
+                              << ": " << found_identity << "; expected "
+                              << ESHKOL_STDLIB_IDENTITY_SYMBOL
+                              << ", falling back to a compatible stdlib source"
+                              << std::endl;
                 } else {
-                    registerStdlibSymbols();
-                    run_stdlib_initializers(stdlib_bc_path);
-                    std::cerr << "[REPL] Loaded stdlib bitcode from: "
-                              << stdlib_bc_path << std::endl;
-                    stdlib_loaded_ = true;
-                    return true;
+                    if (stdlib_module->getDataLayout().isDefault()) {
+                        stdlib_module->setDataLayout(jit_->getDataLayout());
+                    }
+                    eshkol::prepare_jit_module_for_target(
+                        *stdlib_module, jit_->getTargetTriple());
+
+                    auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
+                    auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
+                    if (auto err = jit_->addIRModule(std::move(tsm))) {
+                        std::string err_msg;
+                        raw_string_ostream err_stream(err_msg);
+                        err_stream << err;
+                        std::cerr << "Warning: Failed to load stdlib.bc (" << err_msg
+                                  << "), falling back to stdlib.o" << std::endl;
+                    } else {
+                        registerStdlibSymbols();
+                        run_stdlib_initializers(stdlib_bc_path);
+                        std::cerr << "[REPL] Loaded stdlib bitcode from: "
+                                  << stdlib_bc_path << std::endl;
+                        stdlib_loaded_ = true;
+                        return true;
+                    }
                 }
             } else {
                 std::string err_msg;
@@ -3153,10 +3163,10 @@ bool ReplJITContext::loadStdlib() {
         }
     }
 
-    // Legacy fallback: load pre-compiled stdlib.o via addObjectFile.  This is
-    // kept for installed layouts that have not shipped stdlib.bc yet, but it is
-    // no longer the preferred path for the REPL because it crosses the native
-    // object ABI for Eshkol aggregate values.
+    // Object fallback: load a matching precompiled stdlib.o when a package
+    // carries the identity marker but omits stdlib.bc. The marker check below
+    // rejects packages built before this identity contract as well as foreign
+    // artifacts, then source compilation remains the correctness fallback.
     std::string stdlib_obj_path = findStdlibObject();
     if (!stdlib_obj_path.empty()) {
         auto buffer_or_err = MemoryBuffer::getFile(stdlib_obj_path);
@@ -3169,6 +3179,19 @@ bool ReplJITContext::loadStdlib() {
         // correct, rather than loading and being wrong.
         std::string foreign;
         bool abi_ok = true;
+        std::string found_identity;
+        bool identity_ok = false;
+        if (buffer_or_err) {
+            identity_ok = eshkol::stdlib_identity::matches_object(
+                (*buffer_or_err)->getMemBufferRef(), found_identity);
+            if (!identity_ok) {
+                std::cerr << "Warning: rejecting stdlib.o " << stdlib_obj_path
+                          << ": " << found_identity << "; expected "
+                          << ESHKOL_STDLIB_IDENTITY_SYMBOL
+                          << ", falling back to a compatible stdlib source"
+                          << std::endl;
+            }
+        }
         if (buffer_or_err &&
             !objectMatchesRunningAbi((*buffer_or_err)->getMemBufferRef(), foreign)) {
             std::cerr << "Warning: ignoring stdlib.o built for a different object "
@@ -3177,7 +3200,7 @@ bool ReplJITContext::loadStdlib() {
                       << ", falling back to JIT compilation" << std::endl;
             abi_ok = false;
         }
-        if (buffer_or_err && abi_ok) {
+        if (buffer_or_err && abi_ok && identity_ok) {
             auto& main_dylib = jit_->getMainJITDylib();
             auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
             if (!err) {
