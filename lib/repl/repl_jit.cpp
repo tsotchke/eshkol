@@ -43,6 +43,7 @@
 #include <llvm/IR/CFG.h>  // For predecessors()
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/Errc.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/DynamicLibrary.h>
 #include <llvm/Support/MemoryBuffer.h>  // For loading object files
@@ -2923,16 +2924,19 @@ void ReplJITContext::registerStdlibSymbols() {
  * compilation pipeline as REPL-compiled code so aggregate tagged-value
  * arguments use a consistent ABI; (3) the legacy precompiled stdlib.o via
  * addObjectFile() for installations that have not shipped stdlib.bc; and
- * (4) JIT-compiling the stdlib from source via loadModule(), the slowest but
- * always-correct path. On success, registers stdlib symbols
+ * (4) JIT-compiling the stdlib from source via loadModule() only when no
+ * precompiled artifact was found. A found incompatible or unreadable artifact
+ * returns an LLVM error instead of falling through to source. On success,
+ * registers stdlib symbols
  * (registerStdlibSymbols()) and explicitly invokes
  * `__eshkol_lib_init__`/`__eshkol_init_parallel_workers` since ORC does not
  * reliably run Eshkol's library/global-ctor initializers for REPL preloads.
- * @return true if the stdlib was loaded (or already had been) by any path.
+ * @return success if loaded (or already loaded); an LLVM error for an
+ *         incompatible/unreadable artifact or failed source fallback.
  */
-bool ReplJITContext::loadStdlib() {
+llvm::Error ReplJITContext::loadStdlib() {
     if (stdlib_loaded_) {
-        return true;  // Already loaded — idempotent.
+        return llvm::Error::success();  // Already loaded — idempotent.
     }
 
     if (!jit_) {
@@ -3002,14 +3006,14 @@ bool ReplJITContext::loadStdlib() {
                     eshkol::stdlib_identity::matches_module(
                         **identity_mod, bc_identity);
                 if (!bc_identity_ok) {
-                    if (!identity_mod) consumeError(identity_mod.takeError());
-                    std::cerr << "Warning: rejecting stdlib.bc " << bc_path
-                              << ": " << (bc_identity.empty()
-                                              ? "unreadable bitcode"
-                                              : bc_identity)
-                              << "; expected " << ESHKOL_STDLIB_IDENTITY_SYMBOL
-                              << ", falling back to a compatible stdlib source"
-                              << std::endl;
+                    std::string reason = bc_identity;
+                    if (!identity_mod) reason = toString(identity_mod.takeError());
+                    return llvm::createStringError(
+                        llvm::errc::invalid_argument,
+                        "rejecting stdlib.bc %s: %s; expected %s",
+                        bc_path.c_str(),
+                        reason.empty() ? "unreadable bitcode" : reason.c_str(),
+                        ESHKOL_STDLIB_IDENTITY_SYMBOL);
                 } else {
                     uint64_t content_hash = llvm::xxh3_64bits((*bc_buf)->getBuffer());
                     std::string triple = llvm::sys::getProcessTriple();
@@ -3083,7 +3087,14 @@ bool ReplJITContext::loadStdlib() {
                     }
 
                     if (have_obj) {
-                        if (auto obj_buf = MemoryBuffer::getFile(cache_o.string())) {
+                        auto obj_buf = MemoryBuffer::getFile(cache_o.string());
+                        if (!obj_buf) {
+                            return llvm::createStringError(
+                                obj_buf.getError(),
+                                "rejecting cached stdlib object %s: could not read object",
+                                cache_o.string().c_str());
+                        }
+                        {
                             // Belt to the key's braces. The tag above keeps a
                             // foreign-ABI object from being *named*; this keeps one
                             // from being *loaded* if it is reached by any other
@@ -3096,28 +3107,32 @@ bool ReplJITContext::loadStdlib() {
                                 eshkol::stdlib_identity::matches_object(
                                     (*obj_buf)->getMemBufferRef(), cached_identity);
                             if (!identity_ok) {
-                                std::cerr << "Warning: rejecting cached stdlib object "
-                                          << cache_o.string() << ": "
-                                          << cached_identity << "; expected "
-                                          << ESHKOL_STDLIB_IDENTITY_SYMBOL
-                                          << std::endl;
-                                have_obj = false;
+                                return llvm::createStringError(
+                                    llvm::errc::invalid_argument,
+                                    "rejecting cached stdlib object %s: %s; expected %s",
+                                    cache_o.string().c_str(), cached_identity.c_str(),
+                                    ESHKOL_STDLIB_IDENTITY_SYMBOL);
                             }
                             if (have_obj && !objectMatchesRunningAbi(
                                                 (*obj_buf)->getMemBufferRef(),
                                                 foreign)) {
-                                std::cerr
-                                    << "Warning: ignoring cached stdlib object built "
-                                       "for a different object ABI ("
-                                    << foreign << ", this build is "
-                                    << ESHKOL_ABI_FINGERPRINT_NAME << "): "
-                                    << cache_o.string() << std::endl;
-                                have_obj = false;
+                                return llvm::createStringError(
+                                    llvm::errc::invalid_argument,
+                                    "rejecting cached stdlib object %s built for a different object ABI (%s, this build is %s)",
+                                    cache_o.string().c_str(), foreign.c_str(),
+                                    ESHKOL_ABI_FINGERPRINT_NAME);
                             }
                         }
                     }
                     if (have_obj) {
-                        if (auto obj_buf = MemoryBuffer::getFile(cache_o.string())) {
+                        auto obj_buf = MemoryBuffer::getFile(cache_o.string());
+                        if (!obj_buf) {
+                            return llvm::createStringError(
+                                obj_buf.getError(),
+                                "rejecting cached stdlib object %s: could not read object",
+                                cache_o.string().c_str());
+                        }
+                        {
                             auto& dylib = jit_->getMainJITDylib();
                             if (auto err =
                                     jit_->addObjectFile(dylib, std::move(*obj_buf))) {
@@ -3128,7 +3143,7 @@ bool ReplJITContext::loadStdlib() {
                                 std::cerr << "[REPL] Loaded stdlib from cached object: "
                                           << cache_o.string() << std::endl;
                                 stdlib_loaded_ = true;
-                                return true;
+                                return llvm::Error::success();
                             }
                         }
                     }
@@ -3145,20 +3160,30 @@ bool ReplJITContext::loadStdlib() {
     std::string stdlib_bc_path = findStdlibBitcode();
     if (!stdlib_bc_path.empty()) {
         auto buffer_or_err = MemoryBuffer::getFile(stdlib_bc_path);
-        if (buffer_or_err) {
+        if (!buffer_or_err) {
+            return llvm::createStringError(
+                buffer_or_err.getError(), "cannot read stdlib.bc %s",
+                stdlib_bc_path.c_str());
+        }
+        {
             auto module_context = std::make_unique<LLVMContext>();
             auto mod_or_err = parseBitcodeFile(
                 buffer_or_err->get()->getMemBufferRef(), *module_context);
-            if (mod_or_err) {
+            if (!mod_or_err) {
+                return llvm::createStringError(
+                    llvm::errc::invalid_argument, "cannot parse stdlib.bc %s: %s",
+                    stdlib_bc_path.c_str(), toString(mod_or_err.takeError()).c_str());
+            }
+            {
                 std::unique_ptr<Module> stdlib_module = std::move(*mod_or_err);
                 std::string found_identity;
                 if (!eshkol::stdlib_identity::matches_module(
                         *stdlib_module, found_identity)) {
-                    std::cerr << "Warning: rejecting stdlib.bc " << stdlib_bc_path
-                              << ": " << found_identity << "; expected "
-                              << ESHKOL_STDLIB_IDENTITY_SYMBOL
-                              << ", falling back to a compatible stdlib source"
-                              << std::endl;
+                    return llvm::createStringError(
+                        llvm::errc::invalid_argument,
+                        "rejecting stdlib.bc %s: %s; expected %s",
+                        stdlib_bc_path.c_str(), found_identity.c_str(),
+                        ESHKOL_STDLIB_IDENTITY_SYMBOL);
                 } else {
                     if (stdlib_module->getDataLayout().isDefault()) {
                         stdlib_module->setDataLayout(jit_->getDataLayout());
@@ -3180,61 +3205,49 @@ bool ReplJITContext::loadStdlib() {
                         std::cerr << "[REPL] Loaded stdlib bitcode from: "
                                   << stdlib_bc_path << std::endl;
                         stdlib_loaded_ = true;
-                        return true;
+                        return llvm::Error::success();
                     }
                 }
-            } else {
-                std::string err_msg;
-                raw_string_ostream err_stream(err_msg);
-                err_stream << mod_or_err.takeError();
-                std::cerr << "Warning: Failed to parse stdlib.bc (" << err_msg
-                          << "), falling back to stdlib.o" << std::endl;
             }
-        } else {
-            std::cerr << "Warning: Failed to read stdlib.bc at " << stdlib_bc_path
-                      << ": " << buffer_or_err.getError().message()
-                      << ", falling back to stdlib.o" << std::endl;
         }
     }
 
     // Object fallback: load a matching precompiled stdlib.o when a package
-    // carries the identity marker but omits stdlib.bc. The marker check below
-    // rejects packages built before this identity contract as well as foreign
-    // artifacts, then source compilation remains the correctness fallback.
+    // carries the identity marker but omits stdlib.bc. A found incompatible or
+    // unreadable object is fatal; source compilation is used only when no
+    // precompiled artifact exists.
     std::string stdlib_obj_path = findStdlibObject();
     if (!stdlib_obj_path.empty()) {
         auto buffer_or_err = MemoryBuffer::getFile(stdlib_obj_path);
+        if (!buffer_or_err) {
+            return llvm::createStringError(
+                buffer_or_err.getError(), "cannot read stdlib.o %s",
+                stdlib_obj_path.c_str());
+        }
         // This path has no cache key to carry the ABI: it loads whatever
         // stdlib.o the install roots resolve to. That is precisely the
         // arrangement in which a stale artifact survives an ABI change — the
         // file name says nothing about the layout it was compiled for, and
         // nothing else on this path checks. So the object is asked directly,
-        // and a mismatch falls through to JIT-from-source, which is slower and
-        // correct, rather than loading and being wrong.
+        // and a mismatch returns an error before loading.
         std::string foreign;
-        bool abi_ok = true;
         std::string found_identity;
-        bool identity_ok = false;
-        if (buffer_or_err) {
-            identity_ok = eshkol::stdlib_identity::matches_object(
-                (*buffer_or_err)->getMemBufferRef(), found_identity);
-            if (!identity_ok) {
-                std::cerr << "Warning: rejecting stdlib.o " << stdlib_obj_path
-                          << ": " << found_identity << "; expected "
-                          << ESHKOL_STDLIB_IDENTITY_SYMBOL
-                          << ", falling back to a compatible stdlib source"
-                          << std::endl;
-            }
+        if (!eshkol::stdlib_identity::matches_object(
+                (*buffer_or_err)->getMemBufferRef(), found_identity)) {
+            return llvm::createStringError(
+                llvm::errc::invalid_argument,
+                "rejecting stdlib.o %s: %s; expected %s",
+                stdlib_obj_path.c_str(), found_identity.c_str(),
+                ESHKOL_STDLIB_IDENTITY_SYMBOL);
         }
-        if (buffer_or_err &&
-            !objectMatchesRunningAbi((*buffer_or_err)->getMemBufferRef(), foreign)) {
-            std::cerr << "Warning: ignoring stdlib.o built for a different object "
-                         "ABI (" << foreign << ", this build is "
-                      << ESHKOL_ABI_FINGERPRINT_NAME << "): " << stdlib_obj_path
-                      << ", falling back to JIT compilation" << std::endl;
-            abi_ok = false;
+        if (!objectMatchesRunningAbi((*buffer_or_err)->getMemBufferRef(), foreign)) {
+            return llvm::createStringError(
+                llvm::errc::invalid_argument,
+                "rejecting stdlib.o %s built for a different object ABI (%s, this build is %s)",
+                stdlib_obj_path.c_str(), foreign.c_str(),
+                ESHKOL_ABI_FINGERPRINT_NAME);
         }
-        if (buffer_or_err && abi_ok && identity_ok) {
+        {
             auto& main_dylib = jit_->getMainJITDylib();
             auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
             if (!err) {
@@ -3242,14 +3255,8 @@ bool ReplJITContext::loadStdlib() {
                 run_stdlib_initializers(stdlib_obj_path);
                 std::cerr << "[REPL] Loaded stdlib from: " << stdlib_obj_path << std::endl;
                 stdlib_loaded_ = true;
-                return true;
-            } else {
-                std::string err_msg;
-                raw_string_ostream err_stream(err_msg);
-                err_stream << err;
-                std::cerr << "Warning: Failed to load stdlib.o (" << err_msg
-                          << "), falling back to JIT compilation" << std::endl;
-            }
+                return llvm::Error::success();
+            } else consumeError(std::move(err));
         }
     }
 
@@ -3261,7 +3268,11 @@ bool ReplJITContext::loadStdlib() {
     if (loaded) {
         stdlib_loaded_ = true;
     }
-    return loaded;
+    if (!loaded) {
+        return llvm::createStringError(llvm::errc::invalid_argument,
+                                       "could not load stdlib from source");
+    }
+    return llvm::Error::success();
 }
 
 /**
@@ -3309,14 +3320,13 @@ bool ReplJITContext::loadModule(const std::string& module_name,
     // the individual source file.
     if (allow_precompiled_stdlib && !loading_stdlib_from_source_ &&
         (module_name == "stdlib" || module_name.find("core.") == 0)) {
-        if (loadStdlib()) {
-            if (loaded_modules.count(module_name)) {
-                return true;  // Module is genuinely in stdlib.o — done.
-            }
-            // Module name starts with core.* but stdlib.o doesn't carry
-            // it — JIT-compile the source below.
+        if (llvm::Error error = loadStdlib()) {
+            throw std::runtime_error(toString(std::move(error)));
         }
-        // If stdlib.o loading failed, fall through to JIT compilation
+        if (loaded_modules.count(module_name)) {
+            return true;  // Module is genuinely in stdlib.o — done.
+        }
+        // The matching stdlib omits this core module; compile its source.
     }
 
     std::string module_path = resolveModulePath(module_name);
@@ -3452,7 +3462,7 @@ bool ReplJITContext::loadModule(const std::string& module_name,
         eshkol_ast_clean(&ast_item);
     }
 
-    return true;
+                return llvm::Error::success();
 }
 
 /**

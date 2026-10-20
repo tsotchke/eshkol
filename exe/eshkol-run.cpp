@@ -25,6 +25,7 @@
 #include "../lib/frontend/library_registry.h"
 
 #include <llvm/Config/llvm-config.h>
+#include <llvm/Support/Errc.h>
 #include <llvm/Support/SHA256.h>
 
 #include <stdio.h>
@@ -2620,33 +2621,88 @@ static void report_artifact_resolution(
 }
 
 // Find the pre-compiled stdlib.o file
-static std::string find_stdlib_object(const std::vector<char*>& lib_paths)
+static llvm::Error validate_stdlib_object_file(const std::string& path)
+{
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    if (!buffer) {
+        return llvm::createStringError(
+            llvm::errc::io_error,
+            "rejecting precompiled stdlib object %s: could not read object (%s)",
+            path.c_str(), buffer.getError().message().c_str());
+    }
+    std::string found_identity;
+    if (!eshkol::stdlib_identity::matches_object(
+            (*buffer)->getMemBufferRef(), found_identity)) {
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "rejecting precompiled stdlib object %s: %s; expected %s. Rebuild or reinstall the matching Eshkol package",
+            path.c_str(), found_identity.c_str(),
+            ESHKOL_STDLIB_IDENTITY_SYMBOL);
+    }
+    return llvm::Error::success();
+}
+
+static llvm::Expected<std::string> find_stdlib_object(
+    const std::vector<char*>& lib_paths)
 {
     const auto resolved = eshkol::platform::resolve_install_artifact(
         eshkol::platform::install_library_roots(explicit_library_dirs(lib_paths)),
         {"stdlib.o"});
     if (resolved.found()) {
-        auto buffer = llvm::MemoryBuffer::getFile(resolved.path);
-        if (!buffer) {
-            eshkol_warn("rejecting precompiled stdlib object %s: could not read object (%s); rebuild or reinstall the matching Eshkol package",
-                        resolved.path.c_str(), buffer.getError().message().c_str());
-            return {};
-        }
-        std::string found_identity;
-        if (!eshkol::stdlib_identity::matches_object(
-                (*buffer)->getMemBufferRef(), found_identity)) {
-            eshkol_warn("rejecting precompiled stdlib object %s: %s; expected %s. Rebuild or reinstall the matching Eshkol package",
-                        resolved.path.c_str(),
-                        found_identity.c_str(),
-                        ESHKOL_STDLIB_IDENTITY_SYMBOL);
-            return {};
-        }
+        if (llvm::Error error = validate_stdlib_object_file(resolved.path))
+            return error;
     }
     // Origin is still useful after identity validation; foreign artifacts are
     // rejected above before they can enter the link command.
     report_artifact_resolution("precompiled stdlib object", resolved,
                                /*verify_version=*/false);
     return resolved.path;
+}
+
+static llvm::Error validate_stdlib_bitcode_file(const std::string& path)
+{
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    if (!buffer) {
+        return llvm::createStringError(
+            buffer.getError(), "rejecting precompiled stdlib bitcode %s: cannot read",
+            path.c_str());
+    }
+    llvm::LLVMContext context;
+    auto module = llvm::parseBitcodeFile((*buffer)->getMemBufferRef(), context);
+    if (!module) {
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "rejecting precompiled stdlib bitcode %s: cannot parse (%s)",
+            path.c_str(), llvm::toString(module.takeError()).c_str());
+    }
+    std::string found_identity;
+    if (!eshkol::stdlib_identity::matches_module(**module, found_identity)) {
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "rejecting precompiled stdlib bitcode %s: %s; expected %s",
+            path.c_str(), found_identity.c_str(), ESHKOL_STDLIB_IDENTITY_SYMBOL);
+    }
+    return llvm::Error::success();
+}
+
+static llvm::Error validate_resolved_stdlib_artifacts(
+    const std::vector<char*>& lib_paths)
+{
+    const auto roots = eshkol::platform::install_library_roots(
+        explicit_library_dirs(lib_paths));
+    const auto bitcode = eshkol::platform::resolve_install_artifact(
+        roots, {"stdlib.bc"});
+    if (bitcode.found()) {
+        if (llvm::Error error = validate_stdlib_bitcode_file(bitcode.path))
+            return error;
+    }
+    const auto object = eshkol::platform::resolve_install_artifact(
+        roots, {"stdlib.o"});
+    if (object.found()) {
+        if (llvm::Error error = validate_stdlib_object_file(object.path))
+            return error;
+    }
+    return llvm::Error::success();
 }
 
 // Find the runtime library. Prefer the split runtime archive; fall back to the
@@ -4792,7 +4848,11 @@ int main(int argc, char **argv)
 
         // Load stdlib for eval mode
         if (!no_stdlib) {
-            jit_ctx.loadStdlib();
+            if (llvm::Error error = jit_ctx.loadStdlib()) {
+                std::cerr << llvm::toString(std::move(error)) << std::endl;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
         }
 
         // Parse the expression using istringstream (no temp file needed)
@@ -4876,6 +4936,12 @@ int main(int argc, char **argv)
             std::getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
         const bool language_coverage_tracing =
             language_coverage_trace_dir && *language_coverage_trace_dir;
+        if (!no_stdlib) {
+            if (llvm::Error error = validate_resolved_stdlib_artifacts(lib_paths)) {
+                std::cerr << llvm::toString(std::move(error)) << std::endl;
+                return 1;
+            }
+        }
         if (argc - optind == 1 && !debug_mode && !dump_ast && !dump_ir &&
             !language_coverage_tracing && compile_defines.empty()) {
             if (auto cached_status = tryRunFromPersistentJitCache(
@@ -4901,7 +4967,11 @@ int main(int argc, char **argv)
 
         // Load stdlib for run mode
         if (!no_stdlib) {
-            jit_ctx.loadStdlib();
+            if (llvm::Error error = jit_ctx.loadStdlib()) {
+                std::cerr << llvm::toString(std::move(error)) << std::endl;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
         }
 
         // Process each input file
@@ -5319,12 +5389,30 @@ int main(int argc, char **argv)
 
         if (!has_stdlib) {
             // Try to find stdlib.o automatically
-            std::string stdlib_path = find_stdlib_object(lib_paths);
-            if (!stdlib_path.empty()) {
-                eshkol_info("Auto-linking pre-compiled stdlib: %s", stdlib_path.c_str());
-                compiled_files.push_back(
-                    const_cast<char*>(intern_driver_string(stdlib_path)));
+            auto stdlib_path = find_stdlib_object(lib_paths);
+            if (!stdlib_path) {
+                std::cerr << llvm::toString(stdlib_path.takeError()) << std::endl;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
             }
+            if (!stdlib_path->empty()) {
+                eshkol_info("Auto-linking pre-compiled stdlib: %s",
+                            stdlib_path->c_str());
+                compiled_files.push_back(
+                    const_cast<char*>(intern_driver_string(*stdlib_path)));
+            }
+        }
+    }
+
+    // Explicitly named stdlib objects bypass automatic artifact resolution, so
+    // validate them at the same admission boundary before any output is emitted.
+    for (const auto& obj_file : compiled_files) {
+        const std::string filename = std::filesystem::path(obj_file).filename().string();
+        if (filename != "stdlib.o" && filename != "libstdlib.o") continue;
+        if (llvm::Error error = validate_stdlib_object_file(obj_file)) {
+            std::cerr << llvm::toString(std::move(error)) << std::endl;
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
         }
     }
 

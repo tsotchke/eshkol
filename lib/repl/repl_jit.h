@@ -29,6 +29,7 @@ namespace llvm {
     }
 }
 #include <llvm/ExecutionEngine/Orc/Core.h>  // IntrusiveRefCntPtr for ResourceTrackerSP
+#include <llvm/Support/Error.h>
 
 // C interface
 #include <eshkol/eshkol.h>
@@ -156,9 +157,10 @@ public:
      * Load the standard library (stdlib.esk) into the REPL environment.
      * This makes all stdlib functions available for use.
      *
-     * @return true on success, false on error
+     * @return success on load; an LLVM error when a found artifact is
+     *         incompatible/unreadable or the source fallback cannot load.
      */
-    bool loadStdlib();
+    llvm::Error loadStdlib();
 
     // Seed a fresh interactive parser stream with macros retained from prior
     // REPL evaluations; file/module streams remain isolated.

@@ -50,17 +50,30 @@ build_control "$WORK/wrong-abi" \
     -o "$WORK/unstamped/stdlib" "$WORK/source/stdlib.esk" >/dev/null
 
 compile_probe() {
-    local root="$1" expected="$2" label="$3" output
-    output="$(ESHKOL_LIB_DIR="$root" ESHKOL_PATH="$WORK/source" \
-        "$ESHKOL_RUN" -c -o "$WORK/$label.o" "$WORK/source/main.esk" 2>&1)"
+    local root="$1" expected="$2" label="$3" explicit_object="${4:-}"
+    local output_path="$WORK/$label.o" output status
+    local -a extra_args=()
+    [[ -n "$explicit_object" ]] && extra_args+=("$explicit_object")
+    if output="$(ESHKOL_LIB_DIR="$root" ESHKOL_PATH="$WORK/source" \
+        "$ESHKOL_RUN" -c -o "$output_path" "$WORK/source/main.esk" \
+        "${extra_args[@]}" 2>&1)"; then
+        status=0
+    else
+        status=$?
+    fi
     if [[ "$expected" == match ]]; then
+        [[ "$status" == 0 && -f "$output_path" ]]
         grep -Fq "Auto-linking pre-compiled stdlib: $root/stdlib.o" <<<"$output"
         ! grep -Fq "rejecting precompiled stdlib object" <<<"$output"
     else
+        [[ "$status" != 0 && ! -e "$output_path" ]]
         grep -Fq "rejecting precompiled stdlib object $root/stdlib.o" <<<"$output"
         ! grep -Fq "Auto-linking pre-compiled stdlib: $root/stdlib.o" <<<"$output"
     fi
 }
+
+compile_probe "$WORK/wrong-release" reject aot-explicit-object \
+    "$WORK/wrong-release/stdlib.o"
 
 compile_probe "$WORK/matching" match aot-matching
 compile_probe "$WORK/wrong-release" reject aot-wrong-release
@@ -68,16 +81,37 @@ compile_probe "$WORK/wrong-source" reject aot-wrong-source
 compile_probe "$WORK/wrong-abi" reject aot-wrong-abi
 compile_probe "$WORK/unstamped" reject aot-unstamped
 
+if aot_output="$(ESHKOL_LIB_DIR="$WORK/wrong-release" \
+    ESHKOL_PATH="$WORK/source" "$ESHKOL_RUN" -o "$WORK/rejected-executable" \
+    "$WORK/source/main.esk" 2>&1)"; then
+    aot_status=0
+else
+    aot_status=$?
+fi
+[[ "$aot_status" != 0 && ! -e "$WORK/rejected-executable" ]]
+grep -Fq "rejecting precompiled stdlib object $WORK/wrong-release/stdlib.o" \
+    <<<"$aot_output"
+! grep -Fxq "17" <<<"$aot_output"
+
 run_probe() {
-    local root="$1" expected="$2" reason="${3:-}" output
-    output="$(ESHKOL_LIB_DIR="$root" ESHKOL_PATH="$WORK/source" \
-        ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"
-    if [[ "$expected" == match ]]; then
-        grep -Fq "[REPL] Loaded stdlib bitcode from: $root/stdlib.bc" <<<"$output"
+    local root="$1" expected="$2" reason="${3:-}" output status
+    if output="$(ESHKOL_LIB_DIR="$root" ESHKOL_PATH="$WORK/source" \
+        ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"; then
+        status=0
     else
-        grep -Fq "rejecting stdlib.bc $root/stdlib.bc" <<<"$output"
-        grep -Fq "falling back to a compatible stdlib source" <<<"$output"
+        status=$?
+    fi
+    if [[ "$expected" == match ]]; then
+        [[ "$status" == 0 ]]
+        { grep -Fq "[REPL] Loaded stdlib bitcode from: $root/stdlib.bc" <<<"$output" ||
+          grep -Fq "[REPL] Loaded stdlib from cached object:" <<<"$output"; }
+        grep -Fxq "17" <<<"$output"
+    else
+        [[ "$status" != 0 ]]
+        { grep -Fq "rejecting stdlib.bc $root/stdlib.bc" <<<"$output" ||
+          grep -Fq "rejecting precompiled stdlib bitcode $root/stdlib.bc" <<<"$output"; }
         ! grep -Fq "[REPL] Loaded stdlib bitcode from: $root/stdlib.bc" <<<"$output"
+        ! grep -Fxq "17" <<<"$output"
         if [[ -n "$reason" ]]; then
             grep -Fq "$reason" <<<"$output"
         fi
@@ -89,6 +123,30 @@ run_probe "$WORK/wrong-release" reject
 run_probe "$WORK/wrong-source" reject
 run_probe "$WORK/wrong-abi" reject
 run_probe "$WORK/unstamped" reject
+
+if eval_output="$(ESHKOL_LIB_DIR="$WORK/wrong-release" \
+    ESHKOL_PATH="$WORK/source" "$ESHKOL_RUN" -e '(display 17)' 2>&1)"; then
+    eval_status=0
+else
+    eval_status=$?
+fi
+[[ "$eval_status" != 0 ]]
+grep -Fq "rejecting stdlib.bc $WORK/wrong-release/stdlib.bc" <<<"$eval_output"
+! grep -Fxq "17" <<<"$eval_output"
+
+# The persistent executable cache is checked only after stdlib admission; a
+# stale cached run must not hide an incompatible currently selected package.
+if cached_run_output="$(ESHKOL_LIB_DIR="$WORK/wrong-release" \
+    ESHKOL_PATH="$WORK/source" ESHKOL_JIT_CACHE_DIR="$WORK/run-cache" \
+    "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"; then
+    cached_run_status=0
+else
+    cached_run_status=$?
+fi
+[[ "$cached_run_status" != 0 ]]
+grep -Fq "rejecting precompiled stdlib bitcode $WORK/wrong-release/stdlib.bc" \
+    <<<"$cached_run_output"
+! grep -Fxq "17" <<<"$cached_run_output"
 
 build_marker_controls() {
     local expected_ir="$WORK/identity-declaration.ll"
@@ -122,16 +180,25 @@ fi
 # Seed the JIT object cache from matching bitcode, then replace the discovered
 # cache entry with a real object carrying a foreign marker. Admission must
 # reject it and continue through the validated bitcode path.
-cache_output="$(ESHKOL_LIB_DIR="$WORK/matching" ESHKOL_PATH="$WORK/source" \
-    ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"
+if cache_output="$(ESHKOL_LIB_DIR="$WORK/matching" ESHKOL_PATH="$WORK/source" \
+    ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"; then
+    cache_status=0
+else
+    cache_status=$?
+fi
+[[ "$cache_status" == 0 ]]
 cached_object="$(sed -n 's/.*Loaded stdlib from cached object: //p' \
     <<<"$cache_output" | head -n 1)"
 [[ -n "$cached_object" && -f "$cached_object" ]]
 cp "$WORK/wrong-release/stdlib.o" "$cached_object"
-cache_output="$(ESHKOL_LIB_DIR="$WORK/matching" ESHKOL_PATH="$WORK/source" \
-    ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"
+if cache_output="$(ESHKOL_LIB_DIR="$WORK/matching" ESHKOL_PATH="$WORK/source" \
+    ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"; then
+    cache_status=0
+else
+    cache_status=$?
+fi
+[[ "$cache_status" != 0 ]]
 grep -Fq "rejecting cached stdlib object $cached_object" <<<"$cache_output"
-grep -Fq "[REPL] Loaded stdlib bitcode from: $WORK/matching/stdlib.bc" \
-    <<<"$cache_output"
+! grep -Fxq "17" <<<"$cache_output"
 
 echo "PASS: stdlib identity matching and available artifact/cache controls"

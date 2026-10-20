@@ -26,9 +26,11 @@ The compiler emits it into both formats from the shared LLVM module.
 Native AOT lookup, REPL bitcode loading, and the REPL object fallback validate
 the embedded symbol before using an artifact. This applies to artifacts found
 through `$ESHKOL_LIB_DIR`, explicit `-L` roots, co-located installs, build
-trees, and system prefixes. A mismatch or absent symbol rejects that artifact
-with regeneration guidance; JIT paths can compile the installed source tree
-instead. AOT may also compile from source when its module tree is present.
+trees, and system prefixes. A found but unreadable, unstamped, or mismatched
+precompiled artifact is a hard error; the driver does not substitute source
+after detecting an incompatible artifact. When no precompiled artifact exists,
+JIT and AOT retain their source compilation paths, including source-only and
+bootstrap builds.
 
 Packages built before this guard do not have the symbol and must be rebuilt or
 reinstalled as a matching release. This check detects accidental mixing of
