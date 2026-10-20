@@ -2038,7 +2038,7 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: P6 rational/bignum Taylor coefficients are bit-exact vs symbolic oracle
-        action: run_ad_exact_taylor_gate
+        action: ./scripts/run_ad_exact_coefficients_gate.sh
 
       - runtime_event:
           event_kinds: [ad_tensor_highorder]
@@ -2161,7 +2161,7 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: P6 exact-coefficient towers pass rational/bignum symbolic oracle
-        action: run_ad_exact_taylor_gate
+        action: ./scripts/run_ad_exact_coefficients_gate.sh
 
       # severity: high (F19 false-green sweep): a convergence claim, the
       # same class as every high-severity sibling criterion in this target.

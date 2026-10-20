@@ -6157,7 +6157,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         NAME exact_taylor_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
                 -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
-                -L"${CMAKE_CURRENT_BINARY_DIR}"
+                -L${CMAKE_CURRENT_BINARY_DIR}
     )
     set_tests_properties(exact_taylor_runtime_smoke
         PROPERTIES
