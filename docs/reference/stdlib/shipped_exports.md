@@ -843,6 +843,42 @@ Source: [lib/core/dbsp/circuit.esk](../../../lib/core/dbsp/circuit.esk). The log
 
 Returns a pointer-free observation of all logical operator state for integrity verification during checkpoint restore.
 
+## `core.dbsp.resident`
+
+Source: [lib/core/dbsp/resident.esk](../../../lib/core/dbsp/resident.esk). Owner lifetime, generation-checked snapshots, compaction, and native-only boundaries are documented in [dbsp_resident.md](dbsp_resident.md).
+
+### `call-with-dbsp-resident`
+
+Runs a callback with a scoped resident owner and its initial snapshot.
+
+### `dbsp-resident-step`
+
+Imports changes and returns a retained successor snapshot after one circuit tick.
+
+### `dbsp-resident-release!`
+
+Releases a retained snapshot handle.
+
+### `dbsp-resident-output`
+
+Returns an owned observation of a snapshot's circuit output.
+
+### `dbsp-resident-delta`
+
+Returns an owned observation of a snapshot's output delta.
+
+### `dbsp-resident-work`
+
+Returns an owned observation of a snapshot's circuit work count.
+
+### `dbsp-resident-stats`
+
+Returns root, arena, compaction and copy counters for the owner.
+
+### `dbsp-resident-compact!`
+
+Requests compaction at an idle owner boundary and returns updated statistics.
+
 ## `core.dbsp.checkpoint`
 
 Source: [lib/core/dbsp/checkpoint.esk](../../../lib/core/dbsp/checkpoint.esk). The bounded exact-data codec, trusted callback registry and caller/filesystem authorization boundary are described in [dbsp_checkpoint.md](dbsp_checkpoint.md).

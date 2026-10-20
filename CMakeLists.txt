@@ -13363,7 +13363,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
 endif()
 
 # Explicit resident ownership reuses the core evacuation transaction.
-if(ESHKOL_BUILD_TESTS)
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-static)
+    find_package(Threads REQUIRED)
     add_executable(dbsp_resident_owner_test tests/core/dbsp_resident_owner_test.cpp)
     target_compile_features(dbsp_resident_owner_test PRIVATE cxx_std_17)
     target_include_directories(dbsp_resident_owner_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -13379,7 +13380,7 @@ if(ESHKOL_BUILD_TESTS)
 endif()
 
 # Wave 2 acceptance: dbsp_resident
-if(ESHKOL_BUILD_TESTS)
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(NAME dbsp_resident_jit COMMAND $<TARGET_FILE:eshkol-run> -r
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_resident_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME dbsp_resident_aot COMMAND ${CMAKE_COMMAND}
@@ -13395,10 +13396,19 @@ if(ESHKOL_BUILD_TESTS)
 endif()
 
 if(ESHKOL_BUILD_TESTS)
-    set_tests_properties(dbsp_resident_jit dbsp_resident_aot dbsp_resident_owner_test
-        PROPERTIES ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_ARENA_POISON=1")
+    set(_resident_tests)
+    if(TARGET dbsp_resident_owner_test)
+        list(APPEND _resident_tests dbsp_resident_owner_test)
+    endif()
+    if(TARGET eshkol-run)
+        list(APPEND _resident_tests dbsp_resident_jit dbsp_resident_aot)
+    endif()
+    if(_resident_tests)
+        set_tests_properties(${_resident_tests}
+            PROPERTIES ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_ARENA_POISON=1")
+    endif()
 endif()
-if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND ESHKOL_PYTHON3_EXECUTABLE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME dbsp_resident_memory_family
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/dbsp_resident_memory_gate.py"
