@@ -1,3 +1,15 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/root_branch.esk
+  - lib/core/polynomial_exact.esk
+  - lib/core/ad/rigorous_interval.esk
+  - tests/stdlib/root_branch_test.esk
+---
+
 # `core.ad.root_branch`
 
 `(require core.ad.root_branch)` follows a selected simple real polynomial root
