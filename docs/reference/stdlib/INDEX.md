@@ -36,9 +36,9 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.polynomial_exact`](../../../lib/core/polynomial_exact.esk) | no | [polynomial_exact.md](polynomial_exact.md) | `exact-poly` `exact-poly-zero?` `exact-poly-sub` `exact-poly-scale` `exact-poly-mul` `exact-poly-divmod` `exact-poly-inverse-mod` `exact-poly-eval` `exact-poly-real-root-count` `exact-poly-isolate` |
 | [`core.algebraic_field`](../../../lib/core/algebraic_field.esk) | no | [algebraic_field.md](algebraic_field.md) | `make-algebraic-field` `algebraic-field-degree` `algebraic-field-polynomial` `algebraic-generator` `algebraic-element` `algebraic-coefficients` `algebraic-add` `algebraic-sub` `algebraic-scale` `algebraic-mul` `algebraic-inverse` `algebraic-zero?` `algebraic-equal?` `algebraic-rational` `algebraic-enclosure` `algebraic-sign` `make-algebraic-embedding` `make-algebraic-compositum` `algebraic-field-certificate` |
 | [`core.algebraic_domain`](../../../lib/core/algebraic_domain.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-domain` `algebraic-domain-ref` |
-| [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-solve-transpose` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` |
+| [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-solve-transpose` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` `algebraic-factor-positive-definite?` |
 | [`core.ad.algebraic_implicit`](../../../lib/core/ad/algebraic_implicit.esk) | no | [ad_algebraic_implicit.md](ad_algebraic_implicit.md) | `algebraic-ad-system-root` `algebraic-ad-system-residual` |
-| [`core.ad.algebraic_incremental`](../../../lib/core/ad/algebraic_incremental.esk) | no | [ad_algebraic_incremental.md](ad_algebraic_incremental.md) | `make-algebraic-incremental-plan` `algebraic-incremental-new` `algebraic-incremental-step` `algebraic-incremental-output` `algebraic-incremental-info` |
+| [`core.ad.algebraic_incremental`](../../../lib/core/ad/algebraic_incremental.esk) | no | [ad_algebraic_incremental.md](ad_algebraic_incremental.md) | `make-algebraic-incremental-plan` `algebraic-incremental-new` `algebraic-incremental-step` `algebraic-incremental-output` `algebraic-incremental-info` `algebraic-incremental-moment-ref` |
 | [`core.ad.algebraic_reverse`](../../../lib/core/ad/algebraic_reverse.esk) | no | [ad_algebraic_reverse.md](ad_algebraic_reverse.md) | `algebraic-value-and-pullback` `algebraic-reverse-value` `algebraic-reverse-constant` `algebraic-reverse-add` `algebraic-reverse-sub` `algebraic-reverse-mul` `algebraic-reverse-inverse` `algebraic-reverse-pow` `algebraic-hvp` |
 | [`core.ad.algebraic_sparse`](../../../lib/core/ad/algebraic_sparse.esk) | no | [ad_algebraic_sparse.md](ad_algebraic_sparse.md) | `algebraic-sparse-hessian` `algebraic-sparse-hessian-ref` `algebraic-sparse-hessian-dense` `algebraic-sparse-hessian-summary` |
 | [`core.ad.sparsity`](../../../lib/core/ad/sparsity.esk) | no | [ad_sparsity.md](ad_sparsity.md) | `hessian-color-graph` |
@@ -201,6 +201,13 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.ad.algebraic_reverse` | `algebraic-reverse-inverse` | [algebraic-reverse-inverse](shipped_exports.md#algebraic-reverse-inverse) |
 | `core.ad.algebraic_reverse` | `algebraic-reverse-pow` | [algebraic-reverse-pow](shipped_exports.md#algebraic-reverse-pow) |
 | `core.ad.algebraic_reverse` | `algebraic-hvp` | [algebraic-hvp](shipped_exports.md#algebraic-hvp) |
+| `core.ad.algebraic_ridge` | `algebraic-ridge-new` | [`algebraic-ridge-new`](shipped_exports.md#algebraic-ridge-new) |
+| `core.ad.algebraic_ridge` | `algebraic-ridge-step` | [`algebraic-ridge-step`](shipped_exports.md#algebraic-ridge-step) |
+| `core.ad.algebraic_ridge` | `algebraic-ridge-output` | [`algebraic-ridge-output`](shipped_exports.md#algebraic-ridge-output) |
+| `core.ad.algebraic_ridge` | `algebraic-ridge-info` | [`algebraic-ridge-info`](shipped_exports.md#algebraic-ridge-info) |
+| `core.ad.algebraic_ridge` | `algebraic-ridge-pullback` | [`algebraic-ridge-pullback`](shipped_exports.md#algebraic-ridge-pullback) |
+| `core.algebraic_linalg` | `algebraic-factor-positive-definite?` | [`algebraic-factor-positive-definite?`](shipped_exports.md#algebraic-factor-positive-definite) |
+| `core.ad.algebraic_incremental` | `algebraic-incremental-moment-ref` | [`algebraic-incremental-moment-ref`](shipped_exports.md#algebraic-incremental-moment-ref) |
 | `core.ad.algebraic_sparse` | `algebraic-sparse-hessian` | [algebraic-sparse-hessian](shipped_exports.md#algebraic-sparse-hessian) |
 | `core.ad.algebraic_sparse` | `algebraic-sparse-hessian-dense` | [algebraic-sparse-hessian-dense](shipped_exports.md#algebraic-sparse-hessian-dense) |
 | `core.ad.algebraic_sparse` | `algebraic-sparse-hessian-ref` | [algebraic-sparse-hessian-ref](shipped_exports.md#algebraic-sparse-hessian-ref) |

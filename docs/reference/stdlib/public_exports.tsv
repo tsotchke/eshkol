@@ -139,3 +139,10 @@ lib/core/ad/algebraic_reverse.esk	4	provide	algebraic-reverse-mul
 lib/core/ad/algebraic_reverse.esk	4	provide	algebraic-reverse-inverse
 lib/core/ad/algebraic_reverse.esk	4	provide	algebraic-reverse-pow
 lib/core/ad/algebraic_reverse.esk	4	provide	algebraic-hvp
+lib/core/ad/algebraic_ridge.esk	4	provide	algebraic-ridge-new
+lib/core/ad/algebraic_ridge.esk	4	provide	algebraic-ridge-step
+lib/core/ad/algebraic_ridge.esk	4	provide	algebraic-ridge-output
+lib/core/ad/algebraic_ridge.esk	4	provide	algebraic-ridge-info
+lib/core/ad/algebraic_ridge.esk	4	provide	algebraic-ridge-pullback
+lib/core/algebraic_linalg.esk	3	provide	algebraic-factor-positive-definite?
+lib/core/ad/algebraic_incremental.esk	4	provide	algebraic-incremental-moment-ref

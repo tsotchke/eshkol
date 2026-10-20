@@ -704,3 +704,31 @@ See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedu
 ### `algebraic-hvp`
 
 See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ridge-new`
+
+Declared by [core.ad.algebraic_ridge](../../../lib/core/ad/algebraic_ridge.esk#L4); see [ad_algebraic_ridge.md](ad_algebraic_ridge.md) for its arithmetic, shape, ownership and refusal contract.
+
+### `algebraic-ridge-step`
+
+Declared by [core.ad.algebraic_ridge](../../../lib/core/ad/algebraic_ridge.esk#L4); see [ad_algebraic_ridge.md](ad_algebraic_ridge.md) for its arithmetic, shape, ownership and refusal contract.
+
+### `algebraic-ridge-output`
+
+Declared by [core.ad.algebraic_ridge](../../../lib/core/ad/algebraic_ridge.esk#L4); see [ad_algebraic_ridge.md](ad_algebraic_ridge.md) for its arithmetic, shape, ownership and refusal contract.
+
+### `algebraic-ridge-info`
+
+Declared by [core.ad.algebraic_ridge](../../../lib/core/ad/algebraic_ridge.esk#L4); see [ad_algebraic_ridge.md](ad_algebraic_ridge.md) for its arithmetic, shape, ownership and refusal contract.
+
+### `algebraic-ridge-pullback`
+
+Declared by [core.ad.algebraic_ridge](../../../lib/core/ad/algebraic_ridge.esk#L4); see [ad_algebraic_ridge.md](ad_algebraic_ridge.md) for its arithmetic, shape, ownership and refusal contract.
+
+### `algebraic-factor-positive-definite?`
+
+Declared by [core.algebraic_linalg](../../../lib/core/algebraic_linalg.esk#L3); see [algebraic_linalg.md](algebraic_linalg.md) for its arithmetic, shape, ownership and refusal contract.
+
+### `algebraic-incremental-moment-ref`
+
+Declared by [core.ad.algebraic_incremental](../../../lib/core/ad/algebraic_incremental.esk#L4); see [ad_algebraic_incremental.md](ad_algebraic_incremental.md) for its arithmetic, shape, ownership and refusal contract.

@@ -1,3 +1,16 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_ridge.esk
+  - lib/core/ad/algebraic_incremental.esk
+  - lib/core/algebraic_linalg.esk
+  - tests/stdlib/algebraic_ridge_test.esk
+  - examples/algebraic_ridge.esk
+---
+
 # Live exact ridge regression
 
 `(require core.ad.algebraic_ridge)` maintains the unique minimizer of
