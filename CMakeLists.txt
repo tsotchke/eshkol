@@ -13198,3 +13198,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_update "tests/stdlib/algebraic_update_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_update_example "examples/algebraic_updates.esk")
 endif()
+
+# One pure polynomial supplies derivatives and its complete finite change.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(derived_operator "tests/stdlib/derived_operator_test.esk")
+    eshkol_add_algebraic_ad_acceptance(derived_operator_example "examples/mathematics_derived_operator.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME derived_operator_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/derived_operator_test.esk")
+    set_tests_properties(derived_operator_vm PROPERTIES
+        TIMEOUT 900 LABELS "ad;vm;parity"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()

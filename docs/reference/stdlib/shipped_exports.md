@@ -834,3 +834,31 @@ Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk
 ### `tensor-circuit-work`
 
 Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
+
+## `core.ad.derived_operator`
+
+Source: `lib/core/ad/derived_operator.esk`. The restricted syntax, exact finite-change identity, derivative contract and refusal limits are documented in [ad_derived_operator.md](ad_derived_operator.md).
+
+### `make-derived-operator`
+
+Compiles one bounded pure scalar polynomial and its symbolic partials and shifted finite-change polynomial.
+
+### `derived-operator-value`
+
+Evaluates the admitted polynomial at a fixed-width point.
+
+### `derived-operator-jvp`
+
+Computes the gradient paired with a direction at the point.
+
+### `derived-operator-vjp`
+
+Computes the formal polynomial transpose of the gradient scaled by a seed.
+
+### `derived-operator-delta`
+
+Computes the exact polynomial difference between the point plus an increment and the point.
+
+### `derived-operator-info`
+
+Returns immutable arity, degree and conservative term-work metadata.

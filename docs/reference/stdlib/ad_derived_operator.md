@@ -1,3 +1,15 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/derived_operator.esk
+  - lib/core/symbolic.esk
+  - tests/stdlib/derived_operator_test.esk
+  - examples/mathematics_derived_operator.esk
+---
+
 # `core.ad.derived_operator`
 
 `(require core.ad.derived_operator)` defines a scalar polynomial once and uses

@@ -5065,6 +5065,49 @@
           "verification": "repository"
         }
       ]
+    },
+    {
+      "path": "examples/mathematics_derived_operator.esk",
+      "source_sha256": "48cc39fd7fe3a798e4c2d19dbf48fb867a760937101d15186a9a6521f027f538",
+      "title": "Exact derivatives and finite changes of a bounded polynomial",
+      "kind": "mathematics",
+      "purpose": "Compare an operator-derived directional derivative with an independent analytic gradient and the complete finite-change identity.",
+      "algorithm": "Compile F(x,y)=x^2+xy once, derive its JVP/VJP and shifted polynomial, then check each against hand evaluation over rational point and direction pairs.",
+      "domain": "One pure degree-two scalar polynomial in two variables; exact rational samples.",
+      "arithmetic": "Exact rational arithmetic only; no floating-point approximation or finite-difference derivative.",
+      "validation": "Checks the independent gradient (2x+y,x), JVP/VJP pairing, exact F(x+delta)-F(x), and a case where derivative and finite delta differ.",
+      "limitations": "Demonstrates this bounded polynomial protocol only; it is not a general differentiable-program proof or a nonlinear remainder certificate.",
+      "prerequisites": "Built eshkol-run, source-tree standard library and core.ad.derived_operator.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 2,
+          "text": "(require stdlib)"
+        },
+        {
+          "line": 13,
+          "text": "           (analytic (+ (* (+ (* 2 x) y) dx) (* x dy)))"
+        },
+        {
+          "line": 17,
+          "text": "           (vjp (derived-operator-vjp op p 3/7)))"
+        },
+        {
+          "line": 19,
+          "text": "      (check \"exact full finite-change identity\" (= delta change))"
+        }
+      ],
+      "literature_review": "The exact identities are established by direct polynomial expansion and independent hand-derived gradient; see the module reference.",
+      "references": [
+        {
+          "citation": "core.ad.derived_operator module contract and test corpus in this repository",
+          "verification": "repository"
+        }
+      ],
+      "key_output": [
+        "^Derived polynomial checks passed"
+      ]
     }
   ],
   "runner_contract": {
