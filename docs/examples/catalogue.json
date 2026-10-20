@@ -4766,6 +4766,52 @@
         "^Exact maintained loss coefficients:",
         "^RESULT: PASS$"
       ]
+    },
+    {
+      "path": "examples/algebraic_reverse.esk",
+      "source_sha256": "20af851227419af14c5bd4265b38200599f36ff779b803dc76e3066b0855c8cb",
+      "title": "Exact algebraic reverse-mode pullback and HVP",
+      "kind": "example",
+      "purpose": "Compute an exact whole-vector pullback and Hessian-vector product for a polynomial over Q(sqrt(2)).",
+      "algorithm": "Record f(x,y)=x^3+y*x^2 once with the public algebraic reverse tape, then compare its pullback and forward-over-reverse HVP with independent analytic formulas.",
+      "domain": "One two-variable point (sqrt(2),3) and direction (2,-1) over the certified real quadratic field.",
+      "arithmetic": "Exact rational power-basis coefficients and algebraic operations; no floating conversion or finite differences.",
+      "validation": "Eight in-program assertions check the exact value, both gradient coordinates, both Hessian-action coordinates, the HVP gradient/value/directional outputs, and zero finite-difference evaluations. The program prints RESULT: PASS only after all assertions pass.",
+      "limitations": "This is a polynomial demonstration over one supplied field; it makes no claim about transcendental operations, general compiler transformations, or speed.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.algebraic_domain and core.ad.algebraic_reverse.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact pullback and HVP over Q(sqrt(2)), checked against closed-form formulas."
+        },
+        {
+          "line": 20,
+          "text": "(define record (algebraic-value-and-pullback field objective point))"
+        },
+        {
+          "line": 23,
+          "text": "(define hvp (algebraic-hvp field objective point direction))"
+        },
+        {
+          "line": 39,
+          "text": "(check \"HVP value and directional output match analytic reference\""
+        },
+        {
+          "line": 49,
+          "text": "(display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "No external literature claim is made; the exact derivatives are independently derived in the source comments.",
+      "references": [],
+      "key_output": [
+        "^Value coefficients: #\\(6 2\\)$",
+        "^Gradient coefficients: #\\(#\\(6 6\\) #\\(2 0\\)\\)$",
+        "^HVP coefficients: #\\(#\\(12 10\\) #\\(0 4\\)\\)$",
+        "^Passed: 8 Failed: 0$",
+        "^RESULT: PASS$"
+      ]
     }
   ],
   "runner_contract": {

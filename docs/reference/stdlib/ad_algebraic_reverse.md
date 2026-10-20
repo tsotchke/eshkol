@@ -7,6 +7,7 @@ sources:
   - lib/core/ad/algebraic_reverse.esk
   - lib/core/ad/tape.esk
   - tests/stdlib/algebraic_reverse_test.esk
+  - examples/algebraic_reverse.esk
 ---
 
 # Exact algebraic reverse-mode differentiation
@@ -48,8 +49,10 @@ tape identity, validate contribution arity and copy admitted seeds/results.
 Custom backward callbacks must return correct derivatives and avoid mutating
 recorded state; these semantics are a caller obligation.
 
-`tests/stdlib/algebraic_reverse_test.esk` checks closed-form irrational and
-rational polynomial gradients/HVPs, reciprocal sensitivities, nested derivatives,
+`examples/algebraic_reverse.esk` exercises the public pullback and HVP entrypoints
+and checks every returned value against independent closed-form exact formulas;
+it prints `RESULT: PASS`. The test suite `tests/stdlib/algebraic_reverse_test.esk`
+adds reciprocal sensitivities, nested derivatives,
 sparse recovery, one-forward reuse, failure recovery and ownership refusals.
 Existing numeric custom-op tape and explicit finite-difference tests exercise
 the default recorder path. This is a stdlib reference surface, with no compiler

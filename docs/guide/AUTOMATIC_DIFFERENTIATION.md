@@ -962,6 +962,8 @@ for the arity-recovery mechanism.
 | `core.ad.tape` | `make-tape`, `tape-input`, `tape-mul`/`-add`/…, `tape-gradient`, `tape-node-count`, … | explicit reverse-mode tape (Scheme level) |
 | `core.ad.algebraic_reverse` | `algebraic-value-and-pullback`, `algebraic-hvp`, `algebraic-reverse-*` | exact reverse-mode pullbacks and Hessian-vector products over algebraic coefficient domains |
 
+Example: [`algebraic_reverse.esk`](../../examples/algebraic_reverse.esk) checks the exact value, gradient, and HVP against closed-form formulas.
+
 **Running module examples:** because these modules are loaded via `require`,
 run them with the build directory on the library path:
 
