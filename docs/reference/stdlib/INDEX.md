@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 79** (plus `stdlib` itself and the module system page) — **provided symbols: 930** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 80** (plus `stdlib` itself and the module system page) — **provided symbols: 941** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -24,7 +24,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|
-| [`core.ad.tape`](../../../lib/core/ad/tape.esk) | no | [ad_tape.md](ad_tape.md) | `ad-tape-new` `ad-const` `ad-var` `ad-add` `ad-sub` `ad-mul` `ad-div` `ad-sin` `ad-cos` `ad-exp` `ad-log` `ad-sqrt` `ad-neg` `ad-abs` `ad-relu` `ad-sigmoid` `ad-tanh` `ad-backward` `ad-gradient` `ad-node-value` `with-tape` `current-tape` `make-tape` `tape-input` `tape-const` `node-value` `node-grad` `record-op!` `record-fd-op!` `tape-add` `tape-sub` `tape-mul` `tape-div` `tape-sin` `tape-cos` `tape-exp` `tape-log` `tape-neg` `tape-square` `tape-sqrt` `tape-tanh` `tape-sigmoid` `tape-relu` `tape-pow` `tape-gradient` `tape-snapshot` `tape-restore` |
+| [`core.ad.tape`](../../../lib/core/ad/tape.esk) | no | [ad_tape.md](ad_tape.md) | `ad-tape-new` `ad-const` `ad-var` `ad-add` `ad-sub` `ad-mul` `ad-div` `ad-sin` `ad-cos` `ad-exp` `ad-log` `ad-sqrt` `ad-neg` `ad-abs` `ad-relu` `ad-sigmoid` `ad-tanh` `ad-backward` `ad-gradient` `ad-node-value` `with-tape` `current-tape` `make-tape` `tape-input` `tape-const` `node-value` `node-grad` `record-op!` `record-fd-op!` `tape-add` `tape-sub` `tape-mul` `tape-div` `tape-sin` `tape-cos` `tape-exp` `tape-log` `tape-neg` `tape-square` `tape-sqrt` `tape-tanh` `tape-sigmoid` `tape-relu` `tape-pow` `tape-gradient` `tape-pullback` `tape-seal!` `tape-snapshot` `tape-restore` |
 | [`core.alist`](../../../lib/core/alist.esk) | yes | [alist.md](alist.md) | `alist-ref` `alist-ref-or` `alist-set` |
 | [`core.argparse`](../../../lib/core/argparse.esk) | no | [argparse.md](argparse.md) | `parse-args` `arg-get` `arg-positional` `arg-has?` `argparse-help` |
 | [`core.cache`](../../../lib/core/cache.esk) | no | [cache.md](cache.md) | `make-lru-cache` `lru-get` `lru-get/default` `lru-set!` `lru-has?` `lru-delete!` `lru-size` `lru-capacity` `lru-clear!` `memoize` `memoize/cap` `memoize1` `memoize1/cap` `memoize2` `memoize2/cap` |
@@ -37,6 +37,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` |
 | [`core.ad.algebraic_implicit`](../../../lib/core/ad/algebraic_implicit.esk) | no | [ad_algebraic_implicit.md](ad_algebraic_implicit.md) | `algebraic-ad-system-root` `algebraic-ad-system-residual` |
 | [`core.ad.algebraic_incremental`](../../../lib/core/ad/algebraic_incremental.esk) | no | [ad_algebraic_incremental.md](ad_algebraic_incremental.md) | `make-algebraic-incremental-plan` `algebraic-incremental-new` `algebraic-incremental-step` `algebraic-incremental-output` `algebraic-incremental-info` |
+| [`core.ad.algebraic_reverse`](../../../lib/core/ad/algebraic_reverse.esk) | no | [ad_algebraic_reverse.md](ad_algebraic_reverse.md) | `algebraic-value-and-pullback` `algebraic-reverse-value` `algebraic-reverse-constant` `algebraic-reverse-add` `algebraic-reverse-sub` `algebraic-reverse-mul` `algebraic-reverse-inverse` `algebraic-reverse-pow` `algebraic-hvp` |
 | [`core.ad.algebraic_sparse`](../../../lib/core/ad/algebraic_sparse.esk) | no | [ad_algebraic_sparse.md](ad_algebraic_sparse.md) | `algebraic-sparse-hessian` `algebraic-sparse-hessian-ref` `algebraic-sparse-hessian-dense` `algebraic-sparse-hessian-summary` |
 | [`core.ad.sparsity`](../../../lib/core/ad/sparsity.esk) | no | [ad_sparsity.md](ad_sparsity.md) | `hessian-color-graph` |
 | [`core.algebraic_batch`](../../../lib/core/algebraic_batch.esk) | no | [algebraic_batch.md](algebraic_batch.md) | `make-algebraic-multiplication-plan` `algebraic-batch-mul` |

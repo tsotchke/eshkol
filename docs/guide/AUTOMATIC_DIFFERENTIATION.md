@@ -960,6 +960,7 @@ for the arity-recovery mechanism.
 | `core.ad.checkpoint` | `dense-gradient`, `checkpointed-gradient`, `dense-tower-reverse`, `checkpointed-tower-reverse`, `checkpoint-block-size` | Griewank-checkpointed high-order reverse |
 | `core.ad.taylor_numerics` | `taylor-ode-solve`, `taylor-root`, `taylor-inverse-series`, `taylor-eval` | series-based ODE / root / inversion |
 | `core.ad.tape` | `make-tape`, `tape-input`, `tape-mul`/`-add`/…, `tape-gradient`, `tape-node-count`, … | explicit reverse-mode tape (Scheme level) |
+| `core.ad.algebraic_reverse` | `algebraic-value-and-pullback`, `algebraic-hvp`, `algebraic-reverse-*` | exact reverse-mode pullbacks and Hessian-vector products over algebraic coefficient domains |
 
 **Running module examples:** because these modules are loaded via `require`,
 run them with the build directory on the library path:
@@ -988,6 +989,7 @@ your-file.esk`.
   `(ad-finite-difference-evals)` and `(ad-note-finite-difference!)`, which are what
   make "no finite-difference fallback anywhere in the gradient path" a measurement
   a program can perform on itself rather than a claim it has to take on trust.
+- [`docs/reference/stdlib/ad_algebraic_reverse.md`](../reference/stdlib/ad_algebraic_reverse.md) — exact whole-vector pullbacks and Hessian-vector products over bounded algebraic coefficient domains.
 - [`docs/reference/stdlib/ad_tape.md`](../reference/stdlib/ad_tape.md) — the
   pure-Scheme `core.ad.tape` module listed in the table above: a separate tape that
   records an explicit backward closure per operation, so custom ops and

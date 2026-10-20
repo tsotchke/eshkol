@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_reverse.esk
+  - lib/core/ad/tape.esk
+  - tests/stdlib/algebraic_reverse_test.esk
+---
+
 # Exact algebraic reverse-mode differentiation
 
 `(require core.ad.algebraic_reverse)` adapts the existing `core.ad.tape`
