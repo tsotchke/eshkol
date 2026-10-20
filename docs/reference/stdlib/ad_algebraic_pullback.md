@@ -1,3 +1,17 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_pullback.esk
+  - lib/core/ad/algebraic_implicit.esk
+  - lib/core/ad/algebraic_reverse.esk
+  - lib/core/algebraic_linalg.esk
+  - tests/stdlib/algebraic_pullback_test.esk
+  - examples/algebraic_pullback.esk
+---
+
 # Exact equation-defined solver pullbacks
 
 `(require core.ad.algebraic_pullback)` differentiates the equations defining
