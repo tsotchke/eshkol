@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_implicit.esk
+  - tests/stdlib/algebraic_implicit_test.esk
+  - examples/algebraic_implicit.esk
+---
+
 # Coupled exact implicit differentiation
 
 `core.ad.algebraic_implicit` extends supplied-branch lifting to polynomial

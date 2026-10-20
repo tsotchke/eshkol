@@ -2752,6 +2752,18 @@
       "ctest": [],
       "key_output": [],
       "not_run_reason": "Release measurements remain NOT-RUN; focused PR qualification is recorded separately under richard/evidence-794."
+    },
+    "examples/algebraic_implicit.esk": {
+      "source_sha256": "8d8fcf23e41044e50869126efed1d3289aeed4796849c1647030ef8274beb169",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "Release measurements remain NOT-RUN; focused PR qualification is recorded separately under richard/evidence-795."
     }
   }
 }

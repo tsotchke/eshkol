@@ -86,6 +86,49 @@
       ]
     },
     {
+      "path": "examples/algebraic_implicit.esk",
+      "source_sha256": "8d8fcf23e41044e50869126efed1d3289aeed4796849c1647030ef8274beb169",
+      "title": "Coupled exact implicit differentiation",
+      "kind": "example",
+      "purpose": "Lift a supplied simple branch of a coupled polynomial system through an exact Taylor carrier.",
+      "algorithm": "Derive the polynomial Jacobian, factor its primal matrix once, and reuse it for exact nilpotent corrections.",
+      "domain": "Two coupled equations over Q(sqrt(2)); order-four Taylor carrier at the supplied branch (sqrt(2), sqrt(2)).",
+      "arithmetic": "Exact rational power-basis coefficients and exact Taylor derivatives; no finite differences.",
+      "validation": "Three assertions check coupled components, the full vector residual and exact Taylor derivatives from the binomial expansion; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "Demonstrates local lifting around one supplied simple branch; it does not search roots or prove global uniqueness.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic and core.ad.algebraic_implicit.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Coupled implicit differentiation of x^2+y^2=4+t, x-y=0 around (sqrt(2),sqrt(2))."
+        },
+        {
+          "line": 10,
+          "text": "  (list (list 1 (vector 2 0)) (list 1 (vector 0 2))"
+        },
+        {
+          "line": 13,
+          "text": "(define roots (algebraic-ad-system-root context equations (vector alpha alpha)))"
+        },
+        {
+          "line": 24,
+          "text": "  (let loop ((i 0)) (or (= i (vector-length expected))"
+        },
+        {
+          "line": 33,
+          "text": "(if (> failures 0) (begin (display \"RESULT: FAIL\") (newline) (exit 1)))"
+        }
+      ],
+      "literature_review": "The exact derivatives are independently derived from the binomial expansion and checked by the focused qualification oracle.",
+      "references": [],
+      "key_output": [
+        "^Taylor coefficients for both coupled roots:$",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/autodiff.esk",
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
       "title": "Scalar automatic differentiation",

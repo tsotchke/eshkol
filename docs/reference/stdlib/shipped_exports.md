@@ -5,6 +5,21 @@ not present in the standard-library index. Signatures and module locations are
 taken from the source files named in each section. The anchors are checked by
 `scripts/check_public_api_docs.py`.
 
+## `core.ad.algebraic_implicit`
+
+Source: `lib/core/ad/algebraic_implicit.esk`. The full contract and bounded
+polynomial syntax are in [ad_algebraic_implicit.md](ad_algebraic_implicit.md).
+
+### `algebraic-ad-system-root`
+
+Lifts a supplied simple branch of a bounded coupled polynomial system through
+an exact AD context using its formally derived primal Jacobian.
+
+### `algebraic-ad-system-residual`
+
+Returns the full enclosing-domain residual vector for a bounded polynomial
+system at supplied values.
+
 ## `agent.http`
 
 Source: `lib/agent/http.esk`. The complete transport reference is in
