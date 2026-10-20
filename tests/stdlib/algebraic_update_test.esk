@@ -72,6 +72,14 @@
 (check "pullback owns retained solution" (same (vector-ref (vector-ref (vector-ref ((vector-ref pb 1) (vector 1 0)) 0) 0) 0) -2/5))
 (check "floating update coefficient refused" (raises? (lambda () (algebraic-update original (list (vector 1.0 0)) (list (vector 1 0))))))
 (check "invalid update rank/shape refused" (raises? (lambda () (algebraic-update original (list (vector 1)) (list (vector 1))))))
+(check "rank above bounded correction limit refused" (raises? (lambda () (algebraic-update original
+  (make-list 9 (vector 1 0)) (make-list 9 (vector 0 1))))))
+(check "unknown correction policy refused" (raises? (lambda () (algebraic-update original '() '() 'unchecked))))
+(define foreign (make-algebraic-field '(-3 0 1) 5 1))
+(check "foreign coefficient owner refused" (raises? (lambda () (algebraic-update original
+  (list (vector (algebraic-generator foreign) 0)) (list (vector 1 0))))))
+(check "singular Woodbury core and final matrix refused" (raises? (lambda () (algebraic-update original
+  (list (vector -2 0)) (list (vector 1 0)) 'correction))))
 (check "generic update cannot bypass SPD admission" (raises? (lambda () (algebraic-update spd (list (vector 1 0)) (list (vector 1 0))))))
 (check "empty update reuses factor" (eq? original (algebraic-update original '() '())))
 (display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
