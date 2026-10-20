@@ -2,7 +2,7 @@
 (require core.dbsp)
 (require core.data.radix)
 (provide make-dbsp-group make-dbsp-circuit dbsp-circuit-step dbsp-circuit-output
-         dbsp-circuit-input dbsp-circuit-work)
+         dbsp-circuit-input dbsp-circuit-work dbsp-circuit-checkpoint-state)
 
 ;; Explicit additive-group operations. ZERO constructs an immutable identity;
 ;; ADD/NEGATE return immutable values and ZERO? recognizes that identity exactly.
@@ -233,3 +233,21 @@
   (dc-observe (vector-ref (dc-state (vector-ref runtime 4) (dc-lookup (vector-ref runtime 2) name)) 0)))
 (define (dbsp-circuit-work runtime)
   (dc-check runtime) (vector-copy (vector-ref runtime 5)))
+
+;; Pointer-free logical operator state for checkpoint verification. This is
+;; a full observation, including hidden distinct counts and join arrangements.
+;; The caller owns admitted row data; serialization must freeze those values.
+(define (dbsp-circuit-checkpoint-state runtime)
+  (dc-check runtime)
+  (let* ((graph (vector-ref runtime 1)) (states (vector-ref runtime 4))
+         (n (vector-length graph)) (out (make-vector n #f)))
+    (define (arrangement root)
+      (sort (dc-fold root (lambda (key rows acc) (cons (list key (zset-entries rows)) acc)) '())
+            (lambda (a b) (string<? (zset-row-key (car a)) (zset-row-key (car b))))))
+    (let loop ((i 0)) (if (< i n)
+      (let* ((node (vector-ref graph i)) (op (vector-ref node 0)) (state (dc-state states i)))
+        (vector-set! out i (vector op (zset-entries (dc-observe (vector-ref state 0)))
+          (cond ((eq? op 'distinct) (zset-entries (dc-observe (vector-ref state 1))))
+                ((eq? op 'join) (arrangement (vector-ref state 1))) (else #f))
+          (if (eq? op 'join) (arrangement (vector-ref state 2)) #f)))
+        (loop (+ i 1))))) out))

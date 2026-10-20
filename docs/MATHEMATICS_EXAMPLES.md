@@ -27,7 +27,7 @@ Each entry gives: the published result being reproduced and its references; what
 | `ESHKOL_NS_EXAMPLES` | 12 | 14 | 28 |
 | `ESHKOL_IPM_EXAMPLES` | 29 | 29 | 58 |
 | `ESHKOL_AI_WITNESS_EXAMPLES` | 4 | 4 | 8 |
-| `ESHKOL_DBSP_EXAMPLES` | 1 | 1 | 2 |
+| `ESHKOL_DBSP_EXAMPLES` | 2 | 2 | 4 |
 
 
 Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repeated criteria for one program are counted separately; the localization source has three NS criteria. 1 program (`mathematics_group_cohomology_sweep`) has no dedicated criterion; it is run by the general examples runner.

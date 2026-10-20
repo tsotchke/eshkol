@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 86** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1002** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 87** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1011** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -55,7 +55,8 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.data.radix`](../../../lib/core/data/radix.esk) | no | [data_radix.md](data_radix.md) | `radix-empty` `radix-ref` `radix-set` `radix-delete` `radix-fold` |
 | [`core.dbsp`](../../../lib/core/dbsp.esk) | no | [dbsp.md](dbsp.md) | `zset-row-key` `zset-empty` `zset?` `zset-singleton` `zset-from-weighted` `zset-weight` `zset-add` `zset-negate` `zset-sub` `zset-scale` `zset-consolidate` `zset-empty?` `zset-positive?` `zset=?` `zset-entries` `zset-rows` `zset-size` `zset-map` `zset-filter` `zset-project` `zset-union` `zset-join` `zset-distinct` `zset-count` `zset-sum` `stream-zero` `stream-delay` `dbsp-delay` `stream-D` `stream-I` `stream-add` `stream-negate` `stream-lift` `dbsp-compose` `dbsp-incrementalize` `incremental-map` `incremental-filter` `incremental-project` `incremental-union` `incremental-join` `incremental-distinct` |
 | [`core.dbsp.ad`](../../../lib/core/dbsp/ad.esk) | no | [dbsp_ad.md](dbsp_ad.md) | `dbsp-vector-group` `dbsp-ad-lift` |
-| [`core.dbsp.circuit`](../../../lib/core/dbsp/circuit.esk) | no | [dbsp_circuit.md](dbsp_circuit.md) | `make-dbsp-group` `make-dbsp-circuit` `dbsp-circuit-step` `dbsp-circuit-output` `dbsp-circuit-input` `dbsp-circuit-work` |
+| [`core.dbsp.circuit`](../../../lib/core/dbsp/circuit.esk) | no | [dbsp_circuit.md](dbsp_circuit.md) | `make-dbsp-group` `make-dbsp-circuit` `dbsp-circuit-step` `dbsp-circuit-output` `dbsp-circuit-input` `dbsp-circuit-work` `dbsp-circuit-checkpoint-state` |
+| [`core.dbsp.checkpoint`](../../../lib/core/dbsp/checkpoint.esk) | no | [dbsp_checkpoint.md](dbsp_checkpoint.md) | `make-dbsp-resumable` `dbsp-resumable-step` `dbsp-resumable-output` `dbsp-resumable-tick` `dbsp-resumable-checkpoint` `dbsp-resumable-restore` `dbsp-checkpoint-save` `dbsp-checkpoint-load` |
 | [`core.dbsp.tensor_circuit`](../../../lib/core/dbsp/tensor_circuit.esk) | no | [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) | `make-tensor-circuit` `tensor-circuit-step` `tensor-circuit-output` `tensor-circuit-ref` `tensor-circuit-work` |
 | [`core.dbsp.tensor_snapshot`](../../../lib/core/dbsp/tensor_snapshot.esk) | no | [dbsp_tensor_snapshot.md](dbsp_tensor_snapshot.md) | `tensor-snapshot` `tensor-snapshot-shape` `tensor-snapshot-ref` `tensor-snapshot-apply` `tensor-snapshot->tensor` `tensor-snapshot->reader` `tensor-snapshot-work` |
 | [`core.dbsp.tensor`](../../../lib/core/dbsp/tensor.esk) | no | [dbsp.md](dbsp.md#optional-sparse-tensor-bridge) | `tensor-delta` `tensor-delta?` `tensor-delta-shape` `tensor-delta-entries` `tensor-apply-delta` `zset-project-tensor` `tensor-matmul-delta` `tensor-reader` |
@@ -213,6 +214,15 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.ad.algebraic_reverse` | `algebraic-reverse-inverse` | [algebraic-reverse-inverse](shipped_exports.md#algebraic-reverse-inverse) |
 | `core.ad.algebraic_reverse` | `algebraic-reverse-pow` | [algebraic-reverse-pow](shipped_exports.md#algebraic-reverse-pow) |
 | `core.ad.algebraic_reverse` | `algebraic-hvp` | [algebraic-hvp](shipped_exports.md#algebraic-hvp) |
+| `core.dbsp.circuit` | `dbsp-circuit-checkpoint-state` | [`dbsp-circuit-checkpoint-state`](shipped_exports.md#dbsp-circuit-checkpoint-state) |
+| `core.dbsp.checkpoint` | `make-dbsp-resumable` | [`make-dbsp-resumable`](shipped_exports.md#make-dbsp-resumable) |
+| `core.dbsp.checkpoint` | `dbsp-resumable-step` | [`dbsp-resumable-step`](shipped_exports.md#dbsp-resumable-step) |
+| `core.dbsp.checkpoint` | `dbsp-resumable-output` | [`dbsp-resumable-output`](shipped_exports.md#dbsp-resumable-output) |
+| `core.dbsp.checkpoint` | `dbsp-resumable-tick` | [`dbsp-resumable-tick`](shipped_exports.md#dbsp-resumable-tick) |
+| `core.dbsp.checkpoint` | `dbsp-resumable-checkpoint` | [`dbsp-resumable-checkpoint`](shipped_exports.md#dbsp-resumable-checkpoint) |
+| `core.dbsp.checkpoint` | `dbsp-resumable-restore` | [`dbsp-resumable-restore`](shipped_exports.md#dbsp-resumable-restore) |
+| `core.dbsp.checkpoint` | `dbsp-checkpoint-save` | [`dbsp-checkpoint-save`](shipped_exports.md#dbsp-checkpoint-save) |
+| `core.dbsp.checkpoint` | `dbsp-checkpoint-load` | [`dbsp-checkpoint-load`](shipped_exports.md#dbsp-checkpoint-load) |
 | `core.dbsp.tensor_circuit` | `make-tensor-circuit` | [`make-tensor-circuit`](shipped_exports.md#make-tensor-circuit) |
 | `core.dbsp.tensor_circuit` | `tensor-circuit-step` | [`tensor-circuit-step`](shipped_exports.md#tensor-circuit-step) |
 | `core.dbsp.tensor_circuit` | `tensor-circuit-output` | [`tensor-circuit-output`](shipped_exports.md#tensor-circuit-output) |

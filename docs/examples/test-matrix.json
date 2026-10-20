@@ -1,7 +1,7 @@
 {
   "schema": "eshkol.example-test-matrix.v1",
   "authored_condition": "ESHKOL_BUILD_TESTS AND TARGET eshkol-run",
-  "programs": 83,
+  "programs": 84,
   "mathematics_programs": 47,
   "families": {
     "ESHKOL_NS_EXAMPLES": {
@@ -402,13 +402,21 @@
       ]
     },
     "ESHKOL_DBSP_EXAMPLES": {
-      "criteria": 1,
-      "distinct_sources": 1,
-      "ctest_entries": 2,
+      "criteria": 2,
+      "distinct_sources": 2,
+      "ctest_entries": 4,
       "rows": [
         {
           "criterion": "dbsp_tensor_circuit_example",
           "source": "examples/mathematics_dbsp_tensor_circuit.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        },
+        {
+          "criterion": "dbsp_checkpoint_restart_example",
+          "source": "examples/dbsp_checkpoint_restart.esk",
           "modes": [
             "jit",
             "aot"
@@ -420,7 +428,7 @@
   "general_runner": {
     "discovery": "examples/*.esk",
     "mode": "aot",
-    "flat_programs": 82,
+    "flat_programs": 83,
     "quantum_sources": [
       "examples/vqe_h2.esk",
       "examples/h2_vibrational_quantum.esk",
@@ -441,6 +449,6 @@
   "execution_claim": {
     "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
     "source": "docs/examples/measurements.json",
-    "summary": "Measurement snapshot for these 83 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **62** completed in both modes; **44** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 18 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Without a passing verdict at this SHA:** [H₂ frequency from quantum-backend geometry differences](#h2-vibrational-quantum), [Quantum natural-gradient comparison](#qng-vqe), [H₂ variational quantum optimization](#vqe-h2) (its entry shows the output). **Not run:** [Exact algebraic automatic differentiation](#algebraic-ad), [Packed exact algebraic multiplication](#algebraic-batch), [Exact algebraic computation across matrices, constraints and live rows](#algebraic-frontiers), [Coupled exact implicit differentiation](#algebraic-implicit), [Maintained exact incremental objective and gradient](#algebraic-incremental), [Exact algebraic matrix calculus](#algebraic-matrix-calculus), [Exact algebraic solve pullback and HVP](#algebraic-pullback), [Certified exact convex quadratic programs and active-set pullbacks](#algebraic-qp), [Exact algebraic reverse-mode pullback and HVP](#algebraic-reverse), [Exact live ridge fit and regularization sensitivity](#algebraic-ridge), [Exact sparse algebraic curvature](#algebraic-sparse), [Exact simple eigenvalue branch and projector](#algebraic-spectral), [Guarded exact low-rank updates](#algebraic-updates), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic), [Nested exact differentiation over a certified combined field](#nested-algebraic-fields), [Maintained grouped AD loss and gradients](#streaming-least-squares) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4."
+    "summary": "Measurement snapshot for these 84 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **62** completed in both modes; **44** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 18 print diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Without a passing verdict at this SHA:** [H₂ frequency from quantum-backend geometry differences](#h2-vibrational-quantum), [Quantum natural-gradient comparison](#qng-vqe), [H₂ variational quantum optimization](#vqe-h2) (its entry shows the output). **Not run:** [Exact algebraic automatic differentiation](#algebraic-ad), [Packed exact algebraic multiplication](#algebraic-batch), [Exact algebraic computation across matrices, constraints and live rows](#algebraic-frontiers), [Coupled exact implicit differentiation](#algebraic-implicit), [Maintained exact incremental objective and gradient](#algebraic-incremental), [Exact algebraic matrix calculus](#algebraic-matrix-calculus), [Exact algebraic solve pullback and HVP](#algebraic-pullback), [Certified exact convex quadratic programs and active-set pullbacks](#algebraic-qp), [Exact algebraic reverse-mode pullback and HVP](#algebraic-reverse), [Exact live ridge fit and regularization sensitivity](#algebraic-ridge), [Exact sparse algebraic curvature](#algebraic-sparse), [Exact simple eigenvalue branch and projector](#algebraic-spectral), [Guarded exact low-rank updates](#algebraic-updates), [Exact restart equivalence for a standing DBSP circuit](#dbsp-checkpoint-restart), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic), [Nested exact differentiation over a certified combined field](#nested-algebraic-fields), [Maintained grouped AD loss and gradients](#streaming-least-squares) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4."
   }
 }
