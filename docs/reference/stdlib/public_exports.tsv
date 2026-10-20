@@ -158,3 +158,8 @@ lib/core/algebraic_update.esk	4	provide	algebraic-update-solve
 lib/core/algebraic_update.esk	4	provide	algebraic-update-solve-transpose
 lib/core/algebraic_update.esk	4	provide	algebraic-update-pullback
 lib/core/algebraic_update.esk	4	provide	algebraic-update-info
+lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-solve
+lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-solution
+lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-info
+lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-verify
+lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-pullback

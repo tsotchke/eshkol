@@ -5,6 +5,36 @@ not present in the standard-library index. Signatures and module locations are
 taken from the source files named in each section. The anchors are checked by
 `scripts/check_public_api_docs.py`.
 
+## `core.ad.algebraic_qp`
+
+Source: `lib/core/ad/algebraic_qp.esk`. The exact convexity, certificate,
+active-set and pullback contracts are documented in
+[ad_algebraic_qp.md](ad_algebraic_qp.md).
+
+### `algebraic-qp-solve`
+
+Solves a bounded exact strictly convex quadratic program by deterministic
+inequality active-set enumeration and KKT certification.
+
+### `algebraic-qp-solution`
+
+Returns owned primal values, equality multipliers, inequality multipliers and
+objective value from a certified result.
+
+### `algebraic-qp-info`
+
+Returns active-set attempt count, copied active inequality indices, strict
+pullback-admission status and total factorization attempts.
+
+### `algebraic-qp-verify`
+
+Independently checks a returned certificate against the caller's QP.
+
+### `algebraic-qp-pullback`
+
+Computes exact cotangents for the Hessian, linear term and equality and
+inequality data on an admitted strict active branch.
+
 ## `core.ad.algebraic_sparse`
 
 Source: `lib/core/ad/algebraic_sparse.esk`. The exact sparse-curvature contract,

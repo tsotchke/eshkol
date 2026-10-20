@@ -13186,6 +13186,7 @@ endif()
 # Certified bounded quadratic programs share the exact AD acceptance driver.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_qp "tests/stdlib/algebraic_qp_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_qp_example "examples/algebraic_qp.esk")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)

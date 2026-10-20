@@ -161,6 +161,57 @@
       ]
     },
     {
+      "path": "examples/algebraic_qp.esk",
+      "source_sha256": "6759d5a2cd9c37b46a0258755ea31ad7d60b77f7f4b3bc7226b04a57954b97ad",
+      "title": "Certified exact convex quadratic programs and active-set pullbacks",
+      "kind": "example",
+      "purpose": "Solve small strictly convex quadratic programs over an exact algebraic field, check KKT certificates, and differentiate stable active branches.",
+      "algorithm": "Enumerate inequality active sets, solve the exact KKT system, verify stationarity and complementary slackness, and reuse the transposed factor for parameter pullbacks.",
+      "domain": "A two-variable equality-constrained problem over Q(sqrt(2)) and a one-variable rational bound-constrained problem.",
+      "arithmetic": "Exact rational and algebraic field operations; no floating conversion or finite differences.",
+      "validation": "Closed-form equality and bound solutions, exact RHS and inequality-data cotangents, independent KKT verification, active-set-transition pullback refusal, and search-budget refusal; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "Demonstrates only small exact QPs within the module bounds; it makes no performance claim and does not imply derivatives across active-set transitions.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic_qp and core.algebraic_linalg.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact convex quadratic programming with KKT and pullback certificates."
+        },
+        {
+          "line": 12,
+          "text": ";; Minimize 1/2*(x^2+y^2)+x-y with x+y=alpha."
+        },
+        {
+          "line": 19,
+          "text": "(define equality-bars (algebraic-qp-pullback equality-result (vector 1 0)))"
+        },
+        {
+          "line": 28,
+          "text": ";; The active bound x<=2 has x=2 and multiplier 1. Its stable-branch d-bar is 1."
+        },
+        {
+          "line": 41,
+          "text": ";; At the transition x=d with zero multiplier, the certificate is valid but"
+        },
+        {
+          "line": 52,
+          "text": ";; A one-set budget cannot reach the active set and refuses without a partial answer."
+        },
+        {
+          "line": 59,
+          "text": "(display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "This example demonstrates the repository-local exact KKT API; no external literature claim is made.",
+      "references": [],
+      "key_output": [
+        "^Exact equality and bound-constrained QPs, KKT checks and pullback guards: PASS$",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/algebraic_ridge.esk",
       "source_sha256": "3945e29247e1cc82100e7952b9a4a3e91623110164d1c322bc9dff8764708d80",
       "title": "Exact live ridge fit and regularization sensitivity",

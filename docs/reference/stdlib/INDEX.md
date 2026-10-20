@@ -222,6 +222,11 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.ad.algebraic_ridge` | `algebraic-ridge-output` | [`algebraic-ridge-output`](shipped_exports.md#algebraic-ridge-output) |
 | `core.ad.algebraic_ridge` | `algebraic-ridge-info` | [`algebraic-ridge-info`](shipped_exports.md#algebraic-ridge-info) |
 | `core.ad.algebraic_ridge` | `algebraic-ridge-pullback` | [`algebraic-ridge-pullback`](shipped_exports.md#algebraic-ridge-pullback) |
+| `core.ad.algebraic_qp` | `algebraic-qp-solve` | [`algebraic-qp-solve`](shipped_exports.md#algebraic-qp-solve) |
+| `core.ad.algebraic_qp` | `algebraic-qp-solution` | [`algebraic-qp-solution`](shipped_exports.md#algebraic-qp-solution) |
+| `core.ad.algebraic_qp` | `algebraic-qp-info` | [`algebraic-qp-info`](shipped_exports.md#algebraic-qp-info) |
+| `core.ad.algebraic_qp` | `algebraic-qp-verify` | [`algebraic-qp-verify`](shipped_exports.md#algebraic-qp-verify) |
+| `core.ad.algebraic_qp` | `algebraic-qp-pullback` | [`algebraic-qp-pullback`](shipped_exports.md#algebraic-qp-pullback) |
 | `core.algebraic_linalg` | `algebraic-factor-positive-definite?` | [`algebraic-factor-positive-definite?`](shipped_exports.md#algebraic-factor-positive-definite) |
 | `core.ad.algebraic_incremental` | `algebraic-incremental-moment-ref` | [`algebraic-incremental-moment-ref`](shipped_exports.md#algebraic-incremental-moment-ref) |
 | `core.ad.algebraic_sparse` | `algebraic-sparse-hessian` | [algebraic-sparse-hessian](shipped_exports.md#algebraic-sparse-hessian) |

@@ -1,3 +1,15 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_qp.esk
+  - lib/core/algebraic_linalg.esk
+  - tests/stdlib/algebraic_qp_test.esk
+  - examples/algebraic_qp.esk
+---
+
 # Certified small convex quadratic programs
 
 `(require core.ad.algebraic_qp)` solves
@@ -41,3 +53,8 @@ certificates, moving branches and all six cotangent pairings are exercised.
 No finite-difference derivative is used. This is a bounded exact reference
 solver, not a large sparse/interior-point solver or a global differentiability
 claim at changes of active set.
+
+The standalone example in [algebraic_qp.esk](../../../examples/algebraic_qp.esk)
+shows an equality-constrained problem over Q(sqrt(2)), an active rational bound,
+the corresponding exact pullbacks, and refusal at an active-set transition and
+when the active-set search budget is exhausted.

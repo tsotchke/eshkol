@@ -1,0 +1,59 @@
+;; Exact convex quadratic programming with KKT and pullback certificates.
+(require stdlib)
+(require core.ad.algebraic_qp)
+(define field (make-algebraic-field '(-2 0 1) 3 1))
+(define alpha (algebraic-generator field))
+(define domain (algebraic-domain field))
+(define same (algebraic-domain-ref domain 'equal?))
+(define half (algebraic-element field 1/2))
+(define empty (vector))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+
+;; Minimize 1/2*(x^2+y^2)+x-y with x+y=alpha.
+(define equality-result
+  (algebraic-qp-solve field
+    (vector (vector 1 0) (vector 0 1)) (vector 1 -1)
+    (vector (vector 1 1)) (vector alpha) empty empty))
+(define equality-solution (algebraic-qp-solution equality-result))
+(define x (vector-ref equality-solution 0))
+(define equality-bars (algebraic-qp-pullback equality-result (vector 1 0)))
+(if (not (and
+          (algebraic-qp-verify field (vector (vector 1 0) (vector 0 1))
+            (vector 1 -1) (vector (vector 1 1)) (vector alpha) empty empty equality-result)
+          (same (vector-ref x 0) (algebraic-sub (algebraic-scale alpha 1/2) (algebraic-element field 1)))
+          (same (vector-ref x 1) (algebraic-add (algebraic-scale alpha 1/2) (algebraic-element field 1)))
+          (same (vector-ref (vector-ref equality-bars 3) 0) half)))
+    (error "Exact equality-constrained QP or RHS pullback differs from closed form"))
+
+;; The active bound x<=2 has x=2 and multiplier 1. Its stable-branch d-bar is 1.
+(define active-result
+  (algebraic-qp-solve field (vector (vector 1)) (vector -3)
+    empty empty (vector (vector 1)) (vector 2)))
+(define active-solution (algebraic-qp-solution active-result))
+(define active-bars (algebraic-qp-pullback active-result (vector 1)))
+(if (not (and (same (vector-ref (vector-ref active-solution 0) 0) (algebraic-element field 2))
+              (same (vector-ref (vector-ref active-solution 2) 0) (algebraic-element field 1))
+              (same (vector-ref (vector-ref (vector-ref active-bars 4) 0) 0)
+                    (algebraic-element field -2))
+              (same (vector-ref (vector-ref active-bars 5) 0) (algebraic-element field 1))))
+    (error "Active inequality solution or pullback differs from closed form"))
+
+;; At the transition x=d with zero multiplier, the certificate is valid but
+;; the active-set derivative is ambiguous and must be refused.
+(define boundary-result
+  (algebraic-qp-solve field (vector (vector 1)) (vector -2)
+    empty empty (vector (vector 1)) (vector 2)))
+(if (not (and (algebraic-qp-verify field (vector (vector 1)) (vector -2)
+                  empty empty (vector (vector 1)) (vector 2) boundary-result)
+              (not (vector-ref (algebraic-qp-info boundary-result) 2))
+              (raises? (lambda () (algebraic-qp-pullback boundary-result (vector 1))))))
+    (error "QP transition certificate or strict-pullback refusal differs"))
+
+;; A one-set budget cannot reach the active set and refuses without a partial answer.
+(if (not (raises? (lambda ()
+       (algebraic-qp-solve field (vector (vector 1)) (vector -3)
+         empty empty (vector (vector 1)) (vector 2) 1))))
+    (error "QP search-budget exhaustion did not refuse"))
+
+(display "Exact equality and bound-constrained QPs, KKT checks and pullback guards: PASS") (newline)
+(display "RESULT: PASS") (newline)
