@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/dbsp/tensor_circuit.esk
+  - tests/stdlib/tensor_circuit_test.esk
+  - examples/mathematics_dbsp_tensor_circuit.esk
+---
+
 # Maintained named-axis tensor expressions
 
 `(require core.dbsp.tensor_circuit)` compiles a checked, fixed-shape expression

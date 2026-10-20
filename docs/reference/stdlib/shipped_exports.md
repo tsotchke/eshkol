@@ -732,3 +732,23 @@ Declared by [core.algebraic_linalg](../../../lib/core/algebraic_linalg.esk#L3); 
 ### `algebraic-incremental-moment-ref`
 
 Declared by [core.ad.algebraic_incremental](../../../lib/core/ad/algebraic_incremental.esk#L4); see [ad_algebraic_incremental.md](ad_algebraic_incremental.md) for its arithmetic, shape, ownership and refusal contract.
+
+### `make-tensor-circuit`
+
+Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
+
+### `tensor-circuit-step`
+
+Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
+
+### `tensor-circuit-output`
+
+Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
+
+### `tensor-circuit-ref`
+
+Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
+
+### `tensor-circuit-work`
+
+Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.

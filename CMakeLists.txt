@@ -3890,20 +3890,26 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         list(GET ESHKOL_DBSP_EXAMPLES ${_dbsp_j} _dbsp_file)
         set(_dbsp_src "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_dbsp_file}.esk")
         if(EXISTS "${_dbsp_src}")
-            add_test(NAME ${_dbsp_name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_dbsp_src}")
+            add_test(NAME ${_dbsp_name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_dbsp_src}"
+                "-L${CMAKE_CURRENT_BINARY_DIR}")
             set_tests_properties(${_dbsp_name}_jit PROPERTIES
                 TIMEOUT 180
-                ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/dbsp-jit-cache"
+                ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_JIT_CACHE=0;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/dbsp-jit-cache"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
-                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR:|JIT session error:|LLVM module verification failed|fatal signal")
             add_test(NAME ${_dbsp_name}_aot
-                COMMAND sh -c
-                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_dbsp_name}_aot' '${_dbsp_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_dbsp_name}_aot'")
+                COMMAND ${CMAKE_COMMAND}
+                    "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+                    "-DESHKOL_SOURCE=${_dbsp_src}"
+                    "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_dbsp_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+                    "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    "-DESHKOL_VERDICT=ALL PASS"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
             set_tests_properties(${_dbsp_name}_aot PROPERTIES
                 TIMEOUT 240
                 ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
                 PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
-                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR:|JIT session error:|LLVM module verification failed|fatal signal")
         endif()
     endforeach()
 endif()

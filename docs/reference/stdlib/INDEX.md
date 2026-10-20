@@ -202,6 +202,11 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.ad.algebraic_reverse` | `algebraic-reverse-inverse` | [algebraic-reverse-inverse](shipped_exports.md#algebraic-reverse-inverse) |
 | `core.ad.algebraic_reverse` | `algebraic-reverse-pow` | [algebraic-reverse-pow](shipped_exports.md#algebraic-reverse-pow) |
 | `core.ad.algebraic_reverse` | `algebraic-hvp` | [algebraic-hvp](shipped_exports.md#algebraic-hvp) |
+| `core.dbsp.tensor_circuit` | `make-tensor-circuit` | [`make-tensor-circuit`](shipped_exports.md#make-tensor-circuit) |
+| `core.dbsp.tensor_circuit` | `tensor-circuit-step` | [`tensor-circuit-step`](shipped_exports.md#tensor-circuit-step) |
+| `core.dbsp.tensor_circuit` | `tensor-circuit-output` | [`tensor-circuit-output`](shipped_exports.md#tensor-circuit-output) |
+| `core.dbsp.tensor_circuit` | `tensor-circuit-ref` | [`tensor-circuit-ref`](shipped_exports.md#tensor-circuit-ref) |
+| `core.dbsp.tensor_circuit` | `tensor-circuit-work` | [`tensor-circuit-work`](shipped_exports.md#tensor-circuit-work) |
 | `core.ad.algebraic_ridge` | `algebraic-ridge-new` | [`algebraic-ridge-new`](shipped_exports.md#algebraic-ridge-new) |
 | `core.ad.algebraic_ridge` | `algebraic-ridge-step` | [`algebraic-ridge-step`](shipped_exports.md#algebraic-ridge-step) |
 | `core.ad.algebraic_ridge` | `algebraic-ridge-output` | [`algebraic-ridge-output`](shipped_exports.md#algebraic-ridge-output) |

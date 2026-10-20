@@ -173,6 +173,20 @@ class CatalogueTests(unittest.TestCase):
         path.write_text(original)
         self.catalogue['entries'][0]['registrations'][0]['criterion']='old';self.save();self.reject_without_write()
 
+    def test_dbsp_toolchain_and_uncached_runtime_binding_rejects_drift(self):
+        path=self.root/'CMakeLists.txt';original=path.read_text()
+        mutations=[
+            ('cached runtime', lambda t:t.replace('ESHKOL_JIT_CACHE=0;ESHKOL_JIT_CACHE_DIR=', 'ESHKOL_JIT_CACHE=1;ESHKOL_JIT_CACHE_DIR=')),
+            ('foreign stdlib', lambda t:t.replace('"-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"', '"-DESHKOL_LINK_DIR=/foreign/stdlib"')),
+            ('fake AOT driver', lambda t:t.replace('-P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake"', '-P "/foreign/echo-pass.cmake"')),
+            ('missing JIT stdlib', lambda t:t.replace('"-L${CMAKE_CURRENT_BINARY_DIR}")', ')')),
+        ]
+        for name,mutate in mutations:
+            changed=mutate(original);self.assertNotEqual(changed,original)
+            path.write_text(changed)
+            with self.subTest(mutation=name):self.reject_without_write()
+        path.write_text(original)
+
     def test_runner_change_or_reviewed_skip_mismatch_reject(self):
         path=self.root/'scripts/run_examples_tests.sh';original=path.read_text()
         path.write_text(original.replace('examples/*.esk','examples/selected*.esk'))

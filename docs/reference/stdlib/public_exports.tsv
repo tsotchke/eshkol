@@ -146,3 +146,8 @@ lib/core/ad/algebraic_ridge.esk	4	provide	algebraic-ridge-info
 lib/core/ad/algebraic_ridge.esk	4	provide	algebraic-ridge-pullback
 lib/core/algebraic_linalg.esk	3	provide	algebraic-factor-positive-definite?
 lib/core/ad/algebraic_incremental.esk	4	provide	algebraic-incremental-moment-ref
+lib/core/dbsp/tensor_circuit.esk	3	provide	make-tensor-circuit
+lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-step
+lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-output
+lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-ref
+lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-work

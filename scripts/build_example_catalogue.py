@@ -101,7 +101,22 @@ def registration_matrix(root, paths):
                 raise CatalogueError(f"missing/duplicate authored {mode} registration for {family}")
         if f'"${{CMAKE_CURRENT_SOURCE_DIR}}/examples/${{_{prefix}_file}}.esk"' not in block or 'PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"' not in block:
             raise CatalogueError(f"unrecognized source/verdict registration contract: {family}")
-        if f'COMMAND $<TARGET_FILE:eshkol-run> -r "${{_{prefix}_src}}"' not in block or f"'${{_{prefix}_src}}' && '${{CMAKE_CURRENT_BINARY_DIR}}/${{_{prefix}_name}}_aot'" not in block:
+        jit_command = f'COMMAND $<TARGET_FILE:eshkol-run> -r "${{_{prefix}_src}}"'
+        if family == "ESHKOL_DBSP_EXAMPLES":
+            normalized = " ".join(block.split())
+            expected_jit = jit_command + ' "-L${CMAKE_CURRENT_BINARY_DIR}")'
+            expected_aot = (
+                'COMMAND ${CMAKE_COMMAND} "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" '
+                '"-DESHKOL_SOURCE=${_dbsp_src}" '
+                '"-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_dbsp_name}_aot${CMAKE_EXECUTABLE_SUFFIX}" '
+                '"-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" '
+                '"-DESHKOL_VERDICT=ALL PASS" '
+                '-P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")'
+            )
+            if (expected_jit not in normalized or expected_aot not in normalized
+                    or 'ESHKOL_JIT_CACHE=0;ESHKOL_JIT_CACHE_DIR=' not in block):
+                raise CatalogueError(f"source-bound native JIT/AOT routing changed: {family}")
+        elif jit_command not in block or f"'${{_{prefix}_src}}' && '${{CMAKE_CURRENT_BINARY_DIR}}/${{_{prefix}_name}}_aot'" not in block:
             raise CatalogueError(f"native JIT/AOT command routing changed: {family}")
         if f'ENVIRONMENT "ESHKOL_PATH=${{CMAKE_CURRENT_SOURCE_DIR}}/lib"' not in block[block.find(f'set_tests_properties(${{_{prefix}_name}}_aot'):]:
             raise CatalogueError(f"AOT stdlib environment missing: {family}")
