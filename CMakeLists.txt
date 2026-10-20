@@ -13132,6 +13132,13 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/arc
     set_tests_properties(v14_connection_gate_status_test PROPERTIES TIMEOUT 30)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND UNIX AND Python3_Interpreter_FOUND AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/test_timeout_cancellation_test.sh")
+    add_test(NAME test_timeout_cancellation_test
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/test_timeout_cancellation_test.sh")
+    set_tests_properties(test_timeout_cancellation_test PROPERTIES TIMEOUT 30)
+endif()
+
 # Keyed aggregates and fixed-parameter AD consumers use the same strict driver.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     function(eshkol_add_dbsp_acceptance name source verdict)
