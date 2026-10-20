@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -62,14 +63,20 @@ def validate_test_commands(payload: str, repo_root: Path, build_dir: Path) -> se
     fixture = str((repo_root / "tests/ad/taylor_numerics_test.esk").resolve())
     runtime = by_name["taylor_numerics_runtime_smoke"].get("command")
     aot = by_name["taylor_numerics_aot_smoke"].get("command")
-    if not isinstance(runtime, list) or binary not in runtime or "-r" not in runtime or fixture not in runtime:
+    if (not isinstance(runtime, list) or len(runtime) < 3 or runtime[0] != binary
+            or runtime[1:3] != ["-r", fixture]):
         raise GateError("runtime CTest command does not run the source-bound fixture with this build binary")
-    if not isinstance(aot, list):
-        raise GateError("AOT CTest command is missing its command vector")
-    aot_command = " ".join(str(part) for part in aot)
+    if not isinstance(aot, list) or len(aot) != 3 or aot[:2] != ["sh", "-c"]:
+        raise GateError("AOT CTest command is not the expected shell compile-and-run command")
     aot_output = str((build_dir / "taylor_numerics_aot").resolve())
-    if (binary not in aot_command or fixture not in aot_command
-            or " -o " not in aot_command or aot_output not in aot_command):
+    try:
+        lexer = shlex.shlex(str(aot[2]), posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError as exc:
+        raise GateError(f"AOT CTest command cannot be parsed safely: {exc}") from exc
+    expected_compile = [binary, "-o", aot_output, fixture, "-L" + str(build_dir.resolve())]
+    if tokens != expected_compile + ["&&", aot_output]:
         raise GateError("AOT CTest command does not compile and run the source-bound fixture")
     return names
 
@@ -95,7 +102,7 @@ def validate_report(junit_path: Path, verbose_log_path: Path) -> dict:
         log = verbose_log_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise GateError(f"missing CTest verbose log: {exc}") from exc
-    starts = list(re.finditer(r"(?m)^Start\s+\d+:\s*(\S+)\s*$", log))
+    starts = list(re.finditer(r"(?m)^[ \t]*Start\s+\d+:\s*(\S+)\s*$", log))
     blocks: dict[str, str] = {}
     for index, match in enumerate(starts):
         name = match.group(1)
@@ -107,8 +114,14 @@ def validate_report(junit_path: Path, verbose_log_path: Path) -> dict:
             f"expected={sorted(EXPECTED_TESTS)} observed={sorted(blocks)}"
         )
     for name in sorted(EXPECTED_TESTS):
-        if VERDICT not in blocks[name]:
+        lines = blocks[name].splitlines()
+        verdict_index = next((i for i, line in enumerate(lines) if VERDICT in line), None)
+        if verdict_index is None:
             raise GateError(f"{name} did not print the explicit {VERDICT!r} verdict")
+        trailing_errors = [line for line in lines[verdict_index + 1:]
+                           if re.search(r"\bERROR:|\bJIT session error:|\bFAIL\b", line)]
+        if trailing_errors:
+            raise GateError(f"{name} printed an error after its 41/41 verdict: {trailing_errors}")
     return {"cases": sorted(EXPECTED_TESTS), "verdict": VERDICT, "checks_per_case": 41}
 
 
@@ -311,7 +324,15 @@ def self_test() -> None:
             failure = '<failure>injected</failure>' if case == "failed" and idx == 1 else ""
             verdict = "PASS: tower user-numerics 0/0 checks" if case == "zero-count" else VERDICT
             xml.append(f'<testcase name="{name}">{skipped}{failure}</testcase>')
-            log.extend((f"Start {idx}: {name}", verdict))
+            log.extend((f"  Start {idx}: {name}", f"{idx}: {verdict}"))
+            if case == "error-after-verdict" and idx == 1:
+                log.append("1: ERROR: injected post-verdict diagnostic")
+            elif case == "jit-session-error" and idx == 1:
+                log.append("1: JIT session error: injected post-verdict diagnostic")
+            elif case == "fail-after-verdict" and idx == 1:
+                log.append("1: FAIL injected post-verdict diagnostic")
+            elif case == "linker-warning" and idx == 1:
+                log.append("1: ld: warning: injected benign linker warning")
         xml.append("</testsuite></testsuites>")
         junit, verbose = root / f"{case}.xml", root / f"{case}.log"
         junit.write_text("".join(xml), encoding="utf-8")
@@ -320,9 +341,10 @@ def self_test() -> None:
 
     with tempfile.TemporaryDirectory(prefix="ad-numerics-gate-") as temp:
         root = Path(temp)
-        junit, verbose = fixtures("good", root)
+        junit, verbose = fixtures("linker-warning", root)
         validate_report(junit, verbose)
-        for case in ("missing", "renamed", "skipped", "zero-count", "failed"):
+        for case in ("missing", "renamed", "skipped", "zero-count", "failed",
+                     "error-after-verdict", "jit-session-error", "fail-after-verdict"):
             junit, verbose = fixtures(case, root)
             try:
                 validate_report(junit, verbose)
@@ -375,7 +397,7 @@ def self_test() -> None:
         aot_path = str((build / "taylor_numerics_aot").resolve())
         good_commands = {"tests": [
             {"name": "taylor_numerics_runtime_smoke", "command": [binary_path, "-r", fixture]},
-            {"name": "taylor_numerics_aot_smoke", "command": ["sh", "-c", f"{binary_path} -o {aot_path} {fixture}"]},
+            {"name": "taylor_numerics_aot_smoke", "command": ["sh", "-c", f"{binary_path} -o {aot_path} {fixture} -L{build.resolve()} && {aot_path}"]},
         ]}
         validate_test_commands(json.dumps(good_commands), source, build)
         wrong_commands = json.loads(json.dumps(good_commands))
@@ -386,7 +408,18 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("wrong-source CTest fixture command was accepted")
-    print("PASS: P11 gate failure controls rejected missing/renamed/skipped/0-count/failed/wrong-source evidence")
+        compile_only = json.loads(json.dumps(good_commands))
+        compile_only["tests"][1]["command"][2] = f"{binary_path} -o {aot_path} {fixture} -L{build.resolve()}"
+        echo_command = json.loads(json.dumps(good_commands))
+        echo_command["tests"][0]["command"] = ["echo", binary_path, "-r", fixture]
+        for label, payload in (("compile-only AOT", compile_only), ("echo runtime", echo_command)):
+            try:
+                validate_test_commands(json.dumps(payload), source, build)
+            except GateError:
+                pass
+            else:
+                raise AssertionError(f"{label} CTest command was accepted")
+    print("PASS: P11 gate controls rejected missing/renamed/skipped/0-count/failed/post-verdict ERROR/JIT-session-error/FAIL/wrong-source/compile-only/echo commands; benign linker warning accepted")
 
 
 if __name__ == "__main__":

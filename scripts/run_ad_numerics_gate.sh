@@ -76,7 +76,7 @@ if ! python3 "$REPO_ROOT/scripts/lib/ad_numerics_gate.py" --check-tests \
 fi
 
 set +e
-ctest --test-dir "$BUILD_PATH" --verbose --output-on-failure \
+ctest --test-dir "$BUILD_PATH" --parallel 1 --verbose --output-on-failure \
   --output-junit "$JUNIT" --timeout "${GATE_TIMEOUT:-900}" -R "$EXPECTED" > "$LOG" 2>&1
 CTEST_STATUS=$?
 set -e
