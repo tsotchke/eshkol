@@ -605,7 +605,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Exact derivatives and finite changes of a bounded polynomial
 
-Source: [mathematics_derived_operator.esk](../examples/mathematics_derived_operator.esk#L1). SHA-256: `34055306219a11579a656c113fccc22a4253a0aa99e8e1abf6b86881ea935734`.
+Source: [mathematics_derived_operator.esk](../examples/mathematics_derived_operator.esk#L1). SHA-256: `0900f0c4d1750cf411c0387478c782b0923fc2806566917dedf71f48cecca92f`.
 
 **Published result:** The exact identities are established by direct polynomial expansion and independent hand-derived gradient; see the module reference.
 
@@ -621,7 +621,7 @@ Source: [mathematics_derived_operator.esk](../examples/mathematics_derived_opera
 
 **Arithmetic:** Exact rational arithmetic only; no floating-point approximation or finite-difference derivative.
 
-**Checks in the source:** Checks the independent gradient (2x+y,x), JVP/VJP pairing, exact F(x+delta)-F(x), and a case where derivative and finite delta differ.
+**Checks in the source:** Checks the independent gradient (2x+y,x), JVP/VJP pairing, exact F(x+delta)-F(x), and a case where derivative and finite delta differ. Prints RESULT: PASS only after every assertion succeeds.
 
 **Limits:** Demonstrates this bounded polynomial protocol only; it is not a general differentiable-program proof or a nonlinear remainder certificate.
 
@@ -629,7 +629,7 @@ Source: [mathematics_derived_operator.esk](../examples/mathematics_derived_opera
 
 **Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. Source-only preparation; execution deliberately not performed.
 
-Implementation/check anchors: [line 2](../examples/mathematics_derived_operator.esk#L2), [line 13](../examples/mathematics_derived_operator.esk#L13), [line 17](../examples/mathematics_derived_operator.esk#L17), [line 19](../examples/mathematics_derived_operator.esk#L19).
+Implementation/check anchors: [line 2](../examples/mathematics_derived_operator.esk#L2), [line 13](../examples/mathematics_derived_operator.esk#L13), [line 17](../examples/mathematics_derived_operator.esk#L17), [line 19](../examples/mathematics_derived_operator.esk#L19), [line 30](../examples/mathematics_derived_operator.esk#L30).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 

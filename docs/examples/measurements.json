@@ -2936,7 +2936,7 @@
       "not_run_reason": "This source-only PR preparation did not execute release or focused routes. JIT, AOT, direct-VM and CTest outcomes remain NOT-RUN."
     },
     "examples/mathematics_derived_operator.esk": {
-      "source_sha256": "34055306219a11579a656c113fccc22a4253a0aa99e8e1abf6b86881ea935734",
+      "source_sha256": "0900f0c4d1750cf411c0387478c782b0923fc2806566917dedf71f48cecca92f",
       "jit": {
         "status": "NOT-RUN"
       },

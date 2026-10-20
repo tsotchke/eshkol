@@ -1811,14 +1811,14 @@
     },
     {
       "path": "examples/mathematics_derived_operator.esk",
-      "source_sha256": "34055306219a11579a656c113fccc22a4253a0aa99e8e1abf6b86881ea935734",
+      "source_sha256": "0900f0c4d1750cf411c0387478c782b0923fc2806566917dedf71f48cecca92f",
       "title": "Exact derivatives and finite changes of a bounded polynomial",
       "kind": "mathematics",
       "purpose": "Compare an operator-derived directional derivative with an independent analytic gradient and the complete finite-change identity.",
       "algorithm": "Compile F(x,y)=x^2+xy once, derive its JVP/VJP and shifted polynomial, then check each against hand evaluation over rational point and direction pairs.",
       "domain": "One pure degree-two scalar polynomial in two variables; exact rational samples.",
       "arithmetic": "Exact rational arithmetic only; no floating-point approximation or finite-difference derivative.",
-      "validation": "Checks the independent gradient (2x+y,x), JVP/VJP pairing, exact F(x+delta)-F(x), and a case where derivative and finite delta differ.",
+      "validation": "Checks the independent gradient (2x+y,x), JVP/VJP pairing, exact F(x+delta)-F(x), and a case where derivative and finite delta differ. Prints RESULT: PASS only after every assertion succeeds.",
       "limitations": "Demonstrates this bounded polynomial protocol only; it is not a general differentiable-program proof or a nonlinear remainder certificate.",
       "prerequisites": "Built eshkol-run, source-tree standard library and core.ad.derived_operator.",
       "review_status": "source-inspected",
@@ -1839,6 +1839,10 @@
         {
           "line": 19,
           "text": "      (check \"exact full finite-change identity\" (= delta change))"
+        },
+        {
+          "line": 30,
+          "text": "(display \"RESULT: PASS\\n\")"
         }
       ],
       "literature_review": "The exact identities are established by direct polynomial expansion and independent hand-derived gradient; see the module reference.",
@@ -1849,7 +1853,8 @@
         }
       ],
       "key_output": [
-        "^Derived polynomial checks passed"
+        "^Derived polynomial checks passed",
+        "^RESULT: PASS$"
       ]
     },
     {
