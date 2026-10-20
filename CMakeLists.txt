@@ -3622,6 +3622,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
         ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(string_to_list_runtime_test PRIVATE eshkol-runtime)
     add_test(NAME string_to_list_runtime_test COMMAND string_to_list_runtime_test)
+    set_tests_properties(string_to_list_runtime_test PROPERTIES TIMEOUT 30)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")

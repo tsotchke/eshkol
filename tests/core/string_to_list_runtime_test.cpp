@@ -26,6 +26,11 @@ bool check(arena_t* arena, const unsigned char* input, size_t length,
             std::printf("FAIL: %s: codepoint %zu\n", name, i);
             return false;
         }
+        if (cell->cdr.type != ESHKOL_VALUE_HEAP_PTR &&
+            cell->cdr.type != ESHKOL_VALUE_NULL) {
+            std::printf("FAIL: %s: improper list tail at %zu\n", name, i);
+            return false;
+        }
         if (cell->cdr.type == ESHKOL_VALUE_HEAP_PTR) {
             cell = reinterpret_cast<arena_tagged_cons_cell_t*>(cell->cdr.data.ptr_val);
         } else {
@@ -45,6 +50,8 @@ int main() {
     arena_t* arena = arena_create(4096);
     if (!arena) return 1;
     int failures = 0;
+    const unsigned char empty[] = {0};
+    failures += !check(arena, empty, 0, nullptr, 0, "empty");
     const unsigned char ascii[] = {'A', 'z'};
     const int64_t ascii_expected[] = {'A', 'z'};
     failures += !check(arena, ascii, sizeof(ascii), ascii_expected, 2, "ASCII");
@@ -77,6 +84,13 @@ int main() {
     };
     failures += !check(arena, malformed, sizeof(malformed), malformed_expected, 9,
                        "malformed and truncated sequences");
+    const unsigned char truncated_two[] = {0xC2};
+    const unsigned char truncated_three[] = {0xE2, 0x82};
+    const int64_t replacement[] = {0xFFFD};
+    failures += !check(arena, truncated_two, sizeof(truncated_two), replacement, 1,
+                       "truncated two-byte sequence");
+    failures += !check(arena, truncated_three, sizeof(truncated_three), replacement, 1,
+                       "truncated three-byte sequence");
     arena_destroy(arena);
     if (!failures) std::printf("PASS: runtime string->list Unicode decoding\n");
     return failures ? 1 : 0;
