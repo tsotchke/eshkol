@@ -2789,6 +2789,32 @@
       "key_output": [],
       "note": "Focused offline qualification passed all three routes; release measurements remain NOT-RUN.",
       "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
+    },
+    "examples/algebraic_incremental.esk": {
+      "source_sha256": "2e7f154bbcfb5073f973d61ec7cef7a0e115524983ad20ae550a70238a3ade4c",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "note": "Focused offline qualification passed ORC, O3 AOT, and direct VM routes; release measurements remain NOT-RUN.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
+    },
+    "examples/algebraic_frontiers.esk": {
+      "source_sha256": "1d7ee24f1d77b48899c75708938a3d138229ebce0508025815ab10de23392497",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "note": "Focused qualification is separate from release measurements.",
+      "not_run_reason": "No configured release measurement receipt exists."
     }
   }
 }

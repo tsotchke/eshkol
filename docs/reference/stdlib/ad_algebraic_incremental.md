@@ -1,3 +1,15 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_incremental.esk
+  - tests/stdlib/algebraic_incremental_test.esk
+  - bench/algebraic_incremental.esk
+  - examples/algebraic_incremental.esk
+---
+
 # Live incremental exact polynomial derivatives
 
 `core.ad.algebraic_incremental` maintains signed polynomial row reductions and
