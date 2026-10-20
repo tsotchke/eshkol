@@ -751,7 +751,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Maintained grouped AD loss and gradients
 
-Source: [streaming_least_squares.esk](../examples/streaming_least_squares.esk#L1). SHA-256: `d247ace99d0c5ba65b69830cda8df301f2b14d3e398e33af05c4cbd6113546aa`.
+Source: [streaming_least_squares.esk](../examples/streaming_least_squares.esk#L1). SHA-256: `2004d9d76affaf8011d591e0bb7ea9911989bd5ffd5fa5a525c7b756119f65dd`.
 
 **Purpose:** Maintain fixed-parameter least-squares loss and both parameter derivatives under signed row updates.
 
@@ -759,7 +759,7 @@ Source: [streaming_least_squares.esk](../examples/streaming_least_squares.esk#L1
 
 **Domain and parameters:** Two fixed parameters (0.5, -1.0), finite real sample coordinates/targets, and signed integer row weights.
 
-**Arithmetic:** Numeric AD with floating seeds; dyadic demonstration values compare exactly. General floating accumulation may round.
+**Arithmetic:** Numeric AD with inexact seeds; the dyadic demonstration values are exactly representable in binary64 and compared with strict ZSet equality. General floating accumulation may round.
 
 **Checks in the source:** Six explicit assertions cover grouped loss/gradients, atomic replacement deltas, cohort deletion, historical views and zero finite-difference evaluations.
 

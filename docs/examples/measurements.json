@@ -2704,7 +2704,7 @@
       "output_lines": 27
     },
     "examples/streaming_least_squares.esk": {
-      "source_sha256": "d247ace99d0c5ba65b69830cda8df301f2b14d3e398e33af05c4cbd6113546aa",
+      "source_sha256": "2004d9d76affaf8011d591e0bb7ea9911989bd5ffd5fa5a525c7b756119f65dd",
       "jit": {
         "status": "NOT-RUN"
       },

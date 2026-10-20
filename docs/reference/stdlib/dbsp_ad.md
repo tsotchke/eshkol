@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/dbsp/ad.esk
+  - tests/stdlib/dbsp_ad_test.esk
+  - examples/streaming_least_squares.esk
+---
+
 # `core.dbsp.ad` — maintained fixed-parameter AD objectives
 
 `(dbsp-ad-lift point build-loss)` returns a pure row-to-vector callback. The
