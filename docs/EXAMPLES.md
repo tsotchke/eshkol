@@ -302,17 +302,17 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Exact sparse algebraic curvature
 
-Source: [algebraic_sparse.esk](../examples/algebraic_sparse.esk#L1). SHA-256: `3ddc86270e9aa6eb027182edf8dff11c64b463f15c5ef02d75a3cc0545a0fe09`.
+Source: [algebraic_sparse.esk](../examples/algebraic_sparse.esk#L1). SHA-256: `b39bad3265799ab2414e8af5a57d60a3ab0d1a5fad18860e64fd4d045cedc5b5`.
 
-**Purpose:** Recover selected exact Hessian coefficients over Q(cuberoot(2)) from an explicit sparsity pattern.
+**Purpose:** Recover selected exact Hessian coefficients over Q(sqrt(2)) from an explicit sparsity pattern.
 
 **Implemented algorithm:** Seed a small nonlinear objective over an exact algebraic field, run colored scalar hyperdual probes, and inspect the mixed and diagonal coefficients plus the probe summary.
 
-**Domain and parameters:** A two-variable point over the certified real field Q(cuberoot(2)); structural entries (0,1) and (1,1).
+**Domain and parameters:** A two-variable point over the certified real field Q(sqrt(2)); structural entries (0,1) and (1,1).
 
 **Arithmetic:** Exact rational power-basis coefficients and exact AD operations; no floating conversion or finite differences.
 
-**Checks in the source:** Prints the exact mixed coefficient, diagonal coefficient, and scalar-probe summary; the executable suite independently checks every dense entry against its analytic Hessian formula.
+**Checks in the source:** Five exact assertions compare H01=4, H11=2*sqrt(2), H00=0, the two-probe summary and zero finite differences; errors exit nonzero and success prints RESULT: PASS.
 
 **Limits:** The caller supplies a complete structural pattern. This demonstration uses scalar probes; probe counts are not wall-clock performance evidence.
 
@@ -320,7 +320,7 @@ Source: [algebraic_sparse.esk](../examples/algebraic_sparse.esk#L1). SHA-256: `3
 
 **Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately.
 
-Implementation/check anchors: [line 1](../examples/algebraic_sparse.esk#L1), [line 10](../examples/algebraic_sparse.esk#L10), [line 12](../examples/algebraic_sparse.esk#L12).
+Implementation/check anchors: [line 1](../examples/algebraic_sparse.esk#L1), [line 19](../examples/algebraic_sparse.esk#L19), [line 33](../examples/algebraic_sparse.esk#L33).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 

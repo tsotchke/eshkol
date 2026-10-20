@@ -162,14 +162,14 @@
     },
     {
       "path": "examples/algebraic_sparse.esk",
-      "source_sha256": "3ddc86270e9aa6eb027182edf8dff11c64b463f15c5ef02d75a3cc0545a0fe09",
+      "source_sha256": "b39bad3265799ab2414e8af5a57d60a3ab0d1a5fad18860e64fd4d045cedc5b5",
       "title": "Exact sparse algebraic curvature",
       "kind": "example",
-      "purpose": "Recover selected exact Hessian coefficients over Q(cuberoot(2)) from an explicit sparsity pattern.",
+      "purpose": "Recover selected exact Hessian coefficients over Q(sqrt(2)) from an explicit sparsity pattern.",
       "algorithm": "Seed a small nonlinear objective over an exact algebraic field, run colored scalar hyperdual probes, and inspect the mixed and diagonal coefficients plus the probe summary.",
-      "domain": "A two-variable point over the certified real field Q(cuberoot(2)); structural entries (0,1) and (1,1).",
+      "domain": "A two-variable point over the certified real field Q(sqrt(2)); structural entries (0,1) and (1,1).",
       "arithmetic": "Exact rational power-basis coefficients and exact AD operations; no floating conversion or finite differences.",
-      "validation": "Prints the exact mixed coefficient, diagonal coefficient, and scalar-probe summary; the executable suite independently checks every dense entry against its analytic Hessian formula.",
+      "validation": "Five exact assertions compare H01=4, H11=2*sqrt(2), H00=0, the two-probe summary and zero finite differences; errors exit nonzero and success prints RESULT: PASS.",
       "limitations": "The caller supplies a complete structural pattern. This demonstration uses scalar probes; probe counts are not wall-clock performance evidence.",
       "prerequisites": "Built eshkol-run and stdlib plus source-tree core.algebraic_domain, core.ad.sparsity, and core.ad.algebraic_sparse.",
       "review_status": "source-inspected",
@@ -180,12 +180,12 @@
           "text": "(require stdlib)"
         },
         {
-          "line": 10,
-          "text": "    (mul x (mul y y))))"
+          "line": 19,
+          "text": "(check \"mixed coefficient is exactly four\""
         },
         {
-          "line": 12,
-          "text": "(display \"H(0,1) = \" ) (write (algebraic-sparse-hessian-ref h 0 1)) (newline)"
+          "line": 33,
+          "text": "(display \"RESULT: PASS\") (newline)"
         }
       ],
       "literature_review": "No external literature is needed for this exact arithmetic demonstration.",

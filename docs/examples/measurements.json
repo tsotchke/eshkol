@@ -2778,7 +2778,7 @@
       "not_run_reason": "Focused offline qualification only; release measurements remain NOT-RUN."
     },
     "examples/algebraic_sparse.esk": {
-      "source_sha256": "3ddc86270e9aa6eb027182edf8dff11c64b463f15c5ef02d75a3cc0545a0fe09",
+      "source_sha256": "b39bad3265799ab2414e8af5a57d60a3ab0d1a5fad18860e64fd4d045cedc5b5",
       "jit": {
         "status": "NOT-RUN"
       },
@@ -2787,7 +2787,7 @@
       },
       "ctest": [],
       "key_output": [],
-      "note": "Focused offline qualification passed all three routes; release measurements remain NOT-RUN.",
+      "note": "Exact analytic assertions added after configured CTest rejected the earlier print-only example; root qualification is recorded separately from release measurements.",
       "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
     },
     "examples/algebraic_incremental.esk": {
