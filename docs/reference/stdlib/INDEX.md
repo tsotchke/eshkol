@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 89** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1019** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 90** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1025** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -249,6 +249,12 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.ad.derived_operator` | `derived-operator-vjp` | [`derived-operator-vjp`](shipped_exports.md#derived-operator-vjp) |
 | `core.ad.derived_operator` | `derived-operator-delta` | [`derived-operator-delta`](shipped_exports.md#derived-operator-delta) |
 | `core.ad.derived_operator` | `derived-operator-info` | [`derived-operator-info`](shipped_exports.md#derived-operator-info) |
+| `core.ad.root_branch` | `make-root-branch` | [`make-root-branch`](shipped_exports.md#make-root-branch) |
+| `core.ad.root_branch` | `root-branch-step` | [`root-branch-step`](shipped_exports.md#root-branch-step) |
+| `core.ad.root_branch` | `root-branch-enclosure` | [`root-branch-enclosure`](shipped_exports.md#root-branch-enclosure) |
+| `core.ad.root_branch` | `root-branch-time` | [`root-branch-time`](shipped_exports.md#root-branch-time) |
+| `core.ad.root_branch` | `root-branch-sensitivity` | [`root-branch-sensitivity`](shipped_exports.md#root-branch-sensitivity) |
+| `core.ad.root_branch` | `verify-root-branch-step` | [`verify-root-branch-step`](shipped_exports.md#verify-root-branch-step) |
 | `core.ad.algebraic_spectral` | `algebraic-characteristic` | [`algebraic-characteristic`](shipped_exports.md#algebraic-characteristic) |
 | `core.ad.algebraic_spectral` | `algebraic-eigenvalue-with-pullback` | [`algebraic-eigenvalue-with-pullback`](shipped_exports.md#algebraic-eigenvalue-with-pullback) |
 | `core.ad.algebraic_spectral` | `algebraic-eigenvalue-lift` | [`algebraic-eigenvalue-lift`](shipped_exports.md#algebraic-eigenvalue-lift) |
