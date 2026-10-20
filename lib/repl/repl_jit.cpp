@@ -3013,7 +3013,7 @@ llvm::Error ReplJITContext::loadStdlib() {
                         "rejecting stdlib.bc %s: %s; expected %s",
                         bc_path.c_str(),
                         reason.empty() ? "unreadable bitcode" : reason.c_str(),
-                        ESHKOL_STDLIB_IDENTITY_SYMBOL);
+                        static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
                 } else {
                     uint64_t content_hash = llvm::xxh3_64bits((*bc_buf)->getBuffer());
                     std::string triple = llvm::sys::getProcessTriple();
@@ -3111,7 +3111,7 @@ llvm::Error ReplJITContext::loadStdlib() {
                                     llvm::errc::invalid_argument,
                                     "rejecting cached stdlib object %s: %s; expected %s",
                                     cache_o.string().c_str(), cached_identity.c_str(),
-                                    ESHKOL_STDLIB_IDENTITY_SYMBOL);
+                                    static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
                             }
                             if (have_obj && !objectMatchesRunningAbi(
                                                 (*obj_buf)->getMemBufferRef(),
@@ -3183,7 +3183,7 @@ llvm::Error ReplJITContext::loadStdlib() {
                         llvm::errc::invalid_argument,
                         "rejecting stdlib.bc %s: %s; expected %s",
                         stdlib_bc_path.c_str(), found_identity.c_str(),
-                        ESHKOL_STDLIB_IDENTITY_SYMBOL);
+                        static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
                 } else {
                     if (stdlib_module->getDataLayout().isDefault()) {
                         stdlib_module->setDataLayout(jit_->getDataLayout());
@@ -3238,7 +3238,7 @@ llvm::Error ReplJITContext::loadStdlib() {
                 llvm::errc::invalid_argument,
                 "rejecting stdlib.o %s: %s; expected %s",
                 stdlib_obj_path.c_str(), found_identity.c_str(),
-                ESHKOL_STDLIB_IDENTITY_SYMBOL);
+                static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
         }
         if (!objectMatchesRunningAbi((*buffer_or_err)->getMemBufferRef(), foreign)) {
             return llvm::createStringError(
@@ -3462,7 +3462,7 @@ bool ReplJITContext::loadModule(const std::string& module_name,
         eshkol_ast_clean(&ast_item);
     }
 
-                return llvm::Error::success();
+    return true;
 }
 
 /**

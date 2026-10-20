@@ -1,3 +1,4 @@
+#include <iostream>
 #include <cstdio>
 /*
  * Copyright (C) tsotchke
@@ -2637,7 +2638,7 @@ static llvm::Error validate_stdlib_object_file(const std::string& path)
             llvm::errc::invalid_argument,
             "rejecting precompiled stdlib object %s: %s; expected %s. Rebuild or reinstall the matching Eshkol package",
             path.c_str(), found_identity.c_str(),
-            ESHKOL_STDLIB_IDENTITY_SYMBOL);
+            static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
     }
     return llvm::Error::success();
 }
@@ -2680,7 +2681,7 @@ static llvm::Error validate_stdlib_bitcode_file(const std::string& path)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "rejecting precompiled stdlib bitcode %s: %s; expected %s",
-            path.c_str(), found_identity.c_str(), ESHKOL_STDLIB_IDENTITY_SYMBOL);
+            path.c_str(), found_identity.c_str(), static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
     }
     return llvm::Error::success();
 }
