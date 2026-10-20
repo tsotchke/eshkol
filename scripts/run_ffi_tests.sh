@@ -68,16 +68,36 @@ run_with_timeout() {
     return "$rc"
 }
 
-DIAGNOSTIC_BASE="${RUNNER_TEMP:-$ESHKOL_TEST_TMPDIR}/eshkol-test-logs"
-DIAGNOSTIC_DIR="$DIAGNOSTIC_BASE/ffi-diagnostics-$(basename "$ESHKOL_TEST_TMPDIR")"
+if [ -n "${ESHKOL_FFI_DIAGNOSTIC_DIR:-}" ]; then
+    DIAGNOSTIC_DIR="$ESHKOL_FFI_DIAGNOSTIC_DIR"
+elif [ -n "${RUNNER_TEMP:-}" ]; then
+    DIAGNOSTIC_DIR="$RUNNER_TEMP/eshkol-test-logs/ffi-diagnostics-$(basename "$ESHKOL_TEST_TMPDIR")"
+else
+    # Keep local diagnostics outside ESHKOL_TEST_TMPDIR, which the isolation
+    # trap removes at exit.  mktemp makes each invocation's evidence unique.
+    DIAGNOSTIC_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-ffi-diagnostics.${ESHKOL_TEST_REPO_TAG}.XXXXXX")" \
+        || { echo "FATAL: could not create durable FFI diagnostics directory" >&2; exit 2; }
+fi
+case "$DIAGNOSTIC_DIR/" in
+    "$ESHKOL_TEST_TMPDIR/"*)
+        echo "FATAL: FFI diagnostics must live outside auto-cleaned ESHKOL_TEST_TMPDIR" >&2
+        exit 2
+        ;;
+esac
 mkdir -p "$DIAGNOSTIC_DIR"
+echo "FFI diagnostics: $DIAGNOSTIC_DIR"
+
+TEST_TIMEOUT_SECONDS="${ESHKOL_FFI_TEST_TIMEOUT_SECONDS:-10}"
+case "$TEST_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*|0) echo "FATAL: ESHKOL_FFI_TEST_TIMEOUT_SECONDS must be a positive integer" >&2; exit 2 ;;
+esac
 
 record_phase() {
     local status_path="$1" phase="$2" exit_status="$3" timeout_marker="$4"
     {
         printf 'phase=%s\n' "$phase"
         printf 'exit_status=%s\n' "$exit_status"
-        if [ -s "$timeout_marker" ]; then
+        if [ -n "$timeout_marker" ] && [ -e "$timeout_marker" ]; then
             printf 'timed_out=yes\n'
         else
             printf 'timed_out=no\n'
@@ -127,7 +147,6 @@ for test_file in tests/ffi/*.esk; do
     phase_prefix="$DIAGNOSTIC_DIR/${test_name%.esk}"
     compile_log="$phase_prefix.aot-compile.log"
     compile_status="$phase_prefix.aot-compile.status"
-    : > "$phase_prefix.aot-compile.timeout"
 
     eshkol_test_reset_bin
     if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > "$compile_log" 2>&1; then
@@ -135,13 +154,13 @@ for test_file in tests/ffi/*.esk; do
     else
         compile_rc=$?
     fi
-    record_phase "$compile_status" "AOT compile" "$compile_rc" "$phase_prefix.aot-compile.timeout"
+    record_phase "$compile_status" "AOT compile" "$compile_rc" ""
     if [ "$compile_rc" -eq 0 ]; then
         run_log="$phase_prefix.aot-run.log"
         run_status="$phase_prefix.aot-run.status"
         run_timeout="$phase_prefix.aot-run.timeout"
         eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
-        if run_with_timeout 10 "$run_timeout" "$ESHKOL_TEST_BIN" > "$run_log" 2>&1; then
+        if run_with_timeout "$TEST_TIMEOUT_SECONDS" "$run_timeout" "$ESHKOL_TEST_BIN" > "$run_log" 2>&1; then
             run_rc=0
         else
             run_rc=$?
@@ -153,6 +172,7 @@ for test_file in tests/ffi/*.esk; do
             # form that most test programs actually print.
             if eshkol_test_output_has_failure "$run_log"; then
                 echo -e "${RED}❌ FAIL${NC}"
+                show_failed_phase "$test_name AOT run (failure marker)" "$run_log" "$run_status"
                 FAILED_TESTS+=("$test_name (AOT)")
                 ((FAIL++)) || true
             else
@@ -160,8 +180,8 @@ for test_file in tests/ffi/*.esk; do
                 ((PASS++)) || true
             fi
         else
-            if [ -s "$run_timeout" ]; then
-                echo -e "${RED}❌ RUNTIME TIMEOUT (10s)${NC}"
+            if [ -e "$run_timeout" ]; then
+                echo -e "${RED}❌ RUNTIME TIMEOUT (${TEST_TIMEOUT_SECONDS}s)${NC}"
             else
                 echo -e "${RED}❌ RUNTIME FAIL (exit $run_rc)${NC}"
             fi
@@ -193,7 +213,7 @@ for test_file in tests/ffi/*.esk; do
     jit_timeout="$phase_prefix.jit-orc-cache0.timeout"
 
     eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
-    if ESHKOL_JIT_CACHE=0 run_with_timeout 10 "$jit_timeout" ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR -r "$test_file" > "$jit_log" 2>&1; then
+    if ESHKOL_JIT_CACHE=0 run_with_timeout "$TEST_TIMEOUT_SECONDS" "$jit_timeout" ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR -r "$test_file" > "$jit_log" 2>&1; then
         jit_rc=0
     else
         jit_rc=$?
@@ -205,6 +225,7 @@ for test_file in tests/ffi/*.esk; do
         # form that most test programs actually print.
         if eshkol_test_output_has_failure "$jit_log"; then
             echo -e "${RED}❌ FAIL${NC}"
+            show_failed_phase "$test_name JIT ORC (-r, ESHKOL_JIT_CACHE=0; failure marker)" "$jit_log" "$jit_status"
             FAILED_TESTS+=("$test_name (-r)")
             ((FAIL++)) || true
         else
@@ -212,8 +233,8 @@ for test_file in tests/ffi/*.esk; do
             ((PASS++)) || true
         fi
     else
-        if [ -s "$jit_timeout" ]; then
-            echo -e "${RED}❌ JIT ORC TIMEOUT (10s)${NC}"
+        if [ -e "$jit_timeout" ]; then
+            echo -e "${RED}❌ JIT ORC TIMEOUT (${TEST_TIMEOUT_SECONDS}s)${NC}"
         else
             echo -e "${RED}❌ JIT ORC FAIL (exit $jit_rc)${NC}"
         fi
