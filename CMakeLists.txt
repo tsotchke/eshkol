@@ -3019,6 +3019,25 @@ file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
 # reconfigure when any input changes so the compiler and generated artifacts
 # agree about the expected identity.
 set(_stdlib_identity_inputs "${STDLIB_SOURCE};${STDLIB_TRANSITIVE_SOURCES}")
+# The source digest describes compatibility of emitted and consumed stdlib
+# artifacts, not just the Scheme-level library text. Include the compiler,
+# runtime ABI, JIT consumer, and their CMake/configuration inputs so same-release
+# codegen or layout changes cannot retain an old identity. Use filesystem globs
+# rather than git metadata so source archives configure identically.
+file(GLOB_RECURSE _stdlib_identity_native_inputs CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/inc/eshkol/*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/repl/*"
+     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*")
+file(GLOB _stdlib_identity_config_inputs CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
+list(APPEND _stdlib_identity_inputs
+     ${_stdlib_identity_native_inputs}
+     ${_stdlib_identity_config_inputs}
+     "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol-run.cpp")
+list(REMOVE_DUPLICATES _stdlib_identity_inputs)
+list(SORT _stdlib_identity_inputs)
 set(_stdlib_identity_source_material "")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
      ${_stdlib_identity_inputs})
@@ -3029,6 +3048,10 @@ foreach(_stdlib_input IN LISTS _stdlib_identity_inputs)
   string(APPEND _stdlib_identity_source_material
          "${_stdlib_input_relative}:${_stdlib_input_sha256}\n")
 endforeach()
+string(APPEND _stdlib_identity_source_material
+       "toolchain:c=${CMAKE_C_COMPILER_ID}-${CMAKE_C_COMPILER_VERSION};"
+       "cxx=${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION};"
+       "llvm=${LLVM_PACKAGE_VERSION}\n")
 string(SHA256 ESHKOL_STDLIB_SOURCE_FINGERPRINT
        "${_stdlib_identity_source_material}")
 if(ESHKOL_MEMORY_ABI_V2)

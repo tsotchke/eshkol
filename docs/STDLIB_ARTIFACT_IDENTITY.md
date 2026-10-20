@@ -2,11 +2,13 @@
 
 `stdlib.o` and `stdlib.bc` carry the same externally visible identity symbol.
 The symbol is derived at CMake configure time from the Eshkol release string
-(including the `-evolve` series suffix), selected
-object ABI, and a deterministic SHA-256 over the relative paths and contents of
-`lib/stdlib.esk` plus its complete transitive `.esk` source closure. The
-symbol spells out the normalized release and object ABI plus that source
-digest. The compiler emits it into both formats from the shared LLVM module.
+(including the `-evolve` series suffix), selected object ABI, and a deterministic
+SHA-256 over relative paths and contents for `lib/stdlib.esk`, its transitive
+`.esk` source closure, the compiler/runtime/JIT ABI sources and configuration,
+and the C/C++/LLVM toolchain versions. CMake tracks those files as configure
+dependencies, so edits regenerate the expected identity before stdlib rebuild.
+The symbol spells out the normalized release and object ABI plus that digest.
+The compiler emits it into both formats from the shared LLVM module.
 
 Native AOT lookup, REPL bitcode loading, and the REPL object fallback validate
 the embedded symbol before using an artifact. This applies to artifacts found

@@ -84,4 +84,19 @@ run_probe "$WORK/wrong-source" reject
 run_probe "$WORK/wrong-abi" reject
 run_probe "$WORK/unstamped" reject
 
+# Seed the JIT object cache from matching bitcode, then replace the discovered
+# cache entry with a real object carrying a foreign marker. Admission must
+# reject it and continue through the validated bitcode path.
+cache_output="$(ESHKOL_LIB_DIR="$WORK/matching" ESHKOL_PATH="$WORK/source" \
+    ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"
+cached_object="$(sed -n 's/.*Loaded stdlib from cached object: //p' \
+    <<<"$cache_output" | head -n 1)"
+[[ -n "$cached_object" && -f "$cached_object" ]]
+cp "$WORK/wrong-release/stdlib.o" "$cached_object"
+cache_output="$(ESHKOL_LIB_DIR="$WORK/matching" ESHKOL_PATH="$WORK/source" \
+    ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"
+grep -Fq "rejecting cached stdlib object $cached_object" <<<"$cache_output"
+grep -Fq "[REPL] Loaded stdlib bitcode from: $WORK/matching/stdlib.bc" \
+    <<<"$cache_output"
+
 echo "PASS: stdlib embedded identity matching, release/source/ABI, and missing controls"
