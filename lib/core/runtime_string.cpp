@@ -220,19 +220,46 @@ static int64_t decode_utf8_codepoint(const char** s) {
  * The caller checks the string type before entering this runtime helper. */
 void* eshkol_runtime_string_to_list(void* arena, const char* s) {
     const int64_t length = eshkol_string_byte_length(s);
-    const char* cursor = s;
-    const char* end = s + length;
+    const auto* bytes = reinterpret_cast<const unsigned char*>(s);
+    int64_t pos = 0;
     arena_tagged_cons_cell_t* head = nullptr;
     arena_tagged_cons_cell_t* tail = nullptr;
-    while (cursor < end) {
-        // Bound the decoder even for a truncated byte sequence received from
-        // an external source. Valid Eshkol strings take the shared decode path.
-        const unsigned char lead = static_cast<unsigned char>(*cursor);
-        const int width = lead < 0x80 ? 1 : (lead & 0xE0) == 0xC0 ? 2 :
-                          (lead & 0xF0) == 0xE0 ? 3 : (lead & 0xF8) == 0xF0 ? 4 : 1;
-        int64_t cp;
-        if (end - cursor < width) { cp = 0xFFFD; ++cursor; }
-        else cp = decode_utf8_codepoint(&cursor);
+    while (pos < length) {
+        const unsigned char lead = bytes[pos++];
+        int64_t cp = 0xFFFD;
+        int expected = 0;
+        if (lead < 0x80) {
+            cp = lead;
+        } else if ((lead & 0xE0) == 0xC0) {
+            cp = lead & 0x1F;
+            expected = cp < 2 ? 0 : 1;  // Reject C0/C1 overlong leads.
+        } else if ((lead & 0xF0) == 0xE0) {
+            cp = lead & 0x0F;
+            expected = 2;
+        } else if ((lead & 0xF8) == 0xF0) {
+            cp = lead & 0x07;
+            expected = 3;
+        }
+        if (expected > 0) {
+            int consumed = 0;
+            for (; consumed < expected && pos < length; ++consumed) {
+                const unsigned char continuation = bytes[pos];
+                if ((continuation & 0xC0) != 0x80) break;
+                cp = (cp << 6) | (continuation & 0x3F);
+                ++pos;
+            }
+            if (consumed != expected ||
+                (expected == 1 && cp < 0x80) ||
+                (expected == 2 && cp < 0x800) ||
+                (expected == 3 && cp < 0x10000) ||
+                (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) {
+                cp = 0xFFFD;
+            }
+        } else if (lead >= 0x80 && (lead & 0xE0) == 0xC0 &&
+                   (lead & 0x1F) < 2) {
+            // Invalid two-byte lead; match VM's one-byte recovery step.
+            cp = 0xFFFD;
+        }
         auto* cell = arena_allocate_cons_with_header(static_cast<arena_t*>(arena));
         if (!cell) {
             eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "string->list: allocation failed");

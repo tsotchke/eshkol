@@ -3613,6 +3613,17 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_
     add_test(NAME tensor_validation_test COMMAND tensor_validation_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/string_to_list_runtime_test.cpp")
+    add_executable(string_to_list_runtime_test
+        tests/core/string_to_list_runtime_test.cpp)
+    target_compile_features(string_to_list_runtime_test PRIVATE cxx_std_17)
+    target_include_directories(string_to_list_runtime_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(string_to_list_runtime_test PRIVATE eshkol-runtime)
+    add_test(NAME string_to_list_runtime_test COMMAND string_to_list_runtime_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
     add_executable(ad_tape_zero_gradients_test tests/core/ad_tape_zero_gradients_test.cpp)
     target_compile_features(ad_tape_zero_gradients_test PRIVATE cxx_std_20)
