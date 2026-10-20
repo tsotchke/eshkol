@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_spectral.esk
+  - tests/stdlib/algebraic_spectral_test.esk
+  - examples/algebraic_spectral.esk
+---
+
 # Certified simple eigenvalue branches
 
 `(require core.ad.algebraic_spectral)` composes exact matrix arithmetic,

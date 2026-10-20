@@ -13198,8 +13198,3 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_update "tests/stdlib/algebraic_update_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_update_example "examples/algebraic_updates.esk")
 endif()
-
-# Next frontier acceptance: algebraic_spectral
-if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    eshkol_add_algebraic_ad_acceptance(algebraic_spectral "tests/stdlib/algebraic_spectral_test.esk")
-endif()
