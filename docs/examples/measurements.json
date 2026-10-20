@@ -2776,6 +2776,19 @@
       "note": "Focused offline qualification only; release measurements remain NOT-RUN.",
       "key_output": [],
       "not_run_reason": "Focused offline qualification only; release measurements remain NOT-RUN."
+    },
+    "examples/algebraic_sparse.esk": {
+      "source_sha256": "3ddc86270e9aa6eb027182edf8dff11c64b463f15c5ef02d75a3cc0545a0fe09",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "note": "Focused offline qualification passed all three routes; release measurements remain NOT-RUN.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
     }
   }
 }

@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_sparse.esk
+  - tests/stdlib/algebraic_sparse_test.esk
+  - examples/algebraic_sparse.esk
+---
+
 # Exact sparse curvature
 
 `core.ad.sparsity` owns the existing deterministic distance-two graph coloring,
@@ -33,3 +44,13 @@ cost quadratic storage. There is no wall-clock speed claim from call counts.
 Run CTest with `-R 'algebraic_sparse|hessian_sparsity|sparse_tensors'`.
 Exact nonlinear tridiagonal Hessians are compared with independent formulas,
 and the existing numeric sparse suite exercises the shared coloring seam.
+
+
+The suite's analytic reference is defined in
+[`algebraic_sparse_test.esk`](../../../tests/stdlib/algebraic_sparse_test.esk#L28):
+its diagonal is `12*x_i^2 + 2*x_(i-1)` (omitting the predecessor at `i=0`),
+its adjacent mixed entries are `2*x_max(i,j)`, and other entries are zero.
+The scalar recovery is compared against that formula for all 144 dense entries
+by the assertion loop at lines 47–51. The HVP path also checks selected entries
+against the same formula at lines 56–58. These are in-suite analytic formula
+checks; no separate Python/Fraction reference executable was run.

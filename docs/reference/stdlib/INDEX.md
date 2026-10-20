@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 76** (plus `stdlib` itself and the module system page) — **provided symbols: 920** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 78** (plus `stdlib` itself and the module system page) — **provided symbols: 925** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -36,6 +36,8 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.algebraic_domain`](../../../lib/core/algebraic_domain.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-domain` `algebraic-domain-ref` |
 | [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` |
 | [`core.ad.algebraic_implicit`](../../../lib/core/ad/algebraic_implicit.esk) | no | [ad_algebraic_implicit.md](ad_algebraic_implicit.md) | `algebraic-ad-system-root` `algebraic-ad-system-residual` |
+| [`core.ad.algebraic_sparse`](../../../lib/core/ad/algebraic_sparse.esk) | no | [ad_algebraic_sparse.md](ad_algebraic_sparse.md) | `algebraic-sparse-hessian` `algebraic-sparse-hessian-ref` `algebraic-sparse-hessian-dense` `algebraic-sparse-hessian-summary` |
+| [`core.ad.sparsity`](../../../lib/core/ad/sparsity.esk) | no | [ad_sparsity.md](ad_sparsity.md) | `hessian-color-graph` |
 | [`core.algebraic_batch`](../../../lib/core/algebraic_batch.esk) | no | [algebraic_batch.md](algebraic_batch.md) | `make-algebraic-multiplication-plan` `algebraic-batch-mul` |
 | [`core.control.trampoline`](../../../lib/core/control/trampoline.esk) | yes | [control_trampoline.md](control_trampoline.md) | `trampoline` `bounce` `done` |
 | [`core.cyclotomic`](../../../lib/core/cyclotomic.esk) | no | [cyclotomic.md](cyclotomic.md) | `make-cyclotomic-field` `cyclotomic-order` `cyclotomic-degree` `cyclotomic-polynomial` `cyclotomic-element` `cyclotomic-coefficients` `cyclotomic-root` `cyclotomic-add` `cyclotomic-sub` `cyclotomic-scale` `cyclotomic-mul` `cyclotomic-inverse` `cyclotomic-zero?` `cyclotomic-equal?` `cyclotomic-rational` `cyclotomic-galois` `cyclotomic-norm` |
@@ -119,6 +121,11 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 
 | Source | Export | Reference |
 |---|---|---|
+| `core.ad.algebraic_sparse` | `algebraic-sparse-hessian` | [algebraic-sparse-hessian](shipped_exports.md#algebraic-sparse-hessian) |
+| `core.ad.algebraic_sparse` | `algebraic-sparse-hessian-dense` | [algebraic-sparse-hessian-dense](shipped_exports.md#algebraic-sparse-hessian-dense) |
+| `core.ad.algebraic_sparse` | `algebraic-sparse-hessian-ref` | [algebraic-sparse-hessian-ref](shipped_exports.md#algebraic-sparse-hessian-ref) |
+| `core.ad.algebraic_sparse` | `algebraic-sparse-hessian-summary` | [algebraic-sparse-hessian-summary](shipped_exports.md#algebraic-sparse-hessian-summary) |
+| `core.ad.sparsity` | `hessian-color-graph` | [hessian-color-graph](shipped_exports.md#hessian-color-graph) |
 | `agent.http` | `http-stream-error` | [http-stream-error](shipped_exports.md#http-stream-error) |
 | `agent.http` | `sse-event-id` | [sse-event-id](shipped_exports.md#sse-event-id) |
 | `agent.http` | `sse-event-retry-ms` | [sse-event-retry-ms](shipped_exports.md#sse-event-retry-ms) |
@@ -209,6 +216,8 @@ are documented, with signatures, on the pages listed.
 | `core.ad.guw` | `(require core.ad.guw)` | [AUTOMATIC_DIFFERENTIATION.md §4](../../guide/AUTOMATIC_DIFFERENTIATION.md#4-multivariate-mixed-partials-guw) |
 | `core.ad.tensor_tower` | `(require core.ad.tensor_tower)` | [AUTOMATIC_DIFFERENTIATION.md §5](../../guide/AUTOMATIC_DIFFERENTIATION.md#5-tensor-ad--towers-of-tensors) |
 | `core.ad.sparse_guw` | `(require core.ad.sparse_guw)` | [AUTOMATIC_DIFFERENTIATION.md §7](../../guide/AUTOMATIC_DIFFERENTIATION.md#7-sparse-high-order--sparse-hessians) |
+| `core.ad.algebraic_sparse` | `(require core.ad.algebraic_sparse)` | [ad_algebraic_sparse.md](ad_algebraic_sparse.md) |
+| `core.ad.sparsity` | `(require core.ad.sparsity)` | [ad_sparsity.md](ad_sparsity.md) |
 | `core.ad.checkpoint` | `(require core.ad.checkpoint)` | [AUTOMATIC_DIFFERENTIATION.md §8](../../guide/AUTOMATIC_DIFFERENTIATION.md#8-reverse-mode--checkpointing) |
 | `core.ad.taylor_numerics` | `(require core.ad.taylor_numerics)` | [AUTOMATIC_DIFFERENTIATION.md §10](../../guide/AUTOMATIC_DIFFERENTIATION.md#10-tower-numerics--odes-roots-inversion) |
 | `core.ad.interval`, `core.ad.rigorous_interval`, `core.ad.taylor_models`, `core.ad.rigorous_taylor_models` | `(require core.ad.taylor_models)` | [certified-enclosures.md](certified-enclosures.md) |

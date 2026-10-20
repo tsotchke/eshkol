@@ -3,6 +3,10 @@ lib/agent/http.esk	11	provide	http-stream-error
 lib/agent/http.esk	11	provide	sse-event-id
 lib/agent/http.esk	11	provide	sse-event-retry-ms
 lib/agent/quantum.esk	20	provide	make-pauli-hamiltonian
+lib/core/ad/algebraic_sparse.esk	4	provide	algebraic-sparse-hessian
+lib/core/ad/algebraic_sparse.esk	4	provide	algebraic-sparse-hessian-dense
+lib/core/ad/algebraic_sparse.esk	4	provide	algebraic-sparse-hessian-ref
+lib/core/ad/algebraic_sparse.esk	4	provide	algebraic-sparse-hessian-summary
 lib/core/ad/interval.esk	67	provide	interval-add
 lib/core/ad/interval.esk	67	provide	interval-cos
 lib/core/ad/interval.esk	67	provide	interval-div
@@ -20,6 +24,7 @@ lib/core/ad/interval.esk	67	provide	interval?
 lib/core/ad/interval.esk	67	provide	iv-abs-pad
 lib/core/ad/interval.esk	67	provide	iv-eps
 lib/core/ad/interval.esk	67	provide	iv-rel-pad
+lib/core/ad/sparsity.esk	2	provide	hessian-color-graph
 lib/core/ad/taylor_models.esk	68	provide	taylor-model?
 lib/core/ad/taylor_models.esk	68	provide	tm-nsamp
 lib/core/ad/taylor_models.esk	68	provide	tm-safety

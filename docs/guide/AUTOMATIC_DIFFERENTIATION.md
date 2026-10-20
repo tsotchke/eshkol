@@ -515,6 +515,16 @@ probing.)
 finite-element stencils, structured ML second-order methods — where a dense
 Hessian would be prohibitively expensive.
 
+For exact algebraic coefficients, `core.ad.algebraic_sparse` accepts a
+certified owner domain and an explicit, complete structural pattern. Its
+scalar mode uses hyperdual probes; callers can instead supply a whole-column
+`H*v` callback, whose outputs are copied before caching. The summary reports
+actual callback invocations, which describe performed work but establish no
+runtime speedup. `core.ad.sparsity` owns the deterministic distance-two
+coloring shared with numeric sparse-Hessian recovery. See the
+[exact sparse curvature reference](../reference/stdlib/ad_algebraic_sparse.md)
+and [shared coloring reference](../reference/stdlib/ad_sparsity.md).
+
 ---
 
 ## 8. Reverse mode & checkpointing
@@ -945,6 +955,8 @@ for the arity-recovery mechanism.
 | `core.ad.taylor_models` | `taylor-model`, `tm-range`, `tm-eval`, `tm-coeffs`, `tm-remainder`, … | validated AD (rigorous enclosures) |
 | `core.ad.interval` | `interval-of`, `interval-lo/-hi`, `interval-contains?`, `interval-width`, … | outward-rounded interval arithmetic (used by Taylor models) |
 | `core.ad.sparse_guw` | `sparse-hessian`, `sparse-hessian-pat`, `sparse-hessian-ref`, `sparse-hessian-colors`, `sparse-hessian-row-ptr/-col-idx/-values`, `sparse-hessian-dense?` | colored sparse-Hessian recovery |
+| `core.ad.algebraic_sparse` | `algebraic-sparse-hessian`, `algebraic-sparse-hessian-ref`, `algebraic-sparse-hessian-dense`, `algebraic-sparse-hessian-summary` | exact algebraic sparse-Hessian recovery |
+| `core.ad.sparsity` | `hessian-color-graph` | shared deterministic Hessian coloring |
 | `core.ad.checkpoint` | `dense-gradient`, `checkpointed-gradient`, `dense-tower-reverse`, `checkpointed-tower-reverse`, `checkpoint-block-size` | Griewank-checkpointed high-order reverse |
 | `core.ad.taylor_numerics` | `taylor-ode-solve`, `taylor-root`, `taylor-inverse-series`, `taylor-eval` | series-based ODE / root / inversion |
 | `core.ad.tape` | `make-tape`, `tape-input`, `tape-mul`/`-add`/…, `tape-gradient`, `tape-node-count`, … | explicit reverse-mode tape (Scheme level) |
