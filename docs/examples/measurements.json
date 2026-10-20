@@ -2764,6 +2764,18 @@
       "ctest": [],
       "key_output": [],
       "not_run_reason": "Release measurements remain NOT-RUN; focused PR qualification is recorded separately under richard/evidence-795."
+    },
+    "examples/algebraic_batch.esk": {
+      "source_sha256": "14f94894d4e9627bacfb721b4d7299c670e42bf1bcf757e4fcdbc0ed4ac2fc62",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "note": "Focused offline qualification only; release measurements remain NOT-RUN.",
+      "key_output": [],
+      "not_run_reason": "Focused offline qualification only; release measurements remain NOT-RUN."
     }
   }
 }

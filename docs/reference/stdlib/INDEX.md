@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 75** (plus `stdlib` itself and the module system page) — **provided symbols: 918** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 76** (plus `stdlib` itself and the module system page) — **provided symbols: 920** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -36,6 +36,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.algebraic_domain`](../../../lib/core/algebraic_domain.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-domain` `algebraic-domain-ref` |
 | [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` |
 | [`core.ad.algebraic_implicit`](../../../lib/core/ad/algebraic_implicit.esk) | no | [ad_algebraic_implicit.md](ad_algebraic_implicit.md) | `algebraic-ad-system-root` `algebraic-ad-system-residual` |
+| [`core.algebraic_batch`](../../../lib/core/algebraic_batch.esk) | no | [algebraic_batch.md](algebraic_batch.md) | `make-algebraic-multiplication-plan` `algebraic-batch-mul` |
 | [`core.control.trampoline`](../../../lib/core/control/trampoline.esk) | yes | [control_trampoline.md](control_trampoline.md) | `trampoline` `bounce` `done` |
 | [`core.cyclotomic`](../../../lib/core/cyclotomic.esk) | no | [cyclotomic.md](cyclotomic.md) | `make-cyclotomic-field` `cyclotomic-order` `cyclotomic-degree` `cyclotomic-polynomial` `cyclotomic-element` `cyclotomic-coefficients` `cyclotomic-root` `cyclotomic-add` `cyclotomic-sub` `cyclotomic-scale` `cyclotomic-mul` `cyclotomic-inverse` `cyclotomic-zero?` `cyclotomic-equal?` `cyclotomic-rational` `cyclotomic-galois` `cyclotomic-norm` |
 | [`core.data.base64`](../../../lib/core/data/base64.esk) | yes | [data_base64.md](data_base64.md) | `base64-encode` `base64-decode` `base64-encode-string` `base64-decode-string` `string->bytes` `bytes->string` `base64-char-at` `base64-value` `string->bytes-helper` `base64-encode-helper` `base64-decode-helper` `base64-remove-padding` |

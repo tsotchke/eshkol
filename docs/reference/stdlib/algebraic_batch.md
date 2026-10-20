@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/algebraic_batch.esk
+  - tests/stdlib/algebraic_batch_test.esk
+  - examples/algebraic_batch.esk
+---
+
 # Packed exact algebraic multiplication
 
 `core.algebraic_batch` compiles a certified field and any admitted nested

@@ -304,3 +304,18 @@ Returns the TensorCore version string.
 Source: `lib/web/web.esk`. This module is the browser-facing DOM, event, timer,
 storage, fetch, and canvas surface. Its exports are registered as a module
 surface even though the procedure list is implemented by the browser bridge.
+
+
+## `core.algebraic_batch`
+
+Source: `lib/core/algebraic_batch.esk`. The packed exact multiplication contract,
+preflight bounds and receipt fields are documented in
+[algebraic_batch.md](algebraic_batch.md).
+
+### `make-algebraic-multiplication-plan`
+
+Compiles an admitted algebraic owner into a sparse exact multiplication table.
+
+### `algebraic-batch-mul`
+
+Preflights and multiplies equally sized vectors of exact algebraic values.
