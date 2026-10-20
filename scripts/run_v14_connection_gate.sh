@@ -45,6 +45,11 @@ case "$BUILD_DIR" in
     /*) BUILD_DIR_PATH="$BUILD_DIR" ;;
     *)  BUILD_DIR_PATH="$REPO_ROOT/$BUILD_DIR" ;;
 esac
+if [ ! -d "$BUILD_DIR_PATH" ]; then
+    echo "run_v14_connection_gate.sh: build directory not found: $BUILD_DIR_PATH" >&2
+    exit 2
+fi
+BUILD_DIR_PATH="$(cd "$BUILD_DIR_PATH" && pwd -P)" || exit 2
 ESHKOL_RUN="$BUILD_DIR_PATH/eshkol-run"
 VM_RUN="$BUILD_DIR_PATH/eshkol-vm-standalone-test"
 
@@ -81,7 +86,7 @@ probe_run() {
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
     out=$(eval "$cmd" 2>&1)
     status=$?
-    if [ "$status" -eq 0 ]; then
+    if [ "$status" -eq 0 ] && ! printf '%s\n' "$out" | rg -qi '(^|[^[:alpha:]])(SKIP|UNVERIFIED)(:|[[:space:]]|$)'; then
         emit_event "$probe_id" PASS "${label}: OK"
         printf '  \xE2\x9C\x93 %-42s %s\n' "$probe_id" "$label"
     else

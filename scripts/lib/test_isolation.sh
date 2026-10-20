@@ -110,6 +110,20 @@ def kill_tree(force):
     except ProcessLookupError:
         pass
 
+def forward_signal(signum, _frame):
+    # The caller may itself be cancelled by a disk guard or CI. Forward the
+    # same signal to the owned process group, then reap it before exiting.
+    kill_tree(False)
+    try:
+        child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        kill_tree(True)
+        try:
+            child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    raise SystemExit(128 + signum)
+
 try:
     child = subprocess.Popen(
         argv,
@@ -119,6 +133,8 @@ try:
 except OSError as exc:
     print(f"test_isolation: cannot execute timeout child: {exc}", file=sys.stderr)
     raise SystemExit(127)
+for handled_signal in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(handled_signal, forward_signal)
 try:
     result = child.wait(timeout=seconds)
     raise SystemExit(128 + (-result) if result < 0 else result)
