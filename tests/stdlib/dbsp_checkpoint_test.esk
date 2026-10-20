@@ -68,7 +68,7 @@
 (check "checkpoint larger than 4 MiB refused"
   (raises? (lambda () (dbsp-resumable-restore (template) (make-string 4194305 #\x)))))
 (check "duplicate declared input names refused"
-  (raises? (lambda () (make-dbsp-resumable '(x x) '() 'x '() '(duplicate-inputs))))
+  (raises? (lambda () (make-dbsp-resumable '(x x) '() 'x '() '(duplicate-inputs)))))
 (define failing-template
   (make-dbsp-resumable '(x) '((map y x maybe-fail)) 'y
     (list (list 'maybe-fail "1" 'map
