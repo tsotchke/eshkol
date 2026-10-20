@@ -7224,7 +7224,10 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
                         an = ai.type == VAL_INT ? (double)ai.as.i : ai.as.f;
                         bn = bi.type == VAL_INT ? (double)bi.as.i : bi.as.f;
                         if (an != bn) return 0; /* +/-0 equal; NaN unequal */
-                    } else if (!vm_deep_equal(vm, ai, bi)) {
+                    } else if (a_tensor_literal != b_tensor_literal ||
+                               !vm_deep_equal(vm, ai, bi)) {
+                        /* The native tensor/ordinary-vector bridge is 1-D
+                         * and numeric; only two marked tensors recurse. */
                         return 0;
                     }
                 }

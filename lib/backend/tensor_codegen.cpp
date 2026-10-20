@@ -591,6 +591,13 @@ llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
             } else if (type_c && type_c->getZExtValue() == ESHKOL_VALUE_INT64) {
                 storeInline(i, ctx_.builder().CreateSIToFP(payload, ctx_.doubleType()));
             } else {
+                // The first runtime store may widen the entire buffer to
+                // tagged jet cells. That operation reads every old cell and
+                // probes it for live reverse-mode nodes. Initialize deferred
+                // cells before any boundary call, so reused arena bytes are
+                // never mistaken for an existing node or copied as numbers.
+                // Constant scalar literals keep their single-store path.
+                storeInline(i, llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
                 runtime_elems.emplace_back(i, v);
             }
         } else if (v->getType()->isIntegerTy()) {

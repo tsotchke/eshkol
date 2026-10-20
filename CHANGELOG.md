@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Initialize deferred tensor constructor cells before widening to derivative
+  carriers, avoiding reads of reused arena bytes during promotion. (#836)
+
 - VM numeric reader tensor literals preserve their native binary64 cell
   exactness during construction and integer mutation, including large literals.
   Ordinary and quoted vectors retain their exact integer values. (#836)
