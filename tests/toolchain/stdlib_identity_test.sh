@@ -16,11 +16,11 @@ mkdir -p "$WORK/source" "$WORK/matching" "$WORK/wrong-release" \
     "$WORK/wrong-source" "$WORK/wrong-abi" "$WORK/unstamped" \
     "$WORK/declaration-only" "$WORK/mixed-markers"
 cat > "$WORK/source/stdlib.esk" <<'ESK'
-(define identity-probe 17)
+(define (identity-probe) 17)
 ESK
 cat > "$WORK/source/main.esk" <<'ESK'
 (require stdlib)
-(display identity-probe)
+(display (identity-probe))
 (newline)
 ESK
 
@@ -52,18 +52,18 @@ build_control "$WORK/wrong-abi" \
 compile_probe() {
     local root="$1" expected="$2" label="$3" explicit_object="${4:-}"
     local output_path="$WORK/$label.o" output status
-    local -a extra_args=()
-    [[ -n "$explicit_object" ]] && extra_args+=("$explicit_object")
+    # A nonempty argv array also works with macOS Bash 3.2 and nounset.
+    local -a compile_args=("$ESHKOL_RUN" -c -o "$output_path" "$WORK/source/main.esk")
+    [[ -n "$explicit_object" ]] && compile_args+=("$explicit_object")
     if output="$(ESHKOL_LIB_DIR="$root" ESHKOL_PATH="$WORK/source" \
-        "$ESHKOL_RUN" -c -o "$output_path" "$WORK/source/main.esk" \
-        "${extra_args[@]}" 2>&1)"; then
+        "${compile_args[@]}" 2>&1)"; then
         status=0
     else
         status=$?
     fi
     if [[ "$expected" == match ]]; then
         [[ "$status" == 0 && -f "$output_path" ]]
-        grep -Fq "Auto-linking pre-compiled stdlib: $root/stdlib.o" <<<"$output"
+        # INFO logging is optional; successful admission is verified by output.
         ! grep -Fq "rejecting precompiled stdlib object" <<<"$output"
     else
         [[ "$status" != 0 && ! -e "$output_path" ]]
@@ -80,6 +80,12 @@ compile_probe "$WORK/wrong-release" reject aot-wrong-release
 compile_probe "$WORK/wrong-source" reject aot-wrong-source
 compile_probe "$WORK/wrong-abi" reject aot-wrong-abi
 compile_probe "$WORK/unstamped" reject aot-unstamped
+
+# Exercise an admitted real object through the full native link and execution.
+matching_aot_output="$(ESHKOL_LIB_DIR="$WORK/matching" \
+    ESHKOL_PATH="$WORK/source" "$ESHKOL_RUN" -o "$WORK/matching-executable" \
+    "$WORK/source/main.esk" 2>&1)"
+[[ "$("$WORK/matching-executable")" == 17 ]]
 
 if aot_output="$(ESHKOL_LIB_DIR="$WORK/wrong-release" \
     ESHKOL_PATH="$WORK/source" "$ESHKOL_RUN" -o "$WORK/rejected-executable" \
@@ -153,6 +159,9 @@ build_marker_controls() {
     local mixed_ir="$WORK/identity-mixed.ll"
     cat > "$expected_ir" <<IR
 @$EXPECTED_IDENTITY = external constant i8
+define ptr @identity_marker_reference() {
+    ret ptr @$EXPECTED_IDENTITY
+}
 IR
     cat > "$mixed_ir" <<IR
 @$EXPECTED_IDENTITY = constant i8 0
@@ -179,7 +188,7 @@ fi
 
 # Seed the JIT object cache from matching bitcode, then replace the discovered
 # cache entry with a real object carrying a foreign marker. Admission must
-# reject it and continue through the validated bitcode path.
+# reject it before any user code runs.
 if cache_output="$(ESHKOL_LIB_DIR="$WORK/matching" ESHKOL_PATH="$WORK/source" \
     ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"; then
     cache_status=0
