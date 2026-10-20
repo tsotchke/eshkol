@@ -63,6 +63,24 @@
 (define nr (dbsp-resumable-restore negative-template (dbsp-resumable-checkpoint negative)))
 (define ns (dbsp-resumable-step nr 2 (list (list 'x (zset-singleton 'row 3)))))
 (check "hidden negative distinct counts survive restart" (= (zset-weight (dbsp-resumable-output (vector-ref ns 0)) 'row) 1))
+(check "malformed checkpoint envelope fields refused"
+  (raises? (lambda () (dbsp-resumable-restore (template) "()"))))
+(check "checkpoint larger than 4 MiB refused"
+  (raises? (lambda () (dbsp-resumable-restore (template) (make-string 4194305 #\x)))))
+(check "duplicate declared input names refused"
+  (raises? (lambda () (make-dbsp-resumable '(x x) '() 'x '() '(duplicate-inputs))))
+(define failing-template
+  (make-dbsp-resumable '(x) '((map y x maybe-fail)) 'y
+    (list (list 'maybe-fail "1" 'map
+      (lambda (row) (if (= (car row) 999) (error "deliberate callback failure") row)))) '(exact-row)))
+(define stable-snapshot
+  (vector-ref (dbsp-resumable-step failing-template 1
+    (list (list 'x (zset-singleton '(1) 1)))) 0))
+(define stable-bytes (dbsp-resumable-checkpoint stable-snapshot))
+(check "callback failure refuses step" (raises? (lambda ()
+  (dbsp-resumable-step stable-snapshot 2 (list (list 'x (zset-singleton '(999) 1)))))))
+(check "callback failure leaves old snapshot unchanged"
+  (string=? stable-bytes (dbsp-resumable-checkpoint stable-snapshot)))
 (define phase (getenv "ESHKOL_CHECKPOINT_PHASE"))
 (if phase
   (let* ((path (getenv "ESHKOL_CHECKPOINT_FILE")) (cut (string->number (getenv "ESHKOL_CHECKPOINT_CUT")))

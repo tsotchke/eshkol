@@ -1,0 +1,16 @@
+foreach(required ESHKOL_RUN ESHKOL_SOURCE ESHKOL_BINARY ESHKOL_LINK_DIR ESHKOL_PYTHON ESHKOL_HARNESS)
+    if(NOT DEFINED ${required})
+        message(FATAL_ERROR "Missing -D${required}=...")
+    endif()
+endforeach()
+execute_process(COMMAND "${ESHKOL_RUN}" -o "${ESHKOL_BINARY}" "${ESHKOL_SOURCE}" "-L${ESHKOL_LINK_DIR}"
+    RESULT_VARIABLE compile_result OUTPUT_VARIABLE compile_stdout ERROR_VARIABLE compile_stderr)
+if(NOT compile_result EQUAL 0)
+    message(FATAL_ERROR "Checkpoint AOT compile failed (${compile_result})\n${compile_stdout}\n${compile_stderr}")
+endif()
+execute_process(COMMAND "${ESHKOL_PYTHON}" "${ESHKOL_HARNESS}" --binary "${ESHKOL_BINARY}"
+    RESULT_VARIABLE harness_result OUTPUT_VARIABLE harness_stdout ERROR_VARIABLE harness_stderr)
+if(NOT harness_result EQUAL 0)
+    message(FATAL_ERROR "Checkpoint process harness failed (${harness_result})\n${harness_stdout}\n${harness_stderr}")
+endif()
+message(STATUS "${harness_stdout}")
