@@ -1,0 +1,93 @@
+{
+  "schema": "eshkol.vm_string_to_list_public_result.v1",
+  "recorded_at_utc_date": "2026-10-20",
+  "platform": {
+    "system": "macOS",
+    "architecture": "arm64",
+    "release": "24.1.0",
+    "compiler": "LLVM 21 Release"
+  },
+  "source_heads": {
+    "baseline": "268cc71fc193ae9f8a20b7aefb78981f4ca058d7",
+    "candidate": "93d08a174e866d48e0eb9fc76da225e96c53daab"
+  },
+  "artifact_sha256": {
+    "baseline_executable": "439a9b263d822c4f1c0f3d43ebf300f3b0f787ca8c07548b7b81cd9c87f819b8",
+    "candidate_executable": "8db38aa01b7ca8c7131cead22433dba201440a2e1ed6e1d8c523433cbc01d1c9",
+    "bytecode": "b70e90eb1979d229add37b334f84a8d5b6c7325137576b51e89d4b08017a0bca",
+    "workload_source": "601fb094da7f20efb556f6b9e57a7479cb9cee5c57a1bf169296d3e281c83011"
+  },
+  "workload": {
+    "name": "vm_string_list_8192x32_lambda",
+    "string_codepoints": 8192,
+    "conversions_per_process": 32,
+    "expected_stdout": "262144",
+    "stdout_validated_each_run": true,
+    "startup_included": true,
+    "scope": "Whole precompiled VM process time, including startup, allocation and checksum validation, divided by 32 conversions; one workload and hardware only."
+  },
+  "confirmation": {
+    "interleaved_pairs": 7,
+    "raw_seconds_per_conversion": {
+      "baseline": [
+        0.04746137109375,
+        0.0473943541875,
+        0.047687165375,
+        0.04787498828125,
+        0.04769867578125,
+        0.04737731771875,
+        0.04743951303125
+      ],
+      "candidate": [
+        0.00094247396875,
+        0.00083960028125,
+        0.0008889609375,
+        0.00081684246875,
+        0.00084429165625,
+        0.00080516796875,
+        0.00092301040625
+      ]
+    },
+    "means_seconds_per_conversion": {
+      "baseline": 0.04756191220982143,
+      "candidate": 0.0008657639553571429
+    },
+    "observed_mean_speedup": 54.93635062480893,
+    "icc_verdict": "SMALLER_THAN_PREDICTED",
+    "all_22_runs_correct": true
+  },
+  "limitations": "This measures one valid-input precompiled VM workload on one machine. It does not establish performance across all Eshkol programs, input sizes, or frameworks.",
+  "calibration_pilot": {
+    "raw_seconds_per_conversion": {
+      "baseline": [
+        0.0474807200625,
+        0.047543841125,
+        0.0479442981875
+      ],
+      "candidate": [
+        0.00091122915625,
+        0.00083905990625,
+        0.0008461510625
+      ]
+    },
+    "means_seconds_per_conversion": {
+      "baseline": 0.047656286458333336,
+      "candidate": 0.0008654800416666667
+    },
+    "predicted_improvement_pct_for_fresh_confirmation": 98.18391212159729
+  },
+  "run_accounting": {
+    "warmup_runs": 2,
+    "calibration_runs": 6,
+    "confirmation_runs": 14,
+    "total_correct_runs": 22
+  },
+  "reproduction": {
+    "baseline_source": "268cc71fc193ae9f8a20b7aefb78981f4ca058d7",
+    "candidate_source": "93d08a174e866d48e0eb9fc76da225e96c53daab",
+    "configuration": "Release, CPU/FFI, LLVM21, macOSarm64",
+    "compile_bytecode": "CANDIDATE_BUILD/eshkol-run --profile hosted-vm --emit-eskb workload.eskb bench/vm_string_to_list.esk -LCANDIDATE_BUILD",
+    "run": "python3 scripts/benchmark_vm_string_to_list.py --baseline BASELINE_BUILD/eshkol-vm-standalone-test --candidate CANDIDATE_BUILD/eshkol-vm-standalone-test --bytecode workload.eskb --repeats 7 --warmup 1 --output result.json",
+    "producer_note": "Historical confirmation numbers were produced by the preregistered ICC experiment and its checksum-validating arm helper. The portable wrapper reproduces the workload and interleaved timing protocol; it is not the historical producer."
+  }
+}
