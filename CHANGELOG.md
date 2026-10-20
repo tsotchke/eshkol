@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Exact algebraic computation composes with finite differentiation.** Add
+  optional polynomial and selected real algebraic-field arithmetic, together
+  with field-valued dual, hyperdual and Taylor carriers and checked implicit
+  roots. Contributions from [Richard's field work](https://github.com/tsotchke/eshkol/pull/788)
+  and [algebraic AD](https://github.com/tsotchke/eshkol/pull/791) preserve exact
+  coefficients and reject unproved branches. (#837)
+- **Standing incremental circuits retain signed updates.** Add persistent DBSP
+  arrangements, simultaneous joins, keyed aggregates and a streaming
+  least-squares example with a strict dyadic binary64 reference. Contributions
+  from [circuits](https://github.com/tsotchke/eshkol/pull/789) and
+  [aggregates](https://github.com/tsotchke/eshkol/pull/790). (#837)
+
 - Begin v1.4-connection's managed-resource substrate with a hosted C API for
   exclusive borrowing and exactly-once close attempts. Generation-tagged IDs
   and per-borrow leases reject stale accesses; callbacks can re-enter without
@@ -29,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **v1.4 evidence gates validate analytic, HTTP, and resource-limit results.** Add a JIT/AOT order-8 GUW oracle gate, bind HTTP loopback receipts to the registered source and fresh build evidence, make resource-limit enforcement fail closed when its VM test binary is unavailable, and read build fingerprints from CMake's configured source checkout.
 
 ### Fixed
+
+- Native AOT and JIT reject foreign or unstamped stdlib artifacts before user
+  execution, including explicitly supplied objects and cached JIT objects.
+  Compiler-produced stdlib object and bitcode carry a matching release, object
+  ABI and source identity; a discovered mismatch is a hard error. (#837)
 
 - Initialize deferred tensor constructor cells before widening to derivative
   carriers, avoiding reads of reused arena bytes during promotion. (#836)
