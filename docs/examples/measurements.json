@@ -2829,6 +2829,20 @@
       "output_lines": 0,
       "note": "Focused PR799 qualification passed ORC, O3 AOT, and direct VM routes; configured release measurement remains NOT-RUN.",
       "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
+    },
+    "examples/algebraic_pullback.esk": {
+      "source_sha256": "680b018db65455ce5b56b56ea05a786f5f39153f3040ea2607a35b9eb118084b",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "Focused PR800 qualification runs are recorded separately; configured release measurements remain NOT-RUN.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is separate."
     }
   }
 }

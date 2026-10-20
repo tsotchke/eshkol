@@ -4812,6 +4812,41 @@
         "^Passed: 8 Failed: 0$",
         "^RESULT: PASS$"
       ]
+    },
+    {
+      "path": "examples/algebraic_pullback.esk",
+      "source_sha256": "680b018db65455ce5b56b56ea05a786f5f39153f3040ea2607a35b9eb118084b",
+      "title": "Exact algebraic solve pullback and HVP",
+      "kind": "example",
+      "purpose": "Differentiate an equation-defined exact solve over Q(sqrt(2)) and check its value, gradient and Hessian-vector product.",
+      "algorithm": "Solve x*theta=1 on the exact reverse tape, then compare its pullback and forward-over-reverse HVP with independent closed-form field values.",
+      "domain": "One parameter theta=sqrt(2) over its certified real quadratic field.",
+      "arithmetic": "Exact rational power-basis coefficients and algebraic operations; no floating conversion or finite differences.",
+      "validation": "Three in-program assertions check the exact solution, derivative -1/theta^2 and HVP 2/theta^3. The program prints RESULT: PASS only after all assertions pass.",
+      "limitations": "This is a one-dimensional exact linear solve over one supplied field; it makes no claim about general compiler transformations or speed.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic_pullback.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";;; Exact derivatives through an equation-defined algebraic solve."
+        },
+        {
+          "line": 9,
+          "text": "         (solution (algebraic-reverse-solve tape (vector (vector theta)) (vector one))))"
+        },
+        {
+          "line": 18,
+          "text": "              (field-same? (vector-ref gradient 0) expected-gradient)"
+        }
+      ],
+      "literature_review": "The linked module reference documents the exact reverse solve pullback and its retained factorization.",
+      "references": [],
+      "key_output": [
+        "^Passed: 3 Failed: 0$",
+        "^RESULT: PASS$"
+      ]
     }
   ],
   "runner_contract": {

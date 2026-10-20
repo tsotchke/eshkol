@@ -41,3 +41,6 @@ The acceptance suite uses nonsymmetric row-permuted matrices, analytic
 reciprocal-square gradients and HVPs, coupled polynomial coefficient adjoints,
 owned observations, grouped callback counts and nested full-domain residuals.
 No finite differences, compiler transform or performance speedup is claimed.
+
+The [exact solve example](../../../examples/algebraic_pullback.esk) checks the
+solution, gradient and Hessian-vector product against independent field values.
