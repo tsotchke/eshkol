@@ -24,6 +24,12 @@ if eshkol_durable_enabled; then
 else
   RUN_DIR="$(mktemp -d "$TRACE_DIR/ad-numerics-gate.XXXXXX")"
 fi
+# Isolate the runtime's cache under the same owned evidence root. Force the
+# runtime case through ORC rather than the persistent AOT executable cache.
+export ESHKOL_JIT_CACHE_DIR="$RUN_DIR/jit-cache"
+export ESHKOL_JIT_CACHE=0
+mkdir -p "$ESHKOL_JIT_CACHE_DIR"
+
 JUNIT="$RUN_DIR/ctest.xml"
 LOG="$RUN_DIR/ctest.verbose.log"
 TRACE_FILE="$TRACE_DIR/ad_numerics_gate.jsonl"
