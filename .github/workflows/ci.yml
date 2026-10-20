@@ -2461,7 +2461,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-test-log
-          path: ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+          path: |
+            ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+            ${{ runner.temp }}/eshkol-test-logs/ffi-diagnostics-*
           if-no-files-found: ignore
 
       - name: Upload Artifacts
