@@ -2167,11 +2167,11 @@ oracles:
       # same class as every high-severity sibling criterion in this target.
       - runtime_event:
           event_kinds: [ad_numerics]
-          event_names: ["ad_taylor_p11_user_numerics"]
+          event_names: ["ad_taylor_p11_v14_user_numerics"]
           event_values: ["PASS"]
         severity: high
         label: P11 tower-based user numerics converge on ODE/root/inversion examples
-        action: run_ad_numerics_gate
+        action: ./scripts/run_ad_numerics_gate.sh
 
       # ESH-0011 (workplan Tier 0, package P2) — the async foundation every
       # Tier 1 networking primitive registers its descriptors against. Real
