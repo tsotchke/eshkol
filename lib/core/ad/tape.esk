@@ -314,13 +314,14 @@
 ;; ── snapshot / restore ──
 ;; Capture the current node VALUES (for replay); restore writes them back.
 (define (tape-snapshot t)
-  (tape-map1 node-value (tape-nodes t)))
+  (tape-map1 (lambda (n) (tape-copy t (node-value n))) (tape-nodes t)))
 
 (define (tape-restore t snapshot)
+  (if (and (tape-protocol t) (vector-ref t 3)) (error "Cannot restore a sealed exact tape"))
   (let loop ((ns (tape-nodes t)) (vs snapshot))
     (if (and (pair? ns) (pair? vs))
         (begin
-          (vector-set! (car ns) 0 (car vs))
+          (vector-set! (car ns) 0 (tape-copy t (car vs)))
           (loop (cdr ns) (cdr vs)))))
   t)
 
