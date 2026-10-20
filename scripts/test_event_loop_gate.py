@@ -29,6 +29,20 @@ def main()->int:
             except GateError: return
             raise AssertionError('status-zero compile error was accepted')
     record('AOT compile diagnostic rejected with status zero',compile_error)
+    def generated_rule_controls():
+        source='/tmp/event-loop-gate-source'
+        one_ninja=f'build CMakeFiles/runtime.dir/lib/core/event_loop_kqueue.c.o: CC {source}/lib/core/event_loop_kqueue.c'
+        one_make=f'CMakeFiles/runtime.dir/lib/core/event_loop_epoll.c.o: {source}/lib/core/event_loop_epoll.c'
+        gate.select_backend_from_rules([one_ninja],source)
+        gate.select_backend_from_rules([one_make],source)
+        for bad in (
+            f'build CMakeFiles/runtime.dir/lib/core/event_loop_stub.c.o: CC {source}/lib/core/event_loop_stub.c',
+            one_ninja+f'\nbuild CMakeFiles/runtime.dir/lib/core/event_loop_epoll.c.o: CC {source}/lib/core/event_loop_epoll.c',
+            f'build CMakeFiles/runtime.dir/lib/core/other.c.o: CC {source}/lib/core/other.c',
+        ):
+            rejected(lambda: gate.select_backend_from_rules([bad],source))
+        rejected(lambda: gate.select_backend_from_rules(['build CMakeFiles/runtime.dir/lib/core/event_loop_kqueue.c.o: CC /other/source/lib/core/event_loop_kqueue.c'],source))
+    record('Ninja/Make backend rule selection and stub/multiple/missing/wrong-source controls',generated_rule_controls)
     def stale_pass_cleared():
         with tempfile.TemporaryDirectory() as d:
             trace=Path(d)/'trace.jsonl'; trace.write_text(json.dumps({'kind':'eshkol_smoke','name':'event_loop_works','value':'PASS'})+'\n')

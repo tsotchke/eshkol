@@ -44,15 +44,33 @@ def clean_source()->tuple[str,str]:
     return rev,dirty
 
 def identify_backend(build:Path)->str:
-    # CMake's actual target source selection is recorded by generated build rules.
-    hits=[]
-    for p in build.rglob('build.make'):
-        try: s=p.read_text(errors='ignore')
+    # Ninja and Make both expose the compiled object rule. Do not infer from
+    # uname or from a comment; require exactly one selected source rule.
+    rule_files=list(build.rglob('build.ninja'))+list(build.rglob('build.make'))
+    if not rule_files: raise GateFailure('no generated Ninja or Make rules found')
+    texts=[]
+    for p in rule_files:
+        try: texts.append(p.read_text(errors='ignore'))
         except OSError: continue
-        hits += re.findall(r'lib/core/event_loop_(kqueue|epoll|iocp|stub)\.c',s)
-    actual=sorted(set(hits))
-    if len(actual)!=1 or actual[0]=='stub': raise GateFailure(f'cannot prove one supported backend source in generated CMake rules: {actual}')
-    return actual[0]
+    return select_backend_from_rules(texts,str(HERE))
+
+def select_backend_from_rules(texts:list[str], source_root:str)->str:
+    rx=re.compile(r'^\s*(?:build\s+)?[^\n]*event_loop_(kqueue|epoll|iocp|stub)\.c\.(?:o|obj)\s*:',re.M)
+    rules=[]
+    for text in texts:
+        for line in text.splitlines():
+            if rx.search(line): rules.append((rx.search(line).group(1),line))
+    actual=sorted({name for name,_ in rules})
+    if len(actual)!=1 or actual[0]=='stub': raise GateFailure(f'generated rules must select exactly one supported backend object, found {actual}')
+    name=actual[0]; expected=str(Path(source_root)/BACKENDS[name])
+    selected=[line for n,line in rules if n==name]
+    absolute=re.compile(r'(?:^|\s)(/[\w .@+\-/]+/lib/core/event_loop_'+name+r'\.c)(?=$|\s)')
+    abs_sources=[m.group(1).strip() for line in selected for m in absolute.finditer(line)]
+    if abs_sources and any(str(Path(p).resolve())!=str(Path(expected).resolve()) for p in abs_sources):
+        raise GateFailure(f'generated {name} rule points outside selected source root: {abs_sources}')
+    if not any(expected in line or BACKENDS[name] in line for line in selected):
+        raise GateFailure(f'generated {name} object rule does not name expected source {expected}')
+    return name
 
 def append_event(trace:Path, value:str, detail:str, payload:dict)->None:
     trace.parent.mkdir(parents=True,exist_ok=True)
@@ -78,6 +96,7 @@ def main()->int:
         return 0 if status=='PASS' else 1
     try:
         rev,_=clean_source(); state['source_revision']=rev; payload['source_revision']=rev
+        tree_oid=git('rev-parse','HEAD^{tree}'); state['source_tree_oid']=tree_oid; payload['source_tree_oid']=tree_oid
         run=build/'eshkol-run'; lib=build/'libeshkol-runtime.a'; cache=build/'CMakeCache.txt'; stdobj=build/'stdlib.o'; stdbc=build/'stdlib.bc'
         for p in (run,lib,cache,stdobj,stdbc,FIXTURE):
             if not p.is_file(): raise GateFailure(f'missing required artifact/input: {p}')
@@ -90,7 +109,7 @@ def main()->int:
         state['commands']['freshness_before']=freshness
         fp=subprocess.run(freshness,cwd=HERE,capture_output=True,text=True); state['statuses']['freshness_before']=fp.returncode; state['freshness_before_stdout']=fp.stdout; state['freshness_before_stderr']=fp.stderr
         require_freshness_status(fp.returncode,fp.stdout+fp.stderr)
-        inputs=[HERE/'CMakeLists.txt',HERE/'lib/core/event_loop.c',backend_src,FIXTURE]
+        inputs=[cache,HERE/'CMakeLists.txt',HERE/'lib/core/event_loop.c',backend_src,FIXTURE]
         pre={str(p):sha(p) for p in inputs}; state['source_hashes_before']=pre
         tracked=[run,lib,stdobj,stdbc,FIXTURE]
         state['artifact_hashes_before']={str(p):sha(p) for p in tracked}
@@ -125,6 +144,8 @@ def main()->int:
         except GateFailure as e: raise GateFailure('post-run whole-input freshness check failed: '+str(e))
         rev_after,_=clean_source()
         if rev_after!=rev: raise GateFailure(f'source revision changed during gate: {rev}->{rev_after}')
+        tree_after=git('rev-parse','HEAD^{tree}')
+        if tree_after!=tree_oid: raise GateFailure(f'source tree changed during gate: {tree_oid}->{tree_after}')
         post={str(p):sha(p) for p in inputs}; state['source_hashes_after']=post
         if post!=pre: raise GateFailure('CMake/event-loop/backend/fixture content changed during gate')
         state['artifact_hashes_after']={str(p):sha(p) for p in tracked}
