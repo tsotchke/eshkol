@@ -13143,4 +13143,5 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_ridge "tests/stdlib/algebraic_ridge_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_ridge_example "examples/algebraic_ridge.esk")
 endif()

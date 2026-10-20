@@ -2843,6 +2843,18 @@
       "output_lines": 0,
       "note": "Focused PR800 qualification runs are recorded separately; configured release measurements remain NOT-RUN.",
       "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is separate."
+    },
+    "examples/algebraic_ridge.esk": {
+      "source_sha256": "3945e29247e1cc82100e7952b9a4a3e91623110164d1c322bc9dff8764708d80",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
     }
   }
 }

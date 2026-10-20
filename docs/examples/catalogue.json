@@ -161,6 +161,48 @@
       ]
     },
     {
+      "path": "examples/algebraic_ridge.esk",
+      "source_sha256": "3945e29247e1cc82100e7952b9a4a3e91623110164d1c322bc9dff8764708d80",
+      "title": "Exact live ridge fit and regularization sensitivity",
+      "kind": "example",
+      "purpose": "Fit exact ridge coefficients and differentiate the fit with respect to regularization over a certified algebraic field.",
+      "algorithm": "Accumulate bounded signed sufficient moments, solve the checked normal system once, and use the retained factor pullback for regularization sensitivity.",
+      "domain": "One-dimensional ridge fit over Q(sqrt(2)) using one exact weighted observation.",
+      "arithmetic": "Exact rational power-basis coefficients and algebraic operations; no floating conversion or finite differences.",
+      "validation": "Independent exact checks compare coefficient 1, regularization derivative -1/2, objective 2, and the pullback lambda component -1/2.",
+      "limitations": "The example covers one exact scalar feature and one supplied real quadratic field; it makes no performance claim.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic_ridge.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact ridge coefficient, regularization sensitivity and reverse pullback."
+        },
+        {
+          "line": 6,
+          "text": "(define domain (algebraic-domain field))"
+        },
+        {
+          "line": 10,
+          "text": "(define state (algebraic-ridge-new field 1 one data))"
+        },
+        {
+          "line": 14,
+          "text": "              (same (vector-ref initial 2) (algebraic-element field 2))))"
+        },
+        {
+          "line": 17,
+          "text": "(display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "This is an exact algebraic fitting example; no external literature claim is made.",
+      "references": [],
+      "key_output": [
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/algebraic_sparse.esk",
       "source_sha256": "b39bad3265799ab2414e8af5a57d60a3ab0d1a5fad18860e64fd4d045cedc5b5",
       "title": "Exact sparse algebraic curvature",
