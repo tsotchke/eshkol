@@ -2515,6 +2515,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/runtime_type_name.cpp
   lib/core/symbol_intern.cpp
   lib/core/threads.c
+  lib/core/net.c
   lib/core/workspace.cpp
   lib/quantum/quantum_rng.c
   lib/quantum/quantum_rng_wrapper.c
@@ -13360,4 +13361,16 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "RESULT: PASS"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# Standalone networking boundary: independent POSIX peers, no LLVM rebuild.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c)
+    target_include_directories(net_runtime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(NOT WIN32 AND NOT EMSCRIPTEN)
+        find_package(Threads REQUIRED)
+        target_link_libraries(net_runtime_test PRIVATE Threads::Threads)
+    endif()
+    add_test(NAME net_runtime_test COMMAND net_runtime_test)
+    set_tests_properties(net_runtime_test PROPERTIES TIMEOUT 30)
 endif()
