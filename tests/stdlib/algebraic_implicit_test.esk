@@ -67,6 +67,22 @@
 (define plain (algebraic-ad-system-root context linear (vector 1 1) 0))
 (check "zero-budget already exact simple branch succeeds"
   (algebraic-ad-equal? (vector-ref plain 0) (algebraic-ad-constant context 1)))
+(define unit-system (vector (list (list 1 (vector 1)) (list -1 (vector 0)))))
+(define unit-root (algebraic-ad-system-root context unit-system (vector 1) 0))
+(check "one-unknown endpoint accepts an exact simple branch"
+  (algebraic-ad-equal? (vector-ref unit-root 0) (algebraic-ad-constant context 1)))
+(define identity-eight
+  (let rows ((i 0) (out '()))
+    (if (= i 8) (list->vector (reverse out))
+      (let ((powers (make-vector 8 0)))
+        (vector-set! powers i 1)
+        (rows (+ i 1) (cons (list (list 1 powers)) out))))))
+(define eight-roots (algebraic-ad-system-root context identity-eight (make-vector 8 0) 0))
+(check "eight-unknown endpoint factors and returns the exact identity-system branch"
+  (let loop ((i 0))
+    (or (= i 8)
+        (and (algebraic-ad-equal? (vector-ref eight-roots i) (algebraic-ad-constant context 0))
+             (loop (+ i 1))))))
 (define singular (vector (list (list 1 (vector 2)))))
 (define epsilon (algebraic-ad-seed (make-algebraic-taylor field 1) 0))
 (define enclosing (algebraic-ad-context epsilon))
