@@ -2790,6 +2790,19 @@
       "note": "Exact analytic assertions added after configured CTest rejected the earlier print-only example; root qualification is recorded separately from release measurements.",
       "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
     },
+    "examples/algebraic_spectral.esk": {
+      "source_sha256": "2b37802068f7bfaa3f503ca184807fbc162346bd50e6d933cea446abccebdc70",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "note": "Focused JIT and O3 AOT qualification passed; release measurements remain NOT-RUN.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
+    },
     "examples/algebraic_incremental.esk": {
       "source_sha256": "2e7f154bbcfb5073f973d61ec7cef7a0e115524983ad20ae550a70238a3ade4c",
       "jit": {

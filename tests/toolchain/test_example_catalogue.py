@@ -218,7 +218,7 @@ class CatalogueTests(unittest.TestCase):
 
     def test_real_catalogue_completeness_exact_witness_and_scope_boundaries(self):
         data=json.loads((ROOT/'docs/examples/catalogue.json').read_text())
-        self.assertEqual(len(data['entries']),82)
+        self.assertEqual(len(data['entries']),83)
         self.assertEqual(sum(e['kind']=='mathematics' for e in data['entries']),47)
         pages=json.loads((ROOT/'site/pages.json').read_text())['pages']
         for name in ('docs/EXAMPLES.md','docs/MATHEMATICS_EXAMPLES.md'):
@@ -229,6 +229,7 @@ class CatalogueTests(unittest.TestCase):
         self.assertIn('algebraic_implicit',entries)
         self.assertIn('algebraic_reverse',entries)
         self.assertIn('algebraic_pullback',entries)
+        self.assertIn('algebraic_spectral',entries)
         self.assertIn('algebraic_batch',entries)
         self.assertIn('globally',entries['mathematics_jacobian_counterexample']['validation'])
         self.assertIn('1e-9',entries['mathematics_jacobian_counterexample']['arithmetic'])

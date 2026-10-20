@@ -7,6 +7,9 @@ lib/core/ad/algebraic_sparse.esk	4	provide	algebraic-sparse-hessian
 lib/core/ad/algebraic_sparse.esk	4	provide	algebraic-sparse-hessian-dense
 lib/core/ad/algebraic_sparse.esk	4	provide	algebraic-sparse-hessian-ref
 lib/core/ad/algebraic_sparse.esk	4	provide	algebraic-sparse-hessian-summary
+lib/core/ad/algebraic_spectral.esk	3	provide	algebraic-characteristic
+lib/core/ad/algebraic_spectral.esk	3	provide	algebraic-eigenvalue-with-pullback
+lib/core/ad/algebraic_spectral.esk	3	provide	algebraic-eigenvalue-lift
 lib/core/ad/interval.esk	67	provide	interval-add
 lib/core/ad/interval.esk	67	provide	interval-cos
 lib/core/ad/interval.esk	67	provide	interval-div

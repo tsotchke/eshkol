@@ -34,6 +34,23 @@ Independently checks a returned certificate against the caller's QP.
 
 Computes exact cotangents for the Hessian, linear term and equality and
 inequality data on an admitted strict active branch.
+## `core.ad.algebraic_spectral`
+
+Source: `lib/core/ad/algebraic_spectral.esk`. Exact simple-branch admission,
+projector residuals, pullback convention, and refusal boundaries are in
+[ad_algebraic_spectral.md](ad_algebraic_spectral.md).
+
+### `algebraic-characteristic`
+
+Returns ascending coefficients of the exact characteristic polynomial after checking the Cayley–Hamilton residual.
+
+### `algebraic-eigenvalue-with-pullback`
+
+Certifies a supplied simple eigenvalue of a symmetric matrix and returns its rank-one projector with the unconstrained matrix pullback.
+
+### `algebraic-eigenvalue-lift`
+
+Lifts a supplied enclosing root through an AD context while rechecking the exact simple-branch certificate.
 
 ## `core.ad.algebraic_sparse`
 

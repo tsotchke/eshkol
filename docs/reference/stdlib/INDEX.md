@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 85** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 999** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 86** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1002** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -228,6 +228,9 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.ad.algebraic_qp` | `algebraic-qp-info` | [`algebraic-qp-info`](shipped_exports.md#algebraic-qp-info) |
 | `core.ad.algebraic_qp` | `algebraic-qp-verify` | [`algebraic-qp-verify`](shipped_exports.md#algebraic-qp-verify) |
 | `core.ad.algebraic_qp` | `algebraic-qp-pullback` | [`algebraic-qp-pullback`](shipped_exports.md#algebraic-qp-pullback) |
+| `core.ad.algebraic_spectral` | `algebraic-characteristic` | [`algebraic-characteristic`](shipped_exports.md#algebraic-characteristic) |
+| `core.ad.algebraic_spectral` | `algebraic-eigenvalue-with-pullback` | [`algebraic-eigenvalue-with-pullback`](shipped_exports.md#algebraic-eigenvalue-with-pullback) |
+| `core.ad.algebraic_spectral` | `algebraic-eigenvalue-lift` | [`algebraic-eigenvalue-lift`](shipped_exports.md#algebraic-eigenvalue-lift) |
 | `core.algebraic_linalg` | `algebraic-factor-positive-definite?` | [`algebraic-factor-positive-definite?`](shipped_exports.md#algebraic-factor-positive-definite) |
 | `core.ad.algebraic_incremental` | `algebraic-incremental-moment-ref` | [`algebraic-incremental-moment-ref`](shipped_exports.md#algebraic-incremental-moment-ref) |
 | `core.ad.algebraic_sparse` | `algebraic-sparse-hessian` | [algebraic-sparse-hessian](shipped_exports.md#algebraic-sparse-hessian) |

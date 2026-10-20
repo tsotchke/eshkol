@@ -332,6 +332,44 @@
       "key_output": []
     },
     {
+      "path": "examples/algebraic_spectral.esk",
+      "source_sha256": "2b37802068f7bfaa3f503ca184807fbc162346bd50e6d933cea446abccebdc70",
+      "title": "Exact simple eigenvalue branch and projector",
+      "kind": "example",
+      "purpose": "Certify one supplied simple eigenvalue branch of an exact symmetric matrix and its unconstrained matrix pullback.",
+      "algorithm": "Compute the characteristic polynomial by Faddeev–LeVerrier, derive the adjugate projector, and verify exact eigenvalue, idempotence, trace, and eigen-equation residuals.",
+      "domain": "A two-dimensional diagonal symmetric matrix over Q(sqrt(2)); the selected branch is sqrt(2), separated from 3.",
+      "arithmetic": "Exact algebraic field arithmetic and exact residual checks; no floating eigensolver or finite differences.",
+      "validation": "Four independent exact assertions check characteristic coefficients, selected value, rank-one coordinate projector, and seeded matrix pullback; prints RESULT: PASS.",
+      "limitations": "The caller supplies an admitted field element/enclosing branch; no eigenvalue search, branch ordering, repeated-root projector, or general nonsymmetric matrix handling.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic_spectral.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";;; Exact simple eigenvalue branch and projector over Q(sqrt(2))."
+        },
+        {
+          "line": 8,
+          "text": "(define result (algebraic-eigenvalue-with-pullback field matrix alpha))"
+        },
+        {
+          "line": 13,
+          "text": "(check \"characteristic is (t-alpha)(t-3)\""
+        },
+        {
+          "line": 25,
+          "text": "(display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "The linked module reference documents the exact characteristic and projector certificate.",
+      "references": [],
+      "key_output": [
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/autodiff.esk",
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
       "title": "Scalar automatic differentiation",

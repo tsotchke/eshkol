@@ -12,13 +12,14 @@
   (if (not ok) (error name)))
 (check "characteristic is (t-alpha)(t-3)"
   (and (algebraic-equal? (vector-ref coefficients 0) (algebraic-scale alpha 3))
-       (algebraic-equal? (vector-ref coefficients 1) (algebraic-scale (algebraic-element field 1) -1))))
+       (algebraic-equal? (vector-ref coefficients 1)
+         (algebraic-sub (algebraic-scale alpha -1) (algebraic-element field 3)))))
 (check "selected simple branch is exact alpha" (algebraic-equal? (vector-ref result 0) alpha))
 (check "projector selects first coordinate"
-  (and (algebraic-equal? (vector-ref (vector-ref projector 0) 0) 1)
-       (algebraic-equal? (vector-ref (vector-ref projector 1) 1) 0)))
+  (and (algebraic-equal? (vector-ref (vector-ref projector 0) 0) (algebraic-element field 1))
+       (algebraic-equal? (vector-ref (vector-ref projector 1) 1) (algebraic-element field 0))))
 (check "unconstrained pullback is twice transpose projector"
-  (and (algebraic-equal? (vector-ref (vector-ref gradient 0) 0) 2)
-       (algebraic-equal? (vector-ref (vector-ref gradient 1) 1) 0)))
+  (and (algebraic-equal? (vector-ref (vector-ref gradient 0) 0) (algebraic-element field 2))
+       (algebraic-equal? (vector-ref (vector-ref gradient 1) 1) (algebraic-element field 0))))
 (display "Passed: 4 Failed: 0") (newline)
 (display "RESULT: PASS") (newline)
