@@ -7,11 +7,14 @@ RELEASE="$3"
 OBJECT_ABI="$4"
 SOURCE_FINGERPRINT="$5"
 WORK_ROOT="$6"
+LLVM_AS="${7:-}"
+LLC="${8:-}"
 WORK="$(mktemp -d "$WORK_ROOT/stdlib-identity.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$WORK/source" "$WORK/matching" "$WORK/wrong-release" \
-    "$WORK/wrong-source" "$WORK/wrong-abi" "$WORK/unstamped"
+    "$WORK/wrong-source" "$WORK/wrong-abi" "$WORK/unstamped" \
+    "$WORK/declaration-only" "$WORK/mixed-markers"
 cat > "$WORK/source/stdlib.esk" <<'ESK'
 (define identity-probe 17)
 ESK
@@ -66,7 +69,7 @@ compile_probe "$WORK/wrong-abi" reject aot-wrong-abi
 compile_probe "$WORK/unstamped" reject aot-unstamped
 
 run_probe() {
-    local root="$1" expected="$2" output
+    local root="$1" expected="$2" reason="${3:-}" output
     output="$(ESHKOL_LIB_DIR="$root" ESHKOL_PATH="$WORK/source" \
         ESHKOL_JIT_CACHE=0 "$ESHKOL_RUN" -r "$WORK/source/main.esk" 2>&1)"
     if [[ "$expected" == match ]]; then
@@ -75,6 +78,9 @@ run_probe() {
         grep -Fq "rejecting stdlib.bc $root/stdlib.bc" <<<"$output"
         grep -Fq "falling back to a compatible stdlib source" <<<"$output"
         ! grep -Fq "[REPL] Loaded stdlib bitcode from: $root/stdlib.bc" <<<"$output"
+        if [[ -n "$reason" ]]; then
+            grep -Fq "$reason" <<<"$output"
+        fi
     fi
 }
 
@@ -83,6 +89,35 @@ run_probe "$WORK/wrong-release" reject
 run_probe "$WORK/wrong-source" reject
 run_probe "$WORK/wrong-abi" reject
 run_probe "$WORK/unstamped" reject
+
+build_marker_controls() {
+    local expected_ir="$WORK/identity-declaration.ll"
+    local mixed_ir="$WORK/identity-mixed.ll"
+    cat > "$expected_ir" <<IR
+@$EXPECTED_IDENTITY = external constant i8
+IR
+    cat > "$mixed_ir" <<IR
+@$EXPECTED_IDENTITY = constant i8 0
+@eshkol_stdlib_identity_foreign_control = constant i8 0
+IR
+    "$LLVM_AS" "$expected_ir" -o "$WORK/declaration-only/stdlib.bc"
+    "$LLC" -filetype=obj "$WORK/declaration-only/stdlib.bc" \
+        -o "$WORK/declaration-only/stdlib.o"
+    "$LLVM_AS" "$mixed_ir" -o "$WORK/mixed-markers/stdlib.bc"
+    "$LLC" -filetype=obj "$WORK/mixed-markers/stdlib.bc" \
+        -o "$WORK/mixed-markers/stdlib.o"
+
+    compile_probe "$WORK/declaration-only" reject aot-declaration-only
+    compile_probe "$WORK/mixed-markers" reject aot-mixed-markers
+    run_probe "$WORK/declaration-only" reject "declaration-only identity marker"
+    run_probe "$WORK/mixed-markers" reject "multiple embedded identity markers"
+}
+
+if [[ -x "$LLVM_AS" && -x "$LLC" ]]; then
+    build_marker_controls
+else
+    echo "SKIP: LLVM assembler/codegen unavailable for declaration/mixed-marker controls"
+fi
 
 # Seed the JIT object cache from matching bitcode, then replace the discovered
 # cache entry with a real object carrying a foreign marker. Admission must
@@ -99,4 +134,4 @@ grep -Fq "rejecting cached stdlib object $cached_object" <<<"$cache_output"
 grep -Fq "[REPL] Loaded stdlib bitcode from: $WORK/matching/stdlib.bc" \
     <<<"$cache_output"
 
-echo "PASS: stdlib embedded identity matching, release/source/ABI, and missing controls"
+echo "PASS: stdlib identity matching and available artifact/cache controls"

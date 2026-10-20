@@ -3104,6 +3104,18 @@ add_custom_command(
 add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+  find_program(ESHKOL_STDLIB_IDENTITY_LLVM_AS
+      NAMES llvm-as-${ESHKOL_REQUIRED_LLVM_MAJOR} llvm-as
+      HINTS ${LLVM_TOOLS_BINARY_DIR} "${ESHKOL_LLVM_ROOT}/bin")
+  find_program(ESHKOL_STDLIB_IDENTITY_LLC
+      NAMES llc-${ESHKOL_REQUIRED_LLVM_MAJOR} llc
+      HINTS ${LLVM_TOOLS_BINARY_DIR} "${ESHKOL_LLVM_ROOT}/bin")
+  if(NOT ESHKOL_STDLIB_IDENTITY_LLVM_AS)
+    set(ESHKOL_STDLIB_IDENTITY_LLVM_AS "")
+  endif()
+  if(NOT ESHKOL_STDLIB_IDENTITY_LLC)
+    set(ESHKOL_STDLIB_IDENTITY_LLC "")
+  endif()
   add_test(NAME stdlib_identity_compatibility
       COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/stdlib_identity_test.sh"
@@ -3112,7 +3124,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
           "${ESHKOL_STDLIB_IDENTITY_RELEASE}"
           "${ESHKOL_STDLIB_IDENTITY_ABI_SYMBOL}"
           "${ESHKOL_STDLIB_SOURCE_FINGERPRINT}"
-          "${CMAKE_CURRENT_BINARY_DIR}")
+          "${CMAKE_CURRENT_BINARY_DIR}"
+          "${ESHKOL_STDLIB_IDENTITY_LLVM_AS}"
+          "${ESHKOL_STDLIB_IDENTITY_LLC}")
   set_tests_properties(stdlib_identity_compatibility PROPERTIES TIMEOUT 180)
 endif()
 
