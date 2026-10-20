@@ -2815,6 +2815,74 @@
       "key_output": [],
       "note": "Focused qualification is separate from release measurements.",
       "not_run_reason": "No configured release measurement receipt exists."
+    },
+    "examples/algebraic_reverse.esk": {
+      "source_sha256": "20af851227419af14c5bd4265b38200599f36ff779b803dc76e3066b0855c8cb",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "Focused PR799 qualification passed ORC, O3 AOT, and direct VM routes; configured release measurement remains NOT-RUN.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
+    },
+    "examples/algebraic_pullback.esk": {
+      "source_sha256": "680b018db65455ce5b56b56ea05a786f5f39153f3040ea2607a35b9eb118084b",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "Focused PR800 qualification runs are recorded separately; configured release measurements remain NOT-RUN.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is separate."
+    },
+    "examples/algebraic_ridge.esk": {
+      "source_sha256": "3945e29247e1cc82100e7952b9a4a3e91623110164d1c322bc9dff8764708d80",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
+    },
+    "examples/mathematics_dbsp_tensor_circuit.esk": {
+      "source_sha256": "0c43a271bcc34a56f3d37dccbd69d416bd8a56ed37c152a3d4f383911c585e37",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "Focused local ORC, VM and O3 AOT routes are recorded separately; release measurements remain pending.",
+      "not_run_reason": "Not run in the configured release measurement suite."
+    },
+    "examples/algebraic_updates.esk": {
+      "source_sha256": "da8239d8a8211279d3a215ca8f8a4c99cf4a155e0919db42ab646b6b5231107d",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "Focused PR804 ORC, VM and direct O3 AOT runs passed; configured release measurements remain NOT-RUN.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is separate."
     }
   }
 }

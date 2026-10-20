@@ -161,6 +161,94 @@
       ]
     },
     {
+      "path": "examples/algebraic_ridge.esk",
+      "source_sha256": "3945e29247e1cc82100e7952b9a4a3e91623110164d1c322bc9dff8764708d80",
+      "title": "Exact live ridge fit and regularization sensitivity",
+      "kind": "example",
+      "purpose": "Fit exact ridge coefficients and differentiate the fit with respect to regularization over a certified algebraic field.",
+      "algorithm": "Accumulate bounded signed sufficient moments, solve the checked normal system once, and use the retained factor pullback for regularization sensitivity.",
+      "domain": "One-dimensional ridge fit over Q(sqrt(2)) using one exact weighted observation.",
+      "arithmetic": "Exact rational power-basis coefficients and algebraic operations; no floating conversion or finite differences.",
+      "validation": "Independent exact checks compare coefficient 1, regularization derivative -1/2, objective 2, and the pullback lambda component -1/2.",
+      "limitations": "The example covers one exact scalar feature and one supplied real quadratic field; it makes no performance claim.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic_ridge.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact ridge coefficient, regularization sensitivity and reverse pullback."
+        },
+        {
+          "line": 6,
+          "text": "(define domain (algebraic-domain field))"
+        },
+        {
+          "line": 10,
+          "text": "(define state (algebraic-ridge-new field 1 one data))"
+        },
+        {
+          "line": 14,
+          "text": "              (same (vector-ref initial 2) (algebraic-element field 2))))"
+        },
+        {
+          "line": 17,
+          "text": "(display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "This is an exact algebraic fitting example; no external literature claim is made.",
+      "references": [],
+      "key_output": [
+        "^RESULT: PASS$"
+      ]
+    },
+    {
+      "path": "examples/algebraic_updates.esk",
+      "source_sha256": "da8239d8a8211279d3a215ca8f8a4c99cf4a155e0919db42ab646b6b5231107d",
+      "title": "Guarded exact low-rank updates",
+      "kind": "example",
+      "purpose": "Reuse exact factors through bounded nonsymmetric and symmetric low-rank matrix updates.",
+      "algorithm": "Apply a checked Woodbury correction and transpose correction, verify full-domain residuals, and fall back atomically to a full factorization when a signed SPD batch has an inadmissible intermediate.",
+      "domain": "Square 2x2 systems over Q(sqrt(2)); the focused suite also covers certified algebraic fields and nested AD owners, with dimensions 1–32 and rank at most eight.",
+      "arithmetic": "Exact rational coefficients and exact algebraic operations; the example uses no floating conversion, approximation or finite differences.",
+      "validation": "Six assertions compare nonsymmetric, transpose, symmetric and signed-batch solutions with independently derived exact rational formulas, check the correction route and factor reuse, and print RESULT: PASS or exit nonzero.",
+      "limitations": "This example covers small dense systems and selected signed updates. Bounded factorization counters describe route behavior; they establish no wall-clock speedup or coefficient-growth bound.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.algebraic_update, core.algebraic_linalg and core.ad.algebraic.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": "(require stdlib)"
+        },
+        {
+          "line": 7,
+          "text": "(define base (algebraic-update-factor field (vector (vector 2 1) (vector 0 3))))"
+        },
+        {
+          "line": 17,
+          "text": "(check \"known updated solution\" (and (same (vector-ref x 0) 2) (same (vector-ref x 1) -5)))"
+        },
+        {
+          "line": 23,
+          "text": "(define identity-spd (algebraic-update-factor field (vector (vector 1 0) (vector 0 1)) #t))"
+        },
+        {
+          "line": 29,
+          "text": "(define rescued (algebraic-update-symmetric identity-spd"
+        },
+        {
+          "line": 37,
+          "text": "(display \"PASS: algebraic_updates\") (newline) (display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "The exact solution formulas are derived directly from the two displayed rational matrices; no external literature claim is made.",
+      "references": [],
+      "key_output": [
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/algebraic_sparse.esk",
       "source_sha256": "b39bad3265799ab2414e8af5a57d60a3ab0d1a5fad18860e64fd4d045cedc5b5",
       "title": "Exact sparse algebraic curvature",
@@ -4765,6 +4853,128 @@
       "key_output": [
         "^Exact maintained loss coefficients:",
         "^RESULT: PASS$"
+      ]
+    },
+    {
+      "path": "examples/algebraic_reverse.esk",
+      "source_sha256": "20af851227419af14c5bd4265b38200599f36ff779b803dc76e3066b0855c8cb",
+      "title": "Exact algebraic reverse-mode pullback and HVP",
+      "kind": "example",
+      "purpose": "Compute an exact whole-vector pullback and Hessian-vector product for a polynomial over Q(sqrt(2)).",
+      "algorithm": "Record f(x,y)=x^3+y*x^2 once with the public algebraic reverse tape, then compare its pullback and forward-over-reverse HVP with independent analytic formulas.",
+      "domain": "One two-variable point (sqrt(2),3) and direction (2,-1) over the certified real quadratic field.",
+      "arithmetic": "Exact rational power-basis coefficients and algebraic operations; no floating conversion or finite differences.",
+      "validation": "Eight in-program assertions check the exact value, both gradient coordinates, both Hessian-action coordinates, the HVP gradient/value/directional outputs, and zero finite-difference evaluations. The program prints RESULT: PASS only after all assertions pass.",
+      "limitations": "This is a polynomial demonstration over one supplied field; it makes no claim about transcendental operations, general compiler transformations, or speed.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.algebraic_domain and core.ad.algebraic_reverse.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact pullback and HVP over Q(sqrt(2)), checked against closed-form formulas."
+        },
+        {
+          "line": 20,
+          "text": "(define record (algebraic-value-and-pullback field objective point))"
+        },
+        {
+          "line": 23,
+          "text": "(define hvp (algebraic-hvp field objective point direction))"
+        },
+        {
+          "line": 39,
+          "text": "(check \"HVP value and directional output match analytic reference\""
+        },
+        {
+          "line": 49,
+          "text": "(display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "No external literature claim is made; the exact derivatives are independently derived in the source comments.",
+      "references": [],
+      "key_output": [
+        "^Value coefficients: #\\(6 2\\)$",
+        "^Gradient coefficients: #\\(#\\(6 6\\) #\\(2 0\\)\\)$",
+        "^HVP coefficients: #\\(#\\(12 10\\) #\\(0 4\\)\\)$",
+        "^Passed: 8 Failed: 0$",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
+      "path": "examples/algebraic_pullback.esk",
+      "source_sha256": "680b018db65455ce5b56b56ea05a786f5f39153f3040ea2607a35b9eb118084b",
+      "title": "Exact algebraic solve pullback and HVP",
+      "kind": "example",
+      "purpose": "Differentiate an equation-defined exact solve over Q(sqrt(2)) and check its value, gradient and Hessian-vector product.",
+      "algorithm": "Solve x*theta=1 on the exact reverse tape, then compare its pullback and forward-over-reverse HVP with independent closed-form field values.",
+      "domain": "One parameter theta=sqrt(2) over its certified real quadratic field.",
+      "arithmetic": "Exact rational power-basis coefficients and algebraic operations; no floating conversion or finite differences.",
+      "validation": "Three in-program assertions check the exact solution, derivative -1/theta^2 and HVP 2/theta^3. The program prints RESULT: PASS only after all assertions pass.",
+      "limitations": "This is a one-dimensional exact linear solve over one supplied field; it makes no claim about general compiler transformations or speed.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic_pullback.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";;; Exact derivatives through an equation-defined algebraic solve."
+        },
+        {
+          "line": 9,
+          "text": "         (solution (algebraic-reverse-solve tape (vector (vector theta)) (vector one))))"
+        },
+        {
+          "line": 18,
+          "text": "              (field-same? (vector-ref gradient 0) expected-gradient)"
+        }
+      ],
+      "literature_review": "The linked module reference documents the exact reverse solve pullback and its retained factorization.",
+      "references": [],
+      "key_output": [
+        "^Passed: 3 Failed: 0$",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
+      "path": "examples/mathematics_dbsp_tensor_circuit.esk",
+      "source_sha256": "0c43a271bcc34a56f3d37dccbd69d416bd8a56ed37c152a3d4f383911c585e37",
+      "title": "Maintained named-axis tensor contractions",
+      "kind": "mathematics",
+      "purpose": "Maintain a named-axis matrix product through simultaneous signed input changes and retain the prior version.",
+      "algorithm": "Compile a fixed contraction of two 2×2 inputs, then compare the maintained result with an independently calculated dense product for every output cell.",
+      "domain": "Two fixed 2×2 matrices with distinct named axes and dyadic floating-point values.",
+      "arithmetic": "Native floating-point tensor cells. Integer-valued and dyadic cases are compared with strict equality because all displayed inputs, updates and results are exactly representable in binary64.",
+      "validation": "Thirteen assertions compare every output cell with direct dense formulas before and after simultaneous signed edits and verify historical-version stability.",
+      "limitations": "Small illustrative matrices only; no release measurement, general performance claim, or bound on total update allocation.",
+      "prerequisites": "Built compiler/stdlib and core.dbsp.tensor_circuit.",
+      "review_status": "source-inspected",
+      "registrations": [
+        {
+          "family": "ESHKOL_DBSP_EXAMPLES",
+          "criterion": "dbsp_tensor_circuit_example",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";;; Maintain a named-axis matrix product under simultaneous signed changes."
+        },
+        {
+          "line": 3,
+          "text": "(require core.dbsp.tensor_circuit)"
+        }
+      ],
+      "literature_review": "The repository DBSP tensor-circuit API reference documents the maintained-expression contract.",
+      "references": [
+        {
+          "citation": "The repository DBSP tensor-circuit API reference documents the maintained-expression contract.",
+          "verification": "repository"
+        }
       ]
     }
   ],

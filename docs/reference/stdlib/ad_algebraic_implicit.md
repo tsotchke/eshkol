@@ -44,3 +44,7 @@ Run `ctest --test-dir build --output-on-failure -R algebraic_implicit`.
 Independent binomial derivatives, a nonlinear two-parameter mixed derivative,
 moving outer branches, full vector residuals and singularity/budget controls
 are covered by the executable suite.
+
+`algebraic-system-linearization` exposes the existing formal polynomial
+linearization as `(residual Jacobian coefficient-monomials)` over a field or
+nested coefficient owner, with the same shape, degree and exactness admission.

@@ -1,0 +1,37 @@
+(require stdlib)
+(require core.algebraic_update)
+
+;; Exact rank-one Woodbury update: A + uv^T = [[5,0],[6,1]].
+(define field (make-algebraic-field '(-2 0 1) 3 1))
+(define same (algebraic-domain-ref (algebraic-domain field) 'equal?))
+(define base (algebraic-update-factor field (vector (vector 2 1) (vector 0 3))))
+(define changed (algebraic-update base (list (vector 1 2)) (list (vector 3 -1))))
+(define x (algebraic-update-solve changed (vector 10 7)))
+(define xt (algebraic-update-solve-transpose changed (vector 10 7)))
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+    (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+
+(check "known updated solution" (and (same (vector-ref x 0) 2) (same (vector-ref x 1) -5)))
+(check "known transposed solution" (and (same (vector-ref xt 0) -32/5) (same (vector-ref xt 1) 7)))
+(check "Woodbury route avoids full refactor" (equal? (vector->list (algebraic-update-info changed)) '(correction 1 0 1 1)))
+(check "base factor remains reusable" (same (vector-ref (algebraic-update-solve base (vector 1 0)) 0) 1/2))
+
+;; Symmetric rank-one update of I by [1,2][1,2]^T gives [[2,2],[2,5]].
+(define identity-spd (algebraic-update-factor field (vector (vector 1 0) (vector 0 1)) #t))
+(define symmetric (algebraic-update-symmetric identity-spd (list (vector 1 2)) (vector 1)))
+(define sx (algebraic-update-solve symmetric (vector 1 0)))
+(check "symmetric exact inverse oracle" (and (same (vector-ref sx 0) 5/6) (same (vector-ref sx 1) -1/3)))
+
+;; A signed batch has an indefinite intermediate but SPD final matrix 2I.
+(define rescued (algebraic-update-symmetric identity-spd
+  (list (vector 1 0) (vector 1 0)) (vector -2 3)))
+(define rx (algebraic-update-solve rescued (vector 2 3)))
+(check "signed batch admits final SPD matrix" (and (same (vector-ref rx 0) 1) (same (vector-ref rx 1) 3)
+  (eq? (vector-ref (algebraic-update-info rescued) 0) 'fallback)))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: algebraic_updates") (newline) (display "RESULT: PASS") (newline)

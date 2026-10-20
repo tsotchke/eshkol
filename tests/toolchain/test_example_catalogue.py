@@ -104,6 +104,32 @@ class CatalogueTests(unittest.TestCase):
         (self.root/self.paths[0]).write_text(';; changed algorithm\n(define x 99)\n')
         self.reject_without_write()
 
+    def test_algebraic_reverse_example_is_catalogued_with_release_measurements_pending(self):
+        source_path = ROOT / 'examples/algebraic_reverse.esk'
+        catalogue = json.loads((ROOT / 'docs/examples/catalogue.json').read_text())
+        entry = next(e for e in catalogue['entries'] if e['path'] == 'examples/algebraic_reverse.esk')
+        self.assertEqual(entry['source_sha256'], module.digest(source_path))
+        self.assertEqual(entry['registrations'], [])
+        self.assertIn('RESULT: PASS', source_path.read_text())
+        measurements = json.loads((ROOT / 'docs/examples/measurements.json').read_text())
+        record = measurements['records']['examples/algebraic_reverse.esk']
+        self.assertEqual(record['source_sha256'], module.digest(source_path))
+        self.assertEqual(record['jit']['status'], 'NOT-RUN')
+        self.assertEqual(record['aot']['status'], 'NOT-RUN')
+
+    def test_algebraic_pullback_example_is_catalogued_with_release_measurements_pending(self):
+        source_path = ROOT / 'examples/algebraic_pullback.esk'
+        catalogue = json.loads((ROOT / 'docs/examples/catalogue.json').read_text())
+        entry = next(e for e in catalogue['entries'] if e['path'] == 'examples/algebraic_pullback.esk')
+        self.assertEqual(entry['source_sha256'], module.digest(source_path))
+        self.assertEqual(entry['registrations'], [])
+        self.assertIn('RESULT: PASS', source_path.read_text())
+        measurements = json.loads((ROOT / 'docs/examples/measurements.json').read_text())
+        record = measurements['records']['examples/algebraic_pullback.esk']
+        self.assertEqual(record['source_sha256'], module.digest(source_path))
+        self.assertEqual(record['jit']['status'], 'NOT-RUN')
+        self.assertEqual(record['aot']['status'], 'NOT-RUN')
+
     def test_pending_measurements_do_not_claim_every_source_ran(self):
         measurements={'release_sha':'a'*40, 'records':{
             e['path']:{'jit':{'status':'NOT-RUN'}, 'aot':{'status':'NOT-RUN'}}
@@ -147,6 +173,20 @@ class CatalogueTests(unittest.TestCase):
         path.write_text(original)
         self.catalogue['entries'][0]['registrations'][0]['criterion']='old';self.save();self.reject_without_write()
 
+    def test_dbsp_toolchain_and_uncached_runtime_binding_rejects_drift(self):
+        path=self.root/'CMakeLists.txt';original=path.read_text()
+        mutations=[
+            ('cached runtime', lambda t:t.replace('ESHKOL_JIT_CACHE=0;ESHKOL_JIT_CACHE_DIR=', 'ESHKOL_JIT_CACHE=1;ESHKOL_JIT_CACHE_DIR=')),
+            ('foreign stdlib', lambda t:t.replace('"-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"', '"-DESHKOL_LINK_DIR=/foreign/stdlib"')),
+            ('fake AOT driver', lambda t:t.replace('-P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake"', '-P "/foreign/echo-pass.cmake"')),
+            ('missing JIT stdlib', lambda t:t.replace('"-L${CMAKE_CURRENT_BINARY_DIR}")', ')')),
+        ]
+        for name,mutate in mutations:
+            changed=mutate(original);self.assertNotEqual(changed,original)
+            path.write_text(changed)
+            with self.subTest(mutation=name):self.reject_without_write()
+        path.write_text(original)
+
     def test_runner_change_or_reviewed_skip_mismatch_reject(self):
         path=self.root/'scripts/run_examples_tests.sh';original=path.read_text()
         path.write_text(original.replace('examples/*.esk','examples/selected*.esk'))
@@ -178,8 +218,8 @@ class CatalogueTests(unittest.TestCase):
 
     def test_real_catalogue_completeness_exact_witness_and_scope_boundaries(self):
         data=json.loads((ROOT/'docs/examples/catalogue.json').read_text())
-        self.assertEqual(len(data['entries']),76)
-        self.assertEqual(sum(e['kind']=='mathematics' for e in data['entries']),46)
+        self.assertEqual(len(data['entries']),81)
+        self.assertEqual(sum(e['kind']=='mathematics' for e in data['entries']),47)
         pages=json.loads((ROOT/'site/pages.json').read_text())['pages']
         for name in ('docs/EXAMPLES.md','docs/MATHEMATICS_EXAMPLES.md'):
             self.assertEqual(sum(page['file']==name for page in pages),1)
@@ -187,6 +227,8 @@ class CatalogueTests(unittest.TestCase):
         self.assertIn('nested_algebraic_fields',entries)
         self.assertIn('algebraic_matrix_calculus',entries)
         self.assertIn('algebraic_implicit',entries)
+        self.assertIn('algebraic_reverse',entries)
+        self.assertIn('algebraic_pullback',entries)
         self.assertIn('algebraic_batch',entries)
         self.assertIn('globally',entries['mathematics_jacobian_counterexample']['validation'])
         self.assertIn('1e-9',entries['mathematics_jacobian_counterexample']['arithmetic'])

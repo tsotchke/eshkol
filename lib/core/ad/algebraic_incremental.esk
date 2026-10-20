@@ -2,7 +2,7 @@
 (require core.dbsp)
 (require core.algebraic_domain)
 (provide make-algebraic-incremental-plan algebraic-incremental-new
-         algebraic-incremental-step algebraic-incremental-output algebraic-incremental-info)
+         algebraic-incremental-step algebraic-incremental-output algebraic-incremental-info algebraic-incremental-moment-ref)
 
 (define (aic-size? n) (and (integer? n) (exact? n) (>= n 0) (<= n 8)))
 (define (aic-pow mul one value n)
@@ -176,3 +176,17 @@
                 (vector (sub (vector-ref output 0) (vector-ref old 0)) gradient-delta)
                 (vector 'polynomial-moments-v1 (zset-size rows) (* (zset-size rows) m)
                         (vector-length (vector-ref plan 4)) (+ p 1) 0))))))
+
+;;; Owned observation of a compiled sufficient statistic, without row replay.
+(define (algebraic-incremental-moment-ref state powers)
+  (aic-state state)
+  (let* ((plan (vector-ref state 1)) (domain (vector-ref plan 1)) (monomials (vector-ref plan 5)))
+    (if (not (and (vector? powers) (= (vector-length powers) (vector-ref plan 2))))
+        (error "Moment exponent width differs from the plan"))
+    (for-each (lambda (n) (if (not (and (integer? n) (exact? n) (>= n 0)))
+      (error "Moment powers must be nonnegative exact integers"))) (vector->list powers))
+    (let search ((i 0))
+      (cond ((= i (vector-length monomials)) (error "Moment was not compiled into this plan"))
+            ((equal? powers (vector-ref monomials i))
+             ((algebraic-domain-ref domain 'copy) (vector-ref (vector-ref state 3) i)))
+            (else (search (+ i 1)))))))
