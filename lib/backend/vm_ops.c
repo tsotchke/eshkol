@@ -291,6 +291,17 @@ static void vm_exec_popn(VM* vm, int32_t operand) {
     }
 }
 
+/* Numeric reader literals use binary64 tensor cells in the native runtime.
+ * Keep that cell exactness in the VM's reader-vector carrier too. Ordinary
+ * constructed/quoted vectors retain their integer cells. The large literal
+ * builder calls this after filling its otherwise ordinary vector. */
+static void vm_reader_tensor_float_integer_cells(VmVector* vec) {
+    if (!vec) return;
+    for (int i = 0; i < vec->len; ++i)
+        if (vec->items[i].type == VAL_INT)
+            vec->items[i] = FLOAT_VAL((double)vec->items[i].as.i);
+}
+
 static void vm_exec_vec_create(VM* vm, int32_t operand) {
     /* A negative operand is the reader-only numeric tensor-literal form:
      * -(count + 1). Existing vector construction continues to use count >= 0.
@@ -313,8 +324,10 @@ static void vm_exec_vec_create(VM* vm, int32_t operand) {
     if (!vec->items && count > 0) { vm->error = 1; return; }
     for (int i = count - 1; i >= 0; i--) vec->items[i] = vm_pop(vm);
     vm->heap.objects[ptr]->opaque.ptr = vec;
-    if (tensor_literal)
+    if (tensor_literal) {
+        vm_reader_tensor_float_integer_cells(vec);
         vm->heap.objects[ptr]->opaque.subtype = VM_SUBTYPE_TENSOR_LITERAL;
+    }
     vm_push(vm, (Value){.type = VAL_VECTOR, .as.ptr = ptr});
 }
 
@@ -345,6 +358,9 @@ static void vm_exec_vec_set(VM* vm) {
             vm_raise_error_msg(vm, "vector-set!: index out of bounds");
             return;
         }
+        if (vm->heap.objects[vec_val.as.ptr]->opaque.subtype ==
+                VM_SUBTYPE_TENSOR_LITERAL && val.type == VAL_INT)
+            val = FLOAT_VAL((double)val.as.i);
         vec->items[i] = val;
         /* Reader-origin numeric literals retain tensor? while every stored
          * value remains numeric. Once a successful general-vector store puts
@@ -371,8 +387,11 @@ static void vm_exec_vec_set_with_literal_marker(VM* vm, int32_t operand) {
     vm_exec_vec_set(vm);
     if (operand == 1 && !vm->error && vec_val.type == VAL_VECTOR &&
         is_valid_heap_ptr(vm, vec_val.as.ptr) && vm->heap.objects[vec_val.as.ptr] &&
-        vm->heap.objects[vec_val.as.ptr]->type == HEAP_VECTOR)
+        vm->heap.objects[vec_val.as.ptr]->type == HEAP_VECTOR) {
+        vm_reader_tensor_float_integer_cells(
+            (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr);
         vm->heap.objects[vec_val.as.ptr]->opaque.subtype = VM_SUBTYPE_TENSOR_LITERAL;
+    }
 }
 
 static void vm_exec_vec_len(VM* vm) {
