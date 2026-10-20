@@ -28,7 +28,12 @@
 (check "zero residual is not invertibility proof" (not (proved? (certify-linear-solve (m2 1 1 1 1) (vector 2 2) (vector 1 1) zero-r))))
 (define identity (m2 1 0 0 1))
 (define skew-r (m2 1 -4 0 1))
-(check "unweighted failed contraction is unknown" (not (proved? (certify-linear-solve identity b x skew-r))))
+(define unknown-record (certify-linear-solve identity b x skew-r))
+(check "unweighted failed contraction is unknown" (not (proved? unknown-record)))
+(check "verified unknown receipt is not an admitted solution"
+  (and (eq? (vector-ref unknown-record 1) 'unknown)
+       (verify-linear-solve-certificate unknown-record identity b x skew-r)
+       (not (proved? unknown-record))))
 (define weighted (certify-linear-solve identity b x skew-r (vector 8 1)))
 (check "weighted admission" (and (proved? weighted) (= (vector-ref (vector-ref weighted 3) 11) 1/2)))
 (check "weighted enclosure" (and (inside? (vector-ref (vector-ref weighted 2) 0) 1)

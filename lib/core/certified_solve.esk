@@ -85,8 +85,10 @@
       (vector 'linear-solve-certificate-v1 (if proved 'proved 'unknown) boxes
         (vector a b x r w da db residual defect majorant forcing theta backward radii)))))
 
-;; Source-bound verification recomputes the exact admission data. No estimated
-;; condition number, floating residual or opaque certificate bit is trusted.
+;; Source-bound verification recomputes the exact receipt. #t establishes
+;; source/record equality even for an UNKNOWN result; callers must separately
+;; require status 'proved before treating its boxes as an enclosure. No
+;; estimated condition number, floating residual or opaque certificate bit is trusted.
 (define (verify-linear-solve-certificate certificate matrix rhs received inverse . options)
   (guard (e (else #f))
     (and (vector? certificate) (= (vector-length certificate) 4)

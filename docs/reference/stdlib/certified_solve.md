@@ -32,8 +32,10 @@ componentwise backward error is
 It permits independent coefficient/RHS perturbations, without symmetry,
 positivity or shared-parameter constraints. It stays nominal under uncertainty.
 
-The verifier recomputes the complete source-bound receipt. A mutable vector is
-not a sealed proof. Tests use independent Cramer's-rule answers, weighted and
+The verifier recomputes the complete source-bound receipt and returns true when
+the supplied record matches, including for an `unknown` result. Verification
+checks record integrity; callers must separately require status `proved` before
+using boxes as an enclosure. A mutable vector is not a sealed proof. Tests use independent Cramer's-rule answers, weighted and
 strict-boundary cases, singular zero-residual controls, uncertainty corners,
 copied observations and tampering. Exact verification can be expensive; a poor
 preconditioner may refuse. No speedup, automatic refinement, sparse solver or

@@ -845,4 +845,4 @@ Computes an exact a-posteriori componentwise error enclosure for a received cand
 
 ### `verify-linear-solve-certificate`
 
-Recomputes the receipt from caller-supplied sources; it trusts no condition estimate or certificate flag.
+Recomputes the receipt from caller-supplied sources; true means the record matches, even when its status is `unknown`. Callers must separately require `proved` before using boxes as an enclosure.
