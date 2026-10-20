@@ -20,7 +20,7 @@
       (check "JVP/VJP pairing" (= (* 3/7 jvp) (+ (* (vector-ref vjp 0) dx) (* (vector-ref vjp 1) dy))))
       (check "derivative differs from finite delta" (or (and (= dx 0) (= dy 0)) (not (= jvp delta))))))
     '((1 -2) (0 0) (2/3 3/5)))
-  '((2 3) (-1 7/3) (5/4 -9/7)))
+  '((2 3) (-1 7/3) (5/4 -9/7))))
 (define point (vector 2 3))
 (define direction (vector 1 -2))
 (check "fixed derivative and finite delta differ"
