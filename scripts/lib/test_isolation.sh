@@ -125,6 +125,9 @@ def forward_signal(signum, _frame):
             child.wait(timeout=2)
         except subprocess.TimeoutExpired:
             pass
+    # The leader may exit promptly while a grandchild ignores TERM. Always
+    # clear the owned group after the grace period, even when wait() succeeded.
+    kill_tree(True)
     raise SystemExit(128 + signum)
 
 try:
@@ -151,6 +154,8 @@ except subprocess.TimeoutExpired:
             child.wait(timeout=2)
         except subprocess.TimeoutExpired:
             pass
+    # A reaped leader does not imply its descendants exited.
+    kill_tree(True)
     raise SystemExit(124)
 PY
 }
