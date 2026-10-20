@@ -1,3 +1,5 @@
+#include <iostream>
+#include <cstdio>
 /*
  * Copyright (C) tsotchke
  *
@@ -13,6 +15,7 @@
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/stdlib_identity.h>
 #include <eshkol/pkg/subprocess.h>
 
 #include <eshkol/llvm_backend.h>
@@ -23,7 +26,9 @@
 #include "../lib/frontend/library_registry.h"
 
 #include <llvm/Config/llvm-config.h>
+#include <llvm/Support/Errc.h>
 #include <llvm/Support/SHA256.h>
+#include <llvm-c/Core.h>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -754,10 +759,24 @@ static std::string aotModuleCacheKey(const std::filesystem::path& source_path,
                                      const char* target_triple,
                                      const std::vector<char*>& linked_libs,
                                      const std::vector<char*>& lib_paths,
-                                     const std::vector<char*>& include_paths) {
-    return makeJitRunCacheKey(source_path, self_path, no_stdlib, strict_types,
-                               unsafe_mode, opt_level, target_triple,
-                               linked_libs, lib_paths, include_paths);
+                                     const std::vector<char*>& include_paths,
+                                     LLVMModuleRef generated_module) {
+    // IR is already generated before this lookup. Include its full semantics:
+    // the executable-cache inputs alone omit library mode, embedded stdlib
+    // identity, and other choices that change the compiled module. A separate
+    // schema also prevents reuse of entries made with the incomplete old key.
+    char* ir = LLVMPrintModuleToString(generated_module);
+    if (!ir) return {};
+    llvm::SHA256 hash;
+    hashUpdate(hash, "schema", "eshkol-aot-module-cache-v2-generated-ir");
+    hashUpdate(hash, "input-key",
+               makeJitRunCacheKey(source_path, self_path, no_stdlib, strict_types,
+                                  unsafe_mode, opt_level, target_triple,
+                                  linked_libs, lib_paths, include_paths));
+    // The IR is the final field; hash it directly without another large copy.
+    hash.update(llvm::StringRef(ir));
+    LLVMDisposeMessage(ir);
+    return sha256Hex(hash);
 }
 
 // `-r` runs a single file through the persistent AOT cache for speed. That is
@@ -1298,6 +1317,7 @@ static struct option long_options[] = {
     {"require-vm-entry-zero-arg", required_argument, nullptr, 263},
     {"features", no_argument, nullptr, 264},
     {"abi-fingerprint", no_argument, nullptr, 266},
+    {"embed-stdlib-identity", required_argument, nullptr, 267},
     {0, 0, 0, 0}
 };
 
@@ -2617,16 +2637,88 @@ static void report_artifact_resolution(
 }
 
 // Find the pre-compiled stdlib.o file
-static std::string find_stdlib_object(const std::vector<char*>& lib_paths)
+static llvm::Error validate_stdlib_object_file(const std::string& path)
+{
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    if (!buffer) {
+        return llvm::createStringError(
+            llvm::errc::io_error,
+            "rejecting precompiled stdlib object %s: could not read object (%s)",
+            path.c_str(), buffer.getError().message().c_str());
+    }
+    std::string found_identity;
+    if (!eshkol::stdlib_identity::matches_object(
+            (*buffer)->getMemBufferRef(), found_identity)) {
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "rejecting precompiled stdlib object %s: %s; expected %s. Rebuild or reinstall the matching Eshkol package",
+            path.c_str(), found_identity.c_str(),
+            static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+    }
+    return llvm::Error::success();
+}
+
+static llvm::Expected<std::string> find_stdlib_object(
+    const std::vector<char*>& lib_paths)
 {
     const auto resolved = eshkol::platform::resolve_install_artifact(
         eshkol::platform::install_library_roots(explicit_library_dirs(lib_paths)),
         {"stdlib.o"});
-    // stdlib.o carries no build stamp (it is generated Eshkol code, not a
-    // stamped archive), so only its origin is reportable.
+    if (resolved.found()) {
+        if (llvm::Error error = validate_stdlib_object_file(resolved.path))
+            return error;
+    }
+    // Origin is still useful after identity validation; foreign artifacts are
+    // rejected above before they can enter the link command.
     report_artifact_resolution("precompiled stdlib object", resolved,
                                /*verify_version=*/false);
     return resolved.path;
+}
+
+static llvm::Error validate_stdlib_bitcode_file(const std::string& path)
+{
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    if (!buffer) {
+        return llvm::createStringError(
+            buffer.getError(), "rejecting precompiled stdlib bitcode %s: cannot read",
+            path.c_str());
+    }
+    llvm::LLVMContext context;
+    auto module = llvm::parseBitcodeFile((*buffer)->getMemBufferRef(), context);
+    if (!module) {
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "rejecting precompiled stdlib bitcode %s: cannot parse (%s)",
+            path.c_str(), llvm::toString(module.takeError()).c_str());
+    }
+    std::string found_identity;
+    if (!eshkol::stdlib_identity::matches_module(**module, found_identity)) {
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "rejecting precompiled stdlib bitcode %s: %s; expected %s",
+            path.c_str(), found_identity.c_str(), static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+    }
+    return llvm::Error::success();
+}
+
+static llvm::Error validate_resolved_stdlib_artifacts(
+    const std::vector<char*>& lib_paths)
+{
+    const auto roots = eshkol::platform::install_library_roots(
+        explicit_library_dirs(lib_paths));
+    const auto bitcode = eshkol::platform::resolve_install_artifact(
+        roots, {"stdlib.bc"});
+    if (bitcode.found()) {
+        if (llvm::Error error = validate_stdlib_bitcode_file(bitcode.path))
+            return error;
+    }
+    const auto object = eshkol::platform::resolve_install_artifact(
+        roots, {"stdlib.o"});
+    if (object.found()) {
+        if (llvm::Error error = validate_stdlib_object_file(object.path))
+            return error;
+    }
+    return llvm::Error::success();
 }
 
 // Find the runtime library. Prefer the split runtime archive; fall back to the
@@ -4258,6 +4350,33 @@ static char** intern_driver_module_name_array(const std::string& name) {
     return storage.back().data();
 }
 
+// Own only scratch objects that this driver creates for a later native link.
+// In particular, entries in compiled_files may be caller-owned object files.
+struct OwnedLinkTemporaryObjects {
+    std::vector<std::string> paths;
+
+    bool reserve(const std::string& path) {
+        // Exclusive creation also protects a caller's pre-existing <output>.tmp.o.
+        FILE* file = std::fopen(path.c_str(), "wbx");
+        if (!file) {
+            return false;
+        }
+        paths.push_back(path);
+        std::fclose(file);
+        return true;
+    }
+
+    void cleanup() {
+        for (const auto& path : paths) {
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
+        paths.clear();
+    }
+
+    ~OwnedLinkTemporaryObjects() { cleanup(); }
+};
+
 
 
 int main(int argc, char **argv)
@@ -4316,6 +4435,7 @@ int main(int argc, char **argv)
 
     std::vector<char*> source_files;
     std::vector<char*> compiled_files;
+    OwnedLinkTemporaryObjects owned_link_temp_objects;
     std::vector<char*> linked_libs;
     std::vector<char*> lib_paths;
     std::vector<char*> include_paths;
@@ -4334,6 +4454,7 @@ int main(int argc, char **argv)
     std::vector<std::string> required_vm_entries;
     std::vector<std::string> required_zero_arg_vm_entries;
     const char* depfile_path = nullptr;  // --emit-depfile PATH (ESH-0215)
+    const char* stdlib_identity_symbol = nullptr;
 
     if (argc == 1) print_help(1);
 
@@ -4493,6 +4614,9 @@ int main(int argc, char **argv)
             printf("runtime_header_size=%zu\n", eshkol_abi_runtime_header_size());
             return 0;
         }
+        case 267:
+            stdlib_identity_symbol = optarg;
+            break;
         case 'f':
             /* Native AOT object emission is configured with Reloc::PIC_. */
             break;
@@ -4621,7 +4745,6 @@ int main(int argc, char **argv)
     // way instead of quietly emitting one of the two.
     bool emit_shared_library = false;
     std::string shared_library_path;
-    std::string shared_library_temp_object;
     if (shared_lib) {
         if (wasm_output) {
             fprintf(stderr, "--shared-lib cannot be combined with --wasm\n");
@@ -4741,7 +4864,11 @@ int main(int argc, char **argv)
 
         // Load stdlib for eval mode
         if (!no_stdlib) {
-            jit_ctx.loadStdlib();
+            if (llvm::Error error = jit_ctx.loadStdlib()) {
+                std::cerr << llvm::toString(std::move(error)) << std::endl;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
         }
 
         // Parse the expression using istringstream (no temp file needed)
@@ -4825,6 +4952,12 @@ int main(int argc, char **argv)
             std::getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
         const bool language_coverage_tracing =
             language_coverage_trace_dir && *language_coverage_trace_dir;
+        if (!no_stdlib) {
+            if (llvm::Error error = validate_resolved_stdlib_artifacts(lib_paths)) {
+                std::cerr << llvm::toString(std::move(error)) << std::endl;
+                return 1;
+            }
+        }
         if (argc - optind == 1 && !debug_mode && !dump_ast && !dump_ir &&
             !language_coverage_tracing && compile_defines.empty()) {
             if (auto cached_status = tryRunFromPersistentJitCache(
@@ -4850,7 +4983,11 @@ int main(int argc, char **argv)
 
         // Load stdlib for run mode
         if (!no_stdlib) {
-            jit_ctx.loadStdlib();
+            if (llvm::Error error = jit_ctx.loadStdlib()) {
+                std::cerr << llvm::toString(std::move(error)) << std::endl;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
         }
 
         // Process each input file
@@ -5268,12 +5405,30 @@ int main(int argc, char **argv)
 
         if (!has_stdlib) {
             // Try to find stdlib.o automatically
-            std::string stdlib_path = find_stdlib_object(lib_paths);
-            if (!stdlib_path.empty()) {
-                eshkol_info("Auto-linking pre-compiled stdlib: %s", stdlib_path.c_str());
-                compiled_files.push_back(
-                    const_cast<char*>(intern_driver_string(stdlib_path)));
+            auto stdlib_path = find_stdlib_object(lib_paths);
+            if (!stdlib_path) {
+                std::cerr << llvm::toString(stdlib_path.takeError()) << std::endl;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
             }
+            if (!stdlib_path->empty()) {
+                eshkol_info("Auto-linking pre-compiled stdlib: %s",
+                            stdlib_path->c_str());
+                compiled_files.push_back(
+                    const_cast<char*>(intern_driver_string(*stdlib_path)));
+            }
+        }
+    }
+
+    // Explicitly named stdlib objects bypass automatic artifact resolution, so
+    // validate them at the same admission boundary before any output is emitted.
+    for (const auto& obj_file : compiled_files) {
+        const std::string filename = std::filesystem::path(obj_file).filename().string();
+        if (filename != "stdlib.o" && filename != "libstdlib.o") continue;
+        if (llvm::Error error = validate_stdlib_object_file(obj_file)) {
+            std::cerr << llvm::toString(std::move(error)) << std::endl;
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
         }
     }
 
@@ -5543,6 +5698,17 @@ int main(int argc, char **argv)
             return running_as_cache_build_child() ? kCacheBuildDiagnosticRejectExit : 1;
         }
 
+        if (stdlib_identity_symbol) {
+            const bool stdlib_source = source_files.size() == 1 &&
+                std::filesystem::path(source_files[0]).filename() == "stdlib.esk";
+            if (!library_codegen || !compile_only || wasm_output || !stdlib_source ||
+                eshkol_add_stdlib_identity(llvm_module, stdlib_identity_symbol) != 0) {
+                eshkol_error("--embed-stdlib-identity is valid only while compiling the standard library object");
+                eshkol_dispose_llvm_module(llvm_module);
+                return 1;
+            }
+        }
+
         // Handle different output modes
         if (dump_ir) {
             // Dump IR to file
@@ -5622,7 +5788,7 @@ int main(int argc, char **argv)
                     std::filesystem::path(source_files[0]),
                     resolveSelfPath(argv[0]), no_stdlib, strict_types,
                     unsafe_mode, opt_level, target_triple, linked_libs,
-                    lib_paths, include_paths)
+                    lib_paths, include_paths, llvm_module)
                 : std::string();
             const auto cached_object = module_cache_root.empty() ||
                                        module_cache_key.empty()
@@ -5729,6 +5895,10 @@ int main(int argc, char **argv)
                 shared_library_output_path(output, module_name);
             shared_library_path = library_path;
             const std::string temp_obj = library_path + ".tmp.o";
+            if (!owned_link_temp_objects.reserve(temp_obj)) {
+                eshkol_error("Cannot reserve temporary object %s; existing files are not overwritten", temp_obj.c_str());
+                return 1;
+            }
 
             eshkol_info("Compiling shared-library object: %s", temp_obj.c_str());
             auto esh0103_t_shared0 = esh0103_now();
@@ -5738,7 +5908,6 @@ int main(int argc, char **argv)
                 return 1;
             }
             esh0103_report("emit-object", esh0103_t_shared0, esh0103_now());
-            shared_library_temp_object = temp_obj;
             compiled_files.push_back(
                 const_cast<char*>(intern_driver_string(temp_obj)));
             output = const_cast<char*>(intern_driver_string(library_path));
@@ -5769,6 +5938,10 @@ int main(int argc, char **argv)
             if (!compiled_files.empty()) {
                 // Compile main program to temp .o, then link with stdlib.o etc.
                 std::string temp_obj = exe_name + ".tmp.o";
+                if (!owned_link_temp_objects.reserve(temp_obj)) {
+                    eshkol_error("Cannot reserve temporary object %s; existing files are not overwritten", temp_obj.c_str());
+                    return 1;
+                }
                 eshkol_info("Compiling to temp object: %s", temp_obj.c_str());
                 if (eshkol_compile_llvm_ir_to_object(llvm_module, temp_obj.c_str()) != 0) {
                     eshkol_error("Object file compilation failed");
@@ -6078,20 +6251,10 @@ int main(int argc, char **argv)
         int result = eshkol::pkg::run_subprocess(
             link_args, nullptr, link_subprocess_timeout_seconds());
 
-        // Clean up temp object files (mkstemp-created files in TMPDIR)
-        for (const auto &compiled_file : compiled_files) {
-            std::string file(compiled_file);
-            if (file.find("eshkol_") != std::string::npos && file.find(".o") != std::string::npos) {
-                std::remove(file.c_str());
-            }
-        }
-        // The shared-library scratch object is named after the library, not
-        // after an mkstemp template, so remove it explicitly (on failure too —
-        // a stale .tmp.o must never be mistaken for the artifact).
-        if (!shared_library_temp_object.empty()) {
-            std::error_code temp_object_ec;
-            std::filesystem::remove(shared_library_temp_object, temp_object_ec);
-        }
+        // Remove only scratch objects this driver created. `compiled_files`
+        // also contains caller-owned objects such as stdlib.o and named -l
+        // inputs, whose path or directory may happen to contain "eshkol_".
+        owned_link_temp_objects.cleanup();
 
         // When this process is the AOT-build child of a `-r` cache miss, report
         // a LINK-stage failure with a distinct sentinel so the parent treats it

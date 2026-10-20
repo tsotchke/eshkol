@@ -709,11 +709,12 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
 
     if (cmd == ":stdlib") {
         std::cout << color::dim() << "Loading standard library..." << color::reset() << std::flush;
-        if (repl_ctx.loadStdlib()) {
+        if (llvm::Error error = repl_ctx.loadStdlib()) {
+            std::cout << color::error() << " failed" << color::reset() << "\n";
+            print_error(llvm::toString(std::move(error)));
+        } else {
             std::cout << color::dim() << " done" << color::reset() << "\n";
             print_success("Standard library loaded. Functions available: length, filter, fold, map, etc.");
-        } else {
-            std::cout << color::error() << " failed" << color::reset() << "\n";
         }
         return true;
     }
@@ -1555,13 +1556,12 @@ int main(int argc, char** argv) {
         if (g_interactive) {
             std::cout << color::dim() << "Loading standard library..." << color::reset() << std::flush;
         }
-        if (repl_ctx.loadStdlib()) {
-            if (g_interactive) {
-                std::cout << color::dim() << " done" << color::reset() << "\n";
-            }
+        if (llvm::Error error = repl_ctx.loadStdlib()) {
+            std::cerr << llvm::toString(std::move(error)) << std::endl;
+            return 1;
         } else {
             if (g_interactive) {
-                std::cout << color::error() << " failed" << color::reset() << "\n";
+                std::cout << color::dim() << " done" << color::reset() << "\n";
             }
         }
     }

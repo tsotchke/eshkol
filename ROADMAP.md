@@ -1,5 +1,13 @@
 # Eshkol Development Roadmap
 
+> **Publication update, 2026-10-19:** [v1.3.6-evolve](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)
+> was published at 11:53:31 UTC from source
+> `341ac812ed600fd9d27c28e9509d66ab71363947`. The dated “prepared for
+> publication” passages below retain their historical snapshot meaning.
+> v1.4 development is active; its recovered integration scope and acceptance
+> requirements are recorded in [the development plan](docs/design/V1_4_CONNECTION_START_2026_10_19.md).
+
+
 > **This is the canonical roadmap.** It is the single source of truth for
 > Eshkol's release plan. Other roadmap-shaped documents are derived
 > views — they exist to answer specific questions and should not

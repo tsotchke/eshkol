@@ -3,6 +3,196 @@
   "inventory_policy": "Every Git-tracked examples/**/*.esk program, including nested artifact generators. No untracked or missing paths.",
   "entries": [
     {
+      "path": "examples/algebraic_ad.esk",
+      "source_sha256": "75623281baa24793f65abd9fc9d0d3092916cc40299e699af5e48b158f1366df",
+      "title": "Exact algebraic automatic differentiation",
+      "kind": "example",
+      "purpose": "Differentiate a local algebraic branch exactly over Q(cuberoot(2)).",
+      "algorithm": "Lift the simple root of y^3=2+t through a fourth-order Taylor carrier using bounded nilpotent Newton steps; retain hyperdual derivatives of a zero-primal field relation.",
+      "domain": "One selected cubic real field; Taylor order four and a four-coefficient hyperdual carrier.",
+      "arithmetic": "Exact rational power-basis field coefficients and nilpotent AD operations; no floating approximation or finite differences.",
+      "validation": "Six assertions check the entire cubic equation, independently derived first/second/fourth derivatives, nonzero derivatives of a zero-primal relation and zero finite-difference evaluations; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "The supplied simple root is already in the selected field; no scalar root search, new field extension, general transcendental AD or arbitrary-function compiler transformation. Existing exact scalar arithmetic limits apply.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic and core.algebraic_field.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact AD over Q(cuberoot(2)): the local branch y(t)^3 = 2+t."
+        },
+        {
+          "line": 8,
+          "text": "(define root (algebraic-ad-root context"
+        },
+        {
+          "line": 14,
+          "text": "  (algebraic-ad-mul (algebraic-ad-mul root root) root) parameter))"
+        },
+        {
+          "line": 23,
+          "text": "(check \"field relation retains nonzero derivatives\""
+        },
+        {
+          "line": 29,
+          "text": "(display \"Taylor coefficients in the basis (1, alpha, alpha^2):\") (newline)"
+        }
+      ],
+      "literature_review": "The linked module reference specifies the finite coefficient algebra and supplied-root residual contract.",
+      "references": [],
+      "key_output": [
+        "^Taylor coefficients in the basis",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
+      "path": "examples/algebraic_batch.esk",
+      "source_sha256": "14f94894d4e9627bacfb721b4d7299c670e42bf1bcf757e4fcdbc0ed4ac2fc62",
+      "title": "Packed exact algebraic multiplication",
+      "kind": "example",
+      "purpose": "Multiply exact values in Q(cuberoot(2)) using a preflighted packed plan.",
+      "algorithm": "Compile the field multiplication into a sparse integer table, preflight signed-32-bit bounds, then reconstruct exact rational coefficients.",
+      "domain": "One selected cubic real field; a single exact generator product.",
+      "arithmetic": "Exact rational power-basis coefficients and native integer multiply-accumulate; no floating conversion.",
+      "validation": "Compares packed alpha squared with scalar exact algebraic multiplication; prints RESULT: PASS.",
+      "limitations": "Only admitted domains within component, term, batch and signed-32-bit bounds; no performance claim from operation counters.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.algebraic_batch.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact packed multiplication over Q[cuberoot(2)]."
+        },
+        {
+          "line": 8,
+          "text": "         (result (algebraic-batch-mul plan (vector alpha) (vector alpha)))"
+        },
+        {
+          "line": 11,
+          "text": "    (if (not (algebraic-equal? product reference))"
+        }
+      ],
+      "literature_review": "No external literature is needed for this arithmetic example.",
+      "references": [],
+      "key_output": []
+    },
+    {
+      "path": "examples/algebraic_implicit.esk",
+      "source_sha256": "8d8fcf23e41044e50869126efed1d3289aeed4796849c1647030ef8274beb169",
+      "title": "Coupled exact implicit differentiation",
+      "kind": "example",
+      "purpose": "Lift a supplied simple branch of a coupled polynomial system through an exact Taylor carrier.",
+      "algorithm": "Derive the polynomial Jacobian, factor its primal matrix once, and reuse it for exact nilpotent corrections.",
+      "domain": "Two coupled equations over Q(sqrt(2)); order-four Taylor carrier at the supplied branch (sqrt(2), sqrt(2)).",
+      "arithmetic": "Exact rational power-basis coefficients and exact Taylor derivatives; no finite differences.",
+      "validation": "Three assertions check coupled components, the full vector residual and exact Taylor derivatives from the binomial expansion; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "Demonstrates local lifting around one supplied simple branch; it does not search roots or prove global uniqueness.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.ad.algebraic and core.ad.algebraic_implicit.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Coupled implicit differentiation of x^2+y^2=4+t, x-y=0 around (sqrt(2),sqrt(2))."
+        },
+        {
+          "line": 10,
+          "text": "  (list (list 1 (vector 2 0)) (list 1 (vector 0 2))"
+        },
+        {
+          "line": 13,
+          "text": "(define roots (algebraic-ad-system-root context equations (vector alpha alpha)))"
+        },
+        {
+          "line": 24,
+          "text": "  (let loop ((i 0)) (or (= i (vector-length expected))"
+        },
+        {
+          "line": 33,
+          "text": "(if (> failures 0) (begin (display \"RESULT: FAIL\") (newline) (exit 1)))"
+        }
+      ],
+      "literature_review": "The exact derivatives are independently derived from the binomial expansion and checked by the focused qualification oracle.",
+      "references": [],
+      "key_output": [
+        "^Taylor coefficients for both coupled roots:$",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
+      "path": "examples/algebraic_matrix_calculus.esk",
+      "source_sha256": "fa1ffb035789f75090b14da972533dd7d228a6032b5330d87a93d1d127c41bfe",
+      "title": "Exact algebraic matrix calculus",
+      "kind": "example",
+      "purpose": "Solve exact matrix systems over a selected real number field and its Taylor carrier.",
+      "algorithm": "Factor the field matrix once, reuse the exact LU for independent right-hand sides, then solve Taylor coefficients recursively through the same bottom-field factorization.",
+      "domain": "A 2x2 system over Q(sqrt(2)) and the corresponding order-four Taylor carrier at x=2.",
+      "arithmetic": "Exact rational power-basis coefficients and exact Taylor coefficients; no floating approximation or finite differences.",
+      "validation": "Three assertions check both exact inverse columns, reused bottom-field factorization, and the first three derivatives of the Taylor solution; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "The example demonstrates a small dense system and one Taylor carrier. It does not claim sparse, rectangular solve, larger workload or compiler AD coverage.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.algebraic_field, core.ad.algebraic and core.algebraic_linalg.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact matrix solves over Q(sqrt(2)) and a fourth-order Taylor carrier."
+        },
+        {
+          "line": 15,
+          "text": "(define factor (algebraic-factor field matrix))"
+        },
+        {
+          "line": 21,
+          "text": "(check \"second RHS reuses the same bottom-field factor\""
+        },
+        {
+          "line": 30,
+          "text": "(check \"Taylor solve reuses one bottom LU and matches exact derivatives\""
+        }
+      ],
+      "literature_review": "The independent exact recurrence and closed-form solution are recorded in the qualification evidence; the example cites no external result.",
+      "references": [],
+      "key_output": [
+        "^Bottom-field factor summary .*#\\(2 0 1\\)$",
+        "^Taylor factor summary .*#\\(2 1 1\\)$",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
+      "path": "examples/algebraic_sparse.esk",
+      "source_sha256": "b39bad3265799ab2414e8af5a57d60a3ab0d1a5fad18860e64fd4d045cedc5b5",
+      "title": "Exact sparse algebraic curvature",
+      "kind": "example",
+      "purpose": "Recover selected exact Hessian coefficients over Q(sqrt(2)) from an explicit sparsity pattern.",
+      "algorithm": "Seed a small nonlinear objective over an exact algebraic field, run colored scalar hyperdual probes, and inspect the mixed and diagonal coefficients plus the probe summary.",
+      "domain": "A two-variable point over the certified real field Q(sqrt(2)); structural entries (0,1) and (1,1).",
+      "arithmetic": "Exact rational power-basis coefficients and exact AD operations; no floating conversion or finite differences.",
+      "validation": "Five exact assertions compare H01=4, H11=2*sqrt(2), H00=0, the two-probe summary and zero finite differences; errors exit nonzero and success prints RESULT: PASS.",
+      "limitations": "The caller supplies a complete structural pattern. This demonstration uses scalar probes; probe counts are not wall-clock performance evidence.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.algebraic_domain, core.ad.sparsity, and core.ad.algebraic_sparse.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": "(require stdlib)"
+        },
+        {
+          "line": 19,
+          "text": "(check \"mixed coefficient is exactly four\""
+        },
+        {
+          "line": 33,
+          "text": "(display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "No external literature is needed for this exact arithmetic demonstration.",
+      "references": [],
+      "key_output": []
+    },
+    {
       "path": "examples/autodiff.esk",
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
       "title": "Scalar automatic differentiation",
@@ -3995,6 +4185,54 @@
       ]
     },
     {
+      "path": "examples/nested_algebraic_fields.esk",
+      "source_sha256": "df073d7c01bfb3c3baf9239c0a06be2c1e87a665c9d399ceb35e6a226baafb97",
+      "title": "Nested exact differentiation over a certified combined field",
+      "kind": "example",
+      "purpose": "Compose selected quadratic/cubic fields and independent derivative scopes in one exact calculation.",
+      "algorithm": "Certify a primitive element and both real embeddings, then recursively interpret the existing Taylor/inverse/root kernels with enclosing carriers as coefficients.",
+      "domain": "Q(sqrt(2),cuberoot(2)), degree six; two independent order-two Taylor levels, including a moving implicit cubic branch.",
+      "arithmetic": "Exact rational power-basis coefficients and nilpotent arithmetic; explicit transports and lifts; no floating approximation or finite differences.",
+      "validation": "Seven assertions check degree, both source relations, primitive generator, mixed reciprocal derivative against 24/(a+b)^5, moving-root derivative against -20/(3(a+1)^7), and zero finite-difference evaluations; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "Coprime source degrees only; selected roots, scalar exactness and explicit budgets constrain admission. Nested scopes are bounded to three levels; no compiler AD transformation, arbitrary-depth or general transcendental claim.",
+      "prerequisites": "Built eshkol-run and stdlib with source-tree core.algebraic_field and core.ad.algebraic.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Combine two certified fields, then differentiate with independent scopes."
+        },
+        {
+          "line": 6,
+          "text": "(define composition (make-algebraic-compositum quadratic cubic))"
+        },
+        {
+          "line": 13,
+          "text": "(define mixed (call-with-algebraic-derivative field"
+        },
+        {
+          "line": 26,
+          "text": "(check \"primitive generator\" (algebraic-equal? (algebraic-generator field) (algebraic-add alpha beta)))"
+        },
+        {
+          "line": 37,
+          "text": "              (list (algebraic-ad-sub (algebraic-ad-constant inner 0) b) 0 0 1) root))) point 2))) alpha 2))"
+        },
+        {
+          "line": 42,
+          "text": "(display \"Primitive polynomial: \") (display (algebraic-field-polynomial field)) (newline)"
+        }
+      ],
+      "literature_review": "The module references specify coprime-field certification and explicit finite coefficient-domain differentiation.",
+      "references": [],
+      "key_output": [
+        "^Primitive polynomial:",
+        "^Exact mixed derivative coefficients:",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/neural_xor.esk",
       "source_sha256": "b8e3a8c248e547f4088706408b10589842ca6f7ae8ed1696fd324c7f71027e00",
       "title": "Small XOR neural network",
@@ -4172,6 +4410,33 @@
         "^final vanilla",
         "^exact:"
       ]
+    },
+    {
+      "path": "examples/streaming_least_squares.esk",
+      "source_sha256": "2004d9d76affaf8011d591e0bb7ea9911989bd5ffd5fa5a525c7b756119f65dd",
+      "title": "Maintained grouped AD loss and gradients",
+      "kind": "example",
+      "purpose": "Maintain fixed-parameter least-squares loss and both parameter derivatives under signed row updates.",
+      "algorithm": "Build each row loss on the existing reverse AD tape and combine contributions with a persistent keyed additive-group aggregate.",
+      "domain": "Two fixed parameters (0.5, -1.0), finite real sample coordinates/targets, and signed integer row weights.",
+      "arithmetic": "Numeric AD with inexact seeds; the dyadic demonstration values are exactly representable in binary64 and compared with strict ZSet equality. General floating accumulation may round.",
+      "validation": "Six explicit assertions cover grouped loss/gradients, atomic replacement deltas, cohort deletion, historical views and zero finite-difference evaluations.",
+      "limitations": "No parameter-changing incrementalization, general training speedup, durable restart or total allocation bound.",
+      "prerequisites": "Built compiler/stdlib and checkout-owned core.dbsp.circuit/core.dbsp.ad modules.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Maintain grouped least-squares loss and gradients at a fixed parameter point."
+        },
+        {
+          "line": 4,
+          "text": "(require core.dbsp.ad)"
+        }
+      ],
+      "literature_review": "Repository ADR 0009 supplies the incremental-dataflow design; the source demonstrates the bounded fixed-parameter AD composition.",
+      "references": []
     },
     {
       "path": "examples/streaming_stats.esk",
@@ -4413,6 +4678,93 @@
       "key_output": [
         "^// ad-grid-max-errors",
         "^AD_MODEL_PASS"
+      ]
+    },
+    {
+      "path": "examples/algebraic_incremental.esk",
+      "source_sha256": "2e7f154bbcfb5073f973d61ec7cef7a0e115524983ad20ae550a70238a3ade4c",
+      "title": "Maintained exact incremental objective and gradient",
+      "kind": "example",
+      "purpose": "Maintain an exact least-squares objective and parameter gradient across a signed row replacement and parameter update.",
+      "algorithm": "Compile a bounded polynomial in row and parameter variables, update its row moments from a DBSP Z-set delta, then evaluate its live exact gradient at the new parameters.",
+      "domain": "A two-parameter affine residual over the certified real field Q(sqrt(2)); two initial rows and one signed replacement.",
+      "arithmetic": "Exact rational power-basis coefficients and exact algebraic AD; no floating conversion or finite differences.",
+      "validation": "Compares the maintained objective and both gradient coordinates with an independently written full exact scan of the updated rows; checks that parameter updates replay no rows.",
+      "limitations": "The expression language is bounded to exact polynomial syntax with degree at most eight. The example demonstrates semantics and work counters, not speed or memory limits.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.dbsp, core.algebraic_domain and core.ad.algebraic_incremental.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact maintained least-squares objective under row and parameter edits."
+        },
+        {
+          "line": 7,
+          "text": "(define plan (make-algebraic-incremental-plan field 2 2"
+        },
+        {
+          "line": 12,
+          "text": "(define result (algebraic-incremental-step state row-delta parameter-delta))"
+        },
+        {
+          "line": 31,
+          "text": "(if (not (and (algebraic-equal? (vector-ref output 0) loss)"
+        },
+        {
+          "line": 35,
+          "text": "(if (not (= (vector-ref (vector-ref result 2) 5) 0)) (error \"Parameter tick replayed rows\"))"
+        }
+      ],
+      "literature_review": "This is an exact polynomial bookkeeping example; no external literature claim is made.",
+      "references": [],
+      "key_output": []
+    },
+    {
+      "path": "examples/algebraic_frontiers.esk",
+      "source_sha256": "1d7ee24f1d77b48899c75708938a3d138229ebce0508025815ab10de23392497",
+      "title": "Exact algebraic computation across matrices, constraints and live rows",
+      "kind": "example",
+      "purpose": "Connect certified field composition, matrix calculus, coupled implicit roots, packed multiplication, sparse curvature and live exact parameter gradients.",
+      "algorithm": "Use the shared coefficient-domain adapter and retained exact residuals; polynomial sufficient statistics absorb signed row edits while explicit Taylor carriers differentiate live parameters.",
+      "domain": "Selected degree-six Q(sqrt(2),cuberoot(2)); two-variable coupled constraints, second-order jets and a two-parameter squared affine loss.",
+      "arithmetic": "Exact rational power-basis and nilpotent coefficients; preflighted native integer products; no floating approximation or finite differences.",
+      "validation": "Eight assertions compare exact matrix/root/product/curvature/loss/gradient formulas and zero row replay/finite-difference counts; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "Bounded reference constructions; supplied simple roots, complete declared sparsity and polynomial-only maintained plans. Packed products require certified signed-32-bit admission. No global nonlinear solver, arbitrary loss transformation or flat-RSS claim.",
+      "prerequisites": "Built eshkol-run and source-tree exact algebraic modules.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Certified constants, matrix calculus, coupled roots, packed products,"
+        },
+        {
+          "line": 15,
+          "text": "(define cubic (make-algebraic-field '(-2 0 0 1) 7 0))"
+        },
+        {
+          "line": 24,
+          "text": "(define context (make-algebraic-taylor field 2))"
+        },
+        {
+          "line": 33,
+          "text": "(define packed (algebraic-batch-mul (make-algebraic-multiplication-plan context)"
+        },
+        {
+          "line": 41,
+          "text": "(check \"sparse mixed curvature remains exact\" (= (algebraic-rational (algebraic-sparse-hessian-ref sparse 0 1)) 1))"
+        },
+        {
+          "line": 48,
+          "text": "(define residual (algebraic-sub (algebraic-add (algebraic-scale (algebraic-add alpha (algebraic-element field 1)) 2) beta)"
+        }
+      ],
+      "literature_review": "The linked module references specify selected-field admission, coefficient recurrences, nilpotent lifting and polynomial moment maintenance.",
+      "references": [],
+      "key_output": [
+        "^Exact maintained loss coefficients:",
+        "^RESULT: PASS$"
       ]
     }
   ],

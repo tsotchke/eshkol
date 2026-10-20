@@ -66,15 +66,19 @@ Rationals are written as `numerator/denominator` and stay exact:
 
 ## Part 3: Complex Numbers
 
+Complex components are always inexact binary64 values, even when their
+mathematical values are whole numbers; the `.0` in their printed form shows
+that inexactness.
+
 ```scheme
-(define z (make-rectangular 3.0 4.0))  ;; 3 + 4i
-(display z)              ;; => 3+4i
+(define z (make-rectangular 3.0 4.0))  ;; inexact components: 3.0 + 4.0i
+(display z)              ;; => 3.0+4.0i
 (display (magnitude z))  ;; => 5.0
 (display (angle z))      ;; => 0.9273... (radians)
 
 ;; Arithmetic
-(display (+ z (make-rectangular 1.0 -1.0)))  ;; => 4+3i
-(display (* z z))        ;; => -7+24i
+(display (+ z (make-rectangular 1.0 -1.0)))  ;; => 4.0+3.0i
+(display (* z z))        ;; => -7.0+24.0i
 
 ;; Polar form
 (define w (make-polar 2.0 1.5707963267948966))  ;; r=2, theta=pi/2

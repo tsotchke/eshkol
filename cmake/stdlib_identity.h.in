@@ -1,0 +1,8 @@
+#pragma once
+
+/* Generated from the release, effective object ABI, and complete stdlib source
+ * closure. The symbol name is embedded into both stdlib.o and stdlib.bc. */
+#define ESHKOL_STDLIB_IDENTITY_SYMBOL "@ESHKOL_STDLIB_IDENTITY_SYMBOL@"
+#define ESHKOL_STDLIB_IDENTITY_RELEASE "@ESHKOL_STDLIB_RELEASE_STRING@"
+#define ESHKOL_STDLIB_IDENTITY_ABI "@ESHKOL_STDLIB_IDENTITY_ABI@"
+#define ESHKOL_STDLIB_IDENTITY_SOURCE "@ESHKOL_STDLIB_SOURCE_FINGERPRINT@"

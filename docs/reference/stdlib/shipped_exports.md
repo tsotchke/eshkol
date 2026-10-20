@@ -5,6 +5,52 @@ not present in the standard-library index. Signatures and module locations are
 taken from the source files named in each section. The anchors are checked by
 `scripts/check_public_api_docs.py`.
 
+## `core.ad.algebraic_sparse`
+
+Source: `lib/core/ad/algebraic_sparse.esk`. The exact sparse-curvature contract,
+structural-pattern obligation, and probe summary are in
+[ad_algebraic_sparse.md](ad_algebraic_sparse.md).
+
+### `algebraic-sparse-hessian`
+
+Recovers an exact sparse Hessian from an owner domain, objective, point, and explicit structural pattern, optionally using a whole-column HVP callback.
+
+### `algebraic-sparse-hessian-ref`
+
+Returns an owned exact Hessian coefficient at the requested indices.
+
+### `algebraic-sparse-hessian-dense`
+
+Returns an owned dense view of an exact sparse Hessian.
+
+### `algebraic-sparse-hessian-summary`
+
+Returns dimension, color, actual probe-call, upper-entry, and recovery-mode counts.
+
+## `core.ad.sparsity`
+
+Source: `lib/core/ad/sparsity.esk`. The coloring contract and numeric/exact
+shared ownership are in [ad_sparsity.md](ad_sparsity.md).
+
+### `hessian-color-graph`
+
+Returns deterministic distance-two colors and their count for a validated undirected adjacency vector.
+
+## `core.ad.algebraic_implicit`
+
+Source: `lib/core/ad/algebraic_implicit.esk`. The full contract and bounded
+polynomial syntax are in [ad_algebraic_implicit.md](ad_algebraic_implicit.md).
+
+### `algebraic-ad-system-root`
+
+Lifts a supplied simple branch of a bounded coupled polynomial system through
+an exact AD context using its formally derived primal Jacobian.
+
+### `algebraic-ad-system-residual`
+
+Returns the full enclosing-domain residual vector for a bounded polynomial
+system at supplied values.
+
 ## `agent.http`
 
 Source: `lib/agent/http.esk`. The complete transport reference is in
@@ -289,3 +335,18 @@ Returns the TensorCore version string.
 Source: `lib/web/web.esk`. This module is the browser-facing DOM, event, timer,
 storage, fetch, and canvas surface. Its exports are registered as a module
 surface even though the procedure list is implemented by the browser bridge.
+
+
+## `core.algebraic_batch`
+
+Source: `lib/core/algebraic_batch.esk`. The packed exact multiplication contract,
+preflight bounds and receipt fields are documented in
+[algebraic_batch.md](algebraic_batch.md).
+
+### `make-algebraic-multiplication-plan`
+
+Compiles an admitted algebraic owner into a sparse exact multiplication table.
+
+### `algebraic-batch-mul`
+
+Preflights and multiplies equally sized vectors of exact algebraic values.

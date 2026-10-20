@@ -656,10 +656,12 @@ jobs:
           python3 scripts/ci_change_class.py --self-test
           python3 tests/toolchain/test_disclosure_base.py
           python3 tests/toolchain/test_cuda_runtime_contract_gate.py
+          python3 scripts/test_event_loop_gate.py
           python3 tests/toolchain/test_cublas_fake_windows_outputs.py
           python3 scripts/ci_lane_plan.py --self-test
           python3 scripts/ci_equivalent_head.py --self-test
           python3 tests/toolchain/test_ci_reference_run.py
+          python3 tests/toolchain/test_ffi_harness.py
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
@@ -671,6 +673,8 @@ jobs:
           python3 scripts/check_doc_front_matter.py --self-test
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
+          python3 scripts/lib/ad_numerics_gate.py --self-test
+          python3 scripts/lib/ad_numerics_gate.py --profile p6 --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
           python3 scripts/doc_audit/test_harness.py
           python3 scripts/doc_audit/check_doc_examples.py --self-test
@@ -2458,7 +2462,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-test-log
-          path: ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+          path: |
+            ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+            ${{ runner.temp }}/eshkol-test-logs/ffi-diagnostics-*
           if-no-files-found: ignore
 
       - name: Upload Artifacts

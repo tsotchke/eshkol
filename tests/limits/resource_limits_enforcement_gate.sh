@@ -28,6 +28,15 @@ WORK="${3:?missing work dir}"
 
 mkdir -p "$WORK" || exit 1
 
+if [ ! -x "$ESHKOL_RUN" ]; then
+    echo "FAIL: required resource-limit test binary is missing or not executable: $ESHKOL_RUN" >&2
+    exit 1
+fi
+if [ "$VM_RUN" != "none" ] && [ ! -x "$VM_RUN" ]; then
+    echo "FAIL: configured VM test binary is missing or not executable: $VM_RUN" >&2
+    exit 1
+fi
+
 PASS=0
 FAIL=0
 
@@ -39,10 +48,22 @@ unset_all_limits() {
           ESHKOL_ENFORCE_LIMITS ESHKOL_LIMIT_WARNINGS ESHKOL_VM_MAX_INSN
 }
 
-# check <label> <expected-exit> <expected-stderr-substring|-> -- <command...>
+# baseline <name> -- <command...>
+baseline() {
+    local name="$1"
+    shift 2  # drop the literal --
+    local out="$WORK/baseline-$name.out" err="$WORK/baseline-$name.err"
+    if ! "$@" >"$out" 2>"$err"; then
+        echo "FAIL: baseline $name did not complete successfully"
+        sed -n '1,10p' "$err"
+        exit 1
+    fi
+}
+
+# check <label> <expected-exit> <stderr-substrings-separated-by-|> <expected-stdout-file|-> -- <command...>
 check() {
-    local label="$1" expect_exit="$2" expect_err="$3"
-    shift 4  # drop the literal --
+    local label="$1" expect_exit="$2" expect_err="$3" expect_out="$4"
+    shift 5  # drop the literal --
     local out err rc
     out="$WORK/out.$$"
     err="$WORK/err.$$"
@@ -54,10 +75,21 @@ check() {
         ok=false
         echo "FAIL: $label — expected exit $expect_exit, got $rc"
     fi
-    if [ "$expect_err" != "-" ] && ! grep -qF "$expect_err" "$err"; then
+    if [ "$expect_err" != "-" ]; then
+        local IFS='|'
+        local expected
+        for expected in $expect_err; do
+            if ! grep -qF "$expected" "$err"; then
+                ok=false
+                echo "FAIL: $label — stderr missing: $expected"
+                sed -n '1,10p' "$err"
+            fi
+        done
+    fi
+    if [ "$expect_out" != "-" ] && ! cmp -s "$expect_out" "$out"; then
         ok=false
-        echo "FAIL: $label — stderr missing: $expect_err"
-        sed -n '1,10p' "$err"
+        echo "FAIL: $label — stdout differs from the expected baseline"
+        diff -u "$expect_out" "$out" | sed -n '1,20p'
     fi
     if $ok; then
         PASS=$((PASS + 1))
@@ -99,6 +131,17 @@ cat > "$WORK/vm_loop.esk" <<'EOF'
 (display (count 3000000 0))
 EOF
 
+# Record unconfigured outputs once; inert ceilings and advisory mode must
+# preserve the exact program output, not merely return success.
+unset_all_limits
+baseline alloc_loop -- "$ESHKOL_RUN" -r "$WORK/alloc_loop.esk"
+baseline big_string -- "$ESHKOL_RUN" -r "$WORK/big_string.esk"
+baseline big_tensor -- "$ESHKOL_RUN" -r "$WORK/big_tensor.esk"
+baseline deep_rec -- "$ESHKOL_RUN" -e '(let () (define (down n) (if (= n 0) 0 (+ 1 (down (- n 1))))) (display (down 5000)))'
+if [ "$VM_RUN" != "none" ]; then
+    baseline vm_loop -- "$VM_RUN" "$WORK/vm_loop.esk"
+fi
+
 # --- ceilings are OPT-IN ----------------------------------------------------
 #
 # The defaults in the docs are the values a limit takes WHEN YOU TURN IT ON,
@@ -110,7 +153,7 @@ EOF
 
 if [ -f "tests/features/blc_test.esk" ]; then
     unset_all_limits
-    check "a run that sets nothing gets no ceiling, even past the 1 GiB default" 0 "-" -- \
+    check "a run that sets nothing gets no ceiling, even past the 1 GiB default" 0 "-" "-" -- \
         "$ESHKOL_RUN" -r tests/features/blc_test.esk
 fi
 
@@ -118,53 +161,53 @@ fi
 
 unset_all_limits
 ESHKOL_MAX_HEAP=1 \
-check "ESHKOL_MAX_HEAP=1 terminates with 120" 120 "ESHKOL_MAX_HEAP" -- \
+check "ESHKOL_MAX_HEAP=1 terminates with 120" 120 "eshkol: fatal: Heap hard limit exceeded|ESHKOL_MAX_HEAP" "-" -- \
     "$ESHKOL_RUN" -r "$WORK/alloc_loop.esk"
 
 unset_all_limits
 ESHKOL_MAX_HEAP=4G \
-check "ESHKOL_MAX_HEAP=4G leaves the run untouched" 0 "-" -- \
+check "ESHKOL_MAX_HEAP=4G leaves the run untouched" 0 "-" "$WORK/baseline-alloc_loop.out" -- \
     "$ESHKOL_RUN" -r "$WORK/alloc_loop.esk"
 
 unset_all_limits
 ESHKOL_MAX_HEAP=1 ESHKOL_ENFORCE_LIMITS=false \
-check "ESHKOL_ENFORCE_LIMITS=false makes the heap ceiling advisory" 0 "-" -- \
+check "ESHKOL_ENFORCE_LIMITS=false makes the heap ceiling advisory" 0 "WARNING:|Heap hard limit exceeded|ESHKOL_MAX_HEAP" "$WORK/baseline-alloc_loop.out" -- \
     "$ESHKOL_RUN" -r "$WORK/alloc_loop.esk"
 
 # --- ESHKOL_TIMEOUT_MS ------------------------------------------------------
 
 unset_all_limits
 ESHKOL_TIMEOUT_MS=500 \
-check "ESHKOL_TIMEOUT_MS=500 terminates with 124" 124 "ESHKOL_TIMEOUT_MS" -- \
+check "ESHKOL_TIMEOUT_MS=500 terminates with 124" 124 "eshkol: fatal: Execution timeout exceeded|ESHKOL_TIMEOUT_MS" "-" -- \
     "$ESHKOL_RUN" -r "$WORK/alloc_loop.esk"
 
 unset_all_limits
 ESHKOL_TIMEOUT_MS=600000 \
-check "a timeout the program never reaches changes nothing" 0 "-" -- \
+check "a timeout the program never reaches changes nothing" 0 "-" "$WORK/baseline-alloc_loop.out" -- \
     "$ESHKOL_RUN" -r "$WORK/alloc_loop.esk"
 
 # --- ESHKOL_MAX_STRING_LEN --------------------------------------------------
 
 unset_all_limits
 ESHKOL_MAX_STRING_LEN=100 \
-check "ESHKOL_MAX_STRING_LEN=100 terminates with 123" 123 "ESHKOL_MAX_STRING_LEN" -- \
+check "ESHKOL_MAX_STRING_LEN=100 terminates with 123" 123 "eshkol: fatal: String length limit exceeded|ESHKOL_MAX_STRING_LEN" "-" -- \
     "$ESHKOL_RUN" -r "$WORK/big_string.esk"
 
 unset_all_limits
 ESHKOL_MAX_STRING_LEN=1M \
-check "a string ceiling above the string is inert" 0 "-" -- \
+check "a string ceiling above the string is inert" 0 "-" "$WORK/baseline-big_string.out" -- \
     "$ESHKOL_RUN" -r "$WORK/big_string.esk"
 
 # --- ESHKOL_MAX_TENSOR_ELEMS ------------------------------------------------
 
 unset_all_limits
 ESHKOL_MAX_TENSOR_ELEMS=100 \
-check "ESHKOL_MAX_TENSOR_ELEMS=100 terminates with 122" 122 "ESHKOL_MAX_TENSOR_ELEMS" -- \
+check "ESHKOL_MAX_TENSOR_ELEMS=100 terminates with 122" 122 "eshkol: fatal: Tensor size limit exceeded|ESHKOL_MAX_TENSOR_ELEMS" "-" -- \
     "$ESHKOL_RUN" -r "$WORK/big_tensor.esk"
 
 unset_all_limits
 ESHKOL_MAX_TENSOR_ELEMS=1000000 \
-check "a tensor ceiling above the tensor is inert" 0 "-" -- \
+check "a tensor ceiling above the tensor is inert" 0 "-" "$WORK/baseline-big_tensor.out" -- \
     "$ESHKOL_RUN" -r "$WORK/big_tensor.esk"
 
 # --- ESHKOL_MAX_STACK -------------------------------------------------------
@@ -180,12 +223,12 @@ check "a tensor ceiling above the tensor is inert" 0 "-" -- \
 
 unset_all_limits
 ESHKOL_MAX_STACK=100 \
-check "ESHKOL_MAX_STACK=100 terminates with 121" 121 "ESHKOL_MAX_STACK" -- \
+check "ESHKOL_MAX_STACK=100 terminates with 121" 121 "eshkol: fatal: Stack overflow|ESHKOL_MAX_STACK" "-" -- \
     "$ESHKOL_RUN" -e '(let () (define (down n) (if (= n 0) 0 (+ 1 (down (- n 1))))) (display (down 5000)))'
 
 unset_all_limits
 ESHKOL_MAX_STACK=100000 \
-check "a stack ceiling above the recursion is inert" 0 "-" -- \
+check "a stack ceiling above the recursion is inert" 0 "-" "$WORK/baseline-deep_rec.out" -- \
     "$ESHKOL_RUN" -e '(let () (define (down n) (if (= n 0) 0 (+ 1 (down (- n 1))))) (display (down 5000)))'
 
 # --- ESHKOL_VM_MAX_INSN (bytecode VM) ---------------------------------------
@@ -193,15 +236,15 @@ check "a stack ceiling above the recursion is inert" 0 "-" -- \
 if [ -x "$VM_RUN" ]; then
     unset_all_limits
     ESHKOL_VM_MAX_INSN=100000 \
-    check "ESHKOL_VM_MAX_INSN=100000 terminates the VM with 125" 125 "ESHKOL_VM_MAX_INSN" -- \
+    check "ESHKOL_VM_MAX_INSN=100000 terminates the VM with 125" 125 "bytecode VM executed|ESHKOL_VM_MAX_INSN" "-" -- \
         "$VM_RUN" "$WORK/vm_loop.esk"
 
     unset_all_limits
     ESHKOL_VM_MAX_INSN=0 \
-    check "ESHKOL_VM_MAX_INSN=0 means unlimited" 0 "-" -- \
+    check "ESHKOL_VM_MAX_INSN=0 means unlimited" 0 "-" "$WORK/baseline-vm_loop.out" -- \
         "$VM_RUN" "$WORK/vm_loop.esk"
 else
-    echo "SKIP: bytecode VM standalone binary not built ($VM_RUN)"
+    echo "SKIP: bytecode VM standalone binary is not supported on this platform"
 fi
 
 # --- summary ----------------------------------------------------------------

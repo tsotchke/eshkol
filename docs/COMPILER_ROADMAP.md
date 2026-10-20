@@ -1,5 +1,13 @@
 # Eshkol compiler roadmap — v1.2-scale → v2.0-starlight
 
+> **Publication update, 2026-10-19:** [v1.3.6-evolve](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)
+> was published at 11:53:31 UTC from source
+> `341ac812ed600fd9d27c28e9509d66ab71363947`. The dated “prepared for
+> publication” passages below retain their historical snapshot meaning.
+> v1.4 development is active; its recovered integration scope and acceptance
+> requirements are recorded in [the development plan](design/V1_4_CONNECTION_START_2026_10_19.md).
+
+
 **Date**: 2026-05-20
 **Position in the doc set**: this is the **engineering-detail companion** to
 the canonical [`ROADMAP.md`](../ROADMAP.md) at the repo root. When the two

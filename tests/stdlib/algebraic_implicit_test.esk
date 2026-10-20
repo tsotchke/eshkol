@@ -1,0 +1,113 @@
+(require stdlib)
+(require core.ad.algebraic_implicit)
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define field (make-algebraic-field '(-2 0 1) 3 1))
+(define alpha (algebraic-generator field))
+(define context (make-algebraic-taylor field 4))
+(define p (algebraic-ad-seed context 4))
+(define equations (vector
+  (list (list 1 (vector 2 0)) (list 1 (vector 0 2))
+        (list (algebraic-ad-sub (algebraic-ad-constant context 0) p) (vector 0 0)))
+  (list (list 1 (vector 1 0)) (list -1 (vector 0 1)))))
+(define roots (algebraic-ad-system-root context equations (vector alpha alpha)))
+(for-each (lambda (sample)
+  (check "coupled square-root branch agrees with independent binomial formula"
+    (algebraic-equal? (algebraic-ad-derivative (vector-ref roots 0) (car sample))
+                      (algebraic-scale alpha (cadr sample)))))
+  '((0 1) (1 1/8) (2 -1/64) (4 -15/4096)))
+(check "coupled equation enforces the second component"
+  (algebraic-ad-equal? (vector-ref roots 0) (vector-ref roots 1)))
+(check "complete polynomial-system residual"
+  (let ((residual (algebraic-ad-system-residual context equations roots)) (zero (algebraic-ad-constant context 0)))
+    (and (algebraic-ad-equal? (vector-ref residual 0) zero)
+         (algebraic-ad-equal? (vector-ref residual 1) zero))))
+(define caller-roots (vector alpha alpha))
+(define owned-roots (algebraic-ad-system-root context equations caller-roots))
+(vector-set! caller-roots 0 99)
+(define owned-residual (algebraic-ad-system-residual context equations owned-roots))
+(vector-set! owned-residual 0 #f)
+(check "root and residual vectors own storage independent of caller vectors"
+  (algebraic-ad-equal? (vector-ref owned-roots 0) (vector-ref roots 0)))
+(define hyper (make-algebraic-hyperdual field))
+(define hp (algebraic-ad-value hyper '(2 1 0 0)))
+(define hq (algebraic-ad-value hyper '(2 0 1 0)))
+(define coupled (vector
+  (list (list 1 (vector 2 0)) (list 1 (vector 0 1))
+        (list (algebraic-ad-sub (algebraic-ad-constant hyper 0) hp) (vector 0 0)))
+  (list (list 1 (vector 0 2)) (list 1 (vector 1 0))
+        (list (algebraic-ad-sub (algebraic-ad-constant hyper 0) hq) (vector 0 0)))))
+(define hroots (algebraic-ad-system-root hyper coupled (vector 1 1)))
+(check "nonlinear coupled implicit Jacobian and mixed derivatives"
+  (equal? (map algebraic-rational (vector->list (algebraic-ad-coefficients (vector-ref hroots 0))))
+          '(1 2/3 -1/3 4/27)))
+(check "second nonlinear component mixed derivatives"
+  (equal? (map algebraic-rational (vector->list (algebraic-ad-coefficients (vector-ref hroots 1))))
+          '(1 -1/3 2/3 4/27)))
+(define moving (call-with-algebraic-derivative field
+  (lambda (a lift-a)
+    (let* ((outer (algebraic-ad-context a))
+           (branch (algebraic-ad-add a (algebraic-ad-constant outer 1)))
+           (point (algebraic-ad-mul (algebraic-ad-constant outer 2) (algebraic-ad-mul branch branch))))
+      (call-with-algebraic-derivative outer
+        (lambda (b lift-b)
+          (let* ((inner (algebraic-ad-context b))
+                 (system (vector
+                   (list (list 1 (vector 2 0)) (list 1 (vector 0 2))
+                         (list (algebraic-ad-sub (algebraic-ad-constant inner 0) b) (vector 0 0)))
+                   (list (list 1 (vector 1 0)) (list -1 (vector 0 1))))))
+            (vector-ref (algebraic-ad-system-root inner system (vector branch branch)) 0))) point 2))) 2 2))
+(check "moving branch retains full enclosing coefficients" (= (algebraic-rational moving) -1/324))
+(define linear (vector (list (list 1 (vector 1 0)) (list -1 (vector 0 1)))
+                       (list (list 1 (vector 1 0)) (list 1 (vector 0 1)) (list -2 (vector 0 0)))))
+(define plain (algebraic-ad-system-root context linear (vector 1 1) 0))
+(check "zero-budget already exact simple branch succeeds"
+  (algebraic-ad-equal? (vector-ref plain 0) (algebraic-ad-constant context 1)))
+(define unit-system (vector (list (list 1 (vector 1)) (list -1 (vector 0)))))
+(define unit-root (algebraic-ad-system-root context unit-system (vector 1) 0))
+(check "one-unknown endpoint accepts an exact simple branch"
+  (algebraic-ad-equal? (vector-ref unit-root 0) (algebraic-ad-constant context 1)))
+(define identity-eight
+  (let rows ((i 0) (out '()))
+    (if (= i 8) (list->vector (reverse out))
+      (let ((powers (make-vector 8 0)))
+        (vector-set! powers i 1)
+        (rows (+ i 1) (cons (list (list 1 powers)) out))))))
+(define eight-roots (algebraic-ad-system-root context identity-eight (make-vector 8 0) 0))
+(check "eight-unknown endpoint factors and returns the exact identity-system branch"
+  (let loop ((i 0))
+    (or (= i 8)
+        (and (algebraic-ad-equal? (vector-ref eight-roots i) (algebraic-ad-constant context 0))
+             (loop (+ i 1))))))
+(define singular (vector (list (list 1 (vector 2)))))
+(define epsilon (algebraic-ad-seed (make-algebraic-taylor field 1) 0))
+(define enclosing (algebraic-ad-context epsilon))
+(define inner (make-algebraic-taylor enclosing 1))
+(define foreign (make-algebraic-field '(-3 0 1) 5 1))
+(for-each (lambda (thunk) (check "invalid coupled branch/system/budget refuses" (raises? thunk)))
+  (list
+    (lambda () (algebraic-ad-system-root context singular (vector 0)))
+    (lambda () (algebraic-ad-system-root context equations (vector 1 1)))
+    (lambda () (algebraic-ad-system-root context equations (vector alpha alpha) 0))
+    (lambda () (algebraic-ad-system-root context equations (vector alpha alpha) -1))
+    (lambda () (algebraic-ad-system-root context equations (vector alpha alpha) 1.0))
+    (lambda () (algebraic-ad-system-root context equations (vector alpha)))
+    (lambda () (algebraic-ad-system-root field singular (vector 0)))
+    (lambda () (algebraic-ad-system-root context singular (vector (algebraic-generator foreign))))
+    (lambda () (algebraic-ad-system-root inner
+      (vector (list (list epsilon (vector 1)))) (vector 0)))
+    (lambda () (algebraic-ad-system-root inner
+      (vector (list (list 1 (vector 1)) (list (algebraic-ad-sub
+        (algebraic-ad-constant inner 0) (algebraic-ad-constant inner epsilon)) (vector 0)))) (vector 0)))
+    (lambda () (algebraic-ad-system-root context
+      (vector (list (list 1 (vector 17)))) (vector 0)))
+    (lambda () (algebraic-ad-system-root context
+      (vector (list (list 1 (vector 1/2)))) (vector 0)))))
+(check "no finite differences" (= (ad-finite-difference-evals) 0))
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "RESULT: PASS") (newline)

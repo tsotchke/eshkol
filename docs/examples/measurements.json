@@ -14,6 +14,18 @@
   },
   "gates": {},
   "records": {
+    "examples/algebraic_ad.esk": {
+      "source_sha256": "75623281baa24793f65abd9fc9d0d3092916cc40299e699af5e48b158f1366df",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
+    },
     "examples/autodiff.esk": {
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
       "jit": {
@@ -2702,6 +2714,107 @@
         "AD_MODEL_PASS"
       ],
       "output_lines": 27
+    },
+    "examples/streaming_least_squares.esk": {
+      "source_sha256": "2004d9d76affaf8011d591e0bb7ea9911989bd5ffd5fa5a525c7b756119f65dd",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "New source pending configured release qualification. Focused local native evidence is recorded separately; historical release measurements are unchanged.",
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
+    },
+    "examples/nested_algebraic_fields.esk": {
+      "source_sha256": "df073d7c01bfb3c3baf9239c0a06be2c1e87a665c9d399ceb35e6a226baafb97",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "Release measurement remains NOT-RUN; focused snapshot qualification evidence is separate."
+    },
+    "examples/algebraic_matrix_calculus.esk": {
+      "source_sha256": "fa1ffb035789f75090b14da972533dd7d228a6032b5330d87a93d1d127c41bfe",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "Release measurements remain NOT-RUN; focused PR qualification is recorded separately under richard/evidence-794."
+    },
+    "examples/algebraic_implicit.esk": {
+      "source_sha256": "8d8fcf23e41044e50869126efed1d3289aeed4796849c1647030ef8274beb169",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "Release measurements remain NOT-RUN; focused PR qualification is recorded separately under richard/evidence-795."
+    },
+    "examples/algebraic_batch.esk": {
+      "source_sha256": "14f94894d4e9627bacfb721b4d7299c670e42bf1bcf757e4fcdbc0ed4ac2fc62",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "note": "Focused offline qualification only; release measurements remain NOT-RUN.",
+      "key_output": [],
+      "not_run_reason": "Focused offline qualification only; release measurements remain NOT-RUN."
+    },
+    "examples/algebraic_sparse.esk": {
+      "source_sha256": "b39bad3265799ab2414e8af5a57d60a3ab0d1a5fad18860e64fd4d045cedc5b5",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "note": "Exact analytic assertions added after configured CTest rejected the earlier print-only example; root qualification is recorded separately from release measurements.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
+    },
+    "examples/algebraic_incremental.esk": {
+      "source_sha256": "2e7f154bbcfb5073f973d61ec7cef7a0e115524983ad20ae550a70238a3ade4c",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "note": "Focused offline qualification passed ORC, O3 AOT, and direct VM routes; release measurements remain NOT-RUN.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is recorded separately."
+    },
+    "examples/algebraic_frontiers.esk": {
+      "source_sha256": "1d7ee24f1d77b48899c75708938a3d138229ebce0508025815ab10de23392497",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "note": "Focused qualification is separate from release measurements.",
+      "not_run_reason": "No configured release measurement receipt exists."
     }
   }
 }

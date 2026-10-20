@@ -44,7 +44,7 @@
 ;;; exactness guarantee this module can offer.
 
 (provide exact-matrix? exact-matrix-ref exact-matrix-mul exact-matrix-transpose
-         exact-det exact-solve exact-inverse exact-rank exact-nullspace
+         exact-det exact-solve exact-affine-solve exact-inverse exact-rank exact-nullspace
          torus-average torus-average-2d)
 
 ;; ============================================================
@@ -417,3 +417,60 @@
   (if (not (and (integer? n) (exact? n) (> n 0) (integer? m) (exact? m) (> m 0)))
       (error "torus-average-2d: n and m must be positive exact integers" n m)
       (* (/ 1 (* n m)) (el-sum-f2 f n m))))
+
+;; Strict rational affine solve. Returns (particular . nullspace-basis), so
+;; every solution is particular + sum(t_i * basis_i). Unlike exact-solve this
+;; admits rectangular and singular systems. Inconsistency raises. Optional
+;; COLUMNS fixes the otherwise unknowable width of an empty outer vector.
+;; Existing contagion-permitting operations keep their original contract.
+(define (el-affine-exact-row? row)
+  (and (vector? row)
+       (el-row-all? row (lambda (x) (and (rational? x) (exact? x))))))
+
+(define (exact-affine-solve a b . width)
+  (if (not (and (vector? a) (vector? b) (<= (length width) 1)))
+      (error "exact-affine-solve: expected matrix, RHS and optional width"))
+  (let* ((rows (vector-length a))
+         (cols (if (null? width)
+                   (if (= rows 0) 0
+                       (if (vector? (vector-ref a 0))
+                           (vector-length (vector-ref a 0))
+                           (error "exact-affine-solve: invalid row")))
+                   (car width))))
+    (if (not (and (integer? cols) (exact? cols) (>= cols 0) (<= cols 9223372036854775807)))
+        (error "exact-affine-solve: invalid column count" cols))
+    (if (not (and (= rows (vector-length b)) (el-affine-exact-row? b)))
+        (error "exact-affine-solve: expected matching exact rational RHS"))
+    (let validate ((i 0))
+      (if (< i rows)
+          (begin
+            (if (not (and (el-affine-exact-row? (vector-ref a i))
+                          (= cols (vector-length (vector-ref a i)))))
+                (error "exact-affine-solve: ragged or inexact rational matrix"))
+            (validate (+ i 1)))))
+    (if (= rows 0)
+        (cons (make-vector cols 0)
+              (let basis ((i 0) (out '()))
+                (if (= i cols) (reverse out)
+                    (let ((v (make-vector cols 0)))
+                      (vector-set! v i 1)
+                      (basis (+ i 1) (cons v out))))))
+        (let* ((reduced (el-rref (el-augment-column a b)))
+               (w (car reduced)) (pivots (cdr reduced)))
+          ;; A runtime may demote an overflowing rational to double. Never
+          ;; publish that rounded row reduction as an exact solution family.
+          (let verify ((i 0))
+            (if (< i rows)
+                (begin
+                  (if (not (el-affine-exact-row? (vector-ref w i)))
+                      (error "exact-affine-solve: arithmetic lost exactness"))
+                  (verify (+ i 1)))))
+          (if (member cols pivots)
+              (error "exact-affine-solve: inconsistent system"))
+          (let ((particular (make-vector cols 0)))
+            (let fill ((ps pivots) (i 0))
+              (if (not (null? ps))
+                  (begin
+                    (vector-set! particular (car ps) (exact-matrix-ref w i cols))
+                    (fill (cdr ps) (+ i 1)))))
+            (cons particular (el-nullspace-basis w pivots cols)))))))

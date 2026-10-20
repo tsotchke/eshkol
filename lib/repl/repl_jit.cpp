@@ -12,6 +12,7 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/stdlib_identity.h>
 #include <eshkol/runtime_exports.h>
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
@@ -42,6 +43,7 @@
 #include <llvm/IR/CFG.h>  // For predecessors()
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/Errc.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/DynamicLibrary.h>
 #include <llvm/Support/MemoryBuffer.h>  // For loading object files
@@ -2696,15 +2698,14 @@ static std::string findStdlibObject() {
  * @param buffer The object file's bytes.
  * @param foreign Set to the guard symbol the object actually names, when it
  *        names one that is not ours.
- * @return true if the object may be loaded: it either names this build's guard
- *         symbol, or names none at all (an object predating the guard, or one
- *         whose symbol table could not be read — neither is evidence of a
- *         mismatch, and refusing on absence would break existing installs).
+ * @return true if the object may be loaded by the ABI check: it either names
+ *         this build's guard symbol or names none. The stdlib identity check
+ *         runs separately and rejects unstamped stdlib objects before load.
  */
 static bool objectMatchesRunningAbi(llvm::MemoryBufferRef buffer,
                                     std::string& foreign) {
     static constexpr llvm::StringRef kGuardPrefix = "eshkol_object_abi_v";
-    const llvm::StringRef expected(ESHKOL_ABI_FINGERPRINT_NAME);
+    const llvm::StringRef expected(static_cast<const char*>(ESHKOL_ABI_FINGERPRINT_NAME));
 
     auto obj_or_err = llvm::object::ObjectFile::createObjectFile(buffer);
     if (!obj_or_err) {
@@ -2923,16 +2924,19 @@ void ReplJITContext::registerStdlibSymbols() {
  * compilation pipeline as REPL-compiled code so aggregate tagged-value
  * arguments use a consistent ABI; (3) the legacy precompiled stdlib.o via
  * addObjectFile() for installations that have not shipped stdlib.bc; and
- * (4) JIT-compiling the stdlib from source via loadModule(), the slowest but
- * always-correct path. On success, registers stdlib symbols
+ * (4) JIT-compiling the stdlib from source via loadModule() only when no
+ * precompiled artifact was found. A found incompatible or unreadable artifact
+ * returns an LLVM error instead of falling through to source. On success,
+ * registers stdlib symbols
  * (registerStdlibSymbols()) and explicitly invokes
  * `__eshkol_lib_init__`/`__eshkol_init_parallel_workers` since ORC does not
  * reliably run Eshkol's library/global-ctor initializers for REPL preloads.
- * @return true if the stdlib was loaded (or already had been) by any path.
+ * @return success if loaded (or already loaded); an LLVM error for an
+ *         incompatible/unreadable artifact or failed source fallback.
  */
-bool ReplJITContext::loadStdlib() {
+llvm::Error ReplJITContext::loadStdlib() {
     if (stdlib_loaded_) {
-        return true;  // Already loaded — idempotent.
+        return llvm::Error::success();  // Already loaded — idempotent.
     }
 
     if (!jit_) {
@@ -2991,111 +2995,156 @@ bool ReplJITContext::loadStdlib() {
         std::string bc_path = findStdlibBitcode();
         if (!bc_path.empty()) {
             if (auto bc_buf = MemoryBuffer::getFile(bc_path)) {
-                uint64_t content_hash = llvm::xxh3_64bits((*bc_buf)->getBuffer());
-                std::string triple = llvm::sys::getProcessTriple();
-                for (char& c : triple)
-                    if (c == '/' || c == '\\' || c == ':') c = '_';
-                std::filesystem::path bc_fs(bc_path);
-                // Bump the version tag whenever the emit config below changes
-                // (code model, sections, opt level, or external-data import
-                // lowering) so an existing cached object built with a different
-                // contract is not reused.
-                //
-                // The object ABI is part of that contract and is named
-                // explicitly. It is tempting to argue it is already covered:
-                // flipping the layout rebuilds stdlib.bc, whose content hash is
-                // in the key. But that only holds where stdlib.bc is rebuilt.
-                // An installation that ships a prebuilt stdlib.bc and changes
-                // only the runtime keeps the same content hash and the same
-                // triple, and would be handed back an object compiled for the
-                // other header layout — which links, runs, and reads the wrong
-                // bytes. The tag comes from the same four numbers as the link
-                // guard, so it renames itself when the layout moves.
-                std::filesystem::path cache_o =
-                    bc_fs.parent_path() /
-                    ("stdlib-jit-v4-" + llvm::utohexstr(content_hash) + "-" +
-                     triple + "-" + ESHKOL_OBJECT_ABI_CACHE_TAG + ".o");
+                // A cache entry is derived from this bitcode, so reject foreign
+                // bitcode before either creating or reusing its object cache.
+                // The later IR path performs the same check for uncached loads.
+                auto identity_ctx = std::make_unique<LLVMContext>();
+                auto identity_mod = parseBitcodeFile(
+                    (*bc_buf)->getMemBufferRef(), *identity_ctx);
+                std::string bc_identity;
+                const bool bc_identity_ok = identity_mod &&
+                    eshkol::stdlib_identity::matches_module(
+                        **identity_mod, bc_identity);
+                if (!bc_identity_ok) {
+                    std::string reason = bc_identity;
+                    if (!identity_mod) reason = toString(identity_mod.takeError());
+                    return llvm::createStringError(
+                        llvm::errc::invalid_argument,
+                        "rejecting stdlib.bc %s: %s; expected %s",
+                        bc_path.c_str(),
+                        reason.empty() ? "unreadable bitcode" : reason.c_str(),
+                        static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+                } else {
+                    uint64_t content_hash = llvm::xxh3_64bits((*bc_buf)->getBuffer());
+                    std::string triple = llvm::sys::getProcessTriple();
+                    for (char& c : triple)
+                        if (c == '/' || c == '\\' || c == ':') c = '_';
+                    std::filesystem::path bc_fs(bc_path);
+                    // Bump the version tag whenever the emit config below changes
+                    // (code model, sections, opt level, or external-data import
+                    // lowering) so an existing cached object built with a different
+                    // contract is not reused.
+                    //
+                    // The object ABI is part of that contract and is named
+                    // explicitly. It is tempting to argue it is already covered:
+                    // flipping the layout rebuilds stdlib.bc, whose content hash is
+                    // in the key. But that only holds where stdlib.bc is rebuilt.
+                    // An installation that ships a prebuilt stdlib.bc and changes
+                    // only the runtime keeps the same content hash and the same
+                    // triple, and would be handed back an object compiled for the
+                    // other header layout — which links, runs, and reads the wrong
+                    // bytes. The tag comes from the same four numbers as the link
+                    // guard, so it renames itself when the layout moves.
+                    std::filesystem::path cache_o =
+                        bc_fs.parent_path() /
+                        ("stdlib-jit-v4-" + llvm::utohexstr(content_hash) + "-" +
+                         triple + "-" + ESHKOL_OBJECT_ABI_CACHE_TAG + ".o");
 
-                std::error_code ec;
-                bool have_obj = std::filesystem::exists(cache_o, ec);
-                if (!have_obj) {
-                    auto emit_ctx = std::make_unique<LLVMContext>();
-                    auto emit_mod =
-                        parseBitcodeFile((*bc_buf)->getMemBufferRef(), *emit_ctx);
-                    if (emit_mod) {
-                        auto emit_jtmb = orc::JITTargetMachineBuilder::detectHost();
-                        if (emit_jtmb) {
-                            configure_jit_target_machine_builder(*emit_jtmb);
-                            if (auto emit_tm = emit_jtmb->createTargetMachine()) {
-                                (*emit_mod)->setDataLayout(
-                                    (*emit_tm)->createDataLayout());
-                                (*emit_mod)->setTargetTriple(
-                                    (*emit_tm)->getTargetTriple());
-                                eshkol::prepare_jit_module_for_target(
-                                    **emit_mod, (*emit_tm)->getTargetTriple());
-                                std::filesystem::path tmp_o = cache_o;
-                                tmp_o += ".tmp";
-                                std::error_code wec;
-                                raw_fd_ostream os(tmp_o.string(), wec,
-                                                  sys::fs::OF_None);
-                                if (!wec) {
-                                    legacy::PassManager pm;
-                                    if (!(*emit_tm)->addPassesToEmitFile(
-                                            pm, os, nullptr,
-                                            CodeGenFileType::ObjectFile)) {
-                                        pm.run(**emit_mod);
-                                        os.flush();
-                                        os.close();
-                                        std::filesystem::rename(tmp_o, cache_o, ec);
-                                        have_obj = !ec &&
-                                                   std::filesystem::exists(cache_o, ec);
+                    std::error_code ec;
+                    bool have_obj = std::filesystem::exists(cache_o, ec);
+                    if (!have_obj) {
+                        auto emit_ctx = std::make_unique<LLVMContext>();
+                        auto emit_mod =
+                            parseBitcodeFile((*bc_buf)->getMemBufferRef(), *emit_ctx);
+                        if (emit_mod) {
+                            auto emit_jtmb = orc::JITTargetMachineBuilder::detectHost();
+                            if (emit_jtmb) {
+                                configure_jit_target_machine_builder(*emit_jtmb);
+                                if (auto emit_tm = emit_jtmb->createTargetMachine()) {
+                                    (*emit_mod)->setDataLayout(
+                                        (*emit_tm)->createDataLayout());
+                                    (*emit_mod)->setTargetTriple(
+                                        (*emit_tm)->getTargetTriple());
+                                    eshkol::prepare_jit_module_for_target(
+                                        **emit_mod, (*emit_tm)->getTargetTriple());
+                                    std::filesystem::path tmp_o = cache_o;
+                                    tmp_o += ".tmp";
+                                    std::error_code wec;
+                                    raw_fd_ostream os(tmp_o.string(), wec,
+                                                      sys::fs::OF_None);
+                                    if (!wec) {
+                                        legacy::PassManager pm;
+                                        if (!(*emit_tm)->addPassesToEmitFile(
+                                                pm, os, nullptr,
+                                                CodeGenFileType::ObjectFile)) {
+                                            pm.run(**emit_mod);
+                                            os.flush();
+                                            os.close();
+                                            std::filesystem::rename(tmp_o, cache_o, ec);
+                                            have_obj = !ec &&
+                                                       std::filesystem::exists(cache_o, ec);
+                                        }
                                     }
+                                } else {
+                                    consumeError(emit_tm.takeError());
                                 }
                             } else {
-                                consumeError(emit_tm.takeError());
+                                consumeError(emit_jtmb.takeError());
                             }
                         } else {
-                            consumeError(emit_jtmb.takeError());
+                            consumeError(emit_mod.takeError());
                         }
-                    } else {
-                        consumeError(emit_mod.takeError());
                     }
-                }
 
-                if (have_obj) {
-                    if (auto obj_buf = MemoryBuffer::getFile(cache_o.string())) {
-                        // Belt to the key's braces. The tag above keeps a
-                        // foreign-ABI object from being *named*; this keeps one
-                        // from being *loaded* if it is reached by any other
-                        // route (a hand-copied cache dir, a partially upgraded
-                        // install). Cheap, and the failure it prevents is
-                        // silent.
-                        std::string foreign;
-                        if (!objectMatchesRunningAbi((*obj_buf)->getMemBufferRef(),
-                                                     foreign)) {
-                            std::cerr
-                                << "Warning: ignoring cached stdlib object built "
-                                   "for a different object ABI ("
-                                << foreign << ", this build is "
-                                << ESHKOL_ABI_FINGERPRINT_NAME << "): "
-                                << cache_o.string() << std::endl;
-                            have_obj = false;
+                    if (have_obj) {
+                        auto obj_buf = MemoryBuffer::getFile(cache_o.string());
+                        if (!obj_buf) {
+                            return llvm::createStringError(
+                                obj_buf.getError(),
+                                "rejecting cached stdlib object %s: could not read object",
+                                cache_o.string().c_str());
+                        }
+                        {
+                            // Belt to the key's braces. The tag above keeps a
+                            // foreign-ABI object from being *named*; this keeps one
+                            // from being *loaded* if it is reached by any other
+                            // route (a hand-copied cache dir, a partially upgraded
+                            // install). Cheap, and the failure it prevents is
+                            // silent.
+                            std::string foreign;
+                            std::string cached_identity;
+                            const bool identity_ok =
+                                eshkol::stdlib_identity::matches_object(
+                                    (*obj_buf)->getMemBufferRef(), cached_identity);
+                            if (!identity_ok) {
+                                return llvm::createStringError(
+                                    llvm::errc::invalid_argument,
+                                    "rejecting cached stdlib object %s: %s; expected %s",
+                                    cache_o.string().c_str(), cached_identity.c_str(),
+                                    static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+                            }
+                            if (have_obj && !objectMatchesRunningAbi(
+                                                (*obj_buf)->getMemBufferRef(),
+                                                foreign)) {
+                                return llvm::createStringError(
+                                    llvm::errc::invalid_argument,
+                                    "rejecting cached stdlib object %s built for a different object ABI (%s, this build is %s)",
+                                    cache_o.string().c_str(), foreign.c_str(),
+                                    static_cast<const char*>(ESHKOL_ABI_FINGERPRINT_NAME));
+                            }
                         }
                     }
-                }
-                if (have_obj) {
-                    if (auto obj_buf = MemoryBuffer::getFile(cache_o.string())) {
-                        auto& dylib = jit_->getMainJITDylib();
-                        if (auto err =
-                                jit_->addObjectFile(dylib, std::move(*obj_buf))) {
-                            consumeError(std::move(err));  // fall through to IR path
-                        } else {
-                            registerStdlibSymbols();
-                            run_stdlib_initializers(cache_o.string());
-                            std::cerr << "[REPL] Loaded stdlib from cached object: "
-                                      << cache_o.string() << std::endl;
-                            stdlib_loaded_ = true;
-                            return true;
+                    if (have_obj) {
+                        auto obj_buf = MemoryBuffer::getFile(cache_o.string());
+                        if (!obj_buf) {
+                            return llvm::createStringError(
+                                obj_buf.getError(),
+                                "rejecting cached stdlib object %s: could not read object",
+                                cache_o.string().c_str());
+                        }
+                        {
+                            auto& dylib = jit_->getMainJITDylib();
+                            if (auto err =
+                                    jit_->addObjectFile(dylib, std::move(*obj_buf))) {
+                                consumeError(std::move(err));  // fall through to IR path
+                            } else {
+                                registerStdlibSymbols();
+                                run_stdlib_initializers(cache_o.string());
+                                std::cerr << "[REPL] Loaded stdlib from cached object: "
+                                          << cache_o.string() << std::endl;
+                                stdlib_loaded_ = true;
+                                return llvm::Error::success();
+                            }
                         }
                     }
                 }
@@ -3111,73 +3160,94 @@ bool ReplJITContext::loadStdlib() {
     std::string stdlib_bc_path = findStdlibBitcode();
     if (!stdlib_bc_path.empty()) {
         auto buffer_or_err = MemoryBuffer::getFile(stdlib_bc_path);
-        if (buffer_or_err) {
+        if (!buffer_or_err) {
+            return llvm::createStringError(
+                buffer_or_err.getError(), "cannot read stdlib.bc %s",
+                stdlib_bc_path.c_str());
+        }
+        {
             auto module_context = std::make_unique<LLVMContext>();
             auto mod_or_err = parseBitcodeFile(
                 buffer_or_err->get()->getMemBufferRef(), *module_context);
-            if (mod_or_err) {
-                std::unique_ptr<Module> stdlib_module = std::move(*mod_or_err);
-                if (stdlib_module->getDataLayout().isDefault()) {
-                    stdlib_module->setDataLayout(jit_->getDataLayout());
-                }
-                eshkol::prepare_jit_module_for_target(
-                    *stdlib_module, jit_->getTargetTriple());
-
-                auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
-                auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
-                if (auto err = jit_->addIRModule(std::move(tsm))) {
-                    std::string err_msg;
-                    raw_string_ostream err_stream(err_msg);
-                    err_stream << err;
-                    std::cerr << "Warning: Failed to load stdlib.bc (" << err_msg
-                              << "), falling back to stdlib.o" << std::endl;
-                } else {
-                    registerStdlibSymbols();
-                    run_stdlib_initializers(stdlib_bc_path);
-                    std::cerr << "[REPL] Loaded stdlib bitcode from: "
-                              << stdlib_bc_path << std::endl;
-                    stdlib_loaded_ = true;
-                    return true;
-                }
-            } else {
-                std::string err_msg;
-                raw_string_ostream err_stream(err_msg);
-                err_stream << mod_or_err.takeError();
-                std::cerr << "Warning: Failed to parse stdlib.bc (" << err_msg
-                          << "), falling back to stdlib.o" << std::endl;
+            if (!mod_or_err) {
+                return llvm::createStringError(
+                    llvm::errc::invalid_argument, "cannot parse stdlib.bc %s: %s",
+                    stdlib_bc_path.c_str(), toString(mod_or_err.takeError()).c_str());
             }
-        } else {
-            std::cerr << "Warning: Failed to read stdlib.bc at " << stdlib_bc_path
-                      << ": " << buffer_or_err.getError().message()
-                      << ", falling back to stdlib.o" << std::endl;
+            {
+                std::unique_ptr<Module> stdlib_module = std::move(*mod_or_err);
+                std::string found_identity;
+                if (!eshkol::stdlib_identity::matches_module(
+                        *stdlib_module, found_identity)) {
+                    return llvm::createStringError(
+                        llvm::errc::invalid_argument,
+                        "rejecting stdlib.bc %s: %s; expected %s",
+                        stdlib_bc_path.c_str(), found_identity.c_str(),
+                        static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+                } else {
+                    if (stdlib_module->getDataLayout().isDefault()) {
+                        stdlib_module->setDataLayout(jit_->getDataLayout());
+                    }
+                    eshkol::prepare_jit_module_for_target(
+                        *stdlib_module, jit_->getTargetTriple());
+
+                    auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
+                    auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
+                    if (auto err = jit_->addIRModule(std::move(tsm))) {
+                        std::string err_msg;
+                        raw_string_ostream err_stream(err_msg);
+                        err_stream << err;
+                        std::cerr << "Warning: Failed to load stdlib.bc (" << err_msg
+                                  << "), falling back to stdlib.o" << std::endl;
+                    } else {
+                        registerStdlibSymbols();
+                        run_stdlib_initializers(stdlib_bc_path);
+                        std::cerr << "[REPL] Loaded stdlib bitcode from: "
+                                  << stdlib_bc_path << std::endl;
+                        stdlib_loaded_ = true;
+                        return llvm::Error::success();
+                    }
+                }
+            }
         }
     }
 
-    // Legacy fallback: load pre-compiled stdlib.o via addObjectFile.  This is
-    // kept for installed layouts that have not shipped stdlib.bc yet, but it is
-    // no longer the preferred path for the REPL because it crosses the native
-    // object ABI for Eshkol aggregate values.
+    // Object fallback: load a matching precompiled stdlib.o when a package
+    // carries the identity marker but omits stdlib.bc. A found incompatible or
+    // unreadable object is fatal; source compilation is used only when no
+    // precompiled artifact exists.
     std::string stdlib_obj_path = findStdlibObject();
     if (!stdlib_obj_path.empty()) {
         auto buffer_or_err = MemoryBuffer::getFile(stdlib_obj_path);
+        if (!buffer_or_err) {
+            return llvm::createStringError(
+                buffer_or_err.getError(), "cannot read stdlib.o %s",
+                stdlib_obj_path.c_str());
+        }
         // This path has no cache key to carry the ABI: it loads whatever
         // stdlib.o the install roots resolve to. That is precisely the
         // arrangement in which a stale artifact survives an ABI change — the
         // file name says nothing about the layout it was compiled for, and
         // nothing else on this path checks. So the object is asked directly,
-        // and a mismatch falls through to JIT-from-source, which is slower and
-        // correct, rather than loading and being wrong.
+        // and a mismatch returns an error before loading.
         std::string foreign;
-        bool abi_ok = true;
-        if (buffer_or_err &&
-            !objectMatchesRunningAbi((*buffer_or_err)->getMemBufferRef(), foreign)) {
-            std::cerr << "Warning: ignoring stdlib.o built for a different object "
-                         "ABI (" << foreign << ", this build is "
-                      << ESHKOL_ABI_FINGERPRINT_NAME << "): " << stdlib_obj_path
-                      << ", falling back to JIT compilation" << std::endl;
-            abi_ok = false;
+        std::string found_identity;
+        if (!eshkol::stdlib_identity::matches_object(
+                (*buffer_or_err)->getMemBufferRef(), found_identity)) {
+            return llvm::createStringError(
+                llvm::errc::invalid_argument,
+                "rejecting stdlib.o %s: %s; expected %s",
+                stdlib_obj_path.c_str(), found_identity.c_str(),
+                static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
         }
-        if (buffer_or_err && abi_ok) {
+        if (!objectMatchesRunningAbi((*buffer_or_err)->getMemBufferRef(), foreign)) {
+            return llvm::createStringError(
+                llvm::errc::invalid_argument,
+                "rejecting stdlib.o %s built for a different object ABI (%s, this build is %s)",
+                stdlib_obj_path.c_str(), foreign.c_str(),
+                static_cast<const char*>(ESHKOL_ABI_FINGERPRINT_NAME));
+        }
+        {
             auto& main_dylib = jit_->getMainJITDylib();
             auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
             if (!err) {
@@ -3185,14 +3255,8 @@ bool ReplJITContext::loadStdlib() {
                 run_stdlib_initializers(stdlib_obj_path);
                 std::cerr << "[REPL] Loaded stdlib from: " << stdlib_obj_path << std::endl;
                 stdlib_loaded_ = true;
-                return true;
-            } else {
-                std::string err_msg;
-                raw_string_ostream err_stream(err_msg);
-                err_stream << err;
-                std::cerr << "Warning: Failed to load stdlib.o (" << err_msg
-                          << "), falling back to JIT compilation" << std::endl;
-            }
+                return llvm::Error::success();
+            } else consumeError(std::move(err));
         }
     }
 
@@ -3204,7 +3268,11 @@ bool ReplJITContext::loadStdlib() {
     if (loaded) {
         stdlib_loaded_ = true;
     }
-    return loaded;
+    if (!loaded) {
+        return llvm::createStringError(llvm::errc::invalid_argument,
+                                       "could not load stdlib from source");
+    }
+    return llvm::Error::success();
 }
 
 /**
@@ -3252,14 +3320,13 @@ bool ReplJITContext::loadModule(const std::string& module_name,
     // the individual source file.
     if (allow_precompiled_stdlib && !loading_stdlib_from_source_ &&
         (module_name == "stdlib" || module_name.find("core.") == 0)) {
-        if (loadStdlib()) {
-            if (loaded_modules.count(module_name)) {
-                return true;  // Module is genuinely in stdlib.o — done.
-            }
-            // Module name starts with core.* but stdlib.o doesn't carry
-            // it — JIT-compile the source below.
+        if (llvm::Error error = loadStdlib()) {
+            throw std::runtime_error(toString(std::move(error)));
         }
-        // If stdlib.o loading failed, fall through to JIT compilation
+        if (loaded_modules.count(module_name)) {
+            return true;  // Module is genuinely in stdlib.o — done.
+        }
+        // The matching stdlib omits this core module; compile its source.
     }
 
     std::string module_path = resolveModulePath(module_name);

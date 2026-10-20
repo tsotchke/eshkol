@@ -46411,6 +46411,22 @@ LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t n
     }
 }
 
+int eshkol_add_stdlib_identity(LLVMModuleRef module_ref, const char* symbol) {
+    if (!module_ref || !symbol || !*symbol) return -1;
+    auto it = g_llvm_modules.find(module_ref);
+    if (it == g_llvm_modules.end() || !it->second->module) return -1;
+
+    Module& module = *it->second->module;
+    if (module.getNamedValue(symbol)) return -1;
+    LLVMContext& context = module.getContext();
+    Constant* initializer = ConstantDataArray::getString(context, symbol, true);
+    auto* identity = new GlobalVariable(
+        module, initializer->getType(), true, GlobalValue::ExternalLinkage,
+        initializer, symbol);
+    identity->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+    return 0;
+}
+
 // REPL MODE API FUNCTIONS
 
 void eshkol_repl_enable() {

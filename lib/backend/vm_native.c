@@ -7212,6 +7212,27 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
             VmVector* bv = (bo && bo->opaque.ptr) ? (VmVector*)bo->opaque.ptr : NULL;
             if (!av || !bv) return av == bv;
             if (av->len != bv->len) return 0;
+            int a_tensor_literal = ao->opaque.subtype == VM_SUBTYPE_TENSOR_LITERAL;
+            int b_tensor_literal = bo->opaque.subtype == VM_SUBTYPE_TENSOR_LITERAL;
+            if (a_tensor_literal || b_tensor_literal) {
+                for (int i = 0; i < av->len; i++) {
+                    Value ai = av->items[i], bi = bv->items[i];
+                    double an, bn;
+                    int a_numeric = ai.type == VAL_INT || ai.type == VAL_FLOAT;
+                    int b_numeric = bi.type == VAL_INT || bi.type == VAL_FLOAT;
+                    if (a_numeric && b_numeric) {
+                        an = ai.type == VAL_INT ? (double)ai.as.i : ai.as.f;
+                        bn = bi.type == VAL_INT ? (double)bi.as.i : bi.as.f;
+                        if (an != bn) return 0; /* +/-0 equal; NaN unequal */
+                    } else if (a_tensor_literal != b_tensor_literal ||
+                               !vm_deep_equal(vm, ai, bi)) {
+                        /* The native tensor/ordinary-vector bridge is 1-D
+                         * and numeric; only two marked tensors recurse. */
+                        return 0;
+                    }
+                }
+                return 1;
+            }
             for (int i = 0; i < av->len; i++)
                 if (!vm_deep_equal(vm, av->items[i], bv->items[i])) return 0;
             return 1;

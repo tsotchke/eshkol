@@ -3,7 +3,7 @@
 ;; Before the fix, number->string / display truncated doubles to ~6
 ;; significant figures (the C "%g" default), so high-accuracy results could
 ;; not be recovered from their printed form. The printer now emits the
-;; SHORTEST decimal that reads back to the exact same double (R7RS 6.2.6),
+;; shortest decimal that reads back to the same inexact double,
 ;; via the single shared formatter eshkol_dtoa_shortest — so the native
 ;; JIT / AOT paths and the bytecode VM all produce identical strings.
 ;;
@@ -27,11 +27,11 @@
                (display "\" got \"") (display got) (display "\"") (newline)))))
 
 ;; Round-trip check: reading back the printed form recovers the value.
-;; For integral-valued doubles the reader yields an exact integer of equal
-;; value, so numeric `=` is the right equality here.
+;; Preserve both the numerical value and inexactness, including integral
+;; doubles and positive zero.
 (define (check-rt name x)
   (let ((back (string->number (number->string x))))
-    (if (= x back)
+    (if (and (inexact? back) (= x back))
         (begin (display "ok   rt ") (display name) (newline))
         (begin (set! fail-count (+ fail-count 1))
                (display "error: round-trip ") (display name)
@@ -45,12 +45,12 @@
 (check-str "0.1"         0.1                 "0.1")
 (check-str "ozaki-esque" 4.75072e-11         "4.75072e-11")
 (check-str "neg 2.5"     -2.5                "-2.5")
-(check-str "1234567.0"   1234567.0           "1234567")
+(check-str "1234567.0"   1234567.0           "1234567.0")
 
-;; ── Integral-valued doubles keep the friendly no-".0" form (preserved) ──
-(check-str "3.0"         3.0                 "3")
-(check-str "100.0"       100.0               "100")
-(check-str "123456789.0" 123456789.0         "123456789")
+;; ── Integral-valued doubles retain an inexact external representation ──
+(check-str "3.0"         3.0                 "3.0")
+(check-str "100.0"       100.0               "100.0")
+(check-str "123456789.0" 123456789.0         "123456789.0")
 
 ;; ── Scientific-notation extremes (subnormal / overflow territory) ──
 (check-str "1e-10"       1e-10               "1e-10")
@@ -60,15 +60,14 @@
 (check-str "5e-324"      5e-324              "5e-324")
 
 ;; ── Signed zero ──
-;; Positive zero keeps the integral-double form "0": reading "0" back recovers
-;; the same NUMERIC VALUE (only its exactness changes), exactly like 3.0 => "3".
+;; Positive zero retains "0.0" so readback preserves its inexactness.
 ;;
 ;; Negative zero must NOT. The old "-0" is not a flonum external representation
 ;; at all — the reader takes it as the EXACT INTEGER zero, which has no sign, so
 ;; both the inexactness and the sign bit were lost and the VALUE itself changed:
 ;; (/ 1.0 -0.0) is -inf.0 but (/ 1.0 (string->number "-0")) is +inf.0. It is now
 ;; rendered "-0.0", which the reader recovers as an inexact negative zero.
-(check-str "pos zero"    0.0                 "0")
+(check-str "pos zero"    0.0                 "0.0")
 (check-str "neg zero"    -0.0                "-0.0")
 
 ;; ── Round-trip guarantee across the battery ──
@@ -81,6 +80,7 @@
 (check-rt "1e308"      1e308)
 (check-rt "5e-324"     5e-324)
 (check-rt "3.0"        3.0)
+(check-rt "pos zero"   0.0)
 (check-rt "123456789"  123456789.0)
 (check-rt "-2.5"       -2.5)
 (check-rt "big frac"   0.00010478049866971263)
@@ -89,7 +89,7 @@
 ;; `=` cannot see the difference — (= -0.0 0) and (= -0.0 0.0) are both true —
 ;; so check-rt above passes even when the sign is silently dropped. Re-printing
 ;; the read-back value is the exact witness, because the three candidates print
-;; differently: the exact integer zero prints "0", +0.0 prints "0", and ONLY an
+;; differently: the exact integer zero prints "0", +0.0 prints "0.0", and ONLY an
 ;; inexact negative zero prints "-0.0". So a "-0.0" reprint proves the read-back
 ;; recovered the sign AND the inexactness; `exact?` states the latter directly.
 ;; (The obvious 1/x sign probe is deliberately NOT used here: this same file is
@@ -105,4 +105,5 @@
 (if (= fail-count 0)
     (display "ALL PRINTER ROUND-TRIP CHECKS PASSED\n")
     (begin (display "error: ") (display fail-count)
-           (display " printer round-trip checks FAILED\n")))
+           (display " printer round-trip checks FAILED\n")
+           (exit 1)))

@@ -7,7 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Exact algebraic calculus spans composed fields and maintained objectives.**
+  Add certified field composition and nested derivatives (#793), exact matrix
+  calculus (#794), coupled polynomial root towers (#795), preflighted packed
+  products (#796), sparse exact Hessians (#797), and live polynomial moments
+  with exact parameter gradients (#798). Preserve explicit arithmetic and
+  shape limits, defensive results, and refusal of unsupported inputs. (#838)
+- **Event-loop evidence runs in isolation.** Add a source/build-bound producer
+  for the existing ICC criterion, checking all 27 named assertions on uncached
+  ORC and AOT with stable source, compiler, runtime and stdlib artifacts.
+  Local qualification covers kqueue; other backends need their own evidence.
+  The sparse-curvature example now checks its exact analytic results and emits
+  the verdict required by its configured acceptance tests. (#838)
+
+- **Exact algebraic computation composes with finite differentiation.** Add
+  optional polynomial and selected real algebraic-field arithmetic, together
+  with field-valued dual, hyperdual and Taylor carriers and checked implicit
+  roots. Contributions from [Richard's field work](https://github.com/tsotchke/eshkol/pull/788)
+  and [algebraic AD](https://github.com/tsotchke/eshkol/pull/791) preserve exact
+  coefficients and reject unproved branches. (#837)
+- **Standing incremental circuits retain signed updates.** Add persistent DBSP
+  arrangements, simultaneous joins, keyed aggregates and a streaming
+  least-squares example with a strict dyadic binary64 reference. Contributions
+  from [circuits](https://github.com/tsotchke/eshkol/pull/789) and
+  [aggregates](https://github.com/tsotchke/eshkol/pull/790). (#837)
+
+- Begin v1.4-connection's managed-resource substrate with a hosted C API for
+  exclusive borrowing and exactly-once close attempts. Generation-tagged IDs
+  and per-borrow leases reject stale accesses; callbacks can re-enter without
+  holding the registry lock. Compiler-enforced ownership and public Scheme
+  resource integration remain planned work. (#836)
+- **Exact rational affine solves preserve complete solution families.** Add
+  `core.exact_linalg` support for rectangular, singular, and overdetermined
+  systems, returning a particular solution with a complete nullspace basis;
+  reject inconsistent or inexact inputs. ([#785](https://github.com/tsotchke/eshkol/pull/785))
+- **Rational PSD decisions return checkable certificates.** Add optional
+  `core.exact_psd` weighted Gram factors for positive semidefinite matrices and
+  explicit negative directions for indefinite matrices. ([#786](https://github.com/tsotchke/eshkol/pull/786))
+
+- **Sparse tensor snapshots share unchanged storage across versions.** Add
+  optional `core.dbsp.tensor_snapshot` with block-level copy-on-write updates,
+  historical reads, and matrix read views that reuse finite delta products.
+  ([#787](https://github.com/tsotchke/eshkol/pull/787))
+- **v1.4 evidence gates validate analytic, HTTP, and resource-limit results.** Add a JIT/AOT order-8 GUW oracle gate, bind HTTP loopback receipts to the registered source and fresh build evidence, make resource-limit enforcement fail closed when its VM test binary is unavailable, and read build fingerprints from CMake's configured source checkout.
+
+### Fixed
+
+- Native AOT and JIT reject foreign or unstamped stdlib artifacts before user
+  execution, including explicitly supplied objects and cached JIT objects.
+  Compiler-produced stdlib object and bitcode carry a matching release, object
+  ABI and source identity; a discovered mismatch is a hard error. (#837)
+
+- Initialize deferred tensor constructor cells before widening to derivative
+  carriers, avoiding reads of reused arena bytes during promotion. (#836)
+
+- VM numeric reader tensor literals preserve their native binary64 cell
+  exactness during construction and integer mutation, including large literals.
+  Ordinary and quoted vectors retain their exact integer values. (#836)
+
+- Native linking removes only scratch objects exclusively reserved by the
+  compiler. Caller objects, packaged stdlib objects and pre-existing files
+  with temporary-looking names survive successful and failed links. (#836)
+- Preserve R7RS inexactness when finite integral doubles, including positive
+  zero, round-trip through `number->string` and `string->number`.
+
 ## [1.3.6-evolve] - 2026-10-15
+
+Published on 2026-10-19 ([release](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)).
+The preparation record below retains the intended date and source-stage contract.
 
 PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.
 The final measurement contract requires <!-- release-record:ctest -->CTest **823/823**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->.
