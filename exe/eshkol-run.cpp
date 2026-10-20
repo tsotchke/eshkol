@@ -28,6 +28,7 @@
 #include <llvm/Config/llvm-config.h>
 #include <llvm/Support/Errc.h>
 #include <llvm/Support/SHA256.h>
+#include <llvm-c/Core.h>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -758,10 +759,24 @@ static std::string aotModuleCacheKey(const std::filesystem::path& source_path,
                                      const char* target_triple,
                                      const std::vector<char*>& linked_libs,
                                      const std::vector<char*>& lib_paths,
-                                     const std::vector<char*>& include_paths) {
-    return makeJitRunCacheKey(source_path, self_path, no_stdlib, strict_types,
-                               unsafe_mode, opt_level, target_triple,
-                               linked_libs, lib_paths, include_paths);
+                                     const std::vector<char*>& include_paths,
+                                     LLVMModuleRef generated_module) {
+    // IR is already generated before this lookup. Include its full semantics:
+    // the executable-cache inputs alone omit library mode, embedded stdlib
+    // identity, and other choices that change the compiled module. A separate
+    // schema also prevents reuse of entries made with the incomplete old key.
+    char* ir = LLVMPrintModuleToString(generated_module);
+    if (!ir) return {};
+    llvm::SHA256 hash;
+    hashUpdate(hash, "schema", "eshkol-aot-module-cache-v2-generated-ir");
+    hashUpdate(hash, "input-key",
+               makeJitRunCacheKey(source_path, self_path, no_stdlib, strict_types,
+                                  unsafe_mode, opt_level, target_triple,
+                                  linked_libs, lib_paths, include_paths));
+    // The IR is the final field; hash it directly without another large copy.
+    hash.update(llvm::StringRef(ir));
+    LLVMDisposeMessage(ir);
+    return sha256Hex(hash);
 }
 
 // `-r` runs a single file through the persistent AOT cache for speed. That is
@@ -5773,7 +5788,7 @@ int main(int argc, char **argv)
                     std::filesystem::path(source_files[0]),
                     resolveSelfPath(argv[0]), no_stdlib, strict_types,
                     unsafe_mode, opt_level, target_triple, linked_libs,
-                    lib_paths, include_paths)
+                    lib_paths, include_paths, llvm_module)
                 : std::string();
             const auto cached_object = module_cache_root.empty() ||
                                        module_cache_key.empty()
