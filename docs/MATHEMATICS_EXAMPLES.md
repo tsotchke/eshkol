@@ -567,7 +567,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Exact derivatives and finite changes of a bounded polynomial
 
-Source: [mathematics_derived_operator.esk](../examples/mathematics_derived_operator.esk#L1). SHA-256: `48cc39fd7fe3a798e4c2d19dbf48fb867a760937101d15186a9a6521f027f538`.
+Source: [mathematics_derived_operator.esk](../examples/mathematics_derived_operator.esk#L1). SHA-256: `34055306219a11579a656c113fccc22a4253a0aa99e8e1abf6b86881ea935734`.
 
 **Published result:** The exact identities are established by direct polynomial expansion and independent hand-derived gradient; see the module reference.
 

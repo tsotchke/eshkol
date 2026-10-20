@@ -2909,8 +2909,8 @@
       "note": "Focused PR804 ORC, VM and direct O3 AOT runs passed; configured release measurements remain NOT-RUN.",
       "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is separate."
     },
-    "examples/mathematics_derived_operator.esk":     {
-      "source_sha256": "48cc39fd7fe3a798e4c2d19dbf48fb867a760937101d15186a9a6521f027f538",
+    "examples/mathematics_derived_operator.esk": {
+      "source_sha256": "34055306219a11579a656c113fccc22a4253a0aa99e8e1abf6b86881ea935734",
       "jit": {
         "status": "NOT-RUN"
       },

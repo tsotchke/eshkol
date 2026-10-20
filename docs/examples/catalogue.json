@@ -5068,7 +5068,7 @@
     },
     {
       "path": "examples/mathematics_derived_operator.esk",
-      "source_sha256": "48cc39fd7fe3a798e4c2d19dbf48fb867a760937101d15186a9a6521f027f538",
+      "source_sha256": "34055306219a11579a656c113fccc22a4253a0aa99e8e1abf6b86881ea935734",
       "title": "Exact derivatives and finite changes of a bounded polynomial",
       "kind": "mathematics",
       "purpose": "Compare an operator-derived directional derivative with an independent analytic gradient and the complete finite-change identity.",
