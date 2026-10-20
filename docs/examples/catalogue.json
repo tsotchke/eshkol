@@ -5107,6 +5107,58 @@
           "verification": "repository"
         }
       ]
+    },
+    {
+      "path": "examples/mathematics_certified_linear_solve.esk",
+      "source_sha256": "f8d6299d360038b7a82f78f85b8e7b9ec95b4dacf9724c01fe612b5abeeedc7e",
+      "title": "Exact a-posteriori linear solve admission",
+      "kind": "mathematics",
+      "purpose": "Check a received exact linear candidate enclosure against an independent Cramer solution and the strict contraction boundary.",
+      "algorithm": "Compute the 2x2 determinant and Cramer solution directly from scalar coefficients, then compare that independent result with component boxes from exact a-posteriori admission.",
+      "domain": "A nonsingular rational 2x2 system plus an identity system with a zero approximate inverse at the theta=1 boundary.",
+      "arithmetic": "Exact rational arithmetic only; no floating residual inference. Any finite received float must be decoded explicitly before use.",
+      "validation": "Checks the independently calculated solution (1/5, 3/5) lies in the proved component boxes, theta=1 produces UNKNOWN, and source-bound verification of UNKNOWN is true without making the candidate admitted.",
+      "limitations": "This is a posteriori admission of a received candidate, not a solver. PROVED applies only to the represented exact data and caller-supplied uncertainty radii; it does not establish an original-model enclosure without valid radii, certify nonlinear remainder, or bound rational bit growth.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.certified_solve.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact a-posteriori admission checked against independent Cramer's rule."
+        },
+        {
+          "line": 16,
+          "text": "(define determinant (- (* a11 a22) (* a12 a21)))"
+        },
+        {
+          "line": 28,
+          "text": "(check \"a-posteriori boxes contain independent Cramer answer\""
+        },
+        {
+          "line": 35,
+          "text": ";; At theta=1 the strict contraction theorem does not admit a box."
+        },
+        {
+          "line": 44,
+          "text": "(check \"verified UNKNOWN receipt is not admitted\""
+        },
+        {
+          "line": 49,
+          "text": "(display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "The determinant and Cramer calculation is performed independently in this source; no external literature claim is made.",
+      "references": [
+        {
+          "citation": "Repository-local core.certified_solve contract and exact 2x2 Cramer formula used directly in this example.",
+          "verification": "repository"
+        }
+      ],
+      "key_output": [
+        "^Exact Cramer oracle, strict contraction boundary, and receipt/admission distinction: PASS$",
+        "^RESULT: PASS$"
+      ]
     }
   ],
   "runner_contract": {

@@ -878,3 +878,15 @@ Writes a checkpoint through the existing atomic file-replacement primitive; call
 ### `dbsp-checkpoint-load`
 
 Reads a bounded checkpoint file and returns it only after verified restoration.
+
+## `core.certified_solve`
+
+Source: `lib/core/certified_solve.esk`; see [certified_solve.md](certified_solve.md) for the exact rational admission contract, uncertainty bounds, and theorem limits.
+
+### `certify-linear-solve`
+
+Computes an exact a-posteriori componentwise error enclosure for a received candidate when the weighted contraction bound is strictly below one.
+
+### `verify-linear-solve-certificate`
+
+Recomputes the receipt from caller-supplied sources; true means the record matches, even when its status is `unknown`. Callers must separately require `proved` before using boxes as an enclosure.

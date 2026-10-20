@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 87** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1011** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 88** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1013** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -34,6 +34,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.argparse`](../../../lib/core/argparse.esk) | no | [argparse.md](argparse.md) | `parse-args` `arg-get` `arg-positional` `arg-has?` `argparse-help` |
 | [`core.cache`](../../../lib/core/cache.esk) | no | [cache.md](cache.md) | `make-lru-cache` `lru-get` `lru-get/default` `lru-set!` `lru-has?` `lru-delete!` `lru-size` `lru-capacity` `lru-clear!` `memoize` `memoize/cap` `memoize1` `memoize1/cap` `memoize2` `memoize2/cap` |
 | [`core.capabilities`](../../../lib/core/capabilities.esk) | yes | [capabilities.md](capabilities.md) | `capability-install-policy!` `capability-clear-policy!` `capability-policy` `capability-policy-active?` `capability-allowed?` `capability-require!` |
+| [`core.certified_solve`](../../../lib/core/certified_solve.esk) | no | [certified_solve.md](certified_solve.md) | `certify-linear-solve` `verify-linear-solve-certificate` |
 | [`core.channels`](../../../lib/core/channels.esk) | no | [channels.md](channels.md) | `make-channel` `channel?` `channel-capacity` `channel-len` `channel-closed?` `channel-send!` `channel-recv!` `channel-try-send!` `channel-try-recv!` `channel-close!` `channel-closed-sentinel` |
 | [`core.collections`](../../../lib/core/collections.esk) | no | [collections.md](collections.md) | `make-pq` `pq-push!` `pq-pop!` `pq-peek` `pq-size` `pq-empty?` `make-set` `set-add!` `set-remove!` `set-contains?` `set-size` `set->list` `set-clear!` `set-union` `set-intersect` `set-difference` `make-deque` `deque-push-front!` `deque-push-back!` `deque-pop-front!` `deque-pop-back!` `deque-peek-front` `deque-peek-back` `deque-size` `deque-empty?` `deque->list` |
 | [`core.polynomial_exact`](../../../lib/core/polynomial_exact.esk) | no | [polynomial_exact.md](polynomial_exact.md) | `exact-poly` `exact-poly-zero?` `exact-poly-sub` `exact-poly-scale` `exact-poly-mul` `exact-poly-divmod` `exact-poly-inverse-mod` `exact-poly-eval` `exact-poly-real-root-count` `exact-poly-isolate` |
@@ -233,6 +234,8 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.ad.algebraic_ridge` | `algebraic-ridge-output` | [`algebraic-ridge-output`](shipped_exports.md#algebraic-ridge-output) |
 | `core.ad.algebraic_ridge` | `algebraic-ridge-info` | [`algebraic-ridge-info`](shipped_exports.md#algebraic-ridge-info) |
 | `core.ad.algebraic_ridge` | `algebraic-ridge-pullback` | [`algebraic-ridge-pullback`](shipped_exports.md#algebraic-ridge-pullback) |
+| `core.certified_solve` | `certify-linear-solve` | [`certify-linear-solve`](shipped_exports.md#certify-linear-solve) |
+| `core.certified_solve` | `verify-linear-solve-certificate` | [`verify-linear-solve-certificate`](shipped_exports.md#verify-linear-solve-certificate) |
 | `core.ad.algebraic_qp` | `algebraic-qp-solve` | [`algebraic-qp-solve`](shipped_exports.md#algebraic-qp-solve) |
 | `core.ad.algebraic_qp` | `algebraic-qp-solution` | [`algebraic-qp-solution`](shipped_exports.md#algebraic-qp-solution) |
 | `core.ad.algebraic_qp` | `algebraic-qp-info` | [`algebraic-qp-info`](shipped_exports.md#algebraic-qp-info) |
@@ -346,3 +349,5 @@ are documented, with signatures, on the pages listed.
 | `agent.*` | `(require agent.<name>)` | [../agent/INDEX.md](../agent/INDEX.md) |
 
 The modules under `lib/test/modules/` are module-system test fixtures, not user API.
+
+| `core.certified_solve` | `(require core.certified_solve)` | [certified_solve.md](certified_solve.md) |

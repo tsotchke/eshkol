@@ -175,3 +175,5 @@ lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-solution
 lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-info
 lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-verify
 lib/core/ad/algebraic_qp.esk	3	provide	algebraic-qp-pullback
+lib/core/certified_solve.esk	2	provide	certify-linear-solve
+lib/core/certified_solve.esk	2	provide	verify-linear-solve-certificate

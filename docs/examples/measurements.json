@@ -2920,6 +2920,20 @@
       "output_lines": 0,
       "note": "Focused PR804 ORC, VM and direct O3 AOT runs passed; configured release measurements remain NOT-RUN.",
       "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is separate."
+    },
+    "examples/mathematics_certified_linear_solve.esk":     {
+      "source_sha256": "f8d6299d360038b7a82f78f85b8e7b9ec95b4dacf9724c01fe612b5abeeedc7e",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "CTest JIT (ORC cache disabled with local -L), AOT (local source-tree library path) and conditional direct-VM routes are registered; none were executed.",
+      "not_run_reason": "This source-only PR preparation did not execute release or focused routes. JIT, AOT, direct-VM and CTest outcomes remain NOT-RUN."
     }
   }
 }
