@@ -189,3 +189,11 @@ lib/core/ad/root_branch.esk	4	provide	root-branch-enclosure
 lib/core/ad/root_branch.esk	4	provide	root-branch-time
 lib/core/ad/root_branch.esk	4	provide	root-branch-sensitivity
 lib/core/ad/root_branch.esk	4	provide	verify-root-branch-step
+lib/core/dbsp/resident.esk	3	provide	call-with-dbsp-resident
+lib/core/dbsp/resident.esk	3	provide	dbsp-resident-step
+lib/core/dbsp/resident.esk	3	provide	dbsp-resident-release!
+lib/core/dbsp/resident.esk	3	provide	dbsp-resident-output
+lib/core/dbsp/resident.esk	3	provide	dbsp-resident-delta
+lib/core/dbsp/resident.esk	3	provide	dbsp-resident-work
+lib/core/dbsp/resident.esk	3	provide	dbsp-resident-stats
+lib/core/dbsp/resident.esk	3	provide	dbsp-resident-compact!

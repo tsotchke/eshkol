@@ -13374,3 +13374,63 @@ if(ESHKOL_BUILD_TESTS)
     add_test(NAME net_runtime_test COMMAND net_runtime_test)
     set_tests_properties(net_runtime_test PROPERTIES TIMEOUT 30)
 endif()
+
+# Explicit resident ownership reuses the core evacuation transaction.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-static)
+    find_package(Threads REQUIRED)
+    add_executable(dbsp_resident_owner_test tests/core/dbsp_resident_owner_test.cpp)
+    target_compile_features(dbsp_resident_owner_test PRIVATE cxx_std_17)
+    target_include_directories(dbsp_resident_owner_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(dbsp_resident_owner_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(dbsp_resident_owner_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(dbsp_resident_owner_test PRIVATE Threads::Threads eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME dbsp_resident_owner_test COMMAND dbsp_resident_owner_test)
+    set_tests_properties(dbsp_resident_owner_test PROPERTIES TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: resident owner movement, sharing and rollback"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Wave 2 acceptance: dbsp_resident
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME dbsp_resident_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_resident_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_resident_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_resident_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_resident_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_resident_jit dbsp_resident_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    set(_resident_tests)
+    if(TARGET dbsp_resident_owner_test)
+        list(APPEND _resident_tests dbsp_resident_owner_test)
+    endif()
+    if(TARGET eshkol-run)
+        list(APPEND _resident_tests dbsp_resident_jit dbsp_resident_aot)
+    endif()
+    if(_resident_tests)
+        set_tests_properties(${_resident_tests}
+            PROPERTIES ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_ARENA_POISON=1")
+    endif()
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND ESHKOL_PYTHON3_EXECUTABLE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME dbsp_resident_memory_family
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/dbsp_resident_memory_gate.py"
+            --runner $<TARGET_FILE:eshkol-run>
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/bench/dbsp_resident.esk"
+            --lib-dir "${CMAKE_CURRENT_BINARY_DIR}"
+            --work-dir "${CMAKE_CURRENT_BINARY_DIR}/dbsp-resident-memory")
+    set_tests_properties(dbsp_resident_memory_family PROPERTIES TIMEOUT 1800
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|fatal signal" SKIP_RETURN_CODE 77)
+endif()
