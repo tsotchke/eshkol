@@ -25,49 +25,21 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run"
+case "${BUILD_DIR:-build}" in
+    /*) BUILD_DIR_PATH="${BUILD_DIR}" ;;
+    *) BUILD_DIR_PATH="$ROOT/${BUILD_DIR:-build}" ;;
+esac
+BUILD_DIR_PATH="$(cd "$BUILD_DIR_PATH" 2>/dev/null && pwd -P)" || { echo "FAIL: build directory not found: ${BUILD_DIR:-build}"; exit 2; }
+RUN="$BUILD_DIR_PATH/eshkol-run"
 
 if [ ! -x "$RUN" ]; then
-    echo "SKIP: $RUN not built"
-    exit 0
+    echo "FAIL: $RUN not built"
+    exit 2
 fi
 
 WORK=$(mktemp -d -t eshkol_metrics_http.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 RUN_TIMEOUT="${ESHKOL_METRICS_HTTP_SMOKE_TIMEOUT:-120}"
-
-run_with_timeout() {
-    local seconds="$1"
-    shift
-
-    local timeout_marker="$WORK/timeout"
-    rm -f "$timeout_marker"
-
-    "$@" &
-    local cmd_pid=$!
-
-    (
-        sleep "$seconds"
-        if kill -0 "$cmd_pid" 2>/dev/null; then
-            touch "$timeout_marker"
-            kill "$cmd_pid" 2>/dev/null || true
-            sleep 1
-            kill -9 "$cmd_pid" 2>/dev/null || true
-        fi
-    ) &
-    local watchdog_pid=$!
-
-    wait "$cmd_pid"
-    local rc=$?
-
-    kill "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
-
-    if [ -f "$timeout_marker" ]; then
-        return 124
-    fi
-    return "$rc"
-}
 
 cat > "$WORK/metrics_http.esk" <<'EOF'
 (require stdlib)
@@ -120,8 +92,8 @@ cat > "$WORK/metrics_http.esk" <<'EOF'
 (define srv (create-server-with-retry 5))
 (if (not (server-handle? srv))
     (begin
-      (display "SKIP: http-server-create unavailable") (newline)
-      (exit 0))
+      (display "FAIL: http-server-create unavailable") (newline)
+      (exit 1))
     #t)
 
 (check "http-server-create returns positive handle" #t (server-handle? srv))
@@ -194,7 +166,10 @@ cat > "$WORK/metrics_http.esk" <<'EOF'
 (if (> failed 0) (exit 1) (exit 0))
 EOF
 
-ESHKOL_PATH="$ROOT" run_with_timeout "$RUN_TIMEOUT" "$RUN" -r "$WORK/metrics_http.esk"
+source "$ROOT/scripts/lib/test_isolation.sh"
+ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init "metrics-http-roundtrip"
+trap 'eshkol_test_isolation_cleanup; rm -rf "$WORK"' EXIT
+ESHKOL_TEST_TIMEOUT_FORCE_PYTHON=1 ESHKOL_LIB_DIR="$BUILD_DIR_PATH" ESHKOL_PATH="$ROOT" eshkol_test_timeout "$RUN_TIMEOUT" "$RUN" -r "$WORK/metrics_http.esk"
 rc=$?
 if [ "$rc" -eq 124 ]; then
     echo "FAIL: metrics http roundtrip timed out after ${RUN_TIMEOUT}s"

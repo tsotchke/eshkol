@@ -70,9 +70,27 @@ cat > "$tmpdir/use_external_probe.esk" <<'EOF_USE'
 (define (main) (external-bad-body 1))
 EOF_USE
 
-# The filename is what marks the library as precompiled; compile-only mode does
-# not link this dummy object.
-: > "$tmpdir/stdlib.o"
+# Give the fixture runner the real precompiled library shipped beside the
+# selected executable.  The driver checks its identity before accepting the
+# precompiled-library path, even in compile-only mode; an empty placeholder
+# would test identity rejection instead of external-body pruning.
+stdlib_object=""
+for candidate in \
+    "$(dirname "$ESHKOL_RUN")/stdlib.o" \
+    "${ESHKOL_LIB_DIR:+$ESHKOL_LIB_DIR/stdlib.o}" \
+    "$ROOT_FOR_LIB/${BUILD_DIR:-build}/stdlib.o" \
+    "$ROOT_FOR_LIB/build/stdlib.o" \
+    "$ROOT_FOR_LIB/build-verify/stdlib.o"; do
+    if [ -n "$candidate" ] && [ -s "$candidate" ]; then
+        stdlib_object="$candidate"
+        break
+    fi
+done
+if [ -z "$stdlib_object" ]; then
+    echo "FAIL: could not find a non-empty precompiled stdlib.o associated with $ESHKOL_RUN" >&2
+    exit 1
+fi
+cp "$stdlib_object" "$tmpdir/stdlib.o"
 
 set +e
 (

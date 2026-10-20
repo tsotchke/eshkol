@@ -83,39 +83,6 @@ WORK=$(mktemp -d -t eshkol_http_server.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 RUN_TIMEOUT="${ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT:-120}"
 
-run_with_timeout() {
-    local seconds="$1"
-    shift
-
-    local timeout_marker="$WORK/timeout"
-    rm -f "$timeout_marker"
-
-    "$@" &
-    local cmd_pid=$!
-
-    (
-        sleep "$seconds"
-        if kill -0 "$cmd_pid" 2>/dev/null; then
-            touch "$timeout_marker"
-            kill "$cmd_pid" 2>/dev/null || true
-            sleep 1
-            kill -9 "$cmd_pid" 2>/dev/null || true
-        fi
-    ) &
-    local watchdog_pid=$!
-
-    wait "$cmd_pid"
-    local rc=$?
-
-    kill "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
-
-    if [ -f "$timeout_marker" ]; then
-        return 124
-    fi
-    return "$rc"
-}
-
 cat > "$WORK/http_server.esk" <<'EOF'
 (require stdlib)
 (require core.http_server)
@@ -238,7 +205,10 @@ cat > "$WORK/http_server.esk" <<'EOF'
 (if (> failed 0) (exit 1) (exit 0))
 EOF
 
-ESHKOL_PATH="$ROOT" run_with_timeout "$RUN_TIMEOUT" "$RUN" -r "$WORK/http_server.esk"
+source "$ROOT/scripts/lib/test_isolation.sh"
+ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init "http-server-smoke"
+trap 'eshkol_test_isolation_cleanup; rm -rf "$WORK"' EXIT
+ESHKOL_TEST_TIMEOUT_FORCE_PYTHON=1 ESHKOL_LIB_DIR="$BUILD_DIR_PATH" ESHKOL_PATH="$ROOT" eshkol_test_timeout "$RUN_TIMEOUT" "$RUN" -r "$WORK/http_server.esk"
 rc=$?
 if [ "$rc" -eq 124 ]; then
     echo "FAIL: http server smoke timed out after ${RUN_TIMEOUT}s"

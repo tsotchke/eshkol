@@ -3766,6 +3766,35 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# Independent exact closed-form oracle and strict-boundary example coverage.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(_certified_linear_example "${CMAKE_CURRENT_SOURCE_DIR}/examples/mathematics_certified_linear_solve.esk")
+    add_test(NAME certified_linear_solve_example_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${_certified_linear_example}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_linear_solve_example_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${_certified_linear_example}"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_linear_solve_example_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set(_certified_linear_example_tests certified_linear_solve_example_jit certified_linear_solve_example_aot)
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME vm_mathematics_certified_linear_solve COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+            "-DESHKOL_SOURCE=${_certified_linear_example}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/mathematics_certified_linear_solve.eskb"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        list(APPEND _certified_linear_example_tests vm_mathematics_certified_linear_solve)
+    endif()
+    set_tests_properties(${_certified_linear_example_tests} PROPERTIES TIMEOUT 900
+        LABELS "examples;certified;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
 # Shared exact cyclotomic arithmetic; the two consumers remain gated below.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(NAME cyclotomic_jit
@@ -3881,7 +3910,8 @@ endif()
 # Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set(ESHKOL_DBSP_EXAMPLES
-        dbsp_tensor_circuit_example mathematics_dbsp_tensor_circuit)
+        dbsp_tensor_circuit_example mathematics_dbsp_tensor_circuit
+        dbsp_checkpoint_restart_example dbsp_checkpoint_restart)
     list(LENGTH ESHKOL_DBSP_EXAMPLES _dbsp_len)
     math(EXPR _dbsp_last "${_dbsp_len} - 1")
     foreach(_dbsp_i RANGE 0 ${_dbsp_last} 2)
@@ -13067,12 +13097,46 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FIXTURES_REQUIRED exact_foundations_local_stdlib
         PASS_REGULAR_EXPRESSION "PASS: dbsp_circuit_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    add_test(NAME dbsp_checkpoint_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_checkpoint_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_checkpoint_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_checkpoint_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_checkpoint_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_checkpoint_jit dbsp_checkpoint_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: dbsp_checkpoint_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    if(Python3_Interpreter_FOUND AND NOT WIN32)
+        add_test(NAME dbsp_checkpoint_process COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_checkpoint_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_checkpoint_process${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_PYTHON=${Python3_EXECUTABLE}"
+            "-DESHKOL_HARNESS=${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_dbsp_checkpoint_process.py"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_dbsp_checkpoint_process.cmake")
+        set_tests_properties(dbsp_checkpoint_process PROPERTIES TIMEOUT 2400
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            PASS_REGULAR_EXPRESSION "\"process_runs\": 28"
+            FAIL_REGULAR_EXPRESSION "Traceback|AssertionError")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/v14_connection_gate_status_test.sh")
     add_test(NAME v14_connection_gate_status_test
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/v14_connection_gate_status_test.sh")
     set_tests_properties(v14_connection_gate_status_test PROPERTIES TIMEOUT 30)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND UNIX AND Python3_Interpreter_FOUND AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/test_timeout_cancellation_test.sh")
+    add_test(NAME test_timeout_cancellation_test
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/architecture/test_timeout_cancellation_test.sh")
+    set_tests_properties(test_timeout_cancellation_test PROPERTIES TIMEOUT 30)
 endif()
 
 # Keyed aggregates and fixed-parameter AD consumers use the same strict driver.
@@ -13130,6 +13194,11 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_spectral "tests/stdlib/algebraic_spectral_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_spectral_example "examples/algebraic_spectral.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_implicit "tests/stdlib/algebraic_implicit_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_implicit_example "examples/algebraic_implicit.esk")
 endif()
@@ -13183,7 +13252,54 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_ridge_example "examples/algebraic_ridge.esk")
 endif()
 
+# Certified bounded quadratic programs share the exact AD acceptance driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_qp "tests/stdlib/algebraic_qp_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_qp_example "examples/algebraic_qp.esk")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_update "tests/stdlib/algebraic_update_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_update_example "examples/algebraic_updates.esk")
+endif()
+# Exact admission of a received linear solve, with cache-disabled JIT and AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certified_solve_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_solve_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_solve_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME certified_solve_direct_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk")
+    endif()
+    set(_certified_solve_tests certified_solve_jit certified_solve_aot)
+    if(TARGET eshkol-vm-standalone-test)
+        list(APPEND _certified_solve_tests certified_solve_direct_vm)
+    endif()
+    set_tests_properties(${_certified_solve_tests} PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+
+# One pure polynomial supplies derivatives and its complete finite change.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(derived_operator "tests/stdlib/derived_operator_test.esk")
+    eshkol_add_algebraic_ad_acceptance(derived_operator_example "examples/mathematics_derived_operator.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME derived_operator_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/derived_operator_test.esk")
+    set_tests_properties(derived_operator_vm PROPERTIES
+        TIMEOUT 900 LABELS "ad;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
 endif()

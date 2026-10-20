@@ -101,6 +101,49 @@ check_outputs default-warm "$default_object" "$default_bitcode" || exit 1
     exit 1
 }
 
+# Shared-library and executable compilation of the same source have distinct
+# codegen modes. A cache entry from either mode must not contaminate the other.
+cat > "$WORK/mode_source.esk" <<'ESK'
+(define aot-mode-value (+ 20 22))
+ESK
+find_nm() {
+    local candidate
+    for candidate in "${LLVM_NM:-}" llvm-nm nm; do
+        [ -n "$candidate" ] && command -v "$candidate" >/dev/null 2>&1 && {
+            command -v "$candidate"
+            return 0
+        }
+    done
+    return 1
+}
+NM_TOOL=$(find_nm) || { echo "FAIL: nm tool unavailable for mode cache regression" >&2; exit 1; }
+has_main_symbol() {
+    awk '($NF == "main" || $NF == "_main") && $(NF-1) != "U" { found=1 } END { exit !found }' <<< "$1"
+}
+mode_compile() {
+    local label=$1 mode=$2 expected_main=$3 expected_trace=$4 out="$WORK/$1.o"
+    local symbols
+    local -a args=("$ESHKOL_RUN" -c "$WORK/mode_source.esk" -o "$out" -L"$B")
+    [ "$mode" = library ] && args+=(--shared-lib)
+    (cd "$WORK" && ESHKOL_AOT_MODULE_CACHE_DIR="$WORK/mode-cache" \
+        ESHKOL_AOT_MODULE_CACHE_TRACE=1 eshkol_test_timeout 300 "${args[@]}") \
+        > "$WORK/$label.log" 2>&1 || { sed 's/^/  /' "$WORK/$label.log" >&2; exit 1; }
+    assert_trace "$label" "$expected_trace" || exit 1
+    symbols=$("$NM_TOOL" "$out") || { echo "FAIL: $label symbol inspection failed" >&2; exit 1; }
+    if [ "$expected_main" = yes ]; then
+        has_main_symbol "$symbols" || { echo "FAIL: $label object lacks main symbol" >&2; exit 1; }
+    else
+        ! has_main_symbol "$symbols" || { echo "FAIL: $label library object contains main symbol" >&2; exit 1; }
+    fi
+}
+mode_compile library-first-library library no miss
+mode_compile library-first-library-warm library no hit
+mode_compile library-first-executable executable yes miss
+rm -rf "$WORK/mode-cache"
+mode_compile executable-first-executable executable yes miss
+mode_compile executable-first-executable-warm executable yes hit
+mode_compile executable-first-library library no miss
+
 if ! eshkol_test_toolchain_verify "$B"; then
     echo "FAIL: AOT cache toolchain changed during run" >&2
     exit 1

@@ -97,7 +97,7 @@ seconds = float(sys.argv[1])
 argv = sys.argv[2:]
 is_windows = os.name == "nt"
 
-def kill_tree(force):
+def kill_tree(force=False, signum=signal.SIGTERM):
     if is_windows:
         try:
             subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
@@ -106,9 +106,29 @@ def kill_tree(force):
             pass
         return
     try:
-        os.killpg(child.pid, signal.SIGKILL if force else signal.SIGTERM)
+        os.killpg(child.pid, signal.SIGKILL if force else signum)
     except ProcessLookupError:
         pass
+
+def forward_signal(signum, _frame):
+    # The caller may itself be cancelled by a disk guard or CI. Forward the
+    # same signal to the owned process group, then reap it before exiting.
+    # Prevent nested delivery while waiting or escalating.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    kill_tree(signum=signum)
+    try:
+        child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        kill_tree(True)
+        try:
+            child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    # The leader may exit promptly while a grandchild ignores TERM. Always
+    # clear the owned group after the grace period, even when wait() succeeded.
+    kill_tree(True)
+    raise SystemExit(128 + signum)
 
 try:
     child = subprocess.Popen(
@@ -119,6 +139,8 @@ try:
 except OSError as exc:
     print(f"test_isolation: cannot execute timeout child: {exc}", file=sys.stderr)
     raise SystemExit(127)
+for handled_signal in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(handled_signal, forward_signal)
 try:
     result = child.wait(timeout=seconds)
     raise SystemExit(128 + (-result) if result < 0 else result)
@@ -132,6 +154,8 @@ except subprocess.TimeoutExpired:
             child.wait(timeout=2)
         except subprocess.TimeoutExpired:
             pass
+    # A reaped leader does not imply its descendants exited.
+    kill_tree(True)
     raise SystemExit(124)
 PY
 }

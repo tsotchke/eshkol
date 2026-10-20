@@ -5,6 +5,53 @@ not present in the standard-library index. Signatures and module locations are
 taken from the source files named in each section. The anchors are checked by
 `scripts/check_public_api_docs.py`.
 
+## `core.ad.algebraic_qp`
+
+Source: `lib/core/ad/algebraic_qp.esk`. The exact convexity, certificate,
+active-set and pullback contracts are documented in
+[ad_algebraic_qp.md](ad_algebraic_qp.md).
+
+### `algebraic-qp-solve`
+
+Solves a bounded exact strictly convex quadratic program by deterministic
+inequality active-set enumeration and KKT certification.
+
+### `algebraic-qp-solution`
+
+Returns owned primal values, equality multipliers, inequality multipliers and
+objective value from a certified result.
+
+### `algebraic-qp-info`
+
+Returns active-set attempt count, copied active inequality indices, strict
+pullback-admission status and total factorization attempts.
+
+### `algebraic-qp-verify`
+
+Independently checks a returned certificate against the caller's QP.
+
+### `algebraic-qp-pullback`
+
+Computes exact cotangents for the Hessian, linear term and equality and
+inequality data on an admitted strict active branch.
+## `core.ad.algebraic_spectral`
+
+Source: `lib/core/ad/algebraic_spectral.esk`. Exact simple-branch admission,
+projector residuals, pullback convention, and refusal boundaries are in
+[ad_algebraic_spectral.md](ad_algebraic_spectral.md).
+
+### `algebraic-characteristic`
+
+Returns ascending coefficients of the exact characteristic polynomial after checking the Cayley–Hamilton residual.
+
+### `algebraic-eigenvalue-with-pullback`
+
+Certifies a supplied simple eigenvalue of a symmetric matrix and returns its rank-one projector with the unconstrained matrix pullback.
+
+### `algebraic-eigenvalue-lift`
+
+Lifts a supplied enclosing root through an AD context while rechecking the exact simple-branch certificate.
+
 ## `core.ad.algebraic_sparse`
 
 Source: `lib/core/ad/algebraic_sparse.esk`. The exact sparse-curvature contract,
@@ -787,3 +834,86 @@ Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk
 ### `tensor-circuit-work`
 
 Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
+
+## `core.dbsp.circuit`
+
+Source: [lib/core/dbsp/circuit.esk](../../../lib/core/dbsp/circuit.esk). The logical state view includes hidden distinct counts and join arrangements for checkpoint verification.
+
+### `dbsp-circuit-checkpoint-state`
+
+Returns a pointer-free observation of all logical operator state for integrity verification during checkpoint restore.
+
+## `core.dbsp.checkpoint`
+
+Source: [lib/core/dbsp/checkpoint.esk](../../../lib/core/dbsp/checkpoint.esk). The bounded exact-data codec, trusted callback registry and caller/filesystem authorization boundary are described in [dbsp_checkpoint.md](dbsp_checkpoint.md).
+
+### `make-dbsp-resumable`
+
+Builds a versioned declarative wrapper for an immutable standing DBSP circuit.
+
+### `dbsp-resumable-step`
+
+Applies the next exact logical tick and returns a successor snapshot with its output delta.
+
+### `dbsp-resumable-output`
+
+Returns an owned observation of the current output Z-set.
+
+### `dbsp-resumable-tick`
+
+Returns the current exact logical tick.
+
+### `dbsp-resumable-checkpoint`
+
+Encodes the template contract, input state, tick and digest of full logical operator state in canonical bounded bytes.
+
+### `dbsp-resumable-restore`
+
+Verifies canonical integrity and template compatibility, rebuilds from current inputs and checks the full operator-state digest before returning a snapshot.
+
+### `dbsp-checkpoint-save`
+
+Writes a checkpoint through the existing atomic file-replacement primitive; caller authorization and filesystem permissions govern access.
+
+### `dbsp-checkpoint-load`
+
+Reads a bounded checkpoint file and returns it only after verified restoration.
+
+## `core.certified_solve`
+
+Source: `lib/core/certified_solve.esk`; see [certified_solve.md](certified_solve.md) for the exact rational admission contract, uncertainty bounds, and theorem limits.
+
+### `certify-linear-solve`
+
+Computes an exact a-posteriori componentwise error enclosure for a received candidate when the weighted contraction bound is strictly below one.
+
+### `verify-linear-solve-certificate`
+
+Recomputes the receipt from caller-supplied sources; true means the record matches, even when its status is `unknown`. Callers must separately require `proved` before using boxes as an enclosure.
+## `core.ad.derived_operator`
+
+Source: `lib/core/ad/derived_operator.esk`. The restricted syntax, exact finite-change identity, derivative contract and refusal limits are documented in [ad_derived_operator.md](ad_derived_operator.md).
+
+### `make-derived-operator`
+
+Compiles one bounded pure scalar polynomial and its symbolic partials and shifted finite-change polynomial.
+
+### `derived-operator-value`
+
+Evaluates the admitted polynomial at a fixed-width point.
+
+### `derived-operator-jvp`
+
+Computes the gradient paired with a direction at the point.
+
+### `derived-operator-vjp`
+
+Computes the formal polynomial transpose of the gradient scaled by a seed.
+
+### `derived-operator-delta`
+
+Computes the exact polynomial difference between the point plus an increment and the point.
+
+### `derived-operator-info`
+
+Returns immutable arity, degree and conservative term-work metadata.

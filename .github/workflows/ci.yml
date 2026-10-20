@@ -661,6 +661,7 @@ jobs:
           python3 scripts/ci_lane_plan.py --self-test
           python3 scripts/ci_equivalent_head.py --self-test
           python3 tests/toolchain/test_ci_reference_run.py
+          python3 tests/toolchain/test_ffi_harness.py
           python3 scripts/check_package_manifest.py --self-test
           python3 scripts/check_diagnostic_corpus.py --self-test
           python3 scripts/gate_exhaustive_dispatch.py --self-test
@@ -2461,7 +2462,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-test-log
-          path: ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+          path: |
+            ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+            ${{ runner.temp }}/eshkol-test-logs/ffi-diagnostics-*
           if-no-files-found: ignore
 
       - name: Upload Artifacts
