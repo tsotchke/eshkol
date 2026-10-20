@@ -23,10 +23,8 @@
  * rendering round-trips, then choose fixed vs. scientific notation by whichever
  * is shorter after adding `.0` to integer-looking fixed forms (ties -> fixed),
  * with a printf-style >=2-digit exponent. This
- * matches std::to_chars byte-for-byte on >99% of finite doubles; on the rest it
- * still produces a string of the SAME length that round-trips (it only differs
- * in the last digit among equally-short representations). Because BOTH paths use
- * this exact routine, they always agree with each other.
+ * preserves the numeric round-trip while requiring an inexact external form.
+ * Because both paths use this routine, their default formatting agrees.
  *
  * Non-finite values use the R7RS special external representations
  * (+inf.0 / -inf.0 / +nan.0) so the reader can read them back.

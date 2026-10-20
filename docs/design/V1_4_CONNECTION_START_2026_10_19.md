@@ -110,3 +110,71 @@ test an explicit compatibility policy before claiming this part fixed.
 Richard's 46 open PRs remain an integration queue. They need dependency-aware
 review against the selected release scope; none is implicitly accepted or
 merged by this kickoff. The published v1.3.6 tag and proof archives stay intact.
+
+
+## Scope expanded after the roadmap and ICC recovery audit
+
+The roadmap is a baseline for v1.4, not a ceiling. The first resource slice
+above is only one workstream. The next integration waves must also recover
+mathematical and numerical corrections, expanded capabilities, and completed
+work already present in local branches and Richard's 46-PR queue. A later
+version label in an older plan is not, by itself, a reason to discard a
+qualified contribution. Dependency order, explicit release-stage contracts,
+and correctness gates still apply.
+
+| Workstream | Acceptance for the selected candidate |
+| --- | --- |
+| Exact algebra and certificates | Rational affine solution families, PSD Gram factors and negative witnesses; independent exact oracles, rejected invalid inputs, and JIT/AOT/VM tests. Preserve the original PR authors and dependency history. |
+| Incremental tensor/dataflow work | Persistent snapshots, sparse delta products and historical reads; independent dense recomputation, lifetime tests, and measured copying, memory and execution cost. A copy counter alone does not establish an RSS or latency win. |
+| Numerical correctness and AD | Binary64 value and exactness round trips, precision dispatch, exact coefficients, mixed partials and higher-order derivatives; analytic/exact reference results and explicit accuracy budgets. Scalar exact AD does not establish exact tensor AD. |
+| Geometry and probabilistic language | ADR 0018's signed curvature and K=0 contract, recursive differentiation carriers, and ADR 0017's SBLC candidate; resolve decision status and dependencies, then execute the specific curvature, codec, mass-conservation and reproducibility gates. |
+| Language and execution engines | Parser, macros, type/resource checking, module bindings, and native/VM/browser behavior; direct same-input tests, bounded resources, and explicit unsupported operations. Emitting bytecode is not execution parity. |
+| Connectivity and ownership | TCP/UDP, event loops, synchronization, channels and resource APIs; bounded deadlines, concurrent-close tests, wire interoperability and actual static rejection tests where static ownership is claimed. Native-only support must be stated. |
+| Accelerator and distributed execution | Metal/CUDA/XLA/WebGPU, PJRT and native mesh work; verified backend selection, accuracy, device residency, end-to-end execution and scaling. Separate vendor throughput from exact native collective semantics. |
+| Tooling, SDKs and delivery | Source-bound builds, stdlib identity, external consumers, diagnostics and package parity; no silent cross-release stdlib fallback, and execution from final packages. |
+| Cross-project consumers | Attention/TensorCore, qLLM, resident agents and quantum integrations; pin both producer and consumer sources, ownership/ABI contracts and real consumer results. |
+
+The audit catalog covers 885 tracked documentation paths and 138 existing ICC
+artifact roots. Full semantic reading is narrower than catalog coverage:
+11 tracked documents were read in full, 18 through excerpts, and the remaining
+856 through deterministic content extraction. Stored task/readiness labels
+are historical until bound to the selected source and executable producers.
+These coverage limits remain part of the audit; indexing is not verification.
+
+## Competitive performance campaign
+
+The engineering objective is decisive, reproducible improvements against the
+best relevant PyTorch, JAX, TensorFlow and quantum baselines. Every loss or
+unsupported workload remains visible and becomes prioritized engineering work.
+A winner claim must name its tested workload, hardware, precision, software
+versions and measurement scope.
+
+The campaign must cover cold compilation and startup, steady execution,
+latency tails, sustained throughput, peak and sustained memory, transfers and
+dispatch overhead, higher-order and tensor AD, real training/inference steps,
+dynamic shapes, accelerator utilization, and multi-device/node scaling.
+Quantum comparisons add circuit/shot/noise semantics, state or observable
+accuracy, gradients/Hessians, memory and scaling. Exact arithmetic requires an
+exact reference; lack of an exact feature in a floating framework is a
+capability difference, not a measured speed win.
+
+Use matched inputs, dtypes, layouts, math modes and accuracy budgets. Retain
+raw independent samples, warmup and synchronization policy, all compilation
+and transfer scopes, source and binary hashes, device identities and optimized
+baseline settings. Compare appropriate compiled/fused modes as well as any
+useful eager baseline. No aggregate score may hide a failing declared case.
+The existing four-axis public benchmark and its old reference data remain
+historical evidence; they do not establish current head-to-head superiority.
+
+Useful baseline methodology references are the
+[JAX benchmarking guide](https://docs.jax.dev/en/latest/benchmarking.html),
+[PyTorch compile API](https://docs.pytorch.org/docs/stable/generated/torch.compile),
+[TensorFlow GPU performance guide](https://www.tensorflow.org/guide/gpu_performance_analysis),
+[Lightning GPU documentation](https://docs.pennylane.ai/projects/lightning/en/stable/code/api/pennylane_lightning.lightning_gpu.LightningGPU.html)
+and [Aer simulator documentation](https://qiskit.github.io/qiskit-aer/stubs/qiskit_aer.AerSimulator.html).
+
+Neither a benchmark validator's unit tests nor a source grep is a performance
+result. Run measurements on appropriately available hardware with controlled
+load; keep unavailable backends explicit. New benchmark requirements and ICC
+receipts must bind the actual executed workload and source rather than a
+synthetic fixture or a stored readiness score.

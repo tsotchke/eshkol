@@ -9372,6 +9372,22 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             TIMEOUT 180
             PASS_REGULAR_EXPRESSION "PASS: positive zero retains inexactness"
             FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|fatal signal")
+        set_tests_properties(inexact_roundtrip_jit_smoke PROPERTIES
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            FIXTURES_REQUIRED exact_foundations_local_stdlib
+            PASS_REGULAR_EXPRESSION "PASS: inexact_roundtrip_test 10/10")
+        add_test(NAME inexact_roundtrip_aot
+            COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+                "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/inexact_roundtrip_test.esk"
+                "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/inexact_roundtrip_aot${CMAKE_EXECUTABLE_SUFFIX}"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(inexact_roundtrip_aot PROPERTIES
+            TIMEOUT 180 FIXTURES_REQUIRED exact_foundations_local_stdlib
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: inexact_roundtrip_test 10/10"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
         if(TARGET eshkol-vm-standalone-test)
             add_test(
                 NAME inexact_roundtrip_vm_src_smoke
@@ -9380,7 +9396,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             set_tests_properties(inexact_roundtrip_vm_src_smoke PROPERTIES
                 TIMEOUT 180
                 ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
-                PASS_REGULAR_EXPRESSION "PASS: positive zero retains inexactness"
+                PASS_REGULAR_EXPRESSION "PASS: inexact_roundtrip_test 10/10"
                 FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal runtime error")
         endif()
     endif()

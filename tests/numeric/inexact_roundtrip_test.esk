@@ -1,7 +1,11 @@
 ; R7RS inexactness must survive number->string/string->number.
 (require stdlib)
 
+(define failures 0)
+(define checked 0)
 (define (check label condition)
+  (set! checked (+ checked 1))
+  (if (not condition) (set! failures (+ failures 1)))
   (display (if condition "PASS" "FAIL"))
   (display ": ") (display label) (newline))
 
@@ -25,3 +29,7 @@
        (string=? (number->string 1) "1"))
 (check "exact rational spelling unchanged"
        (string=? (number->string 1/2) "1/2"))
+
+(if (or (not (= checked 10)) (> failures 0))
+    (exit 1)
+    (begin (display "PASS: inexact_roundtrip_test 10/10") (newline)))
