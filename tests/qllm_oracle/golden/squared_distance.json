@@ -12,7 +12,7 @@
       "id": "squared_distance.euclidean.d3",
       "form": "euclidean",
       "dim": 3,
-      "inputs": {"x": [0.5, -1.25, 2], "y": [-0.75, 0.5, 0.125]},
+      "inputs": {"x": [0.5, -1.25, 2.0], "y": [-0.75, 0.5, 0.125]},
       "primal_outputs": {"d2": 8.140625, "d": 2.8531780526283317},
       "gradients": {"d_d2_d_x": [2.5, -3.5, 3.75], "all_finite": true},
       "fd_cross_check": {"best_step": 0.01, "best_rel_diff": 1.522591576628786e-14, "fd_usable": true}
@@ -21,7 +21,7 @@
       "id": "squared_distance.ball.d3.c1",
       "form": "hyperbolic",
       "dim": 3,
-      "curvature": 1,
+      "curvature": 1.0,
       "inputs": {"x": [0.3, -0.2, 0.1], "y": [-0.15, 0.25, 0.4]},
       "primal_outputs": {"d2": 2.488583550322671, "d": 1.5775245007044014, "lambda_x": 2.3255813953488373},
       "gradients": {"d_d2_d_x": [5.220650016932333, -4.738068922930186, -2.0326900626151105], "all_finite": true},
@@ -32,11 +32,11 @@
       "id": "squared_distance.sphere.d3.c1",
       "form": "spherical",
       "dim": 3,
-      "curvature": 1,
-      "inputs": {"x": [0.6, -0.8, 0], "y": [0.20628424925175867, 0.309426373877638, 0.9282791216329139]},
+      "curvature": 1.0,
+      "inputs": {"x": [0.6, -0.8, 0.0], "y": [0.20628424925175867, 0.309426373877638, 0.9282791216329139]},
       "primal_outputs": {"d2": 2.872635450625902, "d": 1.6948850847847774},
       "gradients": {"d_d2_d_x": [-0.9583573646009182, -0.7187680234506887, -3.1710353975765675], "all_finite": true},
-      "identities": {"gauss_lemma_rel": 0, "radial_component": 0},
+      "identities": {"gauss_lemma_rel": 0.0, "radial_component": 0.0},
       "fd_cross_check": {"best_step": 1e-05, "best_rel_diff": 2.685614956326757e-11, "fd_usable": true}
     },
     {
@@ -44,22 +44,22 @@
       "form": "product",
       "dim": 7,
       "layout": "H2(c=1,w=1) x S2(ambient 3,c=1,w=2) x R2(w=0.5)",
-      "inputs": {"x": [0.25, -0.1, 0.6, -0.8, 0, 1.5, 0.25], "y": [-0.3, 0.2, 0.20628424925175867, 0.309426373877638, 0.9282791216329139, -0.5, 1.75]},
+      "inputs": {"x": [0.25, -0.1, 0.6, -0.8, 0.0, 1.5, 0.25], "y": [-0.3, 0.2, 0.20628424925175867, 0.309426373877638, 0.9282791216329139, -0.5, 1.75]},
       "primal_outputs": {"d2": 10.563201437978517, "d2_hyperbolic": 1.6929305367267136, "d2_spherical": 2.872635450625902, "d2_euclidean": 6.25},
-      "gradients": {"d_d2_d_x": [4.974407747741088, -2.5965876858327923, -1.9167147292018365, -1.4375360469013774, -6.342070795153135, 2, -1.5], "all_finite": true},
-      "identities": {"additivity_rel": 0},
+      "gradients": {"d_d2_d_x": [4.974407747741088, -2.5965876858327923, -1.9167147292018365, -1.4375360469013774, -6.342070795153135, 2.0, -1.5], "all_finite": true},
+      "identities": {"additivity_rel": 0.0},
       "fd_cross_check": {"best_step": 1e-05, "best_rel_diff": 7.746605301072222e-11, "fd_usable": true}
     },
     {
       "id": "squared_distance.ball.coincident.d3.c1",
       "form": "hyperbolic",
       "dim": 3,
-      "curvature": 1,
+      "curvature": 1.0,
       "route": "arcosh-then-square (NOT the shipped route)",
       "inputs": {"x": [0.3, -0.2, 0.1], "y": [0.3, -0.2, 0.1]},
-      "primal_outputs": {"d2": 0},
+      "primal_outputs": {"d2": 0.0},
       "gradients": {"d_d2_d_x": [null, null, null], "all_finite": false},
-      "expected_from_log_map_route": {"d_d2_d_x": [0, 0, 0], "all_finite": true}
+      "expected_from_log_map_route": {"d_d2_d_x": [0.0, 0.0, 0.0], "all_finite": true}
     }
   ]
 }
