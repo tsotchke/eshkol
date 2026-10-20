@@ -13102,5 +13102,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_batch_example "examples/algebraic_batch.esk")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_batch_bench "bench/algebraic_batch.esk")
 endif()

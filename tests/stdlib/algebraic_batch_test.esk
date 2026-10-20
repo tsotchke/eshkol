@@ -56,6 +56,7 @@
   (list
     (lambda () (algebraic-batch-mul plan (vector 1) (vector)))
     (lambda () (algebraic-batch-mul plan (vector 1.0) (vector 1)))
+    (lambda () (algebraic-batch-mul plan (vector 3.0) (vector 1)))
     (lambda () (algebraic-batch-mul plan (vector (algebraic-generator foreign)) (vector 1)))
     (lambda () (algebraic-batch-mul plan (vector 2147483648) (vector 1)))
     (lambda () (algebraic-batch-mul plan (vector 65536) (vector 65536)))
