@@ -66,7 +66,8 @@ def validate_test_commands(payload: str, repo_root: Path, build_dir: Path) -> se
     if (not isinstance(runtime, list) or len(runtime) < 3 or runtime[0] != binary
             or runtime[1:3] != ["-r", fixture]):
         raise GateError("runtime CTest command does not run the source-bound fixture with this build binary")
-    if not isinstance(aot, list) or len(aot) != 3 or aot[:2] != ["sh", "-c"]:
+    if (not isinstance(aot, list) or len(aot) != 3
+            or not isinstance(aot[0], str) or Path(aot[0]).name != "sh" or aot[1] != "-c"):
         raise GateError("AOT CTest command is not the expected shell compile-and-run command")
     aot_output = str((build_dir / "taylor_numerics_aot").resolve())
     try:
@@ -118,10 +119,10 @@ def validate_report(junit_path: Path, verbose_log_path: Path) -> dict:
         verdict_index = next((i for i, line in enumerate(lines) if VERDICT in line), None)
         if verdict_index is None:
             raise GateError(f"{name} did not print the explicit {VERDICT!r} verdict")
-        trailing_errors = [line for line in lines[verdict_index + 1:]
+        runtime_errors = [line for line in lines
                            if re.search(r"\bERROR:|\bJIT session error:|\bFAIL\b", line)]
-        if trailing_errors:
-            raise GateError(f"{name} printed an error after its 41/41 verdict: {trailing_errors}")
+        if runtime_errors:
+            raise GateError(f"{name} printed runtime error diagnostics: {runtime_errors}")
     return {"cases": sorted(EXPECTED_TESTS), "verdict": VERDICT, "checks_per_case": 41}
 
 
@@ -400,6 +401,17 @@ def self_test() -> None:
             {"name": "taylor_numerics_aot_smoke", "command": ["sh", "-c", f"{binary_path} -o {aot_path} {fixture} -L{build.resolve()} && {aot_path}"]},
         ]}
         validate_test_commands(json.dumps(good_commands), source, build)
+        absolute_shell = json.loads(json.dumps(good_commands))
+        absolute_shell["tests"][1]["command"][0] = "/bin/sh"
+        validate_test_commands(json.dumps(absolute_shell), source, build)
+        junit, verbose = fixtures("good", root)
+        verbose.write_text(verbose.read_text().replace(VERDICT, "1: ERROR: injected before verdict\n" + VERDICT, 1))
+        try:
+            validate_report(junit, verbose)
+        except GateError:
+            pass
+        else:
+            raise AssertionError("runtime ERROR before a valid verdict was accepted")
         wrong_commands = json.loads(json.dumps(good_commands))
         wrong_commands["tests"][0]["command"][2] = str((wrong / "tests/ad/taylor_numerics_test.esk").resolve())
         try:
