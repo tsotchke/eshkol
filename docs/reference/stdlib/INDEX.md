@@ -1,14 +1,15 @@
-# Eshkol Standard Library — v1.3.5 API Reference Index
+# Eshkol Standard Library — API Reference Index
 
-Complete module-by-function map of the Eshkol standard library. Every symbol
-below links to a per-module reference page in this directory; every documented
-function was verified by compiling and running it with `eshkol-run … -r`.
+Reference map of the documented Eshkol standard-library modules. Module rows
+link to their reference pages and source; the supplemental tables below cover
+additional shipped exports. Execution evidence is recorded per example and
+qualification suite.
 
 See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 81** (plus `stdlib` itself and the module system page) — **provided symbols: 953** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 84** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 994** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
