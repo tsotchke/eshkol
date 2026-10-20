@@ -13111,6 +13111,7 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_sparse "tests/stdlib/algebraic_sparse_test.esk")
+    eshkol_add_algebraic_ad_acceptance(algebraic_sparse_example "examples/algebraic_sparse.esk")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
