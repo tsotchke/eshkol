@@ -350,3 +350,357 @@ Compiles an admitted algebraic owner into a sparse exact multiplication table.
 ### `algebraic-batch-mul`
 
 Preflights and multiplies equally sized vectors of exact algebraic values.
+
+
+## `core.algebraic_batch`
+
+Source: `lib/core/algebraic_batch.esk`. Signatures and semantic constraints are documented in [algebraic_batch.md](algebraic_batch.md).
+
+### `make-algebraic-multiplication-plan`
+
+See [algebraic_batch.md](algebraic_batch.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-batch-mul`
+
+See [algebraic_batch.md](algebraic_batch.md) for this exported procedure and its source-backed contract.
+
+
+## `core.algebraic_domain`
+
+Source: `lib/core/algebraic_domain.esk`. Signatures and semantic constraints are documented in [algebraic_linalg.md](algebraic_linalg.md).
+
+### `algebraic-domain`
+
+See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-domain-ref`
+
+See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and its source-backed contract.
+
+
+## `core.algebraic_field`
+
+Source: `lib/core/algebraic_field.esk`. Signatures and semantic constraints are documented in [algebraic_field.md](algebraic_field.md).
+
+### `make-algebraic-field`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-field-degree`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-field-polynomial`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-generator`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-element`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-coefficients`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-add`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-sub`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-scale`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-mul`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-inverse`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-zero?`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-equal?`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-rational`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-enclosure`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-sign`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `make-algebraic-embedding`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `make-algebraic-compositum`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-field-certificate`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
+
+## `core.algebraic_linalg`
+
+Source: `lib/core/algebraic_linalg.esk`. Signatures and semantic constraints are documented in [algebraic_linalg.md](algebraic_linalg.md).
+
+### `algebraic-factor`
+
+See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-factor-solve`
+
+See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-factor-solve-transpose`
+
+See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-factor-summary`
+
+See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-matrix-mul`
+
+See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-solve`
+
+See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and its source-backed contract.
+
+
+## `core.polynomial_exact`
+
+Source: `lib/core/polynomial_exact.esk`. Signatures and semantic constraints are documented in [polynomial_exact.md](polynomial_exact.md).
+
+### `exact-poly`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+### `exact-poly-zero?`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+### `exact-poly-sub`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+### `exact-poly-scale`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+### `exact-poly-mul`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+### `exact-poly-divmod`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+### `exact-poly-inverse-mod`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+### `exact-poly-eval`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+### `exact-poly-real-root-count`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+### `exact-poly-isolate`
+
+See [polynomial_exact.md](polynomial_exact.md) for this exported procedure and its source-backed contract.
+
+
+## `core.ad.algebraic`
+
+Source: `lib/core/ad/algebraic.esk`. Signatures and semantic constraints are documented in [ad_algebraic.md](ad_algebraic.md).
+
+### `make-algebraic-taylor`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `make-algebraic-hyperdual`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-value`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-constant`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-seed`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-coefficients`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-add`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-sub`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-mul`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-inverse`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-equal?`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-derivative`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-root`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-context`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+### `call-with-algebraic-derivative`
+
+See [ad_algebraic.md](ad_algebraic.md) for this exported procedure and its source-backed contract.
+
+
+## `core.ad.algebraic_implicit`
+
+Source: `lib/core/ad/algebraic_implicit.esk`. Signatures and semantic constraints are documented in [ad_algebraic_implicit.md](ad_algebraic_implicit.md).
+
+### `algebraic-ad-system-root`
+
+See [ad_algebraic_implicit.md](ad_algebraic_implicit.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-ad-system-residual`
+
+See [ad_algebraic_implicit.md](ad_algebraic_implicit.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-system-linearization`
+
+See [ad_algebraic_implicit.md](ad_algebraic_implicit.md) for this exported procedure and its source-backed contract.
+
+
+## `core.ad.algebraic_incremental`
+
+Source: `lib/core/ad/algebraic_incremental.esk`. Signatures and semantic constraints are documented in [ad_algebraic_incremental.md](ad_algebraic_incremental.md).
+
+### `make-algebraic-incremental-plan`
+
+See [ad_algebraic_incremental.md](ad_algebraic_incremental.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-incremental-new`
+
+See [ad_algebraic_incremental.md](ad_algebraic_incremental.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-incremental-step`
+
+See [ad_algebraic_incremental.md](ad_algebraic_incremental.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-incremental-output`
+
+See [ad_algebraic_incremental.md](ad_algebraic_incremental.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-incremental-info`
+
+See [ad_algebraic_incremental.md](ad_algebraic_incremental.md) for this exported procedure and its source-backed contract.
+
+
+## `core.ad.algebraic_pullback`
+
+Source: `lib/core/ad/algebraic_pullback.esk`. Signatures and semantic constraints are documented in [ad_algebraic_pullback.md](ad_algebraic_pullback.md).
+
+### `algebraic-solve-with-pullback`
+
+See [ad_algebraic_pullback.md](ad_algebraic_pullback.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-factor-with-pullback`
+
+See [ad_algebraic_pullback.md](ad_algebraic_pullback.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-system-with-pullback`
+
+See [ad_algebraic_pullback.md](ad_algebraic_pullback.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-reverse-solve`
+
+See [ad_algebraic_pullback.md](ad_algebraic_pullback.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-reverse-system`
+
+See [ad_algebraic_pullback.md](ad_algebraic_pullback.md) for this exported procedure and its source-backed contract.
+
+
+## `core.ad.algebraic_reverse`
+
+Source: `lib/core/ad/algebraic_reverse.esk`. Signatures and semantic constraints are documented in [ad_algebraic_reverse.md](ad_algebraic_reverse.md).
+
+### `algebraic-value-and-pullback`
+
+See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-reverse-value`
+
+See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-reverse-constant`
+
+See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-reverse-add`
+
+See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-reverse-sub`
+
+See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-reverse-mul`
+
+See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-reverse-inverse`
+
+See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-reverse-pow`
+
+See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
+
+### `algebraic-hvp`
+
+See [ad_algebraic_reverse.md](ad_algebraic_reverse.md) for this exported procedure and its source-backed contract.
