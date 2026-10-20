@@ -12,8 +12,8 @@
  * implementation is what guarantees byte-identical output across the native
  * JIT/AOT paths and the VM (ADR-0003 parity).
  *
- * Contract: produce the SHORTEST decimal string that, when read back with
- * `strtod`, recovers the exact same double (round-trip guarantee — R7RS 6.2.6
+ * Contract: produce the shortest R7RS decimal form that, when read back, keeps
+ * the same IEEE double and its inexactness (round-trip guarantee — R7RS 6.2.6
  * requires this of `number->string` on an inexact real). We do NOT depend on
  * C++17 std::to_chars because the VM is C and is also compiled to WebAssembly
  * with emcc; a portable C routine that both paths share is the only way to get
@@ -21,7 +21,8 @@
  *
  * The algorithm: find the minimal significant-digit count (1..17) whose "%.*e"
  * rendering round-trips, then choose fixed vs. scientific notation by whichever
- * is shorter (ties -> fixed), with a printf-style >=2-digit exponent. This
+ * is shorter after adding `.0` to integer-looking fixed forms (ties -> fixed),
+ * with a printf-style >=2-digit exponent. This
  * matches std::to_chars byte-for-byte on >99% of finite doubles; on the rest it
  * still produces a string of the SAME length that round-trips (it only differs
  * in the last digit among equally-short representations). Because BOTH paths use
@@ -68,9 +69,8 @@ static int eshkol_dtoa_shortest(char* buf, size_t cap, double v) {
 
     /* Signed zero.
      *
-     * Positive zero keeps the friendly integral-double form "0" (the same
-     * convention that renders 3.0 as "3"): reading "0" back recovers the same
-     * NUMERIC VALUE, only its exactness changes.
+     * Inexact zero needs an explicit decimal point: reading "0" back recovers
+     * the same numeric value, but changes its exactness.
      *
      * Negative zero must NOT follow that convention. "-0" is not a flonum
      * external representation at all — the reader takes it as the exact integer
@@ -80,7 +80,7 @@ static int eshkol_dtoa_shortest(char* buf, size_t cap, double v) {
      * not just of its exactness, so negative zero is rendered "-0.0", which the
      * reader recovers as an inexact negative zero (R7RS 6.2.6 round-trip). */
     if (v == 0.0) {
-        return snprintf(buf, cap, signbit(v) ? "-0.0" : "0");
+        return snprintf(buf, cap, signbit(v) ? "-0.0" : "0.0");
     }
 
     /* 1) Minimal significant digits: smallest sig-digit count in 1..17 whose
@@ -137,6 +137,14 @@ static int eshkol_dtoa_shortest(char* buf, size_t cap, double v) {
         for (int i = point_pos; i < nd; i++) *o++ = digits[i];
     }
     *o = '\0';
+    /* An integer-looking fixed form loses inexactness when read back. Include
+     * the decimal marker in the candidate length so scientific notation can
+     * still win when it is shorter (for example 1e+03 over 1000.0). */
+    if (!strchr(fixed, '.') && !strchr(fixed, 'e') && !strchr(fixed, 'E')) {
+        *o++ = '.';
+        *o++ = '0';
+        *o = '\0';
+    }
     size_t fixed_len = (size_t)(o - fixed);
 
     /* ---- scientific: d[.ddd]e[+-]XX, exponent >= 2 digits ---- */

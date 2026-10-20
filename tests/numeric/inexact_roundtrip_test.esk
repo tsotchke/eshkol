@@ -1,0 +1,27 @@
+; R7RS inexactness must survive number->string/string->number.
+(require stdlib)
+
+(define (check label condition)
+  (display (if condition "PASS" "FAIL"))
+  (display ": ") (display label) (newline))
+
+(define (roundtrip-inexact? value)
+  (let ((text (number->string value)))
+    (let ((parsed (string->number text)))
+      (and parsed (inexact? parsed) (= parsed value)))))
+
+(check "positive zero retains inexactness" (roundtrip-inexact? 0.0))
+(check "one retains inexactness" (roundtrip-inexact? 1.0))
+(check "negative one retains inexactness" (roundtrip-inexact? -1.0))
+(check "integral double retains inexactness" (roundtrip-inexact? 1000.0))
+(check "ordinary decimal roundtrips" (roundtrip-inexact? 0.1))
+(check "subnormal roundtrips" (roundtrip-inexact? 5e-324))
+(check "largest finite double roundtrips"
+       (roundtrip-inexact? 1.7976931348623157e308))
+(check "signed negative zero survives"
+       (= (/ 1.0 (string->number (number->string -0.0)))
+          (/ 1.0 -0.0)))
+(check "exact integer spelling unchanged"
+       (string=? (number->string 1) "1"))
+(check "exact rational spelling unchanged"
+       (string=? (number->string 1/2) "1/2"))

@@ -33,8 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native linking removes only scratch objects exclusively reserved by the
   compiler. Caller objects, packaged stdlib objects and pre-existing files
   with temporary-looking names survive successful and failed links. (#836)
-
-
+- Preserve R7RS inexactness when finite integral doubles, including positive
+  zero, round-trip through `number->string` and `string->number`.
 
 ## [1.3.6-evolve] - 2026-10-15
 

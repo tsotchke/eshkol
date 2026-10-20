@@ -3358,6 +3358,19 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/web/content_
     add_test(NAME content_length_parse_test COMMAND content_length_parse_test)
 endif()
 
+# Shared C/C++ contract tests for the native and VM binary64 formatter.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/dtoa_shortest_test.c")
+    add_executable(dtoa_shortest_c_test tests/core/dtoa_shortest_test.c)
+    target_include_directories(dtoa_shortest_c_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME dtoa_shortest_c_test COMMAND dtoa_shortest_c_test)
+endif()
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/dtoa_shortest_test.cpp")
+    add_executable(dtoa_shortest_cpp_test tests/core/dtoa_shortest_test.cpp)
+    target_compile_features(dtoa_shortest_cpp_test PRIVATE cxx_std_17)
+    target_include_directories(dtoa_shortest_cpp_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME dtoa_shortest_cpp_test COMMAND dtoa_shortest_cpp_test)
+endif()
+
 # ===== ADR-0000 Stage 1: frontend node-identity substrate =====
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/node_identity_test.cpp")
     add_executable(node_identity_test tests/frontend/node_identity_test.cpp)
@@ -9348,6 +9361,28 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
             ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
             PASS_REGULAR_EXPRESSION "PASS: SW-223 number syntax"
             FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal runtime error")
+    endif()
+
+    # Finite inexact real external forms must retain their exactness on readback.
+    if(TARGET eshkol-run AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/inexact_roundtrip_test.esk")
+        add_test(
+            NAME inexact_roundtrip_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/numeric/inexact_roundtrip_test.esk")
+        set_tests_properties(inexact_roundtrip_jit_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: positive zero retains inexactness"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|fatal signal")
+        if(TARGET eshkol-vm-standalone-test)
+            add_test(
+                NAME inexact_roundtrip_vm_src_smoke
+                COMMAND sh -c
+                    "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/numeric/inexact_roundtrip_test.esk")
+            set_tests_properties(inexact_roundtrip_vm_src_smoke PROPERTIES
+                TIMEOUT 180
+                ENVIRONMENT "ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "PASS: positive zero retains inexactness"
+                FAIL_REGULAR_EXPRESSION "FAIL:|ERROR: VM terminated|fatal runtime error")
+        endif()
     endif()
 
     # A caught condition writes nothing to stderr (native JIT, AOT and VM):
