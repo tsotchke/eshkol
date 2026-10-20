@@ -29,6 +29,8 @@
   (set-car! xs #\a) (and (= (char->integer (string-ref source 0)) 955)
                             (char=? (string-ref source 1) #\x))))
 (check "reject non-string" (guard (e (#t #t)) (string->list 17) #f))
+(check "first-class rejects non-string" (let ((convert string->list))
+  (guard (e (#t #t)) (convert 17) #f)))
 (check "region result survives" (equal? (codes (with-region (string-copy "中🙂"))) '(20013 128578)))
 (display "Passed: ") (display passed) (newline)
 (display "Failed: ") (display failed) (newline)
