@@ -2705,7 +2705,7 @@ static std::string findStdlibObject() {
 static bool objectMatchesRunningAbi(llvm::MemoryBufferRef buffer,
                                     std::string& foreign) {
     static constexpr llvm::StringRef kGuardPrefix = "eshkol_object_abi_v";
-    const llvm::StringRef expected(ESHKOL_ABI_FINGERPRINT_NAME);
+    const llvm::StringRef expected(static_cast<const char*>(ESHKOL_ABI_FINGERPRINT_NAME));
 
     auto obj_or_err = llvm::object::ObjectFile::createObjectFile(buffer);
     if (!obj_or_err) {
@@ -3120,7 +3120,7 @@ llvm::Error ReplJITContext::loadStdlib() {
                                     llvm::errc::invalid_argument,
                                     "rejecting cached stdlib object %s built for a different object ABI (%s, this build is %s)",
                                     cache_o.string().c_str(), foreign.c_str(),
-                                    ESHKOL_ABI_FINGERPRINT_NAME);
+                                    static_cast<const char*>(ESHKOL_ABI_FINGERPRINT_NAME));
                             }
                         }
                     }
@@ -3245,7 +3245,7 @@ llvm::Error ReplJITContext::loadStdlib() {
                 llvm::errc::invalid_argument,
                 "rejecting stdlib.o %s built for a different object ABI (%s, this build is %s)",
                 stdlib_obj_path.c_str(), foreign.c_str(),
-                ESHKOL_ABI_FINGERPRINT_NAME);
+                static_cast<const char*>(ESHKOL_ABI_FINGERPRINT_NAME));
         }
         {
             auto& main_dylib = jit_->getMainJITDylib();
