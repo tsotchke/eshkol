@@ -33,6 +33,7 @@ fi
 # case through ORC rather than the persistent AOT executable cache.
 export ESHKOL_JIT_CACHE_DIR="$RUN_DIR/$CACHE_SUBDIR"
 export ESHKOL_JIT_CACHE=0
+export ESHKOL_VM_NO_DISASM=1
 mkdir -p "$ESHKOL_JIT_CACHE_DIR"
 
 JUNIT="$RUN_DIR/ctest.xml"

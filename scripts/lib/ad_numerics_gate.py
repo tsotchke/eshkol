@@ -5,7 +5,7 @@
 
 This module validates CTest configuration/report evidence. It never emits an
 ICC PASS event; only the production runner writes an event after source/build
-identity and both runtime cases have been checked.
+identity and all required runtime cases have been checked.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import MappingProxyType
+from collections.abc import Mapping
 
 PROFILES = {
     # Keep P11 as the default for callers and scripts that predate profiles.
@@ -49,10 +51,14 @@ PROFILES = {
         "harness": "run_ad_p6_gate",
     },
 }
+PROFILES = MappingProxyType({
+    name: MappingProxyType({**profile, "tests": frozenset(profile["tests"])})
+    for name, profile in PROFILES.items()
+})
 DEFAULT_PROFILE = "p11"
 
 
-def get_profile(name: str = DEFAULT_PROFILE) -> dict:
+def get_profile(name: str = DEFAULT_PROFILE) -> Mapping:
     try:
         return PROFILES[name]
     except KeyError as exc:
@@ -160,7 +166,7 @@ def validate_report(junit_path: Path, verbose_log_path: Path,
         )
     if len(cases) != len(expected) or set(names) != expected or len(set(names)) != len(expected):
         raise GateError(
-            "CTest JUnit report did not contain exactly the required pair: "
+            "CTest JUnit report did not contain exactly the required set: "
             f"expected={sorted(expected)} observed={names}"
         )
     bad = [case.attrib.get("name", "?") for case in cases
@@ -513,6 +519,17 @@ def self_test(profile_name: str = DEFAULT_PROFILE) -> None:
         (build / "CTestTestfile.cmake").write_text("", encoding="utf-8")
         binary.write_text("fixture", encoding="utf-8")
         binary.chmod(0o755)
+        if profile_name == "p6":
+            try:
+                validate_build_source(source, build, profile_name)
+            except GateError:
+                pass
+            else:
+                raise AssertionError("P6 build without standalone VM was accepted")
+            vm_binary = build / "eshkol-vm-standalone-test"
+            vm_binary.write_text("fixture", encoding="utf-8")
+            vm_binary.chmod(0o755)
+            validate_build_source(source, build, profile_name)
         fixture = str((source / profile["fixture"]).resolve())
         binary_path = str((build / "eshkol-run").resolve())
         if profile_name == "p11":

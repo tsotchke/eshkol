@@ -672,6 +672,7 @@ jobs:
           python3 scripts/check_self_verdicts.py --self-test
           python3 scripts/check_build_fingerprint.py --self-test
           python3 scripts/lib/ad_numerics_gate.py --self-test
+          python3 scripts/lib/ad_numerics_gate.py --profile p6 --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
           python3 scripts/doc_audit/test_harness.py
           python3 scripts/doc_audit/check_doc_examples.py --self-test
