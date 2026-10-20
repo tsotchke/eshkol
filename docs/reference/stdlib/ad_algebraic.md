@@ -2,6 +2,7 @@
 kind: reference
 status: current
 owner-area: ad
+since: v1.4.0-connection
 sources:
   - lib/core/ad/algebraic.esk
   - tests/stdlib/algebraic_ad_test.esk
