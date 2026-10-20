@@ -243,7 +243,7 @@
          (n (vector-length graph)) (out (make-vector n #f)))
     (define (arrangement root)
       (sort (dc-fold root (lambda (key rows acc) (cons (list key (zset-entries rows)) acc)) '())
-            (lambda (a b) (string<? (zset-row-key (car a)) (zset-row-key (car b)))))
+            (lambda (a b) (string<? (zset-row-key (car a)) (zset-row-key (car b))))))
     (let loop ((i 0)) (if (< i n)
       (let* ((node (vector-ref graph i)) (op (vector-ref node 0)) (state (dc-state states i)))
         (vector-set! out i (vector op (zset-entries (dc-observe (vector-ref state 0)))
