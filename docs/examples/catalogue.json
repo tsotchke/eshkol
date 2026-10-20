@@ -46,6 +46,46 @@
       ]
     },
     {
+      "path": "examples/algebraic_matrix_calculus.esk",
+      "source_sha256": "fa1ffb035789f75090b14da972533dd7d228a6032b5330d87a93d1d127c41bfe",
+      "title": "Exact algebraic matrix calculus",
+      "kind": "example",
+      "purpose": "Solve exact matrix systems over a selected real number field and its Taylor carrier.",
+      "algorithm": "Factor the field matrix once, reuse the exact LU for independent right-hand sides, then solve Taylor coefficients recursively through the same bottom-field factorization.",
+      "domain": "A 2x2 system over Q(sqrt(2)) and the corresponding order-four Taylor carrier at x=2.",
+      "arithmetic": "Exact rational power-basis coefficients and exact Taylor coefficients; no floating approximation or finite differences.",
+      "validation": "Three assertions check both exact inverse columns, reused bottom-field factorization, and the first three derivatives of the Taylor solution; explicit RESULT: PASS or nonzero exit.",
+      "limitations": "The example demonstrates a small dense system and one Taylor carrier. It does not claim sparse, rectangular solve, larger workload or compiler AD coverage.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.algebraic_field, core.ad.algebraic and core.algebraic_linalg.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";; Exact matrix solves over Q(sqrt(2)) and a fourth-order Taylor carrier."
+        },
+        {
+          "line": 15,
+          "text": "(define factor (algebraic-factor field matrix))"
+        },
+        {
+          "line": 21,
+          "text": "(check \"second RHS reuses the same bottom-field factor\""
+        },
+        {
+          "line": 30,
+          "text": "(check \"Taylor solve reuses one bottom LU and matches exact derivatives\""
+        }
+      ],
+      "literature_review": "The independent exact recurrence and closed-form solution are recorded in the qualification evidence; the example cites no external result.",
+      "references": [],
+      "key_output": [
+        "^Bottom-field factor summary .*#\\(2 0 1\\)$",
+        "^Taylor factor summary .*#\\(2 1 1\\)$",
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/autodiff.esk",
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
       "title": "Scalar automatic differentiation",

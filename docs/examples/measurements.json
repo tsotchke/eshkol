@@ -2740,6 +2740,18 @@
       "ctest": [],
       "key_output": [],
       "not_run_reason": "Release measurement remains NOT-RUN; focused snapshot qualification evidence is separate."
+    },
+    "examples/algebraic_matrix_calculus.esk": {
+      "source_sha256": "fa1ffb035789f75090b14da972533dd7d228a6032b5330d87a93d1d127c41bfe",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "Release measurements remain NOT-RUN; focused PR qualification is recorded separately under richard/evidence-794."
     }
   }
 }
