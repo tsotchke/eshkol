@@ -149,6 +149,15 @@ lib/core/ad/algebraic_ridge.esk	4	provide	algebraic-ridge-info
 lib/core/ad/algebraic_ridge.esk	4	provide	algebraic-ridge-pullback
 lib/core/algebraic_linalg.esk	3	provide	algebraic-factor-positive-definite?
 lib/core/ad/algebraic_incremental.esk	4	provide	algebraic-incremental-moment-ref
+lib/core/dbsp/checkpoint.esk	5	provide	make-dbsp-resumable
+lib/core/dbsp/checkpoint.esk	5	provide	dbsp-resumable-step
+lib/core/dbsp/checkpoint.esk	5	provide	dbsp-resumable-output
+lib/core/dbsp/checkpoint.esk	5	provide	dbsp-resumable-tick
+lib/core/dbsp/checkpoint.esk	5	provide	dbsp-resumable-checkpoint
+lib/core/dbsp/checkpoint.esk	5	provide	dbsp-resumable-restore
+lib/core/dbsp/checkpoint.esk	5	provide	dbsp-checkpoint-save
+lib/core/dbsp/checkpoint.esk	5	provide	dbsp-checkpoint-load
+lib/core/dbsp/circuit.esk	5	provide	dbsp-circuit-checkpoint-state
 lib/core/dbsp/tensor_circuit.esk	3	provide	make-tensor-circuit
 lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-step
 lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-output

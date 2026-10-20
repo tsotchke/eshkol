@@ -3881,7 +3881,8 @@ endif()
 # Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set(ESHKOL_DBSP_EXAMPLES
-        dbsp_tensor_circuit_example mathematics_dbsp_tensor_circuit)
+        dbsp_tensor_circuit_example mathematics_dbsp_tensor_circuit
+        dbsp_checkpoint_restart_example dbsp_checkpoint_restart)
     list(LENGTH ESHKOL_DBSP_EXAMPLES _dbsp_len)
     math(EXPR _dbsp_last "${_dbsp_len} - 1")
     foreach(_dbsp_i RANGE 0 ${_dbsp_last} 2)

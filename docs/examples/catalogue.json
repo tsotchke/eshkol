@@ -504,6 +504,48 @@
       "references": []
     },
     {
+      "path": "examples/dbsp_checkpoint_restart.esk",
+      "source_sha256": "b8cc0fb5d79b9682eef476d9fc85627516674c64562fc1da3cfacc7ed46bda90",
+      "title": "Exact restart equivalence for a standing DBSP circuit",
+      "kind": "example",
+      "purpose": "Compare a three-tick exact-data DBSP run with the same run restored from a checkpoint after tick two.",
+      "algorithm": "Apply signed input deltas to an incremental distinct circuit, checkpoint the tick-two state, restore it into a fresh template, then compare the final output and full logical state with uninterrupted execution.",
+      "domain": "One named relation of exact rational rows and signed integer weights.",
+      "arithmetic": "Exact rational row data and exact integer Z-set weights only.",
+      "validation": "Two assertions compare the visible final Z-set and canonical full logical checkpoint after restart.",
+      "limitations": "Small in-memory illustration; it does not test filesystem ownership, crash durability, concurrent writers or external effects.",
+      "prerequisites": "Built compiler/stdlib and core.dbsp.checkpoint.",
+      "review_status": "source-inspected",
+      "registrations": [
+        {
+          "family": "ESHKOL_DBSP_EXAMPLES",
+          "criterion": "dbsp_checkpoint_restart_example",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";;; Compare exact DBSP output before and after an in-memory checkpoint restore."
+        },
+        {
+          "line": 2,
+          "text": "(require stdlib)"
+        }
+      ],
+      "literature_review": "The repository DBSP checkpoint API reference documents the restart and trust boundary.",
+      "references": [
+        {
+          "citation": "The repository DBSP checkpoint API reference documents the restart and trust boundary.",
+          "verification": "repository"
+        }
+      ],
+      "key_output": []
+    },
+    {
       "path": "examples/differentiable_physics.esk",
       "source_sha256": "e0ca3c23bba825102d5fc1ba8311e698701728baf3b325864c9799ca4dd7e33f",
       "title": "Projectile launch-angle fitting",

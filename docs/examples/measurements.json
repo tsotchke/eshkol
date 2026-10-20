@@ -118,6 +118,18 @@
       ],
       "output_lines": 5
     },
+    "examples/dbsp_checkpoint_restart.esk": {
+      "source_sha256": "b8cc0fb5d79b9682eef476d9fc85627516674c64562fc1da3cfacc7ed46bda90",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "New restart example awaiting runtime qualification; no build or execution has been run."
+    },
     "examples/differentiable_physics.esk": {
       "source_sha256": "e0ca3c23bba825102d5fc1ba8311e698701728baf3b325864c9799ca4dd7e33f",
       "jit": {

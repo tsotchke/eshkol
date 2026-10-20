@@ -834,3 +834,47 @@ Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk
 ### `tensor-circuit-work`
 
 Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
+
+## `core.dbsp.circuit`
+
+Source: [lib/core/dbsp/circuit.esk](../../../lib/core/dbsp/circuit.esk). The logical state view includes hidden distinct counts and join arrangements for checkpoint verification.
+
+### `dbsp-circuit-checkpoint-state`
+
+Returns a pointer-free observation of all logical operator state for integrity verification during checkpoint restore.
+
+## `core.dbsp.checkpoint`
+
+Source: [lib/core/dbsp/checkpoint.esk](../../../lib/core/dbsp/checkpoint.esk). The bounded exact-data codec, trusted callback registry and caller/filesystem authorization boundary are described in [dbsp_checkpoint.md](dbsp_checkpoint.md).
+
+### `make-dbsp-resumable`
+
+Builds a versioned declarative wrapper for an immutable standing DBSP circuit.
+
+### `dbsp-resumable-step`
+
+Applies the next exact logical tick and returns a successor snapshot with its output delta.
+
+### `dbsp-resumable-output`
+
+Returns an owned observation of the current output Z-set.
+
+### `dbsp-resumable-tick`
+
+Returns the current exact logical tick.
+
+### `dbsp-resumable-checkpoint`
+
+Encodes the template contract, input state, tick and digest of full logical operator state in canonical bounded bytes.
+
+### `dbsp-resumable-restore`
+
+Verifies canonical integrity and template compatibility, rebuilds from current inputs and checks the full operator-state digest before returning a snapshot.
+
+### `dbsp-checkpoint-save`
+
+Writes a checkpoint through the existing atomic file-replacement primitive; caller authorization and filesystem permissions govern access.
+
+### `dbsp-checkpoint-load`
+
+Reads a bounded checkpoint file and returns it only after verified restoration.

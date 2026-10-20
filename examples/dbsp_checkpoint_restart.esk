@@ -1,0 +1,30 @@
+;;; Compare exact DBSP output before and after an in-memory checkpoint restore.
+(require stdlib)
+(require core.dbsp.checkpoint)
+
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+    (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (template)
+  (make-dbsp-resumable '(items) '((distinct visible items)) 'visible '() '(exact-row-v1)))
+(define (checkpoint-example-delta . weighted-rows) (zset-from-weighted weighted-rows))
+(define delta-one (checkpoint-example-delta (list 1 '(pear 1/3)) (list 1 '(plum 2/5))))
+(define delta-two (checkpoint-example-delta (list 1 '(apple 3/7)) (list -1 '(pear 1/3))))
+(define delta-three (checkpoint-example-delta (list 1 '(pear 1/3)) (list -1 '(apple 3/7))))
+(define (checkpoint-example-step state tick change)
+  (vector-ref (dbsp-resumable-step state tick (list (list 'items change))) 0))
+
+(define uninterrupted
+  (checkpoint-example-step (checkpoint-example-step (checkpoint-example-step (template) 1 delta-one) 2 delta-two) 3 delta-three))
+(define before-restart (checkpoint-example-step (checkpoint-example-step (template) 1 delta-one) 2 delta-two))
+(define saved-bytes (dbsp-resumable-checkpoint before-restart))
+(define resumed (checkpoint-example-step (dbsp-resumable-restore (template) saved-bytes) 3 delta-three))
+(check "exact visible output matches after the tick-two restart"
+  (zset=? (dbsp-resumable-output uninterrupted) (dbsp-resumable-output resumed)))
+(check "full logical checkpoint is canonical after restart"
+  (string=? (dbsp-resumable-checkpoint uninterrupted) (dbsp-resumable-checkpoint resumed)))
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "RESULT: ALL PASS") (newline)
