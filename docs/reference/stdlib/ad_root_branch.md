@@ -17,8 +17,9 @@ The example follows the positive eigenvalue of symmetric `((t,1),(1,-t))`.
 Data, times and intervals are exact rationals, with x degree 1–8 and parameter
 degree at most eight. Construction copies the family and admits one simple
 root using the existing exact root counter. Construction/steps optionally
-accept 0–64 bisections, default 12. Snapshots are immutable; enclosure observers
-own their pairs.
+accept 0–64 bisections, default 12. Operations preserve their input snapshots; enclosure observers own their pairs.
+Treat snapshot vectors and their nested family data as read-only; the language
+does not prevent callers from mutating the representation.
 
 A positive-width tube X must contain the old enclosure. On the whole parameter
 interval T, rigorous interval arithmetic on exact rational endpoints bounds the
