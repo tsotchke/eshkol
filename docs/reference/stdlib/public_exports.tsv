@@ -183,3 +183,9 @@ lib/core/ad/derived_operator.esk	3	provide	derived-operator-jvp
 lib/core/ad/derived_operator.esk	3	provide	derived-operator-vjp
 lib/core/ad/derived_operator.esk	3	provide	derived-operator-delta
 lib/core/ad/derived_operator.esk	3	provide	derived-operator-info
+lib/core/ad/root_branch.esk	4	provide	make-root-branch
+lib/core/ad/root_branch.esk	4	provide	root-branch-step
+lib/core/ad/root_branch.esk	4	provide	root-branch-enclosure
+lib/core/ad/root_branch.esk	4	provide	root-branch-time
+lib/core/ad/root_branch.esk	4	provide	root-branch-sensitivity
+lib/core/ad/root_branch.esk	4	provide	verify-root-branch-step

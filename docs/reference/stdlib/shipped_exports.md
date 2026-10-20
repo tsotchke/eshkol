@@ -917,3 +917,31 @@ Computes the exact polynomial difference between the point plus an increment and
 ### `derived-operator-info`
 
 Returns immutable arity, degree and conservative term-work metadata.
+
+## `core.ad.root_branch`
+
+Source: [lib/core/ad/root_branch.esk](../../../lib/core/ad/root_branch.esk). The exact whole-step continuation contract and certificate limits are documented in [ad_root_branch.md](ad_root_branch.md).
+
+### `make-root-branch`
+
+Admits an exact polynomial family and a selected simple real root with a certified isolating interval.
+
+### `root-branch-step`
+
+Certifies continuation across a whole parameter step using interval Newton and a root-count certificate.
+
+### `root-branch-enclosure`
+
+Returns the certified root enclosure at the current parameter.
+
+### `root-branch-time`
+
+Returns the exact current parameter value.
+
+### `root-branch-sensitivity`
+
+Returns an exact interval enclosure for the implicit derivative on the admitted branch.
+
+### `verify-root-branch-step`
+
+Recomputes the recorded step certificate and checks it against the supplied branch state.
