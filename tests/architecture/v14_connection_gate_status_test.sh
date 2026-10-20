@@ -40,18 +40,29 @@ esac
 # BUILD_DIR accepts a checkout-relative or absolute directory and reports a
 # missing directory as a setup error (2), without attempting a build.
 missing_build="$root/.scratch/v14-gate-missing-build-$$"
+empty_build="$root/.scratch/v14-gate-empty-build-$$"
+mkdir -p "$empty_build"
+trap 'rm -rf "$empty_build"' EXIT
 set +e
 BUILD_DIR="$missing_build" bash "$gate" >/dev/null 2>&1
 missing_status=$?
 set -e
 [ "$missing_status" -eq 2 ] || { echo "FAIL: missing BUILD_DIR status was $missing_status, expected 2" >&2; exit 1; }
-for missing in "$missing_build" "${missing_build#$root/}"; do
+for build_path in "$empty_build" "${empty_build#$root/}"; do
     set +e
-    BUILD_DIR="$missing" bash "$root/tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh" >/dev/null 2>&1
+    BUILD_DIR="$build_path" bash "$root/tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh" >/dev/null 2>&1
     missing_status=$?
     set -e
-    [ "$missing_status" -eq 2 ] || { echo "FAIL: metrics missing BUILD_DIR status was $missing_status, expected 2" >&2; exit 1; }
+    [ "$missing_status" -eq 2 ] || { echo "FAIL: empty BUILD_DIR status was $missing_status, expected 2" >&2; exit 1; }
 done
+
+# The shared isolation init must not replace either script's WORK cleanup.
+for smoke in "$root/tests/v1_2_edge_cases/http_server_smoke_test.sh" \
+             "$root/tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh"; do
+    rg -Fq 'ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init' "$smoke"
+    rg -Fq "trap 'eshkol_test_isolation_cleanup; rm -rf \"\$WORK\"' EXIT" "$smoke"
+done
+
 case "$out" in
     *"COUNTS 1 1"*) ;;
     *) printf 'FAIL: unverified probe accounting changed\n%s\n' "$out" >&2; exit 1 ;;

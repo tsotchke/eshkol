@@ -34,7 +34,7 @@ RUN="$BUILD_DIR_PATH/eshkol-run"
 
 if [ ! -x "$RUN" ]; then
     echo "FAIL: $RUN not built"
-    exit 0
+    exit 2
 fi
 
 WORK=$(mktemp -d -t eshkol_metrics_http.XXXXXX)
@@ -167,7 +167,8 @@ cat > "$WORK/metrics_http.esk" <<'EOF'
 EOF
 
 source "$ROOT/scripts/lib/test_isolation.sh"
-eshkol_test_isolation_init "metrics-http-roundtrip"
+ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init "metrics-http-roundtrip"
+trap 'eshkol_test_isolation_cleanup; rm -rf "$WORK"' EXIT
 ESHKOL_TEST_TIMEOUT_FORCE_PYTHON=1 ESHKOL_LIB_DIR="$BUILD_DIR_PATH" ESHKOL_PATH="$ROOT" eshkol_test_timeout "$RUN_TIMEOUT" "$RUN" -r "$WORK/metrics_http.esk"
 rc=$?
 if [ "$rc" -eq 124 ]; then

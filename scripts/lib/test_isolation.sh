@@ -97,7 +97,7 @@ seconds = float(sys.argv[1])
 argv = sys.argv[2:]
 is_windows = os.name == "nt"
 
-def kill_tree(force):
+def kill_tree(force=False, signum=signal.SIGTERM):
     if is_windows:
         try:
             subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
@@ -106,14 +106,17 @@ def kill_tree(force):
             pass
         return
     try:
-        os.killpg(child.pid, signal.SIGKILL if force else signal.SIGTERM)
+        os.killpg(child.pid, signal.SIGKILL if force else signum)
     except ProcessLookupError:
         pass
 
 def forward_signal(signum, _frame):
     # The caller may itself be cancelled by a disk guard or CI. Forward the
     # same signal to the owned process group, then reap it before exiting.
-    kill_tree(False)
+    # Prevent nested delivery while waiting or escalating.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    kill_tree(signum=signum)
     try:
         child.wait(timeout=2)
     except subprocess.TimeoutExpired:

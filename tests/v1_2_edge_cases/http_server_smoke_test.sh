@@ -206,7 +206,8 @@ cat > "$WORK/http_server.esk" <<'EOF'
 EOF
 
 source "$ROOT/scripts/lib/test_isolation.sh"
-eshkol_test_isolation_init "http-server-smoke"
+ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init "http-server-smoke"
+trap 'eshkol_test_isolation_cleanup; rm -rf "$WORK"' EXIT
 ESHKOL_TEST_TIMEOUT_FORCE_PYTHON=1 ESHKOL_LIB_DIR="$BUILD_DIR_PATH" ESHKOL_PATH="$ROOT" eshkol_test_timeout "$RUN_TIMEOUT" "$RUN" -r "$WORK/http_server.esk"
 rc=$?
 if [ "$rc" -eq 124 ]; then
