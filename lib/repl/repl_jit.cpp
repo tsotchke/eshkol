@@ -21,6 +21,7 @@
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>  // For the SW-10 limit poll symbol
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
+#include "eshkol/core/net.h"
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -1824,6 +1825,17 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_rational_binary_tagged_ptr);
     ADD_SYMBOL(eshkol_rational_compare_tagged_ptr);
     ADD_SYMBOL(eshkol_bignum_compare_tagged);
+    // Bounded numeric-address networking, shared by FFI and native AOT.
+    ADD_SYMBOL(eshkol_net_open);
+    ADD_SYMBOL(eshkol_net_accept);
+    ADD_SYMBOL(eshkol_net_read);
+    ADD_SYMBOL(eshkol_net_write);
+    ADD_SYMBOL(eshkol_net_sendto);
+    ADD_SYMBOL(eshkol_net_recvfrom);
+    ADD_SYMBOL(eshkol_net_address);
+    ADD_SYMBOL(eshkol_net_port);
+    ADD_SYMBOL(eshkol_net_nonblocking);
+    ADD_SYMBOL(eshkol_net_close);
     ADD_SYMBOL(eshkol_resident_open);
     ADD_SYMBOL(eshkol_resident_close);
     ADD_SYMBOL(eshkol_resident_enter);
