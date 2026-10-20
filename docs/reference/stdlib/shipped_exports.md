@@ -488,6 +488,41 @@ See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and i
 See [algebraic_linalg.md](algebraic_linalg.md) for this exported procedure and its source-backed contract.
 
 
+## `core.algebraic_update`
+
+Source: `lib/core/algebraic_update.esk`. Exactness, update policy, residual,
+positivity and ownership constraints are documented in
+[algebraic_update.md](algebraic_update.md).
+
+### `algebraic-update-factor`
+
+Creates an owned exact factor for a square matrix, optionally requiring positive definiteness.
+
+### `algebraic-update`
+
+Returns a bounded exact low-rank update for `A + U V^T`.
+
+### `algebraic-update-symmetric`
+
+Applies a signed weighted symmetric update to an admitted positive-definite factor.
+
+### `algebraic-update-solve`
+
+Solves the updated exact matrix system and checks the full-domain residual.
+
+### `algebraic-update-solve-transpose`
+
+Solves the transpose of the updated exact matrix and checks the full-domain residual.
+
+### `algebraic-update-pullback`
+
+Returns the exact solution and an adjoint pullback for matrix and right-hand-side cotangents.
+
+### `algebraic-update-info`
+
+Returns the update route, rank, factorization-attempt counters and correction depth.
+
+
 ## `core.polynomial_exact`
 
 Source: `lib/core/polynomial_exact.esk`. Signatures and semantic constraints are documented in [polynomial_exact.md](polynomial_exact.md).

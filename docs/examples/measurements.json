@@ -2869,6 +2869,20 @@
       "output_lines": 0,
       "note": "Focused local ORC, VM and O3 AOT routes are recorded separately; release measurements remain pending.",
       "not_run_reason": "Not run in the configured release measurement suite."
+    },
+    "examples/algebraic_updates.esk": {
+      "source_sha256": "da8239d8a8211279d3a215ca8f8a4c99cf4a155e0919db42ab646b6b5231107d",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "Focused PR804 ORC, VM and direct O3 AOT runs passed; configured release measurements remain NOT-RUN.",
+      "not_run_reason": "No configured release measurement receipt exists; focused qualification against the frozen engine snapshot is separate."
     }
   }
 }

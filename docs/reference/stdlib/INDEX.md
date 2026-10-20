@@ -8,7 +8,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Modules: 80** (plus `stdlib` itself and the module system page) — **provided symbols: 946** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Modules: 81** (plus `stdlib` itself and the module system page) — **provided symbols: 953** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -37,6 +37,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.algebraic_field`](../../../lib/core/algebraic_field.esk) | no | [algebraic_field.md](algebraic_field.md) | `make-algebraic-field` `algebraic-field-degree` `algebraic-field-polynomial` `algebraic-generator` `algebraic-element` `algebraic-coefficients` `algebraic-add` `algebraic-sub` `algebraic-scale` `algebraic-mul` `algebraic-inverse` `algebraic-zero?` `algebraic-equal?` `algebraic-rational` `algebraic-enclosure` `algebraic-sign` `make-algebraic-embedding` `make-algebraic-compositum` `algebraic-field-certificate` |
 | [`core.algebraic_domain`](../../../lib/core/algebraic_domain.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-domain` `algebraic-domain-ref` |
 | [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-solve-transpose` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` `algebraic-factor-positive-definite?` |
+| [`core.algebraic_update`](../../../lib/core/algebraic_update.esk) | no | [algebraic_update.md](algebraic_update.md) | `algebraic-update-factor` `algebraic-update` `algebraic-update-symmetric` `algebraic-update-solve` `algebraic-update-solve-transpose` `algebraic-update-pullback` `algebraic-update-info` |
 | [`core.ad.algebraic_implicit`](../../../lib/core/ad/algebraic_implicit.esk) | no | [ad_algebraic_implicit.md](ad_algebraic_implicit.md) | `algebraic-ad-system-root` `algebraic-ad-system-residual` |
 | [`core.ad.algebraic_incremental`](../../../lib/core/ad/algebraic_incremental.esk) | no | [ad_algebraic_incremental.md](ad_algebraic_incremental.md) | `make-algebraic-incremental-plan` `algebraic-incremental-new` `algebraic-incremental-step` `algebraic-incremental-output` `algebraic-incremental-info` `algebraic-incremental-moment-ref` |
 | [`core.ad.algebraic_reverse`](../../../lib/core/ad/algebraic_reverse.esk) | no | [ad_algebraic_reverse.md](ad_algebraic_reverse.md) | `algebraic-value-and-pullback` `algebraic-reverse-value` `algebraic-reverse-constant` `algebraic-reverse-add` `algebraic-reverse-sub` `algebraic-reverse-mul` `algebraic-reverse-inverse` `algebraic-reverse-pow` `algebraic-hvp` |
@@ -155,6 +156,13 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.algebraic_linalg` | `algebraic-factor-summary` | [algebraic-factor-summary](shipped_exports.md#algebraic-factor-summary) |
 | `core.algebraic_linalg` | `algebraic-matrix-mul` | [algebraic-matrix-mul](shipped_exports.md#algebraic-matrix-mul) |
 | `core.algebraic_linalg` | `algebraic-solve` | [algebraic-solve](shipped_exports.md#algebraic-solve) |
+| `core.algebraic_update` | `algebraic-update-factor` | [algebraic-update-factor](shipped_exports.md#algebraic-update-factor) |
+| `core.algebraic_update` | `algebraic-update` | [algebraic-update](shipped_exports.md#algebraic-update) |
+| `core.algebraic_update` | `algebraic-update-symmetric` | [algebraic-update-symmetric](shipped_exports.md#algebraic-update-symmetric) |
+| `core.algebraic_update` | `algebraic-update-solve` | [algebraic-update-solve](shipped_exports.md#algebraic-update-solve) |
+| `core.algebraic_update` | `algebraic-update-solve-transpose` | [algebraic-update-solve-transpose](shipped_exports.md#algebraic-update-solve-transpose) |
+| `core.algebraic_update` | `algebraic-update-pullback` | [algebraic-update-pullback](shipped_exports.md#algebraic-update-pullback) |
+| `core.algebraic_update` | `algebraic-update-info` | [algebraic-update-info](shipped_exports.md#algebraic-update-info) |
 | `core.polynomial_exact` | `exact-poly` | [exact-poly](shipped_exports.md#exact-poly) |
 | `core.polynomial_exact` | `exact-poly-zero?` | [exact-poly-zero?](shipped_exports.md#exact-poly-zero) |
 | `core.polynomial_exact` | `exact-poly-sub` | [exact-poly-sub](shipped_exports.md#exact-poly-sub) |

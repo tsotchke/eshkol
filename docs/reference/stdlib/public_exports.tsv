@@ -151,3 +151,10 @@ lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-step
 lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-output
 lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-ref
 lib/core/dbsp/tensor_circuit.esk	3	provide	tensor-circuit-work
+lib/core/algebraic_update.esk	4	provide	algebraic-update-factor
+lib/core/algebraic_update.esk	4	provide	algebraic-update
+lib/core/algebraic_update.esk	4	provide	algebraic-update-symmetric
+lib/core/algebraic_update.esk	4	provide	algebraic-update-solve
+lib/core/algebraic_update.esk	4	provide	algebraic-update-solve-transpose
+lib/core/algebraic_update.esk	4	provide	algebraic-update-pullback
+lib/core/algebraic_update.esk	4	provide	algebraic-update-info

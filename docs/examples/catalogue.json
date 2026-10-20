@@ -203,6 +203,52 @@
       ]
     },
     {
+      "path": "examples/algebraic_updates.esk",
+      "source_sha256": "da8239d8a8211279d3a215ca8f8a4c99cf4a155e0919db42ab646b6b5231107d",
+      "title": "Guarded exact low-rank updates",
+      "kind": "example",
+      "purpose": "Reuse exact factors through bounded nonsymmetric and symmetric low-rank matrix updates.",
+      "algorithm": "Apply a checked Woodbury correction and transpose correction, verify full-domain residuals, and fall back atomically to a full factorization when a signed SPD batch has an inadmissible intermediate.",
+      "domain": "Square 2x2 systems over Q(sqrt(2)); the focused suite also covers certified algebraic fields and nested AD owners, with dimensions 1–32 and rank at most eight.",
+      "arithmetic": "Exact rational coefficients and exact algebraic operations; the example uses no floating conversion, approximation or finite differences.",
+      "validation": "Six assertions compare nonsymmetric, transpose, symmetric and signed-batch solutions with independently derived exact rational formulas, check the correction route and factor reuse, and print RESULT: PASS or exit nonzero.",
+      "limitations": "This example covers small dense systems and selected signed updates. Bounded factorization counters describe route behavior; they establish no wall-clock speedup or coefficient-growth bound.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.algebraic_update, core.algebraic_linalg and core.ad.algebraic.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": "(require stdlib)"
+        },
+        {
+          "line": 7,
+          "text": "(define base (algebraic-update-factor field (vector (vector 2 1) (vector 0 3))))"
+        },
+        {
+          "line": 17,
+          "text": "(check \"known updated solution\" (and (same (vector-ref x 0) 2) (same (vector-ref x 1) -5)))"
+        },
+        {
+          "line": 23,
+          "text": "(define identity-spd (algebraic-update-factor field (vector (vector 1 0) (vector 0 1)) #t))"
+        },
+        {
+          "line": 29,
+          "text": "(define rescued (algebraic-update-symmetric identity-spd"
+        },
+        {
+          "line": 37,
+          "text": "(display \"PASS: algebraic_updates\") (newline) (display \"RESULT: PASS\") (newline)"
+        }
+      ],
+      "literature_review": "The exact solution formulas are derived directly from the two displayed rational matrices; no external literature claim is made.",
+      "references": [],
+      "key_output": [
+        "^RESULT: PASS$"
+      ]
+    },
+    {
       "path": "examples/algebraic_sparse.esk",
       "source_sha256": "b39bad3265799ab2414e8af5a57d60a3ab0d1a5fad18860e64fd4d045cedc5b5",
       "title": "Exact sparse algebraic curvature",
