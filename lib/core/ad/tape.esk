@@ -38,7 +38,7 @@
          tape-add tape-sub tape-mul tape-div
          tape-sin tape-cos tape-exp tape-log tape-neg
          tape-square tape-sqrt tape-tanh tape-sigmoid tape-relu tape-pow
-         tape-gradient tape-snapshot tape-restore
+         tape-gradient tape-pullback tape-seal! tape-snapshot tape-restore
          ;; introspection hooks (ESH-0195, P10 checkpointing): O(1)-space
          ;; accessors so callers can measure/bound how large a tape has grown,
          ;; e.g. to compare a checkpointed reverse pass's peak tape size
@@ -86,7 +86,32 @@
 ;; prepending (so `ops` is in reverse-chronological order — exactly the reverse
 ;; topological order needed for the backward pass).
 ;; An op is a list: (output-node input-nodes backward-closure).
-(define (make-tape) (vector '() '()))
+;; Optional scalar protocol: #(copy zero one add zero? [metadata]).
+;; Ordinary numeric tapes retain their historical two-slot representation.
+(define (make-tape . protocol)
+  (if (null? protocol) (vector '() '())
+      (let ((ops (car protocol)))
+        (if (not (and (= (length protocol) 1) (vector? ops) (>= (vector-length ops) 5)))
+            (error "Expected a scalar tape protocol"))
+        (vector '() '() ops #f))))
+(define (tape-protocol t) (if (= (vector-length t) 4) (vector-ref t 2) #f))
+(define (tape-copy t value)
+  (let ((ops (tape-protocol t))) (if ops ((vector-ref ops 0) value) value)))
+(define (tape-zero t value)
+  (let ((ops (tape-protocol t))) (if ops ((vector-ref ops 1)) (val-zero-like value))))
+(define (tape-one t)
+  (let ((ops (tape-protocol t))) (if ops ((vector-ref ops 2)) 1.0)))
+(define (tape-check-node t n)
+  (if (and (tape-protocol t)
+           (not (and (vector? n) (= (vector-length n) 3) (eq? (vector-ref n 2) t))))
+      (error "Node belongs to a different tape")) n)
+(define (tape-seal! t)
+  (if (tape-protocol t) (vector-set! t 3 #t)) t)
+(define (tape-new-node t value)
+  (if (and (tape-protocol t) (vector-ref t 3)) (error "Tape is sealed"))
+  (let ((value (tape-copy t value)))
+    (tape-register-node! t (if (tape-protocol t)
+      (vector value (tape-zero t value) t) (vector value (tape-zero t value))))))
 (define (tape-ops t) (vector-ref t 0))
 (define (tape-nodes t) (vector-ref t 1))
 
@@ -112,8 +137,8 @@
 (define (tape-node-count t) (tape-count-list (tape-nodes t)))
 
 ;; Leaf nodes (gradient targets / constants).
-(define (tape-input t value) (tape-register-node! t (vector value (val-zero-like value))))
-(define (tape-const t value) (tape-register-node! t (vector value (val-zero-like value))))
+(define (tape-input t value) (tape-new-node t value))
+(define (tape-const t value) (tape-new-node t value))
 
 ;; ── Custom op ──
 ;; inputs   : list of input nodes
@@ -122,7 +147,8 @@
 ;;            The closure captures whatever forward context it needs.
 ;; Returns the new output node.
 (define (record-op! t inputs out-value backward)
-  (let ((out (tape-register-node! t (vector out-value (val-zero-like out-value)))))
+  (tape-for-each (lambda (n) (tape-check-node t n)) inputs)
+  (let ((out (tape-new-node t out-value)))
     (tape-record! t out inputs backward)
     out))
 
@@ -256,33 +282,34 @@
 
 ;; ── Reverse pass ──
 ;; Distribute a list of input-grads onto a list of input-nodes (pairwise).
-(define (tape-distribute! ins grads)
+(define (tape-distribute! t ins grads)
+  (if (tape-protocol t)
+      (if (not (= (length ins) (length grads))) (error "Pullback contribution count differs")))
   (if (and (pair? ins) (pair? grads))
-      (begin
-        (node-grad-add! (car ins) (car grads))
-        (tape-distribute! (cdr ins) (cdr grads)))))
-
-;; Zero every node's gradient (so gradient can be called repeatedly). The zero
-;; matches the node's value shape (0.0 for scalars, a zero vector for tensors).
+      (let* ((n (tape-check-node t (car ins))) (ops (tape-protocol t))
+             (g (tape-copy t (car grads))))
+        (node-grad-set! n (if ops ((vector-ref ops 3) (node-grad n) g)
+                             (val-add (node-grad n) g)))
+        (tape-distribute! t (cdr ins) (cdr grads)))))
 (define (tape-zero-grads! t)
-  (tape-for-each (lambda (n) (node-grad-set! n (val-zero-like (node-value n)))) (tape-nodes t)))
-
-;; tape-gradient: reverse-mode from `output`, then read gradients at `targets`.
-;; `targets` is a list of nodes; returns a list of gradients in the same order.
+  (tape-for-each (lambda (n) (node-grad-set! n (tape-zero t (node-value n)))) (tape-nodes t)))
+;; One reverse engine serves numeric tapes and explicit coefficient protocols.
+(define (tape-pullback t output targets seed)
+  (tape-check-node t output)
+  (tape-for-each (lambda (n) (tape-check-node t n)) targets)
+  (let ((seed (tape-copy t seed)) (ops (tape-protocol t)))
+    (tape-zero-grads! t)
+    (node-grad-set! output seed)
+    (tape-for-each
+      (lambda (op)
+        (let ((g (node-grad (car op))))
+          (if (if ops (not ((vector-ref ops 4) g))
+                  (or (vector? g) (not (= g 0.0))))
+              (tape-distribute! t (cadr op) ((caddr op) g)))))
+      (tape-ops t))
+    (tape-map1 (lambda (n) (tape-copy t (node-grad n))) targets)))
 (define (tape-gradient t output targets)
-  (tape-zero-grads! t)
-  (node-grad-set! output 1.0)
-  (tape-for-each
-    (lambda (op)
-      (let* ((out (car op))
-             (ins (cadr op))
-             (backward (caddr op))
-             (g (node-grad out)))
-        ;; process tensor adjoints unconditionally; skip only zero scalars
-        (if (or (vector? g) (not (= g 0.0)))
-            (tape-distribute! ins (backward g)))))
-    (tape-ops t))            ; reverse-chronological (prepended) = reverse topo order
-  (tape-map1 node-grad targets))
+  (tape-pullback t output targets (tape-one t)))
 
 ;; ── snapshot / restore ──
 ;; Capture the current node VALUES (for replay); restore writes them back.

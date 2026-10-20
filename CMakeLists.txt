@@ -13130,3 +13130,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_frontiers "examples/algebraic_frontiers.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_incremental_example "examples/algebraic_incremental.esk")
 endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_reverse "tests/stdlib/algebraic_reverse_test.esk")
+endif()
