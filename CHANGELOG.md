@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Exact algebraic calculus spans composed fields and maintained objectives.**
+  Add certified field composition and nested derivatives (#793), exact matrix
+  calculus (#794), coupled polynomial root towers (#795), preflighted packed
+  products (#796), sparse exact Hessians (#797), and live polynomial moments
+  with exact parameter gradients (#798). Preserve explicit arithmetic and
+  shape limits, defensive results, and refusal of unsupported inputs. (#838)
+- **Event-loop evidence runs in isolation.** Add a source/build-bound producer
+  for the existing ICC criterion, checking all 27 named assertions on uncached
+  ORC and AOT with stable source, compiler, runtime and stdlib artifacts.
+  Local qualification covers kqueue; other backends need their own evidence.
+  The sparse-curvature example now checks its exact analytic results and emits
+  the verdict required by its configured acceptance tests. (#838)
+
 - **Exact algebraic computation composes with finite differentiation.** Add
   optional polynomial and selected real algebraic-field arithmetic, together
   with field-valued dual, hyperdual and Taylor carriers and checked implicit
@@ -61,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zero, round-trip through `number->string` and `string->number`.
 
 ## [1.3.6-evolve] - 2026-10-15
+
+Published on 2026-10-19 ([release](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)).
+The preparation record below retains the intended date and source-stage contract.
 
 PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.
 The final measurement contract requires <!-- release-record:ctest -->CTest **823/823**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->.
