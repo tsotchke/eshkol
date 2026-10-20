@@ -650,7 +650,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Exact restart equivalence for a standing DBSP circuit
 
-Source: [dbsp_checkpoint_restart.esk](../examples/dbsp_checkpoint_restart.esk#L1). SHA-256: `b8cc0fb5d79b9682eef476d9fc85627516674c64562fc1da3cfacc7ed46bda90`.
+Source: [dbsp_checkpoint_restart.esk](../examples/dbsp_checkpoint_restart.esk#L1). SHA-256: `82e606ccea7e2a25fc7f97f645da4483109ec29e96ad5f1532fab31616eb8007`.
 
 **References:**
 

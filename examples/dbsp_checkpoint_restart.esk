@@ -21,8 +21,14 @@
 (define before-restart (checkpoint-example-step (checkpoint-example-step (template) 1 delta-one) 2 delta-two))
 (define saved-bytes (dbsp-resumable-checkpoint before-restart))
 (define resumed (checkpoint-example-step (dbsp-resumable-restore (template) saved-bytes) 3 delta-three))
+(define expected-output
+  (zset-from-weighted (list (list 1 '(pear 1/3)) (list 1 '(plum 2/5)))))
 (check "exact visible output matches after the tick-two restart"
   (zset=? (dbsp-resumable-output uninterrupted) (dbsp-resumable-output resumed)))
+(check "three-tick visible output matches the closed-form exact Z-set"
+  (zset=? (dbsp-resumable-output uninterrupted) expected-output))
+(check "both execution paths finish at logical tick three"
+  (and (= (dbsp-resumable-tick uninterrupted) 3) (= (dbsp-resumable-tick resumed) 3)))
 (check "full logical checkpoint is canonical after restart"
   (string=? (dbsp-resumable-checkpoint uninterrupted) (dbsp-resumable-checkpoint resumed)))
 (display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)

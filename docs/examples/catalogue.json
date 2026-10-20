@@ -505,7 +505,7 @@
     },
     {
       "path": "examples/dbsp_checkpoint_restart.esk",
-      "source_sha256": "b8cc0fb5d79b9682eef476d9fc85627516674c64562fc1da3cfacc7ed46bda90",
+      "source_sha256": "82e606ccea7e2a25fc7f97f645da4483109ec29e96ad5f1532fab31616eb8007",
       "title": "Exact restart equivalence for a standing DBSP circuit",
       "kind": "example",
       "purpose": "Compare a three-tick exact-data DBSP run with the same run restored from a checkpoint after tick two.",
