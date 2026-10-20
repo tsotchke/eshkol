@@ -3613,6 +3613,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_
     add_test(NAME tensor_validation_test COMMAND tensor_validation_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/string_to_list_runtime_test.cpp")
+    add_executable(string_to_list_runtime_test
+        tests/core/string_to_list_runtime_test.cpp)
+    target_compile_features(string_to_list_runtime_test PRIVATE cxx_std_17)
+    target_include_directories(string_to_list_runtime_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(string_to_list_runtime_test PRIVATE eshkol-runtime)
+    add_test(NAME string_to_list_runtime_test COMMAND string_to_list_runtime_test)
+    set_tests_properties(string_to_list_runtime_test PROPERTIES TIMEOUT 30)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
     add_executable(ad_tape_zero_gradients_test tests/core/ad_tape_zero_gradients_test.cpp)
     target_compile_features(ad_tape_zero_gradients_test PRIVATE cxx_std_20)
@@ -13299,6 +13311,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/derived_operator_test.esk")
     set_tests_properties(derived_operator_vm PROPERTIES
         TIMEOUT 900 LABELS "ad;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
+# Unicode string->list uses the same self-asserting fixture in native modes.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME string_to_list_unicode_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/string_to_list_unicode_test.esk"
+            -L"${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME string_to_list_unicode_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/string_to_list_unicode_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/string_to_list_unicode_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(string_to_list_unicode_jit string_to_list_unicode_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        TIMEOUT 600 PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Wave 2 acceptance: root_branch
+if(ESHKOL_BUILD_TESTS)
+    add_test(NAME root_branch_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/root_branch_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME root_branch_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/root_branch_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/root_branch_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(root_branch_jit root_branch_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# The root-branch fixture must execute on the VM, not a renamed AOT driver.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME root_branch_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/root_branch_test.esk")
+    set_tests_properties(root_branch_vm PROPERTIES
+        TIMEOUT 600
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "RESULT: PASS"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")

@@ -1,0 +1,13 @@
+;; Same valid-input program for old and new VM; construction outside the loop.
+(define n 8192)
+(define passes 32)
+(define s (make-string n (integer->char 955)))
+(define checksum 0)
+(do ((i 0 (+ i 1))) ((= i passes))
+  (let ((xs (string->list s)))
+    (if (and (= (length xs) n)
+             (= (char->integer (car xs)) 955)
+             (= (char->integer (list-ref xs (- n 1))) 955))
+        #t (error "conversion oracle failed"))
+    (set! checksum (+ checksum (length xs)))))
+(display checksum) (newline)

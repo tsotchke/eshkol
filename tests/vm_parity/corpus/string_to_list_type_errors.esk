@@ -1,0 +1,4 @@
+; Both native entry paths must raise a catchable error for non-strings.
+(display (guard (e (#t "caught")) (string->list 17) "missed")) (newline)
+(define convert string->list)
+(display (guard (e (#t "caught")) (convert #f) "missed")) (newline)

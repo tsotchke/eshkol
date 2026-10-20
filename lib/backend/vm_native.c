@@ -5287,6 +5287,39 @@ static const double* vm_fg_seq_doubles(VM* vm, Value v, int* out_n) {
 
 static void vm_raise_error_msg(VM* vm, const char* msg);   /* defined below */
 
+/* Shared implementation for direct and first-class string->list calls. */
+static void vm_exec_string_to_list(VM* vm) {
+    Value value = vm_pop(vm);
+    if (!is_heap_type(vm, value, HEAP_STRING)) {
+        vm_raise_error_msg(vm, "string->list: expected string");
+        return;
+    }
+    VmString* string = (VmString*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+    if (!string) {
+        vm_raise_error_msg(vm, "string->list: expected string");
+        return;
+    }
+
+    Value result = NIL_VAL;
+    int32_t tail = -1;
+    int pos = 0;
+    while (pos < string->byte_len) {
+        int codepoint = vm_utf8_decode(string->data, string->byte_len, &pos);
+        int32_t cell = heap_alloc(&vm->heap);
+        if (cell < 0) {
+            vm_raise_error_msg(vm, "string->list: allocation failed");
+            return;
+        }
+        vm->heap.objects[cell]->type = HEAP_CONS;
+        vm->heap.objects[cell]->cons.car = (Value){.type = VAL_CHAR, .as.i = codepoint};
+        vm->heap.objects[cell]->cons.cdr = NIL_VAL;
+        if (tail < 0) result = PAIR_VAL(cell);
+        else vm->heap.objects[tail]->cons.cdr = PAIR_VAL(cell);
+        tail = cell;
+    }
+    vm_push(vm, result);
+}
+
 /**
  * @brief Coerce @p v to a tensor operand for @p op_name, or RAISE.
  *
@@ -12950,27 +12983,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         break;
     }
-    case 565: { /* string->list — convert string to list of character codepoints */
-        Value s_val = vm_pop(vm);
-        if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            int len = vm_string_length(s);
-            Value result = NIL_VAL;
-            for (int i = len - 1; i >= 0; i--) {
-                int cp = vm_string_ref(s, i);
-                int32_t p = heap_alloc(&vm->heap);
-                if (p < 0) break;
-                vm->heap.objects[p]->type = HEAP_CONS;
-                vm->heap.objects[p]->cons.car = (Value){.type = VAL_CHAR, .as.i = cp >= 0 ? cp : 0};
-                vm->heap.objects[p]->cons.cdr = result;
-                result = PAIR_VAL(p);
-            }
-            vm_push(vm, result);
-        } else {
-            vm_push(vm, NIL_VAL);
-        }
-        break;
-    }
+    case 565: vm_exec_string_to_list(vm); break; /* string->list */
     case 566: { /* string-copy */
         Value s_val = vm_pop(vm);
         VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
@@ -17023,22 +17036,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 219: vm_exec_vec_ref(vm); break; /* vector-ref */
     case 220: vm_exec_vec_set(vm); break; /* vector-set! */
     case 221: vm_exec_vec_len(vm); break; /* vector-length */
-    case 222: { /* string->list */
-        Value s_val = vm_pop(vm);
-        Value result = NIL_VAL;
-        if (s_val.type == VAL_STRING) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            if (s) for (int i = s->char_len - 1; i >= 0; i--) {
-                int cp = vm_string_ref(s, i);
-                int32_t p = heap_alloc(&vm->heap); if (p < 0) break;
-                vm->heap.objects[p]->type = HEAP_CONS;
-                vm->heap.objects[p]->cons.car = (Value){.type = VAL_CHAR, .as.i = cp};
-                vm->heap.objects[p]->cons.cdr = result;
-                result = PAIR_VAL(p);
-            }
-        }
-        vm_push(vm, result); break;
-    }
+    case 222: vm_exec_string_to_list(vm); break; /* string->list */
     case 223: { /* list->string */
         Value lst = vm_pop(vm);
         vm_push(vm, vm_list_to_string_value(vm, lst));
