@@ -13198,3 +13198,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_update "tests/stdlib/algebraic_update_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_update_example "examples/algebraic_updates.esk")
 endif()
+# Exact admission of a received linear solve, with cache-disabled JIT and AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certified_solve_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_solve_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_solve_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME certified_solve_direct_vm COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_solve_direct_vm.eskb"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    endif()
+    set(_certified_solve_tests certified_solve_jit certified_solve_aot)
+    if(TARGET eshkol-vm-standalone-test)
+        list(APPEND _certified_solve_tests certified_solve_direct_vm)
+    endif()
+    set_tests_properties(${_certified_solve_tests} PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()

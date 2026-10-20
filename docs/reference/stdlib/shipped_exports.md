@@ -834,3 +834,15 @@ Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk
 ### `tensor-circuit-work`
 
 Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
+
+## `core.certified_solve`
+
+Source: `lib/core/certified_solve.esk`; see [certified_solve.md](certified_solve.md) for the exact rational admission contract, uncertainty bounds, and theorem limits.
+
+### `certify-linear-solve`
+
+Computes an exact a-posteriori componentwise error enclosure for a received candidate when the weighted contraction bound is strictly below one.
+
+### `verify-linear-solve-certificate`
+
+Recomputes the receipt from caller-supplied sources; it trusts no condition estimate or certificate flag.
