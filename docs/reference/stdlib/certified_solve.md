@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/certified_solve.esk
+  - tests/stdlib/certified_solve_test.esk
+  - examples/mathematics_certified_linear_solve.esk
+---
+
 # `core.certified_solve`
 
 `(require core.certified_solve)` checks received approximate solves using exact

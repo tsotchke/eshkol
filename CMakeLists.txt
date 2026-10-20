@@ -3766,6 +3766,35 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# Independent exact closed-form oracle and strict-boundary example coverage.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(_certified_linear_example "${CMAKE_CURRENT_SOURCE_DIR}/examples/mathematics_certified_linear_solve.esk")
+    add_test(NAME certified_linear_solve_example_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${_certified_linear_example}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_linear_solve_example_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${_certified_linear_example}"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_linear_solve_example_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set(_certified_linear_example_tests certified_linear_solve_example_jit certified_linear_solve_example_aot)
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME vm_mathematics_certified_linear_solve COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+            "-DESHKOL_SOURCE=${_certified_linear_example}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/mathematics_certified_linear_solve.eskb"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        list(APPEND _certified_linear_example_tests vm_mathematics_certified_linear_solve)
+    endif()
+    set_tests_properties(${_certified_linear_example_tests} PROPERTIES TIMEOUT 900
+        LABELS "examples;certified;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
 # Shared exact cyclotomic arithmetic; the two consumers remain gated below.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(NAME cyclotomic_jit

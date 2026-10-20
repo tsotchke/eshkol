@@ -1,0 +1,49 @@
+;; Exact a-posteriori admission checked against independent Cramer's rule.
+(require stdlib)
+(require core.certified_solve)
+
+(define (check name ok)
+  (if (not ok) (error (string-append "FAIL: " name))))
+(define (inside? box value) (and (<= (car box) value) (<= value (cdr box))))
+
+;; Independently solve A*x=b by the scalar 2x2 determinant formulas.
+(define a11 2)
+(define a12 1)
+(define a21 1)
+(define a22 3)
+(define b1 1)
+(define b2 2)
+(define determinant (- (* a11 a22) (* a12 a21)))
+(define cramer-x
+  (vector (/ (- (* b1 a22) (* a12 b2)) determinant)
+          (/ (- (* a11 b2) (* b1 a21)) determinant)))
+(define A (vector (vector a11 a12) (vector a21 a22)))
+(define b (vector b1 b2))
+(define candidate (vector 1/4 1/2))
+(define R (vector (vector 3/5 -1/5) (vector -1/5 2/5)))
+(define result (certify-linear-solve A b candidate R))
+(define boxes (vector-ref result 2))
+(check "exact Cramer solution is (1/5, 3/5)"
+  (equal? cramer-x (vector 1/5 3/5)))
+(check "a-posteriori boxes contain independent Cramer answer"
+  (and (eq? (vector-ref result 1) 'proved)
+       (inside? (vector-ref boxes 0) (vector-ref cramer-x 0))
+       (inside? (vector-ref boxes 1) (vector-ref cramer-x 1))))
+(check "proved receipt verifies against its sources"
+  (verify-linear-solve-certificate result A b candidate R))
+
+;; At theta=1 the strict contraction theorem does not admit a box.
+;; Verification only checks receipt/source equality: it can succeed for UNKNOWN.
+(define identity (vector (vector 1 0) (vector 0 1)))
+(define zero-inverse (vector (vector 0 0) (vector 0 0)))
+(define exact-candidate (vector 1 0))
+(define boundary (certify-linear-solve identity exact-candidate exact-candidate zero-inverse))
+(check "theta=1 remains unknown"
+  (and (eq? (vector-ref boundary 1) 'unknown)
+       (= (vector-ref (vector-ref boundary 3) 11) 1)))
+(check "verified UNKNOWN receipt is not admitted"
+  (and (verify-linear-solve-certificate boundary identity exact-candidate exact-candidate zero-inverse)
+       (not (eq? (vector-ref boundary 1) 'proved))))
+
+(display "Exact Cramer oracle, strict contraction boundary, and receipt/admission distinction: PASS") (newline)
+(display "RESULT: PASS") (newline)
