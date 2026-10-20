@@ -3878,6 +3878,36 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endif()
 endif()
 
+# Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    set(ESHKOL_DBSP_EXAMPLES
+        dbsp_tensor_circuit_example mathematics_dbsp_tensor_circuit)
+    list(LENGTH ESHKOL_DBSP_EXAMPLES _dbsp_len)
+    math(EXPR _dbsp_last "${_dbsp_len} - 1")
+    foreach(_dbsp_i RANGE 0 ${_dbsp_last} 2)
+        math(EXPR _dbsp_j "${_dbsp_i} + 1")
+        list(GET ESHKOL_DBSP_EXAMPLES ${_dbsp_i} _dbsp_name)
+        list(GET ESHKOL_DBSP_EXAMPLES ${_dbsp_j} _dbsp_file)
+        set(_dbsp_src "${CMAKE_CURRENT_SOURCE_DIR}/examples/${_dbsp_file}.esk")
+        if(EXISTS "${_dbsp_src}")
+            add_test(NAME ${_dbsp_name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_dbsp_src}")
+            set_tests_properties(${_dbsp_name}_jit PROPERTIES
+                TIMEOUT 180
+                ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/dbsp-jit-cache"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+            add_test(NAME ${_dbsp_name}_aot
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_dbsp_name}_aot' '${_dbsp_src}' && '${CMAKE_CURRENT_BINARY_DIR}/${_dbsp_name}_aot'")
+            set_tests_properties(${_dbsp_name}_aot PROPERTIES
+                TIMEOUT 240
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+        endif()
+    endforeach()
+endif()
+
 # AI-discovered-algorithm witness examples: each program is a compile-and-run
 # exact-verdict check reproducing a published machine-discovered construction
 # (AlphaTensor rank-47/rank-23 F2 matrix multiplication, a FunSearch cap-set
@@ -13058,6 +13088,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endfunction()
     eshkol_add_dbsp_acceptance(dbsp_aggregate "tests/stdlib/dbsp_aggregate_test.esk" "PASS")
     eshkol_add_dbsp_acceptance(dbsp_ad "tests/stdlib/dbsp_ad_test.esk" "PASS")
+    eshkol_add_dbsp_acceptance(tensor_circuit "tests/stdlib/tensor_circuit_test.esk" "PASS")
     eshkol_add_dbsp_acceptance(streaming_least_squares "examples/streaming_least_squares.esk" "ALL PASS")
 endif()
 

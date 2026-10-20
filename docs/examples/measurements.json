@@ -2855,6 +2855,20 @@
       "ctest": [],
       "key_output": [],
       "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
+    },
+    "examples/mathematics_dbsp_tensor_circuit.esk": {
+      "source_sha256": "0c43a271bcc34a56f3d37dccbd69d416bd8a56ed37c152a3d4f383911c585e37",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "output_lines": 0,
+      "note": "Focused local ORC, VM and O3 AOT routes are recorded separately; release measurements remain pending.",
+      "not_run_reason": "Not run in the configured release measurement suite."
     }
   }
 }

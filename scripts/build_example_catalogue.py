@@ -34,8 +34,8 @@ class CatalogueError(ValueError):
     pass
 
 
-FAMILIES = ("ESHKOL_NS_EXAMPLES", "ESHKOL_IPM_EXAMPLES", "ESHKOL_AI_WITNESS_EXAMPLES")
-FAMILY_PREFIX = {"ESHKOL_NS_EXAMPLES": "ns", "ESHKOL_IPM_EXAMPLES": "ipm", "ESHKOL_AI_WITNESS_EXAMPLES": "aiw"}
+FAMILIES = ("ESHKOL_NS_EXAMPLES", "ESHKOL_IPM_EXAMPLES", "ESHKOL_AI_WITNESS_EXAMPLES", "ESHKOL_DBSP_EXAMPLES")
+FAMILY_PREFIX = {"ESHKOL_NS_EXAMPLES": "ns", "ESHKOL_IPM_EXAMPLES": "ipm", "ESHKOL_AI_WITNESS_EXAMPLES": "aiw", "ESHKOL_DBSP_EXAMPLES": "dbsp"}
 FIELDS = ("title", "purpose", "algorithm", "domain", "arithmetic", "validation", "limitations", "prerequisites", "literature_review")
 AI_NAMES = {"mathematics_jacobian_counterexample", "mathematics_alphatensor_gf2", "mathematics_alphatensor_3x3_gf2", "mathematics_funsearch_cap_set"}
 CATALOGUE_SCHEMA = "eshkol.example-catalogue.v2"
@@ -647,7 +647,7 @@ sources:
     ai=marker(ai,'ai-inventory',ai_block)
     readme=(root/'examples/README.md').read_text()
     overview=[f"The reviewed catalogue covers **{len(entries)} programs**, including **{len(math)} mathematics programs**. Start with the [complete guide](../docs/EXAMPLES.md) or the [mathematics guide](../docs/MATHEMATICS_EXAMPLES.md) for published results, references, algorithms, domains, arithmetic, checks, limits, measured outcomes and per-program commands.",
-        f"The general runner discovers **{len(flat)} flat sources** for native AOT, with **{len(quantum)} quantum-conditional programs** and the existing declared exclusions. The nested [WGSL generator](wgsl_artifact/README.md) follows its artifact pipeline. Dedicated mathematics registration contains NS **{matrix['ESHKOL_NS_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_NS_EXAMPLES']['criteria']}/{matrix['ESHKOL_NS_EXAMPLES']['ctest_entries']}**, IPM **{matrix['ESHKOL_IPM_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_IPM_EXAMPLES']['criteria']}/{matrix['ESHKOL_IPM_EXAMPLES']['ctest_entries']}** and AI-witness **{matrix['ESHKOL_AI_WITNESS_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_AI_WITNESS_EXAMPLES']['criteria']}/{matrix['ESHKOL_AI_WITNESS_EXAMPLES']['ctest_entries']}** programs/criteria/JIT-AOT entries, under the authored build condition.",
+        f"The general runner discovers **{len(flat)} flat sources** for native AOT, with **{len(quantum)} quantum-conditional programs** and the existing declared exclusions. The nested [WGSL generator](wgsl_artifact/README.md) follows its artifact pipeline. Dedicated registration contains NS **{matrix['ESHKOL_NS_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_NS_EXAMPLES']['criteria']}/{matrix['ESHKOL_NS_EXAMPLES']['ctest_entries']}**, IPM **{matrix['ESHKOL_IPM_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_IPM_EXAMPLES']['criteria']}/{matrix['ESHKOL_IPM_EXAMPLES']['ctest_entries']}**, AI-witness **{matrix['ESHKOL_AI_WITNESS_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_AI_WITNESS_EXAMPLES']['criteria']}/{matrix['ESHKOL_AI_WITNESS_EXAMPLES']['ctest_entries']}** and DBSP **{matrix['ESHKOL_DBSP_EXAMPLES']['distinct_sources']}/{matrix['ESHKOL_DBSP_EXAMPLES']['criteria']}/{matrix['ESHKOL_DBSP_EXAMPLES']['ctest_entries']}** programs/criteria/JIT-AOT entries, under the authored build condition.",
         outcome_summary(entries, measurements, "programs").replace("](#", "](../docs/EXAMPLES.md#") if measurements is None else
         outcome_summary(entries, measurements, "programs").replace("](#mathematics-", "](../docs/MATHEMATICS_EXAMPLES.md#mathematics-").replace("](#", "](../docs/EXAMPLES.md#"),
         "Each entry distinguishes asserted checks from printed diagnostics. Cross-host byte equality and backend dispatch need their own measured evidence.",

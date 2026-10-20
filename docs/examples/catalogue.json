@@ -4889,6 +4889,47 @@
         "^Passed: 3 Failed: 0$",
         "^RESULT: PASS$"
       ]
+    },
+    {
+      "path": "examples/mathematics_dbsp_tensor_circuit.esk",
+      "source_sha256": "0c43a271bcc34a56f3d37dccbd69d416bd8a56ed37c152a3d4f383911c585e37",
+      "title": "Maintained named-axis tensor contractions",
+      "kind": "mathematics",
+      "purpose": "Maintain a named-axis matrix product through simultaneous signed input changes and retain the prior version.",
+      "algorithm": "Compile a fixed contraction of two 2×2 inputs, then compare the maintained result with an independently calculated dense product for every output cell.",
+      "domain": "Two fixed 2×2 matrices with distinct named axes and dyadic floating-point values.",
+      "arithmetic": "Native floating-point tensor cells. Integer-valued and dyadic cases are compared with strict equality because all displayed inputs, updates and results are exactly representable in binary64.",
+      "validation": "Thirteen assertions compare every output cell with direct dense formulas before and after simultaneous signed edits and verify historical-version stability.",
+      "limitations": "Small illustrative matrices only; no release measurement, general performance claim, or bound on total update allocation.",
+      "prerequisites": "Built compiler/stdlib and core.dbsp.tensor_circuit.",
+      "review_status": "source-inspected",
+      "registrations": [
+        {
+          "family": "ESHKOL_DBSP_EXAMPLES",
+          "criterion": "dbsp_tensor_circuit_example",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";;; Maintain a named-axis matrix product under simultaneous signed changes."
+        },
+        {
+          "line": 3,
+          "text": "(require core.dbsp.tensor_circuit)"
+        }
+      ],
+      "literature_review": "The repository DBSP tensor-circuit API reference documents the maintained-expression contract.",
+      "references": [
+        {
+          "citation": "The repository DBSP tensor-circuit API reference documents the maintained-expression contract.",
+          "verification": "repository"
+        }
+      ]
     }
   ],
   "runner_contract": {

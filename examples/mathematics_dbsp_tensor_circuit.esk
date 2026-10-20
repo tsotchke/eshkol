@@ -1,0 +1,90 @@
+;;; Maintain a named-axis matrix product under simultaneous signed changes.
+(require stdlib)
+(require core.dbsp.tensor_circuit)
+
+(define passed 0)
+(define failed 0)
+(define (check name ok)
+  (if ok (set! passed (+ passed 1))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (make-2x2 values)
+  (let ((out (make-tensor '(2 2) 0.0)))
+    (let loop ((i 0) (rest values))
+      (if (not (null? rest))
+          (begin (tensor-set! out i (car rest)) (loop (+ i 1) (cdr rest)))))
+    out))
+
+(define (reference a b i j)
+  (+ (* (tensor-ref a (+ (* i 2) 0)) (tensor-ref b (+ (* 0 2) j)))
+     (* (tensor-ref a (+ (* i 2) 1)) (tensor-ref b (+ (* 1 2) j)))))
+
+(define exact-a (make-2x2 '(1 2 3 4)))
+(define exact-b (make-2x2 '(5 6 7 8)))
+(define exact-circuit
+  (make-tensor-circuit
+    (list (list 'a '(i k) exact-a) (list 'b '(k j) exact-b))
+    '(contract a b (k))))
+(define exact-output (tensor-circuit-output exact-circuit))
+(let rows ((i 0))
+  (if (< i 2)
+      (begin
+        (let cols ((j 0))
+          (if (< j 2)
+              (begin
+                (check "exact output matches independent dense product"
+                       (= (tensor-ref exact-output (+ (* i 2) j))
+                          (reference exact-a exact-b i j)))
+                (cols (+ j 1)))))
+        (rows (+ i 1)))))
+
+;; Dyadic inputs and updates make every strict floating comparison exact.
+(define float-a (make-2x2 '(1.0 2.0 3.0 4.0)))
+(define float-b (make-2x2 '(0.5 -1.0 2.0 0.25)))
+(define float-circuit
+  (make-tensor-circuit
+    (list (list 'a '(i k) float-a) (list 'b '(k j) float-b))
+    '(contract a b (k))))
+(define initial-reference (make-2x2 (list (reference float-a float-b 0 0)
+                                         (reference float-a float-b 0 1)
+                                         (reference float-a float-b 1 0)
+                                         (reference float-a float-b 1 1))))
+(let rows ((i 0))
+  (if (< i 2)
+      (begin
+        (let cols ((j 0))
+          (if (< j 2)
+              (begin
+                (check "strict float initial output matches independent dense product"
+                       (= (tensor-circuit-ref float-circuit (list i j))
+                          (tensor-ref initial-reference (+ (* i 2) j))))
+                (cols (+ j 1)))))
+        (rows (+ i 1)))))
+
+(define da (tensor-delta '(2 2) '(((0 1) -1.5))))
+(define db (tensor-delta '(2 2) '(((1 0) 0.5))))
+(define tick (tensor-circuit-step float-circuit (list (list 'a da) (list 'b db))))
+(define next-a (tensor-apply-delta float-a da))
+(define next-b (tensor-apply-delta float-b db))
+(define updated-reference (make-2x2 (list (reference next-a next-b 0 0)
+                                         (reference next-a next-b 0 1)
+                                         (reference next-a next-b 1 0)
+                                         (reference next-a next-b 1 1))))
+(let rows ((i 0))
+  (if (< i 2)
+      (begin
+        (let cols ((j 0))
+          (if (< j 2)
+              (begin
+                (check "strict float simultaneous signed update matches dense reference"
+                       (= (tensor-circuit-ref (vector-ref tick 0) (list i j))
+                          (tensor-ref updated-reference (+ (* i 2) j))))
+                (cols (+ j 1)))))
+        (rows (+ i 1)))))
+(check "historical version remains unchanged"
+       (= (tensor-circuit-ref float-circuit '(0 0)) (tensor-ref initial-reference 0)))
+
+(display "Passed: ") (display passed) (display " Failed: ") (display failed) (newline)
+(if (> failed 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: mathematics_dbsp_tensor_circuit") (newline)
+(display "RESULT: ALL PASS") (newline)

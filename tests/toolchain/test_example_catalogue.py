@@ -204,8 +204,8 @@ class CatalogueTests(unittest.TestCase):
 
     def test_real_catalogue_completeness_exact_witness_and_scope_boundaries(self):
         data=json.loads((ROOT/'docs/examples/catalogue.json').read_text())
-        self.assertEqual(len(data['entries']),79)
-        self.assertEqual(sum(e['kind']=='mathematics' for e in data['entries']),46)
+        self.assertEqual(len(data['entries']),80)
+        self.assertEqual(sum(e['kind']=='mathematics' for e in data['entries']),47)
         pages=json.loads((ROOT/'site/pages.json').read_text())['pages']
         for name in ('docs/EXAMPLES.md','docs/MATHEMATICS_EXAMPLES.md'):
             self.assertEqual(sum(page['file']==name for page in pages),1)
