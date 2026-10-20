@@ -46417,7 +46417,7 @@ int eshkol_add_stdlib_identity(LLVMModuleRef module_ref, const char* symbol) {
     if (it == g_llvm_modules.end() || !it->second->module) return -1;
 
     Module& module = *it->second->module;
-    if (module.getGlobalVariable(symbol, true)) return -1;
+    if (module.getNamedValue(symbol)) return -1;
     LLVMContext& context = module.getContext();
     Constant* initializer = ConstantDataArray::getString(context, symbol, true);
     auto* identity = new GlobalVariable(

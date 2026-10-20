@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2562/5497 public symbols documented (46.6%), 2935 undocumented.
+**Coverage:** 2565/5501 public symbols documented (46.6%), 2936 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-417/844 symbols documented.
+420/848 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -29,7 +29,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
-| [`llvm_backend.h`](llvm_backend.md) | 84 | 4 |
+| [`llvm_backend.h`](llvm_backend.md) | 85 | 5 |
 | [`logger.h`](logger.md) | 42 | 26 |
 | [`memory_abi_v2.h`](memory_abi_v2.md) | 20 | 15 |
 | [`model_io.h`](model_io.md) | 8 | 5 |
@@ -37,6 +37,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`module_visibility.h`](module_visibility.md) | 1 | 0 |
 | [`platform_runtime.h`](platform_runtime.md) | 52 | 38 |
 | [`runtime_exports.h`](runtime_exports.md) | 48 | 29 |
+| [`stdlib_identity.h`](stdlib_identity.md) | 3 | 2 |
 | [`tensor_cross_entropy.h`](tensor_cross_entropy.md) | 5 | 0 |
 | [`tensor_validation.h`](tensor_validation.md) | 4 | 0 |
 | [`tensorcore_adapter.h`](tensorcore_adapter.md) | 37 | 0 |

@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/algebraic_field.esk
+  - tests/stdlib/algebraic_field_test.esk
+---
+
 # `core.algebraic_field` — selected exact real number fields
 
 `(make-algebraic-field coefficients prime root-index [split-budget])` admits a

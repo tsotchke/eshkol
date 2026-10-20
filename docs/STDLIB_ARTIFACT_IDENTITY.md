@@ -1,3 +1,16 @@
+---
+kind: reference
+status: current
+owner-area: runtime
+since: v1.4.0-connection
+sources:
+  - CMakeLists.txt
+  - inc/eshkol/stdlib_identity.h
+  - exe/eshkol-run.cpp
+  - lib/repl/repl_jit.cpp
+  - tests/toolchain/stdlib_identity_test.sh
+---
+
 # Precompiled standard-library identity
 
 `stdlib.o` and `stdlib.bc` carry the same externally visible identity symbol.

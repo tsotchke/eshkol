@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/dbsp/circuit.esk
+  - tests/stdlib/dbsp_circuit_test.esk
+---
+
 # `core.dbsp.circuit` — standing relational circuits
 
 `(make-dbsp-circuit inputs declarations output)` builds a pure immutable

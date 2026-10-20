@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/polynomial_exact.esk
+  - tests/stdlib/polynomial_exact_test.esk
+---
+
 # `core.polynomial_exact` — checked rational polynomials
 
 Coefficients are ordinary generic vectors, low degree first. `(exact-poly x)`
