@@ -11,6 +11,9 @@ LLVM_AS="${7:-}"
 LLC="${8:-}"
 WORK="$(mktemp -d "$WORK_ROOT/stdlib-identity.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+# Exercise all stamped/unstamped controls through one writable cache. Sharing
+# the source while changing the embedded marker must never reuse the old IR.
+export ESHKOL_AOT_MODULE_CACHE_DIR="$WORK/module-cache"
 
 mkdir -p "$WORK/source" "$WORK/matching" "$WORK/wrong-release" \
     "$WORK/wrong-source" "$WORK/wrong-abi" "$WORK/unstamped" \
