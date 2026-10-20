@@ -26,6 +26,13 @@
   (let ((residual (algebraic-ad-system-residual context equations roots)) (zero (algebraic-ad-constant context 0)))
     (and (algebraic-ad-equal? (vector-ref residual 0) zero)
          (algebraic-ad-equal? (vector-ref residual 1) zero))))
+(define caller-roots (vector alpha alpha))
+(define owned-roots (algebraic-ad-system-root context equations caller-roots))
+(vector-set! caller-roots 0 99)
+(define owned-residual (algebraic-ad-system-residual context equations owned-roots))
+(vector-set! owned-residual 0 #f)
+(check "root and residual vectors own storage independent of caller vectors"
+  (algebraic-ad-equal? (vector-ref owned-roots 0) (vector-ref roots 0)))
 (define hyper (make-algebraic-hyperdual field))
 (define hp (algebraic-ad-value hyper '(2 1 0 0)))
 (define hq (algebraic-ad-value hyper '(2 0 1 0)))
