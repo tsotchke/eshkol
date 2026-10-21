@@ -13,7 +13,7 @@ independent surfaces and reports any DISAGREEMENT:
   1. doc mention        docs/reference/stdlib/*.md  (### `(name ...` headers)
   2. manifest entry     tests/coverage/language_surface.json builtins/prelude/
                         special_forms
-  3. native registration  manifest backends intersect {native, native_llvm},
+  3. LLVM dispatch evidence  manifest backend includes `native_llvm` (dispatch-name evidence only),
                         or any other vehicle the native engine reaches the
                         name by: a declared special form (parser + codegen),
                         the compiled-in prelude, a core/stdlib module
@@ -244,7 +244,7 @@ def cross_check(docs, manifest, backends, mirrors, syntax, prelude,
         """
         if bk is None:
             bk = backends.get(nm, set())
-        return (bool(bk & {"native", "native_llvm"}) or nm in defined
+        return (bool(bk & {"native_llvm"}) or nm in defined
                 or nm in syntax or nm in prelude)
 
     dis = set()
@@ -321,7 +321,7 @@ def self_test():
              vm_lowerings=collect_vm_compiler_lowerings_from_source(
                  wrapped_vm_call)),
          set()),
-        ("an unrecognized native-only builtin remains VM-missing",
+        ("an unrecognized LLVM-only builtin remains VM-missing",
          run(backends={"widget": {"native_llvm"}}),
          {"vm_missing::widget"}),
         ("a VM recognizer that emits an error remains VM-missing",
@@ -345,8 +345,8 @@ def self_test():
          run(backends={"widget": {"vm"}, "gadget": {"vm"}},
              mirrors={"widget": "gadget"}),
          {"native_missing::widget", "native_missing::gadget"}),
-        ("a native-only builtin still reports the VM side",
-         run(backends={"widget": {"native"}}), {"vm_missing::widget"}),
+        ("a LLVM-only builtin still reports the VM side",
+         run(backends={"widget": {"native_llvm"}}), {"vm_missing::widget"}),
     ]
     failures = 0
     for label, got, want in cases:

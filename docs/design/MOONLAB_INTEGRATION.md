@@ -327,9 +327,8 @@ Stage S1, and Section 5.a for the WASM honesty label.
 To add a core builtin backed by C (the `quantum-random` re-point, and any core
 `quantum-*` primitives that are not agent-gated):
 1. Name->id registration: `lib/backend/eshkol_vm.c` `BUILTINS[]` (VM) and the
-   corresponding native/LLVM table in `lib/backend/eshkol_compiler.c`
-   (`language_surface.json._meta.sources`: `native_builtins` =
-   `eshkol_compiler.c BUILTINS[]`, `vm_builtins` = `eshkol_vm.c BUILTINS[]`).
+   corresponding VM builtin table in `lib/backend/eshkol_vm.c`
+   (`language_surface.json._meta.sources`: `vm_builtins` = `eshkol_vm.c BUILTINS[]`, sole core ID/arity authority; `native_llvm` retains dispatch names as separate source evidence only).
 2. VM native handler: a `vm_*.c` (here `vm_native.c`) dispatch case.
 3. AOT/JIT codegen: the `func_name` dispatch spine in the `*_codegen.cpp` family
    (`llvm-codegen` component in `.icc/architecture-model.yaml:39-57`).

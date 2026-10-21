@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """gen_language_surface.py — extract the COMPLETE Eshkol language surface.
 
-Ground truth for TOTAL-LANGUAGE exposure-engine coverage. Parses the compiler
-and VM source directly (no hand-maintained list to drift) and emits a single
+Ground truth for TOTAL-LANGUAGE exposure-engine coverage. Parses production
+VM, LLVM dispatch, parser, and library sources directly and emits a single
 machine-readable manifest describing every construct a program can invoke:
 
-  * BUILTINS      — the native name->(id,arity) dispatch tables registered by
-                    the LLVM/native backend (lib/backend/eshkol_compiler.c) and
-                    the bytecode VM (lib/backend/eshkol_vm.c). Each entry records
-                    which backend(s) register it, and — where the source row is
+  * BUILTINS      — the VM name->(id,arity) registration table is the sole
+                    core ID/arity authority. LLVM dispatch names remain separate
+                    source evidence and make no ABI claim. Each entry records
+                    VM registration and LLVM name evidence, and — where the source row is
                     annotated `/* mirrors: <public name> */` — the public
                     construct the row is one engine's private spelling of
                     (`mirrors`).
@@ -16,8 +16,7 @@ machine-readable manifest describing every construct a program can invoke:
                     than a call (lib/frontend/parser.cpp get_operator_type plus
                     the directly-dispatched forms begin/define-library/delay/...),
                     keyed to their eshkol_op_t (inc/eshkol/eshkol.h).
-  * PRELUDE       — higher-order library functions defined in the Scheme prelude
-                    compiled into every program (map/filter/fold-*/for-each/...).
+  * PRELUDE       — definitions in the VM bootstrap and canonical lib/stdlib.esk.
 
 Every entry is categorised by a risk/kind bucket that drives exposure-engine
 prioritisation (numeric, list_pair, vector, string_char, control_flow,
@@ -37,7 +36,6 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-COMPILER_C = os.path.join(REPO, "lib", "backend", "eshkol_compiler.c")
 VM_C = os.path.join(REPO, "lib", "backend", "eshkol_vm.c")
 LLVM_CPP = os.path.join(REPO, "lib", "backend", "llvm_codegen.cpp")
 PARSER = os.path.join(REPO, "lib", "frontend", "parser.cpp")
@@ -276,21 +274,18 @@ def extract_special_forms():
     return forms
 
 
-# --- prelude higher-order library functions (compiled into every program) ----
-def extract_prelude_defs():
-    names = set()
-    for path in (COMPILER_C,):
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-        # only the scheme_prelude string literal region
-        m = re.search(r"scheme_prelude\s*=(.*?);\n", text, re.S)
-        region = m.group(1) if m else text
-        for name in re.findall(r'\(define \(([a-zA-Z][a-zA-Z0-9!?*/<>=._+-]*)', region):
-            names.add(name)
-    # canonical R7RS higher-order names that must be reachable
-    names.update({"map", "filter", "fold-left", "fold-right", "for-each",
-                  "reduce", "compose", "any", "every", "find", "take", "drop"})
-    return sorted(names)
+# --- canonical stdlib definitions (production source) -----------------------
+STDLIB = os.path.join(REPO, "lib", "stdlib.esk")
+
+def extract_stdlib_defs():
+    with open(STDLIB, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    return {
+        name for name in re.findall(
+            r"^\s*\(define\s+\(?([a-zA-Z][a-zA-Z0-9!?*/<>=._+-]*)",
+            text, re.M)
+        if not name.startswith("_")
+    }
 
 
 # --- the bytecode VM's own prelude (lib/backend/vm_prelude_source.h) --------
@@ -583,14 +578,12 @@ def categorize(name):
 
 
 def build_manifest():
-    comp = extract_builtin_table(COMPILER_C)
     vm = extract_builtin_table(VM_C)
-    mirrors = dict(extract_mirror_annotations(COMPILER_C))
-    mirrors.update(extract_mirror_annotations(VM_C))
+    mirrors = extract_mirror_annotations(VM_C)
     aot = extract_llvm_dispatch()
     ops = extract_ast_ops()
     forms = extract_special_forms()
-    prelude = extract_prelude_defs()
+    stdlib = extract_stdlib_defs()
     vm_prelude = extract_vm_prelude_defs()
 
     # AOT-dispatched names that are also declared special forms are syntax, not
@@ -598,7 +591,7 @@ def build_manifest():
     form_names = set(forms)
     aot_builtins = {n for n in aot if n not in form_names}
 
-    raw_names = sorted(set(comp) | set(vm) | aot_builtins)
+    raw_names = sorted(set(vm) | aot_builtins)
 
     # Fold ALIASES into their canonical spelling before assigning one
     # language-surface record per construct: an alternate spelling for the
@@ -616,24 +609,19 @@ def build_manifest():
     builtins = []
     for name in names:
         member_names = [name] + aliases_by_canonical.get(name, [])
-        in_c = any(m in comp for m in member_names)
         in_v = any(m in vm or m in vm_prelude for m in member_names)
         in_a = any(m in aot_builtins for m in member_names)
-        ids = sorted(set().union(*(set(comp.get(m, {}).get("ids", []))
-                                   for m in member_names),
-                                 *(set(vm.get(m, {}).get("ids", []))
+        ids = sorted(set().union(*(set(vm.get(m, {}).get("ids", []))
                                    for m in member_names)))
         arity = None
         minimum = None
         for m in member_names:
-            source = comp.get(m, vm.get(m, {}))
+            source = vm.get(m, {})
             arity = source.get("arity")
             if arity is not None:
                 minimum = vm.get(m, {}).get("min_arity", arity)
                 break
         backends = []
-        if in_c:
-            backends.append("native")
         if in_v:
             backends.append("vm")
         if in_a:
@@ -653,16 +641,8 @@ def build_manifest():
             entry["aliases"] = sorted(aliases_by_canonical[name])
         mirror = next((mirrors[m] for m in member_names if m in mirrors), None)
         if mirror is not None:
-            # A `mirrors:` row stands in for a public name the OTHER engine
-            # reaches by a different vehicle. Once the row is registered on
-            # both engines it is an ordinary construct and the annotation is
-            # dead weight that would go on excusing a future asymmetry, so a
-            # redundant one is an error rather than a no-op.
-            if "native" in backends or "native_llvm" in backends:
-                raise ValueError(
-                    "builtin %r carries a mirrors: annotation but is already "
-                    "registered natively (%s) — drop the annotation"
-                    % (name, "+".join(backends)))
+            # Keep the source relationship even when the spelling is VM-backed;
+            # LLVM name evidence does not make the mirror redundant.
             entry["mirrors"] = mirror
         builtins.append(entry)
 
@@ -700,24 +680,30 @@ def build_manifest():
 
     prelude_entries = []
     builtin_names = set(names)
-    for name in prelude:
+    for name in sorted(set(vm_prelude) | set(stdlib)):
         prelude_entries.append({
             "name": name,
             "category": categorize(name),
             "also_builtin": name in builtin_names,
+            "sources": (["vm_bootstrap"] if name in vm_prelude else []) +
+                       (["stdlib"] if name in stdlib else []),
         })
 
     manifest = {
         "_meta": {
+            "schema_version": 2,
+            "evidence_provenance": ("generated from live production sources; "
+                                    "legacy compiler references are frozen separately"),
             "description": "Complete Eshkol language surface (ground truth for "
                            "exposure-engine coverage).",
             "sources": {
-                "native_builtins": "lib/backend/eshkol_compiler.c BUILTINS[]",
-                "vm_builtins": "lib/backend/eshkol_vm.c BUILTINS[]",
+                "vm_builtins": "lib/backend/eshkol_vm.c BUILTINS[] (sole core ids/arity authority)",
+                "native_llvm": "lib/backend/llvm_codegen.cpp dispatch names only; no ids/arity/ABI claim",
                 "ast_ops": "inc/eshkol/eshkol.h eshkol_op_t",
                 "special_forms": "lib/frontend/parser.cpp get_operator_type + "
                                  "direct dispatch",
-                "prelude": "lib/backend/eshkol_compiler.c scheme_prelude",
+                "vm_bootstrap": "lib/backend/vm_prelude_source.h",
+                "stdlib": "lib/stdlib.esk",
                 "mirrors": "BUILTINS[] rows annotated `/* mirrors: <public "
                            "name> */` — this row is one engine's private "
                            "spelling (arity split, or lower-level handle "
@@ -730,8 +716,6 @@ def build_manifest():
         },
         "counts": {
             "builtins_total": len(builtins),
-            "builtins_in_native_closure_table": sum(1 for b in builtins
-                                                    if "native" in b["backends"]),
             "builtins_in_vm_table": sum(1 for b in builtins
                                         if "vm" in b["backends"]),
             "builtins_in_llvm_aot_dispatch": sum(1 for b in builtins
@@ -805,9 +789,8 @@ def main():
         fh.write(rendered)
     c = manifest["counts"]
     print("Wrote %s" % args.out)
-    print("  builtins: %d (native-closure %d, vm %d, llvm-aot %d, aot-only %d)"
-          % (c["builtins_total"], c["builtins_in_native_closure_table"],
-             c["builtins_in_vm_table"], c["builtins_in_llvm_aot_dispatch"],
+    print("  builtins: %d (vm %d, llvm-aot %d, aot-only %d)"
+          % (c["builtins_total"], c["builtins_in_vm_table"], c["builtins_in_llvm_aot_dispatch"],
              c["builtins_aot_only"]))
     print("  special forms: %d   ast ops: %d   prelude: %d"
           % (c["special_forms"], c["ast_ops"], c["prelude"]))
