@@ -6659,13 +6659,30 @@ private:
 
         if (outlining_metadata_cons) {
             const char* name = "__eshkol_metadata_cons";
-            Function* helper = module->getFunction(name);
+            auto* helper_type = FunctionType::get(int64_type,
+                {arena_ptr->getType(), tagged_value_type, tagged_value_type}, false);
+            // A source procedure can legitimately have the helper's spelling.
+            // Cache its compiler identity in module metadata, independently of
+            // the user-visible symbol namespace. LLVM uniquifies its name.
+            auto* helper_cache = module->getOrInsertNamedMetadata("eshkol.metadata.cons");
+            Function* helper = nullptr;
+            for (auto* entry : helper_cache->operands()) {
+                if (entry->getNumOperands() != 1) continue;
+                auto* value = dyn_cast<ValueAsMetadata>(entry->getOperand(0));
+                auto* candidate = value ? dyn_cast<Function>(value->getValue()) : nullptr;
+                if (candidate && candidate->getParent() == module.get() &&
+                    candidate->getFunctionType() == helper_type &&
+                    candidate->hasFnAttribute("eshkol.metadata.cons") &&
+                    !candidate->isDeclaration()) {
+                    helper = candidate;
+                    break;
+                }
+            }
             if (!helper) {
-                auto* helper_type = FunctionType::get(int64_type,
-                    {arena_ptr->getType(), tagged_value_type, tagged_value_type}, false);
                 helper = Function::Create(helper_type, Function::InternalLinkage,
                                           name, module.get());
                 helper->addFnAttr(Attribute::NoInline);
+                helper->addFnAttr("eshkol.metadata.cons");
                 auto saved_ip = builder->saveIP();
                 auto saved_loc = builder->getCurrentDebugLocation();
                 Function* saved_function = current_function;
@@ -6678,6 +6695,8 @@ private:
                 tagged_->storeConsSlot(cell, false, helper->getArg(1));
                 tagged_->storeConsSlot(cell, true, helper->getArg(2));
                 builder->CreateRet(builder->CreatePtrToInt(cell, int64_type));
+                helper_cache->addOperand(MDNode::get(*context,
+                    {ValueAsMetadata::get(helper)}));
                 current_function = saved_function;
                 builder->restoreIP(saved_ip);
                 builder->SetCurrentDebugLocation(saved_loc);
