@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 97** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1078** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 98** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1080** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -25,6 +25,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|
+| [`core.certified_native_solve`](../../../lib/core/certified_native_solve.esk) | no | [certified_native_solve.md](certified_native_solve.md) | `solve-certified-native` `verify-certified-native-solve` |
 | [`core.ad.tape`](../../../lib/core/ad/tape.esk) | no | [ad_tape.md](ad_tape.md) | `ad-tape-new` `ad-const` `ad-var` `ad-add` `ad-sub` `ad-mul` `ad-div` `ad-sin` `ad-cos` `ad-exp` `ad-log` `ad-sqrt` `ad-neg` `ad-abs` `ad-relu` `ad-sigmoid` `ad-tanh` `ad-backward` `ad-gradient` `ad-node-value` `with-tape` `current-tape` `make-tape` `tape-input` `tape-const` `node-value` `node-grad` `record-op!` `record-fd-op!` `tape-add` `tape-sub` `tape-mul` `tape-div` `tape-sin` `tape-cos` `tape-exp` `tape-log` `tape-neg` `tape-square` `tape-sqrt` `tape-tanh` `tape-sigmoid` `tape-relu` `tape-pow` `tape-gradient` `tape-pullback` `tape-seal!` `tape-snapshot` `tape-restore` |
 | [`core.ad.algebraic_pullback`](../../../lib/core/ad/algebraic_pullback.esk) | no | [ad_algebraic_pullback.md](ad_algebraic_pullback.md) | `algebraic-solve-with-pullback` `algebraic-factor-with-pullback` `algebraic-system-with-pullback` `algebraic-reverse-solve` `algebraic-reverse-system` |
 | [`core.ad.algebraic_qp`](../../../lib/core/ad/algebraic_qp.esk) | no | [ad_algebraic_qp.md](ad_algebraic_qp.md) | `algebraic-qp-solve` `algebraic-qp-solution` `algebraic-qp-info` `algebraic-qp-verify` `algebraic-qp-pullback` |
@@ -141,6 +142,8 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 
 | Source | Export | Reference |
 |---|---|---|
+| `core.certified_native_solve` | `solve-certified-native` | [solve-certified-native](shipped_exports.md#solve-certified-native) |
+| `core.certified_native_solve` | `verify-certified-native-solve` | [verify-certified-native-solve](shipped_exports.md#verify-certified-native-solve) |
 | `core.algebraic_batch` | `make-algebraic-multiplication-plan` | [make-algebraic-multiplication-plan](shipped_exports.md#make-algebraic-multiplication-plan) |
 | `core.algebraic_batch` | `algebraic-batch-mul` | [algebraic-batch-mul](shipped_exports.md#algebraic-batch-mul) |
 | `core.algebraic_domain` | `algebraic-domain` | [algebraic-domain](shipped_exports.md#algebraic-domain) |

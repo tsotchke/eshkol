@@ -224,3 +224,5 @@ lib/core/ad/derived_operator.esk	4	provide	derived-operator-enclosure
 lib/core/certified_nonlinear.esk	4	provide	make-certified-polynomial-system
 lib/core/certified_nonlinear.esk	4	provide	certify-polynomial-root
 lib/core/certified_nonlinear.esk	4	provide	verify-polynomial-root-certificate
+lib/core/certified_native_solve.esk	3	provide	solve-certified-native
+lib/core/certified_native_solve.esk	3	provide	verify-certified-native-solve

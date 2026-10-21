@@ -946,6 +946,18 @@ Writes a checkpoint through the existing atomic file-replacement primitive; call
 
 Reads a bounded checkpoint file and returns it only after verified restoration.
 
+## `core.certified_native_solve`
+
+Source: `lib/core/certified_native_solve.esk`; see [certified_native_solve.md](certified_native_solve.md) for the candidate-generation and exact verification contract.
+
+### `solve-certified-native`
+
+Generates candidates with the native dense solver, then admits a result only through exact verification against the original rational model.
+
+### `verify-certified-native-solve`
+
+Rechecks a proved result against caller-supplied source data and tolerance.
+
 ## `core.certified_solve`
 
 Source: `lib/core/certified_solve.esk`; see [certified_solve.md](certified_solve.md) for the exact rational admission contract, uncertainty bounds, and theorem limits.
