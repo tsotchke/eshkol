@@ -5469,6 +5469,18 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
     if (is_sym(head, "/")) {
         int saved = c->n_locals;
+        if (node->n_children == 2) {
+            /* Scheme's unary division is the reciprocal. Keep it on the same
+             * numeric opcode path as binary division so exact operands remain
+             * exact and inexact operands retain IEEE behavior. Compile the
+             * sole operand once; the constant numerator has no effects. */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));
+            add_local(c, "__operand__");
+            compile_expr(c, node->children[1], 0);
+            chunk_emit(c, OP_DIV, 0);
+            c->n_locals = saved;
+            return;
+        }
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
             add_local(c, "__operand__");
