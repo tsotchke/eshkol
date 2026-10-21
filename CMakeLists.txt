@@ -14899,3 +14899,18 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
         PASS_REGULAR_EXPRESSION "PASS: named-let control flow 8 cases across JIT and AOT"
         FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|LLVM module verification failed")
 endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-static)
+    add_executable(function_cache_type_contract_test tests/toolchain/function_cache_type_contract_test.cpp)
+    target_include_directories(function_cache_type_contract_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_definitions(function_cache_type_contract_test PRIVATE ESHKOL_LLVM_BACKEND_ENABLED=1)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(function_cache_type_contract_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(function_cache_type_contract_test PRIVATE eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME function_cache_type_contract COMMAND function_cache_type_contract_test)
+    set_tests_properties(function_cache_type_contract PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "PASS: function-cache declaration contracts 10 checks"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
