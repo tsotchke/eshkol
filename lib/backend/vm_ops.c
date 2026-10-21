@@ -127,7 +127,7 @@ static void vm_op_arith(VM* vm, char op) {
         /* exact/exact -> exact result (R7RS): native 334 (rational div) reduces
          * the fraction and collapses denom==1 back to an integer, so (/ 1 3) is
          * 1/3 and (/ 6 3) is 2 rather than an inexact float. */
-        if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
+        /* Native 334 also raises a catchable exact-zero condition. */
         vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334);
     }
     /* A bignum must reach the bignum domain: as_number() reads a heap pointer's

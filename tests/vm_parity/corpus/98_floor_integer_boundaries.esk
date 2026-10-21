@@ -8,6 +8,7 @@
 (check "floor remainder MIN/-1" (= (floor-remainder minimum -1) 0))
 (check "modulo MIN/-1" (= (modulo minimum -1) 0))
 (check "remainder MIN/-1" (= (remainder minimum -1) 0))
+(check "exact division promotes MIN/-1" (= (/ minimum -1) promoted))
 (check "quotient control" (= (quotient minimum -1) promoted))
 (check "floor quotient keeps fixnum low bits" (= (floor-quotient 9223372036854775806 2) 4611686018427387903))
 (check "modulo keeps fixnum low bits" (= (modulo 9223372036854775807 2) 1))
