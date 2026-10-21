@@ -73,6 +73,8 @@ inline int finishNativeDebugArtifact(const std::filesystem::path& output,
                        / output.filename();
     std::error_code ec;
     if (!std::filesystem::is_regular_file(dwarf, ec) || ec) return 1;
+    if (!std::filesystem::is_regular_file(bundle / "Contents" / "Info.plist", ec) || ec)
+        return 1;
     // A successful tool exit cannot certify an old bundle left beside a new
     // executable. LLDB associates a dSYM with its image by this UUID.
     const auto image_uuid = nativeDebugUUID(output);
