@@ -1507,6 +1507,41 @@ std::vector<std::string> host_runtime_link_args() {
 
     while (std::getline(stream, item, ';')) {
         if (!item.empty()) {
+#ifdef __APPLE__
+            static constexpr std::string_view openssl_static_marker =
+                "__ESHKOL_OPENSSL_STATIC__/";
+            if (item.rfind(openssl_static_marker, 0) == 0) {
+                const std::string filename = item.substr(openssl_static_marker.size());
+                // The marker is deliberately a two-file allowlist. Resolve it
+                // only beside an installed compiler and reject symlinked or
+                // missing payloads instead of falling back to the build host.
+                if (filename != "libssl.a" && filename != "libcrypto.a") {
+                    args.push_back("/__eshkol_invalid_openssl_static__/" + filename);
+                    continue;
+                }
+                const auto executable_dir = executable_directory();
+                const auto dependency_dir = executable_dir.empty()
+                    ? std::filesystem::path{}
+                    : executable_dir.parent_path() / "lib" / "eshkol" / "runtime-deps";
+                const auto packaged = dependency_dir / filename;
+                std::error_code ec;
+                const auto directory_status = std::filesystem::symlink_status(dependency_dir, ec);
+                const bool safe_directory = !ec &&
+                    std::filesystem::is_directory(directory_status) &&
+                    !std::filesystem::is_symlink(directory_status);
+                ec.clear();
+                const auto file_status = std::filesystem::symlink_status(packaged, ec);
+                if (safe_directory && !ec && std::filesystem::is_regular_file(file_status)) {
+                    args.push_back(std::filesystem::absolute(packaged).string());
+                } else {
+                    // A deliberately nonexistent path makes the linker fail
+                    // closed if the required staged payload is absent or unsafe.
+                    args.push_back(std::filesystem::absolute(
+                        dependency_dir / ("." + filename + ".missing")).string());
+                }
+                continue;
+            }
+#endif
             static constexpr std::string_view cuda_marker =
                 "__ESHKOL_CUDA_LIB__/";
             if (item.rfind(cuda_marker, 0) == 0) {
@@ -1544,6 +1579,44 @@ std::vector<std::string> host_runtime_link_args() {
     auto cuda_args = cuda_runtime_link_args(cuda_libraries);
     args.insert(args.end(), cuda_args.begin(), cuda_args.end());
 
+    return args;
+}
+
+std::vector<std::string> host_llvm_link_args() {
+    std::vector<std::string> args;
+    std::stringstream stream(ESHKOL_HOST_LLVM_LINK_ARGS);
+    std::string item;
+    while (std::getline(stream, item, ';')) {
+        if (item.empty()) {
+            continue;
+        }
+#ifdef __APPLE__
+        if (item == "__ESHKOL_MACOS_LLVM_LINK__") {
+            const auto executable_dir = executable_directory();
+            const auto dependency_dir = executable_dir.empty()
+                ? std::filesystem::path{}
+                : executable_dir.parent_path() / "lib" / "eshkol" / "runtime-deps";
+            std::error_code ec;
+            const auto status = std::filesystem::symlink_status(dependency_dir, ec);
+            const auto llvm_alias = dependency_dir / "libLLVM-21.dylib";
+            ec.clear();
+            const auto file_status = std::filesystem::symlink_status(llvm_alias, ec);
+            if (!ec && std::filesystem::is_directory(status) &&
+                !std::filesystem::is_symlink(status) &&
+                std::filesystem::is_regular_file(file_status)) {
+                const auto package_path = std::filesystem::absolute(dependency_dir).string();
+                args.push_back("-L" + package_path);
+                // Persistent `-r` outputs live outside the package. Their
+                // runpath is resolved from the relocated installed compiler.
+                args.push_back("-Wl,-rpath," + package_path);
+            } else {
+                args.push_back(std::filesystem::absolute(llvm_alias).string());
+            }
+            continue;
+        }
+#endif
+        args.push_back(cxx_driver_link_arg(std::move(item)));
+    }
     return args;
 }
 

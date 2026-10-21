@@ -425,9 +425,31 @@ int64_t eshkol_tls_client_context(const char *ca_file) {
     if (!ctx) return -1;
     int ok = SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION) == 1;
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
-    if (ok) ok = ca_file && ca_file[0]
-        ? SSL_CTX_load_verify_locations(ctx, ca_file, NULL) == 1
-        : SSL_CTX_set_default_verify_paths(ctx) == 1;
+    if (ok && ca_file && ca_file[0]) {
+        ok = SSL_CTX_load_verify_locations(ctx, ca_file, NULL) == 1;
+    } else if (ok) {
+        const char *ssl_cert_file = getenv("SSL_CERT_FILE");
+        const char *ssl_cert_dir = getenv("SSL_CERT_DIR");
+        const char *package_cert_file = getenv("ESHKOL_OPENSSL_CERT_FILE");
+        if (ssl_cert_file != NULL || ssl_cert_dir != NULL ||
+            !package_cert_file || !package_cert_file[0]) {
+            /* Preserve explicit OpenSSL trust-store settings. */
+#ifdef __APPLE__
+            /* Homebrew OpenSSL's OPENSSLDIR is builder-specific. Prefer the
+             * macOS system PEM trust bundle when callers set no override. */
+            if (ssl_cert_file == NULL && ssl_cert_dir == NULL) {
+                ok = SSL_CTX_load_verify_locations(ctx, "/etc/ssl/cert.pem", NULL) == 1;
+                if (!ok) ok = SSL_CTX_set_default_verify_paths(ctx) == 1;
+            } else {
+                ok = SSL_CTX_set_default_verify_paths(ctx) == 1;
+            }
+#else
+            ok = SSL_CTX_set_default_verify_paths(ctx) == 1;
+#endif
+        } else {
+            ok = SSL_CTX_load_verify_locations(ctx, package_cert_file, NULL) == 1;
+        }
+    }
     if (!ok) { SSL_CTX_free(ctx); ERR_clear_error(); return -1; }
     return register_context_id(ctx, TLS_ROLE_CLIENT);
 }

@@ -68,6 +68,16 @@ if(NOT Eshkol_COMPILER)
   endif()
 endif()
 
+# An in-tree compiler and its precompiled stdlib/runtime are one build
+# identity. Resolve artifacts from the compiler target's build directory
+# before system prefixes, so a stale /usr/local install cannot contaminate a
+# positive build-integration fixture.
+set(_ESHKOL_IN_TREE_LIBRARY_DIR "")
+if(TARGET eshkol-run AND
+   "${Eshkol_COMPILER}" STREQUAL "$<TARGET_FILE:eshkol-run>")
+  set(_ESHKOL_IN_TREE_LIBRARY_DIR "$<TARGET_FILE_DIR:eshkol-run>")
+endif()
+
 if(NOT Eshkol_COMPILER)
   message(FATAL_ERROR
     "EshkolCompile: Eshkol_COMPILER not set. "
@@ -247,11 +257,17 @@ function(_eshkol_compile_one ESK_FILE OBJ_FILE OUT_DEPS_VAR
     set(_depfile_args DEPFILE "${_depfile}")
   endif()
 
+  set(_eshkol_compile_env "ESHKOL_PATH=${_eshkol_path}")
+  if(_ESHKOL_IN_TREE_LIBRARY_DIR)
+    list(APPEND _eshkol_compile_env
+      "ESHKOL_LIB_DIR=${_ESHKOL_IN_TREE_LIBRARY_DIR}")
+  endif()
+
   add_custom_command(
     OUTPUT  "${OBJ_FILE}"
     BYPRODUCTS ${_byproducts}
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_dir}"
-    COMMAND "${CMAKE_COMMAND}" -E env "ESHKOL_PATH=${_eshkol_path}"
+    COMMAND "${CMAKE_COMMAND}" -E env ${_eshkol_compile_env}
             "${Eshkol_COMPILER}" ${_flags} "${_abs}"
     DEPENDS "${_abs}" ${Eshkol_COMPILER_DEPENDS} ${DEPENDS_LIST}
     ${_depfile_args}

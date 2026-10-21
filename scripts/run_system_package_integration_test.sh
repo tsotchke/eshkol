@@ -77,6 +77,31 @@ if [ -z "$PREFIX" ]; then
     for f in "$BUILD_DIR"/eshkol-agent-*.a; do
         [ -f "$f" ] && cp "$f" "$PREFIX/lib/eshkol/"
     done
+    if [ "$(uname -s)" = "Darwin" ] &&
+       grep -q '^ESHKOL_RELOCATABLE_MACOS_TLS:BOOL=ON$' "$BUILD_DIR/CMakeCache.txt"; then
+        cache_value() {
+            sed -n "s/^$1:[^=]*=//p" "$BUILD_DIR/CMakeCache.txt" | tail -1
+        }
+        openssl_prefix="$(cache_value OPENSSL_ROOT_DIR)"
+        llvm_config="$(cache_value LLVM_CONFIG_EXECUTABLE)"
+        if [ -z "$openssl_prefix" ] || [ -z "$llvm_config" ]; then
+            echo "FATAL: relocatable macOS package lacks OpenSSL or LLVM CMake metadata" >&2
+            exit 2
+        fi
+        llvm_prefix="$("$llvm_config" --prefix)"
+        zstd_prefix="$(brew --prefix zstd)"
+        openssl_version="$("$openssl_prefix/bin/openssl" version | awk '{print $2}')"
+        llvm_version="$("$llvm_prefix/bin/llvm-config" --version)"
+        zstd_version="$("$zstd_prefix/bin/zstd" --version | sed -E 's/.* v([^, ]+).*/\1/')"
+        python3 "$REPO_ROOT/scripts/stage_macos_openssl_runtime.py" \
+            --openssl-prefix "$openssl_prefix" \
+            --llvm-prefix "$llvm_prefix" \
+            --zstd-prefix "$zstd_prefix" \
+            --package-dir "$PREFIX" \
+            --openssl-version "$openssl_version" \
+            --llvm-version "$llvm_version" \
+            --zstd-version "$zstd_version"
+    fi
     for f in stdlib.o stdlib.bc libeshkol-runtime.a libeshkol-static.a; do
         [ -f "$PREFIX/lib/eshkol/$f" ] && ln -sf "../lib/eshkol/$f" "$PREFIX/lib/$f"
     done

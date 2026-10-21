@@ -477,6 +477,11 @@ std::vector<std::string> cuda_runtime_link_args(
  *         forward-slash paths normalized to backslashes on Windows.
  */
 std::vector<std::string> host_runtime_link_args();
+
+/** @brief Get the configured LLVM linker closure, resolving the macOS
+ *         package marker beside the installed compiler when present.
+ * @return Driver-ready LLVM link arguments. */
+std::vector<std::string> host_llvm_link_args();
 // On macOS, the resolved SDK library directory (<sdk>/usr/lib) discovered at
 // runtime via `xcrun --show-sdk-path`. Adding it to the linker search path lets
 // a bare `-lobjc` resolve on any mac, not just the builder. Empty on non-macOS

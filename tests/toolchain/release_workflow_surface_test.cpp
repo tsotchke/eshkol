@@ -373,6 +373,24 @@ int main(int argc, char** argv) {
          expect_contains(workflow,
                          "python3 scripts/stage_linux_runtime_dependencies.py",
                          "Linux archives stage their relocatable image-codec closure") &&
+         expect_contains(workflow,
+                         "brew install llvm@${LLVM_MAJOR} openssl@3",
+                         "macOS release installs the declared OpenSSL TLS provider") &&
+         expect_contains(workflow,
+                         "-DESHKOL_RELOCATABLE_MACOS_TLS=",
+                         "macOS release configures package-relative AOT TLS links") &&
+         expect_contains(workflow,
+                         "python3 scripts/stage_macos_openssl_runtime.py",
+                         "macOS archives stage and relocate their OpenSSL closure") &&
+         expect_contains(workflow,
+                         "--tls-smoke-source \"tests/network/tls_public_api.esk\"",
+                         "macOS release runs packaged native TLS through AOT and JIT") &&
+         expect_contains(workflow,
+                         "verify_macos_openssl_dependencies",
+                         "macOS package verification rejects non-relocatable TLS references") &&
+         expect_contains(workflow,
+                         "python3 scripts/run_tls_encrypted_key_public_test.py",
+                         "macOS package verification rejects encrypted PEM keys without prompting") &&
          expect_contains(workflow, "apt_install() {",
                          "Linux release dependency installation is retryable") &&
          expect_contains(workflow, "apt-get install -y -o Acquire::Retries=5",
