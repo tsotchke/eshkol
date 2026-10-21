@@ -100,6 +100,7 @@
 ;;        pairs (multi-index is a length-m nonneg-int list).
 ;; ─────────────────────────────────────────────────────────────────────────
 
+(require core.ad.sparsity)
 (provide sparse-hessian sparse-hessian-pat
          sparse-hessian-ref sparse-hessian-nonzeros
          sparse-hessian-row-ptr sparse-hessian-col-idx sparse-hessian-values
@@ -252,48 +253,9 @@
 ;; order vertices by descending degree; forbid colors of neighbours AND
 ;; neighbours-of-neighbours; assign smallest free color.  Returns (color . k)
 ;; where color is a length-m vector of color ids and k the number of colors.
-(define (sg-degree-order adj m)
-  ;; insertion sort of 0..m-1 by descending degree
-  (define (deg i) (sg-length (vector-ref adj i)))
-  (define (ins x lst)
-    (cond ((null? lst) (list x))
-          ((>= (deg x) (deg (car lst))) (cons x lst))
-          (else (cons (car lst) (ins x (cdr lst))))))
-  (let loop ((i 0) (acc '()))
-    (if (< i m) (loop (+ i 1) (ins i acc)) acc)))    ; acc is already descending-degree
-
-;; collect forbidden colors (of colored vertices at distance ≤ 2 from v)
-(define (sg-forbidden adj color v)
-  (let ((nbrs (vector-ref adj v)))
-    (let loop-n ((ns nbrs) (acc '()))
-      (if (pair? ns)
-          (let* ((u (car ns))
-                 (cu (vector-ref color u))
-                 (acc1 (if (>= cu 0) (sg-insert-distinct cu acc) acc)))
-            ;; neighbours-of-neighbour
-            (let loop-w ((ws (vector-ref adj u)) (acc2 acc1))
-              (if (pair? ws)
-                  (let* ((w (car ws))
-                         (cw (vector-ref color w))
-                         (acc3 (if (and (not (= w v)) (>= cw 0))
-                                   (sg-insert-distinct cw acc2) acc2)))
-                    (loop-w (cdr ws) acc3))
-                  (loop-n (cdr ns) acc2))))
-          acc))))
-
-(define (sg-smallest-free forbidden)
-  (let loop ((c 0)) (if (sg-member? c forbidden) (loop (+ c 1)) c)))
-
 (define (sg-color-graph adj m)
-  (let ((color (make-vector m -1))
-        (order (sg-degree-order adj m)))
-    (let loop ((os order) (kmax -1))
-      (if (pair? os)
-          (let* ((v (car os))
-                 (c (sg-smallest-free (sg-forbidden adj color v))))
-            (vector-set! color v c)
-            (loop (cdr os) (if (> c kmax) c kmax)))
-          (cons color (+ kmax 1))))))
+  (if (not (= (vector-length adj) m)) (error "Hessian graph dimension mismatch"))
+  (hessian-color-graph adj))
 
 ;; ── CSR assembly from a symmetric entry list ((i j v) …) ───────────────────
 ;; entries must already include both (i j) and (j i) plus the diagonal.
