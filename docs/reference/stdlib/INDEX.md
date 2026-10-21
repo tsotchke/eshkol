@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 92** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1051** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 93** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1056** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -48,6 +48,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.ad.algebraic_incremental`](../../../lib/core/ad/algebraic_incremental.esk) | no | [ad_algebraic_incremental.md](ad_algebraic_incremental.md) | `make-algebraic-incremental-plan` `algebraic-incremental-new` `algebraic-incremental-step` `algebraic-incremental-output` `algebraic-incremental-info` `algebraic-incremental-moment-ref` |
 | [`core.ad.algebraic_reverse`](../../../lib/core/ad/algebraic_reverse.esk) | no | [ad_algebraic_reverse.md](ad_algebraic_reverse.md) | `algebraic-value-and-pullback` `algebraic-reverse-value` `algebraic-reverse-constant` `algebraic-reverse-add` `algebraic-reverse-sub` `algebraic-reverse-mul` `algebraic-reverse-inverse` `algebraic-reverse-pow` `algebraic-hvp` |
 | [`core.ad.algebraic_sparse`](../../../lib/core/ad/algebraic_sparse.esk) | no | [ad_algebraic_sparse.md](ad_algebraic_sparse.md) | `algebraic-sparse-hessian` `algebraic-sparse-hessian-ref` `algebraic-sparse-hessian-dense` `algebraic-sparse-hessian-summary` |
+| [`core.ad.incremental_reverse`](../../../lib/core/ad/incremental_reverse.esk) | no | [ad_incremental_reverse.md](ad_incremental_reverse.md) | `make-incremental-pullback` `incremental-pullback-step` `incremental-pullback-output` `incremental-pullback-work` `incremental-pullback-info` |
 | [`core.ad.sparsity`](../../../lib/core/ad/sparsity.esk) | no | [ad_sparsity.md](ad_sparsity.md) | `hessian-color-graph` |
 | [`core.algebraic_batch`](../../../lib/core/algebraic_batch.esk) | no | [algebraic_batch.md](algebraic_batch.md) | `make-algebraic-multiplication-plan` `algebraic-batch-mul` |
 | [`core.control.trampoline`](../../../lib/core/control/trampoline.esk) | yes | [control_trampoline.md](control_trampoline.md) | `trampoline` `bounce` `done` |
@@ -163,6 +164,11 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.algebraic_linalg` | `algebraic-factor-solve` | [algebraic-factor-solve](shipped_exports.md#algebraic-factor-solve) |
 | `core.algebraic_linalg` | `algebraic-factor-solve-transpose` | [algebraic-factor-solve-transpose](shipped_exports.md#algebraic-factor-solve-transpose) |
 | `core.algebraic_linalg` | `algebraic-factor-summary` | [algebraic-factor-summary](shipped_exports.md#algebraic-factor-summary) |
+| `core.ad.incremental_reverse` | `make-incremental-pullback` | [`make-incremental-pullback`](shipped_exports.md#make-incremental-pullback) |
+| `core.ad.incremental_reverse` | `incremental-pullback-step` | [`incremental-pullback-step`](shipped_exports.md#incremental-pullback-step) |
+| `core.ad.incremental_reverse` | `incremental-pullback-output` | [`incremental-pullback-output`](shipped_exports.md#incremental-pullback-output) |
+| `core.ad.incremental_reverse` | `incremental-pullback-work` | [`incremental-pullback-work`](shipped_exports.md#incremental-pullback-work) |
+| `core.ad.incremental_reverse` | `incremental-pullback-info` | [`incremental-pullback-info`](shipped_exports.md#incremental-pullback-info) |
 | `core.algebraic_linalg` | `algebraic-matrix-mul` | [algebraic-matrix-mul](shipped_exports.md#algebraic-matrix-mul) |
 | `core.algebraic_linalg` | `algebraic-solve` | [algebraic-solve](shipped_exports.md#algebraic-solve) |
 | `core.algebraic_update` | `algebraic-update-factor` | [algebraic-update-factor](shipped_exports.md#algebraic-update-factor) |
