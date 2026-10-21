@@ -14237,6 +14237,14 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test
 endif()
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME bytevector_constructor_all_routes COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_bytevector_constructor_gate.py"
+        --runner $<TARGET_FILE:eshkol-run> --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>)
+    set_tests_properties(bytevector_constructor_all_routes PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "PASS: bytevector constructor four execution routes"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
+
     add_test(NAME msgpack_wire_all_routes COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_msgpack_gate.py"
         --runner $<TARGET_FILE:eshkol-run> --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>

@@ -10549,6 +10549,142 @@ private:
         return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
+    Function* getOrCreateBytevectorRestWrapper() {
+        static const char* const name = "builtin_bytevector_rest_v1";
+        FunctionType* ty = FunctionType::get(tagged_value_type, {tagged_value_type}, false);
+        Function* fn = nullptr;
+        if (llvm::NamedMDNode* ids = module->getNamedMetadata("eshkol.generated.functions")) {
+            for (unsigned i = 0; i < ids->getNumOperands(); ++i) {
+                llvm::MDNode* record = ids->getOperand(i);
+                if (record->getNumOperands() != 2) continue;
+                auto* function_id = llvm::dyn_cast<llvm::ValueAsMetadata>(record->getOperand(0));
+                auto* kind_id = llvm::dyn_cast<llvm::MDString>(record->getOperand(1));
+                auto* identified_fn = function_id
+                    ? llvm::dyn_cast<Function>(function_id->getValue()) : nullptr;
+                if (identified_fn && kind_id &&
+                    kind_id->getString() == "bytevector-rest-v1") {
+                    fn = identified_fn;
+                    break;
+                }
+            }
+        }
+        if (fn) {
+            if (fn->getFunctionType() != ty ||
+                !fn->hasFnAttribute("eshkol.generated.bytevector-rest.v1")) {
+                eshkol_error("bytevector generated wrapper identity collision");
+                return nullptr;
+            }
+            return fn;
+        }
+
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* old_function = current_function;
+        DebugLoc old_debug_location = builder->getCurrentDebugLocation();
+        fn = Function::Create(ty,
+#ifdef _WIN32
+            Function::InternalLinkage,
+#else
+            Function::LinkOnceODRLinkage,
+#endif
+            name, module.get());
+        fn->addFnAttr("eshkol.generated.bytevector-rest.v1");
+        llvm::Metadata* id_fields[] = {llvm::ValueAsMetadata::get(fn),
+            llvm::MDString::get(*context, "bytevector-rest-v1")};
+        llvm::NamedMDNode* ids = module->getOrInsertNamedMetadata("eshkol.generated.functions");
+        ids->addOperand(llvm::MDNode::get(*context, id_fields));
+
+        current_function = fn;
+        builder->SetCurrentDebugLocation(DebugLoc());
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", fn);
+        BasicBlock* count_head = BasicBlock::Create(*context, "count_head", fn);
+        BasicBlock* count_check = BasicBlock::Create(*context, "count_check", fn);
+        BasicBlock* count_body = BasicBlock::Create(*context, "count_body", fn);
+        BasicBlock* counted = BasicBlock::Create(*context, "counted", fn);
+        BasicBlock* size_ok = BasicBlock::Create(*context, "size_ok", fn);
+        BasicBlock* size_bad = BasicBlock::Create(*context, "size_bad", fn);
+        BasicBlock* fill_head = BasicBlock::Create(*context, "fill_head", fn);
+        BasicBlock* fill_body = BasicBlock::Create(*context, "fill_body", fn);
+        BasicBlock* done = BasicBlock::Create(*context, "done", fn);
+        Value* rest = &*fn->arg_begin();
+        builder->SetInsertPoint(entry);
+        builder->CreateBr(count_head);
+        builder->SetInsertPoint(count_head);
+        PHINode* node = builder->CreatePHI(tagged_value_type, 2, "rest_node");
+        PHINode* length = builder->CreatePHI(int64_type, 2, "rest_length");
+        node->addIncoming(rest, entry);
+        length->addIncoming(ConstantInt::get(int64_type, 0), entry);
+        Value* base = getBaseType(getTaggedValueType(node));
+        Value* is_null = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+        builder->CreateCondBr(is_null, counted, count_check);
+        builder->SetInsertPoint(count_check);
+        Value* is_heap = builder->CreateICmpEQ(base, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        BasicBlock* cons_check = BasicBlock::Create(*context, "cons_check", fn);
+        BasicBlock* improper = BasicBlock::Create(*context, "improper", fn);
+        builder->CreateCondBr(is_heap, cons_check, improper);
+        builder->SetInsertPoint(improper);
+        arith_->emitTypeError("bytevector: expected a proper rest list");
+        builder->SetInsertPoint(cons_check);
+        Value* is_cons = isHeapSubtype(node, HEAP_SUBTYPE_CONS);
+        builder->CreateCondBr(is_cons, count_body, improper);
+        builder->SetInsertPoint(count_body);
+        Value* cons_ptr = builder->CreateIntToPtr(unpackInt64FromTaggedValue(node), builder->getPtrTy());
+        Value* car_ptr = builder->CreatePointerCast(cons_ptr, PointerType::getUnqual(tagged_value_type));
+        Value* car = builder->CreateLoad(tagged_value_type, car_ptr);
+        (void)emitCheckedByte(car, "bytevector");
+        Value* cdr_ptr = builder->CreateGEP(tagged_value_type, car_ptr, ConstantInt::get(int64_type, 1));
+        Value* cdr = builder->CreateLoad(tagged_value_type, cdr_ptr);
+        BasicBlock* count_latch = builder->GetInsertBlock();
+        Value* next_len = builder->CreateAdd(length, ConstantInt::get(int64_type, 1));
+        node->addIncoming(cdr, count_latch);
+        length->addIncoming(next_len, count_latch);
+        builder->CreateBr(count_head);
+
+        builder->SetInsertPoint(counted);
+        builder->CreateCondBr(
+            builder->CreateICmpULE(length,
+                ConstantInt::get(int64_type, UINT64_MAX - 8)), size_ok, size_bad);
+        builder->SetInsertPoint(size_bad);
+        arith_->emitTypeError("bytevector: argument list is too large");
+        builder->SetInsertPoint(size_ok);
+        Value* alloc_size = builder->CreateAdd(length, ConstantInt::get(int64_type, 8));
+        Value* arena = getArenaPtr();
+        Value* bv = builder->CreateCall(mem->getArenaAllocateWithHeader(),
+            {arena, alloc_size, ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
+             ConstantInt::get(int8_type, 0)});
+        ctx_->emitConstructorAllocationCheck(bv);
+        builder->CreateStore(length, bv);
+        Value* data = builder->CreateGEP(int8_type, bv, ConstantInt::get(int64_type, 8));
+        BasicBlock* fill_entry = builder->GetInsertBlock();
+        builder->CreateBr(fill_head);
+        builder->SetInsertPoint(fill_head);
+        PHINode* fill_node = builder->CreatePHI(tagged_value_type, 2, "fill_node");
+        PHINode* index = builder->CreatePHI(int64_type, 2, "fill_index");
+        fill_node->addIncoming(rest, fill_entry);
+        index->addIncoming(ConstantInt::get(int64_type, 0), fill_entry);
+        builder->CreateCondBr(builder->CreateICmpUGE(index, length), done, fill_body);
+        builder->SetInsertPoint(fill_body);
+        Value* fill_ptr = builder->CreateIntToPtr(unpackInt64FromTaggedValue(fill_node), builder->getPtrTy());
+        Value* fill_car = builder->CreateLoad(tagged_value_type,
+            builder->CreatePointerCast(fill_ptr, PointerType::getUnqual(tagged_value_type)));
+        Value* byte = emitCheckedByte(fill_car, "bytevector");
+        Value* dest = builder->CreateGEP(int8_type, data, index);
+        builder->CreateStore(byte, dest);
+        Value* fill_cdr = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type,
+                builder->CreatePointerCast(fill_ptr, PointerType::getUnqual(tagged_value_type)),
+                ConstantInt::get(int64_type, 1)));
+        BasicBlock* fill_latch = builder->GetInsertBlock();
+        fill_node->addIncoming(fill_cdr, fill_latch);
+        index->addIncoming(builder->CreateAdd(index, ConstantInt::get(int64_type, 1)), fill_latch);
+        builder->CreateBr(fill_head);
+        builder->SetInsertPoint(done);
+        builder->CreateRet(packPtrToTaggedValue(bv, ESHKOL_VALUE_HEAP_PTR));
+        current_function = old_function;
+        builder->SetCurrentDebugLocation(old_debug_location);
+        if (old_point.isSet()) builder->restoreIP(old_point);
+        return fn;
+    }
+
 
     /* SW-230: a builtin that accepts a small RANGE of argument counts (`atan`
      * of 1 or 2, `round` with an optional precision) as a value. The closure
@@ -10730,6 +10866,9 @@ private:
             return makeVariadicClosureValueFor(wrap_fn);
         }
 
+        if (spec.variadic && spec.rest == VariadicRest::Bytevector) {
+            return makeVariadicClosureValueFor(getOrCreateBytevectorRestWrapper());
+        }
         if (spec.variadic && spec.rest == VariadicRest::ByCount) {
             return makeByCountBuiltinClosureValue(name, spec);
         }
@@ -13384,6 +13523,51 @@ private:
     static bool externTypeIsPointerLike(const std::string& declared) {
         return declared == "ptr" || declared == "string" || declared == "char*" ||
                declared == "void*";
+    }
+
+    // Bytevector constructors accept only exact integers in [0,255].  Keep
+    // the original tagged representation through the exactness/range checks;
+    // conversion to a byte happens only in the success block.  In particular,
+    // bignums are compared by the existing exact runtime comparator.
+    Value* emitCheckedByte(Value* value, const std::string& who) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        Value* base = getBaseType(getTaggedValueType(value));
+        Value* is_fixnum = builder->CreateICmpEQ(base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+        Value* is_bignum = isHeapSubtype(value, HEAP_SUBTYPE_BIGNUM);
+        Value* is_exact_integer = builder->CreateOr(is_fixnum, is_bignum);
+        BasicBlock* type_ok = BasicBlock::Create(*context, "byte_type_ok", fn);
+        BasicBlock* bad_type = BasicBlock::Create(*context, "byte_bad_type", fn);
+        BasicBlock* fixnum = BasicBlock::Create(*context, "byte_fixnum", fn);
+        BasicBlock* bignum = BasicBlock::Create(*context, "byte_bignum", fn);
+        BasicBlock* range_ok = BasicBlock::Create(*context, "byte_range_ok", fn);
+        BasicBlock* bad_range = BasicBlock::Create(*context, "byte_bad_range", fn);
+        builder->CreateCondBr(is_exact_integer, type_ok, bad_type);
+        builder->SetInsertPoint(bad_type);
+        arith_->emitTypeError((who + ": expected exact integer in range 0..255").c_str());
+        builder->SetInsertPoint(type_ok);
+        builder->CreateCondBr(is_fixnum, fixnum, bignum);
+        builder->SetInsertPoint(fixnum);
+        Value* raw = unpackInt64FromTaggedValue(value);
+        Value* fix_ok = builder->CreateAnd(
+            builder->CreateICmpSGE(raw, ConstantInt::get(int64_type, 0)),
+            builder->CreateICmpSLE(raw, ConstantInt::get(int64_type, 255)));
+        builder->CreateCondBr(fix_ok, range_ok, bad_range);
+        builder->SetInsertPoint(bignum);
+        Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+        Value* max = packInt64ToTaggedValue(ConstantInt::get(int64_type, 255), true);
+        Value* ge0 = arith_->emitBignumCompareCall(value, zero, 4);
+        Value* le255 = arith_->emitBignumCompareCall(value, max, 3);
+        Value* bn_ok = builder->CreateAnd(
+            builder->CreateICmpNE(unpackInt64FromTaggedValue(ge0), ConstantInt::get(int64_type, 0)),
+            builder->CreateICmpNE(unpackInt64FromTaggedValue(le255), ConstantInt::get(int64_type, 0)));
+        builder->CreateCondBr(bn_ok, range_ok, bad_range);
+        builder->SetInsertPoint(bad_range);
+        arith_->emitTypeError((who + ": expected exact integer in range 0..255").c_str());
+        builder->SetInsertPoint(range_ok);
+        Value* safe_number = arith_->extractAsDouble(value);
+        Value* safe_integer = builder->CreateFPToSI(safe_number, int64_type);
+        return builder->CreateTrunc(safe_integer, int8_type);
     }
 
     Value* codegenCall(const eshkol_operations_t* op) {
@@ -17053,26 +17237,36 @@ private:
         if (func_name == "bytevector") {
             // (bytevector byte ...)
             uint64_t n = op->call_op.num_vars;
+            // Evaluate every operand before validating any byte. Scheme's
+            // operand effects therefore remain observable when an early
+            // value is invalid.
+            std::vector<Value*> values;
+            values.reserve(n);
+            for (uint64_t i = 0; i < n; ++i) {
+                TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[i]));
+                if (!tv.llvm_value) co_return nullptr;
+                values.push_back(typedValueToTaggedValue(tv));
+            }
+            std::vector<Value*> bytes;
+            bytes.reserve(n);
+            for (Value* value : values) bytes.push_back(emitCheckedByte(value, "bytevector"));
+
             Value* data_size = ConstantInt::get(int64_type, n + 8);
             Value* arena_ptr = getArenaPtr();
             Value* bv_ptr = builder->CreateCall(mem->getArenaAllocateWithHeader(),
                 {arena_ptr, data_size,
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_BYTEVECTOR),
                  ConstantInt::get(int8_type, 0)});
+            ctx_->emitConstructorAllocationCheck(bv_ptr);
 
             builder->CreateStore(ConstantInt::get(int64_type, n), bv_ptr);
             Value* data_ptr = builder->CreateGEP(int8_type, bv_ptr,
                 ConstantInt::get(int64_type, 8));
 
             for (uint64_t i = 0; i < n; i++) {
-                TypedValue elem_tv = (co_await codegenTypedASTTask(&op->call_op.variables[i]));
-                if (!elem_tv.llvm_value) co_return nullptr;
-                Value* elem_tagged = typedValueToTaggedValue(elem_tv);
-                Value* byte_val = builder->CreateTrunc(
-                    unpackInt64FromTaggedValue(elem_tagged), int8_type);
                 Value* dest = builder->CreateGEP(int8_type, data_ptr,
                     ConstantInt::get(int64_type, i));
-                builder->CreateStore(byte_val, dest);
+                builder->CreateStore(bytes[i], dest);
             }
 
             co_return packPtrToTaggedValue(bv_ptr, ESHKOL_VALUE_HEAP_PTR);
@@ -44825,7 +45019,7 @@ private:
      * Every one of these is built from the AUTHORITATIVE call-position
      * lowering (createInlineBuiltinWrapper re-enters codegenCall), so none
      * of them is a second implementation that can drift. */
-    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, ByCount, Chain };
+    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, ByCount, Chain, Bytevector };
 
     /* A row of the first-class builtin table.
      *
@@ -45186,7 +45380,7 @@ private:
             {"triplet-loss", {3}}, {"unsqueeze", {2}}, {"xavier-normal!", {3}},
             {"xavier-uniform!", {3}}, {"zero-grad!", {1}}, {"zeros", {1}},
             // Vectors (LE-16)
-            {"bytevector", {1, true}},
+            {"bytevector", {0, true, VariadicRest::Bytevector}},
             {"bytevector-append", {2, true, VariadicRest::LeftFold}},
             {"bytevector-copy", {1}},
             {"bytevector-copy!", {3}}, {"bytevector-length", {1}}, {"bytevector-u8-ref", {2}},
