@@ -13,6 +13,8 @@ The original classification had 1,043: exact reconciliation found 15
 additions and no removals, with no label changes among the 1,043 shared names.
 All 15 additions are explicitly host-only in the generator, each with a
 source-grounded reason; category defaults alone do not claim device support.
+The `device` label records planned S-fragment eligibility; it is not a count
+of implemented or validated device kernels.
 The generated classification has 1,058 entries (233 device, 816 host,
 9 host-with-device-inner), and the checker reports no missing or stale names.
 
@@ -69,3 +71,17 @@ The plan generator sets `ESHKOL_XLA_DEVICE=0`; these are language-side host
 references paired with proposed table operations. No StableHLO lowering was
 executed, no GPU kernel parity was measured, and no native build, SDK, model,
 service, or device command was run.
+
+## Current candidate host references
+
+Root regenerated all six references using the built canonical engine at
+`7f01cd9707d4368dc6731ad6d91ae8d1eec6a76a`, SHA-256
+`4782240036dae1b33f77fbaea3aba60767c3d483c3aa0983e836ff03c8ce37e5`,
+with JIT cache disabled and the matching candidate standard library. The
+actual process exited zero and the plan contains six `REF` rows and zero
+`NOREF` rows. The command, engine identity, and plan are preserved under
+`docs/xla-classification-floor-evidence/current-7f01cd97/`. These remain host
+references; they do not establish device lowering or accelerator parity.
+The earlier `/usr/local/bin/eshkol-run` evidence is preserved above with its
+original command; its engine revision was not recorded, so it is not used as
+current candidate proof.
