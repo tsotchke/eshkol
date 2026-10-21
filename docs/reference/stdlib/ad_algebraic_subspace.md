@@ -14,7 +14,7 @@ real symmetric invariant subspace, even when eigenvalues within it repeat/cross.
 The owner is the existing exact algebraic field or nested coefficient domain.
 Matrices have size 2–4. Construction copies A and P and checks full-domain
 symmetry, P^2=P, AP=PA, and integer trace/rank strictly between zero and dimension.
-It does not discover a projector or sort eigenvalue branches.
+The direct constructor does not discover a projector or sort eigenvalue branches.
 
 Let Q=I-P. The flattened operator
 `L(X)=[A,[P,X]]+PXP+QXQ` acts as identity on within-subspace blocks and as Sylvester
@@ -44,3 +44,27 @@ continuation certificate or permission to cross an external collision. Tests
 use independent infinitesimal rotations, rational basis changes, internal
 crossings, complement identities, maximum size, irrational separation, nested
 Taylor derivatives, JVP/VJP pairing, ownership and explicit refusal controls.
+
+## Projectors from checked polynomial splits
+
+`(make-algebraic-subspace-from-factors owner A selected complement)` constructs
+and admits the projector instead of requiring an eigenbasis. Both supplied
+factors are nonconstant monic exact rational coefficient vectors/lists, low
+degree first. Their product must equal the original matrix characteristic
+polynomial in the full declared owner. Matrix size remains 2..4.
+
+The shared `exact-poly-inverse-mod` computes `u*g = 1 mod f`; matrix Horner
+evaluation gives `P=u(A)g(A)`. This is one on selected-factor roots and zero
+on complementary-factor roots. Noncoprime factors refuse. The existing
+subspace constructor rechecks symmetry, idempotence, invariance and separation,
+and the selected rank must equal `degree(f)`. Repeated roots within a factor
+are allowed. The resulting object uses the existing JVP/VJP without another
+spectral derivative path. Inputs/observations retain the existing ownership.
+
+Factor selection is explicit. This does not factor arbitrary polynomials,
+sort individual eigenvalues, or accept arbitrary algebraic factor coefficients.
+A rational irreducible factor selects its conjugate eigenvalues together;
+algebraic-entry matrices are admitted when their full characteristic polynomial
+has the supplied rational split. Existing nested owners are also checked in
+full, rather than only at their primal coefficients. Exact coefficient growth
+and the small dense Sylvester solve retain their existing costs/refusals.

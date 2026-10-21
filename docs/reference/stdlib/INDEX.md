@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 97** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1078** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 97** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1079** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -32,7 +32,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.ad.derived_operator`](../../../lib/core/ad/derived_operator.esk) | no | [ad_derived_operator.md](ad_derived_operator.md) | `make-derived-operator` `derived-operator-value` `derived-operator-jvp` `derived-operator-vjp` `derived-operator-delta` `derived-operator-info` `derived-operator-enclosure` |
 | [`core.certified_nonlinear`](../../../lib/core/certified_nonlinear.esk) | no | [certified_nonlinear.md](certified_nonlinear.md) | `make-certified-polynomial-system` `certify-polynomial-root` `verify-polynomial-root-certificate` |
 | [`core.ad.algebraic_spectral`](../../../lib/core/ad/algebraic_spectral.esk) | no | [ad_algebraic_spectral.md](ad_algebraic_spectral.md) | `algebraic-characteristic` `algebraic-eigenvalue-with-pullback` `algebraic-eigenvalue-lift` |
-| [`core.ad.algebraic_subspace`](../../../lib/core/ad/algebraic_subspace.esk) | no | [ad_algebraic_subspace.md](ad_algebraic_subspace.md) | `make-algebraic-subspace` `algebraic-subspace-projector` `algebraic-subspace-jvp` `algebraic-subspace-vjp` `algebraic-subspace-info` `verify-algebraic-subspace-jvp` |
+| [`core.ad.algebraic_subspace`](../../../lib/core/ad/algebraic_subspace.esk) | no | [ad_algebraic_subspace.md](ad_algebraic_subspace.md) | `make-algebraic-subspace` `algebraic-subspace-projector` `algebraic-subspace-jvp` `algebraic-subspace-vjp` `algebraic-subspace-info` `verify-algebraic-subspace-jvp` `make-algebraic-subspace-from-factors` |
 | [`core.ad.root_branch`](../../../lib/core/ad/root_branch.esk) | no | [ad_root_branch.md](ad_root_branch.md) | `make-root-branch` `root-branch-step` `root-branch-enclosure` `root-branch-time` `root-branch-sensitivity` `verify-root-branch-step` |
 | [`core.alist`](../../../lib/core/alist.esk) | yes | [alist.md](alist.md) | `alist-ref` `alist-ref-or` `alist-set` |
 | [`core.argparse`](../../../lib/core/argparse.esk) | no | [argparse.md](argparse.md) | `parse-args` `arg-get` `arg-positional` `arg-has?` `argparse-help` |
