@@ -43,6 +43,9 @@ struct InitializeApi {
         SET_UNUSED_PJRT_FUNCTION(PJRT_LoadedExecutable_GetExecutable);
         SET_UNUSED_PJRT_FUNCTION(PJRT_LoadedExecutable_Execute);
         SET_UNUSED_PJRT_FUNCTION(PJRT_Buffer_Destroy);
+#ifndef PJRT_TEST_MISSING_BUFFER_ELEMENT_TYPE
+        SET_UNUSED_PJRT_FUNCTION(PJRT_Buffer_ElementType);
+#endif
         SET_UNUSED_PJRT_FUNCTION(PJRT_Buffer_Dimensions);
         SET_UNUSED_PJRT_FUNCTION(PJRT_Buffer_ToHostBuffer);
         SET_UNUSED_PJRT_FUNCTION(PJRT_Event_Await);

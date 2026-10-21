@@ -42,7 +42,9 @@ int main(int argc, char** argv) {
         ? "dlopen(" : test_case == "nonplugin"
         ? "does not export GetPjrtApi" : test_case == "incompatible"
         ? "reports PJRT API major version" : test_case == "short"
-        ? "PJRT_Api table too short" : "null required function PJRT_Plugin_Initialize";
+        ? "PJRT_Api table too short" : test_case == "missing_element_type"
+        ? "null required function PJRT_Buffer_ElementType"
+        : "null required function PJRT_Plugin_Initialize";
     if (error.find(expected) == std::string::npos) {
         return fail(test_case + " diagnostic did not contain '" + expected +
                     "': " + error);

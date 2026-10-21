@@ -1177,12 +1177,10 @@ public:
     bool pjrt_active_ = false;
     std::string pjrt_status_;   // empty unless PJRT was requested (diagnostic either way)
 #ifdef ESHKOL_XLA_PJRT_AVAILABLE
-    // Declared client-before-plugin so ~Impl() (reverse declaration order)
-    // destroys the client first — pjrt_client.h requires the plugin to
-    // outlive every client built over it, since every PJRT handle belongs to
-    // the plugin's shared object.
-    std::unique_ptr<PjrtClient> pjrt_client_;
+    // Members are destroyed in reverse declaration order: keep the plugin
+    // first so the client is destroyed before the plugin it references.
     std::unique_ptr<PjrtPlugin> pjrt_plugin_;
+    std::unique_ptr<PjrtClient> pjrt_client_;
     int pjrt_device_index_ = -1;   // index into pjrt_client_->devices() chosen at init
 #endif
 };
@@ -1521,6 +1519,26 @@ ExecutionResult XLARuntime::executePjrt(
                             " must have a valid f64 shape and host buffer",
                         pjrt_inputs, pjrt_outputs);
         }
+        PjrtBufferMetadata metadata;
+        PjrtStatus metadata_status =
+            impl_->pjrt_client_->bufferMetadata(pjrt_outputs[i], &metadata);
+        if (!metadata_status.ok()) {
+            return fail("PJRT execute: could not validate output " +
+                            std::to_string(i) + ": " + metadata_status.message(),
+                        pjrt_inputs, pjrt_outputs);
+        }
+        if (metadata.element_type != PjrtElementType::kF64) {
+            return fail("PJRT execute: output " + std::to_string(i) +
+                            " has device element type " +
+                            std::to_string(static_cast<int>(metadata.element_type)) +
+                            "; expected f64",
+                        pjrt_inputs, pjrt_outputs);
+        }
+        if (metadata.dimensions != outputs[i].shape) {
+            return fail("PJRT execute: output " + std::to_string(i) +
+                            " has device shape inconsistent with the host output descriptor",
+                        pjrt_inputs, pjrt_outputs);
+        }
     }
     for (size_t i = 0; i < outputs.size(); ++i) {
         PjrtStatus copy_status = impl_->pjrt_client_->bufferToHost(
@@ -1628,38 +1646,8 @@ BufferDescriptor XLARuntime::toDevice(void* host_data,
     };
 }
 
-/** @brief Copy a device buffer's contents to host memory. CPU path is a
- *         no-op if the pointers already alias, otherwise a memcpy. Under
- *         PJRT, `device_buffer.data` for an actual on-device buffer is a
- *         `PJRT_Buffer*` handle rather than host memory, and the copy goes
- *         through PjrtClient::bufferToHost() instead of memcpy. */
+/** @brief Copy the host-resident contents of a buffer to host memory. */
 void XLARuntime::toHost(const BufferDescriptor& device_buffer, void* host_data) {
-#ifdef ESHKOL_XLA_PJRT_AVAILABLE
-    // `on_device` is what distinguishes the two: toDevice()/allocateDevice()
-    // are unchanged by this file and still hand back host-resident,
-    // on_device=false descriptors even when PJRT is active (pjrt_client.h has
-    // no device-side "allocate empty buffer" call for them to use — see
-    // s1-runtime-wiring-report.md). The only descriptors that are genuinely
-    // on_device under PJRT are the ones execute() builds internally, and
-    // execute() already copies those back out and destroys them itself before
-    // this function would ever see them — this branch exists for symmetry and
-    // for any future caller that holds one across a call boundary.
-    if (impl_->pjrt_active_ && device_buffer.on_device) {
-        auto* buffer = reinterpret_cast<PJRT_Buffer*>(device_buffer.data);
-        size_t total = 1;
-        for (auto dim : device_buffer.shape) total *= static_cast<size_t>(dim);
-        PjrtStatus status = impl_->pjrt_client_->bufferToHost(
-            buffer, host_data, total * device_buffer.element_size);
-        if (!status.ok()) {
-            // toHost() returns void — there is no channel back to the caller.
-            // stderr is the only diagnostic available here; a silently
-            // unfilled host_data would be far worse than a noisy failure.
-            std::fprintf(stderr, "eshkol: XLA PJRT toHost failed: %s\n",
-                         status.message().c_str());
-        }
-        return;
-    }
-#endif
     // CPU: data is already on host. If pointers differ, memcpy.
     if (device_buffer.data && host_data && device_buffer.data != host_data) {
         size_t total = 1;

@@ -2605,6 +2605,19 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
     add_library(pjrt_test_short_table MODULE tests/xla/pjrt_test_short_table.cpp)
     add_library(pjrt_test_null_initializer MODULE tests/xla/pjrt_test_null_initializer.cpp)
     add_library(pjrt_test_compatible MODULE tests/xla/pjrt_test_compatible.cpp)
+    add_library(pjrt_test_missing_buffer_element_type MODULE
+        tests/xla/pjrt_test_compatible.cpp
+    )
+    target_compile_definitions(pjrt_test_missing_buffer_element_type PRIVATE
+        PJRT_TEST_MISSING_BUFFER_ELEMENT_TYPE=1
+    )
+    add_library(pjrt_test_output_mismatch MODULE
+        tests/xla/pjrt_test_output_mismatch.cpp
+    )
+    target_compile_features(pjrt_test_output_mismatch PRIVATE cxx_std_17)
+    target_include_directories(pjrt_test_output_mismatch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
     target_include_directories(pjrt_test_incompatible PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
     )
@@ -2617,14 +2630,19 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
     target_include_directories(pjrt_test_compatible PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
     )
+    target_include_directories(pjrt_test_missing_buffer_element_type PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
     set_target_properties(
         pjrt_test_nonplugin pjrt_test_incompatible pjrt_test_short_table
-        pjrt_test_null_initializer pjrt_test_compatible PROPERTIES
+        pjrt_test_null_initializer pjrt_test_compatible
+        pjrt_test_missing_buffer_element_type pjrt_test_output_mismatch PROPERTIES
         PREFIX ""
     )
     add_dependencies(pjrt_loader_test
         pjrt_test_nonplugin pjrt_test_incompatible pjrt_test_short_table
         pjrt_test_null_initializer pjrt_test_compatible
+        pjrt_test_missing_buffer_element_type pjrt_test_output_mismatch
     )
 
     add_test(NAME pjrt_loader_missing_library
@@ -2645,6 +2663,10 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
     )
     add_test(NAME pjrt_loader_compatible_initialize_unload
         COMMAND pjrt_loader_test compatible $<TARGET_FILE:pjrt_test_compatible>
+    )
+    add_test(NAME pjrt_loader_missing_buffer_element_type
+        COMMAND pjrt_loader_test missing_element_type
+            $<TARGET_FILE:pjrt_test_missing_buffer_element_type>
     )
 
     # Runtime control test: verifies the default-off path still executes a
@@ -2682,6 +2704,44 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
     add_test(NAME pjrt_runtime_requested_plugin_refusal
         COMMAND pjrt_runtime_control_test missing-plugin
             "${CMAKE_CURRENT_BINARY_DIR}/pjrt-intentionally-absent${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+
+    # Offline fake-plugin controls prove output metadata mismatches refuse
+    # before a host copy and still release input/output/executable handles.
+    add_executable(pjrt_runtime_output_mismatch_test
+        tests/xla/pjrt_runtime_output_mismatch_test.cpp
+    )
+    add_dependencies(pjrt_runtime_output_mismatch_test pjrt_test_output_mismatch)
+    target_include_directories(pjrt_runtime_output_mismatch_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+    target_compile_options(pjrt_runtime_output_mismatch_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_runtime_output_mismatch_test)
+    target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_runtime_output_mismatch_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    add_test(NAME pjrt_runtime_output_dtype_mismatch
+        COMMAND pjrt_runtime_output_mismatch_test dtype
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
+    add_test(NAME pjrt_runtime_output_shape_mismatch
+        COMMAND pjrt_runtime_output_mismatch_test shape
+            $<TARGET_FILE:pjrt_test_output_mismatch>
     )
 endif()
 
@@ -3007,6 +3067,9 @@ if(TARGET pjrt_runtime_control_test AND LLVM_LIBRARY_DIRS)
     # This test target is declared before LLVM's library search directories are
     # normalized from llvm-config; attach them here after that discovery.
     target_link_directories(pjrt_runtime_control_test PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_runtime_output_mismatch_test AND LLVM_LIBRARY_DIRS)
+    target_link_directories(pjrt_runtime_output_mismatch_test PRIVATE ${LLVM_LIBRARY_DIRS})
 endif()
 
 # Propagate the runtime's transitive system link deps (Apple ImageIO/CoreGraphics/

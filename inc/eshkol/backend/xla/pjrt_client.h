@@ -185,6 +185,12 @@ enum class PjrtElementType : int {
     kC128    = 15,
 };
 
+/** @brief PJRT's actual element type and dimensions for a live buffer. */
+struct PjrtBufferMetadata {
+    PjrtElementType element_type = PjrtElementType::kInvalid;
+    std::vector<int64_t> dimensions;
+};
+
 /**
  * @brief A PJRT client: the connection to a set of devices, and the thing that
  *        compiles and runs programs on them.
@@ -278,6 +284,9 @@ public:
 
     /** @brief Copy a device buffer back to host memory. Blocks until ready. */
     PjrtStatus bufferToHost(PJRT_Buffer* buffer, void* dst, size_t dst_bytes);
+
+    /** @brief Query the actual element type and dimensions of a live buffer. */
+    PjrtStatus bufferMetadata(PJRT_Buffer* buffer, PjrtBufferMetadata* metadata);
 
     void destroyBuffer(PJRT_Buffer* buffer);
 

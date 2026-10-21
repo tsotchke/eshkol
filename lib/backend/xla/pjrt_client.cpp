@@ -177,6 +177,7 @@ std::string validatePjrtFunctionTable(const PJRT_Api* api) {
     ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_LoadedExecutable_GetExecutable);
     ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_LoadedExecutable_Execute);
     ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Buffer_Destroy);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Buffer_ElementType);
     ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Buffer_Dimensions);
     ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Buffer_ToHostBuffer);
     ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Event_Await);
@@ -818,6 +819,43 @@ PjrtStatus PjrtClient::bufferToHost(PJRT_Buffer* buffer,
         PjrtStatus status = consumeError(wait_err);
         return PjrtStatus("device to host copy did not complete: " +
                           status.message());
+    }
+    return PjrtStatus();
+}
+
+PjrtStatus PjrtClient::bufferMetadata(PJRT_Buffer* buffer,
+                                      PjrtBufferMetadata* metadata) {
+    if (buffer == nullptr) return PjrtStatus("bufferMetadata: null device buffer");
+    if (metadata == nullptr) return PjrtStatus("bufferMetadata: null output");
+
+    PJRT_Buffer_ElementType_Args type_args = {};
+    type_args.struct_size = PJRT_Buffer_ElementType_Args_STRUCT_SIZE;
+    type_args.extension_start = nullptr;
+    type_args.buffer = buffer;
+    if (PJRT_Error* err = plugin_->api()->PJRT_Buffer_ElementType(&type_args)) {
+        PjrtStatus status = consumeError(err);
+        return PjrtStatus("bufferMetadata: could not read element type: " +
+                          status.message());
+    }
+
+    PJRT_Buffer_Dimensions_Args dimensions_args = {};
+    dimensions_args.struct_size = PJRT_Buffer_Dimensions_Args_STRUCT_SIZE;
+    dimensions_args.extension_start = nullptr;
+    dimensions_args.buffer = buffer;
+    if (PJRT_Error* err = plugin_->api()->PJRT_Buffer_Dimensions(&dimensions_args)) {
+        PjrtStatus status = consumeError(err);
+        return PjrtStatus("bufferMetadata: could not read dimensions: " +
+                          status.message());
+    }
+
+    metadata->element_type = static_cast<PjrtElementType>(type_args.type);
+    metadata->dimensions.clear();
+    if (dimensions_args.num_dims != 0) {
+        if (dimensions_args.dims == nullptr) {
+            return PjrtStatus("bufferMetadata: PJRT returned null dimensions for a non-scalar buffer");
+        }
+        metadata->dimensions.assign(dimensions_args.dims,
+                                    dimensions_args.dims + dimensions_args.num_dims);
     }
     return PjrtStatus();
 }
