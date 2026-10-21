@@ -2097,6 +2097,30 @@ private:
         return isSimplePureExpression(value);
     }
 
+    bool isStaticDataLiteral(const eshkol_ast_t* value) const {
+        if (!value) return false;
+        switch (value->type) {
+            case ESHKOL_UINT8:
+            case ESHKOL_UINT16:
+            case ESHKOL_UINT32:
+            case ESHKOL_UINT64:
+            case ESHKOL_INT8:
+            case ESHKOL_INT16:
+            case ESHKOL_INT32:
+            case ESHKOL_INT64:
+            case ESHKOL_DOUBLE:
+            case ESHKOL_STRING:
+            case ESHKOL_NULL:
+            case ESHKOL_CHAR:
+            case ESHKOL_BOOL:
+            case ESHKOL_BIGNUM_LITERAL:
+            case ESHKOL_SYMBOL:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     CallableEffect effectForExpression(
         const eshkol_ast_t* expression,
         const std::map<std::string, CallableEffect>* known = nullptr) const {
@@ -2138,8 +2162,12 @@ private:
                     effect = effectForTrustedCoreNetName(name);
                     proven_callable = true;
                 } else if (op.define_op.is_external) {
-                    effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
-                    proven_callable = true;
+                    if (op.define_op.is_function) {
+                        effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                        proven_callable = true;
+                    } else if (!isStaticDataLiteral(op.define_op.value)) {
+                        effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                    }
                 } else if (op.define_op.is_function) {
                     effect = isSimplePureFunction(op.define_op.value)
                         ? CallableEffect::NONE
@@ -3091,8 +3119,15 @@ private:
                                 if (bind_resource_effects) {
                                     info.is_defined = true;
                                     if (op->define_op.is_external) {
-                                        info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
-                                        info.is_proven_callable = true;
+                                        if (op->define_op.is_function) {
+                                            info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                            info.is_proven_callable = true;
+                                        } else if (!isStaticDataLiteral(op->define_op.value)) {
+                                            info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                            if (item.resource_effects_enabled)
+                                                reportResourceError("opaque external initializer for '" +
+                                                    name + "' is unsupported in strict mode");
+                                        }
                                     } else if (op->define_op.is_function) {
                                         eshkol_ast_t function_wrapper{};
                                         function_wrapper.type = ESHKOL_OP;
