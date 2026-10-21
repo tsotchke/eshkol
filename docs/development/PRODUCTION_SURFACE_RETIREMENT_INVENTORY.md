@@ -5,7 +5,12 @@ This was the pre-migration source-only inventory; the implementation below recor
 
 ## Resolution
 
-The generator now derives core IDs and arity only from the VM table, keeps LLVM dispatch names as separate source evidence, and reads VM bootstrap and stdlib prelude sources independently. Historical compiler-only names and IDs are frozen in `tests/coverage/retired_compiler_builtin_reference.json` with the original compiler source SHA-256. The C source remains in place pending root review.
+The generator now derives core IDs and arity only from the VM table, keeps LLVM
+dispatch names as separate source evidence, and reads VM bootstrap independently
+from the top-level definitions and export closure rooted at `lib/stdlib.esk`.
+Historical compiler-only names and IDs are frozen in
+`tests/coverage/retired_compiler_builtin_reference.json` with the original
+compiler source SHA-256. The C source remains in place pending root review.
 
 ## Migrated consumers
 
@@ -13,7 +18,7 @@ The generator now derives core IDs and arity only from the VM table, keeps LLVM 
   dispatch as `native_llvm` names only, and reads mirrors from VM annotations.
 - The manifest was regenerated from the migrated production inputs; the
   classification logic now treats only VM entries, LLVM name evidence, syntax,
-  bootstrap, stdlib, and module sources as live evidence.
+  bootstrap, stdlib closure exports, and module sources as live evidence.
 - The vector-limit surface check now verifies the shared capacity boundary
   and the production VM make-vector condition in `vm_native.c`.
 - Coverage and Moonlab docs describe the production source contract and label

@@ -9543,6 +9543,16 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/vm
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/test_language_surface_production_sources.py")
+    add_test(
+        NAME language_surface_production_sources
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/test_language_surface_production_sources.py"
+    )
+    set_tests_properties(language_surface_production_sources PROPERTIES TIMEOUT 60)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/forward_ref_scan_boundary_test.cpp")
     add_executable(forward_ref_scan_boundary_test
         tests/toolchain/forward_ref_scan_boundary_test.cpp)

@@ -70,8 +70,11 @@ regenerated after the last ratchet.
    `static const BuiltinDef BUILTINS[]` (`{name, id, arity}`), the sole core
    ID/arity authority.
 2. **Production prelude sources** — VM bootstrap definitions in
-   `lib/backend/vm_prelude_source.h` and canonical library definitions in
-   `lib/stdlib.esk`, labeled separately in the manifest.
+   `lib/backend/vm_prelude_source.h`, plus top-level definitions in
+   `lib/stdlib.esk` and exports from its recursively required module closure.
+   Prelude entries carry source module, path, and line provenance. The manifest
+   also records each closure module's exact exports and top-level definitions;
+   private module definitions are evidence, not public prelude names.
 3. **LLVM AOT dispatch** — names from `lib/backend/llvm_codegen.cpp`. These
    produce the `native_llvm` name-evidence label only; they provide no stable
    IDs, arity or ABI claim.

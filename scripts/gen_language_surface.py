@@ -16,7 +16,8 @@ machine-readable manifest describing every construct a program can invoke:
                     than a call (lib/frontend/parser.cpp get_operator_type plus
                     the directly-dispatched forms begin/define-library/delay/...),
                     keyed to their eshkol_op_t (inc/eshkol/eshkol.h).
-  * PRELUDE       — definitions in the VM bootstrap and canonical lib/stdlib.esk.
+  * PRELUDE       — definitions in the VM bootstrap and the exported module
+                    closure loaded by canonical lib/stdlib.esk.
 
 Every entry is categorised by a risk/kind bucket that drives exposure-engine
 prioritisation (numeric, list_pair, vector, string_char, control_flow,
@@ -274,18 +275,316 @@ def extract_special_forms():
     return forms
 
 
-# --- canonical stdlib definitions (production source) -----------------------
+# --- canonical stdlib module closure ---------------------------------------
 STDLIB = os.path.join(REPO, "lib", "stdlib.esk")
 
-def extract_stdlib_defs():
-    with open(STDLIB, encoding="utf-8", errors="replace") as fh:
-        text = fh.read()
-    return {
-        name for name in re.findall(
-            r"^\s*\(define\s+\(?([a-zA-Z][a-zA-Z0-9!?*/<>=._+-]*)",
-            text, re.M)
-        if not name.startswith("_")
-    }
+
+def _scheme_tokens(text):
+    """Tokenize the source forms needed by the stdlib surface reader.
+
+    Strings are opaque tokens, and both line and nested block comments are
+    skipped. This deliberately avoids regex scans that promote quoted text,
+    comments, or a local define into a public top-level binding.
+    """
+    tokens = []
+    i = 0
+    line = 1
+    while i < len(text):
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if c.isspace():
+            if c == "\n": line += 1
+            i += 1
+        elif c == ";":
+            while i < len(text) and text[i] != "\n": i += 1
+        elif c == "#" and nxt == ";":
+            tokens.append(("datum-comment", "#;", line)); i += 2
+        elif c == "#" and nxt == "|":
+            i += 2
+            depth = 1
+            while i < len(text) and depth:
+                if text.startswith("#|", i): depth += 1; i += 2
+                elif text.startswith("|#", i): depth -= 1; i += 2
+                else:
+                    if text[i] == "\n": line += 1
+                    i += 1
+            if depth:
+                raise ValueError("unterminated Scheme block comment")
+        elif c == '"':
+            start_line = line
+            i += 1
+            value = []
+            while i < len(text) and text[i] != '"':
+                if text[i] == "\\" and i + 1 < len(text):
+                    value.extend((text[i], text[i + 1]))
+                    if text[i + 1] == "\n": line += 1
+                    i += 2
+                else:
+                    if text[i] == "\n": line += 1
+                    value.append(text[i]); i += 1
+            if i >= len(text):
+                raise ValueError("unterminated Scheme string")
+            i += 1
+            tokens.append(("string", "".join(value), start_line))
+        elif text.startswith("#\\", i):
+            start_line = line
+            start = i
+            i += 2
+            if i < len(text) and text[i] in "()'`,;\"":
+                i += 1
+            else:
+                while i < len(text) and not text[i].isspace() and text[i] not in "()'`,;\"":
+                    i += 1
+            tokens.append(("symbol", text[start:i], start_line))
+        elif c in "()":
+            tokens.append((c, c, line)); i += 1
+        elif c in "'`,":
+            start_line = line
+            if c == "," and nxt == "@":
+                tokens.append(("prefix", ",@", line)); i += 2
+            else:
+                tokens.append(("prefix", c, line)); i += 1
+        elif c == "|":
+            start_line = line
+            i += 1
+            value = ["|"]
+            while i < len(text):
+                value.append(text[i])
+                if text[i] == "\\" and i + 1 < len(text):
+                    i += 1; value.append(text[i])
+                elif text[i] == "|":
+                    i += 1; break
+                i += 1
+            tokens.append(("symbol", "".join(value), start_line))
+        else:
+            start = i
+            start_line = line
+            while i < len(text) and not text[i].isspace() and text[i] not in "()'`,;\"":
+                if text.startswith("#|", i): break
+                i += 1
+            if i == start:
+                tokens.append(("symbol", text[i], line)); i += 1
+            else:
+                tokens.append(("symbol", text[start:i], start_line))
+    return tokens
+
+
+def parse_scheme_forms(text):
+    """Parse balanced Scheme list structure, retaining atom kinds and lines."""
+    tokens = _scheme_tokens(text)
+    cursor = 0
+
+    def parse_one():
+        nonlocal cursor
+        if cursor >= len(tokens):
+            raise ValueError("unexpected end of Scheme source")
+        kind, value, line = tokens[cursor]
+        cursor += 1
+        if kind == "datum-comment":
+            parse_one()
+            return ("discard", None, line)
+        if kind == "(":
+            result = []
+            while cursor < len(tokens) and tokens[cursor][0] != ")":
+                item = parse_one()
+                if item[0] != "discard":
+                    result.append(item)
+            if cursor >= len(tokens):
+                raise ValueError("unclosed Scheme list at line %d" % line)
+            cursor += 1
+            return ("list", result, line)
+        if kind == ")":
+            raise ValueError("unexpected ) at line %d" % line)
+        if kind == "prefix":
+            prefix = {"'": "quote", "`": "quasiquote", ",": "unquote",
+                      ",@": "unquote-splicing"}[value]
+            return ("list", [("symbol", prefix, line), parse_one()], line)
+        return (kind, value, line)
+
+    forms = []
+    while cursor < len(tokens):
+        form = parse_one()
+        if form[0] != "discard":
+            forms.append(form)
+    return forms
+
+
+def _scheme_list(form):
+    return form[1] if isinstance(form, tuple) and form[0] == "list" else None
+
+
+def _scheme_symbol(form):
+    return form[1] if isinstance(form, tuple) and form[0] == "symbol" else None
+
+
+def _top_level_definition(form):
+    items = _scheme_list(form)
+    if not items or _scheme_symbol(items[0]) not in {
+            "define", "define-syntax", "define-macro", "define-values"}:
+        return []
+    if len(items) < 2:
+        return []
+    if _scheme_symbol(items[0]) == "define-values":
+        target = _scheme_list(items[1])
+        return [(name, items[1][2]) for name in
+                (_scheme_symbol(x) for x in target or []) if name]
+    target = _scheme_list(items[1])
+    if target:
+        name = _scheme_symbol(target[0])
+        return [(name, form[2])] if name else []
+    name = _scheme_symbol(items[1])
+    return [(name, items[1][2])] if name else []
+
+
+def _top_level_exports(form):
+    items = _scheme_list(form)
+    if not items or _scheme_symbol(items[0]) != "provide":
+        return []
+    names = []
+    for item in items[1:]:
+        parts = _scheme_list(item)
+        if parts and _scheme_symbol(parts[0]) == "rename":
+            if len(parts) >= 3 and _scheme_symbol(parts[-1]):
+                names.append((_scheme_symbol(parts[-1]), item[2]))
+        else:
+            name = _scheme_symbol(item)
+            if name:
+                names.append((name, item[2]))
+    return names
+
+
+def _require_module_names(form):
+    items = _scheme_list(form)
+    if not items or _scheme_symbol(items[0]) != "require":
+        return []
+    names = []
+
+    def visit(item):
+        symbol = _scheme_symbol(item)
+        if symbol:
+            names.append((symbol, item[2]))
+            return
+        parts = _scheme_list(item)
+        if not parts:
+            if isinstance(item, tuple) and item[0] == "string":
+                names.append((item[1], item[2]))
+            return
+        if _scheme_symbol(parts[0]) in {"only", "except", "prefix", "rename", "for-syntax"}:
+            if len(parts) > 1:
+                visit(parts[1])
+        else:
+            for part in parts:
+                visit(part)
+
+    for item in items[1:]: visit(item)
+    return names
+
+
+def extract_stdlib_surface(repo=REPO):
+    """Return public names and exact top-level provenance for stdlib closure.
+
+    The native stdlib is `lib/stdlib.esk` plus its recursively required modules.
+    Root-level definitions are in the public prelude; required modules
+    contribute only declared exports. Their other top-level definitions remain
+    recorded as module-local implementation details, never as public names.
+    """
+    lib_root = os.path.join(repo, "lib")
+    root_path = os.path.join(lib_root, "stdlib.esk")
+    modules = {}
+    requiring = {}
+
+    def resolve(module):
+        if module == "stdlib": return root_path
+        relative = module.replace(".", os.sep) + ".esk"
+        return os.path.join(lib_root, relative)
+
+    pending = [("stdlib", root_path, "<entry>")]
+    while pending:
+        module, path, parent = pending.pop()
+        if module in modules:
+            requiring[module].add(parent)
+            continue
+        if not os.path.isfile(path):
+            raise ValueError("stdlib require %r from %s has no source at %s" %
+                             (module, parent, os.path.relpath(path, repo)))
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+        try:
+            forms = parse_scheme_forms(source)
+        except ValueError as exc:
+            raise ValueError("cannot read production module %s: %s" %
+                             (os.path.relpath(path, repo), exc)) from exc
+        defs = {}
+        exports = {}
+        requires = []
+        for form in forms:
+            for name, line in _top_level_definition(form):
+                defs.setdefault(name, line)
+            for name, line in _top_level_exports(form):
+                exports.setdefault(name, line)
+            requires.extend(_require_module_names(form))
+        modules[module] = {"path": os.path.relpath(path, repo),
+                           "definitions": defs, "exports": exports,
+                           "requires": []}
+        requiring.setdefault(module, set()).add(parent)
+        for required, line in requires:
+            child_path = resolve(required)
+            modules[module]["requires"].append({"module": required, "line": line})
+            requiring.setdefault(required, set()).add(module)
+            if required not in modules:
+                pending.append((required, child_path, module))
+
+    def definition_origin(module, name, seen=None):
+        seen = set() if seen is None else set(seen)
+        if module in seen:
+            return None
+        seen.add(module)
+        record = modules[module]
+        if name in record["definitions"]:
+            return {"module": module, "path": record["path"],
+                    "line": record["definitions"][name], "chain": [module]}
+        for required in record["requires"]:
+            child = required["module"]
+            if child in modules and name in modules[child]["exports"]:
+                origin = definition_origin(child, name, seen)
+                if origin:
+                    return {**origin, "chain": [module] + origin["chain"]}
+        return None
+
+    names = {}
+    # Direct definitions in the root stdlib source are prelude definitions.
+    for name, line in modules["stdlib"]["definitions"].items():
+        names.setdefault(name, []).append({"kind": "stdlib_root_definition",
+                                           "module": "stdlib",
+                                           "path": modules["stdlib"]["path"],
+                                           "line": line})
+    for module, record in modules.items():
+        if module == "stdlib": continue
+        for name, line in record["exports"].items():
+            origin = definition_origin(module, name)
+            names.setdefault(name, []).append({
+                "kind": "module_export", "module": module,
+                "path": record["path"], "line": line,
+                "defined_at_top_level": name in record["definitions"],
+                "definition_line": record["definitions"].get(name),
+                "definition_origin": origin,
+            })
+
+    closure = []
+    for module, record in sorted(modules.items()):
+        closure.append({
+            "module": module,
+            "path": record["path"],
+            "required_by": sorted(requiring[module]),
+            "requires": record["requires"],
+            "exports": [{"name": name, "line": line,
+                         "definition_line": record["definitions"].get(name),
+                         "definition_origin": definition_origin(module, name)}
+                        for name, line in sorted(record["exports"].items())],
+            "top_level_definitions": [{"name": name, "line": line}
+                                      for name, line in sorted(record["definitions"].items())],
+        })
+    return {"names": names, "modules": closure}
 
 
 # --- the bytecode VM's own prelude (lib/backend/vm_prelude_source.h) --------
@@ -583,7 +882,8 @@ def build_manifest():
     aot = extract_llvm_dispatch()
     ops = extract_ast_ops()
     forms = extract_special_forms()
-    stdlib = extract_stdlib_defs()
+    stdlib_surface = extract_stdlib_surface()
+    stdlib = stdlib_surface["names"]
     vm_prelude = extract_vm_prelude_defs()
 
     # AOT-dispatched names that are also declared special forms are syntax, not
@@ -687,11 +987,12 @@ def build_manifest():
             "also_builtin": name in builtin_names,
             "sources": (["vm_bootstrap"] if name in vm_prelude else []) +
                        (["stdlib"] if name in stdlib else []),
+            "provenance": stdlib.get(name, []),
         })
 
     manifest = {
         "_meta": {
-            "schema_version": 2,
+            "schema_version": 3,
             "evidence_provenance": ("generated from live production sources; "
                                     "legacy compiler references are frozen separately"),
             "description": "Complete Eshkol language surface (ground truth for "
@@ -703,7 +1004,8 @@ def build_manifest():
                 "special_forms": "lib/frontend/parser.cpp get_operator_type + "
                                  "direct dispatch",
                 "vm_bootstrap": "lib/backend/vm_prelude_source.h",
-                "stdlib": "lib/stdlib.esk",
+                "stdlib": "top-level definitions in lib/stdlib.esk plus recursively required module exports",
+                "stdlib_module_closure": stdlib_surface["modules"],
                 "mirrors": "BUILTINS[] rows annotated `/* mirrors: <public "
                            "name> */` — this row is one engine's private "
                            "spelling (arity split, or lower-level handle "

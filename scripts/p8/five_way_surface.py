@@ -144,7 +144,9 @@ def collect_docs(root):
 
 
 def collect_manifest(root):
-    d = json.load(open(os.path.join(root, "tests/coverage/language_surface.json")))
+    with open(os.path.join(root, "tests/coverage/language_surface.json"),
+              encoding="utf-8") as fh:
+        d = json.load(fh)
     backends = {}
     mirrors = {}
     present = set()
@@ -160,9 +162,13 @@ def collect_manifest(root):
     # the backend-asymmetry check needs.
     syntax = {e["name"] if isinstance(e, dict) else e
               for e in d.get("special_forms", [])}
-    prelude = {e["name"] if isinstance(e, dict) else e
-               for e in d.get("prelude", [])}
-    present |= syntax | prelude
+    prelude_entries = {e["name"] if isinstance(e, dict) else e
+                       for e in d.get("prelude", [])}
+    # Only the canonical stdlib closure is a native prelude. The VM bootstrap
+    # is still a manifest surface, but cannot establish hosted/LLVM access.
+    prelude = {e["name"] for e in d.get("prelude", [])
+               if isinstance(e, dict) and "stdlib" in e.get("sources", [])}
+    present |= syntax | prelude_entries
     return present, backends, mirrors, syntax, prelude
 
 
