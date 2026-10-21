@@ -1,5 +1,8 @@
 #include <eshkol/builtin_libraries.h>
 #include <eshkol/module_resolver.h>
+#if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
+#include "vm_embedded_modules.h"
+#endif
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
@@ -1868,16 +1871,22 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                                      int enforce_visibility, char exports[][128], int max_exports) {
     if (!mod_name || !*mod_name) return -1;
 
-#if defined(ESHKOL_VM_TEST_MODULES)
+#if defined(ESHKOL_VM_TEST_MODULES) || defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
     /* The differential WASM build has already loaded the canonical stdlib
      * image. Test fixtures may require it just as desktop programs do, but it
      * must not be reopened through MEMFS. */
     if (strcmp(mod_name, "stdlib") == 0) return 0;
 #endif
 
-#if defined(ESHKOL_VM_NO_DISASM) && !defined(ESHKOL_VM_BUILDING_STDLIB_CACHE) && !defined(ESHKOL_VM_TEST_MODULES)
-    /* Product WASM resolves the embedded standard library, not the filesystem. */
-    return -1;
+#if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES) && !defined(ESHKOL_VM_TEST_MODULES)
+    char path[VM_MAX_MODULE_PATH];
+    const char* embedded_source = NULL;
+    if (!vm_embedded_module_lookup(mod_name, &embedded_source, path, sizeof(path))) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "module source not found: %s", mod_name);
+        vm_compile_error(msg, "product WASM embeds only the supported core modules");
+        return -1;
+    }
 #else
     /* Both dotted module names and path literals go through the same resolver
      * as native JIT/AOT. Its source_path argument makes nested relative loads
@@ -1893,6 +1902,7 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                          "load/require must resolve an existing source file");
         return -1;
     }
+#endif
 
     /* Track the canonical path, not the spelling, so `x.esk` and `./x.esk`
      * cannot compile the same module twice. */
@@ -1900,7 +1910,18 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     if (tracked < 0) return -1;
     if (tracked == 0 && (!exports || max_exports <= 0)) return 0;
 
-    /* Read and parse the file */
+    /* Read the selected module source. Product modules come from the generated
+     * registry; native and test-module builds retain their filesystem reader. */
+#if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES) && !defined(ESHKOL_VM_TEST_MODULES)
+    size_t embedded_len = strlen(embedded_source);
+    char* src = (char*)malloc(embedded_len + 1);
+    if (!src) {
+        vm_compile_error("cannot allocate embedded module source buffer", path);
+        return -1;
+    }
+    memcpy(src, embedded_source, embedded_len + 1);
+    long len = (long)embedded_len;
+#else
     FILE* mf = fopen(path, "r");
     if (!mf) {
         char msg[512];
@@ -1933,6 +1954,7 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
         return -1;
     }
     src[len] = '\0';
+#endif
 
     /* Parse the complete module before compiling it. This gives loaded source
      * the same forward-procedure and same-location redefinition semantics as
@@ -2105,7 +2127,6 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     free(owned_source_path);
     free(src);
     return discovered_exports;
-#endif
 }
 
 /* Establish the same canonical stdlib namespace that native compilation
@@ -2131,6 +2152,44 @@ static void vm_reset_compilation_unit_modules(void) {
     g_vm_n_private_imports = 0;
     g_vm_n_public_imports = 0;
     vm_clear_planned_libraries();
+}
+
+/* A persistent REPL evaluation may load modules while it compiles. If that
+ * evaluation later fails, its bytecode and locals are rolled back, so restore
+ * the compiler-side module and forward-function registries too. Loading a
+ * module appends entries to these per-unit registries; restoring their counts
+ * makes the next eval compile those sources and reserve their function slots
+ * again. */
+typedef struct VmModuleStateSnapshot {
+    int n_forward_functions;
+    int n_loaded;
+    int n_unit_libraries;
+    int n_private_imports;
+    int n_public_imports;
+    int n_import_bindings;
+    int n_planned_libraries;
+} VmModuleStateSnapshot;
+
+static void vm_module_state_snapshot(VmModuleStateSnapshot* snapshot) {
+    if (!snapshot) return;
+    snapshot->n_forward_functions = g_vm_n_forward_functions;
+    snapshot->n_loaded = g_compiler_ctx.n_loaded;
+    snapshot->n_unit_libraries = g_compiler_ctx.n_unit_libraries;
+    snapshot->n_private_imports = g_vm_n_private_imports;
+    snapshot->n_public_imports = g_vm_n_public_imports;
+    snapshot->n_import_bindings = g_vm_n_import_bindings;
+    snapshot->n_planned_libraries = g_vm_n_planned_libraries;
+}
+
+static void vm_module_state_restore(const VmModuleStateSnapshot* snapshot) {
+    if (!snapshot) return;
+    g_vm_n_forward_functions = snapshot->n_forward_functions;
+    g_compiler_ctx.n_loaded = snapshot->n_loaded;
+    g_compiler_ctx.n_unit_libraries = snapshot->n_unit_libraries;
+    g_vm_n_private_imports = snapshot->n_private_imports;
+    g_vm_n_public_imports = snapshot->n_public_imports;
+    g_vm_n_import_bindings = snapshot->n_import_bindings;
+    g_vm_n_planned_libraries = snapshot->n_planned_libraries;
 }
 
 /**

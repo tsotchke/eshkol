@@ -3118,6 +3118,20 @@ jobs:
           node --version
           ./scripts/run_wasm_differential.sh --quick
 
+      - name: Build and verify product WASM embedded modules
+        shell: bash
+        env:
+          BUILD_DIR: build
+          OUT: build/eshkol-vm-product.js
+          EMCC_CORES: "1"
+        run: |
+          set -euxo pipefail
+          scripts/build-wasm-repl.sh
+          python3 scripts/generate_wasm_embedded_modules.py \
+            --output build/generated/vm_embedded_modules.h --check
+          python3 tests/toolchain/test_wasm_embedded_module_generator.py
+          node tests/vm/product_wasm_embedded_modules_test.cjs build/eshkol-vm-product.js
+
       - name: Upload WASM diff trace
         if: always()
         uses: actions/upload-artifact@v7

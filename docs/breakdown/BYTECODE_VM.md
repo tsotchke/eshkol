@@ -159,6 +159,21 @@ that reads those `.esk` files while producing the image. The cache staleness
 gate compares the generated header byte-for-byte, so a stdlib edit cannot leave
 the WASM VM running an older surface.
 
+The browser product VM also embeds these pure source modules, generated from
+their exact UTF-8 bytes by `scripts/build-wasm-repl.sh`:
+
+- `core.msgpack`
+- `core.testing`
+- `core.list.query`
+- `core.list.transform`
+
+They use the normal VM module compiler, including import aliases, exports,
+privacy, and per-compilation cache tracking. Product WASM has no filesystem or
+general source loader. A module outside this four-module set fails compilation
+before the program runs; it is not treated as a successful no-op. The generated
+header records source hashes and can be checked with
+`python3 scripts/generate_wasm_embedded_modules.py --output build/generated/vm_embedded_modules.h --check`.
+
 The WASM execute-and-diff lane admits fixtures from
 `tests/vm_parity/corpus/` by default. A fixture that requires a host file,
 descriptor, or another unavailable host capability must have an explicit
