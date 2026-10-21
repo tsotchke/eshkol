@@ -17053,8 +17053,8 @@ static int vm_ad_reject_untraced_input(VM* vm, int slot, const char* operation) 
                     ? heap_ad_pair_field_node(&vm->heap, a.as.ptr, vm->ad_tape_generation, 1) : -1;
             vm_push(vm, o->cons.cdr); }
         else { fprintf(stderr, "CDR on non-pair\n"); vm_push(vm, NIL_VAL); } break; }
-    case 202: { int car_node = vm->active_tape ? vm->ad_node_map[vm->sp - 2] : -1;
-        int cdr_node = vm->active_tape ? vm->ad_node_map[vm->sp - 1] : -1;
+    case 202: { int car_node = vm->active_tape ? vm->ad_node_map[vm->sp - 1] : -1;
+        int cdr_node = vm->active_tape ? vm->ad_node_map[vm->sp - 2] : -1;
         Value b = vm_pop(vm), a = vm_pop(vm); /* cons */
         int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
         vm->heap.objects[p]->type = HEAP_CONS;
@@ -19726,6 +19726,10 @@ static int vm_ad_reject_untraced_input(VM* vm, int slot, const char* operation) 
 
         /* Activate tape tracing on VM */
         void* saved_tape = vm->active_tape;
+        /* Stack slots and persistent globals may still hold node indices from
+         * an earlier reverse-gradient call. A fresh tape starts with no such
+         * edges; only the argument slots below become variables. */
+        memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
         vm->ad_tape_generation++;
         if (vm->ad_tape_generation == 0) vm->ad_tape_generation = 1;
         vm->active_tape = tape;

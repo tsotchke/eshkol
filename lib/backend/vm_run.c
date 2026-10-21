@@ -782,6 +782,8 @@ vm_exit:
             vm_push(vm, vm->stack[src]);
             break; }
         case OP_SET_LOCAL:
+            if (vm->sp > 0 && vm->sp <= STACK_SIZE)
+                vm->ad_node_map[vm->fp + instr.operand] = vm->ad_node_map[vm->sp - 1];
             vm->stack[vm->fp + instr.operand] = vm_peek(vm, 0);
             vm_pop(vm);
             break;

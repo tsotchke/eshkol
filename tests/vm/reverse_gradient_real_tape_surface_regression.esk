@@ -3,8 +3,11 @@
 (require stdlib)
 
 (define checks 0)
+(define failures 0)
 (define (check name ok)
-  (if (not ok) (begin (display "FAIL: ") (display name) (newline)))
+  (if (not ok)
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline)))
   (set! checks (+ checks 1)))
 (define (near? a b eps) (< (abs (- a b)) eps))
 (define (raises? thunk) (guard (e (else #t)) (thunk) #f))
@@ -40,6 +43,16 @@
     (lambda (x) (fold-left add-alias 0.0 (list (* x x) (* x 3.0))))
     (vector 2.0)))
 (check "fold-left carries list and accumulator nodes" (= fold-grad 7.0))
+(check "set-car! refreshes a pair field's tracked node"
+  (= (reverse-gradient
+       (lambda (x) (let ((p (list 0.0))) (set-car! p x) (car p)))
+       (vector 2.0))
+     1.0)
+(check "set-cdr! refreshes a pair field's tracked node"
+  (= (reverse-gradient
+       (lambda (x) (let ((p (list 0.0))) (set-cdr! p x) (cdr p)))
+       (vector 2.0))
+     1.0)
 (define big-grad
   (reverse-gradient (lambda (x) (* x 9223372036854775808)) (vector 1.0)))
 (check "bignum constant is not coerced to zero" (= big-grad 9.223372036854776e18))
@@ -65,10 +78,29 @@
   (raises? (lambda () (reverse-gradient (lambda (x) (make-dual x 1.0)) (vector 1.0)))))
 (check "untraced tan on a tracked value refuses"
   (raises? (lambda () (reverse-gradient (lambda (x) (tan x)) (vector 1.0)))))
+(check "a caught unsupported operation does not poison the next tape"
+  (and (= (reverse-gradient (lambda (x) (* x x)) (vector 3.0)) 6.0)
+       (raises? (lambda () (reverse-gradient (lambda (x) (tan x)) (vector 1.0)))
+       (= (reverse-gradient (lambda (x) (* x x)) (vector 4.0)) 8.0)))
 (check "untraced exponentiation on a tracked value refuses"
   (raises? (lambda () (reverse-gradient (lambda (x) (expt x 2)) (vector 2.0)))))
 (check "complex point refuses instead of becoming zero"
   (raises? (lambda () (reverse-gradient (lambda (x) (* x x)) (vector (sqrt -1))))))
 
+;; A value copied into a persistent global during one tape belongs to that
+;; completed computation. A later tape must treat it as a constant.
+(define saved-from-prior-tape 0.0)
+(define (save-and-return x)
+  (set! saved-from-prior-tape x)
+  x)
+(define first-global-grad
+  (reverse-gradient save-and-return (vector 5.0)))
+(define second-global-grad
+  (reverse-gradient (lambda (x) (+ saved-from-prior-tape (* x 0.0))) (vector 5.0)))
+(check "global value from an earlier tape is an untracked constant"
+  (and (= first-global-grad 1.0) (= second-global-grad 0.0)))
+
 (display "Checks: ") (display checks) (newline)
-(display "PASS: reverse-gradient real tape surface\n")
+(if (> failures 0)
+    (error "reverse-gradient real tape surface regression failed")
+    (display "PASS: reverse-gradient real tape surface\n"))

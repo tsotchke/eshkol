@@ -285,7 +285,9 @@ static void vm_exec_ge(VM* vm) {
 }
 
 static void vm_exec_cons(VM* vm) {
-    int car_sp = vm->sp - 2, cdr_sp = vm->sp - 1;
+    /* Compiler ABI pushes cdr first, then car; vm_pop therefore reads car
+     * from sp-1 and cdr from sp-2. Keep metadata aligned with those values. */
+    int car_sp = vm->sp - 1, cdr_sp = vm->sp - 2;
     int car_node = (car_sp >= 0 && car_sp < STACK_SIZE) ? vm->ad_node_map[car_sp] : -1;
     int cdr_node = (cdr_sp >= 0 && cdr_sp < STACK_SIZE) ? vm->ad_node_map[cdr_sp] : -1;
     Value car = vm_pop(vm), cdr = vm_pop(vm);
@@ -330,14 +332,46 @@ static void vm_exec_cdr(VM* vm) {
 }
 
 static void vm_exec_set_car(VM* vm) {
+    int pair_sp = vm->sp - 2, value_sp = vm->sp - 1;
     Value val = vm_pop(vm), pair = vm_pop(vm);
-    if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.car = val;
+    if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr) &&
+        is_heap_type(vm, pair, HEAP_CONS)) {
+        int node = vm->active_tape && value_sp >= 0 && value_sp < STACK_SIZE
+            ? vm->ad_node_map[value_sp] : -1;
+        if (vm->active_tape && node >= 0 && !vm_ad_real_scalar(val)) {
+            vm_raise_error_msg(vm, "reverse-gradient: pair field contains an unsupported tracked value");
+            return;
+        }
+        vm->heap.objects[pair.as.ptr]->cons.car = val;
+        if (vm->active_tape && !heap_ad_pair_field_set(&vm->heap, pair.as.ptr,
+                vm->ad_tape_generation, 0, node)) {
+            vm_raise_error_msg(vm, "reverse-gradient: pair metadata allocation failed");
+            return;
+        }
+    }
+    if (pair_sp >= 0 && pair_sp < STACK_SIZE) vm->ad_node_map[pair_sp] = -1;
     vm_push(vm, (Value){.type = VAL_VOID});  /* ADR-0024: unspecified */
 }
 
 static void vm_exec_set_cdr(VM* vm) {
+    int pair_sp = vm->sp - 2, value_sp = vm->sp - 1;
     Value val = vm_pop(vm), pair = vm_pop(vm);
-    if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.cdr = val;
+    if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr) &&
+        is_heap_type(vm, pair, HEAP_CONS)) {
+        int node = vm->active_tape && value_sp >= 0 && value_sp < STACK_SIZE
+            ? vm->ad_node_map[value_sp] : -1;
+        if (vm->active_tape && node >= 0 && !vm_ad_real_scalar(val)) {
+            vm_raise_error_msg(vm, "reverse-gradient: pair field contains an unsupported tracked value");
+            return;
+        }
+        vm->heap.objects[pair.as.ptr]->cons.cdr = val;
+        if (vm->active_tape && !heap_ad_pair_field_set(&vm->heap, pair.as.ptr,
+                vm->ad_tape_generation, 1, node)) {
+            vm_raise_error_msg(vm, "reverse-gradient: pair metadata allocation failed");
+            return;
+        }
+    }
+    if (pair_sp >= 0 && pair_sp < STACK_SIZE) vm->ad_node_map[pair_sp] = -1;
     vm_push(vm, (Value){.type = VAL_VOID});  /* ADR-0024: unspecified */
 }
 

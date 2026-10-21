@@ -446,6 +446,8 @@ static int vm_heap_budget_fatal(void) {
 /** @brief Initialize the VM heap: sets up its arena region stack and the
  *         object-pointer table (fixed capacity HEAP_SIZE). */
 static void heap_init(Heap* h) {
+    h->ad_pair_nodes = NULL;
+    h->ad_nodes_capacity = 0;
     vm_region_stack_init(&h->regions);
     h->capacity = HEAP_SIZE;
     h->objects = (HeapObject**)calloc(h->capacity, sizeof(HeapObject*));
@@ -766,6 +768,15 @@ static int heap_ad_pair_field_node(const Heap* h, int32_t ptr,
     if (!h || ptr < 0 || ptr >= h->ad_nodes_capacity) return -1;
     if (h->ad_pair_nodes[ptr].generation != generation) return -1;
     return cdr ? h->ad_pair_nodes[ptr].cdr_node : h->ad_pair_nodes[ptr].car_node;
+}
+
+static int heap_ad_pair_field_set(Heap* h, int32_t ptr, uint64_t generation,
+                                  int cdr, int node) {
+    int car_node = heap_ad_pair_field_node(h, ptr, generation, 0);
+    int cdr_node = heap_ad_pair_field_node(h, ptr, generation, 1);
+    if (cdr) cdr_node = node;
+    else car_node = node;
+    return heap_ad_pair_nodes_set(h, ptr, generation, car_node, cdr_node);
 }
 
 /*******************************************************************************
@@ -1873,8 +1884,8 @@ static Value vm_call_closure_from_native_impl(VM* vm, Value closure, Value* args
     Value result = NIL_VAL;
     if (vm->sp > saved_sp) {
         result = vm->stack[vm->sp - 1];
-        if (result_ad_node && !callee_error && vm->sp == saved_sp + 1 &&
-            vm->active_tape && vm->sp - 1 < STACK_SIZE)
+        if (result_ad_node && !callee_error && vm->active_tape &&
+            vm->sp - 1 >= 0 && vm->sp - 1 < STACK_SIZE)
             *result_ad_node = vm->ad_node_map[vm->sp - 1];
     }
 

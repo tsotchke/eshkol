@@ -139,7 +139,7 @@ static void vm_exec_return(VM* vm) {
              * region is evacuated; any value that escapes is rewritten in
              * place before the frame is retired. */
             vm_push(vm, result);
-            if (vm->active_tape && vm->sp > 0 && vm->sp < STACK_SIZE)
+            if (vm->active_tape && vm->sp > 0 && vm->sp <= STACK_SIZE)
                 vm->ad_node_map[vm->sp - 1] = result_node;
             if (vm->fp > 0) vm->stack[vm->fp - 1] = NIL_VAL;
             vm_close_handler_region(vm, frame);
