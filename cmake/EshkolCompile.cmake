@@ -263,13 +263,22 @@ function(_eshkol_compile_one ESK_FILE OBJ_FILE OUT_DEPS_VAR
       "ESHKOL_LIB_DIR=${_ESHKOL_IN_TREE_LIBRARY_DIR}")
   endif()
 
+  set(_eshkol_compile_depends ${Eshkol_COMPILER_DEPENDS} ${DEPENDS_LIST})
+  if(_ESHKOL_IN_TREE_LIBRARY_DIR AND TARGET stdlib)
+    # In-tree eshkol-run resolves its matching precompiled SDK from this same
+    # build directory. Ensure the SDK exists before any generated consumer
+    # object invokes the compiler, even when the caller builds only that
+    # consumer target instead of the default ALL target.
+    list(APPEND _eshkol_compile_depends stdlib)
+  endif()
+
   add_custom_command(
     OUTPUT  "${OBJ_FILE}"
     BYPRODUCTS ${_byproducts}
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${_dir}"
     COMMAND "${CMAKE_COMMAND}" -E env ${_eshkol_compile_env}
             "${Eshkol_COMPILER}" ${_flags} "${_abs}"
-    DEPENDS "${_abs}" ${Eshkol_COMPILER_DEPENDS} ${DEPENDS_LIST}
+    DEPENDS "${_abs}" ${_eshkol_compile_depends}
     ${_depfile_args}
     COMMENT "Eshkol → ${OBJ_FILE}"
     VERBATIM)

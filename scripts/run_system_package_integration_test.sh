@@ -89,7 +89,30 @@ if [ -z "$PREFIX" ]; then
             exit 2
         fi
         llvm_prefix="$("$llvm_config" --prefix)"
-        zstd_prefix="$(brew --prefix zstd)"
+        zstd_library="${ESHKOL_ZSTD_PREFIX:-}"
+        if [ -n "$zstd_library" ]; then
+            zstd_library="$(cd "$zstd_library" && pwd -P)/lib/libzstd.1.dylib"
+        else
+            llvm_dylib="$llvm_prefix/lib/libLLVM.dylib"
+            if [ ! -f "$llvm_dylib" ]; then
+                echo "FATAL: cannot inspect LLVM runtime dependency: $llvm_dylib" >&2
+                exit 2
+            fi
+            zstd_library="$(otool -L "$llvm_dylib" | awk '
+                NR > 1 {
+                    path = $1
+                    count = split(path, parts, "/")
+                    if (path ~ /^\// && parts[count] == "libzstd.1.dylib") {
+                        print path
+                        exit
+                    }
+                }')"
+        fi
+        if [ -z "$zstd_library" ] || [ ! -f "$zstd_library" ]; then
+            echo "FATAL: cannot resolve installed zstd dylib from LLVM metadata; set ESHKOL_ZSTD_PREFIX" >&2
+            exit 2
+        fi
+        zstd_prefix="$(cd "$(dirname "$zstd_library")/.." && pwd -P)"
         openssl_version="$("$openssl_prefix/bin/openssl" version | awk '{print $2}')"
         llvm_version="$("$llvm_prefix/bin/llvm-config" --version)"
         zstd_version="$("$zstd_prefix/bin/zstd" --version | sed -E 's/.* v([^, ]+).*/\1/')"

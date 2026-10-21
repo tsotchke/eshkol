@@ -24,11 +24,27 @@ def fail(message: str) -> NoReturn:
     raise ValueError(message)
 
 
-def require_no_symlink_components(path: Path) -> Path:
-    """Return an absolute path only when no existing component is a symlink."""
+def canonical_package_root(path: Path) -> Path:
+    """Resolve OS temp-directory aliases while refusing a symlinked package root."""
     absolute = path.absolute()
-    current = Path(absolute.anchor)
-    for component in absolute.parts[1:]:
+    if absolute.is_symlink():
+        fail(f"refusing symlinked package staging root: {absolute}")
+    try:
+        return absolute.resolve(strict=True)
+    except OSError as exc:
+        fail(f"package staging root is unavailable: {absolute}: {exc}")
+
+
+def require_no_symlink_descendants(package: Path, path: Path) -> Path:
+    """Refuse symlinks below the canonical package root, including the target."""
+    package = package.resolve(strict=True)
+    absolute = path.absolute()
+    try:
+        relative = absolute.relative_to(package)
+    except ValueError:
+        fail(f"staging path escapes package root: {absolute} (root {package})")
+    current = package
+    for component in relative.parts:
         current /= component
         try:
             current.lstat()
@@ -36,7 +52,7 @@ def require_no_symlink_components(path: Path) -> Path:
             continue
         if current.is_symlink():
             fail(f"refusing symlinked staging path component: {current}")
-    return absolute
+    return current
 
 
 def run(args: list[str]) -> str:
@@ -117,7 +133,7 @@ def normalize_rpaths(path: Path, allowed: str) -> None:
 
 def stage(openssl_prefix: Path, llvm_prefix: Path, zstd_prefix: Path,
           package: Path, versions: dict[str, str]) -> dict:
-    package = require_no_symlink_components(package)
+    package = canonical_package_root(package)
     prefixes = {
         "openssl@3": openssl_prefix.resolve(strict=True),
         "llvm@21": llvm_prefix.resolve(strict=True),
@@ -130,7 +146,7 @@ def stage(openssl_prefix: Path, llvm_prefix: Path, zstd_prefix: Path,
             fail(f"package staging root overlaps {formula} provider prefix: {package} / {prefix}")
     out = package / RUNTIME_SUBDIR
     out.mkdir(parents=True, exist_ok=True)
-    require_no_symlink_components(out)
+    require_no_symlink_descendants(package, out)
     files: dict[str, dict[str, str]] = {}
     payloads = (
         tuple(("openssl@3", name) for name in (*OPENSSL_DYLIBS, *OPENSSL_ARCHIVES))
@@ -147,7 +163,7 @@ def stage(openssl_prefix: Path, llvm_prefix: Path, zstd_prefix: Path,
     # Rewrite only the staged package image. Preserve system libraries and fail
     # closed on any additional Homebrew or other absolute third-party closure.
     package_binaries = (package / "bin/eshkol-run", package / "bin/eshkol-repl")
-    require_no_symlink_components(package / "bin")
+    require_no_symlink_descendants(package, package / "bin")
     dylib_rewrites = {
         "libssl.3.dylib": "libssl.3.dylib",
         "libcrypto.3.dylib": "libcrypto.3.dylib",
@@ -209,7 +225,7 @@ def stage(openssl_prefix: Path, llvm_prefix: Path, zstd_prefix: Path,
     license_metadata: dict[str, dict[str, str]] = {}
     license_dir = package / "licenses"
     license_dir.mkdir(parents=True, exist_ok=True)
-    require_no_symlink_components(license_dir)
+    require_no_symlink_descendants(package, license_dir)
     for output_name, (formula, candidates) in license_specs.items():
         source = license_source(prefixes[formula], candidates)
         target = license_dir / output_name

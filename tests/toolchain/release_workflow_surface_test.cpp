@@ -385,7 +385,7 @@ int main(int argc, char** argv) {
          expect_contains(workflow,
                          "--tls-smoke-source \"tests/network/tls_public_api.esk\"",
                          "macOS release runs packaged native TLS through AOT and JIT") &&
-         expect_contains(workflow,
+         expect_contains(package_verifier,
                          "verify_macos_openssl_dependencies",
                          "macOS package verification rejects non-relocatable TLS references") &&
          expect_contains(workflow,
@@ -584,10 +584,10 @@ int main(int argc, char** argv) {
                          "prepare_jit_module_for_target(*module, jit_->getTargetTriple());",
                          "live REPL modules receive the Windows ARM64 data-reach contract") &&
          expect_contains(repl_jit,
-                         "prepare_jit_module_for_target(\n                                    **emit_mod, (*emit_tm)->getTargetTriple());",
+                         "prepare_jit_module_for_target(\n                                        **emit_mod, (*emit_tm)->getTargetTriple());",
                          "cached stdlib object emission receives the data-reach contract") &&
          expect_contains(repl_jit,
-                         "prepare_jit_module_for_target(\n                    *stdlib_module, jit_->getTargetTriple());",
+                         "prepare_jit_module_for_target(\n                        *stdlib_module, jit_->getTargetTriple());",
                          "IR stdlib loading receives the data-reach contract") &&
          expect_contains(jit_target_config,
                          "global.setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);",

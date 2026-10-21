@@ -3,7 +3,7 @@
 (require core.tls)
 (require core.capabilities)
 
-(capability-install-policy! '(file-read))
+(capability-install-policy! '(file-read network))
 (define certificate "tests/network/fixtures/localhost-cert.pem")
 (define nonempty-key "tests/network/fixtures/encrypted-nonempty-password-key.pem")
 (define empty-key "tests/network/fixtures/encrypted-empty-password-key.pem")
