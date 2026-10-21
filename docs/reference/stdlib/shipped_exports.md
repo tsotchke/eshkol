@@ -954,6 +954,26 @@ Computes the exact polynomial difference between the point plus an increment and
 
 Returns immutable arity, degree and conservative term-work metadata.
 
+### `derived-operator-enclosure`
+
+Evaluates the source polynomial and its symbolic derivatives over exact rational boxes with rigorous interval bounds.
+
+## `core.certified_nonlinear`
+
+Source: `lib/core/certified_nonlinear.esk`; the root and implicit-sensitivity certificate contract is documented in [certified_nonlinear.md](certified_nonlinear.md).
+
+### `make-certified-polynomial-system`
+
+Compiles a bounded coupled polynomial system with exact rational coefficients.
+
+### `certify-polynomial-root`
+
+Validates a supplied approximate root using whole-box Jacobian bounds and a strict contraction certificate.
+
+### `verify-polynomial-root-certificate`
+
+Recomputes the certificate from the source system and caller supplied trial data.
+
 ## `core.ad.root_branch`
 
 Source: [lib/core/ad/root_branch.esk](../../../lib/core/ad/root_branch.esk). The exact whole-step continuation contract and certificate limits are documented in [ad_root_branch.md](ad_root_branch.md).

@@ -7,6 +7,7 @@ sources:
   - lib/core/ad/derived_operator.esk
   - lib/core/symbolic.esk
   - tests/stdlib/derived_operator_test.esk
+  - tests/stdlib/certified_nonlinear_test.esk
   - examples/mathematics_derived_operator.esk
 ---
 
@@ -49,3 +50,12 @@ polynomial transpose, not conjugate adjoint.
 Info is `#(arity degree forward-term-work shifted-term-work)`. Tests check
 independent analytic derivatives, JVP/VJP pairing, exact full-update parity over
 a rational corpus, cubic change terms, compiler AD composition and refusals.
+## Exact interval enclosures
+
+`(derived-operator-enclosure op boxes)` returns `#(value-interval partial-interval-vector)`.
+Boxes are a vector of closed exact rational `(lo . hi)` pairs in input order.
+The existing canonical polynomial and symbolic partials are evaluated with the
+shared rigorous interval arithmetic. Every endpoint must retain exactness.
+Bounds enclose the entire box; dependency can make them conservative. Returned
+intervals own their pairs. This is the shared enclosure seam used by
+[certified polynomial roots](certified_nonlinear.md).
