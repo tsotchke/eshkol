@@ -2121,6 +2121,70 @@ private:
         }
     }
 
+    bool isPureResourceDataBuiltin(const std::string& name) const {
+        static const std::set<std::string> names = {
+            "+", "-", "*", "/", "=", "<", "<=", ">", ">=", "boolean=?",
+            "eq?", "eqv?", "equal?", "not", "integer?", "exact?", "inexact?",
+            "number?", "real?", "string?", "symbol?", "vector?", "pair?", "null?",
+            "procedure?", "vector-length", "vector-ref", "car", "cdr", "caar", "cadr",
+            "caddr", "cadddr", "cddr", "cdddr", "cddddr", "cons", "list", "append",
+            "string-length", "string-ref", "substring", "void"
+        };
+        return names.count(name) != 0;
+    }
+
+    bool isStaticDataExpression(
+        const eshkol_ast_t* value,
+        const std::map<std::string, CallableEffect>* known_effects = nullptr,
+        const std::set<std::string>* known_callables = nullptr,
+        unsigned depth = 0) const {
+        if (!value || depth > 128) return false;
+        if (isStaticDataLiteral(value)) return true;
+        if (value->type == ESHKOL_VAR) {
+            const std::string name = getVarName(value);
+            if (known_callables && known_callables->count(name)) return false;
+            if (known_effects) {
+                auto effect = known_effects->find(name);
+                return effect != known_effects->end() &&
+                       effect->second == CallableEffect::NONE;
+            }
+            VariableInfo* info = const_cast<OwnershipAnalyzer*>(this)->lookupVariable(name);
+            return info && info->resource_kind == ResourceKind::NONE &&
+                   info->callable_effect == CallableEffect::NONE &&
+                   !info->is_proven_callable;
+        }
+        if (value->type == ESHKOL_CONS) {
+            const std::string head = getVarName(value->cons_cell.car);
+            if (!head.empty()) {
+                if (!isPureResourceDataBuiltin(head)) return false;
+                return isStaticDataExpression(value->cons_cell.cdr, known_effects,
+                                              known_callables, depth + 1);
+            }
+            return isStaticDataExpression(value->cons_cell.car, known_effects,
+                                          known_callables, depth + 1) &&
+                   isStaticDataExpression(value->cons_cell.cdr, known_effects,
+                                          known_callables, depth + 1);
+        }
+        if (value->type != ESHKOL_OP) return false;
+        const auto& op = value->operation;
+        if (op.op == ESHKOL_QUOTE_OP) return true;
+        if (op.op == ESHKOL_CALL_OP) {
+            const std::string head = getVarName(op.call_op.func);
+            if (!isPureResourceDataBuiltin(head)) return false;
+            for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
+                if (!isStaticDataExpression(&op.call_op.variables[i], known_effects,
+                                            known_callables, depth + 1)) return false;
+            return true;
+        }
+        if (op.op == ESHKOL_SEQUENCE_OP) {
+            for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                if (!isStaticDataExpression(&op.sequence_op.expressions[i], known_effects,
+                                            known_callables, depth + 1)) return false;
+            return op.sequence_op.num_expressions > 0;
+        }
+        return false;
+    }
+
     CallableEffect effectForExpression(
         const eshkol_ast_t* expression,
         const std::map<std::string, CallableEffect>* known = nullptr) const {
@@ -2165,7 +2229,8 @@ private:
                     if (op.define_op.is_function) {
                         effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
                         proven_callable = true;
-                    } else if (!isStaticDataLiteral(op.define_op.value)) {
+                    } else if (!isStaticDataExpression(op.define_op.value, &effects,
+                                                       &proven_callable_names)) {
                         effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
                     }
                 } else if (op.define_op.is_function) {
@@ -3122,7 +3187,7 @@ private:
                                         if (op->define_op.is_function) {
                                             info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
                                             info.is_proven_callable = true;
-                                        } else if (!isStaticDataLiteral(op->define_op.value)) {
+                                        } else if (!isStaticDataExpression(op->define_op.value)) {
                                             info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
                                             if (item.resource_effects_enabled)
                                                 reportResourceError("opaque external initializer for '" +
