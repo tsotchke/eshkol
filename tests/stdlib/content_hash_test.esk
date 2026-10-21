@@ -16,7 +16,7 @@
 (check "native random-byte length" (= (string-byte-length entropy) 32))
 (define hex (random-hex 32))
 (check "native random-hex length" (= (string-length hex) 32))
-(check "native random-hex alphabet" (let loop ((i 0)) (or (= i 32) (and (let ((c (string-ref hex i))) (or (and (char>=? c #\0) (char<=? c #\9)) (and (char>=? c #\a) (char<=? c #\f)))) (loop (+ i 1))))))
+(check "native random-hex alphabet" (let loop ((i 0)) (or (= i 32) (and (let ((c (char->integer (string-ref hex i)))) (or (and (>= c 48) (<= c 57)) (and (>= c 97) (<= c 102)))) (loop (+ i 1))))))
 (define uuid (uuid-v4))
 (check "uuid version" (and (= (string-length uuid) 36) (char=? (string-ref uuid 14) #\4)))
 (display "Checks: ") (display passed) (newline)
