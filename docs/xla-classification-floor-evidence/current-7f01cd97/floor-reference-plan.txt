@@ -1,0 +1,102 @@
+BUILTIN modulo
+CLASS arithmetic
+N 12
+RSHAPE vector
+ETYPE s64
+IN 0 13 -13 13 -13 12 -12 12 -12 0 1 -1 37
+IN 1 5 5 -5 -5 3 3 -3 -3 -7 -7 7 6
+REF 3 2 -2 -3 0 0 0 0 0 -6 6 1
+OP const zero 0 a0
+OP binary Remainder rem a0 a1
+OP compare NE nonzero rem zero
+OP compare LT rem_neg rem zero
+OP compare LT divisor_neg a1 zero
+OP binary Xor differs rem_neg divisor_neg
+OP binary And correct nonzero differs
+OP convert s64 correction correct
+OP binary Multiply offset correction a1
+OP binary Add r rem offset
+RESULT r
+END
+BUILTIN mod
+CLASS arithmetic
+N 12
+RSHAPE vector
+ETYPE s64
+IN 0 13 -13 13 -13 12 -12 12 -12 0 1 -1 37
+IN 1 5 5 -5 -5 3 3 -3 -3 -7 -7 7 6
+REF 3 2 -2 -3 0 0 0 0 0 -6 6 1
+OP const zero 0 a0
+OP binary Remainder rem a0 a1
+OP compare NE nonzero rem zero
+OP compare LT rem_neg rem zero
+OP compare LT divisor_neg a1 zero
+OP binary Xor differs rem_neg divisor_neg
+OP binary And correct nonzero differs
+OP convert s64 correction correct
+OP binary Multiply offset correction a1
+OP binary Add r rem offset
+RESULT r
+END
+BUILTIN floor-remainder
+CLASS arithmetic
+N 12
+RSHAPE vector
+ETYPE s64
+IN 0 13 -13 13 -13 12 -12 12 -12 0 1 -1 37
+IN 1 5 5 -5 -5 3 3 -3 -3 -7 -7 7 6
+REF 3 2 -2 -3 0 0 0 0 0 -6 6 1
+OP const zero 0 a0
+OP binary Remainder rem a0 a1
+OP compare NE nonzero rem zero
+OP compare LT rem_neg rem zero
+OP compare LT divisor_neg a1 zero
+OP binary Xor differs rem_neg divisor_neg
+OP binary And correct nonzero differs
+OP convert s64 correction correct
+OP binary Multiply offset correction a1
+OP binary Add r rem offset
+RESULT r
+END
+BUILTIN floor-quotient
+CLASS arithmetic
+N 12
+RSHAPE vector
+ETYPE s64
+IN 0 13 -13 13 -13 12 -12 12 -12 0 1 -1 37
+IN 1 5 5 -5 -5 3 3 -3 -3 -7 -7 7 6
+REF 2 -3 -3 2 4 -4 -4 4 0 -1 -1 6
+OP const zero 0 a0
+OP binary Remainder rem a0 a1
+OP compare NE nonzero rem zero
+OP compare LT rem_neg rem zero
+OP compare LT divisor_neg a1 zero
+OP binary Xor differs rem_neg divisor_neg
+OP binary And correct nonzero differs
+OP convert s64 correction correct
+OP binary Divide quotient a0 a1
+OP binary Subtract r quotient correction
+RESULT r
+END
+BUILTIN quotient
+CLASS arithmetic
+N 12
+RSHAPE vector
+ETYPE s64
+IN 0 100 93 86 79 72 65 58 51 44 37 30 23
+IN 1 3 4 5 6 7 8 9 10 11 12 13 14
+REF 33 23 17 13 10 8 6 5 4 3 2 1
+OP binary Divide r a0 a1
+RESULT r
+END
+BUILTIN remainder
+CLASS arithmetic
+N 12
+RSHAPE vector
+ETYPE s64
+IN 0 100 93 86 79 72 65 58 51 44 37 30 23
+IN 1 3 4 5 6 7 8 9 10 11 12 13 14
+REF 1 1 1 1 2 1 4 1 0 1 4 9
+OP binary Remainder r a0 a1
+RESULT r
+END
