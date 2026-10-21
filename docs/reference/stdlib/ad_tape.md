@@ -261,6 +261,13 @@ builds the equivalent reverse-mode gradient directly on the tape
 (`ad-var`/`ad-mul`/`ad-add`/`ad-backward`/`ad-gradient`) rather than calling
 `reverse-gradient`.
 
+The VM convenience traces real scalar `+`, `-`, `*` and `/`, with exact
+rational and bignum operands treated as constants, plus the VM's existing
+tracked `sin`, `cos`, `exp`, `log`, `sqrt`, unary negation and `abs` rules.
+Untraced operators on a tracked value raise instead of returning a constant
+gradient. Complex, dual, hyper-dual and container-valued outputs are refused;
+the convenience does not provide reverse rules for those carriers.
+
 ## Internal helpers (provided but user-facing use is uncommon)
 `node-value` and `node-grad` are the documented accessors. The following are used internally by the module and generally not called directly: the `tape-*` list helpers, `val-*` value helpers, and `node-grad-set!/add!` are **not** exported.
 

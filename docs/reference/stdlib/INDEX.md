@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 90** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1025** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 104** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1104** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -25,13 +25,22 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|
+| [`core.dbsp.sqlite_changefeed`](../../../lib/core/dbsp/sqlite_changefeed.esk) | no | [dbsp_sqlite_changefeed.md](dbsp_sqlite_changefeed.md) | `dbsp-sqlite-create!` `dbsp-sqlite-enqueue!` `dbsp-sqlite-consume!` `dbsp-sqlite-state` |
+| [`core.certified_native_solve`](../../../lib/core/certified_native_solve.esk) | no | [certified_native_solve.md](certified_native_solve.md) | `solve-certified-native` `verify-certified-native-solve` |
+| [`core.certified_solve_pullback`](../../../lib/core/certified_solve_pullback.esk) | no | [certified_solve_pullback.md](certified_solve_pullback.md) | `solve-certified-native-pullback` `verify-certified-native-pullback` |
 | [`core.ad.tape`](../../../lib/core/ad/tape.esk) | no | [ad_tape.md](ad_tape.md) | `ad-tape-new` `ad-const` `ad-var` `ad-add` `ad-sub` `ad-mul` `ad-div` `ad-sin` `ad-cos` `ad-exp` `ad-log` `ad-sqrt` `ad-neg` `ad-abs` `ad-relu` `ad-sigmoid` `ad-tanh` `ad-backward` `ad-gradient` `ad-node-value` `with-tape` `current-tape` `make-tape` `tape-input` `tape-const` `node-value` `node-grad` `record-op!` `record-fd-op!` `tape-add` `tape-sub` `tape-mul` `tape-div` `tape-sin` `tape-cos` `tape-exp` `tape-log` `tape-neg` `tape-square` `tape-sqrt` `tape-tanh` `tape-sigmoid` `tape-relu` `tape-pow` `tape-gradient` `tape-pullback` `tape-seal!` `tape-snapshot` `tape-restore` |
+| [`core.ad.tensor_circuit_reverse`](../../../lib/core/ad/tensor_circuit_reverse.esk) | no | [ad_tensor_circuit_reverse.md](ad_tensor_circuit_reverse.md) | `make-tensor-circuit-pullback` `tensor-circuit-pullback-step` `tensor-circuit-pullback-output` `tensor-circuit-pullback-work` |
 | [`core.ad.algebraic_pullback`](../../../lib/core/ad/algebraic_pullback.esk) | no | [ad_algebraic_pullback.md](ad_algebraic_pullback.md) | `algebraic-solve-with-pullback` `algebraic-factor-with-pullback` `algebraic-system-with-pullback` `algebraic-reverse-solve` `algebraic-reverse-system` |
+| [`core.ad.algebraic_farkas`](../../../lib/core/ad/algebraic_farkas.esk) | no | [ad_algebraic_farkas.md](ad_algebraic_farkas.md) | `algebraic-farkas-search` `algebraic-farkas-verify` |
 | [`core.ad.algebraic_qp`](../../../lib/core/ad/algebraic_qp.esk) | no | [ad_algebraic_qp.md](ad_algebraic_qp.md) | `algebraic-qp-solve` `algebraic-qp-solution` `algebraic-qp-info` `algebraic-qp-verify` `algebraic-qp-pullback` |
 | [`core.ad.algebraic_ridge`](../../../lib/core/ad/algebraic_ridge.esk) | no | [ad_algebraic_ridge.md](ad_algebraic_ridge.md) | `algebraic-ridge-new` `algebraic-ridge-step` `algebraic-ridge-output` `algebraic-ridge-info` `algebraic-ridge-pullback` |
-| [`core.ad.derived_operator`](../../../lib/core/ad/derived_operator.esk) | no | [ad_derived_operator.md](ad_derived_operator.md) | `make-derived-operator` `derived-operator-value` `derived-operator-jvp` `derived-operator-vjp` `derived-operator-delta` `derived-operator-info` |
+| [`core.ad.certified_continuation`](../../../lib/core/ad/certified_continuation.esk) | no | [ad_certified_continuation.md](ad_certified_continuation.md) | `make-certified-continuation` `certified-continuation-advance` `certified-continuation-enclosure` `verify-certified-continuation` |
+| [`core.ad.derived_operator`](../../../lib/core/ad/derived_operator.esk) | no | [ad_derived_operator.md](ad_derived_operator.md) | `make-derived-operator` `derived-operator-value` `derived-operator-jvp` `derived-operator-vjp` `derived-operator-delta` `derived-operator-info` `derived-operator-enclosure` |
+| [`core.certified_nonlinear`](../../../lib/core/certified_nonlinear.esk) | no | [certified_nonlinear.md](certified_nonlinear.md) | `make-certified-polynomial-system` `certify-polynomial-root` `verify-polynomial-root-certificate` |
 | [`core.ad.algebraic_spectral`](../../../lib/core/ad/algebraic_spectral.esk) | no | [ad_algebraic_spectral.md](ad_algebraic_spectral.md) | `algebraic-characteristic` `algebraic-eigenvalue-with-pullback` `algebraic-eigenvalue-lift` |
+| [`core.ad.algebraic_subspace`](../../../lib/core/ad/algebraic_subspace.esk) | no | [ad_algebraic_subspace.md](ad_algebraic_subspace.md) | `make-algebraic-subspace` `algebraic-subspace-projector` `algebraic-subspace-jvp` `algebraic-subspace-vjp` `algebraic-subspace-info` `verify-algebraic-subspace-jvp` `make-algebraic-subspace-from-factors` |
 | [`core.ad.root_branch`](../../../lib/core/ad/root_branch.esk) | no | [ad_root_branch.md](ad_root_branch.md) | `make-root-branch` `root-branch-step` `root-branch-enclosure` `root-branch-time` `root-branch-sensitivity` `verify-root-branch-step` |
+
 | [`core.alist`](../../../lib/core/alist.esk) | yes | [alist.md](alist.md) | `alist-ref` `alist-ref-or` `alist-set` |
 | [`core.argparse`](../../../lib/core/argparse.esk) | no | [argparse.md](argparse.md) | `parse-args` `arg-get` `arg-positional` `arg-has?` `argparse-help` |
 | [`core.cache`](../../../lib/core/cache.esk) | no | [cache.md](cache.md) | `make-lru-cache` `lru-get` `lru-get/default` `lru-set!` `lru-has?` `lru-delete!` `lru-size` `lru-capacity` `lru-clear!` `memoize` `memoize/cap` `memoize1` `memoize1/cap` `memoize2` `memoize2/cap` |
@@ -40,7 +49,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.channels`](../../../lib/core/channels.esk) | no | [channels.md](channels.md) | `make-channel` `channel?` `channel-capacity` `channel-len` `channel-closed?` `channel-send!` `channel-recv!` `channel-try-send!` `channel-try-recv!` `channel-close!` `channel-closed-sentinel` |
 | [`core.collections`](../../../lib/core/collections.esk) | no | [collections.md](collections.md) | `make-pq` `pq-push!` `pq-pop!` `pq-peek` `pq-size` `pq-empty?` `make-set` `set-add!` `set-remove!` `set-contains?` `set-size` `set->list` `set-clear!` `set-union` `set-intersect` `set-difference` `make-deque` `deque-push-front!` `deque-push-back!` `deque-pop-front!` `deque-pop-back!` `deque-peek-front` `deque-peek-back` `deque-size` `deque-empty?` `deque->list` |
 | [`core.polynomial_exact`](../../../lib/core/polynomial_exact.esk) | no | [polynomial_exact.md](polynomial_exact.md) | `exact-poly` `exact-poly-zero?` `exact-poly-sub` `exact-poly-scale` `exact-poly-mul` `exact-poly-divmod` `exact-poly-inverse-mod` `exact-poly-eval` `exact-poly-real-root-count` `exact-poly-isolate` |
-| [`core.algebraic_field`](../../../lib/core/algebraic_field.esk) | no | [algebraic_field.md](algebraic_field.md) | `make-algebraic-field` `algebraic-field-degree` `algebraic-field-polynomial` `algebraic-generator` `algebraic-element` `algebraic-coefficients` `algebraic-add` `algebraic-sub` `algebraic-scale` `algebraic-mul` `algebraic-inverse` `algebraic-zero?` `algebraic-equal?` `algebraic-rational` `algebraic-enclosure` `algebraic-sign` `make-algebraic-embedding` `make-algebraic-compositum` `algebraic-field-certificate` |
+| [`core.algebraic_field`](../../../lib/core/algebraic_field.esk) | no | [algebraic_field.md](algebraic_field.md) | `make-algebraic-field` `algebraic-field-degree` `algebraic-field-polynomial` `algebraic-generator` `algebraic-element` `algebraic-coefficients` `algebraic-add` `algebraic-sub` `algebraic-scale` `algebraic-mul` `algebraic-inverse` `algebraic-zero?` `algebraic-equal?` `algebraic-rational` `algebraic-enclosure` `algebraic-sign` `make-algebraic-embedding` `make-algebraic-compositum` `algebraic-field-certificate` `make-multiquadratic-field` |
 | [`core.algebraic_domain`](../../../lib/core/algebraic_domain.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-domain` `algebraic-domain-ref` |
 | [`core.algebraic_linalg`](../../../lib/core/algebraic_linalg.esk) | no | [algebraic_linalg.md](algebraic_linalg.md) | `algebraic-factor` `algebraic-factor-solve` `algebraic-factor-solve-transpose` `algebraic-factor-summary` `algebraic-matrix-mul` `algebraic-solve` `algebraic-factor-positive-definite?` |
 | [`core.algebraic_update`](../../../lib/core/algebraic_update.esk) | no | [algebraic_update.md](algebraic_update.md) | `algebraic-update-factor` `algebraic-update` `algebraic-update-symmetric` `algebraic-update-solve` `algebraic-update-solve-transpose` `algebraic-update-pullback` `algebraic-update-info` |
@@ -48,6 +57,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.ad.algebraic_incremental`](../../../lib/core/ad/algebraic_incremental.esk) | no | [ad_algebraic_incremental.md](ad_algebraic_incremental.md) | `make-algebraic-incremental-plan` `algebraic-incremental-new` `algebraic-incremental-step` `algebraic-incremental-output` `algebraic-incremental-info` `algebraic-incremental-moment-ref` |
 | [`core.ad.algebraic_reverse`](../../../lib/core/ad/algebraic_reverse.esk) | no | [ad_algebraic_reverse.md](ad_algebraic_reverse.md) | `algebraic-value-and-pullback` `algebraic-reverse-value` `algebraic-reverse-constant` `algebraic-reverse-add` `algebraic-reverse-sub` `algebraic-reverse-mul` `algebraic-reverse-inverse` `algebraic-reverse-pow` `algebraic-hvp` |
 | [`core.ad.algebraic_sparse`](../../../lib/core/ad/algebraic_sparse.esk) | no | [ad_algebraic_sparse.md](ad_algebraic_sparse.md) | `algebraic-sparse-hessian` `algebraic-sparse-hessian-ref` `algebraic-sparse-hessian-dense` `algebraic-sparse-hessian-summary` |
+| [`core.ad.incremental_reverse`](../../../lib/core/ad/incremental_reverse.esk) | no | [ad_incremental_reverse.md](ad_incremental_reverse.md) | `make-incremental-pullback` `incremental-pullback-step` `incremental-pullback-output` `incremental-pullback-work` `incremental-pullback-info` |
 | [`core.ad.sparsity`](../../../lib/core/ad/sparsity.esk) | no | [ad_sparsity.md](ad_sparsity.md) | `hessian-color-graph` |
 | [`core.algebraic_batch`](../../../lib/core/algebraic_batch.esk) | no | [algebraic_batch.md](algebraic_batch.md) | `make-algebraic-multiplication-plan` `algebraic-batch-mul` |
 | [`core.control.trampoline`](../../../lib/core/control/trampoline.esk) | yes | [control_trampoline.md](control_trampoline.md) | `trampoline` `bounce` `done` |
@@ -59,9 +69,13 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.dbsp`](../../../lib/core/dbsp.esk) | no | [dbsp.md](dbsp.md) | `zset-row-key` `zset-empty` `zset?` `zset-singleton` `zset-from-weighted` `zset-weight` `zset-add` `zset-negate` `zset-sub` `zset-scale` `zset-consolidate` `zset-empty?` `zset-positive?` `zset=?` `zset-entries` `zset-rows` `zset-size` `zset-map` `zset-filter` `zset-project` `zset-union` `zset-join` `zset-distinct` `zset-count` `zset-sum` `stream-zero` `stream-delay` `dbsp-delay` `stream-D` `stream-I` `stream-add` `stream-negate` `stream-lift` `dbsp-compose` `dbsp-incrementalize` `incremental-map` `incremental-filter` `incremental-project` `incremental-union` `incremental-join` `incremental-distinct` |
 | [`core.dbsp.ad`](../../../lib/core/dbsp/ad.esk) | no | [dbsp_ad.md](dbsp_ad.md) | `dbsp-vector-group` `dbsp-ad-lift` |
 | [`core.dbsp.circuit`](../../../lib/core/dbsp/circuit.esk) | no | [dbsp_circuit.md](dbsp_circuit.md) | `make-dbsp-group` `make-dbsp-circuit` `dbsp-circuit-step` `dbsp-circuit-output` `dbsp-circuit-input` `dbsp-circuit-work` `dbsp-circuit-checkpoint-state` |
+| [`core.dbsp.ordered`](../../../lib/core/dbsp/ordered.esk) | no | [dbsp_ordered.md](dbsp_ordered.md) | `make-dbsp-ordered` `dbsp-ordered-step` `dbsp-ordered-select` `dbsp-ordered-quantile` `dbsp-ordered-rank` `dbsp-ordered-top` `dbsp-ordered-info` `dbsp-ordered-work` |
+| [`core.dbsp.window`](../../../lib/core/dbsp/window.esk) | no | [dbsp_window.md](dbsp_window.md) | `make-dbsp-window` `dbsp-window-step` `dbsp-window-output` `dbsp-window-info` |
 | [`core.dbsp.checkpoint`](../../../lib/core/dbsp/checkpoint.esk) | no | [dbsp_checkpoint.md](dbsp_checkpoint.md) | `make-dbsp-resumable` `dbsp-resumable-step` `dbsp-resumable-output` `dbsp-resumable-tick` `dbsp-resumable-checkpoint` `dbsp-resumable-restore` `dbsp-checkpoint-save` `dbsp-checkpoint-load` |
-| [`core.dbsp.tensor_circuit`](../../../lib/core/dbsp/tensor_circuit.esk) | no | [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) | `make-tensor-circuit` `tensor-circuit-step` `tensor-circuit-output` `tensor-circuit-ref` `tensor-circuit-work` |
+| [`core.dbsp.resident`](../../../lib/core/dbsp/resident.esk) | no | [dbsp_resident.md](dbsp_resident.md) | `call-with-dbsp-resident` `dbsp-resident-step` `dbsp-resident-release!` `dbsp-resident-output` `dbsp-resident-delta` `dbsp-resident-work` `dbsp-resident-stats` `dbsp-resident-compact!` |
+| [`core.dbsp.tensor_circuit`](../../../lib/core/dbsp/tensor_circuit.esk) | no | [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) | `make-tensor-circuit` `tensor-circuit-step` `tensor-circuit-output` `tensor-circuit-ref` `tensor-circuit-work` `tensor-circuit-visit` `tensor-circuit-plan-work` |
 | [`core.dbsp.tensor_snapshot`](../../../lib/core/dbsp/tensor_snapshot.esk) | no | [dbsp_tensor_snapshot.md](dbsp_tensor_snapshot.md) | `tensor-snapshot` `tensor-snapshot-shape` `tensor-snapshot-ref` `tensor-snapshot-apply` `tensor-snapshot->tensor` `tensor-snapshot->reader` `tensor-snapshot-work` |
+| [`core.dbsp.recursive`](../../../lib/core/dbsp/recursive.esk) | no | [dbsp_recursive.md](dbsp_recursive.md) | `make-dbsp-recursive` `dbsp-recursive-step` `dbsp-recursive-output` `dbsp-recursive-work` |
 | [`core.dbsp.tensor`](../../../lib/core/dbsp/tensor.esk) | no | [dbsp.md](dbsp.md#optional-sparse-tensor-bridge) | `tensor-delta` `tensor-delta?` `tensor-delta-shape` `tensor-delta-entries` `tensor-apply-delta` `zset-project-tensor` `tensor-matmul-delta` `tensor-reader` |
 | [`core.distributed`](../../../lib/core/distributed.esk) | no | [distributed.md](distributed.md) | `lamport-zero` `lamport-tick` `lamport-merge` `lamport-recv` `lamport-before?` `vector-clock-empty` `vector-clock-ref` `vector-clock-set` `vector-clock-tick` `vector-clock-merge` `vector-clock-compare` `vector-clock-before?` `vector-clock-after?` `vector-clock-concurrent?` `vector-clock-equal?` `vector-clock-nodes` `make-g-counter` `g-counter-counts` `g-counter-inc` `g-counter-value` `g-counter-merge` `make-pn-counter` `pn-counter-positive` `pn-counter-negative` `pn-counter-inc` `pn-counter-dec` `pn-counter-value` `pn-counter-merge` `make-or-set` `or-set-adds` `or-set-removes` `or-set-clock` `or-set-add` `or-set-remove` `or-set-member?` `or-set-elements` `or-set-merge` `make-lww-register` `lww-register-value` `lww-register-timestamp` `lww-register-writer` `lww-register-deleted?` `lww-register-present?` `lww-register-set` `lww-register-delete` `lww-register-merge` `make-lww-map` `lww-map-entries` `lww-map-set` `lww-map-remove` `lww-map-ref` `lww-map-contains?` `lww-map-visible-entries` `lww-map-merge` `make-rga` `rga-root-id` `rga-entries` `rga-clock` `rga-entry-id` `rga-entry-prev` `rga-entry-value` `rga-entry-deleted?` `rga-insert-after` `rga-append` `rga-delete` `rga-values` `rga-last-id` `rga-merge` |
 | [`core.dnc`](../../../lib/core/dnc.esk) | no | [dnc.md](dnc.md) | `make-dnc-memory` `dnc-content-address` `dnc-loc-address` `dnc-read` `dnc-write!` `dnc-alloc-weights` `dnc-read-grad` `dnc-memory?` |
@@ -71,6 +85,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.functional.compose`](../../../lib/core/functional/compose.esk) | yes | [functional_compose.md](functional_compose.md) | `compose` `compose3` `identity` `constantly` |
 | [`core.functional.curry`](../../../lib/core/functional/curry.esk) | yes | [functional_curry.md](functional_curry.md) | `curry2` `curry3` `uncurry2` `partial1` `partial2` `partial3` `partial` |
 | [`core.functional.flip`](../../../lib/core/functional/flip.esk) | yes | [functional_flip.md](functional_flip.md) | `flip` |
+| [`core.net`](../../../lib/core/net.esk) | no | [net.md](net.md) | `tcp-listen` `tcp-connect` `tcp-accept` `tcp-read` `tcp-write` `tcp-close` `udp-bind` `udp-sendto` `udp-recvfrom` `udp-close` `net-local-address` `net-peer-address` `net-local-port` `net-peer-port` `net-nonblocking!` `network-error?` `network-error-code` `network-error-operation` |
 | [`core.http_server`](../../../lib/core/http_server.esk) | no | [http_server.md](http_server.md) | `http-request-line` `http-request-method` `http-request-target` `http-request-path` `http-request-query` `http-request-version` `http-request-header` `http-request-content-length` `http-request-body` `http-request-body-too-large?` `http-max-request-body-size` `http-response` `http-response?` `http-response-status` `http-response-content-type` `http-response-body` `http-route` `http-route-request` `http-standard-response` `http-server-respond-response` `http-server-respond-standard` |
 | [`core.io`](../../../lib/core/io.esk) | yes | [io.md](io.md) | `print` `println` |
 | [`core.json`](../../../lib/core/json.esk) | yes | [json.md](json.md) | `json-parse` `json-try-parse` `json-parse-result?` `json-result-ok?` `json-result-value` `json-result-error` `json-stringify` `json-read` `json-write` `json-get` `json-get-in` `json-array-ref` `hash-table->alist` `alist->hash-table` `alist->json` `json-write-file` `alist-write-json` `json-read-file` |
@@ -134,6 +149,8 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 
 | Source | Export | Reference |
 |---|---|---|
+| `core.certified_native_solve` | `solve-certified-native` | [solve-certified-native](shipped_exports.md#solve-certified-native) |
+| `core.certified_native_solve` | `verify-certified-native-solve` | [verify-certified-native-solve](shipped_exports.md#verify-certified-native-solve) |
 | `core.algebraic_batch` | `make-algebraic-multiplication-plan` | [make-algebraic-multiplication-plan](shipped_exports.md#make-algebraic-multiplication-plan) |
 | `core.algebraic_batch` | `algebraic-batch-mul` | [algebraic-batch-mul](shipped_exports.md#algebraic-batch-mul) |
 | `core.algebraic_domain` | `algebraic-domain` | [algebraic-domain](shipped_exports.md#algebraic-domain) |
@@ -157,10 +174,16 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.algebraic_field` | `make-algebraic-embedding` | [make-algebraic-embedding](shipped_exports.md#make-algebraic-embedding) |
 | `core.algebraic_field` | `make-algebraic-compositum` | [make-algebraic-compositum](shipped_exports.md#make-algebraic-compositum) |
 | `core.algebraic_field` | `algebraic-field-certificate` | [algebraic-field-certificate](shipped_exports.md#algebraic-field-certificate) |
+| `core.algebraic_field` | `make-multiquadratic-field` | [make-multiquadratic-field](shipped_exports.md#make-multiquadratic-field) |
 | `core.algebraic_linalg` | `algebraic-factor` | [algebraic-factor](shipped_exports.md#algebraic-factor) |
 | `core.algebraic_linalg` | `algebraic-factor-solve` | [algebraic-factor-solve](shipped_exports.md#algebraic-factor-solve) |
 | `core.algebraic_linalg` | `algebraic-factor-solve-transpose` | [algebraic-factor-solve-transpose](shipped_exports.md#algebraic-factor-solve-transpose) |
 | `core.algebraic_linalg` | `algebraic-factor-summary` | [algebraic-factor-summary](shipped_exports.md#algebraic-factor-summary) |
+| `core.ad.incremental_reverse` | `make-incremental-pullback` | [`make-incremental-pullback`](shipped_exports.md#make-incremental-pullback) |
+| `core.ad.incremental_reverse` | `incremental-pullback-step` | [`incremental-pullback-step`](shipped_exports.md#incremental-pullback-step) |
+| `core.ad.incremental_reverse` | `incremental-pullback-output` | [`incremental-pullback-output`](shipped_exports.md#incremental-pullback-output) |
+| `core.ad.incremental_reverse` | `incremental-pullback-work` | [`incremental-pullback-work`](shipped_exports.md#incremental-pullback-work) |
+| `core.ad.incremental_reverse` | `incremental-pullback-info` | [`incremental-pullback-info`](shipped_exports.md#incremental-pullback-info) |
 | `core.algebraic_linalg` | `algebraic-matrix-mul` | [algebraic-matrix-mul](shipped_exports.md#algebraic-matrix-mul) |
 | `core.algebraic_linalg` | `algebraic-solve` | [algebraic-solve](shipped_exports.md#algebraic-solve) |
 | `core.algebraic_update` | `algebraic-update-factor` | [algebraic-update-factor](shipped_exports.md#algebraic-update-factor) |
@@ -249,6 +272,10 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.ad.derived_operator` | `derived-operator-vjp` | [`derived-operator-vjp`](shipped_exports.md#derived-operator-vjp) |
 | `core.ad.derived_operator` | `derived-operator-delta` | [`derived-operator-delta`](shipped_exports.md#derived-operator-delta) |
 | `core.ad.derived_operator` | `derived-operator-info` | [`derived-operator-info`](shipped_exports.md#derived-operator-info) |
+| `core.ad.derived_operator` | `derived-operator-enclosure` | [`derived-operator-enclosure`](shipped_exports.md#derived-operator-enclosure) |
+| `core.certified_nonlinear` | `make-certified-polynomial-system` | [`make-certified-polynomial-system`](shipped_exports.md#make-certified-polynomial-system) |
+| `core.certified_nonlinear` | `certify-polynomial-root` | [`certify-polynomial-root`](shipped_exports.md#certify-polynomial-root) |
+| `core.certified_nonlinear` | `verify-polynomial-root-certificate` | [`verify-polynomial-root-certificate`](shipped_exports.md#verify-polynomial-root-certificate) |
 | `core.ad.root_branch` | `make-root-branch` | [`make-root-branch`](shipped_exports.md#make-root-branch) |
 | `core.ad.root_branch` | `root-branch-step` | [`root-branch-step`](shipped_exports.md#root-branch-step) |
 | `core.ad.root_branch` | `root-branch-enclosure` | [`root-branch-enclosure`](shipped_exports.md#root-branch-enclosure) |
@@ -365,3 +392,35 @@ are documented, with signatures, on the pages listed.
 The modules under `lib/test/modules/` are module-system test fixtures, not user API.
 
 | `core.certified_solve` | `(require core.certified_solve)` | [certified_solve.md](certified_solve.md) |
+
+### Numeric TCP/UDP exports
+
+- [`tcp-listen`](shipped_exports.md#tcp-listen)
+- [`tcp-connect`](shipped_exports.md#tcp-connect)
+- [`tcp-accept`](shipped_exports.md#tcp-accept)
+- [`tcp-read`](shipped_exports.md#tcp-read)
+- [`tcp-write`](shipped_exports.md#tcp-write)
+- [`tcp-close`](shipped_exports.md#tcp-close)
+- [`udp-bind`](shipped_exports.md#udp-bind)
+- [`udp-sendto`](shipped_exports.md#udp-sendto)
+- [`udp-recvfrom`](shipped_exports.md#udp-recvfrom)
+- [`udp-close`](shipped_exports.md#udp-close)
+- [`net-local-address`](shipped_exports.md#net-local-address)
+- [`net-peer-address`](shipped_exports.md#net-peer-address)
+- [`net-local-port`](shipped_exports.md#net-local-port)
+- [`net-peer-port`](shipped_exports.md#net-peer-port)
+- [`net-nonblocking!`](shipped_exports.md#net-nonblocking)
+- [`network-error?`](shipped_exports.md#network-error)
+- [`network-error-code`](shipped_exports.md#network-error-code)
+- [`network-error-operation`](shipped_exports.md#network-error-operation)
+
+### Resident circuit exports
+
+- [`call-with-dbsp-resident`](shipped_exports.md#call-with-dbsp-resident)
+- [`dbsp-resident-step`](shipped_exports.md#dbsp-resident-step)
+- [`dbsp-resident-release!`](shipped_exports.md#dbsp-resident-release)
+- [`dbsp-resident-output`](shipped_exports.md#dbsp-resident-output)
+- [`dbsp-resident-delta`](shipped_exports.md#dbsp-resident-delta)
+- [`dbsp-resident-work`](shipped_exports.md#dbsp-resident-work)
+- [`dbsp-resident-stats`](shipped_exports.md#dbsp-resident-stats)
+- [`dbsp-resident-compact!`](shipped_exports.md#dbsp-resident-compact)

@@ -633,6 +633,7 @@ static const BuiltinDef BUILTINS[] = {
     {"layer-norm", 475, 4}, {"scaled-dot-attention", 477, 3},
     {"gpu-elementwise", 470, 3}, {"gpu-reduce", 471, 2},
     {"linear-solve", 472, 2},
+    {"tensor-inverse", 479, 1},
     {"gpu-transpose", 416, 1},
     {"relu", 462, 1}, {"softmax", 463, 1}, {"gpu-softmax", 463, 1}, {"sigmoid", 464, 1},
     /* The unit-beta tensor kernel behind the prelude's `swish`. */
@@ -720,6 +721,7 @@ static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
      * Consciousness Engine — IDs 500-549
      * ═══════════════════════════════════════════════════════════════ */
+    {"make-logic-var", 500, 1},
     {"logic-var?", 501, 1}, {"unify", 502, 3}, {"walk", 503, 2},
     {"make-substitution", 505, 0}, {"substitution?", 506, 1},
     {"_make-fact1", 507, 1}, {"fact?", 508, 1},
@@ -862,6 +864,8 @@ static const BuiltinDef BUILTINS[] = {
     {"bytevector-u8-ref", 682, 2}, {"bytevector-u8-set!", 683, 3},
     {"bytevector-append", 684, 2, -2}, {"bytevector-copy!", 685, 3},
     {"bytevector?", 686, 1}, {"bytevector-copy", 687, 1},
+    /* The prelude's variadic bytevector wrapper passes its rest list here. */
+    {"_bytevector-from-list", 2250, 1},
     {"utf8->string", 688, 1}, {"string->utf8", 689, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Hash tables — IDs 660-670
@@ -1948,7 +1952,8 @@ static void compile_source_to_chunk_with_options(const char* source,
         }
         if (do_box) vm_compile_boxed_variable_define(chunk, expr);
         else compile_expr(chunk, expr, 0);
-        if (chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
+        // SET_LOCAL in a boxed definition already consumes its value.
+        if (!do_box && chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
         chunk_emit(chunk, OP_GLOBAL_MARK, chunk->n_locals);
         free_node(expr);
     }
@@ -2206,6 +2211,8 @@ static void repl_session_echo(VM* vm) {
 static void repl_session_eval(ReplSession* rs, const char* source, int auto_print) {
     if (!rs || !rs->initialized) return;
 
+    vm_clear_compile_failure();
+
     /* Reset error flags at start of each eval */
     rs->vm->error = 0;
     rs->vm->halted = 0;
@@ -2217,6 +2224,8 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
     int saved_sp = rs->vm->sp;
     int saved_fp = rs->vm->fp;
     int saved_frame_count = rs->vm->frame_count;
+    VmModuleStateSnapshot module_state_before;
+    vm_module_state_snapshot(&module_state_before);
 
     /* setjmp boundary — catches fatal errors during compilation/execution */
     g_repl_jmp_active = 1;
@@ -2230,6 +2239,7 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         rs->vm->sp = saved_sp;
         rs->vm->fp = saved_fp;
         rs->vm->frame_count = saved_frame_count;
+        vm_module_state_restore(&module_state_before);
         rs->vm->halted = 0;
         rs->vm->error = 0;
         g_repl_jmp_active = 0;
@@ -2245,6 +2255,13 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         skip_ws(); if (!*src_ptr) break;
         Node* expr = parse_sexp(); if (!expr) break;
         if (n_top < 256) top_exprs[n_top++] = expr;
+    }
+    if (vm_compile_failed()) {
+        for (int i = 0; i < n_top; ++i) free_node(top_exprs[i]);
+        vm_module_state_restore(&module_state_before);
+        g_repl_jmp_active = 0;
+        printf("Error during evaluation\n");
+        return;
     }
     vm_preregister_unit_syntax(&rs->chunk, top_exprs, n_top);
 
@@ -2281,6 +2298,26 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
                 chunk_emit(&rs->chunk, OP_POP, 0);
         }
         free_node(top_exprs[i]);
+    }
+
+    /* A module-resolution failure is a compile-time failure too. The REPL
+     * compiles one form at a time, so a bad import can follow a visible effect
+     * or a new definition. Discard the entire eval before installing or
+     * running its bytecode, matching batch compilation's refusal semantics. */
+    if (vm_compile_failed()) {
+        rs->chunk.code_len = code_start;
+        rs->chunk.n_constants = const_start;
+        for (int i = locals_start; i < rs->chunk.n_locals; i++)
+            free(rs->chunk.locals[i].name);
+        rs->chunk.n_locals = locals_start;
+        rs->vm->sp = saved_sp;
+        rs->vm->fp = saved_fp;
+        rs->vm->frame_count = saved_frame_count;
+        vm_module_state_restore(&module_state_before);
+        vm_clear_compile_failure();
+        g_repl_jmp_active = 0;
+        printf("Error during evaluation\n");
+        return;
     }
     chunk_emit(&rs->chunk, OP_HALT, 0);
 
@@ -2319,6 +2356,7 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         rs->vm->sp = saved_sp;
         rs->vm->fp = saved_fp;
         rs->vm->frame_count = saved_frame_count;
+        vm_module_state_restore(&module_state_before);
     } else {
         /* Success — remove just the HALT, keep new definitions */
         rs->chunk.code_len--;

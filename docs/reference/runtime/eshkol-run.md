@@ -59,6 +59,13 @@ Multiple `.esk`/`.o` inputs may be given and are linked together.
 | `--dump-ast` | `-a` | Dump the AST to a `.ast` file |
 | `--dump-ir` | `-i` | Dump LLVM IR to a `.ll` file |
 
+On macOS, linked `-g` executables and shared libraries include an adjacent
+`<output>.dSYM` bundle. Keep it with the matching binary for LLDB; intermediate
+linker objects are removed. The compiler runs `dsymutil` from the selected C++
+toolchain or `PATH`; `ESHKOL_DSYMUTIL` selects an explicit tool. A missing or
+failing tool, or a bundle whose UUID differs from the binary, fails the build.
+Object-only `-g -c` output keeps DWARF in the requested object file.
+
 ### Type checking
 
 | Flag | Meaning |

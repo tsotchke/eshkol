@@ -1006,6 +1006,13 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
     if (is_sym(head, "/")) {
+        if (node->n_children == 2) {
+            /* Unary division is the reciprocal in Scheme. */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));
+            compile_expr(c, node->children[1], 0);
+            chunk_emit(c, OP_DIV, 0);
+            return;
+        }
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_DIV, 0); }
         return;

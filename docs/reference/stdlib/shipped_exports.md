@@ -5,6 +5,18 @@ not present in the standard-library index. Signatures and module locations are
 taken from the source files named in each section. The anchors are checked by
 `scripts/check_public_api_docs.py`.
 
+## `core.ad.algebraic_farkas`
+
+Source: `lib/core/ad/algebraic_farkas.esk`. The exact witness equations, selected-real signs, support budget and refusal behavior are documented in [ad_algebraic_farkas.md](ad_algebraic_farkas.md).
+
+### `algebraic-farkas-search`
+
+Searches bounded supports for exact equality/inequality multipliers with a strict negative RHS margin. Exhaustion returns `unknown`.
+
+### `algebraic-farkas-verify`
+
+Rechecks the original constraints, nonnegative inequality multipliers, exact annihilation and strict negative margin.
+
 ## `core.ad.algebraic_qp`
 
 Source: `lib/core/ad/algebraic_qp.esk`. The exact convexity, certificate,
@@ -73,6 +85,41 @@ Returns an owned dense view of an exact sparse Hessian.
 ### `algebraic-sparse-hessian-summary`
 
 Returns dimension, color, actual probe-call, upper-entry, and recovery-mode counts.
+
+## `core.ad.algebraic_subspace`
+
+Source: `lib/core/ad/algebraic_subspace.esk`. Exact admission, spectral separation,
+JVP/VJP conventions, ownership and refusal boundaries are documented in
+[ad_algebraic_subspace.md](ad_algebraic_subspace.md).
+
+### `make-algebraic-subspace`
+
+Admits an exact symmetric matrix and nontrivial invariant orthogonal projector
+whose selected and complementary spectra are disjoint.
+
+### `algebraic-subspace-projector`
+
+Returns an owned copy of the admitted projector.
+
+### `algebraic-subspace-jvp`
+
+Returns the exact derivative of the invariant projector in a symmetric matrix direction.
+
+### `algebraic-subspace-vjp`
+
+Returns the symmetric-parameterization cotangent for a projector seed.
+
+### `algebraic-subspace-info`
+
+Returns matrix size, selected rank, linear-system size and coefficient depth.
+
+### `verify-algebraic-subspace-jvp`
+
+Re-admits the source problem and checks the defining linearized tangent equations.
+
+### `make-algebraic-subspace-from-factors`
+
+Builds the invariant projector from a caller-supplied coprime monic rational split of the full characteristic polynomial, then reuses exact projector admission and separation checks.
 
 ## `core.ad.sparsity`
 
@@ -505,6 +552,10 @@ See [algebraic_field.md](algebraic_field.md) for this exported procedure and its
 
 See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
 
+### `make-multiquadratic-field`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
 
 ## `core.algebraic_linalg`
 
@@ -835,6 +886,30 @@ Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk
 
 Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
 
+### `tensor-circuit-visit`
+
+Visits copied topological node descriptors and read-only scalar accessors without exposing internal graph or snapshot storage.
+
+### `tensor-circuit-plan-work`
+
+Returns per-tick dimensionless work proxies for incremental/recomputed contractions and dense materialization; estimates are not elapsed-time predictions.
+
+### `make-tensor-circuit-pullback`
+
+Builds a seeded structural reverse pass over the maintained named-axis tensor circuit; see [ad_tensor_circuit_reverse.md](ad_tensor_circuit_reverse.md).
+
+### `tensor-circuit-pullback-step`
+
+Applies named input and seed deltas and returns a successor with output and cotangent deltas.
+
+### `tensor-circuit-pullback-output`
+
+Returns owned output and tensor-input cotangent observations.
+
+### `tensor-circuit-pullback-work`
+
+Returns the current reverse-sweep work receipt.
+
 ## `core.dbsp.circuit`
 
 Source: [lib/core/dbsp/circuit.esk](../../../lib/core/dbsp/circuit.esk). The logical state view includes hidden distinct counts and join arrangements for checkpoint verification.
@@ -842,6 +917,42 @@ Source: [lib/core/dbsp/circuit.esk](../../../lib/core/dbsp/circuit.esk). The log
 ### `dbsp-circuit-checkpoint-state`
 
 Returns a pointer-free observation of all logical operator state for integrity verification during checkpoint restore.
+
+## `core.dbsp.resident`
+
+Source: [lib/core/dbsp/resident.esk](../../../lib/core/dbsp/resident.esk). Owner lifetime, generation-checked snapshots, compaction, and native-only boundaries are documented in [dbsp_resident.md](dbsp_resident.md).
+
+### `call-with-dbsp-resident`
+
+Runs a callback with a scoped resident owner and its initial snapshot.
+
+### `dbsp-resident-step`
+
+Imports changes and returns a retained successor snapshot after one circuit tick.
+
+### `dbsp-resident-release!`
+
+Releases a retained snapshot handle.
+
+### `dbsp-resident-output`
+
+Returns an owned observation of a snapshot's circuit output.
+
+### `dbsp-resident-delta`
+
+Returns an owned observation of a snapshot's output delta.
+
+### `dbsp-resident-work`
+
+Returns an owned observation of a snapshot's circuit work count.
+
+### `dbsp-resident-stats`
+
+Returns root, arena, compaction and copy counters for the owner.
+
+### `dbsp-resident-compact!`
+
+Requests compaction at an idle owner boundary and returns updated statistics.
 
 ## `core.dbsp.checkpoint`
 
@@ -878,6 +989,30 @@ Writes a checkpoint through the existing atomic file-replacement primitive; call
 ### `dbsp-checkpoint-load`
 
 Reads a bounded checkpoint file and returns it only after verified restoration.
+
+## `core.certified_solve_pullback`
+
+Source: [lib/core/certified_solve_pullback.esk](../../../lib/core/certified_solve_pullback.esk). The two exact solve certificates, uncertain-model premises and pullback interval conventions are documented in [certified_solve_pullback.md](certified_solve_pullback.md).
+
+### `solve-certified-native-pullback`
+
+Certifies primal and transpose solves independently, then encloses `-lambda*x^T` and the RHS cotangent from the original matrix, RHS, seed and supplied uncertainties.
+
+### `verify-certified-native-pullback`
+
+Recomputes both original-model solve certificates and their interval products; it does not trust stored status or derivative boxes.
+
+## `core.certified_native_solve`
+
+Source: `lib/core/certified_native_solve.esk`; see [certified_native_solve.md](certified_native_solve.md) for the candidate-generation and exact verification contract.
+
+### `solve-certified-native`
+
+Generates candidates with the native dense solver, then admits a result only through exact verification against the original rational model.
+
+### `verify-certified-native-solve`
+
+Rechecks a proved result against caller-supplied source data and tolerance.
 
 ## `core.certified_solve`
 
@@ -918,6 +1053,26 @@ Computes the exact polynomial difference between the point plus an increment and
 
 Returns immutable arity, degree and conservative term-work metadata.
 
+### `derived-operator-enclosure`
+
+Evaluates the source polynomial and its symbolic derivatives over exact rational boxes with rigorous interval bounds.
+
+## `core.certified_nonlinear`
+
+Source: `lib/core/certified_nonlinear.esk`; the root and implicit-sensitivity certificate contract is documented in [certified_nonlinear.md](certified_nonlinear.md).
+
+### `make-certified-polynomial-system`
+
+Compiles a bounded coupled polynomial system with exact rational coefficients.
+
+### `certify-polynomial-root`
+
+Validates a supplied approximate root using whole-box Jacobian bounds and a strict contraction certificate.
+
+### `verify-polynomial-root-certificate`
+
+Recomputes the certificate from the source system and caller supplied trial data.
+
 ## `core.ad.root_branch`
 
 Source: [lib/core/ad/root_branch.esk](../../../lib/core/ad/root_branch.esk). The exact whole-step continuation contract and certificate limits are documented in [ad_root_branch.md](ad_root_branch.md).
@@ -945,3 +1100,103 @@ Returns an exact interval enclosure for the implicit derivative on the admitted 
 ### `verify-root-branch-step`
 
 Recomputes the recorded step certificate and checks it against the supplied branch state.
+
+## `core.net`
+
+Native numeric-address sockets; see [net.md](net.md) for platform, capability, lifetime and deadline limits.
+
+### `tcp-listen`
+
+Binds a numeric IPv4/IPv6 TCP listener; port zero selects an ephemeral port.
+
+### `tcp-connect`
+
+Connects a numeric TCP endpoint within the supplied millisecond deadline.
+
+### `tcp-accept`
+
+Returns an accepted stream handle, or a network error when its bounded wait fails.
+
+### `tcp-read`
+
+Reads up to the byte capacity; empty string is EOF and error -2 is timeout.
+
+### `tcp-write`
+
+Sends string bytes, including NUL; returns the possibly partial byte count.
+
+### `tcp-close`
+
+Invalidates a handle once; stale and repeated closes return error -4.
+
+### `udp-bind`
+
+Binds a numeric datagram endpoint, including an ephemeral local port.
+
+### `udp-sendto`
+
+Sends one datagram, including an empty payload, to a numeric endpoint.
+
+### `udp-recvfrom`
+
+Returns #(payload numeric-peer-endpoint); oversized datagrams refuse with error -4.
+
+### `udp-close`
+
+Closes a datagram handle once and rejects a stale handle.
+
+### `net-local-address`
+
+Returns the numeric local address, or a network error.
+
+### `net-peer-address`
+
+Returns the numeric TCP peer address, or a network error.
+
+### `net-local-port`
+
+Returns the exact local port, or a network error.
+
+### `net-peer-port`
+
+Returns the exact TCP peer port, or a network error.
+
+### `net-nonblocking!`
+
+Selects immediate polling; unavailable operations return timeout error -2.
+
+### `network-error?`
+
+Recognizes the public three-element network-error vector.
+
+### `network-error-code`
+
+Returns the error code from a recognized network-error value.
+
+### `network-error-operation`
+
+Returns the operation symbol from a recognized network-error value.
+
+## `core.ad.incremental_reverse`
+
+Source: `lib/core/ad/incremental_reverse.esk`. Exact scalar-DAG pullbacks across sparse input and cotangent edits are described in [ad_incremental_reverse.md](ad_incremental_reverse.md).
+
+### `make-incremental-pullback`
+
+Creates a persistent pullback state from an exact owner, named inputs, a fixed DAG, outputs, input values and output cotangent seeds.
+
+### `incremental-pullback-step`
+
+Applies sparse additive input and seed changes and returns the successor state, output and input-cotangent deltas, and work counters.
+
+### `incremental-pullback-output`
+
+Returns owned output values and input cotangents for a pullback state.
+
+### `incremental-pullback-work`
+
+Returns forward refresh, reverse refresh, changed-edge, copied-slot and scanned-node work counts for a step.
+
+### `incremental-pullback-info`
+
+Returns the declared input, node and output counts for a state.

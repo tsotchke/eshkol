@@ -17,10 +17,12 @@
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/i128_runtime.h>
+#include <eshkol/core/linear_solve.h>
 #include <eshkol/core/rational.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>  // For the SW-10 limit poll symbol
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
+#include "eshkol/core/net.h"
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -1456,7 +1458,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     }
 #endif
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && defined(ESHKOL_AGENT_FFI_LINKED)
     // ===== OPTIONAL AGENT FFI EXPORTS =====
     // Agent FFI modules are optional at configure time and their symbols
     // are not referenced by C++ code. When linked into eshkol-run/repl,
@@ -1786,6 +1788,12 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_tensor_normalize_apply);
     ADD_SYMBOL(eshkol_tensor_pow_scalar);
     ADD_SYMBOL(eshkol_tensor_map_libm);
+    ADD_SYMBOL(eshkol_tensor_inverse_checked_abi);
+    // Keep native solver ABI reachable independently of the portable VM path.
+    ADD_SYMBOL(eshkol_linear_solve);
+    ADD_SYMBOL(eshkol_linear_solve_with_options);
+    ADD_SYMBOL(eshkol_linear_solve_raise);
+    ADD_SYMBOL(eshkol_linear_solve_query_options);
     ADD_SYMBOL(eshkol_shapes_equal);
     ADD_SYMBOL(eshkol_broadcast_elementwise_f64);
     ADD_SYMBOL(eshkol_batch_matmul_f64);
@@ -1824,6 +1832,27 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_rational_binary_tagged_ptr);
     ADD_SYMBOL(eshkol_rational_compare_tagged_ptr);
     ADD_SYMBOL(eshkol_bignum_compare_tagged);
+    // Bounded numeric-address networking, shared by FFI and native AOT.
+    ADD_SYMBOL(eshkol_net_open);
+    ADD_SYMBOL(eshkol_net_accept);
+    ADD_SYMBOL(eshkol_net_read);
+    ADD_SYMBOL(eshkol_net_write);
+    ADD_SYMBOL(eshkol_net_sendto);
+    ADD_SYMBOL(eshkol_net_recvfrom);
+    ADD_SYMBOL(eshkol_net_address);
+    ADD_SYMBOL(eshkol_net_port);
+    ADD_SYMBOL(eshkol_net_nonblocking);
+    ADD_SYMBOL(eshkol_net_close);
+    ADD_SYMBOL(eshkol_resident_open);
+    ADD_SYMBOL(eshkol_resident_close);
+    ADD_SYMBOL(eshkol_resident_enter);
+    ADD_SYMBOL(eshkol_resident_leave);
+    ADD_SYMBOL(eshkol_resident_hold);
+    ADD_SYMBOL(eshkol_resident_get);
+    ADD_SYMBOL(eshkol_resident_export);
+    ADD_SYMBOL(eshkol_resident_release);
+    ADD_SYMBOL(eshkol_resident_compact);
+    ADD_SYMBOL(eshkol_resident_stat);
     ADD_SYMBOL(eshkol_utf8_strlen);
     ADD_SYMBOL(eshkol_string_byte_length);
     ADD_SYMBOL(eshkol_utf8_ref);

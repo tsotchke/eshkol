@@ -11,6 +11,7 @@
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
+#include <eshkol/frontend/differentiation_graph.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/symbol_syntax.h>
 #include <eshkol/core/number_syntax.h>
@@ -42,6 +43,8 @@
 #endif
 
 /* ── Parse context for diagnostic messages ── */
+// Only the compiler-owned generated-source parser can mint runtime gateways.
+static thread_local bool g_parse_compiler_runtime = false;
 static thread_local std::string g_parse_filename = "<unknown>";
 /* Interned id of g_parse_filename, stamped onto every top-level form so a
  * diagnostic can name the file the form really came from rather than whichever
@@ -9330,6 +9333,57 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
             
+            // Explicit interpretations use one validated compiler graph. Keep
+            // the legacy (differentiate expression variable) symbolic route.
+            const eshkol_ast_t* interpretation = nullptr;
+            if (expression.type == ESHKOL_OP && expression.operation.op == ESHKOL_QUOTE_OP &&
+                expression.operation.call_op.num_vars == 1 && expression.operation.call_op.variables)
+                interpretation = &expression.operation.call_op.variables[0];
+            const bool explicit_mode = first_symbol == "differentiate" && interpretation &&
+                (interpretation->type == ESHKOL_SYMBOL || interpretation->type == ESHKOL_VAR) &&
+                interpretation->str_val.ptr &&
+                (std::strcmp(interpretation->str_val.ptr, "numeric") == 0 ||
+                 std::strcmp(interpretation->str_val.ptr, "incremental") == 0);
+            if (explicit_mode) {
+                const std::string mode = interpretation->str_val.ptr;
+                eshkol_ast_t function = (co_await parse_expression(tokenizer));
+                eshkol_ast_t point = (co_await parse_expression(tokenizer));
+                Token close = tokenizer.nextToken();
+                if (function.type == ESHKOL_INVALID || point.type == ESHKOL_INVALID || close.type != TOKEN_RPAREN) {
+                    PARSE_ERROR_AT(head_token, "differentiate interpretation requires an inline lambda and one point vector");
+                    co_return {.type = ESHKOL_INVALID};
+                }
+                ast.operation.op = ESHKOL_CALL_OP;
+                ast.operation.call_op.func = new eshkol_ast_t{};
+                ast.operation.call_op.func->type = ESHKOL_VAR;
+                ast.operation.call_op.func->variable.id = eshkol_ast_string_copy(mode == "numeric"
+                    ? eshkol::frontend::differentiation_numeric_marker
+                    : eshkol::frontend::differentiation_incremental_marker);
+                // A reserved identity distinguishes the parser-owned gateway
+                // from source calls, including calls whose NodeId is exhausted.
+                ast.operation.call_op.func->node_id = mode == "numeric"
+                    ? eshkol::frontend::differentiation_gateway_node
+                    : eshkol::frontend::differentiation_incremental_gateway_node;
+                std::vector<const char*> helpers = {"vector?", "vector-length", "vector-ref", "not", "=", "error", "make-rational",
+                                                    "real?", "exact?", "finite?", "<", "+"};
+                if (mode == "incremental") {
+                    const char* extra[] = {"vector", "make-vector", "vector-set!", "quotient", "-", "eq?", "eqv?", "type-name"};
+                    helpers.insert(helpers.end(), std::begin(extra), std::end(extra));
+                }
+                const size_t helper_count = helpers.size();
+                ast.operation.call_op.num_vars = 2 + helper_count;
+                ast.operation.call_op.variables = new eshkol_ast_t[2 + helper_count]{};
+                ast.operation.call_op.variables[0] = function;
+                ast.operation.call_op.variables[1] = point;
+                for (size_t i = 0; i < helper_count; ++i) {
+                    auto& helper = ast.operation.call_op.variables[2 + i];
+                    helper.type = ESHKOL_VAR;
+                    helper.variable.id = eshkol_ast_string_copy(helpers[i]);
+                    stamp_node(helper, head_token.line, head_token.column);
+                }
+                co_return ast;
+            }
+
             // Parse the variable to differentiate with respect to
             token = tokenizer.nextToken();
             // Accept both bare symbol and quoted symbol: (diff expr x) or (diff expr 'x)
@@ -10717,9 +10771,16 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Create function name AST node
             ast.operation.call_op.func = new eshkol_ast_t;
             ast.operation.call_op.func->type = ESHKOL_VAR;
+            stamp_node(*ast.operation.call_op.func, head_token.line, head_token.column);
             ast.operation.call_op.func->variable.id =
                 eshkol_ast_string_copy(colored_head.empty() ? first_symbol : colored_head);
             ast.operation.call_op.func->variable.data = nullptr;
+            if (g_parse_compiler_runtime) {
+                if (first_symbol == "__eshkol_incremental_state")
+                    ast.operation.call_op.func->node_id = eshkol::frontend::incremental_state_gateway_node;
+                else if (first_symbol == "__eshkol_incremental_check")
+                    ast.operation.call_op.func->node_id = eshkol::frontend::incremental_check_gateway_node;
+            }
             // Keep a reference to this call's reader syntax (ADR-0026): if
             // the expander finds the head is a macro keyword the parser did
             // not know about, it re-reads the call from the tape.
@@ -11695,4 +11756,29 @@ extern "C" int eshkol_parse_had_error(void) {
 eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file)
 {
     return eshkol_parse_next_ast_from_stream(in_file);
+}
+
+namespace eshkol::frontend {
+eshkol_ast_t parse_generated_differentiation(const std::string& source, DifferentiationOrigin location) {
+    struct ContextGuard {
+        uint32_t file_id = g_parse_filename_id;
+        bool compiler_runtime = g_parse_compiler_runtime;
+        decltype(g_parser_macro_names) macro_names = g_parser_macro_names;
+        ~ContextGuard() {
+            g_parse_filename_id = file_id;
+            g_parse_compiler_runtime = compiler_runtime;
+            g_parser_macro_names = macro_names;
+        }
+    } guard;
+    g_parse_compiler_runtime = true;
+    // The emitted wrapper is already core syntax. Ambient user macro names
+    // must not turn a private helper or primitive into a macro-use placeholder.
+    g_parser_macro_names = nullptr;
+    if (location.file_id) g_parse_filename_id = location.file_id;
+    EshkolAstBirthLocationScope birth(location.line, location.column);
+    SchemeTokenizer generated(source, location.line, location.column);
+    eshkol_ast_t result = parse_expression(generated).run();
+    if (generated.nextToken().type != TOKEN_EOF) result.type = ESHKOL_INVALID;
+    return result;
+}
 }

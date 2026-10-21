@@ -258,6 +258,9 @@ function testIntegrationContracts() {
     const repl = fs.readFileSync(path.join(ROOT, 'web', 'eshkol-repl.js'), 'utf8');
     const runtime = fs.readFileSync(path.join(ROOT, 'site', 'static', 'eshkol-runtime.js'), 'utf8');
     const workflow = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'gpu-execution-gate.yml'), 'utf8');
+    const cmake = fs.readFileSync(path.join(ROOT, 'CMakeLists.txt'), 'utf8');
+    assert.match(cmake, /add_compile_options\(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm\)/);
+    assert.doesNotMatch(cmake, /ESHKOL_WEBGPU_ASYNCIFY|--use-port=emdawnwebgpu/);
 
     assert.equal(siteWebgpu, webgpu);
     assert.match(webgpu, /@workgroup_size\(\$\{GEMM_TILE\}, \$\{GEMM_TILE\}, 1\)/);

@@ -1,7 +1,8 @@
 ;;; One pure scalar polynomial definition, derived numeric and temporal rules.
 (require core.symbolic)
+(require core.ad.rigorous_interval)
 (provide make-derived-operator derived-operator-value derived-operator-jvp
-         derived-operator-vjp derived-operator-delta derived-operator-info)
+         derived-operator-vjp derived-operator-delta derived-operator-info derived-operator-enclosure)
 
 (define (do-exact x)
   (if (not (and (rational? x) (exact? x))) (error "operator coefficients must be exact rationals")) x)
@@ -62,6 +63,30 @@
   (let ((value (poly-eval polynomial bindings)))
     (if exact-input? (do-exact value)) value))
 
+(define (do-box-exact interval)
+  (do-exact (car interval)) (do-exact (cdr interval)) interval)
+(define (do-boxes boxes n)
+  (if (not (and (vector? boxes) (= (vector-length boxes) n)))
+      (error "derived operator box width mismatch"))
+  (list->vector (map (lambda (box)
+    (if (not (and (pair? box) (rational? (car box)) (exact? (car box))
+                  (rational? (cdr box)) (exact? (cdr box)) (<= (car box) (cdr box))))
+        (error "expected closed exact rational interval"))
+    (cons (car box) (cdr box))) (vector->list boxes))))
+;; core.symbolic documents the canonical (vars, exponent-vector . coefficient)
+;; value representation. No copied expression parser or symbolic derivative.
+(define (do-box-eval polynomial bindings)
+  (let ((names (cadr polynomial)))
+    (let terms ((rest (caddr polynomial)) (out (cons 0 0)))
+      (if (null? rest) out
+        (let* ((term (car rest)) (coefficient (do-exact (cdr term)))
+               (value (let powers ((vars names) (i 0) (out (cons coefficient coefficient)))
+                 (if (null? vars) out
+                   (let ((bound (cdr (assq (car vars) bindings))) (power (vector-ref (car term) i)))
+                     (powers (cdr vars) (+ i 1)
+                       (do-box-exact (ia* out (do-box-exact (ia-ipow bound power))))))))))
+          (terms (cdr rest) (do-box-exact (ia+ out value))))))))
+
 ;; Returns a closure, retaining no mutable caller syntax or point containers.
 ;; Public observations expose only fresh numeric results and immutable metadata.
 (define (make-derived-operator variables expression)
@@ -87,6 +112,11 @@
            (partials (map (lambda (x) (poly-deriv forward x)) xs)))
       (lambda (action point extra)
         (if (eq? action 'info) (vector n (poly-degree forward) (vector-ref compiled 2) (vector-ref shifted 2))
+          (if (eq? action 'enclosure)
+            (let* ((boxes (do-boxes point n))
+                   (bindings (map (lambda (name box) (cons name box)) xs (vector->list boxes))))
+              (vector (do-box-eval forward bindings)
+                (list->vector (map (lambda (p) (do-box-eval p bindings)) partials))))
           (let* ((values (do-values point n))
                  (bindings (let loop ((names xs) (i 0) (out '()))
                    (if (null? names) out (loop (cdr names) (+ i 1)
@@ -113,8 +143,11 @@
                           (cons (cons (car names) (vector-ref delta i)) out))))))
                  (do-eval change all-bindings (and exact-input? (do-all-exact? delta)))))
               (else (error "unknown derived operator action")))))))))
+)
 (define (derived-operator-value op point) (op 'value point #f))
 (define (derived-operator-jvp op point direction) (op 'jvp point direction))
 (define (derived-operator-vjp op point seed) (op 'vjp point seed))
 (define (derived-operator-delta op point delta) (op 'delta point delta))
 (define (derived-operator-info op) (op 'info #f #f))
+
+(define (derived-operator-enclosure op boxes) (op 'enclosure boxes #f))

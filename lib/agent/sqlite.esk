@@ -6,7 +6,7 @@
 (require core.strings)        ; string-contains (SQL-injection guard in sqlite-exec-safe)
 
 (provide sqlite-exec-safe sqlite-open sqlite-close sqlite-exec
-         sqlite-prepare sqlite-step sqlite-reset sqlite-finalize
+         sqlite-prepare sqlite-step sqlite-step-code sqlite-step-checked sqlite-reset sqlite-finalize
          sqlite-bind-text sqlite-bind-int sqlite-bind-double sqlite-bind-null
          sqlite-column-text sqlite-column-int sqlite-column-double
          sqlite-column-count sqlite-column-name sqlite-column-type
@@ -95,6 +95,14 @@
 ;; truthy in Scheme — so the canonical (let loop () (if (sqlite-step s) ... (loop)))
 ;; would never terminate. Map to a boolean so the step-loop idiom works.
 (define (sqlite-step stmt) (= (sqlite-step-raw stmt) SQLITE_ROW))
+;; Preserve the compatibility boolean API; transactional readers must distinguish
+;; normal exhaustion from BUSY, CONSTRAINT, I/O errors and interrupted stepping.
+(define (sqlite-step-code stmt) (sqlite-step-raw stmt))
+(define (sqlite-step-checked stmt)
+  (let ((code (sqlite-step-code stmt)))
+    (cond ((= code SQLITE_ROW) #t) ((= code SQLITE_DONE) #f)
+          (else (error "SQLite statement failed while stepping" code)))))
+
 (define (sqlite-reset stmt) (sqlite-reset-raw stmt))
 (define (sqlite-finalize stmt) (sqlite-finalize-raw stmt))
 
@@ -102,6 +110,25 @@
 (define (sqlite-bind-int stmt idx val) (sqlite-bind-int-raw stmt idx val))
 (define (sqlite-bind-double stmt idx val) (sqlite-bind-double-raw stmt idx val))
 (define (sqlite-bind-null stmt idx) (sqlite-bind-null-raw stmt idx))
+
+;; Raw SQLite copy functions report byte lengths; Scheme substring takes
+;; Unicode codepoint indices. Count UTF-8 codepoints using the exact byte
+;; prefix, so embedded NUL codepoints are retained as data.
+(define (sqlite-utf8-character-count text byte-count)
+  (let loop ((characters 0) (bytes 0))
+    (cond
+      ((= bytes byte-count) characters)
+      ((or (> bytes byte-count) (>= characters (string-length text)))
+       (error "SQLite returned an invalid UTF-8 byte count"))
+      (else
+       (let* ((codepoint (char->integer (string-ref text characters)))
+              (width (cond ((< codepoint 128) 1)
+                           ((< codepoint 2048) 2)
+                           ((< codepoint 65536) 3)
+                           (else 4))))
+         (if (> (+ bytes width) byte-count)
+             (error "SQLite returned an incomplete UTF-8 codepoint"))
+         (loop (+ characters 1) (+ bytes width)))))))
 
 (define (sqlite-column-text stmt idx)
   "Get text column value, sized exactly to the row's payload.
@@ -113,12 +140,15 @@
    return \"\" — distinguish them with sqlite-column-type."
   (let ((nbytes (sqlite-column-bytes-raw stmt idx)))
     (cond
-      ((<= nbytes 0) "")
+      ((< nbytes 0) (error "sqlite-column-text: invalid statement or column"))
+      ((= nbytes 0) "")
       (else
        (let* ((cap (+ nbytes 1))   ;; +1 for trailing NUL the C path writes
               (buf (make-string cap #\nul))
               (n (sqlite-column-text-raw stmt idx buf cap)))
-         (if (> n 0) (substring buf 0 n) ""))))))
+         (cond ((< n 0) (error "sqlite-column-text: output buffer was too small"))
+               ((not (= n nbytes)) (error "sqlite-column-text: byte count mismatch"))
+               (else (substring buf 0 (sqlite-utf8-character-count buf n)))))))))
 
 (define (sqlite-column-int stmt idx) (sqlite-column-int-raw stmt idx))
 (define (sqlite-column-double stmt idx) (sqlite-column-double-raw stmt idx))
@@ -127,14 +157,18 @@
 (define (sqlite-column-name stmt idx)
   (let ((buf (make-string 256 #\nul)))
     (let ((n (sqlite-column-name-raw stmt idx buf 256)))
-      (if (> n 0) (substring buf 0 n) ""))))
+      (cond ((< n 0) (error "sqlite-column-name: invalid statement or output buffer too small"))
+            ((= n 0) "")
+            (else (substring buf 0 (sqlite-utf8-character-count buf n)))))))
 
 (define (sqlite-column-type stmt idx) (sqlite-column-type-raw stmt idx))
 
 (define (sqlite-last-error handle)
   (let ((buf (make-string 1024 #\nul)))
     (let ((n (sqlite-last-error-raw handle buf 1024)))
-      (if (> n 0) (substring buf 0 n) "unknown error"))))
+      (cond ((< n 0) (error "sqlite-last-error: invalid handle or output buffer too small"))
+            ((= n 0) "unknown error")
+            (else (substring buf 0 (sqlite-utf8-character-count buf n)))))))
 
 (define (sqlite-last-insert-rowid handle) (sqlite-last-insert-rowid-raw handle))
 (define (sqlite-changes handle) (sqlite-changes-raw handle))

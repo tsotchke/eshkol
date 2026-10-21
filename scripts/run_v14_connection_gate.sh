@@ -315,13 +315,13 @@ else
     probe_unverified v14_resource_limits_enforced "local VM runner is unavailable; resource-limit enforcement evidence is required"
 fi
 
-# These protocol requirements need runtime evidence from real round trips or
-# handshakes. This gate has no such runnable probes attached yet, so each stays
-# UNVERIFIED until a real test is wired in.
-probe_unverified v14_tcp_roundtrip \
-    'requires a real TCP client/server round-trip test'
-probe_unverified v14_udp_roundtrip \
-    'requires a real UDP datagram round-trip test'
+# Numeric TCP/UDP use the public module with binary payloads, deadlines,
+# endpoints and stale-handle checks. Other protocols still require their own
+# implementation and verified runtime evidence.
+probe_run v14_tcp_roundtrip 'public core.net TCP loopback round trip' \
+    'python3 "$REPO_ROOT/scripts/run_net_gate.py" --runner "$ESHKOL_RUN"'
+probe_run v14_udp_roundtrip 'public core.net UDP loopback round trip' \
+    'python3 "$REPO_ROOT/scripts/run_net_gate.py" --runner "$ESHKOL_RUN"'
 probe_unverified v14_tls_handshake_verified \
     'requires a verified TLS handshake test'
 probe_unverified v14_websocket_server_echo \
@@ -395,8 +395,8 @@ probe_unverified v14_semaphores_barriers \
 # tests/v1_2_edge_cases/msgpack_test.esk round-trips every type against
 # exact wire bytes via core.testing's run-tests.
 probe_run v14_msgpack_roundtrip \
-    'MessagePack (#162): encode/decode round-trips nil/bool/int/string/bin/array/map against exact wire bytes (deterministic subset; no ext-types, no int64/float)' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/msgpack_test.esk 2>&1 | grep -q "RESULT: OK"'
+    'MessagePack (#162): exact wire bytes, UTF-8 scalar boundaries, embedded NUL, malformed-text refusal and raw binary preservation' \
+    'python3 scripts/run_msgpack_gate.py --runner "$ESHKOL_RUN" --vm-runner "$VM_RUN" --all-routes'
 
 # #175 CAS + Merkle trees: lib/core/merkle.esk (merkle-leaf/-inode/-tree/
 # -leaves/-proof/-verify plus make-cas/cas-put!/cas-get/cas-has?) backed by

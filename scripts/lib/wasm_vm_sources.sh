@@ -34,6 +34,7 @@ ESHKOL_WASM_VM_SOURCES=(
     "$REPO_ROOT/lib/core/platform_runtime.cpp"
     "$REPO_ROOT/lib/core/model_io_atomic.c"
     "$REPO_ROOT/lib/core/tensor_validation.cpp"
+    "$REPO_ROOT/lib/core/linear_solve_portable.c"
     "$REPO_ROOT/lib/core/tensor_cross_entropy.c"
     # The GPU seam for the wasm target (ADR-0029): the VM's tensor natives
     # reach eshkol_gpu_* exactly as on native; in the browser the WebGPU
@@ -65,7 +66,6 @@ ESHKOL_WASM_VM_FLAGS=(
 # added, never silently turned into an abort.
 ESHKOL_WASM_ALLOWED_UNDEFINED=(
     eshkol_capability_require
-    eshkol_linear_solve
     eshkol_qrng_double
     eshkol_qrng_uint64
 )

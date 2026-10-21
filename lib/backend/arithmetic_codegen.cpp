@@ -2575,23 +2575,18 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         // Safe integer division path
         ctx_.builder().SetInsertPoint(int_safe_bb);
-        /* Audit M4: BOTH SDiv and SRem of INT64_MIN by -1 are UB in
-         * LLVM/C. Detect the pair here (before either op) and raise
-         * so we never emit the UB instruction. */
+        /* Both SDiv and SRem of INT64_MIN by -1 are poison in LLVM.
+         * Route this exact quotient to the arbitrary-precision dispatcher
+         * before either instruction; its result is the exact integer 2^63. */
         {
             llvm::Value* is_min_pre = ctx_.builder().CreateICmpEQ(left_int,
                 llvm::ConstantInt::get(ctx_.int64Type(), INT64_MIN));
             llvm::Value* is_neg1_pre = ctx_.builder().CreateICmpEQ(right_int,
                 llvm::ConstantInt::get(ctx_.int64Type(), -1));
             llvm::Value* is_overflow_pre = ctx_.builder().CreateAnd(is_min_pre, is_neg1_pre);
-            llvm::BasicBlock* pre_ub_bb = llvm::BasicBlock::Create(
-                ctx_.context(), "div_overflow_pre", func);
             llvm::BasicBlock* pre_ok_bb = llvm::BasicBlock::Create(
                 ctx_.context(), "div_overflow_ok", func);
-            ctx_.builder().CreateCondBr(is_overflow_pre, pre_ub_bb, pre_ok_bb);
-            ctx_.builder().SetInsertPoint(pre_ub_bb);
-            raiseDivideByZeroException();
-            ctx_.builder().CreateUnreachable();
+            ctx_.builder().CreateCondBr(is_overflow_pre, bignum_path, pre_ok_bb);
             ctx_.builder().SetInsertPoint(pre_ok_bb);
         }
         // Check if division is exact
@@ -2760,7 +2755,16 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
 
     // Safe path - perform modulo (floor semantics: sign of divisor).
     ctx_.builder().SetInsertPoint(safe_bb);
-    llvm::Value* srem = ctx_.builder().CreateSRem(left_int, right_int, "mod_srem");
+    // MIN/-1 has remainder zero, but LLVM srem on those operands is poison.
+    // Select a safe divisor BEFORE srem so no overflowing division is emitted.
+    llvm::Value* mod_overflow = ctx_.builder().CreateAnd(
+        ctx_.builder().CreateICmpEQ(left_int,
+            llvm::ConstantInt::getSigned(ctx_.int64Type(), INT64_MIN)),
+        ctx_.builder().CreateICmpEQ(right_int,
+            llvm::ConstantInt::getSigned(ctx_.int64Type(), -1)), "mod_int_overflow");
+    llvm::Value* mod_divisor = ctx_.builder().CreateSelect(mod_overflow,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1), right_int, "mod_safe_divisor");
+    llvm::Value* srem = ctx_.builder().CreateSRem(left_int, mod_divisor, "mod_srem");
     llvm::Value* zero_v = llvm::ConstantInt::get(ctx_.int64Type(), 0);
     llvm::Value* rem_neg = ctx_.builder().CreateICmpSLT(srem, zero_v, "mod_rem_neg");
     llvm::Value* div_neg = ctx_.builder().CreateICmpSLT(right_int, zero_v, "mod_div_neg");

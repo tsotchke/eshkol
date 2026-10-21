@@ -196,6 +196,10 @@ raise. An explicit port argument must be a port of the required direction:
   (read))                 ; => (1 2)
 ```
 
+`get-output-string` returns an independent snapshot. Closing an output string
+port releases its buffer; later queries return an empty string. Snapshots
+returned before closure remain valid.
+
 These behaviors are checked by
 `tests/core/standard_port_parameters_test.esk` on native and VM execution.
 

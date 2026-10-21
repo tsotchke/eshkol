@@ -6,6 +6,12 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+#include <eshkol/frontend/incrementalize.h>
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+#include <eshkol/frontend/scalar_lowering.h>
+#endif
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/logger.h>
@@ -15,6 +21,7 @@
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/backend/debug_artifact.h>
 #include <eshkol/stdlib_identity.h>
 #include <eshkol/pkg/subprocess.h>
 
@@ -4381,6 +4388,12 @@ struct OwnedLinkTemporaryObjects {
 
 int main(int argc, char **argv)
 {
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+    eshkol::frontend::enable_self_hosted_incremental();
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+    eshkol::frontend::enable_self_hosted_scalar_lowering();
+#endif
     // First local, so it is destroyed last: every AST consumer in main() has
     // finished before the AST string owner is released (ADR-0021).
     eshkol::frontend::AstStringsTeardownOnReturn ast_strings_teardown;
@@ -6251,11 +6264,6 @@ int main(int argc, char **argv)
         int result = eshkol::pkg::run_subprocess(
             link_args, nullptr, link_subprocess_timeout_seconds());
 
-        // Remove only scratch objects this driver created. `compiled_files`
-        // also contains caller-owned objects such as stdlib.o and named -l
-        // inputs, whose path or directory may happen to contain "eshkol_".
-        owned_link_temp_objects.cleanup();
-
         // When this process is the AOT-build child of a `-r` cache miss, report
         // a LINK-stage failure with a distinct sentinel so the parent treats it
         // as fatal (never masks it with a reduced in-process run) while a
@@ -6295,6 +6303,22 @@ int main(int argc, char **argv)
                 return link_failure_exit;
             }
         }
+
+        if (debug_info) {
+            const int debug_status = eshkol::backend::finishNativeDebugArtifact(
+                output, link_subprocess_timeout_seconds());
+            if (debug_status != 0) {
+                eshkol_error("Debug symbol generation failed with exit code %d "
+                             "(macOS requires dsymutil; ESHKOL_DSYMUTIL can select it)",
+                             debug_status);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
+        }
+
+        // Remove only scratch objects this driver created, after debug-map
+        // collection. The lifetime guard also cleans them on every error path.
+        owned_link_temp_objects.cleanup();
 
         if (emit_shared_library) {
             eshkol_info("Successfully created shared library: %s", output);

@@ -53,24 +53,49 @@ static int vm_require_arithmetic_numbers(VM* vm, Value a, Value b,
     return 0;
 }
 
-/* Reverse-mode AD tracing for a binary arithmetic operation.
- *
- * When vm->active_tape is set, binary operations record on the Wengert tape in
- * addition to computing values. ad_node_map[stack_slot] tracks which tape node
- * corresponds to each stack value (-1 = untracked). Untracked operands that
- * interact with tracked ones are promoted to ad_const nodes on the tape. */
-#define VM_AD_BINARY(vm, a_sp, b_sp, tape_fn, result_val) do { \
-    if ((vm)->active_tape) { \
-        AdTape* _t = (AdTape*)(vm)->active_tape; \
-        int _an = (vm)->ad_node_map[(a_sp)]; \
-        int _bn = (vm)->ad_node_map[(b_sp)]; \
-        if (_an != -1 || _bn != -1) { \
-            if (_an == -1) _an = ad_const(_t, as_number((vm)->stack[(a_sp)])); \
-            if (_bn == -1) _bn = ad_const(_t, as_number((vm)->stack[(b_sp)])); \
-            (vm)->ad_node_map[(vm)->sp] = tape_fn(_t, _an, _bn); \
-        } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
-    } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
-} while(0)
+/* reverse-gradient's real scalar tape supports int/float/rational/bignum
+ * operands. Complex and dual carriers have different derivative contracts and
+ * are refused while a reverse tape is active rather than silently projected. */
+static int vm_ad_real_scalar(Value v) {
+    return v.type == VAL_INT || v.type == VAL_FLOAT ||
+           v.type == VAL_RATIONAL || v.type == VAL_BIGNUM;
+}
+
+static void vm_ad_record_binary_result(VM* vm, int destination,
+        int left_node, int right_node, Value left, Value right,
+        int (*record)(AdTape*, int, int)) {
+    if (!vm || destination < 0 || destination >= STACK_SIZE) return;
+    if (!vm->active_tape) {
+        vm->ad_node_map[destination] = -1;
+        return;
+    }
+    vm->ad_node_map[destination] = -1;
+    if (left_node == -1 && right_node == -1) return;
+    AdTape* tape = (AdTape*)vm->active_tape;
+    if (!vm_ad_real_scalar(left) || !vm_ad_real_scalar(right) ||
+        !vm_ad_real_scalar(vm->stack[destination])) {
+        vm_raise_error_msg(vm,
+            "reverse-gradient on the VM supports real scalar arithmetic only; complex/dual carriers are unsupported");
+        return;
+    }
+    if (left_node < -1 || right_node < -1 ||
+        left_node >= tape->len || right_node >= tape->len) {
+        vm_raise_error_msg(vm, "reverse-gradient: invalid operand tape metadata");
+        return;
+    }
+    int a = left_node >= 0 ? left_node : ad_const(tape, as_number_vm(vm, left));
+    int b = right_node >= 0 ? right_node : ad_const(tape, as_number_vm(vm, right));
+    if (a < 0 || b < 0) {
+        vm_raise_error_msg(vm, "reverse-gradient: tape allocation failed");
+        return;
+    }
+    int result = record(tape, a, b);
+    if (result < 0) {
+        vm_raise_error_msg(vm, "reverse-gradient: tape allocation failed");
+        return;
+    }
+    vm->ad_node_map[destination] = result;
+}
 
 /**
  * @brief The four arithmetic operators, `+ - * /`, on the two values on top
@@ -95,7 +120,9 @@ static int vm_require_arithmetic_numbers(VM* vm, Value a, Value b,
  * vm->error, per this file's convention.
  */
 static void vm_op_arith(VM* vm, char op) {
-    int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
+    int call_sp = vm->sp;
+    int b_sp = call_sp - 1, a_sp = call_sp - 2;
+    int dispatch_pc = vm->pc;
     Value b = vm_pop(vm), a = vm_pop(vm);
     const char* name;
     int i128_id, hyper_id, dual_id, rational_id, complex_id;
@@ -111,15 +138,32 @@ static void vm_op_arith(VM* vm, char op) {
             return;
     }
     if (!vm_require_arithmetic_numbers(vm, a, b, name)) return;
+    int a_node = vm->active_tape ? vm->ad_node_map[a_sp] : -1;
+    int b_node = vm->active_tape ? vm->ad_node_map[b_sp] : -1;
+    if (vm->active_tape && (!vm_ad_real_scalar(a) || !vm_ad_real_scalar(b))) {
+        if (a_sp >= 0 && a_sp < STACK_SIZE) vm->ad_node_map[a_sp] = -1;
+        if (b_sp >= 0 && b_sp < STACK_SIZE) vm->ad_node_map[b_sp] = -1;
+        vm_raise_error_msg(vm,
+            "reverse-gradient on the VM supports real scalar arithmetic only; complex/dual carriers are unsupported");
+        return;
+    }
+    if (vm->active_tape && (a_node < -1 || b_node < -1 ||
+        a_node >= ((AdTape*)vm->active_tape)->len ||
+        b_node >= ((AdTape*)vm->active_tape)->len)) {
+        if (a_sp >= 0 && a_sp < STACK_SIZE) vm->ad_node_map[a_sp] = -1;
+        if (b_sp >= 0 && b_sp < STACK_SIZE) vm->ad_node_map[b_sp] = -1;
+        vm_raise_error_msg(vm, "reverse-gradient: invalid operand tape metadata");
+        return;
+    }
     /* SW-09: a heap-boxed i128 read by as_number_vm() is 0.0; route it through
      * the shared i128 kernel so fixed-width wrap semantics agree with native. */
     if (a.type == VAL_I128 || b.type == VAL_I128) {
-        vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, i128_id); return;
+        vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, i128_id);
     }
     /* A complex operand takes the complex path first: its natives lift a real
      * carrier to a complex with a tangent (ADR-0025), where the dual path
      * would read the complex as a real number. */
-    if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, complex_id); }
+    else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, complex_id); }
     else if (a.type == VAL_HYPER_DUAL || b.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, hyper_id); }
     else if (a.type == VAL_DUAL || b.type == VAL_DUAL)       { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, dual_id); }
     else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, rational_id); }
@@ -127,15 +171,14 @@ static void vm_op_arith(VM* vm, char op) {
         /* exact/exact -> exact result (R7RS): native 334 (rational div) reduces
          * the fraction and collapses denom==1 back to an integer, so (/ 1 3) is
          * 1/3 and (/ 6 3) is 2 rather than an inexact float. */
-        if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
+        /* Native 334 also raises a catchable exact-zero condition. */
         vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334);
     }
     /* A bignum must reach the bignum domain: as_number() reads a heap pointer's
      * .as.i and answers 0.0, so the double path would silently produce 0. */
-    else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, op); }
+    else if (vm_either_bignum(a, b)) { vm_bignum_arith(vm, a, b, op); }
     else if (a.type == VAL_INT && b.type == VAL_INT) {
         int64_t r; int overflow;
-        VM_AD_BINARY(vm, a_sp, b_sp, tape_fn, 0);
         if (op == '+')      overflow = __builtin_add_overflow(a.as.i, b.as.i, &r);
         else if (op == '-') overflow = __builtin_sub_overflow(a.as.i, b.as.i, &r);
         else                overflow = __builtin_mul_overflow(a.as.i, b.as.i, &r);
@@ -153,9 +196,11 @@ static void vm_op_arith(VM* vm, char op) {
         } else {
             r = (op == '+') ? av + bv : (op == '-') ? av - bv : av * bv;
         }
-        VM_AD_BINARY(vm, a_sp, b_sp, tape_fn, 0);
         vm_push(vm, number_val_contagious(a, b, r));
     }
+    if (vm->error || vm->pc != dispatch_pc || vm->sp != call_sp - 1) return;
+    vm_ad_record_binary_result(vm, a_sp, a_node, b_node, a, b, tape_fn);
+    vm->ad_node_map[b_sp] = -1;
 }
 
 
@@ -240,12 +285,23 @@ static void vm_exec_ge(VM* vm) {
 }
 
 static void vm_exec_cons(VM* vm) {
+    /* Compiler ABI pushes cdr first, then car; vm_pop therefore reads car
+     * from sp-1 and cdr from sp-2. Keep metadata aligned with those values. */
+    int car_sp = vm->sp - 1, cdr_sp = vm->sp - 2;
+    int car_node = (car_sp >= 0 && car_sp < STACK_SIZE) ? vm->ad_node_map[car_sp] : -1;
+    int cdr_node = (cdr_sp >= 0 && cdr_sp < STACK_SIZE) ? vm->ad_node_map[cdr_sp] : -1;
     Value car = vm_pop(vm), cdr = vm_pop(vm);
     int32_t ptr = heap_alloc(&vm->heap);
     if (ptr < 0) { vm->error = 1; return; }
     vm->heap.objects[ptr]->type = HEAP_CONS;
     vm->heap.objects[ptr]->cons.car = car;
     vm->heap.objects[ptr]->cons.cdr = cdr;
+    if (vm->active_tape && !heap_ad_pair_nodes_set(&vm->heap, ptr,
+            vm->ad_tape_generation, car_node, cdr_node)) {
+        vm_raise_error_msg(vm, "reverse-gradient: pair metadata allocation failed");
+        return;
+    }
+    if (vm->sp >= 0 && vm->sp < STACK_SIZE) vm->ad_node_map[vm->sp] = -1;
     vm_push(vm, PAIR_VAL(ptr));
 }
 
@@ -255,7 +311,11 @@ static void vm_exec_car(VM* vm) {
         vm_raise_error_msg(vm, "car: argument is not a pair");
         return;
     }
-    vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.car);
+    HeapObject* object = vm->heap.objects[pair.as.ptr];
+    if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+        vm->ad_node_map[vm->sp] = vm->active_tape
+            ? heap_ad_pair_field_node(&vm->heap, pair.as.ptr, vm->ad_tape_generation, 0) : -1;
+    vm_push(vm, object->cons.car);
 }
 
 static void vm_exec_cdr(VM* vm) {
@@ -264,18 +324,54 @@ static void vm_exec_cdr(VM* vm) {
         vm_raise_error_msg(vm, "cdr: argument is not a pair");
         return;
     }
-    vm_push(vm, vm->heap.objects[pair.as.ptr]->cons.cdr);
+    HeapObject* object = vm->heap.objects[pair.as.ptr];
+    if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+        vm->ad_node_map[vm->sp] = vm->active_tape
+            ? heap_ad_pair_field_node(&vm->heap, pair.as.ptr, vm->ad_tape_generation, 1) : -1;
+    vm_push(vm, object->cons.cdr);
 }
 
 static void vm_exec_set_car(VM* vm) {
+    int pair_sp = vm->sp - 2, value_sp = vm->sp - 1;
     Value val = vm_pop(vm), pair = vm_pop(vm);
-    if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.car = val;
+    if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr) &&
+        is_heap_type(vm, pair, HEAP_CONS)) {
+        int node = vm->active_tape && value_sp >= 0 && value_sp < STACK_SIZE
+            ? vm->ad_node_map[value_sp] : -1;
+        if (vm->active_tape && node >= 0 && !vm_ad_real_scalar(val)) {
+            vm_raise_error_msg(vm, "reverse-gradient: pair field contains an unsupported tracked value");
+            return;
+        }
+        vm->heap.objects[pair.as.ptr]->cons.car = val;
+        if (vm->active_tape && !heap_ad_pair_field_set(&vm->heap, pair.as.ptr,
+                vm->ad_tape_generation, 0, node)) {
+            vm_raise_error_msg(vm, "reverse-gradient: pair metadata allocation failed");
+            return;
+        }
+    }
+    if (pair_sp >= 0 && pair_sp < STACK_SIZE) vm->ad_node_map[pair_sp] = -1;
     vm_push(vm, (Value){.type = VAL_VOID});  /* ADR-0024: unspecified */
 }
 
 static void vm_exec_set_cdr(VM* vm) {
+    int pair_sp = vm->sp - 2, value_sp = vm->sp - 1;
     Value val = vm_pop(vm), pair = vm_pop(vm);
-    if (pair.type == VAL_PAIR) vm->heap.objects[pair.as.ptr]->cons.cdr = val;
+    if (pair.type == VAL_PAIR && is_valid_heap_ptr(vm, pair.as.ptr) &&
+        is_heap_type(vm, pair, HEAP_CONS)) {
+        int node = vm->active_tape && value_sp >= 0 && value_sp < STACK_SIZE
+            ? vm->ad_node_map[value_sp] : -1;
+        if (vm->active_tape && node >= 0 && !vm_ad_real_scalar(val)) {
+            vm_raise_error_msg(vm, "reverse-gradient: pair field contains an unsupported tracked value");
+            return;
+        }
+        vm->heap.objects[pair.as.ptr]->cons.cdr = val;
+        if (vm->active_tape && !heap_ad_pair_field_set(&vm->heap, pair.as.ptr,
+                vm->ad_tape_generation, 1, node)) {
+            vm_raise_error_msg(vm, "reverse-gradient: pair metadata allocation failed");
+            return;
+        }
+    }
+    if (pair_sp >= 0 && pair_sp < STACK_SIZE) vm->ad_node_map[pair_sp] = -1;
     vm_push(vm, (Value){.type = VAL_VOID});  /* ADR-0024: unspecified */
 }
 
@@ -286,8 +382,10 @@ static void vm_exec_popn(VM* vm, int32_t operand) {
          * still reading one of them keeps its last value (SW-190). */
         if (vm->n_open_uvs > 0) vm_close_open_upvalues_from(vm, vm->sp - 1 - n);
         Value top = vm->stack[vm->sp - 1];
+        int node = vm->active_tape ? vm->ad_node_map[vm->sp - 1] : -1;
         vm->sp -= n;
         vm->stack[vm->sp - 1] = top;
+        vm->ad_node_map[vm->sp - 1] = node;
     }
 }
 

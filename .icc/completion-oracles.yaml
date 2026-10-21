@@ -2230,7 +2230,7 @@ oracles:
           event_names: ["v14_tcp_roundtrip"]
           event_values: ["PASS"]
         severity: high
-        label: 'TCP sockets (#161): listen/accept/connect/read/write/close, local/remote addr, non-blocking mode, error objects — NOT YET IMPLEMENTED (no tcp-connect/tcp-listen/tcp-accept primitive exists anywhere in lib/, inc/, or tests/)'
+        label: 'Native numeric IPv4/IPv6 TCP sockets (#161): public core.net listen/accept/connect/read/write/close, endpoint, timeout, nonblocking, binary payload and stale-handle round trips; DNS, TLS and standalone VM FFI remain separate work'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2238,7 +2238,7 @@ oracles:
           event_names: ["v14_udp_roundtrip"]
           event_values: ["PASS"]
         severity: high
-        label: 'UDP sockets (#161): bind/sendto/recvfrom — NOT YET IMPLEMENTED (no udp-socket/udp-bind primitive exists anywhere in lib/, inc/, or tests/)'
+        label: 'Native numeric IPv4/IPv6 UDP sockets (#161): public core.net bind/sendto/recvfrom round trips, zero datagrams, sender endpoints and truncation refusal; Windows/WASM explicitly unsupported'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2324,7 +2324,7 @@ oracles:
           event_names: ["v14_msgpack_roundtrip"]
           event_values: ["PASS"]
         severity: medium
-        label: 'MessagePack (#162): encode/decode round-trips nil/bool/signed+unsigned int/fixstr-str8-str16/bin8-bin16/fixarray-array16/fixmap-map16 against exact wire bytes (lib/core/msgpack.esk — a documented deterministic subset, no ext-type hooks, no int64/float) — tests/v1_2_edge_cases/msgpack_test.esk via core.testing''s run-tests'
+        label: 'MessagePack (#162): exact wire bytes and 80 UTF-8 checks covering scalar boundaries, embedded NUL, fixed/str8/str16 payload-length transitions, malformed text refusal, and unchanged arbitrary raw binary payloads'
         action: run_v14_connection_gate
 
       - runtime_event:

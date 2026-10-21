@@ -93,6 +93,7 @@ void vm_run(VM* vm) {
         vm->frames[escape.frame_floor - 1].generation : 0;
     escape.native_depth = vm->native_call_depth;
     escape.ad_live_passes = vm->ad_live_passes;
+    escape.active_tape = vm->active_tape;
     vm->native_escape_context = &escape;
     if (setjmp(escape.destination) != 0) {
         /* A handled raise or continuation crossed one or more native C
@@ -100,6 +101,7 @@ void vm_run(VM* vm) {
          * from the restored VM state, preserving its native callback depth. */
         vm->native_call_depth = escape.native_depth;
         vm->ad_live_passes = escape.ad_live_passes;
+        vm->active_tape = escape.active_tape;
         vm->halted = 0;
         vm->error = 0;
     }
@@ -230,7 +232,11 @@ void vm_run(VM* vm) {
     lbl_TRUE:  vm_push(vm, BOOL_VAL(1)); DISPATCH();
     lbl_FALSE: vm_push(vm, BOOL_VAL(0)); DISPATCH();
     lbl_POP:   vm_pop(vm);               DISPATCH();
-    lbl_DUP:   vm_push(vm, vm_peek(vm, 0)); DISPATCH();
+    lbl_DUP: {
+        if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+            vm->ad_node_map[vm->sp] = vm->active_tape && vm->sp > 0
+                ? vm->ad_node_map[vm->sp - 1] : -1;
+        vm_push(vm, vm_peek(vm, 0)); DISPATCH(); }
 
     /* --- Arithmetic ---
      *
@@ -241,14 +247,20 @@ void vm_run(VM* vm) {
      * tracked ones are promoted to ad_const nodes on the tape.
      */
 
-/* VM_AD_BINARY is defined in vm_ops.c, beside vm_op_arith, its only user. */
+/* vm_op_arith in vm_ops.c records binary real-scalar tape nodes for both
+ * threaded and switch dispatch. */
 
 #define VM_AD_UNARY(vm, a_sp, tape_fn) do { \
     if ((vm)->active_tape) { \
         AdTape* _t = (AdTape*)(vm)->active_tape; \
         int _an = (vm)->ad_node_map[(a_sp)]; \
         if (_an != -1) { \
-            (vm)->ad_node_map[(vm)->sp] = tape_fn(_t, _an); \
+            int _node = tape_fn(_t, _an); \
+            if (_node < 0) { \
+                (vm)->ad_node_map[(vm)->sp] = -1; \
+                vm_raise_error_msg((vm), "reverse-gradient: tape allocation failed"); \
+            } \
+            else (vm)->ad_node_map[(vm)->sp] = _node; \
         } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
     } else { (vm)->ad_node_map[(vm)->sp] = -1; } \
 } while(0)
@@ -258,6 +270,8 @@ void vm_run(VM* vm) {
     lbl_MUL: vm_op_arith(vm, '*'); DISPATCH();
     lbl_DIV: vm_op_arith(vm, '/'); DISPATCH();
     lbl_MOD: {
+        if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "modulo") ||
+            vm_ad_reject_untraced_input(vm, vm->sp - 1, "modulo")) DISPATCH();
         Value b = vm_pop(vm), a = vm_pop(vm);
         /* SW-09b: see lbl_ADD. modulo's double path (fmod) reads a
          * heap-boxed VAL_I128 as 0.0 exactly like the other arithmetic ops. */
@@ -420,6 +434,9 @@ void vm_run(VM* vm) {
         for (int i = 0; i < argc; i++) {
             vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
         }
+        if (vm->active_tape)
+            memmove(&vm->ad_node_map[vm->fp], &vm->ad_node_map[vm->sp - argc],
+                    (size_t)argc * sizeof(int));
         vm->sp = vm->fp + argc;
         /* Update closure slot so GET_UPVALUE sees the NEW closure's upvalues */
         vm->stack[vm->fp - 1] = func;
@@ -614,9 +631,17 @@ void vm_run(VM* vm) {
             vm->heap.objects[p]->type = HEAP_CONS;
             vm->heap.objects[p]->cons.car = item;
             vm->heap.objects[p]->cons.cdr = list;
+            if (vm->active_tape &&
+                !heap_ad_pair_nodes_set(&vm->heap, p, vm->ad_tape_generation,
+                                       vm->ad_node_map[vm->fp + i], -1)) {
+                vm->error = 1;
+                goto vm_exit;
+            }
             list = PAIR_VAL(p);
         }
         vm->sp = vm->fp + n_fixed;
+        if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+            vm->ad_node_map[vm->sp] = -1;
         vm_push(vm, list);
         DISPATCH();
     }
@@ -682,6 +707,8 @@ vm_exit:
                 fprintf(stderr, "INVALID CONSTANT INDEX %d\n", instr.operand);
                 vm->error = 1; break;
             }
+            if (vm->active_tape && vm->sp >= 0 && vm->sp < STACK_SIZE)
+                vm->ad_node_map[vm->sp] = -1;
             vm_push(vm, vm->constants[instr.operand]);
             break;
 
@@ -689,7 +716,11 @@ vm_exit:
         case OP_TRUE:  vm_push(vm, BOOL_VAL(1)); break;
         case OP_FALSE: vm_push(vm, BOOL_VAL(0)); break;
         case OP_POP:   vm_pop(vm); break;
-        case OP_DUP:   vm_push(vm, vm_peek(vm, 0)); break;
+        case OP_DUP:
+            if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+                vm->ad_node_map[vm->sp] = vm->active_tape && vm->sp > 0
+                    ? vm->ad_node_map[vm->sp - 1] : -1;
+            vm_push(vm, vm_peek(vm, 0)); break;
 
         /* Arithmetic */
         case OP_ADD: vm_op_arith(vm, '+'); break;
@@ -697,6 +728,8 @@ vm_exit:
         case OP_MUL: vm_op_arith(vm, '*'); break;
         case OP_DIV: vm_op_arith(vm, '/'); break;
         case OP_MOD: {
+            if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "modulo") ||
+                vm_ad_reject_untraced_input(vm, vm->sp - 1, "modulo")) break;
             Value b = vm_pop(vm), a = vm_pop(vm);
             /* SW-09b: switch-based twin of lbl_MOD. */
             if (a.type == VAL_I128 || b.type == VAL_I128) {
@@ -764,6 +797,8 @@ vm_exit:
             vm_push(vm, vm->stack[src]);
             break; }
         case OP_SET_LOCAL:
+            if (vm->sp > 0 && vm->sp <= STACK_SIZE)
+                vm->ad_node_map[vm->fp + instr.operand] = vm->ad_node_map[vm->sp - 1];
             vm->stack[vm->fp + instr.operand] = vm_peek(vm, 0);
             vm_pop(vm);
             break;
@@ -844,6 +879,9 @@ vm_exit:
             for (int i = 0; i < argc; i++) {
                 vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
             }
+            if (vm->active_tape)
+                memmove(&vm->ad_node_map[vm->fp], &vm->ad_node_map[vm->sp - argc],
+                        (size_t)argc * sizeof(int));
             vm->sp = vm->fp + argc;
             /* Update closure slot so GET_UPVALUE sees the NEW closure's upvalues */
             vm->stack[vm->fp - 1] = func;
@@ -1006,9 +1044,18 @@ vm_exit:
                 vm->heap.objects[p]->type = HEAP_CONS;
                 vm->heap.objects[p]->cons.car = item;
                 vm->heap.objects[p]->cons.cdr = list;
+                if (vm->active_tape &&
+                    !heap_ad_pair_nodes_set(&vm->heap, p, vm->ad_tape_generation,
+                                            vm->ad_node_map[vm->fp + i], -1)) {
+                    vm->error = 1;
+                    break;
+                }
                 list = PAIR_VAL(p);
             }
+            if (vm->error) break;
             vm->sp = vm->fp + n_fixed;
+            if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+                vm->ad_node_map[vm->sp] = -1;
             vm_push(vm, list);
             break;
         }

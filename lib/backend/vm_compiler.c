@@ -1,5 +1,8 @@
 #include <eshkol/builtin_libraries.h>
 #include <eshkol/module_resolver.h>
+#if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
+#include "vm_embedded_modules.h"
+#endif
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
@@ -1758,20 +1761,132 @@ static void vm_seed_entry_module_path(const char* source_path) {
  */
 static int g_vm_bootstrapping_standard_library = 0;
 
+/* The standalone VM lowers the exact extern declarations used by
+ * core.dbsp.sqlite_changefeed, including checkpoint content hashes, through
+ * explicit typed native bridges.
+ * This is deliberately a closed signature table: it is not a general foreign
+ * function interface, and unknown declarations fail compilation rather than
+ * becoming ordinary calls to the symbol `extern`. */
+typedef struct {
+    const char* name;
+    const char* result;
+    const char* args[6];
+    int n_args;
+    const char* real_name;
+    int native_id;
+} VmTypedExternSpec;
+
+static const VmTypedExternSpec VM_TYPED_EXTERNS[] = {
+    /* VM-local implementation: this deliberately resets the VM's own logic
+     * registry and intern pool rather than depending on the hosted runtime. */
+    {"eshkol-logic-reset", "void", {NULL}, 0, "eshkol_logic_registry_reset", 2251},
+    {"sha256-raw", "i32", {"ptr", "i64", "ptr", "i64"}, 4, "eshkol_sha256", VM_NATIVE_SHA256_EXTERN},
+    {"hmac-sha256-raw", "i32", {"ptr", "i64", "ptr", "i64", "ptr", "i64"}, 6, "eshkol_hmac_sha256", VM_NATIVE_HMAC_SHA256_EXTERN},
+    {"random-bytes-raw", "i32", {"ptr", "i64"}, 2, "eshkol_random_bytes", VM_NATIVE_RANDOM_BYTES_EXTERN},
+    {"random-hex-raw", "i32", {"ptr", "i64"}, 2, "eshkol_random_hex", VM_NATIVE_RANDOM_HEX_EXTERN},
+    {"sqlite-open-raw", "i64", {"ptr"}, 1, "eshkol_sqlite_open", VM_NATIVE_SQLITE_OPEN},
+    {"sqlite-close-raw", "void", {"i64"}, 1, "eshkol_sqlite_close", VM_NATIVE_SQLITE_CLOSE},
+    {"sqlite-exec-raw", "i32", {"i64", "ptr"}, 2, "eshkol_sqlite_exec", VM_NATIVE_SQLITE_EXEC},
+    {"sqlite-prepare-raw", "i64", {"i64", "ptr"}, 2, "eshkol_sqlite_prepare", VM_NATIVE_SQLITE_PREPARE},
+    {"sqlite-step-raw", "i32", {"i64"}, 1, "eshkol_sqlite_step", VM_NATIVE_SQLITE_STEP},
+    {"sqlite-reset-raw", "i32", {"i64"}, 1, "eshkol_sqlite_reset", VM_NATIVE_SQLITE_RESET},
+    {"sqlite-finalize-raw", "void", {"i64"}, 1, "eshkol_sqlite_finalize", VM_NATIVE_SQLITE_FINALIZE},
+    {"sqlite-bind-text-raw", "i32", {"i64", "i32", "ptr"}, 3, "eshkol_sqlite_bind_text", VM_NATIVE_SQLITE_BIND_TEXT},
+    {"sqlite-bind-int-raw", "i32", {"i64", "i32", "i64"}, 3, "eshkol_sqlite_bind_int", VM_NATIVE_SQLITE_BIND_INT},
+    {"sqlite-bind-double-raw", "i32", {"i64", "i32", "double"}, 3, "eshkol_sqlite_bind_double", VM_NATIVE_SQLITE_BIND_DOUBLE},
+    {"sqlite-bind-null-raw", "i32", {"i64", "i32"}, 2, "eshkol_sqlite_bind_null", VM_NATIVE_SQLITE_BIND_NULL},
+    {"sqlite-column-text-raw", "i32", {"i64", "i32", "ptr", "i64"}, 4, "eshkol_sqlite_column_text", VM_NATIVE_SQLITE_COLUMN_TEXT},
+    {"sqlite-column-bytes-raw", "i64", {"i64", "i32"}, 2, "eshkol_sqlite_column_bytes", VM_NATIVE_SQLITE_COLUMN_BYTES},
+    {"sqlite-column-int-raw", "i64", {"i64", "i32"}, 2, "eshkol_sqlite_column_int", VM_NATIVE_SQLITE_COLUMN_INT},
+    {"sqlite-column-double-raw", "double", {"i64", "i32"}, 2, "eshkol_sqlite_column_double", VM_NATIVE_SQLITE_COLUMN_DOUBLE},
+    {"sqlite-column-count-raw", "i32", {"i64"}, 1, "eshkol_sqlite_column_count", VM_NATIVE_SQLITE_COLUMN_COUNT},
+    {"sqlite-column-name-raw", "i32", {"i64", "i32", "ptr", "i64"}, 4, "eshkol_sqlite_column_name", VM_NATIVE_SQLITE_COLUMN_NAME},
+    {"sqlite-column-type-raw", "i32", {"i64", "i32"}, 2, "eshkol_sqlite_column_type", VM_NATIVE_SQLITE_COLUMN_TYPE},
+    {"sqlite-last-error-raw", "i32", {"i64", "ptr", "i64"}, 3, "eshkol_sqlite_last_error", VM_NATIVE_SQLITE_LAST_ERROR},
+    {"sqlite-last-insert-rowid-raw", "i64", {"i64"}, 1, "eshkol_sqlite_last_insert_rowid", VM_NATIVE_SQLITE_LAST_INSERT_ROWID},
+    {"sqlite-changes-raw", "i32", {"i64"}, 1, "eshkol_sqlite_changes", VM_NATIVE_SQLITE_CHANGES},
+};
+
+static const VmTypedExternSpec* vm_typed_extern_spec(const Node* form) {
+    if (!form || form->type != N_LIST || form->n_children < 3 ||
+        !is_sym(form->children[0], "extern") ||
+        form->children[1]->type != N_SYMBOL || form->children[2]->type != N_SYMBOL)
+        return NULL;
+    const char* name = form->children[2]->symbol;
+    for (size_t i = 0; i < sizeof(VM_TYPED_EXTERNS) / sizeof(VM_TYPED_EXTERNS[0]); ++i) {
+        const VmTypedExternSpec* spec = &VM_TYPED_EXTERNS[i];
+        if (strcmp(name, spec->name) != 0) continue;
+        if (strcmp(form->children[1]->symbol, spec->result) != 0 ||
+            form->n_children != spec->n_args + 5) return NULL;
+        for (int a = 0; a < spec->n_args; ++a) {
+            Node* arg = form->children[3 + a];
+            if (arg->type != N_SYMBOL || strcmp(arg->symbol, spec->args[a]) != 0)
+                return NULL;
+        }
+        Node* modifier = form->children[3 + spec->n_args];
+        Node* real_name = form->children[4 + spec->n_args];
+        if (modifier->type != N_SYMBOL || strcmp(modifier->symbol, ":real") != 0 ||
+            real_name->type != N_SYMBOL || strcmp(real_name->symbol, spec->real_name) != 0)
+            return NULL;
+        return spec;
+    }
+    return NULL;
+}
+
+static int vm_compile_typed_extern_binding(FuncChunk* c, Node* form) {
+    const VmTypedExternSpec* spec = vm_typed_extern_spec(form);
+    if (!spec) {
+        vm_compile_error("unsupported or malformed VM extern declaration",
+                         "only the exact agent.sqlite and agent.crypto ABI signatures are admitted");
+        return 0;
+    }
+    if (resolve_local(c, spec->name) >= 0) {
+        vm_compile_error("duplicate typed extern declaration", spec->name);
+        return 0;
+    }
+
+    /* Materialize a normal bytecode closure so ESKB carries only the stable
+     * native-call ID; no process pointer or foreign symbol is serialized. */
+    if (add_local(c, spec->name) < 0) {
+        vm_compile_error("unable to allocate typed extern binding", spec->name);
+        return 0;
+    }
+    int function_constant = chunk_add_const(c, INT_VAL(0));
+    if (function_constant < 0) {
+        vm_compile_error("unable to allocate typed extern closure constant", spec->name);
+        return 0;
+    }
+    int skip_body = placeholder(c);
+    int function_pc = c->code_len;
+    c->constants[function_constant].as.i = VM_PACK_FUNC_ARITY(function_pc, spec->n_args);
+    for (int a = 0; a < spec->n_args; ++a) chunk_emit(c, OP_GET_LOCAL, a);
+    chunk_emit(c, OP_NATIVE_CALL, spec->native_id);
+    chunk_emit(c, OP_RETURN, 0);
+    patch(c, skip_body, OP_JUMP, c->code_len);
+    chunk_emit(c, OP_CLOSURE, function_constant);
+    return 1;
+}
+
 static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                                      int enforce_visibility, char exports[][128], int max_exports) {
     if (!mod_name || !*mod_name) return -1;
 
-#if defined(ESHKOL_VM_TEST_MODULES)
+#if defined(ESHKOL_VM_TEST_MODULES) || defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
     /* The differential WASM build has already loaded the canonical stdlib
      * image. Test fixtures may require it just as desktop programs do, but it
      * must not be reopened through MEMFS. */
     if (strcmp(mod_name, "stdlib") == 0) return 0;
 #endif
 
-#if defined(ESHKOL_VM_NO_DISASM) && !defined(ESHKOL_VM_BUILDING_STDLIB_CACHE) && !defined(ESHKOL_VM_TEST_MODULES)
-    /* Product WASM resolves the embedded standard library, not the filesystem. */
-    return -1;
+#if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES) && !defined(ESHKOL_VM_TEST_MODULES)
+    char path[VM_MAX_MODULE_PATH];
+    const char* embedded_source = NULL;
+    if (!vm_embedded_module_lookup(mod_name, &embedded_source, path, sizeof(path))) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "module source not found: %s", mod_name);
+        vm_compile_error(msg, "product WASM embeds only the supported core modules");
+        return -1;
+    }
 #else
     /* Both dotted module names and path literals go through the same resolver
      * as native JIT/AOT. Its source_path argument makes nested relative loads
@@ -1787,6 +1902,7 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                          "load/require must resolve an existing source file");
         return -1;
     }
+#endif
 
     /* Track the canonical path, not the spelling, so `x.esk` and `./x.esk`
      * cannot compile the same module twice. */
@@ -1794,7 +1910,18 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     if (tracked < 0) return -1;
     if (tracked == 0 && (!exports || max_exports <= 0)) return 0;
 
-    /* Read and parse the file */
+    /* Read the selected module source. Product modules come from the generated
+     * registry; native and test-module builds retain their filesystem reader. */
+#if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES) && !defined(ESHKOL_VM_TEST_MODULES)
+    size_t embedded_len = strlen(embedded_source);
+    char* src = (char*)malloc(embedded_len + 1);
+    if (!src) {
+        vm_compile_error("cannot allocate embedded module source buffer", path);
+        return -1;
+    }
+    memcpy(src, embedded_source, embedded_len + 1);
+    long len = (long)embedded_len;
+#else
     FILE* mf = fopen(path, "r");
     if (!mf) {
         char msg[512];
@@ -1827,6 +1954,7 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
         return -1;
     }
     src[len] = '\0';
+#endif
 
     /* Parse the complete module before compiling it. This gives loaded source
      * the same forward-procedure and same-location redefinition semantics as
@@ -1980,7 +2108,10 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                 }
             }
         }
-        if (do_box) vm_compile_boxed_variable_define(c, forms[i]);
+        if (forms[i]->type == N_LIST && forms[i]->n_children > 0 &&
+            is_sym(forms[i]->children[0], "extern")) {
+            (void)vm_compile_typed_extern_binding(c, forms[i]);
+        } else if (do_box) vm_compile_boxed_variable_define(c, forms[i]);
         else compile_expr(c, forms[i], 0);
         if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
         free_node(forms[i]);
@@ -1996,7 +2127,6 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     free(owned_source_path);
     free(src);
     return discovered_exports;
-#endif
 }
 
 /* Establish the same canonical stdlib namespace that native compilation
@@ -2022,6 +2152,44 @@ static void vm_reset_compilation_unit_modules(void) {
     g_vm_n_private_imports = 0;
     g_vm_n_public_imports = 0;
     vm_clear_planned_libraries();
+}
+
+/* A persistent REPL evaluation may load modules while it compiles. If that
+ * evaluation later fails, its bytecode and locals are rolled back, so restore
+ * the compiler-side module and forward-function registries too. Loading a
+ * module appends entries to these per-unit registries; restoring their counts
+ * makes the next eval compile those sources and reserve their function slots
+ * again. */
+typedef struct VmModuleStateSnapshot {
+    int n_forward_functions;
+    int n_loaded;
+    int n_unit_libraries;
+    int n_private_imports;
+    int n_public_imports;
+    int n_import_bindings;
+    int n_planned_libraries;
+} VmModuleStateSnapshot;
+
+static void vm_module_state_snapshot(VmModuleStateSnapshot* snapshot) {
+    if (!snapshot) return;
+    snapshot->n_forward_functions = g_vm_n_forward_functions;
+    snapshot->n_loaded = g_compiler_ctx.n_loaded;
+    snapshot->n_unit_libraries = g_compiler_ctx.n_unit_libraries;
+    snapshot->n_private_imports = g_vm_n_private_imports;
+    snapshot->n_public_imports = g_vm_n_public_imports;
+    snapshot->n_import_bindings = g_vm_n_import_bindings;
+    snapshot->n_planned_libraries = g_vm_n_planned_libraries;
+}
+
+static void vm_module_state_restore(const VmModuleStateSnapshot* snapshot) {
+    if (!snapshot) return;
+    g_vm_n_forward_functions = snapshot->n_forward_functions;
+    g_compiler_ctx.n_loaded = snapshot->n_loaded;
+    g_compiler_ctx.n_unit_libraries = snapshot->n_unit_libraries;
+    g_vm_n_private_imports = snapshot->n_private_imports;
+    g_vm_n_public_imports = snapshot->n_public_imports;
+    g_vm_n_import_bindings = snapshot->n_import_bindings;
+    g_vm_n_planned_libraries = snapshot->n_planned_libraries;
 }
 
 /**
@@ -5029,6 +5197,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     Node* head = node->children[0];
 
+    if (is_sym(head, "differentiate") && !vm_head_user_rebound(c, head) && node->n_children >= 2) {
+        Node* mode = node->children[1];
+        if (mode && mode->type == N_LIST && mode->n_children == 2 &&
+            is_sym(mode->children[0], "quote") &&
+            (is_sym(mode->children[1], "numeric") || is_sym(mode->children[1], "incremental"))) {
+            vm_compile_error("differentiate interpretation requires the native compiler frontend", NULL);
+            chunk_emit(c, OP_NIL, 0);
+            return;
+        }
+    }
+
     /* R7RS `(newline port)` is an explicit-port primitive, not the prelude's
      * zero-argument closure. Handle it before generic head rebinding/call
      * lowering so the port operand cannot be silently discarded. */
@@ -5469,6 +5648,18 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
     if (is_sym(head, "/")) {
         int saved = c->n_locals;
+        if (node->n_children == 2) {
+            /* Scheme's unary division is the reciprocal. Keep it on the same
+             * numeric opcode path as binary division so exact operands remain
+             * exact and inexact operands retain IEEE behavior. Compile the
+             * sole operand once; the constant numerator has no effects. */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));
+            add_local(c, "__operand__");
+            compile_expr(c, node->children[1], 0);
+            chunk_emit(c, OP_DIV, 0);
+            c->n_locals = saved;
+            return;
+        }
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
             add_local(c, "__operand__");

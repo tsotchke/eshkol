@@ -24,7 +24,6 @@ blackman-window	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signa
 butterworth-bandpass	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
 butterworth-highpass	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
 butterworth-lowpass	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
-bytevector	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-input-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-output-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-port	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
@@ -256,7 +255,6 @@ tensor-corrcoef	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tenso
 tensor-cov	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-det	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-disk-fill!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
-tensor-inverse	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-length	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-lu	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-norm	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
