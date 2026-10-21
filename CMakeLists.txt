@@ -8771,6 +8771,15 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/es
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/compiler_input_extension_test.py")
+    add_test(
+        NAME compiler_input_extension_cli
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/compiler_input_extension_test.py"
+                "$<TARGET_FILE:eshkol-run>")
+    set_tests_properties(compiler_input_extension_cli PROPERTIES TIMEOUT 180)
+endif()
+
 if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_object_smoke_test.cpp")
     get_filename_component(ESHKOL_LLVM_BIN_DIR "${LLVM_CONFIG_EXECUTABLE}" DIRECTORY)
     find_program(ESHKOL_LLVM_DIS_EXECUTABLE
