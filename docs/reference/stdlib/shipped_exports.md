@@ -874,6 +874,10 @@ Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk
 
 Visits copied topological node descriptors and read-only scalar accessors without exposing internal graph or snapshot storage.
 
+### `tensor-circuit-plan-work`
+
+Returns per-tick dimensionless work proxies for incremental/recomputed contractions and dense materialization; estimates are not elapsed-time predictions.
+
 ### `make-tensor-circuit-pullback`
 
 Builds a seeded structural reverse pass over the maintained named-axis tensor circuit; see [ad_tensor_circuit_reverse.md](ad_tensor_circuit_reverse.md).
