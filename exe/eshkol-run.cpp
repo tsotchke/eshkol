@@ -2297,8 +2297,13 @@ private:
                 const std::string name = getVarName(node);
                 VariableInfo* info = lookupVariable(name);
                 if (info && info->is_proven_callable &&
-                    info->callable_effect != CallableEffect::NONE)
+                    info->callable_effect != CallableEffect::NONE) {
+                    if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE"))
+                        std::fprintf(stderr,
+                            "[strict-resources] callable contract in value '%s' effect=%u\n",
+                            name.c_str(), static_cast<unsigned>(info->callable_effect));
                     return true;
+                }
                 continue;
             }
             if (node->type == ESHKOL_CONS) {
