@@ -382,8 +382,10 @@ static void vm_exec_popn(VM* vm, int32_t operand) {
          * still reading one of them keeps its last value (SW-190). */
         if (vm->n_open_uvs > 0) vm_close_open_upvalues_from(vm, vm->sp - 1 - n);
         Value top = vm->stack[vm->sp - 1];
+        int node = vm->active_tape ? vm->ad_node_map[vm->sp - 1] : -1;
         vm->sp -= n;
         vm->stack[vm->sp - 1] = top;
+        vm->ad_node_map[vm->sp - 1] = node;
     }
 }
 

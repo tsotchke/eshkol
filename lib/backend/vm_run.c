@@ -628,9 +628,17 @@ void vm_run(VM* vm) {
             vm->heap.objects[p]->type = HEAP_CONS;
             vm->heap.objects[p]->cons.car = item;
             vm->heap.objects[p]->cons.cdr = list;
+            if (vm->active_tape &&
+                !heap_ad_pair_nodes_set(&vm->heap, p, vm->ad_tape_generation,
+                                       vm->ad_node_map[vm->fp + i], -1)) {
+                vm->error = 1;
+                goto vm_exit;
+            }
             list = PAIR_VAL(p);
         }
         vm->sp = vm->fp + n_fixed;
+        if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+            vm->ad_node_map[vm->sp] = -1;
         vm_push(vm, list);
         DISPATCH();
     }
@@ -696,6 +704,8 @@ vm_exit:
                 fprintf(stderr, "INVALID CONSTANT INDEX %d\n", instr.operand);
                 vm->error = 1; break;
             }
+            if (vm->active_tape && vm->sp >= 0 && vm->sp < STACK_SIZE)
+                vm->ad_node_map[vm->sp] = -1;
             vm_push(vm, vm->constants[instr.operand]);
             break;
 
