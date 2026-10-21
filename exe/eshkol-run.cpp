@@ -1900,6 +1900,13 @@ private:
         if (left == right) return left;
         if (left == ResourceState::MOVED && right == ResourceState::MOVED)
             return ResourceState::MOVED;
+        if (left == ResourceState::MOVED || right == ResourceState::MOVED) {
+            const ResourceState other = left == ResourceState::MOVED ? right : left;
+            if (other == ResourceState::ERROR_ONLY ||
+                other == ResourceState::CLOSED_OR_ERROR)
+                return ResourceState::CLOSED_OR_ERROR;
+            if (other == ResourceState::CLOSED) return ResourceState::CLOSED;
+        }
         if (left == ResourceState::NONE || right == ResourceState::NONE)
             return ResourceState::MAYBE_LIVE;
         const bool left_live = isLiveResourceState(left);
