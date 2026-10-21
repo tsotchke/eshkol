@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Classify a PR's changed-file set by real build/CI impact.
 
-Motivating incident: PR #624 touched only `lib/backend/eshkol_compiler.c`,
+Historical motivating incident: PR #624 touched only the now-retired
+`lib/backend/eshkol_compiler.c`,
 a file `CMakeLists.txt` explicitly excludes from the source glob it
 compiles (`list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")`,
 kept as a reference-only standalone program) -- yet the PR ran the full
@@ -90,6 +91,7 @@ falls through to `full`):
 
 Usage
     git diff --name-only origin/master...HEAD | python3 scripts/ci_change_class.py
+    # Historical changed-file example for PR #624; the source is retired.
     python3 scripts/ci_change_class.py lib/backend/eshkol_compiler.c
     python3 scripts/ci_change_class.py --pr 624
     python3 scripts/ci_change_class.py --self-test
@@ -156,7 +158,7 @@ _INCLUDE_DIR_KEYWORDS = {"PRIVATE", "PUBLIC", "INTERFACE", "SYSTEM", "BEFORE", "
 # glob-matched/target-listed *source* is -- lib/backend, for instance, is
 # on the include path for a couple of standalone generator executables
 # (so a real header living there is fair game for #include) while also
-# containing lib/backend/eshkol_compiler.c, a .c file CMakeLists.txt
+# containing the now-retired lib/backend/eshkol_compiler.c, a .c file CMakeLists.txt
 # explicitly excludes from every source list (list(FILTER LIB_SRC EXCLUDE
 # REGEX "lib/backend/[^/]*\\.c$")). Treating "under an include dir" as
 # "is a build input" without this filter would make that exact file --
@@ -613,7 +615,7 @@ class BuildDerivation:
         # EXCLUDE ...) / list(REMOVE_ITEM ...) mutations run against this
         # variable before it is finally consumed by add_executable /
         # add_library / target_sources / add_custom_command DEPENDS --
-        # exactly the eshkol_compiler.c case this script exists to get
+        # the historical eshkol_compiler.c case this script exists to get
         # right. Attribution happens at the consuming command instead, in
         # _sources_from_tokens / _handle_add_custom_command, which reads
         # the variable's value as of that later point in the file.
@@ -1084,7 +1086,7 @@ def self_test() -> bool:
         )
         checks.append(
             (
-                "FILTER EXCLUDE removes lib/top_level_c_excluded.c (mirrors the real eshkol_compiler.c case)",
+                "FILTER EXCLUDE removes lib/top_level_c_excluded.c (mirrors historical PR #624)",
                 "lib/top_level_c_excluded.c" not in deriv.build_inputs,
             )
         )

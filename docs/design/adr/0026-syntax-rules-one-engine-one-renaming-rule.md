@@ -147,8 +147,9 @@ refusal is not completion (SW-192).
   scope, rewrites the node; after renaming no later pass could see the
   shadow. Codegen resolves only top-level and REPL-batch definitions of those
   names, from the same table.
-- The legacy standalone `lib/backend/eshkol_compiler.c`, which no build target
-  compiles, is not maintained against this change.
+- The standalone hosted compiler `lib/backend/eshkol_compiler.c` was a
+  reference-only snapshot and has since been removed; production compilation
+  uses the VM and LLVM paths.
 
 ## Verification
 

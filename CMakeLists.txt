@@ -2199,7 +2199,7 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/gpu/.*")
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/agent/.*")
 
 # Exclude ALL .c files from lib/backend/ — they are either standalone programs
-# (eshkol_compiler.c, weight_matrices.c, eshkol_asm.c, etc.) or unity-build
+# (weight_matrices.c, eshkol_asm.c, etc.) or unity-build
 # includes (vm_*.c, eskb_*.c are #included by eshkol_vm.c).
 # Only eshkol_vm.c is added back below (compiled in library mode).
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")

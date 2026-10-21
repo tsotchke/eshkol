@@ -88,8 +88,9 @@ precompiled-stdlib boundary into user source (see
 neither "pass a closure and call it with a magic symbolic value" nor
 "expose this as a macro" is available the way the compiler's own
 built-in `diff` special form works (a compile-time AST rewrite over the
-literal expression; see `lib/backend/eshkol_compiler.c`'s `diff`
-handling and `simplifySymbolicAST` in `lib/backend/llvm_codegen.cpp`).
+literal expression; the parser creates the `diff` AST and the LLVM path
+rewrites it in `simplifySymbolicAST` (`lib/frontend/parser.cpp`,
+`lib/backend/llvm_codegen.cpp`).
 `poly-derivative-of` / `series-derivative-of` instead take the
 expression as a **quoted datum**:
 

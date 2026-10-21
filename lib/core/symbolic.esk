@@ -130,7 +130,7 @@
 ;;; symbolic value" nor "expose this as a macro" is available here the
 ;;; way the compiler's own built-in `diff` special form works (that one
 ;;; is a compiler AST rewrite over the literal, unevaluated expression;
-;;; see `lib/backend/eshkol_compiler.c`'s "diff" handling and
+;;; see the parser's `ESHKOL_DIFF_OP` handling in `lib/frontend/parser.cpp` and
 ;;; `lib/backend/llvm_codegen.cpp:simplifySymbolicAST`). This module's
 ;;; analogue instead takes the procedure's body as a QUOTED datum — an
 ;;; ordinary Eshkol value the caller builds with `quote`/`'` — and

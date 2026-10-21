@@ -35,9 +35,9 @@ and to be stack-balanced.
 | Native REPL/JIT (`eshkol-run -r`) | **No** |
 
 These names appear in the VM builtin table only. They are absent from the native
-LLVM dispatch (`lib/backend/llvm_codegen.cpp`) and from the native builtin closure
-table (`lib/backend/eshkol_compiler.c`), so calling one from a natively compiled
-program is an unknown-function error, not a slow path. `tests/coverage/language_surface.json`
+LLVM dispatch (`lib/backend/llvm_codegen.cpp`), so these VM-only names are not
+callable from a natively compiled program. The retired standalone hosted
+compiler is not part of this production-surface claim. `tests/coverage/language_surface.json`
 records `"backends": ["vm"]` for every one of them.
 
 To run a program that uses them, compile it to a bytecode module and execute that

@@ -10,7 +10,8 @@ dispatch names as separate source evidence, and reads VM bootstrap independently
 from the top-level definitions and export closure rooted at `lib/stdlib.esk`.
 Historical compiler-only names and IDs are frozen in
 `tests/coverage/retired_compiler_builtin_reference.json` with the original
-compiler source SHA-256. The C source remains in place pending root review.
+compiler source SHA-256. The legacy C source was removed after its surface-generation, classification,
+and vector-limit-test consumers were migrated.
 
 ## Migrated consumers
 

@@ -11713,7 +11713,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 393: { /* derivative: (derivative f x) → f'(x) using forward-mode dual numbers */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
         /* SW-06: `diff` compiles to this same native call (see
-         * eshkol_compiler.c's "diff" entry, both aliased to fid 393), so
+         * the retired compiler's historical "diff" entry, both aliased to fid 393), so
          * `(diff '(* x x) 'x)` — a QUOTED s-expression, not a callable —
          * reaches here as f_val. vm_ad_call_closure() -> vm_call_closure_
          * from_native() silently returns NIL_VAL for anything that isn't
@@ -17326,7 +17326,7 @@ tensor_inverse_done:
 
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Compiler-required native functions (merged from eshkol_compiler.c)
+     * VM native-call handlers, including code historically shared with the retired compiler
      * ══════════════════════════════════════════════════════════════════════ */
 
     case 100: /* build-string-from-packed: TOS has packed chars, below that length */
