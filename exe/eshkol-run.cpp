@@ -1699,8 +1699,14 @@ public:
         pushScope("global");
         prepareStrictBindings(asts);
 
+        // Required module ASTs are also executed by the compiler/JIT module
+        // loader. Check their top-level initializers under the same effect
+        // policy as user forms; DEFINE_OP already suppresses traversal into
+        // function bodies, which are declarations rather than initializers.
+        // Skipping the prefix here allowed an imported module to acquire and
+        // leak a native resource before the checked user suffix ran.
         for (size_t i = 0; i < asts.size(); ++i) {
-            analyzeAST(&asts[i], i >= g_module_ast_prefix_count);
+            analyzeAST(&asts[i], true);
         }
 
         if (strict_resources_) {

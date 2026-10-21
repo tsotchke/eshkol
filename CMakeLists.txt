@@ -13235,6 +13235,27 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
         TIMEOUT 900 LABELS "ownership;memory;regression")
 endif()
 
+# Opt-in native resource checking has its own compiled falsifier corpus and
+# JIT/AOT loopback test. Runtime tests bind fresh ephemeral ports in Python;
+# no generated endpoint or executable is checked into the source tree.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_compiled.py")
+    add_test(NAME strict_resource_profile_compiled
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_compiled.py
+            --runner $<TARGET_FILE:eshkol-run>
+            --lib-dir ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(strict_resource_profile_compiled PROPERTIES
+        TIMEOUT 300 LABELS "ownership;strict-resources;regression")
+    add_test(NAME strict_resource_profile_runtime
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_runtime.py
+            --runner $<TARGET_FILE:eshkol-run>
+            --lib-dir ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(strict_resource_profile_runtime PROPERTIES
+        TIMEOUT 120 LABELS "ownership;strict-resources;runtime;network")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
    TARGET eshkol-vm-standalone-test AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_gate.py" AND

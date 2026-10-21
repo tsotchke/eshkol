@@ -6,6 +6,7 @@ matching runtime build directory. Negatives are compiled only; their binaries
 are never executed and must not be emitted.
 """
 import os
+import argparse
 import subprocess
 import tempfile
 from pathlib import Path
@@ -21,6 +22,7 @@ POSITIVE = (
     "positive-import-alias",
     "positive-import-rename",
     "positive-letrec-star-shadow-capture",
+    "positive-imported-function-declaration",
 )
 NEGATIVE = (
     "negative-leak",
@@ -50,16 +52,25 @@ NEGATIVE = (
     "negative-untrusted-close-alias-collision",
     "negative-unrefined-conditional-close",
     "negative-callable-factory-via-lambda",
+    "negative-imported-initializer-leak",
+    "negative-imported-unknown-factory",
+    "negative-two-module-export-collision",
 )
 
 
 def main():
-    runner = os.environ.get("ESHKOL_RUN")
-    lib_dir = os.environ.get("ESHKOL_LIB_DIR")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runner", default=os.environ.get("ESHKOL_RUN"))
+    parser.add_argument("--lib-dir", default=os.environ.get("ESHKOL_LIB_DIR"))
+    args = parser.parse_args()
+    runner = args.runner
+    lib_dir = args.lib_dir
     if not runner or not lib_dir:
         raise SystemExit("set ESHKOL_RUN and ESHKOL_LIB_DIR")
     env = os.environ.copy()
-    env["ESHKOL_PATH"] = str(Path(__file__).resolve().parents[2] / "lib")
+    source_root = Path(__file__).resolve().parents[2]
+    module_root = HERE / "modules"
+    env["ESHKOL_PATH"] = os.pathsep.join((str(module_root), str(source_root / "lib")))
     results = []
     with tempfile.TemporaryDirectory(prefix="eshkol-strict-resources-") as temp:
         out_dir = Path(temp)

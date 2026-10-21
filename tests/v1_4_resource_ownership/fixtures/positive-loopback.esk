@@ -1,5 +1,5 @@
 (require core.net)
-(define socket (tcp-connect "127.0.0.1" PORT 1000))
+(define socket (tcp-connect "127.0.0.1" @PORT@ 1000))
 (if (network-error? socket)
     (begin (display "CONNECT-ERROR") (newline) (exit 2))
     (begin
