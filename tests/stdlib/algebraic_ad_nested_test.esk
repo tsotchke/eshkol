@@ -1,0 +1,144 @@
+(require stdlib)
+(require core.ad.algebraic)
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define q (make-algebraic-field '(-2 0 1) 3 1))
+(define (rational-is value expected) (= (algebraic-rational value) expected))
+(define (field-power field value n)
+  (let loop ((k n) (out (algebraic-element field 1)))
+    (if (= k 0) out (loop (- k 1) (algebraic-mul out value)))))
+(define (mixed-reciprocal field a0 b0)
+  (call-with-algebraic-derivative field
+    (lambda (a lift-a)
+      (call-with-algebraic-derivative (algebraic-ad-context a)
+        (lambda (b lift-b) (algebraic-ad-inverse (algebraic-ad-add (lift-b a) b))) b0 2)) a0 2))
+(check "captured coefficients retain independent order-two levels"
+  (rational-is (mixed-reciprocal q 2 3) 24/3125))
+(check "nested polynomial agrees with independent mixed differentiation"
+  (rational-is (call-with-algebraic-derivative q
+    (lambda (a lift-a)
+      (call-with-algebraic-derivative (algebraic-ad-context a)
+        (lambda (b lift-b)
+          (let ((a (lift-b a)))
+            (algebraic-ad-mul (algebraic-ad-mul a a)
+                             (algebraic-ad-mul (algebraic-ad-mul b b) b)))) 3 2)) 2 2) 36))
+(check "three fresh reciprocal levels agree with 6!/(1+2+3)^7"
+  (rational-is (call-with-algebraic-derivative q
+    (lambda (a lift-a)
+      (call-with-algebraic-derivative (algebraic-ad-context a)
+        (lambda (b lift-b)
+          (call-with-algebraic-derivative (algebraic-ad-context b)
+            (lambda (c lift-c)
+              (algebraic-ad-inverse (algebraic-ad-add c
+                (algebraic-ad-add (lift-c b) (lift-c (lift-b a)))))) 3 2)) 2 2)) 1 2) 5/1944))
+(define (moving-root field point degree)
+  (call-with-algebraic-derivative field
+    (lambda (a lift-a)
+      (let* ((outer (algebraic-ad-context a))
+             (root (algebraic-ad-add a (algebraic-ad-constant outer 1)))
+             (target (let power ((k degree) (out (algebraic-ad-constant outer 1)))
+               (if (= k 0) out (power (- k 1) (algebraic-ad-mul out root))))))
+        (call-with-algebraic-derivative outer
+          (lambda (b lift-b)
+            (let* ((inner (algebraic-ad-context b)) (coefficients (make-vector (+ degree 1) 0)))
+              (vector-set! coefficients 0 (algebraic-ad-sub (algebraic-ad-constant inner 0) b))
+              (vector-set! coefficients degree 1)
+              (algebraic-ad-root inner (vector->list coefficients) root))) target 2))) point 2))
+(check "moving square-root point and branch retain the outer derivative"
+  (rational-is (moving-root q 2 2) -1/81))
+(check "moving cubic point and branch retain the outer derivative"
+  (rational-is (moving-root q 2 3) -20/6561))
+(check "order-zero inner evaluation preserves enclosing derivatives"
+  (rational-is (call-with-algebraic-derivative q
+    (lambda (a lift-a)
+      (call-with-algebraic-derivative (algebraic-ad-context a)
+        (lambda (b lift-b) (algebraic-ad-mul (algebraic-ad-mul b b) b)) a 0)) 2 2) 12))
+(check "an enclosing result is constant only in the inner direction"
+  (rational-is (call-with-algebraic-derivative q
+    (lambda (a lift-a)
+      (call-with-algebraic-derivative (algebraic-ad-context a)
+        (lambda (b lift-b) a) 3 1)) 2 1) 0))
+(check "nested hyperdual mixed coefficient remains an enclosing value"
+  (rational-is (call-with-algebraic-derivative q
+    (lambda (a lift-a)
+      (let* ((hyper (make-algebraic-hyperdual (algebraic-ad-context a)))
+             (x (algebraic-ad-value hyper '(2 1 0 0))) (y (algebraic-ad-value hyper '(3 0 1 0)))
+             (result (algebraic-ad-mul (algebraic-ad-constant hyper a) (algebraic-ad-mul x y))))
+        (vector-ref (algebraic-ad-coefficients result) 3))) 5 1) 1))
+(define outer (make-algebraic-taylor q 2))
+(define a (algebraic-ad-seed outer 2))
+(define inner (make-algebraic-taylor outer 2))
+(define b (algebraic-ad-seed inner a))
+(define value (algebraic-ad-add b (algebraic-ad-constant inner 1)))
+(check "entire nested inverse residual vanishes"
+  (algebraic-ad-equal? (algebraic-ad-mul value (algebraic-ad-inverse value))
+                      (algebraic-ad-constant inner 1)))
+(check "factorial extraction retains enclosing perturbations"
+  (let ((actual (algebraic-ad-derivative (algebraic-ad-mul b b) 1)))
+    (algebraic-ad-equal? actual (algebraic-ad-mul (algebraic-ad-constant outer 2) a))))
+(define owned-source (algebraic-ad-seed outer 2))
+(define owned (algebraic-ad-value inner (list owned-source 1 0)))
+(vector-set! (vector-ref (vector-ref (vector-ref owned-source 2) 0) 2) 0 99)
+(define observed (algebraic-ad-coefficients owned))
+(vector-set! (vector-ref (vector-ref observed 0) 2) 0 (algebraic-element q 88))
+(vector-set! observed 0 (algebraic-ad-constant outer 77))
+(check "nested constructors and observers own every coefficient layer"
+  (algebraic-ad-equal? (vector-ref (algebraic-ad-coefficients owned) 0) (algebraic-ad-seed outer 2)))
+(define sibling (make-algebraic-taylor q 2))
+(define sibling-value (algebraic-ad-seed sibling 2))
+(define third (make-algebraic-taylor inner 2))
+(define foreign (make-algebraic-field '(-2 0 0 1) 7 0))
+(define nilpotent-context (make-algebraic-taylor q 1))
+(define nilpotent (algebraic-ad-seed nilpotent-context 0))
+(define nilpotent-inner (make-algebraic-taylor nilpotent-context 1))
+(for-each (lambda (thunk) (check "invalid nested scope/coefficient/unit refuses" (raises? thunk)))
+  (list
+    (lambda () (algebraic-ad-add b a))
+    (lambda () (algebraic-ad-constant inner sibling-value))
+    (lambda () (algebraic-ad-value inner (list sibling-value 1 0)))
+    (lambda () (call-with-algebraic-derivative q (lambda (x lift) a) 2 1))
+    (lambda () (call-with-algebraic-derivative outer (lambda (x lift) (lift sibling-value)) 2 1))
+    (lambda () (call-with-algebraic-derivative q (lambda (x lift) (algebraic-generator foreign)) 2 1))
+    (lambda () (call-with-algebraic-derivative foreign (lambda (x lift) x) a 1))
+    (lambda () (call-with-algebraic-derivative q #f 2 1))
+    (lambda () (call-with-algebraic-derivative q (lambda (x lift) x) 2 -1))
+    (lambda () (make-algebraic-taylor third 1))
+    (lambda () (algebraic-ad-inverse (algebraic-ad-constant nilpotent-inner nilpotent)))
+    ;; Its entire residual is already zero, but epsilon*y has no simple root.
+    (lambda () (algebraic-ad-root nilpotent-inner (list 0 nilpotent) 0))
+    ;; Root 2 matches only the bottom primal, not the moving outer branch.
+    (lambda () (let ((target (algebraic-ad-mul a a)))
+      (algebraic-ad-root inner (list (algebraic-ad-sub (algebraic-ad-constant inner 0)
+        (algebraic-ad-constant inner target)) 0 1) 2)))))
+
+;; Joint witness: both coefficient constants enter one certified degree-six
+;; field explicitly before independent derivative scopes are introduced.
+(define composition (make-algebraic-compositum q foreign))
+(define combined (vector-ref composition 0))
+(define alpha ((vector-ref composition 1) (algebraic-generator q)))
+(define beta ((vector-ref composition 2) (algebraic-generator foreign)))
+(define sum (algebraic-add alpha beta))
+(check "mixed-field nested reciprocal matches independent exact derivative"
+  (algebraic-equal? (mixed-reciprocal combined alpha beta)
+    (algebraic-scale (field-power combined (algebraic-inverse sum) 5) 24)))
+(check "mixed-field nested polynomial matches independent derivative"
+  (algebraic-equal? (call-with-algebraic-derivative combined
+    (lambda (a lift-a)
+      (call-with-algebraic-derivative (algebraic-ad-context a)
+        (lambda (b lift-b)
+          (let ((a (lift-b a)))
+            (algebraic-ad-mul (algebraic-ad-mul a a)
+                             (algebraic-ad-mul (algebraic-ad-mul b b) b)))) beta 2)) alpha 2)
+    (algebraic-scale beta 12)))
+(check "moving implicit cubic composes through the certified combined field"
+  (algebraic-equal? (moving-root combined alpha 3)
+    (algebraic-scale (field-power combined (algebraic-inverse
+      (algebraic-add alpha (algebraic-element combined 1))) 7) -20/3)))
+(check "nested and composed-field paths use no finite differences" (= (ad-finite-difference-evals) 0))
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "RESULT: PASS") (newline)
