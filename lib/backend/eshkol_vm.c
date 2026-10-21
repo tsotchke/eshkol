@@ -2208,6 +2208,8 @@ static void repl_session_echo(VM* vm) {
 static void repl_session_eval(ReplSession* rs, const char* source, int auto_print) {
     if (!rs || !rs->initialized) return;
 
+    vm_clear_compile_failure();
+
     /* Reset error flags at start of each eval */
     rs->vm->error = 0;
     rs->vm->halted = 0;
@@ -2247,6 +2249,12 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         skip_ws(); if (!*src_ptr) break;
         Node* expr = parse_sexp(); if (!expr) break;
         if (n_top < 256) top_exprs[n_top++] = expr;
+    }
+    if (vm_compile_failed()) {
+        for (int i = 0; i < n_top; ++i) free_node(top_exprs[i]);
+        g_repl_jmp_active = 0;
+        printf("Error during evaluation\n");
+        return;
     }
     vm_preregister_unit_syntax(&rs->chunk, top_exprs, n_top);
 

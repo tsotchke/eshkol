@@ -14235,3 +14235,12 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test
         PROPERTIES TIMEOUT 180 ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|fatal signal")
 endif()
+
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME vm_parser_prefix_refusal COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/parser_prefix_refusal.py"
+        --runner $<TARGET_FILE:eshkol-run> --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+        --link-dir "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(vm_parser_prefix_refusal PROPERTIES TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "Traceback|AssertionError")
+endif()
