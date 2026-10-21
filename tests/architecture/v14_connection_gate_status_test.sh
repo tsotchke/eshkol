@@ -3,13 +3,56 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 gate="$root/scripts/run_v14_connection_gate.sh"
-helper="$(sed -n '/^probe_unverified() {/,/^}/p' "$gate")"
-[ -n "$helper" ]
-ci_helper="$(sed -n '/^probe_external_ci_evidence() {/,/^}/p' "$gate")"
-[ -n "$ci_helper" ]
-run_helper="$(sed -n '/^probe_run() {/,/^}/p' "$gate")"
-[ -n "$run_helper" ]
+source "$root/scripts/lib/connection_gate_probe.sh"
 
+work="$(mktemp -d "${TMPDIR:-/tmp}/v14-connection-status-test.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+events="$work/events"
+PROBE_TOTAL=0
+PROBE_FAILURES=0
+emit_event() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$events"; }
+
+assert_event() {
+    local name="$1" value="$2" expected="$3"
+    if ! rg -Fq "$name" "$events" || ! rg -Fq "$value" "$events" || { [ -n "$expected" ] && ! rg -Fq "$expected" "$events"; }; then
+        printf 'FAIL: expected %s %s event containing %s\n' "$name" "$value" "$expected" >&2
+        cat "$events" >&2
+        exit 1
+    fi
+}
+
+# Exercise the exact helper that the production gate sources. Marker checks
+# happen only after the producer finishes writing the captured output file.
+probe_run producer_pass 'successful producer' 'printf "PASS: fixture\\n"' '^PASS: fixture$'
+assert_event producer_pass PASS 'successful producer: OK'
+probe_run producer_exit7 'nonzero producer' "bash -c 'printf \"PASS: fixture\\\\n\"; exit 7'" '^PASS: fixture$'
+assert_event producer_exit7 FAIL 'PASS: fixture'
+probe_run missing_marker 'missing marker' 'printf "different output\\n"' '^PASS: fixture$'
+assert_event missing_marker FAIL 'different output'
+completion_marker="$work/producer-completed"
+probe_run producer_complete 'large successful producer' \
+    "COMPLETION_MARKER='$completion_marker' python3 -c 'import os,sys; print(\"PASS: fixture\"); sys.stdout.write(\"x\" * 2000000); open(os.environ[\"COMPLETION_MARKER\"], \"w\").write(\"done\")'" \
+    '^PASS: fixture$'
+assert_event producer_complete PASS 'large successful producer: OK'
+[ -f "$completion_marker" ] || { echo 'FAIL: producer did not finish after emitting its marker' >&2; exit 1; }
+probe_run skip_large 'large SKIP output' \
+    "python3 -c 'import sys; print(\"SKIP: fixture\"); sys.stdout.write(\"x\" * 2000000); print()'" \
+    'SKIP: fixture'
+assert_event skip_large FAIL ''
+probe_run unverified_large 'large UNVERIFIED output' \
+    "python3 -c 'import sys; print(\"UNVERIFIED: fixture\"); sys.stdout.write(\"x\" * 2000000); print()'" \
+    'UNVERIFIED: fixture'
+assert_event unverified_large FAIL ''
+
+[ "$PROBE_TOTAL" -eq 6 ] && [ "$PROBE_FAILURES" -eq 4 ] || {
+    printf 'FAIL: probe totals were %s/%s, expected 6/4\n' "$PROBE_TOTAL" "$PROBE_FAILURES" >&2
+    exit 1
+}
+
+# Preserve UNVERIFIED and external CI accounting from the production gate.
+helper="$(sed -n '/^probe_unverified() {/,/^}/p' "$gate")"
+ci_helper="$(sed -n '/^probe_external_ci_evidence() {/,/^}/p' "$gate")"
+[ -n "$helper" ] && [ -n "$ci_helper" ]
 out="$(bash -c '
     PROBE_TOTAL=0
     PROBE_FAILURES=0
@@ -19,55 +62,9 @@ out="$(bash -c '
     printf "COUNTS %s %s\\n" "$PROBE_TOTAL" "$PROBE_FAILURES"
 ' _ "$helper")"
 case "$out" in
-    *"EVENT v14_example FAIL UNVERIFIED: requires source-bound implementation evidence"*) ;;
-    *) printf 'FAIL: unverified event missing or not failing\n%s\n' "$out" >&2; exit 1 ;;
+    *"EVENT v14_example FAIL UNVERIFIED: requires source-bound implementation evidence"*"COUNTS 1 1"*) ;;
+    *) printf 'FAIL: unverified probe status changed\n%s\n' "$out" >&2; exit 1 ;;
 esac
-
-# A zero exit code cannot turn a test's SKIP/UNVERIFIED report into PASS.
-skip_out="$(bash -c '
-    PROBE_TOTAL=0
-    PROBE_FAILURES=0
-    emit_event() { printf "EVENT %s %s %s\\n" "$1" "$2" "$3"; }
-    eval "$1"
-    probe_run v14_skipped "fixture" '\''printf "SKIP: unavailable\\n"; exit 0'\''
-    printf "COUNTS %s %s\\n" "$PROBE_TOTAL" "$PROBE_FAILURES"
-' _ "$run_helper")"
-case "$skip_out" in
-    *"EVENT v14_skipped FAIL SKIP: unavailable"*"COUNTS 1 1"*) ;;
-    *) printf 'FAIL: zero-exit SKIP output certified or miscounted\n%s\n' "$skip_out" >&2; exit 1 ;;
-esac
-
-# BUILD_DIR accepts a checkout-relative or absolute directory and reports a
-# missing directory as a setup error (2), without attempting a build.
-missing_build="$root/.scratch/v14-gate-missing-build-$$"
-empty_build="$root/.scratch/v14-gate-empty-build-$$"
-mkdir -p "$empty_build"
-trap 'rm -rf "$empty_build"' EXIT
-set +e
-BUILD_DIR="$missing_build" bash "$gate" >/dev/null 2>&1
-missing_status=$?
-set -e
-[ "$missing_status" -eq 2 ] || { echo "FAIL: missing BUILD_DIR status was $missing_status, expected 2" >&2; exit 1; }
-for build_path in "$empty_build" "${empty_build#$root/}"; do
-    set +e
-    BUILD_DIR="$build_path" bash "$root/tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh" >/dev/null 2>&1
-    missing_status=$?
-    set -e
-    [ "$missing_status" -eq 2 ] || { echo "FAIL: empty BUILD_DIR status was $missing_status, expected 2" >&2; exit 1; }
-done
-
-# The shared isolation init must not replace either script's WORK cleanup.
-for smoke in "$root/tests/v1_2_edge_cases/http_server_smoke_test.sh" \
-             "$root/tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh"; do
-    rg -Fq 'ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init' "$smoke"
-    rg -Fq "trap 'eshkol_test_isolation_cleanup; rm -rf \"\$WORK\"' EXIT" "$smoke"
-done
-
-case "$out" in
-    *"COUNTS 1 1"*) ;;
-    *) printf 'FAIL: unverified probe accounting changed\n%s\n' "$out" >&2; exit 1 ;;
-esac
-
 ci_out="$(bash -c '
     PROBE_TOTAL=0
     PROBE_FAILURES=0
@@ -78,17 +75,33 @@ ci_out="$(bash -c '
     printf "COUNTS %s %s\\n" "$PROBE_TOTAL" "$PROBE_FAILURES"
 ' _ "$helper" "$ci_helper")"
 case "$ci_out" in
-    *"EVENT v14_ci_example FAIL UNVERIFIED: no source-bound CI receipt supplied for workflow.yml — receipt required"*) ;;
-    *) printf 'FAIL: CI receipt status missing or not failing\n%s\n' "$ci_out" >&2; exit 1 ;;
+    *"EVENT v14_ci_example FAIL UNVERIFIED: no source-bound CI receipt supplied for workflow.yml — receipt required"*"COUNTS 1 1"*) ;;
+    *) printf 'FAIL: CI receipt status changed\n%s\n' "$ci_out" >&2; exit 1 ;;
 esac
-case "$ci_out" in
-    *"COUNTS 1 1"*) ;;
-    *) printf 'FAIL: CI receipt probe accounting changed\n%s\n' "$ci_out" >&2; exit 1 ;;
-esac
+
+# BUILD_DIR failures remain setup errors and do not attempt a compiler build.
+missing_build="$work/missing"
+empty_build="$work/empty"
+mkdir -p "$empty_build"
+set +e
+BUILD_DIR="$missing_build" bash "$gate" >/dev/null 2>&1
+status=$?
+[ "$status" -eq 2 ] || { echo "FAIL: missing BUILD_DIR status was $status, expected 2" >&2; exit 1; }
+BUILD_DIR="$empty_build" bash "$root/tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh" >/dev/null 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || { echo "FAIL: empty BUILD_DIR status was $status, expected 2" >&2; exit 1; }
+
+# Shared isolation setup must retain each smoke test's own WORK cleanup.
+for smoke in "$root/tests/v1_2_edge_cases/http_server_smoke_test.sh" \
+             "$root/tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh"; do
+    rg -Fq 'ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init' "$smoke"
+    rg -Fq "trap 'eshkol_test_isolation_cleanup; rm -rf \"\$WORK\"' EXIT" "$smoke"
+done
 
 if rg -n -i 'NOT YET IMPLEMENTED|confirmed absent|zero hits|no [^[:cntrl:]]+ exists anywhere|this box has no self-hosted|no PJRT.*reference exists|detect_leaks=0' "$gate"; then
     echo 'FAIL: stale source-absence or runner-availability claim remains' >&2
     exit 1
 fi
 
-echo 'PASS: v1.4 connection gate unverified status'
+echo 'PASS: v1.4 connection gate status semantics'
