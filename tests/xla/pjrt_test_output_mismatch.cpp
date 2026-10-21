@@ -10,6 +10,7 @@ namespace {
 struct FakeHandle { int value = 0; };
 FakeHandle client_handle, device_handle, description_handle, executable_handle,
     loaded_executable_handle, input_buffer_handle, output_buffer_handle,
+    second_output_buffer_handle,
     transfer_event_handle, execution_event_handle, initialized_extension;
 PJRT_Api api = {};
 PJRT_Error compile_error_handle;
@@ -21,6 +22,7 @@ int host_transfers = 0;
 int compile_calls = 0;
 int execute_calls = 0;
 int destroyed_clients = 0;
+int last_input_element_type = 0;
 const int64_t input_dims[] = {1};
 const int64_t dtype_output_dims[] = {1};
 const int64_t shape_output_dims[] = {3, 2};
@@ -66,7 +68,8 @@ PJRT_Error* getExecutable(PJRT_LoadedExecutable_GetExecutable_Args* a) {
     return nullptr;
 }
 PJRT_Error* numOutputs(PJRT_Executable_NumOutputs_Args* a) {
-    a->num_outputs = 1; return nullptr;
+    const char* two = std::getenv("PJRT_TEST_TWO_OUTPUTS");
+    a->num_outputs = two && std::strcmp(two, "1") == 0 ? 2 : 1; return nullptr;
 }
 PJRT_Error* destroyExecutable(PJRT_Executable_Destroy_Args*) { return nullptr; }
 PJRT_Error* destroyLoadedExecutable(PJRT_LoadedExecutable_Destroy_Args*) {
@@ -75,20 +78,30 @@ PJRT_Error* destroyLoadedExecutable(PJRT_LoadedExecutable_Destroy_Args*) {
 PJRT_Error* execute(PJRT_LoadedExecutable_Execute_Args* a) {
     ++execute_calls;
     a->output_lists[0][0] = reinterpret_cast<PJRT_Buffer*>(&output_buffer_handle);
+    const char* two = std::getenv("PJRT_TEST_TWO_OUTPUTS");
+    if (two && std::strcmp(two, "1") == 0)
+        a->output_lists[0][1] = reinterpret_cast<PJRT_Buffer*>(&second_output_buffer_handle);
     a->device_complete_events[0] = reinterpret_cast<PJRT_Event*>(&execution_event_handle);
     return nullptr;
 }
 PJRT_Error* bufferFromHost(PJRT_Client_BufferFromHostBuffer_Args* a) {
     ++host_transfers;
+    last_input_element_type = static_cast<int>(a->type);
     a->buffer = reinterpret_cast<PJRT_Buffer*>(&input_buffer_handle);
     a->done_with_host_buffer = reinterpret_cast<PJRT_Event*>(&transfer_event_handle);
     return nullptr;
 }
 PJRT_Error* bufferType(PJRT_Buffer_ElementType_Args* a) {
     const char* mode = std::getenv("PJRT_TEST_OUTPUT_MISMATCH");
-    a->type = a->buffer == reinterpret_cast<PJRT_Buffer*>(&output_buffer_handle) &&
-              mode && std::strcmp(mode, "dtype") == 0
-        ? PJRT_Buffer_Type_F32 : PJRT_Buffer_Type_F64;
+    const char* configured = std::getenv("PJRT_TEST_DEVICE_OUTPUT_TYPE");
+    const bool output = a->buffer == reinterpret_cast<PJRT_Buffer*>(&output_buffer_handle) ||
+        a->buffer == reinterpret_cast<PJRT_Buffer*>(&second_output_buffer_handle);
+    if (output && mode && std::strcmp(mode, "dtype") == 0) a->type = PJRT_Buffer_Type_F32;
+    else if (output && configured && std::strcmp(configured, "f32") == 0) a->type = PJRT_Buffer_Type_F32;
+    else if (output && configured && std::strcmp(configured, "bf16") == 0) a->type = PJRT_Buffer_Type_BF16;
+    else if (output && configured && std::strcmp(configured, "s32") == 0) a->type = PJRT_Buffer_Type_S32;
+    else if (output && configured && std::strcmp(configured, "u16") == 0) a->type = PJRT_Buffer_Type_U16;
+    else a->type = PJRT_Buffer_Type_F64;
     return nullptr;
 }
 PJRT_Error* bufferDimensions(PJRT_Buffer_Dimensions_Args* a) {
@@ -103,6 +116,9 @@ PJRT_Error* bufferDimensions(PJRT_Buffer_Dimensions_Args* a) {
 }
 PJRT_Error* bufferToHost(PJRT_Buffer_ToHostBuffer_Args* a) {
     ++host_copies;
+    const char* fail_second = std::getenv("PJRT_TEST_FAIL_SECOND_COPY");
+    if (fail_second && std::strcmp(fail_second, "1") == 0 && host_copies == 2)
+        return &compile_error_handle;
     if (a->dst && a->dst_size == sizeof(double)) {
         const double value = 8.25;
         std::memcpy(a->dst, &value, sizeof(value));
@@ -176,6 +192,7 @@ extern "C" int PjrtTestDestroyedBuffers() { return destroyed_buffers; }
 extern "C" int PjrtTestDestroyedExecutables() { return destroyed_executables; }
 extern "C" int PjrtTestHostCopies() { return host_copies; }
 extern "C" int PjrtTestHostTransfers() { return host_transfers; }
+extern "C" int PjrtTestLastInputElementType() { return last_input_element_type; }
 extern "C" int PjrtTestCompileCalls() { return compile_calls; }
 extern "C" int PjrtTestExecuteCalls() { return execute_calls; }
 extern "C" int PjrtTestDestroyedClients() { return destroyed_clients; }
