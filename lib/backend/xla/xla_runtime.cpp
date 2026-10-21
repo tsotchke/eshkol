@@ -20,6 +20,8 @@
 #include <chrono>
 #include <mutex>
 #include <limits>
+#include <new>
+#include <stdexcept>
 #include <eshkol/tensor_validation.h>
 
 // Use the existing BLAS matmul for now
@@ -1618,6 +1620,7 @@ ExecutionResult XLARuntime::executePjrt(
     };
 
     std::vector<size_t> output_bytes(outputs.size());
+    std::vector<std::vector<uint8_t>> staged_outputs;
     for (size_t i = 0; i < outputs.size(); ++i) {
         if (outputs[i].on_device) {
             return fail("PJRT execute: output " + std::to_string(i) +
@@ -1630,6 +1633,19 @@ ExecutionResult XLARuntime::executePjrt(
                             " must have a valid typed host shape and buffer",
                         {}, {});
         }
+    }
+    try {
+        staged_outputs.resize(outputs.size());
+        for (size_t i = 0; i < outputs.size(); ++i)
+            staged_outputs[i].resize(output_bytes[i]);
+    } catch (const std::bad_alloc&) {
+        return ExecutionResult{.success = false,
+            .error_message = "PJRT execute: unable to allocate staged host outputs",
+            .execution_time_ns = 0};
+    } catch (const std::length_error&) {
+        return ExecutionResult{.success = false,
+            .error_message = "PJRT execute: staged host output size is not representable",
+            .execution_time_ns = 0};
     }
 
     std::vector<PJRT_Buffer*> pjrt_inputs;
@@ -1688,9 +1704,7 @@ ExecutionResult XLARuntime::executePjrt(
                         pjrt_inputs, pjrt_outputs);
         }
     }
-    std::vector<std::vector<uint8_t>> staged_outputs(outputs.size());
     for (size_t i = 0; i < outputs.size(); ++i) {
-        staged_outputs[i].resize(output_bytes[i]);
         PjrtStatus copy_status = session->client->bufferToHost(
             pjrt_outputs[i], staged_outputs[i].data(), output_bytes[i]);
         if (!copy_status.ok())

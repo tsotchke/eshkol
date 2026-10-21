@@ -18,6 +18,7 @@ PJRT_Device* devices[] = {reinterpret_cast<PJRT_Device*>(&device_handle)};
 int destroyed_buffers = 0;
 int destroyed_executables = 0;
 int host_copies = 0;
+int successful_host_copies = 0;
 int host_transfers = 0;
 int compile_calls = 0;
 int execute_calls = 0;
@@ -122,7 +123,14 @@ PJRT_Error* bufferToHost(PJRT_Buffer_ToHostBuffer_Args* a) {
     if (a->dst && a->dst_size == sizeof(double)) {
         const double value = 8.25;
         std::memcpy(a->dst, &value, sizeof(value));
+    } else if (a->dst && a->dst_size == sizeof(uint32_t)) {
+        const uint32_t bits = 0x3f800001u;
+        std::memcpy(a->dst, &bits, sizeof(bits));
+    } else if (a->dst && a->dst_size == sizeof(uint16_t)) {
+        const uint16_t bits = 0x3f81u;
+        std::memcpy(a->dst, &bits, sizeof(bits));
     } else if (a->dst && a->dst_size) std::memset(a->dst, 0xA5, a->dst_size);
+    ++successful_host_copies;
     return nullptr;
 }
 PJRT_Error* destroyBuffer(PJRT_Buffer_Destroy_Args*) {
@@ -191,6 +199,7 @@ extern "C" const PJRT_Api* GetPjrtApi() { return &api; }
 extern "C" int PjrtTestDestroyedBuffers() { return destroyed_buffers; }
 extern "C" int PjrtTestDestroyedExecutables() { return destroyed_executables; }
 extern "C" int PjrtTestHostCopies() { return host_copies; }
+extern "C" int PjrtTestSuccessfulHostCopies() { return successful_host_copies; }
 extern "C" int PjrtTestHostTransfers() { return host_transfers; }
 extern "C" int PjrtTestLastInputElementType() { return last_input_element_type; }
 extern "C" int PjrtTestCompileCalls() { return compile_calls; }
