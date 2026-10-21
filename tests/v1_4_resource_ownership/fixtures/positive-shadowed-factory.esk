@@ -1,0 +1,6 @@
+(require core.net)
+;; A local factory with a core.net spelling returns scalar 7; it acquires no handle.
+(define (tcp-connect host port timeout) 7)
+(define value (tcp-connect "localhost" 80 1))
+(if (= value 7) (display "SHADOW-OK") (exit 3))
+(newline)

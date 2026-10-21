@@ -1,0 +1,4 @@
+(require core.net)
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (not (network-error? socket))
+    (begin (tcp-close socket) (tcp-close socket)))

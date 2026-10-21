@@ -1,0 +1,5 @@
+(require core.net)
+;; A user predicate cannot refine away the obligation of the real factory.
+(define (network-error? value) #t)
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (network-error? socket) 0 (tcp-close socket))
