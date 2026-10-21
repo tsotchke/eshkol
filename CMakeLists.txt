@@ -14245,6 +14245,17 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TA
         PASS_REGULAR_EXPRESSION "PASS: MessagePack four execution routes"
         FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
 
+    set(_metadata_name_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/metadata_name_collision.esk")
+    add_test(NAME metadata_name_collision_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_metadata_name_source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME metadata_name_collision_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_metadata_name_source}"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/metadata_name_collision${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DESHKOL_COMPILE_TIMEOUT=120"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(metadata_name_collision_jit metadata_name_collision_aot PROPERTIES TIMEOUT 300
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
     foreach(_vm_case IN ITEMS bytevector_constructor logic_registry_reset)
         set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/${_vm_case}_regression.esk")
         if(_vm_case STREQUAL "logic_registry_reset")
