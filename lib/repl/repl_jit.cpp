@@ -17,6 +17,7 @@
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/i128_runtime.h>
+#include <eshkol/core/linear_solve.h>
 #include <eshkol/core/rational.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>  // For the SW-10 limit poll symbol
@@ -1788,6 +1789,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_tensor_pow_scalar);
     ADD_SYMBOL(eshkol_tensor_map_libm);
     ADD_SYMBOL(eshkol_tensor_inverse_checked_abi);
+    // Keep native solver ABI reachable independently of the portable VM path.
+    ADD_SYMBOL(eshkol_linear_solve);
+    ADD_SYMBOL(eshkol_linear_solve_with_options);
+    ADD_SYMBOL(eshkol_linear_solve_raise);
+    ADD_SYMBOL(eshkol_linear_solve_query_options);
     ADD_SYMBOL(eshkol_shapes_equal);
     ADD_SYMBOL(eshkol_broadcast_elementwise_f64);
     ADD_SYMBOL(eshkol_batch_matmul_f64);
