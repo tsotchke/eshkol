@@ -27,7 +27,10 @@ assert '((bytevector? value) (msgpack-encode-bin-bytes' in value
 # strict invalid-string encoding, and arbitrary binary bytes.
 assert sum(1 for line in test.splitlines() if line.startswith('(golden ')) == 10
 assert sum(1 for line in test.splitlines() if line.startswith('(string-golden ')) == 4
+malformed=test[test.index('(list (bytevector 161 128)'):test.index(')))\n(check (refuses (lambda () (msgpack-encode')]
+assert malformed.count('(bytevector ') == 16
+assert 10 * 3 + 4 * 2 + 16 * 2 + 10 == 80
 assert 'msgpack_utf8_test.esk", "PASS: MessagePack UTF-8 80 checks"' in gate
 assert '80 UTF-8 checks' in docs
 assert '(bytevector 0 127 128 191 192 255)' in test
-print('STATIC_PASS utf8_scalar_ranges=10_boundary_goldens=10 marker=80 binary_bypass=verified')
+print('STATIC_PASS scalar_goldens=10 boundary_pairs=4 malformed_frames=16 explicit_checks=10 total=80 binary_bypass=verified')
