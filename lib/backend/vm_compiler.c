@@ -2154,6 +2154,44 @@ static void vm_reset_compilation_unit_modules(void) {
     vm_clear_planned_libraries();
 }
 
+/* A persistent REPL evaluation may load modules while it compiles. If that
+ * evaluation later fails, its bytecode and locals are rolled back, so restore
+ * the compiler-side module and forward-function registries too. Loading a
+ * module appends entries to these per-unit registries; restoring their counts
+ * makes the next eval compile those sources and reserve their function slots
+ * again. */
+typedef struct VmModuleStateSnapshot {
+    int n_forward_functions;
+    int n_loaded;
+    int n_unit_libraries;
+    int n_private_imports;
+    int n_public_imports;
+    int n_import_bindings;
+    int n_planned_libraries;
+} VmModuleStateSnapshot;
+
+static void vm_module_state_snapshot(VmModuleStateSnapshot* snapshot) {
+    if (!snapshot) return;
+    snapshot->n_forward_functions = g_vm_n_forward_functions;
+    snapshot->n_loaded = g_compiler_ctx.n_loaded;
+    snapshot->n_unit_libraries = g_compiler_ctx.n_unit_libraries;
+    snapshot->n_private_imports = g_vm_n_private_imports;
+    snapshot->n_public_imports = g_vm_n_public_imports;
+    snapshot->n_import_bindings = g_vm_n_import_bindings;
+    snapshot->n_planned_libraries = g_vm_n_planned_libraries;
+}
+
+static void vm_module_state_restore(const VmModuleStateSnapshot* snapshot) {
+    if (!snapshot) return;
+    g_vm_n_forward_functions = snapshot->n_forward_functions;
+    g_compiler_ctx.n_loaded = snapshot->n_loaded;
+    g_compiler_ctx.n_unit_libraries = snapshot->n_unit_libraries;
+    g_vm_n_private_imports = snapshot->n_private_imports;
+    g_vm_n_public_imports = snapshot->n_public_imports;
+    g_vm_n_import_bindings = snapshot->n_import_bindings;
+    g_vm_n_planned_libraries = snapshot->n_planned_libraries;
+}
+
 /**
  * @brief Compile a `(require module.name)` form: resolves the dotted
  *        module name to a `lib/module/name.esk` source path, and if not

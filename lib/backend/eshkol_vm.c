@@ -2224,6 +2224,8 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
     int saved_sp = rs->vm->sp;
     int saved_fp = rs->vm->fp;
     int saved_frame_count = rs->vm->frame_count;
+    VmModuleStateSnapshot module_state_before;
+    vm_module_state_snapshot(&module_state_before);
 
     /* setjmp boundary — catches fatal errors during compilation/execution */
     g_repl_jmp_active = 1;
@@ -2237,6 +2239,7 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         rs->vm->sp = saved_sp;
         rs->vm->fp = saved_fp;
         rs->vm->frame_count = saved_frame_count;
+        vm_module_state_restore(&module_state_before);
         rs->vm->halted = 0;
         rs->vm->error = 0;
         g_repl_jmp_active = 0;
@@ -2255,6 +2258,7 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
     }
     if (vm_compile_failed()) {
         for (int i = 0; i < n_top; ++i) free_node(top_exprs[i]);
+        vm_module_state_restore(&module_state_before);
         g_repl_jmp_active = 0;
         printf("Error during evaluation\n");
         return;
@@ -2309,6 +2313,7 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         rs->vm->sp = saved_sp;
         rs->vm->fp = saved_fp;
         rs->vm->frame_count = saved_frame_count;
+        vm_module_state_restore(&module_state_before);
         vm_clear_compile_failure();
         g_repl_jmp_active = 0;
         printf("Error during evaluation\n");
@@ -2351,6 +2356,7 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         rs->vm->sp = saved_sp;
         rs->vm->fp = saved_fp;
         rs->vm->frame_count = saved_frame_count;
+        vm_module_state_restore(&module_state_before);
     } else {
         /* Success — remove just the HALT, keep new definitions */
         rs->chunk.code_len--;

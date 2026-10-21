@@ -80,6 +80,16 @@ async function main() {
   assert.match(missing.stderr.join('\n'), /module source not found: core\.not-embedded/);
 
   function evaluate(source) { return capture(() => evalFn(source)); }
+  const failedModuleLoad = evaluate('(require core.msgpack) (require core.not-embedded)');
+  assert.match(failedModuleLoad.stderr.join('\n'), /module source not found: core\.not-embedded/);
+  assert.equal(failedModuleLoad.stdout.toString(), 'Error during evaluation\n');
+  const afterModuleFailure = evaluate('(define after-failed-module-load 41)');
+  assert.deepEqual(afterModuleFailure.stderr, [], 'the REPL rejected a definition after failed module rollback');
+  assert.equal(evaluate('after-failed-module-load').stdout.toString(), '41\n');
+  const moduleRetry = evaluate('(require core.msgpack) (msgpack-decode (msgpack-encode 73))');
+  assert.deepEqual(moduleRetry.stderr, [], 'the failed load left stale module tracking or imports');
+  assert.equal(moduleRetry.stdout.toString(), '73\n', 'the module definitions were not restored by a valid retry');
+
   evaluate('(define retained 17)');
   evaluate('(define retained-closure (lambda (x) (+ retained x)))');
   evaluate('(define (preserved-named x) (+ x 10))');
