@@ -11,10 +11,19 @@
             (fill (+ i 1)))
           #t))
     (check-true (logic-var? (make-logic-var "?batch-4095")))))
-(run-tests)
+(define first-batch-result (run-tests))
 
 (reset-tests!)
 (register-test "second logic registry batch after reset"
   (lambda ()
-    (check-true (logic-var? (make-logic-var "?after-reset")))))
-(run-tests)
+    (let ((first (make-logic-var "?after-reset-first"))
+          (second (make-logic-var "?after-reset-second"))
+          (subst (make-substitution)))
+      (let ((bound (unify first 7 subst)))
+        (check-equal? (walk first bound) 7)
+        ;; If reset-tests! were a no-op, the full registry would reject both
+        ;; new names. They would remain ordinary symbols, and unification
+        ;; would fail to bind FIRST to 7.
+        (check-true (eq? (walk second bound) second))))))
+(define second-batch-result (run-tests))
+(display (if (and first-batch-result second-batch-result) "RESULT: PASS" "RESULT: FAIL")) (newline)
