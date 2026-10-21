@@ -347,6 +347,12 @@ endif()
 # When enabled, provides accelerated tensor operations via XLA/StableHLO
 # Requires MLIR and StableHLO libraries
 option(ESHKOL_XLA_ENABLED "Enable XLA backend for accelerated tensor operations" OFF)
+if(ESHKOL_XLA_ENABLED AND UNIX AND CMAKE_DL_LIBS)
+    # PJRT's POSIX plugin loader is part of the guarded XLA runtime objects.
+    # Carry its loader dependency through static/runtime consumers as well.
+    list(APPEND ESHKOL_EXTRA_LINK_LIBS ${CMAKE_DL_LIBS})
+    list(REMOVE_DUPLICATES ESHKOL_EXTRA_LINK_LIBS)
+endif()
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LLVMToolchain.cmake)
 set(ESHKOL_LLVM_USE_CMAKE_PACKAGE FALSE)
 set(ESHKOL_LLVM_ROOT "")
@@ -2337,6 +2343,10 @@ list(APPEND LIB_SRC lib/ffi/eshkol_ffi.cpp)
 # Exclude XLA sources from main library when XLA is disabled
 if(NOT ESHKOL_XLA_ENABLED)
     list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/.*")
+elseif(NOT UNIX)
+    # The portable XLA host path may be enabled on Windows, but this PJRT
+    # loader currently has only a POSIX implementation.
+    list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/pjrt_client\\.cpp$")
 endif()
 
 # Get REPL sources separately
@@ -2545,6 +2555,17 @@ list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC
 set(ESHKOL_XLA_RUNTIME_SRC "")
 if(ESHKOL_XLA_ENABLED)
   set(ESHKOL_XLA_RUNTIME_SRC lib/backend/xla/xla_runtime.cpp)
+  if(UNIX)
+    # The PJRT wrapper uses the POSIX dlopen/dlsym interface. Keep it in the
+    # guarded XLA runtime object set; native Windows support needs a loader
+    # implementation using LoadLibrary/GetProcAddress.
+    list(APPEND ESHKOL_XLA_RUNTIME_SRC lib/backend/xla/pjrt_client.cpp)
+  else()
+    message(STATUS
+      "PJRT plugin loading is unavailable on this platform; "
+      "the XLA host runtime remains enabled"
+    )
+  endif()
   list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC ${ESHKOL_XLA_RUNTIME_SRC})
 endif()
 
@@ -2561,6 +2582,45 @@ set(ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS
 if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
     list(APPEND ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS
       "$<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>"
+    )
+endif()
+
+# This is an offline loader contract test. Its fixture libraries export either
+# no PJRT entry point or an intentionally incompatible API major version; no
+# plugin discovery, device, or model is needed.
+if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
+    add_executable(pjrt_loader_test
+        tests/xla/pjrt_loader_test.cpp
+        lib/backend/xla/pjrt_client.cpp
+    )
+    target_include_directories(pjrt_loader_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_compile_features(pjrt_loader_test PRIVATE cxx_std_17)
+    target_link_libraries(pjrt_loader_test PRIVATE ${CMAKE_DL_LIBS})
+
+    add_library(pjrt_test_nonplugin MODULE tests/xla/pjrt_test_nonplugin.cpp)
+    add_library(pjrt_test_incompatible MODULE tests/xla/pjrt_test_incompatible.cpp)
+    target_include_directories(pjrt_test_incompatible PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    set_target_properties(pjrt_test_nonplugin pjrt_test_incompatible PROPERTIES
+        PREFIX ""
+    )
+    add_dependencies(pjrt_loader_test
+        pjrt_test_nonplugin pjrt_test_incompatible
+    )
+
+    add_test(NAME pjrt_loader_missing_library
+        COMMAND pjrt_loader_test missing
+            "${CMAKE_CURRENT_BINARY_DIR}/pjrt-intentionally-absent${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+    add_test(NAME pjrt_loader_non_pjrt_library
+        COMMAND pjrt_loader_test nonplugin $<TARGET_FILE:pjrt_test_nonplugin>
+    )
+    add_test(NAME pjrt_loader_incompatible_api_version
+        COMMAND pjrt_loader_test incompatible $<TARGET_FILE:pjrt_test_incompatible>
     )
 endif()
 
