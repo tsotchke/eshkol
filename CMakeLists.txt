@@ -13699,3 +13699,15 @@ if(ESHKOL_BUILD_TESTS)
     set_tests_properties(tensor_inverse_checked_test PROPERTIES TIMEOUT 30
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
+
+# Independent rational VJP oracle, including an asymmetric seed.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_subspace_independent "tests/stdlib/algebraic_subspace_independent_test.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME algebraic_subspace_independent_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_subspace_independent_test.esk")
+    set_tests_properties(algebraic_subspace_independent_vm PROPERTIES TIMEOUT 300
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR|fatal signal")
+endif()
