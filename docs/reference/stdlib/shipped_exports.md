@@ -74,6 +74,37 @@ Returns an owned dense view of an exact sparse Hessian.
 
 Returns dimension, color, actual probe-call, upper-entry, and recovery-mode counts.
 
+## `core.ad.algebraic_subspace`
+
+Source: `lib/core/ad/algebraic_subspace.esk`. Exact admission, spectral separation,
+JVP/VJP conventions, ownership and refusal boundaries are documented in
+[ad_algebraic_subspace.md](ad_algebraic_subspace.md).
+
+### `make-algebraic-subspace`
+
+Admits an exact symmetric matrix and nontrivial invariant orthogonal projector
+whose selected and complementary spectra are disjoint.
+
+### `algebraic-subspace-projector`
+
+Returns an owned copy of the admitted projector.
+
+### `algebraic-subspace-jvp`
+
+Returns the exact derivative of the invariant projector in a symmetric matrix direction.
+
+### `algebraic-subspace-vjp`
+
+Returns the symmetric-parameterization cotangent for a projector seed.
+
+### `algebraic-subspace-info`
+
+Returns matrix size, selected rank, linear-system size and coefficient depth.
+
+### `verify-algebraic-subspace-jvp`
+
+Re-admits the source problem and checks the defining linearized tangent equations.
+
 ## `core.ad.sparsity`
 
 Source: `lib/core/ad/sparsity.esk`. The coloring contract and numeric/exact
