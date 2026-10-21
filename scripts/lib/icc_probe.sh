@@ -20,11 +20,15 @@ PROBE_TOTAL=0
 PROBE_SELECTED_COUNT=0
 PROBE_FAILURES=0
 PROBE_INFRA=0
+# Selection is opt-in by this shell's caller after sourcing this helper.
+# Inherited environment must never silently filter an independent gate.
+PROBE_ONLY_ID=""
+export -n PROBE_ONLY_ID
 
 probe() {
     local probe_id="$1" label="$2" cmd="$3"
     local out status snippet class log_file status_file evidence_write_failed
-    if [ -n "${ICC_SMOKE_ONLY_ID:-}" ] && [ "$probe_id" != "$ICC_SMOKE_ONLY_ID" ]; then
+    if [ -n "$PROBE_ONLY_ID" ] && [ "$probe_id" != "$PROBE_ONLY_ID" ]; then
         return 0
     fi
     PROBE_SELECTED_COUNT=$((PROBE_SELECTED_COUNT + 1))

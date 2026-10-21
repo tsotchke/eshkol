@@ -134,6 +134,7 @@ rm() {
 }
 
 . "$REPO_ROOT/scripts/lib/icc_probe.sh"
+PROBE_ONLY_ID="$ICC_SMOKE_ONLY_ID"
 
 # Keep a full per-probe transcript beside durable smoke evidence.  The trace
 # retains its existing bounded summary; these logs preserve diagnostics that

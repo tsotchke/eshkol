@@ -72,6 +72,22 @@ def smoke_rows(path):
 
 
 def main():
+    # The helper is also used by independent release gates. Inherited smoke
+    # selection must not filter their probes into a vacuous success.
+    helper_control = subprocess.run(
+        ["bash", "-c", '''
+source "$1"
+eshkol_outcome_emit_event() { :; }
+eshkol_outcome_emit_test_result() { :; }
+TRACE_FILE=/dev/null
+probe independent_gate control 'printf independent-producer-ran'
+[ "$PROBE_TOTAL" -eq 1 ] && [ "$PROBE_SELECTED_COUNT" -eq 1 ]
+''', "scope-inheritance", str(ROOT / "scripts/lib/icc_probe.sh")],
+        env=dict(os.environ, ICC_SMOKE_ONLY_ID="event_loop_works",
+                 PROBE_ONLY_ID="event_loop_works"),
+        text=True, capture_output=True,
+    )
+    assert helper_control.returncode == 0, helper_control.stdout + helper_control.stderr
     with tempfile.TemporaryDirectory(prefix="icc-smoke-scope-") as tmp_name:
         tmp = Path(tmp_name)
         build = tmp / "build"
