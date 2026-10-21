@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 91** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1033** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 92** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1051** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -72,6 +72,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.functional.compose`](../../../lib/core/functional/compose.esk) | yes | [functional_compose.md](functional_compose.md) | `compose` `compose3` `identity` `constantly` |
 | [`core.functional.curry`](../../../lib/core/functional/curry.esk) | yes | [functional_curry.md](functional_curry.md) | `curry2` `curry3` `uncurry2` `partial1` `partial2` `partial3` `partial` |
 | [`core.functional.flip`](../../../lib/core/functional/flip.esk) | yes | [functional_flip.md](functional_flip.md) | `flip` |
+| [`core.net`](../../../lib/core/net.esk) | no | [net.md](net.md) | `tcp-listen` `tcp-connect` `tcp-accept` `tcp-read` `tcp-write` `tcp-close` `udp-bind` `udp-sendto` `udp-recvfrom` `udp-close` `net-local-address` `net-peer-address` `net-local-port` `net-peer-port` `net-nonblocking!` `network-error?` `network-error-code` `network-error-operation` |
 | [`core.http_server`](../../../lib/core/http_server.esk) | no | [http_server.md](http_server.md) | `http-request-line` `http-request-method` `http-request-target` `http-request-path` `http-request-query` `http-request-version` `http-request-header` `http-request-content-length` `http-request-body` `http-request-body-too-large?` `http-max-request-body-size` `http-response` `http-response?` `http-response-status` `http-response-content-type` `http-response-body` `http-route` `http-route-request` `http-standard-response` `http-server-respond-response` `http-server-respond-standard` |
 | [`core.io`](../../../lib/core/io.esk) | yes | [io.md](io.md) | `print` `println` |
 | [`core.json`](../../../lib/core/json.esk) | yes | [json.md](json.md) | `json-parse` `json-try-parse` `json-parse-result?` `json-result-ok?` `json-result-value` `json-result-error` `json-stringify` `json-read` `json-write` `json-get` `json-get-in` `json-array-ref` `hash-table->alist` `alist->hash-table` `alist->json` `json-write-file` `alist-write-json` `json-read-file` |
@@ -366,3 +367,35 @@ are documented, with signatures, on the pages listed.
 The modules under `lib/test/modules/` are module-system test fixtures, not user API.
 
 | `core.certified_solve` | `(require core.certified_solve)` | [certified_solve.md](certified_solve.md) |
+
+### Numeric TCP/UDP exports
+
+- [`tcp-listen`](shipped_exports.md#tcp-listen)
+- [`tcp-connect`](shipped_exports.md#tcp-connect)
+- [`tcp-accept`](shipped_exports.md#tcp-accept)
+- [`tcp-read`](shipped_exports.md#tcp-read)
+- [`tcp-write`](shipped_exports.md#tcp-write)
+- [`tcp-close`](shipped_exports.md#tcp-close)
+- [`udp-bind`](shipped_exports.md#udp-bind)
+- [`udp-sendto`](shipped_exports.md#udp-sendto)
+- [`udp-recvfrom`](shipped_exports.md#udp-recvfrom)
+- [`udp-close`](shipped_exports.md#udp-close)
+- [`net-local-address`](shipped_exports.md#net-local-address)
+- [`net-peer-address`](shipped_exports.md#net-peer-address)
+- [`net-local-port`](shipped_exports.md#net-local-port)
+- [`net-peer-port`](shipped_exports.md#net-peer-port)
+- [`net-nonblocking!`](shipped_exports.md#net-nonblocking)
+- [`network-error?`](shipped_exports.md#network-error)
+- [`network-error-code`](shipped_exports.md#network-error-code)
+- [`network-error-operation`](shipped_exports.md#network-error-operation)
+
+### Resident circuit exports
+
+- [`call-with-dbsp-resident`](shipped_exports.md#call-with-dbsp-resident)
+- [`dbsp-resident-step`](shipped_exports.md#dbsp-resident-step)
+- [`dbsp-resident-release!`](shipped_exports.md#dbsp-resident-release)
+- [`dbsp-resident-output`](shipped_exports.md#dbsp-resident-output)
+- [`dbsp-resident-delta`](shipped_exports.md#dbsp-resident-delta)
+- [`dbsp-resident-work`](shipped_exports.md#dbsp-resident-work)
+- [`dbsp-resident-stats`](shipped_exports.md#dbsp-resident-stats)
+- [`dbsp-resident-compact!`](shipped_exports.md#dbsp-resident-compact)

@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: runtime
+since: v1.4.0-connection
+sources:
+  - lib/core/dbsp/resident.esk
+---
+
 # `core.dbsp.resident`
 
 `(require core.dbsp.resident)` adds explicit native ownership to ordinary standing

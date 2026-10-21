@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: runtime
+since: v1.4.0-connection
+sources:
+  - lib/core/net.esk
+---
+
 # TCP and UDP
 
 `(require core.net)` exposes bounded native POSIX sockets for numeric IPv4 and

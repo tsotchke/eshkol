@@ -131,3 +131,13 @@ lib/math/fixed_point/eshkol_fixed_point.h	218	extern_c	esk_idot_i8	Computes the 
 lib/math/fixed_point/eshkol_fixed_point.h	219	extern_c	esk_idot_i16	Computes the raw integer dot product sum(a[i]*b[i]) of two int16 vectors in esk_i128, with no scaling; exact and order-independent.
 lib/math/fixed_point/eshkol_fixed_point.h	220	extern_c	esk_idot_i32	Computes the raw integer dot product sum(a[i]*b[i]) of two int32 vectors in esk_i128, with no scaling; exact and order-independent.
 lib/math/fixed_point/eshkol_fixed_point.h	230	extern_c	esk_imatmul_i32	Computes a row-major exact integer matrix product A[rows,inner] x B[inner,cols] into out, with every cell the two-u64 ABI form of an exact i128 sum; returns false without touching out if a required pointer is NULL or a size/index product would overflow size_t, and treats inner==0 as a valid all-zero no-op.
+inc/eshkol/core/net.h	12	extern_c	eshkol_net_open	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.
+inc/eshkol/core/net.h	14	extern_c	eshkol_net_accept	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.
+inc/eshkol/core/net.h	16	extern_c	eshkol_net_read	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.
+inc/eshkol/core/net.h	18	extern_c	eshkol_net_write	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.
+inc/eshkol/core/net.h	20	extern_c	eshkol_net_sendto	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.
+inc/eshkol/core/net.h	24	extern_c	eshkol_net_recvfrom	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.
+inc/eshkol/core/net.h	27	extern_c	eshkol_net_address	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.
+inc/eshkol/core/net.h	29	extern_c	eshkol_net_port	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.
+inc/eshkol/core/net.h	31	extern_c	eshkol_net_nonblocking	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.
+inc/eshkol/core/net.h	33	extern_c	eshkol_net_close	Bounded numeric-address socket entry point; see core/net.md for its buffer, deadline and lifetime contract.

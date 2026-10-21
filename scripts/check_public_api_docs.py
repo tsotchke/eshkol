@@ -12,8 +12,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HEADER_MANIFEST = REPO_ROOT / "docs" / "api" / "public_surface.tsv"
 EXPORT_MANIFEST = REPO_ROOT / "docs" / "reference" / "stdlib" / "public_exports.tsv"
 TRACE_NAME = "public_api_docs_clean"
-EXPECTED_HEADER_COUNT = 132
-EXPECTED_EXPORT_COUNT = 198
+EXPECTED_HEADER_COUNT = 142
+EXPECTED_EXPORT_COUNT = 216
 
 
 def emit_trace(path: Path, status: str, detail: str) -> None:

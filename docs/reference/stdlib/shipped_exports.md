@@ -981,3 +981,79 @@ Returns an exact interval enclosure for the implicit derivative on the admitted 
 ### `verify-root-branch-step`
 
 Recomputes the recorded step certificate and checks it against the supplied branch state.
+
+## `core.net`
+
+Native numeric-address sockets; see [net.md](net.md) for platform, capability, lifetime and deadline limits.
+
+### `tcp-listen`
+
+Binds a numeric IPv4/IPv6 TCP listener; port zero selects an ephemeral port.
+
+### `tcp-connect`
+
+Connects a numeric TCP endpoint within the supplied millisecond deadline.
+
+### `tcp-accept`
+
+Returns an accepted stream handle, or a network error when its bounded wait fails.
+
+### `tcp-read`
+
+Reads up to the byte capacity; empty string is EOF and error -2 is timeout.
+
+### `tcp-write`
+
+Sends string bytes, including NUL; returns the possibly partial byte count.
+
+### `tcp-close`
+
+Invalidates a handle once; stale and repeated closes return error -4.
+
+### `udp-bind`
+
+Binds a numeric datagram endpoint, including an ephemeral local port.
+
+### `udp-sendto`
+
+Sends one datagram, including an empty payload, to a numeric endpoint.
+
+### `udp-recvfrom`
+
+Returns #(payload numeric-peer-endpoint); oversized datagrams refuse with error -4.
+
+### `udp-close`
+
+Closes a datagram handle once and rejects a stale handle.
+
+### `net-local-address`
+
+Returns the numeric local address, or a network error.
+
+### `net-peer-address`
+
+Returns the numeric TCP peer address, or a network error.
+
+### `net-local-port`
+
+Returns the exact local port, or a network error.
+
+### `net-peer-port`
+
+Returns the exact TCP peer port, or a network error.
+
+### `net-nonblocking!`
+
+Selects immediate polling; unavailable operations return timeout error -2.
+
+### `network-error?`
+
+Recognizes the public three-element network-error vector.
+
+### `network-error-code`
+
+Returns the error code from a recognized network-error value.
+
+### `network-error-operation`
+
+Returns the operation symbol from a recognized network-error value.
