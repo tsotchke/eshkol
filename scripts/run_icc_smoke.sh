@@ -1141,15 +1141,15 @@ EOF
 # (examples/mathematics_navier_stokes_*.esk), matching the CTest ns_*_jit
 # names in CMakeLists.txt and the icc-target each program's own
 # ICC-EVENT lines use. Each program is itself a compile-and-run
-# executable check with an internal pass/fail ledger; exit 0 iff its own
-# "RESULT: ALL PASS" line fires, so the probe command is just running it
-# and grepping that line.
+# executable check with an internal pass/fail ledger. A selected probe
+# captures the complete JIT output and exit status; both must agree before
+# the exact "RESULT: ALL PASS" line can count.
 # ───────────────────────────────────────────────────────────────────
 _ns_probe() {
     local id="$1" file="$2"
     probe "$id" \
-        "Navier-Stokes mechanization: examples/${file}.esk exits ALL PASS on both engines' shared JIT path" \
-        "cd \"\$REPO_ROOT\"; \"\$BUILD_DIR/eshkol-run\" -r \"examples/${file}.esk\" 2>&1 | grep -q '^RESULT: ALL PASS$'"
+        "Navier-Stokes mechanization: examples/${file}.esk exits cleanly and prints the exact ALL PASS marker" \
+        "cd \"\$REPO_ROOT\"; ns_output=\$(\"\$BUILD_DIR/eshkol-run\" -r \"examples/${file}.esk\" 2>&1); ns_status=\$?; if [ \"\$ns_status\" -ne 0 ]; then printf '%s\\n' \"\$ns_output\"; exit \"\$ns_status\"; fi; printf '%s\\n' \"\$ns_output\" | grep -q '^RESULT: ALL PASS$'"
 }
 
 _ns_probe ns_viscosity_scaling_exact     mathematics_navier_stokes_viscosity_scaling

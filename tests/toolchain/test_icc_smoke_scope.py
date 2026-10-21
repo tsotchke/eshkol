@@ -13,8 +13,25 @@ RUNNER = r'''#!/usr/bin/env bash
 set -u
 printf '%s\n' "$*" >> "$FAKE_RUN_LOG"
 if [ "${1:-}" = "-r" ]; then
-    echo 'PASS: event_loop_test'
-    exit "${FAKE_JIT_EXIT:-0}"
+    case "${FAKE_RUN_MODE:-event_loop}" in
+        event_loop)
+            echo 'PASS: event_loop_test'
+            exit "${FAKE_JIT_EXIT:-0}"
+            ;;
+        ns_pass)
+            echo 'RESULT: ALL PASS'
+            exit 0
+            ;;
+        ns_exit7)
+            echo 'RESULT: ALL PASS'
+            exit 7
+            ;;
+        ns_missing)
+            echo 'RESULT: PARTIAL'
+            exit 0
+            ;;
+        *) exit 99 ;;
+    esac
 fi
 out=''
 while [ "$#" -gt 0 ]; do
@@ -89,6 +106,32 @@ def main():
         assert len(events) == 1 and events[0].get("name") == "event_loop_works"
         assert events[0].get("value") == "PASS", events
         assert len(log.read_text().splitlines()) == 2, log.read_text()
+
+        ns_cases = (
+            ("ns_pass", 0, "PASS"),
+            ("ns_exit7", 1, "FAIL"),
+            ("ns_missing", 1, "FAIL"),
+        )
+        for mode, expected_exit, expected_value in ns_cases:
+            log.write_text("")
+            result = run(
+                script,
+                "ns_viscosity_scaling_exact",
+                tmp / f"trace-{mode}",
+                base_env,
+                log,
+                {"FAKE_RUN_MODE": mode},
+            )
+            assert result.returncode == expected_exit, (mode, result.stdout)
+            assert f"ICC smoke probe ns_viscosity_scaling_exact: {expected_value}" in result.stdout
+            rows = smoke_rows(tmp / f"trace-{mode}/eshkol_smoke.jsonl")
+            events = [
+                r for r in rows
+                if r.get("kind") == "eshkol_smoke"
+                and r.get("name") == "ns_viscosity_scaling_exact"
+            ]
+            assert len(events) == 1 and events[0].get("value") == expected_value, events
+            assert len(log.read_text().splitlines()) == 1, (mode, log.read_text())
 
         log.write_text("")
         unknown = run(script, "no_such_probe", tmp / "trace-unknown", base_env, log)
