@@ -5,6 +5,18 @@ not present in the standard-library index. Signatures and module locations are
 taken from the source files named in each section. The anchors are checked by
 `scripts/check_public_api_docs.py`.
 
+## `core.ad.algebraic_farkas`
+
+Source: `lib/core/ad/algebraic_farkas.esk`. The exact witness equations, selected-real signs, support budget and refusal behavior are documented in [ad_algebraic_farkas.md](ad_algebraic_farkas.md).
+
+### `algebraic-farkas-search`
+
+Searches bounded supports for exact equality/inequality multipliers with a strict negative RHS margin. Exhaustion returns `unknown`.
+
+### `algebraic-farkas-verify`
+
+Rechecks the original constraints, nonnegative inequality multipliers, exact annihilation and strict negative margin.
+
 ## `core.ad.algebraic_qp`
 
 Source: `lib/core/ad/algebraic_qp.esk`. The exact convexity, certificate,
@@ -977,6 +989,18 @@ Writes a checkpoint through the existing atomic file-replacement primitive; call
 ### `dbsp-checkpoint-load`
 
 Reads a bounded checkpoint file and returns it only after verified restoration.
+
+## `core.certified_solve_pullback`
+
+Source: [lib/core/certified_solve_pullback.esk](../../../lib/core/certified_solve_pullback.esk). The two exact solve certificates, uncertain-model premises and pullback interval conventions are documented in [certified_solve_pullback.md](certified_solve_pullback.md).
+
+### `solve-certified-native-pullback`
+
+Certifies primal and transpose solves independently, then encloses `-lambda*x^T` and the RHS cotangent from the original matrix, RHS, seed and supplied uncertainties.
+
+### `verify-certified-native-pullback`
+
+Recomputes both original-model solve certificates and their interval products; it does not trust stored status or derivative boxes.
 
 ## `core.certified_native_solve`
 
