@@ -3064,7 +3064,7 @@ private:
                                     info.binding_id = existing->second.binding_id;
                                 }
                                 const bool bind_resource_effects = strict_resources_ &&
-                                    (item.resource_effects_enabled || currentScope().name == "global");
+                                    item.resource_effects_enabled;
                                 if (bind_resource_effects) {
                                     info.is_defined = true;
                                     if (op->define_op.is_external) {
@@ -3101,9 +3101,24 @@ private:
                                 currentScope().variables[name] = std::move(info);
                                 if (strict_resources_ && item.resource_effects_enabled)
                                     acceptDirectFactoryInitializer(op->define_op.value);
-                                work.push_back(WorkItem::astNode(op->define_op.value,
-                                    op->define_op.is_function
-                                        ? false : item.resource_effects_enabled));
+                                if (op->define_op.is_function) {
+                                    pushScope("function");
+                                    for (uint64_t i = 0; i < op->define_op.num_params; ++i) {
+                                        const std::string param_name =
+                                            getVarName(&op->define_op.parameters[i]);
+                                        if (!param_name.empty()) {
+                                            currentScope().variables[param_name] = {
+                                                State::UNOWNED, param_name, false,
+                                                next_binding_id_++
+                                            };
+                                        }
+                                    }
+                                    work.push_back(WorkItem::continuation(
+                                        WorkItem::Kind::EXIT_SCOPE, op, 0, false));
+                                    work.push_back(WorkItem::astNode(op->define_op.value, false));
+                                } else {
+                                    work.push_back(astChild(op->define_op.value));
+                                }
                             }
                             break;
                         }

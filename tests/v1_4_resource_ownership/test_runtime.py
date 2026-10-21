@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JIT/AOT strict-resource loopback check using fresh ephemeral ports."""
+"""JIT/AOT strict-resource positives with ephemeral localhost endpoints."""
 import argparse
 import os
 import socketserver
@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+CASES = ("loopback", "borrow", "both-branches", "scalar-shadow")
 
 
 class PongHandler(socketserver.BaseRequestHandler):
@@ -27,60 +28,93 @@ class PongHandler(socketserver.BaseRequestHandler):
         self.request.sendall(b"pong")
 
 
-def run_case(runner: Path, lib_dir: Path, mode: str):
-    received = []
-    server = socketserver.TCPServer(("127.0.0.1", 0), PongHandler)
-    server.timeout = 5
-    server.received = received
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    port = server.server_address[1]
+def run_route(runner: Path, lib_dir: Path, env: dict, source: Path,
+              mode: str, marker: str, received: list | None = None):
+    with tempfile.TemporaryDirectory(prefix=f"strict-resources-{mode}-") as temp:
+        executable = Path(temp) / "strict-positive-aot"
+        if mode == "jit":
+            command = [str(runner), "--strict-resources", "-r", str(source), "-L", str(lib_dir)]
+            completed = subprocess.run(command, env=env, text=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       timeout=30)
+        else:
+            compile_command = [str(runner), "--strict-resources", "-O0", "-o",
+                               str(executable), str(source), "-L", str(lib_dir)]
+            compiled = subprocess.run(compile_command, env=env, text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      timeout=60)
+            if compiled.returncode != 0:
+                raise RuntimeError(f"AOT compile failed ({compiled.returncode}):\n{compiled.stdout}")
+            completed = subprocess.run([str(executable)], env=env, text=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       timeout=20)
+        if completed.returncode != 0 or marker not in completed.stdout:
+            raise RuntimeError(f"{mode} failed ({completed.returncode}):\n{completed.stdout}")
+        if received is not None and received != [b"ping"]:
+            raise RuntimeError(f"{mode} peer received {received!r}, expected [b'ping']")
+
+
+def run_case(case: str, runner: Path, lib_dir: Path):
     source_root = HERE.parents[1]
     module_root = HERE / "modules"
     env = os.environ.copy()
     env["ESHKOL_LIB_DIR"] = str(lib_dir)
-    env["ESHKOL_PATH"] = os.pathsep.join((str(module_root), str(source_root / "lib")))
+    env["ESHKOL_PATH"] = os.pathsep.join((str(source_root / "lib"), str(module_root)))
     env["ESHKOL_JIT_CACHE"] = "0"
+
+    server = None
+    server_thread = None
+    received = None
     try:
-        with tempfile.TemporaryDirectory(prefix=f"strict-resources-{mode}-") as temp:
-            temp_dir = Path(temp)
-            source = temp_dir / "loopback.esk"
+        if case == "loopback":
+            server = socketserver.TCPServer(("127.0.0.1", 0), PongHandler)
+            server.timeout = 5
+            server.received = []
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            source_fd, source_path = tempfile.mkstemp(prefix="strict-loopback-")
+            os.close(source_fd)
+            source = Path(source_path)
             template = (HERE / "fixtures" / "positive-loopback.esk").read_text()
-            source.write_text(template.replace("@PORT@", str(port)))
-            if mode == "jit":
-                command = [str(runner), "--strict-resources", "-r", str(source), "-L", str(lib_dir)]
-                completed = subprocess.run(command, env=env, text=True, stdout=subprocess.PIPE,
-                                           stderr=subprocess.STDOUT, timeout=25)
-            else:
-                executable = temp_dir / "loopback-aot"
-                compile_command = [str(runner), "--strict-resources", "-O0", "-o",
-                                   str(executable), str(source), "-L", str(lib_dir)]
-                compiled = subprocess.run(compile_command, env=env, text=True,
-                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                          timeout=45)
-                if compiled.returncode != 0:
-                    raise RuntimeError(f"AOT compile failed ({compiled.returncode}):\n{compiled.stdout}")
-                completed = subprocess.run([str(executable)], env=env, text=True,
-                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                           timeout=15)
-            if completed.returncode != 0 or "RESULT: PASS" not in completed.stdout:
-                raise RuntimeError(f"{mode} failed ({completed.returncode}):\n{completed.stdout}")
-            if received != [b"ping"]:
-                raise RuntimeError(f"{mode} peer received {received!r}, expected [b'ping']")
-            print(f"PASS strict-resource {mode} loopback ephemeral-port={port}")
+            source.write_text(template.replace("@PORT@", str(server.server_address[1])))
+            marker = "RESULT: PASS"
+        else:
+            names = {
+                "borrow": ("positive-borrow-scope", "RESULT: PASS"),
+                "both-branches": ("positive-both-branches-close", "BOTH-BRANCHES: PASS"),
+                "scalar-shadow": ("positive-shadowed-factory", "SHADOW-OK"),
+            }
+            fixture, marker = names[case]
+            source = HERE / "fixtures" / f"{fixture}.esk"
+
+        for mode in ("jit", "aot"):
+            if server is not None:
+                server.received.clear()
+                received = server.received
+            run_route(runner, lib_dir, env, source, mode, marker, received)
+            print(f"PASS {case} {mode} marker={marker}")
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        if server_thread is not None:
+            server_thread.join(timeout=2)
+        if case == "loopback" and "source" in locals():
+            source.unlink(missing_ok=True)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runner", type=Path, required=True)
     parser.add_argument("--lib-dir", type=Path, required=True)
+    parser.add_argument("--case", action="append", choices=CASES,
+                        help="run one positive case (repeatable; default: all)")
     args = parser.parse_args()
-    run_case(args.runner, args.lib_dir, "jit")
-    run_case(args.runner, args.lib_dir, "aot")
+    selected = args.case if args.case is not None else CASES
+    if not selected:
+        parser.error("at least one --case is required")
+    for case in selected:
+        run_case(case, args.runner, args.lib_dir)
 
 
 if __name__ == "__main__":
