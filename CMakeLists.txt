@@ -14129,7 +14129,8 @@ endforeach()
 # Finite incremental interpretation of the same admitted compiler graph.
 if(ESHKOL_BUILD_TESTS)
     add_executable(incrementalize_test tests/frontend/incrementalize_test.cpp
-        lib/frontend/differentiation_graph.cpp lib/frontend/incrementalize.cpp lib/frontend/incremental_plan_seed.cpp)
+        lib/frontend/differentiation_graph.cpp lib/frontend/incrementalize.cpp
+        lib/frontend/incremental_plan_seed.cpp lib/frontend/scalar_lowering.cpp)
     target_include_directories(incrementalize_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_compile_features(incrementalize_test PRIVATE cxx_std_20)
     add_test(NAME incrementalize_test COMMAND incrementalize_test)
