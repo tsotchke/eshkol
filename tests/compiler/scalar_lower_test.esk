@@ -35,7 +35,10 @@
 (define earlier (scalar-lower (vector 1 2 0 nodes)))
 (check "earlier output retains unused arithmetic" (and (= (vector-ref earlier 2) 0) (= (vector-length (vector-ref earlier 3)) 7)))
 (vector-set! (vector-ref (vector-ref bindings 3) 2) 0 (vector 3 99 (vector)))
-(check "lowerings do not alias" (= (vector-ref (vector-ref (vector-ref (vector-ref (vector-ref (scalar-lower graph) 3) 3) 2) 0) 1) 0))
+(define fresh-lowering (scalar-lower graph))
+(define fresh-first-parent
+  (vector-ref (vector-ref (vector-ref (vector-ref fresh-lowering 3) 3) 2) 0))
+(check "lowerings do not alias" (= (vector-ref fresh-first-parent 1) 0))
 (check "source operands are untouched" (equal? (vector-ref (vector-ref nodes 3) 2) (vector 0 1)))
 (check "singleton graph" (equal? (scalar-lower (vector 1 1 0 (vector (input 0))))
                                  (vector 1 1 0 (vector (vector 0 0 (vector))) (vector (vector 5 0 (vector))))))
