@@ -1,0 +1,2 @@
+(letrec ((factory (lambda () (http-server-create 0))))
+  (factory))

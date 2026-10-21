@@ -1,0 +1,3 @@
+(require core.net)
+(define holder (vector 1))
+(tcp-close (vector-ref holder 0))

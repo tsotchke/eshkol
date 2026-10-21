@@ -1,0 +1,6 @@
+(require core.net)
+(define make tcp-listen)
+(if (> 1 0)
+    (set! make (lambda (host port) 7))
+    0)
+(define value (make "127.0.0.1" 0))

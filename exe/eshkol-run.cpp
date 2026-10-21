@@ -23,6 +23,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/backend/debug_artifact.h>
 #include <eshkol/stdlib_identity.h>
+#include <eshkol/strict_source_identity.h>
 #include <eshkol/pkg/subprocess.h>
 
 #include <eshkol/llvm_backend.h>
@@ -1336,6 +1337,7 @@ static struct option long_options[] = {
     {"features", no_argument, nullptr, 264},
     {"abi-fingerprint", no_argument, nullptr, 266},
     {"embed-stdlib-identity", required_argument, nullptr, 267},
+    {"strict-resources", no_argument, nullptr, 268},
     {0, 0, 0, 0}
 };
 
@@ -1514,17 +1516,195 @@ static ModuleSymbolTable g_symbol_table;
 
 // ===== END MODULE SYMBOL TABLE =====
 
+// A resource contract is trusted only for the exact stock SDK core.net source
+// reviewed for this feature. Export names alone are not a contract: an edited
+// module could keep its surface while changing acquisition/close behavior.
+static constexpr const char* kStrictResourceCoreNetSha256 =
+    "c160df956437b9cff155dcd030fa90586cd9d3c26e9822c453948c336ad3f680";
+static const std::set<std::string> kStrictResourceCoreNetExports = {
+    "tcp-listen", "tcp-connect", "tcp-accept", "tcp-read", "tcp-write",
+    "tcp-close", "udp-bind", "udp-sendto", "udp-recvfrom", "udp-close",
+    "net-local-address", "net-peer-address", "net-local-port", "net-peer-port",
+    "net-nonblocking!", "network-error?", "network-error-code",
+    "network-error-operation"
+};
+static std::set<std::string> g_verified_core_net_exports;
+static bool g_untrusted_core_net_required = false;
+static std::map<const char*, uint8_t> g_trusted_core_net_definition_names;
+static bool g_verified_stdlib_artifact_identity = false;
+static std::set<const char*> g_verified_stdlib_scalar_primitive_names;
+static const std::set<std::string> kStrictStdlibScalarPrimitives = {
+    "inexact->exact", "make-rational"
+};
+static size_t g_module_ast_prefix_count = 0;
+static bool g_capture_strict_source_identity = false;
+static std::map<std::string, std::string> g_strict_source_identities;
+static bool g_strict_source_identity_conflict = false;
+
+static std::string strictSourceDigest(const std::string& bytes) {
+    llvm::SHA256 hash;
+    hash.update(llvm::StringRef(bytes.data(), bytes.size()));
+    return sha256Hex(hash);
+}
+
+static void recordStrictSourceIdentity(const std::filesystem::path& path) {
+    if (!g_capture_strict_source_identity) return;
+    std::error_code ec;
+    const std::string canonical = std::filesystem::weakly_canonical(path, ec).string();
+    const std::string key = canonical.empty() ? path.string() : canonical;
+    const std::string bytes = readFileBytes(path);
+    const std::string digest = strictSourceDigest(bytes);
+    if (!eshkol::strict_source_identity::remember(g_strict_source_identities, key, digest))
+        g_strict_source_identity_conflict = true;
+}
+
+static void recordStrictSourceIdentityBytes(const std::filesystem::path& path,
+                                            const std::string& bytes) {
+    if (!g_capture_strict_source_identity) return;
+    std::error_code ec;
+    const std::string canonical = std::filesystem::weakly_canonical(path, ec).string();
+    const std::string key = canonical.empty() ? path.string() : canonical;
+    const std::string digest = strictSourceDigest(bytes);
+    if (!eshkol::strict_source_identity::remember(g_strict_source_identities, key, digest))
+        g_strict_source_identity_conflict = true;
+}
+
+static bool strictSourceIdentitiesUnchanged(std::string* changed_path = nullptr) {
+    if (g_strict_source_identity_conflict) {
+        if (changed_path) *changed_path = "source parsed with multiple contents";
+        return false;
+    }
+    return eshkol::strict_source_identity::unchanged(g_strict_source_identities,
+        [](const std::string& path) { return strictSourceDigest(readFileBytes(path)); },
+        changed_path);
+}
+
+static bool hasVerifiedCoreNetIdentity(const std::string& module_name,
+                                       const std::string& module_path,
+                                       const std::set<std::string>& exports) {
+    if (module_name != "core.net" || exports != kStrictResourceCoreNetExports) {
+        return false;
+    }
+    if (g_capture_strict_source_identity) {
+        std::error_code ec;
+        const std::string canonical = std::filesystem::weakly_canonical(module_path, ec).string();
+        const std::string key = canonical.empty() ? module_path : canonical;
+        auto parsed_source = g_strict_source_identities.find(key);
+        return parsed_source != g_strict_source_identities.end() &&
+               parsed_source->second == kStrictResourceCoreNetSha256;
+    }
+    const std::string bytes = readFileBytes(module_path);
+    if (bytes.empty()) return false;
+    llvm::SHA256 hash;
+    hash.update(llvm::StringRef(bytes.data(), bytes.size()));
+    return sha256Hex(hash) == kStrictResourceCoreNetSha256;
+}
+
+static bool recordCoreNetIdentity(const std::string& module_name,
+                                  const std::string& module_path,
+                                  const std::set<std::string>& exports) {
+    if (module_name != "core.net") return false;
+    if (hasVerifiedCoreNetIdentity(module_name, module_path, exports)) {
+        g_verified_core_net_exports = exports;
+        return true;
+    } else {
+        g_untrusted_core_net_required = true;
+        return false;
+    }
+}
+
+static void recordTrustedCoreNetDefinitions(
+    const std::vector<eshkol_ast_t>& module_asts,
+    const std::set<std::string>& exports) {
+    for (const auto& ast : module_asts) {
+        if (ast.type != ESHKOL_OP || ast.operation.op != ESHKOL_DEFINE_OP ||
+            !ast.operation.define_op.name) continue;
+        const std::string name = ast.operation.define_op.name;
+        if (exports.count(name))
+            g_trusted_core_net_definition_names[ast.operation.define_op.name] = 1;
+    }
+}
+
+static bool isTrustedCoreNetDefinition(const eshkol_ast_t* ast) {
+    return ast && ast->type == ESHKOL_OP &&
+           ast->operation.op == ESHKOL_DEFINE_OP && ast->operation.define_op.name &&
+           g_trusted_core_net_definition_names.count(ast->operation.define_op.name) != 0;
+}
+
+static bool hasVerifiedStdlibScalarPrimitiveName(const char* name) {
+    return name && kStrictStdlibScalarPrimitives.count(name) &&
+           g_verified_stdlib_scalar_primitive_names.count(name) != 0;
+}
+
+static bool isVerifiedStdlibScalarPrimitive(const eshkol_ast_t* ast) {
+    if (!ast || ast->type != ESHKOL_OP) return false;
+    const char* name = nullptr;
+    if (ast->operation.op == ESHKOL_DEFINE_OP)
+        name = ast->operation.define_op.name;
+    else if (ast->operation.op == ESHKOL_EXTERN_OP)
+        name = ast->operation.extern_op.name;
+    return hasVerifiedStdlibScalarPrimitiveName(name);
+}
+
+static void recordVerifiedStdlibScalarPrimitives(
+    const std::vector<eshkol_ast_t>& module_asts) {
+    if (!g_verified_stdlib_artifact_identity) return;
+    for (const auto& ast : module_asts) {
+        if (ast.type != ESHKOL_OP) continue;
+        const char* name = nullptr;
+        if (ast.operation.op == ESHKOL_DEFINE_OP)
+            name = ast.operation.define_op.name;
+        else if (ast.operation.op == ESHKOL_EXTERN_OP)
+            name = ast.operation.extern_op.name;
+        if (name && kStrictStdlibScalarPrimitives.count(name))
+            g_verified_stdlib_scalar_primitive_names.insert(name);
+    }
+}
+
 // ===== OWNERSHIP ANALYSIS =====
 // Compile-time tracking of owned values for OALR memory management
 
 class OwnershipAnalyzer {
 public:
+    enum class ResourceKind : uint8_t {
+        NONE,
+        TCP_LISTENER,
+        TCP_STREAM,
+        UDP_SOCKET
+    };
+
+    enum class ResourceState : uint8_t {
+        NONE,
+        ERROR_OR_LIVE,
+        ERROR_ONLY,
+        LIVE,
+        CLOSED,
+        CLOSED_OR_ERROR,
+        MAYBE_LIVE,
+        MOVED
+    };
+
+    enum class CallableEffect : uint8_t {
+        NONE,
+        FACTORY_TCP_LISTENER,
+        FACTORY_TCP_STREAM,
+        FACTORY_UDP_SOCKET,
+        RESOURCE_OBSERVER,
+        CLOSE_TCP,
+        CLOSE_UDP,
+        ERROR_PREDICATE,
+        ERROR_OBSERVER,
+        TERMINAL_CONTROL,
+        UNKNOWN_RESOURCE_EFFECT
+    };
+
     // Ownership state for a variable
     enum class State {
         UNOWNED,    // Normal value, no ownership tracking
         OWNED,      // Owned value, must be consumed before scope exit
         MOVED,      // Has been moved, cannot be used
-        BORROWED    // Currently borrowed by a borrow expression
+        BORROWED,   // Currently borrowed by a borrow expression
+        MAYBE_MOVED // Moved on some control-flow paths
     };
 
     struct VariableInfo {
@@ -1532,6 +1712,15 @@ public:
         std::string defined_at;  // Location info for error messages
         bool is_owned_binding;   // Was bound with (owned ...)
         uint64_t binding_id;
+        ResourceKind resource_kind = ResourceKind::NONE;
+        ResourceState resource_state = ResourceState::NONE;
+        CallableEffect callable_effect = CallableEffect::NONE;
+        std::string resource_alias;
+        ResourceState moved_from_state = ResourceState::NONE;
+        bool is_defined = false;
+        std::string callable_contract;
+        bool is_proven_callable = false;
+    bool is_verified_stdlib_primitive = false;
     };
 
     // Ownership scope (lexical block)
@@ -1543,18 +1732,41 @@ public:
     OwnershipAnalyzer() : has_errors_(false) {}
 
     // Run analysis on all ASTs
-    bool analyze(const std::vector<eshkol_ast_t>& asts) {
+    bool analyze(const std::vector<eshkol_ast_t>& asts, bool strict_resources = false) {
         has_errors_ = false;
+        strict_resources_ = strict_resources;
         errors_.clear();
         scope_stack_.clear();
         borrowed_counts_.clear();
+        branch_frames_.clear();
+        accepted_factory_nodes_.clear();
+        accepted_move_nodes_.clear();
+        allowed_resource_use_nodes_.clear();
+        parallel_binding_info_.clear();
+        capture_scan_truncated_ = false;
         next_binding_id_ = 1;
+
+        if (strict_resources_ && g_untrusted_core_net_required) {
+            reportResourceError(
+                "core.net source does not match the pinned stock SDK contract; resource effects are unsupported");
+        }
 
         // Push global scope
         pushScope("global");
+        prepareStrictBindings(asts);
 
-        for (const auto& ast : asts) {
-            analyzeAST(&ast);
+        // Required module ASTs are also executed by the compiler/JIT module
+        // loader. Check their top-level initializers under the same effect
+        // policy as user forms; DEFINE_OP already suppresses traversal into
+        // function bodies, which are declarations rather than initializers.
+        // Skipping the prefix here allowed an imported module to acquire and
+        // leak a native resource before the checked user suffix ran.
+        for (size_t i = 0; i < asts.size(); ++i) {
+            analyzeAST(&asts[i], true);
+        }
+
+        if (strict_resources_) {
+            checkResourceScopeExit();
         }
 
         // Check global scope exit
@@ -1579,29 +1791,37 @@ private:
     std::vector<Scope> scope_stack_;
     std::vector<std::string> errors_;
     bool has_errors_;
+    bool strict_resources_ = false;
 
     struct WorkItem {
         enum class Kind { AST, LET_BINDING, LET_SEQUENTIAL_INSTALL,
                           LET_PARALLEL_INIT, LET_PARALLEL_INSTALL,
-                          EXIT_SCOPE, UNBORROW };
+                          EXIT_SCOPE, UNBORROW, IF_AFTER_CONDITION,
+                          IF_AFTER_TRUE, IF_AFTER_FALSE };
         Kind kind = Kind::AST;
         const eshkol_ast_t* ast = nullptr;
         const eshkol_operations_t* op = nullptr;
         uint64_t index = 0;
         std::string name;
         uint64_t binding_id = 0;
+        uint64_t branch_id = 0;
+        bool resource_effects_enabled = true;
 
-        static WorkItem astNode(const eshkol_ast_t* node) {
+        static WorkItem astNode(const eshkol_ast_t* node,
+                                bool resource_effects_enabled = true) {
             WorkItem item;
             item.ast = node;
+            item.resource_effects_enabled = resource_effects_enabled;
             return item;
         }
         static WorkItem continuation(Kind kind, const eshkol_operations_t* op,
-                                     uint64_t index = 0) {
+                                     uint64_t index = 0,
+                                     bool resource_effects_enabled = true) {
             WorkItem item;
             item.kind = kind;
             item.op = op;
             item.index = index;
+            item.resource_effects_enabled = resource_effects_enabled;
             return item;
         }
         static WorkItem unborrow(uint64_t binding_id) {
@@ -1610,7 +1830,1132 @@ private:
             item.binding_id = binding_id;
             return item;
         }
+        static WorkItem branchContinuation(Kind kind, const eshkol_ast_t* node,
+                                           uint64_t branch_id,
+                                           bool resource_effects_enabled = true) {
+            WorkItem item;
+            item.kind = kind;
+            item.ast = node;
+            item.branch_id = branch_id;
+            item.resource_effects_enabled = resource_effects_enabled;
+            return item;
+        }
     };
+
+    struct BranchFrame {
+        const eshkol_ast_t* if_node = nullptr;
+        const eshkol_ast_t* condition = nullptr;
+        bool resource_effects_enabled = true;
+        std::vector<Scope> base_scopes;
+        std::map<uint64_t, size_t> base_borrows;
+        std::vector<Scope> true_scopes;
+        std::map<uint64_t, size_t> true_borrows;
+    };
+
+    void reportResourceError(const std::string& message) {
+        reportError("Strict resource error: " + message);
+    }
+
+    CallableEffect effectForTrustedCoreNetName(const std::string& name) const {
+        if (!g_verified_core_net_exports.count(name)) return CallableEffect::NONE;
+        if (name == "tcp-listen") return CallableEffect::FACTORY_TCP_LISTENER;
+        if (name == "tcp-connect" || name == "tcp-accept")
+            return CallableEffect::FACTORY_TCP_STREAM;
+        if (name == "udp-bind") return CallableEffect::FACTORY_UDP_SOCKET;
+        if (name == "tcp-close") return CallableEffect::CLOSE_TCP;
+        if (name == "udp-close") return CallableEffect::CLOSE_UDP;
+        if (name == "network-error?") return CallableEffect::ERROR_PREDICATE;
+        if (name == "network-error-code" || name == "network-error-operation")
+            return CallableEffect::ERROR_OBSERVER;
+        if (name == "tcp-read" || name == "tcp-write" || name == "udp-sendto" ||
+            name == "udp-recvfrom" || name == "net-local-address" ||
+            name == "net-peer-address" || name == "net-local-port" ||
+            name == "net-peer-port" || name == "net-nonblocking!")
+            return CallableEffect::RESOURCE_OBSERVER;
+        return CallableEffect::NONE;
+    }
+
+    CallableEffect unresolvedCallableEffect(const std::string& name) const {
+        if (name == "exit" || name == "error") return CallableEffect::TERMINAL_CONTROL;
+        if (isKnownResourceSafeBuiltin(name)) return CallableEffect::NONE;
+        return CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+    }
+
+    CallableEffect callableEffectOf(const eshkol_ast_t* expression) const {
+        const std::string name = getVarName(expression);
+        if (name.empty()) return CallableEffect::NONE;
+        VariableInfo* info = const_cast<OwnershipAnalyzer*>(this)->lookupVariable(name);
+        if (info)
+            if (info->is_verified_stdlib_primitive) return CallableEffect::NONE;
+        if (info)
+            return info->callable_effect;
+        return unresolvedCallableEffect(name);
+    }
+
+    std::string callableContractOf(const eshkol_ast_t* expression) const {
+        const std::string name = getVarName(expression);
+        if (name.empty()) return {};
+        if (VariableInfo* info = const_cast<OwnershipAnalyzer*>(this)->lookupVariable(name))
+            return info->callable_contract;
+        return {};
+    }
+
+    bool isIfForm(const eshkol_ast_t* node) const {
+        if (!node || node->type != ESHKOL_OP) return false;
+        const bool special_if = node->operation.op == ESHKOL_IF_OP;
+        if (node->operation.op != ESHKOL_CALL_OP && !special_if) return false;
+        const auto& call = node->operation.call_op;
+        const bool has_if_callee = call.func && call.func->type == ESHKOL_VAR &&
+            call.func->variable.id && std::strcmp(call.func->variable.id, "if") == 0;
+        return call.num_vars == 3 && call.variables && (special_if || has_if_callee);
+    }
+
+    ResourceKind factoryKind(CallableEffect effect) const {
+        switch (effect) {
+            case CallableEffect::FACTORY_TCP_LISTENER:
+                return ResourceKind::TCP_LISTENER;
+            case CallableEffect::FACTORY_TCP_STREAM:
+                return ResourceKind::TCP_STREAM;
+            case CallableEffect::FACTORY_UDP_SOCKET:
+                return ResourceKind::UDP_SOCKET;
+            default:
+                return ResourceKind::NONE;
+        }
+    }
+
+    bool isLiveResourceState(ResourceState state) const {
+        return state == ResourceState::LIVE ||
+               state == ResourceState::ERROR_OR_LIVE ||
+               state == ResourceState::MAYBE_LIVE;
+    }
+
+    bool hasTrackedResourceBinding() const {
+        for (const auto& scope : scope_stack_)
+            for (const auto& entry : scope.variables)
+                if (entry.second.resource_kind != ResourceKind::NONE &&
+                    isLiveResourceState(entry.second.resource_state))
+                    return true;
+        return false;
+    }
+
+    void checkResourceScopeExit() {
+        if (scope_stack_.empty()) return;
+        const auto& scope = currentScope();
+        for (const auto& entry : scope.variables) {
+            const auto& name = entry.first;
+            const auto& info = entry.second;
+            if (info.resource_kind != ResourceKind::NONE &&
+                isLiveResourceState(info.resource_state)) {
+                reportResourceError("resource '" + name +
+                    "' may still be live at scope exit; close it on every successful path");
+            }
+        }
+    }
+
+    ResourceState joinResourceState(ResourceState left, ResourceState right) const {
+        if (left == right) return left;
+        if (left == ResourceState::MOVED && right == ResourceState::MOVED)
+            return ResourceState::MOVED;
+        if (left == ResourceState::MOVED || right == ResourceState::MOVED) {
+            const ResourceState other = left == ResourceState::MOVED ? right : left;
+            if (other == ResourceState::ERROR_ONLY ||
+                other == ResourceState::CLOSED_OR_ERROR)
+                return ResourceState::CLOSED_OR_ERROR;
+            if (other == ResourceState::CLOSED) return ResourceState::CLOSED;
+        }
+        if (left == ResourceState::NONE || right == ResourceState::NONE)
+            return ResourceState::MAYBE_LIVE;
+        const bool left_live = isLiveResourceState(left);
+        const bool right_live = isLiveResourceState(right);
+        if (left_live || right_live) {
+            if ((left == ResourceState::ERROR_OR_LIVE && right == ResourceState::ERROR_ONLY) ||
+                (right == ResourceState::ERROR_OR_LIVE && left == ResourceState::ERROR_ONLY))
+                return ResourceState::ERROR_OR_LIVE;
+            return ResourceState::MAYBE_LIVE;
+        }
+        if ((left == ResourceState::ERROR_ONLY && right == ResourceState::CLOSED) ||
+            (right == ResourceState::ERROR_ONLY && left == ResourceState::CLOSED) ||
+            left == ResourceState::CLOSED_OR_ERROR || right == ResourceState::CLOSED_OR_ERROR)
+            return ResourceState::CLOSED_OR_ERROR;
+        return ResourceState::MAYBE_LIVE;
+    }
+
+    State joinOwnershipState(State left, State right) const {
+        if (left == right) return left;
+        if ((left == State::OWNED && right == State::MOVED) ||
+            (right == State::OWNED && left == State::MOVED) ||
+            left == State::MAYBE_MOVED || right == State::MAYBE_MOVED)
+            return State::MAYBE_MOVED;
+        return State::UNOWNED;
+    }
+
+    void joinBranchState(const BranchFrame& frame) {
+        const auto false_scopes = scope_stack_;
+        const auto false_borrows = borrowed_counts_;
+        if (frame.true_scopes.size() != false_scopes.size() ||
+            frame.base_scopes.size() != false_scopes.size()) {
+            reportResourceError("branch changes lexical scope shape in the checked fragment");
+            scope_stack_ = frame.base_scopes;
+            borrowed_counts_ = frame.base_borrows;
+            return;
+        }
+        for (size_t scope_index = 0; scope_index < frame.base_scopes.size(); ++scope_index) {
+            auto& joined_scope = scope_stack_[scope_index];
+            const auto& base_scope = frame.base_scopes[scope_index];
+            const auto& true_scope = frame.true_scopes[scope_index];
+            const auto& false_scope = false_scopes[scope_index];
+            for (auto& pair : joined_scope.variables) {
+                auto true_it = true_scope.variables.find(pair.first);
+                auto false_it = false_scope.variables.find(pair.first);
+                if (true_it == true_scope.variables.end() || false_it == false_scope.variables.end() ||
+                    true_it->second.binding_id != pair.second.binding_id ||
+                    false_it->second.binding_id != pair.second.binding_id) {
+                    reportResourceError("binding '" + pair.first +
+                        "' is rebound differently across branches in the checked fragment");
+                    continue;
+                }
+                const VariableInfo& base_info = base_scope.variables.at(pair.first);
+                const VariableInfo& a = true_it->second;
+                const VariableInfo& b = false_it->second;
+                pair.second.state = joinOwnershipState(a.state, b.state);
+                pair.second.resource_state = joinResourceState(a.resource_state, b.resource_state);
+                if (a.resource_kind == b.resource_kind) pair.second.resource_kind = a.resource_kind;
+                else if (a.resource_kind != ResourceKind::NONE || b.resource_kind != ResourceKind::NONE) {
+                    pair.second.resource_kind = a.resource_kind != ResourceKind::NONE
+                        ? a.resource_kind : b.resource_kind;
+                    pair.second.resource_state = ResourceState::MAYBE_LIVE;
+                }
+                pair.second.callable_effect = a.callable_effect == b.callable_effect
+                    ? a.callable_effect
+                    : ((a.callable_effect == CallableEffect::NONE &&
+                        b.callable_effect == CallableEffect::NONE)
+                           ? CallableEffect::NONE
+                           : CallableEffect::UNKNOWN_RESOURCE_EFFECT);
+                pair.second.is_proven_callable =
+                    a.is_proven_callable && b.is_proven_callable;
+                (void)base_info;
+            }
+            for (const auto& pair : true_scope.variables) {
+                if (!base_scope.variables.count(pair.first) &&
+                    pair.second.resource_kind != ResourceKind::NONE &&
+                    pair.second.resource_state != ResourceState::CLOSED &&
+                    pair.second.resource_state != ResourceState::ERROR_ONLY &&
+                    pair.second.resource_state != ResourceState::CLOSED_OR_ERROR) {
+                    reportResourceError("resource binding '" + pair.first +
+                        "' is created in only one branch; this flow is unsupported");
+                }
+            }
+        }
+        if (frame.true_borrows != false_borrows || frame.base_borrows != false_borrows) {
+            reportResourceError("borrow state does not balance across both branches");
+            borrowed_counts_ = frame.base_borrows;
+        }
+    }
+
+    bool conditionRefinement(const eshkol_ast_t* condition,
+                             uint64_t* binding_id, bool* true_is_error) {
+        if (!condition || condition->type != ESHKOL_OP) return false;
+        const eshkol_operations_t* op = &condition->operation;
+        if (op->op == ESHKOL_CALL_OP && op->call_op.num_vars == 1 &&
+            op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
+            op->call_op.func->variable.id &&
+            std::strcmp(op->call_op.func->variable.id, "not") == 0) {
+            const std::string not_name = op->call_op.func->variable.id;
+            VariableInfo* not_binding = lookupVariable(not_name);
+            if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE")) {
+                std::fprintf(stderr, "[strict-resources] not binding=%s effect=%u defined=%d\n",
+                    not_binding ? "present" : "absent",
+                    not_binding ? static_cast<unsigned>(not_binding->callable_effect) : 0U,
+                    not_binding && not_binding->is_defined ? 1 : 0);
+            }
+            if (not_binding) return false; // a lexical replacement is not the primitive
+            bool nested_true_is_error = false;
+            if (conditionRefinement(&op->call_op.variables[0], binding_id,
+                                    &nested_true_is_error)) {
+                *true_is_error = !nested_true_is_error;
+                return true;
+            }
+        }
+        const CallableEffect predicate_effect = op->op == ESHKOL_CALL_OP
+            ? callableEffectOf(op->call_op.func) : CallableEffect::NONE;
+        if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE") && op->op == ESHKOL_CALL_OP)
+            std::fprintf(stderr, "[strict-resources] predicate=%s effect=%u argc=%llu\n",
+                getVarName(op->call_op.func).c_str(), static_cast<unsigned>(predicate_effect),
+                static_cast<unsigned long long>(op->call_op.num_vars));
+        if (op->op != ESHKOL_CALL_OP || op->call_op.num_vars != 1 ||
+            predicate_effect != CallableEffect::ERROR_PREDICATE)
+            return false;
+        const std::string name = getVarName(&op->call_op.variables[0]);
+        VariableInfo* info = lookupVariable(name);
+        if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE"))
+            std::fprintf(stderr, "[strict-resources] predicate argument=%s found=%d kind=%u state=%u\n",
+                name.c_str(), info ? 1 : 0,
+                info ? static_cast<unsigned>(info->resource_kind) : 0U,
+                info ? static_cast<unsigned>(info->resource_state) : 0U);
+        if (!info || info->resource_kind == ResourceKind::NONE) return false;
+        *binding_id = info->binding_id;
+        *true_is_error = true;
+        return true;
+    }
+
+    void refineBranchCondition(const eshkol_ast_t* condition, bool truth) {
+        uint64_t binding_id = 0;
+        bool true_is_error = false;
+        if (!conditionRefinement(condition, &binding_id, &true_is_error)) {
+            if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE"))
+                std::fprintf(stderr, "[strict-resources] condition not refinable truth=%d\n", truth ? 1 : 0);
+            return;
+        }
+        for (auto scope = scope_stack_.rbegin(); scope != scope_stack_.rend(); ++scope) {
+            for (auto& entry : scope->variables) {
+                auto& info = entry.second;
+                if (info.binding_id != binding_id) continue;
+                const bool error_path = truth == true_is_error;
+                if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE"))
+                    std::fprintf(stderr, "[strict-resources] refine binding=%llu truth=%d error=%d prior=%u\n",
+                        static_cast<unsigned long long>(binding_id), truth ? 1 : 0,
+                        error_path ? 1 : 0, static_cast<unsigned>(info.resource_state));
+                if (info.resource_state == ResourceState::ERROR_OR_LIVE)
+                    info.resource_state = error_path ? ResourceState::ERROR_ONLY : ResourceState::LIVE;
+                else if (info.resource_state == ResourceState::MAYBE_LIVE)
+                    reportResourceError("network-error? cannot refine resource '" + entry.first +
+                        "' after incompatible branch states");
+                return;
+            }
+        }
+        if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE"))
+            std::fprintf(stderr, "[strict-resources] refinement binding %llu not in active scopes\n",
+                static_cast<unsigned long long>(binding_id));
+    }
+
+    bool isSimplePureExpression(const eshkol_ast_t* ast, unsigned depth = 0) const {
+        if (!ast || depth > 128) return false;
+        if (ast->type == ESHKOL_VAR) return false;
+        if (ast->type == ESHKOL_CONS) {
+            const std::string head = getVarName(ast->cons_cell.car);
+            if (!head.empty()) {
+                if (!isKnownResourceSafeBuiltin(head)) return false;
+                return isSimplePureExpression(ast->cons_cell.cdr, depth + 1);
+            }
+            return isSimplePureExpression(ast->cons_cell.car, depth + 1) &&
+                   isSimplePureExpression(ast->cons_cell.cdr, depth + 1);
+        }
+        if (ast->type != ESHKOL_OP) return true;
+        const auto& op = ast->operation;
+        if (op.op == ESHKOL_LAMBDA_OP) return false;
+        if (op.op == ESHKOL_SEQUENCE_OP) {
+            for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                if (!isSimplePureExpression(&op.sequence_op.expressions[i], depth + 1)) return false;
+            return true;
+        }
+        // Calls, mutation, loops, FFI and control transfers do not receive an
+        // inferred pure summary in this checked fragment.
+        return false;
+    }
+
+    bool isSimplePureFunction(const eshkol_ast_t* value) const {
+        if (value && value->type == ESHKOL_OP &&
+            value->operation.op == ESHKOL_LAMBDA_OP)
+            return isSimplePureExpression(value->operation.lambda_op.body);
+        return isSimplePureExpression(value);
+    }
+
+    bool isStaticDataLiteral(const eshkol_ast_t* value) const {
+        if (!value) return false;
+        switch (value->type) {
+            case ESHKOL_UINT8:
+            case ESHKOL_UINT16:
+            case ESHKOL_UINT32:
+            case ESHKOL_UINT64:
+            case ESHKOL_INT8:
+            case ESHKOL_INT16:
+            case ESHKOL_INT32:
+            case ESHKOL_INT64:
+            case ESHKOL_DOUBLE:
+            case ESHKOL_STRING:
+            case ESHKOL_NULL:
+            case ESHKOL_CHAR:
+            case ESHKOL_BOOL:
+            case ESHKOL_BIGNUM_LITERAL:
+            case ESHKOL_SYMBOL:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool isPureResourceDataBuiltin(const std::string& name) const {
+        static const std::set<std::string> names = {
+            "+", "-", "*", "/", "=", "<", "<=", ">", ">=", "boolean=?",
+            "eq?", "eqv?", "equal?", "not", "integer?", "exact?", "inexact?",
+            "number?", "real?", "string?", "symbol?", "vector?", "pair?", "null?",
+            "procedure?", "vector-length", "vector-ref", "car", "cdr", "caar", "cadr",
+            "caddr", "cadddr", "cddr", "cdddr", "cddddr", "cons", "list", "append",
+            "string-length", "string-ref", "substring", "void"
+        };
+        return names.count(name) != 0;
+    }
+
+    bool isStaticDataExpression(
+        const eshkol_ast_t* value,
+        const std::map<std::string, CallableEffect>* known_effects = nullptr,
+        const std::set<std::string>* known_callables = nullptr,
+        unsigned depth = 0) const {
+        if (!value || depth > 128) return false;
+        if (isStaticDataLiteral(value)) return true;
+        if (value->type == ESHKOL_VAR) {
+            const std::string name = getVarName(value);
+            if (known_callables && known_callables->count(name)) return false;
+            if (known_effects) {
+                auto effect = known_effects->find(name);
+                return effect != known_effects->end() &&
+                       effect->second == CallableEffect::NONE;
+            }
+            VariableInfo* info = const_cast<OwnershipAnalyzer*>(this)->lookupVariable(name);
+            return info && info->resource_kind == ResourceKind::NONE &&
+                   info->callable_effect == CallableEffect::NONE &&
+                   !info->is_proven_callable;
+        }
+        if (value->type == ESHKOL_CONS) {
+            const std::string head = getVarName(value->cons_cell.car);
+            if (!head.empty()) {
+                if (!isPureResourceDataBuiltin(head)) return false;
+                return isStaticDataExpression(value->cons_cell.cdr, known_effects,
+                                              known_callables, depth + 1);
+            }
+            return isStaticDataExpression(value->cons_cell.car, known_effects,
+                                          known_callables, depth + 1) &&
+                   isStaticDataExpression(value->cons_cell.cdr, known_effects,
+                                          known_callables, depth + 1);
+        }
+        if (value->type != ESHKOL_OP) return false;
+        const auto& op = value->operation;
+        if (op.op == ESHKOL_QUOTE_OP) return true;
+        if (op.op == ESHKOL_CALL_OP) {
+            const std::string head = getVarName(op.call_op.func);
+            if (!isPureResourceDataBuiltin(head)) return false;
+            for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
+                if (!isStaticDataExpression(&op.call_op.variables[i], known_effects,
+                                            known_callables, depth + 1)) return false;
+            return true;
+        }
+        if (op.op == ESHKOL_SEQUENCE_OP) {
+            for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                if (!isStaticDataExpression(&op.sequence_op.expressions[i], known_effects,
+                                            known_callables, depth + 1)) return false;
+            return op.sequence_op.num_expressions > 0;
+        }
+        return false;
+    }
+
+    CallableEffect effectForExpression(
+        const eshkol_ast_t* expression,
+        const std::map<std::string, CallableEffect>* known = nullptr) const {
+        const std::string variable_name = getVarName(expression);
+        if (!variable_name.empty()) {
+            if (known) {
+                auto it = known->find(variable_name);
+                return it == known->end() ? CallableEffect::NONE : it->second;
+            }
+            return callableEffectOf(expression);
+        }
+        if (expression && expression->type == ESHKOL_OP &&
+            expression->operation.op == ESHKOL_CALL_OP) {
+            const auto& call = expression->operation.call_op;
+            const std::string function_name = getVarName(call.func);
+            if (known) {
+                auto it = known->find(function_name);
+                return it == known->end() ? unresolvedCallableEffect(function_name) : it->second;
+            }
+            return callableEffectOf(call.func);
+        }
+        return CallableEffect::NONE;
+    }
+
+    void prepareStrictBindings(const std::vector<eshkol_ast_t>& asts) {
+        if (!strict_resources_) return;
+        std::map<std::string, CallableEffect> effects;
+        std::set<std::string> proven_callable_names;
+
+        std::map<std::string, ResourceKind> future_resources;
+        for (const auto& ast : asts) {
+            if (ast.type != ESHKOL_OP) continue;
+            const auto& op = ast.operation;
+            if (op.op == ESHKOL_DEFINE_OP && op.define_op.name) {
+                const std::string name = op.define_op.name;
+                CallableEffect effect = CallableEffect::NONE;
+                bool proven_callable = false;
+                if (isTrustedCoreNetDefinition(&ast)) {
+                    effect = effectForTrustedCoreNetName(name);
+                    proven_callable = true;
+                } else if (isVerifiedStdlibScalarPrimitive(&ast)) {
+                    effect = CallableEffect::NONE;
+                    proven_callable = true;
+                } else if (op.define_op.is_external) {
+                    if (op.define_op.is_function) {
+                        effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                        proven_callable = true;
+                    } else if (!isStaticDataExpression(op.define_op.value, &effects,
+                                                       &proven_callable_names)) {
+                        effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                    }
+                } else if (op.define_op.is_function) {
+                    effect = isSimplePureFunction(op.define_op.value)
+                        ? CallableEffect::NONE
+                        : CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                    proven_callable = true;
+                } else if (op.define_op.value &&
+                           op.define_op.value->type == ESHKOL_OP &&
+                           op.define_op.value->operation.op == ESHKOL_LAMBDA_OP) {
+                    effect = isSimplePureFunction(op.define_op.value)
+                        ? CallableEffect::NONE
+                        : CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                    proven_callable = true;
+                } else {
+                    effect = effectForExpression(op.define_op.value, &effects);
+                    const std::string source_name = getVarName(op.define_op.value);
+            proven_callable = !source_name.empty() &&
+                (proven_callable_names.count(source_name) != 0 ||
+                 (effects.count(source_name) == 0 &&
+                  (isKnownResourceSafeBuiltin(source_name) ||
+                   source_name == "exit" || source_name == "error")));
+                    const ResourceKind kind = factoryKind(effect);
+                    if (kind != ResourceKind::NONE) future_resources[name] = kind;
+                }
+                if (name == "iv-eps" && envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE")) {
+                    std::fprintf(stderr,
+                        "[strict-resources] prebind iv-eps function=%d external=%d value-type=%u value-name='%s' effect=%u proven=%d\n",
+                        op.define_op.is_function ? 1 : 0,
+                        op.define_op.is_external ? 1 : 0,
+                        op.define_op.value ? static_cast<unsigned>(op.define_op.value->type) : 255U,
+                        getVarName(op.define_op.value).c_str(), static_cast<unsigned>(effect),
+                        proven_callable ? 1 : 0);
+                }
+                effects[name] = effect;
+                if (proven_callable) proven_callable_names.insert(name);
+            } else if (op.op == ESHKOL_EXTERN_OP && op.extern_op.name) {
+                effects[op.extern_op.name] = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                proven_callable_names.insert(op.extern_op.name);
+            }
+        }
+
+        // Give top-level names stable lexical identities before any body is
+        // checked. This lets a closure resolve a later global declaration by
+        // binding ID, while local shadowing still wins through normal scopes.
+        for (const auto& ast : asts) {
+            if (ast.type != ESHKOL_OP) continue;
+            const auto& op = ast.operation;
+            std::string name;
+            CallableEffect effect = CallableEffect::NONE;
+            if (op.op == ESHKOL_DEFINE_OP && op.define_op.name) {
+                name = op.define_op.name;
+            } else if (op.op == ESHKOL_EXTERN_OP && op.extern_op.name) {
+                name = op.extern_op.name;
+            }
+            if (name.empty() || currentScope().variables.count(name)) continue;
+            VariableInfo info{State::UNOWNED, name, false, next_binding_id_++};
+            auto known_effect = effects.find(name);
+            if (known_effect != effects.end()) info.callable_effect = known_effect->second;
+            info.is_proven_callable = proven_callable_names.count(name) != 0;
+            info.is_verified_stdlib_primitive =
+                op.op == ESHKOL_DEFINE_OP && isVerifiedStdlibScalarPrimitive(&ast);
+            auto resource = future_resources.find(name);
+            if (resource != future_resources.end()) {
+                info.resource_kind = resource->second;
+                info.resource_state = ResourceState::ERROR_OR_LIVE;
+            }
+            currentScope().variables.emplace(name, std::move(info));
+        }
+    }
+
+    bool expressionContainsResource(const eshkol_ast_t* expression) {
+        std::vector<const eshkol_ast_t*> todo;
+        if (expression) todo.push_back(expression);
+        while (!todo.empty()) {
+            const eshkol_ast_t* node = todo.back();
+            todo.pop_back();
+            if (!node) continue;
+            if (node->type == ESHKOL_VAR) {
+                VariableInfo* info = lookupVariable(getVarName(node));
+                if (info && info->resource_kind != ResourceKind::NONE) return true;
+                continue;
+            }
+            if (node->type == ESHKOL_CONS) {
+                todo.push_back(node->cons_cell.car);
+                todo.push_back(node->cons_cell.cdr);
+                continue;
+            }
+            if (node->type != ESHKOL_OP) continue;
+            const auto& op = node->operation;
+            switch (op.op) {
+                case ESHKOL_CALL_OP:
+                case ESHKOL_IF_OP:
+                case ESHKOL_COND_OP:
+                    for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
+                        todo.push_back(&op.call_op.variables[i]);
+                    break;
+                case ESHKOL_AND_OP:
+                case ESHKOL_OR_OP:
+                    for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                        todo.push_back(&op.sequence_op.expressions[i]);
+                    break;
+                case ESHKOL_SEQUENCE_OP:
+                    for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                        todo.push_back(&op.sequence_op.expressions[i]);
+                    break;
+                case ESHKOL_LAMBDA_OP:
+                    if (op.lambda_op.body) todo.push_back(op.lambda_op.body);
+                    break;
+                case ESHKOL_LET_OP:
+                case ESHKOL_LET_STAR_OP:
+                case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:
+                    for (uint64_t i = 0; i < op.let_op.num_bindings; ++i)
+                        todo.push_back(&op.let_op.bindings[i]);
+                    todo.push_back(op.let_op.body);
+                    break;
+                case ESHKOL_SET_OP:
+                    todo.push_back(op.set_op.value);
+                    break;
+                case ESHKOL_BORROW_OP:
+                    todo.push_back(op.borrow_op.value);
+                    for (uint64_t i = 0; i < op.borrow_op.num_body_exprs; ++i)
+                        todo.push_back(&op.borrow_op.body[i]);
+                    break;
+                case ESHKOL_MOVE_OP:
+                    todo.push_back(op.move_op.value);
+                    break;
+                case ESHKOL_OWNED_OP:
+                    todo.push_back(op.owned_op.value);
+                    break;
+                default:
+                    break;
+            }
+        }
+        return false;
+    }
+
+    bool expressionProducesResourceValue(const eshkol_ast_t* expression) {
+        if (!expression) return false;
+        if (expression->type == ESHKOL_VAR) {
+            VariableInfo* info = lookupVariable(getVarName(expression));
+            return info && info->resource_kind != ResourceKind::NONE;
+        }
+        if (expression->type != ESHKOL_OP) return false;
+        const auto& op = expression->operation;
+        if ((op.op == ESHKOL_IF_OP || isIfForm(expression)) && op.call_op.num_vars == 3)
+            return expressionProducesResourceValue(&op.call_op.variables[1]) ||
+                   expressionProducesResourceValue(&op.call_op.variables[2]);
+        if (op.op == ESHKOL_CALL_OP)
+            return factoryKind(callableEffectOf(op.call_op.func)) != ResourceKind::NONE;
+        if (op.op == ESHKOL_MOVE_OP)
+            return expressionProducesResourceValue(op.move_op.value);
+        if (op.op == ESHKOL_OWNED_OP)
+            return expressionProducesResourceValue(op.owned_op.value);
+        if (op.op == ESHKOL_SEQUENCE_OP && op.sequence_op.num_expressions)
+            return expressionProducesResourceValue(
+                &op.sequence_op.expressions[op.sequence_op.num_expressions - 1]);
+        return false;
+    }
+
+    bool expressionContainsCallableContract(const eshkol_ast_t* expression) {
+        std::vector<const eshkol_ast_t*> todo;
+        if (expression) todo.push_back(expression);
+        while (!todo.empty()) {
+            const eshkol_ast_t* node = todo.back();
+            todo.pop_back();
+            if (!node) continue;
+            if (node->type == ESHKOL_VAR) {
+                const std::string name = getVarName(node);
+                VariableInfo* info = lookupVariable(name);
+                if (info && info->is_proven_callable &&
+                    info->callable_effect != CallableEffect::NONE) {
+                    if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE"))
+                        std::fprintf(stderr,
+                            "[strict-resources] callable contract in value '%s' effect=%u\n",
+                            name.c_str(), static_cast<unsigned>(info->callable_effect));
+                    return true;
+                }
+                continue;
+            }
+            if (node->type == ESHKOL_CONS) {
+                todo.push_back(node->cons_cell.car);
+                todo.push_back(node->cons_cell.cdr);
+                continue;
+            }
+            if (node->type == ESHKOL_OP && node->operation.op == ESHKOL_LAMBDA_OP)
+                return true;
+            if (node->type == ESHKOL_OP && node->operation.op == ESHKOL_CALL_OP) {
+                const auto& call = node->operation.call_op;
+                for (uint64_t i = 0; i < call.num_vars; ++i)
+                    todo.push_back(&call.variables[i]);
+            }
+        }
+        return false;
+    }
+
+    bool expressionHasResourceTransition(const eshkol_ast_t* expression) {
+        std::vector<const eshkol_ast_t*> todo;
+        if (expression) todo.push_back(expression);
+        while (!todo.empty()) {
+            const eshkol_ast_t* node = todo.back();
+            todo.pop_back();
+            if (!node) continue;
+            if (node->type == ESHKOL_CONS) {
+                todo.push_back(node->cons_cell.car);
+                todo.push_back(node->cons_cell.cdr);
+                continue;
+            }
+            if (node->type != ESHKOL_OP) continue;
+            const auto& op = node->operation;
+            if (op.op == ESHKOL_CALL_OP) {
+                const auto effect = callableEffectOf(op.call_op.func);
+                if (factoryKind(effect) != ResourceKind::NONE ||
+                    effect == CallableEffect::CLOSE_TCP || effect == CallableEffect::CLOSE_UDP ||
+                    effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT)
+                    return true;
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
+                    todo.push_back(&op.call_op.variables[i]);
+            } else if (op.op == ESHKOL_IF_OP || op.op == ESHKOL_COND_OP) {
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
+                    todo.push_back(&op.call_op.variables[i]);
+            } else if (op.op == ESHKOL_AND_OP || op.op == ESHKOL_OR_OP) {
+                for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                    todo.push_back(&op.sequence_op.expressions[i]);
+            } else if (op.op == ESHKOL_SEQUENCE_OP) {
+                for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                    todo.push_back(&op.sequence_op.expressions[i]);
+            } else if (op.op == ESHKOL_MOVE_OP) {
+                if (expressionContainsResource(op.move_op.value)) return true;
+            } else if (op.op == ESHKOL_SET_OP) {
+                VariableInfo* target = lookupVariable(op.set_op.name ? op.set_op.name : "");
+                if (target && (target->resource_kind != ResourceKind::NONE ||
+                               target->callable_effect != CallableEffect::NONE)) return true;
+            }
+        }
+        return false;
+    }
+
+    void bindResourceInitializer(VariableInfo& target, const eshkol_ast_t* value,
+                                 const std::string& target_name) {
+        target.resource_kind = ResourceKind::NONE;
+        target.resource_state = ResourceState::NONE;
+        target.moved_from_state = ResourceState::NONE;
+        target.callable_effect = CallableEffect::NONE;
+        target.callable_contract.clear();
+        target.is_proven_callable = false;
+        if (value && value->type == ESHKOL_VAR) {
+            const std::string source_name = getVarName(value);
+            VariableInfo* source = lookupVariable(source_name);
+            if (source) {
+                target.callable_effect = source->callable_effect;
+                target.callable_contract = source->callable_contract;
+                target.is_proven_callable = source->is_proven_callable;
+            } else if (isKnownResourceSafeBuiltin(source_name) ||
+                       source_name == "exit" || source_name == "error") {
+                target.callable_effect = unresolvedCallableEffect(source_name);
+                target.is_proven_callable = true;
+            }
+        } else if (value && value->type == ESHKOL_OP &&
+                   value->operation.op == ESHKOL_LAMBDA_OP) {
+            target.is_proven_callable = true;
+            target.callable_effect = isSimplePureFunction(value)
+                ? CallableEffect::NONE : CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+            target.callable_contract.clear();
+            checkLambdaResourceCapture(value);
+            return;
+        }
+
+        CallableEffect expression_effect = effectForExpression(value);
+        ResourceKind produced_kind = factoryKind(expression_effect);
+        if (produced_kind != ResourceKind::NONE && value && value->type == ESHKOL_OP &&
+            value->operation.op == ESHKOL_CALL_OP) {
+            accepted_factory_nodes_.insert(value);
+            target.callable_effect = CallableEffect::NONE;
+            target.callable_contract.clear();
+            target.resource_kind = produced_kind;
+            target.resource_state = ResourceState::ERROR_OR_LIVE;
+            target.resource_alias = target_name;
+            return;
+        }
+
+        if (value && value->type == ESHKOL_OP && value->operation.op == ESHKOL_MOVE_OP) {
+            const std::string source_name = getVarName(value->operation.move_op.value);
+            VariableInfo* source = lookupVariable(source_name);
+            if (source && source->resource_kind != ResourceKind::NONE) {
+                accepted_move_nodes_.insert(value);
+                target.resource_kind = source->resource_kind;
+                target.resource_state = source->resource_state == ResourceState::MOVED
+                    ? source->moved_from_state : source->resource_state;
+                target.resource_alias = target_name;
+                return;
+            }
+        }
+
+        const std::string source_name = getVarName(value);
+        VariableInfo* source = lookupVariable(source_name);
+        if (source && source->resource_kind != ResourceKind::NONE) {
+            reportResourceError("copy of resource '" + source_name +
+                "' into '" + target_name + "' is unsupported; use move or borrow");
+        } else if (expressionProducesResourceValue(value)) {
+            reportResourceError("resource value escapes through initializer for '" +
+                target_name + "'");
+        }
+        if (value && value->type != ESHKOL_VAR && expressionContainsCallableContract(value))
+            reportResourceError("resource contract callable escapes through initializer for '" +
+                target_name + "'");
+    }
+
+    void acceptDirectFactoryInitializer(const eshkol_ast_t* value) {
+        if (!value || value->type != ESHKOL_OP ||
+            value->operation.op != ESHKOL_CALL_OP) return;
+        if (factoryKind(callableEffectOf(value->operation.call_op.func)) != ResourceKind::NONE)
+            accepted_factory_nodes_.insert(value);
+    }
+
+    void collectCapturedResourceIds(const eshkol_ast_t* node,
+                                    std::vector<std::set<std::string>>& lexical,
+                                    std::set<uint64_t>& captures,
+                                    unsigned depth = 0) {
+        if (!node) return;
+        if (depth > 256) {
+            capture_scan_truncated_ = true;
+            return;
+        }
+        if (node->type == ESHKOL_VAR) {
+            const std::string name = getVarName(node);
+            for (auto it = lexical.rbegin(); it != lexical.rend(); ++it)
+                if (it->count(name)) return;
+            VariableInfo* info = lookupVariable(name);
+            if (info && (info->resource_kind != ResourceKind::NONE ||
+                         info->callable_effect != CallableEffect::NONE))
+                captures.insert(info->binding_id);
+            return;
+        }
+        if (node->type == ESHKOL_CONS) {
+            collectCapturedResourceIds(node->cons_cell.car, lexical, captures, depth + 1);
+            collectCapturedResourceIds(node->cons_cell.cdr, lexical, captures, depth + 1);
+            return;
+        }
+        if (node->type != ESHKOL_OP) return;
+        const auto& op = node->operation;
+        switch (op.op) {
+            case ESHKOL_LAMBDA_OP: {
+                lexical.emplace_back();
+                for (uint64_t i = 0; i < op.lambda_op.num_params; ++i)
+                    lexical.back().insert(getVarName(&op.lambda_op.parameters[i]));
+                collectCapturedResourceIds(op.lambda_op.body, lexical, captures, depth + 1);
+                lexical.pop_back();
+                break;
+            }
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP: {
+                lexical.emplace_back();
+                if (op.op == ESHKOL_LETREC_OP || op.op == ESHKOL_LETREC_STAR_OP) {
+                    for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
+                        const auto* binding = &op.let_op.bindings[i];
+                        if (binding->type == ESHKOL_CONS)
+                            lexical.back().insert(getVarName(binding->cons_cell.car));
+                    }
+                }
+                for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
+                    const auto* binding = &op.let_op.bindings[i];
+                    if (binding->type != ESHKOL_CONS) continue;
+                    collectCapturedResourceIds(binding->cons_cell.cdr, lexical, captures, depth + 1);
+                    if (op.op == ESHKOL_LET_STAR_OP)
+                        lexical.back().insert(getVarName(binding->cons_cell.car));
+                }
+                if (op.op == ESHKOL_LET_OP) {
+                    for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
+                        const auto* binding = &op.let_op.bindings[i];
+                        if (binding->type == ESHKOL_CONS)
+                            lexical.back().insert(getVarName(binding->cons_cell.car));
+                    }
+                }
+                collectCapturedResourceIds(op.let_op.body, lexical, captures, depth + 1);
+                lexical.pop_back();
+                break;
+            }
+            case ESHKOL_CALL_OP:
+            case ESHKOL_IF_OP:
+            case ESHKOL_COND_OP:
+                if (op.op == ESHKOL_CALL_OP && op.call_op.func)
+                    collectCapturedResourceIds(op.call_op.func, lexical, captures, depth + 1);
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i)
+                    collectCapturedResourceIds(&op.call_op.variables[i], lexical, captures, depth + 1);
+                break;
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                    collectCapturedResourceIds(&op.sequence_op.expressions[i], lexical, captures, depth + 1);
+                break;
+            case ESHKOL_SEQUENCE_OP:
+                for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                    collectCapturedResourceIds(&op.sequence_op.expressions[i], lexical, captures, depth + 1);
+                break;
+            case ESHKOL_SET_OP:
+                collectCapturedResourceIds(op.set_op.value, lexical, captures, depth + 1);
+                break;
+            case ESHKOL_BORROW_OP:
+                collectCapturedResourceIds(op.borrow_op.value, lexical, captures, depth + 1);
+                for (uint64_t i = 0; i < op.borrow_op.num_body_exprs; ++i)
+                    collectCapturedResourceIds(&op.borrow_op.body[i], lexical, captures, depth + 1);
+                break;
+            case ESHKOL_MOVE_OP:
+                collectCapturedResourceIds(op.move_op.value, lexical, captures, depth + 1);
+                break;
+            case ESHKOL_OWNED_OP:
+                collectCapturedResourceIds(op.owned_op.value, lexical, captures, depth + 1);
+                break;
+            default:
+                break;
+        }
+    }
+
+    void checkLambdaResourceCapture(const eshkol_ast_t* lambda,
+                                    bool reject_callable_contract_captures = true) {
+        if (!lambda || lambda->type != ESHKOL_OP ||
+            lambda->operation.op != ESHKOL_LAMBDA_OP) return;
+        std::vector<std::set<std::string>> lexical(1);
+        for (uint64_t i = 0; i < lambda->operation.lambda_op.num_params; ++i)
+            lexical.back().insert(getVarName(&lambda->operation.lambda_op.parameters[i]));
+        std::set<uint64_t> captures;
+        capture_scan_truncated_ = false;
+        collectCapturedResourceIds(lambda->operation.lambda_op.body, lexical, captures);
+        if (capture_scan_truncated_)
+            reportResourceError("closure capture analysis exceeded the checked depth; closure effects are unsupported");
+        for (uint64_t id : captures) {
+            for (const auto& scope : scope_stack_) {
+                for (const auto& entry : scope.variables) {
+                    if (entry.second.binding_id != id) continue;
+                    if (entry.second.resource_kind != ResourceKind::NONE) {
+                        reportResourceError(isBorrowed(id)
+                            ? "borrowed resource '" + entry.first + "' escapes through a closure"
+                            : "resource '" + entry.first + "' is captured by a closure; closure effects are unsupported");
+                    } else if (reject_callable_contract_captures &&
+                               entry.second.callable_effect != CallableEffect::NONE) {
+                        reportResourceError("resource contract callable '" + entry.first +
+                            "' is captured by a closure; closure effects are unsupported");
+                    }
+                }
+            }
+        }
+    }
+
+    ResourceKind resourceKindForArgument(const eshkol_ast_t* argument,
+                                        const std::string& operation,
+                                        bool allow_error_union) {
+        const std::string name = getVarName(argument);
+        if (name.empty()) {
+            reportResourceError(operation + " requires a direct tracked resource owner variable");
+            return ResourceKind::NONE;
+        }
+        VariableInfo* info = lookupVariable(name);
+        if (!info || info->resource_kind == ResourceKind::NONE) {
+            reportResourceError(operation + " received an untracked value '" + name +
+                "'; raw or container-derived resource IDs are unsupported");
+            return ResourceKind::NONE;
+        }
+        if (info->resource_state == ResourceState::CLOSED ||
+            info->resource_state == ResourceState::CLOSED_OR_ERROR ||
+            info->resource_state == ResourceState::MOVED ||
+            info->resource_state == ResourceState::MAYBE_LIVE) {
+            reportResourceError("use of closed or moved resource '" + name + "' in " + operation);
+            return info->resource_kind;
+        }
+        if (!allow_error_union && info->resource_state == ResourceState::ERROR_ONLY) {
+            reportResourceError("resource operation " + operation +
+                " is used on a failed acquisition '" + name + "'");
+            return info->resource_kind;
+        }
+        if (!allow_error_union && info->resource_state == ResourceState::ERROR_OR_LIVE) {
+            reportResourceError("resource '" + name +
+                "' must be refined with the authentic network-error? predicate before " + operation);
+            return info->resource_kind;
+        }
+        return info->resource_kind;
+    }
+
+    bool isRawResourceBuiltin(const std::string& name) const {
+        static const std::set<std::string> names = {
+            "unix-socket-connect", "socket-send", "socket-recv", "socket-close",
+            "websocket-connect", "websocket-send", "websocket-receive",
+            "websocket-close", "fd-close"
+        };
+        return names.count(name) != 0;
+    }
+
+    // Closed set of compiler primitives whose resource effect is known to be
+    // scalar/data output. Every other unresolved compiler builtin is rejected
+    // under --strict-resources because it may create a hidden native handle.
+    bool isKnownResourceSafeBuiltin(const std::string& name) const {
+        static const std::set<std::string> names = {
+            "+", "-", "*", "/", "=", "<", "<=", ">", ">=", "boolean=?",
+            "eq?", "eqv?", "equal?", "not", "and", "or", "integer?", "exact?",
+            "inexact?", "number?", "real?", "string?", "symbol?", "vector?",
+            "pair?", "null?", "procedure?", "vector-length", "vector-ref", "car",
+            "cdr", "caar", "cadr", "caddr", "cadddr", "cddr", "cdddr", "cddddr",
+            "cons", "list", "append", "string-length", "string-ref", "substring",
+            "display", "write", "newline", "exit", "error", "void",
+            "inexact->exact", "make-rational"
+        };
+        return names.count(name) != 0;
+    }
+
+    void processResourceCall(const eshkol_ast_t* node) {
+        if (!strict_resources_ || !active_resource_effects_enabled_ || !node ||
+            node->type != ESHKOL_OP || node->operation.op != ESHKOL_CALL_OP) return;
+        const auto& call = node->operation.call_op;
+        const std::string function_name = getVarName(call.func);
+        const CallableEffect effect = callableEffectOf(call.func);
+        if (function_name == "not" && !lookupVariable(function_name)) {
+            uint64_t binding_id = 0;
+            bool true_is_error = false;
+            if (conditionRefinement(node, &binding_id, &true_is_error)) return;
+        }
+        if (factoryKind(effect) != ResourceKind::NONE) {
+            if (!accepted_factory_nodes_.count(node)) {
+                reportResourceError("factory result from '" + function_name +
+                    "' must be bound directly to one lexical owner");
+            } else if (callableContractOf(call.func) == "tcp-accept" && call.num_vars > 0) {
+                ResourceKind kind = resourceKindForArgument(&call.variables[0], function_name, false);
+                if (kind != ResourceKind::NONE && kind != ResourceKind::TCP_LISTENER)
+                    reportResourceError("tcp-accept requires a TCP listener resource");
+                if (kind != ResourceKind::NONE)
+                    allowed_resource_use_nodes_.insert(&call.variables[0]);
+            }
+            return;
+        }
+
+        if (effect == CallableEffect::CLOSE_TCP || effect == CallableEffect::CLOSE_UDP) {
+            if (call.num_vars < 1) return;
+            const std::string name = getVarName(&call.variables[0]);
+            VariableInfo* info = lookupVariable(name);
+            if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE") && info)
+                std::fprintf(stderr, "[strict-resources] close %s state=%u borrowed=%d\n",
+                    name.c_str(), static_cast<unsigned>(info->resource_state),
+                    isBorrowed(info->binding_id) ? 1 : 0);
+            if (!info || info->resource_kind == ResourceKind::NONE) {
+                reportResourceError(function_name +
+                    " requires a tracked resource owner; raw or forged integer IDs are unsupported");
+                return;
+            }
+            if ((effect == CallableEffect::CLOSE_TCP &&
+                 info->resource_kind != ResourceKind::TCP_LISTENER &&
+                 info->resource_kind != ResourceKind::TCP_STREAM) ||
+                (effect == CallableEffect::CLOSE_UDP &&
+                 info->resource_kind != ResourceKind::UDP_SOCKET)) {
+                reportResourceError("wrong resource kind passed to " + function_name +
+                    " for '" + name + "'");
+                return;
+            }
+            if (isBorrowed(info->binding_id)) {
+                reportResourceError("cannot consume borrowed resource '" + name + "'");
+                return;
+            }
+            if (info->resource_state == ResourceState::CLOSED ||
+                info->resource_state == ResourceState::CLOSED_OR_ERROR ||
+                info->resource_state == ResourceState::MOVED ||
+                info->resource_state == ResourceState::MAYBE_LIVE) {
+                reportResourceError("duplicate close or use after close of resource '" + name + "'");
+                return;
+            }
+            if (info->resource_state == ResourceState::ERROR_ONLY)
+                return; // failed acquisition owns no runtime handle
+            info->resource_state = info->resource_state == ResourceState::ERROR_OR_LIVE
+                ? ResourceState::CLOSED_OR_ERROR : ResourceState::CLOSED;
+            info->state = State::MOVED;
+            allowed_resource_use_nodes_.insert(&call.variables[0]);
+            return;
+        }
+
+        if (effect == CallableEffect::ERROR_PREDICATE) {
+            if (call.num_vars > 0 && !getVarName(&call.variables[0]).empty())
+                allowed_resource_use_nodes_.insert(&call.variables[0]);
+            return;
+        }
+
+        if (effect == CallableEffect::ERROR_OBSERVER) {
+            if (call.num_vars == 0) return;
+            const std::string name = getVarName(&call.variables[0]);
+            VariableInfo* info = lookupVariable(name);
+            if (info && info->resource_kind != ResourceKind::NONE) {
+                if (info->resource_state != ResourceState::ERROR_ONLY)
+                    reportResourceError(function_name + " requires the error branch of an acquisition");
+                allowed_resource_use_nodes_.insert(&call.variables[0]);
+            }
+            return;
+        }
+
+        if (effect == CallableEffect::RESOURCE_OBSERVER) {
+            if (call.num_vars == 0) return;
+            ResourceKind kind = resourceKindForArgument(&call.variables[0], function_name, false);
+            if (kind != ResourceKind::NONE)
+                allowed_resource_use_nodes_.insert(&call.variables[0]);
+            const std::string contract = callableContractOf(call.func);
+            ResourceKind expected = ResourceKind::NONE;
+            if (contract == "tcp-read" || contract == "tcp-write")
+                expected = ResourceKind::TCP_STREAM;
+            else if (contract == "tcp-accept") expected = ResourceKind::TCP_LISTENER;
+            else if (contract == "udp-sendto" || contract == "udp-recvfrom")
+                expected = ResourceKind::UDP_SOCKET;
+            if (kind != ResourceKind::NONE && expected != ResourceKind::NONE && kind != expected)
+                reportResourceError("wrong resource kind passed to " + function_name);
+            return;
+        }
+
+        VariableInfo* callee = lookupVariable(function_name);
+        if (callee && effect == CallableEffect::NONE &&
+            !callee->is_proven_callable) {
+            reportResourceError("callable value '" + function_name +
+                "' has no proved resource-effect provenance");
+            return;
+        }
+        if (effect == CallableEffect::TERMINAL_CONTROL) {
+            for (const auto& scope : scope_stack_) {
+                for (const auto& entry : scope.variables) {
+                    if (entry.second.resource_kind != ResourceKind::NONE &&
+                        isLiveResourceState(entry.second.resource_state)) {
+                        reportResourceError("terminal control transfer '" + function_name +
+                            "' occurs while resource '" + entry.first + "' may still be live");
+                    }
+                }
+            }
+            return;
+        }
+        if ((effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT) ||
+            (!callee && isRawResourceBuiltin(function_name))) {
+            reportResourceError("untrusted FFI or raw resource operation '" + function_name +
+                "' is unsupported in strict mode");
+            return;
+        }
+        if (!callee && effect == CallableEffect::NONE &&
+            !isKnownResourceSafeBuiltin(function_name)) {
+            reportResourceError("builtin '" + function_name +
+                "' has no strict resource effect summary and is unsupported");
+            return;
+        }
+        if (call.num_vars > 0) {
+            for (uint64_t i = 0; i < call.num_vars; ++i) {
+                if (expressionProducesResourceValue(&call.variables[i])) {
+                    reportResourceError("resource value escapes through unsupported call '" +
+                        function_name + "'");
+                    return;
+                }
+                if (expressionContainsCallableContract(&call.variables[i])) {
+                    reportResourceError("resource contract callable escapes through '" +
+                        function_name + "'");
+                    return;
+                }
+            }
+        }
+        if (!callee && (function_name == "eval" || function_name == "call/cc" ||
+                        function_name == "call-with-current-continuation")) {
+            reportResourceError("dynamic evaluation or continuation effects are unsupported");
+        }
+    }
 
     void pushScope(const std::string& name = "") {
         scope_stack_.push_back(Scope{{}, name});
@@ -1639,6 +2984,17 @@ private:
 
     uint64_t next_binding_id_ = 1;
     std::map<uint64_t, size_t> borrowed_counts_;
+    uint64_t next_branch_id_ = 1;
+    std::map<uint64_t, BranchFrame> branch_frames_;
+    std::set<const eshkol_ast_t*> accepted_factory_nodes_;
+    std::set<const eshkol_ast_t*> accepted_move_nodes_;
+    std::set<const eshkol_ast_t*> allowed_resource_use_nodes_;
+    std::map<const eshkol_ast_t*, VariableInfo> parallel_binding_info_;
+    bool capture_scan_truncated_ = false;
+    bool active_resource_effects_enabled_ = true;
+    WorkItem astChild(const eshkol_ast_t* node) const {
+        return WorkItem::astNode(node, active_resource_effects_enabled_);
+    }
     bool isBorrowed(uint64_t binding_id) const {
         auto it = borrowed_counts_.find(binding_id);
         return it != borrowed_counts_.end() && it->second > 0;
@@ -1659,7 +3015,8 @@ private:
         if (scope.name == "global") return;
 
         for (const auto& [name, info] : scope.variables) {
-            if (info.state == State::OWNED && info.is_owned_binding) {
+            if ((info.state == State::OWNED || info.state == State::MAYBE_MOVED) &&
+                info.is_owned_binding) {
                 reportError("Owned value '" + name + "' not consumed before scope exit" +
                            (info.defined_at.empty() ? "" : " (defined at " + info.defined_at + ")"));
             }
@@ -1667,26 +3024,29 @@ private:
     }
 
     // Get variable name from AST
-    std::string getVarName(const eshkol_ast_t* ast) {
+    std::string getVarName(const eshkol_ast_t* ast) const {
         if (ast && ast->type == ESHKOL_VAR && ast->variable.id) {
             return ast->variable.id;
         }
         return "";
     }
 
-    void analyzeAST(const eshkol_ast_t* ast) {
+    void analyzeAST(const eshkol_ast_t* ast, bool resource_effects_enabled = true) {
         if (!ast) return;
 
         // Heap-backed records preserve post-child actions without recursive calls.
         std::vector<WorkItem> work;
-        work.push_back(WorkItem::astNode(ast));
+        work.push_back(WorkItem::astNode(ast, strict_resources_ && resource_effects_enabled));
 
         while (!work.empty()) {
             WorkItem item = std::move(work.back());
             work.pop_back();
+            active_resource_effects_enabled_ = item.resource_effects_enabled;
 
             if (item.kind == WorkItem::Kind::EXIT_SCOPE) {
                 checkScopeExit();
+                if (strict_resources_ && item.resource_effects_enabled)
+                    checkResourceScopeExit();
                 popScope();
                 continue;
             }
@@ -1697,14 +3057,66 @@ private:
                 }
                 continue;
             }
+            if (item.kind == WorkItem::Kind::IF_AFTER_CONDITION) {
+                auto frame_it = branch_frames_.find(item.branch_id);
+                if (frame_it == branch_frames_.end() || !item.ast) continue;
+                auto& frame = frame_it->second;
+                frame.base_scopes = scope_stack_;
+                frame.base_borrows = borrowed_counts_;
+                const auto& call = item.ast->operation.call_op;
+                refineBranchCondition(frame.condition, true);
+                work.push_back(WorkItem::branchContinuation(
+                    WorkItem::Kind::IF_AFTER_TRUE, item.ast, item.branch_id,
+                    item.resource_effects_enabled));
+                work.push_back(astChild(&call.variables[1]));
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::IF_AFTER_TRUE) {
+                auto frame_it = branch_frames_.find(item.branch_id);
+                if (frame_it == branch_frames_.end() || !item.ast) continue;
+                auto& frame = frame_it->second;
+                frame.true_scopes = scope_stack_;
+                frame.true_borrows = borrowed_counts_;
+                if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE")) {
+                    VariableInfo* trace = lookupVariable("socket");
+                    std::fprintf(stderr, "[strict-resources] after true socket state=%u\n",
+                        trace ? static_cast<unsigned>(trace->resource_state) : 255U);
+                }
+                scope_stack_ = frame.base_scopes;
+                borrowed_counts_ = frame.base_borrows;
+                const auto& call = item.ast->operation.call_op;
+                refineBranchCondition(frame.condition, false);
+                work.push_back(WorkItem::branchContinuation(
+                    WorkItem::Kind::IF_AFTER_FALSE, item.ast, item.branch_id,
+                    item.resource_effects_enabled));
+                work.push_back(astChild(&call.variables[2]));
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::IF_AFTER_FALSE) {
+                auto frame_it = branch_frames_.find(item.branch_id);
+                if (frame_it != branch_frames_.end()) {
+                    joinBranchState(frame_it->second);
+                    branch_frames_.erase(frame_it);
+                }
+                continue;
+            }
             if (item.kind == WorkItem::Kind::LET_PARALLEL_INIT) {
                 if (item.index == item.op->let_op.num_bindings) {
-                    work.push_back(WorkItem::continuation(WorkItem::Kind::LET_PARALLEL_INSTALL, item.op));
+                    work.push_back(WorkItem::continuation(WorkItem::Kind::LET_PARALLEL_INSTALL, item.op, 0, item.resource_effects_enabled));
                     continue;
                 }
                 const eshkol_ast_t* binding = &item.op->let_op.bindings[item.index];
-                work.push_back(WorkItem::continuation(WorkItem::Kind::LET_PARALLEL_INIT, item.op, item.index + 1));
-                if (binding->type == ESHKOL_CONS) work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
+                work.push_back(WorkItem::continuation(WorkItem::Kind::LET_PARALLEL_INIT, item.op, item.index + 1, item.resource_effects_enabled));
+                if (binding->type == ESHKOL_CONS) {
+                    if (strict_resources_ && item.resource_effects_enabled) {
+                        acceptDirectFactoryInitializer(binding->cons_cell.cdr);
+                        std::string name = getVarName(binding->cons_cell.car);
+                        VariableInfo inferred{State::UNOWNED, "", false, 0};
+                        bindResourceInitializer(inferred, binding->cons_cell.cdr, name);
+                        parallel_binding_info_[binding] = std::move(inferred);
+                    }
+                    work.push_back(astChild(binding->cons_cell.cdr));
+                }
                 continue;
             }
             if (item.kind == WorkItem::Kind::LET_SEQUENTIAL_INSTALL) {
@@ -1713,9 +3125,12 @@ private:
                     std::string var_name = getVarName(binding->cons_cell.car);
                     if (!var_name.empty()) {
                         bool is_owned = transfersOwnership(binding->cons_cell.cdr);
-                        currentScope().variables[var_name] = {
-                            is_owned ? State::OWNED : State::UNOWNED, "", is_owned, next_binding_id_++
-                        };
+                        VariableInfo info{is_owned ? State::OWNED : State::UNOWNED,
+                                          "", is_owned, next_binding_id_++};
+                        if (strict_resources_ && item.resource_effects_enabled)
+                            bindResourceInitializer(info, binding->cons_cell.cdr, var_name);
+                        info.is_defined = true;
+                        currentScope().variables[var_name] = std::move(info);
                     }
                 }
                 continue;
@@ -1727,48 +3142,90 @@ private:
                     std::string var_name = getVarName(binding->cons_cell.car);
                     if (var_name.empty()) continue;
                     bool is_owned = transfersOwnership(binding->cons_cell.cdr);
-                    currentScope().variables[var_name] = {
-                        is_owned ? State::OWNED : State::UNOWNED, "", is_owned, next_binding_id_++
-                    };
+                    VariableInfo info{is_owned ? State::OWNED : State::UNOWNED,
+                                      "", is_owned, next_binding_id_++};
+                    if (strict_resources_ && item.resource_effects_enabled) {
+                        auto cached = parallel_binding_info_.find(binding);
+                        if (cached != parallel_binding_info_.end()) {
+                            const uint64_t binding_id = info.binding_id;
+                            info = cached->second;
+                            info.binding_id = binding_id;
+                            info.state = is_owned ? State::OWNED : State::UNOWNED;
+                            info.is_owned_binding = is_owned;
+                            parallel_binding_info_.erase(cached);
+                        }
+                    }
+                    info.is_defined = true;
+                    currentScope().variables[var_name] = std::move(info);
                 }
-                work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, item.op));
-                work.push_back(WorkItem::astNode(item.op->let_op.body));
+                work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, item.op, 0, item.resource_effects_enabled));
+                work.push_back(astChild(item.op->let_op.body));
                 continue;
             }
             if (item.kind == WorkItem::Kind::LET_BINDING) {
                 if (item.index == item.op->let_op.num_bindings) {
-                    work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, item.op));
-                    work.push_back(WorkItem::astNode(item.op->let_op.body));
+                    work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, item.op, 0, item.resource_effects_enabled));
+                    work.push_back(astChild(item.op->let_op.body));
                     continue;
                 }
                 const eshkol_ast_t* binding = &item.op->let_op.bindings[item.index];
                 work.push_back(WorkItem::continuation(
-                    WorkItem::Kind::LET_BINDING, item.op, item.index + 1));
+                    WorkItem::Kind::LET_BINDING, item.op, item.index + 1, item.resource_effects_enabled));
                 if (binding->type == ESHKOL_CONS) {
+                    if (strict_resources_ && item.resource_effects_enabled)
+                        acceptDirectFactoryInitializer(binding->cons_cell.cdr);
                     work.push_back(WorkItem::continuation(
-                        WorkItem::Kind::LET_SEQUENTIAL_INSTALL, item.op, item.index));
-                    work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
+                        WorkItem::Kind::LET_SEQUENTIAL_INSTALL, item.op, item.index, item.resource_effects_enabled));
+                    work.push_back(astChild(binding->cons_cell.cdr));
                 }
                 continue;
             }
 
             if (!item.ast) continue;
             const eshkol_ast_t* node = item.ast;
+            if (strict_resources_ && item.resource_effects_enabled && isIfForm(node)) {
+                if (envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE"))
+                    std::fprintf(stderr, "[strict-resources] branch IF vars=%llu condop=%d\n",
+                        static_cast<unsigned long long>(node->operation.call_op.num_vars),
+                        node->operation.call_op.variables[0].type == ESHKOL_OP
+                            ? static_cast<int>(node->operation.call_op.variables[0].operation.op) : -1);
+                const uint64_t branch_id = next_branch_id_++;
+                BranchFrame frame;
+                frame.if_node = node;
+                frame.condition = &node->operation.call_op.variables[0];
+                frame.resource_effects_enabled = item.resource_effects_enabled;
+                branch_frames_[branch_id] = std::move(frame);
+                work.push_back(WorkItem::branchContinuation(
+                    WorkItem::Kind::IF_AFTER_CONDITION, node, branch_id,
+                    item.resource_effects_enabled));
+                work.push_back(astChild(&node->operation.call_op.variables[0]));
+                continue;
+            }
+            if (strict_resources_ && item.resource_effects_enabled)
+                processResourceCall(node);
             switch (node->type) {
                 case ESHKOL_VAR: {
                     std::string name = getVarName(node);
                     if (!name.empty()) {
                         VariableInfo* info = lookupVariable(name);
-                        if (info && info->state == State::MOVED) {
+                        if (info && (info->state == State::MOVED ||
+                                     info->state == State::MAYBE_MOVED) &&
+                            !(strict_resources_ && allowed_resource_use_nodes_.count(node))) {
                             reportError("Use of moved value '" + name + "'");
+                        }
+                        if (strict_resources_ && item.resource_effects_enabled && info &&
+                            info->resource_kind != ResourceKind::NONE &&
+                            !allowed_resource_use_nodes_.count(node)) {
+                            reportResourceError("resource value '" + name +
+                                "' is used outside a recognized owner, observer, close, move, or borrow operation");
                         }
                     }
                     break;
                 }
 
                 case ESHKOL_CONS:
-                    work.push_back(WorkItem::astNode(node->cons_cell.cdr));
-                    work.push_back(WorkItem::astNode(node->cons_cell.car));
+                    work.push_back(astChild(node->cons_cell.cdr));
+                    work.push_back(astChild(node->cons_cell.car));
                     break;
 
                 case ESHKOL_OP: {
@@ -1778,16 +3235,92 @@ private:
                             std::string name = op->define_op.name ? op->define_op.name : "";
                             if (!name.empty()) {
                                 bool is_owned = transfersOwnership(op->define_op.value);
-                                currentScope().variables[name] = {
-                                    is_owned ? State::OWNED : State::UNOWNED, name, is_owned, next_binding_id_++
-                                };
-                                work.push_back(WorkItem::astNode(op->define_op.value));
+                                VariableInfo info{is_owned ? State::OWNED : State::UNOWNED,
+                                                  name, is_owned, next_binding_id_++};
+                                auto existing = currentScope().variables.find(name);
+                                if (existing != currentScope().variables.end()) {
+                                    if (strict_resources_ && item.resource_effects_enabled &&
+                                        existing->second.is_defined &&
+                                        existing->second.resource_kind != ResourceKind::NONE &&
+                                        isLiveResourceState(existing->second.resource_state)) {
+                                        reportResourceError("resource '" + name +
+                                            "' is overwritten before it is closed");
+                                    }
+                                    info.binding_id = existing->second.binding_id;
+                                }
+                                const bool bind_resource_effects = strict_resources_ &&
+                                    item.resource_effects_enabled;
+                                if (bind_resource_effects) {
+                                    info.is_defined = true;
+                                    if (op->define_op.is_external) {
+                                        if (isVerifiedStdlibScalarPrimitive(node)) {
+                                            info.callable_effect = CallableEffect::NONE;
+                                            info.is_proven_callable = true;
+                                            info.is_verified_stdlib_primitive = true;
+                                        } else if (op->define_op.is_function) {
+                                            info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                            info.is_proven_callable = true;
+                                        } else if (!isStaticDataExpression(op->define_op.value)) {
+                                            info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                            if (item.resource_effects_enabled)
+                                                reportResourceError("opaque external initializer for '" +
+                                                    name + "' is unsupported in strict mode");
+                                        }
+                                    } else if (op->define_op.is_function) {
+                                        eshkol_ast_t function_wrapper{};
+                                        function_wrapper.type = ESHKOL_OP;
+                                        function_wrapper.operation.op = ESHKOL_LAMBDA_OP;
+                                        function_wrapper.operation.lambda_op.parameters = op->define_op.parameters;
+                                        function_wrapper.operation.lambda_op.num_params = op->define_op.num_params;
+                                        function_wrapper.operation.lambda_op.body = op->define_op.value;
+                                        if (item.resource_effects_enabled)
+                                            checkLambdaResourceCapture(&function_wrapper, false);
+                                        if (isTrustedCoreNetDefinition(node)) {
+                                            info.callable_effect = effectForTrustedCoreNetName(name);
+                                            info.callable_contract = name;
+                                            info.is_proven_callable = true;
+                                        } else {
+                                            info.callable_effect = isSimplePureFunction(op->define_op.value)
+                                                ? CallableEffect::NONE
+                                                : CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                            info.is_proven_callable = true;
+                                        }
+                                    } else {
+                                        bindResourceInitializer(info, op->define_op.value, name);
+                                        if (info.callable_effect != CallableEffect::NONE &&
+                                            op->define_op.value &&
+                                            op->define_op.value->type == ESHKOL_VAR) {
+                                            info.callable_contract = callableContractOf(op->define_op.value);
+                                        }
+                                    }
+                                }
+                                currentScope().variables[name] = std::move(info);
+                                if (strict_resources_ && item.resource_effects_enabled)
+                                    acceptDirectFactoryInitializer(op->define_op.value);
+                                if (op->define_op.is_function) {
+                                    pushScope("function");
+                                    for (uint64_t i = 0; i < op->define_op.num_params; ++i) {
+                                        const std::string param_name =
+                                            getVarName(&op->define_op.parameters[i]);
+                                        if (!param_name.empty()) {
+                                            currentScope().variables[param_name] = {
+                                                State::UNOWNED, param_name, false,
+                                                next_binding_id_++
+                                            };
+                                        }
+                                    }
+                                    work.push_back(WorkItem::continuation(
+                                        WorkItem::Kind::EXIT_SCOPE, op, 0, false));
+                                    work.push_back(WorkItem::astNode(op->define_op.value, false));
+                                } else {
+                                    work.push_back(astChild(op->define_op.value));
+                                }
                             }
                             break;
                         }
 
                         case ESHKOL_OWNED_OP:
-                            work.push_back(WorkItem::astNode(op->owned_op.value));
+                            work.push_back(astChild(op->owned_op.value));
                             break;
 
                         case ESHKOL_MOVE_OP: {
@@ -1797,14 +3330,33 @@ private:
                                 if (info) {
                                     if (info->state == State::MOVED) {
                                         reportError("Double move of '" + var_name + "' - value already moved");
+                                    } else if (info->state == State::MAYBE_MOVED) {
+                                        reportError("Move of maybe-moved value '" + var_name + "'");
                                     } else if (isBorrowed(info->binding_id)) {
                                         reportError("Cannot move '" + var_name + "' while it is borrowed");
                                     } else {
                                         info->state = State::MOVED;
                                     }
+                                    if (strict_resources_ && item.resource_effects_enabled &&
+                                        info->resource_kind != ResourceKind::NONE) {
+                                        if (!accepted_move_nodes_.count(node)) {
+                                            reportResourceError("resource move from '" + var_name +
+                                                "' must initialize a new tracked owner");
+                                        } else if (info->resource_state == ResourceState::CLOSED ||
+                                            info->resource_state == ResourceState::CLOSED_OR_ERROR ||
+                                            info->resource_state == ResourceState::MOVED) {
+                                            reportResourceError("cannot move closed or already moved resource '" + var_name + "'");
+                                        } else if (isBorrowed(info->binding_id)) {
+                                            reportResourceError("cannot move borrowed resource '" + var_name + "'");
+                                        } else {
+                                            info->moved_from_state = info->resource_state;
+                                            info->resource_state = ResourceState::MOVED;
+                                            allowed_resource_use_nodes_.insert(op->move_op.value);
+                                        }
+                                    }
                                 }
                             } else {
-                                work.push_back(WorkItem::astNode(op->move_op.value));
+                                work.push_back(astChild(op->move_op.value));
                             }
                             break;
                         }
@@ -1817,13 +3369,20 @@ private:
                                 if (info && info->state == State::MOVED) {
                                     reportError("Cannot borrow moved value '" + var_name + "'");
                                 } else if (info) {
+                                    if (strict_resources_ && item.resource_effects_enabled &&
+                                        info->resource_kind != ResourceKind::NONE) {
+                                        if (info->resource_state != ResourceState::LIVE)
+                                            reportResourceError("resource '" + var_name +
+                                                "' must be on a successful acquisition path before borrow");
+                                        allowed_resource_use_nodes_.insert(op->borrow_op.value);
+                                    }
                                     borrowed_binding_id = info->binding_id;
                                     ++borrowed_counts_[borrowed_binding_id];
                                 }
                             }
                             if (borrowed_binding_id) work.push_back(WorkItem::unborrow(borrowed_binding_id));
                             for (uint64_t i = op->borrow_op.num_body_exprs; i > 0; --i) {
-                                work.push_back(WorkItem::astNode(&op->borrow_op.body[i - 1]));
+                                work.push_back(astChild(&op->borrow_op.body[i - 1]));
                             }
                             break;
                         }
@@ -1833,10 +3392,11 @@ private:
                             pushScope("let");
                             work.push_back(WorkItem::continuation(
                                 op->op == ESHKOL_LET_OP ? WorkItem::Kind::LET_PARALLEL_INIT
-                                                       : WorkItem::Kind::LET_BINDING, op));
+                                                       : WorkItem::Kind::LET_BINDING, op, 0, item.resource_effects_enabled));
                             break;
 
-                        case ESHKOL_LETREC_OP: {
+                        case ESHKOL_LETREC_OP:
+                        case ESHKOL_LETREC_STAR_OP: {
                             pushScope("letrec");
                             for (uint64_t i = 0; i < op->let_op.num_bindings; ++i) {
                                 const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -1847,21 +3407,34 @@ private:
                                         currentScope().variables[var_name] = {
                                             is_owned ? State::OWNED : State::UNOWNED, "", is_owned, next_binding_id_++
                                         };
+                                        currentScope().variables[var_name].is_defined = true;
                                     }
                                 }
                             }
-                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
-                            work.push_back(WorkItem::astNode(op->let_op.body));
+                            if (strict_resources_ && item.resource_effects_enabled) {
+                                for (uint64_t i = 0; i < op->let_op.num_bindings; ++i) {
+                                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                                    if (binding->type != ESHKOL_CONS) continue;
+                                    const std::string var_name = getVarName(binding->cons_cell.car);
+                                    VariableInfo* info = lookupVariable(var_name);
+                                    if (info)
+                                        bindResourceInitializer(*info, binding->cons_cell.cdr, var_name);
+                                }
+                            }
+                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op, 0, item.resource_effects_enabled));
+                            work.push_back(astChild(op->let_op.body));
                             for (uint64_t i = op->let_op.num_bindings; i > 0; --i) {
                                 const eshkol_ast_t* binding = &op->let_op.bindings[i - 1];
                                 if (binding->type == ESHKOL_CONS) {
-                                    work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
+                                    work.push_back(astChild(binding->cons_cell.cdr));
                                 }
                             }
                             break;
                         }
 
                         case ESHKOL_LAMBDA_OP:
+                            if (strict_resources_ && item.resource_effects_enabled)
+                                checkLambdaResourceCapture(node);
                             pushScope("lambda");
                             for (uint64_t i = 0; i < op->lambda_op.num_params; ++i) {
                                 std::string param_name = getVarName(&op->lambda_op.parameters[i]);
@@ -1869,49 +3442,158 @@ private:
                                     currentScope().variables[param_name] = {State::UNOWNED, "", false, next_binding_id_++};
                                 }
                             }
-                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
-                            work.push_back(WorkItem::astNode(op->lambda_op.body));
+                            work.push_back(WorkItem::continuation(
+                                WorkItem::Kind::EXIT_SCOPE, op, 0,
+                                strict_resources_ ? false : item.resource_effects_enabled));
+                            work.push_back(WorkItem::astNode(op->lambda_op.body,
+                                strict_resources_ ? false : item.resource_effects_enabled));
                             break;
 
-                        case ESHKOL_CALL_OP:
-                        case ESHKOL_IF_OP:
-                        case ESHKOL_COND_OP:
                         case ESHKOL_AND_OP:
                         case ESHKOL_OR_OP:
+                            if (strict_resources_ && item.resource_effects_enabled &&
+                                expressionHasResourceTransition(node))
+                                reportResourceError("resource transitions under and/or are unsupported in the checked fragment");
+                            for (uint64_t i = op->sequence_op.num_expressions; i > 0; --i)
+                                work.push_back(astChild(&op->sequence_op.expressions[i - 1]));
+                            break;
+                        case ESHKOL_COND_OP:
+                            if (strict_resources_ && item.resource_effects_enabled)
+                                reportResourceError("cond resource control flow is unsupported in the checked fragment");
+                            for (uint64_t i = op->call_op.num_vars; i > 0; --i)
+                                work.push_back(astChild(&op->call_op.variables[i - 1]));
+                            break;
+                        case ESHKOL_CALL_OP:
                             for (uint64_t i = op->call_op.num_vars; i > 0; --i) {
-                                work.push_back(WorkItem::astNode(&op->call_op.variables[i - 1]));
+                                work.push_back(astChild(&op->call_op.variables[i - 1]));
                             }
-                            work.push_back(WorkItem::astNode(op->call_op.func));
+                            work.push_back(astChild(op->call_op.func));
+                            break;
+
+                        case ESHKOL_IF_OP:
+                            for (uint64_t i = op->call_op.num_vars; i > 0; --i)
+                                work.push_back(astChild(&op->call_op.variables[i - 1]));
                             break;
 
                         case ESHKOL_SEQUENCE_OP:
                             for (uint64_t i = op->sequence_op.num_expressions; i > 0; --i) {
-                                work.push_back(WorkItem::astNode(&op->sequence_op.expressions[i - 1]));
+                                work.push_back(astChild(&op->sequence_op.expressions[i - 1]));
                             }
                             break;
 
                         case ESHKOL_WITH_REGION_OP:
                             pushScope("region");
-                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
+                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op, 0, item.resource_effects_enabled));
                             for (uint64_t i = op->with_region_op.num_body_exprs; i > 0; --i) {
-                                work.push_back(WorkItem::astNode(&op->with_region_op.body[i - 1]));
+                                work.push_back(astChild(&op->with_region_op.body[i - 1]));
                             }
                             break;
 
                         case ESHKOL_SHARED_OP:
-                            work.push_back(WorkItem::astNode(op->shared_op.value));
+                            work.push_back(astChild(op->shared_op.value));
                             break;
 
                         case ESHKOL_WEAK_REF_OP:
-                            work.push_back(WorkItem::astNode(op->weak_ref_op.value));
+                            work.push_back(astChild(op->weak_ref_op.value));
                             break;
 
                         case ESHKOL_SET_OP:
-                            work.push_back(WorkItem::astNode(op->set_op.value));
+                            if (strict_resources_ && item.resource_effects_enabled && op->set_op.name) {
+                                VariableInfo* target = lookupVariable(op->set_op.name);
+                                if (target) {
+                                    if (target->resource_kind != ResourceKind::NONE) {
+                                        reportResourceError("set! cannot overwrite resource owner '" +
+                                            std::string(op->set_op.name) + "'");
+                                        target->resource_state = ResourceState::MAYBE_LIVE;
+                                    }
+                                    if (target->callable_effect != CallableEffect::NONE ||
+                                        target->is_proven_callable ||
+                                        effectForExpression(op->set_op.value) != CallableEffect::NONE) {
+                                        target->callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                        target->callable_contract.clear();
+                                        target->is_proven_callable = false;
+                                    }
+                                }
+                            }
+                            work.push_back(astChild(op->set_op.value));
                             break;
 
+                        case ESHKOL_EXTERN_OP: {
+                            const std::string name = op->extern_op.name ? op->extern_op.name : "";
+                            if (!name.empty()) {
+                                VariableInfo info{State::UNOWNED, name, false, next_binding_id_++};
+                                auto existing = currentScope().variables.find(name);
+                                if (existing != currentScope().variables.end())
+                                    info.binding_id = existing->second.binding_id;
+                                if (isVerifiedStdlibScalarPrimitive(node)) {
+                                    info.callable_effect = CallableEffect::NONE;
+                                    info.is_proven_callable = true;
+                                    info.is_verified_stdlib_primitive = true;
+                                } else {
+                                    info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                    info.is_proven_callable = true;
+                                }
+                                info.is_defined = true;
+                                currentScope().variables[name] = std::move(info);
+                            }
+                            break;
+                        }
+
+                        case ESHKOL_EXTERN_VAR_OP:
+                            if (strict_resources_ && item.resource_effects_enabled)
+                                reportResourceError("untrusted extern variable is unsupported in the checked fragment");
+                            break;
+
+                        case ESHKOL_DO_OP:
+                            if (strict_resources_ && item.resource_effects_enabled)
+                                reportResourceError("loop effects are unsupported in the checked fragment");
+                            break;
+
+                        case ESHKOL_CALL_CC_OP:
+                        case ESHKOL_DYNAMIC_WIND_OP:
+                            if (strict_resources_ && item.resource_effects_enabled)
+                                reportResourceError("continuation or dynamic-wind effects are unsupported in the checked fragment");
+                            break;
+
+                        case ESHKOL_VALUES_OP:
+                        case ESHKOL_CALL_WITH_VALUES_OP:
+                            if (strict_resources_ && item.resource_effects_enabled)
+                                reportResourceError("multiple-value resource flow is unsupported in the checked fragment");
+                            break;
+
+                        case ESHKOL_QUASIQUOTE_OP:
+                        case ESHKOL_UNQUOTE_OP:
+                        case ESHKOL_UNQUOTE_SPLICING_OP:
+                            if (strict_resources_ && item.resource_effects_enabled)
+                                reportResourceError("quasiquote/unquote evaluation is unsupported in the checked fragment");
+                            break;
+
+                        case ESHKOL_WHEN_OP:
+                        case ESHKOL_UNLESS_OP:
+                        case ESHKOL_CASE_OP:
+                        case ESHKOL_MATCH_OP:
+                            if (strict_resources_ && item.resource_effects_enabled)
+                                reportResourceError("conditional form is unsupported for resource flow in this checked fragment");
+                            break;
+
+                        case ESHKOL_DEFINE_TYPE_OP:
+                        case ESHKOL_IMPORT_OP:
+                        case ESHKOL_REQUIRE_OP:
+                        case ESHKOL_PROVIDE_OP:
+                        case ESHKOL_DEFINE_SYNTAX_OP:
                         case ESHKOL_QUOTE_OP:
                         default:
+                            if (strict_resources_ && item.resource_effects_enabled &&
+                                op->op != ESHKOL_QUOTE_OP &&
+                                op->op != ESHKOL_DEFINE_TYPE_OP &&
+                                op->op != ESHKOL_IMPORT_OP &&
+                                op->op != ESHKOL_REQUIRE_OP &&
+                                op->op != ESHKOL_PROVIDE_OP &&
+                                op->op != ESHKOL_DEFINE_SYNTAX_OP &&
+                                op->op != ESHKOL_QUOTE_OP)
+                                reportResourceError("operator form " +
+                                    std::to_string(static_cast<int>(op->op)) +
+                                    " has no strict resource traversal summary");
                             break;
                     }
                     break;
@@ -2531,6 +4213,7 @@ static void print_help(int x = 0)
         "\t--debug-info:[-g] = Emit DWARF debug info (enables lldb/gdb source-level debugging).\n"
         "\t--optimize:[-O] N = Set LLVM optimization level (0=none, 1=basic, 2=full, 3=aggressive).\n"
         "\t--strict-types = Type errors are fatal (default: gradual/warnings).\n"
+        "\t--strict-resources = Check core.net resource ownership in the supported native fragment.\n"
         "\t--unsafe = Skip all type checks.\n\n"
         "Eshkol Compiler v%s\n",
         ESHKOL_VER
@@ -2546,7 +4229,6 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
         eshkol_error("File not found: %s", filepath.c_str());
         return;
     }
-
     // Normalize path to prevent duplicate imports
     std::string normalized_path = std::filesystem::canonical(filepath).string();
 
@@ -2559,11 +4241,14 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
     }
     imported_files.insert(normalized_path);
 
-    std::ifstream read_file(filepath);
+    std::ifstream read_file(filepath, std::ios::binary);
     if (!read_file.is_open()) {
         eshkol_error("Failed to open file: %s", filepath.c_str());
         return;
     }
+    const std::string source_bytes(
+        (std::istreambuf_iterator<char>(read_file)), std::istreambuf_iterator<char>());
+    recordStrictSourceIdentityBytes(filepath, source_bytes);
 
     if (debug_mode) {
         eshkol_info("Loading file: %s", filepath.c_str());
@@ -2575,7 +4260,8 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
     eshkol_set_parse_source_context(filepath.c_str());
     eshkol_reset_parse_line_counter();
 
-    eshkol_ast_t ast = eshkol_parse_next_ast(read_file);
+    std::istringstream parse_stream(source_bytes);
+    eshkol_ast_t ast = eshkol_parse_next_ast_from_stream(parse_stream);
     while (ast.type != ESHKOL_INVALID) {
         if (debug_mode) {
             printf("\n=== AST Debug Output ===\n");
@@ -2583,13 +4269,13 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
             printf("========================\n\n");
         }
         asts.push_back(ast);
-        ast = eshkol_parse_next_ast(read_file);
+        ast = eshkol_parse_next_ast_from_stream(parse_stream);
     }
     /* ESHKOL_INVALID is also the parser's EOF sentinel.  If the stream has
      * not reached EOF, however, the invalid node is a reported syntax error
      * and compilation must not silently truncate the file and return success
      * (notably for the R7RS `syntax-error` form). */
-    if (!read_file.eof()) g_source_parse_failed = true;
+    if (!parse_stream.eof()) g_source_parse_failed = true;
 
     read_file.close();
 }
@@ -2715,6 +4401,7 @@ static llvm::Error validate_stdlib_object_file(const std::string& path)
             path.c_str(), found_identity.c_str(),
             static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
     }
+    g_verified_stdlib_artifact_identity = true;
     return llvm::Error::success();
 }
 
@@ -2758,6 +4445,7 @@ static llvm::Error validate_stdlib_bitcode_file(const std::string& path)
             "rejecting precompiled stdlib bitcode %s: %s; expected %s",
             path.c_str(), found_identity.c_str(), static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
     }
+    g_verified_stdlib_artifact_identity = true;
     return llvm::Error::success();
 }
 
@@ -4067,6 +5755,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                         }
                         continue;
                     }
+                    recordStrictSourceIdentity(module_path);
 
                     if (debug_mode) {
                         eshkol_info("Module %s is pre-compiled - loading declarations from %s", module_name.c_str(), module_path.c_str());
@@ -4080,8 +5769,21 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                         continue;
                     }
 
+                    // These name pointers originate in declarations belonging
+                    // to the identity-validated precompiled stdlib closure.
+                    // Only the closed scalar-primitive allowlist may use this
+                    // provenance to avoid a false UNKNOWN effect summary.
+                    recordVerifiedStdlibScalarPrimitives(module_asts);
+
                     // Collect module exports BEFORE processing requires (process_requires may modify ASTs)
                     std::set<std::string> module_exports = collect_module_exports(module_asts);
+                    // A precompiled object can execute a body different from
+                    // the parsed declarations, so source identity cannot
+                    // authenticate its runtime effects.
+                    if (module_name == "core.net") {
+                        g_untrusted_core_net_required = true;
+                        g_verified_core_net_exports.clear();
+                    }
                     std::set<std::string> module_defined_symbols = collect_defined_symbols(module_asts);
                     std::set<std::string> r7rs_alias_sources =
                         module_exports.empty() ? module_defined_symbols : module_exports;
@@ -4186,6 +5888,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                     g_module_load_failed = true;
                     continue;
                 }
+                recordStrictSourceIdentity(module_path);
 
                 if (debug_mode) {
                     eshkol_info("Requiring module '%s' from: %s", module_name.c_str(), module_path.c_str());
@@ -4218,6 +5921,8 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
 
                 // Collect exports from this module BEFORE processing sub-modules
                 std::set<std::string> exports = collect_module_exports(module_asts);
+                if (recordCoreNetIdentity(module_name, module_path, exports))
+                    recordTrustedCoreNetDefinitions(module_asts, exports);
                 std::set<std::string> defined_symbols = collect_defined_symbols(module_asts);
                 const bool inline_load = ast.operation.require_op.is_load;
                 std::set<std::string> r7rs_alias_sources =
@@ -4290,6 +5995,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
     for (auto& ast : required_asts) {
         asts.push_back(ast);
     }
+    g_module_ast_prefix_count = required_asts.size();
     for (auto& ast : new_asts) {
         asts.push_back(ast);
     }
@@ -4441,6 +6147,14 @@ struct OwnedLinkTemporaryObjects {
 
 int main(int argc, char **argv)
 {
+    g_verified_core_net_exports.clear();
+    g_untrusted_core_net_required = false;
+    g_trusted_core_net_definition_names.clear();
+    g_verified_stdlib_artifact_identity = false;
+    g_verified_stdlib_scalar_primitive_names.clear();
+    g_strict_source_identities.clear();
+    g_strict_source_identity_conflict = false;
+    g_capture_strict_source_identity = false;
 #ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
     eshkol::frontend::enable_self_hosted_incremental();
 #endif
@@ -4494,6 +6208,7 @@ int main(int argc, char **argv)
     uint8_t wasm_output = 0;
     uint8_t no_stdlib = 0;
     uint8_t strict_types = 0;
+    uint8_t strict_resources = 0;
     uint8_t unsafe_mode = 0;
     uint8_t debug_info = 0;  // -g flag: emit DWARF debug info for lldb/gdb
     int opt_level = 0;       // -O flag: LLVM optimization level (0-3)
@@ -4613,6 +6328,9 @@ int main(int argc, char **argv)
             break;
         case 257:
             unsafe_mode = 1;
+            break;
+        case 268:
+            strict_resources = 1;
             break;
         case 258:
             printf("Eshkol Compiler v%s\n", ESHKOL_VER);
@@ -4883,6 +6601,22 @@ int main(int argc, char **argv)
         fprintf(stderr, "--require-vm-entry-zero-arg requires a VM profile with --emit-eskb\n");
         return 1;
     }
+    if (strict_resources && vm_only_profile) {
+        eshkol_error("--strict-resources is currently supported only by native compilation");
+        return 1;
+    }
+    if (strict_resources && eval_expr) {
+        eshkol_error("--strict-resources cannot certify dynamic --eval expressions");
+        return 1;
+    }
+    if (strict_resources && wasm_output) {
+        eshkol_error("--strict-resources currently supports native CPU artifacts only");
+        return 1;
+    }
+    if (strict_resources && !linked_libs.empty()) {
+        eshkol_error("Strict resource error: opaque -l libraries are unsupported with --strict-resources");
+        return 1;
+    }
 
     if (!include_paths.empty()) {
         std::string merged;
@@ -5043,7 +6777,7 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
-        if (argc - optind == 1 && !debug_mode && !dump_ast && !dump_ir &&
+        if (argc - optind == 1 && !strict_resources && !debug_mode && !dump_ast && !dump_ir &&
             !language_coverage_tracing && compile_defines.empty()) {
             if (auto cached_status = tryRunFromPersistentJitCache(
                     argv[0], argv[optind], no_stdlib, strict_types, unsafe_mode,
@@ -5094,6 +6828,7 @@ int main(int argc, char **argv)
                 eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
                 return 1;
             }
+            const std::string file_source_bytes = readFileBytes(filepath);
 
             if (debug_mode) {
                 eshkol_info("JIT running: %s", filepath.c_str());
@@ -5107,18 +6842,9 @@ int main(int argc, char **argv)
             // two answers depending only on whether the cache was in play.
             eshkol::platform::ScopedRequiringFile requiring_file(filepath);
 
-            // Set source context so runtime type errors carry a
-            // "file:line:col:" prefix (v1.3 source-span errors), matching
-            // the AOT path. Read the file text once for diagnostics.
-            {
-                std::ifstream src_stream(filepath);
-                if (src_stream.is_open()) {
-                    std::string src_text(
-                        (std::istreambuf_iterator<char>(src_stream)),
-                        std::istreambuf_iterator<char>());
-                    eshkol_set_source_context(filepath.c_str(), src_text.c_str());
-                }
-            }
+            // Runtime diagnostics and both strict-analysis parses share the
+            // same source bytes, so a file edit cannot change the checked AST.
+            eshkol_set_source_context(filepath.c_str(), file_source_bytes.c_str());
 
             // Architectural fix for the per-form JIT module boundary class:
             //
@@ -5138,7 +6864,8 @@ int main(int argc, char **argv)
             file_asts.reserve(64);
             eshkol_reset_parse_errors();
             {
-                eshkol_ast_t ast = eshkol_parse_next_ast(file);
+                std::istringstream parse_stream(file_source_bytes);
+                eshkol_ast_t ast = eshkol_parse_next_ast_from_stream(parse_stream);
                 while (ast.type != ESHKOL_INVALID) {
                     if (debug_mode) {
                         printf("=== AST ===\n");
@@ -5146,7 +6873,7 @@ int main(int argc, char **argv)
                         printf("===========\n");
                     }
                     file_asts.push_back(ast);
-                    ast = eshkol_parse_next_ast(file);
+                    ast = eshkol_parse_next_ast_from_stream(parse_stream);
                 }
             }
             // ESH-0361: a hard parse error (e.g. an unbalanced paren →
@@ -5162,6 +6889,79 @@ int main(int argc, char **argv)
                 file.close();
                 eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
                 return 1;
+            }
+
+            std::vector<eshkol_ast_t> strict_checked_user_asts;
+            if (strict_resources) {
+                if (argc - optind != 1) {
+                    eshkol_error("--strict-resources currently requires one source file in --run mode");
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
+                std::string base_dir = std::filesystem::path(filepath).parent_path().string();
+                if (base_dir.empty()) base_dir = ".";
+                g_strict_source_identities.clear();
+                g_capture_strict_source_identity = true;
+                recordStrictSourceIdentityBytes(filepath, file_source_bytes);
+                // Analyze a fresh parse copy so the normal in-process JIT
+                // still executes its established per-module require path.
+                // process_requires rewrites AST bindings while flattening
+                // modules, so sharing the original AST here would make the
+                // subsequent JIT import execute a different program.
+                std::vector<eshkol_ast_t> strict_asts;
+                eshkol_reset_parse_line_counter();
+                eshkol_reset_parse_errors();
+                {
+                    std::istringstream strict_parse_stream(file_source_bytes);
+                    eshkol_ast_t strict_ast = eshkol_parse_next_ast_from_stream(strict_parse_stream);
+                    while (strict_ast.type != ESHKOL_INVALID) {
+                        strict_asts.push_back(strict_ast);
+                        strict_ast = eshkol_parse_next_ast_from_stream(strict_parse_stream);
+                    }
+                }
+                if (eshkol_parse_had_error()) {
+                    eshkol_error("Strict resource analysis parse failed; refusing to run");
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                g_module_load_failed = false;
+                process_requires(strict_asts, base_dir, debug_mode);
+                process_imports(strict_asts, base_dir, debug_mode);
+                if (g_module_load_failed) {
+                    eshkol_error("Unresolved module dependency; refusing strict resource analysis");
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                if (!g_ownership_analyzer.analyze(strict_asts, true)) {
+                    eshkol_error("Ownership analysis failed:");
+                    g_ownership_analyzer.printErrors();
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                std::string changed_source;
+                if (!strictSourceIdentitiesUnchanged(&changed_source)) {
+                    eshkol_error("A source module changed after strict resource analysis; refusing to run: %s",
+                                 changed_source.c_str());
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                g_capture_strict_source_identity = false;
+                const size_t module_prefix = std::min(g_module_ast_prefix_count,
+                                                       strict_asts.size());
+                strict_checked_user_asts.insert(strict_checked_user_asts.end(),
+                    strict_asts.begin() + static_cast<std::ptrdiff_t>(module_prefix),
+                    strict_asts.end());
+                // The resource pass used the AOT resolver on an isolated AST
+                // parse. Restore the JIT compilation-unit registry before the
+                // original ASTs enter their normal module-load path.
+                eshkol::library_registry::reset();
+                g_module_load_failed = false;
             }
 
             // Process require/import up front so their module contents are
@@ -5205,9 +7005,18 @@ int main(int argc, char **argv)
                         return 1;
                     }
                 } else {
-                    update_ast_references(&ast, g_import_bindings);
-                    batch.push_back(ast);
+                    if (!strict_resources) {
+                        update_ast_references(&ast, g_import_bindings);
+                        batch.push_back(ast);
+                    }
                 }
+            }
+
+            if (strict_resources) {
+                // Execute the exact expanded user forms that the analyzer
+                // checked, after the ordinary JIT require path has loaded the
+                // source modules into this JIT context.
+                batch = std::move(strict_checked_user_asts);
             }
 
             if (!batch.empty()) {
@@ -5262,6 +7071,12 @@ int main(int argc, char **argv)
             source_files.push_back(argv[optind]);
         else if (ends_with(tmp, ".o"))
             compiled_files.push_back(argv[optind]);
+    }
+
+    if (strict_resources && !compiled_files.empty()) {
+        eshkol_error("Strict resource error: opaque .o inputs cannot be certified by --strict-resources");
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+        return 1;
     }
 
     if (vm_only_profile) {
@@ -5396,6 +7211,11 @@ int main(int argc, char **argv)
     // missing/unreadable entry file is fatal here and nothing is written,
     // symmetric with the -r path's top-level existence check. Found by the P8
     // escape-closure fault-injection matrix.
+    if (strict_resources) {
+        g_strict_source_identities.clear();
+        g_strict_source_identity_conflict = false;
+        g_capture_strict_source_identity = true;
+    }
     for (const auto &source_file : source_files) {
         if (!std::filesystem::exists(source_file)) {
             eshkol_error("File not found: %s", source_file);
@@ -5417,6 +7237,16 @@ int main(int argc, char **argv)
         eshkol_error("Source parsing failed; refusing to compile a truncated program");
         eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
         return 1;
+    }
+
+    if (strict_resources) {
+        std::string changed_source;
+        if (!strictSourceIdentitiesUnchanged(&changed_source)) {
+            eshkol_error("A source module changed during strict resource compilation; refusing to compile: %s",
+                         changed_source.c_str());
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
     }
 
     // Bug Y (Noesis 2026-04-30): stdlib auto-loading was previously
@@ -5650,7 +7480,7 @@ int main(int argc, char **argv)
     // Run ownership analysis before code generation
     if (!asts.empty()) {
         eshkol_info("Running ownership analysis...");
-        if (!g_ownership_analyzer.analyze(asts)) {
+        if (!g_ownership_analyzer.analyze(asts, strict_resources != 0)) {
             eshkol_error("Ownership analysis failed:");
             g_ownership_analyzer.printErrors();
             return 1;
@@ -5658,6 +7488,17 @@ int main(int argc, char **argv)
         if (debug_mode) {
             eshkol_info("Ownership analysis passed");
         }
+    }
+
+    if (strict_resources) {
+        std::string changed_source;
+        if (!strictSourceIdentitiesUnchanged(&changed_source)) {
+            eshkol_error("A source module changed after strict resource analysis; refusing code generation: %s",
+                         changed_source.c_str());
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+        g_capture_strict_source_identity = false;
     }
 
     auto esh0103_t_own1 = esh0103_now();

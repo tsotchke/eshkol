@@ -1,0 +1,2 @@
+(require core.net)
+(net-local-port 1)

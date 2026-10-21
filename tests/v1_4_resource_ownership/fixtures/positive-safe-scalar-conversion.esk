@@ -1,0 +1,3 @@
+(define exact-value (inexact->exact 2.5))
+(define ratio (make-rational 1 2))
+(if (and (exact? exact-value) (= ratio 1/2)) #t #f)

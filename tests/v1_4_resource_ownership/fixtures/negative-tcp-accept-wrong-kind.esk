@@ -1,0 +1,12 @@
+(import (core net))
+(define listener (tcp-listen "127.0.0.1" 0))
+(define stream (tcp-connect "127.0.0.1" 1 0))
+(if (network-error? listener)
+    #t
+    (if (network-error? stream)
+        (tcp-close listener)
+        (begin
+          (define accepted (tcp-accept stream 0))
+          (if (network-error? accepted)
+              (begin (tcp-close stream) (tcp-close listener))
+              (begin (tcp-close accepted) (tcp-close stream) (tcp-close listener))))))

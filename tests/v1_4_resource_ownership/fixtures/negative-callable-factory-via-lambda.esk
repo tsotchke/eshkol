@@ -1,0 +1,4 @@
+(import (core net))
+(define make (lambda () tcp-listen))
+(define factory (make))
+(define socket (factory "127.0.0.1" 0))
