@@ -66,7 +66,6 @@ ESHKOL_WASM_VM_FLAGS=(
 # added, never silently turned into an abort.
 ESHKOL_WASM_ALLOWED_UNDEFINED=(
     eshkol_capability_require
-    eshkol_linear_solve
     eshkol_qrng_double
     eshkol_qrng_uint64
 )
