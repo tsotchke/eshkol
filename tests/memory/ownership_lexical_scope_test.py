@@ -16,7 +16,7 @@ def run(command, work, env):
 def fails(compiler, source, work, env, text):
     output = work / (source.stem + "-bad")
     result = run([str(compiler), "-n", "-O0", str(source), "-o", str(output)], work, env)
-    if result.returncode == 0 or text not in result.stdout:
+    if result.returncode != 1 or text not in result.stdout or output.exists():
         raise RuntimeError(f"{source.name}: expected failing compile with {text!r}; "
                            f"exit={result.returncode}\n{result.stdout[-4000:]}")
 
@@ -58,6 +58,21 @@ def main():
         if sequential_move.returncode or sequential_move.stdout.strip() != "1":
             raise RuntimeError(f"let* shadow move failed: {sequential_move.returncode}\n"
                                f"{sequential_move.stdout[-4000:]}")
+        borrow_shadow = fixtures / "ownership_borrow_shadow_move.esk"
+        for mode in ("jit", "aot"):
+            if mode == "jit":
+                command = [str(compiler), "-n", "-r", "-O0", str(borrow_shadow)]
+            else:
+                binary = work / "borrow-shadow-aot"
+                built = run([str(compiler), "-n", "-O0", str(borrow_shadow),
+                             "-o", str(binary)], work, env)
+                if built.returncode:
+                    raise RuntimeError(f"borrow shadow AOT compile failed:\n{built.stdout[-4000:]}")
+                command = [str(binary)]
+            result = run(command, work, env)
+            if result.returncode or result.stdout.strip() != "3\n1\n1":
+                raise RuntimeError(f"borrow shadow {mode} failed: {result.returncode}\n"
+                                   f"{result.stdout[-4000:]}")
     print("PASS: lexical shadow move JIT/AOT, outer and initializer moves, nested borrow, let* visibility")
 
 
