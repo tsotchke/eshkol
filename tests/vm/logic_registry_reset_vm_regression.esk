@@ -1,0 +1,20 @@
+;; The testing reset extern is backed by the VM's own portable variable and
+;; term intern registries. Exercise it between two independent test batches.
+(import (core testing))
+
+(register-test "first logic registry batch"
+  (lambda ()
+    (let fill ((i 0))
+      (if (< i 4096)
+          (begin
+            (make-logic-var (string-append "?batch-" (number->string i)))
+            (fill (+ i 1)))
+          #t))
+    (check-true (logic-var? (make-logic-var "?batch-4095")))))
+(run-tests)
+
+(reset-tests!)
+(register-test "second logic registry batch after reset"
+  (lambda ()
+    (check-true (logic-var? (make-logic-var "?after-reset")))))
+(run-tests)

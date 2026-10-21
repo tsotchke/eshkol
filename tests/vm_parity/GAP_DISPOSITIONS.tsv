@@ -24,7 +24,6 @@ blackman-window	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signa
 butterworth-bandpass	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
 butterworth-highpass	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
 butterworth-lowpass	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	signal faculty has no VM fid coverage
-bytevector	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-input-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-output-file	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 call-with-port	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM

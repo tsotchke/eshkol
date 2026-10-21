@@ -347,6 +347,7 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t #f) (_tensor-reduce-sum t (car args))))\n"
     "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t #f) (_tensor-reduce-mean t (car args))))\n"
     "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t #f) (_tensor-reduce-max t (car args))))\n"
-    "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t #f) (_tensor-reduce-min t (car args))))\n";
+    "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t #f) (_tensor-reduce-min t (car args))))\n"
+    "(define (bytevector . bytes) (_bytevector-from-list bytes))\n";
 
 #endif /* ESHKOL_VM_PRELUDE_SOURCE_H */

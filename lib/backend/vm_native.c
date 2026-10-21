@@ -8,6 +8,8 @@
 #include "../core/tensor_observation.h"
 #include "../core/value_type_names.h"
 
+void eshkol_vm_logic_registry_reset(void);
+
 /* Seeded pseudorandom numbers use the hosted runtime's one canonical
  * drand48-compatible state on the native VM. The WASM VM has no hosted
  * runtime, so it carries the identical 48-bit algorithm locally. */
@@ -16458,6 +16460,43 @@ tensor_inverse_done:
         VmBytevector* bv = vm_bv_make(&vm->heap.regions, (int)as_number(n), (int)as_number(fill));
         if (!bv) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv);
+        break;
+    }
+    case 2250: { /* bytevector(byte...) — rest arguments arrive as a list. */
+        Value rest = vm_pop(vm);
+        int len = 0;
+        Value cur = rest;
+        while (cur.type == VAL_PAIR) {
+            if (!is_valid_heap_ptr(vm, cur.as.ptr) ||
+                !vm->heap.objects[cur.as.ptr]) {
+                vm_raise_error_msg(vm, "bytevector: expected a proper list of exact integers in [0,255]");
+                break;
+            }
+            Value item = vm->heap.objects[cur.as.ptr]->cons.car;
+            if (item.type != VAL_INT || item.as.i < 0 || item.as.i > 255) {
+                vm_raise_error_msg(vm, "bytevector: expected exact integers in [0,255]");
+                break;
+            }
+            ++len;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (!vm->error && cur.type != VAL_NIL)
+            vm_raise_error_msg(vm, "bytevector: expected a proper list of exact integers in [0,255]");
+        if (vm->error) break;
+        VmBytevector* bv = vm_bv_make(&vm->heap.regions, len, 0);
+        if (!bv) { vm_push(vm, NIL_VAL); break; }
+        cur = rest;
+        for (int i = 0; i < len; ++i) {
+            HeapObject* cell = vm->heap.objects[cur.as.ptr];
+            bv->data[i] = (uint8_t)cell->cons.car.as.i;
+            cur = cell->cons.cdr;
+        }
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv);
+        break;
+    }
+    case 2251: { /* VM-local counterpart of eshkol_logic_registry_reset. */
+        eshkol_vm_logic_registry_reset();
+        vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 681: { /* bytevector-length */

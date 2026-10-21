@@ -203,9 +203,17 @@ static const char* vm_logic_intern_text(const char* text, int len, int kind) {
  *         ground-term intern pool (used between test runs). */
 static void vm_logic_var_reset(void) {
     g_vm_var_count = 0;
+    memset(g_vm_var_names, 0, sizeof(g_vm_var_names));
     g_vm_intern_offset = 0;
     g_vm_intern_count = 0;
     for (size_t i = 0; i < VM_LOGIC_INTERN_MAX; i++) g_vm_intern_table[i] = NULL;
+}
+
+/* The VM's portable counterpart to the hosted logic registry reset. Keep this
+ * process-global reset limited to the VM-owned name and ground-term intern
+ * tables; test batches call it only between operations. */
+void eshkol_vm_logic_registry_reset(void) {
+    vm_logic_var_reset();
 }
 
 /* ========================================================================
