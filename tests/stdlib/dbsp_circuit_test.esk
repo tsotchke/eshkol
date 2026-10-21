@@ -68,6 +68,13 @@
   (= (zset-weight (dbsp-circuit-output collision-step) "B@") 2)))
 (define collision-next (car (dbsp-circuit-step collision-step (list (list 'a (zset-singleton "Aa" -1))))))
 (check "collision deletion preserves neighbour" (= (zset-weight (dbsp-circuit-output collision-next) "B@") 2))
+(check "point input observer reads retained multiplicity" (= (dbsp-circuit-input-weight fork 'a 8) 1))
+(check "point input observer returns zero for absence" (= (dbsp-circuit-input-weight initial 'a 8) 0))
+(check "point input observer handles hash collisions and deletion" (and
+  (= (dbsp-circuit-input-weight collision-next 'a "Aa") 0)
+  (= (dbsp-circuit-input-weight collision-next 'a "B@") 2)))
+(check "point input observer rejects unknown names" (raises? (lambda ()
+  (dbsp-circuit-input-weight initial 'foreign 8))))
 
 (define (row-key row) (car row))
 (define (row-emit left right) (list (car left) (cadr left) (cadr right)))

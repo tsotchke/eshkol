@@ -87,3 +87,11 @@ TEXT (value `3`, `SQLITE_TEXT`).
 
 AOT binaries link the SQLite objects automatically when a required module uses
 `agent.sqlite` (see [FFI & AOT linking](ffi.md)).
+
+## Checked stepping
+
+`sqlite-step` retains its compatibility result: true only for SQLITE_ROW, false
+for DONE and errors. `sqlite-step-code` exposes the raw integer status.
+`sqlite-step-checked` returns true for ROW, false for DONE, and raises for every
+other status, including BUSY, CONSTRAINT and I/O failures. Transactional readers
+must use the checked API so an error cannot look like normal exhaustion.

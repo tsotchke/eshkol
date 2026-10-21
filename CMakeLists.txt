@@ -13805,3 +13805,67 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
         PASS_REGULAR_EXPRESSION "RESULT: PASS"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
 endif()
+
+# Standalone VM acceptance for DBSP recursive and SQLite state contracts.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    foreach(feature recursive sqlite_changefeed)
+        if(feature STREQUAL "recursive")
+            set(_dbsp_vm_source tests/stdlib/dbsp_recursive_test.esk)
+        else()
+            set(_dbsp_vm_source tests/stdlib/dbsp_sqlite_changefeed_test.esk)
+        endif()
+        add_test(NAME dbsp_${feature}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/${_dbsp_vm_source}")
+        set_tests_properties(dbsp_${feature}_vm PROPERTIES TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR|fatal signal")
+    endforeach()
+endif()
+
+# Wave 2 acceptance: dbsp_recursive
+if(ESHKOL_BUILD_TESTS)
+    add_test(NAME dbsp_recursive_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_recursive_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_recursive_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_recursive_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_recursive_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_recursive_jit dbsp_recursive_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+# Wave 5 acceptance: dbsp_sqlite_changefeed
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-agent-ffi)
+    add_test(NAME dbsp_sqlite_changefeed_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_sqlite_changefeed_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME dbsp_sqlite_changefeed_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_sqlite_changefeed_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_sqlite_changefeed_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_sqlite_changefeed_jit dbsp_sqlite_changefeed_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-agent-ffi)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND AND UNIX)
+        foreach(mode jit aot)
+            add_test(NAME dbsp_sqlite_crash_${mode} COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/dbsp_sqlite_crash.py"
+                --runner $<TARGET_FILE:eshkol-run> --link-dir "${CMAKE_CURRENT_BINARY_DIR}" --mode ${mode})
+            set_tests_properties(dbsp_sqlite_crash_${mode} PROPERTIES TIMEOUT 900
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+                PASS_REGULAR_EXPRESSION "RESULT: PASS"
+                FAIL_REGULAR_EXPRESSION "Traceback|FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+        endforeach()
+    endif()
+endif()
