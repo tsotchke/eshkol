@@ -37,6 +37,12 @@
 (define apply-grad
   (reverse-gradient (lambda (x) (apply multiply-alias (list x x))) (vector 3.0)))
 (check "apply carries list element nodes to first-class operator" (= apply-grad 6.0))
+(define cons-alias cons)
+(check "first-class cons preserves the car node through apply"
+  (= (reverse-gradient
+       (lambda (x) (car (apply cons-alias (list x 0.0))))
+       (vector 2.0))
+     1.0)
 (define add-alias +)
 (define fold-grad
   (reverse-gradient
