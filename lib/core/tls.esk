@@ -1,0 +1,48 @@
+;;; Optional native TLS contexts. This slice exposes context construction only;
+;;; transport sessions remain unavailable until the TLS BIO/session API lands.
+(require stdlib)
+(require core.capabilities)
+(provide tls-available? tls-client-context tls-server-context tls-context-close
+         tls-error? tls-error-code tls-error-operation)
+(extern i32 -tls-available :real eshkol_tls_available)
+(extern i64 -tls-client-context ptr :real eshkol_tls_client_context)
+(extern i64 -tls-server-context ptr ptr :real eshkol_tls_server_context)
+(extern i32 -tls-context-close i64 :real eshkol_tls_context_close)
+
+(define (tls-error? v)
+  (and (vector? v) (= (vector-length v) 3) (eq? (vector-ref v 0) 'tls-error)))
+(define (tls-error-code v) (vector-ref v 1))
+(define (tls-error-operation v) (vector-ref v 2))
+(define (-tls-result n op)
+  (if (< n 0) (vector 'tls-error (inexact->exact n) op) (inexact->exact n)))
+(define (-tls-exact-handle? n)
+  (and (integer? n) (exact? n) (>= n 1) (<= n 9007199254740991)))
+(define (-tls-path? path optional?)
+  (or (and optional? (not path))
+      (and (string? path) (> (string-byte-length path) 0)
+           (<= (string-byte-length path) 4096)
+           (let loop ((i 0))
+             (if (= i (string-length path)) #t
+                 (and (not (= (char->integer (string-ref path i)) 0))
+                      (loop (+ i 1))))))))
+(define (tls-available?)
+  "True when native TLS context construction is linked on this build."
+  (= (-tls-available) 1))
+(define (tls-client-context ca-file)
+  "Create a peer-verifying client context; #f selects system default trust."
+  (capability-require! 'network)
+  (if (-tls-path? ca-file #t)
+      (-tls-result (-tls-client-context (if ca-file ca-file "")) 'tls-client-context)
+      (-tls-result -4 'tls-client-context)))
+(define (tls-server-context certificate-file private-key-file)
+  "Create a server context from a PEM chain and matching PEM private key."
+  (capability-require! 'network)
+  (if (and (-tls-path? certificate-file #f) (-tls-path? private-key-file #f))
+      (-tls-result (-tls-server-context certificate-file private-key-file)
+                   'tls-server-context)
+      (-tls-result -4 'tls-server-context)))
+(define (tls-context-close context)
+  "Close a TLS context; stale and repeated identifiers return -4."
+  (if (-tls-exact-handle? context)
+      (-tls-result (-tls-context-close context) 'tls-context-close)
+      (-tls-result -4 'tls-context-close)))

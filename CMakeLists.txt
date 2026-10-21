@@ -1972,6 +1972,14 @@ if(NOT APPLE AND NOT WIN32)
     find_package(OpenSSL)
 endif()
 
+# Discover optional OpenSSL early enough to populate generated AOT link args.
+if(NOT WIN32 AND NOT EMSCRIPTEN)
+    find_package(OpenSSL 1.1.1 QUIET COMPONENTS SSL Crypto)
+    if(OpenSSL_FOUND)
+        set(ESHKOL_TLS_OPENSSL_FOUND TRUE)
+    endif()
+endif()
+
 if(NOT APPLE)
     foreach(_extra_runtime_lib IN LISTS ESHKOL_EXTRA_LINK_LIBS)
         # The ClangCL-built Eshkol executables need the build toolchain's
@@ -2019,6 +2027,7 @@ if(NOT APPLE)
     if(WIN32)
         eshkol_append_host_runtime_link_arg("bcrypt")
     elseif(OpenSSL_FOUND)
+        eshkol_append_host_runtime_link_arg("OpenSSL::SSL")
         eshkol_append_host_runtime_link_arg("OpenSSL::Crypto")
     else()
         message(WARNING
@@ -2036,6 +2045,19 @@ if(NOT APPLE)
     # optional agent-FFI archive.
     if(WIN32)
         eshkol_append_host_runtime_link_arg("ws2_32")
+    endif()
+endif()
+
+# Apple normally uses platform Security APIs and has no OpenSSL runtime
+# dependency. If optional OpenSSL was discovered for TLS, carry its dylibs
+# into generated AOT links as well as the CMake runtime targets below.
+if(APPLE AND ESHKOL_TLS_OPENSSL_FOUND)
+    eshkol_append_host_runtime_link_arg("OpenSSL::SSL")
+    eshkol_append_host_runtime_link_arg("OpenSSL::Crypto")
+    get_target_property(_eshkol_tls_ssl_location OpenSSL::SSL IMPORTED_LOCATION)
+    if(_eshkol_tls_ssl_location)
+        get_filename_component(_eshkol_tls_ssl_dir "${_eshkol_tls_ssl_location}" DIRECTORY)
+        eshkol_append_host_runtime_link_arg("-Wl,-rpath,${_eshkol_tls_ssl_dir}")
     endif()
 endif()
 
@@ -2532,6 +2554,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/symbol_intern.cpp
   lib/core/threads.c
   lib/core/net.c
+  lib/core/tls.c
   lib/core/workspace.cpp
   lib/quantum/quantum_rng.c
   lib/quantum/quantum_rng_wrapper.c
@@ -2843,6 +2866,10 @@ add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})
 add_library(eshkol-backend-runtime-obj OBJECT ${ESHKOL_BACKEND_RUNTIME_SRC})
 add_library(eshkol-runtime-support-obj OBJECT ${ESHKOL_RUNTIME_SUPPORT_SRC})
 target_link_libraries(eshkol-runtime-support-obj PRIVATE eshkol-qllm-abi)
+if(ESHKOL_TLS_OPENSSL_FOUND)
+    target_compile_definitions(eshkol-runtime-support-obj PRIVATE ESHKOL_HAVE_OPENSSL_TLS=1)
+    target_link_libraries(eshkol-runtime-support-obj PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 set(ESHKOL_VM_UNITY_OBJECTS)
 if(ESHKOL_VM_UNITY_SRC)
     add_library(eshkol-vm-unity-obj OBJECT ${ESHKOL_VM_UNITY_SRC})
@@ -3157,6 +3184,10 @@ elseif(WIN32)
 elseif(OpenSSL_FOUND)
     target_link_libraries(eshkol-runtime PUBLIC OpenSSL::Crypto)
     target_link_libraries(eshkol-static PUBLIC OpenSSL::Crypto)
+endif()
+if(ESHKOL_TLS_OPENSSL_FOUND)
+    target_link_libraries(eshkol-runtime PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    target_link_libraries(eshkol-static PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.

@@ -23,6 +23,7 @@
 #include <eshkol/core/resource_limits.h>  // For the SW-10 limit poll symbol
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "eshkol/core/net.h"
+#include "eshkol/core/tls.h"
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -1843,6 +1844,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_net_port);
     ADD_SYMBOL(eshkol_net_nonblocking);
     ADD_SYMBOL(eshkol_net_close);
+    // Optional native TLS context construction.
+    ADD_SYMBOL(eshkol_tls_available);
+    ADD_SYMBOL(eshkol_tls_client_context);
+    ADD_SYMBOL(eshkol_tls_server_context);
+    ADD_SYMBOL(eshkol_tls_context_close);
     ADD_SYMBOL(eshkol_resident_open);
     ADD_SYMBOL(eshkol_resident_close);
     ADD_SYMBOL(eshkol_resident_enter);
