@@ -18,41 +18,42 @@ NOTICE_FILE = ROOT / "THIRD_PARTY_NOTICES.md"
 @dataclass(frozen=True)
 class LicenseSpec:
     output_name: str
+    dependency: str
     source_relative: str
 
 
 REQUIRED_LICENSES = (
-    LicenseSpec("pcre2-LICENCE.md", "eshkol_pcre2-src/LICENCE.md"),
-    LicenseSpec("pcre2-sljit-LICENSE.txt", "eshkol_pcre2-src/deps/sljit/LICENSE"),
-    LicenseSpec("zlib-LICENSE.txt", "eshkol_zlib-src/LICENSE"),
-    LicenseSpec("tree-sitter-LICENSE.txt", "eshkol_tree_sitter-src/LICENSE"),
+    LicenseSpec("pcre2-LICENCE.md", "ESHKOL_PCRE2", "LICENCE.md"),
+    LicenseSpec("pcre2-sljit-LICENSE.txt", "ESHKOL_PCRE2", "deps/sljit/LICENSE"),
+    LicenseSpec("zlib-LICENSE.txt", "ESHKOL_ZLIB", "LICENSE"),
+    LicenseSpec("tree-sitter-LICENSE.txt", "ESHKOL_TREE_SITTER", "LICENSE"),
     LicenseSpec(
         "tree-sitter-unicode-LICENSE.txt",
-        "eshkol_tree_sitter-src/lib/src/unicode/LICENSE",
+        "ESHKOL_TREE_SITTER", "lib/src/unicode/LICENSE",
     ),
-    LicenseSpec("tree-sitter-javascript-LICENSE.txt", "eshkol_ts_javascript-src/LICENSE"),
-    LicenseSpec("tree-sitter-typescript-LICENSE.txt", "eshkol_ts_typescript-src/LICENSE"),
-    LicenseSpec("tree-sitter-python-LICENSE.txt", "eshkol_ts_python-src/LICENSE"),
-    LicenseSpec("tree-sitter-rust-LICENSE.txt", "eshkol_ts_rust-src/LICENSE"),
-    LicenseSpec("tree-sitter-go-LICENSE.txt", "eshkol_ts_go-src/LICENSE"),
-    LicenseSpec("tree-sitter-c-LICENSE.txt", "eshkol_ts_c-src/LICENSE"),
-    LicenseSpec("tree-sitter-cpp-LICENSE.txt", "eshkol_ts_cpp-src/LICENSE"),
-    LicenseSpec("tree-sitter-java-LICENSE.txt", "eshkol_ts_java-src/LICENSE"),
-    LicenseSpec("tree-sitter-ruby-LICENSE.txt", "eshkol_ts_ruby-src/LICENSE"),
-    LicenseSpec("tree-sitter-bash-LICENSE.txt", "eshkol_ts_bash-src/LICENSE"),
-    LicenseSpec("yoga-LICENSE.txt", "eshkol_yoga-src/LICENSE"),
+    LicenseSpec("tree-sitter-javascript-LICENSE.txt", "ESHKOL_TS_JAVASCRIPT", "LICENSE"),
+    LicenseSpec("tree-sitter-typescript-LICENSE.txt", "ESHKOL_TS_TYPESCRIPT", "LICENSE"),
+    LicenseSpec("tree-sitter-python-LICENSE.txt", "ESHKOL_TS_PYTHON", "LICENSE"),
+    LicenseSpec("tree-sitter-rust-LICENSE.txt", "ESHKOL_TS_RUST", "LICENSE"),
+    LicenseSpec("tree-sitter-go-LICENSE.txt", "ESHKOL_TS_GO", "LICENSE"),
+    LicenseSpec("tree-sitter-c-LICENSE.txt", "ESHKOL_TS_C", "LICENSE"),
+    LicenseSpec("tree-sitter-cpp-LICENSE.txt", "ESHKOL_TS_CPP", "LICENSE"),
+    LicenseSpec("tree-sitter-java-LICENSE.txt", "ESHKOL_TS_JAVA", "LICENSE"),
+    LicenseSpec("tree-sitter-ruby-LICENSE.txt", "ESHKOL_TS_RUBY", "LICENSE"),
+    LicenseSpec("tree-sitter-bash-LICENSE.txt", "ESHKOL_TS_BASH", "LICENSE"),
+    LicenseSpec("yoga-LICENSE.txt", "ESHKOL_YOGA", "LICENSE"),
 )
 
 WINDOWS_EIGEN_LICENSE = LicenseSpec(
-    "eigen-COPYING.MPL2.txt", "eshkol_eigen-src/COPYING.MPL2"
+    "eigen-COPYING.MPL2.txt", "ESHKOL_EIGEN", "COPYING.MPL2"
 )
 
-CURL_LICENSE = LicenseSpec("curl-COPYING.txt", "eshkol_curl-src/COPYING")
+CURL_LICENSE = LicenseSpec("curl-COPYING.txt", "ESHKOL_CURL", "COPYING")
 
 # The PJRT C API header is vendored directly in the source tree (deps/pjrt/),
 # not fetched via CMake FetchContent, so its license lives next to it rather
 # than under the build directory's _deps/ cache.
-PJRT_LICENSE = LicenseSpec("pjrt-LICENSE.txt", "pjrt/LICENSE")
+PJRT_LICENSE = LicenseSpec("pjrt-LICENSE.txt", "", "pjrt/LICENSE")
 
 SQLITE_PUBLIC_DOMAIN_NOTICE = """SQLite public-domain notice
 
@@ -83,6 +84,56 @@ def _xla_enabled(build_dir: Path) -> bool:
     return re.search(r"^ESHKOL_XLA_ENABLED:BOOL=ON$", text, re.M) is not None
 
 
+def _cmake_cache(build_dir: Path) -> dict[str, str]:
+    cache = build_dir / "CMakeCache.txt"
+    if not cache.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("#") or ":" not in line or "=" not in line:
+            continue
+        key, typed_value = line.split(":", 1)
+        _, value = typed_value.split("=", 1)
+        values[key] = value
+    return values
+
+
+def fetchcontent_source_dir(build_dir: Path, dependency: str) -> Path:
+    """Resolve one FetchContent source, honoring a configured override exactly."""
+    cache_values = _cmake_cache(build_dir)
+    cache_key = f"FETCHCONTENT_SOURCE_DIR_{dependency}"
+    override = cache_values.get(cache_key, "")
+    if override:
+        source = Path(override)
+        origin = f"configured {cache_key} override"
+    else:
+        source_name = {
+            "ESHKOL_PCRE2": "eshkol_pcre2-src",
+            "ESHKOL_ZLIB": "eshkol_zlib-src",
+            "ESHKOL_TREE_SITTER": "eshkol_tree_sitter-src",
+            "ESHKOL_TS_JAVASCRIPT": "eshkol_ts_javascript-src",
+            "ESHKOL_TS_TYPESCRIPT": "eshkol_ts_typescript-src",
+            "ESHKOL_TS_PYTHON": "eshkol_ts_python-src",
+            "ESHKOL_TS_RUST": "eshkol_ts_rust-src",
+            "ESHKOL_TS_GO": "eshkol_ts_go-src",
+            "ESHKOL_TS_C": "eshkol_ts_c-src",
+            "ESHKOL_TS_CPP": "eshkol_ts_cpp-src",
+            "ESHKOL_TS_JAVA": "eshkol_ts_java-src",
+            "ESHKOL_TS_RUBY": "eshkol_ts_ruby-src",
+            "ESHKOL_TS_BASH": "eshkol_ts_bash-src",
+            "ESHKOL_YOGA": "eshkol_yoga-src",
+            "ESHKOL_EIGEN": "eshkol_eigen-src",
+            "ESHKOL_CURL": "eshkol_curl-src",
+        }.get(dependency)
+        if source_name is None:
+            raise ValueError(f"unsupported FetchContent dependency: {dependency}")
+        source = build_dir / "_deps" / source_name
+        origin = "FetchContent default source directory"
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError(f"{origin} is missing or invalid for {dependency}: {source}")
+    return source
+
+
 def stage_licenses(
     build_dir: Path,
     package_dir: Path,
@@ -91,10 +142,7 @@ def stage_licenses(
 ) -> list[Path]:
     build_dir = build_dir.resolve()
     package_dir = package_dir.resolve()
-    deps_dir = build_dir / "_deps"
     _regular_nonempty(notice_file, "third-party notice index")
-    if not deps_dir.is_dir() or deps_dir.is_symlink():
-        raise ValueError(f"FetchContent dependency directory is unavailable: {deps_dir}")
 
     package_dir.mkdir(parents=True, exist_ok=True)
     licenses_dir = package_dir / "licenses"
@@ -106,7 +154,7 @@ def stage_licenses(
     staged.append(notice_target)
 
     for spec in REQUIRED_LICENSES:
-        source = deps_dir / spec.source_relative
+        source = fetchcontent_source_dir(build_dir, spec.dependency) / spec.source_relative
         _regular_nonempty(source, f"license for {spec.output_name}")
         target = licenses_dir / spec.output_name
         shutil.copyfile(source, target)
@@ -119,7 +167,7 @@ def stage_licenses(
     curl_archive_names = ("eshkol-agent-curl.a", "eshkol-agent-curl.lib")
     package_has_curl = any((package_dir / "lib" / name).is_file() for name in curl_archive_names)
     if package_has_curl:
-        source = deps_dir / CURL_LICENSE.source_relative
+        source = fetchcontent_source_dir(build_dir, CURL_LICENSE.dependency) / CURL_LICENSE.source_relative
         _regular_nonempty(source, "curl license")
         target = licenses_dir / CURL_LICENSE.output_name
         shutil.copyfile(source, target)
@@ -127,12 +175,22 @@ def stage_licenses(
 
     # Native ClangCL/MSVC packages compile Eigen's vectorized kernels into the
     # runtime. Other platforms use their system BLAS and do not fetch Eigen.
-    eigen_source = deps_dir / WINDOWS_EIGEN_LICENSE.source_relative
-    if eigen_source.is_file():
+    cache_values = _cmake_cache(build_dir)
+    eigen_key = f"FETCHCONTENT_SOURCE_DIR_{WINDOWS_EIGEN_LICENSE.dependency}"
+    eigen_default = build_dir / "_deps" / "eshkol_eigen-src"
+    eigen_configured = bool(cache_values.get(eigen_key, ""))
+    if eigen_configured or eigen_default.is_dir():
+        eigen_source = (fetchcontent_source_dir(build_dir, WINDOWS_EIGEN_LICENSE.dependency) /
+                       WINDOWS_EIGEN_LICENSE.source_relative)
+    else:
+        eigen_source = None
+    if eigen_source is not None and eigen_source.is_file():
         _regular_nonempty(eigen_source, "Eigen MPL-2.0 license")
         target = licenses_dir / WINDOWS_EIGEN_LICENSE.output_name
         shutil.copyfile(eigen_source, target)
         staged.append(target)
+    elif eigen_configured:
+        _regular_nonempty(eigen_source, "Eigen MPL-2.0 license")
 
     # *-xla packages compile the vendored Apache-2.0 PJRT C API header
     # (deps/pjrt/pjrt_c_api.h) into the runtime; other packages never include
