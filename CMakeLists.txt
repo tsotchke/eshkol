@@ -1972,6 +1972,23 @@ if(NOT APPLE AND NOT WIN32)
     find_package(OpenSSL)
 endif()
 
+# Discover optional OpenSSL early enough to populate generated AOT link args.
+set(ESHKOL_TLS_AVAILABLE 0)
+if(NOT WIN32 AND NOT EMSCRIPTEN)
+    if(OpenSSL_FOUND AND OPENSSL_VERSION VERSION_GREATER_EQUAL "1.1.1")
+        set(ESHKOL_TLS_OPENSSL_FOUND TRUE)
+        set(ESHKOL_TLS_AVAILABLE 1)
+    elseif(NOT OpenSSL_FOUND)
+        find_package(OpenSSL 1.1.1 QUIET)
+        if(OpenSSL_FOUND)
+            set(ESHKOL_TLS_OPENSSL_FOUND TRUE)
+            set(ESHKOL_TLS_AVAILABLE 1)
+        endif()
+    endif()
+endif()
+set(ESHKOL_TLS_AVAILABLE "${ESHKOL_TLS_AVAILABLE}" CACHE INTERNAL
+    "Whether the optional OpenSSL TLS API is compiled" FORCE)
+
 if(NOT APPLE)
     foreach(_extra_runtime_lib IN LISTS ESHKOL_EXTRA_LINK_LIBS)
         # The ClangCL-built Eshkol executables need the build toolchain's
@@ -2019,6 +2036,7 @@ if(NOT APPLE)
     if(WIN32)
         eshkol_append_host_runtime_link_arg("bcrypt")
     elseif(OpenSSL_FOUND)
+        eshkol_append_host_runtime_link_arg("OpenSSL::SSL")
         eshkol_append_host_runtime_link_arg("OpenSSL::Crypto")
     else()
         message(WARNING
@@ -2036,6 +2054,19 @@ if(NOT APPLE)
     # optional agent-FFI archive.
     if(WIN32)
         eshkol_append_host_runtime_link_arg("ws2_32")
+    endif()
+endif()
+
+# Apple normally uses platform Security APIs and has no OpenSSL runtime
+# dependency. If optional OpenSSL was discovered for TLS, carry its dylibs
+# into generated AOT links as well as the CMake runtime targets below.
+if(APPLE AND ESHKOL_TLS_OPENSSL_FOUND)
+    eshkol_append_host_runtime_link_arg("OpenSSL::SSL")
+    eshkol_append_host_runtime_link_arg("OpenSSL::Crypto")
+    get_target_property(_eshkol_tls_ssl_location OpenSSL::SSL IMPORTED_LOCATION)
+    if(_eshkol_tls_ssl_location)
+        get_filename_component(_eshkol_tls_ssl_dir "${_eshkol_tls_ssl_location}" DIRECTORY)
+        eshkol_append_host_runtime_link_arg("-Wl,-rpath,${_eshkol_tls_ssl_dir}")
     endif()
 endif()
 
@@ -2532,6 +2563,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/symbol_intern.cpp
   lib/core/threads.c
   lib/core/net.c
+  lib/core/tls.c
   lib/core/workspace.cpp
   lib/quantum/quantum_rng.c
   lib/quantum/quantum_rng_wrapper.c
@@ -2874,6 +2906,14 @@ add_library(eshkol-runtime-hosted-obj OBJECT ${ESHKOL_RUNTIME_HOSTED_SRC})
 add_library(eshkol-backend-runtime-obj OBJECT ${ESHKOL_BACKEND_RUNTIME_SRC})
 add_library(eshkol-runtime-support-obj OBJECT ${ESHKOL_RUNTIME_SUPPORT_SRC})
 target_link_libraries(eshkol-runtime-support-obj PRIVATE eshkol-qllm-abi)
+if(ESHKOL_TLS_OPENSSL_FOUND)
+    set_source_files_properties(lib/core/tls.c PROPERTIES
+        COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+    target_link_libraries(eshkol-runtime-support-obj PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+else()
+    set_source_files_properties(lib/core/tls.c PROPERTIES
+        COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+endif()
 set(ESHKOL_VM_UNITY_OBJECTS)
 if(ESHKOL_VM_UNITY_SRC)
     add_library(eshkol-vm-unity-obj OBJECT ${ESHKOL_VM_UNITY_SRC})
@@ -3191,6 +3231,10 @@ elseif(WIN32)
 elseif(OpenSSL_FOUND)
     target_link_libraries(eshkol-runtime PUBLIC OpenSSL::Crypto)
     target_link_libraries(eshkol-static PUBLIC OpenSSL::Crypto)
+endif()
+if(ESHKOL_TLS_OPENSSL_FOUND)
+    target_link_libraries(eshkol-runtime PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    target_link_libraries(eshkol-static PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.
@@ -13994,6 +14038,79 @@ if(ESHKOL_BUILD_TESTS)
         FAIL_REGULAR_EXPRESSION "FAIL:")
     add_test(NAME net_runtime_test COMMAND net_runtime_test)
     set_tests_properties(net_runtime_test PROPERTIES TIMEOUT 30)
+
+    add_executable(tls_context_test
+        tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c)
+    target_include_directories(tls_context_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(ESHKOL_TLS_OPENSSL_FOUND)
+        set_source_files_properties(tests/network/tls_context_test.c PROPERTIES
+            COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+        target_link_libraries(tls_context_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    else()
+        set_source_files_properties(tests/network/tls_context_test.c PROPERTIES
+            COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+    endif()
+    if(NOT WIN32 AND NOT EMSCRIPTEN)
+        find_package(Threads REQUIRED)
+        target_link_libraries(tls_context_test PRIVATE Threads::Threads)
+    endif()
+endif()
+
+# TLS acceptance is registered only for a build with the verified native
+# OpenSSL implementation. These tests exercise the public C, Scheme JIT, AOT,
+# and Python SSL peer paths on loopback; unsupported builds expose stubs only.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET tls_context_test)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(ESHKOL_TLS_AVAILABLE AND Python3_Interpreter_FOUND)
+        target_compile_definitions(tls_context_test PRIVATE
+            ESHKOL_TEST_PYTHON=\"${Python3_EXECUTABLE}\")
+        add_test(NAME tls_context_native COMMAND $<TARGET_FILE:tls_context_test>)
+        set_tests_properties(tls_context_native PROPERTIES
+            TIMEOUT 90 RUN_SERIAL TRUE
+            PASS_REGULAR_EXPRESSION "PASS: TLS handshake, binary roundtrip, peer verification, and cleanup"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Assertion failed|Unhandled exception|fatal signal")
+
+        add_test(NAME tls_public_scheme_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_api.esk")
+        add_test(NAME tls_public_scheme_aot COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -O 1 -o '${CMAKE_CURRENT_BINARY_DIR}/tls_public_api_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_api.esk' '-L${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/tls_public_api_aot'")
+        set_tests_properties(tls_public_scheme_jit tls_public_scheme_aot PROPERTIES
+            TIMEOUT 180 RUN_SERIAL TRUE
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "TLS public API: 20 passed, 0 failed"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+
+        foreach(_tls_mode jit aot)
+            foreach(_tls_case python fatal)
+                if(_tls_case STREQUAL "python")
+                    set(_tls_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_python_client.esk")
+                    set(_tls_scenario normal)
+                    set(_tls_pass "TLS Python public API: 7 passed, 0 failed")
+                else()
+                    set(_tls_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_fatal_client.esk")
+                    set(_tls_scenario fatal)
+                    set(_tls_pass "PASS: fatal TLS errors close without another SSL operation")
+                endif()
+                add_test(NAME tls_public_${_tls_case}_${_tls_mode}
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_python_harness.py"
+                        --runtime "$<TARGET_FILE:eshkol-run>"
+                        --source "${_tls_source}"
+                        --mode "${_tls_mode}"
+                        --scenario "${_tls_scenario}"
+                        --work-dir "${CMAKE_CURRENT_BINARY_DIR}/tls-public-${_tls_case}-${_tls_mode}"
+                        --lib-dir "${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                        --link-dir "${CMAKE_CURRENT_BINARY_DIR}")
+                set_tests_properties(tls_public_${_tls_case}_${_tls_mode} PROPERTIES
+                    TIMEOUT 300 RUN_SERIAL TRUE
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+                    PASS_REGULAR_EXPRESSION "${_tls_pass}"
+                    FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
+            endforeach()
+        endforeach()
+    endif()
 endif()
 
 # Explicit resident ownership reuses the core evacuation transaction.
