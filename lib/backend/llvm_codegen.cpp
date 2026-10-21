@@ -5927,16 +5927,19 @@ private:
             case ESHKOL_OP: {
                 // OALR FIX: Handle ownership operations by propagating type from inner expression
                 if (ast->operation.op == ESHKOL_OWNED_OP && ast->operation.owned_op.value) {
-                    // (owned expr) - propagate type from inner expression
+                    // Evaluate once through the typed route, then apply the
+                    // ownership effect to that already evaluated value.
                     TypedValue inner = (co_await codegenTypedASTTask(ast->operation.owned_op.value));
-                    // Generate the owned wrapper (which just returns the value)
-                    Value* val = (co_await codegenASTTask(ast));
+                    if (!inner.llvm_value) co_return TypedValue();
+                    Value* tagged = typedValueToTaggedValue(inner);
+                    Value* val = codegenOwnedValue(tagged);
                     if (!val) co_return TypedValue();
-                    co_return TypedValue(val, inner.type, inner.is_exact);
+                    co_return TypedValue(val, inner.type, inner.hott_type,
+                                         inner.is_exact);
                 }
                 if (ast->operation.op == ESHKOL_MOVE_OP && ast->operation.move_op.value) {
-                    // (move expr) - get type from inner expression, then generate move
-                    // Use codegenTypedAST on inner to get proper type, but with VAR guard
+                    // (move expr) - keep the variable binding side effects while
+                    // applying the wrapper to the typed value evaluated once.
                     const eshkol_ast_t* inner = ast->operation.move_op.value;
 
                     // For variables, check if they're stored in a tagged_value GlobalVariable
@@ -5952,7 +5955,10 @@ private:
                             if (GlobalVariable* gv = dyn_cast<GlobalVariable>(var_ptr)) {
                                 // If stored as tagged_value, load it and return with preserved type
                                 if (gv->getValueType() == tagged_value_type) {
-                                    Value* val = (co_await codegenASTTask(ast));
+                                    TypedValue inner_typed = (co_await codegenTypedASTTask(inner));
+                                    if (!inner_typed.llvm_value) co_return TypedValue();
+                                    Value* val = codegenMoveValue(&ast->operation,
+                                        typedValueToTaggedValue(inner_typed));
                                     if (!val) co_return TypedValue();
                                     // Return the tagged_value directly - type info is inside
                                     // Use CONS_PTR so codegenVariableDefinition stores properly
@@ -5962,11 +5968,16 @@ private:
                         }
                     }
 
-                    // For non-variable expressions or non-tagged storage, use inner type
+                    // For other variables and expressions, preserve inferred
+                    // type/exactness while applying move to one evaluation.
                     TypedValue inner_typed = (co_await codegenTypedASTTask(inner));
-                    Value* val = (co_await codegenASTTask(ast));
+                    if (!inner_typed.llvm_value) co_return TypedValue();
+                    Value* val = codegenMoveValue(&ast->operation,
+                        typedValueToTaggedValue(inner_typed));
                     if (!val) co_return TypedValue();
-                    co_return TypedValue(val, inner_typed.type, inner_typed.is_exact);
+                    co_return TypedValue(val, inner_typed.type,
+                                         inner_typed.hott_type,
+                                         inner_typed.is_exact);
                 }
                 if (ast->operation.op == ESHKOL_BORROW_OP && ast->operation.borrow_op.body) {
                     // (borrow val body...) - type is from last body expression
@@ -5976,11 +5987,14 @@ private:
                     co_return detectValueType(val);
                 }
                 if (ast->operation.op == ESHKOL_SHARED_OP && ast->operation.shared_op.value) {
-                    // (shared expr) - propagate type from inner expression
+                    // Evaluate once and apply shared ownership to that value.
                     TypedValue inner = (co_await codegenTypedASTTask(ast->operation.shared_op.value));
-                    Value* val = (co_await codegenASTTask(ast));
+                    if (!inner.llvm_value) co_return TypedValue();
+                    Value* val = codegenSharedValue(
+                        typedValueToTaggedValue(inner));
                     if (!val) co_return TypedValue();
-                    co_return TypedValue(val, inner.type, inner.is_exact);
+                    co_return TypedValue(val, inner.type, inner.hott_type,
+                                         inner.is_exact);
                 }
 
                 // GRADIENT FIX: Handle LAMBDA_OP specially to preserve CLOSURE_PTR type
@@ -39375,6 +39389,12 @@ private:
 
         Value* value = codegenAST(op->owned_op.value);
         if (!value) return packNullToTaggedValue();
+        return codegenOwnedValue(value);
+    }
+
+    // Apply the ownership marker to a value that has already been evaluated.
+    Value* codegenOwnedValue(Value* value) {
+        if (!value) return packNullToTaggedValue();
 
         // Only set LINEAR flag for heap-allocated values that have object headers
         Value* type = getTaggedValueType(value);
@@ -39416,6 +39436,12 @@ private:
 
         Value* value = codegenAST(op->move_op.value);
         if (!value) return packNullToTaggedValue();
+        return codegenMoveValue(op, value);
+    }
+
+    // Apply the move effects to an already evaluated tagged value.
+    Value* codegenMoveValue(const eshkol_operations_t* op, Value* value) {
+        if (!op || !op->move_op.value || !value) return packNullToTaggedValue();
 
         // Check if value is heap-allocated (has object header)
         Value* type = getTaggedValueType(value);
@@ -39545,6 +39571,12 @@ private:
         eshkol_debug("Generating shared expression");
 
         Value* value = codegenAST(op->shared_op.value);
+        if (!value) return packNullToTaggedValue();
+        return codegenSharedValue(value);
+    }
+
+    // Apply the shared marker to a value that has already been evaluated.
+    Value* codegenSharedValue(Value* value) {
         if (!value) return packNullToTaggedValue();
 
         // Only set SHARED flag for heap-allocated values

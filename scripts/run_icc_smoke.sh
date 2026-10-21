@@ -20,6 +20,14 @@
 #   3. The command must exit 0 for PASS; any nonzero exits → FAIL
 set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
+ICC_SMOKE_ONLY_ID=""
+if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || ! [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo "Usage: $0 [--only PROBE_ID]" >&2
+        exit 2
+    fi
+    ICC_SMOKE_ONLY_ID="$2"
+fi
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
@@ -126,6 +134,7 @@ rm() {
 }
 
 . "$REPO_ROOT/scripts/lib/icc_probe.sh"
+PROBE_ONLY_ID="$ICC_SMOKE_ONLY_ID"
 
 # Keep a full per-probe transcript beside durable smoke evidence.  The trace
 # retains its existing bounded summary; these logs preserve diagnostics that
@@ -1133,15 +1142,15 @@ EOF
 # (examples/mathematics_navier_stokes_*.esk), matching the CTest ns_*_jit
 # names in CMakeLists.txt and the icc-target each program's own
 # ICC-EVENT lines use. Each program is itself a compile-and-run
-# executable check with an internal pass/fail ledger; exit 0 iff its own
-# "RESULT: ALL PASS" line fires, so the probe command is just running it
-# and grepping that line.
+# executable check with an internal pass/fail ledger. A selected probe
+# captures the complete JIT output and exit status; both must agree before
+# the exact "RESULT: ALL PASS" line can count.
 # ───────────────────────────────────────────────────────────────────
 _ns_probe() {
     local id="$1" file="$2"
     probe "$id" \
-        "Navier-Stokes mechanization: examples/${file}.esk exits ALL PASS on both engines' shared JIT path" \
-        "cd \"\$REPO_ROOT\"; \"\$BUILD_DIR/eshkol-run\" -r \"examples/${file}.esk\" 2>&1 | grep -q '^RESULT: ALL PASS$'"
+        "Navier-Stokes mechanization: examples/${file}.esk exits cleanly and prints the exact ALL PASS marker" \
+        "cd \"\$REPO_ROOT\"; ns_output=\$(\"\$BUILD_DIR/eshkol-run\" -r \"examples/${file}.esk\" 2>&1); ns_status=\$?; if [ \"\$ns_status\" -ne 0 ]; then printf '%s\\n' \"\$ns_output\"; exit \"\$ns_status\"; fi; printf '%s\\n' \"\$ns_output\" | grep -q '^RESULT: ALL PASS$'"
 }
 
 _ns_probe ns_viscosity_scaling_exact     mathematics_navier_stokes_viscosity_scaling
@@ -1157,7 +1166,14 @@ _ns_probe ns_pulse_growth_crossover      mathematics_navier_stokes_pulse_growth
 eshkol_durable_mirror_trace "$TRACE_FILE" eshkol_smoke.jsonl
 
 echo
+if [ -n "$ICC_SMOKE_ONLY_ID" ] && [ "$PROBE_SELECTED_COUNT" -eq 0 ]; then
+    echo "Unknown ICC smoke probe: $ICC_SMOKE_ONLY_ID" >&2
+    exit 2
+fi
 echo "Trace written: $TRACE_FILE"
+if [ -n "$ICC_SMOKE_ONLY_ID" ]; then
+    echo "Scope: only $ICC_SMOKE_ONLY_ID (partial run; no full-smoke claim)"
+fi
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES - PROBE_INFRA))/$PROBE_TOTAL passed, $PROBE_INFRA infra (no verdict), $PROBE_FAILURES failed"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"
 echo "         completion-oracle --repo eshkol_lang \\"
@@ -1176,7 +1192,19 @@ if [ "$PROBE_INFRA" -ne 0 ]; then
 fi
 
 if [ "$PROBE_FAILURES" -ne 0 ]; then
-    echo "ICC smoke gate: FAIL ($PROBE_FAILURES probe(s) failed)" >&2
+    if [ -n "$ICC_SMOKE_ONLY_ID" ]; then
+        echo "ICC smoke probe $ICC_SMOKE_ONLY_ID: FAIL ($PROBE_FAILURES failure(s))" >&2
+    else
+        echo "ICC smoke gate: FAIL ($PROBE_FAILURES probe(s) failed)" >&2
+    fi
     exit 1
 fi
-echo "ICC smoke gate: PASS"
+if [ -n "$ICC_SMOKE_ONLY_ID" ]; then
+    if [ "$PROBE_INFRA" -ne 0 ]; then
+        echo "ICC smoke probe $ICC_SMOKE_ONLY_ID: INFRA ($PROBE_INFRA probe(s) had no verdict)" >&2
+        exit 2
+    fi
+    echo "ICC smoke probe $ICC_SMOKE_ONLY_ID: PASS (partial run; no full-smoke claim)"
+else
+    echo "ICC smoke gate: PASS"
+fi

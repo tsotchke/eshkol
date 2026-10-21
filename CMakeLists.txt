@@ -347,6 +347,12 @@ endif()
 # When enabled, provides accelerated tensor operations via XLA/StableHLO
 # Requires MLIR and StableHLO libraries
 option(ESHKOL_XLA_ENABLED "Enable XLA backend for accelerated tensor operations" OFF)
+if(ESHKOL_XLA_ENABLED AND UNIX AND CMAKE_DL_LIBS)
+    # PJRT's POSIX plugin loader is part of the guarded XLA runtime objects.
+    # Carry its loader dependency through static/runtime consumers as well.
+    list(APPEND ESHKOL_EXTRA_LINK_LIBS ${CMAKE_DL_LIBS})
+    list(REMOVE_DUPLICATES ESHKOL_EXTRA_LINK_LIBS)
+endif()
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/LLVMToolchain.cmake)
 set(ESHKOL_LLVM_USE_CMAKE_PACKAGE FALSE)
 set(ESHKOL_LLVM_ROOT "")
@@ -2337,6 +2343,10 @@ list(APPEND LIB_SRC lib/ffi/eshkol_ffi.cpp)
 # Exclude XLA sources from main library when XLA is disabled
 if(NOT ESHKOL_XLA_ENABLED)
     list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/.*")
+elseif(NOT UNIX)
+    # The portable XLA host path may be enabled on Windows, but this PJRT
+    # loader currently has only a POSIX implementation.
+    list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/xla/pjrt_client\\.cpp$")
 endif()
 
 # Get REPL sources separately
@@ -2545,6 +2555,17 @@ list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC
 set(ESHKOL_XLA_RUNTIME_SRC "")
 if(ESHKOL_XLA_ENABLED)
   set(ESHKOL_XLA_RUNTIME_SRC lib/backend/xla/xla_runtime.cpp)
+  if(UNIX)
+    # The PJRT wrapper uses the POSIX dlopen/dlsym interface. Keep it in the
+    # guarded XLA runtime object set; native Windows support needs a loader
+    # implementation using LoadLibrary/GetProcAddress.
+    list(APPEND ESHKOL_XLA_RUNTIME_SRC lib/backend/xla/pjrt_client.cpp)
+  else()
+    message(STATUS
+      "PJRT plugin loading is unavailable on this platform; "
+      "the XLA host runtime remains enabled"
+    )
+  endif()
   list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC ${ESHKOL_XLA_RUNTIME_SRC})
 endif()
 
@@ -2561,6 +2582,174 @@ set(ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS
 if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
     list(APPEND ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS
       "$<BUILD_INTERFACE:${ESHKOL_GENERATED_INCLUDE_DIR}>"
+    )
+endif()
+
+# This is an offline loader contract test. Its fixture libraries export either
+# no PJRT entry point or an intentionally incompatible API major version; no
+# plugin discovery, device, or model is needed.
+if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
+    add_executable(pjrt_loader_test
+        tests/xla/pjrt_loader_test.cpp
+        lib/backend/xla/pjrt_client.cpp
+    )
+    target_include_directories(pjrt_loader_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_compile_features(pjrt_loader_test PRIVATE cxx_std_17)
+    target_link_libraries(pjrt_loader_test PRIVATE ${CMAKE_DL_LIBS})
+
+    add_library(pjrt_test_nonplugin MODULE tests/xla/pjrt_test_nonplugin.cpp)
+    add_library(pjrt_test_incompatible MODULE tests/xla/pjrt_test_incompatible.cpp)
+    add_library(pjrt_test_short_table MODULE tests/xla/pjrt_test_short_table.cpp)
+    add_library(pjrt_test_null_initializer MODULE tests/xla/pjrt_test_null_initializer.cpp)
+    add_library(pjrt_test_compatible MODULE tests/xla/pjrt_test_compatible.cpp)
+    add_library(pjrt_test_missing_buffer_element_type MODULE
+        tests/xla/pjrt_test_compatible.cpp
+    )
+    target_compile_definitions(pjrt_test_missing_buffer_element_type PRIVATE
+        PJRT_TEST_MISSING_BUFFER_ELEMENT_TYPE=1
+    )
+    add_library(pjrt_test_output_mismatch MODULE
+        tests/xla/pjrt_test_output_mismatch.cpp
+    )
+    target_compile_features(pjrt_test_output_mismatch PRIVATE cxx_std_17)
+    target_include_directories(pjrt_test_output_mismatch PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_incompatible PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_short_table PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_null_initializer PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_compatible PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_missing_buffer_element_type PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    set_target_properties(
+        pjrt_test_nonplugin pjrt_test_incompatible pjrt_test_short_table
+        pjrt_test_null_initializer pjrt_test_compatible
+        pjrt_test_missing_buffer_element_type pjrt_test_output_mismatch PROPERTIES
+        PREFIX ""
+    )
+    add_dependencies(pjrt_loader_test
+        pjrt_test_nonplugin pjrt_test_incompatible pjrt_test_short_table
+        pjrt_test_null_initializer pjrt_test_compatible
+        pjrt_test_missing_buffer_element_type pjrt_test_output_mismatch
+    )
+
+    add_test(NAME pjrt_loader_missing_library
+        COMMAND pjrt_loader_test missing
+            "${CMAKE_CURRENT_BINARY_DIR}/pjrt-intentionally-absent${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+    add_test(NAME pjrt_loader_non_pjrt_library
+        COMMAND pjrt_loader_test nonplugin $<TARGET_FILE:pjrt_test_nonplugin>
+    )
+    add_test(NAME pjrt_loader_incompatible_api_version
+        COMMAND pjrt_loader_test incompatible $<TARGET_FILE:pjrt_test_incompatible>
+    )
+    add_test(NAME pjrt_loader_short_api_table
+        COMMAND pjrt_loader_test short $<TARGET_FILE:pjrt_test_short_table>
+    )
+    add_test(NAME pjrt_loader_null_initializer
+        COMMAND pjrt_loader_test null_init $<TARGET_FILE:pjrt_test_null_initializer>
+    )
+    add_test(NAME pjrt_loader_compatible_initialize_unload
+        COMMAND pjrt_loader_test compatible $<TARGET_FILE:pjrt_test_compatible>
+    )
+    add_test(NAME pjrt_loader_missing_buffer_element_type
+        COMMAND pjrt_loader_test missing_element_type
+            $<TARGET_FILE:pjrt_test_missing_buffer_element_type>
+    )
+
+    # Runtime control test: verifies the default-off path still executes a
+    # host function and that the StableHLO entry point refuses to imply a
+    # device compile when PJRT was not selected.
+    add_executable(pjrt_runtime_control_test
+        tests/xla/pjrt_runtime_control_test.cpp
+    )
+    target_include_directories(pjrt_runtime_control_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+    target_compile_options(pjrt_runtime_control_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_runtime_control_test)
+    target_link_libraries(pjrt_runtime_control_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_runtime_control_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_runtime_control_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_runtime_control_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_runtime_control_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    add_test(NAME pjrt_runtime_cpu_control
+        COMMAND pjrt_runtime_control_test off
+    )
+    add_test(NAME pjrt_runtime_requested_plugin_refusal
+        COMMAND pjrt_runtime_control_test missing-plugin
+            "${CMAKE_CURRENT_BINARY_DIR}/pjrt-intentionally-absent${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
+
+    # Offline fake-plugin controls prove output metadata mismatches refuse
+    # before a host copy and still release input/output/executable handles.
+    add_executable(pjrt_runtime_output_mismatch_test
+        tests/xla/pjrt_runtime_output_mismatch_test.cpp
+    )
+    add_dependencies(pjrt_runtime_output_mismatch_test pjrt_test_output_mismatch)
+    target_include_directories(pjrt_runtime_output_mismatch_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+    target_compile_options(pjrt_runtime_output_mismatch_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_runtime_output_mismatch_test)
+    target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_runtime_output_mismatch_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_runtime_output_mismatch_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    add_test(NAME pjrt_runtime_output_dtype_mismatch
+        COMMAND pjrt_runtime_output_mismatch_test dtype
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
+    add_test(NAME pjrt_runtime_output_shape_mismatch
+        COMMAND pjrt_runtime_output_mismatch_test shape
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
+    add_test(NAME pjrt_runtime_reject_on_device_input
+        COMMAND pjrt_runtime_output_mismatch_test on-device-input
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
+    add_test(NAME pjrt_runtime_reject_on_device_output
+        COMMAND pjrt_runtime_output_mismatch_test on-device-output
+            $<TARGET_FILE:pjrt_test_output_mismatch>
     )
 endif()
 
@@ -2667,6 +2856,11 @@ endif()
 set(ESHKOL_XLA_RUNTIME_OBJECTS)
 if(ESHKOL_XLA_RUNTIME_SRC)
     add_library(eshkol-xla-runtime-obj OBJECT ${ESHKOL_XLA_RUNTIME_SRC})
+    if(ESHKOL_XLA_ENABLED AND UNIX)
+        target_compile_definitions(eshkol-xla-runtime-obj PRIVATE
+            ESHKOL_XLA_PJRT_AVAILABLE=1
+        )
+    endif()
     set(ESHKOL_XLA_RUNTIME_OBJECTS $<TARGET_OBJECTS:eshkol-xla-runtime-obj>)
 endif()
 
@@ -2876,6 +3070,14 @@ endif()
 # Add library directories if found
 if(LLVM_LIBRARY_DIRS)
     target_link_directories(eshkol-static PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_runtime_control_test AND LLVM_LIBRARY_DIRS)
+    # This test target is declared before LLVM's library search directories are
+    # normalized from llvm-config; attach them here after that discovery.
+    target_link_directories(pjrt_runtime_control_test PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_runtime_output_mismatch_test AND LLVM_LIBRARY_DIRS)
+    target_link_directories(pjrt_runtime_output_mismatch_test PRIVATE ${LLVM_LIBRARY_DIRS})
 endif()
 
 # Propagate the runtime's transitive system link deps (Apple ImageIO/CoreGraphics/
@@ -8268,6 +8470,7 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
             test_release_autopilot
             test_v1_3_release_evidence_recipe
             test_release_probe_receipts
+            test_icc_smoke_scope
             test_release_harness_paths
             test_repl_smoke
             test_native_image_io_contract)
@@ -11619,11 +11822,10 @@ endif()
 # ===== PJRT Smoke Test =====
 # Mirrors the xla_codegen_test target above exactly (same library, same
 # LLVM/MLIR/StableHLO linkage, same platform-specific options): it links
-# against eshkol-static to reach the PJRT client (PjrtPlugin/PjrtClient), a
-# lib/backend/xla/ source the LIB_SRC glob compiles in whenever XLA is ON, and
-# needs libdl for the plugin loader's dlopen/dlsym. It is configured only when
-# tests/xla/pjrt_smoke_test.cpp exists; neither that test nor the PJRT client
-# source is in this tree yet, so here the block is inert.
+# against eshkol-static to reach the PJRT client and needs libdl for the
+# plugin loader's dlopen/dlsym. It is configured only when
+# tests/xla/pjrt_smoke_test.cpp exists; that device smoke test is not present
+# in this source tree.
 if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_smoke_test.cpp")
     message(STATUS "Building PJRT smoke test")
 
@@ -12916,6 +13118,21 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
             $<TARGET_FILE:eshkol-run>)
     set_tests_properties(ownership_nested_diagnostics PROPERTIES
         TIMEOUT 90 LABELS "ownership;memory;regression")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_gate.py" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_test.esk")
+    add_test(NAME ownership_single_evaluation
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_gate.py
+            --native $<TARGET_FILE:eshkol-run>
+            --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+            --source ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_test.esk
+            --evidence-dir ${CMAKE_CURRENT_BINARY_DIR}/ownership-single-eval-evidence)
+    set_tests_properties(ownership_single_evaluation PROPERTIES
+        TIMEOUT 1200 LABELS "ownership;memory;regression")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE

@@ -36,6 +36,7 @@
 #   TRACE_DIR   (env, default scripts/icc_traces)
 
 set -u
+set -o pipefail
 export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
@@ -79,23 +80,7 @@ print(json.dumps({"kind": "v1_4_connection", "name": sys.argv[1], "value": sys.a
 ' "$1" "$2" "$3" >> "$TRACE_FILE"
 }
 
-# A probe that actually runs a command and grades PASS/FAIL on its exit code.
-probe_run() {
-    local probe_id="$1" label="$2" cmd="$3"
-    local out status snippet
-    PROBE_TOTAL=$((PROBE_TOTAL + 1))
-    out=$(eval "$cmd" 2>&1)
-    status=$?
-    if [ "$status" -eq 0 ] && ! printf '%s\n' "$out" | rg -qi '(^|[^[:alpha:]])(SKIP|UNVERIFIED)(:|[[:space:]]|$)'; then
-        emit_event "$probe_id" PASS "${label}: OK"
-        printf '  \xE2\x9C\x93 %-42s %s\n' "$probe_id" "$label"
-    else
-        PROBE_FAILURES=$((PROBE_FAILURES + 1))
-        snippet=$(printf '%s' "$out" | tail -c 220)
-        emit_event "$probe_id" FAIL "$snippet"
-        printf '  \xE2\x9C\x97 %-42s %s (exit %d)\n' "$probe_id" "$label" "$status"
-    fi
-}
+. "$REPO_ROOT/scripts/lib/connection_gate_probe.sh"
 
 # #145 carries a second, immutable ICC receipt.  The ordinary sweep event is
 # useful for the live counter, but cannot attest which source tree or runner
@@ -339,7 +324,8 @@ probe_unverified v14_websocket_server_echo \
 if [ -x "$ESHKOL_RUN" ]; then
     probe_run v14_async_io_event_loop \
         'Async I/O event loop (#158): kqueue/epoll/IOCP pipe round-trip via event-loop-poll, timeout, close-then-use fails closed, 1000 open/close cycles' \
-        '"$ESHKOL_RUN" -r tests/v1_3_edge_cases/event_loop_test.esk 2>&1 | grep -q "PASS: event_loop_test"'
+        '"$ESHKOL_RUN" -r tests/v1_3_edge_cases/event_loop_test.esk' \
+        '^PASS: event_loop_test$'
 fi
 
 # #156 threads + mutex + condvar: real pthread-backed core.threads.esk
@@ -350,13 +336,15 @@ fi
 # glob but never fed to the ICC oracle.
 probe_run v14_threads_mutex_condvar \
     'Threads + mutex + condvar (#156): 8 parallel-map workers x 1000 mutex-protected increments preserve the exact total' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/threads_mutex_concurrency_test.esk 2>&1 | grep -q "PASS: mutex-protected counter is consistent across threads"'
+    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/threads_mutex_concurrency_test.esk' \
+    'PASS: mutex-protected counter is consistent across threads'
 
 # #157 channels: real bounded-ring-buffer CSP channels (lib/core/channels.esk)
 # built on core.threads, with a real parallel-map producer/consumer test.
 probe_run v14_channels_csp \
     'Channels (#157): parallel-map producer/consumer traffic over a bounded CSP channel preserves the total and drains cleanly' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/channels_test.esk 2>&1 | grep -q "^Failed: 0$"'
+    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/channels_test.esk' \
+    '^Failed: 0$'
 
 # #160 promises/futures: future/force/force-future are real pthread-backed
 # VM builtins (lib/backend/vm_region_evac.c: "thunk/result Values, plus a
@@ -366,7 +354,8 @@ probe_run v14_channels_csp \
 # fell through to "return as-is").
 probe_run v14_promises_futures \
     'Promises/futures (#160): future/force run the thunk and multiple futures resolve independently (regression #222)' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/future_force_test.esk 2>&1 | grep -q "^Failed: 0$"'
+    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/future_force_test.esk' \
+    '^Failed: 0$'
 
 # Atomic ops (unlisted #-number, "Atomic ops (CAS, fetch-add)" in the
 # Concurrency table): real atomic-store!/-load/-exchange!/-compare-exchange!/
@@ -376,7 +365,8 @@ probe_run v14_promises_futures \
 # the primitive surface only, not cross-thread atomicity; the label says so.
 probe_run v14_atomics_surface \
     'Atomic ops: store/load/exchange/compare-exchange/fetch-add/sub/and/or/xor pass the sequential API-surface test' \
-    '"$ESHKOL_RUN" -r tests/ffi/low_level_memory_surface_test.esk 2>&1 | grep -q "Low-level FFI surface:.*0 failed"'
+    '"$ESHKOL_RUN" -r tests/ffi/low_level_memory_surface_test.esk' \
+    'Low-level FFI surface:.*0 failed'
 
 # #159 fibers/coroutines and semaphores/barriers require end-to-end evidence.
 probe_unverified v14_fibers_coroutines \
@@ -405,7 +395,8 @@ probe_run v14_msgpack_roundtrip \
 # verify (valid/tampered/empty), and full CAS round-trip incl. dedup.
 probe_run v14_cas_merkle_roundtrip \
     'Content-addressable storage + Merkle trees (#175): tree build, inclusion-proof verify (valid/tampered/empty), CAS put/get/dedup round-trip' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/merkle_test.esk 2>&1 | grep -q "^Failed: 0$"'
+    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/merkle_test.esk' \
+    '^Failed: 0$'
 
 # #163 Protocol Buffers requires a schema-driven proto3 encode/decode test.
 probe_unverified v14_protobuf_roundtrip \
