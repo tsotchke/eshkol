@@ -5,8 +5,10 @@
 are exact integers no greater than `9007199254740991`; IDs are never reused.
 C failures use `-1` for system or TLS failure, `-2` for an operation deadline,
 `-3` when native TLS is unavailable, and `-4` for invalid input or a stale ID.
-Scheme returns a `tls-error` vector for negative results. Every operation also
-requires the `network` capability.
+Scheme returns a `tls-error` vector for negative results. Context creation,
+connection, accept, read, and write require the `network` capability. Explicit
+CA, certificate, and private-key paths also require `file-read`. Capability
+and port queries and cleanup remain usable after capabilities are revoked.
 
 `(tls-client-context #f)` uses system default trust paths. Passing a CA file
 replaces that trust source. Client contexts always verify the certificate

@@ -6,7 +6,8 @@ extern "C" {
 #endif
 /** Optional native TLS context API. Context identifiers are positive, exact
  * binary64 integers and never reused. Results: -1 system/TLS failure,
- * -3 TLS unavailable on this build/platform, -4 invalid argument/handle. */
+ * -2 operation deadline, -3 TLS unavailable on this build/platform,
+ * -4 invalid argument/handle. */
 int32_t eshkol_tls_available(void);
 /** Create a peer-verifying TLS client context. A null or empty CA file uses
  * system default trust paths; a non-empty file replaces that trust source. */

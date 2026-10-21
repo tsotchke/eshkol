@@ -2,6 +2,9 @@
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE 1
+#endif
 #include "eshkol/core/tls.h"
 #include "eshkol/core/net.h"
 #ifdef NDEBUG
@@ -9,6 +12,7 @@
 #endif
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,9 +53,10 @@ int main(void) {
 typedef struct { int64_t context, listener, session; int32_t read_result; } Server;
 typedef struct { int64_t context, listener, accepted; int delay_ms; } IdleServer;
 typedef struct { int64_t session; int32_t result; int32_t timeout_ms; int started; } Reader;
-static char tempdir[128];
-static char cert_path[512], key_path[512], wrong_cert_path[512], wrong_key_path[512];
-static char expired_cert_path[512], expired_key_path[512];
+static char tempdir[PATH_MAX];
+static char cert_path[PATH_MAX + 64], key_path[PATH_MAX + 64];
+static char wrong_cert_path[PATH_MAX + 64], wrong_key_path[PATH_MAX + 64];
+static char expired_cert_path[PATH_MAX + 64], expired_key_path[PATH_MAX + 64];
 
 static EVP_PKEY *make_key(void) {
     EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
@@ -332,8 +337,12 @@ static void concurrent_close_invalidates_first(void) {
 }
 int main(void) {
     assert(eshkol_tls_available() == 1);
-    snprintf(tempdir, sizeof(tempdir), "/private/tmp/eshkol-tls-test-%ld", (long)getpid());
-    assert(mkdir(tempdir, 0700) == 0);
+    const char *temporary_root = getenv("TMPDIR");
+    if (!temporary_root || !temporary_root[0]) temporary_root = "/tmp";
+    int path_length = snprintf(tempdir, sizeof(tempdir), "%s/eshkol-tls-test-XXXXXX",
+                               temporary_root);
+    assert(path_length > 0 && (size_t)path_length < sizeof(tempdir));
+    assert(mkdtemp(tempdir));
     snprintf(cert_path, sizeof(cert_path), "%s/trusted.pem", tempdir);
     snprintf(key_path, sizeof(key_path), "%s/trusted-key.pem", tempdir);
     snprintf(wrong_cert_path, sizeof(wrong_cert_path), "%s/wrong-ca.pem", tempdir);
