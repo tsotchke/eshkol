@@ -3372,7 +3372,8 @@ if(REPL_SRC)
 
   # ===== Link eshkol-run with REPL library for -e/--eval JIT support =====
   # This must come after eshkol-repl-lib is defined
-  target_link_libraries(eshkol-run PRIVATE eshkol-repl-lib)
+  foreach(_jit_host IN ITEMS eshkol-run eshkol-bootstrap)
+  target_link_libraries(${_jit_host} PRIVATE eshkol-repl-lib)
 
   # Agent FFI linkage is applied AFTER the eshkol-agent-ffi target is
   # defined (see the block at the end of the agent-FFI section further
@@ -3393,7 +3394,7 @@ if(REPL_SRC)
     # eshkol-static, but with only `eshkol_eval_bridge_linked` as an
     # external symbol the archive gets dead-stripped without
     # force_load.
-    target_link_options(eshkol-run PRIVATE
+    target_link_options(${_jit_host} PRIVATE
       "-Wl,-force_load,$<TARGET_FILE:eshkol-static>"
       "-Wl,-force_load,$<TARGET_FILE:eshkol-repl-lib>")
     # NOTE: agent-ffi force_load is applied separately AFTER the
@@ -3402,10 +3403,10 @@ if(REPL_SRC)
     # FFI section. This split is because `if(TARGET eshkol-agent-ffi)`
     # here evaluates at configure time and the target doesn't exist
     # yet.
-    target_link_options(eshkol-run PRIVATE "-Wl,-export_dynamic")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-export_dynamic")
     # 512MB stack for deep recursion (main thread stack set at link time on macOS)
-    target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
-    target_link_options(eshkol-run PRIVATE "-Wl,-bind_at_load")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-stack_size,0x20000000")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-bind_at_load")
   elseif(WIN32 AND ESHKOL_USING_MSVC)
     # The bounded /DEF table attached after the agent target exists performs
     # both precise archive retention and PE export.  Do not /WHOLEARCHIVE the
@@ -3418,24 +3419,26 @@ if(REPL_SRC)
     # overrides + JIT-only helpers); the generated .def exports exactly the
     # Eshkol runtime namespace so GetForCurrentProcess resolves them. PE does
     # not export symbols by default — see cmake/gen_runtime_def.cmake.
-    target_link_options(eshkol-run PRIVATE
+    target_link_options(${_jit_host} PRIVATE
       "-Wl,--whole-archive"
       "$<TARGET_FILE:eshkol-static>"
       "$<TARGET_FILE:eshkol-repl-lib>"
       "-Wl,--no-whole-archive")
-    eshkol_windows_export_runtime(eshkol-run)
+    eshkol_windows_export_runtime(${_jit_host})
   else()
-    target_link_options(eshkol-run PRIVATE
+    target_link_options(${_jit_host} PRIVATE
       "-Wl,--whole-archive"
       "$<TARGET_FILE:eshkol-static>"
       "$<TARGET_FILE:eshkol-repl-lib>"
       "-Wl,--no-whole-archive")
-    target_link_options(eshkol-run PRIVATE "-Wl,--export-dynamic")
+    target_link_options(${_jit_host} PRIVATE "-Wl,--export-dynamic")
     # 512MB stack for deep recursion
-    target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-z,stack-size=536870912")
     # Linker hardening: full RELRO + immediate binding
-    target_link_options(eshkol-run PRIVATE "-Wl,-z,relro" "-Wl,-z,now")
+    target_link_options(${_jit_host} PRIVATE "-Wl,-z,relro" "-Wl,-z,now")
   endif()
+
+  endforeach()
 
   # Linux binary releases stage libpng/libjpeg/libwebp and their codec-side
   # closure under lib/eshkol/runtime-deps.  Keep the tools relocatable: the
@@ -12502,7 +12505,7 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # otherwise compression, Tree-sitter, and Yoga silently disappear
         # from VM execution even though LLVM/JIT and AOT have them.
         foreach(_eshkol_vm_host_target IN ITEMS
-                eshkol-vm-standalone-test test_vm_c_api)
+                eshkol-vm-standalone-test test_vm_c_api eshkol-bootstrap)
             if(TARGET ${_eshkol_vm_host_target})
                 if(APPLE)
                     target_link_libraries(${_eshkol_vm_host_target} PRIVATE eshkol-agent-ffi)
@@ -14044,6 +14047,12 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
     endif()
 endif()
 
+# Both compiler-pass bootstrap tests must exercise the staged REPL when built.
+set(_selfhost_repl_args)
+if(TARGET eshkol-repl)
+    list(APPEND _selfhost_repl_args --repl-runner $<TARGET_FILE:eshkol-repl>)
+endif()
+
 # Scalar DAG-to-core lowering: seed, compiled Eshkol pass, and native integration.
 if(ESHKOL_BUILD_TESTS)
     foreach(_lower_test IN ITEMS seed_scalar_lowering_test selfhost_scalar_lowering_test)
@@ -14093,9 +14102,6 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
     endif()
 endif()
 
-if(TARGET eshkol-repl-lib)
-    target_link_libraries(eshkol-bootstrap PRIVATE eshkol-repl-lib)
-endif()
 foreach(_native_tool IN ITEMS eshkol-repl)
     if(TARGET ${_native_tool})
         target_sources(${_native_tool} PRIVATE "${_incremental_runtime_object}")
@@ -14181,10 +14187,6 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
             PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
     endif()
     if(Python3_Interpreter_FOUND)
-        set(_selfhost_repl_args)
-        if(TARGET eshkol-repl)
-            list(APPEND _selfhost_repl_args --repl-runner $<TARGET_FILE:eshkol-repl>)
-        endif()
         add_test(NAME selfhost_incremental_bootstrap COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/selfhost_incremental_bootstrap.py
             --runner $<TARGET_FILE:eshkol-run> --seed $<TARGET_FILE:eshkol-bootstrap>
