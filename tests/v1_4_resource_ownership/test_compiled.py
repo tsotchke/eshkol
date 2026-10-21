@@ -66,6 +66,8 @@ NEGATIVE = (
     "negative-raise-hidden-acquisition",
     "negative-computed-callable-result",
     "negative-letrec-callable-result",
+    "negative-let-syntax-hidden-acquisition",
+    "negative-letrec-syntax-hidden-acquisition",
 )
 
 

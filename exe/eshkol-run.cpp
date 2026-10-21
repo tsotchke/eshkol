@@ -2154,11 +2154,9 @@ private:
                 } else {
                     effect = effectForExpression(op.define_op.value, &effects);
                     const std::string source_name = getVarName(op.define_op.value);
-                    proven_callable = !source_name.empty() &&
-                        (proven_callable_names.count(source_name) != 0 ||
-                         (effects.count(source_name) == 0 &&
-                          (isKnownResourceSafeBuiltin(source_name) ||
-                           source_name == "exit" || source_name == "error")));
+            proven_callable = !source_name.empty() &&
+                (proven_callable_names.count(source_name) != 0 ||
+                 effects.count(source_name) == 0);
                     const ResourceKind kind = factoryKind(effect);
                     if (kind != ResourceKind::NONE) future_resources[name] = kind;
                 }
@@ -2295,7 +2293,11 @@ private:
             todo.pop_back();
             if (!node) continue;
             if (node->type == ESHKOL_VAR) {
-                if (callableEffectOf(node) != CallableEffect::NONE) return true;
+                const std::string name = getVarName(node);
+                VariableInfo* info = lookupVariable(name);
+                if (info && info->is_proven_callable &&
+                    info->callable_effect != CallableEffect::NONE)
+                    return true;
                 continue;
             }
             if (node->type == ESHKOL_CONS) {
@@ -2373,8 +2375,7 @@ private:
             const std::string source_name = getVarName(value);
             VariableInfo* source = lookupVariable(source_name);
             target.is_proven_callable = (source && source->is_proven_callable) ||
-                (!source && (isKnownResourceSafeBuiltin(source_name) ||
-                             source_name == "exit" || source_name == "error"));
+                !source;
         } else if (value && value->type == ESHKOL_OP &&
                    value->operation.op == ESHKOL_LAMBDA_OP) {
             target.is_proven_callable = true;
@@ -3360,8 +3361,6 @@ private:
                         case ESHKOL_REQUIRE_OP:
                         case ESHKOL_PROVIDE_OP:
                         case ESHKOL_DEFINE_SYNTAX_OP:
-                        case ESHKOL_LET_SYNTAX_OP:
-                        case ESHKOL_LETREC_SYNTAX_OP:
                         case ESHKOL_QUOTE_OP:
                         default:
                             if (strict_resources_ && item.resource_effects_enabled &&
@@ -3371,8 +3370,7 @@ private:
                                 op->op != ESHKOL_REQUIRE_OP &&
                                 op->op != ESHKOL_PROVIDE_OP &&
                                 op->op != ESHKOL_DEFINE_SYNTAX_OP &&
-                                op->op != ESHKOL_LET_SYNTAX_OP &&
-                                op->op != ESHKOL_LETREC_SYNTAX_OP)
+                                op->op != ESHKOL_QUOTE_OP)
                                 reportResourceError("operator form " +
                                     std::to_string(static_cast<int>(op->op)) +
                                     " has no strict resource traversal summary");
