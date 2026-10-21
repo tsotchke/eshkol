@@ -2021,7 +2021,7 @@ oracles:
           event_names: ["ad_taylor_p4_guw_multivariate"]
           event_values: ["PASS"]
         severity: high
-        label: P4 GUW multivariate mixed partials match analytic references to d=8
+        label: P4 GUW mixed partials at total order 8 in three variables match the analytic value 72 and permutation symmetry (JIT and AOT)
         action: run_ad_exact_taylor_gate
 
       - runtime_event:
@@ -2152,7 +2152,7 @@ oracles:
           event_names: ["ad_taylor_p4_guw_multivariate"]
           event_values: ["PASS"]
         severity: high
-        label: P4 GUW multivariate mixed partials pass analytic oracle to d=8
+        label: P4 GUW mixed partials at total order 8 in three variables match the analytic value 72 and permutation symmetry (JIT and AOT)
         action: run_ad_exact_taylor_gate
 
       - runtime_event:
@@ -2246,7 +2246,7 @@ oracles:
           event_names: ["v14_tls_handshake_verified"]
           event_values: ["PASS"]
         severity: high
-        label: 'TLS/SSL via system libraries: server and client contexts, certificate/key loading, peer verification, a local self-signed-cert smoke handshake — NOT YET IMPLEMENTED (no TLS primitive exists anywhere in lib/, inc/, or tests/)'
+        label: 'TLS/SSL via system libraries: server and client contexts, certificate/key loading, peer verification and a local trusted-certificate handshake; verified agent HTTP-client TLS alone does not establish the complete server/client context contract'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2464,7 +2464,7 @@ oracles:
           event_names: ["v14_distribution_pjrt_client_spike"]
           event_values: ["PASS"]
         severity: low
-        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item (per the draft ladder): a PJRT client spike — NOT YET IMPLEMENTED (zero "pjrt"/"PJRT" hits anywhere in the repo — code, headers, docs, or build)'
+        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged PJRT client spike: guarded Unix loader/client and dense host-f64 execution are implemented; runtime evidence from a real plugin/device remains unverified'
         action: run_v14_connection_gate
 
       - runtime_event:
