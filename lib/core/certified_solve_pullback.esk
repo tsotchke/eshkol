@@ -62,4 +62,4 @@
              (vector-ref p 1) (csp-transpose (vector-ref p 2)) (vector-ref p 4))
            (let ((bars (csp-bars (vector-ref result 2) (vector-ref result 3))))
              (and (equal? (vector-ref result 4) (vector-ref bars 0))
-                  (equal? (vector-ref result 5) (vector-ref bars 1)))))))))
+                  (equal? (vector-ref result 5) (vector-ref bars 1))))))))
