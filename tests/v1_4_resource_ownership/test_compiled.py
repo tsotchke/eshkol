@@ -60,6 +60,12 @@ NEGATIVE = (
     "negative-unknown-builtin-alias-factory",
     "negative-callable-return-builtin-factory",
     "negative-re-refine-incompatible-join",
+    "negative-do-hidden-acquisition",
+    "negative-when-hidden-acquisition",
+    "negative-values-hidden-acquisition",
+    "negative-raise-hidden-acquisition",
+    "negative-computed-callable-result",
+    "negative-letrec-callable-result",
 )
 
 
@@ -91,6 +97,26 @@ def main():
             passed = (completed.returncode == 1 and diagnostic and not artifact.exists()) if is_negative \
                      else (completed.returncode == 0 and artifact.exists())
             results.append((name, passed, completed.returncode, diagnostic, artifact.exists(), completed.stdout))
+        harmless_object = out_dir / "positive-borrow-scope.o"
+        mixed_output = out_dir / "strict-mixed-link"
+        mixed = subprocess.run(
+            [runner, "--strict-resources", "-o", str(mixed_output),
+             str(FIXTURES / "positive-borrow-scope.esk"), str(harmless_object),
+             "-L", lib_dir], env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, timeout=30)
+        mixed_diagnostic = "opaque .o inputs" in mixed.stdout
+        results.append(("reject-mixed-opaque-object", mixed.returncode == 1 and
+                        mixed_diagnostic and not mixed_output.exists(), mixed.returncode,
+                        mixed_diagnostic, mixed_output.exists(), mixed.stdout))
+        wasm_output = out_dir / "strict-unsupported.wasm"
+        wasm = subprocess.run(
+            [runner, "--strict-resources", "--wasm", "-o", str(wasm_output),
+             str(FIXTURES / "positive-borrow-scope.esk")], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+        wasm_diagnostic = "native CPU artifacts only" in wasm.stdout
+        results.append(("reject-wasm-profile", wasm.returncode == 1 and
+                        wasm_diagnostic and not wasm_output.exists(), wasm.returncode,
+                        wasm_diagnostic, wasm_output.exists(), wasm.stdout))
     failures = [row for row in results if not row[1]]
     for name, passed, code, diagnostic, artifact, output in results:
         print(f"{'PASS' if passed else 'FAIL'} {name}: exit={code} resource_diagnostic={diagnostic} artifact={artifact}")

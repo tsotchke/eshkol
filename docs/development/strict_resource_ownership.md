@@ -18,9 +18,15 @@ because the compiler and JIT loader execute those forms. Function bodies are
 not executed during module initialization, so their declaration expressions
 are not treated as resource acquisition. Calls whose effects cannot be proved
 in the supported fragment are rejected when they could affect resource safety.
+Bound callable values require explicit effect provenance; computed callable
+results and recursive callable initializers are not assumed resource-free.
 
 The checked fragment excludes resource-sensitive loops, continuations, dynamic
 evaluation, quasiquotation, and unsupported control forms. Diagnostics identify
 these boundaries rather than treating them as safe. The `tests/v1_4_resource_ownership`
 corpus covers compile-time positives and falsifiers; its runtime loopback test
 allocates a fresh local TCP port for each JIT and AOT run.
+
+Opaque `.o` inputs, explicit `-l` libraries, and WebAssembly output are refused
+with this profile because their initializers or runtime effects are outside the
+checked source AST.

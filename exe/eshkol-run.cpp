@@ -1667,6 +1667,7 @@ public:
         ResourceState moved_from_state = ResourceState::NONE;
         bool is_defined = false;
         std::string callable_contract;
+        bool is_proven_callable = false;
     };
 
     // Ownership scope (lexical block)
@@ -1966,6 +1967,8 @@ private:
                         b.callable_effect == CallableEffect::NONE)
                            ? CallableEffect::NONE
                            : CallableEffect::UNKNOWN_RESOURCE_EFFECT);
+                pair.second.is_proven_callable =
+                    a.is_proven_callable && b.is_proven_callable;
                 (void)base_info;
             }
             for (const auto& pair : true_scope.variables) {
@@ -2120,6 +2123,7 @@ private:
     void prepareStrictBindings(const std::vector<eshkol_ast_t>& asts) {
         if (!strict_resources_) return;
         std::map<std::string, CallableEffect> effects;
+        std::set<std::string> proven_callable_names;
 
         std::map<std::string, ResourceKind> future_resources;
         for (const auto& ast : asts) {
@@ -2128,22 +2132,41 @@ private:
             if (op.op == ESHKOL_DEFINE_OP && op.define_op.name) {
                 const std::string name = op.define_op.name;
                 CallableEffect effect = CallableEffect::NONE;
+                bool proven_callable = false;
                 if (isTrustedCoreNetDefinition(&ast)) {
                     effect = effectForTrustedCoreNetName(name);
+                    proven_callable = true;
                 } else if (op.define_op.is_external) {
                     effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                    proven_callable = true;
                 } else if (op.define_op.is_function) {
                     effect = isSimplePureFunction(op.define_op.value)
                         ? CallableEffect::NONE
                         : CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                    proven_callable = true;
+                } else if (op.define_op.value &&
+                           op.define_op.value->type == ESHKOL_OP &&
+                           op.define_op.value->operation.op == ESHKOL_LAMBDA_OP) {
+                    effect = isSimplePureFunction(op.define_op.value)
+                        ? CallableEffect::NONE
+                        : CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                    proven_callable = true;
                 } else {
                     effect = effectForExpression(op.define_op.value, &effects);
+                    const std::string source_name = getVarName(op.define_op.value);
+                    proven_callable = !source_name.empty() &&
+                        (proven_callable_names.count(source_name) != 0 ||
+                         (effects.count(source_name) == 0 &&
+                          (isKnownResourceSafeBuiltin(source_name) ||
+                           source_name == "exit" || source_name == "error")));
                     const ResourceKind kind = factoryKind(effect);
                     if (kind != ResourceKind::NONE) future_resources[name] = kind;
                 }
                 effects[name] = effect;
+                if (proven_callable) proven_callable_names.insert(name);
             } else if (op.op == ESHKOL_EXTERN_OP && op.extern_op.name) {
                 effects[op.extern_op.name] = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                proven_callable_names.insert(op.extern_op.name);
             }
         }
 
@@ -2157,15 +2180,14 @@ private:
             CallableEffect effect = CallableEffect::NONE;
             if (op.op == ESHKOL_DEFINE_OP && op.define_op.name) {
                 name = op.define_op.name;
-                if (op.define_op.is_function && op.define_op.is_external)
-                    effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
             } else if (op.op == ESHKOL_EXTERN_OP && op.extern_op.name) {
                 name = op.extern_op.name;
-                effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
             }
             if (name.empty() || currentScope().variables.count(name)) continue;
             VariableInfo info{State::UNOWNED, name, false, next_binding_id_++};
-            info.callable_effect = effect;
+            auto known_effect = effects.find(name);
+            if (known_effect != effects.end()) info.callable_effect = known_effect->second;
+            info.is_proven_callable = proven_callable_names.count(name) != 0;
             auto resource = future_resources.find(name);
             if (resource != future_resources.end()) {
                 info.resource_kind = resource->second;
@@ -2342,9 +2364,25 @@ private:
         target.callable_effect = value && value->type == ESHKOL_VAR
             ? callableEffectOf(value) : CallableEffect::NONE;
         target.callable_contract.clear();
+        target.is_proven_callable = false;
         if (target.callable_effect != CallableEffect::NONE && value &&
             value->type == ESHKOL_VAR) {
             target.callable_contract = callableContractOf(value);
+        }
+        if (value && value->type == ESHKOL_VAR) {
+            const std::string source_name = getVarName(value);
+            VariableInfo* source = lookupVariable(source_name);
+            target.is_proven_callable = (source && source->is_proven_callable) ||
+                (!source && (isKnownResourceSafeBuiltin(source_name) ||
+                             source_name == "exit" || source_name == "error"));
+        } else if (value && value->type == ESHKOL_OP &&
+                   value->operation.op == ESHKOL_LAMBDA_OP) {
+            target.is_proven_callable = true;
+            target.callable_effect = isSimplePureFunction(value)
+                ? CallableEffect::NONE : CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+            target.callable_contract.clear();
+            checkLambdaResourceCapture(value);
+            return;
         }
 
         CallableEffect expression_effect = effectForExpression(value);
@@ -2494,7 +2532,8 @@ private:
         }
     }
 
-    void checkLambdaResourceCapture(const eshkol_ast_t* lambda) {
+    void checkLambdaResourceCapture(const eshkol_ast_t* lambda,
+                                    bool reject_callable_contract_captures = true) {
         if (!lambda || lambda->type != ESHKOL_OP ||
             lambda->operation.op != ESHKOL_LAMBDA_OP) return;
         std::vector<std::set<std::string>> lexical(1);
@@ -2513,7 +2552,8 @@ private:
                         reportResourceError(isBorrowed(id)
                             ? "borrowed resource '" + entry.first + "' escapes through a closure"
                             : "resource '" + entry.first + "' is captured by a closure; closure effects are unsupported");
-                    } else if (entry.second.callable_effect != CallableEffect::NONE) {
+                    } else if (reject_callable_contract_captures &&
+                               entry.second.callable_effect != CallableEffect::NONE) {
                         reportResourceError("resource contract callable '" + entry.first +
                             "' is captured by a closure; closure effects are unsupported");
                     }
@@ -2683,6 +2723,12 @@ private:
         }
 
         VariableInfo* callee = lookupVariable(function_name);
+        if (callee && effect == CallableEffect::NONE &&
+            !callee->is_proven_callable) {
+            reportResourceError("callable value '" + function_name +
+                "' has no proved resource-effect provenance");
+            return;
+        }
         if (effect == CallableEffect::TERMINAL_CONTROL) {
             for (const auto& scope : scope_stack_) {
                 for (const auto& entry : scope.variables) {
@@ -3022,6 +3068,7 @@ private:
                                     info.is_defined = true;
                                     if (op->define_op.is_external) {
                                         info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                        info.is_proven_callable = true;
                                     } else if (op->define_op.is_function) {
                                         eshkol_ast_t function_wrapper{};
                                         function_wrapper.type = ESHKOL_OP;
@@ -3030,14 +3077,16 @@ private:
                                         function_wrapper.operation.lambda_op.num_params = op->define_op.num_params;
                                         function_wrapper.operation.lambda_op.body = op->define_op.value;
                                         if (item.resource_effects_enabled)
-                                            checkLambdaResourceCapture(&function_wrapper);
+                                            checkLambdaResourceCapture(&function_wrapper, false);
                                         if (isTrustedCoreNetDefinition(node)) {
                                             info.callable_effect = effectForTrustedCoreNetName(name);
                                             info.callable_contract = name;
+                                            info.is_proven_callable = true;
                                         } else {
                                             info.callable_effect = isSimplePureFunction(op->define_op.value)
                                                 ? CallableEffect::NONE
                                                 : CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                            info.is_proven_callable = true;
                                         }
                                     } else {
                                         bindResourceInitializer(info, op->define_op.value, name);
@@ -3143,7 +3192,18 @@ private:
                                         currentScope().variables[var_name] = {
                                             is_owned ? State::OWNED : State::UNOWNED, "", is_owned, next_binding_id_++
                                         };
+                                        currentScope().variables[var_name].is_defined = true;
                                     }
+                                }
+                            }
+                            if (strict_resources_ && item.resource_effects_enabled) {
+                                for (uint64_t i = 0; i < op->let_op.num_bindings; ++i) {
+                                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                                    if (binding->type != ESHKOL_CONS) continue;
+                                    const std::string var_name = getVarName(binding->cons_cell.car);
+                                    VariableInfo* info = lookupVariable(var_name);
+                                    if (info)
+                                        bindResourceInitializer(*info, binding->cons_cell.cdr, var_name);
                                 }
                             }
                             work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op, 0, item.resource_effects_enabled));
@@ -3183,8 +3243,7 @@ private:
                                 work.push_back(astChild(&op->sequence_op.expressions[i - 1]));
                             break;
                         case ESHKOL_COND_OP:
-                            if (strict_resources_ && item.resource_effects_enabled &&
-                                (hasTrackedResourceBinding() || expressionHasResourceTransition(node)))
+                            if (strict_resources_ && item.resource_effects_enabled)
                                 reportResourceError("cond resource control flow is unsupported in the checked fragment");
                             for (uint64_t i = op->call_op.num_vars; i > 0; --i)
                                 work.push_back(astChild(&op->call_op.variables[i - 1]));
@@ -3233,9 +3292,11 @@ private:
                                         target->resource_state = ResourceState::MAYBE_LIVE;
                                     }
                                     if (target->callable_effect != CallableEffect::NONE ||
+                                        target->is_proven_callable ||
                                         effectForExpression(op->set_op.value) != CallableEffect::NONE) {
                                         target->callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
                                         target->callable_contract.clear();
+                                        target->is_proven_callable = false;
                                     }
                                 }
                             }
@@ -3250,6 +3311,7 @@ private:
                                 if (existing != currentScope().variables.end())
                                     info.binding_id = existing->second.binding_id;
                                 info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                info.is_proven_callable = true;
                                 info.is_defined = true;
                                 currentScope().variables[name] = std::move(info);
                             }
@@ -3262,22 +3324,19 @@ private:
                             break;
 
                         case ESHKOL_DO_OP:
-                            if (strict_resources_ && item.resource_effects_enabled &&
-                                (hasTrackedResourceBinding() || expressionHasResourceTransition(node)))
+                            if (strict_resources_ && item.resource_effects_enabled)
                                 reportResourceError("loop effects are unsupported in the checked fragment");
                             break;
 
                         case ESHKOL_CALL_CC_OP:
                         case ESHKOL_DYNAMIC_WIND_OP:
-                            if (strict_resources_ && item.resource_effects_enabled &&
-                                (hasTrackedResourceBinding() || expressionHasResourceTransition(node)))
+                            if (strict_resources_ && item.resource_effects_enabled)
                                 reportResourceError("continuation or dynamic-wind effects are unsupported in the checked fragment");
                             break;
 
                         case ESHKOL_VALUES_OP:
                         case ESHKOL_CALL_WITH_VALUES_OP:
-                            if (strict_resources_ && item.resource_effects_enabled &&
-                                (hasTrackedResourceBinding() || expressionHasResourceTransition(node)))
+                            if (strict_resources_ && item.resource_effects_enabled)
                                 reportResourceError("multiple-value resource flow is unsupported in the checked fragment");
                             break;
 
@@ -3292,13 +3351,31 @@ private:
                         case ESHKOL_UNLESS_OP:
                         case ESHKOL_CASE_OP:
                         case ESHKOL_MATCH_OP:
-                            if (strict_resources_ && item.resource_effects_enabled &&
-                                (hasTrackedResourceBinding() || expressionHasResourceTransition(node)))
+                            if (strict_resources_ && item.resource_effects_enabled)
                                 reportResourceError("conditional form is unsupported for resource flow in this checked fragment");
                             break;
 
+                        case ESHKOL_DEFINE_TYPE_OP:
+                        case ESHKOL_IMPORT_OP:
+                        case ESHKOL_REQUIRE_OP:
+                        case ESHKOL_PROVIDE_OP:
+                        case ESHKOL_DEFINE_SYNTAX_OP:
+                        case ESHKOL_LET_SYNTAX_OP:
+                        case ESHKOL_LETREC_SYNTAX_OP:
                         case ESHKOL_QUOTE_OP:
                         default:
+                            if (strict_resources_ && item.resource_effects_enabled &&
+                                op->op != ESHKOL_QUOTE_OP &&
+                                op->op != ESHKOL_DEFINE_TYPE_OP &&
+                                op->op != ESHKOL_IMPORT_OP &&
+                                op->op != ESHKOL_REQUIRE_OP &&
+                                op->op != ESHKOL_PROVIDE_OP &&
+                                op->op != ESHKOL_DEFINE_SYNTAX_OP &&
+                                op->op != ESHKOL_LET_SYNTAX_OP &&
+                                op->op != ESHKOL_LETREC_SYNTAX_OP)
+                                reportResourceError("operator form " +
+                                    std::to_string(static_cast<int>(op->op)) +
+                                    " has no strict resource traversal summary");
                             break;
                     }
                     break;
@@ -6284,6 +6361,14 @@ int main(int argc, char **argv)
         eshkol_error("--strict-resources cannot certify dynamic --eval expressions");
         return 1;
     }
+    if (strict_resources && wasm_output) {
+        eshkol_error("--strict-resources currently supports native CPU artifacts only");
+        return 1;
+    }
+    if (strict_resources && !linked_libs.empty()) {
+        eshkol_error("Strict resource error: opaque -l libraries are unsupported with --strict-resources");
+        return 1;
+    }
 
     if (!include_paths.empty()) {
         std::string merged;
@@ -6738,6 +6823,12 @@ int main(int argc, char **argv)
             source_files.push_back(argv[optind]);
         else if (ends_with(tmp, ".o"))
             compiled_files.push_back(argv[optind]);
+    }
+
+    if (strict_resources && !compiled_files.empty()) {
+        eshkol_error("Strict resource error: opaque .o inputs cannot be certified by --strict-resources");
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+        return 1;
     }
 
     if (vm_only_profile) {
