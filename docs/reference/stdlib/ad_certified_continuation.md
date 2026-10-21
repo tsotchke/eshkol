@@ -15,7 +15,9 @@ Construction validates the caller's initial center, positive radii and inverse
 through `certify-polynomial-root`. The existing total-variable/degree budgets
 remain. Times, maximum step and all proof arithmetic are exact rationals.
 
-Advance revalidates its starting root certificate and takes state, target, positive maximum step and attempt budget 0..256.
+Advance revalidates its starting root certificate and takes state, target, positive
+maximum step and attempt budget 0..256. The budget counts both accepted and
+rejected trials.
 The old implicit sensitivity predicts a midpoint center; four bounded Newton
 proposal corrections round to a 1/4096 rational grid. These are proposals,
 not trusted roots. The driver chooses a tube from initial radii and predicted
@@ -45,4 +47,8 @@ and parameter interval vectors through the same derived-operator enclosure
 owner. Point/fixed-parameter certificate behavior is preserved. No singular
 branch traversal, complex paths, global root census or arbitrary-function
 tracker is claimed. Conservative interval dependency, fixed tube policy,
-exact arithmetic growth and proposal resolution can stop valid paths.
+exact arithmetic growth and proposal resolution can stop valid paths. The proof
+is relative to the supplied compiled polynomial model; it does not authenticate
+an external model or provide a floating-point error/condition bound. Exact
+certification of a rational root family does not certify the accuracy of a
+separate floating-point computation.

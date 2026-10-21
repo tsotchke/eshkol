@@ -13471,7 +13471,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
-    foreach(reverse_fixture IN ITEMS incremental_reverse incremental_reverse_alias_seed certified_nonlinear certified_nonlinear_independent)
+    foreach(reverse_fixture IN ITEMS incremental_reverse incremental_reverse_alias_seed certified_nonlinear certified_nonlinear_independent certified_continuation certified_continuation_independent)
         add_test(NAME ${reverse_fixture}_vm
             COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${reverse_fixture}_test.esk")
@@ -13500,6 +13500,7 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(certified_nonlinear_independent "tests/stdlib/certified_nonlinear_independent_test.esk")
+    eshkol_add_algebraic_ad_acceptance(certified_continuation_independent "tests/stdlib/certified_continuation_independent_test.esk")
 endif()
 
 # Wave 4 acceptance: certified_continuation

@@ -1,0 +1,91 @@
+(require stdlib)
+(require core.ad.certified_continuation)
+(require core.certified_solve)
+
+(define checks 0)
+(define (check label ok)
+  (if (not ok) (error label))
+  (set! checks (+ checks 1)))
+(define (contains? interval value)
+  (and (<= (car interval) value) (<= value (cdr interval))))
+(define (raises? thunk)
+  (guard (e (else #t)) (thunk) #f))
+
+;; F1=x-t, F2=y-x^2 has the independent coupled branch
+;; x=t, y=t^2 and sensitivity (1, 2t).
+(define equations
+  (make-certified-polynomial-system '(x y) '(t)
+    '((- x t) (- y (* x x)))))
+(define start
+  (make-certified-continuation equations 1 (vector 1 1)
+    (vector 1/64 1/64) (vector (vector 1 0) (vector 0 1))))
+(define start-cert (vector-ref start 3))
+(define sensitivity (vector-ref start-cert 3))
+(check "x implicit derivative encloses 1"
+  (contains? (vector-ref (vector-ref sensitivity 0) 0) 1))
+(check "y implicit derivative encloses 2"
+  (contains? (vector-ref (vector-ref sensitivity 1) 0) 2))
+(define start-snapshot (certified-continuation-enclosure start))
+(define result (certified-continuation-advance start 1/2 1/8 128))
+(check "analytic coupled branch completes" (eq? (vector-ref result 1) 'complete))
+(define finish (vector-ref result 2))
+(define endpoint (certified-continuation-enclosure finish))
+(check "endpoint x encloses t" (contains? (vector-ref (vector-ref endpoint 1) 0) 1/2))
+(check "endpoint y encloses t^2" (contains? (vector-ref (vector-ref endpoint 1) 1) 1/4))
+(check "independent polynomial residual is zero"
+  (equal? (equations 'point (vector 1/2 1/4) (vector 1/2)) #(0 0)))
+
+;; Each accepted whole-step record carries a source-recomputed linear solve
+;; receipt: its residual is F(center,t), its Jacobian uncertainty is from the
+;; full X×T interval, and its majorant proves the contraction/self-inclusion.
+(define (all-step-certificates? steps)
+  (or (null? steps)
+      (let* ((step (car steps)) (linear (vector-ref step 6))
+             (receipt (vector-ref linear 3)))
+        (and (eq? (vector-ref step 0) 'whole-polynomial-step-v1)
+             (eq? (vector-ref linear 1) 'proved)
+             (verify-linear-solve-certificate linear
+               (vector-ref receipt 0) (vector-ref receipt 1) (vector-ref receipt 2)
+               (vector-ref receipt 3) (vector-ref receipt 4)
+               (vector-ref receipt 5) (vector-ref receipt 6))
+             (all-step-certificates? (cdr steps)))))
+(check "every accepted step replays its exact residual/Jacobian certificate"
+  (all-step-certificates? (vector-ref result 3)))
+(check "source-bound continuation replay verifies"
+  (verify-certified-continuation result start 1/2 1/8 128))
+(check "start snapshot remains unchanged"
+  (equal? (certified-continuation-enclosure start) start-snapshot))
+
+(define no-budget (certified-continuation-advance start 1/2 1/8 0))
+(check "zero budget returns initial certified prefix"
+  (and (eq? (vector-ref no-budget 1) 'partial) (= (vector-ref no-budget 4) 0)
+       (= (vector-ref (certified-continuation-enclosure (vector-ref no-budget 2)) 0) 0)))
+(define one-budget (certified-continuation-advance start 1/2 1/8 1))
+(check "one-attempt budget is strictly bounded"
+  (and (eq? (vector-ref one-budget 1) 'partial) (= (vector-ref one-budget 4) 1)
+       (let ((time (vector-ref (certified-continuation-enclosure (vector-ref one-budget 2)) 0)))
+         (or (= time 1) (= time 7/8)))))
+(check "attempt budget above 256 is rejected"
+  (raises? (lambda () (certified-continuation-advance start 2 1/8 257))))
+(check "nonpositive step is rejected"
+  (raises? (lambda () (certified-continuation-advance start 2 0 4))))
+
+;; Both endpoints have real simple roots but F=x^2-t^2 is singular at t=0.
+;; A partial prefix must stop before the collision rather than jump branches.
+(define collision-system
+  (make-certified-polynomial-system '(x) '(t) '((- (* x x) (* t t)))))
+(define collision-start
+  (make-certified-continuation collision-system -1 (vector -1) (vector 1/64)
+    (vector (vector -1/2))))
+(define collision-result
+  (certified-continuation-advance collision-start 1 2 12))
+(define collision-time
+  (vector-ref (certified-continuation-enclosure (vector-ref collision-result 2)) 0))
+(check "singular interior blocks completion"
+  (and (eq? (vector-ref collision-result 1) 'partial) (< collision-time 0)))
+(check "collision prefix preserves selected negative branch"
+  (< (car (vector-ref (vector-ref (certified-continuation-enclosure
+      (vector-ref collision-result 2)) 1) 0)) 0))
+
+(display "Checks: ") (display checks) (newline)
+(display "RESULT: PASS\n")
