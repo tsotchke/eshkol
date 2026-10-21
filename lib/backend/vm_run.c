@@ -105,7 +105,8 @@ void vm_run(VM* vm) {
         vm->halted = 0;
         vm->error = 0;
     }
-#if defined(__GNUC__) || defined(__clang__)
+#if (defined(__GNUC__) || defined(__clang__)) && \
+    !defined(ESHKOL_VM_FORCE_SWITCH_DISPATCH)
 /* =========================================================================
  * Computed-goto (threaded) dispatch — GCC/Clang only.
  *
@@ -198,6 +199,11 @@ void vm_run(VM* vm) {
                 goto vm_exit; \
         } \
         instr = vm->code[vm->pc++]; \
+        if (instr.op >= OP_COUNT) { \
+            fprintf(stderr, "UNKNOWN OPCODE %u\n", (unsigned)instr.op); \
+            vm->error = 1; \
+            goto vm_exit; \
+        } \
         goto *dispatch_table[instr.op]; \
     } while(0)
 

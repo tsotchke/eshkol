@@ -9596,6 +9596,32 @@ if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND NOT WIN32)
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
+    # Keep the switch interpreter available beside the compiler's threaded
+    # dispatch so malformed-bytecode regressions exercise both implementations.
+    add_executable(eshkol-vm-switch-dispatch-test lib/backend/eshkol_vm.c)
+    target_include_directories(eshkol-vm-switch-dispatch-test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_compile_definitions(eshkol-vm-switch-dispatch-test PRIVATE
+        ESHKOL_VM_FORCE_SWITCH_DISPATCH=1)
+    eshkol_apply_vm_limit_definitions(eshkol-vm-switch-dispatch-test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(eshkol-vm-switch-dispatch-test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(eshkol-vm-switch-dispatch-test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME standalone_eskb_admission COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/standalone_eskb_admission_test.py
+        $<TARGET_FILE:eshkol-vm-standalone-test>
+        $<TARGET_FILE:eshkol-vm-switch-dispatch-test>)
+    set_tests_properties(standalone_eskb_admission PROPERTIES TIMEOUT 20)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/linear_solve_portable_surface_regression.esk")
     add_test(
