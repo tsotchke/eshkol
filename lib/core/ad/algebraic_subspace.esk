@@ -1,7 +1,9 @@
 ;;; Exact isolated symmetric invariant subspaces, including internal degeneracy.
 (require core.algebraic_linalg)
+(require core.ad.algebraic_spectral)
+(require core.polynomial_exact)
 (provide make-algebraic-subspace algebraic-subspace-projector algebraic-subspace-jvp
-         algebraic-subspace-vjp algebraic-subspace-info verify-algebraic-subspace-jvp)
+         algebraic-subspace-vjp algebraic-subspace-info verify-algebraic-subspace-jvp make-algebraic-subspace-from-factors)
 
 (define (asp-tab n function) (list->vector (map function (iota n))))
 (define (asp-at a i j) (vector-ref (vector-ref a i) j))
@@ -117,3 +119,42 @@
            (domain (vector-ref admitted 0)) (a (vector-ref admitted 1))
            (p (vector-ref admitted 2)) (n (vector-length a)))
       (asp-tangent? owner domain a p (asp-matrix domain direction n) (asp-matrix domain derivative n)))))
+
+;; A rational coprime split defines a cluster without choosing eigenvectors.
+;; u*g = 1 mod f, so P=u(A)g(A) is one on f's roots and zero on g's roots.
+(define (asp-poly-matrix owner domain a coefficients)
+  (let* ((n (vector-length a)) (add (algebraic-domain-ref domain 'add))
+         (zero (algebraic-domain-ref domain 'zero)))
+    (let horner ((k (- (vector-length coefficients) 1))
+                (out (asp-tab n (lambda (i) (asp-tab n (lambda (j) zero))))))
+      (if (< k 0) out
+          (let ((next (algebraic-matrix-mul owner out a)))
+            (let diagonal ((i 0)) (if (< i n)
+              (begin (vector-set! (vector-ref next i) i
+                       (add (asp-at next i i) (vector-ref coefficients k)))
+                     (diagonal (+ i 1)))))
+            (horner (- k 1) next))))))
+(define (make-algebraic-subspace-from-factors owner matrix selected complement)
+  (let* ((domain (algebraic-domain owner))
+         (n (if (vector? matrix) (vector-length matrix) 0)))
+    (if (not (and (>= n 2) (<= n 4))) (error "Polynomial projectors require size two through four"))
+    (let* ((a (asp-matrix domain matrix n))
+           (f (exact-poly selected)) (g (exact-poly complement)))
+      (if (not (and (> (vector-length f) 1) (> (vector-length g) 1)
+                    (= (+ (vector-length f) (vector-length g)) (+ n 2))
+                    (= (vector-ref f (- (vector-length f) 1)) 1)
+                    (= (vector-ref g (- (vector-length g) 1)) 1)))
+          (error "Expected nonconstant monic rational factors of total matrix degree"))
+      (let* ((product (exact-poly-mul f g)) (characteristic (algebraic-characteristic owner a))
+             (same? (algebraic-domain-ref domain 'equal?)))
+        (let check ((i 0)) (if (<= i n)
+          (begin (if (not (same? (vector-ref product i) (vector-ref characteristic i)))
+                     (error "Factors do not multiply to the original characteristic polynomial"))
+                 (check (+ i 1)))))
+        (let* ((u (exact-poly-inverse-mod g f))
+               (polynomial (exact-poly-mul u g))
+               (p (asp-poly-matrix owner domain a polynomial))
+               (space (make-algebraic-subspace owner a p)))
+          (if (not (= (vector-ref (algebraic-subspace-info space) 1) (- (vector-length f) 1)))
+              (error "Selected polynomial degree and projector rank differ"))
+          space)))))

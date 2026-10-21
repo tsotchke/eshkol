@@ -13276,6 +13276,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
 endif()
 
+# Projector construction from certified characteristic-polynomial splits.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    eshkol_add_algebraic_ad_acceptance(algebraic_projector "tests/stdlib/algebraic_projector_test.esk")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME algebraic_projector_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/algebraic_projector_test.esk")
+    set_tests_properties(algebraic_projector_vm PROPERTIES TIMEOUT 900 LABELS "ad;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_implicit "tests/stdlib/algebraic_implicit_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_implicit_example "examples/algebraic_implicit.esk")

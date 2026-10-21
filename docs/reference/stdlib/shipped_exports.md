@@ -105,6 +105,10 @@ Returns matrix size, selected rank, linear-system size and coefficient depth.
 
 Re-admits the source problem and checks the defining linearized tangent equations.
 
+### `make-algebraic-subspace-from-factors`
+
+Builds the invariant projector from a caller-supplied coprime monic rational split of the full characteristic polynomial, then reuses exact projector admission and separation checks.
+
 ## `core.ad.sparsity`
 
 Source: `lib/core/ad/sparsity.esk`. The coloring contract and numeric/exact
