@@ -66,3 +66,4 @@
 (check (guard (e (#t #t)) (tcp-listen "127.0.0.1" 0) #f) "network capability denied")
 (capability-clear-policy!)
 (display "PASS: UDP roundtrip") (newline)
+(display "RESULT: PASS") (newline)

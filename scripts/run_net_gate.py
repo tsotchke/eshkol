@@ -18,9 +18,14 @@ def main():
         parser.error("timeout must be positive and at most 600 seconds")
     try:
         result = subprocess.run(
-            [str(args.runner.resolve()), "-r", str(root / "tests/v1_2_edge_cases/net_roundtrip_test.esk")],
-            cwd=root, env=dict(os.environ, ESHKOL_PATH=str(root / "lib"), ESHKOL_JIT_CACHE="0"),
-            capture_output=True, text=True, timeout=args.timeout)
+            ["bash", "-c", 'source "$1"; shift; eshkol_test_timeout "$@"',
+             "eshkol-net-gate", str(root / "scripts/lib/test_isolation.sh"), str(args.timeout),
+             str(args.runner.resolve()), "-r", str(root / "tests/v1_2_edge_cases/net_roundtrip_test.esk"),
+             "-L" + str(args.runner.resolve().parent)],
+            cwd=root, env=dict(os.environ, ESHKOL_PATH=str(root / "lib"), ESHKOL_JIT_CACHE="0",
+                              ESHKOL_LIB_DIR=str(args.runner.resolve().parent),
+                              ESHKOL_TEST_TIMEOUT_FORCE_PYTHON="1"),
+            capture_output=True, text=True)
     except (OSError, subprocess.TimeoutExpired) as error:
         print(f"FAIL: network gate: {error}", file=sys.stderr)
         return 1

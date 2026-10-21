@@ -30,15 +30,17 @@ static int64_t next_id = 1;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int64_t now_ms(void) {
     struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
+    if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return -1;
     return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 static int wait_fd(int fd, short events, int64_t deadline) {
     for (;;) {
-        int64_t remaining = deadline - now_ms();
+        int64_t current = now_ms();
+        if (current < 0) return -1;
+        int64_t remaining = deadline - current;
         struct pollfd p = {fd, events, 0};
         int r = poll(&p, 1, remaining > 0 ? (int)remaining : 0);
-        if (r < 0 && errno == EINTR) { if (now_ms() >= deadline) return -2; continue; }
+        if (r < 0 && errno == EINTR) continue;
         if (r < 0) return -1;
         if (!r) return -2;
         if (p.revents & POLLNVAL) return -1;
@@ -87,12 +89,15 @@ static int64_t register_fd(int fd, int kind) {
 }
 static Net *acquire(int64_t id, int kind, int timeout, int64_t *deadline) {
     Net *n = NULL;
+    if (deadline) *deadline = 0;
     if (id <= 0 || timeout < 0) return NULL;
     pthread_mutex_lock(&lock);
     for (int i = 0; i < NET_SLOTS; i++) if (slots[i].id == id && !slots[i].closed) {
         if (!kind || slots[i].kind == kind) {
+            int64_t current = deadline ? now_ms() : 0;
+            if (current < 0) { *deadline = -1; break; }
             n = &slots[i]; n->refs++;
-            if (deadline) *deadline = now_ms() + (n->nonblocking ? 0 : timeout);
+            if (deadline) *deadline = current + (n->nonblocking ? 0 : timeout);
         }
         break;
     }
@@ -119,7 +124,8 @@ int64_t eshkol_net_open(const char *host, int32_t port, int32_t kind, int32_t ti
         if (connect(fd, (struct sockaddr *)&a, len) < 0) {
             if (errno != EINPROGRESS) result = -1;
             else {
-                result = wait_fd(fd, POLLOUT, now_ms() + timeout);
+                int64_t current = now_ms();
+                result = current < 0 ? -1 : wait_fd(fd, POLLOUT, current + timeout);
                 if (!result) {
                     int error = 0; socklen_t size = sizeof(error);
                     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) || error) result = -1;
@@ -134,12 +140,17 @@ int64_t eshkol_net_open(const char *host, int32_t port, int32_t kind, int32_t ti
 }
 int64_t eshkol_net_accept(int64_t h, int32_t timeout) {
     int64_t deadline; Net *n = acquire(h, 1, timeout, &deadline);
-    if (!n) return -4;
+    if (!n) return deadline < 0 ? -1 : -4;
     int fd = -1, result = 0;
     for (;;) {
         fd = accept(n->fd, NULL, NULL);
         if (fd >= 0) break;
-        if (errno == EINTR) { if (now_ms() >= deadline) { result = -2; break; } continue; }
+        if (errno == EINTR) {
+            int64_t current = now_ms();
+            if (current < 0) { result = -1; break; }
+            if (current >= deadline) { result = -2; break; }
+            continue;
+        }
         if (!again()) { result = -1; break; }
         if ((result = wait_fd(n->fd, POLLIN, deadline))) break;
     }
@@ -151,7 +162,7 @@ int64_t eshkol_net_accept(int64_t h, int32_t timeout) {
 static int transfer(int64_t h, void *buf, int32_t length, int32_t timeout, int writing) {
     if (!buf || length < 0 || length > NET_MAX_BYTES || (!writing && !length)) return -4;
     int64_t deadline; Net *n = acquire(h, 2, timeout, &deadline);
-    if (!n) return -4;
+    if (!n) return deadline < 0 ? -1 : -4;
     int result;
     for (;;) {
         int flags = 0;
@@ -160,7 +171,12 @@ static int transfer(int64_t h, void *buf, int32_t length, int32_t timeout, int w
 #endif
         ssize_t count = writing ? send(n->fd, buf, (size_t)length, flags) : recv(n->fd, buf, (size_t)length, 0);
         if (count >= 0) { result = (int)count; break; }
-        if (errno == EINTR) { if (now_ms() >= deadline) { result = -2; break; } continue; }
+        if (errno == EINTR) {
+            int64_t current = now_ms();
+            if (current < 0) { result = -1; break; }
+            if (current >= deadline) { result = -2; break; }
+            continue;
+        }
         if (!again()) { result = -1; break; }
         if ((result = wait_fd(n->fd, writing ? POLLOUT : POLLIN, deadline))) break;
     }
@@ -177,12 +193,17 @@ int32_t eshkol_net_sendto(int64_t h, const char *host, int32_t port, const void 
     struct sockaddr_storage a; socklen_t size;
     if (address(host, port, &a, &size) < 0) return -4;
     int64_t deadline; Net *n = acquire(h, 3, timeout, &deadline);
-    if (!n) return -4;
+    if (!n) return deadline < 0 ? -1 : -4;
     int result;
     for (;;) {
         ssize_t count = sendto(n->fd, buf, (size_t)len, 0, (struct sockaddr *)&a, size);
         if (count >= 0) { result = (int)count; break; }
-        if (errno == EINTR) { if (now_ms() >= deadline) { result = -2; break; } continue; }
+        if (errno == EINTR) {
+            int64_t current = now_ms();
+            if (current < 0) { result = -1; break; }
+            if (current >= deadline) { result = -2; break; }
+            continue;
+        }
         if (!again()) { result = -1; break; }
         if ((result = wait_fd(n->fd, POLLOUT, deadline))) break;
     }
@@ -205,7 +226,7 @@ static int render(const struct sockaddr_storage *a, char *buf, int cap, int with
 int32_t eshkol_net_recvfrom(int64_t h, void *buf, int32_t cap, char *peer, int32_t peer_cap, int32_t timeout) {
     if (!buf || cap <= 0 || cap > 65535 || !peer || peer_cap < 64) return -4;
     int64_t deadline; Net *n = acquire(h, 3, timeout, &deadline);
-    if (!n) return -4;
+    if (!n) return deadline < 0 ? -1 : -4;
     int result;
     for (;;) {
         struct sockaddr_storage a;
@@ -218,7 +239,12 @@ int32_t eshkol_net_recvfrom(int64_t h, void *buf, int32_t cap, char *peer, int32
             if (result >= 0 && render(&a, peer, peer_cap, 1) < 0) result = -1;
             break;
         }
-        if (errno == EINTR) { if (now_ms() >= deadline) { result = -2; break; } continue; }
+        if (errno == EINTR) {
+            int64_t current = now_ms();
+            if (current < 0) { result = -1; break; }
+            if (current >= deadline) { result = -2; break; }
+            continue;
+        }
         if (!again()) { result = -1; break; }
         if ((result = wait_fd(n->fd, POLLIN, deadline))) break;
     }

@@ -13371,6 +13371,14 @@ if(ESHKOL_BUILD_TESTS)
         find_package(Threads REQUIRED)
         target_link_libraries(net_runtime_test PRIVATE Threads::Threads)
     endif()
+    add_executable(net_clock_failure_test tests/network/net_clock_failure_test.c)
+    target_include_directories(net_clock_failure_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(NOT WIN32 AND NOT EMSCRIPTEN)
+        target_link_libraries(net_clock_failure_test PRIVATE Threads::Threads)
+    endif()
+    add_test(NAME net_clock_failure_test COMMAND net_clock_failure_test)
+    set_tests_properties(net_clock_failure_test PROPERTIES TIMEOUT 10
+        FAIL_REGULAR_EXPRESSION "FAIL:")
     add_test(NAME net_runtime_test COMMAND net_runtime_test)
     set_tests_properties(net_runtime_test PROPERTIES TIMEOUT 30)
 endif()
@@ -13433,4 +13441,29 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND ESHKOL_PYTHON3_EXECUTABLE AND CM
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "RESULT: PASS"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|fatal signal" SKIP_RETURN_CODE 77)
+endif()
+
+# Native public module path, including capability/error and binary-data checks.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
+    add_test(NAME net_roundtrip_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_2_edge_cases/net_roundtrip_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME net_roundtrip_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_2_edge_cases/net_roundtrip_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/net_roundtrip_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(net_roundtrip_jit net_roundtrip_aot PROPERTIES TIMEOUT 120
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        PASS_REGULAR_EXPRESSION "PASS: UDP roundtrip"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
+    add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c)
+    target_include_directories(net_close_concurrency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_close_concurrency_test PRIVATE Threads::Threads)
+    add_test(NAME net_close_concurrency_test COMMAND net_close_concurrency_test)
+    set_tests_properties(net_close_concurrency_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
