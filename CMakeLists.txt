@@ -9624,6 +9624,24 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
         ${LLVM_LIBS_LIST}
         ${LLVM_SYSTEM_LIBS_LIST}
     )
+    foreach(_dispatch IN ITEMS threaded switch)
+        set(_dispatch_target vm_invalid_opcode_${_dispatch}_test)
+        add_executable(${_dispatch_target} tests/vm/vm_invalid_opcode_dispatch_test.c)
+        target_include_directories(${_dispatch_target} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_BINARY_DIR}/generated)
+        eshkol_apply_vm_limit_definitions(${_dispatch_target})
+        if(_dispatch STREQUAL "switch")
+            target_compile_definitions(${_dispatch_target} PRIVATE ESHKOL_VM_FORCE_SWITCH_DISPATCH=1)
+        endif()
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(${_dispatch_target} PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(${_dispatch_target} PRIVATE eshkol-static
+            ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        add_test(NAME vm_invalid_opcode_${_dispatch} COMMAND ${_dispatch_target})
+        set_tests_properties(vm_invalid_opcode_${_dispatch} PROPERTIES TIMEOUT 30
+            PASS_REGULAR_EXPRESSION "PASS: rejected" FAIL_REGULAR_EXPRESSION "FAIL:")
+    endforeach()
     add_test(NAME standalone_eskb_admission COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/standalone_eskb_admission_test.py
         $<TARGET_FILE:eshkol-vm-standalone-test>

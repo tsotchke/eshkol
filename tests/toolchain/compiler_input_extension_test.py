@@ -37,6 +37,16 @@ with tempfile.TemporaryDirectory(prefix="eshkol-input-ext-") as td:
     if link_obj.returncode != 0 or not linked.is_file() or not os.access(linked, os.X_OK):
         raise SystemExit(f"valid object input control failed ({link_obj.returncode}):\n{link_obj.stdout}")
 
+    linked_run = subprocess.run([str(linked)], cwd=root, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=10)
+    if linked_run.returncode != 0 or linked_run.stdout != "INPUT-OK":
+        raise SystemExit(f"linked object control did not execute correctly: {linked_run.stdout!r}")
+
+    # Valid source bytes under unsupported names isolate suffix admission from
+    # missing-file errors and make blanket parser rejection insufficient.
+    for unsupported in ("bad.eskb", "bad.txt"):
+        (root / unsupported).write_bytes(src.read_bytes())
     for name, args in (
         ("bytecode", [str(root / "bad.eskb")]),
         ("unknown", [str(root / "bad.txt")]),
@@ -48,7 +58,8 @@ with tempfile.TemporaryDirectory(prefix="eshkol-input-ext-") as td:
         result = subprocess.run(cmd, cwd=root, env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 timeout=60)
-        if result.returncode == 0:
-            raise SystemExit(f"{name} input unexpectedly succeeded:\n{result.stdout}")
-        if output.exists():
+        expected = "--run accepts .esk" if name == "run-object" else "Unsupported input file type"
+        if result.returncode != 1 or expected not in result.stdout:
+            raise SystemExit(f"{name} input was not safely rejected ({result.returncode}):\n{result.stdout}")
+        if output.exists() or pathlib.Path(str(output) + ".tmp.o").exists():
             raise SystemExit(f"{name} input created output before rejection: {output}")
