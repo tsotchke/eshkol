@@ -536,6 +536,10 @@ See [algebraic_field.md](algebraic_field.md) for this exported procedure and its
 
 See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
 
+### `make-multiquadratic-field`
+
+See [algebraic_field.md](algebraic_field.md) for this exported procedure and its source-backed contract.
+
 
 ## `core.algebraic_linalg`
 
