@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 92** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1051** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 93** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1056** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -164,6 +164,11 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 | `core.algebraic_linalg` | `algebraic-factor-solve` | [algebraic-factor-solve](shipped_exports.md#algebraic-factor-solve) |
 | `core.algebraic_linalg` | `algebraic-factor-solve-transpose` | [algebraic-factor-solve-transpose](shipped_exports.md#algebraic-factor-solve-transpose) |
 | `core.algebraic_linalg` | `algebraic-factor-summary` | [algebraic-factor-summary](shipped_exports.md#algebraic-factor-summary) |
+| `core.ad.incremental_reverse` | `make-incremental-pullback` | [`make-incremental-pullback`](shipped_exports.md#make-incremental-pullback) |
+| `core.ad.incremental_reverse` | `incremental-pullback-step` | [`incremental-pullback-step`](shipped_exports.md#incremental-pullback-step) |
+| `core.ad.incremental_reverse` | `incremental-pullback-output` | [`incremental-pullback-output`](shipped_exports.md#incremental-pullback-output) |
+| `core.ad.incremental_reverse` | `incremental-pullback-work` | [`incremental-pullback-work`](shipped_exports.md#incremental-pullback-work) |
+| `core.ad.incremental_reverse` | `incremental-pullback-info` | [`incremental-pullback-info`](shipped_exports.md#incremental-pullback-info) |
 | `core.algebraic_linalg` | `algebraic-matrix-mul` | [algebraic-matrix-mul](shipped_exports.md#algebraic-matrix-mul) |
 | `core.algebraic_linalg` | `algebraic-solve` | [algebraic-solve](shipped_exports.md#algebraic-solve) |
 | `core.algebraic_update` | `algebraic-update-factor` | [algebraic-update-factor](shipped_exports.md#algebraic-update-factor) |

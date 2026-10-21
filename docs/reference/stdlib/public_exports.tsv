@@ -215,3 +215,8 @@ lib/core/net.esk	7	provide	net-nonblocking!
 lib/core/net.esk	7	provide	network-error?
 lib/core/net.esk	7	provide	network-error-code
 lib/core/net.esk	7	provide	network-error-operation
+lib/core/ad/incremental_reverse.esk	3	provide	make-incremental-pullback
+lib/core/ad/incremental_reverse.esk	3	provide	incremental-pullback-step
+lib/core/ad/incremental_reverse.esk	3	provide	incremental-pullback-output
+lib/core/ad/incremental_reverse.esk	3	provide	incremental-pullback-work
+lib/core/ad/incremental_reverse.esk	3	provide	incremental-pullback-info

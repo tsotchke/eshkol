@@ -1057,3 +1057,27 @@ Returns the error code from a recognized network-error value.
 ### `network-error-operation`
 
 Returns the operation symbol from a recognized network-error value.
+
+## `core.ad.incremental_reverse`
+
+Source: `lib/core/ad/incremental_reverse.esk`. Exact scalar-DAG pullbacks across sparse input and cotangent edits are described in [ad_incremental_reverse.md](ad_incremental_reverse.md).
+
+### `make-incremental-pullback`
+
+Creates a persistent pullback state from an exact owner, named inputs, a fixed DAG, outputs, input values and output cotangent seeds.
+
+### `incremental-pullback-step`
+
+Applies sparse additive input and seed changes and returns the successor state, output and input-cotangent deltas, and work counters.
+
+### `incremental-pullback-output`
+
+Returns owned output values and input cotangents for a pullback state.
+
+### `incremental-pullback-work`
+
+Returns forward refresh, reverse refresh, changed-edge, copied-slot and scanned-node work counts for a step.
+
+### `incremental-pullback-info`
+
+Returns the declared input, node and output counts for a state.
