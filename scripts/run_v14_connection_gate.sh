@@ -395,8 +395,8 @@ probe_unverified v14_semaphores_barriers \
 # tests/v1_2_edge_cases/msgpack_test.esk round-trips every type against
 # exact wire bytes via core.testing's run-tests.
 probe_run v14_msgpack_roundtrip \
-    'MessagePack (#162): encode/decode round-trips nil/bool/int/string/bin/array/map against exact wire bytes (deterministic subset; no ext-types, no int64/float)' \
-    '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/msgpack_test.esk 2>&1 | grep -q "RESULT: OK"'
+    'MessagePack (#162): exact wire bytes, UTF-8 scalar boundaries, embedded NUL, malformed-text refusal and raw binary preservation' \
+    'python3 scripts/run_msgpack_gate.py --runner "$ESHKOL_RUN"'
 
 # #175 CAS + Merkle trees: lib/core/merkle.esk (merkle-leaf/-inode/-tree/
 # -leaves/-proof/-verify plus make-cas/cas-put!/cas-get/cas-has?) backed by
