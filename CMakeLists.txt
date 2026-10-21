@@ -14889,3 +14889,13 @@ if(ESHKOL_BUILD_TESTS)
     set_tests_properties(vm_arena_checked_allocation PROPERTIES
         TIMEOUT 30 LABELS "vm;memory;regression")
 endif()
+
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
+    add_test(NAME named_let_tco_control_flow COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/named_let_tco_control_flow_test.py
+        $<TARGET_FILE:eshkol-run> ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(named_let_tco_control_flow PROPERTIES TIMEOUT 600
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: named-let control flow 8 cases across JIT and AOT"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|LLVM module verification failed")
+endif()

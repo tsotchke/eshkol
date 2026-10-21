@@ -25401,10 +25401,9 @@ private:
             BasicBlock* after_body = builder->GetInsertBlock();
             bool body_terminated = eshkol::llvm_compat::terminatorOrNull(after_body) != nullptr;
 
-            phi_inputs.push_back({body_result, after_body});
-
             if (!body_terminated) {
                 builder->CreateBr(done_block);
+                phi_inputs.push_back({body_result, after_body});
             }
 
             // Restore symbol table
@@ -31829,8 +31828,13 @@ private:
         // with the unconditional jump back to the loop header.
         Value* unreachable_sentinel = packNullToTaggedValue();
 
-        // Jump back to loop header
+        // Jump back to loop header. Enclosing expression emitters may still
+        // emit cleanup or a merge after this call; give them an unreachable
+        // block rather than allowing instructions after this terminator.
         builder->CreateBr(tco_ctx.loop_header);
+        BasicBlock* post_tco_dead = BasicBlock::Create(
+            *context, "post_tco_dead", builder->GetInsertBlock()->getParent());
+        builder->SetInsertPoint(post_tco_dead);
 
         return unreachable_sentinel;
     }

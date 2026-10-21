@@ -624,8 +624,10 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
         }
 
         case AstRoute::OtherOperations:
-            // For other ops (arithmetic, etc.), sub-expressions are not in tail position
-            return true;
+            // An operation whose children this walker does not inspect cannot
+            // establish that every self-call is tail-safe. Keep ordinary calls
+            // until that operation has an explicit tail-position traversal.
+            return false;
     }
     }
 }
