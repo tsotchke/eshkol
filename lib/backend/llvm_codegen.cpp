@@ -8,6 +8,7 @@
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/util/continuation_task.h>
 #include <eshkol/backend/ir_builder.h>
+#include <eshkol/backend/debug_artifact.h>
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/abi_fingerprint.h>
@@ -47389,19 +47390,31 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         int result = eshkol::pkg::run_subprocess(
             link_args, nullptr, link_subprocess_timeout_seconds());
 
-        // Clean up temporary object file
-        std::remove(temp_obj.c_str());
-
         if (result == eshkol::pkg::SUBPROCESS_TIMEOUT) {
+            std::remove(temp_obj.c_str());
             eshkol_error("Linking timed out after %u seconds and was aborted "
                          "(set ESHKOL_LINK_TIMEOUT_SECONDS to adjust)",
                          link_subprocess_timeout_seconds());
             return -1;
         }
         if (result != 0) {
+            std::remove(temp_obj.c_str());
             eshkol_error("Linking failed with exit code %d", result);
             return -1;
         }
+
+        if (g_emit_debug_info) {
+            const int debug_status = eshkol::backend::finishNativeDebugArtifact(
+                output_path, link_subprocess_timeout_seconds());
+            if (debug_status != 0) {
+                eshkol_error("Debug symbol generation failed with exit code %d "
+                             "(macOS requires dsymutil; ESHKOL_DSYMUTIL can select it)",
+                             debug_status);
+                std::remove(temp_obj.c_str());
+                return -1;
+            }
+        }
+        std::remove(temp_obj.c_str());
 
         eshkol_info("Successfully generated executable: %s", output_path.generic_string().c_str());
         return 0;

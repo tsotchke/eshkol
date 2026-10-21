@@ -105,6 +105,7 @@ for opt in "" "-O0" "-O1" "-O2" "-O3"; do
         fail "'$label' failed to compile (exit non-zero)"
     fi
     [ -x "$bin" ] || fail "'$label' reported success but produced no executable"
+    [ ! -e "$bin.tmp.o" ] || fail "'$label' retained its temporary linker object"
 
     actual="$("$bin" 2>&1)" || fail "'$label' binary exited non-zero"
     if [ "$actual" != "$EXPECTED" ]; then
@@ -116,9 +117,8 @@ for opt in "" "-O0" "-O1" "-O2" "-O3"; do
 done
 
 # --- 3: the debug info has to be usable ------------------------------------
-# The DWARF lives in the object file the driver leaves beside the executable
-# (that object is also what a debugger follows via the Mach-O debug map), so
-# read whichever of the two the host's reader understands.
+# Mach-O DWARF is collected into a dSYM before owned linker objects are removed.
+# Other hosts can retain it in the linked executable or a compiler object.
 DWARF_TOOL=""
 for candidate in llvm-dwarfdump dwarfdump; do
     if eshkol_command_available "$candidate"; then DWARF_TOOL="$candidate"; break; fi
@@ -133,6 +133,8 @@ if [ -z "$DWARF_TOOL" ]; then
 else
     OBJ="$WORK/probedef.tmp.o"
     TARGET="$OBJ"
+    DSYM="$WORK/probedef.dSYM/Contents/Resources/DWARF/probedef"
+    [ ! -f "$DSYM" ] || TARGET="$DSYM"
     [ -f "$TARGET" ] || TARGET="$WORK/probedef"
     [ -e "$TARGET" ] || fail "neither the -g object nor the executable exists to inspect"
 
@@ -169,6 +171,33 @@ else
         fail "line table has no source rows: -g emitted debug info that cannot attribute code"
     fi
     echo "  ok: DWARF names user functions and carries source line rows ($DWARF_TOOL)"
+fi
+
+if [ "$(uname -s)" = Darwin ]; then
+    # A tool failure and a successful tool that leaves only an old bundle must
+    # both fail the build, while the exact owned object still gets removed.
+    if ESHKOL_DSYMUTIL=/usr/bin/false "$ESHKOL_RUN" -g -L"$BUILD_DIR" \
+            "$SRC" -o "$WORK/debug-tool-failed" >"$WORK/debug-failed.log" 2>&1; then
+        fail "-g accepted failed debug symbol generation"
+    fi
+    [ ! -e "$WORK/debug-tool-failed.tmp.o" ] || fail "failed debug tool leaked its object"
+    grep -q 'Debug symbol generation failed' "$WORK/debug-failed.log" || \
+        fail "failed debug tool did not report its stage"
+
+    [ -f "$WORK/probedef.dSYM/Contents/Resources/DWARF/probedef" ] || \
+        fail "macOS -g did not deliver its dSYM"
+    cp -R "$WORK/probedef.dSYM" "$WORK/stale.dSYM" || fail "could not prepare stale-symbol fixture"
+    mv "$WORK/stale.dSYM/Contents/Resources/DWARF/probedef" \
+       "$WORK/stale.dSYM/Contents/Resources/DWARF/stale" || fail "could not prepare stale-symbol filename"
+    sed 's/(\* x 2)/(\* x 3)/' "$SRC" > "$WORK/changed.esk"
+    if ESHKOL_DSYMUTIL=/usr/bin/true "$ESHKOL_RUN" -g -L"$BUILD_DIR" \
+            "$WORK/changed.esk" -o "$WORK/stale" >"$WORK/stale.log" 2>&1; then
+        fail "-g accepted a dSYM from a different executable"
+    fi
+    [ ! -e "$WORK/stale.tmp.o" ] || fail "stale debug symbols leaked their linker object"
+    grep -q 'Debug symbol generation failed' "$WORK/stale.log" || \
+        fail "stale debug symbols did not report their stage"
+    echo "  ok: failed tool and mismatched dSYM refuse success and clean owned objects"
 fi
 
 echo "PASS: $TEST_NAME"
