@@ -1458,7 +1458,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     }
 #endif
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && defined(ESHKOL_AGENT_FFI_LINKED)
     // ===== OPTIONAL AGENT FFI EXPORTS =====
     // Agent FFI modules are optional at configure time and their symbols
     // are not referenced by C++ code. When linked into eshkol-run/repl,
