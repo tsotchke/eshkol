@@ -396,7 +396,7 @@ probe_unverified v14_semaphores_barriers \
 # exact wire bytes via core.testing's run-tests.
 probe_run v14_msgpack_roundtrip \
     'MessagePack (#162): exact wire bytes, UTF-8 scalar boundaries, embedded NUL, malformed-text refusal and raw binary preservation' \
-    'python3 scripts/run_msgpack_gate.py --runner "$ESHKOL_RUN"'
+    'python3 scripts/run_msgpack_gate.py --runner "$ESHKOL_RUN" --vm-runner "$VM_RUN" --all-routes'
 
 # #175 CAS + Merkle trees: lib/core/merkle.esk (merkle-leaf/-inode/-tree/
 # -leaves/-proof/-verify plus make-cas/cas-put!/cas-get/cas-has?) backed by

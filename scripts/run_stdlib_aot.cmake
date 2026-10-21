@@ -4,12 +4,15 @@ foreach(required ESHKOL_RUN ESHKOL_SOURCE ESHKOL_BINARY ESHKOL_LINK_DIR)
         message(FATAL_ERROR "Missing ${required}")
     endif()
 endforeach()
+if(NOT DEFINED ESHKOL_COMPILE_TIMEOUT)
+    set(ESHKOL_COMPILE_TIMEOUT 720)
+endif()
 if(DEFINED ESHKOL_VM)
     execute_process(COMMAND "${ESHKOL_RUN}" --profile hosted-vm --emit-eskb "${ESHKOL_BINARY}" "${ESHKOL_SOURCE}" "-L${ESHKOL_LINK_DIR}"
-        RESULT_VARIABLE compile_status OUTPUT_VARIABLE compile_output ERROR_VARIABLE compile_error TIMEOUT 720)
+        RESULT_VARIABLE compile_status OUTPUT_VARIABLE compile_output ERROR_VARIABLE compile_error TIMEOUT ${ESHKOL_COMPILE_TIMEOUT})
 else()
     execute_process(COMMAND "${ESHKOL_RUN}" -O 1 -o "${ESHKOL_BINARY}" "${ESHKOL_SOURCE}" "-L${ESHKOL_LINK_DIR}"
-    RESULT_VARIABLE compile_status OUTPUT_VARIABLE compile_output ERROR_VARIABLE compile_error TIMEOUT 720)
+    RESULT_VARIABLE compile_status OUTPUT_VARIABLE compile_output ERROR_VARIABLE compile_error TIMEOUT ${ESHKOL_COMPILE_TIMEOUT})
 endif()
 message("${compile_output}${compile_error}")
 if(NOT compile_status STREQUAL "0" OR

@@ -14237,6 +14237,30 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test
 endif()
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME msgpack_wire_all_routes COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_msgpack_gate.py"
+        --runner $<TARGET_FILE:eshkol-run> --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>
+        --all-routes)
+    set_tests_properties(msgpack_wire_all_routes PROPERTIES TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: MessagePack four execution routes"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
+
+    foreach(_vm_case IN ITEMS bytevector_constructor logic_registry_reset)
+        set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/${_vm_case}_regression.esk")
+        if(_vm_case STREQUAL "logic_registry_reset")
+            set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/logic_registry_reset_vm_regression.esk")
+        endif()
+        add_test(NAME ${_vm_case}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_vm_case_source}")
+        add_test(NAME ${_vm_case}_eskb_vm COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+            "-DESHKOL_SOURCE=${_vm_case_source}" "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_vm_case}.eskb"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DESHKOL_COMPILE_TIMEOUT=120"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_vm_case}_vm ${_vm_case}_eskb_vm PROPERTIES TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|ERROR:|fatal signal")
+    endforeach()
+
     add_test(NAME vm_parser_prefix_refusal COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/parser_prefix_refusal.py"
         --runner $<TARGET_FILE:eshkol-run> --vm $<TARGET_FILE:eshkol-vm-standalone-test>
