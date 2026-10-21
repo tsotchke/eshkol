@@ -3735,6 +3735,10 @@ typedef struct HeapObjectTag {
     };
 } HeapObject;
 
+/* Active decoded string constants for the legacy .eskb runner. The module
+ * remains owned by main until execute_chunk returns. */
+static EskbModule* g_cli_eskb_module = NULL;
+
 typedef struct {
     int32_t return_pc, return_fp;
     int32_t heap_mark;  /* heap pointer at time of CALL — for OALR region cleanup */
@@ -3973,7 +3977,28 @@ static void execute_chunk(FuncChunk* chunk) {
         Instr ins = chunk->code[pc++];
         switch (ins.op) {
         case OP_NOP: break;
-        case OP_CONST: PUSH(chunk->constants[ins.operand]); break;
+        case OP_CONST: {
+            if (g_cli_eskb_module && ins.operand >= 0 &&
+                ins.operand < g_cli_eskb_module->n_constants &&
+                g_cli_eskb_module->const_types[ins.operand] == ESKB_CONST_STRING) {
+                int ptr = HALLOC();
+                if (ptr < 0) break;
+                const char* text = g_cli_eskb_module->const_strings[ins.operand];
+                size_t len = strlen(text ? text : "");
+                if (len >= sizeof(heap[ptr].string.data)) {
+                    fprintf(stderr, "ERROR: .eskb string constant exceeds compiler CLI capacity\n");
+                    error = 1;
+                    break;
+                }
+                heap[ptr].type = HEAP_STRING;
+                heap[ptr].string.len = (int32_t)len;
+                memcpy(heap[ptr].string.data, text ? text : "", len + 1);
+                PUSH(((Value){.type=VAL_STRING,.as.ptr=ptr}));
+            } else {
+                PUSH(chunk->constants[ins.operand]);
+            }
+            break;
+        }
         case OP_NIL: PUSH(((Value){.type=VAL_NIL})); break;
         case OP_TRUE: PUSH(((Value){.type=VAL_BOOL,.as.b=1})); break;
         case OP_FALSE: PUSH(((Value){.type=VAL_BOOL,.as.b=0})); break;
@@ -6555,6 +6580,21 @@ int main(int argc, char** argv) {
         if (flen > 5 && strcmp(input_file + flen - 5, ".eskb") == 0) {
             EskbModule mod;
             if (eskb_load_file(input_file, &mod) == 0) {
+                /* This legacy interpreter has fixed arrays, so never accept a
+                 * module whose declared counts would be truncated on copy.
+                 * Validate every instruction, including unreachable code. */
+                int valid = mod.code_len > 0 && mod.code_len <= MAX_CODE &&
+                            mod.n_constants >= 0 && mod.n_constants <= MAX_CONSTS;
+                for (int pc = 0; valid && pc < mod.code_len; ++pc) {
+                    if (mod.opcodes[pc] >= OP_COUNT) valid = 0;
+                    else if (mod.opcodes[pc] == OP_CONST &&
+                             (mod.operands[pc] < 0 || mod.operands[pc] >= mod.n_constants)) valid = 0;
+                }
+                if (!valid) {
+                    fprintf(stderr, "ERROR: invalid .eskb module for compiler CLI profile\n");
+                    eskb_module_free(&mod);
+                    return 1;
+                }
                 /* Convert to VM FuncChunk format and execute */
                 printf("  [ESKB] Loaded %d instructions, %d constants from %s\n",
                        mod.code_len, mod.n_constants, input_file);
@@ -6586,7 +6626,9 @@ int main(int argc, char** argv) {
                     }
                 }
                 chunk.n_constants = mod.n_constants;
+                g_cli_eskb_module = &mod;
                 execute_chunk(&chunk);
+                g_cli_eskb_module = NULL;
                 eskb_module_free(&mod);
             } else {
                 printf("ERROR: failed to load ESKB file %s\n", input_file);
