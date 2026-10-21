@@ -16,10 +16,10 @@ version: 1
 source_registry: tests/coverage/language_surface.json
 generator: scripts/gen_builtin_classification.py
 labels: [device, host, host-with-device-inner]
-builtin_count: 1043
+builtin_count: 1058
 counts_by_label:
   device: 233
-  host: 801
+  host: 816
   host-with-device-inner: 9
 builtins:
   "%":
@@ -76,6 +76,9 @@ builtins:
   "_atan2":
     label: host
     rationale: "VM-internal arity variant of a prelude builtin; the prelude form is the device entry (atan, min, max)."
+  "_display2":
+    label: host
+    rationale: "VM display helper (eshkol_vm.c mirrors display); performs host I/O."
   "_emit-event":
     label: host
     rationale: "Host runtime helper (arbitrary-precision i128 arithmetic, parameter/fluid-binding machinery, symbol generation, or consciousness-object construction) with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."
@@ -94,6 +97,9 @@ builtins:
   "_min2":
     label: host
     rationale: "VM-internal arity variant of a prelude builtin; the prelude form is the device entry (atan, min, max)."
+  "_newline1":
+    label: host
+    rationale: "VM newline helper (eshkol_vm.c mirrors newline); performs host I/O."
   "_number->string-2":
     label: host
     rationale: "Host runtime helper (arbitrary-precision i128 arithmetic, parameter/fluid-binding machinery, symbol generation, or consciousness-object construction) with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."
@@ -109,9 +115,15 @@ builtins:
   "_region-open":
     label: host
     rationale: "Arena/region memory-management runtime call; host bookkeeping with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."
+  "_std-port-parameter":
+    label: host
+    rationale: "Returns the current host output-port parameter (eshkol_vm.c mirror); host I/O state."
   "_string-append-2":
     label: host
     rationale: "Operates on strings or characters, excluded from the Eshkol-S value domain by name. See docs/design/ESHKOL_S_FRAGMENT.md condition 1."
+  "_swish-tensor":
+    label: host
+    rationale: "VM-only fused tensor kernel behind swish (eshkol_vm.c); no matching XLA table row exists."
   "_tensor-reduce-max":
     label: device
     rationale: "Pure tensor-in tensor-out computation (elementwise op, reduction, dot_general-shaped contraction, or structural reshape/transpose/pad/slice/concatenate) with a direct StableHLO op or a standard decomposition (e.g. softmax/layer-norm/attention decompose into elementwise + reduction + dot_general ops already on this list). See docs/design/ESHKOL_S_FRAGMENT.md condition 5."
@@ -205,6 +217,9 @@ builtins:
   "ad-reverse-passes":
     label: host
     rationale: "Reads host AD-tape instrumentation counters."
+  "ad-scalar-ad-nodes":
+    label: host
+    rationale: "Queries host reverse-mode AD node counters (system_builtins.c); not tensor arithmetic."
   "ad-sigmoid":
     label: host
     rationale: "Records/replays against the host AD tape."
@@ -232,6 +247,9 @@ builtins:
   "ad-tape-release":
     label: host
     rationale: "Releases a host AD-tape object; mutates host state."
+  "ad-tensor-ad-nodes":
+    label: host
+    rationale: "Queries host reverse-mode AD node counters (system_builtins.c); not tensor arithmetic."
   "ad-value":
     label: host
     rationale: "Reads a host AD-tape node's stored value."
@@ -825,6 +843,9 @@ builtins:
   "derivative":
     label: host
     rationale: "Orchestrates the host AD tape to compute a derivative."
+  "derivative-n":
+    label: host
+    rationale: "Runs a dynamic derivative/tape tower (runtime_autodiff.cpp); host AD control, no XLA lowering row."
   "diff":
     label: host
     rationale: "Orchestrates the host AD tape to compute a derivative."
@@ -1133,6 +1154,12 @@ builtins:
   "finite?":
     label: device
     rationale: "Pure numeric-scalar predicate; direct stablehlo.is_finite."
+  "fl-next-down":
+    label: host
+    rationale: "Returns the adjacent host floating-point value (builtin_factory_codegen.cpp); no XLA lowering row."
+  "fl-next-up":
+    label: host
+    rationale: "Returns the adjacent host floating-point value (builtin_factory_codegen.cpp); no XLA lowering row."
   "flatten":
     label: device
     rationale: "Pure tensor-in tensor-out computation (elementwise op, reduction, dot_general-shaped contraction, or structural reshape/transpose/pad/slice/concatenate) with a direct StableHLO op or a standard decomposition (e.g. softmax/layer-norm/attention decompose into elementwise + reduction + dot_general ops already on this list). See docs/design/ESHKOL_S_FRAGMENT.md condition 5."
@@ -1403,6 +1430,9 @@ builtins:
   "i128-ashr":
     label: host
     rationale: "Host runtime helper (arbitrary-precision i128 arithmetic, parameter/fluid-binding machinery, symbol generation, or consciousness-object construction) with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."
+  "i128-floor-remainder":
+    label: host
+    rationale: "Exact signed i128 remainder (i128_runtime.cpp), outside the s64 device contract and not a floating-point substitute."
   "i128-lshr":
     label: host
     rationale: "Host runtime helper (arbitrary-precision i128 arithmetic, parameter/fluid-binding machinery, symbol generation, or consciousness-object construction) with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."
@@ -2166,6 +2196,9 @@ builtins:
   "quotient":
     label: device
     rationale: "Scalar arithmetic, comparison, or elementary-function primitive on a StableHLO-representable element type; has a direct StableHLO op (add/subtract/multiply/divide/compare/exponential/log/power/sine/cosine/...) or a CHLO-style decomposition into those ops (e.g. gcd/lcm decompose into a bounded stablehlo.while computing repeated remainder; bit ops map to shift_left/shift_right_logical/shift_right_arithmetic/and/or/xor/not/popcnt). See docs/design/ESHKOL_S_FRAGMENT.md condition 5."
+  "raise-continuable":
+    label: host
+    rationale: "Invokes a dynamically installed exception handler and resumes control (runtime_exceptions_hosted.cpp)."
   "rand":
     label: host
     rationale: "OS/thread/process/file/network/crypto/timing/quantum-hardware FFI; performs I/O or manages host-only resources, excluded by the purity condition and/or the value domain. See docs/design/ESHKOL_S_FRAGMENT.md conditions 1 and 4."
@@ -2459,6 +2492,9 @@ builtins:
   "squeeze":
     label: device
     rationale: "Pure tensor-in tensor-out computation (elementwise op, reduction, dot_general-shaped contraction, or structural reshape/transpose/pad/slice/concatenate) with a direct StableHLO op or a standard decomposition (e.g. softmax/layer-norm/attention decompose into elementwise + reduction + dot_general ops already on this list). See docs/design/ESHKOL_S_FRAGMENT.md condition 5."
+  "srand48":
+    label: host
+    rationale: "Mutates process-global host PRNG state (runtime_exports_hosted.cpp); side effect, no device lowering row."
   "stack":
     label: device
     rationale: "Pure tensor-in tensor-out computation (elementwise op, reduction, dot_general-shaped contraction, or structural reshape/transpose/pad/slice/concatenate) with a direct StableHLO op or a standard decomposition (e.g. softmax/layer-norm/attention decompose into elementwise + reduction + dot_general ops already on this list). See docs/design/ESHKOL_S_FRAGMENT.md condition 5."
@@ -2609,6 +2645,9 @@ builtins:
   "substring":
     label: host
     rationale: "Operates on strings or characters, excluded from the Eshkol-S value domain by name. See docs/design/ESHKOL_S_FRAGMENT.md condition 1."
+  "swish":
+    label: host
+    rationale: "Prelude wrapper around VM fused _swish-tensor (eshkol_vm.c); no matching XLA table row exists."
   "symbol->string":
     label: host
     rationale: "Operates on strings or characters, excluded from the Eshkol-S value domain by name. See docs/design/ESHKOL_S_FRAGMENT.md condition 1."
@@ -2636,6 +2675,9 @@ builtins:
   "tanh":
     label: device
     rationale: "Scalar arithmetic, comparison, or elementary-function primitive on a StableHLO-representable element type; has a direct StableHLO op (add/subtract/multiply/divide/compare/exponential/log/power/sine/cosine/...) or a CHLO-style decomposition into those ops (e.g. gcd/lcm decompose into a bounded stablehlo.while computing repeated remainder; bit ops map to shift_left/shift_right_logical/shift_right_arithmetic/and/or/xor/not/popcnt). See docs/design/ESHKOL_S_FRAGMENT.md condition 5."
+  "taylor":
+    label: host
+    rationale: "Runs a dynamic Taylor/AD tower (runtime_autodiff.cpp); host AD control, no XLA lowering row."
   "temp-directory":
     label: host
     rationale: "OS/thread/process/file/network/crypto/timing/quantum-hardware FFI; performs I/O or manages host-only resources, excluded by the purity condition and/or the value domain. See docs/design/ESHKOL_S_FRAGMENT.md conditions 1 and 4."
@@ -2937,6 +2979,9 @@ builtins:
   "ts-tree-root":
     label: host
     rationale: "OS/thread/process/file/network/crypto/timing/quantum-hardware FFI; performs I/O or manages host-only resources, excluded by the purity condition and/or the value domain. See docs/design/ESHKOL_S_FRAGMENT.md conditions 1 and 4."
+  "type-name":
+    label: host
+    rationale: "Inspects a dynamic host runtime tag (runtime_type_name.cpp); unavailable in the statically typed device fragment."
   "type-of":
     label: host
     rationale: "Reflection, eval, or error-object introspection; a meta-language feature with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."

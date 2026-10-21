@@ -51,6 +51,10 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TABLE = os.path.join(REPO, "lib", "backend", "xla", "device_lowering_table.yaml")
+FLOOR_BUILTINS = ("modulo", "mod", "floor-remainder", "floor-quotient")
+TRUNC_BUILTINS = ("quotient", "remainder")
+S64_MIN = -(1 << 63)
+S64_MAX = (1 << 63) - 1
 
 
 def load_table(path):
@@ -184,8 +188,57 @@ def values(spec):
     return [base + i * step for i in range(n)]
 
 
+def validate_floor_contract(builtins):
+    """Fail closed on missing, mistyped, or unsafe signed-division rows.
+
+    This is a plan-data contract, not a claim that a device lowering exists.
+    In particular, s64 MIN / -1 overflows the result domain, while exact
+    integers and bignums are not represented by these s64 rows at all.
+    """
+    required = set(FLOOR_BUILTINS + TRUNC_BUILTINS)
+    missing = sorted(required - set(builtins))
+    if missing:
+        raise ValueError("missing signed-division table row(s): " + ", ".join(missing))
+    for name in sorted(required):
+        row = builtins[name]
+        if row.get("etype") != "s64" or str(row.get("arity")) != "2":
+            raise ValueError("%s must have arity 2 and etype s64" % name)
+        operands = [values(spec) for spec in row.get("inputs", [])]
+        if len(operands) != 2 or len(operands[0]) != len(operands[1]):
+            raise ValueError("%s must define two equally sized input vectors" % name)
+        for a, b in zip(*operands):
+            a, b = int(a), int(b)
+            if not (S64_MIN <= a <= S64_MAX and S64_MIN <= b <= S64_MAX):
+                raise ValueError("%s fixture input is outside s64" % name)
+            if b == 0:
+                raise ValueError("%s fixture includes a zero divisor" % name)
+            if a == S64_MIN and b == -1:
+                raise ValueError("%s fixture includes overflowing s64 MIN / -1" % name)
+
+    for name in FLOOR_BUILTINS:
+        ops = [(s.get("op"), s.get("kind"), s.get("dir"))
+               for s in builtins[name].get("lowering", [])]
+        if not any(op == "binary" and kind == "Remainder" for op, kind, _ in ops):
+            raise ValueError("%s lacks truncating-remainder basis for floor correction" % name)
+        if not any(op == "binary" and kind == "Xor" for op, kind, _ in ops):
+            raise ValueError("%s lacks sign-difference floor correction" % name)
+        final_kind = "Subtract" if name == "floor-quotient" else "Add"
+        if not any(op == "binary" and kind == final_kind for op, kind, _ in ops):
+            raise ValueError("%s lacks its final %s correction" % (name, final_kind))
+
+    for name, kind in (("quotient", "Divide"), ("remainder", "Remainder")):
+        ops = builtins[name].get("lowering", [])
+        if len(ops) != 1 or ops[0].get("kind") != kind:
+            raise ValueError("%s must retain truncating %s semantics" % (name, kind))
+
+
 def fmt(x):
     return repr(float(x)) if x == x else "nan"
+
+
+def fmt_typed(x, etype):
+    """Serialize fixed-width integer plan values without a float round-trip."""
+    return str(int(x)) if etype == "s64" else fmt(x)
 
 
 def esk_int_literal(x):
@@ -287,10 +340,12 @@ def build_program(builtins):
 
 
 NUM = re.compile(r"[-+]?(?:\d+\.\d*(?:[eE][-+]?\d+)?|\d+(?:[eE][-+]?\d+)?|\.\d+(?:[eE][-+]?\d+)?|nan|inf)")
+INT_NUM = re.compile(r"[-+]?\d+")
 
 
-def parse_refs(stdout):
+def parse_refs(stdout, integer_names=()):
     """Collect `@name v v v` lines, tolerating the `#(...)` vector form."""
+    integer_names = set(integer_names)
     refs = {}
     for line in stdout.splitlines():
         line = line.strip()
@@ -298,7 +353,9 @@ def parse_refs(stdout):
             continue
         name, _, rest = line[1:].partition(" ")
         rest = rest.replace("#(", " ").replace(")", " ")
-        refs[name] = [float(m.group(0)) for m in NUM.finditer(rest)]
+        matcher = INT_NUM if name in integer_names else NUM
+        refs[name] = [int(m.group(0)) if name in integer_names else float(m.group(0))
+                      for m in matcher.finditer(rest)]
     return refs
 
 
@@ -313,6 +370,7 @@ def main():
     args = ap.parse_args()
 
     builtins = load_table(TABLE)
+    validate_floor_contract(builtins)
     if args.builtin:
         unknown = sorted(set(args.builtin) - set(builtins))
         if unknown:
@@ -338,7 +396,14 @@ def main():
     with open(os.path.join(args.work, "builtin_reference.log"), "w") as f:
         f.write(proc.stdout)
         f.write(proc.stderr)
-    refs = parse_refs(proc.stdout)
+    if proc.returncode != 0:
+        print("gen_builtin_parity_plan: host reference command failed "
+              "(exit %d); see %s" %
+              (proc.returncode, os.path.join(args.work, "builtin_reference.log")),
+              file=sys.stderr)
+        return 2
+    integer_names = {name for name, row in builtins.items() if row.get("etype") == "s64"}
+    refs = parse_refs(proc.stdout, integer_names)
 
     with open(args.out, "w") as f:
         for name, spec in builtins.items():
@@ -362,7 +427,7 @@ def main():
             if spec.get("result_len"):
                 f.write("RLEN %d\n" % int(spec["result_len"]))
             for i, vs in enumerate(ins):
-                f.write("IN %d %s\n" % (i, " ".join(fmt(v) for v in vs)))
+                f.write("IN %d %s\n" % (i, " ".join(fmt_typed(v, spec.get("etype")) for v in vs)))
             ref = refs.get(name)
             if ref is None:
                 f.write("NOREF the reference program printed no @%s line "
@@ -373,7 +438,8 @@ def main():
                     f.write("NOREF the reference printed %d values, expected %d\n"
                             % (len(ref), want))
                 else:
-                    f.write("REF %s\n" % " ".join(fmt(v) for v in ref))
+                    f.write("REF %s\n" % " ".join(
+                        fmt_typed(v, spec.get("etype")) for v in ref))
             for step in spec["lowering"]:
                 if step["op"] == "unary":
                     f.write("OP unary %s %s %s\n" % (step["kind"], step["out"], step["in"]))
@@ -382,7 +448,7 @@ def main():
                             % (step["kind"], step["out"], step["lhs"], step["rhs"]))
                 elif step["op"] == "const":
                     f.write("OP const %s %s %s\n"
-                            % (step["out"], fmt(step["value"]), step["like"]))
+                            % (step["out"], fmt_typed(step["value"], spec.get("etype")), step["like"]))
                 elif step["op"] == "reshape":
                     f.write("OP reshape %s %s %s\n"
                             % (step["out"], step["in"], intlist(step.get("shape"))))

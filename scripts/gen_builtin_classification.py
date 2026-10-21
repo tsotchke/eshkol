@@ -547,6 +547,27 @@ _TENSOR_AD_HDI = {
         "it is in Eshkol-S.",
 }
 
+# Canonical registry names added after the original XLA inventory. Keep these
+# explicitly host-only until their exact operation has a device-lowering row.
+# A numeric/tensor registry category is not evidence of XLA support.
+_CANONICAL_UNSUPPORTED = {
+    "_display2": "VM display helper (eshkol_vm.c mirrors display); performs host I/O.",
+    "_newline1": "VM newline helper (eshkol_vm.c mirrors newline); performs host I/O.",
+    "_std-port-parameter": "Returns the current host output-port parameter (eshkol_vm.c mirror); host I/O state.",
+    "_swish-tensor": "VM-only fused tensor kernel behind swish (eshkol_vm.c); no matching XLA table row exists.",
+    "ad-scalar-ad-nodes": "Queries host reverse-mode AD node counters (system_builtins.c); not tensor arithmetic.",
+    "ad-tensor-ad-nodes": "Queries host reverse-mode AD node counters (system_builtins.c); not tensor arithmetic.",
+    "derivative-n": "Runs a dynamic derivative/tape tower (runtime_autodiff.cpp); host AD control, no XLA lowering row.",
+    "fl-next-down": "Returns the adjacent host floating-point value (builtin_factory_codegen.cpp); no XLA lowering row.",
+    "fl-next-up": "Returns the adjacent host floating-point value (builtin_factory_codegen.cpp); no XLA lowering row.",
+    "i128-floor-remainder": "Exact signed i128 remainder (i128_runtime.cpp), outside the s64 device contract and not a floating-point substitute.",
+    "raise-continuable": "Invokes a dynamically installed exception handler and resumes control (runtime_exceptions_hosted.cpp).",
+    "srand48": "Mutates process-global host PRNG state (runtime_exports_hosted.cpp); side effect, no device lowering row.",
+    "swish": "Prelude wrapper around VM fused _swish-tensor (eshkol_vm.c); no matching XLA table row exists.",
+    "taylor": "Runs a dynamic Taylor/AD tower (runtime_autodiff.cpp); host AD control, no XLA lowering row.",
+    "type-name": "Inspects a dynamic host runtime tag (runtime_type_name.cpp); unavailable in the statically typed device fragment.",
+}
+
 
 def build_overrides():
     overrides = {}
@@ -573,6 +594,9 @@ def build_overrides():
         overrides[name] = (label, rationale)
 
     for name, extra in _TENSOR_AD_HOST.items():
+        overrides[name] = (HOST, extra)
+
+    for name, extra in _CANONICAL_UNSUPPORTED.items():
         overrides[name] = (HOST, extra)
 
     for name, extra in _TENSOR_AD_HDI.items():

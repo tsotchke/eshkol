@@ -6,23 +6,32 @@ classification/parity-plan layer and the focused signed-floor plan regression.
 The source-derived Python plan is an input to future parity work; generating it
 does not execute a StableHLO lowering, device kernel, or GPU test.
 
-## Reconciliation status
+## Reconciliation and semantics
 
-The canonical `tests/coverage/language_surface.json` has 1,058 builtin records;
-the imported classification YAML records 1,043. It is therefore intentionally
-not yet a reconciled/generated artifact. The classification generator and
-checker are included to reconcile it when the verification lane is granted.
-Review any newly classified names and retain the generator's explicit host
-classifications for arbitrary-precision/exact numeric operations. The s64
-floor rows cover fixed-width lowering data only. They do not authorize coercing
-exact integers, bignums, or rationals into f64; unsupported type/domain cases
-must remain refused. The signed quotient correction and remainder adjustment
-are distinct programs: truncating quotient/remainder semantics must not be
-conflated with floor quotient/modulo semantics.
+The canonical `tests/coverage/language_surface.json` has 1,058 builtin names.
+The original classification had 1,043: exact reconciliation found 15
+additions and no removals, with no label changes among the 1,043 shared names.
+All 15 additions are explicitly host-only in the generator, each with a
+source-grounded reason; category defaults alone do not claim device support.
+The generated classification has 1,058 entries (233 device, 816 host,
+9 host-with-device-inner), and the checker reports no missing or stale names.
 
-The plan's inputs include all four sign quadrants, zero numerators, exact
-divisibility with unlike signs, and cases that detect omission of correction.
-`test_floor_builtin_plan.py` checks the host-side integer plan evaluator only.
+The s64 floor rows cover fixed-width plan data only. They do not authorize
+coercing exact integers, bignums, or rationals into f64; those operations stay
+host-only and are absent from the lowering table. Signed `quotient` and
+`remainder` use truncation toward zero; `modulo`, `mod`, `floor-remainder`, and
+`floor-quotient` use floor semantics. The plan validator requires all six
+rows, their s64 binary type, safe nonzero fixtures, and distinct correction
+steps. `s64 MIN / -1` is explicitly outside this plan domain because its
+mathematical quotient is not representable in s64; it is rejected by the
+validator. Exact/bignum type requests stay host-only rather than being narrowed
+or rounded.
+
+`test_floor_builtin_plan.py` checks the host-side integer plan evaluator only,
+including negative controls for a missing row, wrong dtype, and a table entry
+whose correction program was replaced by truncating division. It also checks
+that s64 plan text round-trips both signed endpoints without passing through a
+float.
 
 ## Remaining integration and proof dependencies
 
@@ -39,9 +48,24 @@ and physical GPU execution remain unverified.
 
 ## Verification record
 
-Source-only import is complete. No generator, checker, unit test, native build,
-SDK, model, service, or device command has been run. After the root grants a
-verification lane, run the Python classification generator, classification
-checker, parity-plan generator with source reference execution where supported,
-and `python3 -m unittest tests/xla/test_floor_builtin_plan.py`; preserve exact
-commands, outputs, and negative-control results in the task evidence record.
+Verified in the granted Python lane with `ICC_PYTHON=/Users/tyr/Desktop/infinite_context_coder/.venv/bin/python`:
+
+- `$ICC_PYTHON scripts/gen_builtin_classification.py`: 1,058 builtins; 233 device,
+  816 host, 9 host-with-device-inner.
+- `$ICC_PYTHON scripts/check_builtin_classification.py`: PASS; 0 unclassified,
+  0 stale.
+- `$ICC_PYTHON tests/xla/test_floor_builtin_plan.py`: 8 tests PASS, including the
+  three table negative controls and exact-domain checks.
+- `XDG_CACHE_HOME=/private/tmp/xla-floor-xdg-cache $ICC_PYTHON
+  scripts/gen_builtin_parity_plan.py --eshkol-run /usr/local/bin/eshkol-run
+  --out docs/xla-classification-floor-evidence/floor-reference-plan.txt
+  --work docs/xla-classification-floor-evidence/work --builtin modulo --builtin
+  mod --builtin floor-remainder --builtin floor-quotient --builtin quotient
+  --builtin remainder`: 6 host references, 0 missing. The durable Eshkol
+  source program, log, and plan are under
+  `docs/xla-classification-floor-evidence/`.
+
+The plan generator sets `ESHKOL_XLA_DEVICE=0`; these are language-side host
+references paired with proposed table operations. No StableHLO lowering was
+executed, no GPU kernel parity was measured, and no native build, SDK, model,
+service, or device command was run.

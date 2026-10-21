@@ -11,6 +11,7 @@ spec = importlib.util.spec_from_file_location("plan", ROOT / "scripts/gen_builti
 plan = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(plan)
 NAMES = ("modulo", "mod", "floor-remainder", "floor-quotient")
+TRUNC_NAMES = ("quotient", "remainder")
 
 
 def trunc_div(a, b):
@@ -38,6 +39,7 @@ class FloorPlan(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.rows = plan.load_table(plan.TABLE)
+        plan.validate_floor_contract(cls.rows)
 
     def test_small_signed_domain(self):
         for name in NAMES:
@@ -48,6 +50,53 @@ class FloorPlan(unittest.TestCase):
                     if b:
                         expected = a // b if name == "floor-quotient" else a % b
                         self.assertEqual(evaluate(row, a, b), expected, (name, a, b))
+
+    def test_truncation_and_floor_are_distinct_contracts(self):
+        for a, b in ((-13, 5), (13, -5), (-13, -5), (13, 5)):
+            self.assertEqual(evaluate(self.rows["quotient"], a, b), trunc_div(a, b))
+            self.assertEqual(evaluate(self.rows["remainder"], a, b), a-trunc_div(a, b)*b)
+            self.assertEqual(evaluate(self.rows["floor-quotient"], a, b), a // b)
+            for name in ("modulo", "mod", "floor-remainder"):
+                self.assertEqual(evaluate(self.rows[name], a, b), a % b)
+
+    def test_fail_closed_on_missing_name_wrong_dtype_or_bad_table_entry(self):
+        missing = dict(self.rows)
+        del missing["floor-remainder"]
+        with self.assertRaisesRegex(ValueError, "missing signed-division"):
+            plan.validate_floor_contract(missing)
+
+        for rejected_type in ("f64", "i128"):
+            wrong_dtype = dict(self.rows)
+            wrong_dtype["floor-quotient"] = dict(
+                self.rows["floor-quotient"], etype=rejected_type)
+            with self.assertRaisesRegex(ValueError, "etype s64"):
+                plan.validate_floor_contract(wrong_dtype)
+
+        wrong_lowering = dict(self.rows)
+        wrong_lowering["floor-quotient"] = dict(
+            self.rows["floor-quotient"], lowering=self.rows["quotient"]["lowering"])
+        with self.assertRaisesRegex(ValueError, "truncating-remainder basis"):
+            plan.validate_floor_contract(wrong_lowering)
+
+    def test_unsupported_s64_overflow_and_exact_numeric_domains(self):
+        overflow = dict(self.rows)
+        row = dict(self.rows["floor-quotient"])
+        row["inputs"] = [{"values": [-(1 << 63)]}, {"values": [-1]}]
+        overflow["floor-quotient"] = row
+        with self.assertRaisesRegex(ValueError, "overflowing s64 MIN / -1"):
+            plan.validate_floor_contract(overflow)
+
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML unavailable for classification contract check")
+        with open(plan.os.path.join(plan.REPO, "lib/backend/xla/builtin_classification.yaml"),
+                  encoding="utf-8") as fh:
+            classification = yaml.safe_load(fh)["builtins"]
+        for name in ("exact", "exact->inexact", "inexact->exact", "/rational",
+                     "make-rational", "i128-floor-remainder"):
+            self.assertEqual(classification[name]["label"], "host", name)
+            self.assertNotIn(name, self.rows, name)
 
     def test_cases_kill_missing_correction_and_cover_signs(self):
         for name in NAMES:
@@ -80,6 +129,12 @@ class FloorPlan(unittest.TestCase):
         self.assertNotIn("(modulo -13.0 5.0)", program)
         row = dict(self.rows["modulo"], inputs=[{"values":"1 2"},{"values":"3"}])
         with self.assertRaises(ValueError): plan.build_program({"modulo":row})
+
+    def test_s64_plan_text_never_round_trips_through_float(self):
+        values = plan.parse_refs("@q -9223372036854775808 9223372036854775807\n", {"q"})["q"]
+        self.assertEqual(values, [-(1 << 63), (1 << 63)-1])
+        self.assertEqual([plan.fmt_typed(v, "s64") for v in values],
+                         ["-9223372036854775808", "9223372036854775807"])
 
 
 if __name__ == "__main__": unittest.main()
