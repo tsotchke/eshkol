@@ -111,9 +111,9 @@
 (check "cold graph size does not increase refreshed arithmetic" (and
   (= (vector-ref (vector-ref small 3) 0) 1) (= (vector-ref (vector-ref large 3) 0) 1)
   (= (vector-ref (vector-ref small 3) 1) 1) (= (vector-ref (vector-ref large 3) 1) 1)))
-(check "receipts disclose larger container and scan work" (and
-  (> (vector-ref (vector-ref large 3) 3) (vector-ref (vector-ref small 3) 3))
-  (> (vector-ref (vector-ref large 3) 4) (vector-ref (vector-ref small 3) 4))))
+(check "cold graph size does not increase sparse container or work-set removals" (and
+  (= (vector-ref (vector-ref large 3) 3) (vector-ref (vector-ref small 3) 3))
+  (= (vector-ref (vector-ref large 3) 4) (vector-ref (vector-ref small 3) 4))))
 (display "Passed: ") (display passed) (display " Failed: ") (display failed) (newline)
 (if (> failed 0) (begin (display "RESULT: FAIL\n") (exit 1)))
 (display "RESULT: PASS\n")
