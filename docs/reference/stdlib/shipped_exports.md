@@ -5,6 +5,18 @@ not present in the standard-library index. Signatures and module locations are
 taken from the source files named in each section. The anchors are checked by
 `scripts/check_public_api_docs.py`.
 
+## `core.ad.algebraic_farkas`
+
+Source: `lib/core/ad/algebraic_farkas.esk`. The exact witness equations, selected-real signs, support budget and refusal behavior are documented in [ad_algebraic_farkas.md](ad_algebraic_farkas.md).
+
+### `algebraic-farkas-search`
+
+Searches bounded supports for exact equality/inequality multipliers with a strict negative RHS margin. Exhaustion returns `unknown`.
+
+### `algebraic-farkas-verify`
+
+Rechecks the original constraints, nonnegative inequality multipliers, exact annihilation and strict negative margin.
+
 ## `core.ad.algebraic_qp`
 
 Source: `lib/core/ad/algebraic_qp.esk`. The exact convexity, certificate,
