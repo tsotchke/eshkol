@@ -25,6 +25,7 @@ POSITIVE = (
     "positive-imported-function-declaration",
     "positive-resource-move-to-owner",
     "positive-udp-bind-close",
+    "positive-safe-scalar-conversion",
 )
 NEGATIVE = (
     "negative-leak",
@@ -75,6 +76,8 @@ NEGATIVE = (
     "negative-udp-leak",
     "negative-udp-wrong-close",
     "negative-tcp-accept-wrong-kind",
+    "negative-forged-safe-scalar-extern",
+    "negative-imported-safe-scalar-collision",
 )
 
 

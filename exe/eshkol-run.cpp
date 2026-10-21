@@ -1519,6 +1519,11 @@ static const std::set<std::string> kStrictResourceCoreNetExports = {
 static std::set<std::string> g_verified_core_net_exports;
 static bool g_untrusted_core_net_required = false;
 static std::map<const char*, uint8_t> g_trusted_core_net_definition_names;
+static bool g_verified_stdlib_artifact_identity = false;
+static std::set<const char*> g_verified_stdlib_scalar_primitive_names;
+static const std::set<std::string> kStrictStdlibScalarPrimitives = {
+    "inexact->exact", "make-rational"
+};
 static size_t g_module_ast_prefix_count = 0;
 static bool g_capture_strict_source_identity = false;
 static std::map<std::string, std::string> g_strict_source_identities;
@@ -1609,6 +1614,36 @@ static bool isTrustedCoreNetDefinition(const eshkol_ast_t* ast) {
            g_trusted_core_net_definition_names.count(ast->operation.define_op.name) != 0;
 }
 
+static bool hasVerifiedStdlibScalarPrimitiveName(const char* name) {
+    return name && kStrictStdlibScalarPrimitives.count(name) &&
+           g_verified_stdlib_scalar_primitive_names.count(name) != 0;
+}
+
+static bool isVerifiedStdlibScalarPrimitive(const eshkol_ast_t* ast) {
+    if (!ast || ast->type != ESHKOL_OP) return false;
+    const char* name = nullptr;
+    if (ast->operation.op == ESHKOL_DEFINE_OP)
+        name = ast->operation.define_op.name;
+    else if (ast->operation.op == ESHKOL_EXTERN_OP)
+        name = ast->operation.extern_op.name;
+    return hasVerifiedStdlibScalarPrimitiveName(name);
+}
+
+static void recordVerifiedStdlibScalarPrimitives(
+    const std::vector<eshkol_ast_t>& module_asts) {
+    if (!g_verified_stdlib_artifact_identity) return;
+    for (const auto& ast : module_asts) {
+        if (ast.type != ESHKOL_OP) continue;
+        const char* name = nullptr;
+        if (ast.operation.op == ESHKOL_DEFINE_OP)
+            name = ast.operation.define_op.name;
+        else if (ast.operation.op == ESHKOL_EXTERN_OP)
+            name = ast.operation.extern_op.name;
+        if (name && kStrictStdlibScalarPrimitives.count(name))
+            g_verified_stdlib_scalar_primitive_names.insert(name);
+    }
+}
+
 // ===== OWNERSHIP ANALYSIS =====
 // Compile-time tracking of owned values for OALR memory management
 
@@ -1668,6 +1703,7 @@ public:
         bool is_defined = false;
         std::string callable_contract;
         bool is_proven_callable = false;
+    bool is_verified_stdlib_primitive = false;
     };
 
     // Ownership scope (lexical block)
@@ -1831,7 +1867,10 @@ private:
     CallableEffect callableEffectOf(const eshkol_ast_t* expression) const {
         const std::string name = getVarName(expression);
         if (name.empty()) return CallableEffect::NONE;
-        if (VariableInfo* info = const_cast<OwnershipAnalyzer*>(this)->lookupVariable(name))
+        VariableInfo* info = const_cast<OwnershipAnalyzer*>(this)->lookupVariable(name);
+        if (info)
+            if (info->is_verified_stdlib_primitive) return CallableEffect::NONE;
+        if (info)
             return info->callable_effect;
         return unresolvedCallableEffect(name);
     }
@@ -2232,6 +2271,9 @@ private:
                 if (isTrustedCoreNetDefinition(&ast)) {
                     effect = effectForTrustedCoreNetName(name);
                     proven_callable = true;
+                } else if (isVerifiedStdlibScalarPrimitive(&ast)) {
+                    effect = CallableEffect::NONE;
+                    proven_callable = true;
                 } else if (op.define_op.is_external) {
                     if (op.define_op.is_function) {
                         effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
@@ -2298,6 +2340,8 @@ private:
             auto known_effect = effects.find(name);
             if (known_effect != effects.end()) info.callable_effect = known_effect->second;
             info.is_proven_callable = proven_callable_names.count(name) != 0;
+            info.is_verified_stdlib_primitive =
+                op.op == ESHKOL_DEFINE_OP && isVerifiedStdlibScalarPrimitive(&ast);
             auto resource = future_resources.find(name);
             if (resource != future_resources.end()) {
                 info.resource_kind = resource->second;
@@ -2737,7 +2781,8 @@ private:
             "pair?", "null?", "procedure?", "vector-length", "vector-ref", "car",
             "cdr", "caar", "cadr", "caddr", "cadddr", "cddr", "cdddr", "cddddr",
             "cons", "list", "append", "string-length", "string-ref", "substring",
-            "display", "write", "newline", "exit", "error", "void"
+            "display", "write", "newline", "exit", "error", "void",
+            "inexact->exact", "make-rational"
         };
         return names.count(name) != 0;
     }
@@ -3191,7 +3236,11 @@ private:
                                 if (bind_resource_effects) {
                                     info.is_defined = true;
                                     if (op->define_op.is_external) {
-                                        if (op->define_op.is_function) {
+                                        if (isVerifiedStdlibScalarPrimitive(node)) {
+                                            info.callable_effect = CallableEffect::NONE;
+                                            info.is_proven_callable = true;
+                                            info.is_verified_stdlib_primitive = true;
+                                        } else if (op->define_op.is_function) {
                                             info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
                                             info.is_proven_callable = true;
                                         } else if (!isStaticDataExpression(op->define_op.value)) {
@@ -3459,8 +3508,14 @@ private:
                                 auto existing = currentScope().variables.find(name);
                                 if (existing != currentScope().variables.end())
                                     info.binding_id = existing->second.binding_id;
-                                info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
-                                info.is_proven_callable = true;
+                                if (isVerifiedStdlibScalarPrimitive(node)) {
+                                    info.callable_effect = CallableEffect::NONE;
+                                    info.is_proven_callable = true;
+                                    info.is_verified_stdlib_primitive = true;
+                                } else {
+                                    info.callable_effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+                                    info.is_proven_callable = true;
+                                }
                                 info.is_defined = true;
                                 currentScope().variables[name] = std::move(info);
                             }
@@ -4329,6 +4384,7 @@ static llvm::Error validate_stdlib_object_file(const std::string& path)
             path.c_str(), found_identity.c_str(),
             static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
     }
+    g_verified_stdlib_artifact_identity = true;
     return llvm::Error::success();
 }
 
@@ -4372,6 +4428,7 @@ static llvm::Error validate_stdlib_bitcode_file(const std::string& path)
             "rejecting precompiled stdlib bitcode %s: %s; expected %s",
             path.c_str(), found_identity.c_str(), static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
     }
+    g_verified_stdlib_artifact_identity = true;
     return llvm::Error::success();
 }
 
@@ -5695,6 +5752,12 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                         continue;
                     }
 
+                    // These name pointers originate in declarations belonging
+                    // to the identity-validated precompiled stdlib closure.
+                    // Only the closed scalar-primitive allowlist may use this
+                    // provenance to avoid a false UNKNOWN effect summary.
+                    recordVerifiedStdlibScalarPrimitives(module_asts);
+
                     // Collect module exports BEFORE processing requires (process_requires may modify ASTs)
                     std::set<std::string> module_exports = collect_module_exports(module_asts);
                     // A precompiled object can execute a body different from
@@ -6070,6 +6133,8 @@ int main(int argc, char **argv)
     g_verified_core_net_exports.clear();
     g_untrusted_core_net_required = false;
     g_trusted_core_net_definition_names.clear();
+    g_verified_stdlib_artifact_identity = false;
+    g_verified_stdlib_scalar_primitive_names.clear();
     g_strict_source_identities.clear();
     g_capture_strict_source_identity = false;
 #ifdef ESHKOL_SELF_HOSTED_INCREMENTAL

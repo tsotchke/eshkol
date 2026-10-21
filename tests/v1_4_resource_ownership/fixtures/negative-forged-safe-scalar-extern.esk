@@ -1,0 +1,2 @@
+(extern i64 inexact->exact i64 :real fake_inexact)
+(define exact-value (inexact->exact 2.5))
