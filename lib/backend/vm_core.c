@@ -371,10 +371,20 @@ typedef struct {
 } VmHeapRegionSlots;
 
 typedef struct {
+    uint64_t generation;
+    int32_t car_node;
+    int32_t cdr_node;
+} VmAdPairNodes;
+
+typedef struct {
     VmRegionStack regions;
     HeapObject** objects;    /* array of pointers to arena-allocated objects */
     int32_t next_free;
     int32_t capacity;
+    /* Lazily allocated, heap-indexed reverse-tape metadata for pair fields.
+     * Kept out of HeapObject so ordinary VM objects pay no size overhead. */
+    VmAdPairNodes* ad_pair_nodes;
+    int32_t ad_nodes_capacity;
     /* SW-14 growth watchdog. Before the Stage-1 evacuator the VM heap had no
      * reclamation of any kind and this watchdog was the whole story; it is kept
      * because `with-region` is opt-in and a workload that never opens a region
@@ -628,6 +638,9 @@ static int32_t heap_alloc(Heap* h) {
         slot = h->next_free++;
     }
     h->objects[slot] = obj;
+    if (slot >= 0 && slot < h->ad_nodes_capacity) {
+        h->ad_pair_nodes[slot] = (VmAdPairNodes){0, -1, -1};
+    }
     if (h->regions.depth > 0) heap_region_record_slot(h, slot);
     heap_check_budget(h);
     return slot;
@@ -719,8 +732,40 @@ static void heap_destroy(Heap* h) {
     free(h->markbits);   h->markbits = NULL;   h->markbits_cap = 0;
     free(h->mark_stack); h->mark_stack = NULL; h->mark_stack_n = h->mark_stack_cap = 0;
     free(h->free_slots); h->free_slots = NULL; h->n_free_slots = h->cap_free_slots = 0;
+    free(h->ad_pair_nodes); h->ad_pair_nodes = NULL; h->ad_nodes_capacity = 0;
     free(h->objects);
     h->objects = NULL;
+}
+
+static int heap_ad_pair_nodes_set(Heap* h, int32_t ptr, uint64_t generation,
+                                  int car_node, int cdr_node) {
+    if (!h || ptr < 0) return 0;
+    if (car_node == -1 && cdr_node == -1 && ptr >= h->ad_nodes_capacity) return 1;
+    if (ptr >= h->ad_nodes_capacity) {
+        int32_t capacity = h->capacity;
+        if (capacity <= ptr) capacity = ptr + 1;
+        if ((size_t)capacity > SIZE_MAX / sizeof(VmAdPairNodes)) return 0;
+        VmAdPairNodes* nodes = (VmAdPairNodes*)malloc((size_t)capacity * sizeof(VmAdPairNodes));
+        if (!nodes) return 0;
+        for (int32_t i = 0; i < capacity; ++i)
+            nodes[i] = (VmAdPairNodes){0, -1, -1};
+        if (h->ad_nodes_capacity > 0) {
+            memcpy(nodes, h->ad_pair_nodes,
+                   (size_t)h->ad_nodes_capacity * sizeof(VmAdPairNodes));
+        }
+        free(h->ad_pair_nodes);
+        h->ad_pair_nodes = nodes;
+        h->ad_nodes_capacity = capacity;
+    }
+    h->ad_pair_nodes[ptr] = (VmAdPairNodes){generation, car_node, cdr_node};
+    return 1;
+}
+
+static int heap_ad_pair_field_node(const Heap* h, int32_t ptr,
+                                   uint64_t generation, int cdr) {
+    if (!h || ptr < 0 || ptr >= h->ad_nodes_capacity) return -1;
+    if (h->ad_pair_nodes[ptr].generation != generation) return -1;
+    return cdr ? h->ad_pair_nodes[ptr].cdr_node : h->ad_pair_nodes[ptr].car_node;
 }
 
 /*******************************************************************************
@@ -912,6 +957,7 @@ typedef struct VM {
     uint64_t ad_reverse_passes;
     uint64_t ad_tape_allocations;
     uint64_t ad_tape_nodes;
+    uint64_t ad_tape_generation;
     uint64_t ad_scalar_ad_nodes;
     uint64_t ad_tensor_ad_nodes;
     uint64_t ad_finite_difference_evals;
@@ -1797,7 +1843,9 @@ static HeapObject* vm_callable_closure(VM* vm, Value callable, int argc) {
 /* Defined with the interpreter: the same entry used by OP_CALL. */
 static int vm_enter_call(VM* vm, int argc, int32_t return_pc);
 
-static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int argc) {
+static Value vm_call_closure_from_native_impl(VM* vm, Value closure, Value* args,
+                                              int argc, int* result_ad_node) {
+    if (result_ad_node) *result_ad_node = -1;
 
     /* Save VM state */
     int32_t saved_pc = vm->pc;
@@ -1825,6 +1873,9 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     Value result = NIL_VAL;
     if (vm->sp > saved_sp) {
         result = vm->stack[vm->sp - 1];
+        if (result_ad_node && !callee_error && vm->sp == saved_sp + 1 &&
+            vm->active_tape && vm->sp - 1 < STACK_SIZE)
+            *result_ad_node = vm->ad_node_map[vm->sp - 1];
     }
 
     /* Restore VM state */
@@ -1836,6 +1887,18 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     vm->error = saved_error || callee_error;
 
     return result;
+}
+
+static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int argc) {
+    return vm_call_closure_from_native_impl(vm, closure, args, argc, NULL);
+}
+
+/* Traced variant used by VM reverse-gradient. It captures the map attached to
+ * the actual returned stack slot before restoring the caller's stack; tape
+ * length is not a proxy for output identity. */
+static Value vm_call_closure_from_native_traced(VM* vm, Value closure,
+        Value* args, int argc, int* result_ad_node) {
+    return vm_call_closure_from_native_impl(vm, closure, args, argc, result_ad_node);
 }
 
 /*******************************************************************************

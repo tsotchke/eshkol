@@ -128,6 +128,9 @@ static void vm_exec_closure_long(VM* vm, int32_t const_idx) {
 }
 
 static void vm_exec_return(VM* vm) {
+    int result_slot = vm->sp - 1;
+    int result_node = (vm->active_tape && result_slot >= 0 && result_slot < STACK_SIZE)
+        ? vm->ad_node_map[result_slot] : -1;
     Value result = vm_pop(vm);
     if (vm->frame_count > 0) {
         CallFrame* frame = &vm->frames[vm->frame_count - 1];
@@ -136,6 +139,8 @@ static void vm_exec_return(VM* vm) {
              * region is evacuated; any value that escapes is rewritten in
              * place before the frame is retired. */
             vm_push(vm, result);
+            if (vm->active_tape && vm->sp > 0 && vm->sp < STACK_SIZE)
+                vm->ad_node_map[vm->sp - 1] = result_node;
             if (vm->fp > 0) vm->stack[vm->fp - 1] = NIL_VAL;
             vm_close_handler_region(vm, frame);
             result = vm_pop(vm);
@@ -147,6 +152,8 @@ static void vm_exec_return(VM* vm) {
     // frame_count alone is not an identity and can match an enclosing frame.
     vm_pop_tail_retained_handlers(vm);
     if (vm->frame_count <= 0) {
+        if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+            vm->ad_node_map[vm->sp] = vm->active_tape ? result_node : -1;
         vm_push(vm, result);
         vm->halted = 1;
         return;
@@ -154,6 +161,8 @@ static void vm_exec_return(VM* vm) {
     vm->frame_count--;
     /* Check for native-call sentinel */
     if (vm->frames[vm->frame_count].return_pc == -1) {
+        if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+            vm->ad_node_map[vm->sp] = vm->active_tape ? result_node : -1;
         vm_push(vm, result);
         vm->halted = 1;
         return;
@@ -161,5 +170,7 @@ static void vm_exec_return(VM* vm) {
     vm->sp = vm->fp - 1;
     vm->fp = vm->frames[vm->frame_count].return_fp;
     vm->pc = vm->frames[vm->frame_count].return_pc;
+    if (vm->sp >= 0 && vm->sp < STACK_SIZE)
+        vm->ad_node_map[vm->sp] = vm->active_tape ? result_node : -1;
     vm_push(vm, result);
 }
