@@ -1774,6 +1774,9 @@ typedef struct {
 } VmTypedExternSpec;
 
 static const VmTypedExternSpec VM_TYPED_EXTERNS[] = {
+    /* VM-local implementation: this deliberately resets the VM's own logic
+     * registry and intern pool rather than depending on the hosted runtime. */
+    {"eshkol-logic-reset", "void", {NULL}, 0, "eshkol_logic_registry_reset", 2251},
     {"sha256-raw", "i32", {"ptr", "i64", "ptr", "i64"}, 4, "eshkol_sha256", VM_NATIVE_SHA256_EXTERN},
     {"hmac-sha256-raw", "i32", {"ptr", "i64", "ptr", "i64", "ptr", "i64"}, 6, "eshkol_hmac_sha256", VM_NATIVE_HMAC_SHA256_EXTERN},
     {"random-bytes-raw", "i32", {"ptr", "i64"}, 2, "eshkol_random_bytes", VM_NATIVE_RANDOM_BYTES_EXTERN},

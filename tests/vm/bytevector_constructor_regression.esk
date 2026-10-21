@@ -1,0 +1,35 @@
+;; VM's first-class R7RS bytevector constructor checks.
+(define empty (bytevector))
+(define boundary (bytevector 0 1 127 254 255))
+(define ctor bytevector)
+(define one (ctor 255))
+(define via-apply (apply bytevector (list 0 255)))
+(define mutable (bytevector 9 9))
+(bytevector-u8-set! mutable 0 0)
+
+(display (if (and (bytevector? empty) (= (bytevector-length empty) 0)) "PASS" "FAIL")) (display ": empty") (newline)
+(display (if (and (= (bytevector-length boundary) 5)
+                  (= (bytevector-u8-ref boundary 0) 0)
+                  (= (bytevector-u8-ref boundary 4) 255)) "PASS" "FAIL")) (display ": byte boundaries and embedded NUL") (newline)
+(display (if (and (= (bytevector-length one) 1) (= (bytevector-u8-ref one 0) 255)) "PASS" "FAIL")) (display ": first-class constructor") (newline)
+(display (if (and (= (bytevector-length via-apply) 2)
+                  (= (bytevector-u8-ref via-apply 0) 0)
+                  (= (bytevector-u8-ref via-apply 1) 255)) "PASS" "FAIL")) (display ": apply constructor") (newline)
+(display (if (= (bytevector-u8-ref mutable 0) 0) "PASS" "FAIL")) (display ": mutation preserves bytevector type") (newline)
+
+(define rejected-type
+  (guard (condition (#t #t)) (bytevector 1 2.5) #f))
+(define rejected-negative
+  (guard (condition (#t #t)) (bytevector -1) #f))
+(define rejected-high
+  (guard (condition (#t #t)) (bytevector 256) #f))
+(define native-rejected-type
+  (guard (condition (#t #t)) (_bytevector-from-list (list 1 2.5)) #f))
+(define native-rejected-negative
+  (guard (condition (#t #t)) (_bytevector-from-list (list -1)) #f))
+(define native-rejected-high
+  (guard (condition (#t #t)) (_bytevector-from-list (list 256)) #f))
+(display (if (and rejected-type rejected-negative rejected-high
+                   native-rejected-type native-rejected-negative native-rejected-high)
+             "PASS" "FAIL")) (display ": guarded type and range errors") (newline)
+(display "RESULT: PASS") (newline)

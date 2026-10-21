@@ -2,6 +2,7 @@
 #include <eshkol/core/linear_solve_portable.h>
 #include <eshkol/core/tensor_inverse_checked.h>
 #include <math.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "../core/model_io_atomic.h"
@@ -16458,6 +16459,55 @@ tensor_inverse_done:
         VmBytevector* bv = vm_bv_make(&vm->heap.regions, (int)as_number(n), (int)as_number(fill));
         if (!bv) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv);
+        break;
+    }
+    case 2250: { /* bytevector(byte...) — rest arguments arrive as a list. */
+        Value rest = vm_pop(vm);
+        int len = 0;
+        int validation_failed = 0;
+        Value cur = rest;
+        while (cur.type == VAL_PAIR) {
+            if (!is_heap_type(vm, cur, HEAP_CONS)) {
+                vm_raise_error_msg(vm, "bytevector: expected a proper list of exact integers in [0,255]");
+                validation_failed = 1;
+                break;
+            }
+            Value item = vm->heap.objects[cur.as.ptr]->cons.car;
+            if (item.type != VAL_INT || item.as.i < 0 || item.as.i > 255) {
+                vm_raise_error_msg(vm, "bytevector: expected exact integers in [0,255]");
+                validation_failed = 1;
+                break;
+            }
+            if (len == INT_MAX) {
+                vm_raise_error_msg(vm, "bytevector: argument list is too long");
+                validation_failed = 1;
+                break;
+            }
+            ++len;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (validation_failed) break;
+        if (cur.type != VAL_NIL) {
+            vm_raise_error_msg(vm, "bytevector: expected a proper list of exact integers in [0,255]");
+            break;
+        }
+        VmBytevector* bv = vm_bv_make(&vm->heap.regions, len, 0);
+        if (!bv) {
+            vm_raise_error_msg(vm, "bytevector: allocation failed");
+            break;
+        }
+        cur = rest;
+        for (int i = 0; i < len; ++i) {
+            HeapObject* cell = vm->heap.objects[cur.as.ptr];
+            bv->data[i] = (uint8_t)cell->cons.car.as.i;
+            cur = cell->cons.cdr;
+        }
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, bv);
+        break;
+    }
+    case 2251: { /* VM-local counterpart of eshkol_logic_registry_reset. */
+        vm_logic_var_reset();
+        vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
     case 681: { /* bytevector-length */

@@ -112,7 +112,7 @@ boolean?	vm-supported
 butterworth-bandpass	gap	signal faculty has no VM fid coverage
 butterworth-highpass	gap	signal faculty has no VM fid coverage
 butterworth-lowpass	gap	signal faculty has no VM fid coverage
-bytevector	gap	port/file IO surface missing in VM
+bytevector	vm-supported	variadic first-class constructor; exact integer bytes in [0,255]
 bytevector-append	vm-supported	
 bytevector-copy	vm-supported	
 bytevector-copy!	vm-supported	

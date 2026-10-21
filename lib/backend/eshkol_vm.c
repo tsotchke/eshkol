@@ -721,6 +721,7 @@ static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
      * Consciousness Engine — IDs 500-549
      * ═══════════════════════════════════════════════════════════════ */
+    {"make-logic-var", 500, 1},
     {"logic-var?", 501, 1}, {"unify", 502, 3}, {"walk", 503, 2},
     {"make-substitution", 505, 0}, {"substitution?", 506, 1},
     {"_make-fact1", 507, 1}, {"fact?", 508, 1},
@@ -863,6 +864,8 @@ static const BuiltinDef BUILTINS[] = {
     {"bytevector-u8-ref", 682, 2}, {"bytevector-u8-set!", 683, 3},
     {"bytevector-append", 684, 2, -2}, {"bytevector-copy!", 685, 3},
     {"bytevector?", 686, 1}, {"bytevector-copy", 687, 1},
+    /* The prelude's variadic bytevector wrapper passes its rest list here. */
+    {"_bytevector-from-list", 2250, 1},
     {"utf8->string", 688, 1}, {"string->utf8", 689, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Hash tables — IDs 660-670
