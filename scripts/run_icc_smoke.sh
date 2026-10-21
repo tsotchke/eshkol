@@ -20,6 +20,14 @@
 #   3. The command must exit 0 for PASS; any nonzero exits → FAIL
 set -u
 export LC_ALL=C LC_CTYPE=C LANG=C
+ICC_SMOKE_ONLY_ID=""
+if [ "$#" -gt 0 ]; then
+    if [ "$#" -ne 2 ] || [ "$1" != "--only" ] || ! [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo "Usage: $0 [--only PROBE_ID]" >&2
+        exit 2
+    fi
+    ICC_SMOKE_ONLY_ID="$2"
+fi
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
@@ -1157,7 +1165,14 @@ _ns_probe ns_pulse_growth_crossover      mathematics_navier_stokes_pulse_growth
 eshkol_durable_mirror_trace "$TRACE_FILE" eshkol_smoke.jsonl
 
 echo
+if [ -n "$ICC_SMOKE_ONLY_ID" ] && [ "$PROBE_SELECTED_COUNT" -eq 0 ]; then
+    echo "Unknown ICC smoke probe: $ICC_SMOKE_ONLY_ID" >&2
+    exit 2
+fi
 echo "Trace written: $TRACE_FILE"
+if [ -n "$ICC_SMOKE_ONLY_ID" ]; then
+    echo "Scope: only $ICC_SMOKE_ONLY_ID (partial run; no full-smoke claim)"
+fi
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES - PROBE_INFRA))/$PROBE_TOTAL passed, $PROBE_INFRA infra (no verdict), $PROBE_FAILURES failed"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"
 echo "         completion-oracle --repo eshkol_lang \\"
@@ -1176,7 +1191,19 @@ if [ "$PROBE_INFRA" -ne 0 ]; then
 fi
 
 if [ "$PROBE_FAILURES" -ne 0 ]; then
-    echo "ICC smoke gate: FAIL ($PROBE_FAILURES probe(s) failed)" >&2
+    if [ -n "$ICC_SMOKE_ONLY_ID" ]; then
+        echo "ICC smoke probe $ICC_SMOKE_ONLY_ID: FAIL ($PROBE_FAILURES failure(s))" >&2
+    else
+        echo "ICC smoke gate: FAIL ($PROBE_FAILURES probe(s) failed)" >&2
+    fi
     exit 1
 fi
-echo "ICC smoke gate: PASS"
+if [ -n "$ICC_SMOKE_ONLY_ID" ]; then
+    if [ "$PROBE_INFRA" -ne 0 ]; then
+        echo "ICC smoke probe $ICC_SMOKE_ONLY_ID: INFRA ($PROBE_INFRA probe(s) had no verdict)" >&2
+        exit 2
+    fi
+    echo "ICC smoke probe $ICC_SMOKE_ONLY_ID: PASS (partial run; no full-smoke claim)"
+else
+    echo "ICC smoke gate: PASS"
+fi

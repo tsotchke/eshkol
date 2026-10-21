@@ -17,12 +17,17 @@ emit_event() {
 }
 
 PROBE_TOTAL=0
+PROBE_SELECTED_COUNT=0
 PROBE_FAILURES=0
 PROBE_INFRA=0
 
 probe() {
     local probe_id="$1" label="$2" cmd="$3"
     local out status snippet class log_file status_file evidence_write_failed
+    if [ -n "${ICC_SMOKE_ONLY_ID:-}" ] && [ "$probe_id" != "$ICC_SMOKE_ONLY_ID" ]; then
+        return 0
+    fi
+    PROBE_SELECTED_COUNT=$((PROBE_SELECTED_COUNT + 1))
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
     # Capture combined stdout+stderr so the snippet is informative when
     # something fails. Bound the snippet so a multi-MB log doesn't blow
