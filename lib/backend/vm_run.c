@@ -434,6 +434,9 @@ void vm_run(VM* vm) {
         for (int i = 0; i < argc; i++) {
             vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
         }
+        if (vm->active_tape)
+            memmove(&vm->ad_node_map[vm->fp], &vm->ad_node_map[vm->sp - argc],
+                    (size_t)argc * sizeof(int));
         vm->sp = vm->fp + argc;
         /* Update closure slot so GET_UPVALUE sees the NEW closure's upvalues */
         vm->stack[vm->fp - 1] = func;
@@ -876,6 +879,9 @@ vm_exit:
             for (int i = 0; i < argc; i++) {
                 vm->stack[vm->fp + i] = vm->stack[vm->sp - argc + i];
             }
+            if (vm->active_tape)
+                memmove(&vm->ad_node_map[vm->fp], &vm->ad_node_map[vm->sp - argc],
+                        (size_t)argc * sizeof(int));
             vm->sp = vm->fp + argc;
             /* Update closure slot so GET_UPVALUE sees the NEW closure's upvalues */
             vm->stack[vm->fp - 1] = func;

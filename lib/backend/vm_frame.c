@@ -19,6 +19,13 @@ static void vm_exec_get_upvalue(VM* vm, int32_t operand) {
         HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
         if (operand >= 0 && operand < cl->closure.n_upvalues) {
             int32_t open_slot = cl->closure.open_slots[operand];
+            int node = -1;
+            if (vm->active_tape)
+                node = (open_slot >= 0 && open_slot < STACK_SIZE)
+                    ? vm->ad_node_map[open_slot]
+                    : heap_ad_capture_node(&vm->heap, closure_val.as.ptr,
+                                           vm->ad_tape_generation, operand);
+            if (vm->sp >= 0 && vm->sp < STACK_SIZE) vm->ad_node_map[vm->sp] = node;
             if (open_slot >= 0 && open_slot < STACK_SIZE)
                 vm_push(vm, vm->stack[open_slot]);
             else
@@ -38,10 +45,18 @@ static void vm_exec_set_upvalue(VM* vm, int32_t operand) {
         HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
         if (operand >= 0 && operand < cl->closure.n_upvalues) {
             int32_t open_slot = cl->closure.open_slots[operand];
-            if (open_slot >= 0 && open_slot < STACK_SIZE)
+            if (open_slot >= 0 && open_slot < STACK_SIZE) {
                 vm->stack[open_slot] = vm_peek(vm, 0);
-            else
+                vm->ad_node_map[open_slot] = vm->active_tape ? vm->ad_node_map[vm->sp - 1] : -1;
+            } else {
                 cl->closure.upvalues[operand] = vm_peek(vm, 0);
+                if (vm->active_tape && !heap_ad_capture_node_set(&vm->heap,
+                        closure_val.as.ptr, vm->ad_tape_generation, operand,
+                        cl->closure.n_upvalues, vm->ad_node_map[vm->sp - 1])) {
+                    vm_raise_error_msg(vm, "reverse-gradient: capture metadata allocation failed");
+                    return;
+                }
+            }
         } else {
             fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
         }
@@ -108,8 +123,15 @@ static void vm_exec_closure_with_count(VM* vm, int32_t const_idx,
             vm->heap.objects[ptr]->closure.open_slots[i] = -1;
     }
     for (int i = n_upvalues - 1; i >= 0; i--) {
+        int node = vm->active_tape ? vm->ad_node_map[vm->sp - 1] : -1;
         vm->heap.objects[ptr]->closure.upvalues[i] = vm_pop(vm);
+        if (vm->active_tape && !heap_ad_capture_node_set(&vm->heap, ptr,
+                vm->ad_tape_generation, i, n_upvalues, node)) {
+            vm_raise_error_msg(vm, "reverse-gradient: capture metadata allocation failed");
+            return;
+        }
     }
+    if (vm->sp >= 0 && vm->sp < STACK_SIZE) vm->ad_node_map[vm->sp] = -1;
     vm_push(vm, CLOSURE_VAL(ptr));
 }
 

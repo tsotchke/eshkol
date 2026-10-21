@@ -374,6 +374,8 @@ typedef struct {
     uint64_t generation;
     int32_t car_node;
     int32_t cdr_node;
+    int* captures;
+    int capture_count;
 } VmAdPairNodes;
 
 typedef struct {
@@ -641,7 +643,8 @@ static int32_t heap_alloc(Heap* h) {
     }
     h->objects[slot] = obj;
     if (slot >= 0 && slot < h->ad_nodes_capacity) {
-        h->ad_pair_nodes[slot] = (VmAdPairNodes){0, -1, -1};
+        free(h->ad_pair_nodes[slot].captures);
+        h->ad_pair_nodes[slot] = (VmAdPairNodes){0, -1, -1, NULL, 0};
     }
     if (h->regions.depth > 0) heap_region_record_slot(h, slot);
     heap_check_budget(h);
@@ -734,6 +737,8 @@ static void heap_destroy(Heap* h) {
     free(h->markbits);   h->markbits = NULL;   h->markbits_cap = 0;
     free(h->mark_stack); h->mark_stack = NULL; h->mark_stack_n = h->mark_stack_cap = 0;
     free(h->free_slots); h->free_slots = NULL; h->n_free_slots = h->cap_free_slots = 0;
+    for (int32_t i = 0; i < h->ad_nodes_capacity; ++i)
+        free(h->ad_pair_nodes[i].captures);
     free(h->ad_pair_nodes); h->ad_pair_nodes = NULL; h->ad_nodes_capacity = 0;
     free(h->objects);
     h->objects = NULL;
@@ -750,7 +755,7 @@ static int heap_ad_pair_nodes_set(Heap* h, int32_t ptr, uint64_t generation,
         VmAdPairNodes* nodes = (VmAdPairNodes*)malloc((size_t)capacity * sizeof(VmAdPairNodes));
         if (!nodes) return 0;
         for (int32_t i = 0; i < capacity; ++i)
-            nodes[i] = (VmAdPairNodes){0, -1, -1};
+            nodes[i] = (VmAdPairNodes){0, -1, -1, NULL, 0};
         if (h->ad_nodes_capacity > 0) {
             memcpy(nodes, h->ad_pair_nodes,
                    (size_t)h->ad_nodes_capacity * sizeof(VmAdPairNodes));
@@ -759,7 +764,8 @@ static int heap_ad_pair_nodes_set(Heap* h, int32_t ptr, uint64_t generation,
         h->ad_pair_nodes = nodes;
         h->ad_nodes_capacity = capacity;
     }
-    h->ad_pair_nodes[ptr] = (VmAdPairNodes){generation, car_node, cdr_node};
+    free(h->ad_pair_nodes[ptr].captures);
+    h->ad_pair_nodes[ptr] = (VmAdPairNodes){generation, car_node, cdr_node, NULL, 0};
     return 1;
 }
 
@@ -777,6 +783,36 @@ static int heap_ad_pair_field_set(Heap* h, int32_t ptr, uint64_t generation,
     if (cdr) cdr_node = node;
     else car_node = node;
     return heap_ad_pair_nodes_set(h, ptr, generation, car_node, cdr_node);
+}
+
+/* Closed scalar captures keep their tape nodes outside HeapObject. The table
+ * is indexed by stable heap slots; reuse and heap teardown release each array. */
+static int heap_ad_capture_node_set(Heap* h, int32_t ptr, uint64_t generation,
+                                    int index, int count, int node) {
+    if (!h || ptr < 0 || index < 0 || index >= count || count <= 0 ||
+        (size_t)count > SIZE_MAX / sizeof(int)) return 0;
+    if (ptr < h->ad_nodes_capacity && h->ad_pair_nodes[ptr].generation == generation &&
+        h->ad_pair_nodes[ptr].captures && h->ad_pair_nodes[ptr].capture_count == count) {
+        h->ad_pair_nodes[ptr].captures[index] = node;
+        return 1;
+    }
+    if (node == -1) return 1;
+    int* nodes = (int*)malloc((size_t)count * sizeof(int));
+    if (!nodes) return 0;
+    for (int i = 0; i < count; ++i) nodes[i] = -1;
+    nodes[index] = node;
+    // A real node forces lazy table allocation (an empty pair needs none).
+    if (!heap_ad_pair_nodes_set(h, ptr, generation, node, -1)) { free(nodes); return 0; }
+    h->ad_pair_nodes[ptr].car_node = -1;
+    h->ad_pair_nodes[ptr].captures = nodes;
+    h->ad_pair_nodes[ptr].capture_count = count;
+    return 1;
+}
+static int heap_ad_capture_node(const Heap* h, int32_t ptr, uint64_t generation, int index) {
+    if (!h || ptr < 0 || ptr >= h->ad_nodes_capacity || index < 0) return -1;
+    const VmAdPairNodes* row = &h->ad_pair_nodes[ptr];
+    return row->generation == generation && row->captures && index < row->capture_count
+        ? row->captures[index] : -1;
 }
 
 /*******************************************************************************
@@ -1156,7 +1192,15 @@ static void vm_close_open_upvalues_from(VM* vm, int first_dead_slot) {
         HeapObject* cl = (e.obj >= 0 && e.obj < vm->heap.next_free) ? vm->heap.objects[e.obj] : NULL;
         if (cl && cl->type == HEAP_CLOSURE && e.uv >= 0 && e.uv < cl->closure.n_upvalues &&
             cl->closure.open_slots && cl->closure.open_slots[e.uv] == e.slot) {
-            if (e.slot >= 0 && e.slot < vm->sp) cl->closure.upvalues[e.uv] = vm->stack[e.slot];
+            if (e.slot >= 0 && e.slot < vm->sp) {
+                cl->closure.upvalues[e.uv] = vm->stack[e.slot];
+                if (vm->active_tape && !heap_ad_capture_node_set(&vm->heap, e.obj,
+                        vm->ad_tape_generation, e.uv, cl->closure.n_upvalues,
+                        vm->ad_node_map[e.slot])) {
+                    fprintf(stderr, "ERROR: reverse-gradient capture metadata allocation failed\n");
+                    vm->error = 1;
+                }
+            }
             cl->closure.open_slots[e.uv] = -1;
         }
         vm->open_uvs[i] = vm->open_uvs[--vm->n_open_uvs];
@@ -1288,6 +1332,9 @@ static int vm_tail_call_from_exception_handler(VM* vm, int argc, Value* func) {
          * closure from the root range while keeping every tail argument live. */
         for (int i = 0; i < argc; i++)
             vm->stack[target_fp + i] = vm->stack[vm->sp - argc + i];
+        if (vm->active_tape)
+            memmove(&vm->ad_node_map[target_fp], &vm->ad_node_map[vm->sp - argc],
+                    (size_t)argc * sizeof(int));
         if (target_fp > 0 && func) vm->stack[target_fp - 1] = *func;
         vm->sp = target_fp + argc;
         vm->fp = target_fp;
@@ -1298,6 +1345,9 @@ static int vm_tail_call_from_exception_handler(VM* vm, int argc, Value* func) {
     }
     for (int i = 0; i < argc; i++)
         vm->stack[target_fp + i] = vm->stack[vm->sp - argc + i];
+    if (vm->active_tape)
+        memmove(&vm->ad_node_map[target_fp], &vm->ad_node_map[vm->sp - argc],
+                (size_t)argc * sizeof(int));
     vm->sp = target_fp + argc;
     vm->fp = target_fp;
     vm->frame_count = target_frame_count;
