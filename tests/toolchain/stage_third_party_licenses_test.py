@@ -22,7 +22,8 @@ class FetchContentSourceResolutionTest(unittest.TestCase):
             fallback = build / "_deps/eshkol_pcre2-src"
             fallback.mkdir(parents=True)
             (build / "CMakeCache.txt").write_text(
-                f"FETCHCONTENT_SOURCE_DIR_ESHKOL_PCRE2:PATH={override}\n",
+                f"FETCHCONTENT_SOURCE_DIR_ESHKOL_PCRE2:PATH={override}\n"
+                f"FETCHCONTENT_BASE_DIR:PATH={root / 'other-content'}\n",
                 encoding="utf-8",
             )
             self.assertEqual(
@@ -36,6 +37,21 @@ class FetchContentSourceResolutionTest(unittest.TestCase):
             source.mkdir(parents=True)
             (build / "CMakeCache.txt").write_text(
                 "FETCHCONTENT_FULLY_DISCONNECTED:BOOL=ON\n", encoding="utf-8"
+            )
+            self.assertEqual(
+                licenses.fetchcontent_source_dir(build, "ESHKOL_PCRE2"), source
+            )
+
+    def test_configured_fetchcontent_base_dir_is_used(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="eshkol-license-base-") as temp:
+            root = Path(temp)
+            build = root / "build"
+            build.mkdir()
+            custom_base = root / "configured-content"
+            source = custom_base / "eshkol_pcre2-src"
+            source.mkdir(parents=True)
+            (build / "CMakeCache.txt").write_text(
+                f"FETCHCONTENT_BASE_DIR:PATH={custom_base}\n", encoding="utf-8"
             )
             self.assertEqual(
                 licenses.fetchcontent_source_dir(build, "ESHKOL_PCRE2"), source

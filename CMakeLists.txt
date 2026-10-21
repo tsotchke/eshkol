@@ -8837,6 +8837,20 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(generated_artifact_validator_test PROPERTIES TIMEOUT 120)
     endif()
+    foreach(_license_staging_test IN ITEMS
+            stage_macos_openssl_runtime_test
+            stage_third_party_licenses_test)
+        set(_license_staging_test_path
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_license_staging_test}.py")
+        if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${_license_staging_test_path}")
+            add_test(
+                NAME "${_license_staging_test}"
+                COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                        "${_license_staging_test_path}"
+            )
+            set_tests_properties("${_license_staging_test}" PROPERTIES TIMEOUT 120)
+        endif()
+    endforeach()
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py")
         add_test(
             NAME windows_runtime_exports_validator_test
