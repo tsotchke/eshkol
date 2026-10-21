@@ -13322,6 +13322,7 @@ endif()
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_reverse_example "examples/algebraic_reverse.esk")
     eshkol_add_algebraic_ad_acceptance(incremental_reverse "tests/stdlib/incremental_reverse_test.esk")
+    eshkol_add_algebraic_ad_acceptance(incremental_reverse_sparse "tests/stdlib/incremental_reverse_sparse_test.esk")
     eshkol_add_algebraic_ad_acceptance(incremental_reverse_alias_seed "tests/stdlib/incremental_reverse_alias_seed_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_pullback "tests/stdlib/algebraic_pullback_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_pullback_example "examples/algebraic_pullback.esk")
@@ -13330,6 +13331,17 @@ endif()
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_ridge "tests/stdlib/algebraic_ridge_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_ridge_example "examples/algebraic_ridge.esk")
+endif()
+
+# Sparse incremental reverse bookkeeping also executes on the actual VM.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME incremental_reverse_sparse_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/incremental_reverse_sparse_test.esk")
+    set_tests_properties(incremental_reverse_sparse_vm PROPERTIES TIMEOUT 900 LABELS "ad;vm;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
 endif()
 
 # Certified bounded quadratic programs share the exact AD acceptance driver.
