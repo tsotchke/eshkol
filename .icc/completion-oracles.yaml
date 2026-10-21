@@ -2254,7 +2254,7 @@ oracles:
           event_names: ["v14_websocket_server_echo"]
           event_values: ["PASS"]
         severity: high
-        label: 'WebSocket SERVER (#146): upgrade handshake, text/binary frames, close/ping/pong, backpressure — NOT YET IMPLEMENTED for the server side (only a WebSocket CLIENT exists — lib/core/system_builtins.c websocket-connect/-send/-receive/-close performs the client-side opening handshake against a remote server; there is no Sec-WebSocket-Accept computation or listen/accept loop anywhere)'
+        label: 'WebSocket SERVER (#146): public agent.http_server upgrade and text echo verified through JIT+AOT with a real local RFC 6455 Python client; focused native contract covers binary/empty frames, ping payload echo, malformed handshake/version/key, mask/size/truncation refusal, and bounded backpressure on the host FFI build'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────
