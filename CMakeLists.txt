@@ -2827,6 +2827,40 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
             $<TARGET_FILE:pjrt_test_output_mismatch>
     )
 
+    # Typed host descriptors exercise semantic f32/bf16 metadata, same-width
+    # integer mismatches, and all-or-nothing host output staging offline.
+    add_executable(pjrt_typed_buffers_test
+        tests/xla/pjrt_typed_buffers_test.cpp
+    )
+    add_dependencies(pjrt_typed_buffers_test pjrt_test_output_mismatch)
+    target_include_directories(pjrt_typed_buffers_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_compile_options(pjrt_typed_buffers_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_typed_buffers_test)
+    target_link_libraries(pjrt_typed_buffers_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST} ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_typed_buffers_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_typed_buffers_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_typed_buffers_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_typed_buffers_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    foreach(_pjrt_typed_mode f32 bf16 f32-matrix f32-int32 bf16-uint16 later-transfer-failure overflow negative on-device output-shape output-on-device invalid-output-type)
+        add_test(NAME pjrt_typed_buffers_${_pjrt_typed_mode}
+            COMMAND pjrt_typed_buffers_test ${_pjrt_typed_mode}
+                $<TARGET_FILE:pjrt_test_output_mismatch>
+        )
+    endforeach()
+
     add_executable(pjrt_reusable_program_test
         tests/xla/pjrt_reusable_program_test.cpp
     )
@@ -3192,6 +3226,9 @@ if(TARGET pjrt_runtime_control_test AND LLVM_LIBRARY_DIRS)
 endif()
 if(TARGET pjrt_runtime_output_mismatch_test AND LLVM_LIBRARY_DIRS)
     target_link_directories(pjrt_runtime_output_mismatch_test PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_typed_buffers_test AND LLVM_LIBRARY_DIRS)
+    target_link_directories(pjrt_typed_buffers_test PRIVATE ${LLVM_LIBRARY_DIRS})
 endif()
 if(TARGET pjrt_reusable_program_test AND LLVM_LIBRARY_DIRS)
     target_link_directories(pjrt_reusable_program_test PRIVATE ${LLVM_LIBRARY_DIRS})
