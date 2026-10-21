@@ -12,7 +12,7 @@ import time
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 KEY = "dGhlIHNhbXBsZSBub25jZQ=="
 MESSAGE = b"jit-aot-roundtrip"
-BINARY_MESSAGE = b"public-binary"
+BINARY_MESSAGE = b"public\x00binary"
 
 
 def read_exact(sock, count):
@@ -100,7 +100,8 @@ def run_mode(mode, runner, source, build_dir, test_file, root):
             stderr=subprocess.STDOUT, text=True
         )
         if mode == "aot":
-            output, status = compile_or_server.communicate(timeout=180)
+            output, _ = compile_or_server.communicate(timeout=180)
+            status = compile_or_server.returncode
             if status:
                 raise RuntimeError(f"AOT compile failed ({status}):\n{output}")
             compile_or_server = subprocess.Popen(
@@ -119,14 +120,17 @@ def run_mode(mode, runner, source, build_dir, test_file, root):
             raise RuntimeError(f"{mode} server did not publish a port:\n{output}")
         try:
             run_client(int(port_file.read_text().strip()))
-            output, status = compile_or_server.communicate(timeout=15)
+            output, _ = compile_or_server.communicate(timeout=15)
+            status = compile_or_server.returncode
         except Exception:
             if compile_or_server.poll() is None:
                 compile_or_server.kill()
                 compile_or_server.communicate()
             raise
-        if status or "PUBLIC-WS-ROUNDTRIP-OK" not in output:
+        if "PUBLIC-WS-ROUNDTRIP-OK" not in output:
             raise RuntimeError(f"{mode} public round-trip failed ({status}):\n{output}")
+        if status != 0:
+            raise RuntimeError(f"{mode} server exited {status} after the round-trip:\n{output}")
         print(f"PASS: public Eshkol {mode.upper()} WebSocket round-trip")
 
 
@@ -141,6 +145,22 @@ def main():
              source / "tests/agent/websocket_server_public_roundtrip.esk", source)
     run_mode("aot", args.eshkol_run.resolve(), source, args.build_dir.resolve(),
              source / "tests/agent/websocket_server_public_roundtrip.esk", source)
+    # Exercise the real server through the completed protocol and success
+    # marker, then fail. A matching marker must not conceal its exit status.
+    with tempfile.TemporaryDirectory(prefix="eshkol-ws-exit-control-") as tmp:
+        negative = pathlib.Path(tmp) / "roundtrip-exit7.esk"
+        fixture = source / "tests/agent/websocket_server_public_roundtrip.esk"
+        negative.write_text(fixture.read_text() + "\n(exit 7)\n")
+        for mode in ("jit", "aot"):
+            try:
+                run_mode(mode, args.eshkol_run.resolve(), source,
+                         args.build_dir.resolve(), negative, source)
+            except RuntimeError as error:
+                if f"{mode} server exited 7 after the round-trip:" not in str(error):
+                    raise
+            else:
+                raise RuntimeError(f"{mode}: accepted a server that exited 7 after its success marker")
+            print(f"PASS: public Eshkol {mode.upper()} refuses success-marker then exit 7")
 
 
 if __name__ == "__main__":

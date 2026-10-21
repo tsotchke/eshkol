@@ -30,7 +30,7 @@
 (define binary-ok
   (and binary-frame
        (= (car binary-frame) WS-FRAME-BINARY)
-       (string=? (cdr binary-frame) "public-binary")
+       (string=? (cdr binary-frame) "public\x0;binary")
        (= (ws-send-binary ws (cdr binary-frame)) 0)))
 (define close-frame (if binary-ok (ws-receive ws 256 5000) #f))
 (define roundtrip
