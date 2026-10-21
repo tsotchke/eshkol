@@ -344,6 +344,11 @@ VmHyperDual* vm_hd_pow_hd(VmRegionStack* rs, const VmHyperDual* a,
 #define VM_NATIVE_SQLITE_LAST_ERROR        (VM_NATIVE_SQLITE_BASE + 18)
 #define VM_NATIVE_SQLITE_LAST_INSERT_ROWID (VM_NATIVE_SQLITE_BASE + 19)
 #define VM_NATIVE_SQLITE_CHANGES           (VM_NATIVE_SQLITE_BASE + 20)
+/* Stable typed content-hash/entropy extern IDs; no process pointers in ESKB. */
+#define VM_NATIVE_SHA256_EXTERN       2321
+#define VM_NATIVE_HMAC_SHA256_EXTERN  2322
+#define VM_NATIVE_RANDOM_BYTES_EXTERN 2323
+#define VM_NATIVE_RANDOM_HEX_EXTERN   2324
 #define VM_NATIVE_IO_BASE        580
 #define VM_NATIVE_PARALLEL_BASE  620
 #define VM_NATIVE_MULTIVAL_BASE  650

@@ -9795,6 +9795,96 @@ static int vm_ad_reject_untraced_input(VM* vm, int slot, const char* operation) 
 }
 
 
+/* Checkpoint digests use the VM's existing portable SHA-256 implementation.
+ * Entropy keeps the native core CSPRNG; a WASM host without that facility
+ * raises instead of substituting deterministic or weak random data. */
+#if !defined(__EMSCRIPTEN__)
+extern int eshkol_random_bytes(char*, size_t);
+extern int eshkol_random_hex(char*, size_t);
+#endif
+
+static void vm_dispatch_content_extern(VM* vm, int fid) {
+    int64_t capacity;
+    if (!vm_sqlite_pop_i64(vm, "content extern output size", &capacity)) return;
+    Value target = vm_pop(vm);
+    VmString* output = vm_value_as_string(vm, target);
+    if (!output || !output->data || capacity < 0 || capacity > output->byte_len) {
+        vm_raise_error_msg(vm, "content extern: output size exceeds string buffer");
+        return;
+    }
+    int output_length = output->byte_len;
+    if (fid == VM_NATIVE_RANDOM_BYTES_EXTERN || fid == VM_NATIVE_RANDOM_HEX_EXTERN) {
+        if (fid == VM_NATIVE_RANDOM_HEX_EXTERN && capacity >= output_length) {
+            vm_raise_error_msg(vm, "random-hex-raw: buffer needs room for terminator");
+            return;
+        }
+#if defined(__EMSCRIPTEN__)
+        vm_raise_error_msg(vm, "secure random extern is unavailable on this VM host");
+        return;
+#else
+        char* buffer = (char*)malloc((size_t)output_length + 1);
+        if (!buffer) { vm_raise_error_msg(vm, "content extern: output allocation failed"); return; }
+        memcpy(buffer, output->data, (size_t)output_length + 1);
+        int rc = fid == VM_NATIVE_RANDOM_BYTES_EXTERN
+            ? eshkol_random_bytes(buffer, (size_t)capacity)
+            : eshkol_random_hex(buffer, (size_t)capacity);
+        if (rc == 0 && !vm_sqlite_store_buffer(vm, target, buffer, (size_t)output_length)) {
+            free(buffer); vm_raise_error_msg(vm, "content extern: output update failed"); return;
+        }
+        free(buffer); vm_push(vm, INT_VAL(rc)); return;
+#endif
+    }
+
+    int64_t data_length, key_length = 0;
+    VmString *data, *key = NULL;
+    if (!vm_sqlite_pop_i64(vm, "content extern data size", &data_length) ||
+        !vm_sqlite_pop_string(vm, "content extern data", &data)) return;
+    if (data_length < 0 || data_length > data->byte_len) {
+        vm_raise_error_msg(vm, "content extern: data size exceeds string"); return;
+    }
+    if (fid == VM_NATIVE_HMAC_SHA256_EXTERN) {
+        if (!vm_sqlite_pop_i64(vm, "content extern key size", &key_length) ||
+            !vm_sqlite_pop_string(vm, "content extern key", &key)) return;
+        if (key_length < 0 || key_length > key->byte_len) {
+            vm_raise_error_msg(vm, "content extern: key size exceeds string"); return;
+        }
+    }
+    if (capacity < 65) { vm_push(vm, INT_VAL(-1)); return; }
+    unsigned char digest[32];
+    VmSha256 hash;
+    if (key) {
+        unsigned char block[64] = {0}, inner[32], pad[64];
+        if (key_length > 64) {
+            vm_sha256_init(&hash);
+            vm_sha256_update(&hash, (const unsigned char*)key->data, (size_t)key_length);
+            vm_sha256_final(&hash, block);
+        } else memcpy(block, key->data, (size_t)key_length);
+        for (int i = 0; i < 64; ++i) pad[i] = block[i] ^ 0x36;
+        vm_sha256_init(&hash); vm_sha256_update(&hash, pad, sizeof(pad));
+        vm_sha256_update(&hash, (const unsigned char*)data->data, (size_t)data_length);
+        vm_sha256_final(&hash, inner);
+        for (int i = 0; i < 64; ++i) pad[i] = block[i] ^ 0x5c;
+        vm_sha256_init(&hash); vm_sha256_update(&hash, pad, sizeof(pad));
+        vm_sha256_update(&hash, inner, sizeof(inner)); vm_sha256_final(&hash, digest);
+    } else {
+        vm_sha256_init(&hash);
+        vm_sha256_update(&hash, (const unsigned char*)data->data, (size_t)data_length);
+        vm_sha256_final(&hash, digest);
+    }
+    char* buffer = (char*)malloc((size_t)output_length + 1);
+    if (!buffer) { vm_raise_error_msg(vm, "content extern: output allocation failed"); return; }
+    memcpy(buffer, output->data, (size_t)output_length + 1);
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; ++i) {
+        buffer[2*i] = hex[digest[i] >> 4]; buffer[2*i+1] = hex[digest[i] & 15];
+    }
+    buffer[64] = 0;
+    int ok = vm_sqlite_store_buffer(vm, target, buffer, (size_t)output_length);
+    free(buffer);
+    if (!ok) { vm_raise_error_msg(vm, "content extern: output update failed"); return; }
+    vm_push(vm, INT_VAL(0));
+}
+
 static void vm_dispatch_sqlite_extern(VM* vm, int fid) {
     const char* missing = "SQLite extern is unavailable on this VM host";
     switch (fid) {
@@ -9935,6 +10025,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else {
             vm->error = 1;
         }
+        return;
+    }
+    if (fid >= VM_NATIVE_SHA256_EXTERN && fid <= VM_NATIVE_RANDOM_HEX_EXTERN) {
+        if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) {
+            fprintf(stderr, "VM native policy rejected content extern fid %d\n", fid);
+            vm->error = 1;
+            return;
+        }
+        vm_dispatch_content_extern(vm, fid);
         return;
     }
     if (fid >= VM_NATIVE_SQLITE_BASE && fid <= VM_NATIVE_SQLITE_CHANGES) {

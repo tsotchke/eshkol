@@ -14207,3 +14207,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
             PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
     endif()
 endif()
+
+# Content hashes are required by DBSP checkpoint identity on every execution route.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    set(_content_hash_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/content_hash_test.esk")
+    add_test(NAME content_hash_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_content_hash_source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME content_hash_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_content_hash_source}"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/content_hash_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    add_test(NAME content_hash_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_content_hash_source}")
+    add_test(NAME content_hash_eskb_vm COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+        "-DESHKOL_SOURCE=${_content_hash_source}" "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/content_hash.eskb"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    add_test(NAME content_hash_typed_ffi_vm_regression COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/content_hash_typed_ffi_regression.esk")
+    set_tests_properties(content_hash_jit content_hash_aot content_hash_vm content_hash_eskb_vm content_hash_typed_ffi_vm_regression
+        PROPERTIES TIMEOUT 180 ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|fatal signal")
+endif()
