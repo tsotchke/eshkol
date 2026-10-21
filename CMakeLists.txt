@@ -13729,6 +13729,38 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
     endforeach()
 endif()
 
+# Preserve the same 28-assertion SQLite contract through serialized hosted-VM
+# bytecode as well as direct source compilation. The external SQLite symbols
+# stay late-resolved; ESKB contains only the stable VM native IDs.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND
+   TARGET eshkol-run AND TARGET eshkol-agent-ffi)
+    add_test(NAME dbsp_sqlite_changefeed_eskb_vm COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_sqlite_changefeed_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/dbsp_sqlite_changefeed_vm.eskb"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(dbsp_sqlite_changefeed_eskb_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR|fatal signal")
+endif()
+
+# Exercise the standalone VM's actual typed SQLite ABI with a successful
+# open/bind/query round-trip. The existing changefeed VM suite remains the
+# 28-assertion compatibility gate; this smaller fixture pins UTF-8 buffer
+# marshalling and must not pass when the agent SQLite symbols are unavailable.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND TARGET eshkol-agent-ffi)
+    add_test(NAME sqlite_typed_ffi_vm_regression
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/sqlite_typed_ffi_regression.esk")
+    set_tests_properties(sqlite_typed_ffi_vm_regression PROPERTIES TIMEOUT 120
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|SQLite extern is unavailable|ERROR|fatal signal")
+endif()
+
 # Wave 2 acceptance: dbsp_recursive
 if(ESHKOL_BUILD_TESTS)
     add_test(NAME dbsp_recursive_jit COMMAND $<TARGET_FILE:eshkol-run> -r

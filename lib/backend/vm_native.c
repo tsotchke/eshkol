@@ -9064,6 +9064,39 @@ static int vm_sqlite_pop_string(VM* vm, const char* who, VmString** result) {
     *result = string; return 1;
 }
 
+/* agent.sqlite's established C ABI obtains text byte length from an Eshkol
+ * object header immediately before the char pointer. Native tagged strings
+ * have that header; VM VmString::data is a plain arena buffer. Copy only for
+ * this synchronous SQLITE_TRANSIENT bind and synthesize the same header so
+ * embedded NULs and multibyte UTF-8 retain their exact byte length without
+ * changing the shared 21-function C ABI. */
+typedef struct {
+    uint8_t subtype;
+    uint8_t flags;
+    uint16_t ref_count;
+    uint32_t size;
+} VmSqliteStringHeader;
+_Static_assert(sizeof(VmSqliteStringHeader) == 8, "native Eshkol string header ABI changed");
+
+static char* vm_sqlite_header_string_copy(const VmString* string) {
+    if (!string || !string->data || string->byte_len < 0 ||
+        (uint64_t)string->byte_len >= UINT32_MAX ||
+        (uint64_t)string->byte_len > SIZE_MAX - sizeof(VmSqliteStringHeader) - 1)
+        return NULL;
+    const size_t byte_len = (size_t)string->byte_len;
+    VmSqliteStringHeader* header = (VmSqliteStringHeader*)malloc(
+        sizeof(*header) + byte_len + 1);
+    if (!header) return NULL;
+    header->subtype = 1; /* HEAP_SUBTYPE_STRING in inc/eshkol/eshkol.h */
+    header->flags = 0;
+    header->ref_count = 0;
+    header->size = (uint32_t)(byte_len + 1);
+    char* data = (char*)(header + 1);
+    if (byte_len) memcpy(data, string->data, byte_len);
+    data[byte_len] = '\0';
+    return data;
+}
+
 static int vm_sqlite_pop_double(VM* vm, const char* who, double* result) {
     Value value = vm_pop(vm);
     if (value.type != VAL_INT && value.type != VAL_FLOAT && value.type != VAL_RATIONAL &&
@@ -9818,7 +9851,12 @@ static void vm_dispatch_sqlite_extern(VM* vm, int fid) {
         VmString* text; int i; int64_t h;
         if (!vm_sqlite_pop_string(vm, "sqlite-bind-text-raw", &text) || !vm_sqlite_pop_i32(vm, "sqlite-bind-text-raw", &i) || !vm_sqlite_pop_i64(vm, "sqlite-bind-text-raw", &h)) break;
         VmSqliteBindTextFn fn = (VmSqliteBindTextFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_bind_text");
-        if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, i, text->data))); break;
+        if (!fn) { vm_raise_error_msg(vm, missing); break; }
+        char* tagged_text = vm_sqlite_header_string_copy(text);
+        if (!tagged_text) { vm_raise_error_msg(vm, "sqlite-bind-text-raw: text allocation failed"); break; }
+        int rc = fn(h, i, tagged_text);
+        free((VmSqliteStringHeader*)tagged_text - 1);
+        vm_push(vm, INT_VAL(rc)); break;
     }
     case VM_NATIVE_SQLITE_BIND_INT: {
         int64_t v, h; int i;
