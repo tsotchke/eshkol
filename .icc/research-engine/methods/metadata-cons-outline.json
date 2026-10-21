@@ -1,0 +1,19 @@
+{
+  "schema": "icc.research_method.v1",
+  "method": "metadata-cons-outline",
+  "domain": "Native cold256 compiler locality on Apple M2 LLVM21 O1; eagerly materialized homoiconic procedure source",
+  "objective_metric": "main_preoptimization_basic_blocks",
+  "objective_sense": "lower_is_better",
+  "baselines": [{"name":"inline checked metadata cons constructor", "value":38454, "citation":"compiler-locality-diagnostic/ir-profile/FUNCTIONS.tsv plus count-ir.c bound to frozen12e6 engine and original cold256 witness; current7fba changes do not touch LLVM codegen", "basis":"Actual LLVM-C counted main380154instructions/38454blocks. Main has19026 arena_allocate_cons_with_header calls and19026 eshkol_raise_allocation_failure calls; each constructor adds2blocks. Source topology count is a mechanism estimate, not observed candidate output."}],
+  "decision_points": [{"name":"metadata cons allocation check placement", "current_choice":"repeat allocation and null-check CFG at each metadata cons", "alternatives":[{
+    "choice":"one internal noinline helper for cons allocation/check/whole-slot stores, called only while emitting lambda source data",
+    "analytic_basis":"Move the identical19026 constructor bodies out of main. Each removes2 main blocks; expected delta -38052 if all19026 calls are in lambda source reification. Helper still calls current_arena once per cons, preserves allocation count/order and complete tagged slots. Main source-data computation and registry/alias order stay unchanged. Small construction-call overhead is a startup tradeoff and requires measurement.",
+    "reported_effect":"Calculated CFG-concentration reduction. No compile-time or runtime speedup asserted.",
+    "effect_direction":"improves", "effect_metric":"main_preoptimization_basic_blocks",
+    "predicted_delta":{"value":-38052,"metric":"main_preoptimization_basic_blocks","baseline":38454,"baseline_ref":"exact baseline LLVM-C and call counts"},
+    "transferability_note":"Authored decomposition, ICC does not independently derive the count. Current baseline7fba may differ in incidental metadata versus dump12e6. Any quoted cons outside the scoped lambda construction invalidates the exact delta; record actual comparable before/after IR before calibrating. Lower block count need not resolve remaining123648instruction lambda or backend latency.",
+    "unmeasured_precondition":"All19026 main cons allocations are scoped lambda metadata; check actual candidateIR. Aggregate native job limit2;21GiB start/20.25GiB stop.",
+    "falsifying_experiment":"Task-owned hybrid engine first, exact original O1 cold256 AOT limit300s then514 semantic checks. Compare LLVM-C main blocks; reject prediction if not402blocks (adjusted only from measured current baseline). Validate425 incremental checks, quoted/nested/lambda aliases, debugIR and allocation failure catchability. Fresh CMake build and original locality gate required before integration qualification; no timeouts relaxed.",
+    "cost_class":"forward-pass-only"
+  }]}]
+}

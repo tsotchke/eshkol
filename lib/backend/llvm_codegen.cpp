@@ -1468,6 +1468,10 @@ struct LambdaSExprMetadata {
 // Global vector to accumulate lambdas during compilation
 static std::vector<LambdaSExprMetadata> pending_lambda_sexprs;
 
+// Only active while this compiler thread emits eager procedure source data.
+// A scoped override preserves nesting without changing the codegen class ABI.
+static thread_local bool outlining_metadata_cons = false;
+
 // Track the most recently generated lambda name for codegenList
 static std::string last_generated_lambda_name;
 
@@ -6650,6 +6654,34 @@ private:
             cdr_tagged->getType() != tagged_value_type) {
             eshkol_error("cons cell construction requires two tagged values");
             return nullptr;
+        }
+
+        if (outlining_metadata_cons) {
+            const char* name = "__eshkol_metadata_cons";
+            Function* helper = module->getFunction(name);
+            if (!helper) {
+                auto* helper_type = FunctionType::get(int64_type,
+                    {arena_ptr->getType(), tagged_value_type, tagged_value_type}, false);
+                helper = Function::Create(helper_type, Function::InternalLinkage,
+                                          name, module.get());
+                helper->addFnAttr(Attribute::NoInline);
+                auto saved_ip = builder->saveIP();
+                auto saved_loc = builder->getCurrentDebugLocation();
+                Function* saved_function = current_function;
+                builder->SetInsertPoint(BasicBlock::Create(*context, "entry", helper));
+                builder->SetCurrentDebugLocation(DebugLoc());
+                current_function = helper;
+                Value* cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(),
+                                                {helper->getArg(0)});
+                ctx_->emitConstructorAllocationCheck(cell);
+                tagged_->storeConsSlot(cell, false, helper->getArg(1));
+                tagged_->storeConsSlot(cell, true, helper->getArg(2));
+                builder->CreateRet(builder->CreatePtrToInt(cell, int64_type));
+                current_function = saved_function;
+                builder->restoreIP(saved_ip);
+                builder->SetCurrentDebugLocation(saved_loc);
+            }
+            return builder->CreateCall(helper, {arena_ptr, car_tagged, cdr_tagged});
         }
 
         // Allocate tagged cons cell with object header (consolidated pointer format)
@@ -38572,6 +38604,12 @@ private:
     // Returns cons list pointer (int64): (lambda (param1 param2 ...) body)
     // Handles both LAMBDA_OP and DEFINE_OP (for named function definitions)
     Value* codegenLambdaToSExpr(const eshkol_operations_t* op) {
+        struct MetadataConsScope {
+            bool& flag;
+            bool previous;
+            explicit MetadataConsScope(bool& value) : flag(value), previous(value) { flag = true; }
+            ~MetadataConsScope() { flag = previous; }
+        } metadata_cons_scope(outlining_metadata_cons);
         if (!op) {
             eshkol_error("codegenLambdaToSExpr: null operation");
             return ConstantInt::get(int64_type, 0);
