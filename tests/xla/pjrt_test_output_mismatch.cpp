@@ -5,8 +5,6 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 
-struct PJRT_Error {};
-
 namespace {
 
 struct FakeHandle { int value = 0; };
