@@ -457,17 +457,32 @@ probe_run v14_linear_consume_exactly_once_static \
     'Linear/affine kernel (ADR-0004): a program that uses a linear Qubit twice is REJECTED at compile time under --strict-types (no-cloning), proving the same mechanism v1.4 needs for Own/socket typestate' \
     '"$ESHKOL_RUN" --strict-types tests/typesystem/qubit_no_cloning_test.esk -o "$WORK/qubit_bad" >/dev/null 2>&1; rc=$?; [ "$rc" -ne 0 ] && [ ! -e "$WORK/qubit_bad" ]'
 
-# These requirements need end-to-end compile-fail evidence for resource
-# ownership diagnostics. The gate currently has no such probe attached.
-probe_unverified v14_socket_leak_rejected_statically \
-    'requires a source-bound compile-fail test proving leaked socket ownership is rejected'
-probe_unverified v14_double_close_rejected_statically \
-    'requires a source-bound compile-fail test proving a second close is rejected statically'
-
-# Borrow-pattern enforcement needs a source-bound program test through the
-# real checker, including the intended rejection/acceptance cases.
-probe_unverified v14_borrow_pattern_honored \
-    'requires source-bound program tests demonstrating borrow-pattern enforcement through the real checker'
+# The opt-in native checked fragment must accept real scoped owners and reject
+# the corresponding bad programs. Every static probe compiles a valid control
+# as well as the negative fixture; blanket refusal cannot earn a PASS.
+RESOURCE_COMPILED_TEST="$REPO_ROOT/tests/v1_4_resource_ownership/test_compiled.py"
+RESOURCE_RUNTIME_TEST="$REPO_ROOT/tests/v1_4_resource_ownership/test_runtime.py"
+if [ -f "$RESOURCE_COMPILED_TEST" ] && [ -f "$RESOURCE_RUNTIME_TEST" ]; then
+    probe_run v14_socket_leak_rejected_statically \
+        'native --strict-resources: real socket leak rejected, valid branch-close accepted' \
+        'python3 "$RESOURCE_COMPILED_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case positive-both-branches-close --case negative-leak --case negative-one-branch-leaks' \
+        '^PASS negative-leak: exit=1 resource_diagnostic=True artifact=False$'
+    probe_run v14_double_close_rejected_statically \
+        'native --strict-resources: duplicate close rejected, valid owner accepted' \
+        'python3 "$RESOURCE_COMPILED_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case positive-both-branches-close --case negative-double-close --case negative-use-after-close' \
+        '^PASS negative-double-close: exit=1 resource_diagnostic=True artifact=False$'
+    probe_run v14_borrow_pattern_honored \
+        'native --strict-resources: borrow compile controls and actual JIT/AOT port observations with one close' \
+        'python3 "$RESOURCE_COMPILED_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case positive-borrow-scope --case negative-consume-while-borrowed --case negative-loan-escape && python3 "$RESOURCE_RUNTIME_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case borrow' \
+        '^PASS borrow aot marker=RESULT: PASS$'
+else
+    probe_unverified v14_socket_leak_rejected_statically \
+        'requires source-bound valid and leaked socket compile controls under --strict-resources'
+    probe_unverified v14_double_close_rejected_statically \
+        'requires source-bound valid and duplicate close compile controls under --strict-resources'
+    probe_unverified v14_borrow_pattern_honored \
+        'requires compiled borrow falsifiers and actual JIT/AOT borrow-scope observations'
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Stage 4 / v1.4.1 (docs/design/adr/0000-unified-trajectory.md Stage 4:
