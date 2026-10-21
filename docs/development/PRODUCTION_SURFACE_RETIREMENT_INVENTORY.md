@@ -7,7 +7,8 @@ This was the pre-migration source-only inventory; the implementation below recor
 
 The generator now derives core IDs and arity only from the VM table, keeps LLVM
 dispatch names as separate source evidence, and reads VM bootstrap independently
-from the top-level definitions and export closure rooted at `lib/stdlib.esk`.
+from root stdlib definitions, directly required module exports, and recursive
+closure-presence evidence rooted at `lib/stdlib.esk`.
 Historical compiler-only names and IDs are frozen in
 `tests/coverage/retired_compiler_builtin_reference.json` with the original
 compiler source SHA-256. The legacy C source was removed after its surface-generation, classification,

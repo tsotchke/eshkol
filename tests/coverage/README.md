@@ -71,10 +71,14 @@ regenerated after the last ratchet.
    ID/arity authority.
 2. **Production prelude sources** — VM bootstrap definitions in
    `lib/backend/vm_prelude_source.h`, plus top-level definitions in
-   `lib/stdlib.esk` and exports from its recursively required module closure.
-   Prelude entries carry source module, path, and line provenance. The manifest
-   also records each closure module's exact exports and top-level definitions;
-   private module definitions are evidence, not public prelude names.
+   `lib/stdlib.esk` and exports from modules it directly requires. Recursive
+   dependency exports remain labeled `stdlib_closure_presence` unless a
+   directly required module explicitly re-exports them. Prelude entries carry
+   source module, path, and line provenance. The manifest also records each
+   closure module's exact exports and top-level definitions; private module
+   definitions are evidence, not public prelude names. Current production
+   files use simple symbol `require` and flat `provide`; modifiers or renamed
+   exports make generation fail until their import visibility is modeled.
 3. **LLVM AOT dispatch** — names from `lib/backend/llvm_codegen.cpp`. These
    produce the `native_llvm` name-evidence label only; they provide no stable
    IDs, arity or ABI claim.

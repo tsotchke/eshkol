@@ -22,17 +22,20 @@ class ProductionSurfaceSources(unittest.TestCase):
 #| (define block-comment-ghost 0)
    (require core.block-comment-ghost) |#
 #; (define datum-comment-ghost 0)
+#; #; (define datum-comment-ghost-a 0) (define datum-comment-ghost-b 0)
+(define after-datum-comments 7)
 (define (public-name x)
   (let () (define local-ghost 0) x))
 (define-values (first-value second-value) (values 1 2))
 (define text "(define string-ghost 0) (require core.string-ghost)")
 '(define quoted-ghost 0)
+'#; (define prefix-comment-ghost 0) (define quoted-after-comment-ghost 1)
 (define nested-require
   (lambda () #; (require core.datum-local-only)
     (require core.local-only)))
-(provide public-name first-value
+(provide public-name first-value second-value
   ;; local-looking entries never occur at top level
-  (rename second-value renamed-second))
+)
 '''
         forms = SURFACE.parse_scheme_forms(source)
         definitions = {name for form in forms
@@ -42,14 +45,30 @@ class ProductionSurfaceSources(unittest.TestCase):
         requires = {name for form in forms
                     for name, _ in SURFACE._require_module_names(form)}
         self.assertEqual(
-            {"public-name", "first-value", "second-value", "text", "nested-require"},
+            {"public-name", "first-value", "second-value", "text",
+             "nested-require", "after-datum-comments"},
             definitions)
-        self.assertEqual({"public-name", "first-value", "renamed-second"}, exports)
+        self.assertEqual({"public-name", "first-value", "second-value"}, exports)
         self.assertEqual(set(), requires)
         for ghost in ("line-comment-ghost", "block-comment-ghost",
-                      "datum-comment-ghost", "local-ghost", "string-ghost",
-                      "quoted-ghost", "local-only", "datum-local-only"):
+                      "datum-comment-ghost", "datum-comment-ghost-a",
+                      "datum-comment-ghost-b", "local-ghost", "string-ghost",
+                      "quoted-ghost", "prefix-comment-ghost",
+                      "quoted-after-comment-ghost", "local-only",
+                      "datum-local-only"):
             self.assertNotIn(ghost, definitions | exports | requires)
+
+    def test_scheme_reader_rejects_unterminated_escaped_symbols(self):
+        with self.assertRaisesRegex(ValueError, "unterminated escaped Scheme symbol"):
+            SURFACE.parse_scheme_forms("(define |unfinished-symbol 1)")
+
+    def test_stdlib_reader_fails_closed_on_visibility_modifiers_and_export_renames(self):
+        require = SURFACE.parse_scheme_forms("(require (only core.dep public-name))")[0]
+        provide = SURFACE.parse_scheme_forms("(provide (rename old-name new-name))")[0]
+        with self.assertRaisesRegex(ValueError, "non-symbol require specifier"):
+            SURFACE._require_module_names(require)
+        with self.assertRaisesRegex(ValueError, "nested provide specifier"):
+            SURFACE._top_level_exports(provide)
 
     def test_stdlib_closure_uses_exports_and_root_definitions_with_provenance(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -66,8 +85,8 @@ class ProductionSurfaceSources(unittest.TestCase):
 (require core.alpha)
 ''')
             (root / "lib/core/alpha.esk").write_text('''
-(provide alpha-public)
-(require (only core.beta beta-public))
+(provide alpha-public beta-public)
+(require core.beta)
 (define (alpha-public x)
   (let () (define alpha-local-ghost 0) x))
 (define alpha-private-helper 1)
@@ -76,8 +95,9 @@ class ProductionSurfaceSources(unittest.TestCase):
             (root / "lib/core/beta.esk").write_text('''
 #| (provide block-export-ghost)
    (define (block-export-ghost) 0) |#
-(provide beta-public)
+(provide beta-public beta-only)
 (define (beta-public) 42)
+(define (beta-only) 7)
 ''')
 
             result = SURFACE.extract_stdlib_surface(str(root))
@@ -85,20 +105,41 @@ class ProductionSurfaceSources(unittest.TestCase):
             self.assertTrue({"stdlib-root-api", "source-text", "alpha-public",
                              "beta-public"}.issubset(names))
             self.assertFalse({"alpha-private-helper", "alpha-local-ghost",
+                              "beta-only",
                               "line-ghost", "block-ghost", "datum-ghost",
                               "string-ghost", "quoted-ghost",
                               "quoted-export-ghost", "block-export-ghost"} & names)
             modules = {item["module"]: item for item in result["modules"]}
             self.assertEqual({"stdlib", "core.alpha", "core.beta"}, set(modules))
-            self.assertEqual(["alpha-public"],
+            self.assertEqual(["alpha-public", "beta-public"],
                              [e["name"] for e in modules["core.alpha"]["exports"]])
             self.assertEqual(["alpha-private-helper", "alpha-public"],
                              [e["name"] for e in modules["core.alpha"]["top_level_definitions"]])
             self.assertEqual("module_export", result["names"]["alpha-public"][0]["kind"])
             self.assertEqual("lib/core/alpha.esk", result["names"]["alpha-public"][0]["path"])
+            self.assertEqual(["core.alpha"], result["root_requires"])
+            self.assertEqual("closure_presence_only", modules["core.beta"]["stdlib_visibility"])
+            self.assertEqual("closure_export_presence",
+                             result["closure_names"]["beta-only"][0]["visibility"])
+            self.assertEqual(["core.alpha", "core.beta"],
+                             result["names"]["beta-public"][0]["definition_origin"]["chain"])
         self.assertTrue(all(export["definition_origin"]
                             for module in result["modules"]
                             for export in module["exports"]))
+
+    def test_stdlib_reader_rejects_ambiguous_transitive_export_origin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "lib/core").mkdir(parents=True)
+            (root / "lib/stdlib.esk").write_text("(require core.alpha)\n")
+            (root / "lib/core/alpha.esk").write_text(
+                "(provide shared-api)\n(require core.beta core.gamma)\n")
+            (root / "lib/core/beta.esk").write_text(
+                "(provide shared-api)\n(define (shared-api) 1)\n")
+            (root / "lib/core/gamma.esk").write_text(
+                "(provide shared-api)\n(define (shared-api) 2)\n")
+            with self.assertRaisesRegex(ValueError, "ambiguous re-export"):
+                SURFACE.extract_stdlib_surface(str(root))
 
     def test_generation_is_independent_of_legacy_compiler(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -174,9 +215,13 @@ class ProductionSurfaceSources(unittest.TestCase):
                        if entry["sources"] == ["vm_bootstrap"])
         stdlib_only = next(entry["name"] for entry in manifest["prelude"]
                            if entry["sources"] == ["stdlib"])
+        closure_only = next(entry["name"] for entry in manifest["prelude"]
+                            if entry["sources"] == ["stdlib_closure_presence"])
         self.assertNotIn(vm_only, native_prelude)
         self.assertIn(vm_only, present)
         self.assertIn(stdlib_only, native_prelude)
+        self.assertIn(closure_only, present)
+        self.assertNotIn(closure_only, native_prelude)
 
 
 if __name__ == "__main__":
