@@ -67,6 +67,11 @@ if [ ! -f "$BUILD_DIR/generated/eshkol/build_config.h" ]; then
     exit 2
 fi
 
+# Product WASM has no filesystem. Keep its four source modules as generated,
+# hash-stamped C strings beside the configured build's generated headers.
+python3 "$REPO_ROOT/scripts/generate_wasm_embedded_modules.py" \
+    --output "$BUILD_DIR/generated/vm_embedded_modules.h"
+
 LOG="$(mktemp "${TMPDIR:-/var/tmp}/eshkol-wasm-repl-emcc.XXXXXX")"
 trap 'rm -f "$LOG"' EXIT
 
@@ -84,6 +89,7 @@ echo "== building browser REPL bundle (emcc) -> $OUT"
 # -s ALLOW_MEMORY_GROWTH so a REPL session that outgrows the initial heap
 #   grows instead of aborting the page.
 if ! emcc -O2 -ffp-contract=off \
+        -DESHKOL_VM_PRODUCT_EMBEDDED_MODULES \
         -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
         -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
         -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToNewUTF8"]' \

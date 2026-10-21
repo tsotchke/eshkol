@@ -2295,6 +2295,25 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         }
         free_node(top_exprs[i]);
     }
+
+    /* A module-resolution failure is a compile-time failure too. The REPL
+     * compiles one form at a time, so a bad import can follow a visible effect
+     * or a new definition. Discard the entire eval before installing or
+     * running its bytecode, matching batch compilation's refusal semantics. */
+    if (vm_compile_failed()) {
+        rs->chunk.code_len = code_start;
+        rs->chunk.n_constants = const_start;
+        for (int i = locals_start; i < rs->chunk.n_locals; i++)
+            free(rs->chunk.locals[i].name);
+        rs->chunk.n_locals = locals_start;
+        rs->vm->sp = saved_sp;
+        rs->vm->fp = saved_fp;
+        rs->vm->frame_count = saved_frame_count;
+        vm_clear_compile_failure();
+        g_repl_jmp_active = 0;
+        printf("Error during evaluation\n");
+        return;
+    }
     chunk_emit(&rs->chunk, OP_HALT, 0);
 
     /* Update VM code (full rebuild — base + user) */
