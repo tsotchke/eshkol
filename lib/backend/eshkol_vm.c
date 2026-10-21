@@ -1949,7 +1949,8 @@ static void compile_source_to_chunk_with_options(const char* source,
         }
         if (do_box) vm_compile_boxed_variable_define(chunk, expr);
         else compile_expr(chunk, expr, 0);
-        if (chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
+        // SET_LOCAL in a boxed definition already consumes its value.
+        if (!do_box && chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
         chunk_emit(chunk, OP_GLOBAL_MARK, chunk->n_locals);
         free_node(expr);
     }
