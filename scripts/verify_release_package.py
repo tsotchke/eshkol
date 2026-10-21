@@ -66,6 +66,14 @@ LINUX_REQUIRED_CODEC_ALIASES = (
     "libwebp.so",
     "libz.so",
 )
+MACOS_TLS_RUNTIME_SUBDIR = Path("lib/eshkol/runtime-deps")
+MACOS_TLS_DYLIBS = ("libssl.3.dylib", "libcrypto.3.dylib", "libLLVM.dylib", "libzstd.1.dylib")
+MACOS_TLS_ARCHIVES = ("libssl.a", "libcrypto.a")
+MACOS_TLS_FILES = (*MACOS_TLS_DYLIBS, *MACOS_TLS_ARCHIVES, "libLLVM-21.dylib")
+MACOS_TLS_PROVIDERS = ("openssl@3", "llvm@21", "zstd")
+MACOS_TLS_LICENSES = (
+    "openssl-LICENSE.txt", "llvm-LICENSE.TXT", "zstd-LICENSE",
+)
 
 
 def fail(message: str, *, stdout: str = "", stderr: str = "") -> NoReturn:
@@ -85,6 +93,23 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def macho_rpaths(load_commands: str) -> set[str]:
+    return set(re.findall(
+        r"cmd LC_RPATH\s+cmdsize \d+\s+path (\S+) \(offset \d+\)",
+        load_commands,
+    ))
+
+
+def validate_macho_refs(refs: list[str], image: str) -> None:
+    for ref in refs:
+        if ref.startswith("/") and not ref.startswith(("/System/Library/", "/usr/lib/")):
+            fail(f"{image} retains an absolute third-party runtime reference: {ref}")
+        if ref.startswith(("@loader_path/", "@executable_path/")):
+            fail(f"{image} retains an unexpected image-relative dependency: {ref}")
+        if not ref.startswith(("/System/Library/", "/usr/lib/", "@rpath/")):
+            fail(f"{image} retains an unsupported runtime reference: {ref}")
 
 
 def run_checked(
@@ -226,6 +251,135 @@ def verify_linux_runtime_dependencies(
             )
 
 
+def verify_macos_openssl_dependencies(
+    package_dir: Path,
+    binaries: tuple[Path, ...],
+    env: dict[str, str],
+) -> None:
+    system_ca_bundle = Path("/etc/ssl/cert.pem")
+    if (system_ca_bundle.is_symlink() or not system_ca_bundle.is_file() or
+            system_ca_bundle.stat().st_size == 0):
+        fail(f"macOS system PEM trust bundle is missing or invalid: {system_ca_bundle}")
+    dependency_dir = package_dir / MACOS_TLS_RUNTIME_SUBDIR
+    manifest_path = dependency_dir / "manifest.json"
+    if dependency_dir.is_symlink() or not dependency_dir.is_dir():
+        fail(f"packaged macOS TLS dependency directory is missing or symlinked: {dependency_dir}")
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        fail(f"packaged macOS TLS manifest is missing or symlinked: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"packaged macOS TLS manifest is invalid: {exc}")
+    providers = manifest.get("providers")
+    if manifest.get("schema_version") != 2 or not isinstance(providers, dict):
+        fail("packaged macOS TLS manifest has unsupported schema or provenance")
+    if any(not providers.get(name) for name in MACOS_TLS_PROVIDERS):
+        fail("packaged macOS runtime manifest lacks a dependency formula version")
+    files = manifest.get("files")
+    required = set(MACOS_TLS_FILES)
+    if not isinstance(files, dict) or not required.issubset(files):
+        fail("packaged macOS TLS manifest does not declare the complete dylib/static closure")
+    for name in required:
+        path = dependency_dir / name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
+            fail(f"packaged macOS TLS dependency is missing, empty, or symlinked: {path}")
+        metadata = files[name]
+        if not isinstance(metadata, dict) or metadata.get("sha256") != sha256(path):
+            fail(f"packaged macOS TLS dependency checksum mismatch: {path}")
+        formula = metadata.get("source_formula")
+        if formula not in providers or metadata.get("source_version") != providers[formula]:
+            fail(f"packaged macOS runtime dependency lacks matching formula provenance: {path}")
+
+    licenses = manifest.get("licenses")
+    if not isinstance(licenses, dict) or not set(MACOS_TLS_LICENSES).issubset(licenses):
+        fail("packaged macOS runtime manifest lacks required dependency licenses")
+    for name in MACOS_TLS_LICENSES:
+        license_meta = licenses[name]
+        license_path = package_dir / "licenses" / name
+        if (not isinstance(license_meta, dict) or license_path.is_symlink() or
+                not license_path.is_file() or license_path.stat().st_size == 0 or
+                license_meta.get("sha256") != sha256(license_path) or
+                license_meta.get("source_formula") not in providers or
+                license_meta.get("source_version") != providers[license_meta["source_formula"]]):
+            fail(f"packaged dependency license is missing or does not match its manifest: {name}")
+
+    expected_dylib_edges = {
+        "libssl.3.dylib": {"@rpath/libcrypto.3.dylib"},
+        "libcrypto.3.dylib": set(),
+        "libLLVM.dylib": {"@rpath/libzstd.1.dylib"},
+        "libzstd.1.dylib": set(),
+    }
+    for name in MACOS_TLS_DYLIBS:
+        path = dependency_dir / name
+        run_checked(["codesign", "--verify", "--strict", str(path)], cwd=package_dir,
+                    env=env, timeout=60, description=f"ad-hoc code-signature verification for {path.name}")
+        result = run_checked(["otool", "-L", str(path)], cwd=package_dir, env=env,
+                             timeout=60, description=f"Mach-O dependency inspection for {path.name}")
+        all_refs = [line.strip().split(" (compatibility version", 1)[0]
+                    for line in result.stdout.splitlines()[1:]]
+        validate_macho_refs(all_refs, path.name)
+        refs = set()
+        for ref in all_refs:
+            if ref.startswith("@rpath/"):
+                refs.add(ref)
+        if refs != expected_dylib_edges[name] | {f"@rpath/{name}"}:
+            fail(f"staged macOS runtime library has an unexpected relative dependency set: {path.name}: {sorted(refs)}")
+        load_commands = run_checked(["otool", "-l", str(path)], cwd=package_dir, env=env,
+                                    timeout=60, description=f"Mach-O rpath inspection for {path.name}")
+        if macho_rpaths(load_commands.stdout) != {"@loader_path"}:
+            fail(f"staged macOS runtime library has unexpected rpaths: {path.name}: {sorted(macho_rpaths(load_commands.stdout))}")
+
+    llvm_alias = dependency_dir / "libLLVM-21.dylib"
+    run_checked(["codesign", "--verify", "--strict", str(llvm_alias)], cwd=package_dir,
+                env=env, timeout=60, description="ad-hoc code-signature verification for libLLVM-21.dylib")
+    alias_result = run_checked(["otool", "-L", str(llvm_alias)], cwd=package_dir, env=env,
+                               timeout=60, description="Mach-O dependency inspection for libLLVM-21.dylib")
+    alias_all_refs = [line.strip().split(" (compatibility version", 1)[0]
+                      for line in alias_result.stdout.splitlines()[1:]]
+    validate_macho_refs(alias_all_refs, llvm_alias.name)
+    alias_refs = set()
+    for ref in alias_all_refs:
+        if ref.startswith("@rpath/"):
+            alias_refs.add(ref)
+    if alias_refs != {"@rpath/libLLVM.dylib", "@rpath/libzstd.1.dylib"}:
+        fail(f"macOS LLVM linker alias has an unexpected dependency set: {sorted(alias_refs)}")
+    alias_commands = run_checked(["otool", "-l", str(llvm_alias)], cwd=package_dir, env=env,
+                                 timeout=60, description="Mach-O rpath inspection for libLLVM-21.dylib")
+    if macho_rpaths(alias_commands.stdout) != {"@loader_path"}:
+        fail(f"macOS LLVM linker alias has unexpected rpaths: {sorted(macho_rpaths(alias_commands.stdout))}")
+
+    for binary in binaries:
+        run_checked(["codesign", "--verify", "--strict", str(binary)], cwd=package_dir,
+                    env=env, timeout=60,
+                    description=f"Mach-O code-signature verification for {binary.name}")
+        result = run_checked(["otool", "-L", str(binary)], cwd=package_dir, env=env,
+                             timeout=60, description=f"Mach-O dependency inspection for {binary.name}")
+        refs = [line.strip().split(" (compatibility version", 1)[0]
+                for line in result.stdout.splitlines()[1:]]
+        validate_macho_refs(refs, binary.name)
+        for name in ("libssl.3.dylib", "libcrypto.3.dylib", "libLLVM.dylib"):
+            if f"@rpath/{name}" not in refs:
+                fail(f"{binary.name} does not load packaged runtime {name} through @rpath")
+        load_commands = run_checked(["otool", "-l", str(binary)], cwd=package_dir, env=env,
+                                    timeout=60, description=f"Mach-O rpath inspection for {binary.name}")
+        if macho_rpaths(load_commands.stdout) != {"@executable_path/../lib/eshkol/runtime-deps"}:
+            fail(f"{binary.name} has unexpected package runtime rpaths: {sorted(macho_rpaths(load_commands.stdout))}")
+        strings = run_checked(["strings", str(binary)], cwd=package_dir, env=env,
+                              timeout=60, description=f"AOT link metadata inspection for {binary.name}")
+        if "__ESHKOL_OPENSSL_STATIC__/libssl.a" not in strings.stdout or "__ESHKOL_OPENSSL_STATIC__/libcrypto.a" not in strings.stdout:
+            fail(f"{binary.name} lacks package-relative static OpenSSL AOT link metadata")
+        if "__ESHKOL_MACOS_LLVM_LINK__" not in strings.stdout:
+            fail(f"{binary.name} lacks package-relative LLVM AOT link metadata")
+        for forbidden in ("/opt/homebrew/opt/openssl", "/usr/local/opt/openssl",
+                          "/opt/homebrew/Cellar/openssl@", "/usr/local/Cellar/openssl@",
+                          "/opt/homebrew/opt/llvm@", "/usr/local/opt/llvm@",
+                          "/opt/homebrew/Cellar/llvm@", "/usr/local/Cellar/llvm@",
+                          "/opt/homebrew/opt/zstd", "/usr/local/opt/zstd",
+                          "/opt/homebrew/Cellar/zstd/", "/usr/local/Cellar/zstd/"):
+            if forbidden in strings.stdout:
+                fail(f"{binary.name} embeds a Homebrew dependency path in package or AOT metadata: {forbidden}")
+
+
 def verify_cache_run(
     runner: Path,
     smoke_source: Path,
@@ -304,11 +458,50 @@ def verify_cache_disabled_run(
         )
 
 
+def verify_macos_tls_smoke(
+    runner: Path,
+    source: Path,
+    package_dir: Path,
+    repo_root: Path,
+    env: dict[str, str],
+    timeout: int,
+) -> None:
+    tls_env = env.copy()
+    tls_env["ESHKOL_PATH"] = str(package_dir / "share" / "eshkol" / "lib")
+    for mode, expected_trace in (("AOT cold store", "[jit-cache] store "),
+                                 ("AOT warm hit", "[jit-cache] hit "),
+                                 ("JIT", "")):
+        run_env = tls_env.copy()
+        for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "ESHKOL_OPENSSL_CERT_FILE"):
+            run_env.pop(key, None)
+        if mode == "JIT":
+            run_env["ESHKOL_JIT_CACHE"] = "0"
+        result = run_checked(
+            [str(runner), "-r", str(source)],
+            cwd=repo_root,
+            env=run_env,
+            timeout=timeout,
+            description=f"relocated macOS TLS {mode} handshake",
+        )
+        if not re.search(r"TLS public API: [1-9]\d* passed, 0 failed", result.stdout):
+            fail(f"macOS TLS {mode} smoke did not complete its API checks",
+                 stdout=result.stdout, stderr=result.stderr)
+        if "PASS: default system trust uses network without explicit file-read" not in result.stdout:
+            fail(f"macOS TLS {mode} smoke did not initialize its package-default trust store",
+                 stdout=result.stdout, stderr=result.stderr)
+        if expected_trace and expected_trace not in result.stderr:
+            fail(f"macOS TLS {mode} smoke did not report {expected_trace.strip()!r}",
+                 stdout=result.stdout, stderr=result.stderr)
+        if any(marker in result.stderr for marker in FORBIDDEN_SMOKE_DIAGNOSTICS):
+            fail(f"macOS TLS {mode} smoke reported a module-loading failure",
+                 stdout=result.stdout, stderr=result.stderr)
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package-dir", required=True, type=Path)
     parser.add_argument("--smoke-source", required=True, type=Path)
     parser.add_argument("--agent-smoke-source", required=True, type=Path)
+    parser.add_argument("--tls-smoke-source", type=Path,
+                        help="macOS TLS handshake source exercised through package AOT and JIT")
     parser.add_argument("--expected-version", required=True)
     parser.add_argument(
         "--timeout-seconds",
@@ -326,6 +519,9 @@ def main() -> int:
         fail(f"smoke source does not exist: {smoke_source}")
     if not agent_smoke_source.is_file():
         fail(f"agent smoke source does not exist: {agent_smoke_source}")
+    tls_smoke_source = args.tls_smoke_source.resolve() if args.tls_smoke_source else None
+    if platform.system() == "Darwin" and (tls_smoke_source is None or not tls_smoke_source.is_file()):
+        fail("macOS release verification requires an existing --tls-smoke-source")
     if args.timeout_seconds <= 0:
         fail("--timeout-seconds must be positive")
 
@@ -369,6 +565,8 @@ def main() -> int:
     if platform.system() == "Linux":
         license_names.append("curl-COPYING.txt")
         license_names.extend(LINUX_CODEC_LICENSE_FILES)
+    elif platform.system() == "Darwin":
+        license_names.extend(MACOS_TLS_LICENSES)
     if windows:
         license_names.append("eigen-COPYING.MPL2.txt")
     licenses_dir = package_dir / "licenses"
@@ -393,6 +591,8 @@ def main() -> int:
     base_env = os.environ.copy()
     if platform.system() == "Linux":
         verify_linux_runtime_dependencies(package_dir, (runner, repl), base_env)
+    elif platform.system() == "Darwin":
+        verify_macos_openssl_dependencies(package_dir, (runner, repl), base_env)
     version = run_checked(
         [str(runner), "--version"],
         cwd=package_dir,
@@ -460,6 +660,11 @@ def main() -> int:
             "[jit-cache] store ",
             EXPECTED_AGENT_SMOKE_OUTPUT,
         )
+        if platform.system() == "Darwin" and tls_smoke_source is not None:
+            verify_macos_tls_smoke(
+                runner, tls_smoke_source, package_dir,
+                Path(__file__).resolve().parents[1], env, args.timeout_seconds,
+            )
         verify_cache_disabled_run(
             runner,
             smoke_source,

@@ -19,6 +19,9 @@
 #   - Linux shared-library runtime dependencies staged under
 #     lib/eshkol/runtime-deps/ (scripts/stage_linux_runtime_dependencies.py
 #     and the LINUX_REQUIRED_CODEC_ALIASES check in verify_release_package.py)
+  #   - macOS OpenSSL TLS and LLVM runtime closure under
+  #     lib/eshkol/runtime-deps/ (the staged checksum/provenance manifest and Mach-O relocation checks in
+  #     verify_release_package.py)
 #   - Third-party license files (scripts/stage_third_party_licenses.py)
 #   - Whether the packaged binary actually RUNS a program end to end
 #     (scripts/verify_release_package.py's cold/warm cache smoke test)
@@ -167,3 +170,38 @@ package_surface:
         find_package(Eshkol) -> include(EshkolCompile) ->
         eshkol_compile_executable() -> link -> run, against the staged
         package directory.
+
+  runtime_dependencies:
+    - path: lib/eshkol/runtime-deps/libssl.3.dylib
+      required: true
+      platforms: [macos]
+    - path: lib/eshkol/runtime-deps/libcrypto.3.dylib
+      required: true
+      platforms: [macos]
+    - path: lib/eshkol/runtime-deps/libssl.a
+      required: true
+      platforms: [macos]
+    - path: lib/eshkol/runtime-deps/libcrypto.a
+      required: true
+      platforms: [macos]
+    - path: lib/eshkol/runtime-deps/libLLVM.dylib
+      required: true
+      platforms: [macos]
+    - path: lib/eshkol/runtime-deps/libLLVM-21.dylib
+      required: true
+      platforms: [macos]
+    - path: lib/eshkol/runtime-deps/libzstd.1.dylib
+      required: true
+      platforms: [macos]
+    - path: lib/eshkol/runtime-deps/manifest.json
+      required: true
+      platforms: [macos]
+    - path: licenses/openssl-LICENSE.txt
+      required: true
+      platforms: [macos]
+    - path: licenses/llvm-LICENSE.TXT
+      required: true
+      platforms: [macos]
+    - path: licenses/zstd-LICENSE
+      required: true
+      platforms: [macos]

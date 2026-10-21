@@ -12,6 +12,16 @@ set(ESHKOL_VERSION "1.3.6")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
+# Release macOS packages carry the OpenSSL closure. Keep developer builds
+# compatible with their existing host OpenSSL installation, while allowing
+# the release compiler to resolve AOT TLS links from the relocated package.
+option(ESHKOL_RELOCATABLE_MACOS_TLS
+    "Resolve macOS AOT OpenSSL archives from the installed Eshkol package"
+    OFF)
+if(APPLE AND ESHKOL_RELOCATABLE_MACOS_TLS)
+    add_compile_definitions(ESHKOL_RELOCATABLE_MACOS_TLS=1)
+endif()
+
 # Python's ELF extension force-loads the static compiler, REPL, runtime and
 # agent dependency closure into a shared object. Enable PIC before creating
 # any project or FetchContent targets so every CMake-built static archive in
@@ -1107,6 +1117,29 @@ foreach(_llvm_link_arg IN LISTS LLVM_LDFLAGS_LIST LLVM_LIBS_LIST LLVM_SYSTEM_LIB
 endforeach()
 eshkol_append_elf_runtime_search_paths(ESHKOL_HOST_LLVM_LINK_ARGS)
 eshkol_append_host_cxx_runtime_search_paths(ESHKOL_HOST_LLVM_LINK_ARGS)
+if(APPLE AND ESHKOL_RELOCATABLE_MACOS_TLS)
+    # `-r` cached programs link the shared LLVM dylib. Record a package marker
+    # so the installed compiler derives its search/RPATH directory after the
+    # package has moved, instead of embedding the builder's Homebrew prefix.
+    set(_eshkol_relocatable_llvm_args "")
+    foreach(_llvm_arg IN LISTS ESHKOL_HOST_LLVM_LINK_ARGS)
+        set(_is_builder_llvm_search_path FALSE)
+        if(_llvm_arg MATCHES "^-L(.+)$")
+            set(_llvm_arg_libdir "${CMAKE_MATCH_1}")
+            list(FIND LLVM_LIBRARY_DIRS "${_llvm_arg_libdir}" _llvm_arg_libdir_index)
+            if(NOT _llvm_arg_libdir_index EQUAL -1 OR
+               _llvm_arg_libdir MATCHES "/llvm(@[^/]+)?/lib$" OR
+               _llvm_arg_libdir MATCHES "/Cellar/llvm@[^/]+/[^/]+/lib$")
+                set(_is_builder_llvm_search_path TRUE)
+            endif()
+        endif()
+        if(NOT _is_builder_llvm_search_path)
+            list(APPEND _eshkol_relocatable_llvm_args "${_llvm_arg}")
+        endif()
+    endforeach()
+    set(ESHKOL_HOST_LLVM_LINK_ARGS "${_eshkol_relocatable_llvm_args}")
+    list(PREPEND ESHKOL_HOST_LLVM_LINK_ARGS "__ESHKOL_MACOS_LLVM_LINK__")
+endif()
 
 # Keep LLVM's defines and unwind flags, but let the project control language mode
 # and exception support.
@@ -1970,6 +2003,10 @@ if(NOT APPLE AND NOT WIN32)
     # more-frequently-rebuilt eshkol-agent-ffi archive being complete/whole
     # at AOT-link time.
     find_package(OpenSSL)
+elseif(APPLE AND ESHKOL_RELOCATABLE_MACOS_TLS)
+    # The release workflow stages this exact provider's dynamic and static
+    # closure. Fail configuration if TLS cannot be packaged as promised.
+    find_package(OpenSSL 1.1.1 REQUIRED)
 endif()
 
 # Discover optional OpenSSL early enough to populate generated AOT link args.
@@ -2061,12 +2098,18 @@ endif()
 # dependency. If optional OpenSSL was discovered for TLS, carry its dylibs
 # into generated AOT links as well as the CMake runtime targets below.
 if(APPLE AND ESHKOL_TLS_OPENSSL_FOUND)
-    eshkol_append_host_runtime_link_arg("OpenSSL::SSL")
-    eshkol_append_host_runtime_link_arg("OpenSSL::Crypto")
-    get_target_property(_eshkol_tls_ssl_location OpenSSL::SSL IMPORTED_LOCATION)
-    if(_eshkol_tls_ssl_location)
-        get_filename_component(_eshkol_tls_ssl_dir "${_eshkol_tls_ssl_location}" DIRECTORY)
-        eshkol_append_host_runtime_link_arg("-Wl,-rpath,${_eshkol_tls_ssl_dir}")
+    if(ESHKOL_RELOCATABLE_MACOS_TLS)
+        list(APPEND ESHKOL_HOST_RUNTIME_LINK_ARGS
+            "__ESHKOL_OPENSSL_STATIC__/libssl.a"
+            "__ESHKOL_OPENSSL_STATIC__/libcrypto.a")
+    else()
+        eshkol_append_host_runtime_link_arg("OpenSSL::SSL")
+        eshkol_append_host_runtime_link_arg("OpenSSL::Crypto")
+        get_target_property(_eshkol_tls_ssl_location OpenSSL::SSL IMPORTED_LOCATION)
+        if(_eshkol_tls_ssl_location)
+            get_filename_component(_eshkol_tls_ssl_dir "${_eshkol_tls_ssl_location}" DIRECTORY)
+            eshkol_append_host_runtime_link_arg("-Wl,-rpath,${_eshkol_tls_ssl_dir}")
+        endif()
     endif()
 endif()
 
@@ -8794,6 +8837,20 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(generated_artifact_validator_test PROPERTIES TIMEOUT 120)
     endif()
+    foreach(_license_staging_test IN ITEMS
+            stage_macos_openssl_runtime_test
+            stage_third_party_licenses_test)
+        set(_license_staging_test_path
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/${_license_staging_test}.py")
+        if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${_license_staging_test_path}")
+            add_test(
+                NAME "${_license_staging_test}"
+                COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                        "${_license_staging_test_path}"
+            )
+            set_tests_properties("${_license_staging_test}" PROPERTIES TIMEOUT 120)
+        endif()
+    endforeach()
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py")
         add_test(
             NAME windows_runtime_exports_validator_test

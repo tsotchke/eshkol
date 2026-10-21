@@ -219,7 +219,8 @@ void append_host_agent_ffi_dependency_link_args(
 }
 
 void append_host_llvm_link_args(std::vector<std::string>& link_args) {
-    append_configured_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
+    auto configured = eshkol::platform::host_llvm_link_args();
+    link_args.insert(link_args.end(), configured.begin(), configured.end());
 }
 
 void append_host_tensorcore_link_args(std::vector<std::string>& link_args) {

@@ -277,7 +277,9 @@ static const std::string& resolveLlvmLibDir() {
                 return dir;
             }
         }
-        // Known prefixes as a last resort before the baked path.
+        // Known prefixes are a developer-build fallback. Release packages
+        // resolve LLVM beside the installed executable instead.
+#ifndef ESHKOL_RELOCATABLE_MACOS_TLS
         std::vector<std::string> candidates = {
             "/opt/homebrew/opt/llvm/lib",
             "/opt/homebrew/opt/llvm@" + major + "/lib",
@@ -291,6 +293,7 @@ static const std::string& resolveLlvmLibDir() {
                 return dir;
             }
         }
+#endif
         return std::string{};
     }();
     return cached;
@@ -301,6 +304,14 @@ static void append_host_llvm_link_args(std::vector<std::string>& link_args) {
 #if defined(_WIN32)
     append_space_separated_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
 #else
+#  if defined(__APPLE__)
+    if (std::string(ESHKOL_HOST_LLVM_LINK_ARGS).find(
+            "__ESHKOL_MACOS_LLVM_LINK__") != std::string::npos) {
+        const auto packaged_args = eshkol::platform::host_llvm_link_args();
+        link_args.insert(link_args.end(), packaged_args.begin(), packaged_args.end());
+        return;
+    }
+#  endif
     // Prepend a runtime-resolved LLVM -L (and rpath on ELF) so the libdir is
     // searched BEFORE the build-time absolute Cellar path baked into
     // ESHKOL_HOST_LLVM_LINK_ARGS. This makes a binary built on one host link

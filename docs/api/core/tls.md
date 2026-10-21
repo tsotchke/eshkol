@@ -13,9 +13,16 @@ and port queries and cleanup remain usable after capabilities are revoked.
 `(tls-client-context #f)` uses system default trust paths. Passing a CA file
 replaces that trust source. Client contexts always verify the certificate
 chain and peer identity; there is no unverified-client option. Server
-contexts load a PEM certificate chain and matching PEM private key and fail
-closed when a file is missing or the key does not match. Native sessions use
-TLS 1.2 or newer.
+contexts load a PEM certificate chain and matching unencrypted PEM private key
+and fail closed when a file is missing or the key does not match. Encrypted
+keys return a TLS error; this API does not request passwords from the terminal.
+Native sessions use TLS 1.2 or newer.
+
+On macOS, when neither `SSL_CERT_FILE` nor `SSL_CERT_DIR` is set,
+`(tls-client-context #f)` loads the system PEM bundle at `/etc/ssl/cert.pem`
+before consulting OpenSSL's build-time default paths. `ESHKOL_OPENSSL_CERT_FILE`
+provides an explicit Eshkol-specific override; the standard OpenSSL variables
+take precedence when present.
 
 `(tls-listen context address port)` binds a numeric IPv4/IPv6 address; port
 zero selects an ephemeral port, which `tls-listener-port` returns.

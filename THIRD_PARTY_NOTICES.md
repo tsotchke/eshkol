@@ -29,16 +29,25 @@ artifact verifier.
 | libjpeg-turbo (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | IJG/BSD-3-Clause/zlib licenses as distributed upstream |
 | libwebp (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | BSD-3-Clause |
 | zlib runtime (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | Zlib |
+| OpenSSL 3 runtime and static TLS link archives (macOS binary packages only) | Exact `openssl@3` formula version recorded in `lib/eshkol/runtime-deps/manifest.json` | Apache-2.0; `licenses/openssl-LICENSE.txt` |
+| LLVM shared runtime (macOS binary packages only) | Exact `llvm@21` formula version recorded in `lib/eshkol/runtime-deps/manifest.json` | Apache-2.0 with LLVM exceptions; `licenses/llvm-LICENSE.TXT` |
+| zstd shared runtime (macOS binary packages only) | Exact `zstd` formula version recorded in `lib/eshkol/runtime-deps/manifest.json` | BSD-3-Clause; `licenses/zstd-LICENSE` |
 
 Linux binary packages redistribute the exact image-codec shared-object closure
 used by the release build so image I/O and generated-program linking remain
 relocatable without target-host development packages. The package manifest
 records every object's SHA-256, source package, and source version; the exact
 distribution copyright files are shipped in `licenses/`. Linux packages still
-link against the platform OpenSSL libraries at final AOT link time and do not
-redistribute OpenSSL binaries. Windows system libraries and Apple frameworks
-are likewise supplied by their operating-system SDKs and are not redistributed
-by Eshkol.
+link against platform OpenSSL libraries at final AOT link time and do not
+redistribute OpenSSL binaries. macOS release packages bundle OpenSSL 3 dylibs
+for compiler/JIT TLS and static archives for generated AOT TLS executables.
+They also bundle the LLVM and zstd dylibs used by the compiler. Exact formula
+versions, hashes, and licenses are recorded in the package. OpenSSL TLS uses
+the macOS system PEM bundle at `/etc/ssl/cert.pem` when callers have not set
+`SSL_CERT_FILE`, `SSL_CERT_DIR`, or `ESHKOL_OPENSSL_CERT_FILE`; explicit trust-
+store settings retain precedence. Windows system libraries and Apple
+frameworks are supplied by their operating-system SDKs and are not
+redistributed by Eshkol.
 
 SQLite has been dedicated to the public domain by its authors. The staged
 SQLite notice records the public-domain declaration and the canonical upstream

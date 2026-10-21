@@ -217,7 +217,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          brew install llvm@${LLVM_MAJOR} cmake ninja readline pcre2 sqlite
+          brew install llvm@${LLVM_MAJOR} openssl@3 zstd cmake ninja readline pcre2 sqlite
 
       - name: Configure
         shell: bash
@@ -226,6 +226,7 @@ jobs:
           BUILD_DIR="${{ matrix.build_dir }}"
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             LLVM_PREFIX="$(brew --prefix llvm@${LLVM_MAJOR})"
+            OPENSSL_PREFIX="$(brew --prefix openssl@3)"
             export PATH="$LLVM_PREFIX/bin:$PATH"
             LLVM_CONFIG="$LLVM_PREFIX/bin/llvm-config"
           else
@@ -242,6 +243,8 @@ jobs:
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
             -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
             -DESHKOL_REQUIRE_IMAGE_IO=ON \
+            -DESHKOL_RELOCATABLE_MACOS_TLS="$([[ "$RUNNER_OS" == "macOS" ]] && echo ON || echo OFF)" \
+            -DOPENSSL_ROOT_DIR="${OPENSSL_PREFIX:-}" \
             -DCUDAToolkit_ROOT=/usr/local/cuda-12.4
 
       - name: Verify real CUDA build graph
@@ -412,6 +415,21 @@ jobs:
             python3 scripts/stage_linux_runtime_dependencies.py \
               --build-dir "${{ matrix.build_dir }}" \
               --package-dir "$pkg_dir"
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            openssl_prefix="$(brew --prefix openssl@3)"
+            llvm_prefix="$(brew --prefix llvm@${LLVM_MAJOR})"
+            zstd_prefix="$(brew --prefix zstd)"
+            openssl_version="$("$openssl_prefix/bin/openssl" version | awk '{print $2}')"
+            llvm_version="$("$llvm_prefix/bin/llvm-config" --version)"
+            zstd_version="$("$zstd_prefix/bin/zstd" --version | sed -E 's/.* v([^, ]+).*/\1/')"
+            python3 scripts/stage_macos_openssl_runtime.py \
+              --openssl-prefix "$openssl_prefix" \
+              --llvm-prefix "$llvm_prefix" \
+              --zstd-prefix "$zstd_prefix" \
+              --package-dir "$pkg_dir" \
+              --openssl-version "$openssl_version" \
+              --llvm-version "$llvm_version" \
+              --zstd-version "$zstd_version"
           fi
 
           python3 scripts/stage_third_party_licenses.py \
@@ -432,11 +450,22 @@ jobs:
             --package-dir "$pkg_dir" \
             --platform "$release_platform"
 
-          python3 scripts/verify_release_package.py \
-            --package-dir "$pkg_dir" \
-            --smoke-source "tests/toolchain/windows-smoke.esk" \
-            --agent-smoke-source "tests/toolchain/release-agent-smoke.esk" \
+          verify_args=(
+            --package-dir "$pkg_dir"
+            --smoke-source "tests/toolchain/windows-smoke.esk"
+            --agent-smoke-source "tests/toolchain/release-agent-smoke.esk"
             --expected-version "$RELEASE_TAG"
+          )
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            verify_args+=(--tls-smoke-source "tests/network/tls_public_api.esk")
+          fi
+          python3 scripts/verify_release_package.py "${verify_args[@]}"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            python3 scripts/run_tls_encrypted_key_public_test.py \
+              --runner "$pkg_dir/bin/eshkol-run" \
+              --source-root "$PWD" \
+              --lib-dir "$pkg_dir/lib"
+          fi
 
           tar -czf "$RUNNER_TEMP/$archive_root.tar.gz" -C "$RUNNER_TEMP" "$archive_root"
 

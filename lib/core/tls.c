@@ -411,6 +411,12 @@ static int32_t ssl_error_code(TlsSession *session, int ssl_error, int writing) {
     if (session->io_error == -2) return -2;
     return -1;
 }
+/* The API has no password argument. Never let PEM loading fall back to an
+ * interactive terminal dialog in a context constructor. */
+static int refuse_pem_password(char *buffer, int size, int writing, void *userdata) {
+    (void)buffer; (void)size; (void)writing; (void)userdata;
+    return -1;
+}
 
 int32_t eshkol_tls_available(void) { return 1; }
 int64_t eshkol_tls_client_context(const char *ca_file) {
@@ -419,9 +425,31 @@ int64_t eshkol_tls_client_context(const char *ca_file) {
     if (!ctx) return -1;
     int ok = SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION) == 1;
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
-    if (ok) ok = ca_file && ca_file[0]
-        ? SSL_CTX_load_verify_locations(ctx, ca_file, NULL) == 1
-        : SSL_CTX_set_default_verify_paths(ctx) == 1;
+    if (ok && ca_file && ca_file[0]) {
+        ok = SSL_CTX_load_verify_locations(ctx, ca_file, NULL) == 1;
+    } else if (ok) {
+        const char *ssl_cert_file = getenv("SSL_CERT_FILE");
+        const char *ssl_cert_dir = getenv("SSL_CERT_DIR");
+        const char *package_cert_file = getenv("ESHKOL_OPENSSL_CERT_FILE");
+        if (ssl_cert_file != NULL || ssl_cert_dir != NULL ||
+            !package_cert_file || !package_cert_file[0]) {
+            /* Preserve explicit OpenSSL trust-store settings. */
+#ifdef __APPLE__
+            /* Homebrew OpenSSL's OPENSSLDIR is builder-specific. Prefer the
+             * macOS system PEM trust bundle when callers set no override. */
+            if (ssl_cert_file == NULL && ssl_cert_dir == NULL) {
+                ok = SSL_CTX_load_verify_locations(ctx, "/etc/ssl/cert.pem", NULL) == 1;
+                if (!ok) ok = SSL_CTX_set_default_verify_paths(ctx) == 1;
+            } else {
+                ok = SSL_CTX_set_default_verify_paths(ctx) == 1;
+            }
+#else
+            ok = SSL_CTX_set_default_verify_paths(ctx) == 1;
+#endif
+        } else {
+            ok = SSL_CTX_load_verify_locations(ctx, package_cert_file, NULL) == 1;
+        }
+    }
     if (!ok) { SSL_CTX_free(ctx); ERR_clear_error(); return -1; }
     return register_context_id(ctx, TLS_ROLE_CLIENT);
 }
@@ -431,6 +459,7 @@ int64_t eshkol_tls_server_context(const char *certificate_file,
         !certificate_file || !private_key_file) return -4;
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
     if (!ctx) return -1;
+    SSL_CTX_set_default_passwd_cb(ctx, refuse_pem_password);
     int ok = SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION) == 1 &&
         SSL_CTX_use_certificate_chain_file(ctx, certificate_file) == 1 &&
         SSL_CTX_use_PrivateKey_file(ctx, private_key_file, SSL_FILETYPE_PEM) == 1 &&
