@@ -13119,6 +13119,21 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
         TIMEOUT 90 LABELS "ownership;memory;regression")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_gate.py" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_test.esk")
+    add_test(NAME ownership_single_evaluation
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_gate.py
+            --native $<TARGET_FILE:eshkol-run>
+            --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+            --source ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_test.esk
+            --evidence-dir ${CMAKE_CURRENT_BINARY_DIR}/ownership-single-eval-evidence)
+    set_tests_properties(ownership_single_evaluation PROPERTIES
+        TIMEOUT 1200 LABELS "ownership;memory;regression")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
    AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
     add_test(NAME macro_definition_scope
