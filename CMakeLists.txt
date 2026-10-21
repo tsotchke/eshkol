@@ -13240,6 +13240,13 @@ endif()
 # no generated endpoint or executable is checked into the source tree.
 if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_compiled.py")
+    add_executable(strict_source_identity_helper_test
+        tests/v1_4_resource_ownership/source_identity_helper_test.cpp)
+    target_include_directories(strict_source_identity_helper_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME strict_source_identity_helper COMMAND strict_source_identity_helper_test)
+    set_tests_properties(strict_source_identity_helper PROPERTIES
+        LABELS "ownership;strict-resources;regression")
     add_test(NAME strict_resource_profile_compiled
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_compiled.py

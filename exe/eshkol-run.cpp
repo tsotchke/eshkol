@@ -23,6 +23,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/backend/debug_artifact.h>
 #include <eshkol/stdlib_identity.h>
+#include <eshkol/strict_source_identity.h>
 #include <eshkol/pkg/subprocess.h>
 
 #include <eshkol/llvm_backend.h>
@@ -1527,6 +1528,7 @@ static const std::set<std::string> kStrictStdlibScalarPrimitives = {
 static size_t g_module_ast_prefix_count = 0;
 static bool g_capture_strict_source_identity = false;
 static std::map<std::string, std::string> g_strict_source_identities;
+static bool g_strict_source_identity_conflict = false;
 
 static std::string strictSourceDigest(const std::string& bytes) {
     llvm::SHA256 hash;
@@ -1540,7 +1542,9 @@ static void recordStrictSourceIdentity(const std::filesystem::path& path) {
     const std::string canonical = std::filesystem::weakly_canonical(path, ec).string();
     const std::string key = canonical.empty() ? path.string() : canonical;
     const std::string bytes = readFileBytes(path);
-    g_strict_source_identities[key] = strictSourceDigest(bytes);
+    const std::string digest = strictSourceDigest(bytes);
+    if (!eshkol::strict_source_identity::remember(g_strict_source_identities, key, digest))
+        g_strict_source_identity_conflict = true;
 }
 
 static void recordStrictSourceIdentityBytes(const std::filesystem::path& path,
@@ -1549,17 +1553,19 @@ static void recordStrictSourceIdentityBytes(const std::filesystem::path& path,
     std::error_code ec;
     const std::string canonical = std::filesystem::weakly_canonical(path, ec).string();
     const std::string key = canonical.empty() ? path.string() : canonical;
-    g_strict_source_identities[key] = strictSourceDigest(bytes);
+    const std::string digest = strictSourceDigest(bytes);
+    if (!eshkol::strict_source_identity::remember(g_strict_source_identities, key, digest))
+        g_strict_source_identity_conflict = true;
 }
 
 static bool strictSourceIdentitiesUnchanged(std::string* changed_path = nullptr) {
-    for (const auto& entry : g_strict_source_identities) {
-        if (strictSourceDigest(readFileBytes(entry.first)) != entry.second) {
-            if (changed_path) *changed_path = entry.first;
-            return false;
-        }
+    if (g_strict_source_identity_conflict) {
+        if (changed_path) *changed_path = "source parsed with multiple contents";
+        return false;
     }
-    return true;
+    return eshkol::strict_source_identity::unchanged(g_strict_source_identities,
+        [](const std::string& path) { return strictSourceDigest(readFileBytes(path)); },
+        changed_path);
 }
 
 static bool hasVerifiedCoreNetIdentity(const std::string& module_name,
@@ -6136,6 +6142,7 @@ int main(int argc, char **argv)
     g_verified_stdlib_artifact_identity = false;
     g_verified_stdlib_scalar_primitive_names.clear();
     g_strict_source_identities.clear();
+    g_strict_source_identity_conflict = false;
     g_capture_strict_source_identity = false;
 #ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
     eshkol::frontend::enable_self_hosted_incremental();
@@ -7174,6 +7181,11 @@ int main(int argc, char **argv)
     // missing/unreadable entry file is fatal here and nothing is written,
     // symmetric with the -r path's top-level existence check. Found by the P8
     // escape-closure fault-injection matrix.
+    if (strict_resources) {
+        g_strict_source_identities.clear();
+        g_strict_source_identity_conflict = false;
+        g_capture_strict_source_identity = true;
+    }
     for (const auto &source_file : source_files) {
         if (!std::filesystem::exists(source_file)) {
             eshkol_error("File not found: %s", source_file);
@@ -7195,6 +7207,16 @@ int main(int argc, char **argv)
         eshkol_error("Source parsing failed; refusing to compile a truncated program");
         eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
         return 1;
+    }
+
+    if (strict_resources) {
+        std::string changed_source;
+        if (!strictSourceIdentitiesUnchanged(&changed_source)) {
+            eshkol_error("A source module changed during strict resource compilation; refusing to compile: %s",
+                         changed_source.c_str());
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
     }
 
     // Bug Y (Noesis 2026-04-30): stdlib auto-loading was previously
@@ -7436,6 +7458,17 @@ int main(int argc, char **argv)
         if (debug_mode) {
             eshkol_info("Ownership analysis passed");
         }
+    }
+
+    if (strict_resources) {
+        std::string changed_source;
+        if (!strictSourceIdentitiesUnchanged(&changed_source)) {
+            eshkol_error("A source module changed after strict resource analysis; refusing code generation: %s",
+                         changed_source.c_str());
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+        g_capture_strict_source_identity = false;
     }
 
     auto esh0103_t_own1 = esh0103_now();
