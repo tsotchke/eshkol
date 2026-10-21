@@ -1822,7 +1822,15 @@ private:
         return CallableEffect::NONE;
     }
 
+    bool isNumericLiteralIdentifier(const std::string& name) const {
+        if (name.empty()) return false;
+        char* end = nullptr;
+        std::strtod(name.c_str(), &end);
+        return end != name.c_str() && end && *end == '\0';
+    }
+
     CallableEffect unresolvedCallableEffect(const std::string& name) const {
+        if (isNumericLiteralIdentifier(name)) return CallableEffect::NONE;
         if (name == "exit" || name == "error") return CallableEffect::TERMINAL_CONTROL;
         if (isKnownResourceSafeBuiltin(name)) return CallableEffect::NONE;
         return CallableEffect::UNKNOWN_RESOURCE_EFFECT;
@@ -2156,6 +2164,7 @@ private:
                     effect = effectForExpression(op.define_op.value, &effects);
                     const std::string source_name = getVarName(op.define_op.value);
             proven_callable = !source_name.empty() &&
+                !isNumericLiteralIdentifier(source_name) &&
                 (proven_callable_names.count(source_name) != 0 ||
                  effects.count(source_name) == 0);
                     const ResourceKind kind = factoryKind(effect);
@@ -2381,7 +2390,7 @@ private:
             const std::string source_name = getVarName(value);
             VariableInfo* source = lookupVariable(source_name);
             target.is_proven_callable = (source && source->is_proven_callable) ||
-                !source;
+                (!source && !isNumericLiteralIdentifier(source_name));
         } else if (value && value->type == ESHKOL_OP &&
                    value->operation.op == ESHKOL_LAMBDA_OP) {
             target.is_proven_callable = true;
