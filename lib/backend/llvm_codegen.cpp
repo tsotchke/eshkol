@@ -1468,6 +1468,10 @@ struct LambdaSExprMetadata {
 // Global vector to accumulate lambdas during compilation
 static std::vector<LambdaSExprMetadata> pending_lambda_sexprs;
 
+// Only active while this compiler thread emits eager procedure source data.
+// A scoped override preserves nesting without changing the codegen class ABI.
+static thread_local bool outlining_metadata_cons = false;
+
 // Track the most recently generated lambda name for codegenList
 static std::string last_generated_lambda_name;
 
@@ -1692,10 +1696,6 @@ private:
     // Reset at the start of every generateIR() / library compilation so two
     // compilations of the same source always produce identical IR.
     uint64_t name_uniquifier_ = 0;
-
-    // Procedure source data can contain thousands of cons cells. Keep its
-    // repeated allocation-check CFG out of the surrounding initializer.
-    bool outlining_metadata_cons_ = false;
 
     // Interned plain C strings used only by opt-in runtime language coverage.
     // Keeping one global per distinct spelling avoids bloating instrumented
@@ -6656,7 +6656,7 @@ private:
             return nullptr;
         }
 
-        if (outlining_metadata_cons_) {
+        if (outlining_metadata_cons) {
             const char* name = "__eshkol_metadata_cons";
             Function* helper = module->getFunction(name);
             if (!helper) {
@@ -38609,7 +38609,7 @@ private:
             bool previous;
             explicit MetadataConsScope(bool& value) : flag(value), previous(value) { flag = true; }
             ~MetadataConsScope() { flag = previous; }
-        } metadata_cons_scope(outlining_metadata_cons_);
+        } metadata_cons_scope(outlining_metadata_cons);
         if (!op) {
             eshkol_error("codegenLambdaToSExpr: null operation");
             return ConstantInt::get(int64_type, 0);
