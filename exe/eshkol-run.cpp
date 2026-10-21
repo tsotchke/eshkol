@@ -2163,6 +2163,15 @@ private:
                     const ResourceKind kind = factoryKind(effect);
                     if (kind != ResourceKind::NONE) future_resources[name] = kind;
                 }
+                if (name == "iv-eps" && envFlagEnabled("ESHKOL_STRICT_RESOURCE_TRACE")) {
+                    std::fprintf(stderr,
+                        "[strict-resources] prebind iv-eps function=%d external=%d value-type=%u value-name='%s' effect=%u proven=%d\n",
+                        op.define_op.is_function ? 1 : 0,
+                        op.define_op.is_external ? 1 : 0,
+                        op.define_op.value ? static_cast<unsigned>(op.define_op.value->type) : 255U,
+                        getVarName(op.define_op.value).c_str(), static_cast<unsigned>(effect),
+                        proven_callable ? 1 : 0);
+                }
                 effects[name] = effect;
                 if (proven_callable) proven_callable_names.insert(name);
             } else if (op.op == ESHKOL_EXTERN_OP && op.extern_op.name) {
