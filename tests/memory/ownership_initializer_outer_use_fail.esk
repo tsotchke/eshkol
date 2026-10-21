@@ -1,0 +1,4 @@
+(define x (owned (cons 1 2)))
+(let ((y (move x))
+      (z x))
+  (display z))

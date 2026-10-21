@@ -1520,13 +1520,13 @@ public:
         State state;
         std::string defined_at;  // Location info for error messages
         bool is_owned_binding;   // Was bound with (owned ...)
+        uint64_t binding_id;
     };
 
     // Ownership scope (lexical block)
     struct Scope {
         std::map<std::string, VariableInfo> variables;
         std::string name;  // For debugging
-        std::set<std::string> borrowed_vars;  // Variables currently borrowed in this scope
     };
 
     OwnershipAnalyzer() : has_errors_(false) {}
@@ -1536,6 +1536,8 @@ public:
         has_errors_ = false;
         errors_.clear();
         scope_stack_.clear();
+        borrowed_counts_.clear();
+        next_binding_id_ = 1;
 
         // Push global scope
         pushScope("global");
@@ -1568,12 +1570,15 @@ private:
     bool has_errors_;
 
     struct WorkItem {
-        enum class Kind { AST, LET_BINDING, EXIT_SCOPE, UNBORROW };
+        enum class Kind { AST, LET_BINDING, LET_SEQUENTIAL_INSTALL,
+                          LET_PARALLEL_INIT, LET_PARALLEL_INSTALL,
+                          EXIT_SCOPE, UNBORROW };
         Kind kind = Kind::AST;
         const eshkol_ast_t* ast = nullptr;
         const eshkol_operations_t* op = nullptr;
         uint64_t index = 0;
         std::string name;
+        uint64_t binding_id = 0;
 
         static WorkItem astNode(const eshkol_ast_t* node) {
             WorkItem item;
@@ -1588,16 +1593,16 @@ private:
             item.index = index;
             return item;
         }
-        static WorkItem unborrow(std::string name) {
+        static WorkItem unborrow(uint64_t binding_id) {
             WorkItem item;
             item.kind = Kind::UNBORROW;
-            item.name = std::move(name);
+            item.binding_id = binding_id;
             return item;
         }
     };
 
     void pushScope(const std::string& name = "") {
-        scope_stack_.push_back(Scope{{}, name, {}});
+        scope_stack_.push_back(Scope{{}, name});
     }
 
     void popScope() {
@@ -1621,14 +1626,11 @@ private:
         return nullptr;
     }
 
-    // Check if variable is currently borrowed anywhere
-    bool isBorrowed(const std::string& name) {
-        for (const auto& scope : scope_stack_) {
-            if (scope.borrowed_vars.count(name) > 0) {
-                return true;
-            }
-        }
-        return false;
+    uint64_t next_binding_id_ = 1;
+    std::map<uint64_t, size_t> borrowed_counts_;
+    bool isBorrowed(uint64_t binding_id) const {
+        auto it = borrowed_counts_.find(binding_id);
+        return it != borrowed_counts_.end() && it->second > 0;
     }
 
     void reportError(const std::string& msg) {
@@ -1678,7 +1680,48 @@ private:
                 continue;
             }
             if (item.kind == WorkItem::Kind::UNBORROW) {
-                currentScope().borrowed_vars.erase(item.name);
+                auto borrow = borrowed_counts_.find(item.binding_id);
+                if (borrow != borrowed_counts_.end() && --borrow->second == 0) {
+                    borrowed_counts_.erase(borrow);
+                }
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::LET_PARALLEL_INIT) {
+                if (item.index == item.op->let_op.num_bindings) {
+                    work.push_back(WorkItem::continuation(WorkItem::Kind::LET_PARALLEL_INSTALL, item.op));
+                    continue;
+                }
+                const eshkol_ast_t* binding = &item.op->let_op.bindings[item.index];
+                work.push_back(WorkItem::continuation(WorkItem::Kind::LET_PARALLEL_INIT, item.op, item.index + 1));
+                if (binding->type == ESHKOL_CONS) work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::LET_SEQUENTIAL_INSTALL) {
+                const eshkol_ast_t* binding = &item.op->let_op.bindings[item.index];
+                if (binding->type == ESHKOL_CONS) {
+                    std::string var_name = getVarName(binding->cons_cell.car);
+                    if (!var_name.empty()) {
+                        bool is_owned = transfersOwnership(binding->cons_cell.cdr);
+                        currentScope().variables[var_name] = {
+                            is_owned ? State::OWNED : State::UNOWNED, "", is_owned, next_binding_id_++
+                        };
+                    }
+                }
+                continue;
+            }
+            if (item.kind == WorkItem::Kind::LET_PARALLEL_INSTALL) {
+                for (uint64_t i = 0; i < item.op->let_op.num_bindings; ++i) {
+                    const eshkol_ast_t* binding = &item.op->let_op.bindings[i];
+                    if (binding->type != ESHKOL_CONS) continue;
+                    std::string var_name = getVarName(binding->cons_cell.car);
+                    if (var_name.empty()) continue;
+                    bool is_owned = transfersOwnership(binding->cons_cell.cdr);
+                    currentScope().variables[var_name] = {
+                        is_owned ? State::OWNED : State::UNOWNED, "", is_owned, next_binding_id_++
+                    };
+                }
+                work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, item.op));
+                work.push_back(WorkItem::astNode(item.op->let_op.body));
                 continue;
             }
             if (item.kind == WorkItem::Kind::LET_BINDING) {
@@ -1691,13 +1734,8 @@ private:
                 work.push_back(WorkItem::continuation(
                     WorkItem::Kind::LET_BINDING, item.op, item.index + 1));
                 if (binding->type == ESHKOL_CONS) {
-                    std::string var_name = getVarName(binding->cons_cell.car);
-                    bool is_owned = transfersOwnership(binding->cons_cell.cdr);
-                    if (!var_name.empty()) {
-                        currentScope().variables[var_name] = {
-                            is_owned ? State::OWNED : State::UNOWNED, "", is_owned
-                        };
-                    }
+                    work.push_back(WorkItem::continuation(
+                        WorkItem::Kind::LET_SEQUENTIAL_INSTALL, item.op, item.index));
                     work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
                 }
                 continue;
@@ -1730,7 +1768,7 @@ private:
                             if (!name.empty()) {
                                 bool is_owned = transfersOwnership(op->define_op.value);
                                 currentScope().variables[name] = {
-                                    is_owned ? State::OWNED : State::UNOWNED, name, is_owned
+                                    is_owned ? State::OWNED : State::UNOWNED, name, is_owned, next_binding_id_++
                                 };
                                 work.push_back(WorkItem::astNode(op->define_op.value));
                             }
@@ -1748,7 +1786,7 @@ private:
                                 if (info) {
                                     if (info->state == State::MOVED) {
                                         reportError("Double move of '" + var_name + "' - value already moved");
-                                    } else if (isBorrowed(var_name)) {
+                                    } else if (isBorrowed(info->binding_id)) {
                                         reportError("Cannot move '" + var_name + "' while it is borrowed");
                                     } else {
                                         info->state = State::MOVED;
@@ -1762,15 +1800,17 @@ private:
 
                         case ESHKOL_BORROW_OP: {
                             std::string var_name = getVarName(op->borrow_op.value);
+                            uint64_t borrowed_binding_id = 0;
                             if (!var_name.empty()) {
                                 VariableInfo* info = lookupVariable(var_name);
                                 if (info && info->state == State::MOVED) {
                                     reportError("Cannot borrow moved value '" + var_name + "'");
-                                } else {
-                                    currentScope().borrowed_vars.insert(var_name);
+                                } else if (info) {
+                                    borrowed_binding_id = info->binding_id;
+                                    ++borrowed_counts_[borrowed_binding_id];
                                 }
                             }
-                            if (!var_name.empty()) work.push_back(WorkItem::unborrow(var_name));
+                            if (borrowed_binding_id) work.push_back(WorkItem::unborrow(borrowed_binding_id));
                             for (uint64_t i = op->borrow_op.num_body_exprs; i > 0; --i) {
                                 work.push_back(WorkItem::astNode(&op->borrow_op.body[i - 1]));
                             }
@@ -1780,7 +1820,9 @@ private:
                         case ESHKOL_LET_OP:
                         case ESHKOL_LET_STAR_OP:
                             pushScope("let");
-                            work.push_back(WorkItem::continuation(WorkItem::Kind::LET_BINDING, op));
+                            work.push_back(WorkItem::continuation(
+                                op->op == ESHKOL_LET_OP ? WorkItem::Kind::LET_PARALLEL_INIT
+                                                       : WorkItem::Kind::LET_BINDING, op));
                             break;
 
                         case ESHKOL_LETREC_OP: {
@@ -1792,7 +1834,7 @@ private:
                                     bool is_owned = transfersOwnership(binding->cons_cell.cdr);
                                     if (!var_name.empty()) {
                                         currentScope().variables[var_name] = {
-                                            is_owned ? State::OWNED : State::UNOWNED, "", is_owned
+                                            is_owned ? State::OWNED : State::UNOWNED, "", is_owned, next_binding_id_++
                                         };
                                     }
                                 }
@@ -1813,7 +1855,7 @@ private:
                             for (uint64_t i = 0; i < op->lambda_op.num_params; ++i) {
                                 std::string param_name = getVarName(&op->lambda_op.parameters[i]);
                                 if (!param_name.empty()) {
-                                    currentScope().variables[param_name] = {State::UNOWNED, "", false};
+                                    currentScope().variables[param_name] = {State::UNOWNED, "", false, next_binding_id_++};
                                 }
                             }
                             work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
