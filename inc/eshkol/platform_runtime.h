@@ -482,6 +482,11 @@ std::vector<std::string> host_runtime_link_args();
  *         package marker beside the installed compiler when present.
  * @return Driver-ready LLVM link arguments. */
 std::vector<std::string> host_llvm_link_args();
+/** @brief Resolve the macOS package-local LLVM AOT link marker for a runtime
+ *         dependency directory. Missing or symlinked payloads return a
+ *         guaranteed-invalid linker input so linking fails closed. */
+std::vector<std::string> macos_packaged_llvm_link_args(
+    const std::filesystem::path& dependency_dir);
 // On macOS, the resolved SDK library directory (<sdk>/usr/lib) discovered at
 // runtime via `xcrun --show-sdk-path`. Adding it to the linker search path lets
 // a bare `-lobjc` resolve on any mac, not just the builder. Empty on non-macOS

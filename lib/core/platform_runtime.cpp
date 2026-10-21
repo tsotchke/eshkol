@@ -1582,6 +1582,27 @@ std::vector<std::string> host_runtime_link_args() {
     return args;
 }
 
+std::vector<std::string> macos_packaged_llvm_link_args(
+    const std::filesystem::path& dependency_dir) {
+    std::error_code ec;
+    const auto dir_status = std::filesystem::symlink_status(dependency_dir, ec);
+    const auto llvm_alias = dependency_dir / "libLLVM-21.dylib";
+    ec.clear();
+    const auto file_status = std::filesystem::symlink_status(llvm_alias, ec);
+    if (!ec && std::filesystem::is_directory(dir_status) &&
+        !std::filesystem::is_symlink(dir_status) &&
+        std::filesystem::is_regular_file(file_status) &&
+        !std::filesystem::is_symlink(file_status)) {
+        const auto package_path = std::filesystem::absolute(dependency_dir).string();
+        // Persistent `-r` outputs live outside the package. Their runpath is
+        // resolved from the relocated installed compiler.
+        return {"-L" + package_path, "-Wl,-rpath," + package_path};
+    }
+    // An absent package closure must not silently fall through to a host LLVM
+    // found in the consumer's ordinary linker search path.
+    return {"/__eshkol_package_runtime_missing__/libLLVM-21.dylib"};
+}
+
 std::vector<std::string> host_llvm_link_args() {
     std::vector<std::string> args;
     std::stringstream stream(ESHKOL_HOST_LLVM_LINK_ARGS);
@@ -1596,22 +1617,8 @@ std::vector<std::string> host_llvm_link_args() {
             const auto dependency_dir = executable_dir.empty()
                 ? std::filesystem::path{}
                 : executable_dir.parent_path() / "lib" / "eshkol" / "runtime-deps";
-            std::error_code ec;
-            const auto status = std::filesystem::symlink_status(dependency_dir, ec);
-            const auto llvm_alias = dependency_dir / "libLLVM-21.dylib";
-            ec.clear();
-            const auto file_status = std::filesystem::symlink_status(llvm_alias, ec);
-            if (!ec && std::filesystem::is_directory(status) &&
-                !std::filesystem::is_symlink(status) &&
-                std::filesystem::is_regular_file(file_status)) {
-                const auto package_path = std::filesystem::absolute(dependency_dir).string();
-                args.push_back("-L" + package_path);
-                // Persistent `-r` outputs live outside the package. Their
-                // runpath is resolved from the relocated installed compiler.
-                args.push_back("-Wl,-rpath," + package_path);
-            } else {
-                args.push_back(std::filesystem::absolute(llvm_alias).string());
-            }
+            auto packaged_args = macos_packaged_llvm_link_args(dependency_dir);
+            args.insert(args.end(), packaged_args.begin(), packaged_args.end());
             continue;
         }
 #endif

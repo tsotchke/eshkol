@@ -24,6 +24,21 @@ def fail(message: str) -> NoReturn:
     raise ValueError(message)
 
 
+def require_no_symlink_components(path: Path) -> Path:
+    """Return an absolute path only when no existing component is a symlink."""
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        try:
+            current.lstat()
+        except FileNotFoundError:
+            continue
+        if current.is_symlink():
+            fail(f"refusing symlinked staging path component: {current}")
+    return absolute
+
+
 def run(args: list[str]) -> str:
     p = subprocess.run(args, text=True, capture_output=True, check=False)
     if p.returncode:
@@ -92,26 +107,30 @@ def add_rpath(path: Path, rpath: str) -> None:
     run(["install_name_tool", "-add_rpath", rpath, str(path)])
 
 
-def delete_dependency_rpaths(path: Path) -> None:
+def normalize_rpaths(path: Path, allowed: str) -> None:
     commands = run(["otool", "-l", str(path)])
     for match in re.finditer(r"cmd LC_RPATH\s+cmdsize \d+\s+path (\S+) \(offset \d+\)", commands):
         rpath = match.group(1)
-        if rpath.startswith("/") and any(
-            name in rpath.lower() for name in ("openssl", "llvm@", "zstd")
-        ):
+        if rpath != allowed:
             run(["install_name_tool", "-delete_rpath", rpath, str(path)])
 
 
 def stage(openssl_prefix: Path, llvm_prefix: Path, zstd_prefix: Path,
           package: Path, versions: dict[str, str]) -> dict:
+    package = require_no_symlink_components(package)
     prefixes = {
         "openssl@3": openssl_prefix.resolve(strict=True),
         "llvm@21": llvm_prefix.resolve(strict=True),
         "zstd": zstd_prefix.resolve(strict=True),
     }
-    package = package.resolve(strict=True)
+    if not package.is_dir():
+        fail(f"package staging root is not an existing directory: {package}")
+    for formula, prefix in prefixes.items():
+        if package == prefix or package in prefix.parents or prefix in package.parents:
+            fail(f"package staging root overlaps {formula} provider prefix: {package} / {prefix}")
     out = package / RUNTIME_SUBDIR
     out.mkdir(parents=True, exist_ok=True)
+    require_no_symlink_components(out)
     files: dict[str, dict[str, str]] = {}
     payloads = (
         tuple(("openssl@3", name) for name in (*OPENSSL_DYLIBS, *OPENSSL_ARCHIVES))
@@ -128,6 +147,7 @@ def stage(openssl_prefix: Path, llvm_prefix: Path, zstd_prefix: Path,
     # Rewrite only the staged package image. Preserve system libraries and fail
     # closed on any additional Homebrew or other absolute third-party closure.
     package_binaries = (package / "bin/eshkol-run", package / "bin/eshkol-repl")
+    require_no_symlink_components(package / "bin")
     dylib_rewrites = {
         "libssl.3.dylib": "libssl.3.dylib",
         "libcrypto.3.dylib": "libcrypto.3.dylib",
@@ -143,8 +163,9 @@ def stage(openssl_prefix: Path, llvm_prefix: Path, zstd_prefix: Path,
                 run(["install_name_tool", "-change", old, f"@rpath/{dylib_rewrites[base]}", str(binary)])
             elif old.startswith("/") and not old.startswith(SYSTEM_PREFIXES):
                 fail(f"unsupported absolute third-party dependency in {binary.name}: {old}")
-        delete_dependency_rpaths(binary)
-        add_rpath(binary, "@executable_path/../lib/eshkol/runtime-deps")
+        package_rpath = "@executable_path/../lib/eshkol/runtime-deps"
+        normalize_rpaths(binary, package_rpath)
+        add_rpath(binary, package_rpath)
 
     all_dylibs = (*OPENSSL_DYLIBS, *LLVM_DYLIBS, *ZSTD_DYLIBS)
     for name in all_dylibs:
@@ -162,7 +183,7 @@ def stage(openssl_prefix: Path, llvm_prefix: Path, zstd_prefix: Path,
                 fail(f"unsupported absolute third-party dependency in {name}: {old}")
         if own_id:
             run(["install_name_tool", "-id", f"@rpath/{name}", str(dylib)])
-        delete_dependency_rpaths(dylib)
+        normalize_rpaths(dylib, "@loader_path")
         add_rpath(dylib, "@loader_path")
 
     # CMake's LLVM config names the aggregate as -lLLVM-21. Provide that
@@ -188,6 +209,7 @@ def stage(openssl_prefix: Path, llvm_prefix: Path, zstd_prefix: Path,
     license_metadata: dict[str, dict[str, str]] = {}
     license_dir = package / "licenses"
     license_dir.mkdir(parents=True, exist_ok=True)
+    require_no_symlink_components(license_dir)
     for output_name, (formula, candidates) in license_specs.items():
         source = license_source(prefixes[formula], candidates)
         target = license_dir / output_name

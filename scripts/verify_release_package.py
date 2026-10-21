@@ -95,6 +95,23 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def macho_rpaths(load_commands: str) -> set[str]:
+    return set(re.findall(
+        r"cmd LC_RPATH\s+cmdsize \d+\s+path (\S+) \(offset \d+\)",
+        load_commands,
+    ))
+
+
+def validate_macho_refs(refs: list[str], image: str) -> None:
+    for ref in refs:
+        if ref.startswith("/") and not ref.startswith(("/System/Library/", "/usr/lib/")):
+            fail(f"{image} retains an absolute third-party runtime reference: {ref}")
+        if ref.startswith(("@loader_path/", "@executable_path/")):
+            fail(f"{image} retains an unexpected image-relative dependency: {ref}")
+        if not ref.startswith(("/System/Library/", "/usr/lib/", "@rpath/")):
+            fail(f"{image} retains an unsupported runtime reference: {ref}")
+
+
 def run_checked(
     command: list[str],
     *,
@@ -298,34 +315,38 @@ def verify_macos_openssl_dependencies(
                     env=env, timeout=60, description=f"ad-hoc code-signature verification for {path.name}")
         result = run_checked(["otool", "-L", str(path)], cwd=package_dir, env=env,
                              timeout=60, description=f"Mach-O dependency inspection for {path.name}")
+        all_refs = [line.strip().split(" (compatibility version", 1)[0]
+                    for line in result.stdout.splitlines()[1:]]
+        validate_macho_refs(all_refs, path.name)
         refs = set()
-        for line in result.stdout.splitlines()[1:]:
-            ref = line.strip().split(" (compatibility version", 1)[0]
-            if ref.startswith("/") and not ref.startswith(("/System/Library/", "/usr/lib/")):
-                fail(f"staged macOS runtime library retains an absolute third-party reference: {path.name}: {ref}")
+        for ref in all_refs:
             if ref.startswith("@rpath/"):
                 refs.add(ref)
         if refs != expected_dylib_edges[name] | {f"@rpath/{name}"}:
             fail(f"staged macOS runtime library has an unexpected relative dependency set: {path.name}: {sorted(refs)}")
         load_commands = run_checked(["otool", "-l", str(path)], cwd=package_dir, env=env,
                                     timeout=60, description=f"Mach-O rpath inspection for {path.name}")
-        if "@loader_path" not in load_commands.stdout:
-            fail(f"staged macOS runtime library lacks its relative loader path: {path.name}")
+        if macho_rpaths(load_commands.stdout) != {"@loader_path"}:
+            fail(f"staged macOS runtime library has unexpected rpaths: {path.name}: {sorted(macho_rpaths(load_commands.stdout))}")
 
     llvm_alias = dependency_dir / "libLLVM-21.dylib"
     run_checked(["codesign", "--verify", "--strict", str(llvm_alias)], cwd=package_dir,
                 env=env, timeout=60, description="ad-hoc code-signature verification for libLLVM-21.dylib")
     alias_result = run_checked(["otool", "-L", str(llvm_alias)], cwd=package_dir, env=env,
                                timeout=60, description="Mach-O dependency inspection for libLLVM-21.dylib")
+    alias_all_refs = [line.strip().split(" (compatibility version", 1)[0]
+                      for line in alias_result.stdout.splitlines()[1:]]
+    validate_macho_refs(alias_all_refs, llvm_alias.name)
     alias_refs = set()
-    for line in alias_result.stdout.splitlines()[1:]:
-        ref = line.strip().split(" (compatibility version", 1)[0]
-        if ref.startswith("/") and not ref.startswith(("/System/Library/", "/usr/lib/")):
-            fail(f"macOS LLVM linker alias retains an absolute third-party reference: {ref}")
+    for ref in alias_all_refs:
         if ref.startswith("@rpath/"):
             alias_refs.add(ref)
     if alias_refs != {"@rpath/libLLVM.dylib", "@rpath/libzstd.1.dylib"}:
         fail(f"macOS LLVM linker alias has an unexpected dependency set: {sorted(alias_refs)}")
+    alias_commands = run_checked(["otool", "-l", str(llvm_alias)], cwd=package_dir, env=env,
+                                 timeout=60, description="Mach-O rpath inspection for libLLVM-21.dylib")
+    if macho_rpaths(alias_commands.stdout) != {"@loader_path"}:
+        fail(f"macOS LLVM linker alias has unexpected rpaths: {sorted(macho_rpaths(alias_commands.stdout))}")
 
     for binary in binaries:
         run_checked(["codesign", "--verify", "--strict", str(binary)], cwd=package_dir,
@@ -335,16 +356,14 @@ def verify_macos_openssl_dependencies(
                              timeout=60, description=f"Mach-O dependency inspection for {binary.name}")
         refs = [line.strip().split(" (compatibility version", 1)[0]
                 for line in result.stdout.splitlines()[1:]]
-        for ref in refs:
-            if ref.startswith("/") and not ref.startswith(("/System/Library/", "/usr/lib/")):
-                fail(f"{binary.name} retains an absolute third-party runtime reference: {ref}")
+        validate_macho_refs(refs, binary.name)
         for name in ("libssl.3.dylib", "libcrypto.3.dylib", "libLLVM.dylib"):
             if f"@rpath/{name}" not in refs:
                 fail(f"{binary.name} does not load packaged runtime {name} through @rpath")
         load_commands = run_checked(["otool", "-l", str(binary)], cwd=package_dir, env=env,
                                     timeout=60, description=f"Mach-O rpath inspection for {binary.name}")
-        if "@executable_path/../lib/eshkol/runtime-deps" not in load_commands.stdout:
-            fail(f"{binary.name} lacks the relative packaged runtime dependency path")
+        if macho_rpaths(load_commands.stdout) != {"@executable_path/../lib/eshkol/runtime-deps"}:
+            fail(f"{binary.name} has unexpected package runtime rpaths: {sorted(macho_rpaths(load_commands.stdout))}")
         strings = run_checked(["strings", str(binary)], cwd=package_dir, env=env,
                               timeout=60, description=f"AOT link metadata inspection for {binary.name}")
         if "__ESHKOL_OPENSSL_STATIC__/libssl.a" not in strings.stdout or "__ESHKOL_OPENSSL_STATIC__/libcrypto.a" not in strings.stdout:
@@ -431,6 +450,12 @@ def verify_cache_disabled_run(
             stdout=result.stdout,
             stderr=result.stderr,
         )
+    if any(marker in result.stderr for marker in FORBIDDEN_SMOKE_DIAGNOSTICS):
+        fail(
+            "cache-disabled package JIT reported a module-loading failure",
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
 
 
 def verify_macos_tls_smoke(
@@ -470,14 +495,6 @@ def verify_macos_tls_smoke(
         if any(marker in result.stderr for marker in FORBIDDEN_SMOKE_DIAGNOSTICS):
             fail(f"macOS TLS {mode} smoke reported a module-loading failure",
                  stdout=result.stdout, stderr=result.stderr)
-    if any(marker in result.stderr for marker in FORBIDDEN_SMOKE_DIAGNOSTICS):
-        fail(
-            "cache-disabled package JIT reported a module-loading failure",
-            stdout=result.stdout,
-            stderr=result.stderr,
-        )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package-dir", required=True, type=Path)
