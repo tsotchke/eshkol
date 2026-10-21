@@ -633,6 +633,7 @@ static const BuiltinDef BUILTINS[] = {
     {"layer-norm", 475, 4}, {"scaled-dot-attention", 477, 3},
     {"gpu-elementwise", 470, 3}, {"gpu-reduce", 471, 2},
     {"linear-solve", 472, 2},
+    {"tensor-inverse", 479, 1},
     {"gpu-transpose", 416, 1},
     {"relu", 462, 1}, {"softmax", 463, 1}, {"gpu-softmax", 463, 1}, {"sigmoid", 464, 1},
     /* The unit-beta tensor kernel behind the prelude's `swish`. */

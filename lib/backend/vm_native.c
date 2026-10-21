@@ -1,4 +1,8 @@
 #include "../../inc/eshkol/core/number_syntax.h"
+#include <eshkol/core/tensor_inverse_checked.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include "../core/model_io_atomic.h"
 #include "../core/tensor_observation.h"
 #include "../core/value_type_names.h"
@@ -12237,6 +12241,48 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* out = vm_tensor_from_data(&vm->heap.regions, x, shape, 1);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+
+    case 479: { /* tensor-inverse(A): pivoted Gauss-Jordan, f64 matrix */
+        Value av = vm_pop(vm);
+        VmTensor* a = vm_tensor_operand(vm, av, "tensor-inverse");
+        if (!a) break;
+        if (a->n_dims != 2 || a->shape[0] != a->shape[1] || a->shape[0] <= 0) {
+            vm_raise_error_msg(vm, "tensor-inverse: expected a non-empty square matrix");
+            break;
+        }
+        int64_t n = a->shape[0];
+        if ((uint64_t)n > SIZE_MAX / (uint64_t)n / sizeof(double)) {
+            vm_raise_error_msg(vm, "tensor-inverse: matrix size overflow");
+            break;
+        }
+        size_t count = (size_t)n * (size_t)n;
+        double* work = (double*)vm_alloc(&vm->heap.regions, count * sizeof(double));
+        if (!work) {
+            vm_raise_error_msg(vm, "tensor-inverse: allocation failed");
+            break;
+        }
+        int64_t shape[2] = { n, n };
+        VmTensor* out = vm_tensor_new(&vm->heap.regions, shape, 2);
+        if (!out) {
+            vm_raise_error_msg(vm, "tensor-inverse: allocation failed");
+            break;
+        }
+        int status = eshkol_tensor_inverse_checked(a->data, work, out->data, n);
+        if (status != ESHKOL_TENSOR_INVERSE_OK) {
+            const char* message = status == ESHKOL_TENSOR_INVERSE_SINGULAR
+                ? "tensor-inverse: matrix is singular"
+                : status == ESHKOL_TENSOR_INVERSE_NONFINITE
+                    ? "tensor-inverse: matrix or result is non-finite"
+                    : status == ESHKOL_TENSOR_INVERSE_SIZE
+                        ? "tensor-inverse: matrix size overflow"
+                        : "tensor-inverse: invalid matrix";
+            vm_raise_error_msg(vm, message);
+            goto tensor_inverse_done;
+        }
+        VM_PUSH_TENSOR(vm, out);
+tensor_inverse_done:
         break;
     }
 

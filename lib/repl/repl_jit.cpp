@@ -1787,6 +1787,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_tensor_normalize_apply);
     ADD_SYMBOL(eshkol_tensor_pow_scalar);
     ADD_SYMBOL(eshkol_tensor_map_libm);
+    ADD_SYMBOL(eshkol_tensor_inverse_checked_abi);
     ADD_SYMBOL(eshkol_shapes_equal);
     ADD_SYMBOL(eshkol_broadcast_elementwise_f64);
     ADD_SYMBOL(eshkol_batch_matmul_f64);
