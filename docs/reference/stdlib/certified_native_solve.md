@@ -6,6 +6,7 @@ since: v1.4.0-connection
 sources:
   - lib/core/certified_native_solve.esk
   - tests/stdlib/certified_native_solve_test.esk
+  - tests/stdlib/certified_native_solve_vm_test.esk
 ---
 
 # Certified solutions from the native solver
@@ -54,4 +55,4 @@ returned boxes and tolerance, and trusts no native residual or status flag.
 It does not attest the descriptive cost receipt or rerun native generation.
 Mutable receipt vectors are not sealed proofs. Arithmetic loss refuses
 certification. Exact verification/reconstruction/correction costs are additional;
-there is no unconditional speedup, sparse solve or GPU qualification claim.
+Native numerical qualification covers JIT and AOT. The current VM route is unsupported for numerical candidate generation and has a refusal test; when both primitives become available, that route runs an exact identity-solve assertion. Current VM numerical certification remains unsupported. There is no unconditional speedup, sparse solve or GPU qualification claim.

@@ -13501,3 +13501,27 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PASS_REGULAR_EXPRESSION "RESULT: PASS"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()
+
+# The VM does not provide the native tensor-inverse candidate primitive. Keep
+# its native candidate contract covered without weakening the native numerical suite.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME certified_native_solve_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_native_solve_vm_test.esk")
+    set_tests_properties(certified_native_solve_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|fatal signal")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME certified_native_solve_eskb_vm COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_native_solve_vm_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_native_solve_vm.eskb"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certified_native_solve_eskb_vm PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_VM_NO_DISASM=1"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|fatal signal")
+endif()

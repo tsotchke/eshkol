@@ -53,8 +53,12 @@
                        (cns-tab n (lambda (i) (make-vector n 0))) extra))
            (source (vector-ref premises 3))
            (owned (list (vector-ref source 4) (vector-ref source 5) (vector-ref source 6))))
-      (guard (e (else (vector 'certified-native-solve-v1 'unknown #f #f #f (vector 'candidate-unavailable 0 0))))
-        (let* ((native-a (cns-tensor a n #t)) (native-b (cns-tensor b n #f))
+      ;; The bytecode VM does not expose the hosted native inverse primitive.
+      ;; Probe availability before calling the primitive so the module fails closed.
+      (if (not (and (procedure? linear-solve) (procedure? tensor-inverse)))
+          (vector 'certified-native-solve-v1 'unknown #f #f #f (vector 'candidate-unavailable 0 0))
+          (guard (e (else (vector 'certified-native-solve-v1 'unknown #f #f #f (vector 'candidate-unavailable 0 0))))
+            (let* ((native-a (cns-tensor a n #t)) (native-b (cns-tensor b n #f))
                (initial (cns-decode (linear-solve native-a native-b) n #f))
                (inverse (cns-decode (tensor-inverse native-a) n #t)))
           (let refine ((x initial) (iteration 0))
@@ -68,7 +72,7 @@
                   (let* ((residual (vector-ref (vector-ref certificate 3) 7))
                          (next (cns-tab n (lambda (i) (cns-q (+ (vector-ref x i)
                            (cns-sum n (lambda (j) (cns-q (* (vector-ref (vector-ref inverse i) j) (vector-ref residual j)))))))))))
-                    (refine next (+ iteration 1)))))))))))
+                    (refine next (+ iteration 1))))))))))))
 ;; Verification trusts no native residual, status flag or recorded cost claim.
 ;; It verifies a proved enclosure against the caller's original problem.
 (define (verify-certified-native-solve result matrix rhs tolerance . premises)

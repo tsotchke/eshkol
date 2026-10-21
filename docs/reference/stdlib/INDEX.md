@@ -139,6 +139,8 @@ reference anchors on [shipped_exports.md](shipped_exports.md).
 
 | Source | Export | Reference |
 |---|---|---|
+| `core.certified_native_solve` | `solve-certified-native` | [solve-certified-native](shipped_exports.md#solve-certified-native) |
+| `core.certified_native_solve` | `verify-certified-native-solve` | [verify-certified-native-solve](shipped_exports.md#verify-certified-native-solve) |
 | `core.algebraic_batch` | `make-algebraic-multiplication-plan` | [make-algebraic-multiplication-plan](shipped_exports.md#make-algebraic-multiplication-plan) |
 | `core.algebraic_batch` | `algebraic-batch-mul` | [algebraic-batch-mul](shipped_exports.md#algebraic-batch-mul) |
 | `core.algebraic_domain` | `algebraic-domain` | [algebraic-domain](shipped_exports.md#algebraic-domain) |
