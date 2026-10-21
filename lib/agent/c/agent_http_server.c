@@ -502,8 +502,13 @@ int32_t eshkol_http_server_accept(int64_t handle, char* buf, int32_t buf_size,
     int32_t total = 0;
     size_t required_total = 0;
     while (total < buf_size - 1) {
+        /* The final read may contain the start of a WebSocket frame. Bound
+         * that read by our retained-byte capacity even for a larger caller
+         * buffer, so TCP coalescing cannot turn a valid upgrade into loss. */
+        size_t read_capacity = (size_t)(buf_size - 1 - total);
+        if (read_capacity > sizeof(srv->pending)) read_capacity = sizeof(srv->pending);
         int n = eshkol_socket_recv(client_fd, buf + total,
-                                   (size_t)(buf_size - 1 - total), 0);
+                                   read_capacity, 0);
         if (n <= 0) break;
         total += (int32_t)n;
         buf[total] = '\0';

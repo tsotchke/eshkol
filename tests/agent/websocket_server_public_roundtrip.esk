@@ -10,15 +10,18 @@
       (close-port out))
     #t)
 
+;; Let the client's complete upgrade + 64 KiB first-frame burst queue before
+;; accepting it, so the read-ahead boundary is exercised consistently.
+(sleep-ms 100)
 (define request (if (> server 0)
-                    (http-server-accept server 32768 15000)
+                    (http-server-accept server 131072 15000)
                     #f))
 (define ws (if request (ws-server-upgrade server request) -1))
-(define text-frame (if (> ws 0) (ws-receive ws 256 5000) #f))
+(define text-frame (if (> ws 0) (ws-receive ws 65537 5000) #f))
 (define text-ok
   (and text-frame
        (= (car text-frame) WS-FRAME-TEXT)
-       (string=? (cdr text-frame) "jit-aot-roundtrip")
+       (string=? (cdr text-frame) (make-string 65536 #\x))
        (= (ws-send-text ws (cdr text-frame)) 0)))
 (define empty-frame (if text-ok (ws-receive ws 256 5000) #f))
 (define empty-ok

@@ -11,7 +11,7 @@ import time
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 KEY = "dGhlIHNhbXBsZSBub25jZQ=="
-MESSAGE = b"jit-aot-roundtrip"
+MESSAGE = b"x" * 65536
 BINARY_MESSAGE = b"public\x00binary"
 
 
@@ -61,9 +61,14 @@ def run_client(port):
 
 
 def client_frame(opcode, payload, mask):
-    if len(payload) >= 126:
-        raise ValueError("test frame payload must fit a short length")
-    return bytes((0x80 | opcode, 0x80 | len(payload))) + mask + bytes(
+    length = len(payload)
+    if length < 126:
+        header = bytes((0x80 | opcode, 0x80 | length))
+    elif length < 65536:
+        header = bytes((0x80 | opcode, 0x80 | 126)) + length.to_bytes(2, "big")
+    else:
+        header = bytes((0x80 | opcode, 0x80 | 127)) + length.to_bytes(8, "big")
+    return header + mask + bytes(
         byte ^ mask[index & 3] for index, byte in enumerate(payload)
     )
 
