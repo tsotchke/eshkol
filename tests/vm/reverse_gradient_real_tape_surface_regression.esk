@@ -1,0 +1,112 @@
+;; `reverse-gradient` is a VM-only convenience. Exercise real scalar tape
+;; arithmetic and explicit refusals for unsupported carriers/operators.
+(require stdlib)
+
+(define checks 0)
+(define failures 0)
+(define (check name ok)
+  (if (not ok)
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline)))
+  (set! checks (+ checks 1)))
+(define (near? a b eps) (< (abs (- a b)) eps))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+
+;; Exact rational constants are converted through the heap-aware numeric path.
+(define rational-grad
+  (reverse-gradient (lambda (x) (* x (/ 1 3))) (vector 6.0)))
+(check "rational constant in multiply" (near? rational-grad (/ 1.0 3.0) 1e-12))
+
+;; The discarded x*x node is later than the actual constant return. The output
+;; mapping must follow RETURN's stack slot, never tape->len-1.
+(define discarded-grad
+  (reverse-gradient (lambda (x) (let ((unused (* x x))) 7.0)) (vector 6.0)))
+(check "discarded computation does not become the output" (= discarded-grad 0.0))
+
+;; Identity, nested calls, integer promotion, apply, and fold aliases all move
+;; the scalar node map with the returned/contained real Value.
+(define identity-grad (reverse-gradient (lambda (x y) x) (vector 3.0 4.0)))
+(check "identity output node survives return"
+  (and (= (tensor-ref identity-grad 0) 1.0) (= (tensor-ref identity-grad 1) 0.0)))
+(define nested-grad
+  (reverse-gradient (lambda (x) ((lambda (y) (* y y)) x)) (vector 3.0)))
+(check "nested closure return preserves node" (= nested-grad 6.0))
+(define integer-grad (reverse-gradient (lambda (x) (+ x 2)) (vector 3.0)))
+(check "integer constant promotes with tracked flonum" (= integer-grad 1.0))
+(define multiply-alias *)
+(define apply-grad
+  (reverse-gradient (lambda (x) (apply multiply-alias (list x x))) (vector 3.0)))
+(check "apply carries list element nodes to first-class operator" (= apply-grad 6.0))
+(define cons-alias cons)
+(check "first-class cons preserves the car node through apply"
+  (= (reverse-gradient
+       (lambda (x) (car (apply cons-alias (list x 0.0))))
+       (vector 2.0))
+     1.0)
+(define add-alias +)
+(define fold-grad
+  (reverse-gradient
+    (lambda (x) (fold-left add-alias 0.0 (list (* x x) (* x 3.0))))
+    (vector 2.0)))
+(check "fold-left carries list and accumulator nodes" (= fold-grad 7.0))
+(check "set-car! refreshes a pair field's tracked node"
+  (= (reverse-gradient
+       (lambda (x) (let ((p (list 0.0))) (set-car! p x) (car p)))
+       (vector 2.0))
+     1.0)
+(check "set-cdr! refreshes a pair field's tracked node"
+  (= (reverse-gradient
+       (lambda (x) (let ((p (list 0.0))) (set-cdr! p x) (cdr p)))
+       (vector 2.0))
+     1.0)
+(define big-grad
+  (reverse-gradient (lambda (x) (* x 9223372036854775808)) (vector 1.0)))
+(check "bignum constant is not coerced to zero" (= big-grad 9.223372036854776e18))
+
+;; Exact and inexact point forms enter the same real scalar tape.
+(define rational-point-grad
+  (reverse-gradient (lambda (x) (* x x)) (vector 1/3)))
+(check "rational real point is read through heap payload"
+  (near? rational-point-grad (/ 2.0 3.0) 1e-12))
+
+;; The VM tape differentiates real scalar arithmetic; complex/carrier outputs
+;; and an unimplemented real primitive must fail explicitly, never return zero.
+(check "complex output refuses reverse-gradient"
+  (raises? (lambda () (reverse-gradient (lambda (x) (sqrt -1)) (vector 1.0)))))
+(check "complex arithmetic on a tracked input refuses"
+  (raises? (lambda ()
+    (reverse-gradient (lambda (x) (* x (sqrt -1))) (vector 1.0)))))
+(check "complex construction and real-part projection refuse tracked input"
+  (raises? (lambda ()
+    (reverse-gradient
+      (lambda (x) (real-part (make-rectangular x 2.0))) (vector 1.0)))))
+(check "dual output refuses reverse-gradient"
+  (raises? (lambda () (reverse-gradient (lambda (x) (make-dual x 1.0)) (vector 1.0)))))
+(check "untraced tan on a tracked value refuses"
+  (raises? (lambda () (reverse-gradient (lambda (x) (tan x)) (vector 1.0)))))
+(check "a caught unsupported operation does not poison the next tape"
+  (and (= (reverse-gradient (lambda (x) (* x x)) (vector 3.0)) 6.0)
+       (raises? (lambda () (reverse-gradient (lambda (x) (tan x)) (vector 1.0)))
+       (= (reverse-gradient (lambda (x) (* x x)) (vector 4.0)) 8.0)))
+(check "untraced exponentiation on a tracked value refuses"
+  (raises? (lambda () (reverse-gradient (lambda (x) (expt x 2)) (vector 2.0)))))
+(check "complex point refuses instead of becoming zero"
+  (raises? (lambda () (reverse-gradient (lambda (x) (* x x)) (vector (sqrt -1))))))
+
+;; A value copied into a persistent global during one tape belongs to that
+;; completed computation. A later tape must treat it as a constant.
+(define saved-from-prior-tape 0.0)
+(define (save-and-return x)
+  (set! saved-from-prior-tape x)
+  x)
+(define first-global-grad
+  (reverse-gradient save-and-return (vector 5.0)))
+(define second-global-grad
+  (reverse-gradient (lambda (x) (+ saved-from-prior-tape (* x 0.0))) (vector 5.0)))
+(check "global value from an earlier tape is an untracked constant"
+  (and (= first-global-grad 1.0) (= second-global-grad 0.0)))
+
+(display "Checks: ") (display checks) (newline)
+(if (> failures 0)
+    (error "reverse-gradient real tape surface regression failed")
+    (display "PASS: reverse-gradient real tape surface\n"))
