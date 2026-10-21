@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 #include "../../inc/eshkol/core/object_limits.h"
@@ -180,13 +181,21 @@ static inline void vm_arena_destroy(VmArena* a) {
 
 /* O(1) bump-pointer allocation */
 static inline void* vm_arena_alloc(VmArena* a, size_t size) {
+    if (!a || size > SIZE_MAX - (VM_ARENA_ALIGNMENT - 1)) return NULL;
     /* Align to VM_ARENA_ALIGNMENT */
     size = (size + VM_ARENA_ALIGNMENT - 1) & ~(VM_ARENA_ALIGNMENT - 1);
+    if (a->total_used > SIZE_MAX - size) return NULL;
+    if (a->current && a->current->used > a->current->size) return NULL;
 
-    if (!a->current || a->current->used + size > a->current->size) {
+    if (!a->current || size > a->current->size - a->current->used) {
         /* Need new block */
         size_t block_size = a->default_block_size;
-        if (size > block_size) block_size = size * 2;
+        if (size > block_size) {
+            if (size > SIZE_MAX / 2) return NULL;
+            block_size = size * 2;
+        }
+        if (a->total_allocated > SIZE_MAX - block_size ||
+            a->n_blocks == INT_MAX) return NULL;
         VmArenaBlock* nb = vm_arena_block_create(block_size);
         if (!nb) return NULL;
         nb->next = a->current;

@@ -22,6 +22,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <limits.h>
 
 /* ── VmString Type ── */
 
@@ -267,44 +268,55 @@ static VmString* vm_string_append(VmRegionStack* rs, const VmString* a, const Vm
     return result;
 }
 
-/** @brief Native call 557: `(string-upcase s)` (ASCII codepoints only). */
-static VmString* vm_string_upcase(VmRegionStack* rs, const VmString* s) {
-    if (!s) return NULL;
-    VmString* result = (VmString*)vm_alloc(rs, sizeof(VmString));
-    if (!result) return NULL;
-    result->data = (char*)vm_alloc(rs, s->byte_len + 1);
-    if (!result->data) return NULL;
-
-    int pos = 0, out = 0;
+/* Invalid input bytes decode to U+FFFD and can expand when re-encoded. Count
+ * the actual output first, keeping ordinary ASCII allocation proportional to
+ * its result rather than reserving three times every input string's size. */
+static VmString* vm_string_ascii_case(VmRegionStack* rs, const VmString* s,
+                                      int upper) {
+    if (!s || s->byte_len < 0 || (s->byte_len && !s->data)) return NULL;
+    int pos = 0, required = 0;
     while (pos < s->byte_len) {
         int cp = vm_utf8_decode(s->data, s->byte_len, &pos);
-        if (cp >= 'a' && cp <= 'z') cp -= 32;
-        out += vm_utf8_encode(cp, result->data + out);
+        char encoded[4];
+        int count = vm_utf8_encode(cp, encoded);
+        if (required > INT_MAX - count) return NULL;
+        required += count;
+    }
+
+    VmString* result = (VmString*)vm_alloc(rs, sizeof(VmString));
+    if (!result) return NULL;
+    result->data = (char*)vm_alloc(rs, (size_t)required + 1);
+    if (!result->data) return NULL;
+
+    pos = 0;
+    int out = 0, chars = 0;
+    while (pos < s->byte_len) {
+        int cp = vm_utf8_decode(s->data, s->byte_len, &pos);
+        if (upper && cp >= 'a' && cp <= 'z') cp -= 'a' - 'A';
+        if (!upper && cp >= 'A' && cp <= 'Z') cp += 'a' - 'A';
+        char encoded[4];
+        int count = vm_utf8_encode(cp, encoded);
+        /* Strings are immutable, but never write beyond the counted extent
+         * even if an invalid external caller changes the input meanwhile. */
+        if (count > required - out) return NULL;
+        memcpy(result->data + out, encoded, (size_t)count);
+        out += count;
+        ++chars;
     }
     result->data[out] = '\0';
     result->byte_len = out;
-    result->char_len = s->char_len;
+    result->char_len = chars;
     return result;
+}
+
+/** @brief Native call 557: `(string-upcase s)` (ASCII codepoints only). */
+static VmString* vm_string_upcase(VmRegionStack* rs, const VmString* s) {
+    return vm_string_ascii_case(rs, s, 1);
 }
 
 /** @brief Native call 558: `(string-downcase s)` (ASCII codepoints only). */
 static VmString* vm_string_downcase(VmRegionStack* rs, const VmString* s) {
-    if (!s) return NULL;
-    VmString* result = (VmString*)vm_alloc(rs, sizeof(VmString));
-    if (!result) return NULL;
-    result->data = (char*)vm_alloc(rs, s->byte_len + 1);
-    if (!result->data) return NULL;
-
-    int pos = 0, out = 0;
-    while (pos < s->byte_len) {
-        int cp = vm_utf8_decode(s->data, s->byte_len, &pos);
-        if (cp >= 'A' && cp <= 'Z') cp += 32;
-        out += vm_utf8_encode(cp, result->data + out);
-    }
-    result->data[out] = '\0';
-    result->byte_len = out;
-    result->char_len = s->char_len;
-    return result;
+    return vm_string_ascii_case(rs, s, 0);
 }
 
 /** @brief Native call 559: `(string-contains s substr)` — byte-level

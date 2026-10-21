@@ -14763,7 +14763,7 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TA
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 
-    foreach(_vm_case IN ITEMS bytevector_constructor logic_registry_reset)
+    foreach(_vm_case IN ITEMS bytevector_constructor logic_registry_reset utf8_case_capacity)
         set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/${_vm_case}_regression.esk")
         if(_vm_case STREQUAL "logic_registry_reset")
             set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/logic_registry_reset_vm_regression.esk")
@@ -14785,4 +14785,26 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TA
         --link-dir "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(vm_parser_prefix_refusal PROPERTIES TIMEOUT 300
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "Traceback|AssertionError")
+endif()
+
+# Invalid UTF-8 can expand when decoded to replacement characters. Verify
+# actual output allocation extents, including in Release/NDEBUG builds.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(vm_string_case_capacity_test
+        tests/vm/vm_string_case_capacity_test.c)
+    target_include_directories(vm_string_case_capacity_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME vm_string_case_capacity COMMAND vm_string_case_capacity_test)
+    set_tests_properties(vm_string_case_capacity PROPERTIES
+        TIMEOUT 30 LABELS "vm;utf8;memory;regression")
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    add_executable(vm_arena_checked_allocation_test
+        tests/vm/vm_arena_checked_allocation_test.c)
+    target_include_directories(vm_arena_checked_allocation_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME vm_arena_checked_allocation COMMAND vm_arena_checked_allocation_test)
+    set_tests_properties(vm_arena_checked_allocation PROPERTIES
+        TIMEOUT 30 LABELS "vm;memory;regression")
 endif()

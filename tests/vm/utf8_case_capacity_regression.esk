@@ -1,0 +1,16 @@
+;; Malformed input bytes expand to U+FFFD in the VM's decoder. Both case
+;; conversions must preserve all replacements without overrunning storage.
+(define malformed (utf8->string (make-bytevector 64 #xff)))
+(define expected (make-string 64 (integer->char #xfffd)))
+(define upper (string-upcase malformed))
+(define lower (string-downcase malformed))
+(if (and (string=? upper expected)
+         (string=? lower expected)
+         (= (string-length upper) 64)
+         (= (string-length lower) 64)
+         (= (bytevector-length (string->utf8 upper)) 192)
+         (= (bytevector-length (string->utf8 lower)) 192)
+         (string=? (string-upcase "aZ09") "AZ09")
+         (string=? (string-downcase "Az09") "az09"))
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "FAIL: UTF-8 case conversion") (newline) (exit 1)))
