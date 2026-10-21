@@ -1,4 +1,5 @@
 #include "../../inc/eshkol/core/number_syntax.h"
+#include <eshkol/core/linear_solve_portable.h>
 #include <eshkol/core/tensor_inverse_checked.h>
 #include <math.h>
 #include <stdint.h>
@@ -6,13 +7,6 @@
 #include "../core/model_io_atomic.h"
 #include "../core/tensor_observation.h"
 #include "../core/value_type_names.h"
-
-/* Dense linear solver (lib/core/linear_solve.cpp): full-f64 Ax=b, row-major
- * f64 buffers, returns 0 on success or a nonzero catchable status code. */
-extern int64_t eshkol_linear_solve(
-    int64_t a_ndim, const int64_t* a_dims,
-    int64_t b_ndim, const int64_t* b_dims,
-    const double* A, const double* b, double* x);
 
 /* Seeded pseudorandom numbers use the hosted runtime's one canonical
  * drand48-compatible state on the native VM. The WASM VM has no hosted
@@ -12344,59 +12338,75 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 472: { /* linear-solve(A, b) -> x, full-f64 Ax=b (mixed-precision IR) */
+    case 472: { /* linear-solve(A, b) -> x, portable pivoted f64 VM solver */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         VmTensor* A = vm_tensor_operand(vm, a_val, "linear-solve");
         if (!A) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand(vm, b_val, "linear-solve");
         if (!b) break;   /* raised: push nothing */
-
-        /* Dimension vectors are sized from the operands, not clipped to a
-         * fixed rank (the old `i < VM_TENSOR_MAX_DIMS` clamp silently handed
-         * the solver a truncated shape). */
-        int64_t* a_dims = (A->n_dims > 0)
-            ? (int64_t*)vm_alloc(&vm->heap.regions, (size_t)A->n_dims * sizeof(int64_t)) : NULL;
-        int64_t* b_dims = (b->n_dims > 0)
-            ? (int64_t*)vm_alloc(&vm->heap.regions, (size_t)b->n_dims * sizeof(int64_t)) : NULL;
-        if ((A->n_dims > 0 && !a_dims) || (b->n_dims > 0 && !b_dims)) {
-            vm_push(vm, NIL_VAL); break;
-        }
-        for (int i = 0; i < A->n_dims; i++) a_dims[i] = A->shape[i];
-        for (int i = 0; i < b->n_dims; i++) b_dims[i] = b->shape[i];
-
-        /* Solution length is A's leading dimension; the runtime validates that
-         * A is a square 2-D matrix and that b's length matches before use. */
-        int64_t n = (A->n_dims >= 1 && A->shape[0] > 0) ? A->shape[0] : 0;
-        double* x = (n > 0)
-            ? (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double))
-            : NULL;
-        if (n > 0 && !x) { vm_push(vm, NIL_VAL); break; }
-
-        int64_t status = eshkol_linear_solve(
-            A->n_dims, a_dims, b->n_dims, b_dims, A->data, b->data, x);
-
-        if (status != 0) {
-            const char* msg =
-                (status == 1) ? "linear-solve: matrix is singular" :
-                (status == 2) ? "linear-solve: A must be a square 2-D matrix" :
-                                "linear-solve: dimension mismatch (b length must equal N)";
-            VmError* e = vm_error_make(&vm->heap.regions, "error", msg, NULL, 0);
-            Value exn = NIL_VAL;
-            if (e) {
-                int32_t ep = heap_alloc(&vm->heap);
-                if (ep >= 0) {
-                    vm->heap.objects[ep]->type = HEAP_ERROR;
-                    vm->heap.objects[ep]->opaque.ptr = e;
-                    exn = (Value){.type = VAL_ERROR_OBJ, .as.ptr = ep};
-                }
-            }
-            vm_dispatch_exception(vm, exn);
+        if (A->n_dims != 2 || !A->shape || A->shape[0] <= 0 ||
+            A->shape[0] != A->shape[1]) {
+            vm_raise_error_msg(vm,
+                "linear-solve: A must be a non-empty square rank-2 tensor");
             break;
         }
-
+        const int64_t n = A->shape[0];
+        if (n > INT64_MAX / n || (uint64_t)n > SIZE_MAX / (uint64_t)n / sizeof(double)) {
+            vm_raise_error_msg(vm, "linear-solve: matrix size overflow");
+            break;
+        }
+        const int64_t matrix_count = n * n;
+        if (A->total != matrix_count || !A->data || b->n_dims <= 0 ||
+            !b->shape || !b->data) {
+            vm_raise_error_msg(vm,
+                "linear-solve: expected a non-empty RHS tensor with N elements");
+            break;
+        }
+        int64_t rhs_count = 1;
+        int bad_rhs_shape = 0;
+        for (int i = 0; i < b->n_dims; ++i) {
+            if (b->shape[i] < 0 ||
+                (b->shape[i] != 0 && rhs_count > INT64_MAX / b->shape[i])) {
+                bad_rhs_shape = 1;
+                break;
+            }
+            rhs_count *= b->shape[i];
+        }
+        if (bad_rhs_shape || rhs_count != n || b->total != n) {
+            vm_raise_error_msg(vm,
+                "linear-solve: dimension mismatch (b must contain N elements)");
+            break;
+        }
+        if ((uint64_t)n > SIZE_MAX / sizeof(double)) {
+            vm_raise_error_msg(vm, "linear-solve: solution size overflow");
+            break;
+        }
+        double* x = (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double));
+        if (!x) {
+            vm_raise_error_msg(vm, "linear-solve: allocation failed");
+            break;
+        }
+        const int status = eshkol_linear_solve_portable(A->data, b->data, x, n);
+        if (status != ESHKOL_LINEAR_SOLVE_PORTABLE_OK) {
+            const char* msg =
+                status == ESHKOL_LINEAR_SOLVE_PORTABLE_SINGULAR
+                    ? "linear-solve: matrix is singular" :
+                status == ESHKOL_LINEAR_SOLVE_PORTABLE_NONFINITE
+                    ? "linear-solve: inputs or computed solution must be finite" :
+                status == ESHKOL_LINEAR_SOLVE_PORTABLE_OUT_OF_MEMORY
+                    ? "linear-solve: workspace allocation failed" :
+                status == ESHKOL_LINEAR_SOLVE_PORTABLE_SIZE_OVERFLOW
+                    ? "linear-solve: matrix size overflow" :
+                      "linear-solve: invalid solver arguments";
+            vm_raise_error_msg(vm, msg);
+            break;
+        }
         int64_t shape[1] = { n };
         VmTensor* out = vm_tensor_from_data(&vm->heap.regions, x, shape, 1);
-        if (!out) { vm_push(vm, NIL_VAL); break; }
+        if (!out) {
+            vm_raise_error_msg(vm, "linear-solve: result allocation failed");
+            break;
+        }
         VM_PUSH_TENSOR(vm, out);
         break;
     }

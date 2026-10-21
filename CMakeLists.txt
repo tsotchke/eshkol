@@ -2403,6 +2403,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_hash_table.cpp
   lib/core/runtime_list_helpers.cpp
   lib/core/linear_solve.cpp
+  lib/core/linear_solve_portable.c
   lib/core/memory_abi_v2.cpp
   lib/core/runtime_object_alloc.cpp
   lib/core/runtime_regions.cpp
@@ -7643,6 +7644,19 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_
         ENVIRONMENT "ESHKOL_LINSOLVE_FORCE_DGESV=1")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_portable_test.c")
+    add_executable(linear_solve_portable_test
+        tests/core/linear_solve_portable_test.c
+        lib/core/linear_solve_portable.c)
+    set_target_properties(linear_solve_portable_test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_include_directories(linear_solve_portable_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(NOT WIN32)
+        target_link_libraries(linear_solve_portable_test PRIVATE m)
+    endif()
+    add_test(NAME linear_solve_portable_test COMMAND linear_solve_portable_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_signal_handlers_test.cpp")
     add_executable(runtime_signal_handlers_test tests/core/runtime_signal_handlers_test.cpp)
     target_compile_features(runtime_signal_handlers_test PRIVATE cxx_std_17)
@@ -9110,6 +9124,18 @@ if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND NOT WIN32)
         ${LLVM_LIBS_LIST}
         ${LLVM_SYSTEM_LIBS_LIST}
     )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/linear_solve_portable_surface_regression.esk")
+    add_test(
+        NAME linear_solve_portable_vm_regression
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/linear_solve_portable_surface_regression.esk")
+    set_tests_properties(linear_solve_portable_vm_regression PROPERTIES
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS: portable VM linear-solve"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32)
