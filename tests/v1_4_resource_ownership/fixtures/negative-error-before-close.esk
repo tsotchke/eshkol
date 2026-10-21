@@ -1,0 +1,4 @@
+(import (core net))
+(define socket (tcp-listen "127.0.0.1" 0))
+(error "stop")
+(tcp-close socket)

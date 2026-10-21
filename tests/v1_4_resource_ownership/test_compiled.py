@@ -55,6 +55,11 @@ NEGATIVE = (
     "negative-imported-initializer-leak",
     "negative-imported-unknown-factory",
     "negative-two-module-export-collision",
+    "negative-error-before-close",
+    "negative-error-alias-before-close",
+    "negative-unknown-builtin-alias-factory",
+    "negative-callable-return-builtin-factory",
+    "negative-re-refine-incompatible-join",
 )
 
 

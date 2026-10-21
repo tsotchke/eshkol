@@ -1642,6 +1642,7 @@ public:
         CLOSE_UDP,
         ERROR_PREDICATE,
         ERROR_OBSERVER,
+        TERMINAL_CONTROL,
         UNKNOWN_RESOURCE_EFFECT
     };
 
@@ -1819,12 +1820,18 @@ private:
         return CallableEffect::NONE;
     }
 
+    CallableEffect unresolvedCallableEffect(const std::string& name) const {
+        if (name == "exit" || name == "error") return CallableEffect::TERMINAL_CONTROL;
+        if (isKnownResourceSafeBuiltin(name)) return CallableEffect::NONE;
+        return CallableEffect::UNKNOWN_RESOURCE_EFFECT;
+    }
+
     CallableEffect callableEffectOf(const eshkol_ast_t* expression) const {
         const std::string name = getVarName(expression);
         if (name.empty()) return CallableEffect::NONE;
         if (VariableInfo* info = const_cast<OwnershipAnalyzer*>(this)->lookupVariable(name))
             return info->callable_effect;
-        return CallableEffect::NONE;
+        return unresolvedCallableEffect(name);
     }
 
     std::string callableContractOf(const eshkol_ast_t* expression) const {
@@ -2044,7 +2051,8 @@ private:
                 if (info.resource_state == ResourceState::ERROR_OR_LIVE)
                     info.resource_state = error_path ? ResourceState::ERROR_ONLY : ResourceState::LIVE;
                 else if (info.resource_state == ResourceState::MAYBE_LIVE)
-                    info.resource_state = error_path ? ResourceState::ERROR_ONLY : ResourceState::LIVE;
+                    reportResourceError("network-error? cannot refine resource '" + entry.first +
+                        "' after incompatible branch states");
                 return;
             }
         }
@@ -2055,9 +2063,16 @@ private:
 
     bool isSimplePureExpression(const eshkol_ast_t* ast, unsigned depth = 0) const {
         if (!ast || depth > 128) return false;
-        if (ast->type == ESHKOL_CONS)
+        if (ast->type == ESHKOL_VAR) return false;
+        if (ast->type == ESHKOL_CONS) {
+            const std::string head = getVarName(ast->cons_cell.car);
+            if (!head.empty()) {
+                if (!isKnownResourceSafeBuiltin(head)) return false;
+                return isSimplePureExpression(ast->cons_cell.cdr, depth + 1);
+            }
             return isSimplePureExpression(ast->cons_cell.car, depth + 1) &&
                    isSimplePureExpression(ast->cons_cell.cdr, depth + 1);
+        }
         if (ast->type != ESHKOL_OP) return true;
         const auto& op = ast->operation;
         if (op.op == ESHKOL_LAMBDA_OP) return false;
@@ -2085,7 +2100,7 @@ private:
         if (!variable_name.empty()) {
             if (known) {
                 auto it = known->find(variable_name);
-                return it == known->end() ? CallableEffect::NONE : it->second;
+                return it == known->end() ? unresolvedCallableEffect(variable_name) : it->second;
             }
             return callableEffectOf(expression);
         }
@@ -2095,7 +2110,7 @@ private:
             const std::string function_name = getVarName(call.func);
             if (known) {
                 auto it = known->find(function_name);
-                return it == known->end() ? CallableEffect::NONE : it->second;
+                return it == known->end() ? unresolvedCallableEffect(function_name) : it->second;
             }
             return callableEffectOf(call.func);
         }
@@ -2668,22 +2683,22 @@ private:
         }
 
         VariableInfo* callee = lookupVariable(function_name);
-        if ((effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT) ||
-            (!callee && isRawResourceBuiltin(function_name))) {
-            reportResourceError("untrusted FFI or raw resource operation '" + function_name +
-                "' is unsupported in strict mode");
-            return;
-        }
-        if (function_name == "exit" && !callee) {
+        if (effect == CallableEffect::TERMINAL_CONTROL) {
             for (const auto& scope : scope_stack_) {
                 for (const auto& entry : scope.variables) {
                     if (entry.second.resource_kind != ResourceKind::NONE &&
                         isLiveResourceState(entry.second.resource_state)) {
-                        reportResourceError("exit occurs while resource '" + entry.first +
-                            "' may still be live");
+                        reportResourceError("terminal control transfer '" + function_name +
+                            "' occurs while resource '" + entry.first + "' may still be live");
                     }
                 }
             }
+            return;
+        }
+        if ((effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT) ||
+            (!callee && isRawResourceBuiltin(function_name))) {
+            reportResourceError("untrusted FFI or raw resource operation '" + function_name +
+                "' is unsupported in strict mode");
             return;
         }
         if (!callee && effect == CallableEffect::NONE &&
