@@ -14844,7 +14844,7 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TA
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 
-    foreach(_vm_case IN ITEMS bytevector_constructor logic_registry_reset utf8_case_capacity)
+    foreach(_vm_case IN ITEMS bytevector_constructor logic_registry_reset utf8_case_capacity reverse_gradient_real_tape_surface)
         set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/${_vm_case}_regression.esk")
         if(_vm_case STREQUAL "logic_registry_reset")
             set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/logic_registry_reset_vm_regression.esk")
@@ -14902,7 +14902,7 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-static)
     add_executable(function_cache_type_contract_test tests/toolchain/function_cache_type_contract_test.cpp)
-    target_include_directories(function_cache_type_contract_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_include_directories(function_cache_type_contract_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc ${LLVM_INCLUDE_DIRS})
     target_compile_definitions(function_cache_type_contract_test PRIVATE ESHKOL_LLVM_BACKEND_ENABLED=1)
     if(LLVM_LIBRARY_DIRS)
         target_link_directories(function_cache_type_contract_test PRIVATE ${LLVM_LIBRARY_DIRS})

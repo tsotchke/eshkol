@@ -31,6 +31,13 @@ int main() {
             catch (const std::runtime_error& e) {
                 refused = std::string(e.what()).find("strlen") != std::string::npos;
             }
+            if (refused) {
+                refused = false;
+                try { cache.getStrlen(); }
+                catch (const std::runtime_error& e) {
+                    refused = std::string(e.what()).find("strlen") != std::string::npos;
+                }
+            }
             if (!refused || module.size() != 1 || module.getFunction("strlen") != original) {
                 std::fprintf(stderr, "FAIL: mismatched function declaration was accepted or renamed\n");
                 return 3;

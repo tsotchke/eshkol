@@ -33,85 +33,9 @@ FunctionCodegen::FunctionCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged
     eshkol_debug("FunctionCodegen initialized");
 }
 
-/**
- * @brief Build a tagged CALLABLE value wrapping a function pointer and its captures.
- *
- * With no captures, this just packs the raw function pointer as a legacy
- * CLOSURE_PTR-compatible CALLABLE tagged value (no heap allocation, since
- * there is no environment to store). With captures, it allocates a closure
- * structure in the arena via arena_allocate_closure_with_header (16-byte
- * header + function pointer + capture count, followed by one 16-byte tagged
- * slot per capture), stores each captured tagged value at offset
- * `16 + i*16`, and packs the resulting pointer as a CALLABLE tagged value
- * (header carries CALLABLE_SUBTYPE_CLOSURE).
- *
- * @param func LLVM function to wrap as a closure.
- * @param captures Tagged values to store in the closure's environment, in order.
- * @return Tagged CALLABLE value, or a tagged null if arena allocation or the
- *         global arena pointer is unavailable.
- */
-llvm::Value* FunctionCodegen::createClosure(llvm::Function* func, const std::vector<llvm::Value*>& captures) {
-    if (captures.empty()) {
-        // No captures - just return function pointer as closure
-        // NOTE: Uses legacy CLOSURE_PTR since there's no allocation (no header).
-        // The isClosure() helper recognizes both legacy and consolidated types.
-        llvm::Value* func_ptr = ctx_.builder().CreatePtrToInt(func, ctx_.int64Type());
-        return tagged_.packPtr(
-            ctx_.builder().CreateIntToPtr(func_ptr, ctx_.ptrType()),
-            ESHKOL_VALUE_CALLABLE
-        );
-    }
-
-    // Allocate closure structure in arena with header (consolidated CALLABLE type)
-    llvm::Function* alloc_closure = mem_.getArenaAllocateClosureWithHeader();
-    if (!alloc_closure) {
-        eshkol_warn("arena_allocate_closure_with_header not available");
-        return tagged_.packNull();
-    }
-
-    llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("global_arena");
-    if (!arena_global) {
-        eshkol_warn("global_arena not found");
-        return tagged_.packNull();
-    }
-
-    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global, "arena");
-    llvm::Value* func_ptr = ctx_.builder().CreatePtrToInt(func, ctx_.intPtrType());
-    llvm::Value* num_captures = llvm::ConstantInt::get(ctx_.int64Type(), captures.size());
-    llvm::Value* sexpr_ptr = llvm::ConstantInt::get(ctx_.intPtrType(), 0);  // Compiled closures don't carry s-expression data
-    llvm::Value* return_type_info = llvm::ConstantInt::get(ctx_.intPtrType(), 0);  // Default type info
-
-    llvm::Value* closure_ptr = ctx_.builder().CreateCall(
-        alloc_closure,
-        {arena_ptr, func_ptr, num_captures, sexpr_ptr, return_type_info},
-        "closure"
-    );
-    ctx_.emitConstructorAllocationCheck(closure_ptr);
-
-    // Store captured values
-    for (size_t i = 0; i < captures.size(); i++) {
-        llvm::Value* capture_idx = llvm::ConstantInt::get(ctx_.int64Type(), i);
-        // Calculate offset: closure_ptr + 16 + (i * 16) for tagged values
-        llvm::Value* offset = ctx_.builder().CreateAdd(
-            llvm::ConstantInt::get(ctx_.int64Type(), 16),
-            ctx_.builder().CreateMul(capture_idx, llvm::ConstantInt::get(ctx_.int64Type(), 16))
-        );
-        llvm::Value* capture_ptr = ctx_.builder().CreateGEP(
-            ctx_.int8Type(),
-            closure_ptr,
-            offset,
-            "capture_ptr"
-        );
-        llvm::Value* capture_typed_ptr = ctx_.builder().CreateBitCast(
-            capture_ptr,
-            llvm::PointerType::getUnqual(ctx_.context())
-        );
-        ctx_.builder().CreateStore(captures[i], capture_typed_ptr);
-    }
-
-    // Pack using consolidated CALLABLE type (header contains CALLABLE_SUBTYPE_CLOSURE)
-    return tagged_.packCallable(closure_ptr);
-}
+// Closure allocation and environment stores belong to the live implementation
+// in llvm_codegen.cpp. The obsolete alternate allocator used an incompatible
+// payload layout and has been removed rather than left available for revival.
 
 // Note: The following implementations are complex and depend on:
 // - Symbol table management for captures
