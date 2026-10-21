@@ -13155,6 +13155,17 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
 endif()
 
 if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_lexical_scope_test.py")
+    add_test(NAME ownership_lexical_scope
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_lexical_scope_test.py
+            $<TARGET_FILE:eshkol-run>
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory)
+    set_tests_properties(ownership_lexical_scope PROPERTIES
+        TIMEOUT 900 LABELS "ownership;memory;regression")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
    TARGET eshkol-vm-standalone-test AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_gate.py" AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_single_eval_test.esk")
