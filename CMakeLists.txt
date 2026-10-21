@@ -13257,6 +13257,7 @@ endif()
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(algebraic_reverse_example "examples/algebraic_reverse.esk")
     eshkol_add_algebraic_ad_acceptance(incremental_reverse "tests/stdlib/incremental_reverse_test.esk")
+    eshkol_add_algebraic_ad_acceptance(incremental_reverse_alias_seed "tests/stdlib/incremental_reverse_alias_seed_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_pullback "tests/stdlib/algebraic_pullback_test.esk")
     eshkol_add_algebraic_ad_acceptance(algebraic_pullback_example "examples/algebraic_pullback.esk")
 endif()
@@ -13467,4 +13468,16 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
     add_test(NAME net_close_concurrency_test COMMAND net_close_concurrency_test)
     set_tests_properties(net_close_concurrency_test PROPERTIES TIMEOUT 30
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    foreach(reverse_fixture IN ITEMS incremental_reverse incremental_reverse_alias_seed)
+        add_test(NAME ${reverse_fixture}_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${reverse_fixture}_test.esk")
+        set_tests_properties(${reverse_fixture}_vm PROPERTIES TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
+    endforeach()
 endif()
