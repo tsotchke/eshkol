@@ -1759,20 +1759,25 @@ static void vm_seed_entry_module_path(const char* source_path) {
 static int g_vm_bootstrapping_standard_library = 0;
 
 /* The standalone VM lowers the exact extern declarations used by
- * core.dbsp.sqlite_changefeed through its existing typed SQLite host bridge.
+ * core.dbsp.sqlite_changefeed, including checkpoint content hashes, through
+ * explicit typed native bridges.
  * This is deliberately a closed signature table: it is not a general foreign
  * function interface, and unknown declarations fail compilation rather than
  * becoming ordinary calls to the symbol `extern`. */
 typedef struct {
     const char* name;
     const char* result;
-    const char* args[4];
+    const char* args[6];
     int n_args;
     const char* real_name;
     int native_id;
-} VmSqliteExternSpec;
+} VmTypedExternSpec;
 
-static const VmSqliteExternSpec VM_SQLITE_EXTERNS[] = {
+static const VmTypedExternSpec VM_TYPED_EXTERNS[] = {
+    {"sha256-raw", "i32", {"ptr", "i64", "ptr", "i64"}, 4, "eshkol_sha256", VM_NATIVE_SHA256_EXTERN},
+    {"hmac-sha256-raw", "i32", {"ptr", "i64", "ptr", "i64", "ptr", "i64"}, 6, "eshkol_hmac_sha256", VM_NATIVE_HMAC_SHA256_EXTERN},
+    {"random-bytes-raw", "i32", {"ptr", "i64"}, 2, "eshkol_random_bytes", VM_NATIVE_RANDOM_BYTES_EXTERN},
+    {"random-hex-raw", "i32", {"ptr", "i64"}, 2, "eshkol_random_hex", VM_NATIVE_RANDOM_HEX_EXTERN},
     {"sqlite-open-raw", "i64", {"ptr"}, 1, "eshkol_sqlite_open", VM_NATIVE_SQLITE_OPEN},
     {"sqlite-close-raw", "void", {"i64"}, 1, "eshkol_sqlite_close", VM_NATIVE_SQLITE_CLOSE},
     {"sqlite-exec-raw", "i32", {"i64", "ptr"}, 2, "eshkol_sqlite_exec", VM_NATIVE_SQLITE_EXEC},
@@ -1796,14 +1801,14 @@ static const VmSqliteExternSpec VM_SQLITE_EXTERNS[] = {
     {"sqlite-changes-raw", "i32", {"i64"}, 1, "eshkol_sqlite_changes", VM_NATIVE_SQLITE_CHANGES},
 };
 
-static const VmSqliteExternSpec* vm_sqlite_extern_spec(const Node* form) {
+static const VmTypedExternSpec* vm_typed_extern_spec(const Node* form) {
     if (!form || form->type != N_LIST || form->n_children < 3 ||
         !is_sym(form->children[0], "extern") ||
         form->children[1]->type != N_SYMBOL || form->children[2]->type != N_SYMBOL)
         return NULL;
     const char* name = form->children[2]->symbol;
-    for (size_t i = 0; i < sizeof(VM_SQLITE_EXTERNS) / sizeof(VM_SQLITE_EXTERNS[0]); ++i) {
-        const VmSqliteExternSpec* spec = &VM_SQLITE_EXTERNS[i];
+    for (size_t i = 0; i < sizeof(VM_TYPED_EXTERNS) / sizeof(VM_TYPED_EXTERNS[0]); ++i) {
+        const VmTypedExternSpec* spec = &VM_TYPED_EXTERNS[i];
         if (strcmp(name, spec->name) != 0) continue;
         if (strcmp(form->children[1]->symbol, spec->result) != 0 ||
             form->n_children != spec->n_args + 5) return NULL;
@@ -1822,27 +1827,27 @@ static const VmSqliteExternSpec* vm_sqlite_extern_spec(const Node* form) {
     return NULL;
 }
 
-static int vm_compile_sqlite_extern_binding(FuncChunk* c, Node* form) {
-    const VmSqliteExternSpec* spec = vm_sqlite_extern_spec(form);
+static int vm_compile_typed_extern_binding(FuncChunk* c, Node* form) {
+    const VmTypedExternSpec* spec = vm_typed_extern_spec(form);
     if (!spec) {
         vm_compile_error("unsupported or malformed VM extern declaration",
-                         "only the exact agent.sqlite SQLite ABI signatures are admitted");
+                         "only the exact agent.sqlite and agent.crypto ABI signatures are admitted");
         return 0;
     }
     if (resolve_local(c, spec->name) >= 0) {
-        vm_compile_error("duplicate SQLite extern declaration", spec->name);
+        vm_compile_error("duplicate typed extern declaration", spec->name);
         return 0;
     }
 
     /* Materialize a normal bytecode closure so ESKB carries only the stable
      * native-call ID; no process pointer or foreign symbol is serialized. */
     if (add_local(c, spec->name) < 0) {
-        vm_compile_error("unable to allocate SQLite extern binding", spec->name);
+        vm_compile_error("unable to allocate typed extern binding", spec->name);
         return 0;
     }
     int function_constant = chunk_add_const(c, INT_VAL(0));
     if (function_constant < 0) {
-        vm_compile_error("unable to allocate SQLite extern closure constant", spec->name);
+        vm_compile_error("unable to allocate typed extern closure constant", spec->name);
         return 0;
     }
     int skip_body = placeholder(c);
@@ -2080,7 +2085,7 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
         }
         if (forms[i]->type == N_LIST && forms[i]->n_children > 0 &&
             is_sym(forms[i]->children[0], "extern")) {
-            (void)vm_compile_sqlite_extern_binding(c, forms[i]);
+            (void)vm_compile_typed_extern_binding(c, forms[i]);
         } else if (do_box) vm_compile_boxed_variable_define(c, forms[i]);
         else compile_expr(c, forms[i], 0);
         if (c->n_locals == before) chunk_emit(c, OP_POP, 0);

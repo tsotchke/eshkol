@@ -14,7 +14,9 @@
 (define db (sqlite-open ":memory:"))
 (check "SQLite host symbol is linked" (> db 0))
 (check "table creation succeeds" (= (sqlite-exec db "CREATE TABLE t(value TEXT)") 0))
-(define payload (string-append "left" (string (integer->char 0)) "λright"))
+(define payload (string-append (string (integer->char 0)) "left"
+                               (string (integer->char 0)) "λ漢🙂right"
+                               (string (integer->char 0))))
 (define insert (sqlite-prepare db "INSERT INTO t(value) VALUES(?)"))
 (check "prepare insert succeeds" (> insert 0))
 (check "VM string length is passed to SQLite with embedded NUL" (= (sqlite-bind-text insert 1 payload) 0))
@@ -26,7 +28,7 @@
 (check "query reaches SQLITE_ROW" (sqlite-step query))
 (check "UTF-8 column name round-trips"
   (string=? (sqlite-column-name query 0) "column λ"))
-(check "UTF-8 and embedded NUL column text round-trips"
+(check "2/3/4-byte UTF-8 and leading/interior/trailing NUL round-trip"
   (string=? (sqlite-column-text query 0) payload))
 (check "query reaches SQLITE_DONE" (not (sqlite-step query)))
 (sqlite-finalize query)
