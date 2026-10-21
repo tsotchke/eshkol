@@ -18,7 +18,7 @@
     '((- x t) (- y (* x x)))))
 (define start
   (make-certified-continuation equations 1 (vector 1 1)
-    (vector 1/64 1/64) (vector (vector 1 0) (vector 0 1))))
+    (vector 1/64 1/64) (vector (vector 1 0) (vector 2 1))))
 (define start-cert (vector-ref start 3))
 (define sensitivity (vector-ref start-cert 3))
 (check "x implicit derivative encloses 1"
@@ -33,7 +33,7 @@
 (check "endpoint x encloses t" (contains? (vector-ref (vector-ref endpoint 1) 0) 1/2))
 (check "endpoint y encloses t^2" (contains? (vector-ref (vector-ref endpoint 1) 1) 1/4))
 (check "independent polynomial residual is zero"
-  (equal? (equations 'point (vector 1/2 1/4) (vector 1/2)) #(0 0)))
+  (equal? (equations 'point (vector 1/2 1/4) (vector 1/2)) (vector 0 0)))
 
 ;; Each accepted whole-step record carries a source-recomputed linear solve
 ;; receipt: its residual is F(center,t), its Jacobian uncertainty is from the
@@ -48,7 +48,7 @@
                (vector-ref receipt 0) (vector-ref receipt 1) (vector-ref receipt 2)
                (vector-ref receipt 3) (vector-ref receipt 4)
                (vector-ref receipt 5) (vector-ref receipt 6))
-             (all-step-certificates? (cdr steps)))))
+             (all-step-certificates? (cdr steps))))))
 (check "every accepted step replays its exact residual/Jacobian certificate"
   (all-step-certificates? (vector-ref result 3)))
 (check "source-bound continuation replay verifies"
@@ -59,7 +59,7 @@
 (define no-budget (certified-continuation-advance start 1/2 1/8 0))
 (check "zero budget returns initial certified prefix"
   (and (eq? (vector-ref no-budget 1) 'partial) (= (vector-ref no-budget 4) 0)
-       (= (vector-ref (certified-continuation-enclosure (vector-ref no-budget 2)) 0) 0)))
+       (= (vector-ref (certified-continuation-enclosure (vector-ref no-budget 2)) 0) 1)))
 (define one-budget (certified-continuation-advance start 1/2 1/8 1))
 (check "one-attempt budget is strictly bounded"
   (and (eq? (vector-ref one-budget 1) 'partial) (= (vector-ref one-budget 4) 1)
