@@ -12244,7 +12244,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
-    case 479: { /* tensor-inverse(A): pivoted Gauss-Jordan, f64 matrix */
+    case 479: { /* tensor-inverse(A): checked pivoted elimination, f64 matrix */
         Value av = vm_pop(vm);
         VmTensor* a = vm_tensor_operand(vm, av, "tensor-inverse");
         if (!a) break;

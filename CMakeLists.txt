@@ -13686,3 +13686,16 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test
         PASS_REGULAR_EXPRESSION "RESULT: PASS"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|fatal signal")
 endif()
+
+# Shared C kernel is used by native, VM, and WebAssembly callers.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(tensor_inverse_checked_test tests/tensor_inverse_checked_test.c)
+    target_include_directories(tensor_inverse_checked_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    set_target_properties(tensor_inverse_checked_test PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    if(UNIX)
+        target_link_libraries(tensor_inverse_checked_test PRIVATE m)
+    endif()
+    add_test(NAME tensor_inverse_checked_test COMMAND tensor_inverse_checked_test)
+    set_tests_properties(tensor_inverse_checked_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL")
+endif()

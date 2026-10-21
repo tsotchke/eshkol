@@ -62,21 +62,44 @@ static inline int eshkol_tensor_inverse_checked(const void* input,
             eshkol_inverse_store(inverse, y, t);
         }
         double pivot = work[(size_t)k*n + (size_t)k];
-        for (int64_t c = 0; c < n; ++c) {
+        for (int64_t c = k + 1; c < n; ++c) {
             size_t x = (size_t)k*n + (size_t)c;
             work[x] /= pivot;
+            if (!isfinite(work[x])) return ESHKOL_TENSOR_INVERSE_NONFINITE;
+        }
+        work[(size_t)k*n + (size_t)k] = 1.0;
+        for (int64_t c = 0; c < n; ++c) {
+            size_t x = (size_t)k*n + (size_t)c;
             double iv = eshkol_inverse_load(inverse, x) / pivot;
             eshkol_inverse_store(inverse, x, iv);
-            if (!isfinite(work[x]) || !isfinite(iv)) return ESHKOL_TENSOR_INVERSE_NONFINITE;
+            if (!isfinite(iv)) return ESHKOL_TENSOR_INVERSE_NONFINITE;
         }
-        for (int64_t r = 0; r < n; ++r) if (r != k) {
+        for (int64_t r = k + 1; r < n; ++r) {
+            double f = work[(size_t)r*n + (size_t)k];
+            work[(size_t)r*n + (size_t)k] = 0.0;
+            for (int64_t c = k + 1; c < n; ++c) {
+                size_t x = (size_t)r*n + (size_t)c, y = (size_t)k*n + (size_t)c;
+                work[x] -= f * work[y];
+                if (!isfinite(work[x])) return ESHKOL_TENSOR_INVERSE_NONFINITE;
+            }
+            for (int64_t c = 0; c < n; ++c) {
+                size_t x = (size_t)r*n + (size_t)c, y = (size_t)k*n + (size_t)c;
+                double iv = eshkol_inverse_load(inverse, x) - f * eshkol_inverse_load(inverse, y);
+                eshkol_inverse_store(inverse, x, iv);
+                if (!isfinite(iv)) return ESHKOL_TENSOR_INVERSE_NONFINITE;
+            }
+        }
+    }
+    // The normalized upper triangle now solves U*inverse=P*L^-1.
+    // Back substitution changes only inverse; earlier work columns are dead.
+    for (int64_t k = n; k-- > 0;) {
+        for (int64_t r = 0; r < k; ++r) {
             double f = work[(size_t)r*n + (size_t)k];
             for (int64_t c = 0; c < n; ++c) {
                 size_t x = (size_t)r*n + (size_t)c, y = (size_t)k*n + (size_t)c;
-                work[x] -= f * work[y];
                 double iv = eshkol_inverse_load(inverse, x) - f * eshkol_inverse_load(inverse, y);
                 eshkol_inverse_store(inverse, x, iv);
-                if (!isfinite(work[x]) || !isfinite(iv)) return ESHKOL_TENSOR_INVERSE_NONFINITE;
+                if (!isfinite(iv)) return ESHKOL_TENSOR_INVERSE_NONFINITE;
             }
         }
     }
