@@ -309,8 +309,17 @@ probe_run v14_udp_roundtrip 'public core.net UDP loopback round trip' \
     'python3 "$REPO_ROOT/scripts/run_net_gate.py" --runner "$ESHKOL_RUN"'
 probe_unverified v14_tls_handshake_verified \
     'requires a verified TLS handshake test'
-probe_unverified v14_websocket_server_echo \
-    'requires a WebSocket server upgrade and echo round-trip test'
+if [ -f "$BUILD_DIR_PATH/libeshkol-agent-ffi.a" ] &&
+   [ -x "$ESHKOL_RUN" ] &&
+   [ -x "$BUILD_DIR_PATH/eshkol-agent-websocket-server-test" ]; then
+    probe_run v14_websocket_server_echo \
+        'public agent.http_server WebSocket upgrade and echo through JIT/AOT; native frame, control, refusal, and backpressure contracts' \
+        '"$BUILD_DIR_PATH/eshkol-agent-websocket-server-test" && python3 "$REPO_ROOT/scripts/test_websocket_server_public.py" --eshkol-run "$ESHKOL_RUN" --source "$REPO_ROOT" --build-dir "$BUILD_DIR_PATH"' \
+        '^PASS: public Eshkol AOT WebSocket round-trip$'
+else
+    probe_unverified v14_websocket_server_echo \
+        'optional agent FFI archive or public server test targets are unavailable in this build'
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Concurrency (docs/COMPILER_ROADMAP.md #156-#160, M3)

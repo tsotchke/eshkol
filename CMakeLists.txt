@@ -12791,6 +12791,32 @@ if(ESHKOL_BUILD_AGENT_FFI)
             set_tests_properties(agent-http-contract PROPERTIES TIMEOUT 90)
         endif()
 
+        if(UNIX)
+            find_package(Threads REQUIRED)
+            add_executable(eshkol-agent-websocket-server-test
+                tests/agent/websocket_server_contract_test.c)
+            target_link_libraries(eshkol-agent-websocket-server-test PRIVATE
+                eshkol-agent-ffi Threads::Threads)
+            if(BUILD_TESTING)
+                add_test(NAME agent-websocket-server-contract
+                    COMMAND eshkol-agent-websocket-server-test)
+                set_tests_properties(agent-websocket-server-contract PROPERTIES
+                    TIMEOUT 30)
+            endif()
+        endif()
+
+        if(UNIX AND TARGET eshkol-run)
+            find_package(Python3 COMPONENTS Interpreter REQUIRED)
+            add_test(NAME agent-websocket-server-public-roundtrip
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/scripts/test_websocket_server_public.py
+                    --eshkol-run $<TARGET_FILE:eshkol-run>
+                    --source ${CMAKE_SOURCE_DIR}
+                    --build-dir ${CMAKE_BINARY_DIR})
+            set_tests_properties(agent-websocket-server-public-roundtrip
+                PROPERTIES TIMEOUT 90)
+        endif()
+
         add_executable(eshkol-agent-terminal-status-test
             tests/agent/agent_terminal_status_test.c)
         target_link_libraries(eshkol-agent-terminal-status-test PRIVATE
