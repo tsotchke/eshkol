@@ -9671,6 +9671,19 @@ static VmString* vm_number_value_to_string(VM* vm, Value n) {
     return vm_number_to_string(rs, as_number_vm(vm, n));
 }
 
+static int vm_ad_reject_untraced_input(VM* vm, int slot, const char* operation) {
+    if (!vm || !vm->active_tape || slot < 0 || slot >= STACK_SIZE) return 0;
+    int node = vm->ad_node_map[slot];
+    if (node == -1) { vm->ad_node_map[slot] = -1; return 0; }
+    vm->ad_node_map[slot] = -1;
+    char message[192];
+    snprintf(message, sizeof(message),
+        "reverse-gradient: %s is unsupported for tracked real scalars on the VM", operation);
+    vm_raise_error_msg(vm, message);
+    return 1;
+}
+
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY &&
@@ -9709,17 +9722,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math functions (20-35)
      * ══════════════════════════════════════════════════════════════════════ */
-static int vm_ad_reject_untraced_input(VM* vm, int slot, const char* operation) {
-    if (!vm || !vm->active_tape || slot < 0 || slot >= STACK_SIZE) return 0;
-    int node = vm->ad_node_map[slot];
-    if (node == -1) { vm->ad_node_map[slot] = -1; return 0; }
-    vm->ad_node_map[slot] = -1;
-    char message[192];
-    snprintf(message, sizeof(message),
-        "reverse-gradient: %s is unsupported for tracked real scalars on the VM", operation);
-    vm_raise_error_msg(vm, message);
-    return 1;
-}
 
     /* Reverse-mode AD tracing for the transcendental unary ops: when a tape
      * is active and the operand slot is tracked, record the matching tape node
