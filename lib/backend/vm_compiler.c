@@ -1758,6 +1758,104 @@ static void vm_seed_entry_module_path(const char* source_path) {
  */
 static int g_vm_bootstrapping_standard_library = 0;
 
+/* The standalone VM lowers the exact extern declarations used by
+ * core.dbsp.sqlite_changefeed through its existing typed SQLite host bridge.
+ * This is deliberately a closed signature table: it is not a general foreign
+ * function interface, and unknown declarations fail compilation rather than
+ * becoming ordinary calls to the symbol `extern`. */
+typedef struct {
+    const char* name;
+    const char* result;
+    const char* args[4];
+    int n_args;
+    const char* real_name;
+    int native_id;
+} VmSqliteExternSpec;
+
+static const VmSqliteExternSpec VM_SQLITE_EXTERNS[] = {
+    {"sqlite-open-raw", "i64", {"ptr"}, 1, "eshkol_sqlite_open", VM_NATIVE_SQLITE_OPEN},
+    {"sqlite-close-raw", "void", {"i64"}, 1, "eshkol_sqlite_close", VM_NATIVE_SQLITE_CLOSE},
+    {"sqlite-exec-raw", "i32", {"i64", "ptr"}, 2, "eshkol_sqlite_exec", VM_NATIVE_SQLITE_EXEC},
+    {"sqlite-prepare-raw", "i64", {"i64", "ptr"}, 2, "eshkol_sqlite_prepare", VM_NATIVE_SQLITE_PREPARE},
+    {"sqlite-step-raw", "i32", {"i64"}, 1, "eshkol_sqlite_step", VM_NATIVE_SQLITE_STEP},
+    {"sqlite-reset-raw", "i32", {"i64"}, 1, "eshkol_sqlite_reset", VM_NATIVE_SQLITE_RESET},
+    {"sqlite-finalize-raw", "void", {"i64"}, 1, "eshkol_sqlite_finalize", VM_NATIVE_SQLITE_FINALIZE},
+    {"sqlite-bind-text-raw", "i32", {"i64", "i32", "ptr"}, 3, "eshkol_sqlite_bind_text", VM_NATIVE_SQLITE_BIND_TEXT},
+    {"sqlite-bind-int-raw", "i32", {"i64", "i32", "i64"}, 3, "eshkol_sqlite_bind_int", VM_NATIVE_SQLITE_BIND_INT},
+    {"sqlite-bind-double-raw", "i32", {"i64", "i32", "double"}, 3, "eshkol_sqlite_bind_double", VM_NATIVE_SQLITE_BIND_DOUBLE},
+    {"sqlite-bind-null-raw", "i32", {"i64", "i32"}, 2, "eshkol_sqlite_bind_null", VM_NATIVE_SQLITE_BIND_NULL},
+    {"sqlite-column-text-raw", "i32", {"i64", "i32", "ptr", "i64"}, 4, "eshkol_sqlite_column_text", VM_NATIVE_SQLITE_COLUMN_TEXT},
+    {"sqlite-column-bytes-raw", "i64", {"i64", "i32"}, 2, "eshkol_sqlite_column_bytes", VM_NATIVE_SQLITE_COLUMN_BYTES},
+    {"sqlite-column-int-raw", "i64", {"i64", "i32"}, 2, "eshkol_sqlite_column_int", VM_NATIVE_SQLITE_COLUMN_INT},
+    {"sqlite-column-double-raw", "double", {"i64", "i32"}, 2, "eshkol_sqlite_column_double", VM_NATIVE_SQLITE_COLUMN_DOUBLE},
+    {"sqlite-column-count-raw", "i32", {"i64"}, 1, "eshkol_sqlite_column_count", VM_NATIVE_SQLITE_COLUMN_COUNT},
+    {"sqlite-column-name-raw", "i32", {"i64", "i32", "ptr", "i64"}, 4, "eshkol_sqlite_column_name", VM_NATIVE_SQLITE_COLUMN_NAME},
+    {"sqlite-column-type-raw", "i32", {"i64", "i32"}, 2, "eshkol_sqlite_column_type", VM_NATIVE_SQLITE_COLUMN_TYPE},
+    {"sqlite-last-error-raw", "i32", {"i64", "ptr", "i64"}, 3, "eshkol_sqlite_last_error", VM_NATIVE_SQLITE_LAST_ERROR},
+    {"sqlite-last-insert-rowid-raw", "i64", {"i64"}, 1, "eshkol_sqlite_last_insert_rowid", VM_NATIVE_SQLITE_LAST_INSERT_ROWID},
+    {"sqlite-changes-raw", "i32", {"i64"}, 1, "eshkol_sqlite_changes", VM_NATIVE_SQLITE_CHANGES},
+};
+
+static const VmSqliteExternSpec* vm_sqlite_extern_spec(const Node* form) {
+    if (!form || form->type != N_LIST || form->n_children < 3 ||
+        !is_sym(form->children[0], "extern") ||
+        form->children[1]->type != N_SYMBOL || form->children[2]->type != N_SYMBOL)
+        return NULL;
+    const char* name = form->children[2]->symbol;
+    for (size_t i = 0; i < sizeof(VM_SQLITE_EXTERNS) / sizeof(VM_SQLITE_EXTERNS[0]); ++i) {
+        const VmSqliteExternSpec* spec = &VM_SQLITE_EXTERNS[i];
+        if (strcmp(name, spec->name) != 0) continue;
+        if (strcmp(form->children[1]->symbol, spec->result) != 0 ||
+            form->n_children != spec->n_args + 5) return NULL;
+        for (int a = 0; a < spec->n_args; ++a) {
+            Node* arg = form->children[3 + a];
+            if (arg->type != N_SYMBOL || strcmp(arg->symbol, spec->args[a]) != 0)
+                return NULL;
+        }
+        Node* modifier = form->children[3 + spec->n_args];
+        Node* real_name = form->children[4 + spec->n_args];
+        if (modifier->type != N_SYMBOL || strcmp(modifier->symbol, ":real") != 0 ||
+            real_name->type != N_SYMBOL || strcmp(real_name->symbol, spec->real_name) != 0)
+            return NULL;
+        return spec;
+    }
+    return NULL;
+}
+
+static int vm_compile_sqlite_extern_binding(FuncChunk* c, Node* form) {
+    const VmSqliteExternSpec* spec = vm_sqlite_extern_spec(form);
+    if (!spec) {
+        vm_compile_error("unsupported or malformed VM extern declaration",
+                         "only the exact agent.sqlite SQLite ABI signatures are admitted");
+        return 0;
+    }
+    if (resolve_local(c, spec->name) >= 0) {
+        vm_compile_error("duplicate SQLite extern declaration", spec->name);
+        return 0;
+    }
+
+    /* Materialize a normal bytecode closure so ESKB carries only the stable
+     * native-call ID; no process pointer or foreign symbol is serialized. */
+    if (add_local(c, spec->name) < 0) {
+        vm_compile_error("unable to allocate SQLite extern binding", spec->name);
+        return 0;
+    }
+    int function_constant = chunk_add_const(c, INT_VAL(0));
+    if (function_constant < 0) {
+        vm_compile_error("unable to allocate SQLite extern closure constant", spec->name);
+        return 0;
+    }
+    int skip_body = placeholder(c);
+    int function_pc = c->code_len;
+    c->constants[function_constant].as.i = VM_PACK_FUNC_ARITY(function_pc, spec->n_args);
+    for (int a = 0; a < spec->n_args; ++a) chunk_emit(c, OP_GET_LOCAL, a);
+    chunk_emit(c, OP_NATIVE_CALL, spec->native_id);
+    chunk_emit(c, OP_RETURN, 0);
+    patch(c, skip_body, OP_JUMP, c->code_len);
+    chunk_emit(c, OP_CLOSURE, function_constant);
+    return 1;
+}
+
 static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                                      int enforce_visibility, char exports[][128], int max_exports) {
     if (!mod_name || !*mod_name) return -1;
@@ -1980,7 +2078,10 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                 }
             }
         }
-        if (do_box) vm_compile_boxed_variable_define(c, forms[i]);
+        if (forms[i]->type == N_LIST && forms[i]->n_children > 0 &&
+            is_sym(forms[i]->children[0], "extern")) {
+            (void)vm_compile_sqlite_extern_binding(c, forms[i]);
+        } else if (do_box) vm_compile_boxed_variable_define(c, forms[i]);
         else compile_expr(c, forms[i], 0);
         if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
         free_node(forms[i]);

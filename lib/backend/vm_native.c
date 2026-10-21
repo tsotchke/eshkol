@@ -9010,6 +9010,123 @@ static void vm_raise_error_msg(VM* vm, const char* msg) {
     vm_raise_error_msg_with_irritants(vm, msg, NIL_VAL);
 }
 
+typedef int64_t (*VmSqliteOpenFn)(const char*);
+typedef void (*VmSqliteCloseFn)(int64_t);
+typedef int64_t (*VmSqlitePrepareFn)(int64_t, const char*);
+typedef int (*VmSqliteHandleFn)(int64_t);
+typedef void (*VmSqliteVoidHandleFn)(int64_t);
+typedef int (*VmSqliteBindTextFn)(int64_t, int, const char*);
+typedef int (*VmSqliteBindIntFn)(int64_t, int, int64_t);
+typedef int (*VmSqliteBindDoubleFn)(int64_t, int, double);
+typedef int (*VmSqliteBindNullFn)(int64_t, int);
+typedef int (*VmSqliteCopyColumnFn)(int64_t, int, char*, size_t);
+typedef int64_t (*VmSqliteColumnI64Fn)(int64_t, int);
+typedef int (*VmSqliteColumnIntFn)(int64_t, int);
+typedef double (*VmSqliteColumnDoubleFn)(int64_t, int);
+typedef int (*VmSqliteCopyErrorFn)(int64_t, char*, size_t);
+
+static int vm_sqlite_pop_i64(VM* vm, const char* who, int64_t* result) {
+    Value value = vm_pop(vm);
+    if (value.type == VAL_INT) { *result = value.as.i; return 1; }
+    if (value.type == VAL_BIGNUM && is_valid_heap_ptr(vm, value.as.ptr)) {
+        VmBignum* b = (VmBignum*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+        int overflow = 0;
+        int64_t integer = b ? bignum_to_int64(b, &overflow) : 0;
+        if (b && !overflow) { *result = integer; return 1; }
+    }
+    char msg[160]; snprintf(msg, sizeof(msg), "%s: expected exact signed 64-bit integer", who);
+    vm_raise_error_msg(vm, msg); return 0;
+}
+
+static int vm_sqlite_pop_i32(VM* vm, const char* who, int* result) {
+    int64_t value;
+    if (!vm_sqlite_pop_i64(vm, who, &value)) return 0;
+    if (value < INT32_MIN || value > INT32_MAX) {
+        char msg[160]; snprintf(msg, sizeof(msg), "%s: integer outside signed 32-bit range", who);
+        vm_raise_error_msg(vm, msg); return 0;
+    }
+    *result = (int)value; return 1;
+}
+
+static int vm_sqlite_pop_string(VM* vm, const char* who, VmString** result) {
+    Value value = vm_pop(vm);
+    VmString* string = vm_value_as_string(vm, value);
+    if (!string || !string->data) {
+        char msg[160]; snprintf(msg, sizeof(msg), "%s: expected a string", who);
+        vm_raise_error_msg(vm, msg); return 0;
+    }
+    *result = string; return 1;
+}
+
+/* agent.sqlite's established C ABI obtains text byte length from an Eshkol
+ * object header immediately before the char pointer. Native tagged strings
+ * have that header; VM VmString::data is a plain arena buffer. Copy only for
+ * this synchronous SQLITE_TRANSIENT bind and synthesize the same header so
+ * embedded NULs and multibyte UTF-8 retain their exact byte length without
+ * changing the shared 21-function C ABI. */
+typedef struct {
+    uint8_t subtype;
+    uint8_t flags;
+    uint16_t ref_count;
+    uint32_t size;
+} VmSqliteStringHeader;
+_Static_assert(sizeof(VmSqliteStringHeader) == 8, "native Eshkol string header ABI changed");
+
+static char* vm_sqlite_header_string_copy(const VmString* string) {
+    if (!string || !string->data || string->byte_len < 0 ||
+        (uint64_t)string->byte_len >= UINT32_MAX ||
+        (uint64_t)string->byte_len > SIZE_MAX - sizeof(VmSqliteStringHeader) - 1)
+        return NULL;
+    const size_t byte_len = (size_t)string->byte_len;
+    VmSqliteStringHeader* header = (VmSqliteStringHeader*)malloc(
+        sizeof(*header) + byte_len + 1);
+    if (!header) return NULL;
+    header->subtype = 1; /* HEAP_SUBTYPE_STRING in inc/eshkol/eshkol.h */
+    header->flags = 0;
+    header->ref_count = 0;
+    header->size = (uint32_t)(byte_len + 1);
+    char* data = (char*)(header + 1);
+    if (byte_len) memcpy(data, string->data, byte_len);
+    data[byte_len] = '\0';
+    return data;
+}
+
+static int vm_sqlite_pop_double(VM* vm, const char* who, double* result) {
+    Value value = vm_pop(vm);
+    if (value.type != VAL_INT && value.type != VAL_FLOAT && value.type != VAL_RATIONAL &&
+        value.type != VAL_BIGNUM) {
+        char msg[160]; snprintf(msg, sizeof(msg), "%s: expected a real number", who);
+        vm_raise_error_msg(vm, msg); return 0;
+    }
+    *result = as_number_vm(vm, value); return 1;
+}
+
+static int vm_sqlite_store_buffer(VM* vm, Value target, const char* bytes, size_t length) {
+    if (!vm_value_as_string(vm, target) || !is_valid_heap_ptr(vm, target.as.ptr)) return 0;
+    /* SQLite writes into a temporary `make-string` buffer. Replace its
+     * backing value with a fresh UTF-8-aware VmString after the C call, so
+     * byte counts from SQLite never leave stale codepoint metadata behind. */
+    VmString* updated = vm_string_new(&vm->heap.regions, bytes, (int64_t)length);
+    if (!updated) return 0;
+    vm->heap.objects[target.as.ptr]->opaque.ptr = updated;
+    return 1;
+}
+
+static const char* vm_sqlite_extern_symbol(int fid) {
+    static const char* const symbols[] = {
+        "eshkol_sqlite_open", "eshkol_sqlite_close", "eshkol_sqlite_exec",
+        "eshkol_sqlite_prepare", "eshkol_sqlite_step", "eshkol_sqlite_reset",
+        "eshkol_sqlite_finalize", "eshkol_sqlite_bind_text", "eshkol_sqlite_bind_int",
+        "eshkol_sqlite_bind_double", "eshkol_sqlite_bind_null", "eshkol_sqlite_column_text",
+        "eshkol_sqlite_column_bytes", "eshkol_sqlite_column_int", "eshkol_sqlite_column_double",
+        "eshkol_sqlite_column_count", "eshkol_sqlite_column_name", "eshkol_sqlite_column_type",
+        "eshkol_sqlite_last_error", "eshkol_sqlite_last_insert_rowid", "eshkol_sqlite_changes"
+    };
+    int index = fid - VM_NATIVE_SQLITE_BASE;
+    return index >= 0 && index < (int)(sizeof(symbols) / sizeof(symbols[0]))
+        ? symbols[index] : NULL;
+}
+
 /* Container boundary for the accessor family (SW-221), the VM twin of
  * TaggedValueCodegen::requireContainer. An accessor reads its operand by the
  * container's layout, so it must first establish that the operand IS that
@@ -9678,6 +9795,119 @@ static int vm_ad_reject_untraced_input(VM* vm, int slot, const char* operation) 
 }
 
 
+static void vm_dispatch_sqlite_extern(VM* vm, int fid) {
+    const char* missing = "SQLite extern is unavailable on this VM host";
+    switch (fid) {
+    case VM_NATIVE_SQLITE_OPEN: {
+        Value v = vm_pop(vm); VmString* s = vm_value_as_string(vm, v);
+        VmSqliteOpenFn fn = (VmSqliteOpenFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_open");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; }
+        if (!s || !s->data) { vm_raise_error_msg(vm, "sqlite-open-raw: expected string"); break; }
+        vm_push(vm, INT_VAL(fn(s->data))); break;
+    }
+    case VM_NATIVE_SQLITE_CLOSE:
+    case VM_NATIVE_SQLITE_FINALIZE: {
+        int64_t h; if (!vm_sqlite_pop_i64(vm, "SQLite close/finalize", &h)) break;
+        if (fid == VM_NATIVE_SQLITE_CLOSE) {
+            VmSqliteCloseFn fn = (VmSqliteCloseFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_close");
+            if (!fn) { vm_raise_error_msg(vm, missing); break; } fn(h);
+        } else {
+            VmSqliteVoidHandleFn fn = (VmSqliteVoidHandleFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_finalize");
+            if (!fn) { vm_raise_error_msg(vm, missing); break; } fn(h);
+        }
+        vm_push(vm, (Value){.type = VAL_VOID, .as.i = 0}); break;
+    }
+    case VM_NATIVE_SQLITE_EXEC:
+    case VM_NATIVE_SQLITE_PREPARE: {
+        VmString* sql; int64_t h;
+        if (!vm_sqlite_pop_string(vm, "SQLite SQL", &sql) || !vm_sqlite_pop_i64(vm, "SQLite SQL", &h)) break;
+        if (fid == VM_NATIVE_SQLITE_EXEC) {
+            VmSqliteExecFn fn = (VmSqliteExecFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_exec");
+            if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, sql->data)));
+        } else {
+            VmSqlitePrepareFn fn = (VmSqlitePrepareFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_prepare");
+            if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, sql->data)));
+        }
+        break;
+    }
+    case VM_NATIVE_SQLITE_STEP:
+    case VM_NATIVE_SQLITE_RESET:
+    case VM_NATIVE_SQLITE_COLUMN_COUNT:
+    case VM_NATIVE_SQLITE_CHANGES: {
+        int64_t h; if (!vm_sqlite_pop_i64(vm, "SQLite handle operation", &h)) break;
+        const char* name = fid == VM_NATIVE_SQLITE_STEP ? "eshkol_sqlite_step" :
+            fid == VM_NATIVE_SQLITE_RESET ? "eshkol_sqlite_reset" :
+            fid == VM_NATIVE_SQLITE_COLUMN_COUNT ? "eshkol_sqlite_column_count" : "eshkol_sqlite_changes";
+        VmSqliteHandleFn fn = (VmSqliteHandleFn)(uintptr_t)vm_runtime_symbol(name);
+        if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h))); break;
+    }
+    case VM_NATIVE_SQLITE_BIND_TEXT: {
+        VmString* text; int i; int64_t h;
+        if (!vm_sqlite_pop_string(vm, "sqlite-bind-text-raw", &text) || !vm_sqlite_pop_i32(vm, "sqlite-bind-text-raw", &i) || !vm_sqlite_pop_i64(vm, "sqlite-bind-text-raw", &h)) break;
+        VmSqliteBindTextFn fn = (VmSqliteBindTextFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_bind_text");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; }
+        char* tagged_text = vm_sqlite_header_string_copy(text);
+        if (!tagged_text) { vm_raise_error_msg(vm, "sqlite-bind-text-raw: text allocation failed"); break; }
+        int rc = fn(h, i, tagged_text);
+        free((VmSqliteStringHeader*)tagged_text - 1);
+        vm_push(vm, INT_VAL(rc)); break;
+    }
+    case VM_NATIVE_SQLITE_BIND_INT: {
+        int64_t v, h; int i;
+        if (!vm_sqlite_pop_i64(vm, "sqlite-bind-int-raw", &v) || !vm_sqlite_pop_i32(vm, "sqlite-bind-int-raw", &i) || !vm_sqlite_pop_i64(vm, "sqlite-bind-int-raw", &h)) break;
+        VmSqliteBindIntFn fn = (VmSqliteBindIntFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_bind_int");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, i, v))); break;
+    }
+    case VM_NATIVE_SQLITE_BIND_DOUBLE: {
+        double v; int i; int64_t h;
+        if (!vm_sqlite_pop_double(vm, "sqlite-bind-double-raw", &v) || !vm_sqlite_pop_i32(vm, "sqlite-bind-double-raw", &i) || !vm_sqlite_pop_i64(vm, "sqlite-bind-double-raw", &h)) break;
+        VmSqliteBindDoubleFn fn = (VmSqliteBindDoubleFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_bind_double");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, i, v))); break;
+    }
+    case VM_NATIVE_SQLITE_BIND_NULL: {
+        int i; int64_t h;
+        if (!vm_sqlite_pop_i32(vm, "sqlite-bind-null-raw", &i) || !vm_sqlite_pop_i64(vm, "sqlite-bind-null-raw", &h)) break;
+        VmSqliteBindNullFn fn = (VmSqliteBindNullFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_bind_null");
+        if (!fn) { vm_raise_error_msg(vm, missing); break; } vm_push(vm, INT_VAL(fn(h, i))); break;
+    }
+    case VM_NATIVE_SQLITE_COLUMN_TEXT:
+    case VM_NATIVE_SQLITE_COLUMN_NAME:
+    case VM_NATIVE_SQLITE_LAST_ERROR: {
+        int64_t cap; if (!vm_sqlite_pop_i64(vm, "SQLite output capacity", &cap)) break;
+        Value target = vm_pop(vm); int index = 0; int64_t h = 0;
+        if (fid != VM_NATIVE_SQLITE_LAST_ERROR && (!vm_sqlite_pop_i32(vm, "SQLite column index", &index) || !vm_sqlite_pop_i64(vm, "SQLite column handle", &h))) break;
+        if (fid == VM_NATIVE_SQLITE_LAST_ERROR && !vm_sqlite_pop_i64(vm, "sqlite-last-error-raw", &h)) break;
+        VmString* old = vm_value_as_string(vm, target);
+        if (!old || cap <= 0 || (uint64_t)cap > (uint64_t)old->byte_len || (uint64_t)cap > SIZE_MAX) { vm_raise_error_msg(vm, "SQLite output capacity exceeds Scheme buffer"); break; }
+        char* buf = (char*)calloc((size_t)cap, 1); if (!buf) { vm_raise_error_msg(vm, "SQLite output allocation failed"); break; }
+        int n = -1;
+        if (fid == VM_NATIVE_SQLITE_COLUMN_TEXT) { VmSqliteCopyColumnFn fn = (VmSqliteCopyColumnFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_column_text"); if (fn) n = fn(h,index,buf,(size_t)cap); }
+        else if (fid == VM_NATIVE_SQLITE_COLUMN_NAME) { VmSqliteCopyColumnFn fn = (VmSqliteCopyColumnFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_column_name"); if (fn) n = fn(h,index,buf,(size_t)cap); }
+        else { VmSqliteCopyErrorFn fn = (VmSqliteCopyErrorFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_last_error"); if (fn) n = fn(h,buf,(size_t)cap); }
+        if (n < 0 && !vm_runtime_symbol(fid == VM_NATIVE_SQLITE_COLUMN_TEXT ? "eshkol_sqlite_column_text" : fid == VM_NATIVE_SQLITE_COLUMN_NAME ? "eshkol_sqlite_column_name" : "eshkol_sqlite_last_error")) { free(buf); vm_raise_error_msg(vm, missing); break; }
+        if (n >= 0 && (uint64_t)n < (uint64_t)cap && !vm_sqlite_store_buffer(vm,target,buf,(size_t)n)) { free(buf); vm_raise_error_msg(vm,"SQLite output string update failed"); break; }
+        free(buf); vm_push(vm, INT_VAL(n)); break;
+    }
+    case VM_NATIVE_SQLITE_COLUMN_BYTES:
+    case VM_NATIVE_SQLITE_COLUMN_INT:
+    case VM_NATIVE_SQLITE_COLUMN_DOUBLE:
+    case VM_NATIVE_SQLITE_COLUMN_TYPE: {
+        int i; int64_t h;
+        if (!vm_sqlite_pop_i32(vm, "SQLite column access", &i) || !vm_sqlite_pop_i64(vm, "SQLite column access", &h)) break;
+        if (fid == VM_NATIVE_SQLITE_COLUMN_DOUBLE) { VmSqliteColumnDoubleFn fn = (VmSqliteColumnDoubleFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_column_double"); if (!fn) { vm_raise_error_msg(vm,missing); break; } vm_push(vm,FLOAT_VAL(fn(h,i))); }
+        else if (fid == VM_NATIVE_SQLITE_COLUMN_TYPE) { VmSqliteColumnIntFn fn = (VmSqliteColumnIntFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_column_type"); if (!fn) { vm_raise_error_msg(vm,missing); break; } vm_push(vm,INT_VAL(fn(h,i))); }
+        else { const char* n = fid == VM_NATIVE_SQLITE_COLUMN_BYTES ? "eshkol_sqlite_column_bytes" : "eshkol_sqlite_column_int"; VmSqliteColumnI64Fn fn = (VmSqliteColumnI64Fn)(uintptr_t)vm_runtime_symbol(n); if (!fn) { vm_raise_error_msg(vm,missing); break; } vm_push(vm,INT_VAL(fn(h,i))); }
+        break;
+    }
+    case VM_NATIVE_SQLITE_LAST_INSERT_ROWID: {
+        int64_t h; if (!vm_sqlite_pop_i64(vm, "sqlite-last-insert-rowid-raw", &h)) break;
+        typedef int64_t (*Fn)(int64_t); Fn fn = (Fn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_last_insert_rowid");
+        if (!fn) { vm_raise_error_msg(vm,missing); break; } vm_push(vm,INT_VAL(fn(h))); break;
+    }
+    default: vm_raise_error_msg(vm, "unknown SQLite VM extern"); break;
+    }
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY &&
@@ -9705,6 +9935,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else {
             vm->error = 1;
         }
+        return;
+    }
+    if (fid >= VM_NATIVE_SQLITE_BASE && fid <= VM_NATIVE_SQLITE_CHANGES) {
+        if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY &&
+            vm_runtime_symbol(vm_sqlite_extern_symbol(fid))) {
+            fprintf(stderr, "VM native policy rejected desktop native fid %d\n", fid);
+            vm->error = 1;
+            return;
+        }
+        /* On WASM and other hosts without the linked SQLite backend,
+         * vm_runtime_symbol() is NULL and the typed helper raises a catchable
+         * unsupported condition instead of invoking a missing-link stub. */
+        vm_dispatch_sqlite_extern(vm, fid);
         return;
     }
     if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) {
