@@ -324,6 +324,12 @@ llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
     llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-inverse",
                                                     TensorOperandMode::RequireMatrix);
 
+    // RequireMatrix enforces a numeric tensor with rank >= 2. Inverse itself
+    // is defined only for rank exactly 2, so validate rank before reading dims.
+    llvm::Value* rank_field = builder.CreateStructGEP(tensor_type, a_ptr, 1);
+    llvm::Value* rank = builder.CreateLoad(ctx_.int64Type(), rank_field);
+    emitRankGuard(rank, 2, "tensor-inverse: expected a rank-2 matrix", "inverse_rank");
+
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
     llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
     llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), dims_ptr);

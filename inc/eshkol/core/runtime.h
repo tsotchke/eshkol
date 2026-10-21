@@ -20,6 +20,13 @@
 
 #ifdef __cplusplus
 extern "C" {
+
+/* Internal LLVM runtime entry point for the checked tensor-inverse kernel.
+ * This is a compiler/runtime ABI symbol, not a user-facing FFI/API function. */
+int32_t eshkol_tensor_inverse_checked_abi(const void* input_bits,
+                                          double* work,
+                                          void* output_bits,
+                                          int64_t n);
 #endif
 
 /* Forward declaration for tagged-value helpers that need it.
