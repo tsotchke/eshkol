@@ -80,10 +80,10 @@ int main(int argc, char** argv) {
             auto refused = first.executeCompiledStableHLO(*p, inputs, outputs);
             if (refused.success || executions() != 0 || copies() != 0) result = fail("reinitialized runtime accepted stale program");
         } else {
-            auto moved = std::move(p);
+            eshkol::xla::StableHLOProgram moved(std::move(*p));
             auto refused = first.executeCompiledStableHLO(*p, inputs, outputs);
             if (refused.success || executions() != 0 || copies() != 0) result = fail("moved-from program was accepted");
-            auto accepted = first.executeCompiledStableHLO(*moved, inputs, outputs);
+            auto accepted = first.executeCompiledStableHLO(moved, inputs, outputs);
             if (!accepted.success || executions() != 1 || copies() != 1) result = fail("moved-to program lost ownership");
         }
     } else if (mode == "compile-fail") {
