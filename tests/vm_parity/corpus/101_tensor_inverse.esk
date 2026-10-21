@@ -22,6 +22,6 @@
             #f))
 (newline)
 (display (guard (e (#t #t))
-            (tensor-inverse (reshape #(/ 0.0 0.0) #(1 1)))
+            (tensor-inverse (reshape #(+nan.0) #(1 1)))
             #f))
 (newline)

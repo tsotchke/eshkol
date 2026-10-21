@@ -1,4 +1,5 @@
 #include "../../inc/eshkol/core/number_syntax.h"
+#include <eshkol/core/tensor_inverse_checked.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -12241,67 +12242,30 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
         size_t count = (size_t)n * (size_t)n;
-        double* lu = (double*)vm_alloc(&vm->heap.regions, count * sizeof(double));
-        double* inv = (double*)vm_alloc(&vm->heap.regions, count * sizeof(double));
-        if (!lu || !inv) {
+        double* work = (double*)vm_alloc(&vm->heap.regions, count * sizeof(double));
+        if (!work) {
             vm_raise_error_msg(vm, "tensor-inverse: allocation failed");
             break;
         }
-        for (size_t i = 0; i < count; ++i) {
-            if (!isfinite(a->data[i])) {
-                vm_raise_error_msg(vm, "tensor-inverse: matrix contains a non-finite value");
-                goto tensor_inverse_done;
-            }
-            lu[i] = a->data[i];
-            inv[i] = 0.0;
+        int64_t shape[2] = { n, n };
+        VmTensor* out = vm_tensor_new(&vm->heap.regions, shape, 2);
+        if (!out) {
+            vm_raise_error_msg(vm, "tensor-inverse: allocation failed");
+            break;
         }
-        for (int64_t i = 0; i < n; ++i) inv[(size_t)i * (size_t)n + (size_t)i] = 1.0;
-        for (int64_t k = 0; k < n; ++k) {
-            int64_t pivot_row = k;
-            double largest = fabs(lu[(size_t)k * (size_t)n + (size_t)k]);
-            for (int64_t r = k + 1; r < n; ++r) {
-                double v = fabs(lu[(size_t)r * (size_t)n + (size_t)k]);
-                if (v > largest) { largest = v; pivot_row = r; }
-            }
-            if (largest == 0.0) {
-                vm_raise_error_msg(vm, "tensor-inverse: matrix is singular");
-                goto tensor_inverse_done;
-            }
-            if (pivot_row != k) for (int64_t c = 0; c < n; ++c) {
-                size_t x = (size_t)k * (size_t)n + (size_t)c;
-                size_t y = (size_t)pivot_row * (size_t)n + (size_t)c;
-                double t = lu[x]; lu[x] = lu[y]; lu[y] = t;
-                t = inv[x]; inv[x] = inv[y]; inv[y] = t;
-            }
-            double pivot = lu[(size_t)k * (size_t)n + (size_t)k];
-            for (int64_t c = 0; c < n; ++c) {
-                size_t x = (size_t)k * (size_t)n + (size_t)c;
-                lu[x] /= pivot; inv[x] /= pivot;
-                if (!isfinite(lu[x]) || !isfinite(inv[x])) {
-                    vm_raise_error_msg(vm, "tensor-inverse: non-finite result");
-                    goto tensor_inverse_done;
-                }
-            }
-            for (int64_t r = 0; r < n; ++r) if (r != k) {
-                double factor = lu[(size_t)r * (size_t)n + (size_t)k];
-                for (int64_t c = 0; c < n; ++c) {
-                    size_t x = (size_t)r * (size_t)n + (size_t)c;
-                    size_t y = (size_t)k * (size_t)n + (size_t)c;
-                    lu[x] -= factor * lu[y];
-                    inv[x] -= factor * inv[y];
-                    if (!isfinite(lu[x]) || !isfinite(inv[x])) {
-                        vm_raise_error_msg(vm, "tensor-inverse: non-finite result");
-                        goto tensor_inverse_done;
-                    }
-                }
-            }
+        int status = eshkol_tensor_inverse_checked(a->data, work, out->data, n);
+        if (status != ESHKOL_TENSOR_INVERSE_OK) {
+            const char* message = status == ESHKOL_TENSOR_INVERSE_SINGULAR
+                ? "tensor-inverse: matrix is singular"
+                : status == ESHKOL_TENSOR_INVERSE_NONFINITE
+                    ? "tensor-inverse: matrix or result is non-finite"
+                    : status == ESHKOL_TENSOR_INVERSE_SIZE
+                        ? "tensor-inverse: matrix size overflow"
+                        : "tensor-inverse: invalid matrix";
+            vm_raise_error_msg(vm, message);
+            goto tensor_inverse_done;
         }
-        {
-            int64_t shape[2] = { n, n };
-            VmTensor* out = vm_tensor_from_data(&vm->heap.regions, inv, shape, 2);
-            if (!out) vm_raise_error_msg(vm, "tensor-inverse: allocation failed");
-            else VM_PUSH_TENSOR(vm, out);
-        }
+        VM_PUSH_TENSOR(vm, out);
 tensor_inverse_done:
         break;
     }

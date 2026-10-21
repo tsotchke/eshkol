@@ -9,11 +9,17 @@
 #include "arena_memory.h"
 #include "taylor_opcodes.h"
 #include <eshkol/tensor_validation.h>
+#include <eshkol/core/tensor_inverse_checked.h>
 
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+
+extern "C" int32_t eshkol_tensor_inverse_checked_abi(
+        const void* input, double* work, void* inverse, int64_t n) {
+    return eshkol_tensor_inverse_checked(input, work, inverse, n);
+}
 
 // These helpers are called from LLVM-generated code through extern "C" names.
 // They operate on raw double arrays in row-major order.
