@@ -93,6 +93,7 @@ void vm_run(VM* vm) {
         vm->frames[escape.frame_floor - 1].generation : 0;
     escape.native_depth = vm->native_call_depth;
     escape.ad_live_passes = vm->ad_live_passes;
+    escape.active_tape = vm->active_tape;
     vm->native_escape_context = &escape;
     if (setjmp(escape.destination) != 0) {
         /* A handled raise or continuation crossed one or more native C
@@ -100,6 +101,7 @@ void vm_run(VM* vm) {
          * from the restored VM state, preserving its native callback depth. */
         vm->native_call_depth = escape.native_depth;
         vm->ad_live_passes = escape.ad_live_passes;
+        vm->active_tape = escape.active_tape;
         vm->halted = 0;
         vm->error = 0;
     }

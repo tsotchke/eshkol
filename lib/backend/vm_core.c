@@ -835,6 +835,7 @@ typedef struct VmNativeEscape {
     uint64_t frame_generation;
     int native_depth;
     int ad_live_passes;   /* forward passes live at the escape point (ADR-0027) */
+    void* active_tape;    /* reverse tape owned by the surviving interpreter */
 } VmNativeEscape;
 
 typedef struct VM {
