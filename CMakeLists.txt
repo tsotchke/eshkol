@@ -8470,6 +8470,7 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
             test_release_autopilot
             test_v1_3_release_evidence_recipe
             test_release_probe_receipts
+            test_icc_smoke_scope
             test_release_harness_paths
             test_repl_smoke
             test_native_image_io_contract)
