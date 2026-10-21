@@ -1228,7 +1228,7 @@ Matrix determinant computed via LU decomposition: det(A) = ∏ diag(U) · sign(P
 
 Computes the inverse of a non-empty rank-2 square numeric tensor with partial-pivoting Gauss-Jordan elimination. Native code and the VM use the same checked kernel.
 
-**Complexity:** O(n³). Raises a catchable error for nonsquare or non-rank-2 inputs, exactly singular matrices (zero pivot), non-finite inputs/results, or allocation failure. Pivot selection has no absolute epsilon cutoff, so scaling a finite invertible matrix does not by itself make it singular.
+**Complexity:** O(n³). Raises a catchable error for nonsquare or non-rank-2 inputs, exactly singular matrices (zero pivot), non-finite inputs/results, or allocation failure. Pivot selection has no absolute epsilon cutoff, so scaling a finite invertible matrix does not by itself make it singular. The operation does not certify an error bound for ill-conditioned matrices.
 
 **Implementation:** `tensorInverse` in [lib/backend/tensor_linalg_codegen.cpp](../lib/backend/tensor_linalg_codegen.cpp).
 

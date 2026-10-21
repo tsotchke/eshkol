@@ -1,6 +1,15 @@
 #ifndef ESHKOL_CORE_TENSOR_INVERSE_CHECKED_H
 #define ESHKOL_CORE_TENSOR_INVERSE_CHECKED_H
 
+/** @file tensor_inverse_checked.h
+ * @brief Portable checked row-major f64 matrix inversion kernel shared by
+ *        native code generation and the VM (including its WASM build).
+ *
+ * The kernel uses partial pivoting and treats only an exact zero pivot as
+ * singular. It reports non-finite inputs/results and size errors; it does not
+ * certify an error bound or numerical accuracy for ill-conditioned matrices.
+ */
+
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
