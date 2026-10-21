@@ -2760,7 +2760,16 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
 
     // Safe path - perform modulo (floor semantics: sign of divisor).
     ctx_.builder().SetInsertPoint(safe_bb);
-    llvm::Value* srem = ctx_.builder().CreateSRem(left_int, right_int, "mod_srem");
+    // MIN/-1 has remainder zero, but LLVM srem on those operands is poison.
+    // Select a safe divisor BEFORE srem so no overflowing division is emitted.
+    llvm::Value* mod_overflow = ctx_.builder().CreateAnd(
+        ctx_.builder().CreateICmpEQ(left_int,
+            llvm::ConstantInt::getSigned(ctx_.int64Type(), INT64_MIN)),
+        ctx_.builder().CreateICmpEQ(right_int,
+            llvm::ConstantInt::getSigned(ctx_.int64Type(), -1)), "mod_int_overflow");
+    llvm::Value* mod_divisor = ctx_.builder().CreateSelect(mod_overflow,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1), right_int, "mod_safe_divisor");
+    llvm::Value* srem = ctx_.builder().CreateSRem(left_int, mod_divisor, "mod_srem");
     llvm::Value* zero_v = llvm::ConstantInt::get(ctx_.int64Type(), 0);
     llvm::Value* rem_neg = ctx_.builder().CreateICmpSLT(srem, zero_v, "mod_rem_neg");
     llvm::Value* div_neg = ctx_.builder().CreateICmpSLT(right_int, zero_v, "mod_div_neg");

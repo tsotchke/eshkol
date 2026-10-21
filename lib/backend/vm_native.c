@@ -9888,10 +9888,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2119); break;
         }
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'m'); break; }
-        int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
+        int64_t ia = a.type == VAL_INT ? a.as.i : (int64_t)as_number(a);
+        int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         /* `modulo` by zero is fatal for exact AND inexact operands — native
          * raises "division by zero" for both (modulo 1 0) and (modulo 1 0.0). */
         if (ib==0){ fprintf(stderr, "MODULO BY ZERO\n"); vm->error=1; break; }
+        if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
         int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { Value b = vm_pop(vm); Value a = vm_pop(vm);
@@ -9906,8 +9908,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 2107); break;
         }
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'r'); break; }
-        int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
+        int64_t ia = a.type == VAL_INT ? a.as.i : (int64_t)as_number(a);
+        int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
+        if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
         vm_push(vm, INT_VAL(ia%ib)); break; }
     case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         /* `quotient` truncates toward zero and preserves inexact contagion.
@@ -9940,10 +9944,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, INT_VAL(a.as.i / b.as.i));
             break;
         }
-        int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
+        int64_t ia = a.type == VAL_INT ? a.as.i : (int64_t)as_number(a);
+        int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia/ib)); break; }
     case 39: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+            double x = vm_division_number_to_double(vm, a);
+            double y = vm_division_number_to_double(vm, b);
+            if (y == 0.0) { fprintf(stderr, "FLOOR QUOTIENT BY ZERO\n"); vm->error = 1; break; }
+            vm_push(vm, FLOAT_VAL(floor(x / y))); break;
+        }
         if (a.type == VAL_I128 || b.type == VAL_I128) {
             int oka = 0, okb = 0;
             __int128 x = vm_coerce_i128(vm, a, &oka);
@@ -9961,8 +9972,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, adjusted); vm_push(vm, b); vm_dispatch_native(vm, 38);
             break;
         }
-        int64_t ia = (int64_t)as_number(a), ib = (int64_t)as_number(b);
+        int64_t ia = a.type == VAL_INT ? a.as.i : (int64_t)as_number(a);
+        int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         if (ib == 0) { fprintf(stderr, "FLOOR QUOTIENT BY ZERO\n"); vm->error = 1; break; }
+        if (ia == INT64_MIN && ib == -1) {
+            vm_bignum_arith(vm, a, b, 'q');
+            break;
+        }
         int64_t q = ia / ib, r = ia % ib;
         if (r != 0 && ((ia < 0) != (ib < 0))) q -= 1;
         vm_push(vm, INT_VAL(q));

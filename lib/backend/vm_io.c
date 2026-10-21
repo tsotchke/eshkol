@@ -191,6 +191,9 @@ static void vm_port_close(VmPort* port) {
         /* Output string port buffer was malloc'd */
         free(port->string.buf);
         port->string.buf = NULL;
+        port->string.len = 0;
+        port->string.pos = 0;
+        port->string.cap = 0;
     }
     /* Input string port buffer is arena-allocated, freed with region */
 }
@@ -415,11 +418,15 @@ static void vm_port_write_cstr(VmPort* port, const char* cstr) {
     vm_port_write_bytes(port, cstr, (int)strlen(cstr));
 }
 
-/** @brief Native call 591: `(get-output-string port)` — snapshot an output
- *         string port's accumulated buffer as a new VmString; NULL if
- *         @p port isn't an output string port. */
+/** @brief `(get-output-string port)` snapshots an open output string port.
+ *         A closed output string port returns an empty owned snapshot, matching
+ *         the hosted runtime. NULL if @p port is not an output string port. */
 static VmString* vm_port_get_output_string(VmRegionStack* rs, VmPort* port) {
     if (!port || port->kind != VM_PORT_STRING || port->dir != VM_PORT_OUTPUT) return NULL;
+    // Match the hosted runtime: closure releases the buffer; queries then
+    // return an empty owned snapshot, never read the freed storage.
+    if (!port->is_open || port->string.len == 0) return vm_string_new(rs, "", 0);
+    if (!port->string.buf) return NULL;
     return vm_string_new(rs, port->string.buf, port->string.len);
 }
 
