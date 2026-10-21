@@ -14,7 +14,7 @@ def main():
                         default=root / os.environ.get("BUILD_DIR", "build") / "eshkol-run")
     args = parser.parse_args()
     for test, marker in [("msgpack_test.esk", "RESULT: OK"),
-                         ("msgpack_utf8_test.esk", "PASS: MessagePack UTF-8 70 checks")]:
+                         ("msgpack_utf8_test.esk", "PASS: MessagePack UTF-8 80 checks")]:
         try:
             result = subprocess.run(
                 [str(args.runner.resolve()), "-r", str(root / "tests/v1_2_edge_cases" / test)],

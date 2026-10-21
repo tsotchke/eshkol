@@ -1,0 +1,9 @@
+# MessagePack UTF-8 validation review
+
+The codec distinguishes MessagePack `str` from `bin`. `msgpack-require-utf8` scans the exact bounded payload before `utf8->string` and before text encoding. Lead/second-byte bounds enforce shortest-form UTF-8, exclude U+D800..U+DFFF and values above U+10FFFF, and reject lone continuations, bad continuations and truncated scalars. The string encoder runs the same validator over `string->utf8` output; `msgpack-encode-value` sends bytevectors directly to bin encoding, and `msgpack-decode-bin` does only frame-range validation and bytevector copying.
+
+The original fixture had 70 assertions but did not independently pin text marker transitions in the encoder. The leaf adds exact-wire + roundtrip pairs for lengths 31, 32, 255 and 256, plus exact roundtrip and wire checks for binary bytes containing NUL, continuation bytes and 0xFF. The test has 80 assertions total. The existing malformed set exercises leading/continuation errors, overlong forms, surrogate encodings, out-of-range scalars, incomplete scalars, fixstr/str8/str16 payloads, nested array/map-key decoding, prefix decoding and a truncated frame. Encoder refusal for malformed source text remains covered.
+
+Static review only: UTF-8 range/source assertions, fixture count/gate marker consistency, Eshkol parenthesis/string balance, Python AST parsing for the gate, shell `sh -n`, and `git diff --check` passed. No compiler, build, runtime, skip, or availability path was used. Root owns the runtime qualification on its rebuilt engine.
+
+ICC `pack-context` was attempted after doctor reported the registered alias fresh, but refused because root advanced the canonical source from the indexed `c013d672` to `a4eba926` during its build. No reindex was run. The live source and exact original commit diff were reviewed directly.

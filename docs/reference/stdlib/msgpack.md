@@ -147,8 +147,9 @@ Not part of the public API but present in the source (wire-format primitives):
 ## Validation
 
 `python3 scripts/run_msgpack_gate.py` runs the existing wire-format goldens
-and 70 UTF-8 checks through the public API. Hand-authored bytes cover scalar
-boundaries from U+0000 through U+10FFFF and mixed NUL/multibyte strings.
-Malformed fixtures exercise fixed strings, str8, str16, nested arrays/map
-keys and prefix decoding; binary payloads remain byte-preserving. The gate
+and 80 UTF-8 checks through the public API. Hand-authored bytes cover scalar
+boundaries from U+0000 through U+10FFFF, fixstr/str8/str16 length transitions,
+and mixed NUL/multibyte strings. Malformed fixtures exercise fixed strings,
+str8, str16, nested arrays/map keys and prefix decoding; binary payloads with
+NUL, continuation, and invalid UTF-8 bytes remain byte-preserving. The gate
 requires successful process exit and both final assertion markers.
