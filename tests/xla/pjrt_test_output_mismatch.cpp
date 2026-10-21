@@ -27,6 +27,10 @@ int last_input_element_type = 0;
 const int64_t input_dims[] = {1};
 const int64_t dtype_output_dims[] = {1};
 const int64_t shape_output_dims[] = {3, 2};
+const uint32_t f32_matrix_payload[] = {
+    0x3f800001u, 0x40000002u, 0x40400003u,
+    0x40800004u, 0x40a00005u, 0x40c00006u,
+};
 
 PJRT_Error* initialize(PJRT_Plugin_Initialize_Args*) {
     api.extension_start = reinterpret_cast<PJRT_Extension_Base*>(&initialized_extension);
@@ -108,7 +112,7 @@ PJRT_Error* bufferType(PJRT_Buffer_ElementType_Args* a) {
 PJRT_Error* bufferDimensions(PJRT_Buffer_Dimensions_Args* a) {
     const char* mode = std::getenv("PJRT_TEST_OUTPUT_MISMATCH");
     if (a->buffer == reinterpret_cast<PJRT_Buffer*>(&output_buffer_handle) &&
-        mode && std::strcmp(mode, "shape") == 0) {
+        mode && (std::strcmp(mode, "shape") == 0 || std::strcmp(mode, "matrix") == 0)) {
         a->dims = shape_output_dims; a->num_dims = 2;
     } else {
         a->dims = input_dims; a->num_dims = 1;
@@ -129,6 +133,8 @@ PJRT_Error* bufferToHost(PJRT_Buffer_ToHostBuffer_Args* a) {
     } else if (a->dst && a->dst_size == sizeof(uint16_t)) {
         const uint16_t bits = 0x3f81u;
         std::memcpy(a->dst, &bits, sizeof(bits));
+    } else if (a->dst && a->dst_size == sizeof(f32_matrix_payload)) {
+        std::memcpy(a->dst, f32_matrix_payload, sizeof(f32_matrix_payload));
     } else if (a->dst && a->dst_size) std::memset(a->dst, 0xA5, a->dst_size);
     ++successful_host_copies;
     return nullptr;

@@ -18,12 +18,13 @@ int fail(const std::string& message) { std::cerr << "FAIL: " << message << '\n';
 }
 
 int main(int argc, char** argv) {
-    if (argc != 3) return fail("usage: pjrt_typed_buffers_test f32|bf16|f32-int32|bf16-uint16|later-transfer-failure|overflow|negative|on-device|output-shape|output-on-device|invalid-output-type PLUGIN");
+    if (argc != 3) return fail("usage: pjrt_typed_buffers_test f32|bf16|f32-matrix|f32-int32|bf16-uint16|later-transfer-failure|overflow|negative|on-device|output-shape|output-on-device|invalid-output-type PLUGIN");
     const std::string mode = argv[1], plugin = argv[2];
     setenv("ESHKOL_XLA_PJRT", "1", 1);
     setenv("ESHKOL_PJRT_PLUGIN_PATH", plugin.c_str(), 1);
     setenv("PJRT_TEST_OUTPUT_MISMATCH", "ok", 1);
     if (mode == "output-shape") setenv("PJRT_TEST_OUTPUT_MISMATCH", "shape", 1);
+    if (mode == "f32-matrix") setenv("PJRT_TEST_OUTPUT_MISMATCH", "matrix", 1);
     const bool two_outputs = mode == "later-transfer-failure";
     if (two_outputs) {
         setenv("PJRT_TEST_TWO_OUTPUTS", "1", 1);
@@ -35,17 +36,20 @@ int main(int argc, char** argv) {
         type = eshkol::xla::BufferElementType::kBF16;
         device_type = mode == "bf16" ? "bf16" : "u16";
     } else if (mode == "f32-int32") device_type = "s32";
-    else if (mode != "f32" && !two_outputs && mode != "overflow" &&
+    else if (mode != "f32" && mode != "f32-matrix" && !two_outputs && mode != "overflow" &&
              mode != "negative" && mode != "on-device" && mode != "output-shape" &&
              mode != "output-on-device" && mode != "invalid-output-type") return fail("unknown control mode");
     setenv("PJRT_TEST_DEVICE_OUTPUT_TYPE", device_type, 1);
 
     float f32_input = 2.0f, f32_output = -17.0f, f32_output2 = -23.0f;
+    std::array<float, 6> f32_matrix_output;
+    f32_matrix_output.fill(-31.0f);
     uint16_t bf16_input = 0x4000, bf16_output = 0xbeef, bf16_output2 = 0xcafe;
     void* input_data = type == eshkol::xla::BufferElementType::kBF16
         ? static_cast<void*>(&bf16_input) : static_cast<void*>(&f32_input);
     void* output_data = type == eshkol::xla::BufferElementType::kBF16
         ? static_cast<void*>(&bf16_output) : static_cast<void*>(&f32_output);
+    if (mode == "f32-matrix") output_data = f32_matrix_output.data();
     std::vector<int64_t> input_shape = mode == "overflow"
         ? std::vector<int64_t>{std::numeric_limits<int64_t>::max(), 2}
         : mode == "negative" ? std::vector<int64_t>{-1} : std::vector<int64_t>{1};
@@ -53,7 +57,9 @@ int main(int argc, char** argv) {
     std::vector<eshkol::xla::TypedBufferDescriptor> inputs = {
         {input_data, input_shape, type, mode == "on-device"}};
     std::vector<eshkol::xla::TypedBufferDescriptor> outputs;
-    outputs.push_back({output_data, {1}, type, mode == "output-on-device"});
+    outputs.push_back({output_data, mode == "f32-matrix" ? std::vector<int64_t>{3, 2}
+                                                          : std::vector<int64_t>{1},
+                       type, mode == "output-on-device"});
     void* second_output_data = type == eshkol::xla::BufferElementType::kBF16
         ? static_cast<void*>(&bf16_output2) : static_cast<void*>(&f32_output2);
     if (two_outputs) outputs.push_back({second_output_data, {1}, type, false});
@@ -109,7 +115,14 @@ int main(int argc, char** argv) {
             return fail("later transfer failure partially committed outputs");
     } else {
         if (!result.success) return fail("matching typed host buffers were refused: " + result.error_message);
-        if (type == eshkol::xla::BufferElementType::kF32) {
+        if (mode == "f32-matrix") {
+            const std::array<uint32_t, 6> expected_bits = {
+                0x3f800001u, 0x40000002u, 0x40400003u,
+                0x40800004u, 0x40a00005u, 0x40c00006u,
+            };
+            if (std::memcmp(f32_matrix_output.data(), expected_bits.data(), sizeof(expected_bits)) != 0)
+                return fail("six-element f32 transfer bytes differed from offline fixture payload");
+        } else if (type == eshkol::xla::BufferElementType::kF32) {
             const uint32_t expected_bits = 0x3f800001u;
             if (std::memcmp(&f32_output, &expected_bits, sizeof(expected_bits)) != 0)
                 return fail("f32 transfer bytes differed from the offline fixture payload");

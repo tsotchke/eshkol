@@ -2811,7 +2811,7 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
     else()
         target_link_options(pjrt_typed_buffers_test PRIVATE "-Wl,--export-dynamic")
     endif()
-    foreach(_pjrt_typed_mode f32 bf16 f32-int32 bf16-uint16 later-transfer-failure overflow negative on-device output-shape output-on-device invalid-output-type)
+    foreach(_pjrt_typed_mode f32 bf16 f32-matrix f32-int32 bf16-uint16 later-transfer-failure overflow negative on-device output-shape output-on-device invalid-output-type)
         add_test(NAME pjrt_typed_buffers_${_pjrt_typed_mode}
             COMMAND pjrt_typed_buffers_test ${_pjrt_typed_mode}
                 $<TARGET_FILE:pjrt_test_output_mismatch>
@@ -3183,6 +3183,9 @@ if(TARGET pjrt_runtime_control_test AND LLVM_LIBRARY_DIRS)
 endif()
 if(TARGET pjrt_runtime_output_mismatch_test AND LLVM_LIBRARY_DIRS)
     target_link_directories(pjrt_runtime_output_mismatch_test PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_typed_buffers_test AND LLVM_LIBRARY_DIRS)
+    target_link_directories(pjrt_typed_buffers_test PRIVATE ${LLVM_LIBRARY_DIRS})
 endif()
 if(TARGET pjrt_reusable_program_test AND LLVM_LIBRARY_DIRS)
     target_link_directories(pjrt_reusable_program_test PRIVATE ${LLVM_LIBRARY_DIRS})
