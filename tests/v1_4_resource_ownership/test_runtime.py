@@ -14,7 +14,15 @@ HERE = Path(__file__).resolve().parent
 class PongHandler(socketserver.BaseRequestHandler):
     def handle(self):
         self.request.settimeout(5)
-        payload = self.request.recv(4)
+        chunks = []
+        total = 0
+        while total < 4:
+            chunk = self.request.recv(4 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        payload = b"".join(chunks)
         self.server.received.append(payload)
         self.request.sendall(b"pong")
 
@@ -30,6 +38,7 @@ def run_case(runner: Path, lib_dir: Path, mode: str):
     source_root = HERE.parents[1]
     module_root = HERE / "modules"
     env = os.environ.copy()
+    env["ESHKOL_LIB_DIR"] = str(lib_dir)
     env["ESHKOL_PATH"] = os.pathsep.join((str(module_root), str(source_root / "lib")))
     env["ESHKOL_JIT_CACHE"] = "0"
     try:

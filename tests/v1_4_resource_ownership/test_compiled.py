@@ -68,6 +68,7 @@ def main():
     if not runner or not lib_dir:
         raise SystemExit("set ESHKOL_RUN and ESHKOL_LIB_DIR")
     env = os.environ.copy()
+    env["ESHKOL_LIB_DIR"] = str(lib_dir)
     source_root = Path(__file__).resolve().parents[2]
     module_root = HERE / "modules"
     env["ESHKOL_PATH"] = os.pathsep.join((str(module_root), str(source_root / "lib")))
