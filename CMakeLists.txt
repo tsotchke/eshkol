@@ -2646,6 +2646,43 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
     add_test(NAME pjrt_loader_compatible_initialize_unload
         COMMAND pjrt_loader_test compatible $<TARGET_FILE:pjrt_test_compatible>
     )
+
+    # Runtime control test: verifies the default-off path still executes a
+    # host function and that the StableHLO entry point refuses to imply a
+    # device compile when PJRT was not selected.
+    add_executable(pjrt_runtime_control_test
+        tests/xla/pjrt_runtime_control_test.cpp
+    )
+    target_include_directories(pjrt_runtime_control_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+    target_compile_options(pjrt_runtime_control_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_runtime_control_test)
+    target_link_libraries(pjrt_runtime_control_test PRIVATE
+        eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+        ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_runtime_control_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_runtime_control_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_runtime_control_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_runtime_control_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    add_test(NAME pjrt_runtime_cpu_control
+        COMMAND pjrt_runtime_control_test off
+    )
+    add_test(NAME pjrt_runtime_requested_plugin_refusal
+        COMMAND pjrt_runtime_control_test missing-plugin
+            "${CMAKE_CURRENT_BINARY_DIR}/pjrt-intentionally-absent${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    )
 endif()
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -2751,6 +2788,11 @@ endif()
 set(ESHKOL_XLA_RUNTIME_OBJECTS)
 if(ESHKOL_XLA_RUNTIME_SRC)
     add_library(eshkol-xla-runtime-obj OBJECT ${ESHKOL_XLA_RUNTIME_SRC})
+    if(ESHKOL_XLA_ENABLED AND UNIX)
+        target_compile_definitions(eshkol-xla-runtime-obj PRIVATE
+            ESHKOL_XLA_PJRT_AVAILABLE=1
+        )
+    endif()
     set(ESHKOL_XLA_RUNTIME_OBJECTS $<TARGET_OBJECTS:eshkol-xla-runtime-obj>)
 endif()
 
@@ -2960,6 +3002,11 @@ endif()
 # Add library directories if found
 if(LLVM_LIBRARY_DIRS)
     target_link_directories(eshkol-static PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_runtime_control_test AND LLVM_LIBRARY_DIRS)
+    # This test target is declared before LLVM's library search directories are
+    # normalized from llvm-config; attach them here after that discovery.
+    target_link_directories(pjrt_runtime_control_test PRIVATE ${LLVM_LIBRARY_DIRS})
 endif()
 
 # Propagate the runtime's transitive system link deps (Apple ImageIO/CoreGraphics/
@@ -11703,11 +11750,10 @@ endif()
 # ===== PJRT Smoke Test =====
 # Mirrors the xla_codegen_test target above exactly (same library, same
 # LLVM/MLIR/StableHLO linkage, same platform-specific options): it links
-# against eshkol-static to reach the PJRT client (PjrtPlugin/PjrtClient), a
-# lib/backend/xla/ source the LIB_SRC glob compiles in whenever XLA is ON, and
-# needs libdl for the plugin loader's dlopen/dlsym. It is configured only when
-# tests/xla/pjrt_smoke_test.cpp exists; neither that test nor the PJRT client
-# source is in this tree yet, so here the block is inert.
+# against eshkol-static to reach the PJRT client and needs libdl for the
+# plugin loader's dlopen/dlsym. It is configured only when
+# tests/xla/pjrt_smoke_test.cpp exists; that device smoke test is not present
+# in this source tree.
 if(ESHKOL_XLA_ENABLED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/pjrt_smoke_test.cpp")
     message(STATUS "Building PJRT smoke test")
 

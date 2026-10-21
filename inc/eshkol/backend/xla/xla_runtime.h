@@ -66,6 +66,14 @@ public:
 
     /**
      * Initialize runtime for a target.
+     *
+     * Independently of `target`, if the environment variable ESHKOL_XLA_PJRT
+     * is set to "1" (and this build has the optional PJRT client compiled
+     * in), also attempts to select a PJRT device for executeStableHLO() — see
+     * pjrt_client.h and ESHKOL_PJRT_PLUGIN_PATH. This never changes what this
+     * function returns; whether PJRT ended up active is reported through
+     * getDescription(), not through the return value.
+     *
      * @param target Target backend
      * @return true on success
      */
@@ -87,6 +95,11 @@ public:
 
     /**
      * Execute a compiled computation.
+     *
+     * `executable` is a raw `void(const void* const*, void* const*)` function
+     * pointer produced by the LLVM-direct compiler. This entry point always
+     * keeps that contract, regardless of PJRT environment settings.
+     *
      * @param executable Compiled executable
      * @param inputs Input buffers
      * @param outputs Output buffers (pre-allocated)
@@ -95,6 +108,16 @@ public:
     ExecutionResult execute(void* executable,
                             const std::vector<BufferDescriptor>& inputs,
                             std::vector<BufferDescriptor>& outputs);
+
+    /**
+     * Compile and execute StableHLO on the active PJRT device. The PJRT
+     * executable stays inside this call, so it cannot be confused with the
+     * raw function pointer accepted by execute(). Returns a diagnostic and
+     * performs no host fallback when PJRT is inactive or compilation fails.
+     */
+    ExecutionResult executeStableHLO(const std::string& module_text,
+                                     const std::vector<BufferDescriptor>& inputs,
+                                     std::vector<BufferDescriptor>& outputs);
 
     /**
      * Execute asynchronously.
@@ -167,13 +190,18 @@ public:
     void getMemoryStats(size_t& allocated_bytes, size_t& peak_bytes);
 
     /**
-     * Get runtime description.
+     * Get runtime description, including whether executeStableHLO() has an
+     * active PJRT device and its reported platform.
+     *
      * @return Human-readable description
      */
     std::string getDescription() const;
 
 private:
     class Impl;
+    ExecutionResult executePjrt(void* executable,
+                                const std::vector<BufferDescriptor>& inputs,
+                                std::vector<BufferDescriptor>& outputs);
     std::unique_ptr<Impl> impl_;
 };
 
