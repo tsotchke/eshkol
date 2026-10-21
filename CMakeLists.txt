@@ -13536,7 +13536,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
-    foreach(reverse_fixture IN ITEMS incremental_reverse incremental_reverse_alias_seed certified_nonlinear certified_nonlinear_independent)
+    foreach(reverse_fixture IN ITEMS incremental_reverse incremental_reverse_alias_seed certified_nonlinear certified_nonlinear_independent certified_continuation certified_continuation_independent)
         add_test(NAME ${reverse_fixture}_vm
             COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${reverse_fixture}_test.esk")
@@ -13565,6 +13565,23 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     eshkol_add_algebraic_ad_acceptance(certified_nonlinear_independent "tests/stdlib/certified_nonlinear_independent_test.esk")
+    eshkol_add_algebraic_ad_acceptance(certified_continuation_independent "tests/stdlib/certified_continuation_independent_test.esk")
+endif()
+
+# Wave 4 acceptance: certified_continuation
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certified_continuation_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_continuation_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME certified_continuation_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_continuation_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certified_continuation_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certified_continuation_jit certified_continuation_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()
 
 # Wave 4 acceptance: certified_native_solve
