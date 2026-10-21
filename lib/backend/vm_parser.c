@@ -163,6 +163,7 @@ static void add_child(Node* p, Node* c) {
 static void free_node(Node* n);
 static Node* parse_sexp(void);
 static void vm_compile_error(const char* message, const char* detail);
+static int vm_compile_failed(void);
 
 /** @brief Append one character to a growable char buffer (*@p buf,
  *         *@p len, *@p cap), doubling capacity via realloc when nearly
@@ -216,6 +217,7 @@ static Node* make_call_node(const char* name) {
     Node* head = make_symbol_node(name);
     if (!head) { free_node(call); return NULL; }
     add_child(call, head);
+    if (call->n_children != 1) { free_node(head); free_node(call); return NULL; }
     return call;
 }
 
@@ -262,13 +264,27 @@ static int add_part(Node*** parts, int* n_parts, int* cap_parts, Node* part) {
     return 0;
 }
 
+/* Parts remain owned here until the complete string expression adopts them. */
+static void free_string_parts(Node** parts, int n_parts) {
+    for (int i = 0; i < n_parts; ++i) free_node(parts[i]);
+    free(parts);
+}
+
 /** @brief Wrap an interpolated @p expr as `(format "~a" expr)`, so its
  *         display representation can be spliced into a string literal. */
 static Node* make_format_display_node(Node* expr) {
     Node* call = make_call_node("format");
-    if (!call) return NULL;
-    add_child(call, make_string_node("~a"));
-    add_child(call, expr);
+    Node* format = make_string_node("~a");
+    if (!call || !format || !expr) {
+        free_node(call); free_node(format); free_node(expr); return NULL;
+    }
+    Node** children = (Node**)realloc(call->children, 3 * sizeof(Node*));
+    if (!children) {
+        free_node(call); free_node(format); free_node(expr); return NULL;
+    }
+    call->children = children;
+    call->children[1] = format; call->children[2] = expr;
+    call->n_children = call->_cap = 3;
     return call;
 }
 
@@ -281,7 +297,11 @@ static Node* make_string_append_node(Node** parts, int n_parts) {
 
     Node* call = make_call_node("string-append");
     if (!call) return NULL;
-    for (int i = 0; i < n_parts; i++) add_child(call, parts[i]);
+    Node** children = (Node**)realloc(call->children, ((size_t)n_parts + 1) * sizeof(Node*));
+    if (!children) { free_node(call); return NULL; }
+    call->children = children;
+    for (int i = 0; i < n_parts; ++i) call->children[i + 1] = parts[i];
+    call->n_children = call->_cap = n_parts + 1;
     return call;
 }
 
@@ -323,11 +343,11 @@ static Node* parse_string_literal(void) {
                         ? "incomplete string escape"
                         : "malformed string escape",
                     "string escapes must use a supported named, bounded octal, or terminated hex form");
-                free(buf); free(parts); return NULL;
+                free(buf); free_string_parts(parts, n_parts); return NULL;
             }
             for (size_t i = 0; i < decoded_len; i++) {
                 if (append_char_buf(&buf, &len, &buf_cap, (char)decoded[i]) != 0) {
-                    free(buf); free(parts); return NULL;
+                    free(buf); free_string_parts(parts, n_parts); return NULL;
                 }
             }
             src_ptr += consumed;
@@ -337,7 +357,7 @@ static Node* parse_string_literal(void) {
         if (src_ptr[0] == '~' && src_ptr[1] == '~' && src_ptr[2] == '{') {
             if (append_char_buf(&buf, &len, &buf_cap, '~') != 0 ||
                 append_char_buf(&buf, &len, &buf_cap, '{') != 0) {
-                free(buf); free(parts); return NULL;
+                free(buf); free_string_parts(parts, n_parts); return NULL;
             }
             src_ptr += 3;
             continue;
@@ -346,9 +366,9 @@ static Node* parse_string_literal(void) {
         if (src_ptr[0] == '~' && src_ptr[1] == '{') {
             has_interpolation = 1;
             if (len > 0) {
-                if (add_part(&parts, &n_parts, &cap_parts,
-                             make_string_node_n(buf, (size_t)len)) != 0) {
-                    free(buf); free(parts); return NULL;
+                Node* literal = make_string_node_n(buf, (size_t)len);
+                if (add_part(&parts, &n_parts, &cap_parts, literal) != 0) {
+                    free_node(literal); free(buf); free_string_parts(parts, n_parts); return NULL;
                 }
                 len = 0;
             }
@@ -356,7 +376,7 @@ static Node* parse_string_literal(void) {
             src_ptr += 2;
             int expr_cap = 128;
             char* expr_buf = (char*)malloc(expr_cap);
-            if (!expr_buf) { free(buf); free(parts); return NULL; }
+            if (!expr_buf) { free(buf); free_string_parts(parts, n_parts); return NULL; }
             int expr_len = 0;
             int in_expr_string = 0;
             int escaped = 0;
@@ -383,7 +403,7 @@ static Node* parse_string_literal(void) {
                 }
 
                 if (append_char_buf(&expr_buf, &expr_len, &expr_cap, tracked) != 0) {
-                    free(expr_buf); free(buf); free(parts); return NULL;
+                    free(expr_buf); free(buf); free_string_parts(parts, n_parts); return NULL;
                 }
 
                 if (in_expr_string) {
@@ -402,29 +422,33 @@ static Node* parse_string_literal(void) {
 
             if (!closed) {
                 fprintf(stderr, "ERROR: unterminated string interpolation\n");
-                free(expr_buf); free(buf); free(parts); return NULL;
+                free(expr_buf); free(buf); free_string_parts(parts, n_parts); return NULL;
             }
 
             expr_buf[expr_len] = 0;
             Node* expr = parse_sexp_from_string(expr_buf);
             free(expr_buf);
-            if (!expr) { free(buf); free(parts); return NULL; }
+            if (!expr) { free(buf); free_string_parts(parts, n_parts); return NULL; }
 
             Node* formatted = make_format_display_node(expr);
             if (add_part(&parts, &n_parts, &cap_parts, formatted) != 0) {
-                free_node(formatted); free(buf); free(parts); return NULL;
+                free_node(formatted); free(buf); free_string_parts(parts, n_parts); return NULL;
             }
             src_ptr++; /* skip closing interpolation brace */
             continue;
         }
 
         if (append_char_buf(&buf, &len, &buf_cap, *src_ptr) != 0) {
-            free(buf); free(parts); return NULL;
+            free(buf); free_string_parts(parts, n_parts); return NULL;
         }
         src_ptr++;
     }
 
-    if (*src_ptr == '"') src_ptr++; /* skip closing quote */
+    if (*src_ptr != '"') {
+        vm_compile_error("unterminated string literal", "expected closing quote");
+        free_string_parts(parts, n_parts); free(buf); return NULL;
+    }
+    src_ptr++; /* skip closing quote */
     buf[len] = 0;
 
     if (!has_interpolation) {
@@ -434,28 +458,43 @@ static Node* parse_string_literal(void) {
     }
 
     if (len > 0) {
-        if (add_part(&parts, &n_parts, &cap_parts,
-                     make_string_node_n(buf, (size_t)len)) != 0) {
-            free(buf); free(parts); return NULL;
+        Node* literal = make_string_node_n(buf, (size_t)len);
+        if (add_part(&parts, &n_parts, &cap_parts, literal) != 0) {
+            free_node(literal); free(buf); free_string_parts(parts, n_parts); return NULL;
         }
     }
     free(buf);
 
     Node* result = make_string_append_node(parts, n_parts);
-    free(parts);
+    if (result) free(parts);
+    else free_string_parts(parts, n_parts);
     return result;
 }
 
 /** @brief Parse a parenthesized list body (after the opening `(` has been
  *         consumed) into an N_LIST node, reading sub-expressions until `)`
- *         or end of input. */
-static Node* parse_list(void) {
-    Node* list = make_node(N_LIST);
+ *         and refusing an incomplete body at end of input. */
+static Node* parse_list_body(Node* list) {
     if (!list) return NULL;
-    while (1) { skip_ws(); if (!*src_ptr || *src_ptr == ')') break; Node* c = parse_sexp(); if (!c) break; add_child(list, c); }
-    if (*src_ptr == ')') src_ptr++;
-    return list;
+    for (;;) {
+        skip_ws();
+        if (!*src_ptr) {
+            vm_compile_error("unterminated list or vector", "expected closing parenthesis");
+            free_node(list); return NULL;
+        }
+        if (*src_ptr == ')') { src_ptr++; return list; }
+        Node* child = parse_sexp();
+        if (!child) { free_node(list); return NULL; }
+        int before = list->n_children;
+        add_child(list, child);
+        if (list->n_children != before + 1) {
+            vm_compile_error("unable to append parsed datum", "allocation failed");
+            free_node(child); free_node(list); return NULL;
+        }
+    }
 }
+
+static Node* parse_list(void) { return parse_list_body(make_node(N_LIST)); }
 
 /** @brief Build an N_NUMBER leaf from a (optionally signed) run of @p len
  *         decimal digit characters at @p digits: an exact int64 node when
@@ -568,7 +607,20 @@ static Node* vm_number_node(const eshkol_numsyn_t* syn) {
  *        1/3 and scientific notation), and symbols.
  * @return The parsed Node, or NULL at end of input / on a bare `)`.
  */
+static Node* parse_sexp_impl(void);
+
+/* EOF between complete datums is normal. Failure after a datum starts must
+ * poison the entire compilation, rather than execute or emit a valid prefix. */
 static Node* parse_sexp(void) {
+    skip_ws();
+    if (!*src_ptr) return NULL;
+    Node* datum = parse_sexp_impl();
+    if (!datum && !vm_compile_failed())
+        vm_compile_error("invalid or incomplete Scheme datum", NULL);
+    return datum;
+}
+
+static Node* parse_sexp_impl(void) {
     skip_ws();
     if (!*src_ptr) return NULL;
     if (*src_ptr == '(') { src_ptr++; return parse_list(); }
@@ -581,7 +633,11 @@ static Node* parse_sexp(void) {
         strncpy(qs->symbol, "quote", 127); qs->symbol[127] = 0;
         add_child(q, qs);
         Node* datum = parse_sexp();
-        if (datum) add_child(q, datum);
+        if (!datum) {
+            vm_compile_error("missing datum after reader prefix", NULL);
+            free_node(q); return NULL;
+        }
+        add_child(q, datum);
         return q;
     }
     /* Quasiquote */
@@ -592,7 +648,11 @@ static Node* parse_sexp(void) {
         strncpy(tag->symbol, "quasiquote", 127); tag->symbol[127] = 0;
         add_child(q, tag);
         Node* datum = parse_sexp();
-        if (datum) add_child(q, datum);
+        if (!datum) {
+            vm_compile_error("missing datum after reader prefix", NULL);
+            free_node(q); return NULL;
+        }
+        add_child(q, datum);
         return q;
     }
     /* Unquote-splicing (must check before unquote) */
@@ -603,7 +663,11 @@ static Node* parse_sexp(void) {
         strncpy(tag->symbol, "unquote-splicing", 127); tag->symbol[127] = 0;
         add_child(q, tag);
         Node* datum = parse_sexp();
-        if (datum) add_child(q, datum);
+        if (!datum) {
+            vm_compile_error("missing datum after reader prefix", NULL);
+            free_node(q); return NULL;
+        }
+        add_child(q, datum);
         return q;
     }
     /* Unquote */
@@ -614,7 +678,11 @@ static Node* parse_sexp(void) {
         strncpy(tag->symbol, "unquote", 127); tag->symbol[127] = 0;
         add_child(q, tag);
         Node* datum = parse_sexp();
-        if (datum) add_child(q, datum);
+        if (!datum) {
+            vm_compile_error("missing datum after reader prefix", NULL);
+            free_node(q); return NULL;
+        }
+        add_child(q, datum);
         return q;
     }
     /* String literal */
@@ -661,9 +729,7 @@ static Node* parse_sexp(void) {
             strncpy(tag->symbol, "vector", 127); tag->symbol[127] = 0;
             vec->is_vector = 1;   /* reader-origin marker; see the Node field note */
             add_child(vec, tag);
-            while (1) { skip_ws(); if (!*src_ptr || *src_ptr == ')') break; Node* el = parse_sexp(); if (!el) break; add_child(vec, el); }
-            if (*src_ptr == ')') src_ptr++;
-            return vec;
+            return parse_list_body(vec);
         }
     }
     /* R7RS 7.1.1 numbers -- every real and complex spelling, with radix and
