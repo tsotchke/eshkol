@@ -12226,6 +12226,14 @@ if(ESHKOL_BUILD_AGENT_FFI)
 
         add_library(eshkol-agent-ffi STATIC ${AGENT_FFI_SOURCES})
 
+        # `repl_jit.cpp` records optional agent FFI symbols in the JIT
+        # namespace only when this archive is part of the configured host.
+        # With FFI disabled, omit those optional weak-import references so
+        # small embedded builds do not require the production agent archive.
+        if(TARGET eshkol-repl-lib)
+            target_compile_definitions(eshkol-repl-lib PRIVATE ESHKOL_AGENT_FFI_LINKED=1)
+        endif()
+
         # A program that requires an agent module links this archive alongside
         # libeshkol-runtime.a, including when the output is a `--shared-lib`
         # shared object — so it needs the same position independence, for the
