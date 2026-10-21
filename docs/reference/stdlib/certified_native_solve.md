@@ -55,4 +55,4 @@ returned boxes and tolerance, and trusts no native residual or status flag.
 It does not attest the descriptive cost receipt or rerun native generation.
 Mutable receipt vectors are not sealed proofs. Arithmetic loss refuses
 certification. Exact verification/reconstruction/correction costs are additional;
-The unchanged 30-check numerical suite passes native JIT, optimized AOT, VM source, and VM bytecode execution with the checked tensor inverse. The WebAssembly linear solver path still requires qualification. These results establish correctness on the tested routes; they do not establish a speedup, sparse solve, or GPU performance.
+On macOS arm64, the unchanged 30-check numerical suite passes native JIT, optimized AOT, VM source, and VM bytecode execution with the checked tensor inverse. WebAssembly does not yet implement the required `linear-solve` primitive. These results establish correctness on the tested routes; they do not establish a speedup, sparse solve, or GPU performance.

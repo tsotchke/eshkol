@@ -841,7 +841,7 @@ tensor-dot	vm-supported
 tensor-dtype	vm-supported	
 tensor-exp	vm-supported	
 tensor-get	vm-supported	#322: alias of tensor-ref; multi-dim (tensor-get t i j ...) via the same VM-compiler special form
-tensor-inverse	gap	tensor linalg/manipulation fid missing in VM
+tensor-inverse	vm-supported	Shared checked pivoted inverse; corpus/101_tensor_inverse.esk checks pivoting, scale, shape, finite failures, ownership and both inverse products. Native JIT/O3 and actual VM source/ESKB plus Node WASM passed14assertions at5afde04d; future changes must preserve these gates.
 tensor-length	gap	tensor linalg/manipulation fid missing in VM
 tensor-load	vm-supported	
 tensor-log	vm-supported	

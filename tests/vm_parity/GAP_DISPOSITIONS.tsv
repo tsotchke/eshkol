@@ -256,7 +256,6 @@ tensor-corrcoef	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tenso
 tensor-cov	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-det	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-disk-fill!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
-tensor-inverse	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-length	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-lu	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
 tensor-norm	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
