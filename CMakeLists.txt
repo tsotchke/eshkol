@@ -13712,6 +13712,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR|fatal signal")
 endif()
 
+# Standalone VM acceptance for DBSP recursive and SQLite state contracts.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    foreach(feature recursive sqlite_changefeed)
+        if(feature STREQUAL "recursive")
+            set(_dbsp_vm_source tests/stdlib/dbsp_recursive_test.esk)
+        else()
+            set(_dbsp_vm_source tests/stdlib/dbsp_sqlite_changefeed_test.esk)
+        endif()
+        add_test(NAME dbsp_${feature}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/${_dbsp_vm_source}")
+        set_tests_properties(dbsp_${feature}_vm PROPERTIES TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_VM_NO_DISASM=1"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|ERROR|fatal signal")
+    endforeach()
+endif()
+
 # Wave 2 acceptance: dbsp_recursive
 if(ESHKOL_BUILD_TESTS)
     add_test(NAME dbsp_recursive_jit COMMAND $<TARGET_FILE:eshkol-run> -r
