@@ -2602,14 +2602,29 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
 
     add_library(pjrt_test_nonplugin MODULE tests/xla/pjrt_test_nonplugin.cpp)
     add_library(pjrt_test_incompatible MODULE tests/xla/pjrt_test_incompatible.cpp)
+    add_library(pjrt_test_short_table MODULE tests/xla/pjrt_test_short_table.cpp)
+    add_library(pjrt_test_null_initializer MODULE tests/xla/pjrt_test_null_initializer.cpp)
+    add_library(pjrt_test_compatible MODULE tests/xla/pjrt_test_compatible.cpp)
     target_include_directories(pjrt_test_incompatible PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
     )
-    set_target_properties(pjrt_test_nonplugin pjrt_test_incompatible PROPERTIES
+    target_include_directories(pjrt_test_short_table PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_null_initializer PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    target_include_directories(pjrt_test_compatible PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/deps/pjrt
+    )
+    set_target_properties(
+        pjrt_test_nonplugin pjrt_test_incompatible pjrt_test_short_table
+        pjrt_test_null_initializer pjrt_test_compatible PROPERTIES
         PREFIX ""
     )
     add_dependencies(pjrt_loader_test
-        pjrt_test_nonplugin pjrt_test_incompatible
+        pjrt_test_nonplugin pjrt_test_incompatible pjrt_test_short_table
+        pjrt_test_null_initializer pjrt_test_compatible
     )
 
     add_test(NAME pjrt_loader_missing_library
@@ -2621,6 +2636,15 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
     )
     add_test(NAME pjrt_loader_incompatible_api_version
         COMMAND pjrt_loader_test incompatible $<TARGET_FILE:pjrt_test_incompatible>
+    )
+    add_test(NAME pjrt_loader_short_api_table
+        COMMAND pjrt_loader_test short $<TARGET_FILE:pjrt_test_short_table>
+    )
+    add_test(NAME pjrt_loader_null_initializer
+        COMMAND pjrt_loader_test null_init $<TARGET_FILE:pjrt_test_null_initializer>
+    )
+    add_test(NAME pjrt_loader_compatible_initialize_unload
+        COMMAND pjrt_loader_test compatible $<TARGET_FILE:pjrt_test_compatible>
     )
 endif()
 

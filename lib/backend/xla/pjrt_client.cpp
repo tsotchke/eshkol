@@ -37,6 +37,7 @@
 // happens; here it cost an entire platform.
 #include <unistd.h>
 
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <cstdlib>
@@ -129,6 +130,62 @@ std::vector<unsigned char> encodeCompileOptions(int num_replicas) {
     return out;
 }
 
+/**
+ * @brief Validate every PJRT_Api entry point this wrapper may call.
+ *
+ * PJRT_Api is append-only and reports the number of bytes the plugin actually
+ * provides. Check each field's extent before reading its function pointer so
+ * an older or malformed same-major table fails here instead of being called
+ * through a null or out-of-bounds slot later.
+ */
+std::string validatePjrtFunctionTable(const PJRT_Api* api) {
+#define ESHKOL_REQUIRE_PJRT_FUNCTION(field)                                  \
+    do {                                                                      \
+        constexpr size_t required_size =                                     \
+            offsetof(PJRT_Api, field) +                                      \
+            sizeof(((PJRT_Api*)nullptr)->field);                             \
+        if (api->struct_size < required_size) {                              \
+            return std::string("PJRT_Api table is too short for ") + #field + \
+                   " (struct_size=" + std::to_string(api->struct_size) +     \
+                   ", required=" + std::to_string(required_size) + ")";    \
+        }                                                                     \
+        if (api->field == nullptr) {                                          \
+            return std::string("PJRT_Api has null required function ") + #field; \
+        }                                                                     \
+    } while (false)
+
+    // Plugin initialization comes first because PJRT requires it before any
+    // other entry point. Error accessors are needed if initialization fails.
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Plugin_Initialize);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Error_Message);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Error_Destroy);
+
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Client_Create);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Client_Destroy);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Client_PlatformName);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Client_Devices);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Client_Compile);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Client_BufferFromHostBuffer);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_DeviceDescription_Id);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_DeviceDescription_Kind);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Device_GetDescription);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Device_IsAddressable);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Executable_Destroy);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Executable_NumOutputs);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_LoadedExecutable_Destroy);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_LoadedExecutable_AddressableDevices);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_LoadedExecutable_GetExecutable);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_LoadedExecutable_Execute);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Buffer_Destroy);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Buffer_Dimensions);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Buffer_ToHostBuffer);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Event_Await);
+    ESHKOL_REQUIRE_PJRT_FUNCTION(PJRT_Event_Destroy);
+
+#undef ESHKOL_REQUIRE_PJRT_FUNCTION
+    return std::string();
+}
+
 // The one-replica encoding must be byte-for-byte the S1 payload documented
 // above; anything else means the generalisation changed the single-device
 // path, which it must not.
@@ -195,6 +252,29 @@ std::unique_ptr<PjrtPlugin> PjrtPlugin::load(const std::string& library_path,
         return fail(library_path + " GetPjrtApi() returned null");
     }
 
+    // The table starts with its byte extent. Do not read nested API version
+    // fields until the plugin says the complete version member is present.
+    const size_t api_struct_size = api->struct_size;
+    const size_t version_end = offsetof(PJRT_Api, pjrt_api_version) +
+                               sizeof(api->pjrt_api_version);
+    if (api_struct_size < sizeof(api->struct_size) ||
+        api_struct_size < version_end) {
+        dlclose(handle);
+        return fail(library_path + " reports a PJRT_Api table too short for "
+                    "pjrt_api_version (struct_size=" +
+                    std::to_string(api_struct_size) + ", required=" +
+                    std::to_string(version_end) + ")");
+    }
+    const size_t version_struct_size = api->pjrt_api_version.struct_size;
+    if (version_struct_size < PJRT_Api_Version_STRUCT_SIZE) {
+        dlclose(handle);
+        return fail(library_path + " reports a PJRT API version record too "
+                    "short (struct_size=" +
+                    std::to_string(version_struct_size) +
+                    ", required=" +
+                    std::to_string(PJRT_Api_Version_STRUCT_SIZE) + ")");
+    }
+
     // A major-version mismatch means the Args struct layouts differ. Refusing
     // here is deliberate: continuing would write past the end of structs the
     // plugin allocated differently, and the resulting corruption would present
@@ -208,6 +288,12 @@ std::unique_ptr<PjrtPlugin> PjrtPlugin::load(const std::string& library_path,
                     std::to_string(PJRT_API_MAJOR) +
                     "; struct layouts differ across a major version and "
                     "proceeding would corrupt memory");
+    }
+
+    const std::string table_error = validatePjrtFunctionTable(api);
+    if (!table_error.empty()) {
+        dlclose(handle);
+        return fail(library_path + " " + table_error);
     }
 
     // ONE-TIME PLUGIN SETUP, and the ABI is explicit that it "must be called

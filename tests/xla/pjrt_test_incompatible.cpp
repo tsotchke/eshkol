@@ -9,6 +9,7 @@ PJRT_Api api = {};
 struct InitializeVersion {
     InitializeVersion() {
         api.struct_size = sizeof(api);
+        api.pjrt_api_version.struct_size = PJRT_Api_Version_STRUCT_SIZE;
         api.pjrt_api_version.major_version = PJRT_API_MAJOR + 1;
         api.pjrt_api_version.minor_version = PJRT_API_MINOR;
     }
