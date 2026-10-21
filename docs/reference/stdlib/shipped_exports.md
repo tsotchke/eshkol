@@ -874,6 +874,30 @@ Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk
 
 Declared by [core.dbsp.tensor_circuit](../../../lib/core/dbsp/tensor_circuit.esk#L3); see [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) for shape, arithmetic, signed-update and ownership constraints.
 
+### `tensor-circuit-visit`
+
+Visits copied topological node descriptors and read-only scalar accessors without exposing internal graph or snapshot storage.
+
+### `tensor-circuit-plan-work`
+
+Returns per-tick dimensionless work proxies for incremental/recomputed contractions and dense materialization; estimates are not elapsed-time predictions.
+
+### `make-tensor-circuit-pullback`
+
+Builds a seeded structural reverse pass over the maintained named-axis tensor circuit; see [ad_tensor_circuit_reverse.md](ad_tensor_circuit_reverse.md).
+
+### `tensor-circuit-pullback-step`
+
+Applies named input and seed deltas and returns a successor with output and cotangent deltas.
+
+### `tensor-circuit-pullback-output`
+
+Returns owned output and tensor-input cotangent observations.
+
+### `tensor-circuit-pullback-work`
+
+Returns the current reverse-sweep work receipt.
+
 ## `core.dbsp.circuit`
 
 Source: [lib/core/dbsp/circuit.esk](../../../lib/core/dbsp/circuit.esk). The logical state view includes hidden distinct counts and join arrangements for checkpoint verification.
