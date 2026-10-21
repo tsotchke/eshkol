@@ -19,7 +19,7 @@ def main():
     env = dict(os.environ, ESHKOL_PATH=str(root / "lib"),
                ESHKOL_LIB_DIR=str(runner.parent), ESHKOL_JIT_CACHE="0",
                ESHKOL_VM_NO_DISASM="1")
-    markers = {"Passed: 16", "Failed: 0", "RESULT: PASS"}
+    markers = {"Passed: 18", "Failed: 0", "RESULT: PASS"}
 
     def run(label, command, expected=markers):
         try:
@@ -72,6 +72,10 @@ def main():
         if not run("actualESKB", [str(vm), str(bytecode)]):
             return 1
     fatal_dir = root / "tests/vm_parity/fatal"
+    fatal_markers = ("fatal signal", "sigsegv", "segmentation fault", "bus error",
+                     "addresssanitizer", "runtime error:", "assertion failed",
+                     "llvm module verification failed", "failed to materialize symbols",
+                     "vm terminated on a fatal runtime error")
     for case in ("bytevector_constructor_type.esk",
                  "bytevector_constructor_negative.esk",
                  "bytevector_constructor_high.esk"):
@@ -85,11 +89,27 @@ def main():
             except (OSError, subprocess.TimeoutExpired) as error:
                 print(f"FAIL: fatal {case} {route}: {error}", file=sys.stderr)
                 return 1
-            if result.returncode == 0:
-                print(result.stdout, end="")
-                print(f"FAIL: {fatal_dir / case} {route} accepted invalid byte", file=sys.stderr)
+            transcript = result.stdout + result.stderr
+            diagnostic = ("bytevector: expected exact integer in range 0..255"
+                          if route == "native" else
+                          "bytevector: expected exact integers in [0,255]")
+            # The VM prints this generic termination line after an uncaught
+            # Scheme exception. It is the expected refusal only when the
+            # precise bytevector diagnostic is also present; all signal and
+            # compiler/runtime crash markers remain unconditional failures.
+            unexpected_fatal = any(
+                marker in transcript.lower() and not (
+                    marker == "vm terminated on a fatal runtime error"
+                    and route == "VM" and diagnostic in transcript)
+                for marker in fatal_markers)
+            if (result.returncode != 1 or diagnostic not in transcript or unexpected_fatal):
+                print(transcript, end="", file=sys.stderr)
+                print(f"FAIL: fatal {case} {route}: expected exit=1 and bytevector diagnostic; "
+                      f"actual exit={result.returncode}", file=sys.stderr)
                 return 1
-    print("PASS: bytevector constructor four execution routes (16 checks each), six fatal refusals")
+            print(f"REFUSAL: {case} {route} expected=1 actual={result.returncode}; "
+                  f"diagnostic={diagnostic}")
+    print("PASS: bytevector constructor four execution routes (18 checks each), six diagnostic refusals")
     return 0
 
 

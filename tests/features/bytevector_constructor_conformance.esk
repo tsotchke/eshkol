@@ -37,6 +37,10 @@
 (check "reject negative" (guard (e (#t #t)) (bytevector -1) #f))
 (check "reject high" (guard (e (#t #t)) (bytevector 256) #f))
 (check "reject huge bignum" (guard (e (#t #t)) (bytevector (expt 2 100)) #f))
+(check "apply rejects negative rest byte"
+  (guard (e (#t #t)) (apply ctor '(-1 0)) #f))
+(check "apply rejects high rest byte"
+  (guard (e (#t #t)) (apply ctor '(0 256)) #f))
 (define effects 0)
 (guard (e (#t #t))
   (bytevector -1 (begin (set! effects (+ effects 1)) 8)) #f)
