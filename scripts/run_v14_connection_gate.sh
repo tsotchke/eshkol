@@ -207,6 +207,36 @@ probe_external_ci_evidence() {
     printf '  \xE2\x9C\x97 %-42s UNVERIFIED (CI receipt needed): %s — %s\n' "$probe_id" "$workflow" "$reason"
 }
 
+# A native TLS event is emitted only after the compiled capability and all
+# registered C/JIT/AOT/Python-peer tests are present and pass in this run.
+probe_tls_acceptance() {
+    local compile_flags test_list required
+    compile_flags="$BUILD_DIR_PATH/CMakeCache.txt"
+    if [ ! -f "$compile_flags" ] || ! grep -Fq 'ESHKOL_TLS_AVAILABLE:INTERNAL=1' "$compile_flags"; then
+        probe_unverified v14_tls_handshake_verified \
+            "native OpenSSL TLS is unavailable in this build; no handshake PASS is emitted"
+        return
+    fi
+
+    test_list="$(ctest --test-dir "$BUILD_DIR_PATH" -N -R '^tls_' 2>&1)" || {
+        probe_unverified v14_tls_handshake_verified "CTest could not enumerate TLS acceptance tests"
+        return
+    }
+    for required in tls_context_native tls_public_scheme_jit tls_public_scheme_aot \
+                    tls_public_python_jit tls_public_python_aot \
+                    tls_public_fatal_jit tls_public_fatal_aot; do
+        if ! printf '%s\n' "$test_list" | grep -Fq "$required"; then
+            probe_unverified v14_tls_handshake_verified \
+                "required public TLS test is not registered: $required"
+            return
+        fi
+    done
+    probe_run v14_tls_handshake_verified \
+        'native TLS C/JIT/AOT and Python SSL peer acceptance suite' \
+        'ctest --test-dir "$BUILD_DIR_PATH" --output-on-failure -R "^tls_"' \
+        '100% tests passed'
+}
+
 echo "Running v1.4-connection oracle probes -> $TRACE_FILE"
 echo
 
@@ -307,8 +337,7 @@ probe_run v14_tcp_roundtrip 'public core.net TCP loopback round trip' \
     'python3 "$REPO_ROOT/scripts/run_net_gate.py" --runner "$ESHKOL_RUN"'
 probe_run v14_udp_roundtrip 'public core.net UDP loopback round trip' \
     'python3 "$REPO_ROOT/scripts/run_net_gate.py" --runner "$ESHKOL_RUN"'
-probe_unverified v14_tls_handshake_verified \
-    'requires a verified TLS handshake test'
+probe_tls_acceptance
 probe_unverified v14_websocket_server_echo \
     'requires a WebSocket server upgrade and echo round-trip test'
 

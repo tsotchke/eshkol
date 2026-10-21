@@ -1,0 +1,106 @@
+;;; Public Scheme TLS API roundtrip, exercised under both JIT and AOT.
+(require stdlib)
+(require core.tls)
+(require core.threads)
+(require core.capabilities)
+
+(define tests-passed 0)
+(define tests-failed 0)
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (condition (#t (set! raised #t))) (thunk))
+    raised))
+(define (check name condition)
+  (if condition
+      (begin (set! tests-passed (+ tests-passed 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! tests-failed (+ tests-failed 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define cert "tests/network/fixtures/localhost-cert.pem")
+(define key "tests/network/fixtures/localhost-key.pem")
+(capability-install-policy! '(network))
+(check "explicit client CA path requires file-read before native loading"
+       (raises? (lambda () (tls-client-context "/definitely/missing/ca.pem"))))
+(check "explicit server certificate and key require file-read"
+       (raises? (lambda ()
+                  (tls-server-context "/definitely/missing/cert.pem"
+                                      "/definitely/missing/key.pem"))))
+(define default-trust-context (tls-client-context #f))
+(check "default system trust uses network without explicit file-read"
+       (not (tls-error? default-trust-context)))
+(check "default trust context closes under the network policy"
+       (= (tls-context-close default-trust-context) 0))
+(capability-install-policy! '(network file-read))
+(define (text-a) (string (integer->char 65) (integer->char 0) (integer->char 233)))
+(define payload (text-a))
+(define server-context (tls-server-context cert key))
+(check "server context loads PEM certificate and matching key"
+       (and (not (tls-error? server-context)) (tls-available?)))
+(define listener (tls-listen server-context "127.0.0.1" 0))
+(check "TLS listener binds an ephemeral loopback port" (not (tls-error? listener)))
+(define port (tls-listener-port listener))
+(check "TLS listener exposes its selected port" (and (integer? port) (> port 0)))
+
+(define (serve-one)
+  (let ((session (tls-accept listener 2000)))
+    (if (tls-error? session)
+        session
+        (let ((ctx-close (tls-context-close server-context))
+              (received (tls-read session 32 2000)))
+          (let ((written (if (tls-error? received) received
+                             (tls-write session received 2000))))
+            (let ((closed (tls-session-close session)))
+              (vector ctx-close received written closed)))))))
+(define server-thread (make-thread serve-one))
+(define client-context (tls-client-context cert))
+(check "client context loads the supplied trusted CA" (not (tls-error? client-context)))
+(define client-listen-result (tls-listen client-context "127.0.0.1" 0))
+(check "client context refuses listener use before opening a socket"
+       (and (tls-error? client-listen-result)
+            (= (tls-error-code client-listen-result) -4)))
+(define server-connect-result
+  (tls-connect server-context "127.0.0.1" port "localhost" 0))
+(check "server context refuses client connect before opening a socket"
+       (and (tls-error? server-connect-result)
+            (= (tls-error-code server-connect-result) -4)))
+(define client-session
+  (tls-connect client-context "127.0.0.1" port "localhost" 2000))
+(check "client verifies localhost over a numeric TCP address"
+       (not (tls-error? client-session)))
+(define client-context-close (tls-context-close client-context))
+(check "active client session retains a closed context" (= client-context-close 0))
+(define sent (if (tls-error? client-session) client-session
+                 (tls-write client-session payload 1000)))
+(check "TLS write reports UTF-8 byte length including embedded NUL"
+       (= sent (string-byte-length payload)))
+(define reply (if (tls-error? client-session) client-session
+                  (tls-read client-session 32 1000)))
+(check "TLS read preserves embedded NUL and multibyte text"
+       (and (string? reply) (string=? reply payload)))
+(define server-result (thread-join server-thread))
+(check "server session remained live after its context closed"
+       (and (vector? server-result) (= (vector-length server-result) 4)
+            (= (vector-ref server-result 0) 0)
+            (string? (vector-ref server-result 1))
+            (string=? (vector-ref server-result 1) payload)
+            (= (vector-ref server-result 2) (string-byte-length payload))
+            (= (vector-ref server-result 3) 0)))
+(capability-install-policy! '())
+(define client-session-close (tls-session-close client-session))
+(check "TLS client session closes after capability revocation"
+       (= client-session-close 0))
+(check "stale client session identifier refuses a second close"
+       (and (tls-error? (tls-session-close client-session))
+            (= (tls-error-code (tls-session-close client-session)) -4)))
+(check "server context identifier is stale after close"
+       (and (tls-error? (tls-context-close server-context))
+            (= (tls-error-code (tls-context-close server-context)) -4)))
+(check "TLS listener closes once" (= (tls-listener-close listener) 0))
+(check "stale TLS listener refuses a second close"
+       (and (tls-error? (tls-listener-close listener))
+            (= (tls-error-code (tls-listener-close listener)) -4)))
+
+(display "TLS public API: ") (display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed") (newline)
+(if (> tests-failed 0) (error "TLS public API failures") #t)

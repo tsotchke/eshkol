@@ -1849,6 +1849,14 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_tls_client_context);
     ADD_SYMBOL(eshkol_tls_server_context);
     ADD_SYMBOL(eshkol_tls_context_close);
+    ADD_SYMBOL(eshkol_tls_listen);
+    ADD_SYMBOL(eshkol_tls_accept);
+    ADD_SYMBOL(eshkol_tls_connect);
+    ADD_SYMBOL(eshkol_tls_listener_port);
+    ADD_SYMBOL(eshkol_tls_read);
+    ADD_SYMBOL(eshkol_tls_write);
+    ADD_SYMBOL(eshkol_tls_session_close);
+    ADD_SYMBOL(eshkol_tls_listener_close);
     ADD_SYMBOL(eshkol_resident_open);
     ADD_SYMBOL(eshkol_resident_close);
     ADD_SYMBOL(eshkol_resident_enter);
