@@ -411,6 +411,12 @@ static int32_t ssl_error_code(TlsSession *session, int ssl_error, int writing) {
     if (session->io_error == -2) return -2;
     return -1;
 }
+/* The API has no password argument. Never let PEM loading fall back to an
+ * interactive terminal dialog in a context constructor. */
+static int refuse_pem_password(char *buffer, int size, int writing, void *userdata) {
+    (void)buffer; (void)size; (void)writing; (void)userdata;
+    return 0;
+}
 
 int32_t eshkol_tls_available(void) { return 1; }
 int64_t eshkol_tls_client_context(const char *ca_file) {
@@ -431,6 +437,7 @@ int64_t eshkol_tls_server_context(const char *certificate_file,
         !certificate_file || !private_key_file) return -4;
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
     if (!ctx) return -1;
+    SSL_CTX_set_default_passwd_cb(ctx, refuse_pem_password);
     int ok = SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION) == 1 &&
         SSL_CTX_use_certificate_chain_file(ctx, certificate_file) == 1 &&
         SSL_CTX_use_PrivateKey_file(ctx, private_key_file, SSL_FILETYPE_PEM) == 1 &&

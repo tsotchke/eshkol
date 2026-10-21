@@ -12,8 +12,8 @@ int32_t eshkol_tls_available(void);
 /** Create a peer-verifying TLS client context. A null or empty CA file uses
  * system default trust paths; a non-empty file replaces that trust source. */
 int64_t eshkol_tls_client_context(const char *ca_file);
-/** Create a TLS server context from a PEM certificate chain and private key.
- * A missing file or non-matching key fails closed. */
+/** Create a TLS server context from a PEM chain and unencrypted private key.
+ * Missing files, encrypted keys, and non-matching keys fail without prompting. */
 int64_t eshkol_tls_server_context(const char *certificate_file,
                                  const char *private_key_file);
 /** Close a context. Stale and double-closed identifiers return -4. */

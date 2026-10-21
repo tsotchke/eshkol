@@ -37,6 +37,7 @@ int main(void) {
 
 #include <string.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -57,6 +58,7 @@ static char tempdir[PATH_MAX];
 static char cert_path[PATH_MAX + 64], key_path[PATH_MAX + 64];
 static char wrong_cert_path[PATH_MAX + 64], wrong_key_path[PATH_MAX + 64];
 static char expired_cert_path[PATH_MAX + 64], expired_key_path[PATH_MAX + 64];
+static char encrypted_key_path[PATH_MAX + 64];
 
 static EVP_PKEY *make_key(void) {
     EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, NULL);
@@ -335,7 +337,61 @@ static void concurrent_close_invalidates_first(void) {
     assert(pthread_join(server_thread, NULL) == 0);
     assert(eshkol_tls_listener_close(server.listener) == 0);
 }
-int main(void) {
+static void encrypted_key_never_reads_terminal(const char *executable) {
+    FILE *file = fopen(key_path, "rb"); assert(file);
+    EVP_PKEY *key = PEM_read_PrivateKey(file, NULL, NULL, NULL);
+    fclose(file); assert(key);
+    file = fopen(encrypted_key_path, "wb"); assert(file);
+    unsigned char password[] = "test-only";
+    assert(PEM_write_PrivateKey(file, key, EVP_aes_256_cbc(), password,
+                               sizeof(password) - 1, NULL, NULL) == 1);
+    fclose(file); EVP_PKEY_free(key);
+
+    int input[2], errors[2];
+    assert(pipe(input) == 0 && pipe(errors) == 0);
+    pid_t child = fork(); assert(child >= 0);
+    if (!child) {
+        if (setsid() < 0 || dup2(input[0], STDIN_FILENO) < 0 ||
+            dup2(errors[1], STDERR_FILENO) < 0) _exit(126);
+        int descriptors[] = {input[0], input[1], errors[0], errors[1]};
+        for (size_t i = 0; i < sizeof(descriptors) / sizeof(descriptors[0]); ++i)
+            if (descriptors[i] > STDERR_FILENO) close(descriptors[i]);
+        execl(executable, executable, "--encrypted-key-probe", cert_path,
+              encrypted_key_path, (char *)NULL);
+        _exit(127);
+    }
+    close(input[0]); close(errors[1]);
+    /* Keep stdin open without providing a password. A default interactive
+     * PEM callback blocks here; the explicit rejection callback must finish. */
+    int status = 0;
+    pid_t completed = 0;
+    int64_t deadline = monotonic_ms() + 3000;
+    while (monotonic_ms() < deadline) {
+        completed = waitpid(child, &status, WNOHANG);
+        if (completed == child) break;
+        if (completed < 0 && errno != EINTR) break;
+        delay_ms(10);
+    }
+    if (completed != child) {
+        kill(child, SIGKILL);
+        pid_t reaped;
+        do { reaped = waitpid(child, &status, 0); } while (reaped < 0 && errno == EINTR);
+        assert(reaped == child);
+    }
+    close(input[1]);
+    char diagnostic[1024];
+    ssize_t n;
+    do { n = read(errors[0], diagnostic, sizeof(diagnostic)); } while (n < 0 && errno == EINTR);
+    close(errors[0]);
+    assert(completed == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(n == 0);  /* No password request or terminal diagnostics. */
+}
+int main(int argc, char **argv) {
+    if (argc == 4 && strcmp(argv[1], "--encrypted-key-probe") == 0) {
+        int64_t result = eshkol_tls_server_context(argv[2], argv[3]);
+        if (result > 0) eshkol_tls_context_close(result);
+        return result == -1 ? 0 : 1;
+    }
     assert(eshkol_tls_available() == 1);
     const char *temporary_root = getenv("TMPDIR");
     if (!temporary_root || !temporary_root[0]) temporary_root = "/tmp";
@@ -349,6 +405,7 @@ int main(void) {
     snprintf(wrong_key_path, sizeof(wrong_key_path), "%s/wrong-key.pem", tempdir);
     snprintf(expired_cert_path, sizeof(expired_cert_path), "%s/expired.pem", tempdir);
     snprintf(expired_key_path, sizeof(expired_key_path), "%s/expired-key.pem", tempdir);
+    snprintf(encrypted_key_path, sizeof(encrypted_key_path), "%s/encrypted-key.pem", tempdir);
     make_cert_files(cert_path, key_path, "localhost", 0);
     make_cert_files(wrong_cert_path, wrong_key_path, "different.example", 0);
     make_cert_files(expired_cert_path, expired_key_path, "localhost", 1);
@@ -367,9 +424,11 @@ int main(void) {
     assert(eshkol_tls_client_context("/definitely/missing/ca.pem") == -1);
     assert(eshkol_tls_server_context("/definitely/missing/cert.pem",
                                     "/definitely/missing/key.pem") == -1);
+    encrypted_key_never_reads_terminal(argv[0]);
 
     unlink(cert_path); unlink(key_path); unlink(wrong_cert_path); unlink(wrong_key_path);
-    unlink(expired_cert_path); unlink(expired_key_path); rmdir(tempdir);
+    unlink(expired_cert_path); unlink(expired_key_path);
+    unlink(encrypted_key_path); rmdir(tempdir);
     puts("PASS: TLS handshake, binary roundtrip, peer verification, and cleanup");
     return 0;
 }
