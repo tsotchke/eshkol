@@ -5130,6 +5130,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     Node* head = node->children[0];
 
+    if (is_sym(head, "differentiate") && !vm_head_user_rebound(c, head) && node->n_children >= 2) {
+        Node* mode = node->children[1];
+        if (mode && mode->type == N_LIST && mode->n_children == 2 &&
+            is_sym(mode->children[0], "quote") &&
+            (is_sym(mode->children[1], "numeric") || is_sym(mode->children[1], "incremental"))) {
+            vm_compile_error("differentiate interpretation requires the native compiler frontend", NULL);
+            chunk_emit(c, OP_NIL, 0);
+            return;
+        }
+    }
+
     /* R7RS `(newline port)` is an explicit-port primitive, not the prelude's
      * zero-argument closure. Handle it before generic head rebinding/call
      * lowering so the port operand cannot be silently discarded. */

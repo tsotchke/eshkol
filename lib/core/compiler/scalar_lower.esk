@@ -1,0 +1,58 @@
+;;; Copyright (C) tsotchke. SPDX-License-Identifier: MIT
+;;; Scalar DAG -> straight-line core bindings and incremental kernel bodies.
+;;; Input: (vector 1 width output nodes), node=(vector opcode input-slot parents).
+;;; Opcodes: input=0, literal=1, +=2, -=3, *=4, /=5. Literal contents and source
+;;; identities stay in the caller. Output: (vector 1 width output bindings kernels).
+;;; A core term is (vector kind payload children). Kinds: input=0, literal-slot=1,
+;;; primitive=2, binding=3, kernel-read=4, absent=5; primitives +=0, -=1, *=2, /=3.
+;;; Bindings are sequential compiler-owned slots. No folding, user evaluation,
+;;; reassociation, pruning or floating/exact conversion is performed.
+(provide scalar-lower)
+
+(define (sl-index? value limit)
+  (and (integer? value) (exact? value) (>= value 0) (< value limit)))
+(define (sl-leaf kind slot) (vector kind slot (vector)))
+
+(define (scalar-lower graph)
+  (if (not (and (vector? graph) (= (vector-length graph) 4)
+                (eqv? (vector-ref graph 0) 1)))
+      (error "scalar lowering: unsupported graph schema"))
+  (let ((width (vector-ref graph 1)) (output (vector-ref graph 2))
+        (nodes (vector-ref graph 3)))
+    (if (not (and (sl-index? width 65) (> width 0) (vector? nodes)))
+        (error "scalar lowering: invalid inputs"))
+    (let ((count (vector-length nodes)))
+      (if (not (and (>= count width) (<= count 1024) (sl-index? output count)))
+          (error "scalar lowering: invalid graph size or output"))
+      (let ((bindings (make-vector count #f)) (kernels (make-vector count #f)))
+        (let walk ((i 0))
+          (if (< i count)
+              (let ((node (vector-ref nodes i)))
+                (if (not (and (vector? node) (= (vector-length node) 3)))
+                    (error "scalar lowering: invalid node"))
+                (let ((op (vector-ref node 0)) (slot (vector-ref node 1))
+                      (parents (vector-ref node 2)))
+                  (if (not (and (sl-index? op 6) (vector? parents)
+                                (= (vector-length parents) (if (>= op 2) 2 0))))
+                      (error "scalar lowering: invalid operation or arity"))
+                  (if (< i width)
+                      (if (not (and (= op 0) (eqv? slot i)))
+                          (error "scalar lowering: invalid input prefix"))
+                      (if (= op 0) (error "scalar lowering: misplaced input")))
+                  (cond
+                    ((= op 0)
+                     (vector-set! bindings i (sl-leaf 0 slot))
+                     (vector-set! kernels i (sl-leaf 5 0)))
+                    ((= op 1)
+                     (vector-set! bindings i (sl-leaf 1 i))
+                     (vector-set! kernels i (sl-leaf 5 0)))
+                    (else
+                     (let ((a (vector-ref parents 0)) (b (vector-ref parents 1)))
+                       (if (not (and (sl-index? a i) (sl-index? b i)))
+                           (error "scalar lowering: non-topological operand"))
+                       (vector-set! bindings i
+                         (vector 2 (- op 2) (vector (sl-leaf 3 a) (sl-leaf 3 b))))
+                       (vector-set! kernels i
+                         (vector 2 (- op 2) (vector (sl-leaf 4 a) (sl-leaf 4 b))))))))
+                (walk (+ i 1)))))
+        (vector 1 width output bindings kernels)))))
