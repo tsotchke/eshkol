@@ -2324,7 +2324,7 @@ oracles:
           event_names: ["v14_msgpack_roundtrip"]
           event_values: ["PASS"]
         severity: medium
-          label: 'MessagePack (#162): exact wire bytes and 80 UTF-8 checks covering scalar boundaries, embedded NUL, fixed/str8/str16 payload-length transitions, malformed text refusal, and unchanged arbitrary raw binary payloads'
+        label: 'MessagePack (#162): exact wire bytes and 80 UTF-8 checks covering scalar boundaries, embedded NUL, fixed/str8/str16 payload-length transitions, malformed text refusal, and unchanged arbitrary raw binary payloads'
         action: run_v14_connection_gate
 
       - runtime_event:
