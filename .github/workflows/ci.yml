@@ -3082,6 +3082,10 @@ jobs:
         with:
           node-version: '20'
 
+      - name: WebGPU WASM fallback and refusal (no device required)
+        shell: bash
+        run: python3 scripts/run_webgpu_wasm_fallback_test.py
+
       - name: Configure (lite)
         shell: bash
         run: |
