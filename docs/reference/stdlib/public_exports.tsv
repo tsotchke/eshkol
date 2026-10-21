@@ -220,3 +220,7 @@ lib/core/ad/incremental_reverse.esk	3	provide	incremental-pullback-step
 lib/core/ad/incremental_reverse.esk	3	provide	incremental-pullback-output
 lib/core/ad/incremental_reverse.esk	3	provide	incremental-pullback-work
 lib/core/ad/incremental_reverse.esk	3	provide	incremental-pullback-info
+lib/core/ad/derived_operator.esk	4	provide	derived-operator-enclosure
+lib/core/certified_nonlinear.esk	4	provide	make-certified-polynomial-system
+lib/core/certified_nonlinear.esk	4	provide	certify-polynomial-root
+lib/core/certified_nonlinear.esk	4	provide	verify-polynomial-root-certificate

@@ -7,6 +7,7 @@ sources:
   - lib/core/ad/derived_operator.esk
   - lib/core/symbolic.esk
   - tests/stdlib/derived_operator_test.esk
+  - tests/stdlib/certified_nonlinear_test.esk
   - examples/mathematics_derived_operator.esk
 ---
 
