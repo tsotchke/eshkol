@@ -2767,6 +2767,13 @@ set(ESHKOL_RUNTIME_OBJECTS
 add_library(eshkol-runtime STATIC
   ${ESHKOL_RUNTIME_OBJECTS}
 )
+# Agent implementations need the native runtime helpers, never compiler-generated
+# incremental objects. Reuse the already compiled objects in an uninstalled base
+# archive so bootstrapping the compiler cannot depend on its own output.
+add_library(eshkol-runtime-base STATIC EXCLUDE_FROM_ALL ${ESHKOL_RUNTIME_OBJECTS})
+target_include_directories(eshkol-runtime-base PUBLIC ${ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS})
+target_link_libraries(eshkol-runtime-base PUBLIC
+    "$<TARGET_PROPERTY:eshkol-runtime,INTERFACE_LINK_LIBRARIES>")
 target_include_directories(
   eshkol-runtime
   PUBLIC
@@ -12264,16 +12271,10 @@ if(ESHKOL_BUILD_AGENT_FFI)
             eshkol-agent-tree-sitter-grammars
             tree-sitter
             yogacore
-            # Agent capability implementations call core allocation/string
-            # helpers (for example eshkol_make_bytevector and
-            # eshkol_string_byte_length).  Declare that archive dependency at
-            # its owner so CMake emits eshkol-runtime after the force-loaded
-            # agent archive.  ELF linkers scan static archives left-to-right;
-            # relying on an earlier eshkol-static occurrence works on Apple
-            # and MSVC but leaves these references unresolved on Linux.
-            # The compiler seed already owns these helpers via eshkol-static;
-            # it must not depend on runtime objects which it generates itself.
-            "$<IF:$<BOOL:$<TARGET_PROPERTY:ESHKOL_COMPILER_SEED_HOST>>,eshkol-static,eshkol-runtime>")
+            # Core helpers follow the force-loaded agent archive for ELF linkers.
+            # The base reuses runtime objects and excludes compiler-generated
+            # incremental runtime output, keeping the seed dependency acyclic.
+            eshkol-runtime-base)
 
         if(WIN32)
             target_compile_definitions(eshkol-agent-ffi PRIVATE
