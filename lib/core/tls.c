@@ -415,7 +415,7 @@ static int32_t ssl_error_code(TlsSession *session, int ssl_error, int writing) {
  * interactive terminal dialog in a context constructor. */
 static int refuse_pem_password(char *buffer, int size, int writing, void *userdata) {
     (void)buffer; (void)size; (void)writing; (void)userdata;
-    return 0;
+    return -1;
 }
 
 int32_t eshkol_tls_available(void) { return 1; }

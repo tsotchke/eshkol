@@ -337,14 +337,18 @@ static void concurrent_close_invalidates_first(void) {
     assert(pthread_join(server_thread, NULL) == 0);
     assert(eshkol_tls_listener_close(server.listener) == 0);
 }
-static void encrypted_key_never_reads_terminal(const char *executable) {
+static void encrypted_key_never_reads_terminal(const char *executable,
+                                               const char *password_text) {
     FILE *file = fopen(key_path, "rb"); assert(file);
     EVP_PKEY *key = PEM_read_PrivateKey(file, NULL, NULL, NULL);
     fclose(file); assert(key);
     file = fopen(encrypted_key_path, "wb"); assert(file);
-    unsigned char password[] = "test-only";
+    unsigned char password[32] = {0};
+    size_t password_length = strlen(password_text);
+    assert(password_length < sizeof(password));
+    memcpy(password, password_text, password_length);
     assert(PEM_write_PrivateKey(file, key, EVP_aes_256_cbc(), password,
-                               sizeof(password) - 1, NULL, NULL) == 1);
+                               (int)password_length, NULL, NULL) == 1);
     fclose(file); EVP_PKEY_free(key);
 
     int input[2], errors[2];
@@ -424,7 +428,8 @@ int main(int argc, char **argv) {
     assert(eshkol_tls_client_context("/definitely/missing/ca.pem") == -1);
     assert(eshkol_tls_server_context("/definitely/missing/cert.pem",
                                     "/definitely/missing/key.pem") == -1);
-    encrypted_key_never_reads_terminal(argv[0]);
+    encrypted_key_never_reads_terminal(argv[0], "test-only");
+    encrypted_key_never_reads_terminal(argv[0], "");
 
     unlink(cert_path); unlink(key_path); unlink(wrong_cert_path); unlink(wrong_key_path);
     unlink(expired_cert_path); unlink(expired_key_path);
