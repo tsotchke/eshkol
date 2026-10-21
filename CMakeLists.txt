@@ -2743,6 +2743,14 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
         COMMAND pjrt_runtime_output_mismatch_test shape
             $<TARGET_FILE:pjrt_test_output_mismatch>
     )
+    add_test(NAME pjrt_runtime_reject_on_device_input
+        COMMAND pjrt_runtime_output_mismatch_test on-device-input
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
+    add_test(NAME pjrt_runtime_reject_on_device_output
+        COMMAND pjrt_runtime_output_mismatch_test on-device-output
+            $<TARGET_FILE:pjrt_test_output_mismatch>
+    )
 endif()
 
 # ───────────────────────────────────────────────────────────────────────────

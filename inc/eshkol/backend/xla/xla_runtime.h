@@ -110,7 +110,9 @@ public:
                             std::vector<BufferDescriptor>& outputs);
 
     /**
-     * Compile and execute StableHLO on the active PJRT device. The PJRT
+     * Compile and execute StableHLO on the active PJRT device. Input and
+     * output descriptors must name host-resident, dense row-major f64 buffers
+     * (`on_device == false`, `element_size == sizeof(double)`). The PJRT
      * executable stays inside this call, so it cannot be confused with the
      * raw function pointer accepted by execute(). Returns a diagnostic and
      * performs no host fallback when PJRT is inactive or compilation fails.

@@ -1168,12 +1168,10 @@ public:
     std::unordered_map<void*, std::future<ExecutionResult>> async_handles_;
     size_t next_handle_id_ = 1;
 
-    // PJRT device execution state. `pjrt_active_` and `pjrt_status_` are
-    // plain types so every read site below can check them unconditionally —
-    // when ESHKOL_XLA_PJRT_AVAILABLE isn't defined, initialize() never sets
-    // pjrt_active_ true and pjrt_status_ never leaves the empty string, so
-    // execute()/toHost()/getDescription() fall straight through to the
-    // existing behaviour with no ifdef needed at those call sites.
+    // PJRT device state is plain so diagnostics remain available in every
+    // build. Without the guarded PJRT client, initialization leaves the
+    // active flag false and the explicit StableHLO entry point reports that
+    // no PJRT client was compiled in.
     bool pjrt_active_ = false;
     std::string pjrt_status_;   // empty unless PJRT was requested (diagnostic either way)
 #ifdef ESHKOL_XLA_PJRT_AVAILABLE
@@ -1458,7 +1456,8 @@ ExecutionResult XLARuntime::executePjrt(
     auto start = std::chrono::high_resolution_clock::now();
     auto* pjrt_executable = reinterpret_cast<PJRT_LoadedExecutable*>(executable);
     auto f64_bytes = [](const BufferDescriptor& descriptor, size_t* bytes) {
-        if (!bytes || descriptor.element_size != sizeof(double)) return false;
+        if (!bytes || descriptor.on_device ||
+            descriptor.element_size != sizeof(double)) return false;
         size_t size = sizeof(double);  // An empty shape denotes one scalar.
         for (int64_t dim : descriptor.shape) {
             if (dim < 0) return false;
@@ -1481,12 +1480,31 @@ ExecutionResult XLARuntime::executePjrt(
                                .execution_time_ns = ns};
     };
 
+    std::vector<size_t> output_bytes(outputs.size());
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        if (outputs[i].on_device) {
+            return fail("PJRT execute: output " + std::to_string(i) +
+                            " must be a host-resident buffer descriptor",
+                        {}, {});
+        }
+        if (!f64_bytes(outputs[i], &output_bytes[i]) ||
+            (output_bytes[i] != 0 && !outputs[i].data)) {
+            return fail("PJRT execute: output " + std::to_string(i) +
+                            " must have a valid host-resident f64 shape and buffer",
+                        {}, {});
+        }
+    }
+
     std::vector<PJRT_Buffer*> pjrt_inputs;
     pjrt_inputs.reserve(inputs.size());
     for (const auto& in : inputs) {
+        if (in.on_device) {
+            return fail("PJRT execute: input must be a host-resident buffer descriptor",
+                        pjrt_inputs, {});
+        }
         size_t input_bytes = 0;
         if (!f64_bytes(in, &input_bytes) || (input_bytes != 0 && !in.data)) {
-            return fail("PJRT execute: input must have a valid f64 shape and host buffer",
+            return fail("PJRT execute: input must have a valid host-resident f64 shape and buffer",
                         pjrt_inputs, {});
         }
         std::string stage_error;
@@ -1511,14 +1529,7 @@ ExecutionResult XLARuntime::executePjrt(
                     pjrt_inputs, pjrt_outputs);
     }
 
-    std::vector<size_t> output_bytes(outputs.size());
     for (size_t i = 0; i < outputs.size(); ++i) {
-        if (!f64_bytes(outputs[i], &output_bytes[i]) ||
-            (output_bytes[i] != 0 && !outputs[i].data)) {
-            return fail("PJRT execute: output " + std::to_string(i) +
-                            " must have a valid f64 shape and host buffer",
-                        pjrt_inputs, pjrt_outputs);
-        }
         PjrtBufferMetadata metadata;
         PjrtStatus metadata_status =
             impl_->pjrt_client_->bufferMetadata(pjrt_outputs[i], &metadata);

@@ -16,6 +16,7 @@ PJRT_Device* devices[] = {reinterpret_cast<PJRT_Device*>(&device_handle)};
 int destroyed_buffers = 0;
 int destroyed_executables = 0;
 int host_copies = 0;
+int host_transfers = 0;
 const int64_t input_dims[] = {1};
 const int64_t dtype_output_dims[] = {1};
 const int64_t shape_output_dims[] = {3, 2};
@@ -69,6 +70,7 @@ PJRT_Error* execute(PJRT_LoadedExecutable_Execute_Args* a) {
     return nullptr;
 }
 PJRT_Error* bufferFromHost(PJRT_Client_BufferFromHostBuffer_Args* a) {
+    ++host_transfers;
     a->buffer = reinterpret_cast<PJRT_Buffer*>(&input_buffer_handle);
     a->done_with_host_buffer = reinterpret_cast<PJRT_Event*>(&transfer_event_handle);
     return nullptr;
@@ -155,3 +157,4 @@ extern "C" const PJRT_Api* GetPjrtApi() { return &api; }
 extern "C" int PjrtTestDestroyedBuffers() { return destroyed_buffers; }
 extern "C" int PjrtTestDestroyedExecutables() { return destroyed_executables; }
 extern "C" int PjrtTestHostCopies() { return host_copies; }
+extern "C" int PjrtTestHostTransfers() { return host_transfers; }
