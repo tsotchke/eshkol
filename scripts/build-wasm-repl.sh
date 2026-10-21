@@ -69,8 +69,11 @@ fi
 
 # Product WASM has no filesystem. Keep its four source modules as generated,
 # hash-stamped C strings beside the configured build's generated headers.
-python3 "$REPO_ROOT/scripts/generate_wasm_embedded_modules.py" \
-    --output "$BUILD_DIR/generated/vm_embedded_modules.h"
+if ! python3 "$REPO_ROOT/scripts/generate_wasm_embedded_modules.py" \
+        --output "$BUILD_DIR/generated/vm_embedded_modules.h"; then
+    echo "build-wasm-repl.sh: failed to generate embedded module sources" >&2
+    exit 1
+fi
 
 LOG="$(mktemp "${TMPDIR:-/var/tmp}/eshkol-wasm-repl-emcc.XXXXXX")"
 trap 'rm -f "$LOG"' EXIT
