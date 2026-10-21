@@ -2875,10 +2875,25 @@ int main(int argc, char** argv) {
                 /* Load and run ESKB bytecode */
                 EskbModule mod;
                 if (eskb_load_file(input, &mod) == 0) {
+                    EshkolVmLoadOptions load_options;
+                    if (eshkol_vm_validate_module_profile(&mod) != 0 ||
+                        eshkol_vm_default_load_options(&load_options) != 0 ||
+                        eshkol_vm_validate_load_policy(&mod, &load_options) != 0) {
+                        fprintf(stderr, "ERROR: invalid or disallowed ESKB module in %s\n", input);
+                        eskb_module_free(&mod);
+                        return 1;
+                    }
                     VM* vm = vm_create();
                     if (!vm) { fprintf(stderr, "ERROR: cannot create VM\n"); eskb_module_free(&mod); return 1; }
                     free(vm->code);
-                    vm->code = (Instr*)calloc(mod.code_len, sizeof(Instr));
+                    vm->code = (Instr*)calloc(mod.code_len ? (size_t)mod.code_len : 1,
+                                              sizeof(Instr));
+                    if (!vm->code) {
+                        fprintf(stderr, "ERROR: cannot allocate ESKB bytecode for %s\n", input);
+                        vm_free(vm);
+                        eskb_module_free(&mod);
+                        return 1;
+                    }
                     vm->code_len = mod.code_len;
                     for (int i = 0; i < mod.code_len; i++)
                         vm->code[i] = (Instr){mod.opcodes[i], mod.operands[i]};

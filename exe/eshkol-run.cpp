@@ -4840,6 +4840,25 @@ int main(int argc, char **argv)
         }
     }
 
+    // Validate every positional input before opening sources or reserving any
+    // output artifact. Silently skipping an unknown suffix can otherwise turn
+    // `eshkol-run bad.eskb -o app` into a successful empty executable.
+    for (int i = optind; i < argc; ++i) {
+        const std::filesystem::path input(argv[i]);
+        const std::string ext = input.extension().string();
+        const bool source_input = ext == ".esk";
+        const bool object_input = ext == ".o";
+        if (!source_input && !object_input) {
+            eshkol_error("Unsupported input file type '%s' (expected .esk source%s)",
+                         argv[i], run_mode ? "" : " or .o object");
+            return 1;
+        }
+        if (run_mode && object_input) {
+            eshkol_error("--run accepts .esk source files; object input '%s' is not runnable", argv[i]);
+            return 1;
+        }
+    }
+
     // -g on a JIT path has no artifact to carry DWARF: `-r`/`-e`/the REPL
     // execute in memory and eshkol_enable_debug_info() is only reached on the
     // AOT codegen path.  Say so instead of accepting the flag and doing
