@@ -954,6 +954,18 @@ Writes a checkpoint through the existing atomic file-replacement primitive; call
 
 Reads a bounded checkpoint file and returns it only after verified restoration.
 
+## `core.certified_solve_pullback`
+
+Source: [lib/core/certified_solve_pullback.esk](../../../lib/core/certified_solve_pullback.esk). The two exact solve certificates, uncertain-model premises and pullback interval conventions are documented in [certified_solve_pullback.md](certified_solve_pullback.md).
+
+### `solve-certified-native-pullback`
+
+Certifies primal and transpose solves independently, then encloses `-lambda*x^T` and the RHS cotangent from the original matrix, RHS, seed and supplied uncertainties.
+
+### `verify-certified-native-pullback`
+
+Recomputes both original-model solve certificates and their interval products; it does not trust stored status or derivative boxes.
+
 ## `core.certified_native_solve`
 
 Source: `lib/core/certified_native_solve.esk`; see [certified_native_solve.md](certified_native_solve.md) for the candidate-generation and exact verification contract.
