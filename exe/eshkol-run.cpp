@@ -21,6 +21,7 @@
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/backend/debug_artifact.h>
 #include <eshkol/stdlib_identity.h>
 #include <eshkol/pkg/subprocess.h>
 
@@ -6263,11 +6264,6 @@ int main(int argc, char **argv)
         int result = eshkol::pkg::run_subprocess(
             link_args, nullptr, link_subprocess_timeout_seconds());
 
-        // Remove only scratch objects this driver created. `compiled_files`
-        // also contains caller-owned objects such as stdlib.o and named -l
-        // inputs, whose path or directory may happen to contain "eshkol_".
-        owned_link_temp_objects.cleanup();
-
         // When this process is the AOT-build child of a `-r` cache miss, report
         // a LINK-stage failure with a distinct sentinel so the parent treats it
         // as fatal (never masks it with a reduced in-process run) while a
@@ -6307,6 +6303,22 @@ int main(int argc, char **argv)
                 return link_failure_exit;
             }
         }
+
+        if (debug_info) {
+            const int debug_status = eshkol::backend::finishNativeDebugArtifact(
+                output, link_subprocess_timeout_seconds());
+            if (debug_status != 0) {
+                eshkol_error("Debug symbol generation failed with exit code %d "
+                             "(macOS requires dsymutil; ESHKOL_DSYMUTIL can select it)",
+                             debug_status);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
+        }
+
+        // Remove only scratch objects this driver created, after debug-map
+        // collection. The lifetime guard also cleans them on every error path.
+        owned_link_temp_objects.cleanup();
 
         if (emit_shared_library) {
             eshkol_info("Successfully created shared library: %s", output);
