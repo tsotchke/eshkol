@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 95** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1066** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 97** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1078** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -62,6 +62,8 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.dbsp`](../../../lib/core/dbsp.esk) | no | [dbsp.md](dbsp.md) | `zset-row-key` `zset-empty` `zset?` `zset-singleton` `zset-from-weighted` `zset-weight` `zset-add` `zset-negate` `zset-sub` `zset-scale` `zset-consolidate` `zset-empty?` `zset-positive?` `zset=?` `zset-entries` `zset-rows` `zset-size` `zset-map` `zset-filter` `zset-project` `zset-union` `zset-join` `zset-distinct` `zset-count` `zset-sum` `stream-zero` `stream-delay` `dbsp-delay` `stream-D` `stream-I` `stream-add` `stream-negate` `stream-lift` `dbsp-compose` `dbsp-incrementalize` `incremental-map` `incremental-filter` `incremental-project` `incremental-union` `incremental-join` `incremental-distinct` |
 | [`core.dbsp.ad`](../../../lib/core/dbsp/ad.esk) | no | [dbsp_ad.md](dbsp_ad.md) | `dbsp-vector-group` `dbsp-ad-lift` |
 | [`core.dbsp.circuit`](../../../lib/core/dbsp/circuit.esk) | no | [dbsp_circuit.md](dbsp_circuit.md) | `make-dbsp-group` `make-dbsp-circuit` `dbsp-circuit-step` `dbsp-circuit-output` `dbsp-circuit-input` `dbsp-circuit-work` `dbsp-circuit-checkpoint-state` |
+| [`core.dbsp.ordered`](../../../lib/core/dbsp/ordered.esk) | no | [dbsp_ordered.md](dbsp_ordered.md) | `make-dbsp-ordered` `dbsp-ordered-step` `dbsp-ordered-select` `dbsp-ordered-quantile` `dbsp-ordered-rank` `dbsp-ordered-top` `dbsp-ordered-info` `dbsp-ordered-work` |
+| [`core.dbsp.window`](../../../lib/core/dbsp/window.esk) | no | [dbsp_window.md](dbsp_window.md) | `make-dbsp-window` `dbsp-window-step` `dbsp-window-output` `dbsp-window-info` |
 | [`core.dbsp.checkpoint`](../../../lib/core/dbsp/checkpoint.esk) | no | [dbsp_checkpoint.md](dbsp_checkpoint.md) | `make-dbsp-resumable` `dbsp-resumable-step` `dbsp-resumable-output` `dbsp-resumable-tick` `dbsp-resumable-checkpoint` `dbsp-resumable-restore` `dbsp-checkpoint-save` `dbsp-checkpoint-load` |
 | [`core.dbsp.resident`](../../../lib/core/dbsp/resident.esk) | no | [dbsp_resident.md](dbsp_resident.md) | `call-with-dbsp-resident` `dbsp-resident-step` `dbsp-resident-release!` `dbsp-resident-output` `dbsp-resident-delta` `dbsp-resident-work` `dbsp-resident-stats` `dbsp-resident-compact!` |
 | [`core.dbsp.tensor_circuit`](../../../lib/core/dbsp/tensor_circuit.esk) | no | [dbsp_tensor_circuit.md](dbsp_tensor_circuit.md) | `make-tensor-circuit` `tensor-circuit-step` `tensor-circuit-output` `tensor-circuit-ref` `tensor-circuit-work` |
