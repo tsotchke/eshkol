@@ -61,3 +61,11 @@ Run CTest with `-R 'tensor_circuit|tensor_snapshot|dbsp_tensor'`. The acceptance
 suite checks every streamed prefix against independent dense products,
 simultaneous updates, shared operands, batch axes, reductions, retractions,
 ownership, failed ticks and fixed sparse work at growing payload sizes.
+
+## Structural visitor
+
+`tensor-circuit-visit` calls a callback for each node in topological order with
+its ID, operation, fresh child/parameter/axis/shape lists, associated input
+names, and a read-only scalar reader. The reader refuses on row nodes, so row
+relations remain discrete and inaccessible. It returns `#(node-count root-id)`
+and does not expose internal graph or snapshot storage.
