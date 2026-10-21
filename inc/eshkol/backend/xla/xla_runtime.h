@@ -121,6 +121,22 @@ public:
                                      const std::vector<BufferDescriptor>& inputs,
                                      std::vector<BufferDescriptor>& outputs);
 
+    /** Compile one explicitly reusable StableHLO program for this runtime's
+     * active PJRT session. On failure returns nullptr and stores a diagnostic.
+     * The program retains its session's client and plugin after this runtime
+     * is destroyed, until the program itself is released. Calls that overlap
+     * initialize(), or concurrent use of one runtime/program, require caller
+     * serialization. */
+    std::unique_ptr<class StableHLOProgram> compileStableHLO(
+        const std::string& module_text, std::string* diagnostic = nullptr);
+
+    /** Execute a compiled program only through the exact session that compiled
+     * it. Calls overlapping initialize() require caller serialization. */
+    ExecutionResult executeCompiledStableHLO(
+        const class StableHLOProgram& program,
+        const std::vector<BufferDescriptor>& inputs,
+        std::vector<BufferDescriptor>& outputs);
+
     /**
      * Execute asynchronously.
      * @param executable Compiled executable
@@ -201,10 +217,25 @@ public:
 
 private:
     class Impl;
-    ExecutionResult executePjrt(void* executable,
+    ExecutionResult executePjrt(void* executable, const void* session,
                                 const std::vector<BufferDescriptor>& inputs,
                                 std::vector<BufferDescriptor>& outputs);
     std::unique_ptr<Impl> impl_;
+};
+
+/** Opaque, noncopyable owner of one PJRT executable and its originating session. */
+class StableHLOProgram {
+public:
+    ~StableHLOProgram();
+    StableHLOProgram(const StableHLOProgram&) = delete;
+    StableHLOProgram& operator=(const StableHLOProgram&) = delete;
+    StableHLOProgram(StableHLOProgram&&) noexcept;
+    StableHLOProgram& operator=(StableHLOProgram&&) noexcept;
+private:
+    class Impl;
+    explicit StableHLOProgram(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+    friend class XLARuntime;
 };
 
 /**
