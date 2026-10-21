@@ -1225,6 +1225,10 @@ function(eshkol_windows_export_runtime target_name)
         eshkol-static
         eshkol-runtime
         eshkol-repl-lib)
+    get_target_property(_eshkol_seed_host ${target_name} ESHKOL_COMPILER_SEED_HOST)
+    if(_eshkol_seed_host)
+        list(REMOVE_ITEM _eshkol_runtime_export_targets eshkol-runtime)
+    endif()
     if(TARGET eshkol-agent-ffi)
         list(APPEND _eshkol_runtime_export_targets eshkol-agent-ffi)
     endif()
@@ -2985,6 +2989,7 @@ if(CMAKE_CROSSCOMPILING)
     message(FATAL_ERROR "The compiler-pass bootstrap requires a native host build; cross-compiling the compiler is not supported")
 endif()
 add_executable(eshkol-bootstrap EXCLUDE_FROM_ALL exe/eshkol-run.cpp)
+set_property(TARGET eshkol-bootstrap PROPERTY ESHKOL_COMPILER_SEED_HOST TRUE)
 target_compile_options(eshkol-bootstrap PRIVATE ${LLVM_CXXFLAGS_LIST} ${ESHKOL_EXE_COMPILE_FLAGS})
 target_compile_definitions(eshkol-bootstrap PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
 target_include_directories(eshkol-bootstrap PRIVATE inc/)
@@ -12266,7 +12271,9 @@ if(ESHKOL_BUILD_AGENT_FFI)
             # agent archive.  ELF linkers scan static archives left-to-right;
             # relying on an earlier eshkol-static occurrence works on Apple
             # and MSVC but leaves these references unresolved on Linux.
-            eshkol-runtime)
+            # The compiler seed already owns these helpers via eshkol-static;
+            # it must not depend on runtime objects which it generates itself.
+            "$<IF:$<BOOL:$<TARGET_PROPERTY:ESHKOL_COMPILER_SEED_HOST>>,eshkol-static,eshkol-runtime>")
 
         if(WIN32)
             target_compile_definitions(eshkol-agent-ffi PRIVATE
