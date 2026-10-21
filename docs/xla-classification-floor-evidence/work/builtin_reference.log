@@ -1,0 +1,6 @@
+@modulo 3 2 -2 -3 0 0 0 0 0 -6 6 1 
+@mod 3 2 -2 -3 0 0 0 0 0 -6 6 1 
+@floor-remainder 3 2 -2 -3 0 0 0 0 0 -6 6 1 
+@floor-quotient 2 -3 -3 2 4 -4 -4 4 0 -1 -1 6 
+@quotient 33 23 17 13 10 8 6 5 4 3 2 1 
+@remainder 1 1 1 1 2 1 4 1 0 1 4 9 
