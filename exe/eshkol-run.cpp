@@ -1687,6 +1687,7 @@ public:
         borrowed_counts_.clear();
         branch_frames_.clear();
         accepted_factory_nodes_.clear();
+        accepted_move_nodes_.clear();
         allowed_resource_use_nodes_.clear();
         parallel_binding_info_.clear();
         capture_scan_truncated_ = false;
@@ -2403,6 +2404,7 @@ private:
             const std::string source_name = getVarName(value->operation.move_op.value);
             VariableInfo* source = lookupVariable(source_name);
             if (source && source->resource_kind != ResourceKind::NONE) {
+                accepted_move_nodes_.insert(value);
                 target.resource_kind = source->resource_kind;
                 target.resource_state = source->resource_state == ResourceState::MOVED
                     ? source->moved_from_state : source->resource_state;
@@ -2684,6 +2686,7 @@ private:
                 return; // failed acquisition owns no runtime handle
             info->resource_state = info->resource_state == ResourceState::ERROR_OR_LIVE
                 ? ResourceState::CLOSED_OR_ERROR : ResourceState::CLOSED;
+            info->state = State::MOVED;
             allowed_resource_use_nodes_.insert(&call.variables[0]);
             return;
         }
@@ -2804,6 +2807,7 @@ private:
     uint64_t next_branch_id_ = 1;
     std::map<uint64_t, BranchFrame> branch_frames_;
     std::set<const eshkol_ast_t*> accepted_factory_nodes_;
+    std::set<const eshkol_ast_t*> accepted_move_nodes_;
     std::set<const eshkol_ast_t*> allowed_resource_use_nodes_;
     std::map<const eshkol_ast_t*, VariableInfo> parallel_binding_info_;
     bool capture_scan_truncated_ = false;
@@ -3025,7 +3029,8 @@ private:
                     if (!name.empty()) {
                         VariableInfo* info = lookupVariable(name);
                         if (info && (info->state == State::MOVED ||
-                                     info->state == State::MAYBE_MOVED)) {
+                                     info->state == State::MAYBE_MOVED) &&
+                            !(strict_resources_ && allowed_resource_use_nodes_.count(node))) {
                             reportError("Use of moved value '" + name + "'");
                         }
                         if (strict_resources_ && item.resource_effects_enabled && info &&
@@ -3143,7 +3148,10 @@ private:
                                     }
                                     if (strict_resources_ && item.resource_effects_enabled &&
                                         info->resource_kind != ResourceKind::NONE) {
-                                        if (info->resource_state == ResourceState::CLOSED ||
+                                        if (!accepted_move_nodes_.count(node)) {
+                                            reportResourceError("resource move from '" + var_name +
+                                                "' must initialize a new tracked owner");
+                                        } else if (info->resource_state == ResourceState::CLOSED ||
                                             info->resource_state == ResourceState::CLOSED_OR_ERROR ||
                                             info->resource_state == ResourceState::MOVED) {
                                             reportResourceError("cannot move closed or already moved resource '" + var_name + "'");

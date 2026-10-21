@@ -1,0 +1,3 @@
+(import (core net))
+(define socket (udp-bind "127.0.0.1" 0))
+(if (network-error? socket) #t (udp-close socket))

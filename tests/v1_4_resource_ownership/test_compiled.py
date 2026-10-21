@@ -23,6 +23,8 @@ POSITIVE = (
     "positive-import-rename",
     "positive-letrec-star-shadow-capture",
     "positive-imported-function-declaration",
+    "positive-resource-move-to-owner",
+    "positive-udp-bind-close",
 )
 NEGATIVE = (
     "negative-leak",
@@ -69,6 +71,10 @@ NEGATIVE = (
     "negative-let-syntax-hidden-acquisition",
     "negative-letrec-syntax-hidden-acquisition",
     "negative-function-local-factory-shadow",
+    "negative-discarded-resource-move",
+    "negative-udp-leak",
+    "negative-udp-wrong-close",
+    "negative-tcp-accept-wrong-kind",
 )
 
 

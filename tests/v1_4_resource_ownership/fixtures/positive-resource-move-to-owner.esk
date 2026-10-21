@@ -1,0 +1,6 @@
+(import (core net))
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (network-error? socket)
+    #t
+    (let ((transferred (move socket)))
+      (tcp-close transferred)))
