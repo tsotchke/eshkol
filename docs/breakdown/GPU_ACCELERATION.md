@@ -99,9 +99,9 @@ serve increments `backend.fallbackCount` and records the reason in
 `webgpu:gemm_sf64`).
 
 `python3 scripts/run_webgpu_wasm_fallback_test.py` compiles the actual Emscripten
-C backend and verifies no-device matmul refusal plus caller-owned CPU matmul and
-batched-matmul fallback in Node. It needs no browser or GPU and makes no GPU
-execution or precision claim.
+C backend and verifies no-device matmul refusal, its CPU matmul fallback, and
+batched fallback delegation to an instrumented scalar reference callback in Node.
+It needs no browser or GPU and makes no GPU execution or precision claim.
 
 A backend can be attached to multiple browser VMs. Each compute call retains
 the initiating VM's memory through asynchronous readback, so concurrent calls

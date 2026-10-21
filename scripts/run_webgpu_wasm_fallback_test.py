@@ -20,7 +20,7 @@ def main():
     args = parser.parse_args()
     work = args.work_dir.resolve()
     (work / "tmp").mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, TMPDIR=str(work / "tmp"), EMCC_CORES="3")
+    env = dict(os.environ, TMPDIR=str(work / "tmp"), EMCC_CORES=os.environ.get("EMCC_CORES", "1"))
     output = work / "fallback.cjs"
     commands = [
         [args.emxx, "-std=c++17", "-I" + str(root / "inc"),
