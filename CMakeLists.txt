@@ -2751,6 +2751,37 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
         COMMAND pjrt_runtime_output_mismatch_test on-device-output
             $<TARGET_FILE:pjrt_test_output_mismatch>
     )
+
+    add_executable(pjrt_reusable_program_test
+        tests/xla/pjrt_reusable_program_test.cpp
+    )
+    add_dependencies(pjrt_reusable_program_test pjrt_test_output_mismatch)
+    target_include_directories(pjrt_reusable_program_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_options(pjrt_reusable_program_test PRIVATE ${LLVM_CXXFLAGS_LIST})
+    eshkol_target_llvm_includes(pjrt_reusable_program_test)
+    target_link_libraries(pjrt_reusable_program_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST} ${CMAKE_DL_LIBS}
+    )
+    if(MLIR_AVAILABLE AND MLIR_LIBRARIES)
+        target_link_libraries(pjrt_reusable_program_test PRIVATE ${MLIR_LIBRARIES})
+    endif()
+    if(STABLEHLO_LIBRARIES)
+        target_link_libraries(pjrt_reusable_program_test PRIVATE ${STABLEHLO_LIBRARIES})
+    endif()
+    if(APPLE)
+        target_link_libraries(pjrt_reusable_program_test PRIVATE "-framework Accelerate")
+    else()
+        target_link_options(pjrt_reusable_program_test PRIVATE "-Wl,--export-dynamic")
+    endif()
+    foreach(control reuse baseline owner reinit moved-from compile-fail no-active
+            uninitialized empty typed-dtype typed-shape
+            typed-on-device-input typed-on-device-output)
+        add_test(NAME pjrt_reusable_program_${control}
+            COMMAND pjrt_reusable_program_test ${control}
+                $<TARGET_FILE:pjrt_test_output_mismatch>
+        )
+    endforeach()
 endif()
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -3078,6 +3109,9 @@ if(TARGET pjrt_runtime_control_test AND LLVM_LIBRARY_DIRS)
 endif()
 if(TARGET pjrt_runtime_output_mismatch_test AND LLVM_LIBRARY_DIRS)
     target_link_directories(pjrt_runtime_output_mismatch_test PRIVATE ${LLVM_LIBRARY_DIRS})
+endif()
+if(TARGET pjrt_reusable_program_test AND LLVM_LIBRARY_DIRS)
+    target_link_directories(pjrt_reusable_program_test PRIVATE ${LLVM_LIBRARY_DIRS})
 endif()
 
 # Propagate the runtime's transitive system link deps (Apple ImageIO/CoreGraphics/
