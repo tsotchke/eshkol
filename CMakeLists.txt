@@ -3371,7 +3371,7 @@ if(REPL_SRC)
       # PE/COFF: export only the bounded Eshkol runtime namespace via a
       # generated .def (--export-all-symbols overflows the 65535 PE export
       # limit because the exe statically links all of LLVM).
-      eshkol_windows_export_runtime(eshkol-repl)
+      # The unified runtime export table is attached after optional agent FFI.
     else()
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
     endif()
@@ -3436,7 +3436,7 @@ if(REPL_SRC)
       "$<TARGET_FILE:eshkol-static>"
       "$<TARGET_FILE:eshkol-repl-lib>"
       "-Wl,--no-whole-archive")
-    eshkol_windows_export_runtime(${_jit_host})
+    # The unified runtime export table is attached after optional agent FFI.
   else()
     target_link_options(${_jit_host} PRIVATE
       "-Wl,--whole-archive"
@@ -12495,18 +12495,6 @@ if(ESHKOL_BUILD_AGENT_FFI)
             endif()
         endif()
 
-        # Build one bounded PE export table after the optional agent archive is
-        # defined. This avoids competing /DEF files and makes both core and
-        # agent-generated calls resolvable in cache-disabled ORC JIT sessions.
-        if(WIN32)
-            if(TARGET eshkol-run)
-                eshkol_windows_export_runtime(eshkol-run)
-            endif()
-            if(TARGET eshkol-repl)
-                eshkol_windows_export_runtime(eshkol-repl)
-            endif()
-        endif()
-
         # The standalone hosted-VM executables resolve optional native
         # capabilities through the same process-wide symbol lookup used by
         # eshkol-run.  Force-load the production agent archive here as well;
@@ -12530,7 +12518,9 @@ if(ESHKOL_BUILD_AGENT_FFI)
                     target_link_libraries(${_eshkol_vm_host_target} PRIVATE
                         "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
                 endif()
-                eshkol_export_host_agent_api(${_eshkol_vm_host_target})
+                if(NOT _eshkol_vm_host_target STREQUAL "eshkol-bootstrap")
+                    eshkol_export_host_agent_api(${_eshkol_vm_host_target})
+                endif()
             endif()
         endforeach()
 
@@ -12618,6 +12608,16 @@ endif()
 # SQLite's byte-preserving column contract is tested against the same agent
 # archive consumed by AOT programs. Keep this test beside the archive wiring so
 # it cannot silently become a standalone system-SQLite test.
+# One bounded export table per native JIT host, with or without optional FFI.
+# Delay until the agent target is known; the seed omits generated runtime output.
+if(WIN32)
+    foreach(_eshkol_export_host IN ITEMS eshkol-run eshkol-repl eshkol-bootstrap)
+        if(TARGET ${_eshkol_export_host})
+            eshkol_windows_export_runtime(${_eshkol_export_host})
+        endif()
+    endforeach()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-agent-ffi AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ffi/sqlite_column_roundtrip_test.c")
     add_executable(eshkol-agent-sqlite-column-roundtrip
