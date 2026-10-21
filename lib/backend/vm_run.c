@@ -3,6 +3,51 @@
 extern __int128 vm_unbox_i128(VM* vm, Value v);
 extern void vm_push_i128(VM* vm, __int128 value);
 
+/* These guards are shared by both dispatch loops so platform selection cannot
+ * change which bytecode indices may touch VM-owned state. */
+static int vm_local_slot(VM* vm, int32_t operand, int* slot) {
+    if (!vm || operand < 0 || vm->fp < 0 || vm->fp >= STACK_SIZE ||
+        operand >= STACK_SIZE - vm->fp) {
+        int64_t requested = vm ? (int64_t)vm->fp + operand : operand;
+        fprintf(stderr, "LOCAL: index %lld out of bounds [0, %d)\n",
+                (long long)requested, STACK_SIZE);
+        if (vm) vm->error = 1;
+        return 0;
+    }
+    *slot = vm->fp + operand;
+    return 1;
+}
+
+static int vm_callcc_state_valid(VM* vm) {
+    if (!vm || vm->sp < 0 || vm->sp > STACK_SIZE ||
+        vm->fp < 0 || vm->fp >= STACK_SIZE ||
+        vm->global_top < 0 || vm->global_top > vm->sp ||
+        vm->frame_count < 0 || vm->frame_count > vm->frame_cap ||
+        !vm->frames ||
+        vm->n_handlers < 0 || vm->n_handlers > vm->handler_cap ||
+        (vm->n_handlers > 0 && !vm->handler_stack) ||
+        vm->n_winds < 0 || vm->n_winds > 32 ||
+        vm->n_parameter_bindings < 0 ||
+        vm->n_parameter_bindings > (int)(sizeof(vm->parameter_bindings) /
+                                         sizeof(vm->parameter_bindings[0]))) {
+        if (vm) vm->error = 1;
+        return 0;
+    }
+    return 1;
+}
+
+static int vm_push_wind(VM* vm, Value before, Value after) {
+    if (vm->n_winds < 0 || vm->n_winds >= 32) {
+        fprintf(stderr, "WIND STACK OVERFLOW\n");
+        vm->error = 1;
+        return 0;
+    }
+    vm->wind_stack[vm->n_winds].before = before;
+    vm->wind_stack[vm->n_winds].after = after;
+    vm->n_winds++;
+    return 1;
+}
+
 /**
  * @file vm_run.c
  * @brief The bytecode interpreter's DISPATCH LOOP: fetch, decode, and route
@@ -341,21 +386,15 @@ void vm_run(VM* vm) {
     /* --- Variables --- */
 
     lbl_GET_LOCAL: {
-        int src = vm->fp + instr.operand;
-        if (src < 0 || src >= STACK_SIZE) {
-            fprintf(stderr, "GET_LOCAL: index %d out of bounds [0, %d)\n", src, STACK_SIZE);
-            vm->error = 1; goto vm_exit;
-        }
+        int src;
+        if (!vm_local_slot(vm, instr.operand, &src)) goto vm_exit;
         if (vm->sp >= 0 && vm->sp < STACK_SIZE)
             vm->ad_node_map[vm->sp] = vm->ad_node_map[src];
         vm_push(vm, vm->stack[src]);
         DISPATCH(); }
     lbl_SET_LOCAL: {
-        int dst = vm->fp + instr.operand;
-        if (dst < 0 || dst >= STACK_SIZE) {
-            fprintf(stderr, "SET_LOCAL: index %d out of bounds [0, %d)\n", dst, STACK_SIZE);
-            vm->error = 1; goto vm_exit;
-        }
+        int dst;
+        if (!vm_local_slot(vm, instr.operand, &dst)) goto vm_exit;
         if (vm->sp > 0 && vm->sp <= STACK_SIZE)
             vm->ad_node_map[dst] = vm->ad_node_map[vm->sp - 1];
         vm->stack[dst] = vm_peek(vm, 0);
@@ -563,7 +602,7 @@ void vm_run(VM* vm) {
             DISPATCH();
         }
         /* Validate bounds before capture */
-        if (vm->sp > STACK_SIZE || vm->frame_count > vm->frame_cap) { vm->error = 1; goto vm_exit; }
+        if (!vm_callcc_state_valid(vm)) goto vm_exit;
         int32_t cont_ptr = heap_alloc(&vm->heap);
         if (cont_ptr < 0) { vm->error = 1; goto vm_exit; }
         vm->heap.objects[cont_ptr]->type = HEAP_CONTINUATION;
@@ -659,10 +698,7 @@ void vm_run(VM* vm) {
          * again (see vm_reroot_winds). */
         Value after = vm_pop(vm);
         Value before = vm_pop(vm);
-        if (vm->n_winds >= 32) { fprintf(stderr, "WIND STACK OVERFLOW\n"); vm->error = 1; goto vm_exit; }
-        vm->wind_stack[vm->n_winds].before = before;
-        vm->wind_stack[vm->n_winds].after = after;
-        vm->n_winds++;
+        if (!vm_push_wind(vm, before, after)) goto vm_exit;
         DISPATCH();
     }
 
@@ -797,17 +833,20 @@ vm_exit:
 
         /* Variables */
         case OP_GET_LOCAL: {
-            int src = vm->fp + instr.operand;
-            if (src >= 0 && src < STACK_SIZE && vm->sp < STACK_SIZE)
+            int src;
+            if (!vm_local_slot(vm, instr.operand, &src)) break;
+            if (vm->sp >= 0 && vm->sp < STACK_SIZE)
                 vm->ad_node_map[vm->sp] = vm->ad_node_map[src];
             vm_push(vm, vm->stack[src]);
             break; }
-        case OP_SET_LOCAL:
+        case OP_SET_LOCAL: {
+            int dst;
+            if (!vm_local_slot(vm, instr.operand, &dst)) break;
             if (vm->sp > 0 && vm->sp <= STACK_SIZE)
-                vm->ad_node_map[vm->fp + instr.operand] = vm->ad_node_map[vm->sp - 1];
-            vm->stack[vm->fp + instr.operand] = vm_peek(vm, 0);
+                vm->ad_node_map[dst] = vm->ad_node_map[vm->sp - 1];
+            vm->stack[dst] = vm_peek(vm, 0);
             vm_pop(vm);
-            break;
+            break; }
         case OP_GET_UPVALUE: vm_exec_get_upvalue(vm, instr.operand); break;
         case OP_SET_UPVALUE: vm_exec_set_upvalue(vm, instr.operand); break;
 
@@ -994,6 +1033,7 @@ vm_exit:
             if (proc.type != VAL_CLOSURE) { vm_push(vm, NIL_VAL); break; }
             HeapObject* proc_closure = vm->heap.objects[proc.as.ptr];
             if (!vm_check_closure_arity(vm, proc_closure, 1)) break;
+            if (!vm_callcc_state_valid(vm)) break;
             int32_t cont_ptr = heap_alloc(&vm->heap);
             if (cont_ptr < 0) { vm->error = 1; break; }
             vm->heap.objects[cont_ptr]->type = HEAP_CONTINUATION;
@@ -1068,7 +1108,7 @@ vm_exit:
         case OP_WIND_PUSH: {
             Value after = vm_pop(vm);
             Value before = vm_pop(vm);
-            if (vm->n_winds < 32) { vm->wind_stack[vm->n_winds].before = before; vm->wind_stack[vm->n_winds].after = after; vm->n_winds++; }
+            vm_push_wind(vm, before, after);
             break;
         }
         case OP_WIND_POP: {
