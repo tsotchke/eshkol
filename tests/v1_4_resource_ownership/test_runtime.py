@@ -48,10 +48,11 @@ def run_route(runner: Path, lib_dir: Path, env: dict, source: Path,
             completed = subprocess.run([str(executable)], env=env, text=True,
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        timeout=20)
-        if completed.returncode != 0 or marker not in completed.stdout:
-            raise RuntimeError(f"{mode} failed ({completed.returncode}):\n{completed.stdout}")
         if received is not None and received != [b"ping"]:
-            raise RuntimeError(f"{mode} peer received {received!r}, expected [b'ping']")
+            raise RuntimeError(f"{mode} peer received {received!r}, expected [b'ping']; "
+                               f"exit={completed.returncode}, output={completed.stdout!r}")
+        if completed.returncode != 0 or marker not in completed.stdout:
+            raise RuntimeError(f"{mode} failed ({completed.returncode}, peer={received!r}):\n{completed.stdout}")
 
 
 def run_case(case: str, runner: Path, lib_dir: Path):
@@ -62,45 +63,40 @@ def run_case(case: str, runner: Path, lib_dir: Path):
     env["ESHKOL_PATH"] = os.pathsep.join((str(source_root / "lib"), str(module_root)))
     env["ESHKOL_JIT_CACHE"] = "0"
 
-    server = None
-    server_thread = None
-    received = None
-    try:
-        if case == "loopback":
+    if case == "loopback":
+        template = (HERE / "fixtures" / "positive-loopback.esk").read_text()
+        marker = "RESULT: PASS"
+        for mode in ("jit", "aot"):
             server = socketserver.TCPServer(("127.0.0.1", 0), PongHandler)
             server.timeout = 5
             server.received = []
-            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-            server_thread.start()
-            source_fd, source_path = tempfile.mkstemp(prefix="strict-loopback-")
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            source_fd, source_path = tempfile.mkstemp(
+                prefix=f"strict-loopback-{mode}-", suffix=".esk")
             os.close(source_fd)
             source = Path(source_path)
-            template = (HERE / "fixtures" / "positive-loopback.esk").read_text()
             source.write_text(template.replace("@PORT@", str(server.server_address[1])))
-            marker = "RESULT: PASS"
-        else:
-            names = {
-                "borrow": ("positive-borrow-scope", "RESULT: PASS"),
-                "both-branches": ("positive-both-branches-close", "BOTH-BRANCHES: PASS"),
-                "scalar-shadow": ("positive-shadowed-factory", "SHADOW-OK"),
-            }
-            fixture, marker = names[case]
-            source = HERE / "fixtures" / f"{fixture}.esk"
+            try:
+                run_route(runner, lib_dir, env, source, mode, marker, server.received)
+                print(f"PASS {case} {mode} marker={marker} port={server.server_address[1]}")
+            finally:
+                source.unlink(missing_ok=True)
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+        return
 
-        for mode in ("jit", "aot"):
-            if server is not None:
-                server.received.clear()
-                received = server.received
-            run_route(runner, lib_dir, env, source, mode, marker, received)
-            print(f"PASS {case} {mode} marker={marker}")
-    finally:
-        if server is not None:
-            server.shutdown()
-            server.server_close()
-        if server_thread is not None:
-            server_thread.join(timeout=2)
-        if case == "loopback" and "source" in locals():
-            source.unlink(missing_ok=True)
+    names = {
+        "borrow": ("positive-borrow-scope", "RESULT: PASS"),
+        "both-branches": ("positive-both-branches-close", "BOTH-BRANCHES: PASS"),
+        "scalar-shadow": ("positive-shadowed-factory", "SHADOW-OK"),
+    }
+    fixture, marker = names[case]
+    source = HERE / "fixtures" / f"{fixture}.esk"
+    for mode in ("jit", "aot"):
+        run_route(runner, lib_dir, env, source, mode, marker)
+        print(f"PASS {case} {mode} marker={marker}")
 
 
 def main():
