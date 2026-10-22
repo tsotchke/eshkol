@@ -45101,6 +45101,7 @@ private:
             {"display", {1, true, VariadicRest::ByCount, nullptr, 2}},
             {"write",   {1, true, VariadicRest::ByCount, nullptr, 2}},
             {"newline", {0, true, VariadicRest::ByCount, nullptr, 1}},
+            {"hash-ref", {2, true, VariadicRest::ByCount, nullptr, 3}},
             // Strings — comparisons
             // R7RS comparison CHAINS: (string<? a b c) is legal, so these are
             // variadic rows. Marked so a use site that knows its arity gets a

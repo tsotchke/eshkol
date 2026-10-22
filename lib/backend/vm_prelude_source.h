@@ -257,6 +257,13 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define * (lambda args (fold-left mul2 1 args)))\n"
     "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
     "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
+    /* Keep the raw opcode available while exposing the public optional
+     * default as a procedure value, with an explicit upper arity. */
+    "(define _hash-ref-raw hash-ref)\n"
+    "(define (hash-ref table key . rest)\n"
+    "  (cond ((null? rest) (_hash-ref-raw table key #f))\n"
+    "        ((null? (cdr rest)) (_hash-ref-raw table key (car rest)))\n"
+    "        (else (error \"hash-ref: expected 2 or 3 arguments\"))))\n"
     /* ── Variadic wrappers around 2-arg builtins ──────────────────────── */
     "(define _append-2 append)\n"
     "(define (append . lists) (fold-right _append-2 '() lists))\n"

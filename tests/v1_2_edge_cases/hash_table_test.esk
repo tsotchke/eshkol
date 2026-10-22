@@ -39,6 +39,54 @@
        (equal? (hash-ref ht "missing" "NOPE") "NOPE"))
 (check "hash-count after 2 sets = 2" (= (hash-count ht) 2))
 
+;; ---- Optional default contract across calls and procedure values ----
+(define ref-proc hash-ref)
+(define apply-ref2 (apply ref-proc (list ht "name")))
+(define apply-ref3 (apply ref-proc (list ht "missing-by-apply" 41)))
+(check "direct hash-ref without default finds value"
+       (equal? (hash-ref ht "name") "Alice"))
+(check "direct hash-ref with default finds value"
+       (equal? (hash-ref ht "name" "unused") "Alice"))
+(check "first-class hash-ref accepts two arguments"
+       (equal? (ref-proc ht "name") "Alice"))
+(check "first-class hash-ref accepts three arguments"
+       (equal? (ref-proc ht "name" "unused") "Alice"))
+(check "apply hash-ref with two arguments"
+       (equal? apply-ref2 "Alice"))
+(check "apply hash-ref with three arguments"
+       (= apply-ref3 41))
+(check "hash-ref without default returns #f on miss"
+       (eq? (hash-ref ht "missing-without-default") #f))
+(hash-set! ht "stored-false" #f)
+(check "stored #f remains present"
+       (and (hash-has-key? ht "stored-false")
+            (eq? (hash-ref ht "stored-false" 'sentinel) #f)))
+(check "hash-ref preserves exact default"
+       (eqv? (hash-ref ht "exact-default-miss" 3/7) 3/7))
+
+;; Arguments are evaluated once, in order, even when the key already exists.
+(define default-evals 0)
+(hash-set! ht "eager-hit" "present")
+(check "default runs once on a hit"
+       (and (equal? (hash-ref ht "eager-hit"
+                              (begin (set! default-evals (+ default-evals 1)) 'unused))
+                    "present")
+            (= default-evals 1)))
+(check "default runs once on a miss"
+       (and (eq? (hash-ref ht "eager-miss"
+                           (begin (set! default-evals (+ default-evals 1)) 'fallback))
+                 'fallback)
+            (= default-evals 2)))
+(check "default side effects happen before the lookup"
+       (equal? (hash-ref ht "insert-during-default"
+                         (begin (hash-set! ht "insert-during-default" "inserted")
+                                'fallback))
+               "inserted"))
+(check "first-class hash-ref rejects extra arguments"
+       (guard (e (#t #t))
+         (apply ref-proc (list ht "name" 1 2))
+         #f))
+
 ;; ---- SRFI-125 long-name aliases ----
 (hash-table-set! ht "city" "NYC")
 (check "hash-table-ref finds new key"
