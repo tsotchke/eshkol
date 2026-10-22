@@ -6,6 +6,8 @@
 #ifndef ESHKOL_BACKEND_TENSOR_SHAPE_GUARD_H
 #define ESHKOL_BACKEND_TENSOR_SHAPE_GUARD_H
 
+#ifdef ESHKOL_LLVM_BACKEND_ENABLED
+
 #include <eshkol/backend/codegen_context.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/Constants.h>
@@ -74,5 +76,7 @@ inline void emitMatchingTensorShapes(CodegenContext& ctx,
 }
 
 } // namespace eshkol
+
+#endif // ESHKOL_LLVM_BACKEND_ENABLED
 
 #endif
