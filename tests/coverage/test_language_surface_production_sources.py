@@ -162,6 +162,52 @@ class ProductionSurfaceSources(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ambiguous re-export"):
                 SURFACE.extract_stdlib_surface(str(root))
 
+    def test_binding_metadata_tracks_only_provable_kinds_and_resolved_origins(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "lib/core").mkdir(parents=True)
+            (root / "lib/stdlib.esk").write_text("(require core.alpha)\n")
+            (root / "lib/core/alpha.esk").write_text('''
+(provide stream-null-like explicit-procedure lambda-procedure local-alias
+         forwarded beta-value conditional-value redefined syntax-name)
+(require core.beta)
+(define stream-null-like '())
+(define (explicit-procedure x)
+  (let ((stream-null-like (if #t x 0))) stream-null-like))
+(define lambda-procedure (lambda (x) x))
+(define-syntax syntax-name (syntax-rules () ((_ x) x)))
+(define local-alias stream-null-like)
+(define forwarded beta-value)
+(define conditional-value (if #t 'safe 'also-safe))
+(define redefined '())
+(define redefined (if #t 1 2))
+''')
+            (root / "lib/core/beta.esk").write_text('''
+(provide beta-value)
+(define beta-value '())
+''')
+
+            result = SURFACE.extract_stdlib_surface(str(root))
+            entries = {name: records[0] for name, records in result["names"].items()}
+            self.assertEqual("value", entries["stream-null-like"]["binding_category"])
+            self.assertEqual("procedure", entries["explicit-procedure"]["binding_category"])
+            self.assertEqual("procedure", entries["lambda-procedure"]["binding_category"])
+            self.assertEqual("syntax", entries["syntax-name"]["binding_category"])
+            self.assertEqual("value", entries["local-alias"]["binding_category"])
+            self.assertEqual(entries["stream-null-like"]["binding_identity"],
+                             entries["local-alias"]["binding_identity"])
+            self.assertEqual("beta-value",
+                             entries["forwarded"]["definition_origin"]["name"])
+            self.assertEqual("forwarded", entries["forwarded"]["public_name"])
+            direct_reexport = next(item for item in result["names"]["beta-value"]
+                                   if item["module"] == "core.alpha")
+            self.assertEqual("core.beta", direct_reexport["definition_origin"]["module"])
+            self.assertEqual("beta-value", direct_reexport["public_name"])
+            self.assertEqual("unknown", entries["conditional-value"]["binding_category"])
+            self.assertIn("binding_identity", entries["conditional-value"])
+            self.assertEqual("unknown", entries["redefined"]["binding_category"])
+            self.assertNotIn("binding_identity", entries["redefined"])
+
     def test_generation_is_independent_of_legacy_compiler(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -228,6 +274,12 @@ class ProductionSurfaceSources(unittest.TestCase):
                 self.assertTrue(exported["name"])
                 self.assertGreater(exported["line"], 0)
                 self.assertTrue(exported["definition_origin"])
+
+        stream_null = next(entry for entry in manifest["prelude"]
+                           if entry["name"] == "stream-null")
+        self.assertEqual("value", stream_null["binding_category"])
+        self.assertIn("core.streams:lib/core/streams.esk#stream-null",
+                      stream_null["binding_identity"])
 
         sys.path.insert(0, str(REPO / "scripts/p8"))
         import five_way_surface

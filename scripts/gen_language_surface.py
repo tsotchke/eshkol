@@ -462,6 +462,74 @@ def _top_level_definition(form):
     return [(name, items[1][2])] if name else []
 
 
+_NUMBER_LITERAL = re.compile(
+    r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"
+)
+
+
+def _quoted_constant(form):
+    """Whether a parsed datum contains only inert quoted literal data."""
+    if not isinstance(form, tuple):
+        return False
+    kind, value = form[0], form[1]
+    if kind == "string":
+        return True
+    if kind == "symbol":
+        return (value in {"#t", "#f"} or value.startswith("#\\") or
+                bool(_NUMBER_LITERAL.fullmatch(value)))
+    if kind != "list":
+        return False
+    items = value
+    # The parser represents quote as a two-item list. Nested quote is inert too.
+    if len(items) == 2 and _scheme_symbol(items[0]) == "quote":
+        return _quoted_constant(items[1])
+    return all(_quoted_constant(item) for item in items)
+
+
+def _binding_expression_category(rhs):
+    """Classify only source forms whose binding kind is directly provable."""
+    items = _scheme_list(rhs)
+    if items and _scheme_symbol(items[0]) == "lambda" and len(items) >= 3:
+        return "procedure"
+    if (items and _scheme_symbol(items[0]) == "quote" and len(items) == 2
+            and _quoted_constant(items[1])):
+        return "value"
+    if isinstance(rhs, tuple) and rhs[0] == "string":
+        return "value"
+    symbol = _scheme_symbol(rhs)
+    if symbol is not None and (symbol in {"#t", "#f"} or
+                               symbol.startswith("#\\") or
+                               _NUMBER_LITERAL.fullmatch(symbol)):
+        return "value"
+    return "unknown"
+
+
+def _top_level_binding(form):
+    """Return (name, line, category, alias-target) for a simple top-level binding."""
+    items = _scheme_list(form)
+    if not items or len(items) < 2:
+        return []
+    kind = _scheme_symbol(items[0])
+    target = _scheme_list(items[1])
+    if kind in {"define-syntax", "define-macro"}:
+        name = _scheme_symbol(items[1]) or (_scheme_symbol(target[0]) if target else None)
+        return [(name, form[2], "syntax", None)] if name else []
+    if kind == "define-values":
+        return [(name, items[1][2], "unknown", None)
+                for name in (_scheme_symbol(x) for x in target or []) if name]
+    if kind != "define":
+        return []
+    if target:
+        name = _scheme_symbol(target[0])
+        return [(name, form[2], "procedure", None)] if name else []
+    name = _scheme_symbol(items[1])
+    if not name or len(items) < 3:
+        return []
+    rhs = items[2]
+    alias = _scheme_symbol(rhs)
+    return [(name, items[1][2], _binding_expression_category(rhs), alias)]
+
+
 def _top_level_exports(form):
     items = _scheme_list(form)
     if not items or _scheme_symbol(items[0]) != "provide":
@@ -533,12 +601,16 @@ def extract_stdlib_surface(repo=REPO):
             raise ValueError("cannot read production module %s: %s" %
                              (os.path.relpath(path, repo), exc)) from exc
         defs = {}
+        binding_defs = {}
         exports = {}
         requires = []
         try:
             for form in forms:
                 for name, line in _top_level_definition(form):
                     defs.setdefault(name, line)
+                for name, line, category, alias in _top_level_binding(form):
+                    binding_defs.setdefault(name, []).append({
+                        "line": line, "category": category, "alias": alias})
                 for name, line in _top_level_exports(form):
                     exports.setdefault(name, line)
                 requires.extend(_require_module_names(form))
@@ -546,7 +618,8 @@ def extract_stdlib_surface(repo=REPO):
             raise ValueError("unsupported stdlib surface in %s: %s" %
                              (os.path.relpath(path, repo), exc)) from exc
         modules[module] = {"path": os.path.relpath(path, repo),
-                           "definitions": defs, "exports": exports,
+                           "definitions": defs, "binding_definitions": binding_defs,
+                           "exports": exports,
                            "requires": []}
         requiring.setdefault(module, set()).add(parent)
         for required, line in requires:
@@ -556,36 +629,93 @@ def extract_stdlib_surface(repo=REPO):
             if required not in modules:
                 pending.append((required, child_path, module))
 
-    def definition_origin(module, name, seen=None):
+    def resolve_binding(module, name, seen=None):
+        """Resolve a public name to a unique definition and conservative kind."""
         seen = set() if seen is None else set(seen)
-        if module in seen:
+        key = (module, name)
+        if key in seen:
             return None
-        seen.add(module)
+        seen.add(key)
         record = modules[module]
-        if name in record["definitions"]:
-            return {"module": module, "path": record["path"],
-                    "line": record["definitions"][name], "chain": [module]}
+        definitions = record["binding_definitions"].get(name, [])
+        if definitions:
+            # Multiple same-spelled definitions may be a deliberate redefinition;
+            # without expansion/evaluation order guarantees it is unsafe to label.
+            if len(definitions) != 1:
+                return None
+            definition = definitions[0]
+            alias = definition["alias"]
+            if alias and alias != name:
+                candidates = []
+                if alias in record["binding_definitions"]:
+                    candidates.append((module, alias))
+                else:
+                    candidates = [(required["module"], alias)
+                                  for required in record["requires"]
+                                  if required["module"] in modules and
+                                  alias in modules[required["module"]]["exports"]]
+                if len(candidates) == 1:
+                    target_module, target_name = candidates[0]
+                    target = resolve_binding(target_module, target_name, seen)
+                    if target:
+                        return {**target,
+                                "chain": [module] + [m for m in target["chain"]
+                                                     if m != module]}
+                    return None
+                if len(candidates) > 1:
+                    return None
+            return {
+                "module": module, "path": record["path"], "name": name,
+                "line": definition["line"], "chain": [module],
+                "category": definition["category"],
+            }
         candidates = [required["module"] for required in record["requires"]
                       if required["module"] in modules and
                       name in modules[required["module"]]["exports"]]
-        if len(candidates) > 1:
-            raise ValueError("ambiguous re-export %r in %s from %s" %
-                             (name, module, ", ".join(candidates)))
-        if candidates:
-            child = candidates[0]
-            origin = definition_origin(child, name, seen)
-            if origin:
-                return {**origin, "chain": [module] + origin["chain"]}
+        if len(candidates) != 1:
+            return None
+        child = candidates[0]
+        target = resolve_binding(child, name, seen)
+        if not target:
+            return None
+        return {**target, "chain": [module] + [m for m in target["chain"]
+                                              if m != module]}
+
+    def definition_origin(module, name):
+        record = modules[module]
+        if name not in record["binding_definitions"]:
+            candidates = [required["module"] for required in record["requires"]
+                          if required["module"] in modules and
+                          name in modules[required["module"]]["exports"]]
+            if len(candidates) > 1:
+                raise ValueError("ambiguous re-export %r in %s from %s" %
+                                 (name, module, ", ".join(candidates)))
+        origin = resolve_binding(module, name)
+        if origin:
+            return {key: origin[key] for key in ("module", "path", "name", "line", "chain")}
         return None
 
     root_requires = {item["module"] for item in modules["stdlib"]["requires"]}
+
+    def binding_metadata(public_name, origin):
+        if not origin:
+            return {"public_name": public_name, "binding_category": "unknown"}
+        identity = "%s:%s#%s" % (origin["module"], origin["path"], origin["name"])
+        return {
+            "public_name": public_name,
+            "binding_category": origin["category"],
+            "binding_identity": identity,
+            "definition_origin": {key: origin[key] for key in
+                                  ("module", "path", "name", "line", "chain")},
+        }
+
     names = {}
     # Direct definitions in the root stdlib source are prelude definitions.
     for name, line in modules["stdlib"]["definitions"].items():
-        names.setdefault(name, []).append({"kind": "stdlib_root_definition",
-                                           "module": "stdlib",
-                                           "path": modules["stdlib"]["path"],
-                                           "line": line})
+        evidence = {"kind": "stdlib_root_definition", "module": "stdlib",
+                    "path": modules["stdlib"]["path"], "line": line}
+        evidence.update(binding_metadata(name, resolve_binding("stdlib", name)))
+        names.setdefault(name, []).append(evidence)
     closure_names = {}
     for module, record in modules.items():
         if module == "stdlib": continue
@@ -600,6 +730,7 @@ def extract_stdlib_surface(repo=REPO):
                 "visibility": ("stdlib_root_required_export" if module in root_requires
                                else "closure_export_presence"),
             }
+            evidence.update(binding_metadata(name, resolve_binding(module, name)))
             closure_names.setdefault(name, []).append(evidence)
             if module in root_requires:
                 names.setdefault(name, []).append(evidence)
@@ -1019,6 +1150,7 @@ def build_manifest():
 
     prelude_entries = []
     builtin_names = set(names)
+    identity_origins = {}
     for name in sorted(set(vm_prelude) | set(stdlib) | set(stdlib_closure)):
         sources = []
         if name in vm_prelude:
@@ -1027,13 +1159,33 @@ def build_manifest():
             sources.append("stdlib")
         elif name in stdlib_closure:
             sources.append("stdlib_closure_presence")
-        prelude_entries.append({
+        provenance = stdlib.get(name, []) + stdlib_closure.get(name, [])
+        identities = set()
+        categories = set()
+        for evidence in provenance:
+            category = evidence.get("binding_category", "unknown")
+            categories.add(category)
+            identity = evidence.get("binding_identity")
+            if identity:
+                origin = evidence["definition_origin"]
+                origin_key = (origin["module"], origin["path"], origin["name"])
+                previous = identity_origins.setdefault(identity, origin_key)
+                if previous != origin_key:
+                    raise ValueError("binding identity collision for %r: %r vs %r" %
+                                     (identity, previous, origin_key))
+                identities.add(identity)
+        entry = {
             "name": name,
             "category": categorize(name),
             "also_builtin": name in builtin_names,
             "sources": sources,
-            "provenance": stdlib.get(name, []) + stdlib_closure.get(name, []),
-        })
+            "provenance": provenance,
+            "binding_category": (next(iter(categories)) if len(categories) == 1
+                                 else "unknown"),
+        }
+        if len(identities) == 1:
+            entry["binding_identity"] = next(iter(identities))
+        prelude_entries.append(entry)
 
     manifest = {
         "_meta": {
