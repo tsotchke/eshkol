@@ -5306,6 +5306,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
             PASS_REGULAR_EXPRESSION "PASS: exact division by zero raises"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
+    if(APPLE)
+        add_test(NAME keychain_native_denial_jit
+            COMMAND $<TARGET_FILE:eshkol-run> --run
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/keychain_native_denial_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME keychain_native_denial_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/keychain_native_denial_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/keychain_native_denial_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/keychain_native_denial_aot'")
+        set_tests_properties(keychain_native_denial_jit keychain_native_denial_aot
+            PROPERTIES TIMEOUT 120 ENVIRONMENT "${STDLIB_CODEGEN_ENV}"
+            PASS_REGULAR_EXPRESSION "PASS: production keychain raw helpers deny before OS access"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
+    endif()
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
         if(APPLE AND TARGET eshkol-run)
