@@ -14963,7 +14963,7 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
         --link-dir ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(jit_batch_lookup_failure_exit_status PROPERTIES TIMEOUT 300
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
-        PASS_REGULAR_EXPRESSION "PASS: JIT batch lookup failures affect file exit status"
+        PASS_REGULAR_EXPRESSION "PASS: JIT batch lookup failure affects file exit status"
         FAIL_REGULAR_EXPRESSION "FAIL:|Traceback")
 endif()
 

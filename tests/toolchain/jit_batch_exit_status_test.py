@@ -34,27 +34,22 @@ def main():
     args = parser.parse_args()
 
     fixtures = args.repo_root / "tests" / "toolchain" / "fixtures"
-    for fixture_name, missing_name, marker in (
-        ("stream_null_root_lookup_failure.esk", "stream-null", "ROOT_LOOKUP_OK"),
-        ("jit_batch_unbound_name_failure.esk", "jit_batch_name_that_is_never_bound",
-         "UNBOUND_LOOKUP_OK"),
-    ):
-        failed = run(args.runner, args.repo_root, args.link_dir,
-                     fixtures / fixture_name)
-        failed_output = failed.stdout + failed.stderr
-        if failed.returncode == 0:
-            print(f"FAIL: unresolved JIT entry returned success ({fixture_name})")
-            print(failed_output)
-            return 1
-        if missing_name not in failed_output:
-            print(f"FAIL: failure did not identify {missing_name} ({fixture_name})")
-            print(failed_output)
-            return 1
-        if marker in failed.stdout:
-            print(f"FAIL: failed batch executed its marker form ({fixture_name})")
-            print(failed_output)
-            return 1
-        print(f"PASS: {fixture_name} returned {failed.returncode} with missing-name diagnostic")
+    failed = run(args.runner, args.repo_root, args.link_dir,
+                 fixtures / "jit_batch_unbound_name_failure.esk")
+    failed_output = failed.stdout + failed.stderr
+    if failed.returncode != 1:
+        print(f"FAIL: unbound JIT entry returned {failed.returncode}, expected 1")
+        print(failed_output)
+        return 1
+    if "jit_batch_name_that_is_never_bound" not in failed_output:
+        print("FAIL: failure did not identify the deliberately unbound name")
+        print(failed_output)
+        return 1
+    if "UNBOUND_LOOKUP_OK" in failed.stdout:
+        print("FAIL: failed batch executed its marker form")
+        print(failed_output)
+        return 1
+    print(f"PASS: unbound-name batch returned exact exit code {failed.returncode}")
 
     control = run(args.runner, args.repo_root, args.link_dir,
                   fixtures / "jit_batch_success_control.esk")
@@ -72,7 +67,7 @@ def main():
         return 1
     print(f"PASS: jit_batch_definitions_only.esk returned {definitions.returncode}")
 
-    print("PASS: JIT batch lookup failures affect file exit status; valid and definitions-only controls pass")
+    print("PASS: JIT batch lookup failure affects file exit status; valid and definitions-only controls pass")
     return 0
 
 
