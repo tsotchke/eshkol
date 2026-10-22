@@ -12,6 +12,7 @@
  * pre-loss-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/tensor_shape_guard.h>
 #include <eshkol/backend/libm_codegen.h>
 #include <eshkol/tensor_cross_entropy.h>
 
@@ -52,6 +53,7 @@ llvm::Value* TensorCodegen::mseLoss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "mse-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "mse-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "mse-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* num_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 1);
@@ -203,6 +205,7 @@ llvm::Value* TensorCodegen::bceLoss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "bce-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "bce-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "bce-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* num_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 1);
@@ -316,6 +319,7 @@ llvm::Value* TensorCodegen::huberLoss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "huber-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "huber-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "huber-loss");
 
     llvm::Value* delta = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     if (op->call_op.num_vars >= 3) {
@@ -429,6 +433,7 @@ llvm::Value* TensorCodegen::maeLoss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "mae-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "mae-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "mae-loss");
 
     // Get tensor layouts (index 0 = dims ptr, index 1 = ndims, index 2 = elems)
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -529,6 +534,7 @@ llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "binary-cross-entropy-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "binary-cross-entropy-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "binary-cross-entropy-loss");
 
     // Get tensor layouts (index 0 = dims ptr, index 1 = ndims, index 2 = elems)
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -651,6 +657,7 @@ llvm::Value* TensorCodegen::klDivLoss(const eshkol_operations_t* op) {
 
     llvm::Value* p_ptr = unpackTensorOperandChecked(p_tagged, "kl-div-loss");
     llvm::Value* q_ptr = unpackTensorOperandChecked(q_tagged, "kl-div-loss");
+    emitMatchingTensorShapes(ctx_, {p_ptr, q_ptr}, "kl-div-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* p_dims_ptr = builder.CreateStructGEP(tensor_type, p_ptr, 0);
@@ -758,6 +765,7 @@ llvm::Value* TensorCodegen::hingeLoss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "hinge-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "hinge-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "hinge-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* pred_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
@@ -865,6 +873,7 @@ llvm::Value* TensorCodegen::smoothL1Loss(const eshkol_operations_t* op) {
 
     llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "smooth-l1-loss");
     llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "smooth-l1-loss");
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "smooth-l1-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* pred_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
@@ -1069,6 +1078,7 @@ llvm::Value* TensorCodegen::tripletLoss(const eshkol_operations_t* op) {
     llvm::Value* anchor_ptr = unpackTensorOperandChecked(anchor_tagged, "triplet-loss");
     llvm::Value* pos_ptr = unpackTensorOperandChecked(positive_tagged, "triplet-loss");
     llvm::Value* neg_ptr = unpackTensorOperandChecked(negative_tagged, "triplet-loss");
+    emitMatchingTensorShapes(ctx_, {anchor_ptr, pos_ptr, neg_ptr}, "triplet-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     // Get anchor total elements from field 3
@@ -1175,6 +1185,7 @@ llvm::Value* TensorCodegen::contrastiveLoss(const eshkol_operations_t* op) {
 
     llvm::Value* t1_ptr = unpackTensorOperandChecked(t1_tagged, "contrastive-loss");
     llvm::Value* t2_ptr = unpackTensorOperandChecked(t2_tagged, "contrastive-loss");
+    emitMatchingTensorShapes(ctx_, {t1_ptr, t2_ptr}, "contrastive-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* t1_total_ptr = builder.CreateStructGEP(tensor_type, t1_ptr, 3);
@@ -1270,6 +1281,7 @@ llvm::Value* TensorCodegen::labelSmoothingLoss(const eshkol_operations_t* op) {
 
     llvm::Value* logits_ptr = unpackTensorOperandChecked(logits_tagged, "label-smoothing-loss");
     llvm::Value* targets_ptr = unpackTensorOperandChecked(targets_tagged, "label-smoothing-loss");
+    emitMatchingTensorShapes(ctx_, {logits_ptr, targets_ptr}, "label-smoothing-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* logits_total_ptr = builder.CreateStructGEP(tensor_type, logits_ptr, 3);
@@ -1422,6 +1434,7 @@ llvm::Value* TensorCodegen::cosineEmbeddingLoss(const eshkol_operations_t* op) {
 
     llvm::Value* t1_ptr = unpackTensorOperandChecked(t1_tagged, "cosine-embedding-loss");
     llvm::Value* t2_ptr = unpackTensorOperandChecked(t2_tagged, "cosine-embedding-loss");
+    emitMatchingTensorShapes(ctx_, {t1_ptr, t2_ptr}, "cosine-embedding-loss");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* t1_total_ptr = builder.CreateStructGEP(tensor_type, t1_ptr, 3);

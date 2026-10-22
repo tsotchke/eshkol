@@ -18,6 +18,7 @@
  * pre-reduce-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/tensor_shape_guard.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -950,6 +951,10 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
 
     // Scheme vector: [length:i64, element0:tagged_value, element1:tagged_value, ...]
     llvm::Value* svec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_a_ptr);
+    llvm::Value* svec_b_len = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_b_ptr);
+    emitCatchableTensorContractGuard(ctx_,
+        ctx_.builder().CreateICmpEQ(svec_len, svec_b_len),
+        "tensor-dot: Scheme vector lengths must match", "svec_dot_length");
 
     // Dot product loop for Scheme vectors
     llvm::BasicBlock* svec_loop_cond = llvm::BasicBlock::Create(ctx_.context(), "svec_dot_cond", current_func);
@@ -1039,6 +1044,7 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
     // Falls back to scalar when SIMD_WIDTH == 1
     ctx_.builder().SetInsertPoint(dot_1d_block);
+    emitMatchingTensorShapes(ctx_, {tensor_a_ptr, tensor_b_ptr}, "tensor-dot");
 
     llvm::Value* ad_dot_tagged_result = nullptr;
     llvm::BasicBlock* ad_dot_exit_block = nullptr;
