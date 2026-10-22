@@ -4072,7 +4072,19 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     void* result = nullptr;
     if (entry_func && !func_name.empty()) {
         uint64_t func_addr = lookupSymbol(func_name);
-        if (func_addr != 0) {
+        if (func_addr == 0) {
+            // `silent == false` is the batch/file CLI path (`eshkol-run -r`).
+            // ORC can report a missing external while materializing the entry
+            // lookup; lookupSymbol consumes that Error and returns zero, so
+            // without this check executeBatch returned nullptr and the driver
+            // mistook a failed file for a successful no-result batch. Module
+            // loads use silent batches and keep their established warning /
+            // recovery behavior, as does the interactive REPL.
+            if (!silent) {
+                throw std::runtime_error(
+                    "failed to resolve JIT batch entry function: " + func_name);
+            }
+        } else {
             incrementEvalCounter();
             typedef int32_t (*EvalFunc)(int32_t, char**);
             EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);

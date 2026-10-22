@@ -14955,6 +14955,16 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "PASS: named-let control flow 11 cases across JIT and AOT"
         FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|LLVM module verification failed")
+
+    add_test(NAME jit_batch_lookup_failure_exit_status COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/jit_batch_exit_status_test.py
+        --runner $<TARGET_FILE:eshkol-run>
+        --repo-root ${CMAKE_CURRENT_SOURCE_DIR}
+        --link-dir ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(jit_batch_lookup_failure_exit_status PROPERTIES TIMEOUT 300
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: JIT batch lookup failure affects file exit status"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-static)
