@@ -19,6 +19,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Function.h>
+#include <vector>
 
 namespace eshkol {
 
@@ -3246,33 +3247,35 @@ llvm::Value* StringIOCodegen::charCompare(const eshkol_operations_t* op, const s
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 2) {
-        eshkol_arity_error_current("Character comparison requires exactly 2 arguments");
+    if (op->call_op.num_vars < 2) {
+        eshkol_arity_error_current("Character comparison requires at least 2 arguments");
         return nullptr;
     }
 
-    llvm::Value* char1_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
-    llvm::Value* char2_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-    if (!char1_arg || !char2_arg) return nullptr;
-
-    llvm::Value* char1_val = tagged_.unpackInt64(char1_arg);
-    llvm::Value* char2_val = tagged_.unpackInt64(char2_arg);
-
-    llvm::Value* result;
-    if (cmp_type == "eq") {
-        result = ctx_.builder().CreateICmpEQ(char1_val, char2_val);
-    } else if (cmp_type == "lt") {
-        result = ctx_.builder().CreateICmpSLT(char1_val, char2_val);
-    } else if (cmp_type == "gt") {
-        result = ctx_.builder().CreateICmpSGT(char1_val, char2_val);
-    } else if (cmp_type == "le") {
-        result = ctx_.builder().CreateICmpSLE(char1_val, char2_val);
-    } else if (cmp_type == "ge") {
-        result = ctx_.builder().CreateICmpSGE(char1_val, char2_val);
-    } else {
-        result = llvm::ConstantInt::getFalse(ctx_.context());
+    // Lower every argument once before emitting any pair comparison. Besides
+    // matching Scheme's call evaluation order, this keeps side effects from
+    // being repeated by the chain.
+    std::vector<llvm::Value*> chars;
+    chars.reserve(op->call_op.num_vars);
+    for (int i = 0; i < op->call_op.num_vars; ++i) {
+        llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        if (!arg) return nullptr;
+        chars.push_back(tagged_.unpackInt64(arg));
     }
 
+    llvm::Value* result = llvm::ConstantInt::getTrue(ctx_.context());
+    for (size_t i = 1; i < chars.size(); ++i) {
+        llvm::Value* left = chars[i - 1];
+        llvm::Value* right = chars[i];
+        llvm::Value* pair_result;
+        if (cmp_type == "eq") pair_result = ctx_.builder().CreateICmpEQ(left, right);
+        else if (cmp_type == "lt") pair_result = ctx_.builder().CreateICmpSLT(left, right);
+        else if (cmp_type == "gt") pair_result = ctx_.builder().CreateICmpSGT(left, right);
+        else if (cmp_type == "le") pair_result = ctx_.builder().CreateICmpSLE(left, right);
+        else if (cmp_type == "ge") pair_result = ctx_.builder().CreateICmpSGE(left, right);
+        else pair_result = llvm::ConstantInt::getFalse(ctx_.context());
+        result = ctx_.builder().CreateAnd(result, pair_result);
+    }
     return tagged_.packBool(result);
 }
 
@@ -3294,17 +3297,19 @@ llvm::Value* StringIOCodegen::charCiCompare(const eshkol_operations_t* op, const
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 2) {
-        eshkol_arity_error_current("Case-insensitive character comparison requires exactly 2 arguments");
+    if (op->call_op.num_vars < 2) {
+        eshkol_arity_error_current("Character comparison requires at least 2 arguments");
         return nullptr;
     }
 
-    llvm::Value* char1_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
-    llvm::Value* char2_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-    if (!char1_arg || !char2_arg) return nullptr;
-
-    llvm::Value* char1_val = tagged_.unpackInt64(char1_arg);
-    llvm::Value* char2_val = tagged_.unpackInt64(char2_arg);
+    // Evaluate the entire operand list once before comparing adjacent pairs.
+    std::vector<llvm::Value*> chars;
+    chars.reserve(op->call_op.num_vars);
+    for (int i = 0; i < op->call_op.num_vars; ++i) {
+        llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        if (!arg) return nullptr;
+        chars.push_back(tagged_.unpackInt64(arg));
+    }
 
     // Fold each operand: if ASCII uppercase, add 32; else keep.
     auto fold = [&](llvm::Value* v) -> llvm::Value* {
@@ -3317,17 +3322,19 @@ llvm::Value* StringIOCodegen::charCiCompare(const eshkol_operations_t* op, const
         return ctx_.builder().CreateZExt(folded, ctx_.int64Type());
     };
 
-    llvm::Value* fc1 = fold(char1_val);
-    llvm::Value* fc2 = fold(char2_val);
-
-    llvm::Value* result;
-    if (cmp_type == "eq")      result = ctx_.builder().CreateICmpEQ(fc1, fc2);
-    else if (cmp_type == "lt") result = ctx_.builder().CreateICmpSLT(fc1, fc2);
-    else if (cmp_type == "gt") result = ctx_.builder().CreateICmpSGT(fc1, fc2);
-    else if (cmp_type == "le") result = ctx_.builder().CreateICmpSLE(fc1, fc2);
-    else if (cmp_type == "ge") result = ctx_.builder().CreateICmpSGE(fc1, fc2);
-    else                       result = llvm::ConstantInt::getFalse(ctx_.context());
-
+    llvm::Value* result = llvm::ConstantInt::getTrue(ctx_.context());
+    for (size_t i = 1; i < chars.size(); ++i) {
+        llvm::Value* fc1 = fold(chars[i - 1]);
+        llvm::Value* fc2 = fold(chars[i]);
+        llvm::Value* pair_result;
+        if (cmp_type == "eq")      pair_result = ctx_.builder().CreateICmpEQ(fc1, fc2);
+        else if (cmp_type == "lt") pair_result = ctx_.builder().CreateICmpSLT(fc1, fc2);
+        else if (cmp_type == "gt") pair_result = ctx_.builder().CreateICmpSGT(fc1, fc2);
+        else if (cmp_type == "le") pair_result = ctx_.builder().CreateICmpSLE(fc1, fc2);
+        else if (cmp_type == "ge") pair_result = ctx_.builder().CreateICmpSGE(fc1, fc2);
+        else                       pair_result = llvm::ConstantInt::getFalse(ctx_.context());
+        result = ctx_.builder().CreateAnd(result, pair_result);
+    }
     return tagged_.packBool(result);
 }
 

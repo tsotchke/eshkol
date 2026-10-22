@@ -18,6 +18,29 @@
 (check "char<= chain false" (not (char<=? #\a #\c #\b)))
 (check "char>= chain true" (char>=? #\c #\b #\a))
 (check "char>= chain false" (not (char>=? #\c #\a #\b)))
+(check "char=? chain true" (char=? #\a #\a #\a))
+(check "char=? chain false" (not (char=? #\a #\a #\b)))
+(check "char-ci<= chain true" (char-ci<=? #\A #\b #\C))
+(check "char-ci<= chain false" (not (char-ci<=? #\A #\c #\B)))
+
+;; Native lowering must evaluate every operand exactly once, from left to
+;; right, before combining adjacent comparisons.
+(define char-compare-trace "")
+(define char-compare-count 0)
+(define (char-compare-operand marker ch)
+  (set! char-compare-count (+ char-compare-count 1))
+  (set! char-compare-trace (string-append char-compare-trace marker))
+  ch)
+(set! char-compare-trace "")
+(set! char-compare-count 0)
+(check "char<= chain side effect result"
+       (char<=? (char-compare-operand "a" #\a)
+                (char-compare-operand "b" #\b)
+                (char-compare-operand "c" #\c)))
+(check "char<= chain evaluates each operand once"
+       (= char-compare-count 3))
+(check "char<= chain evaluates left to right"
+       (string=? char-compare-trace "abc"))
 
 (define ge-first-class char>=?)
 (define le-first-class char<=?)
