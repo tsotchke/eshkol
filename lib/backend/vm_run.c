@@ -38,6 +38,19 @@ static int vm_callcc_state_valid(VM* vm) {
     return 1;
 }
 
+static int vm_call_stack_args_valid(VM* vm, int argc) {
+    if (!vm || argc < 0 || vm->sp < 0 || vm->sp > STACK_SIZE ||
+        argc >= vm->sp) {
+        fprintf(stderr,
+                "ERROR: CALL stack underflow or invalid depth "
+                "(sp=%d argc=%d stack=%d)\n",
+                vm ? vm->sp : -1, argc, STACK_SIZE);
+        if (vm) vm->error = 1;
+        return 0;
+    }
+    return 1;
+}
+
 static int vm_push_wind(VM* vm, Value before, Value after) {
     if (vm->n_winds < 0 || vm->n_winds >= 32) {
         fprintf(stderr, "WIND STACK OVERFLOW\n");
@@ -84,6 +97,7 @@ static int vm_push_wind(VM* vm, Value before, Value after) {
  * higher-order operations. Arguments and callable are already rooted on the
  * VM stack; positive means enter bytecode, zero means an immediate result. */
 static int vm_enter_call(VM* vm, int argc, int32_t return_pc) {
+    if (!vm_call_stack_args_valid(vm, argc)) return -1;
     Value func = vm->stack[vm->sp - 1 - argc];
 
     vm_language_coverage_named_call(vm, func);
@@ -423,6 +437,7 @@ void vm_run(VM* vm) {
     lbl_TAIL_CALL: {
         int argc = instr.op == OP_TAIL_CALL_POPN
                        ? (instr.operand & 0xFFFF) : instr.operand;
+        if (!vm_call_stack_args_valid(vm, argc)) goto vm_exit;
         vm_mark_tail_retained_handlers(vm);
         Value func = vm->stack[vm->sp - 1 - argc];
         vm_language_coverage_named_call(vm, func);
@@ -870,6 +885,7 @@ vm_exit:
         case OP_TAIL_CALL_POPN: {
             int argc = instr.op == OP_TAIL_CALL_POPN
                            ? (instr.operand & 0xFFFF) : instr.operand;
+            if (!vm_call_stack_args_valid(vm, argc)) break;
             vm_mark_tail_retained_handlers(vm);
             Value func = vm->stack[vm->sp - 1 - argc];
             vm_language_coverage_named_call(vm, func);

@@ -81,19 +81,25 @@ def main():
         root = pathlib.Path(tmp)
         cases = {
             "valid": eskb([(36, 0)]),
+            "valid-zero-argument-call": eskb_functions(
+                [("main", [(24, 0), (25, 0), (36, 0)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(3 | (1 << 40))]),
             # The coverage call marker may precede all three compiler call
             # opcodes. OP_TAIL_CALL_POPN packs local cleanup and argc in its
             # operand; this fixture reaches a real zero-argument tail call.
             "valid-coverage-call-tail-popn": eskb_functions(
-                [("main", [(24, 0), (65, 123), (70, 0)]),
+                [("main", [(24, 0), (25, 0), (36, 0)]),
+                 ("wrapper", [(24, 1), (65, 123), (70, 0)]),
                  ("callee", [(2, 0), (27, 0)])],
-                [int_constant(3 | (1 << 40))]),
+                [int_constant(3 | (1 << 40)), int_constant(6 | (1 << 40))]),
             # Guard cleanup belongs before the marker; the marker must still
             # directly precede the tail-call opcode after cleanup.
             "valid-coverage-call-guarded-tail": eskb_functions(
-                [("main", [(24, 0), (58, 0), (65, 123), (70, 0)]),
+                [("main", [(24, 0), (25, 0), (36, 0)]),
+                 ("wrapper", [(24, 1), (58, 0), (65, 123), (70, 0)]),
                  ("callee", [(2, 0), (27, 0)])],
-                [int_constant(4 | (1 << 40))]),
+                [int_constant(3 | (1 << 40)), int_constant(7 | (1 << 40))]),
             "invalid-coverage-call-successor": eskb_functions(
                 [("main", [(24, 0), (65, 123), (7, 0), (36, 0)]),
                  ("callee", [(2, 0), (27, 0)])],
@@ -105,6 +111,17 @@ def main():
             "valid-closure-long-constant": eskb(
                 [(67, 0), (68, 0), (5, 0), (36, 0)], [int_constant(0)]),
             "invalid-opcode": eskb([(255, 0)]),
+            # ESKB admission accepts structurally valid CALL opcodes, so the
+            # interpreter must reject a missing callable before indexing the
+            # VM stack. Cover both tail-call handlers and an argc that exceeds
+            # the one available callable value.
+            "invalid-call-stack-underflow-call-zero": eskb([(25, 0)]),
+            "invalid-call-stack-underflow-tail-call-zero": eskb([(26, 0)]),
+            "invalid-call-stack-underflow-tail-call-popn-zero": eskb([(70, 0)]),
+            "invalid-call-stack-underflow-call-too-few-args": eskb_functions(
+                [("main", [(24, 0), (25, 1)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(2 | (1 << 40))]),
             "invalid-constant-index": eskb([(1, 1)]),
             # The marker would be printed if the malformed closure passed
             # module admission and execution began.
@@ -139,30 +156,38 @@ def main():
                 raise AssertionError(f"fixture exceeds 1 MiB: {name}")
             paths[name] = root / f"{name}.eskb"
             paths[name].write_bytes(data)
+        failures = []
         for binary in sys.argv[1:]:
-            for name in ("valid", "valid-constant-pool", "valid-closure-constant",
+            for name in ("valid", "valid-zero-argument-call",
+                         "valid-constant-pool", "valid-closure-constant",
                          "valid-closure-long-constant",
                          "valid-coverage-call-tail-popn",
                          "valid-coverage-call-guarded-tail"):
                 valid = run(binary, paths[name])
                 if valid.returncode != 0:
-                    raise AssertionError(f"valid ESKB {name} rejected by {binary}: "
-                                         f"{valid.stderr.decode(errors='replace')}")
+                    failures.append(f"valid ESKB {name} rejected by {binary}: "
+                                    f"{valid.stderr.decode(errors='replace')}")
             for name in cases.keys() - {"valid"}:
                 if name.startswith("valid-"):
                     continue
                 result = run(binary, paths[name])
                 if result.returncode != 1:
-                    raise AssertionError(f"{binary} failed unsafely on {name}: "
-                                         f"return code {result.returncode}")
+                    failures.append(f"{binary} failed unsafely on {name}: "
+                                    f"return code {result.returncode}")
                 diagnostic = result.stderr.lower()
                 if not any(word in diagnostic for word in
                            (b"invalid", b"opcode", b"crc32", b"failed to load",
                             b"error")):
-                    raise AssertionError(f"{binary} gave no bounded diagnostic "
-                                         f"for {name}: {result.stderr!r}")
+                    failures.append(f"{binary} gave no bounded diagnostic "
+                                    f"for {name}: {result.stderr!r}")
+                if name.startswith("invalid-call-stack-") and \
+                        b"stack underflow" not in diagnostic:
+                    failures.append(f"{binary} gave no call-stack diagnostic "
+                                    f"for {name}: {result.stderr!r}")
                 if b"ADMISSION_MARKER" in result.stdout + result.stderr:
-                    raise AssertionError(f"{binary} executed rejected fixture {name}")
+                    failures.append(f"{binary} executed rejected fixture {name}")
+        if failures:
+            raise AssertionError("\n".join(failures))
     print("PASS: standalone ESKB admission rejects malformed operands and constant pools")
 
 
