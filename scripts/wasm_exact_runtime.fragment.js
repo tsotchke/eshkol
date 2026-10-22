@@ -17,6 +17,12 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
             fail('invalid wasm32 size or pointer', 'ESH_NUMERIC_ABI');
         return n;
     };
+    const wasm32 = x => {
+        const n = Number(x);
+        if (!Number.isSafeInteger(n) || n < -0x80000000 || n > 0xffffffff)
+            fail('invalid wasm32 size or pointer', 'ESH_NUMERIC_ABI');
+        return n >>> 0;
+    };
     const span = (p, n, alignment = 1) => {
         p = uint(p); n = uint(n);
         if (!p || p % alignment || p + n > mem().buffer.byteLength)
@@ -1040,6 +1046,17 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         new Uint8Array(mem().buffer).copyWithin(target, source, source + length);
         return dst;
     };
+    const memoryCompare = (leftValue, rightValue, lengthValue) => {
+        const left = wasm32(leftValue), right = wasm32(rightValue), length = wasm32(lengthValue);
+        if (!length) return 0;
+        span(left, length); span(right, length);
+        const bytes = new Uint8Array(mem().buffer);
+        for (let i = 0; i < length; i++) {
+            const difference = bytes[left + i] - bytes[right + i];
+            if (difference) return difference;
+        }
+        return 0;
+    };
     const memorySet = (dstValue, value, lengthValue) => {
         const dst = uint(dstValue), length = uint(lengthValue);
         if (!length) return dst;
@@ -1068,6 +1085,7 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         arena_tape_get_node_count: tapeGetNodeCount,
         eshkol_unwrap_list_index: unwrapListIndex,
         eshkol_vref_unwrap_index: vrefUnwrapIndex,
+        memcmp: memoryCompare,
         memcpy: memoryCopy,
         memmove: memoryCopy,
         memset: memorySet,

@@ -33,6 +33,13 @@ function fixture(extraData = false) {
         ...section(7,[1,...str('convert'),0,1]), ...section(10,[1,...uleb(body.length),...body]),
         ...(extraData ? section(11, [1, 0, 0x41, 0x80, 0x80, 0x80, 0x01, 0x0b, 1, 7]) : [])]);
 }
+function memcmpFixture() {
+    const types = [1, 0x60, 3, 0x7f, 0x7f, 0x7f, 1, 0x7f];
+    const imports = [1, ...str('env'), ...str('memcmp'), 0, 0];
+    const exports = [1, ...str('compare'), 0, 0];
+    return new Uint8Array([0,97,115,109,1,0,0,0,
+        ...section(1, types), ...section(2, imports), ...section(7, exports)]);
+}
 function load(file, className) {
     const context = { console, WebAssembly, TextEncoder, TextDecoder, Map, Set,
         Uint8Array, DataView, ArrayBuffer, document: { body: {} }, window: {} };
@@ -54,6 +61,26 @@ async function run(file, className) {
     assert.deepEqual(abi.eshkol_rational_floor_tagged,['arena_ptr','rational_payload_ptr','tagged_out_ptr']);
     assert.deepEqual(abi.eshkol_rational_compare_tagged_ptr,['arena_ptr','tagged_ptr','tagged_ptr','i32','tagged_out_ptr']);
     const memory = rt.memory || rt._importedMemory;
+    const memcmpWasm = await WebAssembly.instantiate(memcmpFixture(), { env });
+    const compare = memcmpWasm.instance.exports.compare;
+    const left = 9000, right = 9016;
+    new Uint8Array(memory.buffer).set([0, 255, 128, 0], left);
+    new Uint8Array(memory.buffer).set([0, 127, 255, 0], right);
+    assert.ok(compare(left, right, 4) > 0, `${file}: memcmp compares unsigned bytes after NUL`);
+    assert.ok(compare(right, left, 4) < 0, `${file}: memcmp returns the opposite sign`);
+    assert.equal(compare(left, left, 4), 0, `${file}: equal byte ranges compare equal`);
+    assert.equal(compare(-1, 0, 0), 0, `${file}: zero-length comparison does not access memory`);
+    assert.throws(() => compare(0, right, 1), /memory span/, `${file}: null range is refused`);
+    assert.throws(() => compare(memory.buffer.byteLength - 1, right, 2), /memory span/,
+        `${file}: out-of-bounds range is refused`);
+    assert.throws(() => compare(-1, right, 1), /memory span/,
+        `${file}: signed wasm32 pointer is validated as unsigned`);
+    const oldMemoryLength = memory.buffer.byteLength;
+    memory.grow(1);
+    new Uint8Array(memory.buffer).set([0x80, 0x7f], oldMemoryLength);
+    assert.ok(compare(oldMemoryLength, oldMemoryLength + 1, 1) > 0,
+        `${file}: memcmp reads the current buffer after memory growth`);
+    assert.ok(compare(oldMemoryLength + 1, oldMemoryLength, 1) < 0);
     const closure = (imports, funcPtr, packedInfo, sexprPtr, returnTypeInfo, namePtr) =>
         imports.arena_allocate_closure_with_header(1, funcPtr, packedInfo, sexprPtr, returnTypeInfo, namePtr);
     const assertClosure = (p, packedInfo, subtype, namePtr, variadic) => {

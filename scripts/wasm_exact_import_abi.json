@@ -306,6 +306,11 @@
     "tagged_ptr",
     "port_ptr"
   ],
+  "memcmp": [
+    "memory_ptr",
+    "memory_ptr",
+    "byte_count"
+  ],
   "memcpy": [
     "memory_ptr",
     "memory_ptr",
