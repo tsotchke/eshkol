@@ -9711,6 +9711,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
             PASS_REGULAR_EXPRESSION "PASS: compiler-produced tensor-literal ESKB admission and invalid-opcode rejection"
             FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
     endif()
+    if(TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+       TARGET eshkol-vm-switch-dispatch-test)
+        add_test(NAME vm_coverage_guarded_self_tail
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/coverage_guarded_self_tail_test.py
+                $<TARGET_FILE:eshkol-run>
+                $<TARGET_FILE:eshkol-vm-standalone-test>
+                $<TARGET_FILE:eshkol-vm-switch-dispatch-test>
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/coverage_guarded_self_tail_regression.esk)
+        set_tests_properties(vm_coverage_guarded_self_tail PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "PASS: guarded self-tail marker admission and runtime coverage"
+            FAIL_REGULAR_EXPRESSION "Traceback|FAIL:|invalid ESKB VM bytecode profile|fatal signal")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS)

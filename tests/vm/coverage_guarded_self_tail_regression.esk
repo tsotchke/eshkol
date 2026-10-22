@@ -1,0 +1,10 @@
+(define (coverage-guard-loop n)
+  (guard (e (else -1))
+    (if (= n 0)
+        0
+        (coverage-guard-loop (- n 1)))))
+
+(define coverage-guard-loop-alias coverage-guard-loop)
+(if (= (coverage-guard-loop-alias 12) 0)
+    (display "PASS: coverage guarded self-tail result 0\n")
+    (display "FAIL: coverage guarded self-tail result\n"))
