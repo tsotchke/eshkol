@@ -116,7 +116,7 @@ struct ImportSet {
 
 class ImportResolver {
 public:
-    void define(LibraryInterface interface);
+    void define(LibraryInterface library_interface);
     bool evaluate(const ImportSet& set, std::map<std::string, eshkol_binding_id_t>* out,
                   std::string* error = nullptr) const;
     bool merge(const std::map<std::string, eshkol_binding_id_t>& bindings,
