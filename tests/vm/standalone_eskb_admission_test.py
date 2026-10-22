@@ -57,6 +57,11 @@ def main():
             "valid": eskb(36),
             "invalid-opcode": eskb(255),
             "invalid-constant-index": eskb(1, 1),
+            # OP_VEC_CREATE (39) uses -(count + 1) for numeric tensors.
+            # Both signed extremes must fail admission before allocation;
+            # decoding INT32_MIN must also avoid signed negation overflow.
+            "invalid-vector-count-int32-max": eskb(39, (1 << 31) - 1),
+            "invalid-tensor-count-int32-min": eskb(39, -(1 << 31)),
             "truncated": eskb(36)[:-1],
         }
         paths = {}
@@ -68,7 +73,7 @@ def main():
             if valid.returncode != 0:
                 raise AssertionError(f"valid ESKB rejected by {binary}: "
                                      f"{valid.stderr.decode(errors='replace')}")
-            for name in ("invalid-opcode", "invalid-constant-index", "truncated"):
+            for name in cases.keys() - {"valid"}:
                 result = run(binary, paths[name])
                 if result.returncode <= 0:
                     raise AssertionError(f"{binary} failed unsafely on {name}: "
