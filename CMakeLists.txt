@@ -5308,6 +5308,14 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|Unhandled exception")
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        if(APPLE AND TARGET eshkol-run)
+            add_test(NAME keychain_scheme_boundary_test
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/keychain_scheme_boundary_test.py
+                        --eshkol-run $<TARGET_FILE:eshkol-run>
+                        --source-root ${CMAKE_CURRENT_SOURCE_DIR})
+            set_tests_properties(keychain_scheme_boundary_test PROPERTIES TIMEOUT 120)
+        endif()
         # Every builtin the math dispatch lowers has a Taylor recurrence, and
         # every complex kernel a carrier formula; the selftest proves the gate
         # goes red on each shape it guards.

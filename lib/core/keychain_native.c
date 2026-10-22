@@ -13,10 +13,6 @@ extern int eshkol_capability_require(const char *capability);
 #define ESHKOL_KEYCHAIN_FAILURE ((int64_t)-1)
 #define ESHKOL_KEYCHAIN_UNSUPPORTED ((int64_t)-2)
 
-static int keychain_valid_span(const void *ptr, int64_t len) {
-    return ptr != NULL && len >= 0 && len <= ESHKOL_KEYCHAIN_MAX_BYTES;
-}
-
 static int keychain_allowed(void) {
     return eshkol_capability_require("keychain") != 0;
 }
@@ -25,12 +21,17 @@ static int keychain_allowed(void) {
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/SecItem.h>
 
+static int keychain_valid_span(const void *ptr, int64_t len) {
+    return ptr != NULL && len >= 0 && len <= ESHKOL_KEYCHAIN_MAX_BYTES;
+}
+
 /* This deprecated constant is the SDK-supported way to make every SecItem
  * operation fail instead of presenting authentication UI. */
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-static CFStringRef keychain_no_ui(void) {
-    return kSecUseAuthenticationUIFail;
+static void keychain_apply_no_ui(CFMutableDictionaryRef query) {
+    CFDictionarySetValue(query, kSecUseAuthenticationUI,
+                         kSecUseAuthenticationUIFail);
 }
 #pragma clang diagnostic pop
 
@@ -52,7 +53,7 @@ static CFMutableDictionaryRef keychain_query(CFStringRef account) {
     CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
     CFDictionarySetValue(query, kSecAttrService, CFSTR("eshkol-agent"));
     CFDictionarySetValue(query, kSecAttrAccount, account);
-    CFDictionarySetValue(query, kSecUseAuthenticationUI, keychain_no_ui());
+    keychain_apply_no_ui(query);
     return query;
 }
 
