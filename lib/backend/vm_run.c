@@ -1,3 +1,5 @@
+#include "vm_integer_arithmetic.h"
+
 /* Shared i128 boxing helpers are defined by vm_native.c, which is included
  * before this interpreter in the VM unity build. */
 extern __int128 vm_unbox_i128(VM* vm, Value v);
@@ -334,7 +336,7 @@ void vm_run(VM* vm) {
         if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, 'm'); DISPATCH(); }
         if (a.type == VAL_INT && b.type == VAL_INT) {
             if (b.as.i == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; goto vm_exit; }
-            int64_t r = a.as.i % b.as.i; if (r != 0 && ((r ^ b.as.i) < 0)) r += b.as.i;
+            int64_t r = vm_i64_remainder_nonzero(a.as.i, b.as.i); if (r != 0 && ((r ^ b.as.i) < 0)) r += b.as.i;
             vm_push(vm, INT_VAL(r)); DISPATCH();
         }
         double bd = as_number_vm(vm, b);
@@ -782,7 +784,7 @@ vm_exit:
             if (vm_either_bignum(a, b)) { vm_bignum_arith(vm, a, b, 'm'); break; }
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 if (b.as.i == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; break; }
-                int64_t r = a.as.i % b.as.i; if (r != 0 && ((r ^ b.as.i) < 0)) r += b.as.i;
+                int64_t r = vm_i64_remainder_nonzero(a.as.i, b.as.i); if (r != 0 && ((r ^ b.as.i) < 0)) r += b.as.i;
                 vm_push(vm, INT_VAL(r)); break;
             }
             double bd = as_number_vm(vm, b);

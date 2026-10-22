@@ -14947,6 +14947,17 @@ if(ESHKOL_BUILD_TESTS)
         TIMEOUT 30 LABELS "vm;memory;regression")
 endif()
 
+if(ESHKOL_BUILD_TESTS)
+    add_executable(vm_integer_arithmetic_test tests/vm/vm_integer_arithmetic_test.c)
+    target_include_directories(vm_integer_arithmetic_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend)
+    add_test(NAME vm_integer_remainder_boundaries COMMAND vm_integer_arithmetic_test)
+    set_tests_properties(vm_integer_remainder_boundaries PROPERTIES
+        TIMEOUT 30 LABELS "vm;numeric;regression"
+        PASS_REGULAR_EXPRESSION "PASS: VM integer remainder boundaries")
+endif()
+
+
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
     add_test(NAME named_let_tco_control_flow COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/named_let_tco_control_flow_test.py

@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "vm_integer_arithmetic.h"
 #include "../core/model_io_atomic.h"
 #include "../core/tensor_observation.h"
 #include "../core/value_type_names.h"
@@ -10368,7 +10369,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * raises "division by zero" for both (modulo 1 0) and (modulo 1 0.0). */
         if (ib==0){ fprintf(stderr, "MODULO BY ZERO\n"); vm->error=1; break; }
         if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
-        int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
+        int64_t r=vm_i64_remainder_nonzero(ia, ib); if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "remainder") ||
                     vm_ad_reject_untraced_input(vm, vm->sp - 1, "remainder")) break;
@@ -10388,7 +10389,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
         if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
-        vm_push(vm, INT_VAL(ia%ib)); break; }
+        vm_push(vm, INT_VAL(vm_i64_remainder_nonzero(ia, ib))); break; }
     case 38: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "quotient") ||
                     vm_ad_reject_untraced_input(vm, vm->sp - 1, "quotient")) break;
         Value b = vm_pop(vm); Value a = vm_pop(vm);
@@ -10457,7 +10458,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_bignum_arith(vm, a, b, 'q');
             break;
         }
-        int64_t q = ia / ib, r = ia % ib;
+        int64_t q = ia / ib, r = vm_i64_remainder_nonzero(ia, ib);
         if (r != 0 && ((ia < 0) != (ib < 0))) q -= 1;
         vm_push(vm, INT_VAL(q));
         break;
