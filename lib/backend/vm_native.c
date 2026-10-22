@@ -13453,7 +13453,7 @@ tensor_inverse_done:
         Value ch = vm_pop(vm), idx = vm_pop(vm), s_val = vm_pop(vm);
         if (!vm_require_container(vm, s_val, VM_CONTAINER_STRING, "string-set!", "a string")) break;
         if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
+            VmString* s = vm_value_as_string(vm, s_val);
             VmString* result = vm_string_set(&vm->heap.regions, s, (int)as_number(idx), (int)as_number(ch));
             if (result) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, result); }
             else vm_push(vm, NIL_VAL);
@@ -18396,34 +18396,61 @@ tensor_inverse_done:
     case 908: { /* string-split(str, delim) */
         Value d_val = vm_pop(vm), s_val = vm_pop(vm);
         Value result = NIL_VAL;
-        if (s_val.type == VAL_STRING && d_val.type == VAL_STRING) {
+        if (s_val.type == VAL_STRING &&
+            (d_val.type == VAL_STRING || d_val.type == VAL_CHAR)) {
             VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            VmString* d = (VmString*)vm->heap.objects[d_val.as.ptr]->opaque.ptr;
-            if (s && d && d->byte_len > 0) {
-                const char* p = s->data; int slen = s->byte_len, dlen = d->byte_len;
-                while (1) {
-                    const char* found = (slen >= dlen) ? strstr(p, d->data) : NULL;
-                    int seg_len = found ? (int)(found - p) : (int)(s->data + slen - p);
-                    VmString* seg = vm_string_new(&vm->heap.regions, p, seg_len);
-                    if (seg) { int32_t sp2 = heap_alloc(&vm->heap); if (sp2 >= 0) {
-                        vm->heap.objects[sp2]->type = HEAP_STRING; vm->heap.objects[sp2]->opaque.ptr = seg;
-                        int32_t cp2 = heap_alloc(&vm->heap); if (cp2 >= 0) {
-                            vm->heap.objects[cp2]->type = HEAP_CONS;
-                            vm->heap.objects[cp2]->cons.car = (Value){.type = VAL_STRING, .as.ptr = sp2};
-                            vm->heap.objects[cp2]->cons.cdr = result; result = PAIR_VAL(cp2); } } }
-                    if (!found) break;
-                    p = found + dlen;
+            VmString* d = vm_value_as_string_or_char(vm, d_val);
+            if (s && d) {
+                int slen = s->byte_len, dlen = d->byte_len;
+                int failed = 0;
+                int pos = 0;
+                /* The empty delimiter follows the native string-split rule:
+                 * return one element containing the original string. */
+                if (dlen == 0) pos = slen;
+                while (!failed) {
+                    int found = -1;
+                    if (dlen > 0 && pos <= slen - dlen) {
+                        for (int i = pos; i <= slen - dlen; ++i) {
+                            if (memcmp(s->data + i, d->data, (size_t)dlen) == 0) {
+                                found = i;
+                                break;
+                            }
+                        }
+                    }
+                    int end = found >= 0 ? found : slen;
+                    VmString* seg = vm_string_new(&vm->heap.regions,
+                                                   s->data + pos, end - pos);
+                    int32_t sp2 = seg ? heap_alloc(&vm->heap) : -1;
+                    int32_t cp2 = sp2 >= 0 ? heap_alloc(&vm->heap) : -1;
+                    if (!seg || sp2 < 0 || cp2 < 0) {
+                        failed = 1;
+                        break;
+                    }
+                    vm->heap.objects[sp2]->type = HEAP_STRING;
+                    vm->heap.objects[sp2]->opaque.ptr = seg;
+                    vm->heap.objects[cp2]->type = HEAP_CONS;
+                    vm->heap.objects[cp2]->cons.car =
+                        (Value){.type = VAL_STRING, .as.ptr = sp2};
+                    vm->heap.objects[cp2]->cons.cdr = result;
+                    result = PAIR_VAL(cp2);
+                    if (found < 0 || dlen == 0) break;
+                    pos = found + dlen;
+                }
+                if (failed) {
+                    vm_push(vm, NIL_VAL);
+                    break;
                 }
                 /* reverse */
                 Value rev2 = NIL_VAL;
                 while (result.type == VAL_PAIR) {
                     Value car2 = vm->heap.objects[result.as.ptr]->cons.car;
-                    int32_t rp2 = heap_alloc(&vm->heap); if (rp2 < 0) break;
+                    int32_t rp2 = heap_alloc(&vm->heap);
+                    if (rp2 < 0) { failed = 1; break; }
                     vm->heap.objects[rp2]->type = HEAP_CONS;
                     vm->heap.objects[rp2]->cons.car = car2; vm->heap.objects[rp2]->cons.cdr = rev2;
                     rev2 = PAIR_VAL(rp2); result = vm->heap.objects[result.as.ptr]->cons.cdr;
                 }
-                vm_push(vm, rev2); break;
+                vm_push(vm, failed ? NIL_VAL : rev2); break;
             }
         }
         vm_push(vm, NIL_VAL); break; }
