@@ -904,10 +904,9 @@ The docs-only predicate above answers one narrow question — "does this
 touch only documentation" — but plenty of PRs are just as inert to the
 build and test suite without touching `docs/`. Two examples that shipped
 before this classifier existed: #624 touched only
-`lib/backend/eshkol_compiler.c`, a file `CMakeLists.txt` explicitly
-excludes from the source list it compiles (kept as a reference-only
-standalone program); #618 and #619 each touched a single test shell
-script. All three ran the full 25-job cross-platform matrix anyway,
+`lib/backend/eshkol_compiler.c`, the standalone hosted compiler source that
+was already excluded from build inputs and has since been retired; #618 and #619
+each touched a single test shell script. All three ran the full 25-job cross-platform matrix anyway,
 because nothing in `changes` could tell a build-irrelevant source edit
 from a real one.
 

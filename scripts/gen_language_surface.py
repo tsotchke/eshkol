@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """gen_language_surface.py — extract the COMPLETE Eshkol language surface.
 
-Ground truth for TOTAL-LANGUAGE exposure-engine coverage. Parses the compiler
-and VM source directly (no hand-maintained list to drift) and emits a single
+Ground truth for TOTAL-LANGUAGE exposure-engine coverage. Parses production
+VM, LLVM dispatch, parser, and library sources directly and emits a single
 machine-readable manifest describing every construct a program can invoke:
 
-  * BUILTINS      — the native name->(id,arity) dispatch tables registered by
-                    the LLVM/native backend (lib/backend/eshkol_compiler.c) and
-                    the bytecode VM (lib/backend/eshkol_vm.c). Each entry records
-                    which backend(s) register it, and — where the source row is
+  * BUILTINS      — the VM name->(id,arity) registration table is the sole
+                    core ID/arity authority. LLVM dispatch names remain separate
+                    source evidence and make no ABI claim. Each entry records
+                    VM registration and LLVM name evidence, and — where the source row is
                     annotated `/* mirrors: <public name> */` — the public
                     construct the row is one engine's private spelling of
                     (`mirrors`).
@@ -16,8 +16,9 @@ machine-readable manifest describing every construct a program can invoke:
                     than a call (lib/frontend/parser.cpp get_operator_type plus
                     the directly-dispatched forms begin/define-library/delay/...),
                     keyed to their eshkol_op_t (inc/eshkol/eshkol.h).
-  * PRELUDE       — higher-order library functions defined in the Scheme prelude
-                    compiled into every program (map/filter/fold-*/for-each/...).
+  * PRELUDE       — VM bootstrap, root stdlib definitions and direct stdlib
+                    imports, with recursive dependency exports labeled only
+                    as closure-presence evidence unless re-exported.
 
 Every entry is categorised by a risk/kind bucket that drives exposure-engine
 prioritisation (numeric, list_pair, vector, string_char, control_flow,
@@ -37,7 +38,6 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-COMPILER_C = os.path.join(REPO, "lib", "backend", "eshkol_compiler.c")
 VM_C = os.path.join(REPO, "lib", "backend", "eshkol_vm.c")
 LLVM_CPP = os.path.join(REPO, "lib", "backend", "llvm_codegen.cpp")
 PARSER = os.path.join(REPO, "lib", "frontend", "parser.cpp")
@@ -276,21 +276,353 @@ def extract_special_forms():
     return forms
 
 
-# --- prelude higher-order library functions (compiled into every program) ----
-def extract_prelude_defs():
-    names = set()
-    for path in (COMPILER_C,):
+# --- canonical stdlib module closure ---------------------------------------
+STDLIB = os.path.join(REPO, "lib", "stdlib.esk")
+
+
+def _scheme_tokens(text):
+    """Tokenize the source forms needed by the stdlib surface reader.
+
+    Strings are opaque tokens, and both line and nested block comments are
+    skipped. This deliberately avoids regex scans that promote quoted text,
+    comments, or a local define into a public top-level binding.
+    """
+    tokens = []
+    i = 0
+    line = 1
+    while i < len(text):
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if c.isspace():
+            if c == "\n": line += 1
+            i += 1
+        elif c == ";":
+            while i < len(text) and text[i] != "\n": i += 1
+        elif c == "#" and nxt == ";":
+            tokens.append(("datum-comment", "#;", line)); i += 2
+        elif c == "#" and nxt == "|":
+            i += 2
+            depth = 1
+            while i < len(text) and depth:
+                if text.startswith("#|", i): depth += 1; i += 2
+                elif text.startswith("|#", i): depth -= 1; i += 2
+                else:
+                    if text[i] == "\n": line += 1
+                    i += 1
+            if depth:
+                raise ValueError("unterminated Scheme block comment")
+        elif c == '"':
+            start_line = line
+            i += 1
+            value = []
+            while i < len(text) and text[i] != '"':
+                if text[i] == "\\" and i + 1 < len(text):
+                    value.extend((text[i], text[i + 1]))
+                    if text[i + 1] == "\n": line += 1
+                    i += 2
+                else:
+                    if text[i] == "\n": line += 1
+                    value.append(text[i]); i += 1
+            if i >= len(text):
+                raise ValueError("unterminated Scheme string")
+            i += 1
+            tokens.append(("string", "".join(value), start_line))
+        elif text.startswith("#\\", i):
+            start_line = line
+            start = i
+            i += 2
+            if i < len(text) and text[i] in "()'`,;\"":
+                i += 1
+            else:
+                while i < len(text) and not text[i].isspace() and text[i] not in "()'`,;\"":
+                    i += 1
+            tokens.append(("symbol", text[start:i], start_line))
+        elif c in "()":
+            tokens.append((c, c, line)); i += 1
+        elif c in "'`,":
+            start_line = line
+            if c == "," and nxt == "@":
+                tokens.append(("prefix", ",@", line)); i += 2
+            else:
+                tokens.append(("prefix", c, line)); i += 1
+        elif c == "|":
+            start_line = line
+            i += 1
+            value = ["|"]
+            closed = False
+            while i < len(text):
+                value.append(text[i])
+                if text[i] == "\\" and i + 1 < len(text):
+                    i += 1; value.append(text[i])
+                elif text[i] == "|":
+                    i += 1; closed = True; break
+                i += 1
+            if not closed:
+                raise ValueError("unterminated escaped Scheme symbol at line %d" % start_line)
+            tokens.append(("symbol", "".join(value), start_line))
+        else:
+            start = i
+            start_line = line
+            while i < len(text) and not text[i].isspace() and text[i] not in "()'`,;\"":
+                if text.startswith("#|", i): break
+                i += 1
+            if i == start:
+                tokens.append(("symbol", text[i], line)); i += 1
+            else:
+                tokens.append(("symbol", text[start:i], start_line))
+    return tokens
+
+
+def parse_scheme_forms(text):
+    """Parse balanced Scheme list structure, retaining atom kinds and lines."""
+    tokens = _scheme_tokens(text)
+    cursor = 0
+
+    def skip_datum_comments():
+        nonlocal cursor
+        while cursor < len(tokens) and tokens[cursor][0] == "datum-comment":
+            _, _, line = tokens[cursor]
+            cursor += 1
+            # A nested #; is itself interlexeme trivia: it comments out its
+            # datum, then the outer comment still consumes the next datum.
+            skip_datum_comments()
+            if cursor >= len(tokens) or tokens[cursor][0] == ")":
+                raise ValueError("datum comment at line %d has no datum" % line)
+            parse_raw()
+
+    def parse_next():
+        nonlocal cursor
+        skip_datum_comments()
+        if cursor >= len(tokens):
+            return None
+        return parse_raw()
+
+    def parse_raw():
+        nonlocal cursor
+        if cursor >= len(tokens):
+            raise ValueError("unexpected end of Scheme source")
+        kind, value, line = tokens[cursor]
+        cursor += 1
+        if kind == "(":
+            result = []
+            while True:
+                skip_datum_comments()
+                if cursor >= len(tokens):
+                    raise ValueError("unclosed Scheme list at line %d" % line)
+                if tokens[cursor][0] == ")":
+                    break
+                result.append(parse_raw())
+            if cursor >= len(tokens):
+                raise ValueError("unclosed Scheme list at line %d" % line)
+            cursor += 1
+            return ("list", result, line)
+        if kind == ")":
+            raise ValueError("unexpected ) at line %d" % line)
+        if kind == "prefix":
+            prefix = {"'": "quote", "`": "quasiquote", ",": "unquote",
+                      ",@": "unquote-splicing"}[value]
+            datum = parse_next()
+            if datum is None:
+                raise ValueError("prefix %s at line %d has no datum" % (value, line))
+            return ("list", [("symbol", prefix, line), datum], line)
+        return (kind, value, line)
+
+    forms = []
+    while cursor < len(tokens):
+        form = parse_next()
+        if form is not None:
+            forms.append(form)
+    return forms
+
+
+def _scheme_list(form):
+    return form[1] if isinstance(form, tuple) and form[0] == "list" else None
+
+
+def _scheme_symbol(form):
+    return form[1] if isinstance(form, tuple) and form[0] == "symbol" else None
+
+
+def _top_level_definition(form):
+    items = _scheme_list(form)
+    if not items or _scheme_symbol(items[0]) not in {
+            "define", "define-syntax", "define-macro", "define-values"}:
+        return []
+    if len(items) < 2:
+        return []
+    if _scheme_symbol(items[0]) == "define-values":
+        target = _scheme_list(items[1])
+        return [(name, items[1][2]) for name in
+                (_scheme_symbol(x) for x in target or []) if name]
+    target = _scheme_list(items[1])
+    if target:
+        name = _scheme_symbol(target[0])
+        return [(name, form[2])] if name else []
+    name = _scheme_symbol(items[1])
+    return [(name, items[1][2])] if name else []
+
+
+def _top_level_exports(form):
+    items = _scheme_list(form)
+    if not items or _scheme_symbol(items[0]) != "provide":
+        return []
+    names = []
+    for item in items[1:]:
+        parts = _scheme_list(item)
+        if parts:
+            raise ValueError("nested provide specifier at line %d is unsupported "
+                             "by the production stdlib surface reader" % item[2])
+        name = _scheme_symbol(item)
+        if not name:
+            raise ValueError("non-symbol provide entry at line %d is unsupported" % item[2])
+        names.append((name, item[2]))
+    return names
+
+
+def _require_module_names(form):
+    items = _scheme_list(form)
+    if not items or _scheme_symbol(items[0]) != "require":
+        return []
+    names = []
+
+    for item in items[1:]:
+        symbol = _scheme_symbol(item)
+        if not symbol:
+            raise ValueError("non-symbol require specifier at line %d is unsupported "
+                             "by the production stdlib surface reader" % item[2])
+        names.append((symbol, item[2]))
+    return names
+
+
+def extract_stdlib_surface(repo=REPO):
+    """Return public names and exact top-level provenance for stdlib closure.
+
+    The native stdlib surface is `lib/stdlib.esk`'s top-level definitions plus
+    exports from modules it directly requires. Recursively required module
+    exports are retained as closure-presence evidence, but are not promoted to
+    root stdlib availability unless a directly required module re-exports them.
+    Module-local definitions remain provenance, not public names. The current
+    production closure uses simple symbol `require` and flat symbol `provide`
+    forms; import modifiers and export renaming fail closed until their
+    visibility mapping is modeled explicitly.
+    """
+    lib_root = os.path.join(repo, "lib")
+    root_path = os.path.join(lib_root, "stdlib.esk")
+    modules = {}
+    requiring = {}
+
+    def resolve(module):
+        if module == "stdlib": return root_path
+        relative = module.replace(".", os.sep) + ".esk"
+        return os.path.join(lib_root, relative)
+
+    pending = [("stdlib", root_path, "<entry>")]
+    while pending:
+        module, path, parent = pending.pop()
+        if module in modules:
+            requiring[module].add(parent)
+            continue
+        if not os.path.isfile(path):
+            raise ValueError("stdlib require %r from %s has no source at %s" %
+                             (module, parent, os.path.relpath(path, repo)))
         with open(path, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-        # only the scheme_prelude string literal region
-        m = re.search(r"scheme_prelude\s*=(.*?);\n", text, re.S)
-        region = m.group(1) if m else text
-        for name in re.findall(r'\(define \(([a-zA-Z][a-zA-Z0-9!?*/<>=._+-]*)', region):
-            names.add(name)
-    # canonical R7RS higher-order names that must be reachable
-    names.update({"map", "filter", "fold-left", "fold-right", "for-each",
-                  "reduce", "compose", "any", "every", "find", "take", "drop"})
-    return sorted(names)
+            source = fh.read()
+        try:
+            forms = parse_scheme_forms(source)
+        except ValueError as exc:
+            raise ValueError("cannot read production module %s: %s" %
+                             (os.path.relpath(path, repo), exc)) from exc
+        defs = {}
+        exports = {}
+        requires = []
+        try:
+            for form in forms:
+                for name, line in _top_level_definition(form):
+                    defs.setdefault(name, line)
+                for name, line in _top_level_exports(form):
+                    exports.setdefault(name, line)
+                requires.extend(_require_module_names(form))
+        except ValueError as exc:
+            raise ValueError("unsupported stdlib surface in %s: %s" %
+                             (os.path.relpath(path, repo), exc)) from exc
+        modules[module] = {"path": os.path.relpath(path, repo),
+                           "definitions": defs, "exports": exports,
+                           "requires": []}
+        requiring.setdefault(module, set()).add(parent)
+        for required, line in requires:
+            child_path = resolve(required)
+            modules[module]["requires"].append({"module": required, "line": line})
+            requiring.setdefault(required, set()).add(module)
+            if required not in modules:
+                pending.append((required, child_path, module))
+
+    def definition_origin(module, name, seen=None):
+        seen = set() if seen is None else set(seen)
+        if module in seen:
+            return None
+        seen.add(module)
+        record = modules[module]
+        if name in record["definitions"]:
+            return {"module": module, "path": record["path"],
+                    "line": record["definitions"][name], "chain": [module]}
+        candidates = [required["module"] for required in record["requires"]
+                      if required["module"] in modules and
+                      name in modules[required["module"]]["exports"]]
+        if len(candidates) > 1:
+            raise ValueError("ambiguous re-export %r in %s from %s" %
+                             (name, module, ", ".join(candidates)))
+        if candidates:
+            child = candidates[0]
+            origin = definition_origin(child, name, seen)
+            if origin:
+                return {**origin, "chain": [module] + origin["chain"]}
+        return None
+
+    root_requires = {item["module"] for item in modules["stdlib"]["requires"]}
+    names = {}
+    # Direct definitions in the root stdlib source are prelude definitions.
+    for name, line in modules["stdlib"]["definitions"].items():
+        names.setdefault(name, []).append({"kind": "stdlib_root_definition",
+                                           "module": "stdlib",
+                                           "path": modules["stdlib"]["path"],
+                                           "line": line})
+    closure_names = {}
+    for module, record in modules.items():
+        if module == "stdlib": continue
+        for name, line in record["exports"].items():
+            origin = definition_origin(module, name)
+            evidence = {
+                "kind": "module_export", "module": module,
+                "path": record["path"], "line": line,
+                "defined_at_top_level": name in record["definitions"],
+                "definition_line": record["definitions"].get(name),
+                "definition_origin": origin,
+                "visibility": ("stdlib_root_required_export" if module in root_requires
+                               else "closure_export_presence"),
+            }
+            closure_names.setdefault(name, []).append(evidence)
+            if module in root_requires:
+                names.setdefault(name, []).append(evidence)
+
+    closure = []
+    for module, record in sorted(modules.items()):
+        closure.append({
+            "module": module,
+            "path": record["path"],
+            "required_by": sorted(requiring[module]),
+            "stdlib_visibility": ("stdlib_root_required_module" if module in root_requires
+                                 else "closure_presence_only" if module != "stdlib"
+                                 else "stdlib_root"),
+            "requires": record["requires"],
+            "exports": [{"name": name, "line": line,
+                         "definition_line": record["definitions"].get(name),
+                         "definition_origin": definition_origin(module, name)}
+                        for name, line in sorted(record["exports"].items())],
+            "top_level_definitions": [{"name": name, "line": line}
+                                      for name, line in sorted(record["definitions"].items())],
+        })
+    return {"names": names, "closure_names": closure_names,
+            "root_requires": sorted(root_requires), "modules": closure}
 
 
 # --- the bytecode VM's own prelude (lib/backend/vm_prelude_source.h) --------
@@ -583,14 +915,14 @@ def categorize(name):
 
 
 def build_manifest():
-    comp = extract_builtin_table(COMPILER_C)
     vm = extract_builtin_table(VM_C)
-    mirrors = dict(extract_mirror_annotations(COMPILER_C))
-    mirrors.update(extract_mirror_annotations(VM_C))
+    mirrors = extract_mirror_annotations(VM_C)
     aot = extract_llvm_dispatch()
     ops = extract_ast_ops()
     forms = extract_special_forms()
-    prelude = extract_prelude_defs()
+    stdlib_surface = extract_stdlib_surface()
+    stdlib = stdlib_surface["names"]
+    stdlib_closure = stdlib_surface["closure_names"]
     vm_prelude = extract_vm_prelude_defs()
 
     # AOT-dispatched names that are also declared special forms are syntax, not
@@ -598,7 +930,7 @@ def build_manifest():
     form_names = set(forms)
     aot_builtins = {n for n in aot if n not in form_names}
 
-    raw_names = sorted(set(comp) | set(vm) | aot_builtins)
+    raw_names = sorted(set(vm) | aot_builtins)
 
     # Fold ALIASES into their canonical spelling before assigning one
     # language-surface record per construct: an alternate spelling for the
@@ -616,24 +948,19 @@ def build_manifest():
     builtins = []
     for name in names:
         member_names = [name] + aliases_by_canonical.get(name, [])
-        in_c = any(m in comp for m in member_names)
         in_v = any(m in vm or m in vm_prelude for m in member_names)
         in_a = any(m in aot_builtins for m in member_names)
-        ids = sorted(set().union(*(set(comp.get(m, {}).get("ids", []))
-                                   for m in member_names),
-                                 *(set(vm.get(m, {}).get("ids", []))
+        ids = sorted(set().union(*(set(vm.get(m, {}).get("ids", []))
                                    for m in member_names)))
         arity = None
         minimum = None
         for m in member_names:
-            source = comp.get(m, vm.get(m, {}))
+            source = vm.get(m, {})
             arity = source.get("arity")
             if arity is not None:
                 minimum = vm.get(m, {}).get("min_arity", arity)
                 break
         backends = []
-        if in_c:
-            backends.append("native")
         if in_v:
             backends.append("vm")
         if in_a:
@@ -653,16 +980,8 @@ def build_manifest():
             entry["aliases"] = sorted(aliases_by_canonical[name])
         mirror = next((mirrors[m] for m in member_names if m in mirrors), None)
         if mirror is not None:
-            # A `mirrors:` row stands in for a public name the OTHER engine
-            # reaches by a different vehicle. Once the row is registered on
-            # both engines it is an ordinary construct and the annotation is
-            # dead weight that would go on excusing a future asymmetry, so a
-            # redundant one is an error rather than a no-op.
-            if "native" in backends or "native_llvm" in backends:
-                raise ValueError(
-                    "builtin %r carries a mirrors: annotation but is already "
-                    "registered natively (%s) — drop the annotation"
-                    % (name, "+".join(backends)))
+            # Keep the source relationship even when the spelling is VM-backed;
+            # LLVM name evidence does not make the mirror redundant.
             entry["mirrors"] = mirror
         builtins.append(entry)
 
@@ -700,24 +1019,40 @@ def build_manifest():
 
     prelude_entries = []
     builtin_names = set(names)
-    for name in prelude:
+    for name in sorted(set(vm_prelude) | set(stdlib) | set(stdlib_closure)):
+        sources = []
+        if name in vm_prelude:
+            sources.append("vm_bootstrap")
+        if name in stdlib:
+            sources.append("stdlib")
+        elif name in stdlib_closure:
+            sources.append("stdlib_closure_presence")
         prelude_entries.append({
             "name": name,
             "category": categorize(name),
             "also_builtin": name in builtin_names,
+            "sources": sources,
+            "provenance": stdlib.get(name, []) + stdlib_closure.get(name, []),
         })
 
     manifest = {
         "_meta": {
+            "schema_version": 3,
+            "evidence_provenance": ("generated from live production sources; "
+                                    "legacy compiler references are frozen separately"),
             "description": "Complete Eshkol language surface (ground truth for "
                            "exposure-engine coverage).",
             "sources": {
-                "native_builtins": "lib/backend/eshkol_compiler.c BUILTINS[]",
-                "vm_builtins": "lib/backend/eshkol_vm.c BUILTINS[]",
+                "vm_builtins": "lib/backend/eshkol_vm.c BUILTINS[] (sole core ids/arity authority)",
+                "native_llvm": "lib/backend/llvm_codegen.cpp dispatch names only; no ids/arity/ABI claim",
                 "ast_ops": "inc/eshkol/eshkol.h eshkol_op_t",
                 "special_forms": "lib/frontend/parser.cpp get_operator_type + "
                                  "direct dispatch",
-                "prelude": "lib/backend/eshkol_compiler.c scheme_prelude",
+                "vm_bootstrap": "lib/backend/vm_prelude_source.h",
+                "stdlib": "top-level definitions in lib/stdlib.esk plus exports from modules it directly requires",
+                "stdlib_closure_presence": "exports in recursive dependencies, retained as source evidence but not promoted to root stdlib availability without a direct re-export",
+                "stdlib_direct_requires": stdlib_surface["root_requires"],
+                "stdlib_module_closure": stdlib_surface["modules"],
                 "mirrors": "BUILTINS[] rows annotated `/* mirrors: <public "
                            "name> */` — this row is one engine's private "
                            "spelling (arity split, or lower-level handle "
@@ -730,8 +1065,6 @@ def build_manifest():
         },
         "counts": {
             "builtins_total": len(builtins),
-            "builtins_in_native_closure_table": sum(1 for b in builtins
-                                                    if "native" in b["backends"]),
             "builtins_in_vm_table": sum(1 for b in builtins
                                         if "vm" in b["backends"]),
             "builtins_in_llvm_aot_dispatch": sum(1 for b in builtins
@@ -805,9 +1138,8 @@ def main():
         fh.write(rendered)
     c = manifest["counts"]
     print("Wrote %s" % args.out)
-    print("  builtins: %d (native-closure %d, vm %d, llvm-aot %d, aot-only %d)"
-          % (c["builtins_total"], c["builtins_in_native_closure_table"],
-             c["builtins_in_vm_table"], c["builtins_in_llvm_aot_dispatch"],
+    print("  builtins: %d (vm %d, llvm-aot %d, aot-only %d)"
+          % (c["builtins_total"], c["builtins_in_vm_table"], c["builtins_in_llvm_aot_dispatch"],
              c["builtins_aot_only"]))
     print("  special forms: %d   ast ops: %d   prelude: %d"
           % (c["special_forms"], c["ast_ops"], c["prelude"]))

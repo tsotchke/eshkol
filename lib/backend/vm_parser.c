@@ -1,6 +1,6 @@
 /*******************************************************************************
  * Eshkol Source Compiler (parser + bytecode generator)
- * Merged from eshkol_compiler.c — single interpreter, one dispatch table.
+ * Historical parser code retained in the VM backend; the retired standalone compiler is not a live source.
  ******************************************************************************/
 
 #include "eshkol/backend/vm_limits.h"

@@ -38,7 +38,7 @@
 <li>The VM expands each form when the compiler reaches it, in that form’s scope.</li>
 <li>The native expander gives every lexical binder a fresh spelling, <code>_v&lt;n&gt;.&lt;name&gt;</code>, so a colored free identifier can reach a definition-site local that a caller’s binding of the same name would otherwise shadow. That spelling is an implementation name and never reaches a user: <code>syntax_color.h</code> owns the format in both directions, and every checker diagnostic, every diagnostic record and the source form of a procedure (<code>(display (lambda (x) x))</code>) names identifiers as they were written. Identifiers of the form <code>_v&lt;n&gt;.&lt;name&gt;</code> are reserved for the expander.</li>
 <li>A builtin the parser lowers to its own operation node (<code>walk</code>, <code>unify</code>, <code>make-fact</code>, …; <code>shadowable_ops.h</code>) is an ordinary call of a local binder of the same name in that binder’s scope. The expander, which owns lexical scope, rewrites the node; after renaming no later pass could see the shadow. Codegen resolves only top-level and REPL-batch definitions of those names, from the same table.</li>
-<li>The legacy standalone <code>lib/backend/eshkol_compiler.c</code>, which no build target compiles, is not maintained against this change.</li>
+<li>The standalone hosted compiler <code>lib/backend/eshkol_compiler.c</code> was a reference-only snapshot and has since been removed; production compilation uses the VM and LLVM paths.</li>
 </ul>
 <h2 id="verification">Verification</h2>
 <ul>

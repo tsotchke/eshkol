@@ -6,8 +6,9 @@
 #
 # Every builtin the compiler registers (per
 # tests/coverage/language_surface.json's builtins[] array, itself derived
-# from lib/backend/eshkol_compiler.c BUILTINS[], lib/backend/eshkol_vm.c
-# BUILTINS[], and the quantum/PQC agent-module surface — see
+# from lib/backend/eshkol_vm.c BUILTINS[] (core ID/arity source),
+# lib/backend/llvm_codegen.cpp dispatch names, and the quantum/PQC
+# agent-module surface — see
 # scripts/gen_language_surface.py) gets exactly one of the three labels
 # docs/design/ESHKOL_S_FRAGMENT.md defines: device, host,
 # host-with-device-inner. scripts/check_builtin_classification.py enforces
@@ -16,11 +17,11 @@ version: 1
 source_registry: tests/coverage/language_surface.json
 generator: scripts/gen_builtin_classification.py
 labels: [device, host, host-with-device-inner]
-builtin_count: 1058
+builtin_count: 1057
 counts_by_label:
   device: 233
   host: 816
-  host-with-device-inner: 9
+  host-with-device-inner: 8
 builtins:
   "%":
     label: device
@@ -76,6 +77,9 @@ builtins:
   "_atan2":
     label: host
     rationale: "VM-internal arity variant of a prelude builtin; the prelude form is the device entry (atan, min, max)."
+  "_bytevector-from-list":
+    label: host
+    rationale: "Category 'vector' defaults to host; see docs/design/ESHKOL_S_FRAGMENT.md."
   "_display2":
     label: host
     rationale: "VM display helper (eshkol_vm.c mirrors display); performs host I/O."
@@ -1727,12 +1731,6 @@ builtins:
   "make-event-loop":
     label: host
     rationale: "OS/thread/process/file/network/crypto/timing/quantum-hardware FFI; performs I/O or manages host-only resources, excluded by the purity condition and/or the value domain. See docs/design/ESHKOL_S_FRAGMENT.md conditions 1 and 4."
-  "make-fact":
-    label: host
-    rationale: "Operates on a consciousness-engine value (knowledge base, factor graph, workspace, substitution), excluded from the Eshkol-S value domain by name. See docs/design/ESHKOL_S_FRAGMENT.md condition 1."
-  "make-factor-graph":
-    label: host
-    rationale: "Operates on a consciousness-engine value (knowledge base, factor graph, workspace, substitution), excluded from the Eshkol-S value domain by name. See docs/design/ESHKOL_S_FRAGMENT.md condition 1."
   "make-h2-hamiltonian":
     label: host
     rationale: "OS/thread/process/file/network/crypto/timing/quantum-hardware FFI; performs I/O or manages host-only resources, excluded by the purity condition and/or the value domain. See docs/design/ESHKOL_S_FRAGMENT.md conditions 1 and 4."
@@ -1757,6 +1755,9 @@ builtins:
   "make-line-reader":
     label: host
     rationale: "OS/thread/process/file/network/crypto/timing/quantum-hardware FFI; performs I/O or manages host-only resources, excluded by the purity condition and/or the value domain. See docs/design/ESHKOL_S_FRAGMENT.md conditions 1 and 4."
+  "make-logic-var":
+    label: host
+    rationale: "Host runtime helper (arbitrary-precision i128 arithmetic, parameter/fluid-binding machinery, symbol generation, or consciousness-object construction) with no StableHLO representation. See docs/design/ESHKOL_S_FRAGMENT.md 'What is host-only, and why'."
   "make-lru-cache":
     label: host
     rationale: "OS/thread/process/file/network/crypto/timing/quantum-hardware FFI; performs I/O or manages host-only resources, excluded by the purity condition and/or the value domain. See docs/design/ESHKOL_S_FRAGMENT.md conditions 1 and 4."
@@ -2458,10 +2459,6 @@ builtins:
   "softplus":
     label: device
     rationale: "Pure tensor-in tensor-out computation (elementwise op, reduction, dot_general-shaped contraction, or structural reshape/transpose/pad/slice/concatenate) with a direct StableHLO op or a standard decomposition (e.g. softmax/layer-norm/attention decompose into elementwise + reduction + dot_general ops already on this list). See docs/design/ESHKOL_S_FRAGMENT.md condition 5."
-  "sort":
-    label: host-with-device-inner
-    rationale: "Host-side traversal or dispatch (walks a list, or dispatches dynamically) whose argument procedure's body may itself be a device region when that body is in Eshkol-S. See docs/design/ESHKOL_S_FRAGMENT.md, 'Three labels for every builtin'."
-    inner_op: "the argument procedure's body, when that body is itself in Eshkol-S"
   "spherical-exp":
     label: device
     rationale: "Riemannian/hyperbolic/spherical/Euclidean manifold computation over tensor-valued points and tangent vectors; decomposes into device-eligible tensor arithmetic (matmul, elementwise transcendentals, reductions). See docs/design/ESHKOL_S_FRAGMENT.md condition 5 and the campaign's S2 geometric-parity target."

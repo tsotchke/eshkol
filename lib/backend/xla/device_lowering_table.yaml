@@ -52,10 +52,9 @@
 #   the language, and a row that cannot get a reference is reported uncovered
 #   rather than given a hand-written expected value.
 #
-#   sign — a real registry builtin ({"sign", 743, 1} in lib/backend/eshkol_vm.c
-#   and lib/backend/eshkol_compiler.c) but implemented ONLY as a VM bytecode
-#   special form (lib/backend/eshkol_compiler.c:3428, emitting
-#   OP_NATIVE_CALL 743). The native/LLVM backend has no `sign` at all — the
+#   sign — a real VM builtin ({"sign", 743, 1} in lib/backend/eshkol_vm.c),
+#   implemented by the VM native-call handler. The production native/LLVM
+#   backend has no `sign` dispatch at all — the
 #   string does not appear in llvm_codegen.cpp or any *_codegen.cpp — so
 #   `eshkol-run -r` answers "Unknown function: sign" for every syntactic form
 #   of it, and no host reference can be obtained through the path this

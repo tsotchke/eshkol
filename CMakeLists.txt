@@ -2199,7 +2199,7 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/gpu/.*")
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/agent/.*")
 
 # Exclude ALL .c files from lib/backend/ — they are either standalone programs
-# (eshkol_compiler.c, weight_matrices.c, eshkol_asm.c, etc.) or unity-build
+# (weight_matrices.c, eshkol_asm.c, etc.) or unity-build
 # includes (vm_*.c, eskb_*.c are #included by eshkol_vm.c).
 # Only eshkol_vm.c is added back below (compiled in library mode).
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
@@ -9540,16 +9540,26 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/vm
     )
 endif()
 
-if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_compiler_vector_limit_surface_test.cpp")
-    add_executable(eshkol_compiler_vector_limit_surface_test
-        tests/toolchain/eshkol_compiler_vector_limit_surface_test.cpp)
-    target_compile_features(eshkol_compiler_vector_limit_surface_test PRIVATE cxx_std_17)
-    target_include_directories(eshkol_compiler_vector_limit_surface_test PRIVATE
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/vm_vector_limit_surface_test.cpp")
+    add_executable(vm_vector_limit_surface_test
+        tests/toolchain/vm_vector_limit_surface_test.cpp)
+    target_compile_features(vm_vector_limit_surface_test PRIVATE cxx_std_17)
+    target_include_directories(vm_vector_limit_surface_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     add_test(
-        NAME eshkol_compiler_vector_limit_surface_test
-        COMMAND eshkol_compiler_vector_limit_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
+        NAME vm_vector_limit_surface_test
+        COMMAND vm_vector_limit_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
     )
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/test_language_surface_production_sources.py")
+    add_test(
+        NAME language_surface_production_sources
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/test_language_surface_production_sources.py"
+    )
+    set_tests_properties(language_surface_production_sources PROPERTIES TIMEOUT 60)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/forward_ref_scan_boundary_test.cpp")
