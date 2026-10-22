@@ -160,10 +160,10 @@ ImportSet ImportSet::renaming(
     return set;
 }
 
-void ImportResolver::define(LibraryInterface interface) {
-    const std::string key = interface.name.empty()
-        ? std::to_string(interface.module) : interface.name;
-    interfaces_[key] = std::move(interface);
+void ImportResolver::define(LibraryInterface library_interface) {
+    const std::string key = library_interface.name.empty()
+        ? std::to_string(library_interface.module) : library_interface.name;
+    interfaces_[key] = std::move(library_interface);
 }
 
 bool ImportResolver::evaluate(const ImportSet& set,
