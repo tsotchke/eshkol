@@ -279,6 +279,13 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define _cmp2_15 char=?) (define char=? (_chain2 _cmp2_15))\n"
     "(define _cmp2_16 char<?) (define char<? (_chain2 _cmp2_16))\n"
     "(define _cmp2_17 char>?) (define char>? (_chain2 _cmp2_17))\n"
+    /* Derive the inclusive predicates from the native strict comparisons.
+     * This preserves their character type checks and binary arity while
+     * exposing the same two-or-more argument procedure shape as _chain2. */
+    "(define _char-le-2 (lambda (a b) (not (char>? a b))))\n"
+    "(define char<=? (_chain2 _char-le-2))\n"
+    "(define _char-ge-2 (lambda (a b) (not (char<? a b))))\n"
+    "(define char>=? (_chain2 _char-ge-2))\n"
     /* SW-173: `list`, `vector` and `string` are compiled by head symbol in
      * CALL position (vm_compiler.c lowers `(list a b)` to a cons chain and
      * `(vector …)` to OP_VEC_CREATE before it ever looks a binding up), so

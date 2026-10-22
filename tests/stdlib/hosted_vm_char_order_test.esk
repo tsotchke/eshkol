@@ -1,0 +1,42 @@
+(define checks 0)
+(define (check name ok)
+  (if ok
+      (set! checks (+ checks 1))
+      (error name)))
+
+;; The VM wrappers compose the existing binary predicates, preserving their
+;; character operand checks and two-argument minimum; _chain2 supplies the
+;; public two-or-more argument and first-class procedure behavior.
+(check "char<= before" (char<=? #\a #\b))
+(check "char<= equal" (char<=? #\a #\a))
+(check "char<= after" (not (char<=? #\b #\a)))
+(check "char>= after" (char>=? #\b #\a))
+(check "char>= equal" (char>=? #\a #\a))
+(check "char>= before" (not (char>=? #\a #\b)))
+
+(check "char<= chain true" (char<=? #\a #\b #\c))
+(check "char<= chain false" (not (char<=? #\a #\c #\b)))
+(check "char>= chain true" (char>=? #\c #\b #\a))
+(check "char>= chain false" (not (char>=? #\c #\a #\b)))
+
+(define ge-first-class char>=?)
+(define le-first-class char<=?)
+(check "char>= first-class call" (ge-first-class #\z #\y))
+(check "char<= first-class call" (le-first-class #\x #\y))
+(check "char>= apply" (apply ge-first-class (list #\z #\z)))
+(check "char<= apply" (apply le-first-class (list #\x #\x)))
+
+;; Character ordering follows Unicode codepoint ordering for non-ASCII input.
+(define greek-lambda (string-ref "λ" 0))
+(define greek-mu (string-ref "μ" 0))
+(check "unicode char<= before" (char<=? greek-lambda greek-mu))
+(check "unicode char<= equal" (char<=? greek-lambda greek-lambda))
+(check "unicode char<= after" (not (char<=? greek-mu greek-lambda)))
+(check "unicode char>= after" (char>=? greek-mu greek-lambda))
+(check "unicode char>= equal" (char>=? greek-lambda greek-lambda))
+(check "unicode char>= before" (not (char>=? greek-lambda greek-mu)))
+
+(display "Checks: ")
+(display checks)
+(newline)
+(display "RESULT: PASS\n")
