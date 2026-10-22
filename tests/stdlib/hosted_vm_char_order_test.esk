@@ -5,8 +5,8 @@
       (error name)))
 
 ;; The VM wrappers compose the existing binary predicates, preserving their
-;; character operand checks and two-argument minimum; _chain2 supplies the
-;; public two-or-more argument and first-class procedure behavior.
+;; binary comparison results; _chain2 supplies the public two-or-more
+;; argument and first-class procedure behavior.
 (check "char<= before" (char<=? #\a #\b))
 (check "char<= equal" (char<=? #\a #\a))
 (check "char<= after" (not (char<=? #\b #\a)))

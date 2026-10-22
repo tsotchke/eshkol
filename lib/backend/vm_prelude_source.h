@@ -287,8 +287,8 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define _cmp2_16 char<?) (define char<? (_chain2 _cmp2_16))\n"
     "(define _cmp2_17 char>?) (define char>? (_chain2 _cmp2_17))\n"
     /* Derive the inclusive predicates from the native strict comparisons.
-     * This preserves their character type checks and binary arity while
-     * exposing the same two-or-more argument procedure shape as _chain2. */
+     * Reuse their binary comparison results while exposing the existing
+     * _chain2 two-or-more argument procedure shape. */
     "(define _char-le-2 (lambda (a b) (not (char>? a b))))\n"
     "(define char<=? (_chain2 _char-le-2))\n"
     "(define _char-ge-2 (lambda (a b) (not (char<? a b))))\n"
