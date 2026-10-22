@@ -132,6 +132,11 @@ SMOKE_PROGRAMS = {
         "(define a (reshape (vector 1.0 2.0 3.0 4.0) 2 2))"
         " (define c (matmul a a)) (display (tensor-get c (list 0) 1)) (newline)",
     "string_io": "(define p (open-output-string)) (display \"hi\" p) (display (get-output-string p)) (newline)",
+    # strlen returns target size_t (i32 on wasm32), while string-split uses
+    # the compiler's internal i64 lengths for its scan indices.
+    "strlen_widths":
+        "(define pieces (string-split \"a,b\" \",\"))"
+        " (display (car pieces)) (newline)",
     "parameters": "(define p (make-parameter 1)) (display (p)) (newline)",
     "regions": "(with-region (lambda () (define x (list 1 2 3)) (display (car x)) (newline)))",
     "bignum_rational": "(display (* 100000000000 100000000000)) (newline) (display (/ 1 3)) (newline)",

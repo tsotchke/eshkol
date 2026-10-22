@@ -22,6 +22,20 @@
 
 namespace eshkol {
 
+namespace {
+
+// C size_t is i32 for wasm32, while string indexing and allocation lengths
+// use Eshkol's canonical i64 representation. Preserve the C ABI at the call
+// and widen its unsigned result only when an internal length is needed.
+llvm::Value* strlenAsInt64(CodegenContext& ctx, llvm::Function* strlen_func,
+                           llvm::Value* str_ptr, const llvm::Twine& name) {
+    llvm::Value* size = ctx.builder().CreateCall(strlen_func, {str_ptr});
+    if (size->getType() == ctx.int64Type()) return size;
+    return ctx.builder().CreateZExt(size, ctx.int64Type(), name);
+}
+
+} // namespace
+
 /**
  * @brief Construct the string/IO codegen helper bound to a shared codegen
  *        context and tagged-value helper.
@@ -1400,8 +1414,10 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Value* delim_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), delim_ptr_storage);
 
     // Get delimiter length and string length
-    llvm::Value* delim_len = ctx_.builder().CreateCall(strlen_func, {delim_ptr});
-    llvm::Value* str_len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
+    llvm::Value* delim_len = strlenAsInt64(ctx_, strlen_func, delim_ptr,
+                                           "split_delim_len_i64");
+    llvm::Value* str_len = strlenAsInt64(ctx_, strlen_func, str_ptr,
+                                         "split_str_len_i64");
 
     // Create basic blocks
     llvm::BasicBlock* search_cond = llvm::BasicBlock::Create(ctx_.context(), "split_search", parent_func);
@@ -2720,7 +2736,8 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(success_block);
 
     // Get string length
-    llvm::Value* len = ctx_.builder().CreateCall(strlen_func, {buffer});
+    llvm::Value* len = strlenAsInt64(ctx_, strlen_func, buffer,
+                                     "readline_len_i64");
 
     // Strip trailing newline if present
     llvm::Value* last_idx = ctx_.builder().CreateSub(len, llvm::ConstantInt::get(ctx_.int64Type(), 1));

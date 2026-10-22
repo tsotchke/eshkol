@@ -15075,8 +15075,10 @@ private:
             Value* at_idx = safeExtractInt64(at_val);
             // Get from length via strlen
             llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
-                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
-            Value* from_len = builder->CreateCall(strlen_fn, {from_ptr});
+                FunctionType::get(size_type, {PointerType::getUnqual(*context)}, false));
+            Value* from_len_size = builder->CreateCall(strlen_fn, {from_ptr});
+            Value* from_len = from_len_size->getType() == int64_type
+                ? from_len_size : builder->CreateZExt(from_len_size, int64_type);
             // Compute copy length (use full from string if no start/end given)
             Value* copy_len = from_len;
             if (op->call_op.num_vars >= 4) {
@@ -15122,8 +15124,10 @@ private:
             Value* ptr_int = unpackInt64FromTaggedValue(str_arg);
             Value* str_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context));
             llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
-                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
-            Value* str_len = builder->CreateCall(strlen_fn, {str_ptr});
+                FunctionType::get(size_type, {PointerType::getUnqual(*context)}, false));
+            Value* str_len_size = builder->CreateCall(strlen_fn, {str_ptr});
+            Value* str_len = str_len_size->getType() == int64_type
+                ? str_len_size : builder->CreateZExt(str_len_size, int64_type);
             // Alloca for loop index — immune to codegenClosureCall's block changes
             Value* idx_ptr = builder->CreateAlloca(int64_type, nullptr, "sfe_idx");
             builder->CreateStore(ConstantInt::get(int64_type, 0), idx_ptr);
@@ -15159,8 +15163,10 @@ private:
             Value* ptr_int = unpackInt64FromTaggedValue(str_arg);
             Value* str_ptr = builder->CreateIntToPtr(ptr_int, PointerType::getUnqual(*context));
             llvm::FunctionCallee strlen_fn = module->getOrInsertFunction("strlen",
-                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
-            Value* str_len = builder->CreateCall(strlen_fn, {str_ptr});
+                FunctionType::get(size_type, {PointerType::getUnqual(*context)}, false));
+            Value* str_len_size = builder->CreateCall(strlen_fn, {str_ptr});
+            Value* str_len = str_len_size->getType() == int64_type
+                ? str_len_size : builder->CreateZExt(str_len_size, int64_type);
             Value* arena_ptr = getArenaPtr();
             llvm::FunctionCallee alloc_fn = module->getOrInsertFunction("arena_allocate_string_with_header",
                 FunctionType::get(PointerType::getUnqual(*context),
@@ -15527,8 +15533,10 @@ private:
                 builder->CreateExtractValue(tagged, {4}), PointerType::getUnqual(*context));
             // Get string length via strlen
             llvm::FunctionCallee strlen_func = module->getOrInsertFunction("strlen",
-                FunctionType::get(int64_type, {PointerType::getUnqual(*context)}, false));
-            Value* str_len = builder->CreateCall(strlen_func, {str_ptr});
+                FunctionType::get(size_type, {PointerType::getUnqual(*context)}, false));
+            Value* str_len_size = builder->CreateCall(strlen_func, {str_ptr});
+            Value* str_len = str_len_size->getType() == int64_type
+                ? str_len_size : builder->CreateZExt(str_len_size, int64_type);
             // Call runtime: eshkol_open_input_string(arena, str, len) -> FILE*
             llvm::FunctionCallee open_func = module->getOrInsertFunction("eshkol_open_input_string",
                 FunctionType::get(PointerType::getUnqual(*context),
@@ -26447,9 +26455,11 @@ private:
 
         // Valid path: copy C string
         builder->SetInsertPoint(valid_bb);
-        FunctionType* strlen_ty = FunctionType::get(int64_type, {builder->getPtrTy()}, false);
+        FunctionType* strlen_ty = FunctionType::get(size_type, {builder->getPtrTy()}, false);
         FunctionCallee strlen_fn = module->getOrInsertFunction("strlen", strlen_ty);
-        Value* length = builder->CreateCall(strlen_fn, {raw_ptr});
+        Value* length_size = builder->CreateCall(strlen_fn, {raw_ptr});
+        Value* length = length_size->getType() == int64_type
+            ? length_size : builder->CreateZExt(length_size, int64_type);
 
         Value* arena_ptr = getArenaPtr();
         Value* new_str = builder->CreateCall(mem->getArenaAllocateStringWithHeader(),
