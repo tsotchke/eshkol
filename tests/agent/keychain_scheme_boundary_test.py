@@ -126,9 +126,10 @@ def main() -> None:
         test_path.write_text(SCHEME_TEST.replace("@WRAPPER@", str(wrapper_path)))
         result = subprocess.run(
             [args.eshkol_run, "--run", str(test_path)],
-            check=False, capture_output=True, text=True,
+            check=False, capture_output=True, text=True, timeout=60,
         )
-        if result.returncode != 0:
+        completed = "PASS: keychain Scheme denial, exact-byte, empty, race, and bound checks"
+        if result.returncode != 0 or completed not in result.stdout or "FAIL:" in result.stdout:
             raise RuntimeError(
                 f"Scheme boundary test failed ({result.returncode}):\n"
                 f"{result.stdout}{result.stderr}"
