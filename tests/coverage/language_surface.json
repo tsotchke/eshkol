@@ -9973,13 +9973,13 @@
   },
   "counts": {
     "builtins_total": 1057,
-    "builtins_in_vm_table": 791,
+    "builtins_in_vm_table": 793,
     "builtins_in_llvm_aot_dispatch": 799,
-    "builtins_aot_only": 244,
+    "builtins_aot_only": 242,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
-    "prelude": 469
+    "prelude": 472
   },
   "builtins_by_category": {
     "ffi_system": 302,
@@ -12514,6 +12514,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -12550,6 +12551,7 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -26481,6 +26483,24 @@
       ]
     },
     {
+      "name": "char<=?",
+      "category": "predicate",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": []
+    },
+    {
+      "name": "char>=?",
+      "category": "predicate",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": []
+    },
+    {
       "name": "christoffel-symbol",
       "category": "geometry",
       "also_builtin": false,
@@ -29595,6 +29615,15 @@
           "visibility": "stdlib_root_required_export"
         }
       ]
+    },
+    {
+      "name": "hash-ref",
+      "category": "hash",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": []
     },
     {
       "name": "hash-table->alist",
