@@ -1395,7 +1395,8 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
 
     // Encode the character through the runtime's checked UTF-8 constructor.
     ctx_.builder().SetInsertPoint(char_delim_block);
-    ctx_.builder().CreateStore(tagged_.packInt64(1), char_length_slot);
+    ctx_.builder().CreateStore(tagged_.packInt64(
+        llvm::ConstantInt::get(ctx_.int64Type(), 1)), char_length_slot);
     ctx_.builder().CreateStore(delim_arg, char_fill_slot);
     llvm::FunctionCallee make_char_string = ctx_.module().getOrInsertFunction(
         "eshkol_make_string_checked",
