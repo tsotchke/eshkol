@@ -1,3 +1,6 @@
+;;; Test: Parallel initializer use after move is rejected
+;;; Expected: Error - "Use of moved value 'x'"
+
 (define x (owned (cons 1 2)))
 (let ((y (move x))
       (z x))

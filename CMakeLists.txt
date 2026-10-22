@@ -3584,6 +3584,13 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
   set_tests_properties(stdlib_identity_compatibility PROPERTIES TIMEOUT 180)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND NOT WIN32)
+  add_test(NAME memory_compile_refusal_contract
+      COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/memory_compile_refusal_contract_test.sh")
+  set_tests_properties(memory_compile_refusal_contract PROPERTIES TIMEOUT 20)
+endif()
+
 # Install stdlib artifacts to lib directory.  The REPL prefers stdlib.bc so
 # stdlib and later REPL batches share the same ORC IR compilation pipeline;
 # stdlib.o remains available for legacy/load-time fallback paths.

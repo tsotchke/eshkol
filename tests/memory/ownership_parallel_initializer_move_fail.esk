@@ -1,3 +1,6 @@
+;;; Test: Parallel initializers cannot move the same value twice
+;;; Expected: Error - "Double move of 'x' - value already moved"
+
 (define x (owned (cons 1 2)))
 (let ((y (move x))
       (z (move x)))
