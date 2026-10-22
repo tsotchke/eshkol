@@ -19,6 +19,10 @@
 (check "whitespace content base64 roundtrip"
        (string=? (base64-decode-string (base64-encode-string "a b\tc\n")) "a b\tc\n"))
 
+(check "one byte gets double padding" (string=? (base64-encode-string "M") "TQ=="))
+(check "two bytes get single padding" (string=? (base64-encode-string "Ma") "TWE="))
+(check "one padded byte decodes" (equal? (base64-decode "TQ==") '(77)))
+
 ;; alist->json is checked through the public serializer and parser APIs.
 (define json-text (alist->json '(("name" . "test") ("value" . 42))))
 (define json-value (json-parse json-text))
@@ -30,10 +34,16 @@
 (check "json result accepts err" (json-parse-result? (cons 'json-err "bad")))
 (check "json result rejects empty list" (not (json-parse-result? '())))
 (check "json result rejects unrelated tag" (not (json-parse-result? (cons 'other 17))))
+(check "json result rejects false" (not (json-parse-result? #f)))
+(check "json error accessor preserves message" (string=? (json-result-error (cons 'json-err "bad")) "bad"))
 (define parsed-null (json-try-parse "null"))
 (check "json null parse result shape" (and (json-parse-result? parsed-null) (json-result-ok? parsed-null) (null? (json-result-value parsed-null))))
 (define parsed-bad (json-try-parse "{"))
 (check "malformed JSON is tagged error" (and (json-parse-result? parsed-bad) (not (json-result-ok? parsed-bad))))
+
+(check "malformed JSON has nonempty diagnostic"
+       (let ((message (json-result-error parsed-bad)))
+         (and (string? message) (> (string-length message) 0))))
 
 ;; CSV type inference preserves quoted commas; selection preserves requested order.
 (define frame (csv-parse-typed "name,count,note\nalpha,7,\"a,b\"\nbeta,0,plain"))
@@ -43,6 +53,12 @@
 (check "CSV selector order and values"
        (equal? (csv-select frame '("note" "count"))
                '(("note" "count") ("a,b" 7) ("plain" 0))))
+
+(check "CSV row count" (= (csv-row-count frame) 2))
+(check "CSV column count" (= (csv-col-count frame) 3))
+(check "CSV column index" (= (csv-column-idx frame "note") 2))
+(check "CSV absent column index" (= (csv-column-idx frame "absent") -1))
+(check "CSV typed column projection" (equal? (csv-column frame "count") '(7 0)))
 
 (display "Checks: ")
 (display checks)
