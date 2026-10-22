@@ -170,7 +170,8 @@ class ProductionSurfaceSources(unittest.TestCase):
             (root / "lib/core/alpha.esk").write_text('''
 (provide stream-null-like explicit-procedure lambda-procedure local-alias
          forwarded beta-value conditional-value redefined syntax-name
-         mutable-later mutable-closure alias-of-mutable shadowed-write)
+         mutable-later mutable-closure alias-of-mutable shadowed-write
+         cross-module-mutable alias-of-cross-module)
 (require core.beta)
 (define stream-null-like '())
 (define (explicit-procedure x)
@@ -186,13 +187,17 @@ class ProductionSurfaceSources(unittest.TestCase):
 (define mutable-closure 1)
 (define alias-of-mutable mutable-later)
 (define shadowed-write '())
+(define cross-module-mutable '())
+(define alias-of-cross-module cross-module-mutable)
 (set! mutable-later (lambda () 2))
 (define (mutate-closure) (set! mutable-closure 2))
 (define (lexical-setter shadowed-write) (set! shadowed-write 2))
 ''')
             (root / "lib/core/beta.esk").write_text('''
+(require core.alpha)
 (provide beta-value)
 (define beta-value '())
+(set! cross-module-mutable (lambda () 2))
 ''')
 
             result = SURFACE.extract_stdlib_surface(str(root))
@@ -225,6 +230,10 @@ class ProductionSurfaceSources(unittest.TestCase):
                 self.assertEqual("unknown", entries[mutable]["binding_category"])
             self.assertEqual(entries["mutable-later"]["binding_identity"],
                              entries["alias-of-mutable"]["binding_identity"])
+            self.assertEqual("unknown",
+                             entries["cross-module-mutable"]["binding_category"])
+            self.assertEqual(entries["cross-module-mutable"]["binding_identity"],
+                             entries["alias-of-cross-module"]["binding_identity"])
 
     def test_generation_is_independent_of_legacy_compiler(self):
         with tempfile.TemporaryDirectory() as temp:

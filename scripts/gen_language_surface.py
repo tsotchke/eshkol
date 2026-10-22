@@ -651,6 +651,11 @@ def extract_stdlib_surface(repo=REPO):
             if required not in modules:
                 pending.append((required, child_path, module))
 
+    # Import mutation/provenance is not modeled. Treat a same-spelled write in
+    # any reachable module as potentially affecting every exported binding.
+    assigned_names = set().union(*(record["assigned_names"]
+                                   for record in modules.values()))
+
     def resolve_binding(module, name, seen=None):
         """Resolve a public name to a unique definition and conservative kind."""
         seen = set() if seen is None else set(seen)
@@ -666,7 +671,7 @@ def extract_stdlib_surface(repo=REPO):
             if len(definitions) != 1:
                 return None
             definition = definitions[0]
-            if name in record["assigned_names"]:
+            if name in assigned_names:
                 return {
                     "module": module, "path": record["path"], "name": name,
                     "line": definition["line"], "chain": [module],
@@ -697,7 +702,7 @@ def extract_stdlib_surface(repo=REPO):
                 "line": definition["line"], "chain": [module],
                 "category": definition["category"],
             }
-        if name in record["assigned_names"]:
+        if name in assigned_names:
             return None
         candidates = [required["module"] for required in record["requires"]
                       if required["module"] in modules and
