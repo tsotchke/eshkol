@@ -383,8 +383,12 @@ def parse_scheme_forms(text):
         while cursor < len(tokens) and tokens[cursor][0] == "datum-comment":
             _, _, line = tokens[cursor]
             cursor += 1
-            if parse_next() is None:
+            # A nested #; is itself interlexeme trivia: it comments out its
+            # datum, then the outer comment still consumes the next datum.
+            skip_datum_comments()
+            if cursor >= len(tokens) or tokens[cursor][0] == ")":
                 raise ValueError("datum comment at line %d has no datum" % line)
+            parse_raw()
 
     def parse_next():
         nonlocal cursor
@@ -401,14 +405,14 @@ def parse_scheme_forms(text):
         cursor += 1
         if kind == "(":
             result = []
-            while cursor < len(tokens) and tokens[cursor][0] != ")":
-                item = parse_next()
-                if item is None:
+            while True:
+                skip_datum_comments()
+                if cursor >= len(tokens):
+                    raise ValueError("unclosed Scheme list at line %d" % line)
+                if tokens[cursor][0] == ")":
                     break
-                result.append(item)
+                result.append(parse_raw())
             if cursor >= len(tokens):
-                raise ValueError("unclosed Scheme list at line %d" % line)
-            if tokens[cursor][0] != ")":
                 raise ValueError("unclosed Scheme list at line %d" % line)
             cursor += 1
             return ("list", result, line)

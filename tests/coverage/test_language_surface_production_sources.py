@@ -62,6 +62,27 @@ class ProductionSurfaceSources(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unterminated escaped Scheme symbol"):
             SURFACE.parse_scheme_forms("(define |unfinished-symbol 1)")
 
+    def test_scheme_reader_accepts_trailing_comments_and_rejects_missing_datums(self):
+        def list_symbols(form):
+            return [SURFACE._scheme_symbol(item)
+                    for item in SURFACE._scheme_list(form) or []]
+
+        self.assertEqual(["a"], list_symbols(SURFACE.parse_scheme_forms("(a #; b)")[0]))
+        define_x = SURFACE.parse_scheme_forms("(define x (list #; 1))")[0]
+        define_items = SURFACE._scheme_list(define_x)
+        self.assertEqual(["define", "x"], [SURFACE._scheme_symbol(item)
+                                             for item in define_items[:2]])
+        self.assertEqual(["list"], list_symbols(define_items[2]))
+        self.assertEqual(["a"], list_symbols(SURFACE.parse_scheme_forms("(a #; #; b c)")[0]))
+        quoted = SURFACE.parse_scheme_forms("'(a #; b c)")[0]
+        quote_items = SURFACE._scheme_list(quoted)
+        self.assertEqual("quote", SURFACE._scheme_symbol(quote_items[0]))
+        self.assertEqual(["a", "c"], list_symbols(quote_items[1]))
+        for source in ("#;", "(a #;)", "(define x (list #;))", "#; #; a )"):
+            with self.subTest(source=source), self.assertRaisesRegex(
+                    ValueError, "datum comment.*has no datum"):
+                SURFACE.parse_scheme_forms(source)
+
     def test_stdlib_reader_fails_closed_on_visibility_modifiers_and_export_renames(self):
         require = SURFACE.parse_scheme_forms("(require (only core.dep public-name))")[0]
         provide = SURFACE.parse_scheme_forms("(provide (rename old-name new-name))")[0]
