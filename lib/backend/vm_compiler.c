@@ -5237,16 +5237,18 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             compile_expr(c, node->children[i], 0);
             add_local(c, "__call_arg__");
         }
+        const int emit_tail_call = vm_tail_call_allowed(c, head, tail);
+        if (emit_tail_call) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
+        }
+        /* The admission and runtime checks bind this marker to the immediate
+         * call instruction. Handler cleanup must precede the marker. */
         if (vm_language_coverage_compilation_enabled()) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (vm_tail_call_allowed(c, head, tail)) {
-            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
-                chunk_emit(c, OP_POP_HANDLER, 0);
-            vm_emit_call(c, argc, 1);
-        } else
-            chunk_emit(c, OP_CALL, argc);
+        vm_emit_call(c, argc, emit_tail_call);
         c->n_locals = saved_locals; /* CALL consumed func+args */
         return;
     }
@@ -6973,16 +6975,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             add_local(c, "__call_arg__");
             argc++;
         }
+        const int emit_tail_call = vm_tail_call_allowed(c, head, tail);
+        if (emit_tail_call) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
+        }
+        /* Keep the coverage marker adjacent to its actual call opcode. */
         if (head->type == N_SYMBOL && vm_language_coverage_compilation_enabled()) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (vm_tail_call_allowed(c, head, tail)) {
-            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
-                chunk_emit(c, OP_POP_HANDLER, 0);
-            vm_emit_call(c, argc, 1);
-        } else
-            chunk_emit(c, OP_CALL, argc);
+        vm_emit_call(c, argc, emit_tail_call);
         c->n_locals = saved_locals; /* CALL consumed func+args, restore n_locals */
         return;
     }
