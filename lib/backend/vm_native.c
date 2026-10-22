@@ -16337,6 +16337,8 @@ tensor_inverse_done:
     }
     case 661: { /* hash-ref(ht, key, default) */
         Value dflt = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
+        /* The compiler pads an omitted optional operand with VAL_VOID. */
+        if (vm_native_absent(dflt)) dflt = BOOL_VAL(0);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             Value* result = (Value*)vm_ht_ref(ht, &key, NULL);
