@@ -530,6 +530,27 @@ def _top_level_binding(form):
     return [(name, items[1][2], _binding_expression_category(rhs), alias)]
 
 
+def _assigned_names(forms):
+    """Find set! targets anywhere in parsed code, including nested closures."""
+    assigned = set()
+
+    def visit(node):
+        items = _scheme_list(node)
+        if items is None:
+            return
+        if items and _scheme_symbol(items[0]) == "quote":
+            return
+        if (len(items) >= 2 and _scheme_symbol(items[0]) == "set!"
+                and _scheme_symbol(items[1])):
+            assigned.add(_scheme_symbol(items[1]))
+        for item in items:
+            visit(item)
+
+    for form in forms:
+        visit(form)
+    return assigned
+
+
 def _top_level_exports(form):
     items = _scheme_list(form)
     if not items or _scheme_symbol(items[0]) != "provide":
@@ -619,6 +640,7 @@ def extract_stdlib_surface(repo=REPO):
                              (os.path.relpath(path, repo), exc)) from exc
         modules[module] = {"path": os.path.relpath(path, repo),
                            "definitions": defs, "binding_definitions": binding_defs,
+                           "assigned_names": _assigned_names(forms),
                            "exports": exports,
                            "requires": []}
         requiring.setdefault(module, set()).add(parent)
@@ -644,6 +666,12 @@ def extract_stdlib_surface(repo=REPO):
             if len(definitions) != 1:
                 return None
             definition = definitions[0]
+            if name in record["assigned_names"]:
+                return {
+                    "module": module, "path": record["path"], "name": name,
+                    "line": definition["line"], "chain": [module],
+                    "category": "unknown",
+                }
             alias = definition["alias"]
             if alias and alias != name:
                 candidates = []
@@ -669,6 +697,8 @@ def extract_stdlib_surface(repo=REPO):
                 "line": definition["line"], "chain": [module],
                 "category": definition["category"],
             }
+        if name in record["assigned_names"]:
+            return None
         candidates = [required["module"] for required in record["requires"]
                       if required["module"] in modules and
                       name in modules[required["module"]]["exports"]]
@@ -681,39 +711,50 @@ def extract_stdlib_surface(repo=REPO):
         return {**target, "chain": [module] + [m for m in target["chain"]
                                               if m != module]}
 
-    def definition_origin(module, name):
+    def definition_origin(module, name, seen=None):
+        """Keep the original source-provenance behavior for compatibility."""
+        seen = set() if seen is None else set(seen)
+        if module in seen:
+            return None
+        seen.add(module)
         record = modules[module]
-        if name not in record["binding_definitions"]:
-            candidates = [required["module"] for required in record["requires"]
-                          if required["module"] in modules and
-                          name in modules[required["module"]]["exports"]]
-            if len(candidates) > 1:
-                raise ValueError("ambiguous re-export %r in %s from %s" %
-                                 (name, module, ", ".join(candidates)))
-        origin = resolve_binding(module, name)
-        if origin:
-            return {key: origin[key] for key in ("module", "path", "name", "line", "chain")}
+        if name in record["definitions"]:
+            return {"module": module, "path": record["path"],
+                    "line": record["definitions"][name], "chain": [module]}
+        candidates = [required["module"] for required in record["requires"]
+                      if required["module"] in modules and
+                      name in modules[required["module"]]["exports"]]
+        if len(candidates) > 1:
+            raise ValueError("ambiguous re-export %r in %s from %s" %
+                             (name, module, ", ".join(candidates)))
+        if candidates:
+            child = candidates[0]
+            origin = definition_origin(child, name, seen)
+            if origin:
+                return {**origin, "chain": [module] + origin["chain"]}
         return None
 
     root_requires = {item["module"] for item in modules["stdlib"]["requires"]}
 
     def binding_metadata(public_name, origin):
         if not origin:
-            return {"public_name": public_name, "binding_category": "unknown"}
+            return {"public_name": public_name, "binding_category": "unknown",
+                    "resolved_binding_origin": None}
         identity = "%s:%s#%s" % (origin["module"], origin["path"], origin["name"])
         return {
             "public_name": public_name,
             "binding_category": origin["category"],
             "binding_identity": identity,
-            "definition_origin": {key: origin[key] for key in
-                                  ("module", "path", "name", "line", "chain")},
+            "resolved_binding_origin": {key: origin[key] for key in
+                                         ("module", "path", "name", "line", "chain")},
         }
 
     names = {}
     # Direct definitions in the root stdlib source are prelude definitions.
     for name, line in modules["stdlib"]["definitions"].items():
         evidence = {"kind": "stdlib_root_definition", "module": "stdlib",
-                    "path": modules["stdlib"]["path"], "line": line}
+                    "path": modules["stdlib"]["path"], "line": line,
+                    "definition_origin": definition_origin("stdlib", name)}
         evidence.update(binding_metadata(name, resolve_binding("stdlib", name)))
         names.setdefault(name, []).append(evidence)
     closure_names = {}
@@ -1167,7 +1208,7 @@ def build_manifest():
             categories.add(category)
             identity = evidence.get("binding_identity")
             if identity:
-                origin = evidence["definition_origin"]
+                origin = evidence["resolved_binding_origin"]
                 origin_key = (origin["module"], origin["path"], origin["name"])
                 previous = identity_origins.setdefault(identity, origin_key)
                 if previous != origin_key:

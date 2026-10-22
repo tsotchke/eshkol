@@ -169,7 +169,8 @@ class ProductionSurfaceSources(unittest.TestCase):
             (root / "lib/stdlib.esk").write_text("(require core.alpha)\n")
             (root / "lib/core/alpha.esk").write_text('''
 (provide stream-null-like explicit-procedure lambda-procedure local-alias
-         forwarded beta-value conditional-value redefined syntax-name)
+         forwarded beta-value conditional-value redefined syntax-name
+         mutable-later mutable-closure alias-of-mutable shadowed-write)
 (require core.beta)
 (define stream-null-like '())
 (define (explicit-procedure x)
@@ -181,6 +182,13 @@ class ProductionSurfaceSources(unittest.TestCase):
 (define conditional-value (if #t 'safe 'also-safe))
 (define redefined '())
 (define redefined (if #t 1 2))
+(define mutable-later 1)
+(define mutable-closure 1)
+(define alias-of-mutable mutable-later)
+(define shadowed-write '())
+(set! mutable-later (lambda () 2))
+(define (mutate-closure) (set! mutable-closure 2))
+(define (lexical-setter shadowed-write) (set! shadowed-write 2))
 ''')
             (root / "lib/core/beta.esk").write_text('''
 (provide beta-value)
@@ -197,16 +205,26 @@ class ProductionSurfaceSources(unittest.TestCase):
             self.assertEqual(entries["stream-null-like"]["binding_identity"],
                              entries["local-alias"]["binding_identity"])
             self.assertEqual("beta-value",
-                             entries["forwarded"]["definition_origin"]["name"])
+                             entries["forwarded"]["resolved_binding_origin"]["name"])
+            self.assertEqual("core.alpha",
+                             entries["forwarded"]["definition_origin"]["module"])
             self.assertEqual("forwarded", entries["forwarded"]["public_name"])
             direct_reexport = next(item for item in result["names"]["beta-value"]
                                    if item["module"] == "core.alpha")
-            self.assertEqual("core.beta", direct_reexport["definition_origin"]["module"])
+            self.assertEqual("core.beta",
+                             direct_reexport["resolved_binding_origin"]["module"])
             self.assertEqual("beta-value", direct_reexport["public_name"])
             self.assertEqual("unknown", entries["conditional-value"]["binding_category"])
             self.assertIn("binding_identity", entries["conditional-value"])
             self.assertEqual("unknown", entries["redefined"]["binding_category"])
             self.assertNotIn("binding_identity", entries["redefined"])
+            self.assertTrue(entries["redefined"]["definition_origin"])
+            self.assertIsNone(entries["redefined"]["resolved_binding_origin"])
+            for mutable in ("mutable-later", "mutable-closure",
+                            "alias-of-mutable", "shadowed-write"):
+                self.assertEqual("unknown", entries[mutable]["binding_category"])
+            self.assertEqual(entries["mutable-later"]["binding_identity"],
+                             entries["alias-of-mutable"]["binding_identity"])
 
     def test_generation_is_independent_of_legacy_compiler(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -280,6 +298,10 @@ class ProductionSurfaceSources(unittest.TestCase):
         self.assertEqual("value", stream_null["binding_category"])
         self.assertIn("core.streams:lib/core/streams.esk#stream-null",
                       stream_null["binding_identity"])
+        stream_origin = stream_null["provenance"][0]
+        self.assertEqual(58, stream_origin["definition_origin"]["line"])
+        self.assertEqual("stream-null",
+                         stream_origin["resolved_binding_origin"]["name"])
 
         sys.path.insert(0, str(REPO / "scripts/p8"))
         import five_way_surface
