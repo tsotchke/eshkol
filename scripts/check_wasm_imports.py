@@ -171,6 +171,17 @@ SMOKE_PROGRAMS = {
         " (newline))",
 }
 
+# These inputs exercise WASM codegen whose imports need host input-port
+# semantics. The compiler can emit the modules, but neither browser glue
+# currently implements eshkol_open_input_string or
+# eshkol_runtime_current_input_fp. Compile them as verifier controls without
+# adding their imports to the supported-surface assertion above.
+COMPILE_ONLY_PROGRAMS = {
+    "explicit_input_string_read_line":
+        '(define p (open-input-string "line")) (display (read-line p))',
+    "default_input_read_line": "(display (read-line))",
+}
+
 
 # --------------------------------------------------------------------------- #
 #  WASM parser — header + import section only
@@ -818,6 +829,39 @@ def main() -> int:
     if not js_provided:
         print("error: no JS glue files configured", file=sys.stderr)
         return 2
+
+    # Compile-only inputs intentionally stay out of all_imports: this script's
+    # support verdict applies to browser-compatible surfaces, while these two
+    # still pin LLVM/WASM verification of explicit and default input-port paths.
+    if not args.prebuilt_wasm_dir:
+        for surface, src in COMPILE_ONLY_PROGRAMS.items():
+            print(f"compiling compile-only WASM control: {surface}", file=sys.stderr)
+            wasm = compile_smoke_wasm_via_cli(
+                eshkol_run, src, args.compile_timeout
+            )
+            if wasm is None:
+                print(f"error: compile-only WASM control failed: {surface}",
+                      file=sys.stderr)
+                return 2
+            SCRATCH_ROOT.mkdir(exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=SCRATCH_ROOT) as tmp:
+                wasm_path = Path(tmp) / f"{surface}.wasm"
+                wasm_path.write_bytes(wasm)
+                try:
+                    imports = parse_env_imports(wasm_path)
+                except Exception as e:
+                    print(f"error: compile-only WASM control is malformed: "
+                          f"{surface}: {e}", file=sys.stderr)
+                    return 2
+            print(f"compile-only {surface}: WASM compile and module parse PASS; "
+                  "excluded from browser import-support verdict")
+            for js, keys in js_provided.items():
+                missing = sorted(imports - keys)
+                if missing:
+                    rel = js.relative_to(REPO_ROOT)
+                    print(f"  runtime unsupported in {rel}: {', '.join(missing)}")
+                else:
+                    print(f"  runtime imports present in {js.relative_to(REPO_ROOT)}")
 
     # Cross-check.
     failed = False
