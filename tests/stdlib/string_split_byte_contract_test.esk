@@ -53,4 +53,5 @@
     (exit 1)
     (begin (display "string-split byte contract: ")
            (display passed) (display " checks passed") (newline)
+           (display "RESULT: PASS") (newline)
            (exit 0)))

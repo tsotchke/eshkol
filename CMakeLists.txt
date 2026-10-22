@@ -14942,6 +14942,62 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|fatal signal")
 endif()
 
+# Keep the focused conversion, character, hash-ref, and string-split contracts
+# on every available interpreter route. VM routes are guarded independently so
+# a runner-only build still gets its JIT and AOT coverage.
+if(ESHKOL_BUILD_TESTS)
+    set(_stdlib_contract_fixtures
+        coverage_conversion_probes
+        hosted_vm_char_order
+        hash_ref_optional_contract
+        string_split_byte_contract)
+
+    foreach(_fixture IN LISTS _stdlib_contract_fixtures)
+        set(_fixture_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_fixture}_test.esk")
+        set(_fixture_pass "RESULT: PASS")
+
+        if(TARGET eshkol-run)
+            add_test(NAME ${_fixture}_jit COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+                $<TARGET_FILE:eshkol-run> -r "${_fixture_source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+            set_tests_properties(${_fixture}_jit PROPERTIES TIMEOUT 240
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+                PASS_REGULAR_EXPRESSION "${_fixture_pass}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|FAILURES DETECTED|ERROR:|fatal signal")
+
+            add_test(NAME ${_fixture}_aot COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_fixture_source}"
+                "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_fixture}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+            set_tests_properties(${_fixture}_aot PROPERTIES TIMEOUT 900
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+                PASS_REGULAR_EXPRESSION "${_fixture_pass}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|FAILURES DETECTED|ERROR:|fatal signal|LLVM module verification failed")
+        endif()
+
+        if(TARGET eshkol-vm-standalone-test)
+            add_test(NAME ${_fixture}_vm_source COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${_fixture_source}")
+            set_tests_properties(${_fixture}_vm_source PROPERTIES TIMEOUT 300
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "${_fixture_pass}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|FAILURES DETECTED|ERROR:|fatal signal")
+        endif()
+
+        if(TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+            add_test(NAME ${_fixture}_vm_eskb COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "-DESHKOL_SOURCE=${_fixture_source}" "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_fixture}.eskb"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+            set_tests_properties(${_fixture}_vm_eskb PROPERTIES TIMEOUT 900
+                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+                PASS_REGULAR_EXPRESSION "${_fixture_pass}"
+                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|FAILURES DETECTED|ERROR:|fatal signal|LLVM module verification failed")
+        endif()
+    endforeach()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
     add_test(NAME bytevector_constructor_all_routes COMMAND ${Python3_EXECUTABLE}
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_bytevector_constructor_gate.py"
