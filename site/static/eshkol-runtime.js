@@ -345,6 +345,58 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         const bytes = new TextEncoder().encode(text), p = header(bytes.length + 1, 1);
         new Uint8Array(mem().buffer, p, bytes.length).set(bytes); return p;
     };
+    const makeStringChecked = (_arena, lengthPtr, fillPtr) => transaction(() => {
+        lengthPtr = span(wasm32(lengthPtr), 16, 8);
+        const lengthType = baseType(lengthPtr), count = view().getBigInt64(lengthPtr + 8, true);
+        if (lengthType !== 1 || count < 0n)
+            fail('make-string: expected a non-negative exact integer', 'ESH_NUMERIC_TYPE');
+        let codepoint = 0x20;
+        if (fillPtr) {
+            fillPtr = span(wasm32(fillPtr), 16, 8);
+            const fillType = baseType(fillPtr), scalar = view().getBigInt64(fillPtr + 8, true);
+            if (fillType !== 4 || scalar < 0n || scalar > 0x10ffffn ||
+                (scalar >= 0xd800n && scalar <= 0xdfffn))
+                fail('make-string: expected a Unicode character', 'ESH_NUMERIC_TYPE');
+            codepoint = Number(scalar);
+        }
+        const encoded = new TextEncoder().encode(String.fromCodePoint(codepoint));
+        const byteLength = count * BigInt(encoded.length);
+        if (byteLength > 0xfffffffen)
+            fail('make-string: requested string exceeds the WASM header limit', 'ESH_NUMERIC_MEMORY');
+        const bytes = Number(byteLength), result = header(bytes + 1, 1);
+        const target = new Uint8Array(mem().buffer, result, bytes + 1);
+        if (encoded.length === 1) target.fill(encoded[0], 0, bytes);
+        else if (bytes) {
+            target.set(encoded, 0);
+            let initialized = encoded.length;
+            while (initialized < bytes) {
+                const copyLength = Math.min(initialized, bytes - initialized);
+                target.copyWithin(initialized, 0, copyLength);
+                initialized += copyLength;
+            }
+        }
+        target[bytes] = 0;
+        return result;
+    });
+    const stringByteLength = pointerValue => {
+        const pointer = wasm32(pointerValue);
+        if (!pointer) return 0n;
+        const buffer = mem().buffer;
+        if (pointer > buffer.byteLength) fail('invalid WASM string span', 'ESH_NUMERIC_ABI');
+        const v = new DataView(buffer);
+        if (pointer >= 8 && v.getUint8(pointer - 8) === 1) {
+            const size = v.getUint32(pointer - 4, true);
+            if (size > 0) {
+                if (pointer + size > buffer.byteLength)
+                    fail('invalid WASM string span', 'ESH_NUMERIC_ABI');
+                return BigInt(size - 1);
+            }
+        }
+        const bytes = new Uint8Array(buffer, pointer, buffer.byteLength - pointer);
+        const terminator = bytes.indexOf(0);
+        if (terminator < 0) fail('unterminated WASM C string', 'ESH_NUMERIC_ABI');
+        return BigInt(terminator);
+    };
     const numeric = p => {
         const t = baseType(p);
         return t === 1 || t === 2 || (t === 8 && [11, 19].includes(subtype(pointer(p))));
@@ -976,6 +1028,63 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
     };
     const tapeGetNodeCount = tapeValue => tapeSet().get(uint(tapeValue))?.nodes.length || 0;
     const consAllocateWithHeader = (_arena) => header(32, 0);
+    const listReverseTagged = (arenaValue, headValue, outValue) => {
+        const arena = wasm32(arenaValue), out = wasm32(outValue);
+        if (!out) return;
+        span(out, 16, 8);
+        const head = wasm32(headValue);
+        if (!arena || !head) {
+            new Uint8Array(mem().buffer, out, 16).fill(0);
+            return;
+        }
+        let current = new Uint8Array(mem().buffer, span(head, 16, 8), 16).slice();
+        const sourceCells = [], cars = [], seen = new Set();
+        const memory = mem().buffer, values = new DataView(memory);
+        const maximumItems = 1 << 20;
+        while (true) {
+            const tag = current[0];
+            if (tag !== 8 && tag !== 32) break;
+            const raw = new DataView(current.buffer, current.byteOffset, current.byteLength).getBigUint64(8, true);
+            if (!raw) break;
+            if (raw > 0xffffffffn) fail('cons pointer exceeds wasm32', 'ESH_NUMERIC_ABI');
+            const cell = Number(raw);
+            if (tag === 8) {
+                if (!cell || cell % 8 || cell < 8 || cell > memory.byteLength)
+                    fail('invalid WASM cons header span', 'ESH_NUMERIC_ABI');
+                const subtype = values.getUint8(cell - 8);
+                if (subtype !== 0) break;
+                if (values.getUint32(cell - 4, true) !== 32)
+                    fail('invalid WASM cons header size', 'ESH_NUMERIC_ABI');
+            }
+            span(cell, 32, 8);
+            if (seen.has(cell)) fail('cyclic WASM cons list', 'ESH_NUMERIC_ABI');
+            if (cars.length >= maximumItems)
+                fail('WASM list reverse exceeds the browser item limit', 'ESH_NUMERIC_MEMORY');
+            seen.add(cell);
+            sourceCells.push({ start: tag === 8 ? cell - 8 : cell, end: cell + 32 });
+            cars.push(new Uint8Array(memory, cell, 16).slice());
+            current = new Uint8Array(memory, cell + 16, 16).slice();
+        }
+        for (const source of sourceCells) {
+            if (out < source.end && source.start < out + 16)
+                fail('WASM list reverse output overlaps an input cons cell', 'ESH_NUMERIC_ABI');
+        }
+        new Uint8Array(mem().buffer, out, 16).fill(0);
+        return transaction(() => {
+            let result = new Uint8Array(16);
+            for (const car of cars) {
+                const cell = consAllocateWithHeader(arena);
+                span(cell, 32, 8);
+                const buffer = mem().buffer;
+                new Uint8Array(buffer, cell, 16).set(car);
+                new Uint8Array(buffer, cell + 16, 16).set(result);
+                result = new Uint8Array(16);
+                result[0] = 8;
+                new DataView(result.buffer).setBigUint64(8, BigInt(cell), true);
+            }
+            new Uint8Array(mem().buffer, out, 16).set(result);
+        });
+    };
     const vectorAllocateWithHeader = (_arena, capacityValue) => transaction(() => {
         const capacity = uint(capacityValue);
         if (capacity >= (1 << 28)) fail('vector capacity exceeds browser limit', 'ESH_NUMERIC_MEMORY');
@@ -1096,6 +1205,9 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         arena_tape_get_node_count: tapeGetNodeCount,
         eshkol_unwrap_list_index: unwrapListIndex,
         eshkol_vref_unwrap_index: vrefUnwrapIndex,
+        eshkol_list_reverse_tagged: listReverseTagged,
+        eshkol_make_string_checked: makeStringChecked,
+        eshkol_string_byte_length: stringByteLength,
         memcmp: memoryCompare,
         memcpy: memoryCopy,
         memmove: memoryCopy,
@@ -1790,32 +1902,6 @@ class EshkolRuntime {
                 arena_hash_table_create_with_header: () => rt._bump(32) + 8,
                 arena_allocate_string_with_header: (arena, len) => rt._allocString(Number(len)),
                 // (make-string k [char]): the rules of the native runtime's
-                // eshkol_make_string_checked -- k an exact non-negative
-                // integer (tag 1), the fill a character (tag 4) written as
-                // UTF-8, a space when the fill pointer is null.
-                eshkol_make_string_checked: (arena, kPtr, fillPtr) => {
-                    const dv = new DataView(rt.memory.buffer);
-                    const base = (t) => (t >= 8 ? t : (t & 0x0F));
-                    const kType = base(dv.getUint8(Number(kPtr)));
-                    const k = dv.getBigInt64(Number(kPtr) + 8, true);
-                    if (kType !== 1 || k < 0n) throw new Error('Type error in make-string: expected non-negative exact integer');
-                    let cp = 32;
-                    if (Number(fillPtr) !== 0) {
-                        const fType = base(dv.getUint8(Number(fillPtr)));
-                        const c = Number(dv.getBigInt64(Number(fillPtr) + 8, true));
-                        if (fType !== 4 || c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF))
-                            throw new Error('Type error in make-string: expected character');
-                        cp = c;
-                    }
-                    const enc = new TextEncoder().encode(String.fromCodePoint(cp));
-                    const count = Number(k);
-                    const len = count * enc.length;
-                    const buf = rt._allocString(len);
-                    const mem = new Uint8Array(rt.memory.buffer);
-                    for (let i = 0; i < count; i++) mem.set(enc, Number(buf) + i * enc.length);
-                    mem[Number(buf) + len] = 0;
-                    return buf;
-                },
                 arena_allocate_closure_with_header: (_arena, funcPtr, packedInfo, sexprPtr, returnTypeInfo, namePtr) => {
                     return exact.transaction(() => {
                         const captures = Number(BigInt(packedInfo) & 0xffffffffn);
@@ -2164,7 +2250,6 @@ class EshkolRuntime {
                 hash_table_get: () => false,
                 hash_table_has_key: () => false,
                 hash_table_keys: () => 0,
-                eshkol_string_byte_length: (ptr) => BigInt(rt.readString(ptr).length),
                 eshkol_utf8_strlen: (ptr) => BigInt(Array.from(rt.readString(ptr)).length),
                 eshkol_utf8_ref: () => 0,
                 eshkol_utf8_substring: () => 0,
@@ -2263,7 +2348,6 @@ class EshkolRuntime {
                 __multi3: (alo, ahi, blo, bhi) => 0n,  // 128×128→128 mul; bignums route through eshkol_bignum_*
 
                 // Exact numeric imports are generated below.
-                eshkol_list_reverse_tagged:       (value) => value,
 
                 // Taylor towers remain outside this browser lane. Exact entry
                 // refuses at seeding; the ordinary scalar lane uses the shared
@@ -2334,10 +2418,12 @@ class EshkolRuntime {
                 eshkol_format_double: exact.imports.eshkol_format_double,
                 eshkol_fprint_double: exact.imports.eshkol_fprint_double,
                 eshkol_is_bignum_tagged: exact.imports.eshkol_is_bignum_tagged,
+                eshkol_make_string_checked: exact.imports.eshkol_make_string_checked,
                 // Checked eight-coefficient tensor jets; Taylor and reverse carriers refuse.
                 eshkol_jet_tensor_binary: exact.imports.eshkol_jet_tensor_binary,
                 eshkol_jet_tensor_matmul: exact.imports.eshkol_jet_tensor_matmul,
                 eshkol_list_to_vector_sret: exact.imports.eshkol_list_to_vector_sret,
+                eshkol_list_reverse_tagged: exact.imports.eshkol_list_reverse_tagged,
                 eshkol_is_rational_tagged_ptr: exact.imports.eshkol_is_rational_tagged_ptr,
                 eshkol_rational_binary_tagged_ptr: exact.imports.eshkol_rational_binary_tagged_ptr,
                 eshkol_rational_ceil: exact.imports.eshkol_rational_ceil,
@@ -2363,6 +2449,7 @@ class EshkolRuntime {
                 eshkol_unwrap_list_index: exact.imports.eshkol_unwrap_list_index,
                 eshkol_wasm_numeric_abi_check: exact.imports.eshkol_wasm_numeric_abi_check,
                 eshkol_vref_unwrap_index: exact.imports.eshkol_vref_unwrap_index,
+                eshkol_string_byte_length: exact.imports.eshkol_string_byte_length,
                 arena_allocate_tape: exact.imports.arena_allocate_tape,
                 arena_allocate_cons_with_header: exact.imports.arena_allocate_cons_with_header,
                 arena_allocate_multi_value: exact.imports.arena_allocate_multi_value,

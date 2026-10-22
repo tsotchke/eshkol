@@ -334,6 +334,58 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         const bytes = new TextEncoder().encode(text), p = header(bytes.length + 1, 1);
         new Uint8Array(mem().buffer, p, bytes.length).set(bytes); return p;
     };
+    const makeStringChecked = (_arena, lengthPtr, fillPtr) => transaction(() => {
+        lengthPtr = span(wasm32(lengthPtr), 16, 8);
+        const lengthType = baseType(lengthPtr), count = view().getBigInt64(lengthPtr + 8, true);
+        if (lengthType !== 1 || count < 0n)
+            fail('make-string: expected a non-negative exact integer', 'ESH_NUMERIC_TYPE');
+        let codepoint = 0x20;
+        if (fillPtr) {
+            fillPtr = span(wasm32(fillPtr), 16, 8);
+            const fillType = baseType(fillPtr), scalar = view().getBigInt64(fillPtr + 8, true);
+            if (fillType !== 4 || scalar < 0n || scalar > 0x10ffffn ||
+                (scalar >= 0xd800n && scalar <= 0xdfffn))
+                fail('make-string: expected a Unicode character', 'ESH_NUMERIC_TYPE');
+            codepoint = Number(scalar);
+        }
+        const encoded = new TextEncoder().encode(String.fromCodePoint(codepoint));
+        const byteLength = count * BigInt(encoded.length);
+        if (byteLength > 0xfffffffen)
+            fail('make-string: requested string exceeds the WASM header limit', 'ESH_NUMERIC_MEMORY');
+        const bytes = Number(byteLength), result = header(bytes + 1, 1);
+        const target = new Uint8Array(mem().buffer, result, bytes + 1);
+        if (encoded.length === 1) target.fill(encoded[0], 0, bytes);
+        else if (bytes) {
+            target.set(encoded, 0);
+            let initialized = encoded.length;
+            while (initialized < bytes) {
+                const copyLength = Math.min(initialized, bytes - initialized);
+                target.copyWithin(initialized, 0, copyLength);
+                initialized += copyLength;
+            }
+        }
+        target[bytes] = 0;
+        return result;
+    });
+    const stringByteLength = pointerValue => {
+        const pointer = wasm32(pointerValue);
+        if (!pointer) return 0n;
+        const buffer = mem().buffer;
+        if (pointer > buffer.byteLength) fail('invalid WASM string span', 'ESH_NUMERIC_ABI');
+        const v = new DataView(buffer);
+        if (pointer >= 8 && v.getUint8(pointer - 8) === 1) {
+            const size = v.getUint32(pointer - 4, true);
+            if (size > 0) {
+                if (pointer + size > buffer.byteLength)
+                    fail('invalid WASM string span', 'ESH_NUMERIC_ABI');
+                return BigInt(size - 1);
+            }
+        }
+        const bytes = new Uint8Array(buffer, pointer, buffer.byteLength - pointer);
+        const terminator = bytes.indexOf(0);
+        if (terminator < 0) fail('unterminated WASM C string', 'ESH_NUMERIC_ABI');
+        return BigInt(terminator);
+    };
     const numeric = p => {
         const t = baseType(p);
         return t === 1 || t === 2 || (t === 8 && [11, 19].includes(subtype(pointer(p))));
@@ -965,6 +1017,63 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
     };
     const tapeGetNodeCount = tapeValue => tapeSet().get(uint(tapeValue))?.nodes.length || 0;
     const consAllocateWithHeader = (_arena) => header(32, 0);
+    const listReverseTagged = (arenaValue, headValue, outValue) => {
+        const arena = wasm32(arenaValue), out = wasm32(outValue);
+        if (!out) return;
+        span(out, 16, 8);
+        const head = wasm32(headValue);
+        if (!arena || !head) {
+            new Uint8Array(mem().buffer, out, 16).fill(0);
+            return;
+        }
+        let current = new Uint8Array(mem().buffer, span(head, 16, 8), 16).slice();
+        const sourceCells = [], cars = [], seen = new Set();
+        const memory = mem().buffer, values = new DataView(memory);
+        const maximumItems = 1 << 20;
+        while (true) {
+            const tag = current[0];
+            if (tag !== 8 && tag !== 32) break;
+            const raw = new DataView(current.buffer, current.byteOffset, current.byteLength).getBigUint64(8, true);
+            if (!raw) break;
+            if (raw > 0xffffffffn) fail('cons pointer exceeds wasm32', 'ESH_NUMERIC_ABI');
+            const cell = Number(raw);
+            if (tag === 8) {
+                if (!cell || cell % 8 || cell < 8 || cell > memory.byteLength)
+                    fail('invalid WASM cons header span', 'ESH_NUMERIC_ABI');
+                const subtype = values.getUint8(cell - 8);
+                if (subtype !== 0) break;
+                if (values.getUint32(cell - 4, true) !== 32)
+                    fail('invalid WASM cons header size', 'ESH_NUMERIC_ABI');
+            }
+            span(cell, 32, 8);
+            if (seen.has(cell)) fail('cyclic WASM cons list', 'ESH_NUMERIC_ABI');
+            if (cars.length >= maximumItems)
+                fail('WASM list reverse exceeds the browser item limit', 'ESH_NUMERIC_MEMORY');
+            seen.add(cell);
+            sourceCells.push({ start: tag === 8 ? cell - 8 : cell, end: cell + 32 });
+            cars.push(new Uint8Array(memory, cell, 16).slice());
+            current = new Uint8Array(memory, cell + 16, 16).slice();
+        }
+        for (const source of sourceCells) {
+            if (out < source.end && source.start < out + 16)
+                fail('WASM list reverse output overlaps an input cons cell', 'ESH_NUMERIC_ABI');
+        }
+        new Uint8Array(mem().buffer, out, 16).fill(0);
+        return transaction(() => {
+            let result = new Uint8Array(16);
+            for (const car of cars) {
+                const cell = consAllocateWithHeader(arena);
+                span(cell, 32, 8);
+                const buffer = mem().buffer;
+                new Uint8Array(buffer, cell, 16).set(car);
+                new Uint8Array(buffer, cell + 16, 16).set(result);
+                result = new Uint8Array(16);
+                result[0] = 8;
+                new DataView(result.buffer).setBigUint64(8, BigInt(cell), true);
+            }
+            new Uint8Array(mem().buffer, out, 16).set(result);
+        });
+    };
     const vectorAllocateWithHeader = (_arena, capacityValue) => transaction(() => {
         const capacity = uint(capacityValue);
         if (capacity >= (1 << 28)) fail('vector capacity exceeds browser limit', 'ESH_NUMERIC_MEMORY');
@@ -1085,6 +1194,9 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         arena_tape_get_node_count: tapeGetNodeCount,
         eshkol_unwrap_list_index: unwrapListIndex,
         eshkol_vref_unwrap_index: vrefUnwrapIndex,
+        eshkol_list_reverse_tagged: listReverseTagged,
+        eshkol_make_string_checked: makeStringChecked,
+        eshkol_string_byte_length: stringByteLength,
         memcmp: memoryCompare,
         memcpy: memoryCopy,
         memmove: memoryCopy,

@@ -159,6 +159,11 @@
   "eshkol_is_bignum_tagged": [
     "tagged_ptr"
   ],
+  "eshkol_make_string_checked": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_ptr"
+  ],
   "eshkol_is_rational_tagged_ptr": [
     "tagged_ptr"
   ],
@@ -176,6 +181,11 @@
     "tensor_ptr",
     "i32",
     "cstring_ptr"
+  ],
+  "eshkol_list_reverse_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_out_ptr"
   ],
   "eshkol_list_to_vector_sret": [
     "tagged_out_ptr",
@@ -277,6 +287,9 @@
   ],
   "eshkol_tensor_operand_carrier_checked": [
     "tagged_ptr",
+    "cstring_ptr"
+  ],
+  "eshkol_string_byte_length": [
     "cstring_ptr"
   ],
   "eshkol_unwrap_list_index": [

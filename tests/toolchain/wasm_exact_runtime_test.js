@@ -40,6 +40,24 @@ function memcmpFixture() {
     return new Uint8Array([0,97,115,109,1,0,0,0,
         ...section(1, types), ...section(2, imports), ...section(7, exports)]);
 }
+function exactBridgeFixture() {
+    const types = [
+        3,
+        0x60, 3, 0x7f, 0x7f, 0x7f, 0,
+        0x60, 3, 0x7f, 0x7f, 0x7f, 1, 0x7f,
+        0x60, 1, 0x7f, 1, 0x7e,
+    ];
+    const imports = [3,
+        ...str('env'), ...str('eshkol_list_reverse_tagged'), 0, 0,
+        ...str('env'), ...str('eshkol_make_string_checked'), 0, 1,
+        ...str('env'), ...str('eshkol_string_byte_length'), 0, 2];
+    const exports = [3,
+        ...str('reverse'), 0, 0,
+        ...str('make_string'), 0, 1,
+        ...str('byte_length'), 0, 2];
+    return new Uint8Array([0,97,115,109,1,0,0,0,
+        ...section(1, types), ...section(2, imports), ...section(7, exports)]);
+}
 function load(file, className) {
     const context = { console, WebAssembly, TextEncoder, TextDecoder, Map, Set,
         Uint8Array, DataView, ArrayBuffer, document: { body: {} }, window: {} };
@@ -61,6 +79,176 @@ async function run(file, className) {
     assert.deepEqual(abi.eshkol_rational_floor_tagged,['arena_ptr','rational_payload_ptr','tagged_out_ptr']);
     assert.deepEqual(abi.eshkol_rational_compare_tagged_ptr,['arena_ptr','tagged_ptr','tagged_ptr','i32','tagged_out_ptr']);
     const memory = rt.memory || rt._importedMemory;
+    const bridgeWasm = await WebAssembly.instantiate(exactBridgeFixture(), { env });
+    const reverse = bridgeWasm.instance.exports.reverse;
+    const makeString = bridgeWasm.instance.exports.make_string;
+    const stringByteLength = bridgeWasm.instance.exports.byte_length;
+    const allocRaw = size => env.arena_allocate(1, size);
+    const taggedBytes = (tag, value = 0n) => {
+        const bytes = new Uint8Array(16); bytes[0] = tag;
+        new DataView(bytes.buffer).setBigUint64(8, BigInt.asUintN(64, BigInt(value)), true);
+        return bytes;
+    };
+    const copyBytes = (ptr, size) => new Uint8Array(memory.buffer, ptr, size).slice();
+    const storeTagged = (ptr, bytes) => new Uint8Array(memory.buffer, ptr, 16).set(bytes);
+    const allocateCons = (car, cdr) => {
+        const cell = env.arena_allocate_cons_with_header(1);
+        storeTagged(cell, car); storeTagged(cell + 16, cdr); return cell;
+    };
+    const headPointer = (ptr, tag = 8) => {
+        const slot = allocRaw(16); storeTagged(slot, taggedBytes(tag, BigInt(ptr))); return slot;
+    };
+    const readReversedCars = out => {
+        const bytes = new Uint8Array(memory.buffer), dv = new DataView(memory.buffer);
+        let tag = bytes[out], ptr = Number(dv.getBigUint64(out + 8, true));
+        const cars = [], cells = new Set();
+        while (tag === 8) {
+            assert.ok(ptr && !cells.has(ptr), `${file}: reverse result is an acyclic heap list`);
+            cells.add(ptr); cars.push(copyBytes(ptr, 16));
+            const cdr = ptr + 16; tag = bytes[cdr]; ptr = Number(dv.getBigUint64(cdr + 8, true));
+        }
+        assert.equal(tag, 0, `${file}: reverse result ends in null`);
+        assert.equal(ptr, 0, `${file}: null result has zero payload`);
+        return { cars, cells };
+    };
+    for (const name of ['eshkol_list_reverse_tagged', 'eshkol_make_string_checked', 'eshkol_string_byte_length'])
+        assert.equal(typeof env[name], 'function', `${file}: production bridge import ${name} exists`);
+    assert.equal(env.eshkol_list_reverse_tagged.length, 3, `${file}: reverse matches native three-pointer ABI`);
+    assert.equal(env.eshkol_make_string_checked.length, 3, `${file}: make-string matches native ABI`);
+    assert.equal(env.eshkol_string_byte_length.length, 1, `${file}: byte length matches native ABI`);
+
+    const integerValue = taggedBytes(1, -17n), characterValue = taggedBytes(4, 0x3bbn);
+    const rationalSlot = allocRaw(16); rt._exact.write(rationalSlot, { n: 7n, d: 3n });
+    const rationalValue = copyBytes(rationalSlot, 16);
+    const nullValue = new Uint8Array(16);
+    const tail = allocateCons(characterValue, nullValue);
+    const middle = allocateCons(rationalValue, taggedBytes(8, BigInt(tail)));
+    const first = allocateCons(integerValue, taggedBytes(8, BigInt(middle)));
+    const head = headPointer(first), reverseOut = allocRaw(16);
+    const inputSnapshots = [head, first - 8, middle - 8, tail - 8].map(ptr => ({ ptr, bytes: copyBytes(ptr, ptr === head ? 16 : 40) }));
+    reverse(1, head, reverseOut);
+    const reversed = readReversedCars(reverseOut);
+    assert.deepEqual(reversed.cars, [characterValue, rationalValue, integerValue], `${file}: proper list reverses full tagged values`);
+    for (const ptr of [first, middle, tail]) assert.ok(!reversed.cells.has(ptr), `${file}: reverse allocates fresh cons cells`);
+    for (const snapshot of inputSnapshots)
+        assert.deepEqual(copyBytes(snapshot.ptr, snapshot.bytes.length), snapshot.bytes, `${file}: input list remains untouched`);
+
+    const emptyHead = headPointer(0, 0), emptyOut = allocRaw(16);
+    new Uint8Array(memory.buffer, emptyOut, 16).fill(0xa5);
+    reverse(1, emptyHead, emptyOut);
+    assert.deepEqual([...copyBytes(emptyOut, 16)], Array(16).fill(0), `${file}: empty list writes a zeroed null tagged value`);
+
+    const dottedTail = taggedBytes(1, 99n), dottedCar = taggedBytes(1, 88n);
+    const dottedCell = allocateCons(dottedCar, dottedTail), dottedHead = headPointer(dottedCell), dottedOut = allocRaw(16);
+    const dottedSnapshot = copyBytes(dottedCell - 8, 40);
+    reverse(1, dottedHead, dottedOut);
+    assert.deepEqual(readReversedCars(dottedOut).cars, [dottedCar], `${file}: reverse drops a dotted tail`);
+    assert.deepEqual(copyBytes(dottedCell - 8, 40), dottedSnapshot, `${file}: dotted input remains untouched`);
+
+    const legacyCell = allocRaw(32), legacyCar = taggedBytes(2, bits(2.5));
+    storeTagged(legacyCell, legacyCar); storeTagged(legacyCell + 16, nullValue);
+    const legacyHead = headPointer(legacyCell, 32), legacyOut = allocRaw(16);
+    reverse(1, legacyHead, legacyOut);
+    assert.deepEqual(readReversedCars(legacyOut).cars, [legacyCar], `${file}: legacy CONS32 tag is supported`);
+
+    const malformedHead = headPointer(memory.buffer.byteLength + 8), malformedOut = allocRaw(16);
+    assert.throws(() => reverse(1, malformedHead, malformedOut), /invalid WASM cons header span/,
+        `${file}: malformed cons pointers are refused`);
+    const cyclicCell = env.arena_allocate_cons_with_header(1);
+    storeTagged(cyclicCell, integerValue); storeTagged(cyclicCell + 16, taggedBytes(8, BigInt(cyclicCell)));
+    const cyclicHead = headPointer(cyclicCell), cyclicOut = allocRaw(16), bumpBeforeCycle = rt._bumpPtr;
+    assert.throws(() => reverse(1, cyclicHead, cyclicOut), /cyclic WASM cons list/,
+        `${file}: cyclic lists are refused`);
+    assert.equal(rt._bumpPtr, bumpBeforeCycle, `${file}: cycle rejection performs no allocation`);
+
+    const makeTaggedSlot = bytes => { const ptr = allocRaw(16); storeTagged(ptr, bytes); return ptr; };
+    const lengthOne = makeTaggedSlot(taggedBytes(1, 2n));
+    const lambdaFill = makeTaggedSlot(characterValue);
+    const lambdaString = makeString(1, lengthOne, lambdaFill);
+    const lambdaBytes = new TextEncoder().encode('λλ');
+    assert.equal(new DataView(memory.buffer).getUint8(lambdaString - 8), 1, `${file}: make-string allocates STRING subtype`);
+    assert.equal(new DataView(memory.buffer).getUint32(lambdaString - 4, true), lambdaBytes.length + 1,
+        `${file}: string header stores UTF-8 bytes plus terminator`);
+    assert.deepEqual([...new Uint8Array(memory.buffer, lambdaString, lambdaBytes.length + 1)], [...lambdaBytes, 0]);
+    assert.equal(stringByteLength(lambdaString), 4n, `${file}: byte length counts UTF-8 bytes`);
+    const defaultFillString = makeString(1, lengthOne, 0);
+    assert.deepEqual([...new Uint8Array(memory.buffer, defaultFillString, 3)], [0x20, 0x20, 0],
+        `${file}: omitted fill defaults to spaces`);
+    const zeroFill = makeTaggedSlot(taggedBytes(4, 0n));
+    const nulString = makeString(1, lengthOne, zeroFill);
+    assert.deepEqual([...new Uint8Array(memory.buffer, nulString, 3)], [0, 0, 0], `${file}: NUL fill is repeated and terminated`);
+    assert.equal(stringByteLength(nulString), 2n, `${file}: header length preserves embedded NULs`);
+    const rawCString = allocRaw(8);
+    new Uint8Array(memory.buffer, rawCString, 4).set([0xe2, 0x98, 0x83, 0]);
+    assert.equal(stringByteLength(rawCString), 3n, `${file}: raw C-string fallback counts bytes to NUL`);
+    assert.equal(stringByteLength(0), 0n, `${file}: null C-string pointer has zero byte length`);
+    assert.throws(() => makeString(1, makeTaggedSlot(taggedBytes(2, 2n)), lambdaFill), /non-negative exact integer/,
+        `${file}: inexact make-string length is rejected`);
+    assert.throws(() => makeString(1, makeTaggedSlot(taggedBytes(1, -1n)), lambdaFill), /non-negative exact integer/,
+        `${file}: negative make-string length is rejected`);
+    assert.throws(() => makeString(1, lengthOne, makeTaggedSlot(taggedBytes(1, 32n))), /Unicode character/,
+        `${file}: non-character fill is rejected`);
+    assert.throws(() => makeString(1, lengthOne, makeTaggedSlot(taggedBytes(4, 0xd800n))), /Unicode character/,
+        `${file}: surrogate fill is rejected`);
+    assert.throws(() => makeString(1, lengthOne, makeTaggedSlot(taggedBytes(4, 0x110000n))), /Unicode character/,
+        `${file}: out-of-range fill is rejected`);
+    assert.throws(() => makeString(1, makeTaggedSlot(taggedBytes(1, 0x7fffffffffffffffn)), lambdaFill), /header limit/,
+        `${file}: oversized string length is rejected without truncation`);
+
+    const isolatedRuntime = async maximum => {
+        const isolated = load(file, className), isolatedMemory = new WebAssembly.Memory({ initial: 20, maximum });
+        if (className === 'EshkolRepl') isolated.memory = isolatedMemory;
+        else isolated._importedMemory = isolatedMemory;
+        isolated.prepareWasm(wasm);
+        const isolatedEnv = isolated.createImports().env;
+        const isolatedModule = await WebAssembly.instantiate(exactBridgeFixture(), { env: isolatedEnv });
+        return { runtime: isolated, memory: isolatedMemory, env: isolatedEnv,
+            exports: isolatedModule.instance.exports };
+    };
+    const growth = await isolatedRuntime(22), growthMemory = growth.memory;
+    const growthLength = growth.env.arena_allocate(1, 16), growthFill = growth.env.arena_allocate(1, 16);
+    new Uint8Array(growthMemory.buffer, growthLength, 16).set(taggedBytes(1, 2n));
+    new Uint8Array(growthMemory.buffer, growthFill, 16).set(characterValue);
+    const growthCar = taggedBytes(1, 123n), growthCell = growth.env.arena_allocate_cons_with_header(1);
+    new Uint8Array(growthMemory.buffer, growthCell, 16).set(growthCar);
+    new Uint8Array(growthMemory.buffer, growthCell + 16, 16).set(nullValue);
+    const growthHead = growth.env.arena_allocate(1, 16), growthOut = growth.env.arena_allocate(1, 16);
+    new Uint8Array(growthMemory.buffer, growthHead, 16).set(taggedBytes(8, BigInt(growthCell)));
+    growth.runtime._bump(growthMemory.buffer.byteLength - growth.runtime._bumpPtr - 8);
+    let isolatedBufferBeforeGrowth = growthMemory.buffer;
+    const grownString = growth.exports.make_string(1, growthLength, growthFill);
+    assert.notEqual(growthMemory.buffer, isolatedBufferBeforeGrowth, `${file}: make-string handles memory growth`);
+    assert.equal(growth.exports.byte_length(grownString), 4n, `${file}: grown string remains readable through its new buffer`);
+    growth.runtime._bump(growthMemory.buffer.byteLength - growth.runtime._bumpPtr - 8);
+    isolatedBufferBeforeGrowth = growthMemory.buffer;
+    growth.exports.reverse(1, growthHead, growthOut);
+    assert.notEqual(growthMemory.buffer, isolatedBufferBeforeGrowth, `${file}: list reverse handles memory growth`);
+    const grownCell = Number(new DataView(growthMemory.buffer).getBigUint64(growthOut + 8, true));
+    assert.equal(new DataView(growthMemory.buffer).getUint8(growthOut), 8);
+    assert.deepEqual(new Uint8Array(growthMemory.buffer, grownCell, 16).slice(), growthCar,
+        `${file}: grown reverse preserves the car bytes`);
+    assert.equal(new DataView(growthMemory.buffer).getUint8(grownCell + 16), 0);
+
+    const exhausted = await isolatedRuntime(20), exhaustedMemory = exhausted.memory;
+    const exhaustedCar = taggedBytes(1, 5n), exhaustedCell = exhausted.env.arena_allocate_cons_with_header(1);
+    new Uint8Array(exhaustedMemory.buffer, exhaustedCell, 16).set(exhaustedCar);
+    new Uint8Array(exhaustedMemory.buffer, exhaustedCell + 16, 16).set(nullValue);
+    const exhaustedHead = exhausted.env.arena_allocate(1, 16), exhaustedOut = exhausted.env.arena_allocate(1, 16);
+    const exhaustedLength = exhausted.env.arena_allocate(1, 16), exhaustedFill = exhausted.env.arena_allocate(1, 16);
+    new Uint8Array(exhaustedMemory.buffer, exhaustedHead, 16).set(taggedBytes(8, BigInt(exhaustedCell)));
+    new Uint8Array(exhaustedMemory.buffer, exhaustedLength, 16).set(taggedBytes(1, 1n));
+    new Uint8Array(exhaustedMemory.buffer, exhaustedFill, 16).set(characterValue);
+    exhausted.runtime._bump(exhaustedMemory.buffer.byteLength - exhausted.runtime._bumpPtr - 8);
+    const exhaustedCheckpoint = exhausted.runtime._bumpPtr;
+    assert.throws(() => exhausted.exports.reverse(1, exhaustedHead, exhaustedOut), /arena exhausted/,
+        `${file}: reverse refuses allocation exhaustion`);
+    assert.equal(exhausted.runtime._bumpPtr, exhaustedCheckpoint, `${file}: reverse allocation failure rolls back`);
+    assert.deepEqual([...new Uint8Array(exhaustedMemory.buffer, exhaustedOut, 16)], Array(16).fill(0),
+        `${file}: failed reverse leaves the output as null`);
+    assert.throws(() => exhausted.exports.make_string(1, exhaustedLength, exhaustedFill), /arena exhausted/,
+        `${file}: make-string refuses allocation exhaustion`);
+    assert.equal(exhausted.runtime._bumpPtr, exhaustedCheckpoint, `${file}: make-string allocation failure rolls back`);
+
     const memcmpWasm = await WebAssembly.instantiate(memcmpFixture(), { env });
     const compare = memcmpWasm.instance.exports.compare;
     const left = 9000, right = 9016;
@@ -309,6 +497,6 @@ async function run(file, className) {
     assert.throws(()=>limited.eshkol_double_to_exact_tagged(1,Number.MIN_VALUE,result),/arena exhausted/);
     assert.equal(fresh._bumpPtr,checkpoint);assert.deepEqual([...new Uint8Array(isolated.buffer,result,16)],Array(16).fill(0xa5));
     const elevated=load(file,className).prepareWasm(fixture(true));assert.equal(elevated.staticEnd,2097153);assert.ok(elevated.heapFloor>2097153);
-    console.log(`${file}: ${conversions} exact finite conversions; ABI/consumers/rounding/growth/corruption/exhaustion PASS`);
+    console.log(`${file}: ${conversions} exact finite conversions; list/string/memcmp imports, ABI/consumers/rounding/growth/corruption/exhaustion PASS`);
 }
 (async()=>{await run('web/eshkol-repl.js','EshkolRepl');await run('site/static/eshkol-runtime.js','EshkolRuntime');})().catch(e=>{console.error(e);process.exitCode=1;});
