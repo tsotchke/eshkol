@@ -9641,6 +9641,16 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
         add_test(NAME vm_invalid_opcode_${_dispatch} COMMAND ${_dispatch_target})
         set_tests_properties(vm_invalid_opcode_${_dispatch} PROPERTIES TIMEOUT 30
             PASS_REGULAR_EXPRESSION "PASS: rejected" FAIL_REGULAR_EXPRESSION "FAIL:")
+        foreach(_behavior IN ITEMS
+                local_get_oob local_set_oob local_get_negative local_get_int32_max
+                wind_overflow callcc_bad_state local_get_valid local_set_valid
+                wind_valid callcc_valid)
+            add_test(NAME vm_dispatch_${_behavior}_${_dispatch}
+                COMMAND ${_dispatch_target} ${_behavior})
+            set_tests_properties(vm_dispatch_${_behavior}_${_dispatch} PROPERTIES TIMEOUT 30
+                PASS_REGULAR_EXPRESSION "PASS: ${_behavior}"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+        endforeach()
     endforeach()
     add_test(NAME standalone_eskb_admission COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/standalone_eskb_admission_test.py
