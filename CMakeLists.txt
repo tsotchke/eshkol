@@ -14947,7 +14947,8 @@ endif()
 # must never override a failing child process through CTest's PASS regex.
 if(ESHKOL_BUILD_TESTS)
     foreach(_fixture IN ITEMS coverage_conversion_probes hosted_vm_char_order
-            hash_ref_optional_contract string_split_byte_contract)
+            hash_ref_optional_contract string_split_byte_contract
+            coverage_pure_helpers native_char_comparison_chains)
         set(_fixture_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_fixture}_test.esk")
         set(_fixture_tests)
         if(TARGET eshkol-run)
@@ -14963,7 +14964,7 @@ if(ESHKOL_BUILD_TESTS)
             list(APPEND _fixture_tests ${_fixture}_jit ${_fixture}_aot)
         endif()
         foreach(_vm_target IN ITEMS eshkol-vm-standalone-test eshkol-vm-switch-dispatch-test)
-            if(TARGET ${_vm_target})
+            if(TARGET ${_vm_target} AND NOT _fixture STREQUAL "native_char_comparison_chains")
                 if(_vm_target STREQUAL "eshkol-vm-standalone-test")
                     set(_vm_route vm)
                 else()

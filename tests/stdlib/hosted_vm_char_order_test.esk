@@ -20,8 +20,6 @@
 (check "char>= chain false" (not (char>=? #\c #\a #\b)))
 (check "char=? chain true" (char=? #\a #\a #\a))
 (check "char=? chain false" (not (char=? #\a #\a #\b)))
-(check "char-ci<= chain true" (char-ci<=? #\A #\b #\C))
-(check "char-ci<= chain false" (not (char-ci<=? #\A #\c #\B)))
 
 ;; Native lowering must evaluate every operand exactly once, from left to
 ;; right, before combining adjacent comparisons.

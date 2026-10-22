@@ -1154,7 +1154,9 @@ int eshkol_builtin_min_arity(const char* name) {
 }
 
 static int vm_language_coverage_compilation_enabled(void) {
-#ifdef ESHKOL_VM_WASM
+#if defined(ESHKOL_VM_WASM) || defined(GENERATE_PRELUDE_CACHE)
+    /* Bootstrap bytes are a deterministic build artifact, not an executed
+     * coverage sample. An inherited trace directory must not alter them. */
     return 0;
 #else
     const char* trace_dir = getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
