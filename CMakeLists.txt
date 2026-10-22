@@ -14948,7 +14948,7 @@ endif()
 if(ESHKOL_BUILD_TESTS)
     foreach(_fixture IN ITEMS coverage_conversion_probes hosted_vm_char_order
             hash_ref_optional_contract string_split_byte_contract
-            coverage_pure_helpers native_char_comparison_chains)
+            coverage_pure_helpers coverage_interval_dataframe native_char_comparison_chains)
         set(_fixture_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_fixture}_test.esk")
         set(_fixture_tests)
         if(TARGET eshkol-run)
