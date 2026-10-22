@@ -186,6 +186,8 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
         } else if (sections[s].id == ESKB_SECTION_CODE) {
             uint64_t nf;
             if (eskb_read_leb(&sr, &nf) < 0 || nf > 4096 || nf > INT_MAX) return -1;
+            /* Each function needs at least six bytes: nonempty name length
+             * and byte, parameters, locals, upvalues, and code length. */
             if (nf > (sr.len - sr.pos) / 6) return -1;
             if (mod->opcodes || mod->functions) return -1;
 
@@ -225,6 +227,7 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
                     free(fname);
                     return -1;
                 }
+                /* Every instruction needs at least an opcode and one LEB byte. */
                 if (cl > (sr.len - sr.pos) / 2) {
                     free(fname);
                     return -1;

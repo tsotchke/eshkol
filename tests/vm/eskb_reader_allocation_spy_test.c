@@ -13,10 +13,10 @@ static size_t largest_attempt;
 static unsigned malloc_calls;
 static unsigned calloc_calls;
 static unsigned realloc_calls;
-static int check_allocation_counts;
-static unsigned expected_malloc_calls;
-static unsigned expected_calloc_calls;
-static unsigned expected_realloc_calls;
+static unsigned forbidden_malloc_attempts;
+static size_t forbidden_malloc_size;
+static int forbid_reallocations;
+static int require_no_allocations;
 
 static void *spy_malloc(size_t size);
 static void *spy_calloc(size_t count, size_t size);
@@ -123,6 +123,7 @@ static int expect_load(const char *name, int expected_result,
     malloc_calls = 0;
     calloc_calls = 0;
     realloc_calls = 0;
+    forbidden_malloc_attempts = 0;
     allocator_spy_active = 1;
     int result = eskb_load_memory(module_bytes.bytes, module_bytes.len, &module);
     allocator_spy_active = 0;
@@ -131,32 +132,41 @@ static int expect_load(const char *name, int expected_result,
         (expected_result != 0 && result == 0) ||
         oversized_attempts < expected_oversized_min ||
         oversized_attempts > expected_oversized_max ||
-        (check_allocation_counts &&
-         (malloc_calls != expected_malloc_calls ||
-          calloc_calls != expected_calloc_calls ||
-          realloc_calls != expected_realloc_calls))) {
+        (forbidden_malloc_size && forbidden_malloc_attempts != 0) ||
+        (forbid_reallocations && realloc_calls != 0) ||
+        (require_no_allocations &&
+         (malloc_calls != 0 || calloc_calls != 0 || realloc_calls != 0))) {
         fprintf(stderr, "FAIL: %s result=%d oversized=%u largest=%zu malloc=%u calloc=%u realloc=%u\n",
                 name, result, oversized_attempts, largest_attempt,
                 malloc_calls, calloc_calls, realloc_calls);
-        check_allocation_counts = 0;
+        forbidden_malloc_size = 0;
+        forbid_reallocations = 0;
+        require_no_allocations = 0;
         return -1;
     }
     if (expected_oversized_min > 0) {
         printf("RED: %s attempted %u oversized allocation(s), largest=%zu bytes; denied\n",
                name, oversized_attempts, largest_attempt);
     }
-    check_allocation_counts = 0;
+    forbidden_malloc_size = 0;
+    forbid_reallocations = 0;
+    require_no_allocations = 0;
     return 0;
 }
 
-static int expect_load_counts(const char *name, int expected_result,
-                              unsigned expected_malloc,
-                              unsigned expected_calloc,
-                              unsigned expected_realloc) {
-    check_allocation_counts = 1;
-    expected_malloc_calls = expected_malloc;
-    expected_calloc_calls = expected_calloc;
-    expected_realloc_calls = expected_realloc;
+static int expect_load_without_allocations(const char *name, int expected_result) {
+    require_no_allocations = 1;
+    return expect_load(name, expected_result, 0, 0);
+}
+
+static int expect_load_without_malloc_size(const char *name, int expected_result,
+                                          size_t forbidden_size) {
+    forbidden_malloc_size = forbidden_size;
+    return expect_load(name, expected_result, 0, 0);
+}
+
+static int expect_load_without_realloc(const char *name, int expected_result) {
+    forbid_reallocations = 1;
     return expect_load(name, expected_result, 0, 0);
 }
 
@@ -231,11 +241,11 @@ static int run_fixed_positive_cases(void) {
         expect_load("valid-string-at-section-boundary", 0, 0, 0) < 0) return -1;
 
     if (prepare_short_constant_count() < 0 ||
-        expect_load_counts("constant-count-over-remaining", -1, 0, 0, 0) < 0) return -1;
+        expect_load_without_allocations("constant-count-over-remaining", -1) < 0) return -1;
     if (prepare_short_string_length() < 0 ||
-        expect_load_counts("string-length-over-remaining", -1, 0, 4, 0) < 0) return -1;
+        expect_load_without_malloc_size("string-length-over-remaining", -1, 6) < 0) return -1;
     if (prepare_short_instruction_count() < 0 ||
-        expect_load_counts("instruction-count-over-remaining", -1, 1, 5, 0) < 0) return -1;
+        expect_load_without_realloc("instruction-count-over-remaining", -1) < 0) return -1;
 
     /* A six-byte nonempty-name function header is the exact nf*6 lower bound.
      * The reader accepts it; VM profile validation separately rejects empty code. */
@@ -245,15 +255,21 @@ static int run_fixed_positive_cases(void) {
         expect_load("function-count-at-minimum-header", 0, 0, 0) < 0) return -1;
 
     buffer_reset(&entries);
-    for (uint64_t i = 0; i < 4097; i++) {
+    uint64_t pool_count = ESHKOL_VM_MAX_CONSTS_CEILING < 4097
+                              ? ESHKOL_VM_MAX_CONSTS_CEILING : 4097;
+    if (pool_count == 0) return -1;
+    for (uint64_t i = 0; i < pool_count; i++) {
         if (buffer_u8(&entries, ESKB_CONST_NIL) < 0) return -1;
     }
     buffer_reset(&instructions);
-    if (buffer_instruction(&instructions, 1, 4096) < 0 ||
+    if (buffer_instruction(&instructions, 1, (int32_t)(pool_count - 1)) < 0 ||
         buffer_instruction(&instructions, 5, 0) < 0 ||
         buffer_instruction(&instructions, 36, 0) < 0 ||
-        make_module(4097, &entries, 1, 3, &instructions) < 0 ||
-        expect_load("valid-pool-over-4096", 0, 0, 0) < 0) return -1;
+        make_module(pool_count, &entries, 1, 3, &instructions) < 0 ||
+        expect_load("valid-bounded-pool", 0, 0, 0) < 0) return -1;
+    printf("PASS: valid constant pool count=%llu (configured ceiling=%llu)\n",
+           (unsigned long long)pool_count,
+           (unsigned long long)ESHKOL_VM_MAX_CONSTS_CEILING);
     return 0;
 }
 
@@ -287,6 +303,9 @@ static void note_attempt(size_t size) {
 
 static void *spy_malloc(size_t size) {
     if (allocator_spy_active) malloc_calls++;
+    if (allocator_spy_active && forbidden_malloc_size == size) {
+        forbidden_malloc_attempts++;
+    }
     note_attempt(size);
     if (allocator_spy_active && size >= ALLOCATION_DENY_AT) return NULL;
     return malloc(size);

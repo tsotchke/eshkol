@@ -9706,7 +9706,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
     endif()
 endif()
 
-if(ESHKOL_BUILD_TESTS AND NOT WIN32)
+if(ESHKOL_BUILD_TESTS)
     add_executable(eskb_reader_allocation_spy_test
         tests/vm/eskb_reader_allocation_spy_test.c)
     target_compile_features(eskb_reader_allocation_spy_test PRIVATE c_std_11)
