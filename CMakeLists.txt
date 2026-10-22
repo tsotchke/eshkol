@@ -14942,57 +14942,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|fatal signal")
 endif()
 
-# Keep the focused conversion, character, hash-ref, and string-split contracts
-# on every available interpreter route. VM routes are guarded independently so
-# a runner-only build still gets its JIT and AOT coverage.
+# Keep the focused contracts on each available execution route. The CMake
+# runners check exit status and the explicit verdict; a printed pass marker
+# must never override a failing child process through CTest's PASS regex.
 if(ESHKOL_BUILD_TESTS)
-    set(_stdlib_contract_fixtures
-        coverage_conversion_probes
-        hosted_vm_char_order
-        hash_ref_optional_contract
-        string_split_byte_contract)
-
-    foreach(_fixture IN LISTS _stdlib_contract_fixtures)
+    foreach(_fixture IN ITEMS coverage_conversion_probes hosted_vm_char_order
+            hash_ref_optional_contract string_split_byte_contract)
         set(_fixture_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_fixture}_test.esk")
-        set(_fixture_pass "RESULT: PASS")
-
+        set(_fixture_tests)
         if(TARGET eshkol-run)
-            add_test(NAME ${_fixture}_jit COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
-                $<TARGET_FILE:eshkol-run> -r "${_fixture_source}" "-L${CMAKE_CURRENT_BINARY_DIR}")
-            set_tests_properties(${_fixture}_jit PROPERTIES TIMEOUT 240
-                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
-                PASS_REGULAR_EXPRESSION "${_fixture_pass}"
-                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|FAILURES DETECTED|ERROR:|fatal signal")
-
+            add_test(NAME ${_fixture}_jit COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_EXE=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_fixture_source}"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DESHKOL_MODE=jit"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_direct.cmake")
             add_test(NAME ${_fixture}_aot COMMAND ${CMAKE_COMMAND}
                 "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_fixture_source}"
                 "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_fixture}_aot${CMAKE_EXECUTABLE_SUFFIX}"
                 "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
-            set_tests_properties(${_fixture}_aot PROPERTIES TIMEOUT 900
-                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
-                PASS_REGULAR_EXPRESSION "${_fixture_pass}"
-                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|FAILURES DETECTED|ERROR:|fatal signal|LLVM module verification failed")
+            list(APPEND _fixture_tests ${_fixture}_jit ${_fixture}_aot)
         endif()
-
-        if(TARGET eshkol-vm-standalone-test)
-            add_test(NAME ${_fixture}_vm_source COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
-                "${_fixture_source}")
-            set_tests_properties(${_fixture}_vm_source PROPERTIES TIMEOUT 300
+        foreach(_vm_target IN ITEMS eshkol-vm-standalone-test eshkol-vm-switch-dispatch-test)
+            if(TARGET ${_vm_target})
+                if(_vm_target STREQUAL "eshkol-vm-standalone-test")
+                    set(_vm_route vm)
+                else()
+                    set(_vm_route vm_switch)
+                endif()
+                add_test(NAME ${_fixture}_${_vm_route}_source COMMAND ${CMAKE_COMMAND}
+                    "-DESHKOL_EXE=$<TARGET_FILE:${_vm_target}>" "-DESHKOL_SOURCE=${_fixture_source}"
+                    "-DESHKOL_MODE=vm"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_direct.cmake")
+                list(APPEND _fixture_tests ${_fixture}_${_vm_route}_source)
+                if(TARGET eshkol-run)
+                    add_test(NAME ${_fixture}_${_vm_route}_eskb COMMAND ${CMAKE_COMMAND}
+                        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_VM=$<TARGET_FILE:${_vm_target}>"
+                        "-DESHKOL_SOURCE=${_fixture_source}"
+                        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_fixture}_${_vm_route}.eskb"
+                        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+                    list(APPEND _fixture_tests ${_fixture}_${_vm_route}_eskb)
+                endif()
+            endif()
+        endforeach()
+        if(_fixture_tests)
+            set_tests_properties(${_fixture_tests} PROPERTIES TIMEOUT 900
                 ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
-                PASS_REGULAR_EXPRESSION "${_fixture_pass}"
-                FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|FAILURES DETECTED|ERROR:|fatal signal")
-        endif()
-
-        if(TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
-            add_test(NAME ${_fixture}_vm_eskb COMMAND ${CMAKE_COMMAND}
-                "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
-                "-DESHKOL_SOURCE=${_fixture_source}" "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_fixture}.eskb"
-                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
-            set_tests_properties(${_fixture}_vm_eskb PROPERTIES TIMEOUT 900
-                ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
-                PASS_REGULAR_EXPRESSION "${_fixture_pass}"
                 FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|FAILURES DETECTED|ERROR:|fatal signal|LLVM module verification failed")
         endif()
     endforeach()
