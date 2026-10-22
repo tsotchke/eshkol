@@ -263,7 +263,7 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (hash-ref table key . rest)\n"
     "  (cond ((null? rest) (_hash-ref-raw table key #f))\n"
     "        ((null? (cdr rest)) (_hash-ref-raw table key (car rest)))\n"
-    "        (else (error \"hash-ref: expected 2 or 3 arguments\"))))\n"
+    "        (else (error \"Arity mismatch: hash-ref expects 2 or 3 arguments\"))))\n"
     /* ── Variadic wrappers around 2-arg builtins ──────────────────────── */
     "(define _append-2 append)\n"
     "(define (append . lists) (fold-right _append-2 '() lists))\n"
