@@ -2558,7 +2558,8 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
             if (operand < 0) return -1;
             if (pc + 1 >= mod->code_len ||
                 (mod->opcodes[pc + 1] != OP_CALL &&
-                 mod->opcodes[pc + 1] != OP_TAIL_CALL)) {
+                 mod->opcodes[pc + 1] != OP_TAIL_CALL &&
+                 mod->opcodes[pc + 1] != OP_TAIL_CALL_POPN)) {
                 return -1;
             }
             break;

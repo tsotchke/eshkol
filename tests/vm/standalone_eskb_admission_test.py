@@ -39,14 +39,21 @@ def string_constant(value):
 
 
 def eskb(instructions, constants=(), advertised_count=None):
-    # Tiny single-function containers; all count-controlled sections stay
-    # small so malformed inputs cannot trigger large allocations.
-    code = bytearray(leb(1))
-    code += leb(4) + b"main"
-    code += b"\0" + leb(0) + leb(0)
-    code += leb(len(instructions))
-    for opcode, operand in instructions:
-        code += instruction(opcode, operand)
+    return eskb_functions([("main", instructions)], constants,
+                          advertised_count)
+
+
+def eskb_functions(functions, constants=(), advertised_count=None):
+    # Tiny containers keep all count-controlled sections small so malformed
+    # inputs cannot trigger large allocations.
+    code = bytearray(leb(len(functions)))
+    for name, instructions in functions:
+        encoded_name = name.encode("ascii")
+        code += leb(len(encoded_name)) + encoded_name
+        code += b"\0" + leb(0) + leb(0)
+        code += leb(len(instructions))
+        for opcode, operand in instructions:
+            code += instruction(opcode, operand)
     constant_section = bytearray(leb(
         len(constants) if advertised_count is None else advertised_count))
     constant_section += b"".join(constants)
@@ -74,6 +81,23 @@ def main():
         root = pathlib.Path(tmp)
         cases = {
             "valid": eskb([(36, 0)]),
+            # The coverage call marker may precede all three compiler call
+            # opcodes. OP_TAIL_CALL_POPN packs local cleanup and argc in its
+            # operand; this fixture reaches a real zero-argument tail call.
+            "valid-coverage-call-tail-popn": eskb_functions(
+                [("main", [(24, 0), (65, 123), (70, 0)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(3 | (1 << 40))]),
+            # Guard cleanup belongs before the marker; the marker must still
+            # directly precede the tail-call opcode after cleanup.
+            "valid-coverage-call-guarded-tail": eskb_functions(
+                [("main", [(24, 0), (58, 0), (65, 123), (70, 0)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(4 | (1 << 40))]),
+            "invalid-coverage-call-successor": eskb_functions(
+                [("main", [(24, 0), (65, 123), (7, 0), (36, 0)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(4 | (1 << 40))]),
             "valid-constant-pool": eskb([(1, 0), (5, 0), (36, 0)],
                                         [int_constant(42)]),
             "valid-closure-constant": eskb([(24, 0), (5, 0), (36, 0)],
@@ -117,7 +141,9 @@ def main():
             paths[name].write_bytes(data)
         for binary in sys.argv[1:]:
             for name in ("valid", "valid-constant-pool", "valid-closure-constant",
-                         "valid-closure-long-constant"):
+                         "valid-closure-long-constant",
+                         "valid-coverage-call-tail-popn",
+                         "valid-coverage-call-guarded-tail"):
                 valid = run(binary, paths[name])
                 if valid.returncode != 0:
                     raise AssertionError(f"valid ESKB {name} rejected by {binary}: "
