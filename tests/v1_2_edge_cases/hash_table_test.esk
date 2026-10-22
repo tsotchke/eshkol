@@ -40,51 +40,53 @@
 (check "hash-count after 2 sets = 2" (= (hash-count ht) 2))
 
 ;; ---- Optional default contract across calls and procedure values ----
+(define contract-ht (make-hash-table))
+(hash-set! contract-ht "name" "Alice")
 (define ref-proc hash-ref)
-(define apply-ref2 (apply ref-proc (list ht "name")))
-(define apply-ref3 (apply ref-proc (list ht "missing-by-apply" 41)))
+(define apply-ref2 (apply ref-proc (list contract-ht "name")))
+(define apply-ref3 (apply ref-proc (list contract-ht "missing-by-apply" 41)))
 (check "direct hash-ref without default finds value"
-       (equal? (hash-ref ht "name") "Alice"))
+       (equal? (hash-ref contract-ht "name") "Alice"))
 (check "direct hash-ref with default finds value"
-       (equal? (hash-ref ht "name" "unused") "Alice"))
+       (equal? (hash-ref contract-ht "name" "unused") "Alice"))
 (check "first-class hash-ref accepts two arguments"
-       (equal? (ref-proc ht "name") "Alice"))
+       (equal? (ref-proc contract-ht "name") "Alice"))
 (check "first-class hash-ref accepts three arguments"
-       (equal? (ref-proc ht "name" "unused") "Alice"))
+       (equal? (ref-proc contract-ht "name" "unused") "Alice"))
 (check "apply hash-ref with two arguments"
        (equal? apply-ref2 "Alice"))
 (check "apply hash-ref with three arguments"
        (= apply-ref3 41))
 (check "hash-ref without default returns #f on miss"
-       (eq? (hash-ref ht "missing-without-default") #f))
-(hash-set! ht "stored-false" #f)
+       (eq? (hash-ref contract-ht "missing-without-default") #f))
+(hash-set! contract-ht "stored-false" #f)
 (check "stored #f remains present"
-       (and (hash-has-key? ht "stored-false")
-            (eq? (hash-ref ht "stored-false" 'sentinel) #f)))
+       (and (hash-has-key? contract-ht "stored-false")
+            (eq? (hash-ref contract-ht "stored-false" 'sentinel) #f)))
 (check "hash-ref preserves exact default"
-       (eqv? (hash-ref ht "exact-default-miss" 3/7) 3/7))
+       (eqv? (hash-ref contract-ht "exact-default-miss" 3/7) 3/7))
 
 ;; Arguments are evaluated once, in order, even when the key already exists.
 (define default-evals 0)
-(hash-set! ht "eager-hit" "present")
+(hash-set! contract-ht "eager-hit" "present")
 (check "default runs once on a hit"
-       (and (equal? (hash-ref ht "eager-hit"
+       (and (equal? (hash-ref contract-ht "eager-hit"
                               (begin (set! default-evals (+ default-evals 1)) 'unused))
                     "present")
             (= default-evals 1)))
 (check "default runs once on a miss"
-       (and (eq? (hash-ref ht "eager-miss"
+       (and (eq? (hash-ref contract-ht "eager-miss"
                            (begin (set! default-evals (+ default-evals 1)) 'fallback))
                  'fallback)
             (= default-evals 2)))
 (check "default side effects happen before the lookup"
-       (equal? (hash-ref ht "insert-during-default"
-                         (begin (hash-set! ht "insert-during-default" "inserted")
+       (equal? (hash-ref contract-ht "insert-during-default"
+                         (begin (hash-set! contract-ht "insert-during-default" "inserted")
                                 'fallback))
                "inserted"))
 (check "first-class hash-ref rejects extra arguments"
        (guard (e (#t #t))
-         (apply ref-proc (list ht "name" 1 2))
+         (apply ref-proc (list contract-ht "name" 1 2))
          #f))
 
 ;; ---- SRFI-125 long-name aliases ----

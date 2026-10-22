@@ -45301,7 +45301,7 @@ private:
             {"yoga-node-free!", {1}}, {"yoga-node-get-computed", {2}}, {"yoga-node-set!", {3}},
             // Hash tables (LE-16)
             {"hash-clear!", {1}}, {"hash-count", {1}}, {"hash-delete!", {2}},
-            {"hash-has-key?", {2}}, {"hash-keys", {1}}, {"hash-ref", {2}},
+            {"hash-has-key?", {2}}, {"hash-keys", {1}},
             {"hash-remove!", {2}}, {"hash-set!", {3}}, {"hash-table-clear!", {1}},
             {"hash-table-contains?", {2}}, {"hash-table-delete!", {2}}, {"hash-table-exists?", {2}},
             {"hash-table-keys", {1}}, {"hash-table-ref", {2}}, {"hash-table-ref/default", {3}},
