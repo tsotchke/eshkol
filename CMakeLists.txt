@@ -9706,6 +9706,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
     endif()
 endif()
 
+if(ESHKOL_BUILD_TESTS AND NOT WIN32)
+    add_executable(eskb_reader_allocation_spy_test
+        tests/vm/eskb_reader_allocation_spy_test.c)
+    target_compile_features(eskb_reader_allocation_spy_test PRIVATE c_std_11)
+    target_include_directories(eskb_reader_allocation_spy_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend)
+    eshkol_apply_vm_limit_definitions(eskb_reader_allocation_spy_test)
+    add_test(NAME eskb_reader_allocation_spy
+        COMMAND eskb_reader_allocation_spy_test --expect-green)
+    set_tests_properties(eskb_reader_allocation_spy PROPERTIES TIMEOUT 15)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/linear_solve_portable_surface_regression.esk")
     add_test(

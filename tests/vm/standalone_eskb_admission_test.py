@@ -88,13 +88,13 @@ def main():
                 [(24, 0), (5, 0), (1, 1), (35, 0), (36, 0)],
                 [float_constant(0.0), string_constant("ADMISSION_MARKER")]),
             "invalid-closure-constant-index": eskb(
-                [(24, 1), (5, 0), (1, 0), (35, 0), (36, 0)],
+                [(24, 2), (5, 0), (1, 0), (35, 0), (36, 0)],
                 [int_constant(0), string_constant("ADMISSION_MARKER")]),
             "invalid-closure-long-constant-type": eskb(
                 [(67, 0), (68, 0), (5, 0), (1, 1), (35, 0), (36, 0)],
                 [float_constant(0.0), string_constant("ADMISSION_MARKER")]),
             "invalid-closure-long-constant-index": eskb(
-                [(67, 1), (68, 0), (5, 0), (1, 0), (35, 0), (36, 0)],
+                [(67, 2), (68, 0), (5, 0), (1, 0), (35, 0), (36, 0)],
                 [int_constant(0), string_constant("ADMISSION_MARKER")]),
             # Advertised pool records are intentionally tiny. These exercise
             # EOF and count/entry mismatches without approaching the profile

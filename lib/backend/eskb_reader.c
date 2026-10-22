@@ -65,6 +65,7 @@ static int eskb_read_string_alloc(EskbReader* r, char** out, size_t* actual_len)
     if (!out) return -1;
     *out = NULL;
     if (eskb_read_leb(r, &slen64) < 0 || slen64 > SIZE_MAX - 1) return -1;
+    if (slen64 > r->len - r->pos) return -1;
 
     size_t slen = (size_t)slen64;
     char* s = (char*)malloc(slen + 1);
@@ -139,6 +140,8 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
         if (sections[s].id == ESKB_SECTION_CONST) {
             uint64_t nc;
             if (eskb_read_leb(&sr, &nc) < 0 || nc > INT_MAX) return -1;
+            if (nc > ESHKOL_VM_MAX_CONSTS_CEILING ||
+                nc > sr.len - sr.pos) return -1;
             if (mod->const_types) return -1;
 
             mod->n_constants = (int)nc;
@@ -183,6 +186,7 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
         } else if (sections[s].id == ESKB_SECTION_CODE) {
             uint64_t nf;
             if (eskb_read_leb(&sr, &nf) < 0 || nf > 4096 || nf > INT_MAX) return -1;
+            if (nf > (sr.len - sr.pos) / 6) return -1;
             if (mod->opcodes || mod->functions) return -1;
 
             mod->n_functions = (int)nf;
@@ -218,6 +222,10 @@ static int eskb_parse_payload(const uint8_t* payload, size_t payload_len, EskbMo
                     return -1;
                 }
                 if (mod->code_len > INT_MAX - (int)cl) {
+                    free(fname);
+                    return -1;
+                }
+                if (cl > (sr.len - sr.pos) / 2) {
                     free(fname);
                     return -1;
                 }
