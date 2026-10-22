@@ -1,0 +1,112 @@
+;;; Focused, deterministic coverage for remaining pure interval/dataframe gaps
+;;; plus adjacent small CPU-only helpers from the same coverage tranche.
+(require stdlib)
+(require core.ad.interval)
+(require core.ad.rigorous_interval)
+(require core.data.csv)
+(require core.data.dataframe)
+(require core.alist)
+(require core.list.compound)
+(require core.list.search)
+(require core.logic.types)
+(require core.logic.predicates)
+(require core.numeric_extras)
+(require core.control.trampoline)
+
+(define failures 0)
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+(define (captured thunk)
+  (let ((port (open-output-string)))
+    (parameterize ((current-output-port port)) (thunk))
+    (get-output-string port)))
+(define (encloses-near? iv lo hi)
+  (and (<= (- lo 1e-12) (car iv))
+       (<= (car iv) (+ lo 1e-12))
+       (<= (- hi 1e-12) (cdr iv))
+       (<= (cdr iv) (+ hi 1e-12))))
+
+;; Transcendental ranges must include extrema inside the input interval.
+(check "interval-exp maps monotone endpoints and widens outward"
+       (encloses-near? (interval-exp (cons 0.0 1.0)) 1.0 2.718281828459045))
+(check "interval-log maps positive monotone endpoints"
+       (encloses-near? (interval-log (cons 1.0 2.718281828459045)) 0.0 1.0))
+(check "interval-sin includes the interior maximum"
+       (let ((iv (interval-sin (cons 0.0 3.141592653589793))))
+         (and (<= -1e-12 (car iv))
+              (<= (car iv) 0.0)
+              (<= 1.0 (cdr iv))
+              (<= (cdr iv) (+ 1.0 1e-12)))))
+(check "interval-cos includes the interior minimum"
+       (let ((iv (interval-cos (cons 0.0 3.141592653589793))))
+         (and (<= (car iv) -1.0)
+              (<= (- -1.0 1e-12) (car iv))
+              (<= 1.0 (cdr iv))
+              (<= (cdr iv) (+ 1.0 1e-12)))))
+(check "interval-pow even exponent handles a sign crossing"
+       (encloses-near? (interval-pow (cons -2.0 3.0) 2) 0.0 9.0))
+(check "interval-union takes the outer endpoints"
+       (equal? (interval-union (cons -2 1) (cons 0 5)) (cons -2 5)))
+(check "interval-widen adds the requested absolute margin"
+       (equal? (interval-widen (cons 2 4) 1/2) (cons 3/2 9/2)))
+
+;; Rigorous exact-endpoint operations preserve exact values.
+(check "ia-neg reverses and negates exact endpoints"
+       (equal? (ia-neg (cons 1/3 2/3)) (cons -2/3 -1/3)))
+(check "ia-scale handles a negative exact scalar"
+       (equal? (ia-scale (cons -2 3) -2) (cons -6 4)))
+
+;; Dataframe transforms preserve headers, row order, and untouched columns.
+(define frame (cons '("name" "score")
+                    '(("Ada" 8) ("Bo" 3) ("Cy" 10))))
+(check "csv-filter keeps matching rows in source order"
+       (equal? (csv-filter frame (lambda (row) (>= (cadr row) 8)))
+               '(("name" "score") ("Ada" 8) ("Cy" 10))))
+(check "csv-map-column changes only the selected values"
+       (equal? (csv-map-column frame "score" (lambda (n) (+ n 1)))
+               '(("name" "score") ("Ada" 9) ("Bo" 4) ("Cy" 11))))
+(check "csv-map-column leaves a frame unchanged for a missing column"
+       (equal? (csv-map-column frame "missing" (lambda (x) x)) frame))
+(check "csv-describe prints the documented shape and columns"
+       (string=? (captured (lambda () (csv-describe frame)))
+                 "DataFrame: 3 rows x 2 columns\nColumns: name, score\n"))
+(check "csv-stringify quotes commas and escapes embedded quotes"
+       (string=? (csv-stringify '(("name" "note") ("Ada" "a,b") ("Bo" "x\"y")))
+                 "name,note\nAda,\"a,b\"\nBo,\"x\"\"y\""))
+
+;; Mutable positional update and positional accessors.
+(define mutable-items (list 'a 'b 'c))
+(list-set! mutable-items 1 'updated)
+(check "list-set! mutates the requested zero-based slot"
+       (equal? mutable-items '(a updated c)))
+(check "fifth selects the fifth element"
+       (eq? (fifth '(a b c d e f)) 'e))
+(check "sixth selects the sixth element"
+       (eq? (sixth '(a b c d e f)) 'f))
+
+;; Predicate wrappers retain their base predicate meanings.
+(check "is-null? distinguishes the empty list" (and (is-null? '()) (not (is-null? '(x)))))
+(check "is-pair? distinguishes a pair from the empty list"
+       (and (is-pair? '(x)) (not (is-pair? '()))))
+(check "is-positive? accepts positive values only"
+       (and (is-positive? 3) (not (is-positive? 0))))
+(check "is-zero? recognizes exact zero"
+       (and (is-zero? 0) (not (is-zero? -1))))
+(check "alist-ref-or returns present value or missing-key default"
+       (and (= (alist-ref-or '((a . 7)) 'a 99) 7)
+            (= (alist-ref-or '((a . 7)) 'b 99) 99)))
+(check "exact-integer-sqrt returns root and remainder"
+       (call-with-values (lambda () (exact-integer-sqrt 99))
+         (lambda (root rem) (and (= root 9) (= rem 18)))))
+
+;; Bounce is a thunk constructor; done returns the final value unchanged.
+(check "bounce and done complete through the trampoline"
+       (= (trampoline (bounce (lambda () (done 42)))) 42))
+(check "done returns its value directly" (eq? (done 'finished) 'finished))
+
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
