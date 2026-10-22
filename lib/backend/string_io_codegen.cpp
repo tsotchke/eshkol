@@ -1358,6 +1358,7 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     llvm::Value* delim_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!str_arg || !delim_arg) return nullptr;
+    tagged_.requireContainer(str_arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-split", "string");
 
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::Function* memcpy_func = ctx_.funcs().getMemcpy();
@@ -1383,16 +1384,16 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::BasicBlock& entry_block = parent_func->getEntryBlock();
     ctx_.builder().SetInsertPoint(&entry_block, entry_block.begin());
     llvm::Value* delim_ptr_storage = ctx_.builder().CreateAlloca(ctx_.ptrType(), nullptr, "delim_ptr_storage");
+    llvm::Value* char_length_slot = ctx_.builder().CreateAlloca(
+        ctx_.taggedValueType(), nullptr, "split_char_length");
+    llvm::Value* char_fill_slot = ctx_.builder().CreateAlloca(
+        ctx_.taggedValueType(), nullptr, "split_char_fill");
     ctx_.builder().restoreIP(saved_ip_delim);
 
     ctx_.builder().CreateCondBr(is_char, char_delim_block, str_delim_block);
 
     // Encode the character through the runtime's checked UTF-8 constructor.
     ctx_.builder().SetInsertPoint(char_delim_block);
-    llvm::Value* char_length_slot = ctx_.builder().CreateAlloca(
-        ctx_.taggedValueType(), nullptr, "split_char_length");
-    llvm::Value* char_fill_slot = ctx_.builder().CreateAlloca(
-        ctx_.taggedValueType(), nullptr, "split_char_fill");
     ctx_.builder().CreateStore(tagged_.packInt64(1), char_length_slot);
     ctx_.builder().CreateStore(delim_arg, char_fill_slot);
     llvm::FunctionCallee make_char_string = ctx_.module().getOrInsertFunction(
@@ -1406,6 +1407,7 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
 
     // Handle string delimiter: use directly
     ctx_.builder().SetInsertPoint(str_delim_block);
+    tagged_.requireContainer(delim_arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-split", "string or character");
     llvm::Value* delim_ptr_int = tagged_.unpackInt64(delim_arg);
     llvm::Value* str_delim_ptr = ctx_.builder().CreateIntToPtr(delim_ptr_int, ctx_.ptrType());
     ctx_.builder().CreateStore(str_delim_ptr, delim_ptr_storage);
@@ -1431,8 +1433,6 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::BasicBlock* not_found = llvm::BasicBlock::Create(ctx_.context(), "split_not_found", parent_func);
     llvm::BasicBlock* add_segment = llvm::BasicBlock::Create(ctx_.context(), "split_add", parent_func);
     llvm::BasicBlock* loop_end = llvm::BasicBlock::Create(ctx_.context(), "split_end", parent_func);
-    llvm::BasicBlock* empty_delim_test = llvm::BasicBlock::Create(ctx_.context(), "split_empty_delim_test", parent_func);
-    llvm::BasicBlock* empty_delim_body = llvm::BasicBlock::Create(ctx_.context(), "split_empty_delim", parent_func);
 
     // Create allocas at function entry
     llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
@@ -1448,26 +1448,7 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(null_val, result_ptr);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), pos_ptr);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), segment_start_ptr);
-    ctx_.builder().CreateBr(empty_delim_test);
-
-    ctx_.builder().SetInsertPoint(empty_delim_test);
-    llvm::Value* has_empty_delim = ctx_.builder().CreateICmpEQ(
-        delim_len, llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    ctx_.builder().CreateCondBr(has_empty_delim, empty_delim_body, search_cond);
-
-    ctx_.builder().SetInsertPoint(empty_delim_body);
-    llvm::Value* whole_size = ctx_.builder().CreateZExtOrTrunc(str_len, ctx_.sizeType());
-    llvm::Value* whole_buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, whole_size});
-    ctx_.builder().CreateCall(memcpy_func, {whole_buf, str_ptr, whole_size});
-    llvm::Value* whole_term = ctx_.builder().CreateGEP(ctx_.int8Type(), whole_buf, str_len);
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), whole_term);
-    llvm::Value* whole_tagged = tagged_.packHeapPtr(whole_buf);
-    llvm::Value* whole_cons_ptr = cons_create_callback_(whole_tagged, null_val, callback_context_);
-    llvm::Value* whole_cons = tagged_.packHeapPtr(
-        ctx_.builder().CreateIntToPtr(whole_cons_ptr, ctx_.ptrType()));
-    ctx_.builder().CreateStore(whole_cons, result_ptr);
-    ctx_.builder().CreateBr(loop_end);
+    ctx_.builder().CreateBr(search_cond);
 
     // Search condition: pos <= str_len
     ctx_.builder().SetInsertPoint(search_cond);

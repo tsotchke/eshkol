@@ -13453,7 +13453,7 @@ tensor_inverse_done:
         Value ch = vm_pop(vm), idx = vm_pop(vm), s_val = vm_pop(vm);
         if (!vm_require_container(vm, s_val, VM_CONTAINER_STRING, "string-set!", "a string")) break;
         if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
-            VmString* s = vm_value_as_string(vm, s_val);
+            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
             VmString* result = vm_string_set(&vm->heap.regions, s, (int)as_number(idx), (int)as_number(ch));
             if (result) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, result); }
             else vm_push(vm, NIL_VAL);
@@ -18398,7 +18398,7 @@ tensor_inverse_done:
         Value result = NIL_VAL;
         if (s_val.type == VAL_STRING &&
             (d_val.type == VAL_STRING || d_val.type == VAL_CHAR)) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
+            VmString* s = vm_value_as_string(vm, s_val);
             VmString* d = vm_value_as_string_or_char(vm, d_val);
             if (s && d) {
                 int slen = s->byte_len, dlen = d->byte_len;
@@ -18406,7 +18406,6 @@ tensor_inverse_done:
                 int pos = 0;
                 /* The empty delimiter follows the native string-split rule:
                  * return one element containing the original string. */
-                if (dlen == 0) pos = slen;
                 while (!failed) {
                     int found = -1;
                     if (dlen > 0 && pos <= slen - dlen) {
@@ -18437,7 +18436,7 @@ tensor_inverse_done:
                     pos = found + dlen;
                 }
                 if (failed) {
-                    vm_push(vm, NIL_VAL);
+                    vm_raise_error_msg(vm, "string-split: cannot allocate result");
                     break;
                 }
                 /* reverse */
@@ -18450,7 +18449,9 @@ tensor_inverse_done:
                     vm->heap.objects[rp2]->cons.car = car2; vm->heap.objects[rp2]->cons.cdr = rev2;
                     rev2 = PAIR_VAL(rp2); result = vm->heap.objects[result.as.ptr]->cons.cdr;
                 }
-                vm_push(vm, failed ? NIL_VAL : rev2); break;
+                if (failed) vm_raise_error_msg(vm, "string-split: cannot allocate result");
+                else vm_push(vm, rev2);
+                break;
             }
         }
         vm_push(vm, NIL_VAL); break; }
