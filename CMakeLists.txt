@@ -2586,6 +2586,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/bridge/space_form_ad.cpp
   lib/bridge/tensorcore_adapter.cpp
   lib/core/crypto_primitives.c
+  lib/core/keychain_native.c
   lib/core/dnc_api.c
   lib/core/image_io.c
   lib/core/inference.cpp
@@ -3302,6 +3303,8 @@ endif()
 # exe/eshkol-run.cpp) is covered separately — see append_host_runtime_link_args()
 # there for non-Apple, and the hardcoded Apple framework list for Apple.
 if(APPLE)
+    target_link_libraries(eshkol-runtime PUBLIC "-framework CoreFoundation")
+    target_link_libraries(eshkol-static PUBLIC "-framework CoreFoundation")
     target_link_libraries(eshkol-runtime PUBLIC "-framework Security")
     target_link_libraries(eshkol-static PUBLIC "-framework Security")
 elseif(WIN32)
@@ -4014,6 +4017,17 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     endif()
     target_link_libraries(model_io_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME model_io_test COMMAND model_io_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND APPLE)
+    add_executable(keychain_native_mock_test
+        lib/core/keychain_native.c
+        tests/core/keychain_native_mock_test.c)
+    target_include_directories(keychain_native_mock_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/lib/core")
+    target_link_libraries(keychain_native_mock_test PRIVATE
+        "-framework CoreFoundation")
+    add_test(NAME keychain_native_mock_test COMMAND keychain_native_mock_test)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND

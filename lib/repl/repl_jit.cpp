@@ -14,6 +14,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/stdlib_identity.h>
 #include <eshkol/runtime_exports.h>
+#include "../core/keychain_native.h"
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/i128_runtime.h>
@@ -1423,6 +1424,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_capability_runtime_clear);
     ADD_SYMBOL(eshkol_capability_runtime_begin_install);
     ADD_SYMBOL(eshkol_capability_runtime_allow);
+    ADD_SYMBOL(eshkol_keychain_size);
+    ADD_SYMBOL(eshkol_keychain_get_into);
+    ADD_SYMBOL(eshkol_keychain_set);
+    ADD_SYMBOL(eshkol_keychain_delete);
+    ADD_SYMBOL(eshkol_keychain_has);
     ADD_SYMBOL(eshkol_capability_runtime_is_active);
     ADD_SYMBOL(eshkol_capability_runtime_allows);
     ADD_SYMBOL(eshkol_capability_runtime_allows_file_mode);
