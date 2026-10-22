@@ -9692,6 +9692,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
         $<TARGET_FILE:eshkol-vm-standalone-test>
         $<TARGET_FILE:eshkol-vm-switch-dispatch-test>)
     set_tests_properties(standalone_eskb_admission PROPERTIES TIMEOUT 20)
+    if(TARGET eshkol-run)
+        add_test(NAME eskb_compiler_tensor_literal_admission
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/eskb_compiler_admission_test.py
+                $<TARGET_FILE:eshkol-run>
+                $<TARGET_FILE:eshkol-vm-standalone-test>
+                $<TARGET_FILE:eshkol-vm-switch-dispatch-test>)
+        set_tests_properties(eskb_compiler_tensor_literal_admission PROPERTIES
+            TIMEOUT 240
+            PASS_REGULAR_EXPRESSION "PASS: compiler-produced tensor-literal ESKB admission and invalid-opcode rejection"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND

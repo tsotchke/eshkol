@@ -2457,6 +2457,13 @@ static int eshkol_vm_validate_stack_operand(int32_t operand) {
     return operand >= 0 && operand < ESHKOL_VM_STACK_SIZE;
 }
 
+static int eshkol_vm_validate_vec_create_operand(int32_t operand) {
+    /* Reader numeric tensor literals encode their count as -(count + 1).
+     * Decode in a wider type so INT32_MIN is rejected without overflowing. */
+    int64_t count = operand < 0 ? -(int64_t)operand - 1 : operand;
+    return count >= 0 && count < ESHKOL_VM_STACK_SIZE;
+}
+
 static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
     if (!mod) return -1;
     /* The pool grows on demand; the ceiling is the profile bound. */
@@ -2519,10 +2526,12 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
             break;
         case OP_CALL:
         case OP_TAIL_CALL:
-        case OP_VEC_CREATE:
         case OP_POPN:
         case OP_PACK_REST:
             if (!eshkol_vm_validate_stack_operand(operand)) return -1;
+            break;
+        case OP_VEC_CREATE:
+            if (!eshkol_vm_validate_vec_create_operand(operand)) return -1;
             break;
         case OP_JUMP:
         case OP_JUMP_IF_FALSE:
@@ -2876,10 +2885,14 @@ int main(int argc, char** argv) {
                 EskbModule mod;
                 if (eskb_load_file(input, &mod) == 0) {
                     EshkolVmLoadOptions load_options;
-                    if (eshkol_vm_validate_module_profile(&mod) != 0 ||
-                        eshkol_vm_default_load_options(&load_options) != 0 ||
+                    if (eshkol_vm_validate_module_profile(&mod) != 0) {
+                        fprintf(stderr, "ERROR: invalid ESKB VM bytecode profile in %s\n", input);
+                        eskb_module_free(&mod);
+                        return 1;
+                    }
+                    if (eshkol_vm_default_load_options(&load_options) != 0 ||
                         eshkol_vm_validate_load_policy(&mod, &load_options) != 0) {
-                        fprintf(stderr, "ERROR: invalid or disallowed ESKB module in %s\n", input);
+                        fprintf(stderr, "ERROR: ESKB module disallowed by VM load policy in %s\n", input);
                         eskb_module_free(&mod);
                         return 1;
                     }
