@@ -38,6 +38,11 @@ import re
 import sys
 import time
 
+try:
+    import resource
+except ImportError:  # pragma: no cover - unavailable on Windows
+    resource = None
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 sys.path.insert(0, os.path.join(REPO, "tests", "ad_adversarial"))
@@ -177,7 +182,7 @@ def repo_relative_or_absolute(path):
     return absolute.replace("\\", "/")
 
 
-def load_runtime_evidence(trace_dirs):
+def load_runtime_evidence(trace_dirs, progress_path=None):
     """Parse strict TSV traces and return execution-backed surface names.
 
     P records identify exact source spelling. O/C records prove evaluation at
@@ -196,7 +201,10 @@ def load_runtime_evidence(trace_dirs):
         raise RuntimeError("no runtime language-coverage TSV files found in: %s"
                            % ", ".join(trace_dirs))
 
-    parsed = []
+    started_at = time.monotonic()
+    parsed = set()
+    normalized_sources = {}
+    p_sources = set()
     executed_locations = set()
     executed_positions = set()
     accepted_locations = set()
@@ -209,7 +217,34 @@ def load_runtime_evidence(trace_dirs):
     rejected_forms = set()
     counts = {kind: 0 for kind in ("P", "A", "G", "O", "C", "R", "V")}
 
-    for path in trace_paths:
+    def write_progress(files_done, last_file, status="running"):
+        if not progress_path:
+            return
+        peak_rss = None
+        if resource is not None:
+            peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform != "darwin":
+                peak_rss *= 1024
+        progress = {
+            "status": status,
+            "files_done": files_done,
+            "files_total": len(trace_paths),
+            "Pcount": counts["P"],
+            "uniqueP": len(parsed),
+            "sources": len(p_sources),
+            "elapsed_seconds": time.monotonic() - started_at,
+            "rss_peak_bytes": peak_rss,
+            "last_completed_file": last_file,
+        }
+        parent = os.path.dirname(os.path.abspath(progress_path))
+        os.makedirs(parent, exist_ok=True)
+        temporary_path = "%s.%d.tmp" % (progress_path, os.getpid())
+        with open(temporary_path, "w", encoding="utf-8") as fh:
+            json.dump(progress, fh, sort_keys=True)
+            fh.write("\n")
+        os.replace(temporary_path, progress_path)
+
+    for file_index, path in enumerate(trace_paths, 1):
         with open(path, encoding="utf-8", errors="strict") as fh:
             for line_number, raw in enumerate(fh, 1):
                 raw = raw.rstrip("\n")
@@ -222,7 +257,11 @@ def load_runtime_evidence(trace_dirs):
                     raise RuntimeError("malformed runtime trace %s:%d: %r"
                                        % (path, line_number, raw))
                 try:
-                    source = normalize_trace_source(fields[1])
+                    raw_source = fields[1]
+                    if raw_source not in normalized_sources:
+                        normalized_sources[raw_source] = normalize_trace_source(
+                            raw_source)
+                    source = normalized_sources[raw_source]
                     line = int(fields[2])
                     column = int(fields[3])
                     operation = int(fields[4]) if kind != "C" else None
@@ -232,7 +271,8 @@ def load_runtime_evidence(trace_dirs):
                                        % (path, line_number, exc)) from exc
                 counts[kind] += 1
                 if kind == "P":
-                    parsed.append((location, fields[5]))
+                    parsed.add((location, fields[5]))
+                    p_sources.add(source)
                 elif kind == "V":
                     # "@call" is a validated closure call; "@form" is the
                     # per-form OP_LANGUAGE_COVERAGE_FORM marker the VM
@@ -260,6 +300,7 @@ def load_runtime_evidence(trace_dirs):
                 elif kind == "G":
                     generated_locations.add(location)
                     generated_positions.add(location[:3])
+        write_progress(file_index, path)
 
     # Resolve executed direct Scheme callsites only against the checked-in
     # language manifest.  Refuse manifest collisions: an ambiguous marker can
@@ -313,6 +354,7 @@ def load_runtime_evidence(trace_dirs):
     if "delay-force" in covered:
         covered.add("%make-lazy-promise-force")
 
+    write_progress(len(trace_paths), trace_paths[-1], status="complete")
     return {
         "covered_names": covered,
         "direct_call_names": direct_calls,
@@ -610,6 +652,8 @@ def main():
                          "release cut or when the policy floor moves)")
     ap.add_argument("--runtime-trace-dir", action="append", required=True,
                     help="directory containing execution TSV traces (repeatable)")
+    ap.add_argument("--progress-json", default=None,
+                    help="optional per-file aggregation progress JSON path")
     ap.add_argument("--emit-runtime-event", action="store_true",
                     help="print ICC runtime_event JSON lines to stdout")
     ap.add_argument("--trace", default=None,
@@ -666,7 +710,8 @@ def main():
     heads_by_engine = {name: collect_heads(text)
                        for name, text in engine_text.items()}
     source_heads = set().union(*heads_by_engine.values())
-    runtime_evidence = load_runtime_evidence(args.runtime_trace_dir)
+    runtime_evidence = load_runtime_evidence(
+        args.runtime_trace_dir, progress_path=args.progress_json)
     runtime_names = runtime_evidence["covered_names"]
 
     covered = {k: v for k, v in surface.items() if k in runtime_names}
