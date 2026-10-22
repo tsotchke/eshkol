@@ -311,7 +311,7 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
     {
         enum class AstRoute {
             Call, If, Sequence, Let, Cond, And,
-            When, Case, Lambda, Guard, OtherOperations
+            When, Case, Lambda, Guard, Set, Quote, OtherOperations
         };
         switch (eshkol::routeAstOperation(op->op,
             eshkol::AstRouteGroup<AstRoute::Call, ESHKOL_CALL_OP>{},
@@ -330,11 +330,13 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             eshkol::AstRouteGroup<AstRoute::Case, ESHKOL_CASE_OP>{},
             eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
             eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
+            eshkol::AstRouteGroup<AstRoute::Quote, ESHKOL_QUOTE_OP>{},
             eshkol::AstRouteGroup<AstRoute::OtherOperations,
                 ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
                 ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
-                ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
-                ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
+                ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
+                ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
                 ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                 ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
                 ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
@@ -622,6 +624,17 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             }
             return true;
         }
+
+        case AstRoute::Set:
+            // The RHS executes before assignment, never in tail position. An
+            // unrelated mutation does not invalidate a later proven tail call;
+            // mutation of the loop binding itself must disable its backedge.
+            if (op->set_op.name && func_name == op->set_op.name) return false;
+            return allSelfCallsInTailPosition(op->set_op.value, func_name, false);
+
+        case AstRoute::Quote:
+            // Quoted data is not executed, including a list spelling a call.
+            return true;
 
         case AstRoute::OtherOperations:
             // An operation whose children this walker does not inspect cannot

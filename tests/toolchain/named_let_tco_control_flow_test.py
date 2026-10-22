@@ -8,6 +8,9 @@ import tempfile
 
 runner, lib_dir = sys.argv[1:]
 cases = {
+    "tail-loop-unrelated-mutation": ("(let ((sum 0)) (let loop ((i 100000)) (if (= i 0) sum (begin (set! sum (+ sum 1)) (loop (- i 1))))))", "100000"),
+    "tail-loop-quoted-data": ("(let loop ((i 100000)) (if (= i 0) 42 (begin '(loop 0) (loop (- i 1)))))", "42"),
+    "non-tail-assignment-rhs": ("(let loop ((i 3)) (if (= i 0) 42 (let ((x 0)) (set! x (loop (- i 1))) (+ x 1))))", "45"),
     "non-tail-match": ("(let loop ((i 3)) (match i (0 42) (_ (+ 1 (loop (- i 1))))))", "45"),
     "tail-match": ("(let loop ((i 10)) (match i (0 42) (_ (loop (- i 1)))))", "42"),
     "non-tail-values": ("(let loop ((i 3)) (if (= i 0) 42 (let-values (((x) (values (loop (- i 1))))) (+ x 1))))", "45"),
