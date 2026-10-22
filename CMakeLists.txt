@@ -4235,6 +4235,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# Shape-bound regressions use public language calls through both native front doors.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/tensor_shape_bounds_test.esk")
+    set(_tensor_shape_bounds_source
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/tensor_shape_bounds_test.esk")
+    add_test(NAME tensor_shape_bounds_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${_tensor_shape_bounds_source}")
+    set_tests_properties(tensor_shape_bounds_jit PROPERTIES
+        TIMEOUT 180
+        ENVIRONMENT "ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/tensor-shape-bounds-jit-cache"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    add_test(NAME tensor_shape_bounds_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${_tensor_shape_bounds_source}"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/tensor_shape_bounds_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(tensor_shape_bounds_aot PROPERTIES
+        TIMEOUT 240
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
 # Independent exact closed-form oracle and strict-boundary example coverage.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set(_certified_linear_example "${CMAKE_CURRENT_SOURCE_DIR}/examples/mathematics_certified_linear_solve.esk")
