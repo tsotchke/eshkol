@@ -172,6 +172,14 @@ jobs:
           for f in "$out"/*.esk; do
             ./build-tsan/eshkol-run -r "$f" || rc=1
           done
+          # core.threads synchronisation under real contention: mutex,
+          # channels, counting semaphores, reusable barriers and atomics.
+          for f in tests/v1_2_edge_cases/threads_mutex_concurrency_test.esk \
+                   tests/v1_2_edge_cases/channels_test.esk \
+                   tests/v1_2_edge_cases/threads_semaphore_barrier_test.esk \
+                   tests/v1_2_edge_cases/atomics_contention_test.esk; do
+            ./build-tsan/eshkol-run -r "$f" || rc=1
+          done
           rm -rf "$out"
           exit $rc
 
