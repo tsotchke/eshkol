@@ -110,8 +110,8 @@ closure for `type`. Fields are written in field-number order, then the
 message's unknown fields. Implicit-presence fields holding their default are
 omitted (a `-0.0` float is written, since its bit pattern is non-zero); map
 entries always carry both key and value. A value outside the field's range, a
-value of the wrong kind, an unknown field name, a field given twice, two
-members of one oneof, or a message of the wrong type raises an error.
+value of another kind, an unknown field name, a field given twice, two
+members of one oneof, or a message whose type does not match the field raises an error.
 
 ### `(protobuf-decode schema type bv)` / `(protobuf-decoder schema type)`
 Decode a bytevector holding one message of `type`. The result holds every

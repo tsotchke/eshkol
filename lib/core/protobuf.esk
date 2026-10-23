@@ -645,7 +645,7 @@
   (if (> depth pb-max-depth) (error "protobuf-encode: messages nested too deeply" depth))
   (pb-require-message "protobuf-encode" message)
   (if (not (eq? (protobuf-message-type message) (pb-msg-name desc)))
-      (error "protobuf-encode: message has the wrong type"
+      (error "protobuf-encode: message type does not match the field"
              (pb-msg-name desc) (protobuf-message-type message)))
   (let ((entries (protobuf-message-entries message))
         (all (pb-msg-map-entry? desc)))
