@@ -1,3 +1,21 @@
+---
+kind: explanation
+status: current
+owner-area: ad
+since: v1.4.0
+sources:
+  - inc/eshkol/core/saturating_vjp.h
+  - lib/core/sdnc_core.h
+  - lib/core/sdnc_finetune.h
+  - lib/core/sdnc_finetune.c
+  - lib/core/sdnc_api.c
+  - lib/core/sdnc.esk
+  - lib/backend/qllm_backward.c
+  - lib/backend/weight_matrices.c
+  - tests/sdnc/sdnc_finetune_unit_test.c
+  - tests/sdnc/sdnc_finetune_test.esk
+  - scripts/run_sdnc_finetune_gate.sh
+---
 # ADR-0032: Exact-forward control fine-tuning of the constructed interpreter
 
 - **Status:** Accepted — implemented for v1.4.0-connection
@@ -76,9 +94,16 @@ at any layer.
 
 **3. Parameterize thresholds per construction gate.**
 `sdnc_gate_groups_build` ties every neuron whose gate column and bias are
-identical (value equality, so `-0` and `+0` tie). A tied gate moves as one
-threshold. The constructed interpreter has 1102 tied gates over its gated
-layers.
+identical in the **construction** (value equality, so `-0` and `+0` tie). A
+tied gate moves as one threshold. The constructed interpreter has 1102 tied
+gates over its gated layers. The tying is taken from the construction, never
+from the weights being repaired: the indicator gates of neighbouring opcodes
+share a column and differ in bias by exactly one construction unit, so a
+threshold knocked down by one unit equals the next opcode's threshold, and
+tying on the damaged weights merges the two gates. Measured: tying on the
+damaged weights stalls the repair at 141 differing transitions; tying on the
+construction reaches 0. `sdnc_control_finetune` therefore requires the groups
+as an argument, and `sdnc-repair!` takes the construction file.
 
 **4. Rank with the smoothed backward, accept with the exact forward.**
 `sdnc_control_finetune` repeats, first over tied gates and then over single
@@ -108,7 +133,8 @@ every forward transition of the verifier battery through `run_with_weights`,
 and writes them as an `SDTR` v1 file next to the weights (`QLMW` v3).
 
 **6. Eshkol surface.** `core.sdnc` adds `(sdnc-load-weights! θ path)`,
-`(sdnc-mismatches θ transitions)`, `(sdnc-repair! θ transitions [beta])` and a
+`(sdnc-mismatches θ transitions)`, `(sdnc-repair! θ transitions construction
+[beta])` and a
 smoothing argument to `(sdnc-weight-grad θ input target [smoothing])`, where
 `smoothing` is a positive real or a pair `(gate-beta . attention-beta)`. The
 three new procedures are `extern` wrappers over C entry points in
@@ -131,17 +157,23 @@ release build:
 | Quantity | Value |
 |---|---|
 | Verifier battery on the constructed weights | 127 / 127 |
-| Recorded transitions / program runs | MEASURED_TRANSITIONS / MEASURED_PROGRAMS |
-| ADD-dispatch gate neurons switched off (Layer 3) | MEASURED_DAMAGED |
-| Battery on the damaged weights | MEASURED_DAMAGED_BATTERY |
-| Transitions that differ after the damage | MEASURED_BEFORE |
+| Recorded transitions / program runs | 3316 / 224 |
+| ADD-dispatch gate neurons switched off (Layer 3) | 85 |
+| Battery on the damaged weights | 71 / 127 (56 programs fail) |
+| Transitions that differ after the damage | 240 |
 | Exact derivative of every control weight | identically zero |
 | Backward inverse temperature | `beta = 10 / 300` for gates and attention |
-| Tied-gate moves / neuron moves | MEASURED_GATE_MOVES / MEASURED_NEURON_MOVES |
+| Tied-gate moves / neuron moves | 13 / 5 |
 | Transitions that differ after the repair | 0 |
 | Battery on the repaired weights | 127 / 127 |
-| Recorded transitions byte-identical (`forward_with_weights`) | MEASURED_TRANSITIONS / MEASURED_TRANSITIONS |
-| Wall time | MEASURED_TIME |
+| Recorded transitions byte-identical (`forward_with_weights`) | 3316 / 3316 |
+| Wall time | 2 min 14 s for the whole run (three battery passes, the recording, the identity checks and the repair), one core of a Linux x86-64 host, release build |
+
+The 13 tied-gate moves are each `+300` on a Layer-3 tied gate; they bring the
+differing transitions from 240 to 6. The 5 neuron moves (three `+300`, two
+`-300`) bring them to 0. 65 gate thresholds of the repaired weights differ from the
+construction; none of them changes any recorded transition, which is all the
+acceptance criterion constrains.
 
 The same run checks that `sdnc_forward` reproduces every recorded transition
 of `forward_with_weights` byte for byte, and that `sdnc_backward` is
@@ -155,10 +187,11 @@ constructed weights and on unsaturated random weights.
   softened forward pass.
 - `sdnc_backward` and `qllm_backward.c` share one logistic/softmax rule; the
   `qllm_backward_gradcheck` test and the beta = 1 bit-identity checks pin it.
-- Thresholds that no recorded transition exercises are not constrained by the
-  repair; a repaired weight set can differ from the construction there while
-  behaving identically on the record.
-- Planned for v1.4.1: control moves for gate columns and the attention query
-  and key weights (`W_Q`, `W_K`, `b_Q`), which this release ranks but does not
-  move; and a repair objective over a full rollout rather than single
-  transitions.
+- Thresholds whose value does not change any recorded transition are not
+  constrained by the repair; a repaired weight set can differ from the
+  construction there (65 thresholds in the measured run) while behaving
+  identically on the record.
+- Planned for v1.4.1: moves for gate columns and for the attention query and
+  key weights (`W_Q`, `W_K`, `b_Q`); this release moves gate thresholds only.
+  Also planned for v1.4.1: a repair objective over a full rollout rather than
+  single transitions.

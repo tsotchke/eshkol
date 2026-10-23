@@ -92,8 +92,8 @@ Replace θ's weights with a QLMW v3 weight file (the format `weight_matrices` wr
 ### `(sdnc-mismatches θ transitions)`
 Number of transitions in the `transitions` file (SDTR v1) whose next state θ does not reproduce byte for byte. `0` means θ executes every recorded step exactly as the teacher did.
 
-### `(sdnc-repair! θ transitions [beta])`
-Fine-tune θ's gate thresholds in place against the recorded transitions: tied construction gates first (neurons with identical gate column and bias move together), then single neurons, each move one construction unit (300). `beta` is the backward smoothing (default `sdnc-default-repair-beta` = 1/30). Returns a report alist:
+### `(sdnc-repair! θ transitions construction [beta])`
+Fine-tune θ's gate thresholds in place against the recorded transitions: tied gates first, then single neurons, each move one construction unit (300). Gates are tied as in `construction` (a QLMW weight file of the analytic construction): neurons with identical gate column and bias there move together. The tying has to come from the construction, not from θ: neighbouring construction gates differ by whole units, so a damaged threshold can coincide with another gate's. `beta` is the backward smoothing (default `sdnc-default-repair-beta` = 1/30). Returns a report alist:
 
 | Key | Meaning |
 |---|---|
@@ -116,7 +116,7 @@ Fine-tune θ's gate thresholds in place against the recorded transitions: tied c
 (sdnc-load-weights! th (string-append dir "/damaged.qlmw"))
 (display "damaged:     ") (display (sdnc-mismatches th transitions)) (newline)
 
-(define report (sdnc-repair! th transitions))
+(define report (sdnc-repair! th transitions (string-append dir "/constructed.qlmw")))
 (display "repaired:    ") (display (sdnc-mismatches th transitions)) (newline)
 (display report) (newline)
 ```
@@ -132,6 +132,6 @@ EXAMPLE_OUTPUT
 - `sdnc-repair!` changes only gate thresholds, each by whole construction units; thresholds that no recorded transition exercises are left where they are.
 
 ## Verification note
-`tests/sdnc/sdnc_finetune_test.esk` (ctest `sdnc_finetune_surface_jit`) runs the fine-tuning surface on the artifacts written by ctest `sdnc_control_finetune`: 15/15 checks. `tests/sdnc/sdnc_finetune_unit_test.c` (ctest `sdnc_finetune_unit`) checks the smoothing rule against finite differences and the beta = 1 bit-identity: 20/20.
+`tests/sdnc/sdnc_finetune_test.esk` (ctest `sdnc_finetune_surface_jit`) runs the fine-tuning surface on the artifacts written by ctest `sdnc_control_finetune`: 16/16 checks. `tests/sdnc/sdnc_finetune_unit_test.c` (ctest `sdnc_finetune_unit`) checks the smoothing rule against finite differences and the beta = 1 bit-identity: 21/21.
 
 `tests/sdnc/sdnc_api_test.esk` passes 13/13 under `eshkol-run -r`: handle/predicate, params length > 1000, params round-trip, deterministic 256-dim forward, `sdnc-weight-grad` length == `sdnc-params` length, and `sdnc-improve!` loss decrease (observed 0.25 → 0.0616 in the suite's setup). This design is described in memory as *"VM-as-transformer memory-ops design"*. No `.swarm` ledger issues reference the SDNC builtins.

@@ -830,7 +830,7 @@ left exact ([ADR-0032](design/adr/0032-exact-forward-control-fine-tuning.md)):
    once, in `inc/eshkol/core/saturating_vjp.h`, shared with
    `qllm_backward.c`.
 2. **Tied construction gates.** Neurons with identical gate column and bias
-   are one threshold: MEASURED_TIED tied gates over the gated layers. Neurons
+   are one threshold: 1102 tied gates over the gated layers. Neurons
    come in `±M` pairs on one gate, so untied per-neuron gradients cancel.
 3. **Rank smoothed, accept exact.** The smoothed gradient of a Huber loss over
    recorded transitions ranks tied gates; each of the top 16 is moved by one
@@ -840,13 +840,13 @@ left exact ([ADR-0032](design/adr/0032-exact-forward-control-fine-tuning.md)):
 
 **Measured** (`ctest -R sdnc_control_finetune`, i.e.
 `weight_matrices --control-finetune`): the verifier battery records
-MEASURED_TRANSITIONS transitions over MEASURED_PROGRAMS program runs. Switching
-off the MEASURED_DAMAGED Layer-3 gate neurons of the ADD dispatch fails
-MEASURED_DAMAGED_FAIL of 127 battery programs and changes MEASURED_BEFORE
+3316 transitions over 224 program runs. Switching
+off the 85 Layer-3 gate neurons of the ADD dispatch fails
+56 of 127 battery programs and changes 240
 transitions; the exact control gradient is identically zero.
-MEASURED_GATE_MOVES tied-gate moves and MEASURED_NEURON_MOVES neuron moves at
+13 tied-gate moves and 5 neuron moves at
 `beta = 10/300` restore 127/127 programs and
-MEASURED_TRANSITIONS/MEASURED_TRANSITIONS byte-identical transitions.
+3316/3316 byte-identical transitions.
 
 From Eshkol, `core.sdnc` exposes the same repair (`sdnc-load-weights!`,
 `sdnc-mismatches`, `sdnc-repair!`) and the smoothing argument of
