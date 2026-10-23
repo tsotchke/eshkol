@@ -4324,6 +4324,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# Classical BLC finite byte observation, with explicit collector/resource gates.
+option(ESHKOL_BLC_CORPUS_TESTS "Register the slow seven-program BLC transfer gate" OFF)
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME blc_bytes_gate
+        COMMAND ${CMAKE_COMMAND} -E env "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_blc_bytes_gate.sh")
+    set_tests_properties(blc_bytes_gate PROPERTIES TIMEOUT 600
+        LABELS "stdlib;blc;parity" PASS_REGULAR_EXPRESSION "BLC-BYTES GATE: PASS")
+    if(ESHKOL_BLC_CORPUS_TESTS)
+        add_test(NAME blc_bytes_corpus_gate
+            COMMAND ${CMAKE_COMMAND} -E env "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_blc_bytes_gate.sh" --corpus)
+        set_tests_properties(blc_bytes_corpus_gate PROPERTIES TIMEOUT 7200
+            LABELS "stdlib;blc;parity;slow" PASS_REGULAR_EXPRESSION "BLC-BYTES CORPUS: PASS")
+    endif()
+endif()
+
 # Stochastic Binary Lambda Calculus (ADR-0017): the gate runs the core.sblc
 # suite on JIT and AOT, requires every oracle on both engines and
 # byte-identical output (fixed-seed parity), and writes its ICC trace into

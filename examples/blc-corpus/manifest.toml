@@ -1,0 +1,167 @@
+schema_version = 1
+license = "MIT"
+calculus = "classic-blc"
+fixture_count = 31
+[[program]]
+id = "version-space"
+bits_path = "version-space.blc"
+packed_path = "version-space.blc8"
+logical_bits = 3854
+packed_bytes = 482
+padding_bits = 2
+
+[[program]]
+id = "polynomial"
+bits_path = "polynomial.blc"
+packed_path = "polynomial.blc8"
+logical_bits = 6348
+packed_bytes = 794
+padding_bits = 4
+
+[[program]]
+id = "grad-depth"
+bits_path = "grad-depth.blc"
+packed_path = "grad-depth.blc8"
+logical_bits = 27599
+packed_bytes = 3450
+padding_bits = 1
+
+[[program]]
+id = "selfapply"
+bits_path = "selfapply.blc"
+packed_path = "selfapply.blc8"
+logical_bits = 16413
+packed_bytes = 2052
+padding_bits = 3
+
+[[program]]
+id = "seed"
+bits_path = "seed.blc"
+packed_path = "seed.blc8"
+logical_bits = 20409
+packed_bytes = 2552
+padding_bits = 7
+
+[[program]]
+id = "active-query"
+bits_path = "active-query.blc"
+packed_path = "active-query.blc8"
+logical_bits = 6133
+packed_bytes = 767
+padding_bits = 3
+
+[[program]]
+id = "transformer"
+bits_path = "transformer.blc"
+packed_path = "transformer.blc8"
+logical_bits = 38027
+packed_bytes = 4754
+padding_bits = 5
+
+[[provenance]]
+receipt = "version-space-results.toml"
+receipt_sha256 = "3d75e8900896a9397a427cda0bf2968e2c872b44d919b6d763a55b0fef1d3b4b"
+
+[[provenance]]
+receipt = "polynomial-results.toml"
+receipt_sha256 = "e018075b5c9998235634f783375872b6c6ec9186a42eedcead39d9a835071df5"
+
+[[provenance]]
+receipt = "grad-depth-results.toml"
+receipt_sha256 = "a0ac94398f0003ea3d3666d7e3c0a4937e219857614187de45e2913231792f89"
+
+[[provenance]]
+receipt = "selfapply-results.toml"
+receipt_sha256 = "3ec9f695ae174bff4d9d462bc9d687e0085815209ff33a4b00abdb93d5c80049"
+
+[[provenance]]
+receipt = "seed-results.toml"
+receipt_sha256 = "c84f0d27b8b649450af02502dbd0a889bf6b85cd27eec15698eb5b581a7f106c"
+
+[[provenance]]
+receipt = "active-query-results.toml"
+receipt_sha256 = "2b75f207737090f90acea473cbfd93b45258b01cdd301df0aaa4b682434afae2"
+
+[[provenance]]
+receipt = "transformer-results.toml"
+receipt_sha256 = "c9981766b38a8fdac044572cb22209bfe145195f140278979e50d09ed3f83f7b"
+
+[[file]]
+path = "LICENSE"
+sha256 = "6528219548a5bc069aeaa8d5d7791568fbc907ed38660224907a7ddee31be714"
+
+[[file]]
+path = "README.md"
+sha256 = "0ec26c54ec261472198529b21972fb6b1d595727c5f84faac54b0f4e33f697a8"
+
+[[file]]
+path = "run.py"
+sha256 = "c310afe12b751400d75990bd0d62fa7aa9735cbd5f1cf2d23115187843f7ae97"
+
+[[file]]
+path = "probe.esk"
+sha256 = "55ba2f27a9805c49150750598eff64a4fe209ddf194b6aba0504cacd3dcfd41a"
+
+[[file]]
+path = "fixtures.toml"
+sha256 = "6def2bcf4559ac9a653206c252a4f462f59e2d89e6b3dae7ad230658bc5e818d"
+
+[[file]]
+path = "selfapply-core.bits"
+sha256 = "416ee58b3e9c2e0ba287b122f657e07fb34b61b9fdd412de10ac3b64393c5308"
+
+[[file]]
+path = "version-space.blc"
+sha256 = "150b1bbde9e656aa780b45e399db7b125383ce6c380fb3682b8d282e84949c1a"
+
+[[file]]
+path = "version-space.blc8"
+sha256 = "3f2651c0e2b9d444da929bc0ed030201dd3ef184d995c4356e6d904f47b40247"
+
+[[file]]
+path = "polynomial.blc"
+sha256 = "5811a05a2de5fc5ba8484ab4c21eb1a110c30a9e7b4b5b9a946c103739eaf673"
+
+[[file]]
+path = "polynomial.blc8"
+sha256 = "f1a9c0fbf6f36453d4c0f3092b71623d2d7b67a9d269a81d03ef1998cfe66c82"
+
+[[file]]
+path = "grad-depth.blc"
+sha256 = "ad1e12f430503ed03e3e582ce99bf0130ad16c8a848b38f3001e9892040d0f4f"
+
+[[file]]
+path = "grad-depth.blc8"
+sha256 = "f9eab517a93e7a0a277e60a34135ee09c83103c11a2d68b916e5cd1b9a4791d9"
+
+[[file]]
+path = "selfapply.blc"
+sha256 = "b558db69e1ad9e156d047dd242e69c2fa020ffb16654e781f62ccca33e209d75"
+
+[[file]]
+path = "selfapply.blc8"
+sha256 = "05da96464a4eced82102569130888717ec339e802bd1db3d8e642166d005b72f"
+
+[[file]]
+path = "seed.blc"
+sha256 = "12db622050e7d0b90594d7a3a7735fd97a93ec640de9c95d510c6c08680ef9ee"
+
+[[file]]
+path = "seed.blc8"
+sha256 = "54a06f9fa66c8fbfc5f2fc8cc776189dcaec6b76a936e71b3521f70681d51927"
+
+[[file]]
+path = "active-query.blc"
+sha256 = "f31aa26025667df0ac25c64fcd1c0ea07b7916e82bc84905ed96ce783bd4cb40"
+
+[[file]]
+path = "active-query.blc8"
+sha256 = "66bf7b1668f3764d59e9f730362297aad4ce45063bf121f48f8aeed623bae3b1"
+
+[[file]]
+path = "transformer.blc"
+sha256 = "89117954b3dcc11d9c741a2b0651d303428bc2bcb3adfad802c1c75f708c2ddc"
+
+[[file]]
+path = "transformer.blc8"
+sha256 = "f41f19c40c39858b74c04339c9d9e2d67a4f11a12eccb8ad87696eaf849c3778"
