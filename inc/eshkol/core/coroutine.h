@@ -187,6 +187,10 @@ int eshkol_boundary_call_thunk(const eshkol_tagged_value_t* thunk,
                                eshkol_tagged_value_t* result,
                                eshkol_boundary_raise_t* raised);
 
+/** @return 1 when eshkol_boundary_call_thunk can call procedures (the
+ *  compiled program registered its thunk worker). */
+int eshkol_boundary_thunks_available(void);
+
 /** Re-deliver a recorded raise or transfer in the calling context. Does not
  *  return when @p raised is pending. */
 void eshkol_boundary_redeliver(const eshkol_boundary_raise_t* raised);

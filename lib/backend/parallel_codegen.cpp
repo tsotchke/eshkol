@@ -375,6 +375,11 @@ extern "C" void eshkol_parallel_boundary_context_load(const eshkol_exec_context_
     t_parallel_boundary = static_cast<ParallelBoundaryFrame*>(ctx->parallel_boundary);
 }
 
+extern "C" int eshkol_boundary_thunks_available(void) {
+    if (!g_parallel_execute_worker) eshkol_parallel_workers_lazy_resolve();
+    return g_parallel_execute_worker ? 1 : 0;
+}
+
 extern "C" int eshkol_boundary_call_thunk(const eshkol_tagged_value_t* thunk,
                                           eshkol_tagged_value_t* result,
                                           eshkol_boundary_raise_t* raised) {

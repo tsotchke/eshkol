@@ -130,6 +130,7 @@
       "lib/core/runtime_closure_alloc.cpp": 1,
       "lib/core/runtime_closure_reflection.cpp": 1,
       "lib/core/runtime_continuations.cpp": 3,
+      "lib/core/runtime_coroutines_hosted.cpp": 1,
       "lib/core/runtime_display_hosted.cpp": 1,
       "lib/core/runtime_exceptions_hosted.cpp": 7,
       "lib/core/runtime_gensym.cpp": 1,
@@ -498,6 +499,19 @@
         "scripts/abi_header_inventory.py selftest",
         "focused type-name/equality/raise-continuable tests (JIT/AOT/VM)"
       ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_coroutines_hosted.cpp": 1
+      },
+      "before": {},
+      "class": "E_alloc_with_header",
+      "reason": "Stackful coroutines (ADR-0030) report (coroutine-stats) as an association list built from C. The one site is the canonical arena_allocate_cons_with_header allocator; raises go through the shared eshkol_raise_object helper in runtime_exceptions_hosted.cpp (which absorbs raise-continuable's former site, so that file's count is unchanged) and continuation refusals share one helper in runtime_continuations.cpp (count unchanged). This admits only the reviewed one-file delta.",
+      "source": "feat/v14-fibers",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/run_fibers_gate.py"
+      ]
     }
   ],
   "schema": 1,
@@ -507,7 +521,7 @@
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 47,
-    "E_alloc_with_header": 220,
+    "E_alloc_with_header": 221,
     "F_parallel_header_decl": 2,
     "G_header_field_write": 186,
     "H_wasm_glue": 112,

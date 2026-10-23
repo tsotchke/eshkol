@@ -71,7 +71,7 @@ extern "C" void __tsan_switch_to_fiber(void* fiber, unsigned flags);
  * and does not return. */
 extern "C" void eshkol_runtime_fatal(int type, const char* fmt, ...);
 extern "C" void* eshkol_intern_symbol_lookup(const char* name);
-extern "C" void eshkol_set_raised_value(const eshkol_tagged_value_t* value);
+extern "C" void eshkol_raise_object(const eshkol_tagged_value_t* obj);
 extern "C" void eshkol_ad_state_capture(unsigned char* mode_active, uint64_t* tape_depth,
                                         void** current_tape, void** seed_node,
                                         uint64_t* mixed_record_count);
@@ -615,14 +615,8 @@ void coroutine_run(Coroutine* co) {
     eshkol_tagged_value_t result = tv_null();
     eshkol_boundary_raise_t raised;
     std::memset(&raised, 0, sizeof(raised));
-    if (!eshkol_boundary_call_thunk(&co->thunk, &result, &raised)) {
-        /* No compiled procedure worker: report it as the coroutine's failure. */
-        raised.pending = 1;
-        raised.value = tv_null();
-        raised.exception = eshkol_make_exception_with_header(
-            ESHKOL_EXCEPTION_ERROR,
-            "make-coroutine: this program has no compiled procedures to run");
-    }
+    /* make-coroutine checked that a thunk worker is registered. */
+    (void)eshkol_boundary_call_thunk(&co->thunk, &result, &raised);
     if (raised.pending) {
         co->status = ESHKOL_COROUTINE_FAILED;
         co->failure = raised;
@@ -714,9 +708,7 @@ eshkol_tagged_value_t resume(Coroutine* co, const eshkol_tagged_value_t* value,
         co->status = ESHKOL_COROUTINE_FAILED;
         std::memset(&co->failure, 0, sizeof(co->failure));
         release_stack(ts, co);
-        eshkol_set_raised_value(&v);
-        eshkol_raise(eshkol_make_exception_with_header(ESHKOL_EXCEPTION_USER_DEFINED,
-                                                       "user exception"));
+        eshkol_raise_object(&v);
     }
     if (!co->started) {
         if (!stack_acquire(ts, &co->stack)) {
@@ -814,6 +806,10 @@ extern "C" void eshkol_builtin_make_coroutine(eshkol_tagged_value_t* out,
 #if defined(ESHKOL_CORO_UNAVAILABLE)
     raise_error("%s: coroutines are not available on this platform", "make-coroutine");
 #endif
+    if (!eshkol_boundary_thunks_available()) {
+        raise_error("%s: this program has no compiled procedure worker registered",
+                    "make-coroutine");
+    }
     auto* co = new (std::nothrow) Coroutine();
     if (!co) eshkol_raise_allocation_failure("make-coroutine", sizeof(Coroutine));
     co->owner_thread = t_state.token;
@@ -868,9 +864,7 @@ extern "C" void eshkol_builtin_coroutine_yield(eshkol_tagged_value_t* out,
     if (co->inject_raise) {
         co->inject_raise = false;
         eshkol_tagged_value_t obj = co->transfer;
-        eshkol_set_raised_value(&obj);
-        eshkol_raise(eshkol_make_exception_with_header(ESHKOL_EXCEPTION_USER_DEFINED,
-                                                       "user exception"));
+        eshkol_raise_object(&obj);
     }
     *out = co->transfer;
 #endif

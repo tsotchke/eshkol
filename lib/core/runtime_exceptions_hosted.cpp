@@ -148,6 +148,18 @@ extern "C" void eshkol_set_raised_value(const eshkol_tagged_value_t* value) {
     g_raised_value_set_by_user = true;
 }
 
+// Raise an arbitrary object: the runtime spelling of `(raise obj)`, for C
+// code that delivers a program's object as a raise (an unhandled
+// raise-continuable, coroutine-raise). Handlers
+// see `obj` itself, exactly as for the generated `raise`. Does not return.
+extern "C" void eshkol_raise_object(const eshkol_tagged_value_t* obj) {
+    eshkol_tagged_value_t value = *obj;
+    eshkol_exception_t* exc = eshkol_make_exception_with_header(
+        ESHKOL_EXCEPTION_USER_DEFINED, "user exception");
+    eshkol_set_raised_value(&value);
+    eshkol_raise(exc);
+}
+
 // Retrieve the raised tagged value (called from with-exception-handler and guard)
 extern "C" void eshkol_get_raised_value(eshkol_tagged_value_t* out) {
     *out = g_raised_tagged_value;
@@ -1007,10 +1019,8 @@ extern "C" void* eshkol_raise_continuable_begin(const eshkol_tagged_value_t* obj
         *proc_out = h->handler_proc;
         return h;
     }
-    eshkol_set_raised_value(obj);
-    eshkol_raise(eshkol_make_exception_with_header(ESHKOL_EXCEPTION_USER_DEFINED,
-                                                  "user exception"));
-    std::exit(1);   // eshkol_raise does not return
+    eshkol_raise_object(obj);
+    std::exit(1);   // eshkol_raise_object does not return
 }
 
 extern "C" void eshkol_raise_continuable_end(void* frame) {

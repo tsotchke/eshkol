@@ -240,20 +240,24 @@ extern "C" void eshkol_continuation_extent_leave(uint64_t id) {
  * state is touched. Images taken on the thread's own stack (owner 0) are
  * governed by the host-extent rule and the parallel boundary instead.
  */
+/* Refuse a continuation invocation with a catchable condition. Does not
+ * return. Shared by the owner and host-extent admission checks. */
+[[noreturn]] static void refuse_continuation(const char* reason) {
+    eshkol_exception_t* exc = eshkol_make_exception_with_header(ESHKOL_EXCEPTION_ERROR, reason);
+    if (exc) eshkol_raise(exc);   /* does not return */
+    eshkol_error("%s (and the condition object could not be allocated)", reason);
+    exit(1);
+}
+
 extern "C" void eshkol_continuation_check_owner(void* state_void) {
     auto* state = (eshkol_continuation_state_t*)state_void;
     if (!state) return;
     const uint64_t owner = image_owner(state);
     if (owner == 0 || owner == t_exec_context_id) return;
-    eshkol_exception_t* exc = eshkol_make_exception_with_header(
-        ESHKOL_EXCEPTION_ERROR,
+    refuse_continuation(
         "continuation cannot be resumed: it was captured inside a different "
         "coroutine, and a continuation is resumed only on the coroutine whose "
         "stack it captured");
-    if (exc) eshkol_raise(exc);   /* does not return */
-    eshkol_error("continuation captured in another coroutine was invoked, "
-                 "and the condition object could not be allocated");
-    exit(1);
 }
 
 extern "C" void eshkol_continuation_check_extent(void* state_void) {
@@ -270,15 +274,10 @@ extern "C" void eshkol_continuation_check_extent(void* state_void) {
             if (st.entries[i].id == captured) return;
         }
     }
-    eshkol_exception_t* exc = eshkol_make_exception_with_header(
-        ESHKOL_EXCEPTION_ERROR,
+    refuse_continuation(
         "continuation cannot be resumed: it was captured during an earlier "
         "top-level evaluation that has already returned, and this host resumes "
         "a continuation only within the evaluation that captured it");
-    if (exc) eshkol_raise(exc);   /* does not return */
-    eshkol_error("continuation captured by a finished top-level evaluation was invoked, "
-                 "and the condition object could not be allocated");
-    exit(1);
 }
 
 /**
