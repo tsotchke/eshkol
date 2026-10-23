@@ -7735,6 +7735,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: event_loop_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # Stackful coroutines and core.fibers: JIT and O1 AOT behaviour, the
+    # 10,000-fiber stress program and the flat-memory comparison, all in one
+    # gate (scripts/run_fibers_gate.py). Registered wherever coroutines run;
+    # the browser build has none.
+    if(NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_fibers_gate.py")
+        add_test(
+            NAME v14_fibers_gate
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_fibers_gate.py"
+                    --runner $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(v14_fibers_gate
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: fibers gate"
+                FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/jit_cache_test.sh")
         add_test(
             NAME v1_3_jit_cache_runtime_smoke
