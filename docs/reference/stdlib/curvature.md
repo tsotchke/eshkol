@@ -196,7 +196,7 @@ eshkol-run -o example example.esk && ./example   # AOT
   distance, squared distance, curvature jet, endpoint gradient and refusal
   class per case.
 - `tests/geometry/signed_curvature_test.esk` runs this module under the JIT and
-  AOT against the same reference values; `tests/vm/signed_curvature_surface_regression.esk`
+  AOT against the same reference values; `tests/vm/signed_curvature_surface.esk`
   runs the VM geometry ops against them.
 - `scripts/run_signed_curvature_gate.sh` runs all three and records the
   `v14_signed_curvature_reference_grid` ICC event.

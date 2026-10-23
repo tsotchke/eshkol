@@ -14,7 +14,7 @@
 #      reduction, convention and migration). "Results: N passed, 0 failed".
 #   2. tests/geometry/signed_curvature_test.esk (core.curvature) under the JIT
 #      AND compiled AOT: "RESULT: ALL PASS" and "Failed: 0" in both.
-#   3. tests/vm/signed_curvature_surface_regression.esk on the bytecode VM:
+#   3. tests/vm/signed_curvature_surface.esk on the bytecode VM:
 #      every assertion PASS (the VM ops reproduce the same reference values).
 #
 # A build without binary128 arithmetic runs the golden-subset mode; that is
@@ -44,7 +44,7 @@ ESHKOL_RUN="$ABS_BUILD/eshkol-run"
 VM="$ABS_BUILD/eshkol-vm-standalone-test"
 GRID="$ABS_BUILD/signed_curvature_reference_grid_test"
 PROGRAM="$REPO_ROOT/tests/geometry/signed_curvature_test.esk"
-VMPROG="$REPO_ROOT/tests/vm/signed_curvature_surface_regression.esk"
+VMPROG="$REPO_ROOT/tests/vm/signed_curvature_surface.esk"
 WORK="$ABS_BUILD/signed-curvature-gate"
 mkdir -p "$WORK"
 export ESHKOL_JIT_CACHE=0 ESHKOL_LIB_DIR="$ABS_BUILD"

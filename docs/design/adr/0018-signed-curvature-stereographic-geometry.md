@@ -99,7 +99,7 @@ Bachmann, Bécigneul, Ganea, *Constant Curvature Graph Convolutional Networks* (
 - **Gates.** `tests/bridge/signed_curvature_reference_grid_test.cpp` (binary128,
   every finite binade of both signs; golden subset elsewhere),
   `tests/geometry/signed_curvature_test.esk` (JIT and AOT),
-  `tests/vm/signed_curvature_surface_regression.esk` (VM), producer
+  `tests/vm/signed_curvature_surface.esk` (VM), producer
   `scripts/run_signed_curvature_gate.sh`.
 - **Planned for v1.4.1.** Routing the qLLM fp32 geometry through the versioned
   core (Migration step 5), intrinsic Frechet aggregation in attention (step 6,

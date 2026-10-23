@@ -4,8 +4,11 @@
 **Require**: `(require core.manifold)` — auto-loaded via `(require stdlib)` (it is listed in `lib/stdlib.esk`), but the examples below `(require core.manifold)` explicitly so they stand alone.
 
 Constructors and operations for three constant-curvature Riemannian spaces:
-Euclidean (flat, K=0), Hyperbolic Poincaré ball (K=−1), and Spherical (K=+1,
-stereographic). It provides the geometric-ML primitives (exponential/logarithmic
+Euclidean (flat, K=0), Hyperbolic ball (K=−1), and Spherical (K=+1,
+stereographic), all in **one chart**: the ADR-0018 κ-stereographic chart in the
+`α = 1` gauge, with metric `I/(1 + K‖x‖²/4)²` — the same chart as the VM
+[geometry ops](geometry.md) and [`core.curvature`](curvature.md). The hyperbolic
+ball has radius 2; the spherical chart covers the sphere except its pole. It provides the geometric-ML primitives (exponential/logarithmic
 maps, geodesic distance, parallel transport) plus a full closed-form differential-
 geometry surface (metric, inverse metric, Christoffel symbols, sectional/scalar
 curvature, Ricci and Riemann tensors). Pure Scheme over the core math builtins, so
@@ -27,8 +30,10 @@ it runs identically under REPL/JIT and AOT.
 ## Functions
 
 ### `(make-euclidean-manifold dim)` / `(make-hyperbolic-manifold dim)` / `(make-spherical-manifold dim)`
-Construct a manifold of the given integer dimension. Hyperbolic is the Poincaré ball
-model (K=−1); spherical is the stereographic model (K=+1); Euclidean is flat (K=0).
+Construct a manifold of the given integer dimension. Hyperbolic is the ball of
+radius 2 (K=−1); spherical is the stereographic chart (K=+1); Euclidean is flat
+(K=0). For a curvature other than ±1, or for curvature derivatives, use
+[`core.curvature`](curvature.md).
 Returns the `#(type dim)` object.
 
 ```scheme
@@ -66,9 +71,9 @@ spherical, `0.0` euclidean.
 ```
 
 ### `(manifold-distance m a b)`
-Geodesic distance between points `a` and `b`. Hyperbolic uses the Poincaré `arccosh`
-formula; spherical uses `acos` of the normalized dot product (clamped to [−1,1]);
-Euclidean is the L2 norm of `a−b`.
+Geodesic distance between points `a` and `b`: `artan_B(‖(−a) ⊕_B b‖)` with
+`B = −K/4`, where `artan_B` is `artanh(√B r)/√B` on the ball and `atan(√−B r)/√−B` on
+the sphere chart; Euclidean is the L2 norm of `a−b`.
 
 ```scheme
 (require core.manifold)
@@ -90,9 +95,8 @@ returns a wrong value — see [Known issues](#known-issues).
 
 ### `(manifold-exp-map m base v)`
 Exponential map: move from point `base` along tangent vector `v`, returning the endpoint
-point. Hyperbolic uses Möbius addition with the `tanh` scaling; spherical uses the
-great-circle `cos/sin` formula; Euclidean is `base + v`. A near-zero tangent returns
-`base` unchanged.
+point: `base ⊕_B tan_B(λ‖v‖)·v/‖v‖` (`tanh` on the ball, `tan` on the sphere
+chart); Euclidean is `base + v`. A near-zero tangent returns `base` unchanged.
 
 ```scheme
 (require core.manifold)
@@ -124,10 +128,9 @@ with `base`.
 
 ### `(manifold-parallel-transport m base-a base-b v)`
 Transport tangent vector `v` from `base-a` to `base-b`. Euclidean is the identity;
-hyperbolic uses `(λ_a/λ_b)·gyr[base-b,−base-a]v` with the linear closed form for
-gyration; spherical removes the component of `v` along `base-b` (projection). The
-hyperbolic result is the exact constant-curvature gyrovector transport for this
-chart, not a first-order rescaling.
+hyperbolic and spherical use `(λ_a/λ_b)·gyr[base-b,−base-a]v` with the linear
+closed form for gyration — the exact constant-curvature gyrovector transport for
+this chart, not a first-order rescaling.
 
 ```scheme
 (require core.manifold)
@@ -170,8 +173,8 @@ Scalar curvature R = K·n·(n−1), where n is the dimension. Takes only the man
 
 ### `(metric-component m x i j)`
 Single metric-tensor entry g_ij at point `x`. All three spaces are conformally flat:
-g_ij = λ(x)²·δ_ij, where λ = 1 (euclidean), 2/(1−‖x‖²) (hyperbolic), 2/(1+‖x‖²)
-(spherical). Off-diagonal entries are 0.
+g_ij = λ(x)²·δ_ij, where λ = 1/(1 + K‖x‖²/4): 1 (euclidean), 1/(1−‖x‖²/4)
+(hyperbolic), 1/(1+‖x‖²/4) (spherical). Off-diagonal entries are 0.
 
 ```scheme
 (require core.manifold)

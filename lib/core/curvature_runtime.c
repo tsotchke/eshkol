@@ -66,7 +66,7 @@ static const char* curv_out(eshkol_tensor_t* t, int64_t want, double** data) {
     if (!t || t->dtype != ESHKOL_TENSOR_DTYPE_F64 || !t->elements)
         return "the output must be an f64 tensor";
     if ((int64_t)t->total_elements != want)
-        return "the output tensor has the wrong size";
+        return "the output tensor size does not match";
     *data = (double*)t->elements;
     return NULL;
 }
