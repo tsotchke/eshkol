@@ -112,14 +112,38 @@ struct Run {
     bool ok = false;
 };
 
+/* ===== Legacy-ball fixtures through the ADR-0018 migration ================
+ * The hyperbolic fixtures, references and golden vectors in this file are
+ * written in the legacy ball coordinates (alpha = 2, radius 1/sqrt(-K)). The
+ * node evaluates the alpha = 1 chart (radius 2/sqrt(-K)), whose coordinates
+ * are x_v2 = 2 x_v1. Every HYPERBOLIC block is therefore handed to the node
+ * migrated, and its gradient is pulled back through the same map:
+ *   d^2 is unchanged, and d(d^2)/dx_v1 = 2 d(d^2)/dx_v2.
+ * Every legacy assertion below is thereby also a check of the migration. */
+const double kMigrate = 2.0;
+
+void migrate_blocks(std::vector<double>& p, const eshkol_manifold_factor_t* f,
+                    size_t k) {
+    size_t off = 0;
+    for (size_t i = 0; i < k; ++i) {
+        size_t dim = (size_t)f[i].dim;
+        if (f[i].form == ESHKOL_SPACE_FORM_HYPERBOLIC)
+            for (size_t j = 0; j < dim; ++j) p[off + j] *= kMigrate;
+        off += dim;
+    }
+}
+
 /** @brief Record d^2 for a product spec, seed dL/d(d^2) = 1, sweep. */
 Run run_product(const double* X, const double* Y, size_t n,
                 const eshkol_manifold_factor_t* f, size_t k,
                 double upstream = 1.0) {
     Run r;
     ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
-    ad_node_t* xn = var_node(X, n);
-    ad_node_t* yn = var_node(Y, n);
+    std::vector<double> Xm(X, X + n), Ym(Y, Y + n);
+    migrate_blocks(Xm, f, k);
+    migrate_blocks(Ym, f, k);
+    ad_node_t* xn = var_node(Xm.data(), n);
+    ad_node_t* yn = var_node(Ym.data(), n);
     ad_node_t* out = ad_product_squared_distance(tape, xn, yn, f, k);
     if (!out) return r;
     r.d2 = ((const double*)out->tensor_value)[0];
@@ -130,6 +154,8 @@ Run run_product(const double* X, const double* Y, size_t n,
                 (const double*)xn->tensor_gradient + n);
     r.gy.assign((const double*)yn->tensor_gradient,
                 (const double*)yn->tensor_gradient + n);
+    migrate_blocks(r.gx, f, k);
+    migrate_blocks(r.gy, f, k);
     r.ok = true;
     return r;
 }
@@ -148,8 +174,11 @@ Run run_single(const double* X, const double* Y, size_t n, int form, double c,
 /** @brief Forward-only value, for finite differences. */
 double value_only(const double* X, const double* Y, size_t n,
                   const eshkol_manifold_factor_t* f, size_t k) {
-    ad_node_t* xn = var_node(X, n);
-    ad_node_t* yn = var_node(Y, n);
+    std::vector<double> Xm(X, X + n), Ym(Y, Y + n);
+    migrate_blocks(Xm, f, k);
+    migrate_blocks(Ym, f, k);
+    ad_node_t* xn = var_node(Xm.data(), n);
+    ad_node_t* yn = var_node(Ym.data(), n);
     ad_node_t* out = ad_product_squared_distance(nullptr, xn, yn, f, k);
     if (!out) return NAN;
     return ((const double*)out->tensor_value)[0];
@@ -641,6 +670,32 @@ int main() {
                std::fabs(r.gx[0]) < 1e-30 &&
                std::fabs(r.gx[1] - expected) < 1e-30 && tiny_ok,
                detail);
+    }
+
+    /* ---- the STEREOGRAPHIC factor is the chart for every sign of K ------- */
+    {
+        const double x[3] = { 0.3, -0.2, 0.1 };
+        const double y[3] = { -0.25, 0.15, 0.2 };
+        bool ok = true;
+        for (double K : { -4.0, -1.0, 0.0, 1.0, 4.0 }) {
+            Run r = run_single(x, y, 3, ESHKOL_SPACE_FORM_STEREOGRAPHIC, K);
+            double want = 0.0, scratch[6], g[3];
+            ok = ok && r.ok &&
+                 eshkol_rm_sq_distance(x, y, K, 3, &want) == nullptr &&
+                 eshkol_rm_sq_distance_grad(x, y, K, 3, g, nullptr, scratch) == nullptr &&
+                 r.d2 == want;
+            for (int i = 0; ok && i < 3; ++i) ok = (r.gx[i] == g[i]);
+        }
+        Run h = run_single(x, y, 3, ESHKOL_SPACE_FORM_STEREOGRAPHIC, -1.0);
+        /* run_single migrates HYPERBOLIC blocks by 2, so the halved fixture
+         * reaches the node at exactly x and y */
+        double xh[3], yh[3];
+        for (int i = 0; i < 3; ++i) { xh[i] = 0.5 * x[i]; yh[i] = 0.5 * y[i]; }
+        Run bm = run_single(xh, yh, 3, ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0);
+        double hb = bm.ok ? bm.d2 : -1.0;
+        report("stereographic: d2 and grad equal the shared chart core at K in "
+               "{-4,-1,0,1,4}; HYPERBOLIC is its K < 0 member",
+               ok && h.ok && hb == h.d2);
     }
 
     /* ---- 2. coincidence is a value, not a refusal, and it is exactly 0 --- */
