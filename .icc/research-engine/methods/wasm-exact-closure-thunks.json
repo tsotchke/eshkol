@@ -1,0 +1,40 @@
+{
+  "schema": "icc.research_method.v1",
+  "method": "wasm-exact-closure-thunks",
+  "domain": "Currentf4ac compiler, wasm32, minimal length3 witness, two production host bundles; correctness first, no runtime baseline success",
+  "objective_metric": "capture_pointer_arguments_per_indirect_call",
+  "objective_sense": "lower_is_better",
+  "baselines": [
+    {
+      "name": "Native caller-cleanup over-provisioned small-closure call",
+      "value": 64,
+      "citation": "llvm_codegen.cpp MAX_CLOSURE_DISPATCH_CAPTURES64 and both smallclosure calls; evidence/baseline-observe.log resolves fnslot11/captures1/fixed2/variadicfalse actualWasmArity12 while dispatchtype75",
+      "basis": "Exact source constant and actual runtime metadata;2taggedarguments lower to10WASMparams plus1sret, so64captures give75 rather than12"
+    }
+  ],
+  "decision_points": [
+    {
+      "name": "WASM smallclosure final call shape",
+      "current_choice": "Pass64 capturepointerarguments independently ofactualcapturecount",
+      "alternatives": [
+        {
+          "choice": "WASM-only noinline module-cached thunk per userargumentcount; switch0..64 once per thunk and call targetwith exactNcaptures; preserveNativefastpath and>64envABI",
+          "analytic_basis": "For measuredlengthloopN1, targetrequires1capturepointer, so64to1 changescapturetail by-63. Thunk reuse bounds exactcapturearms at65per userargumentarity globally ratherthan65percallsite; NoInline required tokeepfactorization. Existingfixed/variadicpaths supply effectiveTaggedargumentcount; no target/directcall ABI changes.",
+          "reported_effect": "Exactly63fewer capturepointerarguments at identified1capture indirectcall. No elapsedtime/RSS/WASMsize gain asserted; thunk codegen/compile cost requires measurement.",
+          "effect_direction": "improves",
+          "effect_metric": "capture_pointer_arguments_per_indirect_call",
+          "predicted_delta": {
+            "value": -63,
+            "metric": "capture_pointer_arguments_per_indirect_call",
+            "baseline": 64,
+            "baseline_ref": "f4ac staticMAX64 + dynamic1capture actualtablearity12"
+          },
+          "transferability_note": "Count applies only measured1capturecall; otherN0..64 require exactN. This is correctness/callshape prediction, not claimed speedup. At most65capturearms percached argumentarity; dynamicarity0..16 would bound17*65=1105arms globally; actualmodulearityset mustbe counted.",
+          "unmeasured_precondition": "LLVMWASM logicaltaggedreturn/sret matches target; fixed,variadic,apply,zero/64/65boundary controls required; Native callingpath unchanged; start21GiB/stop20.25/core0/max2serialnative lanes.",
+          "falsifying_experiment": "Compile isolated one-object replacement compiler with frozen19 canonicalpins. Minimal length3 must change from trap to output3 bothhosts and resolve exacttype12. Run dynamic0/1/multicapture fixed/variadic/apply and64/65boundary fixtures, confirmNoInline sharedthunks; normalNative/JIT/AOT regression and source-bound normalbuild beforeintegration. Any wrongvalue/arity/sanitizerfailure orrecreatedper-callsite matrix falsifies.",
+          "cost_class": "sub-gpu-hour"
+        }
+      ]
+    }
+  ]
+}

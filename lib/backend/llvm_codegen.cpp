@@ -6983,6 +6983,67 @@ private:
         Value* address;
     };
 
+    // WASM call_indirect requires the callee's exact capture tail. Cache one
+    // non-inline dispatcher per user-argument arity in the module: placing the
+    // 65-way capture switch at every call site would multiply compiler work.
+    // Native caller-cleanup calls keep their existing padded fast path.
+    Value* codegenWasmSmallClosureCall(Value* function_ptr, Value* captures,
+                                     Value* capture_count,
+                                     const std::vector<Value*>& arguments) {
+        const std::string name = "__eshkol_wasm_closure_call_" +
+                                 std::to_string(arguments.size());
+        // Metadata is module-owned and occupies no compiler-object fields.
+        // Its namespace is separate from user procedure names in the IR.
+        const std::string cache_key = "eshkol.wasm.closure.call." +
+                                      std::to_string(arguments.size());
+        NamedMDNode* cache = module->getNamedMetadata(cache_key);
+        Function* thunk = nullptr;
+        if (cache && cache->getNumOperands() == 1) {
+            auto* reference = dyn_cast<ValueAsMetadata>(cache->getOperand(0)->getOperand(0));
+            if (reference) thunk = dyn_cast<Function>(reference->getValue());
+        }
+        if (!thunk) {
+            Type* pointer_type = PointerType::getUnqual(*context);
+            std::vector<Type*> types{pointer_type, pointer_type, int64_type};
+            types.insert(types.end(), arguments.size(), tagged_value_type);
+            auto* type = FunctionType::get(tagged_value_type, types, false);
+            thunk = Function::Create(type, Function::InternalLinkage, name, module.get());
+            module->getOrInsertNamedMetadata(cache_key)->addOperand(
+                MDNode::get(*context, ValueAsMetadata::get(thunk)));
+            thunk->addFnAttr(Attribute::NoInline);
+            IRBuilder<> ir(*context);
+            ir.SetInsertPoint(BasicBlock::Create(*context, "entry", thunk));
+            auto parameter = thunk->arg_begin();
+            Value* target = &*parameter++;
+            Value* environment = &*parameter++;
+            Value* count = &*parameter++;
+            std::vector<Value*> values;
+            for (; parameter != thunk->arg_end(); ++parameter) values.push_back(&*parameter);
+            BasicBlock* invalid = BasicBlock::Create(*context, "invalid_capture_count", thunk);
+            SwitchInst* dispatch = ir.CreateSwitch(count, invalid, 65);
+            for (unsigned n = 0; n <= 64; ++n) {
+                BasicBlock* arm = BasicBlock::Create(*context, "captures_" + std::to_string(n), thunk);
+                dispatch->addCase(ConstantInt::get(int64_type, n), arm);
+                ir.SetInsertPoint(arm);
+                std::vector<Value*> call_values = values;
+                std::vector<Type*> call_types(values.size(), tagged_value_type);
+                for (unsigned i = 0; i < n; ++i) {
+                    call_values.push_back(ir.CreateGEP(tagged_value_type, environment,
+                                                       ConstantInt::get(int64_type, i)));
+                    call_types.push_back(pointer_type);
+                }
+                FunctionType* exact_type = FunctionType::get(tagged_value_type, call_types, false);
+                ir.CreateRet(ir.CreateCall(exact_type, target, call_values));
+            }
+            ir.SetInsertPoint(invalid);
+            ir.CreateCall(Intrinsic::getDeclaration(module.get(), Intrinsic::trap));
+            ir.CreateUnreachable();
+        }
+        std::vector<Value*> parameters{function_ptr, captures, capture_count};
+        parameters.insert(parameters.end(), arguments.begin(), arguments.end());
+        return builder->CreateCall(thunk, parameters);
+    }
+
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
     // void eshkol_procedure_call_error(const eshkol_tagged_value_t* callee,
@@ -7751,7 +7812,17 @@ private:
             }
             FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
 
-            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+            Value* result;
+            if (wasm_codegen_) {
+                // Capture slots are supplied by the shared exact-signature
+                // thunk. Only actual user arguments belong in this vector.
+                std::vector<Value*> user_args(full_args.begin(),
+                    full_args.end() - MAX_CLOSURE_DISPATCH_CAPTURES);
+                result = codegenWasmSmallClosureCall(actual_func_ptr, captures_typed,
+                                                     num_captures, user_args);
+            } else {
+                result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+            }
             builder->CreateBr(merge_bb);
             variadic_results.push_back({builder->GetInsertBlock(), result});
         }
@@ -7917,7 +7988,17 @@ private:
             param_types.insert(param_types.end(), cap_param_types.begin(), cap_param_types.end());
             FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
 
-            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+            Value* result;
+            if (wasm_codegen_) {
+                // Capture slots are supplied by the shared exact-signature
+                // thunk. Only actual user arguments belong in this vector.
+                std::vector<Value*> user_args(full_args.begin(),
+                    full_args.end() - MAX_CLOSURE_DISPATCH_CAPTURES);
+                result = codegenWasmSmallClosureCall(actual_func_ptr, captures_typed,
+                                                     num_captures, user_args);
+            } else {
+                result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+            }
 
             builder->CreateBr(merge_bb);
             results.push_back({builder->GetInsertBlock(), result});
