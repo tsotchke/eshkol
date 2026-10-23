@@ -1,0 +1,475 @@
+;;; core.sblc acceptance suite (ADR-0017, first slice).
+;;;
+;;; Oracles, each independent of the code path it checks:
+;;;   codec      brute-force strict decoding of every bit string of length n
+;;;              equals structural enumeration and the exact count recurrence;
+;;;              round trips consume every bit; no trailing-bit aliases;
+;;;              closedness is depth-aware.
+;;;   mass       Kraft equality of the complete prefix code at every L
+;;;              (prior mass + incomplete-prefix mass = 1, exactly), the
+;;;              grammar fixed point, and normal + timeout = 1 for every
+;;;              exact distribution.
+;;;   coins      every exact distribution equals the sum over exhaustively
+;;;              enumerated coin traces (replayed runs) of 2^-|trace|.
+;;;   semantics  lazy choice, half mass per branch, M ⊕ M merging,
+;;;              alpha-identical merging, step-bound edges, impossible
+;;;              evidence.
+;;;   sampler    seeded reproducibility and constructor / term frequencies
+;;;              inside predeclared simultaneous bounds.
+;;;   receipt    deterministic conditioning receipts (bit lists and BLC8);
+;;;              the gate script compares this whole output across JIT and
+;;;              AOT byte for byte.
+;;;
+;;; Prints PASS/FAIL per check, one "SBLC-GATE <oracle> PASS|FAIL" line per
+;;; oracle, and "RESULT: PASS" only when every check passed.
+
+(require core.blc)
+(require core.sblc)
+
+(define passed 0)
+(define failed 0)
+(define group-failed 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (set! group-failed (+ group-failed 1))
+             (display "FAIL: ")))
+  (display label) (newline))
+
+(define (gate-line name)
+  (display "SBLC-GATE ") (display name)
+  (display (if (= group-failed 0) " PASS" " FAIL")) (newline)
+  (set! group-failed 0))
+
+(define (all? pred xs)
+  (or (null? xs) (and (pred (car xs)) (all? pred (cdr xs)))))
+
+(define (range-from a b)
+  (if (> a b) '() (cons a (range-from (+ a 1) b))))
+
+;; All bit strings of length n in lexicographic order.
+(define (bits-of k n)
+  (let loop ((i 0) (k k) (acc '()))
+    (if (= i n)
+        (list->string acc)
+        (loop (+ i 1) (quotient k 2) (cons (if (= (remainder k 2) 0) #\0 #\1) acc)))))
+
+(define (all-bit-strings n)
+  (let loop ((k (- (expt 2 n) 1)) (acc '()))
+    (if (< k 0) acc (loop (- k 1) (cons (bits-of k n) acc)))))
+
+(define (brute-terms n)
+  (let loop ((xs (all-bit-strings n)) (acc '()))
+    (if (null? xs)
+        (reverse acc)
+        (let ((t (sblc-try-decode (car xs))))
+          (loop (cdr xs) (if t (cons t acc) acc))))))
+
+(define (filter-closed ts)
+  (cond ((null? ts) '())
+        ((sblc-closed? (car ts)) (cons (car ts) (filter-closed (cdr ts))))
+        (else (filter-closed (cdr ts)))))
+
+(define (strictly-increasing-bits? ts)
+  (or (null? ts) (null? (cdr ts))
+      (and (string<? (sblc-encode (car ts)) (sblc-encode (cadr ts)))
+           (strictly-increasing-bits? (cdr ts)))))
+
+;; Built from the constructors (core.blc's predefined terms are the same).
+(define I (blc-lam (blc-var 1)))
+(define K (blc-lam (blc-lam (blc-var 2))))
+(define omega (blc-app (blc-lam (blc-app (blc-var 1) (blc-var 1)))
+                       (blc-lam (blc-app (blc-var 1) (blc-var 1)))))
+
+;; ============================================================================
+;; 1. Codec oracle
+;; ============================================================================
+
+(check "four-form codes: var 1 = 00, var 3 = 0110, lam = 10, app = 110, choice = 111"
+       (and (string=? (sblc-encode (blc-var 1)) "00")
+            (string=? (sblc-encode (blc-var 3)) "0110")
+            (string=? (sblc-encode I) "1000")
+            (string=? (sblc-encode K) "1010010")
+            (string=? (sblc-encode (blc-app I I)) "11010001000")
+            (string=? (sblc-encode (sblc-choice I K)) "11110001010010")))
+
+(check "classic core.blc encodings are unchanged"
+       (and (string=? (blc-encode I) "0010")
+            (string=? (blc-encode K) "0000110")
+            (string=? (blc-encode (blc-decode "00000001011110100111010"))
+                      "00000001011110100111010")))
+
+(define codec-max 12)
+
+(for-each
+ (lambda (n)
+   (let ((brute (brute-terms n))
+         (enum (sblc-enumerate n)))
+     (check (string-append "length " (number->string n)
+                           ": brute-force strict decoding = structural enumeration = count "
+                           (number->string (sblc-count n)))
+            (and (equal? brute enum)
+                 (= (length brute) (sblc-count n))
+                 (strictly-increasing-bits? enum)))
+     (check (string-append "length " (number->string n)
+                           ": closed terms = enumerate-closed = count-closed "
+                           (number->string (sblc-count-closed n)))
+            (and (equal? (filter-closed brute) (sblc-enumerate-closed n))
+                 (= (length (filter-closed brute)) (sblc-count-closed n))))
+     (check (string-append "length " (number->string n)
+                           ": round trip consumes every bit, no trailing-bit alias")
+            (all? (lambda (t)
+                    (let ((b (sblc-encode t)))
+                      (and (= (string-length b) n (sblc-length t))
+                           (equal? (sblc-decode b) t)
+                           (eq? (sblc-prefix-status b) 'complete)
+                           (not (sblc-try-decode (string-append b "0")))
+                           (not (sblc-try-decode (string-append b "1")))
+                           (eq? (sblc-prefix-status (string-append b "0")) 'trailing)
+                           (= (sblc-weight t) (/ 1 (expt 2 n))))))
+                  enum))))
+ (range-from 0 codec-max))
+
+(check "known counts: lengths 2..8 -> 1 1 2 2 3 5 8"
+       (equal? (map sblc-count (range-from 2 8)) '(1 1 2 2 3 5 8)))
+(check "known closed counts: lengths 4..9 -> 1 0 1 1 1 3"
+       (equal? (map sblc-count-closed (range-from 4 9)) '(1 0 1 1 1 3)))
+(check "closedness is depth-aware"
+       (and (sblc-closed? K)
+            (not (sblc-closed? (blc-lam (blc-var 2))))
+            (sblc-closed-at? (blc-lam (blc-var 2)) 1)
+            (not (sblc-closed? (sblc-choice I (blc-var 1))))))
+(check "invalid and truncated inputs are classified, never decoded"
+       (and (eq? (sblc-prefix-status "") 'incomplete)
+            (eq? (sblc-prefix-status "0111") 'incomplete)
+            (eq? (sblc-prefix-status "1102") 'invalid)
+            (not (sblc-try-decode "111"))
+            (not (sblc-try-decode "x"))))
+(check "versioned identity"
+       (string=? (sblc-program-id I) "sblc-v1:1000"))
+(gate-line "codec_oracle")
+
+;; ============================================================================
+;; 2. Exact mass conservation
+;; ============================================================================
+
+(define (incomplete-count L)
+  (let loop ((xs (all-bit-strings L)) (acc 0))
+    (if (null? xs)
+        acc
+        (loop (cdr xs) (if (eq? (sblc-prefix-status (car xs)) 'incomplete) (+ acc 1) acc)))))
+
+(define mass-max 14)
+
+(for-each
+ (lambda (L)
+   (check (string-append "L=" (number->string L)
+                         ": prior mass + incomplete-prefix mass = 1 exactly")
+          (= (+ (sblc-prior-mass L) (/ (incomplete-count L) (expt 2 L))) 1)))
+ (range-from 0 mass-max))
+
+(check "cumulative prior mass is monotone and below one"
+       (let loop ((L 0) (prev 0))
+         (if (> L 40)
+             #t
+             (let ((m (sblc-prior-mass L)))
+               (and (exact? m) (>= m prev) (< m 1) (loop (+ L 1) m))))))
+(check "closed prior mass never exceeds raw prior mass"
+       (all? (lambda (L) (<= (sblc-closed-prior-mass L) (sblc-prior-mass L)))
+             (range-from 0 30)))
+(check "grammar fixed point: S = 1/2 + S/4 + S^2/4 has roots 1 and 2; the prior selects 1"
+       (let ((f (lambda (s) (+ (/ 1 2) (/ s 4) (/ (* s s) 4)))))
+         (and (= (f 1) 1) (= (f 2) 2) (< (sblc-prior-mass 60) 1)
+              (> (sblc-prior-mass 60) (/ 3 4)))))
+(check "root constructor prefixes 0, 10, 110, 111 carry exactly 1/2, 1/4, 1/8, 1/8"
+       (let ((total (lambda (prefix L)
+                      (let loop ((n 0) (acc 0))
+                        (if (> n L) acc
+                            (loop (+ n 1)
+                                  (+ acc (let inner ((ts (sblc-enumerate n)) (a 0))
+                                           (if (null? ts) a
+                                               (inner (cdr ts)
+                                                      (let ((b (sblc-encode (car ts))))
+                                                        (if (and (>= (string-length b) (string-length prefix))
+                                                                 (string=? (substring b 0 (string-length prefix)) prefix))
+                                                            (+ a (sblc-weight (car ts)))
+                                                            a)))))))))))
+             (L 12))
+         ;; mass of terms of length <= L under a prefix, plus that prefix's
+         ;; incomplete strings of length L, is exactly the prefix probability
+         (all? (lambda (pp)
+                 (= (+ (total (car pp) L)
+                       (/ (let loop ((xs (all-bit-strings L)) (k 0))
+                            (if (null? xs) k
+                                (loop (cdr xs)
+                                      (if (and (string=? (substring (car xs) 0 (string-length (car pp))) (car pp))
+                                               (eq? (sblc-prefix-status (car xs)) 'incomplete))
+                                          (+ k 1) k))))
+                          (expt 2 L)))
+                    (cdr pp)))
+               (list (cons "0" (/ 1 2)) (cons "10" (/ 1 4))
+                     (cons "110" (/ 1 8)) (cons "111" (/ 1 8))))))
+
+(define small-programs
+  (let loop ((n 0) (acc '()))
+    (if (> n 11) acc (loop (+ n 1) (append acc (sblc-enumerate-closed n))))))
+
+(define probe-terms
+  (append
+   small-programs
+   (list (sblc-choice I K)
+         (sblc-choice I I)
+         (blc-app (blc-app K I) (sblc-choice omega K))
+         (blc-app (sblc-choice I K) (sblc-choice K I))
+         (sblc-choice omega I)
+         (blc-app (blc-lam (sblc-choice (blc-app (blc-var 1) (blc-var 1)) (blc-var 1)))
+                  (blc-lam (sblc-choice (blc-app (blc-var 1) (blc-var 1)) (blc-var 1)))))))
+
+(check (string-append "normal + timeout mass = 1 for "
+                      (number->string (length probe-terms))
+                      " terms at bounds 0, 1, 3, 8, 16")
+       (all? (lambda (t)
+               (all? (lambda (S)
+                       (let ((d (sblc-distribution t S)))
+                         (= (+ (sblc-dist-normal-mass d) (sblc-dist-timeout d)) 1)))
+                     '(0 1 3 8 16)))
+             probe-terms))
+(gate-line "mass_conservation")
+
+;; ============================================================================
+;; 3. Exhaustive coin-trace oracle
+;; ============================================================================
+;;
+;; Replay every coin string: a run that asks for another coin is extended by
+;; 0 and by 1; a finished run contributes 2^-|trace| to its outcome.
+
+(define (add-mass alist key m)
+  (cond ((null? alist) (list (cons key m)))
+        ((equal? (caar alist) key) (cons (cons key (+ (cdar alist) m)) (cdr alist)))
+        (else (cons (car alist) (add-mass (cdr alist) key m)))))
+
+(define (trace-oracle t S)
+  ;; returns (outcome-alist . timeout)
+  (let walk ((coins "") (acc (cons '() 0)))
+    (let ((r (sblc-run-coins t coins S)))
+      (cond
+        ((eq? (sblc-run-status r) 'needs-coin)
+         (walk (string-append coins "1") (walk (string-append coins "0") acc)))
+        (else
+         (let ((w (/ 1 (expt 2 (string-length coins)))))
+           (if (and (string=? (sblc-run-trace r) coins)
+                    (<= (sblc-run-steps r) S))
+               (if (eq? (sblc-run-status r) 'normal)
+                   (cons (add-mass (car acc) (sblc-run-term r) w) (cdr acc))
+                   (cons (car acc) (+ (cdr acc) w)))
+               (cons (cons (list 'inconsistent-trace) 1) (cdr acc)))))))))
+
+(define (same-distribution? d oracle)
+  (and (= (sblc-dist-timeout d) (cdr oracle))
+       (= (length (sblc-dist-outcomes d)) (length (car oracle)))
+       (all? (lambda (o) (= (sblc-dist-mass-of d (car o)) (cdr o))) (car oracle))))
+
+(check (string-append "exact distribution = exhaustive coin traces for "
+                      (number->string (length probe-terms)) " terms at bounds 2, 6, 12")
+       (all? (lambda (t)
+               (all? (lambda (S) (same-distribution? (sblc-distribution t S) (trace-oracle t S)))
+                     '(2 6 12)))
+             probe-terms))
+(check "every run reconciles steps = beta + coins and never exceeds the bound"
+       (all? (lambda (t)
+               (let ((r (sblc-sample t 7 10)))
+                 (and (= (sblc-run-steps r) (+ (sblc-run-beta r) (sblc-run-coins-used r)))
+                      (<= (sblc-run-steps r) 10)
+                      (= (string-length (sblc-run-trace r)) (sblc-run-coins-used r)))))
+             probe-terms))
+(gate-line "coin_trace_oracle")
+
+;; ============================================================================
+;; 4. Semantics
+;; ============================================================================
+
+(define lazy (blc-app (blc-app K I) (sblc-choice omega I)))
+(let ((r (sblc-run-coins lazy "" 100))
+      (d (sblc-distribution lazy 100)))
+  (check "lazy choice: K I (Ω ⊕ M) consumes zero coins and normalizes to I"
+         (and (eq? (sblc-run-status r) 'normal)
+              (equal? (sblc-run-term r) I)
+              (= (sblc-run-coins-used r) 0)
+              (= (sblc-run-beta r) 2)
+              (equal? (sblc-dist-outcomes d) (list (cons I 1)))
+              (= (sblc-dist-timeout d) 0))))
+
+(let ((d (sblc-distribution (sblc-choice I K) 1)))
+  (check "exact half mass per branch: I ⊕ K"
+         (and (= (sblc-dist-mass-of d I) (/ 1 2))
+              (= (sblc-dist-mass-of d K) (/ 1 2))
+              (= (sblc-dist-timeout d) 0))))
+
+(check "M ⊕ M merges to mass one"
+       (equal? (sblc-dist-outcomes (sblc-distribution (sblc-choice K K) 1))
+               (list (cons K 1))))
+
+(check "alpha-identical branches merge: λx.x ⊕ (λy.y applied under K)"
+       (equal? (sblc-dist-outcomes
+                (sblc-distribution (sblc-choice I (blc-app (blc-app K I) K)) 4))
+               (list (cons I 1))))
+
+(check "nested choices: (I ⊕ K) (K ⊕ I) gives exact quarter masses"
+       (let ((d (sblc-distribution (blc-app (sblc-choice I K) (sblc-choice K I)) 10)))
+         (and (= (sblc-dist-mass-of d K) (/ 1 4))
+              (= (sblc-dist-mass-of d I) (/ 1 4))
+              (= (+ (sblc-dist-normal-mass d) (sblc-dist-timeout d)) 1))))
+
+(let ((t (blc-app (blc-app K I) K)))
+  (check "step-bound edge: two beta steps normalize at S=2 and time out at S=1"
+         (and (eq? (sblc-run-status (sblc-run-coins t "" 2)) 'normal)
+              (eq? (sblc-run-status (sblc-run-coins t "" 1)) 'timeout)
+              (= (sblc-dist-timeout (sblc-distribution t 1)) 1)
+              (= (sblc-dist-timeout (sblc-distribution t 2)) 0))))
+
+(check "a coin counts as a step: I ⊕ K normalizes at S=1, times out at S=0"
+       (and (= (sblc-dist-timeout (sblc-distribution (sblc-choice I K) 0)) 1)
+            (= (sblc-dist-timeout (sblc-distribution (sblc-choice I K) 1)) 0)))
+
+(check "Ω ⊕ I: half mass normalizes, half times out (a timeout is not divergence)"
+       (let ((d (sblc-distribution (sblc-choice omega I) 25)))
+         (and (= (sblc-dist-mass-of d I) (/ 1 2))
+              (= (sblc-dist-timeout d) (/ 1 2)))))
+
+(check "normal order: a divergent discarded argument does not block K I Ω"
+       (equal? (sblc-run-term (sblc-run-coins (blc-app (blc-app K I) omega) "" 10)) I))
+
+(check "outcome order is canonical: sorted by code length, then bits"
+       (let ((d (sblc-distribution (sblc-choice K (sblc-choice I (blc-lam (blc-lam (blc-var 1))))) 4)))
+         (equal? (map car (sblc-dist-outcomes d))
+                 (list I (blc-lam (blc-lam (blc-var 1))) K))))
+
+(check "rendering: λ(1 ⊕ 1)"
+       (string=? (sblc->string (blc-lam (sblc-choice (blc-var 1) (blc-var 1)))) "λ(1 ⊕ 1)"))
+
+(define impossible
+  (sblc-condition 7 8 30 (list (sblc-bytes-example '(65) '(65 66)))))
+(check "impossible evidence returns no-consistent-program"
+       (and (eq? (sblc-receipt-status impossible) 'no-consistent-program)
+            (= (sblc-receipt-evidence impossible) 0)
+            (not (sblc-receipt-shortest impossible))
+            (not (sblc-receipt-mdl impossible))))
+(gate-line "semantics")
+
+;; ============================================================================
+;; 5. Sampler: reproducibility and statistics
+;; ============================================================================
+
+(define coin-term (blc-app (sblc-choice I K) (sblc-choice K I)))
+(check "same seed, same run: coins, result, counters and trace"
+       (equal? (sblc-sample coin-term 2026 20) (sblc-sample coin-term 2026 20)))
+(check "the sampled outcome is one of the exact outcomes"
+       (> (sblc-dist-mass-of (sblc-distribution coin-term 20)
+                             (sblc-run-term (sblc-sample coin-term 2026 20)))
+          0))
+
+;; Predeclared simultaneous bound: |observed - N p| <= 5 sqrt(N p (1-p)) for
+;; every tracked frequency (all comparisons in exact integer arithmetic:
+;; (observed - N p)^2 <= 25 N p (1-p)).
+(define stat-n 4000)
+(define (within-bound? observed p)
+  (let ((dev (- observed (* stat-n p))))
+    (<= (* dev dev) (* 25 stat-n p (- 1 p)))))
+
+(define (sample-programs seed n)
+  (let ((prng (make-prng seed)))
+    (let loop ((i 0) (acc '()))
+      (if (= i n) acc (loop (+ i 1) (cons (sblc-sample-program prng 40) acc))))))
+
+(define drawn (sample-programs 17 stat-n))
+(define (count-if pred xs)
+  (let loop ((xs xs) (k 0)) (if (null? xs) k (loop (cdr xs) (if (pred (car xs)) (+ k 1) k)))))
+(define (root-is? tag) (lambda (t) (and t (pair? t) (eq? (car t) tag))))
+
+(check "constructor frequencies match (1/2, 1/4, 1/8, 1/8) within the predeclared bound"
+       (and (within-bound? (count-if (root-is? 'var) drawn) (/ 1 2))
+            (within-bound? (count-if (root-is? 'lam) drawn) (/ 1 4))
+            (within-bound? (count-if (root-is? 'app) drawn) (/ 1 8))
+            (within-bound? (count-if (root-is? 'choice) drawn) (/ 1 8))))
+(check "term frequencies match 2^-length for 00, 010, 1000, 0110"
+       (all? (lambda (bits)
+               (within-bound? (count-if (lambda (t) (and t (string=? (sblc-encode t) bits))) drawn)
+                              (/ 1 (expt 2 (string-length bits)))))
+             '("00" "010" "1000" "0110")))
+(check "sampled evaluation of I ⊕ K: frequency of I within the predeclared bound"
+       (let ((prng (make-prng 99)))
+         (within-bound?
+          (let loop ((i 0) (k 0))
+            (if (= i stat-n)
+                k
+                (loop (+ i 1)
+                      (if (equal? (sblc-run-term (sblc-sample-prng prng (sblc-choice I K) 4)) I)
+                          (+ k 1) k))))
+          (/ 1 2))))
+(check "bounded-closed sampler returns closed programs within the bound"
+       (let ((prng (make-prng 5)))
+         (all? (lambda (i) (let ((t (sblc-sample-closed-program prng 10)))
+                             (and (sblc-closed? t) (<= (sblc-length t) 10))))
+               (range-from 1 200))))
+(gate-line "sampler_statistics")
+
+;; ============================================================================
+;; 6. Conditioning receipts (printed in full; JIT/AOT parity is checked by
+;;    the gate script on this whole output)
+;; ============================================================================
+
+(define bit-receipt
+  (sblc-condition 2026 10 40
+                  (list (sblc-bits-example "0" "0")
+                        (sblc-bits-example "10" "10"))))
+(check "bit-list conditioning: identity is the shortest and MDL witness"
+       (and (eq? (sblc-receipt-status bit-receipt) 'consistent)
+            (string=? (sblc-entry-bits (sblc-receipt-shortest bit-receipt)) "1000")
+            (string=? (sblc-entry-bits (sblc-receipt-mdl bit-receipt)) "1000")))
+(check "posterior masses are exact and sum to one"
+       (= (let loop ((xs (sblc-receipt-programs bit-receipt)) (acc 0))
+            (if (null? xs) acc (loop (cdr xs) (+ acc (sblc-entry-posterior (car xs))))))
+          1))
+(check "a stochastic program earns its exact likelihood: λ(1 ⊕ 1) = 1"
+       (let ((e (assoc "101110000" (map (lambda (e) (cons (sblc-entry-bits e) e))
+                                        (sblc-receipt-programs bit-receipt)))))
+         (and e (= (sblc-entry-likelihood (cdr e)) 1)
+              (= (sblc-entry-weight (cdr e)) (/ 1 512)))))
+(check "complete bounded program set: every closed program of length <= 10"
+       (= (length (sblc-receipt-programs bit-receipt))
+          (let loop ((n 0) (acc 0)) (if (> n 10) acc (loop (+ n 1) (+ acc (sblc-count-closed n)))))))
+
+(define byte-receipt
+  (sblc-condition 7 9 40 (list (sblc-bytes-example '(65) '(65)))))
+(check "BLC8 conditioning: identity on one byte"
+       (and (eq? (sblc-receipt-status byte-receipt) 'consistent)
+            (string=? (sblc-entry-bits (sblc-receipt-mdl byte-receipt)) "1000")))
+(check "identical tuples reproduce identical receipts"
+       (string=? (sblc-receipt->string bit-receipt)
+                 (sblc-receipt->string
+                  (sblc-condition 2026 10 40
+                                  (list (sblc-bits-example "0" "0")
+                                        (sblc-bits-example "10" "10"))))))
+(gate-line "conditioning_receipt")
+
+(display "RECEIPT-BEGIN bit-lists") (newline)
+(display (sblc-receipt->string bit-receipt)) (newline)
+(display "RECEIPT-END") (newline)
+(display "RECEIPT-BEGIN blc8") (newline)
+(display (sblc-receipt->string byte-receipt)) (newline)
+(display "RECEIPT-END") (newline)
+(display "RECEIPT-BEGIN impossible") (newline)
+(display (sblc-receipt->string impossible)) (newline)
+(display "RECEIPT-END") (newline)
+(display "SAMPLE seed 2026: ")
+(let ((r (sblc-sample coin-term 2026 20)))
+  (display (sblc-run-status r)) (display " ") (display (sblc-encode (sblc-run-term r)))
+  (display " coins ") (display (sblc-run-trace r)))
+(newline)
+
+(display "sblc_test: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

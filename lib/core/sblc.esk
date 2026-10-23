@@ -1,0 +1,737 @@
+;;; lib/core/sblc.esk — Stochastic Binary Lambda Calculus (SBLC), first slice.
+;;;
+;;; ADR-0017 (docs/design/adr/0017-stochastic-binary-lambda-calculus.md).
+;;;
+;;; SBLC is the untyped lambda calculus with a fair binary choice M ⊕ N,
+;;; written in a self-delimiting binary prefix code. This module keeps the
+;;; ADR's three layers apart:
+;;;
+;;;   1. The language: the four-form `sblc-v1` prefix code, closedness,
+;;;      choice-aware shift/substitution and strong leftmost-outermost
+;;;      reduction.
+;;;   2. The probability semantics: a sampled semantics (every coin comes
+;;;      from an explicitly seeded, isolated PRNG and is recorded in a
+;;;      trace) and an exact distribution semantics (an exact rational
+;;;      sub-distribution over normal forms plus an exact timeout mass under
+;;;      a step bound; the two always sum to 1).
+;;;   3. The prior over programs: weight 2^-|program| from the prefix code,
+;;;      exact per-length counts and enumeration, and exact conditioning on
+;;;      input/output examples.
+;;;
+;;; Terms reuse core.blc's homoiconic forms and add one:
+;;;
+;;;   (var i)        variable, i a positive (1-based) De Bruijn index
+;;;   (lam B)        abstraction
+;;;   (app M N)      application
+;;;   (choice M N)   fair binary choice M ⊕ N
+;;;
+;;; Grammar `sblc-v1` (a distinct, versioned format; classic BLC encodings
+;;; are produced only by core.blc and are never re-encoded here):
+;;;
+;;;   sblc(var i)      = 0 1^(i-1) 0
+;;;   sblc(lam M)      = 10  sblc(M)
+;;;   sblc(app M N)    = 110 sblc(M) sblc(N)
+;;;   sblc(choice M N) = 111 sblc(M) sblc(N)
+;;;
+;;; Every bit string is meaningful, so the code is complete: the generating
+;;; function S(z) = z^2/(1-z) + z^2 S(z) + 2 z^3 S(z)^2 has least root
+;;; S(1/2) = 1 and the fair-bit sampler over the grammar is a probability
+;;; distribution (root probabilities var 1/2, lam 1/4, app 1/8, choice 1/8).
+;;;
+;;; Coins: a coin of 0 selects the left branch M, a coin of 1 the right
+;;; branch N. The sampled evaluator draws coins with
+;;; (prng-random-integer prng 2) from (make-prng seed): RNG policy
+;;; `drand48-msb-v1`. Every probability on the exact path is an exact Eshkol
+;;; rational; no floating-point value is involved.
+
+(require core.blc)
+(require core.list.sort)
+
+(provide sblc-format-version sblc-rng-policy
+         ;; syntax
+         sblc-choice sblc-choice? sblc-choice-left sblc-choice-right
+         sblc-term? sblc-closed? sblc-closed-at?
+         sblc-length sblc-weight
+         sblc-encode sblc-decode sblc-try-decode sblc-prefix-status
+         sblc-program-id sblc->string
+         ;; reduction
+         sblc-shift sblc-subst sblc-step sblc-normal?
+         sblc-run sblc-run-coins sblc-sample sblc-sample-prng
+         sblc-coins-from-bits sblc-coins-from-prng
+         sblc-run-status sblc-run-term sblc-run-beta sblc-run-coins-used
+         sblc-run-steps sblc-run-trace
+         sblc-distribution sblc-dist-outcomes sblc-dist-timeout
+         sblc-dist-normal-mass sblc-dist-mass-of
+         ;; prior and enumeration
+         sblc-count sblc-count-closed sblc-enumerate sblc-enumerate-closed
+         sblc-prior-mass sblc-closed-prior-mass
+         sblc-sample-program sblc-sample-closed-program
+         ;; observations and conditioning
+         sblc-bits-example sblc-bytes-example sblc-likelihood
+         sblc-condition
+         sblc-receipt-status sblc-receipt-evidence sblc-receipt-programs
+         sblc-receipt-shortest sblc-receipt-mdl sblc-receipt-witness-runs
+         sblc-entry-bits sblc-entry-length sblc-entry-prior sblc-entry-likelihoods
+         sblc-entry-likelihood sblc-entry-timeouts sblc-entry-weight
+         sblc-entry-posterior
+         sblc-receipt->string)
+
+(define sblc-format-version 'sblc-v1)
+(define sblc-rng-policy 'drand48-msb-v1)
+
+;; ============================================================================
+;; Syntax
+;; ============================================================================
+
+(define (sblc-choice m n) (list 'choice m n))
+(define (sblc-choice? t) (and (pair? t) (eq? (car t) 'choice)))
+(define (sblc-choice-left t) (cadr t))
+(define (sblc-choice-right t) (caddr t))
+
+;; Structurally well-formed four-form term.
+(define (sblc-term? t)
+  (cond
+    ((blc-var? t) (let ((i (blc-var-index t))) (and (integer? i) (>= i 1))))
+    ((blc-lam? t) (sblc-term? (blc-lam-body t)))
+    ((blc-app? t) (and (sblc-term? (blc-app-fun t)) (sblc-term? (blc-app-arg t))))
+    ((sblc-choice? t) (and (sblc-term? (sblc-choice-left t))
+                           (sblc-term? (sblc-choice-right t))))
+    (else #f)))
+
+;; Depth-aware closedness: every variable is bound within `depth` enclosing
+;; binders plus the binders inside the term itself.
+(define (sblc-closed-at? t depth)
+  (cond
+    ((blc-var? t) (<= (blc-var-index t) depth))
+    ((blc-lam? t) (sblc-closed-at? (blc-lam-body t) (+ depth 1)))
+    ((blc-app? t) (and (sblc-closed-at? (blc-app-fun t) depth)
+                       (sblc-closed-at? (blc-app-arg t) depth)))
+    ((sblc-choice? t) (and (sblc-closed-at? (sblc-choice-left t) depth)
+                           (sblc-closed-at? (sblc-choice-right t) depth)))
+    (else (error "sblc-closed-at?: not an sblc-v1 term" t))))
+
+(define (sblc-closed? t) (sblc-closed-at? t 0))
+
+;; Code length in bits, computed structurally.
+(define (sblc-length t)
+  (cond
+    ((blc-var? t) (+ (blc-var-index t) 1))
+    ((blc-lam? t) (+ 2 (sblc-length (blc-lam-body t))))
+    ((blc-app? t) (+ 3 (sblc-length (blc-app-fun t)) (sblc-length (blc-app-arg t))))
+    ((sblc-choice? t) (+ 3 (sblc-length (sblc-choice-left t))
+                         (sblc-length (sblc-choice-right t))))
+    (else (error "sblc-length: not an sblc-v1 term" t))))
+
+;; Exact prior weight 2^-|t| as an Eshkol rational.
+(define (sblc-weight t) (/ 1 (expt 2 (sblc-length t))))
+
+;; ============================================================================
+;; Codec
+;; ============================================================================
+
+(define (sblc-encode t)
+  (cond
+    ((blc-var? t)
+     (let ((i (blc-var-index t)))
+       (if (and (integer? i) (>= i 1))
+           (string-append "0" (make-string (- i 1) #\1) "0")
+           (error "sblc-encode: variable index must be a positive integer" i))))
+    ((blc-lam? t) (string-append "10" (sblc-encode (blc-lam-body t))))
+    ((blc-app? t) (string-append "110" (sblc-encode (blc-app-fun t))
+                                 (sblc-encode (blc-app-arg t))))
+    ((sblc-choice? t) (string-append "111" (sblc-encode (sblc-choice-left t))
+                                     (sblc-encode (sblc-choice-right t))))
+    (else (error "sblc-encode: not an sblc-v1 term" t))))
+
+;; Parse one term starting at `pos`. Returns (term . next-pos), or the
+;; symbol 'incomplete when the input ends inside the term, or 'invalid on a
+;; character other than #\0 / #\1. Never raises and never loops.
+(define (sblc-parse-at bits pos len)
+  (if (>= pos len)
+      'incomplete
+      (let ((c (string-ref bits pos)))
+        (cond
+          ((char=? c #\0) (sblc-parse-var bits (+ pos 1) len 1))
+          ((char=? c #\1) (sblc-parse-compound bits (+ pos 1) len))
+          (else 'invalid)))))
+
+;; After the leading 0 of a variable: count 1s up to the terminating 0.
+(define (sblc-parse-var bits pos len index)
+  (if (>= pos len)
+      'incomplete
+      (let ((c (string-ref bits pos)))
+        (cond
+          ((char=? c #\0) (cons (blc-var index) (+ pos 1)))
+          ((char=? c #\1) (sblc-parse-var bits (+ pos 1) len (+ index 1)))
+          (else 'invalid)))))
+
+;; After a leading 1: 0 -> lam; 10 -> app; 11 -> choice.
+(define (sblc-parse-compound bits pos len)
+  (if (>= pos len)
+      'incomplete
+      (let ((c (string-ref bits pos)))
+        (cond
+          ((char=? c #\0)
+           (let ((b (sblc-parse-at bits (+ pos 1) len)))
+             (if (pair? b) (cons (blc-lam (car b)) (cdr b)) b)))
+          ((char=? c #\1)
+           (if (>= (+ pos 1) len)
+               'incomplete
+               (let ((c2 (string-ref bits (+ pos 1))))
+                 (cond
+                   ((char=? c2 #\0) (sblc-parse-binary bits (+ pos 2) len blc-app))
+                   ((char=? c2 #\1) (sblc-parse-binary bits (+ pos 2) len sblc-choice))
+                   (else 'invalid)))))
+          (else 'invalid)))))
+
+(define (sblc-parse-binary bits pos len make)
+  (let ((m (sblc-parse-at bits pos len)))
+    (if (pair? m)
+        (let ((n (sblc-parse-at bits (cdr m) len)))
+          (if (pair? n) (cons (make (car m) (car n)) (cdr n)) n))
+        m)))
+
+;; Classify a whole bit string: 'complete (exactly one term, every bit
+;; consumed), 'trailing (a term followed by extra bits), 'incomplete (a
+;; proper prefix of some term) or 'invalid (a non-bit character).
+(define (sblc-prefix-status bits)
+  (if (not (string? bits))
+      'invalid
+      (let* ((len (string-length bits))
+             (r (sblc-parse-at bits 0 len)))
+        (cond
+          ((pair? r) (if (= (cdr r) len) 'complete 'trailing))
+          (else r)))))
+
+;; Strict decode: the term, or #f unless the string is exactly one term.
+(define (sblc-try-decode bits)
+  (if (not (string? bits))
+      #f
+      (let* ((len (string-length bits))
+             (r (sblc-parse-at bits 0 len)))
+        (if (and (pair? r) (= (cdr r) len)) (car r) #f))))
+
+;; Strict decode that consumes every bit; signals a descriptive error.
+(define (sblc-decode bits)
+  (let ((status (sblc-prefix-status bits)))
+    (cond
+      ((eq? status 'complete) (sblc-try-decode bits))
+      ((eq? status 'trailing)
+       (error "sblc-decode: trailing bits after a complete sblc-v1 term" bits))
+      ((eq? status 'incomplete)
+       (error "sblc-decode: input ends inside an sblc-v1 term" bits))
+      (else (error "sblc-decode: input is not a string of 0/1 bits" bits)))))
+
+;; Versioned identity: "sblc-v1:<bits>".
+(define (sblc-program-id t)
+  (string-append "sblc-v1:" (sblc-encode t)))
+
+;; De Bruijn rendering with ⊕ for choice, e.g. "λ(1 ⊕ 1)".
+(define (sblc->string t)
+  (cond
+    ((blc-var? t) (number->string (blc-var-index t)))
+    ((blc-lam? t) (string-append "λ" (sblc-render-atom (blc-lam-body t))))
+    ((blc-app? t) (string-append (sblc-render-fun (blc-app-fun t)) " "
+                                 (sblc-render-atom (blc-app-arg t))))
+    ((sblc-choice? t) (string-append "(" (sblc->string (sblc-choice-left t)) " ⊕ "
+                                     (sblc->string (sblc-choice-right t)) ")"))
+    (else (error "sblc->string: not an sblc-v1 term" t))))
+
+(define (sblc-render-atom t)
+  (if (blc-app? t) (string-append "(" (sblc->string t) ")") (sblc->string t)))
+
+(define (sblc-render-fun t)
+  (if (blc-lam? t) (string-append "(" (sblc->string t) ")") (sblc->string t)))
+
+;; ============================================================================
+;; Choice-aware De Bruijn shift and substitution
+;; ============================================================================
+
+(define (sblc-shift d cutoff t)
+  (cond
+    ((blc-var? t)
+     (let ((k (blc-var-index t))) (if (>= k cutoff) (blc-var (+ k d)) t)))
+    ((blc-lam? t) (blc-lam (sblc-shift d (+ cutoff 1) (blc-lam-body t))))
+    ((blc-app? t) (blc-app (sblc-shift d cutoff (blc-app-fun t))
+                           (sblc-shift d cutoff (blc-app-arg t))))
+    ((sblc-choice? t) (sblc-choice (sblc-shift d cutoff (sblc-choice-left t))
+                                   (sblc-shift d cutoff (sblc-choice-right t))))
+    (else (error "sblc-shift: not an sblc-v1 term" t))))
+
+(define (sblc-subst t j s)
+  (cond
+    ((blc-var? t) (if (= (blc-var-index t) j) s t))
+    ((blc-lam? t) (blc-lam (sblc-subst (blc-lam-body t) (+ j 1) (sblc-shift 1 1 s))))
+    ((blc-app? t) (blc-app (sblc-subst (blc-app-fun t) j s)
+                           (sblc-subst (blc-app-arg t) j s)))
+    ((sblc-choice? t) (sblc-choice (sblc-subst (sblc-choice-left t) j s)
+                                   (sblc-subst (sblc-choice-right t) j s)))
+    (else (error "sblc-subst: not an sblc-v1 term" t))))
+
+;; Contract (app (lam B) N).
+(define (sblc-beta redex)
+  (let ((b (blc-lam-body (blc-app-fun redex)))
+        (n (blc-app-arg redex)))
+    (sblc-shift -1 1 (sblc-subst b 1 (sblc-shift 1 1 n)))))
+
+;; ============================================================================
+;; Strong leftmost-outermost step
+;; ============================================================================
+;;
+;; (sblc-step t) locates the leftmost-outermost redex. A redex is either a
+;; beta redex (app (lam B) N) or a choice (choice M N). The result is one of
+;;
+;;   (normal)            t is a normal form (no redex anywhere)
+;;   (beta t1)           the redex was a beta redex; t1 is the contractum
+;;   (choice t0 t1)      the redex was a choice; t0 / t1 are t with the
+;;                       choice replaced by its left / right branch
+;;
+;; A choice inside a discarded argument is never reached: K I (Ω ⊕ M)
+;; contracts both beta redexes before any choice is outermost.
+
+(define (sblc-step-wrap r make)
+  (cond
+    ((eq? (car r) 'normal) r)
+    ((eq? (car r) 'beta) (list 'beta (make (cadr r))))
+    (else (list 'choice (make (cadr r)) (make (caddr r))))))
+
+(define (sblc-step t)
+  (cond
+    ((blc-var? t) (list 'normal))
+    ((blc-lam? t)
+     (sblc-step-wrap (sblc-step (blc-lam-body t)) (lambda (b) (blc-lam b))))
+    ((sblc-choice? t)
+     (list 'choice (sblc-choice-left t) (sblc-choice-right t)))
+    ((blc-app? t)
+     (let ((m (blc-app-fun t)) (n (blc-app-arg t)))
+       (if (blc-lam? m)
+           (list 'beta (sblc-beta t))
+           (let ((rm (sblc-step m)))
+             (if (eq? (car rm) 'normal)
+                 (sblc-step-wrap (sblc-step n) (lambda (x) (blc-app m x)))
+                 (sblc-step-wrap rm (lambda (x) (blc-app x n))))))))
+    (else (error "sblc-step: not an sblc-v1 term" t))))
+
+(define (sblc-normal? t) (eq? (car (sblc-step t)) 'normal))
+
+;; ============================================================================
+;; Sampled semantics: runs driven by a coin stream
+;; ============================================================================
+;;
+;; A coin stream is a thunk returning (bit . next-stream), or #f when it is
+;; exhausted. The step bound S limits the total number of contractions
+;; (beta steps plus coins) along the run.
+
+(define (sblc-coins-from-bits bits)
+  (sblc-coins-from-bits-at bits 0 (string-length bits)))
+
+(define (sblc-coins-from-bits-at bits i len)
+  (lambda ()
+    (if (>= i len)
+        #f
+        (cons (if (char=? (string-ref bits i) #\0) 0 1)
+              (sblc-coins-from-bits-at bits (+ i 1) len)))))
+
+(define (sblc-coins-from-prng prng)
+  (lambda () (cons (prng-random-integer prng 2) (sblc-coins-from-prng prng))))
+
+;; Run record: (sblc-run STATUS TERM BETA COINS TRACE), STATUS one of
+;; 'normal, 'timeout (the bound was reached first; this is never a claim of
+;; divergence) or 'needs-coin (the coin stream was exhausted).
+(define (sblc-run-status r) (list-ref r 1))
+(define (sblc-run-term r) (list-ref r 2))
+(define (sblc-run-beta r) (list-ref r 3))
+(define (sblc-run-coins-used r) (list-ref r 4))
+(define (sblc-run-trace r) (list-ref r 5))
+(define (sblc-run-steps r) (+ (sblc-run-beta r) (sblc-run-coins-used r)))
+
+(define (sblc-run t bound coins)
+  (sblc-run-loop t bound coins 0 0 '()))
+
+(define (sblc-run-finish status t beta ncoins trace)
+  (list 'sblc-run status t beta ncoins (list->string (reverse trace))))
+
+(define (sblc-run-loop t bound coins beta ncoins trace)
+  (let ((r (sblc-step t)))
+    (cond
+      ((eq? (car r) 'normal) (sblc-run-finish 'normal t beta ncoins trace))
+      ((>= (+ beta ncoins) bound) (sblc-run-finish 'timeout t beta ncoins trace))
+      ((eq? (car r) 'beta)
+       (sblc-run-loop (cadr r) bound coins (+ beta 1) ncoins trace))
+      (else
+       (let ((c (coins)))
+         (if (not c)
+             (sblc-run-finish 'needs-coin t beta ncoins trace)
+             (sblc-run-loop (if (= (car c) 0) (cadr r) (caddr r))
+                            bound (cdr c) beta (+ ncoins 1)
+                            (cons (if (= (car c) 0) #\0 #\1) trace))))))))
+
+;; Replay a run from an explicit coin string.
+(define (sblc-run-coins t coin-bits bound)
+  (sblc-run t bound (sblc-coins-from-bits coin-bits)))
+
+;; Seeded sample: coins from (make-prng seed).
+(define (sblc-sample t seed bound)
+  (sblc-run t bound (sblc-coins-from-prng (make-prng seed))))
+
+(define (sblc-sample-prng prng t bound)
+  (sblc-run t bound (sblc-coins-from-prng prng)))
+
+;; ============================================================================
+;; Exact distribution semantics
+;; ============================================================================
+;;
+;; (sblc-distribution t S) explores reduction layer by layer. Layer k holds
+;; the terms reachable in exactly k contractions with their exact rational
+;; mass; identical (alpha-identical, since De Bruijn terms are canonical)
+;; terms in a layer are merged. A term that is normal is an outcome; a term
+;; still reducible after S contractions contributes its mass to the timeout.
+;; Result: (sblc-dist OUTCOMES TIMEOUT), OUTCOMES a list of (term . mass)
+;; sorted by (code length, code bits); sum of masses + TIMEOUT = 1.
+
+(define (sblc-mass-add alist key mass)
+  (cond
+    ((null? alist) (list (cons key mass)))
+    ((equal? (caar alist) key) (cons (cons key (+ (cdar alist) mass)) (cdr alist)))
+    (else (cons (car alist) (sblc-mass-add (cdr alist) key mass)))))
+
+(define (sblc-term-before? a b)
+  (let ((la (sblc-length a)) (lb (sblc-length b)))
+    (or (< la lb)
+        (and (= la lb) (string<? (sblc-encode a) (sblc-encode b))))))
+
+(define (sblc-distribution t bound)
+  (sblc-dist-layer (list (cons t 1)) 0 bound '()))
+
+(define (sblc-dist-layer frontier k bound outcomes)
+  (if (null? frontier)
+      (sblc-dist-make outcomes 0)
+      (sblc-dist-scan frontier k bound outcomes '() 0)))
+
+(define (sblc-dist-scan frontier k bound outcomes next timeout)
+  (if (null? frontier)
+      (if (null? next)
+          (sblc-dist-make outcomes timeout)
+          (sblc-dist-layer (reverse next) (+ k 1) bound outcomes))
+      (let* ((t (caar frontier))
+             (m (cdar frontier))
+             (r (sblc-step t)))
+        (cond
+          ((eq? (car r) 'normal)
+           (sblc-dist-scan (cdr frontier) k bound
+                           (sblc-mass-add outcomes t m) next timeout))
+          ((>= k bound)
+           (sblc-dist-scan (cdr frontier) k bound outcomes next (+ timeout m)))
+          ((eq? (car r) 'beta)
+           (sblc-dist-scan (cdr frontier) k bound outcomes
+                           (sblc-mass-add next (cadr r) m) timeout))
+          (else
+           (let ((half (/ m 2)))
+             (sblc-dist-scan (cdr frontier) k bound outcomes
+                             (sblc-mass-add (sblc-mass-add next (cadr r) half)
+                                            (caddr r) half)
+                             timeout)))))))
+
+(define (sblc-dist-make outcomes timeout)
+  (list 'sblc-dist
+        (sort outcomes (lambda (a b) (sblc-term-before? (car a) (car b))))
+        timeout))
+
+(define (sblc-dist-outcomes d) (cadr d))
+(define (sblc-dist-timeout d) (caddr d))
+
+(define (sblc-dist-normal-mass d)
+  (let loop ((xs (sblc-dist-outcomes d)) (acc 0))
+    (if (null? xs) acc (loop (cdr xs) (+ acc (cdar xs))))))
+
+(define (sblc-dist-mass-of d t)
+  (let ((hit (assoc t (sblc-dist-outcomes d))))
+    (if hit (cdr hit) 0)))
+
+;; ============================================================================
+;; Prior: exact counts, enumeration, samplers
+;; ============================================================================
+;;
+;; count(n, d): sblc-v1 terms of code length n that are closed at depth d.
+;;   var: lengths 2..d+1 (index n-1 <= d)        -> 1 if 2 <= n <= d+1
+;;   lam: count(n-2, d+1)
+;;   app, choice: 2 * sum_{a+b=n-3} count(a, d) count(b, d)
+;; A term of length n can only mention indices below n, so depth d >= n is
+;; the unrestricted (raw) count.
+
+(define (sblc-count-table n)
+  ;; table[m][d] for 0 <= m <= n, 0 <= d <= n
+  (let ((table (make-vector (+ n 1) #f)))
+    (let fill ((m 0))
+      (if (> m n)
+          table
+          (begin
+            (vector-set! table m (make-vector (+ n 1) 0))
+            (let fill-d ((d 0))
+              (if (<= d n)
+                  (begin
+                    (vector-set! (vector-ref table m) d (sblc-count-cell table m d n))
+                    (fill-d (+ d 1)))))
+            (fill (+ m 1)))))))
+
+(define (sblc-count-ref table m d n)
+  (if (< m 0) 0 (vector-ref (vector-ref table m) (min d n))))
+
+(define (sblc-count-cell table m d n)
+  (+ (if (and (>= m 2) (<= m (+ d 1))) 1 0)
+     (if (>= m 2) (sblc-count-ref table (- m 2) (+ d 1) n) 0)
+     (* 2 (let loop ((a 0) (acc 0))
+            (if (> a (- m 3))
+                acc
+                (loop (+ a 1)
+                      (+ acc (* (sblc-count-ref table a d n)
+                                (sblc-count-ref table (- m 3 a) d n)))))))))
+
+(define (sblc-count n)
+  (if (< n 0) 0 (sblc-count-ref (sblc-count-table n) n n n)))
+
+(define (sblc-count-closed n)
+  (if (< n 0) 0 (sblc-count-ref (sblc-count-table n) n 0 n)))
+
+;; Exact prefix mass sum_{n <= L} count(n) / 2^n (and the closed analogue).
+(define (sblc-prior-mass-at L closed)
+  (let ((table (sblc-count-table (max L 0))))
+    (let loop ((n 0) (acc 0))
+      (if (> n L)
+          acc
+          (loop (+ n 1)
+                (+ acc (/ (sblc-count-ref table n (if closed 0 n) (max L 0))
+                          (expt 2 n))))))))
+
+(define (sblc-prior-mass L) (sblc-prior-mass-at L #f))
+(define (sblc-closed-prior-mass L) (sblc-prior-mass-at L #t))
+
+;; Structural enumeration of the terms of length n closed at depth d. A
+;; term of length n only mentions indices below n, so d = n enumerates every
+;; term of that length. Results are sorted by code bits.
+(define (sblc-enum n d)
+  (if (< n 2)
+      '()
+      (append
+       (if (<= (- n 1) d) (list (blc-var (- n 1))) '())
+       (sblc-enum-map-lam (sblc-enum (- n 2) (+ d 1)))
+       (sblc-enum-pairs n d blc-app)
+       (sblc-enum-pairs n d sblc-choice))))
+
+(define (sblc-enum-map-lam bodies)
+  (if (null? bodies) '()
+      (cons (blc-lam (car bodies)) (sblc-enum-map-lam (cdr bodies)))))
+
+(define (sblc-enum-pairs n d make)
+  (let loop ((a 0) (acc '()))
+    (if (> a (- n 3))
+        acc
+        (loop (+ a 1)
+              (append acc (sblc-enum-cross (sblc-enum a d) (sblc-enum (- n 3 a) d) make))))))
+
+(define (sblc-enum-cross ms ns make)
+  (if (null? ms) '()
+      (append (sblc-enum-cross-one (car ms) ns make)
+              (sblc-enum-cross (cdr ms) ns make))))
+
+(define (sblc-enum-cross-one m ns make)
+  (if (null? ns) '()
+      (cons (make m (car ns)) (sblc-enum-cross-one m (cdr ns) make))))
+
+(define (sblc-sort-by-bits terms)
+  (sort terms (lambda (a b) (string<? (sblc-encode a) (sblc-encode b)))))
+
+(define (sblc-enumerate n) (sblc-sort-by-bits (sblc-enum n n)))
+(define (sblc-enumerate-closed n) (sblc-sort-by-bits (sblc-enum n 0)))
+
+;; Raw sampler: draw fair bits from `prng` and parse one term. Returns the
+;; term, or #f when the term is unfinished after `max-bits` bits.
+(define (sblc-sample-program prng max-bits)
+  (let loop ((bits '()) (n 0))
+    (let* ((s (list->string (reverse bits)))
+           (status (sblc-prefix-status s)))
+      (cond
+        ((eq? status 'complete) (sblc-try-decode s))
+        ((>= n max-bits) #f)
+        (else (loop (cons (if (= (prng-random-integer prng 2) 0) #\0 #\1) bits)
+                    (+ n 1)))))))
+
+;; Bounded-closed sampler: exact draw from the 2^-length prior conditioned on
+;; closed programs of length <= L, by rejection.
+(define (sblc-sample-closed-program prng L)
+  (if (< L 4)
+      (error "sblc-sample-closed-program: no closed program has length below 4" L)
+      (let loop ()
+        (let ((t (sblc-sample-program prng L)))
+          (if (and t (sblc-closed? t)) t (loop))))))
+
+;; ============================================================================
+;; Observations and exact conditioning
+;; ============================================================================
+;;
+;; An example is (input-term . expected-output-term). Inputs and outputs use
+;; core.blc's Scott-list encodings: bit strings via blc-list-of-bits, BLC8
+;; byte lists via blc-bytes->term. A program P explains an example with the
+;; exact mass of normal forms of (app P input) equal to the output.
+
+(define (sblc-bits-example input-bits output-bits)
+  (cons (blc-list-of-bits input-bits blc-nil)
+        (blc-list-of-bits output-bits blc-nil)))
+
+(define (sblc-bytes-example input-bytes output-bytes)
+  (cons (blc-bytes->term input-bytes) (blc-bytes->term output-bytes)))
+
+;; (likelihood timeout-mass) of one example under the step bound.
+(define (sblc-likelihood program example bound)
+  (let ((d (sblc-distribution (blc-app program (car example)) bound)))
+    (list (sblc-dist-mass-of d (cdr example)) (sblc-dist-timeout d))))
+
+;; Receipt:
+;;   (sblc-receipt STATUS FORMAT RNG SEED L S N-EXAMPLES
+;;                 PROGRAMS EVIDENCE SHORTEST MDL WITNESS-RUNS)
+;; STATUS is 'consistent or 'no-consistent-program. PROGRAMS is the complete
+;; bounded program set (every closed program of length <= L, sorted by
+;; length then bits); each entry is
+;;   (bits length prior likelihoods timeouts likelihood weight posterior)
+;; with per-example likelihood and timeout lists, likelihood their product,
+;; weight = prior * likelihood and posterior = weight / evidence (0 when
+;; there is no evidence). SHORTEST and MDL are entries or #f. WITNESS-RUNS
+;; are seeded runs of the MDL witness on each example input.
+
+(define (sblc-entry-bits e) (list-ref e 0))
+(define (sblc-entry-length e) (list-ref e 1))
+(define (sblc-entry-prior e) (list-ref e 2))
+(define (sblc-entry-likelihoods e) (list-ref e 3))
+(define (sblc-entry-timeouts e) (list-ref e 4))
+(define (sblc-entry-likelihood e) (list-ref e 5))
+(define (sblc-entry-weight e) (list-ref e 6))
+(define (sblc-entry-posterior e) (list-ref e 7))
+
+(define (sblc-receipt-status r) (list-ref r 1))
+(define (sblc-receipt-programs r) (list-ref r 8))
+(define (sblc-receipt-evidence r) (list-ref r 9))
+(define (sblc-receipt-shortest r) (list-ref r 10))
+(define (sblc-receipt-mdl r) (list-ref r 11))
+(define (sblc-receipt-witness-runs r) (list-ref r 12))
+
+(define (sblc-bounded-programs L)
+  (let loop ((n 0) (acc '()))
+    (if (> n L) acc (loop (+ n 1) (append acc (sblc-enumerate-closed n))))))
+
+(define (sblc-product xs)
+  (if (null? xs) 1 (* (car xs) (sblc-product (cdr xs)))))
+
+(define (sblc-condition-entry program examples bound)
+  (let loop ((exs examples) (lks '()) (tos '()))
+    (if (null? exs)
+        (let* ((lk (reverse lks))
+               (prior (sblc-weight program))
+               (likelihood (sblc-product lk)))
+          (list (sblc-encode program) (sblc-length program) prior
+                lk (reverse tos) likelihood (* prior likelihood)))
+        (let ((r (sblc-likelihood program (car exs) bound)))
+          (loop (cdr exs) (cons (car r) lks) (cons (cadr r) tos))))))
+
+(define (sblc-condition seed L bound examples)
+  (let* ((raw (sblc-condition-entries (sblc-bounded-programs L) examples bound))
+         (evidence (let loop ((xs raw) (acc 0))
+                     (if (null? xs) acc (loop (cdr xs) (+ acc (list-ref (car xs) 6))))))
+         (entries (sblc-attach-posterior raw evidence))
+         (shortest (sblc-first-positive entries))
+         (mdl (sblc-max-weight entries))
+         (status (if (= evidence 0) 'no-consistent-program 'consistent)))
+    (list 'sblc-receipt status sblc-format-version sblc-rng-policy seed L bound
+          (length examples) entries evidence shortest mdl
+          (if mdl (sblc-witness-runs (sblc-decode (sblc-entry-bits mdl))
+                                     examples seed bound)
+              '()))))
+
+(define (sblc-condition-entries programs examples bound)
+  (if (null? programs) '()
+      (cons (sblc-condition-entry (car programs) examples bound)
+            (sblc-condition-entries (cdr programs) examples bound))))
+
+(define (sblc-attach-posterior raw evidence)
+  (if (null? raw) '()
+      (let ((e (car raw)))
+        (cons (append e (list (if (= evidence 0) 0 (/ (list-ref e 6) evidence))))
+              (sblc-attach-posterior (cdr raw) evidence)))))
+
+(define (sblc-first-positive entries)
+  (cond ((null? entries) #f)
+        ((> (sblc-entry-weight (car entries)) 0) (car entries))
+        (else (sblc-first-positive (cdr entries)))))
+
+(define (sblc-max-weight entries)
+  (let loop ((xs entries) (best #f))
+    (cond
+      ((null? xs) best)
+      ((and (> (sblc-entry-weight (car xs)) 0)
+            (or (not best) (> (sblc-entry-weight (car xs)) (sblc-entry-weight best))))
+       (loop (cdr xs) (car xs)))
+      (else (loop (cdr xs) best)))))
+
+;; One seeded run per example, all drawing from one PRNG seeded with `seed`.
+(define (sblc-witness-runs program examples seed bound)
+  (let ((prng (make-prng seed)))
+    (let loop ((exs examples) (acc '()))
+      (if (null? exs)
+          (reverse acc)
+          (loop (cdr exs)
+                (cons (sblc-sample-prng prng (blc-app program (caar exs)) bound) acc))))))
+
+;; ============================================================================
+;; Canonical receipt text (byte-identical across engines)
+;; ============================================================================
+
+(define (sblc-join strs sep)
+  (cond ((null? strs) "")
+        ((null? (cdr strs)) (car strs))
+        (else (string-append (car strs) sep (sblc-join (cdr strs) sep)))))
+
+(define (sblc-num-list xs)
+  (if (null? xs) '() (cons (number->string (car xs)) (sblc-num-list (cdr xs)))))
+
+(define (sblc-entry->string e)
+  (string-append "program " (sblc-entry-bits e)
+                 " length " (number->string (sblc-entry-length e))
+                 " prior " (number->string (sblc-entry-prior e))
+                 " likelihoods [" (sblc-join (sblc-num-list (sblc-entry-likelihoods e)) " ") "]"
+                 " timeouts [" (sblc-join (sblc-num-list (sblc-entry-timeouts e)) " ") "]"
+                 " weight " (number->string (sblc-entry-weight e))
+                 " posterior " (number->string (sblc-entry-posterior e))))
+
+(define (sblc-run->string r)
+  (string-append "run " (symbol->string (sblc-run-status r))
+                 " result " (sblc-encode (sblc-run-term r))
+                 " beta " (number->string (sblc-run-beta r))
+                 " coins " (number->string (sblc-run-coins-used r))
+                 " trace " (if (string=? (sblc-run-trace r) "") "-" (sblc-run-trace r))))
+
+(define (sblc-entries->lines entries)
+  (if (null? entries) '()
+      (cons (sblc-entry->string (car entries)) (sblc-entries->lines (cdr entries)))))
+
+(define (sblc-runs->lines runs)
+  (if (null? runs) '()
+      (cons (sblc-run->string (car runs)) (sblc-runs->lines (cdr runs)))))
+
+(define (sblc-receipt->string r)
+  (let ((shortest (sblc-receipt-shortest r))
+        (mdl (sblc-receipt-mdl r)))
+    (sblc-join
+     (append
+      (list (string-append "sblc-receipt " (symbol->string (list-ref r 2))
+                           " rng " (symbol->string (list-ref r 3))
+                           " seed " (number->string (list-ref r 4))
+                           " L " (number->string (list-ref r 5))
+                           " S " (number->string (list-ref r 6))
+                           " examples " (number->string (list-ref r 7)))
+            (string-append "status " (symbol->string (sblc-receipt-status r)))
+            (string-append "programs " (number->string (length (sblc-receipt-programs r))))
+            (string-append "evidence " (number->string (sblc-receipt-evidence r)))
+            (string-append "shortest " (if shortest (sblc-entry-bits shortest) "none"))
+            (string-append "mdl " (if mdl (sblc-entry-bits mdl) "none")))
+      (sblc-entries->lines (sblc-receipt-programs r))
+      (sblc-runs->lines (sblc-receipt-witness-runs r)))
+     "\n")))

@@ -4324,6 +4324,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# Stochastic Binary Lambda Calculus (ADR-0017): the gate runs the core.sblc
+# suite on JIT and AOT, requires every oracle on both engines and
+# byte-identical output (fixed-seed parity), and writes its ICC trace into
+# the build tree.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME sblc_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "TRACE_DIR=${CMAKE_CURRENT_BINARY_DIR}/sblc-gate-traces"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_gate.sh")
+    set_tests_properties(sblc_gate PROPERTIES
+        TIMEOUT 600
+        LABELS "stdlib;sblc;parity"
+        PASS_REGULAR_EXPRESSION "SBLC GATE: PASS"
+        FAIL_REGULAR_EXPRESSION "SBLC GATE: FAIL|LLVM module verification failed|fatal signal")
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
