@@ -14,7 +14,7 @@ emit_event() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$events"; }
 
 assert_event() {
     local name="$1" value="$2" expected="$3"
-    if ! rg -Fq "$name" "$events" || ! rg -Fq "$value" "$events" || { [ -n "$expected" ] && ! rg -Fq "$expected" "$events"; }; then
+    if ! grep -Fq "$name" "$events" || ! grep -Fq "$value" "$events" || { [ -n "$expected" ] && ! grep -Fq "$expected" "$events"; }; then
         printf 'FAIL: expected %s %s event containing %s\n' "$name" "$value" "$expected" >&2
         cat "$events" >&2
         exit 1
@@ -95,11 +95,11 @@ set -e
 # Shared isolation setup must retain each smoke test's own WORK cleanup.
 for smoke in "$root/tests/v1_2_edge_cases/http_server_smoke_test.sh" \
              "$root/tests/v1_2_edge_cases/metrics_http_roundtrip_test.sh"; do
-    rg -Fq 'ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init' "$smoke"
-    rg -Fq "trap 'eshkol_test_isolation_cleanup; rm -rf \"\$WORK\"' EXIT" "$smoke"
+    grep -Fq 'ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init' "$smoke"
+    grep -Fq "trap 'eshkol_test_isolation_cleanup; rm -rf \"\$WORK\"' EXIT" "$smoke"
 done
 
-if rg -n -i 'NOT YET IMPLEMENTED|confirmed absent|zero hits|no [^[:cntrl:]]+ exists anywhere|this box has no self-hosted|no PJRT.*reference exists|detect_leaks=0' "$gate"; then
+if grep -Ein 'NOT YET IMPLEMENTED|confirmed absent|zero hits|no [^[:cntrl:]]+ exists anywhere|this box has no self-hosted|no PJRT.*reference exists|detect_leaks=0' "$gate"; then
     echo 'FAIL: stale source-absence or runner-availability claim remains' >&2
     exit 1
 fi
