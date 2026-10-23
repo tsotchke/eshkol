@@ -769,10 +769,12 @@ extern "C" ad_node_t* ad_poincare_log_map(ad_tape_t* tape, ad_node_t* x,
     return node;
 }
 
-extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
-                                            ad_node_t* q, ad_node_t* k, ad_node_t* v,
-                                            int num_heads, double curvature,
-                                            bool causal) {
+extern "C" ad_node_t* ad_geodesic_attention_tempered(ad_tape_t* tape,
+                                                     ad_node_t* q, ad_node_t* k,
+                                                     ad_node_t* v, int num_heads,
+                                                     double curvature,
+                                                     double temperature,
+                                                     bool causal) {
     if (!has_tensor(q) || !has_tensor(k) || !has_tensor(v)) {
         eshkol_error("qllm bridge: ad_geodesic_attention needs Q, K and V");
         return nullptr;
@@ -809,6 +811,11 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         eshkol_error("qllm bridge: ad_geodesic_attention requires finite sectional curvature");
         return nullptr;
     }
+    if (!(temperature > 0.0) || !std::isfinite(temperature)) {
+        eshkol_error("qllm bridge: ad_geodesic_attention requires a finite positive "
+                     "temperature (squared-distance units); got %.17g", temperature);
+        return nullptr;
+    }
 
     const double* Q = (const double*)q->tensor_value;
     const double* K = (const double*)k->tensor_value;
@@ -821,23 +828,13 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         }
     }
     double* O = alloc_doubles(batch * seq * dim);
-    double* scores = alloc_doubles(seq);
-    /* Retain the softmax weights for the backward (SW-65). Recomputing them in
-     * the reverse pass would have to re-derive the max-shift and the causal
-     * mask, i.e. duplicate this loop, and any drift between the two copies is
-     * the silently-wrong-gradient class SW-12 records for ad_tensor_attention.
+    double* sqd = alloc_doubles(seq);
+    /* Retain the softmax weights for the backward. Recomputing them in the
+     * reverse pass would have to re-derive the max-shift and the causal mask,
+     * and any drift between two copies is a gradient of a different function.
      * Zero-filled, so a masked tail stays exactly zero. */
     double* A = alloc_doubles(batch * (size_t)num_heads * seq * seq);
-    if (!O || !scores || !A) return nullptr;
-
-    /* Score by negative shared-core geodesic distance. */
-    double metric_scale = curvature < 0.0
-        ? eshkol_rm_sqrt_nonnegative(-curvature) : 1.0;
-    double scale = 1.0 / (metric_scale * std::sqrt((double)head_dim));
-    if (!std::isfinite(metric_scale) || !(scale > 0.0) || !std::isfinite(scale)) {
-        eshkol_error("qllm bridge: ad_geodesic_attention score scale is not finite");
-        return nullptr;
-    }
+    if (!O || !sqd || !A) return nullptr;
 
     for (size_t b = 0; b < batch; ++b) {
         for (int h = 0; h < num_heads; ++h) {
@@ -845,73 +842,19 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
             for (size_t i = 0; i < seq; ++i) {
                 size_t qi = (b * seq + i) * dim + off;
                 size_t limit = causal ? (i + 1) : seq;
-                double min_dist = HUGE_VAL;
-                for (size_t j = 0; j < limit; ++j) {
-                    size_t kj = (b * seq + j) * dim + off;
-                    double dist = 0.0;
-                    const char* why = nullptr;
-                    if (curvature > 0.0) {
-                        why = eshkol_rm_sphere_distance_domain(
-                            Q + qi, K + kj, curvature, (int)head_dim);
-                        if (why) {
-                            eshkol_error("qllm bridge: ad_geodesic_attention refused query/key row: %s", why);
-                            return nullptr;
-                        }
-                    }
-                    why = eshkol_rm_distance(
-                        Q + qi, K + kj, curvature, (int)head_dim, &dist);
-                    if (why) {
-                        eshkol_error("qllm bridge: ad_geodesic_attention refused query/key row: %s", why);
-                        return nullptr;
-                    }
-                    /* Store the finite distance, not the scaled score.  The
-                     * latter can overflow even when the distance and the
-                     * eventual softmax are perfectly well-defined. */
-                    scores[j] = dist;
-                    if (dist < min_dist) min_dist = dist;
-                }
-                if (!std::isfinite(min_dist)) {
-                    eshkol_error("qllm bridge: ad_geodesic_attention produced a "
-                                 "non-finite score maximum; refusing before softmax");
-                    return nullptr;
-                }
-                double sum = 0.0;
-                for (size_t j = 0; j < limit; ++j) {
-                    /* Subtract the minimum distance before scaling.  This is
-                     * the exact max-shift for scores=-scale*distance, but it
-                     * never forms the overflowing absolute score.  A gap whose
-                     * scaled score is beyond f64 is assigned its exact zero
-                     * softmax weight before the multiplication. */
-                    const double gap = scores[j] - min_dist;
-                    if (!std::isfinite(gap) || gap < 0.0) {
-                        eshkol_error("qllm bridge: ad_geodesic_attention could not "
-                                     "form a finite distance gap");
-                        return nullptr;
-                    }
-                    /* A score gap larger than DBL_MAX/scale has the exact
-                     * stabilized weight zero.  Decide that before multiplying,
-                     * so an overflowing absolute score is never materialised. */
-                    if (gap > DBL_MAX / scale) {
-                        scores[j] = 0.0;
-                    } else {
-                        const double shifted = -gap * scale;
-                        if (!std::isfinite(shifted) || shifted > 0.0) {
-                            eshkol_error("qllm bridge: ad_geodesic_attention could not "
-                                         "form a finite shifted score");
-                            return nullptr;
-                        }
-                        scores[j] = std::exp(shifted);
-                    }
-                    sum += scores[j];
-                }
-                if (!(sum > 0.0) || !std::isfinite(sum)) {
-                    eshkol_error("qllm bridge: ad_geodesic_attention softmax "
-                                 "normalisation is not finite");
-                    return nullptr;
-                }
                 double* arow =
                     &A[((b * (size_t)num_heads + (size_t)h) * seq + i) * seq];
-                for (size_t j = 0; j < limit; ++j) arow[j] = scores[j] / sum;
+                /* The one stabilized row kernel: -d^2/(2t), shifted by the
+                 * row's minimum squared distance. Key j of this head starts at
+                 * K + (b*seq + j)*dim + off, so the stride is dim. */
+                const char* why = eshkol_rm_attention_row(
+                    Q + qi, K + (b * seq) * dim + off, (long)dim, (int)limit,
+                    (int)head_dim, curvature, temperature, sqd, arow);
+                if (why) {
+                    eshkol_error("qllm bridge: ad_geodesic_attention refused query "
+                                 "row %zu (batch %zu, head %d): %s", i, b, h, why);
+                    return nullptr;
+                }
                 for (size_t d = 0; d < head_dim; ++d) {
                     double acc = 0.0;
                     for (size_t j = 0; j < limit; ++j) {
@@ -934,19 +877,17 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         /* params as int64[6], the layout tensor_geodesic_attention_backward
          * reads:
          *   [0] num_heads   [1] head_dim   [2] causal (0/1)
-         *   [3] sectional curvature K bit-cast from double (the "scale_bits" convention
-         *       shared with ad_tensor_attention and the Frechet rule)
-         *   [4] [5] reserved, zero
+         *   [3] sectional curvature K bit-cast from double
+         *   [4] temperature t bit-cast from double (squared-distance units)
+         *   [5] reserved, zero
          * [0]/[1] deliberately coincide with the named attention_params fields
-         * so both spellings read the same slots. Before this, `causal` and the
-         * curvature were not recorded at all — the backward could not have
-         * reconstructed the mask or the metric. */
+         * so both spellings read the same slots. */
         int64_t* p = (int64_t*)&node->params;
         p[0] = (int64_t)num_heads;
         p[1] = (int64_t)head_dim;
         p[2] = causal ? 1 : 0;
         std::memcpy(&p[3], &curvature, sizeof curvature);
-        p[4] = 0;
+        std::memcpy(&p[4], &temperature, sizeof temperature);
         p[5] = 0;
 
         double** saved = (double**)arena_allocate_zeroed(get_global_arena(),
@@ -962,6 +903,20 @@ extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
         node->num_saved = 1;
     }
     return node;
+}
+
+extern "C" ad_node_t* ad_geodesic_attention(ad_tape_t* tape,
+                                            ad_node_t* q, ad_node_t* k, ad_node_t* v,
+                                            int num_heads, double curvature,
+                                            bool causal) {
+    if (!has_tensor(q) || q->ndim != 3 || num_heads <= 0 ||
+        q->shape[2] <= 0 || q->shape[2] % num_heads != 0)
+        return ad_geodesic_attention_tempered(tape, q, k, v, num_heads, curvature,
+                                              1.0, causal);
+    const int head_dim = (int)(q->shape[2] / num_heads);
+    return ad_geodesic_attention_tempered(
+        tape, q, k, v, num_heads, curvature,
+        eshkol_rm_default_temperature(head_dim), causal);
 }
 
 /**
@@ -1022,7 +977,7 @@ extern "C" ad_node_t* ad_frechet_mean(ad_tape_t* tape,
     }
     if (!(curvature <= 0.0) || !(curvature == curvature)) {
         eshkol_error("qllm bridge: ad_frechet_mean needs sectional curvature "
-                     "K <= 0 (got %.17g); the ball has radius 1/sqrt(-K)",
+                     "K <= 0 (got %.17g); the ball has radius 2/sqrt(-K)",
                      curvature);
         return nullptr;
     }

@@ -117,8 +117,25 @@ bool valid_form_curvature(int form, double K) {
         case ESHKOL_SPACE_FORM_EUCLIDEAN:  return K == 0.0;
         case ESHKOL_SPACE_FORM_HYPERBOLIC: return K < 0.0;
         case ESHKOL_SPACE_FORM_SPHERICAL:  return K > 0.0;
+        case ESHKOL_SPACE_FORM_STEREOGRAPHIC: return true;
         default: return false;
     }
+}
+
+/* The SPHERICAL form is the embedded sphere in ambient coordinates; every
+ * other form is the ADR-0018 chart (EUCLIDEAN and HYPERBOLIC are its K = 0 and
+ * K < 0 restrictions, STEREOGRAPHIC is the chart for every sign). */
+const char* sf_check_point(int form, const double* x, double K, size_t n) {
+    return form == ESHKOL_SPACE_FORM_SPHERICAL
+        ? eshkol_rm_sphere_check_point(x, K, (int)n)
+        : eshkol_rm_check_point(x, K, (int)n);
+}
+
+const char* sf_log_map(int form, const double* x, const double* y, double K,
+                       size_t n, double* out, double* scratch) {
+    return form == ESHKOL_SPACE_FORM_SPHERICAL
+        ? eshkol_rm_sphere_log_map(x, y, K, (int)n, out)
+        : eshkol_rm_log_map(x, y, K, (int)n, out, scratch);
 }
 
 bool finite_point(const double* p, size_t n) {
@@ -134,8 +151,8 @@ const char* form_name(int form);
 bool space_form_sq_value(int form, double K, const double* x, const double* y,
                          size_t n, double distance_scale, double* out) {
     if (!valid_form_curvature(form, K) || !finite_point(x, n) ||
-        !finite_point(y, n) || eshkol_rm_check_point(x, K, (int)n) != nullptr ||
-        eshkol_rm_check_point(y, K, (int)n) != nullptr) return false;
+        !finite_point(y, n) || sf_check_point(form, x, K, n) != nullptr ||
+        sf_check_point(form, y, K, n) != nullptr) return false;
     if (eshkol_rm_points_equal(x, y, (int)n)) {
         *out = 0.0;
         return true;
@@ -153,7 +170,7 @@ bool space_form_sq_value(int form, double K, const double* x, const double* y,
         }
         if (direct_finite && std::isfinite(distance_scale * distance_scale *
                                             unweighted)) {
-            *out = ESHKOL_RM_FLAT_LAMBDA * ESHKOL_RM_FLAT_LAMBDA *
+            *out = ESHKOL_RM_ALPHA * ESHKOL_RM_ALPHA *
                    (distance_scale * distance_scale * unweighted);
             return std::isfinite(*out);
         }
@@ -169,22 +186,14 @@ bool space_form_sq_value(int form, double K, const double* x, const double* y,
                 d = distance_scale * (x[i] - y[i]);
             e += d * d;
         }
-        *out = ESHKOL_RM_FLAT_LAMBDA * ESHKOL_RM_FLAT_LAMBDA * e;
+        *out = ESHKOL_RM_ALPHA * ESHKOL_RM_ALPHA * e;
         return std::isfinite(*out);
     }
-    if (K < 0.0) {
-        double B = eshkol_rm_ball_param(-K);
-        double a = eshkol_rm_one_minus_bnorm2(x, B, (int)n);
-        double b = eshkol_rm_one_minus_bnorm2(y, B, (int)n);
-        double delta = 0.0;
-        for (size_t i = 0; i < n; ++i)
-            delta = std::hypot(delta, x[i] - y[i]);
-        double scaled_delta = delta / std::sqrt(a * b);
-        double scaled_argument = std::sqrt(B) * scaled_delta;
-        double psi = eshkol_rm_psi(scaled_argument * scaled_argument,
-                                   nullptr, nullptr);
-        double d = ESHKOL_RM_LAMBDA0 *
-                   (distance_scale * scaled_delta) * psi;
+    if (form != ESHKOL_SPACE_FORM_SPHERICAL) {
+        /* The chart distance of the shared core, every sign of K. */
+        double d = 0.0;
+        if (eshkol_rm_distance(x, y, K, (int)n, &d) != nullptr) return false;
+        d = distance_scale * d;
         *out = d * d;
         return std::isfinite(*out);
     }
@@ -227,18 +236,19 @@ SfPair factor_sq(int form, double K, const double* x, const double* y, size_t n,
             }
         } else {
             std::vector<double> log_x(n), log_y(n), scratch(n);
-            if (eshkol_rm_log_map(x, y, K, (int)n, log_x.data(), scratch.data()) ||
-                eshkol_rm_log_map(y, x, K, (int)n, log_y.data(), scratch.data())) {
+            if (sf_log_map(form, x, y, K, n, log_x.data(), scratch.data()) ||
+                sf_log_map(form, y, x, K, n, log_y.data(), scratch.data())) {
                 return SfPair{0.0, false};
             }
-            double sx = (K < 0.0) ? eshkol_rm_lambda(x, K, (int)n) *
-                                    eshkol_rm_lambda(x, K, (int)n)
-                                  : (1.0 / std::sqrt(K)) /
-                                    eshkol_rm_norm(x, (int)n);
-            double sy = (K < 0.0) ? eshkol_rm_lambda(y, K, (int)n) *
-                                    eshkol_rm_lambda(y, K, (int)n)
-                                  : (1.0 / std::sqrt(K)) /
-                                    eshkol_rm_norm(y, (int)n);
+            const bool sphere = (form == ESHKOL_SPACE_FORM_SPHERICAL);
+            double sx = !sphere ? eshkol_rm_lambda(x, K, (int)n) *
+                                  eshkol_rm_lambda(x, K, (int)n)
+                                : (1.0 / std::sqrt(K)) /
+                                  eshkol_rm_norm(x, (int)n);
+            double sy = !sphere ? eshkol_rm_lambda(y, K, (int)n) *
+                                  eshkol_rm_lambda(y, K, (int)n)
+                                : (1.0 / std::sqrt(K)) /
+                                  eshkol_rm_norm(y, (int)n);
             for (size_t i = 0; i < n; ++i) {
                 if (grad_x) grad_x[i] = -2.0 * weight * sx * log_x[i];
                 if (grad_y) grad_y[i] = -2.0 * weight * sy * log_y[i];
@@ -266,7 +276,8 @@ size_t validate_factors(const eshkol_manifold_factor_t* f, size_t k, size_t n) {
         }
         if (f[i].form != ESHKOL_SPACE_FORM_EUCLIDEAN &&
             f[i].form != ESHKOL_SPACE_FORM_HYPERBOLIC &&
-            f[i].form != ESHKOL_SPACE_FORM_SPHERICAL) {
+            f[i].form != ESHKOL_SPACE_FORM_SPHERICAL &&
+            f[i].form != ESHKOL_SPACE_FORM_STEREOGRAPHIC) {
             eshkol_error("space form: factor %zu names unknown space form %d",
                          i, (int)f[i].form);
             return 0;
@@ -278,7 +289,8 @@ size_t validate_factors(const eshkol_manifold_factor_t* f, size_t k, size_t n) {
         if (!valid_form_curvature(f[i].form, f[i].curvature)) {
             eshkol_error("space form: factor %zu has curvature %g inconsistent "
                          "with form %s (Euclidean requires K=0, hyperbolic K<0, "
-                         "spherical K>0)", i, f[i].curvature,
+                         "spherical K>0, stereographic any finite K)", i,
+                         f[i].curvature,
                          form_name(f[i].form));
             return 0;
         }
@@ -324,8 +336,8 @@ bool product_forward(const eshkol_manifold_factor_t* factors, size_t k,
              * arithmetic: a valid finite pair can have an overflowing
              * unweighted squared distance. */
             if (!finite_point(X + off, dim) || !finite_point(Y + off, dim) ||
-                eshkol_rm_check_point(X + off, K, (int)dim) != nullptr ||
-                eshkol_rm_check_point(Y + off, K, (int)dim) != nullptr) {
+                sf_check_point(factors[i].form, X + off, K, dim) != nullptr ||
+                sf_check_point(factors[i].form, Y + off, K, dim) != nullptr) {
                 if (out_bad_factor) *out_bad_factor = i;
                 return false;
             }
@@ -371,6 +383,7 @@ const char* form_name(int form) {
         case ESHKOL_SPACE_FORM_EUCLIDEAN:  return "euclidean";
         case ESHKOL_SPACE_FORM_HYPERBOLIC: return "hyperbolic";
         case ESHKOL_SPACE_FORM_SPHERICAL:  return "spherical";
+        case ESHKOL_SPACE_FORM_STEREOGRAPHIC: return "stereographic";
         default: return "unknown";
     }
 }
@@ -386,10 +399,10 @@ extern "C" bool eshkol_space_form_log_map(int form, double curvature,
                                           size_t n, double* out) {
     if (!out || n == 0 || !valid_form_curvature(form, curvature) ||
         !finite_point(x, n) || !finite_point(y, n) ||
-        eshkol_rm_check_point(x, curvature, (int)n) != nullptr ||
-        eshkol_rm_check_point(y, curvature, (int)n) != nullptr) return false;
+        sf_check_point(form, x, curvature, n) != nullptr ||
+        sf_check_point(form, y, curvature, n) != nullptr) return false;
     std::vector<double> scratch(n);
-    return eshkol_rm_log_map(x, y, curvature, (int)n, out, scratch.data()) == nullptr;
+    return sf_log_map(form, x, y, curvature, n, out, scratch.data()) == nullptr;
 }
 
 extern "C" double eshkol_space_form_distance(int form, double curvature,
@@ -397,11 +410,13 @@ extern "C" double eshkol_space_form_distance(int form, double curvature,
                                              size_t n) {
     if (n == 0 || !valid_form_curvature(form, curvature) ||
         !finite_point(x, n) || !finite_point(y, n) ||
-        eshkol_rm_check_point(x, curvature, (int)n) != nullptr ||
-        eshkol_rm_check_point(y, curvature, (int)n) != nullptr) return -1.0;
+        sf_check_point(form, x, curvature, n) != nullptr ||
+        sf_check_point(form, y, curvature, n) != nullptr) return -1.0;
     double out = -1.0;
-    if (eshkol_rm_distance(x, y, curvature, (int)n, &out) != nullptr)
-        return -1.0;
+    const char* why = (form == ESHKOL_SPACE_FORM_SPHERICAL)
+        ? eshkol_rm_sphere_distance(x, y, curvature, (int)n, &out)
+        : eshkol_rm_distance(x, y, curvature, (int)n, &out);
+    if (why != nullptr) return -1.0;
     return out;
 }
 

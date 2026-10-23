@@ -2586,6 +2586,8 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/bridge/space_form_ad.cpp
   lib/bridge/tensorcore_adapter.cpp
   lib/core/crypto_primitives.c
+  # Native face of the ADR-0018 signed-curvature chart (core.curvature).
+  lib/core/curvature_runtime.c
   lib/core/keychain_native.c
   lib/core/dnc_api.c
   lib/core/image_io.c

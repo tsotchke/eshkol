@@ -26,55 +26,58 @@
  * target), so a call to an external symbol would not link there. Static
  * functions in a header give every caller ONE source of truth with no link edge.
  *
- * ═══ THE MODEL, IN ONE PLACE ═══════════════════════════════════════════════
+ * ═══ THE MODEL, IN ONE PLACE (ADR-0018) ════════════════════════════════════
  *
- * Every entry point below takes @c K, the SECTIONAL CURVATURE, and dispatches on
- * its sign. The chart and its normalisation are fixed by TWO constants and two
- * accessors, and nothing else in this file or in vm_geometric.c open-codes them:
+ * Every entry point below takes @c K, the SIGNED SECTIONAL CURVATURE, and
+ * evaluates ONE chart for every sign: the kappa-stereographic chart in the
+ * canonical-flat gauge alpha = 1 (docs/design/adr/0018-signed-curvature-
+ * stereographic-geometry.md). The chart and its normalisation are fixed by one
+ * constant and two accessors, and nothing else in this file or its callers
+ * open-codes them:
  *
- *   ESHKOL_RM_LAMBDA0       the conformal factor at the origin of the ball chart
- *   ESHKOL_RM_FLAT_LAMBDA   the conformal factor the K = 0 branch uses
- *   eshkol_rm_ball_param(c) the chart's ball parameter B, from c = -K
- *   eshkol_rm_lambda(x,c,n) the conformal factor at a point
+ *   ESHKOL_RM_ALPHA         the conformal factor at the origin (alpha = 1)
+ *   eshkol_rm_ball_param(c) the chart parameter B = c alpha^2 / 4, c = -K
+ *   eshkol_rm_lambda(x,K,n) the conformal factor at a point
  *
- *   K < 0   Poincare ball. With c = -K and B = eshkol_rm_ball_param(c), the
- *           metric is g_x = lambda_x^2 <.,.> with
+ * The metric is
  *
- *               lambda_x = LAMBDA0 / (1 - B |x|^2),   B = c LAMBDA0^2 / 4,
+ *       g_K(x) = lambda_x^2 <.,.>,   lambda_x = alpha / (1 - B |x|^2),
+ *       B = -K alpha^2 / 4  (so rho = K/4 = -B at alpha = 1),
  *
- *           so the ball has Euclidean radius 1/sqrt(B) = 2/(LAMBDA0 sqrt(c)) and
- *           sectional curvature exactly -c. At the shipped LAMBDA0 = 2 this is
- *           B = c, radius 1/sqrt(c) and lambda_x = 2/(1-c|x|^2): the convention
- *           of Ganea et al., Nickel-Kiela and geoopt, which is what every
- *           in-tree call site already passes -- `(make-hyperbolic-manifold 2
- *           -1.0)`, `(poincare-distance x y -1.0)` -- and what
- *           `eshkol_frechet_mean_compute` takes.
- *   K = 0   Flat R^n with the metric ESHKOL_RM_FLAT_LAMBDA^2 <.,.>.
- *   K > 0   Round sphere of radius R = 1/sqrt(K), points required to lie ON it.
+ * and the gyrovector operations are Mobius addition (+)_B with the SAME signed
+ * B. Consequences, all of them by construction rather than by special case:
  *
- * THE FAMILY IS DISCONTINUOUS AT K = 0 AS SHIPPED, AND THAT IS A KNOWN OPEN
- * QUESTION, NOT AN OVERSIGHT. The c -> 0 limit of the ball branch is flat space
- * with the metric LAMBDA0^2 <.,.>, because lambda_0 = LAMBDA0 for every c. The
- * K = 0 branch instead uses FLAT_LAMBDA = 1, the CANONICAL Euclidean metric,
- * which is what "K = 0 is Euclidean" means to a caller and what every existing
- * flat-reduction test asserts. Those two cannot both hold: with LAMBDA0 = 2 and
- * FLAT_LAMBDA = 1 the geodesic distance jumps by a factor of 2 as K crosses 0,
- * and the Riemannian gradient by a factor of 4.
+ *   K < 0   B > 0: the open ball of radius 1/sqrt(B) = 2/sqrt(-K).
+ *   K = 0   B = 0: canonical Euclidean R^n, lambda = 1, (+)_0 = vector sum.
+ *   K > 0   B < 0: the round sphere of radius 1/sqrt(K) minus one point (the
+ *           POLE, at infinity in the chart). Every finite point is a point of
+ *           the manifold; the antipode of x is -x/(|B| |x|^2), its CUT LOCUS.
  *
- * Which of the two to keep is a CONVENTION RULING, not a bug fix, because it
- * changes published numbers and the AD bridge's contract along with them.
- * Setting FLAT_LAMBDA to LAMBDA0 is the entire change on this side: the family
- * becomes real-analytic in K on K <= 0, `geodesic-distance` at K = 0 returns
- * 2|x-y| and `riemannian-grad` returns g/4, and eshkol_rm_distance_dK stops
- * refusing at K = 0. Setting LAMBDA0 to 1 is the other resolution -- a ball of
- * radius 2/sqrt(c) whose flat limit is canonical -- and is also a one-line
- * change here, though it moves every published hyperbolic constant.
+ * The family is real-analytic in K through K = 0 at fixed chart coordinates.
+ * The generalized trigonometric ratios (eshkol_rm_psi, eshkol_rm_tan_ratio,
+ * eshkol_rm_artan_ratio) are functions of one dimensionless signed argument
+ * and switch to a degree-10 series for |argument| <= ESHKOL_RM_Q_SERIES, so the
+ * K -> 0 corner and the K = 0 point are one expression. Positive cut loci and
+ * the negative ball boundary are explicit domain errors, never clamps.
  *
- * exp, log, parallel transport, projection and Mobius addition are NOT affected
- * by either constant beyond the ball parameter: a CONSTANT conformal rescale of
- * a metric leaves the Levi-Civita connection unchanged, so those five maps are
- * the same maps under any LAMBDA0. Only distances, norms and the
- * gradient conversion carry the factor.
+ * Legacy coordinates (LEGACY_BALL_V1: the alpha = 2 ball of radius 1/sqrt(-K),
+ * K = 0 with lambda = 1, K > 0 as an ambient sphere in R^{n+1}) are read only
+ * through the migration helpers at the end of this file: x_v2 = 2 x_v1 for ball
+ * points and tangent vectors, the stereographic projection for ambient sphere
+ * points. Serialized geometry carries ESHKOL_GEOMETRY_CONVENTION_* and is
+ * refused when the id is missing or does not match.
+ *
+ * The ambient round sphere survives as an EMBEDDED MODEL, not as a second
+ * chart: the `eshkol_rm_sphere_*` functions take points of R^{n+1} on the
+ * sphere of radius 1/sqrt(K) and back the ops whose contract is that embedding
+ * (`great-circle-distance`, `slerp`, `spherical-exp/log/project`, and the
+ * space-form SPHERICAL factor). eshkol_rm_sphere_to_chart and
+ * eshkol_rm_chart_to_sphere are the isometry between the two.
+ *
+ * exp, log, parallel transport, projection and Mobius addition depend on the
+ * chart parameter B only: a constant conformal rescale of a metric leaves the
+ * Levi-Civita connection unchanged. Distances, norms, the gradient conversion
+ * and the curvature derivatives carry alpha.
  *
  * RELATION TO THE AD BRIDGE. `lib/bridge/qllm_bridge.cpp` includes this header
  * and calls these same f64 primitives for its hyperbolic distance, Poincare
@@ -95,6 +98,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <float.h>
+#include <stdbool.h>
 #ifdef __cplusplus
 #include <cmath>
 #include <vector>
@@ -109,45 +113,37 @@
 #pragma clang fp contract(off)
 #endif
 
-/* The conformal factor at the origin of the ball chart. See the model block
- * above: this fixes the ball's radius (2/(LAMBDA0 sqrt c)) and the metric's
- * normalisation together, because both are determined by requiring the
- * sectional curvature to be exactly -c. */
-#define ESHKOL_RM_LAMBDA0 2.0
+/* The conformal factor at the origin of the chart: the gauge alpha of
+ * ADR-0018. alpha = 1 is the canonical-flat gauge: K = 0 is the Euclidean
+ * metric, Riemannian gradients at K = 0 are unscaled, and the negative ball has
+ * radius 2/sqrt(-K). */
+#define ESHKOL_RM_ALPHA 1.0
 
-/* The conformal factor the K = 0 branch uses. Equal to ESHKOL_RM_LAMBDA0 makes
- * the K <= 0 family continuous (and real-analytic) in K; equal to 1 makes K = 0
- * the canonical Euclidean metric. It cannot be both. UNDER RULING -- see the
- * model block above and docs/reference/stdlib/geometry.md. */
-#define ESHKOL_RM_FLAT_LAMBDA 1.0
+/* Serialized-geometry convention ids. Every checkpoint, curvature schedule,
+ * product factor or attention temperature that leaves the process carries one;
+ * eshkol_rm_check_geometry_header refuses anything else. */
+#define ESHKOL_GEOMETRY_CONVENTION_UNVERSIONED 0u
+#define ESHKOL_GEOMETRY_CONVENTION_LEGACY_BALL_V1 1u
+#define ESHKOL_GEOMETRY_CONVENTION_STEREOGRAPHIC_V2_ALPHA1 2u
 
-/* Relative tolerance on |x| = R for a point claimed to lie on the sphere of
- * radius R. A point off the sphere has no geodesic relation to another point on
- * it, so the ops refuse rather than project silently; `manifold-project` is the
- * op that moves a point onto the manifold. */
+/* Relative tolerance on |x| = R for a point of the EMBEDDED sphere model
+ * (eshkol_rm_sphere_*). A point off the sphere has no geodesic relation to
+ * another point on it, so those ops refuse rather than project silently;
+ * `spherical-project` is the op that moves a point onto the sphere. */
 #define ESHKOL_RM_SPHERE_TOL 1e-9
 
 /* Relative tolerance on <x,v> = 0 for a vector claimed to be tangent to the
- * sphere at x. RELATIVE TO |v| AND R, both: the test is |<x,v>| <= tol R |v|,
- * which is scale-free in v. It used to be |<x,v>|/R <= tol (|v| + R), whose
- * additive R made it absolute, so a WHOLLY RADIAL v of norm 1e-10 passed at
- * R = 1 -- 100% radial and accepted, because the threshold did not shrink with
- * the vector. */
+ * embedded sphere at x. RELATIVE TO |v| AND R, both: the test is
+ * |<x,v>| <= tol R |v|, which is scale-free in v. */
 #define ESHKOL_RM_TANGENT_TOL 1e-9
 
-/* Below this |w| the series for asinh(sqrt w)/sqrt w and its two derivatives is
- * used instead of the closed forms, which lose digits to cancellation there.
- * Eleven terms at w = 1e-2 truncate below 1e-21 relative. */
-#define ESHKOL_RM_PSI_SMALL 1e-2
-
-/* The curvature-derivative series is written in q = K r^2 / 4, where r is
- * the dimensionless-flat distance of the fixed pair.  q = -w on the
- * hyperbolic branch.  The separate series avoids forming B*r^2 when that
+/* The one series switch of ADR-0018. Every generalized ratio is a function of
+ * a dimensionless signed argument q (q = K r^2/4 up to sign conventions noted
+ * at each function); for |q| <= 2^-8 the degree-10 series is evaluated, else
+ * the closed form. The first omitted term is below 2^-88 relative, so the
+ * switch is invisible at f64. The series also avoids forming B*r^2 when that
  * product is below the f64 subnormal floor. */
-#define ESHKOL_RM_CURVATURE_Q_SMALL 0x1p-8
-
-/* Below this |z| the series for tanh(z)/z is used. */
-#define ESHKOL_RM_TAU_SMALL 1e-4
+#define ESHKOL_RM_Q_SERIES 0x1p-8
 
 static void eshkol_rm_two_sum(double a, double b, double* sum, double* error);
 static void eshkol_rm_two_product(double a, double b, double* product,
@@ -793,19 +789,23 @@ static void eshkol_rm_axpby_exact(double p, const double* a, double q,
     }
 }
 
-/** @brief The ball parameter B of the chart of curvature -c: the number for
- *         which the ball is |x|^2 < 1/B and Mobius addition is (+)_B. */
+/** @brief The chart parameter B for the curvature K = -c: B = c alpha^2/4.
+ *
+ * Signed: B > 0 for K < 0 (the ball |x|^2 < 1/B), B = 0 for K = 0, B < 0 for
+ * K > 0 (the stereographic sphere chart). Mobius addition is (+)_B for every
+ * sign. THE ONE PLACE the gauge enters the chart parameter. */
 static double eshkol_rm_ball_param(double c) {
-    return eshkol_rm_scaled_product4(c, ESHKOL_RM_LAMBDA0,
-                                     ESHKOL_RM_LAMBDA0, 0.25);
+    return eshkol_rm_scaled_product4(c, ESHKOL_RM_ALPHA, ESHKOL_RM_ALPHA, 0.25);
 }
 
-/** @brief The conformal factor lambda_x of the metric of curvature @p K at
- *         @p x: g_x = lambda_x^2 <.,.>. THE ONE PLACE this is computed. */
+/** @brief The conformal factor lambda_x = alpha/(1 - B|x|^2) of the metric of
+ *         curvature @p K at @p x, for every sign of K. THE ONE PLACE this is
+ *         computed. At K = 0 it is exactly alpha. Infinite or zero when the
+ *         denominator is not representable (the pole of a positive chart). */
 static double eshkol_rm_lambda(const double* x, double K, int n) {
-    if (K >= 0.0) return (K == 0.0) ? ESHKOL_RM_FLAT_LAMBDA : 1.0;
+    if (K == 0.0) return ESHKOL_RM_ALPHA;
     double B = eshkol_rm_ball_param(-K);
-    return ESHKOL_RM_LAMBDA0 / eshkol_rm_one_minus_bnorm2(x, B, n);
+    return ESHKOL_RM_ALPHA / eshkol_rm_one_minus_bnorm2(x, B, n);
 }
 
 /** @brief The Riemannian norm of tangent vector @p v at @p x. */
@@ -816,42 +816,46 @@ static double eshkol_rm_metric_norm(const double* v, const double* x, double K,
     return lam * vn;
 }
 
-/** @brief tanh(z)/z, analytic at 0 with value 1. The series is used near zero
- *         because the quotient is 0/0 there, which is exactly the c -> 0 corner
- *         of the exponential map. */
-static double eshkol_rm_tanh_over(double z) {
-    double w = z * z;
-    if (w < ESHKOL_RM_TAU_SMALL * ESHKOL_RM_TAU_SMALL)
-        return 1.0 - w / 3.0 + 2.0 * w * w / 15.0;
-    return tanh(z) / z;
-}
-
-/** @brief psi(w) = asinh(sqrt w)/sqrt w, analytic at 0 with value 1, together
- *         with psi'(w) and psi''(w).
+/* ═══ Generalized trigonometric ratios ════════════════════════════════════
  *
- * The hyperbolic distance is 2 sqrt(R) psi(c R) with R = |x-y|^2/P (see
- * eshkol_rm_distance), which is the STABLE form: the arccosh(1 + 2cR) it
- * replaces loses every digit of a small separation to the 1 + eps cancellation
- * (at c = 1, x = 0, y = 1e-9 it returns exactly 0 where the distance is 2e-9),
- * and psi is what makes the K -> 0 corner and the near-coincident corner one
- * expression instead of two special cases.
+ * Each ratio is an analytic function of ONE dimensionless signed argument and
+ * is evaluated by the same rule: the degree-10 Taylor series for
+ * |argument| <= ESHKOL_RM_Q_SERIES, the closed form otherwise. A positive
+ * argument is the hyperbolic branch, a negative one the spherical branch, and
+ * zero is the flat value 1; there is no third code path.
+ *
+ *   psi(w)        = asinh(sqrt w)/sqrt w,  = asin(sqrt -w)/sqrt -w for w < 0
+ *   tan_ratio(s)  = tanh(sqrt s)/sqrt s,   = tan(sqrt -s)/sqrt -s  for s < 0
+ *   artan_ratio(s)= artanh(sqrt s)/sqrt s, = atan(sqrt -s)/sqrt -s for s < 0
+ */
+
+/** @brief psi(w) = asinh(sqrt w)/sqrt w for w >= 0 and asin(sqrt(-w))/sqrt(-w)
+ *         for -1 <= w < 0, with psi'(w) and psi''(w).
+ *
+ * The geodesic distance is alpha sqrt(E/P) psi(B E/P) on the chart (see
+ * eshkol_rm_distance). Both branches share one Taylor series,
+ * psi(w) = sum_n a_n w^n, a_n = (-1)^n (2n)!/(4^n (n!)^2 (2n+1)), so K -> 0 from
+ * either side and K = 0 itself are one expression. Outside the series window the
+ * derivatives use psi' = (g - psi)/(2w), psi'' = (g' - 3 psi')/(2w) with
+ * g = (1+w)^(-1/2), which hold on both branches.
  *
  * @param d1 psi'(w), may be NULL.
  * @param d2 psi''(w), may be NULL.
+ * @return NaN for w < -1 (beyond the antipode; no chart pair produces it).
  */
 static double eshkol_rm_psi(double w, double* d1, double* d2) {
-    /* asinh(u) = sum_n (-1)^n (2n)! / (4^n (n!)^2 (2n+1)) u^(2n+1), so
-     * psi(w) = sum_n a_n w^n with the same coefficients. */
     static const double a[11] = {
         1.0, -1.0 / 6.0, 3.0 / 40.0, -5.0 / 112.0,
         35.0 / 1152.0, -63.0 / 2816.0, 231.0 / 13312.0,
         -143.0 / 10240.0, 6435.0 / 557056.0, -12155.0 / 1245184.0,
         46189.0 / 5505024.0
     };
-    if (w < 0.0) w = 0.0;
-    if (w < ESHKOL_RM_PSI_SMALL) {
-        /* Horner on the truncated series, and on its two term-by-term
-         * derivatives. Exact at w = 0, where the closed forms are 0/0. */
+    if (!(w >= -1.0)) {
+        if (d1) *d1 = (double)NAN;
+        if (d2) *d2 = (double)NAN;
+        return (double)NAN;
+    }
+    if (fabs(w) <= ESHKOL_RM_Q_SERIES) {
         double psi = a[10];
         double dp  = 10.0 * a[10];
         double dpp = 90.0 * a[10];
@@ -862,16 +866,86 @@ static double eshkol_rm_psi(double w, double* d1, double* d2) {
         if (d2) *d2 = dpp;
         return psi;
     }
-    {
-        double u = sqrt(w);
-        double s = sqrt(1.0 + w);
-        double A = asinh(u);
-        double N  = u / s - A;                 /* = -u^3/3 + 3u^5/10 - ...   */
-        double Np = 1.0 / (s * s * s) - 1.0 / s;
-        if (d1) *d1 = N / (2.0 * u * u * u);
-        if (d2) *d2 = (Np * u - 3.0 * N) / (4.0 * u * u * u * u * u);
-        return A / u;
+    double psi;
+    if (w > 0.0) {
+        const double u = sqrt(w);
+        psi = asinh(u) / u;
+    } else {
+        const double u = sqrt(-w);
+        /* atan2 form: asin(u) = atan2(u, sqrt(1-u^2)), well conditioned up to
+         * the antipode u = 1, where it is pi/2. */
+        psi = atan2(u, sqrt(1.0 + w)) / u;
     }
+    if (d1 || d2) {
+        const double g = 1.0 / sqrt(1.0 + w);
+        const double p1 = (g - psi) / (2.0 * w);
+        if (d1) *d1 = p1;
+        if (d2) {
+            const double g1 = -0.5 * g * g * g;
+            *d2 = (g1 - 3.0 * p1) / (2.0 * w);
+        }
+    }
+    return psi;
+}
+
+/** @brief tan_ratio(s) = tanh(sqrt s)/sqrt s (s >= 0), tan(sqrt -s)/sqrt -s
+ *         (s < 0), analytic at 0 with value 1, and its derivative.
+ *
+ * The exponential map's step factor: exp_x(v) = x (+)_B [(lambda_x/alpha)
+ * tan_ratio(s) v] with s = B (lambda_x |v| / alpha)^2. On the positive branch
+ * the ratio has a pole at sqrt(-s) = pi/2: the geodesic reaches the pole of the
+ * chart there, and the caller reports it.
+ *
+ * @param d1 tan_ratio'(s), may be NULL. Off the series window it is
+ *           (1 - s T^2 - T)/(2s) on both branches.
+ */
+static double eshkol_rm_tan_ratio(double s, double* d1) {
+    /* tan(z)/z = sum tau_k z^(2k); with s = -z^2 on the spherical branch and
+     * s = z^2 (sign flipped termwise) on the hyperbolic one, both are
+     * sum tau_k (-s)^k. */
+    static const double tau[11] = {
+        1.0, 1.0 / 3.0, 2.0 / 15.0, 17.0 / 315.0, 62.0 / 2835.0,
+        1382.0 / 155925.0, 21844.0 / 6081075.0, 929569.0 / 638512875.0,
+        6404582.0 / 10854718875.0, 443861162.0 / 1856156927625.0,
+        18888466084.0 / 194896477400625.0
+    };
+    if (fabs(s) <= ESHKOL_RM_Q_SERIES) {
+        const double m = -s;
+        double t = tau[10];
+        double dt = 10.0 * tau[10];
+        for (int k = 9; k >= 0; k--) t = t * m + tau[k];
+        for (int k = 9; k >= 1; k--) dt = dt * m + (double)k * tau[k];
+        if (d1) *d1 = -dt;
+        return t;
+    }
+    double T;
+    if (s > 0.0) {
+        const double z = sqrt(s);
+        T = tanh(z) / z;
+    } else {
+        const double z = sqrt(-s);
+        T = tan(z) / z;
+    }
+    if (d1) *d1 = (1.0 - s * T * T - T) / (2.0 * s);
+    return T;
+}
+
+/** @brief artan_ratio(s) = artanh(sqrt s)/sqrt s (0 <= s < 1),
+ *         atan(sqrt -s)/sqrt -s (s < 0); analytic at 0 with value 1.
+ *         NaN for s >= 1 (on or beyond the ball boundary). */
+static double eshkol_rm_artan_ratio(double s) {
+    if (fabs(s) <= ESHKOL_RM_Q_SERIES) {
+        double r = 1.0 / 21.0;
+        for (int k = 9; k >= 0; k--) r = r * s + 1.0 / (double)(2 * k + 1);
+        return r;
+    }
+    if (s > 0.0) {
+        if (!(s < 1.0)) return (double)NAN;
+        const double u = sqrt(s);
+        return atanh(u) / u;
+    }
+    const double u = sqrt(-s);
+    return atan(u) / u;
 }
 
 /**
@@ -894,7 +968,8 @@ static double eshkol_rm_psi(double w, double* d1, double* d2) {
 static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
                                    int n) {
     double q  = eshkol_rm_one_plus_dot(x, y, B, n);
-    double root_B = eshkol_rm_sqrt_nonnegative(B);
+    /* B^2 Gram: sign-free, so |B| carries the scale for both chart signs. */
+    double root_B = eshkol_rm_sqrt_nonnegative(fabs(B));
     double gram = 0.0;
     for (int i = 0; i < n; i++)
         for (int j = i + 1; j < n; j++) {
@@ -911,7 +986,8 @@ static double eshkol_rm_mobius_den(const double* x, const double* y, double B,
 static double eshkol_rm_mobius_den_negx(const double* x, const double* y,
                                         double B, int n) {
     double q  = eshkol_rm_one_minus_dot(x, y, B, n);
-    double root_B = eshkol_rm_sqrt_nonnegative(B);
+    /* B^2 Gram: sign-free, so |B| carries the scale for both chart signs. */
+    double root_B = eshkol_rm_sqrt_nonnegative(fabs(B));
     double gram = 0.0;
     for (int i = 0; i < n; i++)
         for (int j = i + 1; j < n; j++) {
@@ -993,58 +1069,97 @@ static void eshkol_rm_gyration(const double* a, const double* b, const double* w
 }
 
 /**
- * @brief Check that @p x is a legal point of the manifold of curvature @p K.
+ * @brief Check that @p x is a legal point of the chart of curvature @p K.
+ *
+ * K < 0: strictly inside the ball of radius 2/sqrt(-K) (alpha = 1).
+ * K = 0: any finite point.
+ * K > 0: any finite point whose conformal denominator 1 + K|x|^2/4 is
+ *        representable; a point where it overflows is numerically the POLE of
+ *        the chart, which is not a point of the chart.
  * @return NULL when it is, else a reason naming what is wrong.
  */
 static const char* eshkol_rm_check_point(const double* x, double K, int n) {
     if (!isfinite(K)) return "curvature is not finite";
     for (int i = 0; i < n; i++)
         if (!isfinite(x[i])) return "a coordinate is not finite";
+    if (K == 0.0) return NULL;
+    double B = eshkol_rm_ball_param(-K);
+    double den = eshkol_rm_one_minus_bnorm2(x, B, n);
     if (K < 0.0) {
-        double B = eshkol_rm_ball_param(-K);
-        if (!(eshkol_rm_one_minus_bnorm2(x, B, n) > 0.0))
-            return "the point must lie strictly inside the Poincare ball";
-    } else if (K > 0.0) {
-        double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
-        if (!isfinite(R)) return "the sphere radius is not finite";
-        double xn = eshkol_rm_norm(x, n);
-        if (!(fabs(xn - R) <= ESHKOL_RM_SPHERE_TOL * R))
-            return "the point must lie ON the sphere of radius 1/sqrt(K) "
-                   "(use manifold-project to move it there)";
+        if (!(den > 0.0))
+            return "the point must lie strictly inside the ball of radius "
+                   "2/sqrt(-K)";
+    } else if (!isfinite(den)) {
+        return "the point is at the pole of the positive-curvature chart "
+               "(1 + K|x|^2/4 is not representable)";
     }
     return NULL;
 }
 
 /**
- * @brief Check that a computed ball point is STRICTLY interior.
+ * @brief Check that a computed chart point is a point of the chart.
  *
- * tanh rounds to exactly 1.0 for arguments beyond about 19, so both the
- * exponential map and Mobius scalar multiplication can land on the boundary --
- * `exp_0(20)` at K = -1 returned exactly 1.0, and `mobius-scalar-mul(100, 0.5,
- * -1)` likewise -- which is not a point of the open ball and is the one place
- * these ops could return a value outside their own codomain. Refusing names the
- * representability limit; returning the boundary point would hand the caller a
- * point at which lambda is infinite and every subsequent log is zero.
+ * tanh rounds to exactly 1.0 for arguments beyond about 19, so the exponential
+ * map and Mobius scalar multiplication can land on the ball boundary, which is
+ * not a point of the open ball; on the positive chart a geodesic that reaches
+ * the pole produces a non-representable conformal denominator. Refusing names
+ * the representability limit.
  *
- * @return NULL when strictly interior, else a reason.
+ * @return NULL when the point is in the chart, else a reason.
  */
 static const char* eshkol_rm_require_interior(const double* out, double K, int n) {
-    if (K >= 0.0) return NULL;
+    if (K == 0.0) return NULL;
     double B = eshkol_rm_ball_param(-K);
-    if (!(eshkol_rm_one_minus_bnorm2(out, B, n) > 0.0))
+    double den = eshkol_rm_one_minus_bnorm2(out, B, n);
+    if (K < 0.0 && !(den > 0.0))
         return "the result is on or outside the ball boundary: no strictly "
                "interior double-precision point exists at this magnitude";
+    if (K > 0.0 && !isfinite(den))
+        return "the result is at the pole of the positive-curvature chart";
     return NULL;
 }
 
 /**
- * @brief Check that @p v is tangent to the sphere of curvature @p K at @p x.
- *        A no-op for K <= 0, where every vector is tangent.
- * @return NULL when tangent (or K <= 0), else a reason.
+ * @brief Check a tangent vector of the chart: every finite vector is tangent.
+ * @return NULL when every component is finite, else a reason.
  */
 static const char* eshkol_rm_check_tangent(const double* x, const double* v,
                                            double K, int n) {
-    if (K <= 0.0) return NULL;
+    (void)x;
+    (void)K;
+    for (int i = 0; i < n; i++)
+        if (!isfinite(v[i])) return "a tangent-vector component is not finite";
+    return NULL;
+}
+
+/**
+ * @brief Check that @p x lies ON the embedded sphere of radius 1/sqrt(K) in
+ *        ambient coordinates (the model behind the `eshkol_rm_sphere_*` ops).
+ * @return NULL when it does, else a reason.
+ */
+static const char* eshkol_rm_sphere_check_point(const double* x, double K, int n) {
+    if (!isfinite(K)) return "curvature is not finite";
+    if (!(K > 0.0)) return "the embedded sphere requires positive curvature";
+    for (int i = 0; i < n; i++)
+        if (!isfinite(x[i])) return "a coordinate is not finite";
+    double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
+    if (!isfinite(R)) return "the sphere radius is not finite";
+    double xn = eshkol_rm_norm(x, n);
+    if (!(fabs(xn - R) <= ESHKOL_RM_SPHERE_TOL * R))
+        return "the point must lie ON the sphere of radius 1/sqrt(K) "
+               "(use spherical-project to move it there)";
+    return NULL;
+}
+
+/**
+ * @brief Check that @p v is tangent to the embedded sphere of curvature @p K
+ *        at @p x: <x,v> must vanish, tested relative to |x| and |v|.
+ * @return NULL when tangent, else a reason.
+ */
+static const char* eshkol_rm_sphere_check_tangent(const double* x,
+                                                  const double* v,
+                                                  double K, int n) {
+    (void)K;
     double vn = eshkol_rm_norm(v, n);
     if (vn == 0.0) return NULL;
     double xm = 0.0, vm = 0.0, x2 = 0.0, v2 = 0.0, dot = 0.0;
@@ -1070,432 +1185,6 @@ static const char* eshkol_rm_check_tangent(const double* x, const double* v,
     return NULL;
 }
 
-/* The differentiable spherical distance domain shared by attention forward
- * and reverse.  All calculations use unit vectors, so neither R^2 nor a
- * squared residual is formed; this remains valid when R = 1/sqrt(K) is large
- * but finite. */
-static const char* eshkol_rm_sphere_distance_domain(const double* x,
-                                                    const double* y,
-                                                    double K, int n) {
-    if (!(K > 0.0) || !isfinite(K))
-        return "spherical distance requires finite positive curvature";
-    const char* why = eshkol_rm_check_point(x, K, n);
-    if (why) return why;
-    why = eshkol_rm_check_point(y, K, n);
-    if (why) return why;
-    if (eshkol_rm_points_equal(x, y, n))
-        return "the two points coincide: spherical distance has no derivative";
-    if (eshkol_rm_sphere_antipodal(x, y, n))
-        return "the two points are antipodal: distance is not differentiable";
-    const double xn = eshkol_rm_norm(x, n);
-    const double yn = eshkol_rm_norm(y, n);
-    if (!(xn > 0.0) || !(yn > 0.0))
-        return "a spherical distance endpoint is the zero vector";
-    double cs = 0.0;
-    for (int i = 0; i < n; ++i)
-        cs += (x[i] / xn) * (y[i] / yn);
-    double sn = 0.0;
-    for (int i = 0; i < n; ++i)
-        sn = hypot(sn, y[i] / yn - cs * (x[i] / xn));
-    if (!(sn > 0.0) || !isfinite(sn) || !isfinite(cs))
-        return "the spherical distance derivative is not finite";
-    const double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
-    const double theta = atan2(sn, cs);
-    if (!isfinite(R) || !isfinite(theta) || !isfinite(R * theta))
-        return "the spherical distance is not finite";
-    return NULL;
-}
-
-/* Gradient of the same spherical distance.  Normalising first is algebraically
- * identical to (cs*x-y)/(R*sin(theta)), while avoiding R^2 and R-scaled
- * residual squares at the true-minimum positive curvature. */
-static int eshkol_rm_sphere_distance_gradient(const double* x,
-                                              const double* y, double K, int n,
-                                              double* gx, double* gy) {
-    if (eshkol_rm_sphere_distance_domain(x, y, K, n)) return false;
-    const double xn = eshkol_rm_norm(x, n);
-    const double yn = eshkol_rm_norm(y, n);
-    double cs = 0.0;
-    for (int i = 0; i < n; ++i)
-        cs += (x[i] / xn) * (y[i] / yn);
-    double sn = 0.0;
-    for (int i = 0; i < n; ++i)
-        sn = hypot(sn, y[i] / yn - cs * (x[i] / xn));
-    if (!(sn > 0.0) || !isfinite(sn)) return false;
-    for (int i = 0; i < n; ++i) {
-        const double ux = x[i] / xn;
-        const double uy = y[i] / yn;
-        gx[i] = (cs * ux - uy) / sn;
-        gy[i] = (cs * uy - ux) / sn;
-    }
-    return eshkol_rm_check_output(gx, n, "the spherical distance gradient is not finite") == NULL &&
-           eshkol_rm_check_output(gy, n, "the spherical distance gradient is not finite") == NULL;
-}
-
-/**
- * @brief Geodesic distance between @p x and @p y on the manifold of curvature
- *        @p K, into *@p out.
- *
- * Hyperbolic: 2 sqrt(R) psi(B R) scaled by LAMBDA0/2, with R = |x-y|^2/P and
- * P = (1 - B|x|^2)(1 - B|y|^2). Equivalently
- * (LAMBDA0/sqrt B) asinh(sqrt(B) |x-y| / sqrt P), which is the same number as
- * the arccosh(1 + 2 B |x-y|^2 / P)/sqrt(B) it replaces and is STABLE where that
- * form is not: arccosh(1 + eps) throws away every digit of a small separation,
- * returning exactly 0 for two points 2e-9 apart at B = 1.
- *
- * Spherical: R theta with theta = atan2(|y - cos(theta) x| / R, cos(theta)),
- * which is stable near both 0 and pi where acos(<x,y>/R^2) is not.
- *
- * @return NULL on success, else a reason.
- */
-static const char* eshkol_rm_distance(const double* x, const double* y, double K,
-                                      int n, double* out) {
-    const char* why = eshkol_rm_check_point(x, K, n);
-    if (why) return why;
-    why = eshkol_rm_check_point(y, K, n);
-    if (why) return why;
-
-    if (eshkol_rm_points_equal(x, y, n)) {
-        *out = 0.0;
-        return NULL;
-    }
-
-    if (K == 0.0) {
-        double delta = 0.0;
-        for (int i = 0; i < n; i++) delta = hypot(delta, x[i] - y[i]);
-        *out = ESHKOL_RM_FLAT_LAMBDA * delta;
-        return isfinite(*out) ? NULL : "the geodesic distance is not finite";
-    }
-    if (K < 0.0) {
-        double B  = eshkol_rm_ball_param(-K);
-        double delta = 0.0;
-        for (int i = 0; i < n; i++) delta = hypot(delta, x[i] - y[i]);
-        double P  = eshkol_rm_one_minus_bnorm2(x, B, n) *
-                    eshkol_rm_one_minus_bnorm2(y, B, n);
-        double scaled_delta = delta / sqrt(P);
-        double ps = eshkol_rm_psi(eshkol_rm_scaled_square(B, scaled_delta), NULL, NULL);
-        *out = ESHKOL_RM_LAMBDA0 * scaled_delta * ps;
-        if (!isfinite(*out)) return "the geodesic distance is not finite";
-        return NULL;
-    }
-    {
-        double R  = 1.0 / eshkol_rm_sqrt_nonnegative(K);
-        if (eshkol_rm_sphere_antipodal(x, y, n))
-            return "the two points are antipodal: distance is not differentiable";
-        *out = R * eshkol_rm_sphere_angle(x, y, R, n, NULL);
-        if (!isfinite(*out)) return "the geodesic distance is not finite";
-        return NULL;
-    }
-}
-
-/**
- * @brief Exponential map exp_x(v) on the manifold of curvature @p K.
- *
- * Hyperbolic: x (+)_B [ (lambda_x/LAMBDA0) tanh(z)/z * v ] with
- * z = sqrt(B) lambda_x |v| / LAMBDA0. Written through tanh(z)/z rather than
- * tanh(...)/(sqrt(B)|v|) so that the B -> 0 corner is the same expression
- * (tanh(z)/z -> 1) instead of a 0/0 special case.
- *
- * Spherical: cos(|v|/R) x + R sin(|v|/R) v/|v|, with the tangency of v checked
- * rather than assumed -- a v with a radial component would leave the sphere.
- *
- * @param scratch n doubles.
- * @return NULL on success, else a reason.
- */
-static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
-                                     int n, double* out, double* scratch) {
-    const char* why = eshkol_rm_check_point(x, K, n);
-    if (why) return why;
-    for (int i = 0; i < n; i++)
-        if (!isfinite(v[i])) return "a tangent-vector component is not finite";
-    why = eshkol_rm_check_tangent(x, v, K, n);
-    if (why) return why;
-
-    double vn = eshkol_rm_norm(v, n);
-    if (vn == 0.0) {
-        memcpy(out, x, (size_t)n * sizeof(double));
-        return NULL;
-    }
-    if (K == 0.0) {
-        for (int i = 0; i < n; i++) out[i] = x[i] + v[i];
-        return eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
-    }
-    if (K < 0.0) {
-        double B   = eshkol_rm_ball_param(-K);
-        double lam = eshkol_rm_lambda(x, K, n);
-        double z   = eshkol_rm_sqrt_nonnegative(B) * lam * vn / ESHKOL_RM_LAMBDA0;
-        double f   = (lam / ESHKOL_RM_LAMBDA0) * eshkol_rm_tanh_over(z);
-        for (int i = 0; i < n; i++) scratch[i] = f * v[i];
-        eshkol_rm_mobius_add(x, scratch, B, n, out);
-        why = eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
-        if (why) return why;
-        return eshkol_rm_require_interior(out, K, n);
-    }
-    {
-        double R  = 1.0 / eshkol_rm_sqrt_nonnegative(K);
-        double th = vn / R;
-        double ca = cos(th), sa = sin(th);
-        for (int i = 0; i < n; i++) out[i] = ca * x[i] + R * sa * v[i] / vn;
-        return eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
-    }
-}
-
-/**
- * @brief Logarithmic map log_x(y) on the manifold of curvature @p K, the inverse
- *        of eshkol_rm_exp_map().
- *
- * Hyperbolic: the DIRECTION comes from the Mobius numerator of (-x) (+)_B y and
- * the MAGNITUDE from the geodesic distance, |log_x(y)| = d(x,y)/lambda_x. Both
- * halves matter:
- *
- *   - the direction is taken from the numerator vector alone, never divided by
- *     the Mobius denominator, which is the quantity that goes to zero for two
- *     nearly-antipodal interior points;
- *   - the magnitude is d/lambda_x, computed by eshkol_rm_distance's stable
- *     asinh form, rather than (2/(sqrt(B) lambda_x)) artanh(sqrt(B)|u|).
- *
- * This op used to REFUSE whenever sqrt(B)|u| rounded to 1, on the grounds that
- * no finite log existed. That was wrong: EVERY pair of strictly interior ball
- * points has a unique finite log, and the rounding was a numerical failure of
- * the artanh route, not a statement about the manifold. For
- * x = 0.999999999, y = -0.999999999 at B = 1 the true distance is
- * 4 artanh(x) ~ 42.83; the old code refused and the AD bridge, on the same
- * input, clamped to 1 - 1e-12 and fabricated 28.32.
- *
- * @param scratch n doubles.
- * @return NULL on success, else a reason.
- */
-static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
-                                     int n, double* out, double* scratch) {
-    const char* why = eshkol_rm_check_point(x, K, n);
-    if (why) return why;
-    why = eshkol_rm_check_point(y, K, n);
-    if (why) return why;
-
-    if (eshkol_rm_points_equal(x, y, n)) {
-        for (int i = 0; i < n; i++) out[i] = 0.0;
-        return NULL;
-    }
-
-    if (K == 0.0) {
-        for (int i = 0; i < n; i++) out[i] = y[i] - x[i];
-        return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
-    }
-    if (K < 0.0) {
-        double B  = eshkol_rm_ball_param(-K);
-        double By2 = eshkol_rm_scaled_norm2_times(y, B, n);
-        /* Numerator of (-x) (+)_B y; its denominator is positive and only
-         * scales the vector, so the direction is this alone. Both coefficients
-         * come from the well-conditioned pair (den, 1 - B|x|^2) rather than
-         * from their own cancelling sums -- see eshkol_rm_dot_dd. */
-        double* V = scratch;
-        double nb = eshkol_rm_one_minus_bnorm2(x, B, n);
-        double dn = eshkol_rm_mobius_den_negx(x, y, B, n);
-        double na = dn + By2 * nb;
-        eshkol_rm_axpby_exact(nb, y, -na, x, n, V);
-        double Vn = eshkol_rm_norm(V, n);
-        double d = 0.0;
-        why = eshkol_rm_distance(x, y, K, n, &d);
-        if (why) return why;
-        double coef = (d / eshkol_rm_lambda(x, K, n)) / Vn;
-        for (int i = 0; i < n; i++) out[i] = coef * V[i];
-        return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
-    }
-    {
-        /* Sphere: log_x(y) = theta R * u/|u| with u = y - (<x,y>/R^2) x. */
-        double R  = 1.0 / eshkol_rm_sqrt_nonnegative(K);
-        if (!isfinite(R)) return "the sphere radius is not finite";
-        double* u = scratch;
-        if (eshkol_rm_sphere_antipodal(x, y, n))
-            return "the two points are antipodal: log is not single-valued there";
-        const char* sphere_why = eshkol_rm_sphere_log_map_stable(x, y, R, n, out);
-        if (sphere_why) return sphere_why;
-        return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
-    }
-}
-
-/**
- * @brief Parallel transport of tangent vector @p v from @p x to @p y along the
- *        connecting geodesic.
- *
- * Hyperbolic: P_{x->y}(v) = (lambda_x / lambda_y) gyr[y, -x] v, with the
- * gyration in its LINEAR closed form (eshkol_rm_gyration) rather than expanded
- * through Mobius point addition -- see that function for the counterexample the
- * expansion got wrong.
- *
- * Spherical: P_{x->y}(v) = v - (<y,v>/(R^2 + <x,y>)) (x + y), the closed form,
- * which is exactly tangent at y by construction. Refuses a non-tangent v (the
- * old code returned a radial v unchanged, which is not even tangent at the
- * destination) and refuses antipodal endpoints, where the geodesic and hence
- * the transport is not unique.
- *
- * @param scratch n doubles.
- * @return NULL on success, else a reason.
- */
-static const char* eshkol_rm_transport(const double* x, const double* y,
-                                       const double* v, double K, int n,
-                                       double* out, double* scratch) {
-    const char* why = eshkol_rm_check_point(x, K, n);
-    if (why) return why;
-    why = eshkol_rm_check_point(y, K, n);
-    if (why) return why;
-    for (int i = 0; i < n; i++)
-        if (!(v[i] == v[i])) return "a tangent-vector component is NaN";
-    why = eshkol_rm_check_tangent(x, v, K, n);
-    if (why) return why;
-
-    if (K == 0.0) {
-        memcpy(out, v, (size_t)n * sizeof(double));
-        return NULL;
-    }
-    if (K < 0.0) {
-        double B = eshkol_rm_ball_param(-K);
-        double* negx = scratch;
-        for (int i = 0; i < n; i++) negx[i] = -x[i];
-        eshkol_rm_gyration(y, negx, v, B, n, out);
-        double ratio = eshkol_rm_lambda(x, K, n) / eshkol_rm_lambda(y, K, n);
-        for (int i = 0; i < n; i++) out[i] *= ratio;
-        return eshkol_rm_check_output(out, n, "the parallel-transport result is not finite");
-    }
-    {
-        double R2 = 1.0 / K;
-        double xy = eshkol_rm_dot(x, y, n);
-        double den = R2 + xy;
-        if (!(fabs(den) > ESHKOL_RM_SPHERE_TOL * R2))
-            return "the endpoints are antipodal: parallel transport between "
-                   "them is not unique";
-        double f = eshkol_rm_dot(y, v, n) / den;
-        for (int i = 0; i < n; i++) out[i] = v[i] - f * (x[i] + y[i]);
-        return eshkol_rm_check_output(out, n, "the parallel-transport result is not finite");
-    }
-}
-
-/**
- * @brief Mobius scalar multiplication r (x)_B x
- *      = (1/sqrt(B)) tanh(r artanh(sqrt(B)|x|)) x/|x|.
- *
- * @return NULL, or a reason when @p x is not strictly inside the ball, or when
- *         the result would land on it (see eshkol_rm_require_interior).
- */
-static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
-                                           int n, double* out) {
-    if (K > 0.0)
-        return "Mobius scalar multiplication is a gyrovector operation of the "
-               "Poincare ball and is not defined on the sphere";
-    const char* why = eshkol_rm_check_point(x, K, n);
-    if (why) return why;
-    double xn = eshkol_rm_norm(x, n);
-    if (K == 0.0) {
-        for (int i = 0; i < n; i++) out[i] = r * x[i];
-        return eshkol_rm_check_output(out, n, "the Mobius scalar result is not finite");
-    }
-    if (xn == 0.0) {
-        for (int i = 0; i < n; i++) out[i] = 0.0;
-        return NULL;
-    }
-    double B = eshkol_rm_ball_param(-K);
-    double s = eshkol_rm_sqrt_nonnegative(B);
-    double t = s * xn;
-    double coef = tanh(r * atanh(t)) / (s * xn);
-    for (int i = 0; i < n; i++) out[i] = coef * x[i];
-    why = eshkol_rm_check_output(out, n, "the Mobius scalar result is not finite");
-    if (why) return why;
-    return eshkol_rm_require_interior(out, K, n);
-}
-
-/**
- * @brief Project @p x onto the manifold of curvature @p K.
- *
- * Hyperbolic: rescale onto the open ball when @p x is on or outside it, leaving
- * interior points untouched. Spherical: rescale to radius 1/sqrt(K). Euclidean:
- * a copy.
- *
- * @return NULL on success, else a reason (only when the input cannot be scaled,
- *         i.e. it is the origin on a sphere).
- */
-static const char* eshkol_rm_project(const double* x, double K, int n, double* out) {
-    if (!isfinite(K)) return "curvature is not finite";
-    for (int i = 0; i < n; i++)
-        if (!isfinite(x[i])) return "a coordinate is not finite";
-    if (K == 0.0) {
-        memcpy(out, x, (size_t)n * sizeof(double));
-        return NULL;
-    }
-    if (K < 0.0) {
-        double xn = eshkol_rm_norm(x, n);
-        double R = 1.0 / eshkol_rm_sqrt_nonnegative(eshkol_rm_ball_param(-K));
-        /* Leave a margin so the projected point is STRICTLY inside: a point
-         * exactly on the boundary makes lambda infinite and every log map
-         * degenerate to zero, which is the failure mode frechet_mean_core.h
-         * refuses to let look like convergence. */
-        double limit = R * (1.0 - 1e-12);
-        if (xn <= limit) {
-            memcpy(out, x, (size_t)n * sizeof(double));
-            return NULL;
-        }
-        double s = limit / xn;
-        for (int i = 0; i < n; i++) out[i] = s * x[i];
-        return NULL;
-    }
-    {
-        double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
-        double max_abs = 0.0;
-        for (int i = 0; i < n; i++) {
-            if (!isfinite(x[i])) return "a coordinate is not finite";
-            if (fabs(x[i]) > max_abs) max_abs = fabs(x[i]);
-        }
-        if (max_abs == 0.0)
-            return "the origin has no projection onto the sphere";
-        double scaled_norm2_hi = 0.0, scaled_norm2_lo = 0.0;
-        for (int i = 0; i < n; i++) {
-            double z = x[i] / max_abs;
-            double term, term_error, next_hi, next_lo;
-            eshkol_rm_two_product(z, z, &term, &term_error);
-            eshkol_rm_dd_add(scaled_norm2_hi, scaled_norm2_lo,
-                             term, term_error, &next_hi, &next_lo);
-            scaled_norm2_hi = next_hi;
-            scaled_norm2_lo = next_lo;
-        }
-        double scaled_norm = sqrt(scaled_norm2_hi + scaled_norm2_lo);
-        if (!(scaled_norm > 0.0) || !isfinite(scaled_norm))
-            return "the vector could not be normalised to the sphere";
-        double radius_scale = R / scaled_norm;
-        for (int i = 0; i < n; i++) out[i] = radius_scale * (x[i] / max_abs);
-        for (int i = 0; i < n; i++)
-            if (!isfinite(out[i])) return "the projected point is not finite";
-        return NULL;
-    }
-}
-
-/**
- * @brief Convert a Euclidean gradient @p g at @p x into the Riemannian gradient.
- *
- * Conformal branches (K <= 0): g / lambda_x^2, with lambda from the ONE
- * accessor -- so the K = 0 value follows ESHKOL_RM_FLAT_LAMBDA and moves with
- * the convention ruling rather than being open-coded here. Spherical: the
- * ambient gradient projected onto the tangent space at @p x.
- *
- * @return NULL on success, else a reason.
- */
-static const char* eshkol_rm_egrad_to_rgrad(const double* g, const double* x,
-                                            double K, int n, double* out) {
-    const char* why = eshkol_rm_check_point(x, K, n);
-    if (why) return why;
-    if (K <= 0.0) {
-        double lam = eshkol_rm_lambda(x, K, n);
-        if (!isfinite(lam)) return "the conformal factor is not finite";
-        double inv_lam = 1.0 / lam;
-        double s = inv_lam * inv_lam;
-        for (int i = 0; i < n; i++) out[i] = s * g[i];
-        return eshkol_rm_check_output(out, n, "the Riemannian gradient is not finite");
-    }
-    {
-        double gx = eshkol_rm_scaled_dot_factor(g, x, K, n);
-        for (int i = 0; i < n; i++) out[i] = g[i] - gx * x[i];
-        return eshkol_rm_check_output(out, n, "the Riemannian gradient is not finite");
-    }
-}
-
 /* Multiply a finite value by B^(-p/2), p in {1,3,5}, without first forming
  * B^(p/2) or its reciprocal.  The mantissa/exponent pair is essential when
  * B is a large negative-curvature magnitude: B^(-5/2) is subnormal or
@@ -1516,8 +1205,503 @@ static double eshkol_rm_inverse_power_mul(double B, int p, double value) {
                   -(p * exponent) / 2 + value_exponent);
 }
 
-/* Evaluate the hyperbolic distance and its first two B-derivatives from the
- * degree-10 series in q = K r^2 / 4 = -B z, where
+/**
+ * @brief Geodesic distance between @p x and @p y on the chart of curvature
+ *        @p K, into *@p out.
+ *
+ * With E = |x-y|^2, P = (1 - B|x|^2)(1 - B|y|^2) and the signed dimensionless
+ * w = B E/P (w = -q, q = K E/(4P)):
+ *
+ *     d = alpha sqrt(E/P) psi(w)
+ *
+ * for every sign: asinh on the ball, asin on the sphere chart, the series for
+ * |w| <= ESHKOL_RM_Q_SERIES, and exactly alpha |x-y| at K = 0. Outside the
+ * series window the positive chart is evaluated as
+ *
+ *     d = alpha atan2(sqrt(|B| E), sqrt(Dn)) / sqrt(|B|),
+ *     Dn = (1 - B<x,y>)^2 + B^2 (|x|^2|y|^2 - <x,y>^2) = P (1 + w),
+ *
+ * which is well conditioned up to the antipode, where Dn = 0 and the distance
+ * is pi/sqrt(K). The asinh form replaces arccosh(1 + 2B E/P) on the ball, which
+ * loses every digit of a small separation.
+ *
+ * @return NULL on success, else a reason.
+ */
+static const char* eshkol_rm_distance(const double* x, const double* y, double K,
+                                      int n, double* out) {
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (why) return why;
+    why = eshkol_rm_check_point(y, K, n);
+    if (why) return why;
+
+    if (eshkol_rm_points_equal(x, y, n)) {
+        *out = 0.0;
+        return NULL;
+    }
+
+    double delta = 0.0;
+    for (int i = 0; i < n; i++) delta = hypot(delta, x[i] - y[i]);
+    if (K == 0.0) {
+        *out = ESHKOL_RM_ALPHA * delta;
+        return isfinite(*out) ? NULL : "the geodesic distance is not finite";
+    }
+    const double B = eshkol_rm_ball_param(-K);
+    const double pa = eshkol_rm_one_minus_bnorm2(x, B, n);
+    const double pb = eshkol_rm_one_minus_bnorm2(y, B, n);
+    const double scaled_delta = (delta / sqrt(pa)) / sqrt(pb);
+    const double w = eshkol_rm_scaled_square(B, scaled_delta);
+    if (K < 0.0 || fabs(w) <= ESHKOL_RM_Q_SERIES) {
+        double ps = eshkol_rm_psi(w, NULL, NULL);
+        *out = ESHKOL_RM_ALPHA * scaled_delta * ps;
+    } else {
+        const double abs_B = fabs(B);
+        const double bE = eshkol_rm_difference_norm2_times(x, y, abs_B, n);
+        const double dn = eshkol_rm_mobius_den_negx(x, y, B, n);
+        if (!(dn > 0.0))
+            return "the two points are antipodal (the cut locus of the "
+                   "positive-curvature chart): distance is not differentiable";
+        const double h = atan2(sqrt(bE), sqrt(dn));
+        *out = ESHKOL_RM_ALPHA * eshkol_rm_inverse_power_mul(abs_B, 1, h);
+    }
+    if (!isfinite(*out)) return "the geodesic distance is not finite";
+    return NULL;
+}
+
+/**
+ * @brief Squared geodesic distance d(x,y)^2 on the chart of curvature @p K.
+ *
+ * The value only. Its gradient is never formed from d (see
+ * eshkol_rm_sq_distance_grad): d^2 is smooth at coincidence while d is not.
+ */
+static const char* eshkol_rm_sq_distance(const double* x, const double* y,
+                                         double K, int n, double* out) {
+    double d = 0.0;
+    const char* why = eshkol_rm_distance(x, y, K, n, &d);
+    if (why) return why;
+    *out = d * d;
+    return isfinite(*out) ? NULL : "the squared geodesic distance is not finite";
+}
+
+/**
+ * @brief Exponential map exp_x(v) on the chart of curvature @p K.
+ *
+ *     exp_x(v) = x (+)_B [ (lambda_x/alpha) tan_ratio(s) v ],
+ *     s = B (lambda_x |v| / alpha)^2,
+ *
+ * for every sign: tanh on the ball, tan on the sphere chart, the series near
+ * s = 0, and x + v at K = 0. On the positive chart a geodesic that reaches the
+ * pole (sqrt(-s) = pi/2) is refused; past it, the chart formula continues onto
+ * the far hemisphere.
+ *
+ * @param scratch n doubles.
+ * @return NULL on success, else a reason.
+ */
+static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
+                                     int n, double* out, double* scratch) {
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (why) return why;
+    why = eshkol_rm_check_tangent(x, v, K, n);
+    if (why) return why;
+
+    double vn = eshkol_rm_norm(v, n);
+    if (vn == 0.0) {
+        memcpy(out, x, (size_t)n * sizeof(double));
+        return NULL;
+    }
+    if (K == 0.0) {
+        for (int i = 0; i < n; i++) out[i] = x[i] + v[i];
+        return eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
+    }
+    double B   = eshkol_rm_ball_param(-K);
+    double lam = eshkol_rm_lambda(x, K, n);
+    double s   = eshkol_rm_scaled_square(B, lam * vn / ESHKOL_RM_ALPHA);
+    double f   = (lam / ESHKOL_RM_ALPHA) * eshkol_rm_tan_ratio(s, NULL);
+    if (!isfinite(f))
+        return "the geodesic reaches the pole of the positive-curvature chart";
+    for (int i = 0; i < n; i++) scratch[i] = f * v[i];
+    eshkol_rm_mobius_add(x, scratch, B, n, out);
+    why = eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
+    if (why) return why;
+    return eshkol_rm_require_interior(out, K, n);
+}
+
+/**
+ * @brief Logarithmic map log_x(y) on the chart of curvature @p K, the inverse
+ *        of eshkol_rm_exp_map().
+ *
+ * The DIRECTION comes from the Mobius numerator of (-x) (+)_B y and the
+ * MAGNITUDE from the geodesic distance, |log_x(y)| = d(x,y)/lambda_x:
+ *
+ *   - the direction is taken from the numerator vector alone, never divided by
+ *     the Mobius denominator, which is the quantity that goes to zero for two
+ *     nearly-antipodal points;
+ *   - the magnitude is d/lambda_x from eshkol_rm_distance's stable form, never
+ *     (2/(sqrt(B) lambda_x)) artanh(sqrt(B)|u|), which loses the answer when
+ *     sqrt(B)|u| rounds to 1 for a valid interior pair.
+ *
+ * On the positive chart the antipode (Mobius denominator zero) is the cut
+ * locus and is refused.
+ *
+ * @param scratch n doubles.
+ * @return NULL on success, else a reason.
+ */
+static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
+                                     int n, double* out, double* scratch) {
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (why) return why;
+    why = eshkol_rm_check_point(y, K, n);
+    if (why) return why;
+
+    if (eshkol_rm_points_equal(x, y, n)) {
+        for (int i = 0; i < n; i++) out[i] = 0.0;
+        return NULL;
+    }
+
+    if (K == 0.0) {
+        for (int i = 0; i < n; i++) out[i] = y[i] - x[i];
+        return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
+    }
+    double B  = eshkol_rm_ball_param(-K);
+    double By2 = eshkol_rm_scaled_norm2_times(y, B, n);
+    /* Numerator of (-x) (+)_B y; its denominator is positive and only scales
+     * the vector, so the direction is this alone. Both coefficients come from
+     * the well-conditioned pair (den, 1 - B|x|^2) rather than from their own
+     * cancelling sums -- see eshkol_rm_dot_dd. */
+    double* V = scratch;
+    double nb = eshkol_rm_one_minus_bnorm2(x, B, n);
+    double dn = eshkol_rm_mobius_den_negx(x, y, B, n);
+    if (!(dn > 0.0))
+        return "the two points are antipodal (the cut locus of the "
+               "positive-curvature chart): log is not single-valued there";
+    double na = dn + By2 * nb;
+    eshkol_rm_axpby_exact(nb, y, -na, x, n, V);
+    double Vn = eshkol_rm_norm(V, n);
+    double d = 0.0;
+    why = eshkol_rm_distance(x, y, K, n, &d);
+    if (why) return why;
+    double coef = (d / eshkol_rm_lambda(x, K, n)) / Vn;
+    for (int i = 0; i < n; i++) out[i] = coef * V[i];
+    return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
+}
+
+/**
+ * @brief Coordinate gradients of the SQUARED distance:
+ *        @p gx = d(d^2)/dx = -2 lambda_x^2 log_x(y), @p gy likewise.
+ *
+ * The Riemannian gradient of d^2 is -2 log_x(y); the coordinate gradient is
+ * that vector pushed through the metric, lambda_x^2. It is evaluated in the
+ * log-map form and never through d: at x == y bitwise the log map is exactly
+ * zero, so the gradient is exactly zero with no epsilon guard. Either output
+ * may be NULL.
+ *
+ * @param scratch 2n doubles.
+ */
+static const char* eshkol_rm_sq_distance_grad(const double* x, const double* y,
+                                              double K, int n, double* gx,
+                                              double* gy, double* scratch) {
+    double* lg = scratch + n;
+    if (gx) {
+        const char* why = eshkol_rm_log_map(x, y, K, n, lg, scratch);
+        if (why) return why;
+        const double lam = eshkol_rm_lambda(x, K, n);
+        for (int i = 0; i < n; i++) gx[i] = -2.0 * lam * lam * lg[i];
+        why = eshkol_rm_check_output(gx, n, "the squared-distance gradient is not finite");
+        if (why) return why;
+    }
+    if (gy) {
+        const char* why = eshkol_rm_log_map(y, x, K, n, lg, scratch);
+        if (why) return why;
+        const double lam = eshkol_rm_lambda(y, K, n);
+        for (int i = 0; i < n; i++) gy[i] = -2.0 * lam * lam * lg[i];
+        why = eshkol_rm_check_output(gy, n, "the squared-distance gradient is not finite");
+        if (why) return why;
+    }
+    return NULL;
+}
+
+/**
+ * @brief Parallel transport of tangent vector @p v from @p x to @p y along the
+ *        connecting geodesic of the chart of curvature @p K.
+ *
+ *     P_{x->y}(v) = (lambda_x / lambda_y) gyr[y, -x] v,
+ *
+ * with the gyration in its LINEAR closed form (eshkol_rm_gyration), whose only
+ * denominator is the Mobius denominator of the two points. On the positive
+ * chart that denominator vanishes at the antipode, where the geodesic and hence
+ * the transport is not unique, and the op refuses.
+ *
+ * @param scratch n doubles.
+ * @return NULL on success, else a reason.
+ */
+static const char* eshkol_rm_transport(const double* x, const double* y,
+                                       const double* v, double K, int n,
+                                       double* out, double* scratch) {
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (why) return why;
+    why = eshkol_rm_check_point(y, K, n);
+    if (why) return why;
+    for (int i = 0; i < n; i++)
+        if (!(v[i] == v[i])) return "a tangent-vector component is NaN";
+    why = eshkol_rm_check_tangent(x, v, K, n);
+    if (why) return why;
+
+    if (K == 0.0) {
+        memcpy(out, v, (size_t)n * sizeof(double));
+        return NULL;
+    }
+    double B = eshkol_rm_ball_param(-K);
+    if (!(eshkol_rm_mobius_den_negx(x, y, B, n) > 0.0))
+        return "the endpoints are antipodal (the cut locus of the "
+               "positive-curvature chart): parallel transport between them is "
+               "not unique";
+    double* negx = scratch;
+    for (int i = 0; i < n; i++) negx[i] = -x[i];
+    eshkol_rm_gyration(y, negx, v, B, n, out);
+    double ratio = eshkol_rm_lambda(x, K, n) / eshkol_rm_lambda(y, K, n);
+    for (int i = 0; i < n; i++) out[i] *= ratio;
+    return eshkol_rm_check_output(out, n, "the parallel-transport result is not finite");
+}
+
+/**
+ * @brief Mobius scalar multiplication r (x)_B x = tan_B(r artan_B(|x|)) x/|x|
+ *        on the chart of curvature @p K, every sign:
+ *
+ *     a   = r |x| artan_ratio(B|x|^2)           (r artan_B |x|, length units)
+ *     out = r artan_ratio(B|x|^2) tan_ratio(B a^2) x
+ *
+ * r x at K = 0. Refuses when the result is not a point of the chart (the ball
+ * boundary for K < 0, the pole for K > 0).
+ */
+static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
+                                           int n, double* out) {
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (why) return why;
+    if (!isfinite(r)) return "the Mobius scalar is not finite";
+    double xn = eshkol_rm_norm(x, n);
+    if (K == 0.0) {
+        for (int i = 0; i < n; i++) out[i] = r * x[i];
+        return eshkol_rm_check_output(out, n, "the Mobius scalar result is not finite");
+    }
+    if (xn == 0.0) {
+        for (int i = 0; i < n; i++) out[i] = 0.0;
+        return NULL;
+    }
+    double B = eshkol_rm_ball_param(-K);
+    double A = eshkol_rm_artan_ratio(eshkol_rm_scaled_norm2_times(x, B, n));
+    double a = r * xn * A;
+    double coef = r * A * eshkol_rm_tan_ratio(eshkol_rm_scaled_square(B, a), NULL);
+    for (int i = 0; i < n; i++) out[i] = coef * x[i];
+    why = eshkol_rm_check_output(out, n, "the Mobius scalar result is not finite");
+    if (why) return why;
+    return eshkol_rm_require_interior(out, K, n);
+}
+
+/**
+ * @brief Project @p x onto the chart of curvature @p K.
+ *
+ * K < 0: rescale onto the open ball when @p x is on or outside it, leaving
+ * interior points untouched. K >= 0: every finite point is a chart point, so a
+ * copy (a positive-chart point at the pole is refused).
+ *
+ * @return NULL on success, else a reason.
+ */
+static const char* eshkol_rm_project(const double* x, double K, int n, double* out) {
+    if (!isfinite(K)) return "curvature is not finite";
+    for (int i = 0; i < n; i++)
+        if (!isfinite(x[i])) return "a coordinate is not finite";
+    if (K >= 0.0) {
+        const char* why = eshkol_rm_check_point(x, K, n);
+        if (why) return why;
+        memcpy(out, x, (size_t)n * sizeof(double));
+        return NULL;
+    }
+    double xn = eshkol_rm_norm(x, n);
+    double R = 1.0 / eshkol_rm_sqrt_nonnegative(eshkol_rm_ball_param(-K));
+    /* Leave a margin so the projected point is STRICTLY inside: a point exactly
+     * on the boundary makes lambda infinite and every log map degenerate to
+     * zero, which is the failure mode frechet_mean_core.h refuses to let look
+     * like convergence. */
+    double limit = R * (1.0 - 1e-12);
+    if (xn <= limit) {
+        memcpy(out, x, (size_t)n * sizeof(double));
+        return NULL;
+    }
+    double s = limit / xn;
+    for (int i = 0; i < n; i++) out[i] = s * x[i];
+    return NULL;
+}
+
+/**
+ * @brief Convert a Euclidean (coordinate) gradient @p g at @p x into the
+ *        Riemannian gradient g / lambda_x^2, every sign of K. At K = 0 it is
+ *        g / alpha^2 = g.
+ *
+ * @return NULL on success, else a reason.
+ */
+static const char* eshkol_rm_egrad_to_rgrad(const double* g, const double* x,
+                                            double K, int n, double* out) {
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (why) return why;
+    double lam = eshkol_rm_lambda(x, K, n);
+    if (!isfinite(lam) || !(lam > 0.0)) return "the conformal factor is not finite";
+    double inv_lam = 1.0 / lam;
+    double s = inv_lam * inv_lam;
+    for (int i = 0; i < n; i++) out[i] = s * g[i];
+    return eshkol_rm_check_output(out, n, "the Riemannian gradient is not finite");
+}
+
+/* ═══ The embedded sphere model (ambient coordinates) ═════════════════════
+ *
+ * Points of R^{n+1} on the sphere of radius R = 1/sqrt(K). These back the ops
+ * whose documented contract is the embedding (`great-circle-distance`,
+ * `slerp`, `spherical-exp/log/project`, the space-form SPHERICAL factor); every
+ * curvature-parameterized op uses the chart above. */
+
+/** @brief Geodesic distance R theta on the embedded sphere, theta from the
+ *         cancellation-free atan2 form; the antipode is refused. */
+static const char* eshkol_rm_sphere_distance(const double* x, const double* y,
+                                             double K, int n, double* out) {
+    const char* why = eshkol_rm_sphere_check_point(x, K, n);
+    if (why) return why;
+    why = eshkol_rm_sphere_check_point(y, K, n);
+    if (why) return why;
+    if (eshkol_rm_points_equal(x, y, n)) { *out = 0.0; return NULL; }
+    double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
+    if (eshkol_rm_sphere_antipodal(x, y, n))
+        return "the two points are antipodal: distance is not differentiable";
+    *out = R * eshkol_rm_sphere_angle(x, y, R, n, NULL);
+    return isfinite(*out) ? NULL : "the geodesic distance is not finite";
+}
+
+/** @brief exp_x(v) = cos(|v|/R) x + R sin(|v|/R) v/|v| on the embedded sphere,
+ *         with the tangency of v checked rather than assumed. */
+static const char* eshkol_rm_sphere_exp_map(const double* x, const double* v,
+                                            double K, int n, double* out) {
+    const char* why = eshkol_rm_sphere_check_point(x, K, n);
+    if (why) return why;
+    for (int i = 0; i < n; i++)
+        if (!isfinite(v[i])) return "a tangent-vector component is not finite";
+    why = eshkol_rm_sphere_check_tangent(x, v, K, n);
+    if (why) return why;
+    double vn = eshkol_rm_norm(v, n);
+    if (vn == 0.0) {
+        memcpy(out, x, (size_t)n * sizeof(double));
+        return NULL;
+    }
+    double R  = 1.0 / eshkol_rm_sqrt_nonnegative(K);
+    double th = vn / R;
+    double ca = cos(th), sa = sin(th);
+    for (int i = 0; i < n; i++) out[i] = ca * x[i] + R * sa * v[i] / vn;
+    return eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
+}
+
+/** @brief log_x(y) on the embedded sphere; the antipode is refused. */
+static const char* eshkol_rm_sphere_log_map(const double* x, const double* y,
+                                            double K, int n, double* out) {
+    const char* why = eshkol_rm_sphere_check_point(x, K, n);
+    if (why) return why;
+    why = eshkol_rm_sphere_check_point(y, K, n);
+    if (why) return why;
+    if (eshkol_rm_points_equal(x, y, n)) {
+        for (int i = 0; i < n; i++) out[i] = 0.0;
+        return NULL;
+    }
+    double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
+    if (!isfinite(R)) return "the sphere radius is not finite";
+    if (eshkol_rm_sphere_antipodal(x, y, n))
+        return "the two points are antipodal: log is not single-valued there";
+    why = eshkol_rm_sphere_log_map_stable(x, y, R, n, out);
+    if (why) return why;
+    return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
+}
+
+/** @brief Rescale @p x onto the embedded sphere of radius 1/sqrt(K); the
+ *         origin has no projection and is refused. */
+static const char* eshkol_rm_sphere_project(const double* x, double K, int n,
+                                            double* out) {
+    if (!isfinite(K) || !(K > 0.0)) return "the embedded sphere requires positive curvature";
+    double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
+    double max_abs = 0.0;
+    for (int i = 0; i < n; i++) {
+        if (!isfinite(x[i])) return "a coordinate is not finite";
+        if (fabs(x[i]) > max_abs) max_abs = fabs(x[i]);
+    }
+    if (max_abs == 0.0)
+        return "the origin has no projection onto the sphere";
+    double scaled_norm2_hi = 0.0, scaled_norm2_lo = 0.0;
+    for (int i = 0; i < n; i++) {
+        double z = x[i] / max_abs;
+        double term, term_error, next_hi, next_lo;
+        eshkol_rm_two_product(z, z, &term, &term_error);
+        eshkol_rm_dd_add(scaled_norm2_hi, scaled_norm2_lo,
+                         term, term_error, &next_hi, &next_lo);
+        scaled_norm2_hi = next_hi;
+        scaled_norm2_lo = next_lo;
+    }
+    double scaled_norm = sqrt(scaled_norm2_hi + scaled_norm2_lo);
+    if (!(scaled_norm > 0.0) || !isfinite(scaled_norm))
+        return "the vector could not be normalised to the sphere";
+    double radius_scale = R / scaled_norm;
+    for (int i = 0; i < n; i++) out[i] = radius_scale * (x[i] / max_abs);
+    for (int i = 0; i < n; i++)
+        if (!isfinite(out[i])) return "the projected point is not finite";
+    return NULL;
+}
+
+/**
+ * @brief The isometry from the embedded sphere of radius R = 1/sqrt(K) in
+ *        R^{n+1} (@p p, n+1 coordinates, last one the polar axis) to the
+ *        alpha = 1 chart (@p x, n coordinates):
+ *
+ *     x = 2 R p' / (R + p_n),
+ *
+ * the stereographic projection from the pole p = -R e_n. Where p_n < 0 the
+ * denominator is formed as |p'|^2/(R - p_n) (the same number on the sphere)
+ * so the far hemisphere keeps its relative precision. The pole is refused.
+ */
+static const char* eshkol_rm_sphere_to_chart(const double* p, double K, int n,
+                                             double* x) {
+    const char* why = eshkol_rm_sphere_check_point(p, K, n + 1);
+    if (why) return why;
+    const double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
+    const double pn = p[n];
+    if (pn >= 0.0) {
+        const double den = R + pn;
+        for (int i = 0; i < n; i++) x[i] = 2.0 * R * (p[i] / den);
+    } else {
+        const double pp = eshkol_rm_norm(p, n);
+        if (!(pp > 0.0))
+            return "the point is the pole of the chart: it has no chart "
+                   "coordinates";
+        const double far = R - pn;
+        for (int i = 0; i < n; i++)
+            x[i] = 2.0 * R * ((p[i] / pp) * (far / pp));
+    }
+    return eshkol_rm_check_output(x, n, "the chart coordinates are not finite");
+}
+
+/**
+ * @brief The inverse isometry, chart -> embedded sphere:
+ *
+ *     p' = lambda_x x,  p_n = R (2 lambda_x - 1) = R (1 - K|x|^2/4) lambda_x,
+ *     lambda_x = 1/(1 + K|x|^2/4).
+ */
+static const char* eshkol_rm_chart_to_sphere(const double* x, double K, int n,
+                                             double* p) {
+    if (!(K > 0.0)) return "the embedded sphere requires positive curvature";
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (why) return why;
+    const double R = 1.0 / eshkol_rm_sqrt_nonnegative(K);
+    const double B = eshkol_rm_ball_param(-K);
+    const double den = eshkol_rm_one_minus_bnorm2(x, B, n);  /* 1 + K|x|^2/4 */
+    const double q = eshkol_rm_scaled_norm2_times(x, -B, n); /* K|x|^2/4 */
+    for (int i = 0; i < n; i++) p[i] = x[i] / den;
+    p[n] = R * ((1.0 - q) / den);
+    return eshkol_rm_check_output(p, n + 1, "the sphere coordinates are not finite");
+}
+
+/* Evaluate the chart distance and its first two B-derivatives from the
+ * degree-10 series in q = K r^2 / 4 = -B z (either sign of K, and K = 0), where
  *
  *   z = |x-y|^2 / P,  P = (1-B|x|^2)(1-B|y|^2),
  *   d = LAMBDA0 sqrt(z) H(-q),
@@ -1569,13 +1753,13 @@ static const char* eshkol_rm_distance_dK_small_q(
         power *= w;
     }
 
-    const double d_factors[] = {ESHKOL_RM_LAMBDA0, root_z, H};
+    const double d_factors[] = {ESHKOL_RM_ALPHA, root_z, H};
     const double d = eshkol_rm_scaled_product_n(d_factors, 3);
     const double dB1_zero_factors[] = {
-        ESHKOL_RM_LAMBDA0, root_z, 0.5 * r
+        ESHKOL_RM_ALPHA, root_z, 0.5 * r
     };
     const double dB1_series_factors[] = {
-        ESHKOL_RM_LAMBDA0, z, root_z, first
+        ESHKOL_RM_ALPHA, z, root_z, first
     };
     const double dB1 = eshkol_rm_scaled_product_n(dB1_zero_factors, 3) +
                        eshkol_rm_scaled_product_n(dB1_series_factors, 4);
@@ -1583,13 +1767,13 @@ static const char* eshkol_rm_distance_dK_small_q(
     /* The n=0 term is (T-R)/B^2 + R^2/B^2, with the quotients expanded
      * directly as s2 and r^2.  The n=1 term is treated the same way. */
     const double dB2_zero_factors[] = {
-        ESHKOL_RM_LAMBDA0, root_z, 0.5 * s2 + 0.25 * r * r
+        ESHKOL_RM_ALPHA, root_z, 0.5 * s2 + 0.25 * r * r
     };
     const double alpha1 = 1.5;
     const double one_bracket = alpha1 * (2.0 * r + B * s2) +
                                alpha1 * alpha1 * B * r * r;
     const double dB2_one_factors[] = {
-        ESHKOL_RM_LAMBDA0, z, root_z, a[1] * one_bracket
+        ESHKOL_RM_ALPHA, z, root_z, a[1] * one_bracket
     };
     double dB2 = eshkol_rm_scaled_product_n(dB2_zero_factors, 3) +
                  eshkol_rm_scaled_product_n(dB2_one_factors, 4);
@@ -1601,7 +1785,7 @@ static const char* eshkol_rm_distance_dK_small_q(
         const double second_factor = log_derivative * log_derivative -
                                      log_derivative + alpha * T;
         const double dB2_factors[] = {
-            ESHKOL_RM_LAMBDA0, z, z, root_z, a[k], power,
+            ESHKOL_RM_ALPHA, z, z, root_z, a[k], power,
             second_factor
         };
         dB2 += eshkol_rm_scaled_product_n(dB2_factors, 7);
@@ -1618,51 +1802,28 @@ static const char* eshkol_rm_distance_dK_small_q(
 
 /**
  * @brief Geodesic distance between @p x and @p y AND its first two derivatives
- *        with respect to the sectional curvature K, at fixed points.
+ *        with respect to the sectional curvature K, at fixed chart points:
+ *        the curvature JET (value, d/dK, d^2/dK^2) of ADR-0018.
  *
- * WHY THIS EXISTS. `curvature-gradient` (852) returned the plain SUM of a
- * tensor's elements, `curvature-hessian` (855) returned the constant 0.0, and
- * `adaptive-curvature-step` (856) moved K by a fixed 0.01 times that sum. None
- * of the three differentiated anything: the first two are not derivatives of
- * any objective, and a Hessian that is identically zero is the assertion that
- * every objective is affine in K, made without looking at one. This function is
- * the measurement they now report -- exact closed-form d/dK and d^2/dK^2, not a
- * difference quotient, so there is no step size to choose and no truncation
- * error to bound.
+ * Exact closed-form derivatives, not difference quotients. One formula for
+ * every sign: with B = -K alpha^2/4 (dB/dK = -alpha^2/4), A = B|x|^2,
+ * C = B|y|^2, w = B|x-y|^2 / ((1-A)(1-C)) and D = B d/dB,
  *
- * HYPERBOLIC BRANCH (K < 0, c = -K, B = ball_param(c)). With a = |x|^2,
- * b = |y|^2, E = |x-y|^2,
+ *   L  = D log w = 1 + A/(1-A) + C/(1-C)
+ *   h  = sqrt|w| psi(w)          (asinh on the ball, asin on the sphere chart)
+ *   d  = alpha |B|^(-1/2) h
+ *   Dh = q L,  D^2 h = q (DL + L^2/(2(1+w))),  q = sqrt|w| / (2 sqrt(1+w)),
  *
- *   P(B) = (1 - B a)(1 - B b),  Rr = E/P,  w = B Rr,
- *   d    = LAMBDA0 sqrt(Rr) psi(w)
+ * evaluated in the cancellation-free t1/t2 form below. For |w| <=
+ * ESHKOL_RM_Q_SERIES the degree-10 series is differentiated termwise instead
+ * (eshkol_rm_distance_dK_small_q), which is what carries the jet THROUGH
+ * K = 0: at B = 0 the series is evaluated at w = 0 and the left and right jets
+ * are the same expression. Coincident points give an identically zero d, so
+ * every derivative is exactly zero.
  *
- * and the derivatives are the exact chain rule on that composition. Written
- * through psi rather than arccosh because the two agree exactly and only this
- * one stays accurate as B -> 0 and as the points approach each other.
- * Coincident points are handled separately: E = 0 makes d identically zero in
- * B, so every K-derivative is exactly zero.
- *
- * SPHERICAL BRANCH (K > 0). A point of the sphere of radius 1/sqrt(K) is NOT a
- * point of the sphere of a different radius, so "hold the points fixed and vary
- * K" is not a curve in any single manifold. The family this branch differen-
- * tiates instead holds the pair at FIXED ANGULAR POSITION and lets the radius
- * follow K: with theta fixed, d = theta K^(-1/2), so d' = -theta K^(-3/2)/2 and
- * d'' = 3 theta K^(-5/2)/4.
- *
- * The spherical formulas are published only when both derivatives are
- * representable in f64. At the positive subnormal floor, the fixed-angle
- * analytic derivative can be outside f64 even while d itself is finite; that
- * case is an explicit refusal, never a successful infinity. For theta = 0 the
- * continuous value is d' = d'' = 0, including at that floor.
- *
- * K = 0 IS REFUSED WHILE ESHKOL_RM_FLAT_LAMBDA != ESHKOL_RM_LAMBDA0. The ball
- * branch tends to LAMBDA0 |x-y| as K -> 0-, the flat branch returns
- * FLAT_LAMBDA |x-y|, and the spherical branch diverges as K -> 0+. With the two
- * constants unequal the family is discontinuous there, so no number is the
- * derivative and returning one would be the plausible-wrong-number case this
- * surface exists to exclude. If the convention ruling equalises them the ball
- * branch below is already valid AT B = 0 -- psi is analytic there -- and this
- * refusal becomes removable.
+ * A non-finite requested output is refused (for example d/dK at the subnormal
+ * negative-curvature floor with radius-scaled points, whose analytic value is
+ * beyond DBL_MAX); there is no blanket binade refusal.
  *
  * @param d_out   the distance itself (may be NULL).
  * @param d1_out  d(distance)/dK.
@@ -1677,117 +1838,251 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
     why = eshkol_rm_check_point(y, K, n);
     if (why) return why;
 
-    if (K == 0.0 && ESHKOL_RM_FLAT_LAMBDA != ESHKOL_RM_LAMBDA0)
-        return "the curvature derivative is not defined at K = 0: the ball "
-               "branch tends to ESHKOL_RM_LAMBDA0 |x-y| as K -> 0- and the "
-               "K = 0 branch returns ESHKOL_RM_FLAT_LAMBDA |x-y|, so with those "
-               "two constants unequal the metric family is discontinuous there";
-
-    if (K <= 0.0) {
-        if (eshkol_rm_points_equal(x, y, n)) {
-            /* Coincident points: d is identically zero in B, so both
-             * derivatives are exactly 0 -- not a limit through a 0/0 form. */
-            if (d_out)  *d_out  = 0.0;
-            *d1_out = 0.0;
-            *d2_out = 0.0;
-            return NULL;
-        }
-        double B = eshkol_rm_ball_param(-K);
-        /* Work with dimensionless quantities.  A = B|x|^2, C = B|y|^2 and
-         * G = B|x-y|^2 remain representable across all curvature binades in
-         * which the point lies in the ball; the old E/P, P^2 and P^3 chain
-         * formed the dimensional squares first and lost this information. */
-        const double A = eshkol_rm_scaled_norm2_times(x, B, n);
-        const double C = eshkol_rm_scaled_norm2_times(y, B, n);
-        const double gamma = eshkol_rm_difference_norm2_times(x, y, B, n);
-        /* dB/dc = LAMBDA0^2/4 and c = -K, so dB/dK is its negative. */
-        double dBdK = -(ESHKOL_RM_LAMBDA0 * ESHKOL_RM_LAMBDA0) / 4.0;
-
-        double pa  = eshkol_rm_one_minus_bnorm2(x, B, n);
-        double pb  = eshkol_rm_one_minus_bnorm2(y, B, n);
-        const double w = gamma / (pa * pb);
-        if (!(w >= 0.0) || !isfinite(w))
-            return "the dimensionless curvature argument is not finite";
-
-        /* q = K r^2/4 = -w.  Do not require w to be nonzero here: at the
-         * subnormal curvature floor B*|x-y|^2 can underflow even though the
-         * derivatives' analytic limits are ordinary f64 values. */
-        if (w <= ESHKOL_RM_CURVATURE_Q_SMALL)
-            return eshkol_rm_distance_dK_small_q(
-                x, y, B, dBdK, pa, pb, w, n, d_out, d1_out, d2_out);
-
-        /* Let D = B d/dB.  For h = asinh(sqrt(w)),
-         *
-         *   L = D log(w) = 1 + A/pa + C/pb
-         *   DL = A/pa + (A/pa)^2 + C/pb + (C/pb)^2
-         *   Dh = q L,  D2h = q (DL + L^2/(2(1+w)))
-         *   q = 1/2 sqrt(w/(1+w)).
-         *
-         * Since d = LAMBDA0 B^-1/2 h, this gives d/dK and d2/dK2
-         * without dimensional E/P powers or cancellation-prone P derivatives. */
-        const double ra = A / pa;
-        const double rb = C / pb;
-        const double R = ra + rb;
-        const double T = R + ra * ra + rb * rb;
-        const double root_w = sqrt(w);
-        const double h = asinh(root_w);
-        const double q = 0.5 * root_w / sqrt(1.0 + w);
-        double psi1 = 0.0, psi2 = 0.0;
-        (void)eshkol_rm_psi(w, &psi1, &psi2);
-        const double t0 = h;
-        /* Factor the cancellations in t1 and t2 through psi'(w) and
-         * psi''(w). The residual R/T terms are the dependence of P on B. */
-        const double t1 = root_w * w * psi1 + q * R;
-        const double t2 = root_w * w * w * psi2 +
-            q * (T + (2.0 * R + R * R) / (2.0 * (1.0 + w)) - 2.0 * R);
-        const double d = ESHKOL_RM_LAMBDA0 *
-            eshkol_rm_inverse_power_mul(B, 1, t0);
-        const double dB1 = ESHKOL_RM_LAMBDA0 *
-            eshkol_rm_inverse_power_mul(B, 3, t1);
-        const double dB2 = ESHKOL_RM_LAMBDA0 *
-            eshkol_rm_inverse_power_mul(B, 5, t2);
-        if (d_out) *d_out = d;
-        *d1_out = dB1 * dBdK;
-        *d2_out = dB2 * dBdK * dBdK;
-        /* For K < 0 this is the exact refusal boundary: refuse only when one
-         * requested f64 output is non-finite after the dimensionless
-         * calculation. There is no blanket binade refusal. */
-        if (!isfinite(d) || !isfinite(*d1_out) || !isfinite(*d2_out))
-            return "the curvature derivative is not finite";
+    if (eshkol_rm_points_equal(x, y, n)) {
+        if (d_out)  *d_out  = 0.0;
+        *d1_out = 0.0;
+        *d2_out = 0.0;
         return NULL;
     }
+    const double B = eshkol_rm_ball_param(-K);
+    /* Dimensionless quantities. A = B|x|^2, C = B|y|^2 and G = B|x-y|^2 remain
+     * representable across all curvature binades in which the points are chart
+     * points; the dimensional squares are never formed. */
+    const double A = eshkol_rm_scaled_norm2_times(x, B, n);
+    const double C = eshkol_rm_scaled_norm2_times(y, B, n);
+    const double gamma = eshkol_rm_difference_norm2_times(x, y, B, n);
+    const double dBdK = -(ESHKOL_RM_ALPHA * ESHKOL_RM_ALPHA) / 4.0;
+    const double pa  = eshkol_rm_one_minus_bnorm2(x, B, n);
+    const double pb  = eshkol_rm_one_minus_bnorm2(y, B, n);
+    const double w = (gamma / pa) / pb;
+    if (!(w >= -1.0) || !isfinite(w))
+        return "the dimensionless curvature argument is not finite";
 
-    {
-        double R  = 1.0 / eshkol_rm_sqrt_nonnegative(K);
-        double cs = eshkol_rm_dot(x, y, n) / (R * R);
-        double sn = 0.0;
-        for (int i = 0; i < n; i++) { double t = y[i] - cs * x[i]; sn += t * t; }
-        double th = atan2(sqrt(sn) / R, cs);
-        double rk = 1.0 / eshkol_rm_sqrt_nonnegative(K);
-        if (d_out) *d_out = th * rk;
-        if (th == 0.0) {
-            *d1_out = 0.0;
-            *d2_out = 0.0;
-            return NULL;
-        }
-        if (K <= DBL_TRUE_MIN)
-            return "the spherical curvature derivative is outside f64 range "
-                   "at the positive subnormal curvature floor";
-        /* The fixed-angle spherical family has d = theta K^(-1/2), so its
-         * analytic derivatives are -theta K^(-3/2)/2 and
-         * 3 theta K^(-5/2)/4.  At the subnormal end of f64 those values can
-         * exceed the result type even though d itself is finite.  Do not
-         * publish an infinity as a successful derivative: the caller must
-         * see the representability boundary and choose a higher-precision or
-         * reparameterised calculation. */
-        *d1_out = -0.5 * th * rk / K;
-        *d2_out =  0.75 * th * rk / (K * K);
-        if (!isfinite(*d1_out) || !isfinite(*d2_out))
-            return "the spherical curvature derivative is outside f64 range "
-                   "at this positive K (analytic fixed-angle limit is "
-                   "unrepresentable)";
-        return NULL;
+    /* Do not require w to be nonzero: at the subnormal curvature floor and at
+     * K = 0 itself B*|x-y|^2 is zero while the derivatives are ordinary f64
+     * values. */
+    if (fabs(w) <= ESHKOL_RM_Q_SERIES)
+        return eshkol_rm_distance_dK_small_q(
+            x, y, B, dBdK, pa, pb, w, n, d_out, d1_out, d2_out);
+
+    /* 1 + w = Dn/P with Dn the Mobius denominator of (-x, y): on the positive
+     * chart it is the quantity that vanishes at the antipode, so it is taken
+     * from the cancellation-free Mobius form rather than from 1 + w. */
+    double onepw = 1.0 + w;
+    if (B < 0.0) {
+        const double dn = eshkol_rm_mobius_den_negx(x, y, B, n);
+        if (!(dn > 0.0))
+            return "the two points are antipodal (the cut locus of the "
+                   "positive-curvature chart): no curvature derivative";
+        onepw = (dn / pa) / pb;
     }
+    const double ra = A / pa;
+    const double rb = C / pb;
+    const double R = ra + rb;
+    const double T = R + ra * ra + rb * rb;
+    const double root_w = sqrt(fabs(w));
+    const double h = (w > 0.0) ? asinh(root_w) : atan2(root_w, sqrt(onepw));
+    const double q = 0.5 * root_w / sqrt(onepw);
+    double psi1 = 0.0, psi2 = 0.0;
+    (void)eshkol_rm_psi(w, &psi1, &psi2);
+    /* Factor the cancellations in t1 and t2 through psi'(w) and psi''(w). The
+     * residual R/T terms are the dependence of P on B. */
+    const double t0 = h;
+    const double t1 = root_w * w * psi1 + q * R;
+    const double t2 = root_w * w * w * psi2 +
+        q * (T + (2.0 * R + R * R) / (2.0 * onepw) - 2.0 * R);
+    const double abs_B = fabs(B);
+    const double sign_B = (B > 0.0) ? 1.0 : -1.0;
+    const double d = ESHKOL_RM_ALPHA *
+        eshkol_rm_inverse_power_mul(abs_B, 1, t0);
+    const double dB1 = sign_B * ESHKOL_RM_ALPHA *
+        eshkol_rm_inverse_power_mul(abs_B, 3, t1);
+    const double dB2 = ESHKOL_RM_ALPHA *
+        eshkol_rm_inverse_power_mul(abs_B, 5, t2);
+    if (d_out) *d_out = d;
+    *d1_out = dB1 * dBdK;
+    *d2_out = dB2 * dBdK * dBdK;
+    if (!isfinite(d) || !isfinite(*d1_out) || !isfinite(*d2_out))
+        return "the curvature derivative is not finite";
+    return NULL;
+}
+
+/**
+ * @brief The curvature jet of the SQUARED distance, from the distance jet:
+ *        (d^2)' = 2 d d',  (d^2)'' = 2 (d'^2 + d d'').
+ */
+static const char* eshkol_rm_sq_distance_dK(const double* x, const double* y,
+                                            double K, int n, double* s_out,
+                                            double* s1_out, double* s2_out) {
+    double d = 0.0, d1 = 0.0, d2 = 0.0;
+    const char* why = eshkol_rm_distance_dK(x, y, K, n, &d, &d1, &d2);
+    if (why) return why;
+    if (s_out) *s_out = d * d;
+    *s1_out = 2.0 * d * d1;
+    *s2_out = 2.0 * (d1 * d1 + d * d2);
+    if (!isfinite(d * d) || !isfinite(*s1_out) || !isfinite(*s2_out))
+        return "the squared-distance curvature derivative is not finite";
+    return NULL;
+}
+
+/* ═══ Squared-distance geodesic attention (ADR-0018 decision 5) ═══════════
+ *
+ * Logits are -d^2/(2t) with a finite temperature t in squared-distance units;
+ * there is no curvature-dependent scale anywhere. The default temperature is
+ * sqrt(head_dim): at K = 0 the logit is -|q-k|^2/(2 sqrt(dim)), which differs
+ * from scaled dot-product attention q.k/sqrt(dim) only by terms constant in the
+ * softmax row and the key-norm bias.
+ *
+ * eshkol_rm_attention_row is the ONE stabilized softmax every engine runs: the
+ * VM ops, the AD bridge forward, and the native module. The shift is the
+ * row's minimum squared distance, so no absolute logit is materialised; a gap
+ * whose scaled logit underflows has the exact weight zero. */
+
+/** @brief The default attention temperature sqrt(head_dim). */
+static double eshkol_rm_default_temperature(int head_dim) {
+    return sqrt((double)head_dim);
+}
+
+/**
+ * @brief One attention row: weights_j = softmax_j(-d^2(q, k_j)/(2t)) over the
+ *        first @p limit keys (the causal mask is the caller's limit).
+ *
+ * @param keys        first key row; key j starts at keys + j*key_stride
+ * @param sqd         limit doubles: receives d^2(q, k_j)
+ * @param weights     limit doubles: receives the normalised weights
+ * @return NULL on success, else a reason (a refused pair names the domain).
+ */
+static const char* eshkol_rm_attention_row(const double* q, const double* keys,
+                                           long key_stride, int limit, int dim,
+                                           double K, double temperature,
+                                           double* sqd, double* weights) {
+    if (!(temperature > 0.0) || !isfinite(temperature))
+        return "the attention temperature must be finite and positive";
+    if (limit <= 0) return "an attention row needs at least one key";
+    double min_sq = HUGE_VAL;
+    for (int j = 0; j < limit; j++) {
+        const char* why = eshkol_rm_sq_distance(q, keys + (long)j * key_stride,
+                                                K, dim, &sqd[j]);
+        if (why) return why;
+        if (sqd[j] < min_sq) min_sq = sqd[j];
+    }
+    const double inv_two_t = 0.5 / temperature;
+    double sum = 0.0;
+    for (int j = 0; j < limit; j++) {
+        const double gap = sqd[j] - min_sq;
+        if (!isfinite(gap) || gap < 0.0)
+            return "the attention row could not form a finite squared-distance gap";
+        weights[j] = (gap > DBL_MAX / inv_two_t) ? 0.0 : exp(-gap * inv_two_t);
+        sum += weights[j];
+    }
+    if (!(sum > 0.0) || !isfinite(sum))
+        return "the attention softmax normalisation is not finite";
+    for (int j = 0; j < limit; j++) weights[j] /= sum;
+    return NULL;
+}
+
+/* ═══ Convention ids and legacy migration (ADR-0018 Migration) ════════════ */
+
+/** @brief The header every serialized geometry record carries. */
+typedef struct {
+    uint32_t convention;   /* ESHKOL_GEOMETRY_CONVENTION_* */
+    uint32_t reserved;     /* must be zero */
+    double   alpha;        /* the gauge; ESHKOL_RM_ALPHA for v2 */
+    double   curvature;    /* signed sectional curvature K */
+} eshkol_geometry_header_t;
+
+/** @brief Fill @p h for the current convention at curvature @p K. */
+static void eshkol_rm_geometry_header(double K, eshkol_geometry_header_t* h) {
+    h->convention = ESHKOL_GEOMETRY_CONVENTION_STEREOGRAPHIC_V2_ALPHA1;
+    h->reserved = 0u;
+    h->alpha = ESHKOL_RM_ALPHA;
+    h->curvature = K;
+}
+
+/**
+ * @brief Accept a serialized header only when it names the current convention
+ *        and gauge. An unversioned or legacy record is refused, never guessed:
+ *        legacy data goes through the explicit migration helpers below.
+ */
+static const char* eshkol_rm_check_geometry_header(const eshkol_geometry_header_t* h) {
+    if (!h) return "the geometry record has no header";
+    if (h->convention == ESHKOL_GEOMETRY_CONVENTION_UNVERSIONED)
+        return "the geometry record carries no convention id; unversioned "
+               "coordinates are never reinterpreted";
+    if (h->convention == ESHKOL_GEOMETRY_CONVENTION_LEGACY_BALL_V1)
+        return "the geometry record uses the legacy ball convention; migrate it "
+               "(x_v2 = 2 x_v1) before loading";
+    if (h->convention != ESHKOL_GEOMETRY_CONVENTION_STEREOGRAPHIC_V2_ALPHA1)
+        return "the geometry record names an unknown convention id";
+    if (h->reserved != 0u) return "the geometry record header is malformed";
+    if (!(h->alpha == ESHKOL_RM_ALPHA))
+        return "the geometry record gauge alpha does not match this build";
+    if (!isfinite(h->curvature)) return "the geometry record curvature is not finite";
+    return NULL;
+}
+
+/**
+ * @brief Migrate a legacy ball point (alpha = 2, radius 1/sqrt(-K)) to the
+ *        current chart: x_v2 = 2 x_v1. K = 0 legacy coordinates were already
+ *        canonical Euclidean and are copied. Positive legacy data was ambient
+ *        (use eshkol_rm_sphere_to_chart).
+ */
+static const char* eshkol_rm_migrate_legacy_point(const double* x_v1, double K,
+                                                  int n, double* x_v2) {
+    if (!isfinite(K)) return "curvature is not finite";
+    if (K > 0.0)
+        return "legacy positive-curvature points are ambient sphere points; "
+               "migrate them with the stereographic projection";
+    for (int i = 0; i < n; i++)
+        if (!isfinite(x_v1[i])) return "a coordinate is not finite";
+    if (K < 0.0) {
+        /* legacy ball: |x|^2 < 1/c with c = -K */
+        if (!(eshkol_rm_one_minus_bnorm2(x_v1, -K, n) > 0.0))
+            return "the legacy point is not strictly inside the legacy ball";
+        for (int i = 0; i < n; i++) x_v2[i] = 2.0 * x_v1[i];
+        return eshkol_rm_check_point(x_v2, K, n);
+    }
+    memcpy(x_v2, x_v1, (size_t)n * sizeof(double));
+    return NULL;
+}
+
+/** @brief Migrate a legacy tangent vector (or first-moment optimizer state)
+ *         by the differential of x_v2 = 2 x_v1. Squared Riemannian norms
+ *         (second-moment state) are invariant and are not touched. */
+static const char* eshkol_rm_migrate_legacy_tangent(const double* v_v1, double K,
+                                                    int n, double* v_v2) {
+    if (!isfinite(K)) return "curvature is not finite";
+    if (K > 0.0)
+        return "legacy positive-curvature tangents are ambient; push them "
+               "through the differential of the stereographic projection";
+    const double scale = (K < 0.0) ? 2.0 : 1.0;
+    for (int i = 0; i < n; i++) {
+        if (!isfinite(v_v1[i])) return "a tangent-vector component is not finite";
+        v_v2[i] = scale * v_v1[i];
+    }
+    return NULL;
+}
+
+/**
+ * @brief Migrate a legacy attention score scale s (logit = -s d) to a
+ *        squared-distance temperature t (logit = -d^2/(2t)).
+ *
+ * No temperature reproduces a linear-distance score exactly. The migration
+ * matches the two logits to first order at the caller's reference distance
+ * d_ref: softmax rows are invariant to a constant offset, and the slopes
+ * agree when t = d_ref / s. Callers record d_ref (for example the median
+ * attention distance of the checkpoint) next to the migrated temperature.
+ */
+static const char* eshkol_rm_migrate_legacy_temperature(double legacy_scale,
+                                                        double reference_distance,
+                                                        double* temperature) {
+    if (!(legacy_scale > 0.0) || !isfinite(legacy_scale))
+        return "the legacy attention scale must be finite and positive";
+    if (!(reference_distance > 0.0) || !isfinite(reference_distance))
+        return "the reference distance must be finite and positive";
+    *temperature = reference_distance / legacy_scale;
+    return (isfinite(*temperature) && *temperature > 0.0)
+        ? NULL : "the migrated temperature is not finite";
 }
 
 #ifdef __cplusplus
@@ -1841,20 +2136,12 @@ static eshkol_rm_directional eshkol_rm_dsqrt(eshkol_rm_directional a) {
     return {r, a.tangent / (2.0 * r)};
 }
 
-static eshkol_rm_directional eshkol_rm_dtanh_over(eshkol_rm_directional z) {
-    const double small = ESHKOL_RM_TAU_SMALL;
-    const double w = z.value * z.value;
-    if (w < small * small) {
-        const double value = 1.0 - w / 3.0 + 2.0 * w * w / 15.0;
-        const double derivative = (-2.0 * z.value / 3.0 +
-                                   8.0 * z.value * w / 15.0) * z.tangent;
-        return {value, derivative};
-    }
-    const double t = tanh(z.value);
-    const double value = t / z.value;
-    const double derivative = ((1.0 - t * t) * z.value - t) /
-                              (z.value * z.value) * z.tangent;
-    return {value, derivative};
+/* Directional derivative of eshkol_rm_tan_ratio in its own argument s:
+ * the executed branch (series or closed form) and its derivative. */
+static eshkol_rm_directional eshkol_rm_dtan_ratio(eshkol_rm_directional s) {
+    double d1 = 0.0;
+    const double value = eshkol_rm_tan_ratio(s.value, &d1);
+    return {value, d1 * s.tangent};
 }
 
 static eshkol_rm_directional eshkol_rm_dnorm(const double* a,
@@ -1968,8 +2255,8 @@ static bool eshkol_rm_distance_directional(
         }
         eshkol_rm_directional d = eshkol_rm_dnorm(
             delta.data(), ddelta.data(), n);
-        if (out) *out = ESHKOL_RM_FLAT_LAMBDA * d.value;
-        if (dout) *dout = ESHKOL_RM_FLAT_LAMBDA * d.tangent;
+        if (out) *out = ESHKOL_RM_ALPHA * d.value;
+        if (dout) *dout = ESHKOL_RM_ALPHA * d.tangent;
         return isfinite(d.value) && isfinite(d.tangent);
     }
     if (K >= 0.0) return false;
@@ -1984,9 +2271,9 @@ static bool eshkol_rm_distance_directional(
         delta.data(), ddelta.data(), n);
     eshkol_rm_directional px = eshkol_rm_done_minus_bnorm2(x, dx, B, n);
     eshkol_rm_directional py = eshkol_rm_done_minus_bnorm2(y, dy, B, n);
-    eshkol_rm_directional P = eshkol_rm_dmul(px, py);
+    /* The forward's order: (|x-y| / sqrt(pa)) / sqrt(pb). */
     eshkol_rm_directional scaled_delta = eshkol_rm_ddiv(
-        delta_norm, eshkol_rm_dsqrt(P));
+        eshkol_rm_ddiv(delta_norm, eshkol_rm_dsqrt(px)), eshkol_rm_dsqrt(py));
     /* Keep the forward's multiplication order.  The squared scaled distance
      * can overflow before its B factor is applied even when B*distance^2 is
      * finite. */
@@ -1997,8 +2284,8 @@ static bool eshkol_rm_distance_directional(
     double psi1 = 0.0, psi2 = 0.0;
     const double psi_value = eshkol_rm_psi(w.value, &psi1, &psi2);
     eshkol_rm_directional distance = {
-        ESHKOL_RM_LAMBDA0 * scaled_delta.value * psi_value,
-        ESHKOL_RM_LAMBDA0 *
+        ESHKOL_RM_ALPHA * scaled_delta.value * psi_value,
+        ESHKOL_RM_ALPHA *
             (scaled_delta.tangent * psi_value +
              scaled_delta.value * psi1 * w.tangent)};
     double shared = 0.0;
@@ -2027,13 +2314,16 @@ static bool eshkol_rm_exp_directional(
     eshkol_rm_directional vn = eshkol_rm_dnorm(v, dv, n);
     eshkol_rm_directional nb = eshkol_rm_done_minus_bnorm2(x, dx, B, n);
     eshkol_rm_directional lambda = eshkol_rm_ddiv(
-        {ESHKOL_RM_LAMBDA0, 0.0}, nb);
-    eshkol_rm_directional z = eshkol_rm_dmul(
-        {eshkol_rm_sqrt_nonnegative(B), 0.0}, eshkol_rm_ddiv(
-            eshkol_rm_dmul(lambda, vn), {ESHKOL_RM_LAMBDA0, 0.0}));
+        {ESHKOL_RM_ALPHA, 0.0}, nb);
+    /* s = B (lambda |v| / alpha)^2 in the forward's multiplication order. */
+    eshkol_rm_directional r = eshkol_rm_ddiv(
+        eshkol_rm_dmul(lambda, vn), {ESHKOL_RM_ALPHA, 0.0});
+    eshkol_rm_directional sarg = {
+        eshkol_rm_scaled_square(B, r.value),
+        eshkol_rm_scaled_product4(B, 2.0, r.value, r.tangent)};
     eshkol_rm_directional f = eshkol_rm_dmul(
-        eshkol_rm_ddiv(lambda, {ESHKOL_RM_LAMBDA0, 0.0}),
-        eshkol_rm_dtanh_over(z));
+        eshkol_rm_ddiv(lambda, {ESHKOL_RM_ALPHA, 0.0}),
+        eshkol_rm_dtan_ratio(sarg));
     std::vector<double> s((size_t)n), ds((size_t)n);
     for (int i = 0; i < n; ++i) {
         s[(size_t)i] = f.value * v[i];
@@ -2092,7 +2382,7 @@ static bool eshkol_rm_log_directional(
         return false;
     eshkol_rm_directional coefficient = eshkol_rm_ddiv(
         eshkol_rm_ddiv({distance_value, distance_tangent},
-                       eshkol_rm_ddiv({ESHKOL_RM_LAMBDA0, 0.0}, nb)), Vn);
+                       eshkol_rm_ddiv({ESHKOL_RM_ALPHA, 0.0}, nb)), Vn);
     for (int i = 0; i < n; ++i) {
         eshkol_rm_directional result = eshkol_rm_dmul(
             coefficient, V[(size_t)i]);
