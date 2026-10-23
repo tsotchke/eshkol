@@ -57,9 +57,9 @@ The geodesic distance.
 (require core.curvature)
 (define a #(0.9 0.0))
 (define b #(-0.9 0.0))
-(display (chart-distance a b -1.0)) (newline)   ; 1.938801114376207
+(display (chart-distance a b -1.0)) (newline)   ; 1.9388011143762072
 (display (chart-distance a b 0.0)) (newline)    ; 1.8
-(display (chart-distance a b 1.0)) (newline)    ; 1.691415704531763
+(display (chart-distance a b 1.0)) (newline)    ; 1.6914157045317628
 ```
 
 The three values are one continuous family in `K`. At `K = −1` the points are
@@ -84,7 +84,7 @@ there.
 (define x #(0.3 -0.2 0.1))
 (define y #(-0.25 0.15 0.2))
 (display (chart-distance-jet x y 0.0)) (newline)
-; (0.6595452979136459 -0.009893179468704692 0.0002438256523224506)
+; (0.6595452979136459 -0.009893179468704692 0.00024382565232245064)
 (display (equal? (chart-distance-jet x y 1e-300)
                  (chart-distance-jet x y -1e-300)))
 (newline)                                       ; #t
@@ -117,8 +117,9 @@ with no epsilon guard.
 (define x #(0.3 -0.2 0.1))
 (define v #(0.7 0.2 -0.3))
 (define e (chart-exp-map x v 1.0))
-(display e) (newline)                           ; #(1.03428734667149 0.0603918451495408 -0.255170945453931)
-(display (chart-log-map x e 1.0)) (newline)     ; #(0.7 0.2 -0.3)
+(display e) (newline)                           ; #(1.03428734667149 0.06039184514954082 -0.2551709454539306)
+(display (chart-log-map x e 1.0)) (newline)
+; #(0.6999999999999998 0.19999999999999996 -0.2999999999999999)
 ```
 
 ## Squared-distance geodesic attention
@@ -143,6 +144,7 @@ weights are continuous in `K` through zero, and at `K = 0` they are
 (define keys (tensor (list (list 0.3 -0.2 0.1) (list -0.25 0.15 0.2))))
 (define vals (tensor (list (list 1.0 0.0) (list 0.0 1.0))))
 (display (chart-attention-weights q keys vals -1.0)) (newline)
+; #((0.5323094147333125 0.4676905852666875))
 ```
 
 ## The embedded sphere

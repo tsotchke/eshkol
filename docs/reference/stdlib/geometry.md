@@ -140,8 +140,8 @@ right curvature jets agree there.
 The gauge `α = 1` keeps every exact `K = 0` result: `geodesic-distance` at
 `K = 0` is `‖x − y‖`, `riemannian-grad` is the identity, and a learned curvature
 can cross zero. Two points a tenth of a unit inside the ball of radius 2 at
-`K = −1`, `x = (0.9, 0)` and `y = (−0.9, 0)`, are `1.938801114376207` apart; at
-`K = 0` they are `1.8` apart and at `K = 1` `1.691415704531763` — one continuous
+`K = −1`, `x = (0.9, 0)` and `y = (−0.9, 0)`, are `1.9388011143762072` apart; at
+`K = 0` they are `1.8` apart and at `K = 1` `1.6914157045317628` — one continuous
 family.
 
 The positive chart covers the sphere except one point, its **pole**, which lies
@@ -526,9 +526,9 @@ both signs (`tests/bridge/signed_curvature_reference_grid_test.cpp`).
 (tensor-set! a 0 0.9)
 (define b (make-tensor '(2) 0.0))
 (tensor-set! b 0 -0.9)
-(display (geodesic-distance a b -1.0)) (newline)   ; 1.938801114376207
+(display (geodesic-distance a b -1.0)) (newline)   ; 1.9388011143762072
 (display (geodesic-distance a b 0.0)) (newline)    ; 1.8
-(display (geodesic-distance a b 1.0)) (newline)    ; 1.691415704531763
+(display (geodesic-distance a b 1.0)) (newline)    ; 1.6914157045317628
 ```
 
 ### `(parallel-transport x y v curvature)` / `(manifold-parallel-transport …)` / `(vector-transport x y v curvature)` — id 812 / 843

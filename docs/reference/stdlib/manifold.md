@@ -65,9 +65,9 @@ spherical, `0.0` euclidean.
 (display (manifold-curvature (make-spherical-manifold 3)))  (newline)
 ```
 ```
--1
-0
-1
+-1.0
+0.0
+1.0
 ```
 
 ### `(manifold-distance m a b)`
@@ -84,14 +84,13 @@ the sphere chart; Euclidean is the L2 norm of `a−b`.
 (display (manifold-distance (make-spherical-manifold 3)  a b)) (newline)
 ```
 ```
-0.7613421083415903
+0.3654157126323245
 0.36055512754639896
-1.4288992721907328
+0.3557995806927712
 ```
 
-Edge case: `(manifold-distance m x x)` returns `0.0` (and for spherical, points with
-tiny norm are guarded by `mf-eps`). Passing lists instead of vectors does not crash but
-returns a wrong value — see [Known issues](#known-issues).
+Edge case: `(manifold-distance m x x)` returns `0.0`. Points are vectors; see
+[Points are vectors](#points-are-vectors).
 
 ### `(manifold-exp-map m base v)`
 Exponential map: move from point `base` along tangent vector `v`, returning the endpoint
@@ -106,7 +105,7 @@ chart); Euclidean is `base + v`. A near-zero tangent returns `base` unchanged.
 (display (vector-ref (manifold-exp-map H a v) 0)) (newline)
 ```
 ```
-0.15042424407613583
+0.1501046611543684
 ```
 
 ### `(manifold-log-map m base p)`
@@ -123,7 +122,7 @@ with `base`.
 (display (vector-ref (manifold-log-map H a (manifold-exp-map H a v)) 0)) (newline)
 ```
 ```
-0.049999999999999975
+0.049999999999999885
 ```
 
 ### `(manifold-parallel-transport m base-a base-b v)`
@@ -141,7 +140,7 @@ this chart, not a first-order rescaling.
 (display (vector-ref (manifold-parallel-transport H a b v) 0)) (newline)
 ```
 ```
-0.050896286401282395
+0.050375696202531635
 ```
 
 ### `(manifold-sectional-curvature m)`
@@ -153,7 +152,7 @@ Takes only the manifold (constant across all points/planes).
 (display (manifold-sectional-curvature (make-hyperbolic-manifold 3))) (newline)
 ```
 ```
--1
+-1.0
 ```
 
 ### `(manifold-scalar-curvature m)`
@@ -166,9 +165,9 @@ Scalar curvature R = K·n·(n−1), where n is the dimension. Takes only the man
 (display (manifold-scalar-curvature (make-spherical-manifold 3)))  (newline)
 ```
 ```
--6
-0
-6
+-6.0
+0.0
+6.0
 ```
 
 ### `(metric-component m x i j)`
@@ -182,7 +181,7 @@ g_ij = λ(x)²·δ_ij, where λ = 1/(1 + K‖x‖²/4): 1 (euclidean), 1/(1−�
 (display (metric-component H #(0.1 0.2 0.0) 0 0)) (newline)
 ```
 ```
-4.432132963988919
+1.0254766864284566
 ```
 
 ### `(manifold-metric m x)`
@@ -195,7 +194,7 @@ materialized in parallel via `parallel-map`.
 (display (vector-ref (vector-ref (manifold-metric H #(0.1 0.2 0.0)) 0) 0)) (newline)
 ```
 ```
-4.432132963988919
+1.0254766864284566
 ```
 
 ### `(manifold-metric-inverse m x)`
@@ -208,7 +207,7 @@ layout.
 (display (vector-ref (vector-ref (manifold-metric-inverse H #(0.1 0.2 0.0)) 0) 0)) (newline)
 ```
 ```
-0.22562500000000002
+0.9751562500000004
 ```
 
 ### `(christoffel-symbol m x i j k)`
@@ -224,8 +223,8 @@ Symmetric in the lower indices i,j. Zero everywhere for Euclidean. Argument orde
 (display (christoffel-symbol (make-euclidean-manifold 3) #(0.1 0.2 0.0) 0 1 0)) (newline)
 ```
 ```
-0.21052631578947367
-0
+0.050632911392405056
+0.0
 ```
 
 ### `(manifold-christoffel m x)`
@@ -250,7 +249,7 @@ Single Ricci-tensor entry. Einstein form for constant curvature: Ric_ij = K·(n�
 (display (ricci-component H #(0.1 0.2 0.0) 0 0)) (newline)  ; -1*2*g_00
 ```
 ```
--8.864265927977838
+-2.050953372856913
 ```
 
 ### `(manifold-ricci m x)`
@@ -262,7 +261,7 @@ Full n×n Ricci tensor at `x` as a vector of row-vectors.
 (display (vector-ref (vector-ref (manifold-ricci H #(0.1 0.2 0.0)) 0) 0)) (newline)
 ```
 ```
--8.864265927977838
+-2.050953372856913
 ```
 
 ### `(riemann-component m x i j k l)`
@@ -275,38 +274,14 @@ R_ijkl = K·(g_ik·g_jl − g_il·g_jk). Takes four lower indices i,j,k,l.
 (display (riemann-component H #(0.1 0.2 0.0) 0 1 0 1)) (newline)  ; = -λ⁴
 ```
 ```
--19.643802610477202
+-1.051602434408287
 ```
 
-## Known issues
+## Points are vectors
 
-### Points must be vectors, not lists (silently wrong, cross-ref ESH-0069)
-
-All operations index points with `vector-ref` / `vector-length`. Passing a plain `list`
-does not crash but produces a **wrong** result:
-
-```scheme
-(require core.manifold)
-(define H (make-hyperbolic-manifold 3))
-;; list form — WRONG
-(display (manifold-distance H (list 0.1 0.2 0.0) (list 0.3 -0.1 0.0))) (newline)
-;; vector form — correct
-(display (manifold-distance H (vector 0.1 0.2 0.0) (vector 0.3 -0.1 0.0))) (newline)
-```
-```
-0.2513143891844848            ;; the list form: a different number on every run
-0.7613421083415903            ;; the vector form: the correct distance
-```
-
-The correct distance is `0.7613421083415903`. The list form reinterprets a cons
-chain through the vector layout, so what it returns is **whatever the adjacent
-heap words happen to hold** — it is not a stable wrong number, and re-running
-the same program prints a different one, so the first line above is one
-observed run and not a value to compare against. This is
-the same "no type error on non-vector/non-tensor geometric input" class tracked by
-ESH-0069 (*"Tensor ops SIGSEGV on non-tensor
-(vector) input instead of raising a type error"* — here it is silent-wrong rather than a
-crash). Always pass `#(...)`, `(vector ...)`, or `(make-vector n x)` points.
+All operations index points with `vector-ref` / `vector-length`. Pass `#(...)`,
+`(vector ...)`, or `(make-vector n x)`; a list argument raises a catchable type error
+(`vector-length: expected vector or tensor, got pair`).
 
 ## Notes
 
