@@ -2,6 +2,58 @@
   "arena_allocate_cons_with_header": [
     "arena_ptr"
   ],
+  "arena_tagged_cons_get_double": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_flags": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_int64": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_ptr": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_tagged_value": [
+    "tagged_out_ptr",
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_type": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_set_double": [
+    "cons_ptr",
+    "i32",
+    "f64",
+    "i32"
+  ],
+  "arena_tagged_cons_set_int64": [
+    "cons_ptr",
+    "i32",
+    "i64",
+    "i32"
+  ],
+  "arena_tagged_cons_set_null": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_set_ptr": [
+    "cons_ptr",
+    "i32",
+    "i64",
+    "i32"
+  ],
+  "arena_tagged_cons_set_tagged_value": [
+    "cons_ptr",
+    "i32",
+    "tagged_ptr"
+  ],
   "arena_allocate_multi_value": [
     "arena_ptr",
     "size_t"

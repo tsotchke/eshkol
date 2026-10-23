@@ -110,7 +110,12 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         const block = allocate(size + 8), v = view();
         v.setUint8(block, subtype); v.setUint8(block + 1, flags);
         v.setUint32(block + 4, size, true);
-        return block + 8;
+        const payload = block + 8;
+        if (subtype === 0) {
+            const consHeaders = owner._exactConsHeaders || (owner._exactConsHeaders = new Map());
+            consHeaders.set(payload, size);
+        }
+        return payload;
     };
     const transaction = fn => {
         const checkpoint = owner._bumpPtr;
@@ -1028,6 +1033,75 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
     };
     const tapeGetNodeCount = tapeValue => tapeSet().get(uint(tapeValue))?.nodes.length || 0;
     const consAllocateWithHeader = (_arena) => header(32, 0);
+    const consSlot = (cellValue, isCdr) => {
+        const cell = wasm32(cellValue);
+        if (!cell || cell % 8) fail('invalid WASM cons cell pointer', 'ESH_NUMERIC_ABI');
+        span(cell, 32, 8);
+        const knownSize = owner._exactConsHeaders && owner._exactConsHeaders.get(cell);
+        if (knownSize !== undefined) {
+            if (knownSize !== 32) fail('invalid WASM cons header size', 'ESH_NUMERIC_ABI');
+            const v = view();
+            if (v.getUint8(cell - 8) !== 0 || v.getUint32(cell - 4, true) !== 32)
+                fail('invalid WASM cons header', 'ESH_NUMERIC_ABI');
+        } else if (cell >= 8) {
+            span(cell - 8, 8, 8);
+            const v = view(), subtype = v.getUint8(cell - 8), size = v.getUint32(cell - 4, true);
+            if (subtype >= 1 && subtype <= 23 && size > 0 && cell + size <= mem().buffer.byteLength) {
+                fail('WASM cons pointer names a non-cons object', 'ESH_NUMERIC_ABI');
+            }
+        }
+        return cell + (Number(isCdr) !== 0 ? 16 : 0);
+    };
+    const consType = slot => view().getUint8(slot);
+    const consData = slot => view().getBigUint64(slot + 8, true);
+    const consIntStorageTypes = new Set([1, 3, 4, 5, 8, 9, 10, 32, 33, 34, 35, 36, 37, 38, 39, 40]);
+    const consPointerTypes = new Set([8, 9, 32, 33, 34, 35, 36, 37, 38, 39, 40]);
+    const consGetInt64 = (cell, isCdr) => {
+        const slot = consSlot(cell, isCdr);
+        return consIntStorageTypes.has(consType(slot)) ? BigInt.asIntN(64, consData(slot)) : 0n;
+    };
+    const consGetDouble = (cell, isCdr) => {
+        const slot = consSlot(cell, isCdr);
+        return consType(slot) === 2 ? view().getFloat64(slot + 8, true) : 0;
+    };
+    const consGetPtr = (cell, isCdr) => {
+        const slot = consSlot(cell, isCdr), type = consType(slot);
+        if ((type & 0x3f) === 0) return 0n;
+        return consPointerTypes.has(type) ? consData(slot) : 0n;
+    };
+    const consGetType = (cell, isCdr) => consType(consSlot(cell, isCdr));
+    const consGetFlags = (cell, isCdr) => view().getUint8(consSlot(cell, isCdr) + 1);
+    const consSetInt64 = (cell, isCdr, value, typeValue) => {
+        const slot = consSlot(cell, isCdr), type = Number(typeValue) & 0xff;
+        if (!consIntStorageTypes.has(type)) fail('invalid type for WASM cons int64 storage', 'ESH_NUMERIC_ABI');
+        const v = view(); v.setUint8(slot, type); v.setBigInt64(slot + 8, BigInt.asIntN(64, BigInt(value)), true);
+    };
+    const consSetDouble = (cell, isCdr, value, typeValue) => {
+        const slot = consSlot(cell, isCdr), type = Number(typeValue) & 0xff;
+        if (type !== 2) fail('invalid type for WASM cons double storage', 'ESH_NUMERIC_ABI');
+        const v = view(); v.setUint8(slot, type); v.setFloat64(slot + 8, Number(value), true);
+    };
+    const consSetPtr = (cell, isCdr, value, typeValue) => {
+        const slot = consSlot(cell, isCdr), type = Number(typeValue) & 0xff;
+        if (!consPointerTypes.has(type)) fail('invalid type for WASM cons pointer storage', 'ESH_NUMERIC_ABI');
+        const v = view(); v.setUint8(slot, type); v.setBigUint64(slot + 8, BigInt.asUintN(64, BigInt(value)), true);
+    };
+    const consSetNull = (cell, isCdr) => {
+        const slot = consSlot(cell, isCdr), v = view();
+        v.setUint8(slot, 0); v.setBigUint64(slot + 8, 0n, true);
+    };
+    const consSetTaggedValue = (cell, isCdr, taggedValue) => {
+        const slot = consSlot(cell, isCdr), source = span(taggedValue, 16, 8);
+        const copy = new Uint8Array(mem().buffer, source, 16).slice();
+        new Uint8Array(mem().buffer, slot, 16).set(copy);
+    };
+    // NativeLLVM's wasm32 ABI lowers the 16-byte aggregate to hidden sret:
+    // (tagged_out_ptr, cell_ptr, bool) -> void.
+    const consGetTaggedValue = (outValue, cell, isCdr) => {
+        const out = span(outValue, 16, 8), slot = consSlot(cell, isCdr);
+        const copy = new Uint8Array(mem().buffer, slot, 16).slice();
+        new Uint8Array(mem().buffer, out, 16).set(copy);
+    };
     const listReverseTagged = (arenaValue, headValue, outValue) => {
         const arena = wasm32(arenaValue), out = wasm32(outValue);
         if (!out) return;
@@ -1197,6 +1271,17 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         eshkol_tensor_operand_carrier_checked: tensorOperandCarrierChecked,
         arena_allocate_tape: tapeAllocate,
         arena_allocate_cons_with_header: consAllocateWithHeader,
+        arena_tagged_cons_get_int64: consGetInt64,
+        arena_tagged_cons_get_double: consGetDouble,
+        arena_tagged_cons_get_ptr: consGetPtr,
+        arena_tagged_cons_get_type: consGetType,
+        arena_tagged_cons_get_flags: consGetFlags,
+        arena_tagged_cons_get_tagged_value: consGetTaggedValue,
+        arena_tagged_cons_set_int64: consSetInt64,
+        arena_tagged_cons_set_double: consSetDouble,
+        arena_tagged_cons_set_ptr: consSetPtr,
+        arena_tagged_cons_set_null: consSetNull,
+        arena_tagged_cons_set_tagged_value: consSetTaggedValue,
         arena_allocate_vector_with_header: vectorAllocateWithHeader,
         arena_allocate_multi_value: multiValueAllocate,
         arena_tape_add_node: tapeAddNode,
@@ -1891,10 +1976,6 @@ class EshkolRuntime {
                 eshkol_arena_loop_scope_begin: () => {},
                 arena_allocate_cons_cell: () => rt._bump(32),
                 arena_allocate_tagged_cons_cell: () => rt._bump(48),
-                eshkol_tagged_cons_set_tagged_value: () => {},
-                arena_tagged_cons_set_ptr: () => {},
-                arena_tagged_cons_set_null: () => {},
-                arena_tagged_cons_set_int64: () => {},
                 arena_allocate_tensor_with_header: () => exact.header(40, 3),
                 arena_allocate_tensor_full: (_arena, ndim, total) => exact.tensorAllocateFull(ndim, total),
                 arena_allocate_ad_node: () => exact.adNodeAllocateRaw(),
@@ -1927,12 +2008,6 @@ class EshkolRuntime {
                         return closure;
                     });
                 },
-                arena_tagged_cons_get_int64: () => 0n,
-                arena_tagged_cons_get_double: () => 0.0,
-                arena_tagged_cons_get_ptr: () => 0n,
-                arena_tagged_cons_get_type: () => 0,
-                arena_tagged_cons_get_flags: () => 0,
-                arena_tagged_cons_set_double: () => {},
 
                 // Runtime functions
                 __eshkol_register_parallel_workers: () => {},
@@ -2245,7 +2320,6 @@ class EshkolRuntime {
                 eshkol_check_recursion_depth: () => 0,
                 eshkol_decrement_recursion_depth: () => {},
                 eshkol_runtime_current_output_fp: () => 0,
-                arena_tagged_cons_set_tagged_value: () => {},
                 hash_table_set: () => false,
                 hash_table_get: () => false,
                 hash_table_has_key: () => false,
@@ -2452,6 +2526,17 @@ class EshkolRuntime {
                 eshkol_string_byte_length: exact.imports.eshkol_string_byte_length,
                 arena_allocate_tape: exact.imports.arena_allocate_tape,
                 arena_allocate_cons_with_header: exact.imports.arena_allocate_cons_with_header,
+                arena_tagged_cons_get_int64: exact.imports.arena_tagged_cons_get_int64,
+                arena_tagged_cons_get_double: exact.imports.arena_tagged_cons_get_double,
+                arena_tagged_cons_get_ptr: exact.imports.arena_tagged_cons_get_ptr,
+                arena_tagged_cons_get_type: exact.imports.arena_tagged_cons_get_type,
+                arena_tagged_cons_get_flags: exact.imports.arena_tagged_cons_get_flags,
+                arena_tagged_cons_get_tagged_value: exact.imports.arena_tagged_cons_get_tagged_value,
+                arena_tagged_cons_set_int64: exact.imports.arena_tagged_cons_set_int64,
+                arena_tagged_cons_set_double: exact.imports.arena_tagged_cons_set_double,
+                arena_tagged_cons_set_ptr: exact.imports.arena_tagged_cons_set_ptr,
+                arena_tagged_cons_set_null: exact.imports.arena_tagged_cons_set_null,
+                arena_tagged_cons_set_tagged_value: exact.imports.arena_tagged_cons_set_tagged_value,
                 arena_allocate_multi_value: exact.imports.arena_allocate_multi_value,
                 arena_allocate_vector_with_header: exact.imports.arena_allocate_vector_with_header,
                 arena_tape_add_node: exact.imports.arena_tape_add_node,

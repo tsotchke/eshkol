@@ -58,6 +58,34 @@ function exactBridgeFixture() {
     return new Uint8Array([0,97,115,109,1,0,0,0,
         ...section(1, types), ...section(2, imports), ...section(7, exports)]);
 }
+function consBridgeFixture() {
+    const types = [
+        9,
+        0x60, 2, 0x7f, 0x7f, 1, 0x7e, // get int64 / pointer
+        0x60, 2, 0x7f, 0x7f, 1, 0x7c, // get double
+        0x60, 2, 0x7f, 0x7f, 1, 0x7f, // get type / flags
+        0x60, 4, 0x7f, 0x7f, 0x7e, 0x7f, 0, // set int64
+        0x60, 4, 0x7f, 0x7f, 0x7c, 0x7f, 0, // set double
+        0x60, 2, 0x7f, 0x7f, 0, // set null
+        0x60, 3, 0x7f, 0x7f, 0x7f, 0, // set tagged value
+        0x60, 4, 0x7f, 0x7f, 0x7e, 0x7f, 0, // set pointer
+        0x60, 3, 0x7f, 0x7f, 0x7f, 0, // get tagged value sret
+    ];
+    const names = [
+        'arena_tagged_cons_get_int64', 'arena_tagged_cons_get_double',
+        'arena_tagged_cons_get_ptr', 'arena_tagged_cons_get_type',
+        'arena_tagged_cons_get_flags', 'arena_tagged_cons_set_int64',
+        'arena_tagged_cons_set_double', 'arena_tagged_cons_set_ptr',
+        'arena_tagged_cons_set_null', 'arena_tagged_cons_set_tagged_value',
+        'arena_tagged_cons_get_tagged_value',
+    ];
+    const typeIndices = [0, 1, 0, 2, 2, 3, 4, 7, 5, 6, 8];
+    const imports = [names.length, ...names.flatMap((name, i) =>
+        [...str('env'), ...str(name), 0, typeIndices[i]])];
+    const exports = [names.length, ...names.flatMap((name, i) => [...str(name), 0, i])];
+    return new Uint8Array([0,97,115,109,1,0,0,0,
+        ...section(1, types), ...section(2, imports), ...section(7, exports)]);
+}
 function load(file, className) {
     const context = { console, WebAssembly, TextEncoder, TextDecoder, Map, Set,
         Uint8Array, DataView, ArrayBuffer, document: { body: {} }, window: {} };
@@ -83,6 +111,8 @@ async function run(file, className) {
     const reverse = bridgeWasm.instance.exports.reverse;
     const makeString = bridgeWasm.instance.exports.make_string;
     const stringByteLength = bridgeWasm.instance.exports.byte_length;
+    const consWasm = await WebAssembly.instantiate(consBridgeFixture(), { env });
+    const cons = consWasm.instance.exports;
     const allocRaw = size => env.arena_allocate(1, size);
     const taggedBytes = (tag, value = 0n) => {
         const bytes = new Uint8Array(16); bytes[0] = tag;
@@ -116,6 +146,68 @@ async function run(file, className) {
     assert.equal(env.eshkol_list_reverse_tagged.length, 3, `${file}: reverse matches native three-pointer ABI`);
     assert.equal(env.eshkol_make_string_checked.length, 3, `${file}: make-string matches native ABI`);
     assert.equal(env.eshkol_string_byte_length.length, 1, `${file}: byte length matches native ABI`);
+    for (const name of ['arena_tagged_cons_get_int64', 'arena_tagged_cons_get_double',
+        'arena_tagged_cons_get_ptr', 'arena_tagged_cons_get_type', 'arena_tagged_cons_get_flags',
+        'arena_tagged_cons_set_int64', 'arena_tagged_cons_set_double', 'arena_tagged_cons_set_ptr',
+        'arena_tagged_cons_set_null', 'arena_tagged_cons_set_tagged_value',
+        'arena_tagged_cons_get_tagged_value']) {
+        assert.equal(typeof cons[name], 'function', `${file}: real WASM cons import ${name}`);
+    }
+    const consInt = (cell, isCdr) => cons.arena_tagged_cons_get_int64(cell, isCdr ? 1 : 0);
+    const consType = (cell, isCdr) => cons.arena_tagged_cons_get_type(cell, isCdr ? 1 : 0);
+    const consTagged = (cell, isCdr, out) => cons.arena_tagged_cons_get_tagged_value(out, cell, isCdr ? 1 : 0);
+    const consCell = env.arena_allocate_cons_with_header(1);
+    const consCar = taggedBytes(1, -0x123456789abcdefn), consCdr = taggedBytes(2, bits(3.25));
+    const consCarPtr = allocRaw(16), consCdrPtr = allocRaw(16), consOut = allocRaw(16);
+    storeTagged(consCarPtr, consCar); storeTagged(consCdrPtr, consCdr);
+    cons.arena_tagged_cons_set_tagged_value(consCell, 0, consCarPtr);
+    cons.arena_tagged_cons_set_tagged_value(consCell, 1, consCdrPtr);
+    assert.equal(consInt(consCell, false), -0x123456789abcdefn, `${file}: car int64 keeps signed 64-bit payload`);
+    assert.equal(cons.arena_tagged_cons_get_double(consCell, 1), 3.25, `${file}: true selects cdr double`);
+    assert.equal(consType(consCell, false), 1, `${file}: false selects car type`);
+    assert.equal(consType(consCell, true), 2, `${file}: true selects cdr type`);
+    assert.deepEqual([...new Uint8Array(memory.buffer, consCell, 16)], [...consCar], `${file}: cdr write preserves car`);
+    consTagged(consCell, false, consOut);
+    assert.deepEqual([...copyBytes(consOut, 16)], [...consCar], `${file}: tagged getter sret copies all 16 car bytes`);
+    consTagged(consCell, true, consOut);
+    assert.deepEqual([...copyBytes(consOut, 16)], [...consCdr], `${file}: tagged getter sret copies all 16 cdr bytes`);
+    const flagged = taggedBytes(1, 44n); flagged[1] = 0x10; flagged[2] = 0x34; flagged[3] = 0x12;
+    new DataView(flagged.buffer).setUint32(4, 0x89abcdef, true);
+    const flaggedPtr = allocRaw(16); storeTagged(flaggedPtr, flagged);
+    cons.arena_tagged_cons_set_tagged_value(consCell, 0, flaggedPtr);
+    assert.equal(cons.arena_tagged_cons_get_flags(consCell, 0), 0x10, `${file}: flags getter exposes raw tag flags`);
+    consTagged(consCell, false, consOut);
+    assert.deepEqual([...copyBytes(consOut, 16)], [...flagged],
+        `${file}: full tagged getter preserves type, flags, reserved, padding, and payload bytes`);
+    cons.arena_tagged_cons_set_int64(consCell, 0, 45n, 1);
+    assert.equal(consInt(consCell, false), 45n, `${file}: int64 setter stores value`);
+    assert.equal(cons.arena_tagged_cons_get_flags(consCell, 0), 0x10, `${file}: scalar setter preserves native flags behavior`);
+    cons.arena_tagged_cons_set_double(consCell, 0, -8.5, 2);
+    assert.equal(cons.arena_tagged_cons_get_double(consCell, 0), -8.5, `${file}: double setter stores value`);
+    cons.arena_tagged_cons_set_ptr(consCell, 1, 0x123456789abcdef0n, 8);
+    assert.equal(cons.arena_tagged_cons_get_ptr(consCell, 1), 0x123456789abcdef0n, `${file}: pointer setter/getter preserve i64`);
+    cons.arena_tagged_cons_set_null(consCell, 1);
+    assert.equal(cons.arena_tagged_cons_get_ptr(consCell, 1), 0n, `${file}: null pointer reads as zero`);
+
+    // Legacy raw 32-byte cells remain accepted, and a distinct object subtype,
+    // malformed bounds, and malformed cons header are refused.
+    const legacyCons = allocRaw(32);
+    cons.arena_tagged_cons_set_int64(legacyCons, 0, -7n, 1);
+    assert.equal(consInt(legacyCons, false), -7n, `${file}: legacy raw cons cell is supported`);
+    const nonCons = rt._exact.header(32, 1);
+    assert.throws(() => consType(nonCons, false), /non-cons object/, `${file}: non-cons subtype is refused`);
+    assert.throws(() => consType(memory.buffer.byteLength - 16, false), /invalid WASM memory span/,
+        `${file}: out-of-bounds cell span is refused`);
+    const malformedCons = rt._exact.header(16, 0);
+    assert.throws(() => consType(malformedCons, false), /invalid WASM cons header size/,
+        `${file}: malformed cons header is refused`);
+    const growthBuffer = memory.buffer;
+    memory.grow(1);
+    assert.notEqual(memory.buffer, growthBuffer, `${file}: test grew linear memory`);
+    cons.arena_tagged_cons_set_int64(consCell, 0, 99n, 1);
+    assert.equal(consInt(consCell, false), 99n, `${file}: cons accesses refresh views after memory growth`);
+    assert.throws(() => cons.arena_tagged_cons_set_double(consCell, 0, 1.0, 1), /invalid type/,
+        `${file}: invalid typed setter is refused`);
 
     const integerValue = taggedBytes(1, -17n), characterValue = taggedBytes(4, 0x3bbn);
     const rationalSlot = allocRaw(16); rt._exact.write(rationalSlot, { n: 7n, d: 3n });
@@ -205,6 +297,11 @@ async function run(file, className) {
         return { runtime: isolated, memory: isolatedMemory, env: isolatedEnv,
             exports: isolatedModule.instance.exports };
     };
+    const freshLegacy = await isolatedRuntime(21);
+    const freshLegacyCell = freshLegacy.env.arena_allocate(1, 32);
+    freshLegacy.env.arena_tagged_cons_set_int64(freshLegacyCell, 0, -12n, 1);
+    assert.equal(freshLegacy.env.arena_tagged_cons_get_int64(freshLegacyCell, 0), -12n,
+        `${file}: first raw legacy cons is accepted with a zeroed preceding span`);
     const growth = await isolatedRuntime(22), growthMemory = growth.memory;
     const growthLength = growth.env.arena_allocate(1, 16), growthFill = growth.env.arena_allocate(1, 16);
     new Uint8Array(growthMemory.buffer, growthLength, 16).set(taggedBytes(1, 2n));
