@@ -777,15 +777,23 @@ under the same discipline that made `Qubit` linear.
       case + Python one-liner per new AD/quantum feature) goes live
 - [ ] qLLM backward completion: `input2` wiring for conv2d/batchnorm/
       layernorm/attention tape nodes
-- [ ] Symbolic multivariate polynomial and truncated-series values (sparse
+- [x] Symbolic multivariate polynomial and truncated-series values (sparse
       ring over `Q` and `GF(p)`, series values carrying a coefficient norm),
       and polynomial-valued duals — the AD operators applied to a symbolic
       ansatz so a residual comes back as a graded value whose coefficients can
-      be collected and solved, rather than as a number. **Partially SHIPPED in
-      v1.3.5-evolve:** `core.symbolic` provides polynomials and truncated power
-      series over the exact rationals, consumed by the `core.pde.ns-residual`
-      oracle. Remaining: `GF(p)`, the coefficient norm on series values, and
-      polynomial-valued duals
+      be collected and solved, rather than as a number. `core.symbolic`
+      polynomials and truncated power series over the exact rationals shipped
+      in v1.3.5-evolve. **SHIPPED in v1.4.0-connection:** a coefficient field
+      on every value (`coefficient-field-gf`, `poly->field`, `series->field`;
+      GF(p) on the exact integer tower with a deterministic primality check),
+      the B_rho weighted l1 norm `series-norm`, and polynomial-valued duals:
+      `series-of` applies a procedure that uses the built-in AD operators to a
+      symbolic point and returns the graded value, which `poly-collect` /
+      `series-collect` group by a grading variable and `poly-solve-linear`
+      solves over Q or GF(p). Taylor-tower nesting depth is one process-wide
+      counter, so a pass opened in the precompiled stdlib and a pass opened in
+      user code nest as levels of one carrier. Gated JIT and AOT by
+      `scripts/run_symbolic_fields_gate.sh`
 - [ ] Exact linear algebra, remainder: an exact tensor element type.
       **Partially SHIPPED in v1.3.5-evolve:** `core.exact_linalg` provides
       matrix multiply, transpose, fraction-free determinant, solve, inverse,
@@ -796,8 +804,15 @@ under the same discipline that made `Qubit` linear.
       tensors are f64-backed, so an exact system over tensor storage must still
       be written out on Scheme vectors. Both items are used step by step in
       [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
-- [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane, SymPy
-      oracle pilot on the exact-AD surface
+- [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane
+- [x] Assurance: SymPy oracle pilot on the exact-AD surface. **SHIPPED in
+      v1.4.0-connection:** `scripts/sympy_exact_ad_oracle.py` runs a fixed
+      corpus (`tests/sympy_oracle/exact_ad_corpus.json`) of `derivative-n`,
+      `taylor`, `derivative`, `gradient`, `hessian` and `jacobian` cases on
+      exact inputs under JIT and AOT, compares each with SymPy (exact
+      equality where the documented contract promises an exact result, f64
+      rounding where it promises a double), and emits one ICC trace per case
+      plus `sympy_exact_ad_oracle_pilot`. CTest `sympy_exact_ad_oracle`
 - [ ] Performance: benchmarks wave 2 (Ozaki CRT vs. cuBLAS/Accelerate,
       accuracy and throughput, pinned hardware)
 - [ ] Codebase: native image I/O dependency removal; decompose

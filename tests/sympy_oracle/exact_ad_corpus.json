@@ -1,0 +1,28 @@
+{
+  "schema": "eshkol-sympy-exact-ad-corpus-v1",
+  "description": "Fixed corpus for the SymPy differential oracle on the exact-AD surface. Each case gives the same function as an Eshkol lambda and a SymPy expression, an operator, an exact point and the exactness class the documented contract promises (docs/reference/ad/operators.md, 'Exact vs inexact seeds'). expect_exact=true: the result must be exact and equal to SymPy's rational value. expect_exact=false: an inexact result must agree to f64 rounding, an exact one must equal SymPy exactly.",
+  "cases": [
+    {"id": "x5_derivative_n", "op": "derivative-n", "vars": ["x"], "eshkol": "(lambda (x) (* x x x x x))", "sympy": "x**5", "point": ["2"], "orders": [0, 1, 2, 3, 4, 5, 6, 7, 8], "expect_exact": true},
+    {"id": "x5_expt_derivative_n", "op": "derivative-n", "vars": ["x"], "eshkol": "(lambda (x) (expt x 5))", "sympy": "x**5", "point": ["2"], "orders": [0, 1, 2, 3, 4, 5, 6], "expect_exact": true},
+    {"id": "geometric_derivative_n", "op": "derivative-n", "vars": ["x"], "eshkol": "(lambda (x) (/ 1 (- 1 x)))", "sympy": "1/(1 - x)", "point": ["1/2"], "orders": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "expect_exact": true},
+    {"id": "rational_function_derivative_n", "op": "derivative-n", "vars": ["x"], "eshkol": "(lambda (x) (/ (+ (* 3 x x) (* -2 x) 7/3) (+ (* x x) 1)))", "sympy": "(3*x**2 - 2*x + Rational(7, 3))/(x**2 + 1)", "point": ["1/3"], "orders": [0, 1, 2, 3, 4, 5, 6], "expect_exact": true},
+    {"id": "negative_power_derivative_n", "op": "derivative-n", "vars": ["x"], "eshkol": "(lambda (x) (expt (+ x 1) -3))", "sympy": "(x + 1)**(-3)", "point": ["2/5"], "orders": [0, 1, 2, 3, 4, 5], "expect_exact": true},
+    {"id": "x20_bignum_derivative_n", "op": "derivative-n", "vars": ["x"], "eshkol": "(lambda (x) (expt x 20))", "sympy": "x**20", "point": ["3"], "orders": [0, 5, 10, 15, 17, 18, 19, 20, 21], "expect_exact": true},
+    {"id": "product_quotient_taylor", "op": "taylor", "vars": ["x"], "eshkol": "(lambda (x) (/ (- (* x x x) x) (- 2 x)))", "sympy": "(x**3 - x)/(2 - x)", "point": ["1/2"], "order": 8, "expect_exact": true},
+    {"id": "shifted_power_taylor", "op": "taylor", "vars": ["x"], "eshkol": "(lambda (x) (* x (expt (+ 1 x) 4)))", "sympy": "x*(1 + x)**4", "point": ["-1/3"], "order": 6, "expect_exact": true},
+    {"id": "nested_rational_taylor", "op": "taylor", "vars": ["x"], "eshkol": "(lambda (x) (/ 1 (+ 1 (/ x (- 3 x)))))", "sympy": "1/(1 + x/(3 - x))", "point": ["1"], "order": 7, "expect_exact": true},
+    {"id": "cubic_derivative", "op": "derivative", "vars": ["x"], "eshkol": "(lambda (x) (* x x x))", "sympy": "x**3", "point": ["2/5"], "expect_exact": true},
+    {"id": "geometric_derivative", "op": "derivative", "vars": ["x"], "eshkol": "(lambda (x) (/ 1 (- 1 x)))", "sympy": "1/(1 - x)", "point": ["1/2"], "expect_exact": true},
+    {"id": "cubic_gradient_scalar", "op": "gradient", "vars": ["x"], "eshkol": "(lambda (x) (* x x x))", "sympy": "x**3", "point": ["2/5"], "scalar_point": true, "expect_exact": true},
+    {"id": "quartic_hessian_scalar", "op": "hessian", "vars": ["x"], "eshkol": "(lambda (x) (expt x 4))", "sympy": "x**4", "point": ["1/3"], "scalar_point": true, "expect_exact": true},
+    {"id": "nested_mixed_partial", "op": "derivative-n", "vars": ["x"], "eshkol": "(lambda (x) (derivative-n (lambda (y) (* x x y y y)) 1/2 2))", "sympy": "Subs(Derivative(x**2*y**3, (y, 2)), y, Rational(1, 2)).doit()", "point": ["1/3"], "orders": [0, 1, 2, 3], "expect_exact": true},
+    {"id": "exp_derivative_n", "op": "derivative-n", "vars": ["x"], "eshkol": "(lambda (x) (exp x))", "sympy": "exp(x)", "point": ["0"], "orders": [0, 1, 2, 3, 4, 5], "expect_exact": false},
+    {"id": "sin_poly_taylor", "op": "taylor", "vars": ["x"], "eshkol": "(lambda (x) (* (sin x) x x))", "sympy": "sin(x)*x**2", "point": ["1/2"], "order": 5, "expect_exact": false},
+    {"id": "log1p_derivative_n", "op": "derivative-n", "vars": ["x"], "eshkol": "(lambda (x) (log (+ 1 x)))", "sympy": "log(1 + x)", "point": ["1/3"], "orders": [0, 1, 2, 3, 4], "expect_exact": false},
+    {"id": "trilinear_gradient", "op": "gradient", "vars": ["x", "y", "z"], "eshkol": "(lambda (v) (/ (* (vector-ref v 0) (vector-ref v 1) (vector-ref v 2)) 3))", "sympy": "x*y*z/3", "point": ["1/2", "3", "-2"], "expect_exact": false},
+    {"id": "squared_norm_gradient", "op": "gradient", "vars": ["x", "y"], "eshkol": "(lambda (v) (let ((s (+ (* (vector-ref v 0) (vector-ref v 0)) (* (vector-ref v 1) (vector-ref v 1))))) (* s s)))", "sympy": "(x**2 + y**2)**2", "point": ["1", "-2"], "expect_exact": false},
+    {"id": "monomial_hessian", "op": "hessian", "vars": ["x", "y"], "eshkol": "(lambda (v) (/ (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 1)) 3))", "sympy": "x**2*y/3", "point": ["1/2", "3"], "expect_exact": false},
+    {"id": "cubic_quadratic_hessian", "op": "hessian", "vars": ["x", "y"], "eshkol": "(lambda (v) (* (expt (vector-ref v 0) 3) (expt (vector-ref v 1) 2)))", "sympy": "x**3*y**2", "point": ["1", "2"], "expect_exact": false},
+    {"id": "bilinear_jacobian", "op": "jacobian", "vars": ["x", "y"], "eshkol": "(lambda (v) (vector (* (vector-ref v 0) (vector-ref v 1)) (+ (/ (vector-ref v 0) 3) (* (vector-ref v 1) (vector-ref v 1)))))", "sympy": ["x*y", "x/3 + y**2"], "point": ["1/2", "3"], "expect_exact": false}
+  ]
+}

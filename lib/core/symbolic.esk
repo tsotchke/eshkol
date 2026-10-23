@@ -150,6 +150,72 @@
 ;;; any non-integer/negative `expt` exponent raises via `(error ...)` —
 ;;; deliberately, so a caller who reaches for an unsupported head gets a
 ;;; loud failure instead of a silently-wrong or silently-numeric answer.
+;;;
+;;; ------------------------------------------------------------------
+;;; Coefficient fields: Q and GF(p)
+;;; ------------------------------------------------------------------
+;;;
+;;; Every polynomial and series has a coefficient field. The default is
+;;; the rationals Q: the value keeps exactly the 3-list / 4-list shape
+;;; described above, and every coefficient operation is the generic
+;;; tower operation (`+ - * /`), so a value built with `poly`/`series`
+;;; behaves exactly as it always has, including R7RS contagion.
+;;;
+;;; `(coefficient-field-gf p)` names the prime field GF(p). A value over
+;;; GF(p) appends `p` to its list — `(eshkol-poly vars terms p)`,
+;;; `(eshkol-series vars terms order p)` — and stores every coefficient as
+;;; its canonical representative, an exact integer in [0, p). There is no
+;;; separate element type: GF(p) arithmetic is the exact integer tower
+;;; (int64 promoting to bignum) followed by `modulo p`, and division is
+;;; multiplication by the Fermat inverse a^(p-2). `p` must be prime; the
+;;; constructor proves it with the deterministic Miller-Rabin base set
+;;; {2, 3, ..., 41}, which is exact for every p below
+;;; 3317044064679887385961981, and refuses a modulus above that bound.
+;;;
+;;; `poly->field` / `series->field` move a value into a field: Q -> GF(p)
+;;; reduces each exact rational coefficient n/d to n*d^-1 mod p (raising
+;;; when p divides d); GF(p) -> Q lifts each canonical representative.
+;;; Binary operations require both operands to share a field and raise
+;;; otherwise, so a value never changes field implicitly.
+;;;
+;;; ------------------------------------------------------------------
+;;; Coefficient norm on series values
+;;; ------------------------------------------------------------------
+;;;
+;;; `(series-norm s rho)` is the weighted l1 norm sum_a |c_a| rho^a of the
+;;; analytic space B_rho: `rho` is one positive weight for every variable
+;;; or an alist `((var . rho_var) ...)` with one weight per variable. It
+;;; is submultiplicative, |f g| <= |f| |g| (truncation only drops terms),
+;;; which is the Banach-algebra fact a contraction argument on B_rho
+;;; rests on. Exact coefficients and an exact weight give an exact norm.
+;;; It is defined over Q; a GF(p) value has no absolute value and raises.
+;;;
+;;; ------------------------------------------------------------------
+;;; Polynomial-valued duals: `series-of`
+;;; ------------------------------------------------------------------
+;;;
+;;; `(series-of f vars point order)` applies an ordinary procedure `f`
+;;; (written with the generic arithmetic and the compiler's own AD
+;;; operators) to a symbolic point: the result is the truncated series
+;;; of f in the displacements of `vars` from `point`, with coefficient
+;;; c_a = (d^a f)(point) / a!. Each coefficient is one nested pass of the
+;;; built-in AD operators (`taylor` on the first variable, `derivative-n`
+;;; on the rest), so the passes inside `f` (a `derivative`, a residual
+;;; operator that takes `derivative-n` of its argument, ...) nest under
+;;; them as levels of the recursive Taylor carrier
+;;; (docs/design/adr/0027-recursive-taylor-level-carrier.md). At an exact
+;;; point every coefficient is exact; a transcendental inside `f` demotes
+;;; only the coefficients it touches. When `f` is a polynomial of total
+;;; degree <= order in `vars`, the series is that polynomial exactly.
+;;; A vector-valued `f` gives a vector of series, one per component.
+;;;
+;;; The graded value is then collected (`series-collect`/`poly-collect`
+;;; group terms by the exponents of chosen variables, e.g. powers of a
+;;; grading parameter q) and solved (`poly-linear-system` /
+;;; `poly-solve-linear` treat the collected coefficients as equations
+;;; that are affine in a list of unknowns; over Q the solve is
+;;; `core.exact_linalg`'s `exact-affine-solve`, over GF(p) the same
+;;; reduced-row-echelon elimination in the field).
 ;;; ------------------------------------------------------------------
 
 ;; Canonicalizing a term list requires sorting it, and term lists can run
@@ -166,6 +232,7 @@
 ;; O(log n) recursion depth, so this module reuses it rather than
 ;; reintroducing that failure mode.
 (require core.list.sort)
+(require core.exact_linalg)
 
 (provide
   ;; polynomials
@@ -176,6 +243,14 @@
   series-integrate series-inverse series-coeff series-truncate
   series->poly series-exp series-log series-sin series-cos series-sqrt
   series-lowest-order series-singular-part
+  ;; coefficient fields (Q and GF(p))
+  coefficient-field-q coefficient-field-gf coefficient-field?
+  coefficient-field-characteristic poly-field series-field
+  poly->field series->field
+  ;; coefficient norm on series values
+  series-norm
+  ;; polynomial-valued duals: collect and solve
+  series-of series-collect poly-collect poly-linear-system poly-solve-linear
   ;; AD / symbolic-evaluation interoperation
   poly-derivative-of series-derivative-of)
 
@@ -237,6 +312,97 @@
           ((< (car l) 0) (error (string-append who ": exponents must be nonnegative") lst))
           (else (loop (cdr l))))))
 
+;; ---- coefficient-field operations ----------------------------------
+;; `F` is the field's internal form: #f for Q, the prime p for GF(p).
+;; Over Q each operation is exactly the generic tower operation, so Q
+;; values compute what they computed before fields existed.
+
+(define (sf-add F a b) (if F (modulo (+ a b) F) (+ a b)))
+(define (sf-sub F a b) (if F (modulo (- a b) F) (- a b)))
+(define (sf-neg F a) (if F (modulo (- a) F) (- a)))
+(define (sf-mul F a b) (if F (modulo (* a b) F) (* a b)))
+
+;; a^n mod m by repeated squaring, on exact integers (bignum-capable).
+(define (sf-pow-mod a n m)
+  (let loop ((b (modulo a m)) (n n) (acc 1))
+    (cond ((= n 0) (modulo acc m))
+          ((even? n) (loop (modulo (* b b) m) (quotient n 2) acc))
+          (else (loop (modulo (* b b) m) (quotient n 2) (modulo (* acc b) m))))))
+
+(define (sf-inv-mod a p)
+  (if (= (modulo a p) 0)
+      (error "GF(p) arithmetic: zero has no inverse" p)
+      (sf-pow-mod a (- p 2) p)))
+
+;; Admit a constant into the field: identity over Q; over GF(p) an exact
+;; rational n/d becomes n * d^-1 mod p (d must be a unit mod p).
+(define (sf-in F c)
+  (cond
+    ((not F) c)
+    ((and (integer? c) (exact? c)) (modulo c F))
+    ((and (rational? c) (exact? c))
+     (if (= (modulo (denominator c) F) 0)
+         (error "GF(p) coefficient: denominator is divisible by p" c F)
+         (modulo (* (numerator c) (sf-inv-mod (denominator c) F)) F)))
+    (else (error "GF(p) coefficient must be an exact rational" c F))))
+
+(define (sf-div F a b)
+  (if F (sf-mul F a (sf-inv-mod (sf-in F b) F)) (/ a b)))
+
+;; Deterministic Miller-Rabin: the bases 2..41 decide primality exactly
+;; for every n below 3317044064679887385961981.
+(define sf-prime-bound 3317044064679887385961981)
+(define (sf-mr-witness? a n d s)
+  (let ((x (sf-pow-mod a d n)))
+    (if (or (= x 1) (= x (- n 1)))
+        #f
+        (let loop ((x x) (r 1))
+          (cond ((>= r s) #t)
+                ((= (modulo (* x x) n) (- n 1)) #f)
+                (else (loop (modulo (* x x) n) (+ r 1))))))))
+(define (sf-prime? n)
+  (let ((bases (list 2 3 5 7 11 13 17 19 23 29 31 37 41)))
+    (cond
+      ((< n 2) #f)
+      ((memv n bases) #t)
+      ((let small ((bs bases)) (and (pair? bs) (or (= (modulo n (car bs)) 0) (small (cdr bs))))) #f)
+      (else
+       (let split ((d (- n 1)) (s 0))
+         (if (even? d)
+             (split (quotient d 2) (+ s 1))
+             (let check ((bs bases))
+               (cond ((null? bs) #t)
+                     ((sf-mr-witness? (car bs) n d s) #f)
+                     (else (check (cdr bs)))))))))))
+
+;; Public field descriptors. Q has characteristic 0.
+(define (coefficient-field-q) (vector 'eshkol-coefficient-field 0))
+(define (coefficient-field-gf p)
+  (cond
+    ((not (and (integer? p) (exact? p)))
+     (error "coefficient-field-gf: modulus must be an exact integer" p))
+    ((>= p sf-prime-bound)
+     (error "coefficient-field-gf: modulus exceeds the deterministic primality bound 3317044064679887385961981" p))
+    ((not (sf-prime? p))
+     (error "coefficient-field-gf: modulus is not prime" p))
+    (else (vector 'eshkol-coefficient-field p))))
+(define (coefficient-field? x)
+  (and (vector? x) (= (vector-length x) 2) (eq? (vector-ref x 0) 'eshkol-coefficient-field)))
+(define (coefficient-field-characteristic field)
+  (if (coefficient-field? field)
+      (vector-ref field 1)
+      (error "coefficient-field-characteristic: expected a coefficient field" field)))
+(define (sf-from-descriptor field who)
+  (if (coefficient-field? field)
+      (let ((p (vector-ref field 1))) (if (= p 0) #f p))
+      (error (string-append who ": expected a coefficient field") field)))
+(define (sf-descriptor F) (vector 'eshkol-coefficient-field (if F F 0)))
+
+(define (sf-same F G who)
+  (if (equal? F G)
+      F
+      (error (string-append who ": operands have different coefficient fields") (sf-descriptor F) (sf-descriptor G))))
+
 ;; ---- exponent-vector / term helpers --------------------------------
 
 (define (sym-degree ev)
@@ -288,7 +454,7 @@
 ;; already-sorted term list, dropping any that cancel to zero. Handles
 ;; runs of 3+ duplicates by re-consing the partial sum back onto the
 ;; front of the remaining list.
-(define (sym-merge-terms terms)
+(define (sym-merge-terms F terms)
   (let loop ((ts terms) (acc '()))
     (cond
       ((null? ts) (reverse acc))
@@ -297,13 +463,13 @@
       (else
        (let* ((t1 (car ts)) (t2 (cadr ts)))
          (if (sym-expvec-equal? (car t1) (car t2))
-             (loop (cons (cons (car t1) (+ (cdr t1) (cdr t2))) (cddr ts)) acc)
+             (loop (cons (cons (car t1) (sf-add F (cdr t1) (cdr t2))) (cddr ts)) acc)
              (if (zero? (cdr t1))
                  (loop (cdr ts) acc)
                  (loop (cdr ts) (cons t1 acc)))))))))
 
-(define (sym-canon-terms raw-terms)
-  (sym-merge-terms (sym-sort raw-terms sym-term<?)))
+(define (sym-canon-terms F raw-terms)
+  (sym-merge-terms F (sym-sort raw-terms sym-term<?)))
 
 ;; Exponent of `var` in `ev` (a term over `vars`); 0 if `var` isn't in
 ;; `vars` at all.
@@ -329,14 +495,14 @@
         (reverse acc)
         (loop (cdr ts) (cons (cons (sym-remap vars-from (caar ts) vars-to) (cdar ts)) acc)))))
 
-(define (sym-negate-terms terms)
+(define (sym-negate-terms F terms)
   (let loop ((ts terms) (acc '()))
-    (if (null? ts) (reverse acc) (loop (cdr ts) (cons (cons (caar ts) (- (cdar ts))) acc)))))
+    (if (null? ts) (reverse acc) (loop (cdr ts) (cons (cons (caar ts) (sf-neg F (cdar ts))) acc)))))
 
 ;; Cartesian-product multiplication of two term lists already expressed
 ;; over the same variable list. Not canonicalized — the caller sorts and
 ;; merges via `sym-canon-terms`.
-(define (sym-mul-terms ta tb)
+(define (sym-mul-terms F ta tb)
   (let loopA ((as ta) (acc '()))
     (if (null? as)
         acc
@@ -344,7 +510,7 @@
           (if (null? bs)
               (loopA (cdr as) acc2)
               (loopB (cdr bs)
-                     (cons (cons (sym-expvec-add (caar as) (caar bs)) (* (cdar as) (cdar bs))) acc2)))))))
+                     (cons (cons (sym-expvec-add (caar as) (caar bs)) (sf-mul F (cdar as) (cdar bs))) acc2)))))))
 
 ;; ---- order helpers (series truncation bounds) ----------------------
 
@@ -416,26 +582,79 @@
 
 ;; ---- tagged constructors / predicates -------------------------------
 
-(define (sym-make-poly vars terms) (list 'eshkol-poly vars terms))
+;; A Q value keeps its original shape; a GF(p) value appends p.
+(define (sym-make-poly-in F vars terms)
+  (if F (list 'eshkol-poly vars terms F) (list 'eshkol-poly vars terms)))
+(define (sym-make-poly vars terms) (sym-make-poly-in #f vars terms))
 (define (p-vars p) (cadr p))
 (define (p-terms p) (caddr p))
+(define (p-field p) (if (= (length p) 4) (list-ref p 3) #f))
 (define (poly? x) (and (pair? x) (eq? (car x) 'eshkol-poly)))
 
-(define (sym-make-series vars terms order) (list 'eshkol-series vars terms order))
+(define (sym-make-series-in F vars terms order)
+  (if F (list 'eshkol-series vars terms order F) (list 'eshkol-series vars terms order)))
+(define (sym-make-series vars terms order) (sym-make-series-in #f vars terms order))
 (define (sr-vars s) (cadr s))
 (define (sr-terms s) (caddr s))
 (define (sr-order s) (list-ref s 3))
+(define (sr-field s) (if (= (length s) 5) (list-ref s 4) #f))
 (define (series? x) (and (pair? x) (eq? (car x) 'eshkol-series)))
+
+(define (poly-field p) (sf-descriptor (p-field p)))
+(define (series-field s) (sf-descriptor (sr-field s)))
+
+;; ============================================================
+;; Coefficient fields: moving values between Q and GF(p)
+;; ============================================================
+
+;; Q -> GF(p): admit every coefficient; GF(p) -> Q: the canonical
+;; representatives; same field: identity. GF(p) -> GF(q), p /= q, has
+;; no ring map and raises.
+(define (sym-terms-to-field F G terms who)
+  (cond
+    ((equal? F G) terms)
+    ((and F G) (error (string-append who ": no ring map between different prime fields") (sf-descriptor F) (sf-descriptor G)))
+    (else
+     (let loop ((ts terms) (acc '()))
+       (if (null? ts)
+           (reverse acc)
+           (let ((c (sf-in G (cdar ts))))
+             (loop (cdr ts) (if (zero? c) acc (cons (cons (caar ts) c) acc)))))))))
+
+(define (poly->field p field)
+  (let ((G (sf-from-descriptor field "poly->field")))
+    (sym-make-poly-in G (p-vars p) (sym-terms-to-field (p-field p) G (p-terms p) "poly->field"))))
+
+(define (series->field s field)
+  (let ((G (sf-from-descriptor field "series->field")))
+    (sym-make-series-in G (sr-vars s) (sym-terms-to-field (sr-field s) G (sr-terms s) "series->field") (sr-order s))))
 
 ;; ============================================================
 ;; Polynomials
 ;; ============================================================
 
-(define (poly-const c)
-  (if (zero? c) (sym-make-poly '() '()) (sym-make-poly '() (list (cons (vector) c)))))
+(define (sym-poly-const-in F c)
+  (let ((c (sf-in F c)))
+    (if (zero? c) (sym-make-poly-in F '() '()) (sym-make-poly-in F '() (list (cons (vector) c))))))
+
+(define (poly-const c) (sym-poly-const-in #f c))
 
 (define (poly-var sym)
   (sym-make-poly (list sym) (list (cons (vector 1) 1))))
+
+;; Shared constructor body: canonical variable order, admitted
+;; coefficients, canonical term list.
+(define (sym-poly-in F vars term-specs)
+  (let ((sorted-vars (sym-sort vars sym-symbol<?)))
+    (sym-make-poly-in F sorted-vars
+      (sym-canon-terms F
+        (let loop ((ts term-specs) (acc '()))
+          (if (null? ts)
+              (reverse acc)
+              (let* ((spec (car ts)) (exps (car spec)) (coeff (sf-in F (cdr spec))))
+                (sym-check-nonneg-list exps "poly")
+                (let ((ev (sym-remap vars (sym-list->vec exps) sorted-vars)))
+                  (loop (cdr ts) (if (zero? coeff) acc (cons (cons ev coeff) acc)))))))))))
 
 ;; (poly vars term-specs) — general constructor. `term-specs` is a list
 ;; of `(exponents . coeff)` pairs, `exponents` a LIST of nonnegative
@@ -443,53 +662,47 @@
 ;; necessarily canonical order — the constructor reorders and
 ;; canonicalizes everything). A negative exponent is rejected: use
 ;; `series`, not `poly`, for Laurent data.
-(define (poly vars term-specs)
-  (let ((sorted-vars (sym-sort vars sym-symbol<?)))
-    (sym-make-poly sorted-vars
-      (sym-canon-terms
-        (let loop ((ts term-specs) (acc '()))
-          (if (null? ts)
-              (reverse acc)
-              (let* ((spec (car ts)) (exps (car spec)) (coeff (cdr spec)))
-                (sym-check-nonneg-list exps "poly")
-                (let ((ev (sym-remap vars (sym-list->vec exps) sorted-vars)))
-                  (loop (cdr ts) (if (zero? coeff) acc (cons (cons ev coeff) acc)))))))))))
+(define (poly vars term-specs) (sym-poly-in #f vars term-specs))
 
 (define (poly+ a b)
-  (let* ((vars (sym-merge-vars (p-vars a) (p-vars b)))
+  (let* ((F (sf-same (p-field a) (p-field b) "poly+"))
+         (vars (sym-merge-vars (p-vars a) (p-vars b)))
          (ta (sym-align-terms (p-vars a) (p-terms a) vars))
          (tb (sym-align-terms (p-vars b) (p-terms b) vars)))
-    (sym-make-poly vars (sym-canon-terms (append ta tb)))))
+    (sym-make-poly-in F vars (sym-canon-terms F (append ta tb)))))
 
 (define (poly- a b)
-  (let* ((vars (sym-merge-vars (p-vars a) (p-vars b)))
+  (let* ((F (sf-same (p-field a) (p-field b) "poly-"))
+         (vars (sym-merge-vars (p-vars a) (p-vars b)))
          (ta (sym-align-terms (p-vars a) (p-terms a) vars))
-         (tb (sym-negate-terms (sym-align-terms (p-vars b) (p-terms b) vars))))
-    (sym-make-poly vars (sym-canon-terms (append ta tb)))))
+         (tb (sym-negate-terms F (sym-align-terms (p-vars b) (p-terms b) vars))))
+    (sym-make-poly-in F vars (sym-canon-terms F (append ta tb)))))
 
 (define (poly* a b)
-  (let* ((vars (sym-merge-vars (p-vars a) (p-vars b)))
+  (let* ((F (sf-same (p-field a) (p-field b) "poly*"))
+         (vars (sym-merge-vars (p-vars a) (p-vars b)))
          (ta (sym-align-terms (p-vars a) (p-terms a) vars))
          (tb (sym-align-terms (p-vars b) (p-terms b) vars)))
-    (sym-make-poly vars (sym-canon-terms (sym-mul-terms ta tb)))))
+    (sym-make-poly-in F vars (sym-canon-terms F (sym-mul-terms F ta tb)))))
 
 (define (poly-scale p c)
-  (if (zero? c)
-      (poly-const 0)
-      (sym-make-poly (p-vars p)
-        (let loop ((ts (p-terms p)) (acc '()))
-          (if (null? ts)
-              (sym-canon-terms (reverse acc))
-              (loop (cdr ts) (cons (cons (caar ts) (* c (cdar ts))) acc)))))))
+  (let* ((F (p-field p)) (c (sf-in F c)))
+    (if (zero? c)
+        (sym-poly-const-in F 0)
+        (sym-make-poly-in F (p-vars p)
+          (let loop ((ts (p-terms p)) (acc '()))
+            (if (null? ts)
+                (sym-canon-terms F (reverse acc))
+                (loop (cdr ts) (cons (cons (caar ts) (sf-mul F c (cdar ts))) acc))))))))
 
 ;; (poly-expt p n) — p^n for a nonnegative exact integer n, via repeated
 ;; squaring (O(log n) polynomial multiplications).
 (define (poly-expt p n)
   (cond
     ((< n 0) (error "poly-expt: negative exponent not supported for polynomials" n))
-    ((= n 0) (poly-const 1))
+    ((= n 0) (sym-poly-const-in (p-field p) 1))
     (else
-     (let loop ((base p) (n n) (acc (poly-const 1)))
+     (let loop ((base p) (n n) (acc (sym-poly-const-in (p-field p) 1)))
        (cond
          ((= n 0) acc)
          ((even? n) (loop (poly* base base) (quotient n 2) acc))
@@ -507,26 +720,41 @@
         acc
         (loop (cdr vs) (+ i 1) (* acc (sym-ipow (sym-lookup-required (car vs) bindings "poly-eval") (vector-ref ev i)))))))
 
+(define (sym-term-value-gf F vars ev bindings)
+  (let loop ((vs vars) (i 0) (acc 1))
+    (if (null? vs)
+        acc
+        (loop (cdr vs) (+ i 1)
+              (sf-mul F acc (sf-pow-mod (sf-in F (sym-lookup-required (car vs) bindings "poly-eval")) (vector-ref ev i) F))))))
+
 ;; (poly-eval p bindings) — evaluate p exactly at a point. `bindings` is
 ;; a list of `(var . value)` pairs covering every variable of p (order
 ;; doesn't matter); missing a variable raises. Exact in, exact out (the
 ;; usual R7RS contagion rule) — this is the "exact at exact points"
 ;; guarantee.
+;; Over GF(p) every binding is admitted into the field (an exact
+;; rational with a denominator prime to p) and the value is the
+;; canonical representative in [0, p).
 (define (poly-eval p bindings)
-  (let ((vars (p-vars p)))
-    (let loop ((ts (p-terms p)) (acc 0))
-      (if (null? ts)
-          acc
-          (loop (cdr ts) (+ acc (* (cdar ts) (sym-term-value vars (caar ts) bindings))))))))
+  (let ((vars (p-vars p)) (F (p-field p)))
+    (if F
+        (let loop ((ts (p-terms p)) (acc 0))
+          (if (null? ts)
+              acc
+              (loop (cdr ts) (sf-add F acc (sf-mul F (cdar ts) (sym-term-value-gf F vars (caar ts) bindings))))))
+        (let loop ((ts (p-terms p)) (acc 0))
+          (if (null? ts)
+              acc
+              (loop (cdr ts) (+ acc (* (cdar ts) (sym-term-value vars (caar ts) bindings)))))))))
 
 ;; (poly-deriv p var) — partial derivative with respect to var (0 if var
 ;; doesn't appear in p at all).
 (define (poly-deriv p var)
-  (let* ((vars (p-vars p)) (idx (sym-index-of var vars)))
+  (let* ((F (p-field p)) (vars (p-vars p)) (idx (sym-index-of var vars)))
     (if (< idx 0)
-        (poly-const 0)
-        (sym-make-poly vars
-          (sym-canon-terms
+        (sym-poly-const-in F 0)
+        (sym-make-poly-in F vars
+          (sym-canon-terms F
             (let loop ((ts (p-terms p)) (acc '()))
               (if (null? ts)
                   (reverse acc)
@@ -535,7 +763,7 @@
                         (loop (cdr ts) acc)
                         (let ((newev (sym-copy-vec ev)))
                           (vector-set! newev idx (- e 1))
-                          (loop (cdr ts) (cons (cons newev (* c e)) acc))))))))))))
+                          (loop (cdr ts) (cons (cons newev (sf-mul F c e)) acc))))))))))))
 
 ;; (poly-degree p) — total degree (max sum-of-exponents over all terms);
 ;; 0 for the zero polynomial.
@@ -571,10 +799,12 @@
         (else #f)))
 
 (define (poly=? a b)
-  (let* ((vars (sym-merge-vars (p-vars a) (p-vars b)))
-         (ta (sym-canon-terms (sym-align-terms (p-vars a) (p-terms a) vars)))
-         (tb (sym-canon-terms (sym-align-terms (p-vars b) (p-terms b) vars))))
-    (sym-terms-equal? ta tb)))
+  (and (equal? (p-field a) (p-field b))
+       (let* ((F (p-field a))
+              (vars (sym-merge-vars (p-vars a) (p-vars b)))
+              (ta (sym-canon-terms F (sym-align-terms (p-vars a) (p-terms a) vars)))
+              (tb (sym-canon-terms F (sym-align-terms (p-vars b) (p-terms b) vars))))
+         (sym-terms-equal? ta tb))))
 
 (define (sym-var-power-string sym e)
   (cond ((= e 0) "")
@@ -627,32 +857,36 @@
 ;; bound) or a bare list of integers/`#f` parallel to `vars`
 ;; (per-variable bound; `#f` = unbounded in that variable). See the
 ;; module header for the exact truncation rule.
-(define (series vars term-specs order)
+(define (sym-series-in F vars term-specs order)
   (let* ((sorted-vars (sym-sort vars sym-symbol<?))
          (raw (let loop ((ts term-specs) (acc '()))
                 (if (null? ts)
                     (reverse acc)
-                    (let* ((spec (car ts)) (exps (car spec)) (coeff (cdr spec))
+                    (let* ((spec (car ts)) (exps (car spec)) (coeff (sf-in F (cdr spec)))
                            (ev (sym-remap vars (sym-list->vec exps) sorted-vars)))
                       (loop (cdr ts) (if (zero? coeff) acc (cons (cons ev coeff) acc)))))))
          (nord (sym-normalize-order order (length sorted-vars))))
-    (sym-make-series sorted-vars (sym-apply-order nord (sym-canon-terms raw)) nord)))
+    (sym-make-series-in F sorted-vars (sym-apply-order nord (sym-canon-terms F raw)) nord)))
+
+(define (series vars term-specs order) (sym-series-in #f vars term-specs order))
 
 ;; Internal: the constant series (single term, all-zero exponents) with
 ;; value `val`, over `vars`, truncated to `order` (any accepted spec).
-(define (series-const-in vars val order)
-  (let ((nord (sym-normalize-order order (length vars))))
+(define (series-const-in-field F vars val order)
+  (let ((nord (sym-normalize-order order (length vars))) (val (sf-in F val)))
     (if (zero? val)
-        (sym-make-series vars '() nord)
-        (sym-make-series vars (list (cons (make-vector (length vars) 0) val)) nord))))
+        (sym-make-series-in F vars '() nord)
+        (sym-make-series-in F vars (list (cons (make-vector (length vars) 0) val)) nord))))
+(define (series-const-in vars val order) (series-const-in-field #f vars val order))
 
 (define (series-scale s c)
-  (if (zero? c)
-      (sym-make-series (sr-vars s) '() (sr-order s))
-      (sym-make-series (sr-vars s)
-        (let loop ((ts (sr-terms s)) (acc '()))
-          (if (null? ts) (reverse acc) (loop (cdr ts) (cons (cons (caar ts) (* c (cdar ts))) acc))))
-        (sr-order s))))
+  (let* ((F (sr-field s)) (c (sf-in F c)))
+    (if (zero? c)
+        (sym-make-series-in F (sr-vars s) '() (sr-order s))
+        (sym-make-series-in F (sr-vars s)
+          (let loop ((ts (sr-terms s)) (acc '()))
+            (if (null? ts) (reverse acc) (loop (cdr ts) (cons (cons (caar ts) (sf-mul F c (cdar ts))) acc))))
+          (sr-order s)))))
 
 ;; (series-truncate s new-order) — re-truncate to (the tighter of) the
 ;; series' existing bound and `new-order`; never fabricates accuracy the
@@ -660,21 +894,23 @@
 (define (series-truncate s new-order)
   (let* ((nord (sym-normalize-order new-order (length (sr-vars s))))
          (combined (sym-order-combine (sr-order s) nord)))
-    (sym-make-series (sr-vars s) (sym-apply-order combined (sr-terms s)) combined)))
+    (sym-make-series-in (sr-field s) (sr-vars s) (sym-apply-order combined (sr-terms s)) combined)))
 
 (define (series+ a b)
-  (let* ((vars (sym-merge-vars (sr-vars a) (sr-vars b)))
+  (let* ((F (sf-same (sr-field a) (sr-field b) "series+"))
+         (vars (sym-merge-vars (sr-vars a) (sr-vars b)))
          (ta (sym-align-terms (sr-vars a) (sr-terms a) vars))
          (tb (sym-align-terms (sr-vars b) (sr-terms b) vars))
          (order (sym-order-combine (sr-order a) (sr-order b))))
-    (sym-make-series vars (sym-apply-order order (sym-canon-terms (append ta tb))) order)))
+    (sym-make-series-in F vars (sym-apply-order order (sym-canon-terms F (append ta tb))) order)))
 
 (define (series- a b)
-  (let* ((vars (sym-merge-vars (sr-vars a) (sr-vars b)))
+  (let* ((F (sf-same (sr-field a) (sr-field b) "series-"))
+         (vars (sym-merge-vars (sr-vars a) (sr-vars b)))
          (ta (sym-align-terms (sr-vars a) (sr-terms a) vars))
-         (tb (sym-negate-terms (sym-align-terms (sr-vars b) (sr-terms b) vars)))
+         (tb (sym-negate-terms F (sym-align-terms (sr-vars b) (sr-terms b) vars)))
          (order (sym-order-combine (sr-order a) (sr-order b))))
-    (sym-make-series vars (sym-apply-order order (sym-canon-terms (append ta tb))) order)))
+    (sym-make-series-in F vars (sym-apply-order order (sym-canon-terms F (append ta tb))) order)))
 
 ;; (series* a b) — truncated multiplication: correct up to the combined
 ;; (tighter) order of a and b, PROVIDED a and b are themselves accurate
@@ -682,18 +918,19 @@
 ;; caveat — this module cannot tell an under-specified series from a
 ;; genuinely short polynomial).
 (define (series* a b)
-  (let* ((vars (sym-merge-vars (sr-vars a) (sr-vars b)))
+  (let* ((F (sf-same (sr-field a) (sr-field b) "series*"))
+         (vars (sym-merge-vars (sr-vars a) (sr-vars b)))
          (ta (sym-align-terms (sr-vars a) (sr-terms a) vars))
          (tb (sym-align-terms (sr-vars b) (sr-terms b) vars))
          (order (sym-order-combine (sr-order a) (sr-order b))))
-    (sym-make-series vars (sym-apply-order order (sym-canon-terms (sym-mul-terms ta tb))) order)))
+    (sym-make-series-in F vars (sym-apply-order order (sym-canon-terms F (sym-mul-terms F ta tb))) order)))
 
 (define (series-deriv s var)
-  (let* ((vars (sr-vars s)) (idx (sym-index-of var vars)))
+  (let* ((F (sr-field s)) (vars (sr-vars s)) (idx (sym-index-of var vars)))
     (if (< idx 0)
-        (sym-make-series vars '() (sr-order s))
-        (sym-make-series vars
-          (sym-canon-terms
+        (sym-make-series-in F vars '() (sr-order s))
+        (sym-make-series-in F vars
+          (sym-canon-terms F
             (let loop ((ts (sr-terms s)) (acc '()))
               (if (null? ts)
                   (reverse acc)
@@ -702,19 +939,21 @@
                         (loop (cdr ts) acc)
                         (let ((newev (sym-copy-vec ev)))
                           (vector-set! newev idx (- e 1))
-                          (loop (cdr ts) (cons (cons newev (* c e)) acc))))))))
+                          (loop (cdr ts) (cons (cons newev (sf-mul F c e)) acc))))))))
           (sr-order s)))))
 
 ;; (series-integrate s var) — antiderivative with respect to var, zero
 ;; integration constant. Raises if s carries a var^-1 term (its
-;; antiderivative is a logarithm, not a Laurent series term).
+;; antiderivative is a logarithm, not a Laurent series term), and over
+;; GF(p) when an exponent e has e + 1 divisible by p.
 (define (series-integrate s var)
-  (let* ((vars (sr-vars s))
+  (let* ((F (sr-field s))
+         (vars (sr-vars s))
          (vars2 (if (< (sym-index-of var vars) 0) (sym-merge-vars vars (list var)) vars))
          (idx (sym-index-of var vars2))
          (aligned (sym-align-terms vars (sr-terms s) vars2)))
-    (sym-make-series vars2
-      (sym-canon-terms
+    (sym-make-series-in F vars2
+      (sym-canon-terms F
         (let loop ((ts aligned) (acc '()))
           (if (null? ts)
               (reverse acc)
@@ -723,7 +962,7 @@
                     (error "series-integrate: cannot integrate a var^-1 term into a Laurent series (would produce a logarithm)" ev)
                     (let ((newev (sym-copy-vec ev)))
                       (vector-set! newev idx (+ e 1))
-                      (loop (cdr ts) (cons (cons newev (/ c (+ e 1))) acc))))))))
+                      (loop (cdr ts) (cons (cons newev (sf-div F c (+ e 1))) acc))))))))
       (sr-order s))))
 
 (define (series-coeff s var-exp-alist)
@@ -753,7 +992,7 @@
 ;; `var` exponent (the Laurent principal part with respect to `var`).
 (define (series-singular-part s var)
   (let ((idx (sym-index-of var (sr-vars s))))
-    (sym-make-series (sr-vars s)
+    (sym-make-series-in (sr-field s) (sr-vars s)
       (if (< idx 0)
           '()
           (let loop ((ts (sr-terms s)) (acc '()))
@@ -767,7 +1006,7 @@
 (define (series->poly s)
   (if (sym-terms-have-negative? (sr-terms s))
       (error "series->poly: series has negative exponents (Laurent part); cannot convert to a polynomial" s)
-      (sym-make-poly (sr-vars s) (sr-terms s))))
+      (sym-make-poly-in (sr-field s) (sr-vars s) (sr-terms s))))
 
 ;; (series-compose g f) — g(f(x)), truncated to f's order. g must be a
 ;; single-variable series; f must have zero constant term (composition
@@ -775,13 +1014,14 @@
 (define (series-compose g f)
   (if (not (= (length (sr-vars g)) 1))
       (error "series-compose: outer series must be single-variable" g)
-      (let* ((u (car (sr-vars g)))
+      (let* ((F (sf-same (sr-field g) (sr-field f) "series-compose"))
+             (u (car (sr-vars g)))
              (fvars (sr-vars f))
              (fconst (if (null? fvars) 0 (series-coeff f (list (cons (car fvars) 0))))))
         (if (not (zero? fconst))
             (error "series-compose: inner series must have zero constant term" f)
             (let ((n (sym-order-total-value (sr-order f))))
-              (let loop ((k 0) (fpow (series-const-in fvars 1 (sr-order f))) (acc (series-const-in fvars 0 (sr-order f))))
+              (let loop ((k 0) (fpow (series-const-in-field F fvars 1 (sr-order f))) (acc (series-const-in-field F fvars 0 (sr-order f))))
                 (if (> k n)
                     acc
                     (let ((gk (series-coeff g (list (cons u k)))))
@@ -794,7 +1034,9 @@
 ;; the named function of `1 + u` (log/sqrt) or of `u` directly
 ;; (exp/sin/cos) — see the module header's "1+x convention" section.
 ;; Coefficients are computed from small exact-rational recurrences, so
-;; an exact-order request produces an exact-coefficient result.
+;; an exact-order request produces an exact-coefficient result. Over
+;; GF(p) the same rationals are reduced into the field, which raises
+;; once a denominator (k!, 2^k, ...) is divisible by p.
 
 (define (sym-outer-series-exp n)
   (series (list 'u)
@@ -836,6 +1078,10 @@
               (if (> k n) (reverse acc) (loop (+ k 1) (cons (cons (list k) c) acc) (* c (/ (- alpha k) (+ k 1))))))
             n)))
 
+;; The outer series in the inner argument's field.
+(define (sym-outer-in f outer)
+  (if (sr-field f) (series->field outer (series-field f)) outer))
+
 (define (sym-check-zero-const f who)
   (if (or (null? (sr-vars f)) (not (zero? (series-coeff f (list (cons (car (sr-vars f)) 0))))))
       (error (string-append who ": argument series must have zero constant term") f)
@@ -844,29 +1090,29 @@
 ;; (series-exp f) — exp(f); f must have zero constant term.
 (define (series-exp f)
   (sym-check-zero-const f "series-exp")
-  (series-compose (sym-outer-series-exp (sym-order-total-value (sr-order f))) f))
+  (series-compose (sym-outer-in f (sym-outer-series-exp (sym-order-total-value (sr-order f)))) f))
 
 ;; (series-log f) — log(1+f); f must have zero constant term (see the
 ;; module header's "1+x convention").
 (define (series-log f)
   (sym-check-zero-const f "series-log")
-  (series-compose (sym-outer-series-log1p (sym-order-total-value (sr-order f))) f))
+  (series-compose (sym-outer-in f (sym-outer-series-log1p (sym-order-total-value (sr-order f)))) f))
 
 ;; (series-sin f) — sin(f); f must have zero constant term.
 (define (series-sin f)
   (sym-check-zero-const f "series-sin")
-  (series-compose (sym-outer-series-sin (sym-order-total-value (sr-order f))) f))
+  (series-compose (sym-outer-in f (sym-outer-series-sin (sym-order-total-value (sr-order f)))) f))
 
 ;; (series-cos f) — cos(f); f must have zero constant term.
 (define (series-cos f)
   (sym-check-zero-const f "series-cos")
-  (series-compose (sym-outer-series-cos (sym-order-total-value (sr-order f))) f))
+  (series-compose (sym-outer-in f (sym-outer-series-cos (sym-order-total-value (sr-order f)))) f))
 
 ;; (series-sqrt f) — sqrt(1+f); f must have zero constant term (see the
 ;; module header's "1+x convention").
 (define (series-sqrt f)
   (sym-check-zero-const f "series-sqrt")
-  (series-compose (sym-outer-series-sqrt1p (sym-order-total-value (sr-order f))) f))
+  (series-compose (sym-outer-in f (sym-outer-series-sqrt1p (sym-order-total-value (sr-order f)))) f))
 
 ;; (series-inverse s) — 1/s for a SINGLE-VARIABLE series s with nonzero
 ;; constant term c0 (the "1/(1+x)-type" reciprocal), via the standard
@@ -875,28 +1121,355 @@
 (define (series-inverse s)
   (if (not (= (length (sr-vars s)) 1))
       (error "series-inverse: only single-variable series are supported" s)
-      (let* ((var (car (sr-vars s)))
+      (let* ((F (sr-field s))
+             (var (car (sr-vars s)))
              (n (sym-order-total-value (sr-order s)))
              (c0 (series-coeff s (list (cons var 0)))))
         (if (zero? c0)
             (error "series-inverse: constant term must be nonzero" s)
             (let ((r (make-vector (+ n 1) 0)))
-              (vector-set! r 0 (/ 1 c0))
+              (vector-set! r 0 (sf-div F 1 c0))
               (let loopn ((k 1))
                 (if (> k n)
                     #t
                     (let ((sum (let loopj ((j 1) (acc 0))
                                  (if (> j k)
                                      acc
-                                     (loopj (+ j 1) (+ acc (* (series-coeff s (list (cons var j))) (vector-ref r (- k j)))))))))
-                      (vector-set! r k (* (- (/ 1 c0)) sum))
+                                     (loopj (+ j 1) (sf-add F acc (sf-mul F (series-coeff s (list (cons var j))) (vector-ref r (- k j)))))))))
+                      (vector-set! r k (sf-mul F (sf-neg F (sf-div F 1 c0)) sum))
                       (loopn (+ k 1)))))
-              (series (list var)
+              (sym-series-in F (list var)
                       (let loopb ((i 0) (acc '()))
                         (if (> i n)
                             (reverse acc)
                             (loopb (+ i 1) (if (zero? (vector-ref r i)) acc (cons (cons (list i) (vector-ref r i)) acc)))))
                       n))))))
+
+;; ============================================================
+;; Coefficient norm: the weighted l1 norm of B_rho
+;; ============================================================
+
+;; rho^e for a positive weight and any exact integer e (Laurent terms
+;; have e < 0).
+(define (sym-weight-pow rho e)
+  (if (< e 0) (/ 1 (sym-ipow rho (- e))) (sym-ipow rho e)))
+
+(define (sym-check-weight rho)
+  (if (and (real? rho) (positive? rho))
+      rho
+      (error "series-norm: weights must be positive real numbers" rho)))
+
+;; (series-norm s rho) — sum over terms of |c| * rho^(exponents), where
+;; `rho` is one positive weight (applied to the total degree) or an alist
+;; ((var . weight) ...) giving every variable of s its own weight. `s` may
+;; be a series or a polynomial over Q.
+(define (series-norm s rho)
+  (let* ((is-series (series? s))
+         (F (if is-series (sr-field s) (p-field s)))
+         (vars (if is-series (sr-vars s) (p-vars s)))
+         (terms (if is-series (sr-terms s) (p-terms s)))
+         (weights (if (pair? rho)
+                      (sym-list->vec
+                        (let loop ((vs vars) (acc '()))
+                          (if (null? vs)
+                              (reverse acc)
+                              (loop (cdr vs) (cons (sym-check-weight (sym-lookup-required (car vs) rho "series-norm")) acc)))))
+                      (make-vector (length vars) (sym-check-weight rho)))))
+    (if F
+        (error "series-norm: the coefficient norm is defined over Q, not GF(p)" (sf-descriptor F))
+        (let loop ((ts terms) (acc 0))
+          (if (null? ts)
+              acc
+              (let ((ev (caar ts)))
+                (loop (cdr ts)
+                      (+ acc (* (abs (cdar ts))
+                                (let wl ((i 0) (w 1))
+                                  (if (>= i (vector-length ev))
+                                      w
+                                      (wl (+ i 1) (* w (sym-weight-pow (vector-ref weights i) (vector-ref ev i)))))))))))))))
+
+;; ============================================================
+;; Polynomial-valued duals: series-of, collect, solve
+;; ============================================================
+
+(define (sym-factorial n) (let loop ((k 1) (acc 1)) (if (> k n) acc (loop (+ k 1) (* acc k)))))
+
+;; The value of d^alpha g at the point, with the leading `fixed` arguments
+;; already bound (in reverse). Each nonzero order opens one nested pass of
+;; the built-in `derivative-n`; a zero order binds the point directly.
+(define (sym-nested-partial g pts alphas fixed)
+  (cond
+    ((null? pts) (apply g (reverse fixed)))
+    ((= (car alphas) 0) (sym-nested-partial g (cdr pts) (cdr alphas) (cons (car pts) fixed)))
+    (else
+     (derivative-n (lambda (t) (sym-nested-partial g (cdr pts) (cdr alphas) (cons t fixed)))
+                   (car pts) (car alphas)))))
+
+;; All exponent lists of the given length with total at most `budget`.
+(define (sym-exponent-lists len budget)
+  (if (= len 0)
+      (list '())
+      (let loop ((k 0) (acc '()))
+        (if (> k budget)
+            acc
+            (loop (+ k 1)
+                  (append acc (map (lambda (rest) (cons k rest)) (sym-exponent-lists (- len 1) (- budget k)))))))))
+
+(define (sym-sum-list l) (let loop ((l l) (acc 0)) (if (null? l) acc (loop (cdr l) (+ acc (car l))))))
+
+(define (sym-product-factorials l)
+  (let loop ((l l) (acc 1)) (if (null? l) acc (loop (cdr l) (* acc (sym-factorial (car l)))))))
+
+;; Coefficient specs (exponents . c) for x1^k * rest, k = 0..budget:
+;; taylor already divides by k!, and rest! divides the nested partial.
+(define (sym-taylor-specs g rest x1 rest-point rest-alphas budget)
+  (let* ((denominator (sym-product-factorials rest-alphas))
+         (coeffs (taylor (lambda (t) (sym-nested-partial g rest-point rest-alphas (list t))) x1 budget)))
+    (let loop ((k 0) (cs coeffs) (acc '()))
+      (if (null? cs)
+          (reverse acc)
+          (loop (+ k 1) (cdr cs) (cons (cons (cons k rest) (/ (car cs) denominator)) acc))))))
+
+;; One scalar component: for every exponent list `rest` of the trailing
+;; variables, one built-in `taylor` pass in the first variable yields the
+;; coefficients of x1^k * (rest) for every k at once.
+(define (sym-series-of-scalar g vars point order)
+  (let ((specs
+         (if (null? (cdr vars))
+             (sym-taylor-specs g '() (car point) (cdr point) '() order)
+             (let loop ((rests (sym-exponent-lists (- (length vars) 1) order)) (acc '()))
+               (if (null? rests)
+                   acc
+                   (loop (cdr rests)
+                         (append acc (sym-taylor-specs g (car rests) (car point) (cdr point) (car rests)
+                                                       (- order (sym-sum-list (car rests)))))))))))
+    (series vars specs order)))
+
+(define (sym-check-series-of-args vars point order)
+  (if (not (and (list? vars) (list? point) (= (length vars) (length point))))
+      (error "series-of: vars and point must be lists of the same length" vars point))
+  (let loop ((vs vars))
+    (if (pair? vs)
+        (begin
+          (if (not (symbol? (car vs))) (error "series-of: variables must be symbols" (car vs)))
+          (if (memq (car vs) (cdr vs)) (error "series-of: variables must be distinct" (car vs)))
+          (loop (cdr vs)))))
+  (if (not (and (integer? order) (exact? order) (>= order 0)))
+      (error "series-of: order must be a nonnegative exact integer" order)))
+
+(define (sym-component g i) (lambda args (vector-ref (apply g args) i)))
+
+;; (series-of f vars point order) — see the module header.
+(define (series-of f vars point order)
+  (sym-check-series-of-args vars point order)
+  (if (null? vars)
+      (let ((v (f)))
+        (if (vector? v)
+            (list->vector (map (lambda (c) (series '() (list (cons '() c)) order)) (vector->list v)))
+            (series '() (list (cons '() v)) order)))
+      (let ((probe (apply f point)))
+        (if (vector? probe)
+            (let loop ((i 0) (acc '()))
+              (if (= i (vector-length probe))
+                  (list->vector (reverse acc))
+                  (loop (+ i 1) (cons (sym-series-of-scalar (sym-component f i) vars point order) acc))))
+            (sym-series-of-scalar f vars point order)))))
+
+;; Group terms by the exponents of `cvars`: an alist from exponent lists
+;; (in `cvars` order) to the term lists of the remaining variables. A
+;; collected variable the value does not mention has exponent 0.
+(define (sym-collect-terms vars terms cvars who)
+  (let* ((idxs (map (lambda (v)
+                      (if (symbol? v) (sym-index-of v vars) (error (string-append who ": variables must be symbols") v)))
+                    cvars))
+         (rest-vars (let loop ((vs vars) (acc '()))
+                      (cond ((null? vs) (reverse acc))
+                            ((memq (car vs) cvars) (loop (cdr vs) acc))
+                            (else (loop (cdr vs) (cons (car vs) acc))))))
+         (rest-idxs (map (lambda (v) (sym-index-of v vars)) rest-vars)))
+    (let loop ((ts terms) (groups '()))
+      (if (null? ts)
+          (cons rest-vars groups)
+          (let* ((ev (caar ts))
+                 (key (map (lambda (i) (if (< i 0) 0 (vector-ref ev i))) idxs))
+                 (rest-ev (sym-list->vec (map (lambda (i) (vector-ref ev i)) rest-idxs)))
+                 (entry (assoc key groups)))
+            (if entry
+                (begin (set-cdr! entry (cons (cons rest-ev (cdar ts)) (cdr entry)))
+                       (loop (cdr ts) groups))
+                (loop (cdr ts) (cons (list key (cons rest-ev (cdar ts))) groups))))))))
+
+(define (sym-key<? a b)
+  (let ((da (sym-sum-list a)) (db (sym-sum-list b)))
+    (if (= da db)
+        (let loop ((a a) (b b))
+          (cond ((null? a) #f) ((< (car a) (car b)) #t) ((> (car a) (car b)) #f) (else (loop (cdr a) (cdr b)))))
+        (< da db))))
+
+(define (sym-cvars cvars) (if (symbol? cvars) (list cvars) cvars))
+
+;; (poly-collect p cvars) — the coefficients of p with respect to the
+;; variables `cvars` (a symbol or a list): an ascending list of
+;; `(exponents . coefficient-polynomial)`, the coefficient polynomial over
+;; the remaining variables and p's field.
+(define (poly-collect p cvars)
+  (let* ((F (p-field p)) (cv (sym-cvars cvars))
+         (collected (sym-collect-terms (p-vars p) (p-terms p) cv "poly-collect"))
+         (rest-vars (car collected)))
+    (sym-sort (map (lambda (g) (cons (car g) (sym-make-poly-in F rest-vars (sym-canon-terms F (cdr g)))))
+                   (cdr collected))
+              (lambda (a b) (sym-key<? (car a) (car b))))))
+
+;; The order a coefficient series inherits: a total bound N leaves
+;; N - (positive part of the collected exponents); a per-variable bound
+;; drops the collected variables' entries.
+(define (sym-collected-order order vars cvars key)
+  (if (eq? (car order) 'total)
+      (cons 'total (- (cdr order) (sym-sum-list (map (lambda (e) (max e 0)) key))))
+      (cons 'per-var
+            (let loop ((vs vars) (bs (cdr order)) (acc '()))
+              (cond ((null? vs) (reverse acc))
+                    ((memq (car vs) cvars) (loop (cdr vs) (cdr bs) acc))
+                    (else (loop (cdr vs) (cdr bs) (cons (car bs) acc))))))))
+
+;; (series-collect s cvars) — as poly-collect, for a series (Laurent
+;; exponents allowed, e.g. negative powers of a grading parameter); each
+;; coefficient is a series over the remaining variables.
+(define (series-collect s cvars)
+  (let* ((F (sr-field s)) (cv (sym-cvars cvars))
+         (collected (sym-collect-terms (sr-vars s) (sr-terms s) cv "series-collect"))
+         (rest-vars (car collected)))
+    (sym-sort (map (lambda (g)
+                     (cons (car g)
+                           (sym-make-series-in F rest-vars (sym-canon-terms F (cdr g))
+                                               (sym-collected-order (sr-order s) (sr-vars s) cv (car g)))))
+                   (cdr collected))
+              (lambda (a b) (sym-key<? (car a) (car b))))))
+
+;; Equations may be polynomials or Laurent-free series.
+(define (sym-equation->poly e)
+  (cond ((poly? e) e)
+        ((series? e) (series->poly e))
+        (else (error "poly-linear-system: equations must be polynomials or series" e))))
+
+(define (sym-equations-field eqs)
+  (if (null? eqs) #f
+      (let loop ((es (cdr eqs)) (F (p-field (car eqs))))
+        (if (null? es) F (loop (cdr es) (sf-same F (p-field (car es)) "poly-linear-system"))))))
+
+;; One row: coefficients of the unknowns and the right-hand side, for an
+;; equation that must be affine in the unknowns and free of every other
+;; variable.
+(define (sym-linear-row F p unknowns)
+  (let ((row (make-vector (length unknowns) 0)) (constant 0) (vars (p-vars p)))
+    (let loop ((ts (p-terms p)))
+      (if (null? ts)
+          (cons row (sf-neg F constant))
+          (let* ((ev (caar ts)) (c (cdar ts))
+                 (hit (let scan ((i 0) (found #f))
+                        (cond ((>= i (vector-length ev)) found)
+                              ((= (vector-ref ev i) 0) (scan (+ i 1) found))
+                              ((not (memq (list-ref vars i) unknowns))
+                               (error "poly-linear-system: an equation depends on a variable outside the unknowns; collect it first" (list-ref vars i)))
+                              ((or found (> (vector-ref ev i) 1))
+                               (error "poly-linear-system: an equation is not affine in the unknowns" p))
+                              (else (scan (+ i 1) (list-ref vars i)))))))
+            (if hit
+                (let ((j (sym-index-of hit unknowns)))
+                  (vector-set! row j (sf-add F (vector-ref row j) c)))
+                (set! constant (sf-add F constant c)))
+            (loop (cdr ts)))))))
+
+;; (poly-linear-system equations unknowns) — the system A u = b, as
+;; `(cons A b)` in core.exact_linalg's row-vector format, for equations
+;; (each read as "= 0") affine in `unknowns`.
+(define (poly-linear-system equations unknowns)
+  (let* ((eqs (map sym-equation->poly equations)) (F (sym-equations-field eqs))
+         (rows (map (lambda (p) (sym-linear-row F p unknowns)) eqs)))
+    (cons (list->vector (map car rows)) (list->vector (map cdr rows)))))
+
+;; Reduced row echelon form of the augmented system over GF(p), in place
+;; on fresh row vectors. Returns (rows . pivot-columns).
+(define (sym-rref-gf F a b ncols)
+  (let* ((nrows (vector-length a))
+         (w (list->vector
+              (let loop ((i 0) (acc '()))
+                (if (= i nrows)
+                    (reverse acc)
+                    (let ((r (make-vector (+ ncols 1) 0)))
+                      (let fill ((j 0)) (if (< j ncols) (begin (vector-set! r j (vector-ref (vector-ref a i) j)) (fill (+ j 1)))))
+                      (vector-set! r ncols (vector-ref b i))
+                      (loop (+ i 1) (cons r acc))))))))
+    (let colloop ((col 0) (rank 0) (pivots '()))
+      (if (or (> col ncols) (= rank nrows))
+          (cons w (reverse pivots))
+          (let find ((r rank))
+            (cond
+              ((= r nrows) (colloop (+ col 1) rank pivots))
+              ((= (vector-ref (vector-ref w r) col) 0) (find (+ r 1)))
+              (else
+               (let ((tmp (vector-ref w r)))
+                 (vector-set! w r (vector-ref w rank))
+                 (vector-set! w rank tmp))
+               (let* ((prow (vector-ref w rank))
+                      (inv (sf-inv-mod (vector-ref prow col) F)))
+                 (let scale ((j 0)) (if (<= j ncols) (begin (vector-set! prow j (sf-mul F inv (vector-ref prow j))) (scale (+ j 1)))))
+                 (let elim ((i 0))
+                   (if (< i nrows)
+                       (begin
+                         (if (not (= i rank))
+                             (let* ((row (vector-ref w i)) (factor (vector-ref row col)))
+                               (if (not (= factor 0))
+                                   (let upd ((j 0))
+                                     (if (<= j ncols)
+                                         (begin (vector-set! row j (sf-sub F (vector-ref row j) (sf-mul F factor (vector-ref prow j))))
+                                                (upd (+ j 1))))))))
+                         (elim (+ i 1)))))
+                 (colloop (+ col 1) (+ rank 1) (cons col pivots))))))))))
+
+(define (sym-affine-solve-gf F a b ncols)
+  (let* ((reduced (sym-rref-gf F a b ncols)) (w (car reduced)) (pivots (cdr reduced)))
+    (if (memv ncols pivots)
+        (error "poly-solve-linear: inconsistent system" (sf-descriptor F)))
+    (let ((particular (make-vector ncols 0)))
+      (let fill ((ps pivots) (i 0))
+        (if (pair? ps)
+            (begin (vector-set! particular (car ps) (vector-ref (vector-ref w i) ncols))
+                   (fill (cdr ps) (+ i 1)))))
+      (cons particular
+            (let free ((j 0) (acc '()))
+              (cond
+                ((= j ncols) (reverse acc))
+                ((memv j pivots) (free (+ j 1) acc))
+                (else
+                 (let ((v (make-vector ncols 0)))
+                   (vector-set! v j 1)
+                   (let fill ((ps pivots) (i 0))
+                     (if (pair? ps)
+                         (begin (vector-set! v (car ps) (sf-neg F (vector-ref (vector-ref w i) j)))
+                                (fill (cdr ps) (+ i 1)))))
+                   (free (+ j 1) (cons v acc))))))))))
+
+(define (sym-vector->alist unknowns v)
+  (let loop ((us unknowns) (i 0) (acc '()))
+    (if (null? us) (reverse acc) (loop (cdr us) (+ i 1) (cons (cons (car us) (vector-ref v i)) acc)))))
+
+;; (poly-solve-linear equations unknowns) — every solution of the affine
+;; system, as `(particular . basis)`: `particular` an alist
+;; ((unknown . value) ...) and `basis` a list of such alists spanning the
+;; homogeneous solutions. Inconsistent systems raise. Over Q this is
+;; core.exact_linalg's exact-affine-solve; over GF(p) the same
+;; elimination in the field.
+(define (poly-solve-linear equations unknowns)
+  (let* ((eqs (map sym-equation->poly equations))
+         (F (sym-equations-field eqs))
+         (system (poly-linear-system eqs unknowns))
+         (n (length unknowns))
+         (solution (if F
+                       (sym-affine-solve-gf F (car system) (cdr system) n)
+                       (exact-affine-solve (car system) (cdr system) n))))
+    (cons (sym-vector->alist unknowns (car solution))
+          (map (lambda (v) (sym-vector->alist unknowns v)) (cdr solution)))))
 
 ;; ============================================================
 ;; AD interoperation: symbolic evaluation of a quoted expression
