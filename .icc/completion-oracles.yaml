@@ -2597,6 +2597,27 @@ oracles:
         label: SDNC weight-matrix FFN backward gradients match finite differences (< 1e-6)
         action: ./scripts/run_icc_smoke.sh
 
+      # Exact-forward control fine-tuning (ADR 0032). The constructed
+      # interpreter's ADD dispatch is switched off; the exact derivative of
+      # every control weight is identically zero; smoothed-backward-ranked,
+      # exact-forward-accepted threshold moves must restore the full
+      # verifier battery and every recorded transition byte for byte.
+      - runtime_event:
+          event_kinds: [sdnc_control_finetune]
+          event_names: ["battery_repair"]
+          event_values: ["PASS"]
+        severity: high
+        label: Damaged ADD dispatch repaired by control fine-tuning; full battery and every recorded transition byte-identical
+        action: ./scripts/run_sdnc_finetune_gate.sh
+
+      - runtime_event:
+          event_kinds: [sdnc_control_finetune]
+          event_names: ["surface"]
+          event_values: ["PASS"]
+        severity: high
+        label: core.sdnc sdnc-load-weights! / sdnc-mismatches / sdnc-repair! / smoothed sdnc-weight-grad on the recorded artifacts
+        action: ./scripts/run_sdnc_finetune_gate.sh
+
   # ─────────────────────────────────────────────────────────────────
   # No-regression gate — used after a refactor or codegen change to
   # confirm the fix didn't break anything. Lower bar than full release.

@@ -1983,7 +1983,24 @@ CE_ONE_ARG(dncPredBuiltin, "eshkol_dnc_pred_tagged")
 /* SDNC weight-program (core.sdnc) */
 CE_ONE_ARG(sdncProgramBuiltin, "eshkol_sdnc_program_tagged")
 CE_TWO_ARG(sdncRunBuiltin, "eshkol_sdnc_run_tagged")
-CE_THREE_ARG(sdncWeightGradBuiltin, "eshkol_sdnc_weight_grad_tagged")
+/* (sdnc-weight-grad θ input target [smoothing]): the optional fourth argument
+ * selects the backward smoothing (lib/core/sdnc_core.h SdncBackwardSmoothing). */
+llvm::Value* SystemCodegen::sdncWeightGradBuiltin(const eshkol_operations_t* op) {
+    const uint64_t n = op->call_op.num_vars;
+    if (n != 3 && n != 4) return tagged_.packNull();
+    if (!codegen_ast_callback_) return tagged_.packNull();
+    std::vector<llvm::Value*> args;
+    for (uint64_t i = 0; i < n; i++) {
+        llvm::Value* v = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        if (!v) return tagged_.packNull();
+        args.push_back(v);
+    }
+    if (n == 3)
+        return callArenaTaggedFunc(ctx_, tagged_, "eshkol_sdnc_weight_grad_tagged", 3,
+                                   {args[0], args[1], args[2]});
+    return callArenaTaggedFunc(ctx_, tagged_, "eshkol_sdnc_weight_grad_smoothed_tagged", 4,
+                               {args[0], args[1], args[2], args[3]});
+}
 CE_ONE_ARG(sdncParamsBuiltin, "eshkol_sdnc_params_tagged")
 CE_TWO_ARG(sdncSetParamsBuiltin, "eshkol_sdnc_set_params_tagged")
 CE_FOUR_ARG(sdncImproveBuiltin, "eshkol_sdnc_improve_tagged")
