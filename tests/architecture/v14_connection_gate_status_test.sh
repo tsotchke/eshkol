@@ -79,7 +79,7 @@ case "$ci_out" in
     *) printf 'FAIL: CI receipt status changed\n%s\n' "$ci_out" >&2; exit 1 ;;
 esac
 
-# Regression: probe_portable_tail_transfer must not grade an incomplete read
+# Coverage: probe_portable_tail_transfer must not grade an incomplete read
 # of scripts/run_recursion_depth.sh's trace file as "no mutual_tail cells".
 # guarded_exec.pl SIGKILLs any process a cell left behind in its group on a
 # normal exit too, without waiting for that kill to land, so a descendant can
