@@ -344,6 +344,22 @@ probe_diagnostic_corpus_clean() {
 # lane (ESHKOL_TAIL_TRANSFER_ONLY=1), which is the dispatcher this criterion
 # is actually named for. The producer's trace path is its own (it does not
 # honor this gate's TRACE_DIR), so it is read at its documented location.
+#
+# $(...) only guarantees the PRODUCER's own process has exited — guarded_exec.pl
+# (scripts/lib/harness_outcome.sh's eshkol_outcome_guarded, which every cell in
+# the producer runs through) SIGKILLs any process the command left behind in
+# its group on normal exit too, but does not wait() for that kill to land
+# before returning; a descendant still dying at that instant can hold a stdio
+# pipe open a moment longer. That is a pipe-closing delay, not a file-content
+# hazard by itself (the producer's own process writes the trace file directly
+# and sequentially, with no child involved in those writes) — but this probe
+# does not assume that proof holds forever as the producer evolves. Instead
+# it waits for the producer's OWN explicit completion record
+# (kind=recursion_depth, name=recursion_depth_gate, emitted as literally the
+# last write before the producer exits) to appear in the file it just read,
+# re-reading up to ~10s if it is not there yet, and fails closed with a clear
+# message if it never appears. Only a read that already contains that
+# completion record is trusted for the mutual_tail_{cond,forms,arity} match.
 probe_portable_tail_transfer() {
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
     local depth_script="$REPO_ROOT/scripts/run_recursion_depth.sh"
@@ -360,29 +376,41 @@ probe_portable_tail_transfer() {
     depth_rc=$?
 
     verdict=$(python3 -c '
-import json, re, sys
+import json, re, sys, time
 path, rc = sys.argv[1], sys.argv[2]
 # Names are scripts/run_recursion_depth.sh'"'"'s own `${f%.esk}_${mode}`,
 # e.g. rec_mutual_tail_cond_d100000000_r / _aot / _aot-xfer.
 name_re = re.compile(r"^rec_mutual_tail_(cond|forms|arity)_d\d+_(r|aot|aot-xfer)$")
-rows = []
-try:
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rows.append(json.loads(line))
-            except Exception:
-                continue
-except OSError as exc:
-    print("no trace written by the producer (exit %s): %s" % (rc, exc))
+deadline = time.time() + 10.0
+rows, saw_completion, last_err = [], False, None
+while True:
+    rows, saw_completion = [], False
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                rows.append(row)
+                if row.get("kind") == "recursion_depth" and row.get("name") == "recursion_depth_gate":
+                    saw_completion = True
+    except OSError as exc:
+        last_err = str(exc)
+    if saw_completion or time.time() >= deadline:
+        break
+    time.sleep(0.25)
+if not saw_completion:
+    detail = (": " + last_err) if last_err else ""
+    print("producer trace at %s never showed its recursion_depth_gate completion record after waiting (exit %s)%s" % (path, rc, detail))
     raise SystemExit(0)
 matches = [r for r in rows if r.get("kind") == "recursion_depth"
            and name_re.match(str(r.get("name", "")))]
 if not matches:
-    print("producer trace has no mutual_tail_{cond,forms,arity} cells (exit %s)" % rc)
+    print("producer trace has no mutual_tail_{cond,forms,arity} cells despite a complete trace (exit %s)" % rc)
     raise SystemExit(0)
 bad = [r for r in matches if r.get("value") != "PASS"]
 if bad:
