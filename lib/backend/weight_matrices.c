@@ -3,7 +3,7 @@
  * @brief Universal Eshkol VM interpreter compiled into transformer weights.
  *
  * Full ISA implementation (84 opcodes: 65 base + 19 AD, d_model=256).
- * Opcode numbering matches eshkol_compiler.c canonical enum.
+ * Opcode numbering follows the private weight-machine ISA in sdnc_isa.h.
  *
  * Three execution modes verified against each other:
  *   1. Reference interpreter (direct C switch)
@@ -7186,7 +7186,7 @@ int main(int argc, char** argv) {
         export_weights_binary(g_weights, out_path);
     }
 
-    /* ── Integration test: load bytecode from eshkol_compiler ── */
+    /* ── Integration test: load ESKB or legacy bytecode supplied by caller ── */
     /* Supports both legacy raw format and new ESKB section-based format.
      * Set ESHKOL_BC=path.eskb to load ESKB, or ESHKOL_BC=path.bc for legacy. */
     if (g_weights) {
@@ -7217,7 +7217,7 @@ int main(int argc, char** argv) {
                         }
 
                         /* Resolve CONST operands: replace constant pool index with actual value.
-                         * The eshkol_compiler uses CONST <pool_index>, but our weight matrix
+                         * Production ESKB producers use CONST <pool_index>, but this weight matrix
                          * uses CONST <immediate_value>. Inline the constants. */
                         for (int i = 0; i < mod.code_len; i++) {
                             if (prog[i].op == OP_CONST && prog[i].operand >= 0 && prog[i].operand < mod.n_constants) {

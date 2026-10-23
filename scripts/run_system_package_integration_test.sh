@@ -77,6 +77,54 @@ if [ -z "$PREFIX" ]; then
     for f in "$BUILD_DIR"/eshkol-agent-*.a; do
         [ -f "$f" ] && cp "$f" "$PREFIX/lib/eshkol/"
     done
+    if [ "$(uname -s)" = "Darwin" ] &&
+       grep -q '^ESHKOL_RELOCATABLE_MACOS_TLS:BOOL=ON$' "$BUILD_DIR/CMakeCache.txt"; then
+        cache_value() {
+            sed -n "s/^$1:[^=]*=//p" "$BUILD_DIR/CMakeCache.txt" | tail -1
+        }
+        openssl_prefix="$(cache_value OPENSSL_ROOT_DIR)"
+        llvm_config="$(cache_value LLVM_CONFIG_EXECUTABLE)"
+        if [ -z "$openssl_prefix" ] || [ -z "$llvm_config" ]; then
+            echo "FATAL: relocatable macOS package lacks OpenSSL or LLVM CMake metadata" >&2
+            exit 2
+        fi
+        llvm_prefix="$("$llvm_config" --prefix)"
+        zstd_library="${ESHKOL_ZSTD_PREFIX:-}"
+        if [ -n "$zstd_library" ]; then
+            zstd_library="$(cd "$zstd_library" && pwd -P)/lib/libzstd.1.dylib"
+        else
+            llvm_dylib="$llvm_prefix/lib/libLLVM.dylib"
+            if [ ! -f "$llvm_dylib" ]; then
+                echo "FATAL: cannot inspect LLVM runtime dependency: $llvm_dylib" >&2
+                exit 2
+            fi
+            zstd_library="$(otool -L "$llvm_dylib" | awk '
+                NR > 1 {
+                    path = $1
+                    count = split(path, parts, "/")
+                    if (path ~ /^\// && parts[count] == "libzstd.1.dylib") {
+                        print path
+                        exit
+                    }
+                }')"
+        fi
+        if [ -z "$zstd_library" ] || [ ! -f "$zstd_library" ]; then
+            echo "FATAL: cannot resolve installed zstd dylib from LLVM metadata; set ESHKOL_ZSTD_PREFIX" >&2
+            exit 2
+        fi
+        zstd_prefix="$(cd "$(dirname "$zstd_library")/.." && pwd -P)"
+        openssl_version="$("$openssl_prefix/bin/openssl" version | awk '{print $2}')"
+        llvm_version="$("$llvm_prefix/bin/llvm-config" --version)"
+        zstd_version="$("$zstd_prefix/bin/zstd" --version | sed -E 's/.* v([^, ]+).*/\1/')"
+        python3 "$REPO_ROOT/scripts/stage_macos_openssl_runtime.py" \
+            --openssl-prefix "$openssl_prefix" \
+            --llvm-prefix "$llvm_prefix" \
+            --zstd-prefix "$zstd_prefix" \
+            --package-dir "$PREFIX" \
+            --openssl-version "$openssl_version" \
+            --llvm-version "$llvm_version" \
+            --zstd-version "$zstd_version"
+    fi
     for f in stdlib.o stdlib.bc libeshkol-runtime.a libeshkol-static.a; do
         [ -f "$PREFIX/lib/eshkol/$f" ] && ln -sf "../lib/eshkol/$f" "$PREFIX/lib/$f"
     done

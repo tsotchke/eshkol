@@ -3,6 +3,7 @@
 
 import argparse
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
@@ -46,6 +47,57 @@ class RuntimeEvidencePolicyTest(unittest.TestCase):
             "C\ttests/live.esk\t1\t2\tabs",
         ])
         self.assertIn("abs", evidence["covered_names"])
+
+    def test_duplicate_p_records_keep_raw_counts_and_source_cache_is_local(self):
+        records = [
+            "P\ttests/duplicate.esk\t1\t2\t7\tabs",
+            "P\ttests/duplicate.esk\t1\t2\t7\tabs",
+            "O\ttests/duplicate.esk\t1\t2\t7",
+            "C\ttests/duplicate.esk\t1\t2\tabs",
+        ]
+        with mock.patch.object(
+                LANGUAGE_COVERAGE, "normalize_trace_source",
+                wraps=LANGUAGE_COVERAGE.normalize_trace_source) as normalize:
+            evidence = self.synthetic_evidence(records)
+        self.assertEqual(evidence["event_counts"]["P"], 2)
+        self.assertEqual(evidence["event_counts"]["O"], 1)
+        self.assertEqual(evidence["event_counts"]["C"], 1)
+        self.assertEqual(len(evidence["trace_paths"]), 1)
+        self.assertIn("abs", evidence["covered_names"])
+        self.assertEqual(normalize.call_count, 1)
+        # A new invocation gets a fresh cache, so no path identity leaks
+        # between separate trace loads.
+        with mock.patch.object(
+                LANGUAGE_COVERAGE, "normalize_trace_source",
+                wraps=LANGUAGE_COVERAGE.normalize_trace_source) as normalize:
+            self.synthetic_evidence(records[:1])
+        self.assertEqual(normalize.call_count, 1)
+
+    def test_malformed_duplicate_p_record_is_still_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "malformed runtime trace"):
+            self.synthetic_evidence([
+                "P\ttests/duplicate.esk\t1\t2\t7\tabs",
+                "P\ttests/duplicate.esk\t1\t2\t7",
+            ])
+
+    def test_progress_json_records_completed_file_and_deduplicated_counts(self):
+        with tempfile.TemporaryDirectory() as trace_dir:
+            trace_path = pathlib.Path(trace_dir, "language-coverage-1.tsv")
+            trace_path.write_text(
+                "P\ttests/progress.esk\t1\t2\t7\tabs\n"
+                "P\ttests/progress.esk\t1\t2\t7\tabs\n",
+                encoding="utf-8")
+            progress_path = pathlib.Path(trace_dir, "RUNNING.json")
+            LANGUAGE_COVERAGE.load_runtime_evidence(
+                [trace_dir], progress_path=str(progress_path))
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        self.assertEqual(progress["files_done"], 1)
+        self.assertEqual(progress["files_total"], 1)
+        self.assertEqual(progress["Pcount"], 2)
+        self.assertEqual(progress["uniqueP"], 1)
+        self.assertEqual(progress["sources"], 1)
+        self.assertGreaterEqual(progress["elapsed_seconds"], 0)
+        self.assertEqual(progress["status"], "complete")
 
     def test_lowered_operation_matches_unambiguous_source_position(self):
         evidence = self.synthetic_evidence([

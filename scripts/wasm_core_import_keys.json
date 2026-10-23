@@ -198,7 +198,6 @@
   "eshkol_string_byte_length",
   "eshkol_string_from_codepoints",
   "eshkol_string_to_number_tagged",
-  "eshkol_tagged_cons_set_tagged_value",
   "eshkol_tail_transfer_slot",
   "eshkol_taylor_binary_tagged",
   "eshkol_taylor_c0",

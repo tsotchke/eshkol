@@ -14,6 +14,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/stdlib_identity.h>
 #include <eshkol/runtime_exports.h>
+#include "../core/keychain_native.h"
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/i128_runtime.h>
@@ -23,6 +24,7 @@
 #include <eshkol/core/resource_limits.h>  // For the SW-10 limit poll symbol
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "eshkol/core/net.h"
+#include "eshkol/core/tls.h"
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -1422,6 +1424,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_capability_runtime_clear);
     ADD_SYMBOL(eshkol_capability_runtime_begin_install);
     ADD_SYMBOL(eshkol_capability_runtime_allow);
+    ADD_SYMBOL(eshkol_keychain_size);
+    ADD_SYMBOL(eshkol_keychain_get_into);
+    ADD_SYMBOL(eshkol_keychain_set);
+    ADD_SYMBOL(eshkol_keychain_delete);
+    ADD_SYMBOL(eshkol_keychain_has);
     ADD_SYMBOL(eshkol_capability_runtime_is_active);
     ADD_SYMBOL(eshkol_capability_runtime_allows);
     ADD_SYMBOL(eshkol_capability_runtime_allows_file_mode);
@@ -1843,6 +1850,19 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_net_port);
     ADD_SYMBOL(eshkol_net_nonblocking);
     ADD_SYMBOL(eshkol_net_close);
+    // Optional native TLS context construction.
+    ADD_SYMBOL(eshkol_tls_available);
+    ADD_SYMBOL(eshkol_tls_client_context);
+    ADD_SYMBOL(eshkol_tls_server_context);
+    ADD_SYMBOL(eshkol_tls_context_close);
+    ADD_SYMBOL(eshkol_tls_listen);
+    ADD_SYMBOL(eshkol_tls_accept);
+    ADD_SYMBOL(eshkol_tls_connect);
+    ADD_SYMBOL(eshkol_tls_listener_port);
+    ADD_SYMBOL(eshkol_tls_read);
+    ADD_SYMBOL(eshkol_tls_write);
+    ADD_SYMBOL(eshkol_tls_session_close);
+    ADD_SYMBOL(eshkol_tls_listener_close);
     ADD_SYMBOL(eshkol_resident_open);
     ADD_SYMBOL(eshkol_resident_close);
     ADD_SYMBOL(eshkol_resident_enter);
@@ -4058,7 +4078,19 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     void* result = nullptr;
     if (entry_func && !func_name.empty()) {
         uint64_t func_addr = lookupSymbol(func_name);
-        if (func_addr != 0) {
+        if (func_addr == 0) {
+            // `silent == false` is the batch/file CLI path (`eshkol-run -r`).
+            // ORC can report a missing external while materializing the entry
+            // lookup; lookupSymbol consumes that Error and returns zero, so
+            // without this check executeBatch returned nullptr and the driver
+            // mistook a failed file for a successful no-result batch. Module
+            // loads use silent batches and keep their established warning /
+            // recovery behavior, as does the interactive REPL.
+            if (!silent) {
+                throw std::runtime_error(
+                    "failed to resolve JIT batch entry function: " + func_name);
+            }
+        } else {
             incrementEvalCounter();
             typedef int32_t (*EvalFunc)(int32_t, char**);
             EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);

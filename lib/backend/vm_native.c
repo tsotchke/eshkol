@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "vm_integer_arithmetic.h"
 #include "../core/model_io_atomic.h"
 #include "../core/tensor_observation.h"
 #include "../core/value_type_names.h"
@@ -10368,7 +10369,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * raises "division by zero" for both (modulo 1 0) and (modulo 1 0.0). */
         if (ib==0){ fprintf(stderr, "MODULO BY ZERO\n"); vm->error=1; break; }
         if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
-        int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
+        int64_t r=vm_i64_remainder_nonzero(ia, ib); if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "remainder") ||
                     vm_ad_reject_untraced_input(vm, vm->sp - 1, "remainder")) break;
@@ -10388,7 +10389,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
         if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
-        vm_push(vm, INT_VAL(ia%ib)); break; }
+        vm_push(vm, INT_VAL(vm_i64_remainder_nonzero(ia, ib))); break; }
     case 38: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "quotient") ||
                     vm_ad_reject_untraced_input(vm, vm->sp - 1, "quotient")) break;
         Value b = vm_pop(vm); Value a = vm_pop(vm);
@@ -10457,7 +10458,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_bignum_arith(vm, a, b, 'q');
             break;
         }
-        int64_t q = ia / ib, r = ia % ib;
+        int64_t q = ia / ib, r = vm_i64_remainder_nonzero(ia, ib);
         if (r != 0 && ((ia < 0) != (ib < 0))) q -= 1;
         vm_push(vm, INT_VAL(q));
         break;
@@ -11713,7 +11714,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 393: { /* derivative: (derivative f x) → f'(x) using forward-mode dual numbers */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
         /* SW-06: `diff` compiles to this same native call (see
-         * eshkol_compiler.c's "diff" entry, both aliased to fid 393), so
+         * the retired compiler's historical "diff" entry, both aliased to fid 393), so
          * `(diff '(* x x) 'x)` — a QUOTED s-expression, not a callable —
          * reaches here as f_val. vm_ad_call_closure() -> vm_call_closure_
          * from_native() silently returns NIL_VAL for anything that isn't
@@ -16336,6 +16337,8 @@ tensor_inverse_done:
     }
     case 661: { /* hash-ref(ht, key, default) */
         Value dflt = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
+        /* The compiler pads an omitted optional operand with VAL_VOID. */
+        if (vm_native_absent(dflt)) dflt = BOOL_VAL(0);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             Value* result = (Value*)vm_ht_ref(ht, &key, NULL);
@@ -17326,7 +17329,7 @@ tensor_inverse_done:
 
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Compiler-required native functions (merged from eshkol_compiler.c)
+     * VM native-call handlers, including code historically shared with the retired compiler
      * ══════════════════════════════════════════════════════════════════════ */
 
     case 100: /* build-string-from-packed: TOS has packed chars, below that length */
@@ -18393,34 +18396,62 @@ tensor_inverse_done:
     case 908: { /* string-split(str, delim) */
         Value d_val = vm_pop(vm), s_val = vm_pop(vm);
         Value result = NIL_VAL;
-        if (s_val.type == VAL_STRING && d_val.type == VAL_STRING) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            VmString* d = (VmString*)vm->heap.objects[d_val.as.ptr]->opaque.ptr;
-            if (s && d && d->byte_len > 0) {
-                const char* p = s->data; int slen = s->byte_len, dlen = d->byte_len;
-                while (1) {
-                    const char* found = (slen >= dlen) ? strstr(p, d->data) : NULL;
-                    int seg_len = found ? (int)(found - p) : (int)(s->data + slen - p);
-                    VmString* seg = vm_string_new(&vm->heap.regions, p, seg_len);
-                    if (seg) { int32_t sp2 = heap_alloc(&vm->heap); if (sp2 >= 0) {
-                        vm->heap.objects[sp2]->type = HEAP_STRING; vm->heap.objects[sp2]->opaque.ptr = seg;
-                        int32_t cp2 = heap_alloc(&vm->heap); if (cp2 >= 0) {
-                            vm->heap.objects[cp2]->type = HEAP_CONS;
-                            vm->heap.objects[cp2]->cons.car = (Value){.type = VAL_STRING, .as.ptr = sp2};
-                            vm->heap.objects[cp2]->cons.cdr = result; result = PAIR_VAL(cp2); } } }
-                    if (!found) break;
-                    p = found + dlen;
+        if (s_val.type == VAL_STRING &&
+            (d_val.type == VAL_STRING || d_val.type == VAL_CHAR)) {
+            VmString* s = vm_value_as_string(vm, s_val);
+            VmString* d = vm_value_as_string_or_char(vm, d_val);
+            if (s && d) {
+                int slen = s->byte_len, dlen = d->byte_len;
+                int failed = 0;
+                int pos = 0;
+                /* The empty delimiter follows the native string-split rule:
+                 * return one element containing the original string. */
+                while (!failed) {
+                    int found = -1;
+                    if (dlen > 0 && pos <= slen - dlen) {
+                        for (int i = pos; i <= slen - dlen; ++i) {
+                            if (memcmp(s->data + i, d->data, (size_t)dlen) == 0) {
+                                found = i;
+                                break;
+                            }
+                        }
+                    }
+                    int end = found >= 0 ? found : slen;
+                    VmString* seg = vm_string_new(&vm->heap.regions,
+                                                   s->data + pos, end - pos);
+                    int32_t sp2 = seg ? heap_alloc(&vm->heap) : -1;
+                    int32_t cp2 = sp2 >= 0 ? heap_alloc(&vm->heap) : -1;
+                    if (!seg || sp2 < 0 || cp2 < 0) {
+                        failed = 1;
+                        break;
+                    }
+                    vm->heap.objects[sp2]->type = HEAP_STRING;
+                    vm->heap.objects[sp2]->opaque.ptr = seg;
+                    vm->heap.objects[cp2]->type = HEAP_CONS;
+                    vm->heap.objects[cp2]->cons.car =
+                        (Value){.type = VAL_STRING, .as.ptr = sp2};
+                    vm->heap.objects[cp2]->cons.cdr = result;
+                    result = PAIR_VAL(cp2);
+                    if (found < 0 || dlen == 0) break;
+                    pos = found + dlen;
+                }
+                if (failed) {
+                    vm_raise_error_msg(vm, "string-split: cannot allocate result");
+                    break;
                 }
                 /* reverse */
                 Value rev2 = NIL_VAL;
                 while (result.type == VAL_PAIR) {
                     Value car2 = vm->heap.objects[result.as.ptr]->cons.car;
-                    int32_t rp2 = heap_alloc(&vm->heap); if (rp2 < 0) break;
+                    int32_t rp2 = heap_alloc(&vm->heap);
+                    if (rp2 < 0) { failed = 1; break; }
                     vm->heap.objects[rp2]->type = HEAP_CONS;
                     vm->heap.objects[rp2]->cons.car = car2; vm->heap.objects[rp2]->cons.cdr = rev2;
                     rev2 = PAIR_VAL(rp2); result = vm->heap.objects[result.as.ptr]->cons.cdr;
                 }
-                vm_push(vm, rev2); break;
+                if (failed) vm_raise_error_msg(vm, "string-split: cannot allocate result");
+                else vm_push(vm, rev2);
+                break;
             }
         }
         vm_push(vm, NIL_VAL); break; }

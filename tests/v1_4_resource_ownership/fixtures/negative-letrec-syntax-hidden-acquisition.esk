@@ -1,0 +1,2 @@
+(letrec-syntax ((identity (syntax-rules () ((_ expression) expression))))
+  (identity (tcp-listen "127.0.0.1" 0)))

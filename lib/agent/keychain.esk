@@ -1,42 +1,53 @@
-;;
-;; keychain.esk - macOS Keychain FFI wrapper
-;; Uses shell `security` command (no C FFI needed — Security.framework is complex)
-;;
+;; Native macOS Keychain bridge. Secret bytes never cross a shell or file API.
+(require core.capabilities)
+
 (provide keychain-get keychain-set! keychain-delete keychain-has?)
 
-(define KEYCHAIN_SERVICE "eshkol-agent")
+(define KEYCHAIN_MAX_BYTES 1048576)
 
-;; Delegate to stdlib shell-quote builtin (see lib/agent/fs-watch.esk
-;; for rationale). Single source of truth for shell arg quoting.
-(define shell-escape shell-quote)
+(extern i64 keychain-size-raw ptr i64 :real eshkol_keychain_size)
+(extern i64 keychain-get-into-raw ptr i64 ptr i64 :real eshkol_keychain_get_into)
+(extern i32 keychain-set-raw ptr i64 ptr i64 :real eshkol_keychain_set)
+(extern i32 keychain-delete-raw ptr i64 :real eshkol_keychain_delete)
+(extern i32 keychain-has-raw ptr i64 :real eshkol_keychain_has)
+
+(define (keychain-valid-account? account)
+  (and (string? account)
+       (<= (string-byte-length account) KEYCHAIN_MAX_BYTES)))
 
 (define (keychain-get account)
-  "Retrieve a password from macOS Keychain."
-  (let* ((tmp "/tmp/eshkol-kc.txt")
-         (cmd (string-append "security find-generic-password -s "
-                              (shell-escape KEYCHAIN_SERVICE) " -a "
-                              (shell-escape account) " -w > " tmp " 2>/dev/null"))
-         (rc (system cmd))
-         (val (guard (e (#t #f)) (string-trim (read-file tmp)))))
-    (guard (e (#t #f)) (file-delete tmp))
-    (if (= rc 0) val #f)))
+  "Retrieve exact password bytes from macOS Keychain, or #f on failure."
+  (capability-require! 'keychain)
+  (if (not (keychain-valid-account? account))
+      #f
+      (let ((size (keychain-size-raw account (string-byte-length account))))
+        (if (or (< size 0) (> size KEYCHAIN_MAX_BYTES))
+            #f
+            (let* ((value (make-string size #\space))
+                   (copied (keychain-get-into-raw
+                            account (string-byte-length account) value size)))
+              (if (= copied size) value #f))))))
 
 (define (keychain-set! account value)
-  "Store a password in macOS Keychain."
-  (system (string-append "security delete-generic-password -s "
-                          (shell-escape KEYCHAIN_SERVICE) " -a "
-                          (shell-escape account) " 2>/dev/null"))
-  (= (system (string-append "security add-generic-password -s "
-                              (shell-escape KEYCHAIN_SERVICE) " -a "
-                              (shell-escape account) " -w "
-                              (shell-escape value) " -U 2>/dev/null")) 0))
+  "Store exact password bytes in macOS Keychain."
+  (capability-require! 'keychain)
+  (if (and (keychain-valid-account? account)
+           (string? value)
+           (<= (string-byte-length value) KEYCHAIN_MAX_BYTES))
+      (= (keychain-set-raw account (string-byte-length account)
+                           value (string-byte-length value)) 1)
+      #f))
 
 (define (keychain-delete account)
-  (= (system (string-append "security delete-generic-password -s "
-                              (shell-escape KEYCHAIN_SERVICE) " -a "
-                              (shell-escape account) " 2>/dev/null")) 0))
+  "Delete an item from macOS Keychain; return #f when it is absent."
+  (capability-require! 'keychain)
+  (if (keychain-valid-account? account)
+      (= (keychain-delete-raw account (string-byte-length account)) 1)
+      #f))
 
 (define (keychain-has? account)
-  (= (system (string-append "security find-generic-password -s "
-                              (shell-escape KEYCHAIN_SERVICE) " -a "
-                              (shell-escape account) " >/dev/null 2>&1")) 0))
+  "Return whether a matching item exists, without reading its secret."
+  (capability-require! 'keychain)
+  (if (keychain-valid-account? account)
+      (= (keychain-has-raw account (string-byte-length account)) 1)
+      #f))

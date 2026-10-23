@@ -79,14 +79,6 @@ public:
      */
     llvm::Value* closureCall(llvm::Value* closure, const std::vector<llvm::Value*>& args);
 
-    /**
-     * Create a closure capturing the given environment.
-     * @param func The LLVM function
-     * @param captures Values to capture in the closure
-     * @return Closure as tagged value
-     */
-    llvm::Value* createClosure(llvm::Function* func, const std::vector<llvm::Value*>& captures);
-
     // === Application ===
 
     /**

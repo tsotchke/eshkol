@@ -1,0 +1,95 @@
+(require core.strings)
+(require core.data.base64)
+(require core.list.transform)
+(require core.list.higher_order)
+(require core.list.compound)
+(require core.functional.compose)
+(require core.functional.curry)
+(require core.ad.interval)
+(require core.data.dataframe)
+(require core.json)
+
+(define checks 0)
+(define (check name ok)
+  (if ok
+      (set! checks (+ checks 1))
+      (error name)))
+
+;; String helpers cover empty needles and leading whitespace handling.
+(check "string starts-with positive and negative"
+       (and (string-starts-with "Eshkol" "Esh")
+            (not (string-starts-with "Eshkol" "esh"))))
+(check "string ends-with positive and negative"
+       (and (string-ends-with "Eshkol" "kol")
+            (not (string-ends-with "Eshkol" "Esh"))))
+(check "string trim-left whitespace, empty, and unchanged"
+       (and (string=? (string-trim-left "  \tEshkol") "Eshkol")
+            (string=? (string-trim-left "") "")
+            (string=? (string-trim-left "Eshkol") "Eshkol")))
+(check "string to bytes ASCII" (equal? (string->bytes "abc") '(97 98 99)))
+(check "bytes to string ASCII" (string=? (bytes->string '(65 66 67)) "ABC"))
+
+;; List copying, right-fold order, and the four exported positional selectors.
+(check "list-copy contents" (equal? (list-copy '(a b c)) '(a b c)))
+(check "foldr associates from the right" (= (foldr - 0 '(10 3 2)) 9))
+(define ten-items '(a b c d e f g h i j))
+(check "seventh selector" (eq? (seventh ten-items) 'g))
+(check "eighth selector" (eq? (eighth ten-items) 'h))
+(check "ninth selector" (eq? (ninth ten-items) 'i))
+(check "tenth selector" (eq? (tenth ten-items) 'j))
+
+;; Each combinator is applied to concrete, deterministic functions.
+(define composed (compose3 (lambda (x) (+ x 10))
+                           (lambda (x) (* x 2))
+                           (lambda (x) (- x 3))))
+(check "compose3 order" (= (composed 5) 14))
+(check "constantly ignores its argument" (string=? ((constantly "fixed") "ignored") "fixed"))
+(define curried-sum (curry3 (lambda (a b c) (+ a b c))))
+(check "curry3" (= (((curried-sum 2) 3) 4) 9))
+(check "partial1 thunk" (= ((partial1 (lambda (x) (* x x)) 7)) 49))
+(check "partial2 fixes first argument" (= ((partial2 - 10) 3) 7))
+(check "partial3 fixes first argument" (= ((partial3 (lambda (a b c) (+ a (* b c))) 2) 3 4) 14))
+(check "uncurry2" (= ((uncurry2 (lambda (x) (lambda (y) (+ x y)))) 5 7) 12))
+
+;; Interval operations are checked by their enclosure bounds because arithmetic
+;; operations widen endpoints outward to preserve soundness.
+(define reversed-interval (interval-of 5.0 1.0))
+(check "interval-of normalizes endpoint order"
+       (and (= (car reversed-interval) 1.0) (= (cdr reversed-interval) 5.0)))
+(define sample-interval (interval-of 1.0 3.0))
+(check "interval-width" (= (interval-width sample-interval) 2.0))
+(check "interval-mid" (= (interval-mid sample-interval) 2.0))
+(define negated-interval (interval-neg sample-interval))
+(check "interval-neg" (and (= (car negated-interval) -3.0) (= (cdr negated-interval) -1.0)))
+(define subtracted-interval (interval-sub (interval-of 3.0 5.0) (interval-of 1.0 2.0)))
+(check "interval-sub encloses exact range"
+       (and (<= (car subtracted-interval) 1.0) (>= (cdr subtracted-interval) 4.0)))
+(define multiplied-interval (interval-mul (interval-of 2.0 3.0) (interval-of 4.0 5.0)))
+(check "interval-mul encloses exact range"
+       (and (<= (car multiplied-interval) 8.0) (>= (cdr multiplied-interval) 15.0)))
+(define divided-interval (interval-div (interval-of 6.0 8.0) (interval-of 2.0 4.0)))
+(check "interval-div encloses quotient"
+       (and (<= (car divided-interval) 1.5) (>= (cdr divided-interval) 4.0)))
+
+;; CSV type inference, headers, and requested projection order use only strings
+;; held in memory; no file or service access is involved.
+(define frame (csv-parse-typed "kind,count\nalpha,3\nbeta,7"))
+(check "csv-parse-typed infers numbers"
+       (equal? (csv-rows frame) '(("alpha" 3) ("beta" 7))))
+(check "csv-header" (equal? (csv-header frame) '("kind" "count")))
+(check "csv-select preserves requested column order"
+       (equal? (csv-select frame '("count" "kind"))
+               '(("count" "kind") (3 "alpha") (7 "beta"))))
+
+;; Serialize and parse one JSON field, checking the documented tagged result.
+(define json-result (json-try-parse (alist->json '(("answer" . 42)))))
+(check "alist->json returns a tagged successful parse"
+       (and (json-parse-result? json-result) (json-result-ok? json-result)
+            (not (json-parse-result? '()))))
+(check "alist->json preserves its value"
+       (= (hash-ref (json-result-value json-result) "answer" #f) 42))
+
+(display "Checks: ")
+(display checks)
+(newline)
+(display "RESULT: PASS\n")

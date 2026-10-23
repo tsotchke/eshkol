@@ -18,7 +18,7 @@ static void vm_macro_capture_values(Node* node, FuncChunk* owner, int context) {
         for (FuncChunk* frame = owner; frame; frame = frame->enclosing) {
             int found = 0;
             for (int i = frame->n_locals - 1; i >= 0; --i) {
-                if (strcmp(frame->locals[i].name, node->symbol) != 0) continue;
+                if (frame->locals[i].compiler_temporary || strcmp(frame->locals[i].name, node->symbol) != 0) continue;
                 if (frame->enclosing || frame->locals[i].depth != 0) {
                     node->macro_value_owner = frame->binding_env_id;
                     node->macro_value_slot = frame->locals[i].slot;
@@ -50,7 +50,7 @@ static int resolve_macro_local(FuncChunk* c, const Node* identifier) {
     if (owner == c->binding_env_id) return identifier->macro_value_slot;
     if (owner < 0 && !c->enclosing)
         for (int i = c->n_locals - 1; i >= 0; --i)
-            if (c->locals[i].depth == 0 &&
+            if (!c->locals[i].compiler_temporary && c->locals[i].depth == 0 &&
                 strcmp(c->locals[i].name, identifier->symbol) == 0)
                 return c->locals[i].slot;
     return -1;
@@ -114,7 +114,7 @@ static void vm_prescan_unit_syntax(FuncChunk* unit, const char* source) {
 static const Local* vm_find_exact_local(FuncChunk* c, const char* name, FuncChunk** where) {
     for (FuncChunk* p = c; p; p = p->enclosing) {
         for (int i = p->n_locals - 1; i >= 0; --i) {
-            if (strcmp(p->locals[i].name, name) == 0) {
+            if (!p->locals[i].compiler_temporary && strcmp(p->locals[i].name, name) == 0) {
                 if (where) *where = p;
                 return &p->locals[i];
             }
@@ -669,7 +669,7 @@ static int vm_head_user_rebound(FuncChunk* c, const Node* identifier) {
 static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int last) {
     for (int i = first; i <= last; i++) {
         compile_expr(c, node->children[i], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
     }
 }
 
@@ -912,7 +912,7 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
          * claimed here — test value on top, nothing emitted since — is the
          * frame offset that value already occupies. */
         int arrow_tmp = -1;
-        if (is_arrow) arrow_tmp = add_local(c, "__cond_arrow_test__");
+        if (is_arrow) arrow_tmp = add_temporary_local(c, "__cond_arrow_test__");
         int jnext = placeholder(c);
         if (is_arrow) {
             /* The receiver is evaluated only on the truthy path (R7RS), then
@@ -1867,6 +1867,38 @@ static int vm_compile_typed_extern_binding(FuncChunk* c, Node* form) {
     return 1;
 }
 
+#include "vm_binding_origins.h"
+
+static uint64_t vm_binding_source_hash(const char* source) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (const unsigned char* p = (const unsigned char*)source; *p; ++p)
+        hash = (hash ^ *p) * UINT64_C(1099511628211);
+    return hash;
+}
+
+static uint32_t vm_module_binding_id(const char* module, const char* name,
+                                      int line, uint64_t source_hash) {
+    if (!module || !name) return 0;
+    for (size_t i = 0; i < sizeof(vm_binding_origins)/sizeof(vm_binding_origins[0]); ++i) {
+        const VmBindingOrigin* origin = &vm_binding_origins[i];
+        if (origin->line == line && origin->source_hash == source_hash &&
+            strcmp(origin->module, module) == 0 && strcmp(origin->name, name) == 0)
+            return origin->id;
+    }
+    return 0;
+}
+
+static uint32_t vm_local_binding_id(const FuncChunk* c, int slot) {
+    for (int i = c->n_locals - 1; i >= 0; --i)
+        if (c->locals[i].slot == slot) return c->locals[i].coverage_binding_id;
+    return 0;
+}
+
+static void vm_emit_binding_read(FuncChunk* c, uint32_t id) {
+    if (id && vm_language_coverage_compilation_enabled())
+        chunk_emit(c, OP_LANGUAGE_COVERAGE_READ, (int)id);
+}
+
 static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                                      int enforce_visibility, char exports[][128], int max_exports) {
     if (!mod_name || !*mod_name) return -1;
@@ -1968,13 +2000,21 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
         return -1;
     }
     Node* forms[VM_MAX_FORWARD_FUNCTIONS * 8];
+    uint32_t binding_ids[VM_MAX_FORWARD_FUNCTIONS * 8] = {0};
+    const uint64_t source_hash = vm_binding_source_hash(src);
+    const char* line_cursor = src;
+    int source_line = 1;
     int n_forms = 0;
     src_ptr = src;
     while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
         skip_ws();
         if (!*src_ptr) break;
+        while (line_cursor < src_ptr) if (*line_cursor++ == '\n') ++source_line;
+        const int definition_line = source_line;
         Node* expr = parse_sexp();
         if (!expr) break;
+        binding_ids[n_forms] = vm_module_binding_id(mod_name,
+            vm_define_bound_name(expr), definition_line, source_hash);
         forms[n_forms++] = expr;
     }
 
@@ -2007,7 +2047,10 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
             if ((form->type == N_LIST && form->n_children > 0 && is_sym(form->children[0], "extern")) ||
                 (name && resolve_local(c, name) >= 0)) {
                 free_node(form);
-            } else forms[kept++] = form;
+            } else {
+                binding_ids[kept] = binding_ids[i];
+                forms[kept++] = form;
+            }
         }
         n_forms = kept;
     }
@@ -2113,6 +2156,11 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
             (void)vm_compile_typed_extern_binding(c, forms[i]);
         } else if (do_box) vm_compile_boxed_variable_define(c, forms[i]);
         else compile_expr(c, forms[i], 0);
+        const char* bound = vm_define_bound_name(forms[i]);
+        if (bound) {
+            int slot = resolve_local(c, bound);
+            if (slot >= 0) c->locals[slot].coverage_binding_id = binding_ids[i];
+        }
         if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
         free_node(forms[i]);
     }
@@ -2715,9 +2763,9 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
         Node* binding = bindings->children[i];
         if (binding->type != N_LIST || binding->n_children != 2) continue;
         compile_expr(c, binding->children[0], 0);
-        parameter_slots[n_bindings] = add_local(c, "__parameterize_parameter__");
+        parameter_slots[n_bindings] = add_temporary_local(c, "__parameterize_parameter__");
         compile_expr(c, binding->children[1], 0);
-        raw_value_slots[n_bindings] = add_local(c, "__parameterize_raw_value__");
+        raw_value_slots[n_bindings] = add_temporary_local(c, "__parameterize_raw_value__");
         n_bindings++;
     }
 
@@ -2728,7 +2776,7 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_GET_LOCAL, parameter_slots[i]);
         chunk_emit(c, OP_GET_LOCAL, raw_value_slots[i]);
         chunk_emit(c, OP_NATIVE_CALL, 705); /* parameter-convert */
-        converted_value_slots[i] = add_local(c, "__parameterize_value__");
+        converted_value_slots[i] = add_temporary_local(c, "__parameterize_value__");
     }
 
     /* Enter every binding.  Native 702 records a parameter cleanup entry in
@@ -2850,7 +2898,7 @@ static void compile_form_define_values(FuncChunk* c, Node* node) {
      * written (ADR-0026). */
     if (c->enclosing == NULL && c->scope_depth == 0) vm_decolor_tree(node->children[1]);
     compile_expr(c, node->children[2], 0);
-    int result_slot = add_local(c, "__define_values_result__");
+    int result_slot = add_temporary_local(c, "__define_values_result__");
     compile_bind_values_formals(c, result_slot, node->children[1], NULL, 0);
 }
 
@@ -2875,7 +2923,7 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
         Node* binding = bindings_list->children[b];
         if (binding->type != N_LIST || binding->n_children != 2) continue;
         compile_expr(c, binding->children[1], 0);
-        result_slots[n_bindings] = add_local(c, "__let_values_result__");
+        result_slots[n_bindings] = add_temporary_local(c, "__let_values_result__");
         formals[n_bindings] = binding->children[0];
         n_bindings++;
         if (sequential) {
@@ -2932,7 +2980,7 @@ static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int ta
     (void)head; (void)tail;
     int saved_locals = c->n_locals;
     compile_expr(c, node->children[1], 0);   /* the handler procedure */
-    add_local(c, "__handler__");
+    add_temporary_local(c, "__handler__");
     int handler_patch = c->code_len;
     chunk_emit(c, OP_PUSH_HANDLER, 0);
     chunk_emit(c, OP_NATIVE_CALL, 2244);     /* %handler-procedure! */
@@ -3091,7 +3139,7 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
          * alias the slot the receiver is about to be pushed into, which is
          * what the first cut of this fix did. */
         int arrow_tmp = -1;
-        if (is_arrow) arrow_tmp = add_local(&handler_func, "__guard_arrow_test__");
+        if (is_arrow) arrow_tmp = add_temporary_local(&handler_func, "__guard_arrow_test__");
         int jnext = handler_func.code_len;
         chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
         if (is_test_only) {
@@ -5087,6 +5135,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
         if (slot >= 0) {
             chunk_emit(c, OP_GET_LOCAL, slot);
+            vm_emit_binding_read(c, vm_local_binding_id(c, slot));
             /* If boxed, unbox: the local holds a vector, read element 0 */
             for (int li = c->n_locals - 1; li >= 0; li--) {
                 if (c->locals[li].slot == slot && c->locals[li].boxed) {
@@ -5169,6 +5218,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                     }
                     if (final_uv >= 0) {
                         chunk_emit(c, OP_GET_UPVALUE, final_uv);
+                        vm_emit_binding_read(c, vm_local_binding_id(chain[d], enc_slot));
                         /* Unbox if the captured variable is boxed */
                         if (final_boxed) {
                             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
@@ -5232,21 +5282,23 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int argc = node->n_children - 1;
         int saved_locals = c->n_locals;
         compile_expr(c, head, 0);  /* push the (rebound) function */
-        add_local(c, "__call_func__");
+        add_temporary_local(c, "__call_func__");
         for (int i = 1; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
-            add_local(c, "__call_arg__");
+            add_temporary_local(c, "__call_arg__");
         }
+        const int emit_tail_call = vm_tail_call_allowed(c, head, tail);
+        if (emit_tail_call) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
+        }
+        /* The admission and runtime checks bind this marker to the immediate
+         * call instruction. Handler cleanup must precede the marker. */
         if (vm_language_coverage_compilation_enabled()) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (vm_tail_call_allowed(c, head, tail)) {
-            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
-                chunk_emit(c, OP_POP_HANDLER, 0);
-            vm_emit_call(c, argc, 1);
-        } else
-            chunk_emit(c, OP_CALL, argc);
+        vm_emit_call(c, argc, emit_tail_call);
         c->n_locals = saved_locals; /* CALL consumed func+args */
         return;
     }
@@ -5254,7 +5306,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "gpu-matmul") && node->n_children == 3) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 440);
@@ -5265,7 +5317,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         if (native_id >= 0) {
             int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
             compile_expr(c, node->children[2], 0);
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[3], 0);
             c->n_locals = __opnd_s;
             chunk_emit(c, OP_NATIVE_CALL, native_id);
@@ -5351,16 +5403,16 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         } else if (node->n_children == 3) {
             int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
             compile_expr(c, node->children[1], 0);                     /* start */
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[2], 0);                     /* stop  */
             c->n_locals = __opnd_s;
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));   /* step  */
         } else { /* node->n_children == 4 */
             int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
             compile_expr(c, node->children[1], 0);                     /* start */
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[2], 0);                     /* stop  */
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[3], 0);                     /* step  */
             c->n_locals = __opnd_s;
         }
@@ -5379,7 +5431,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         (node->n_children == 3 || node->n_children == 4)) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         if (node->n_children == 4) compile_expr(c, node->children[3], 0);
@@ -5397,7 +5449,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         (node->n_children == 3 || node->n_children == 4)) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);          /* bv    */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);          /* start */
         c->n_locals = __opnd_s;
         if (node->n_children == 4) {
@@ -5416,11 +5468,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         (node->n_children == 5 || node->n_children == 6)) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);          /* to    */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);          /* at    */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[3], 0);          /* from  */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[4], 0);          /* start */
         c->n_locals = __opnd_s;
         if (node->n_children == 6) {
@@ -5472,7 +5524,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "fg-infer!") && node->n_children == 3) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_CONST, chunk_add_const(c, FLOAT_VAL(1e-8)));
@@ -5616,7 +5668,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
-            add_local(c, "__operand__");                    /* accumulator on stack */
+            add_operand_local(c);                    /* accumulator on stack */
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_ADD, 0);
             c->n_locals = saved;                            /* ADD collapsed acc+operand → 1 */
@@ -5628,7 +5680,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_SUB, 0);
             c->n_locals = saved;
@@ -5639,7 +5691,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_MUL, 0);
             c->n_locals = saved;
@@ -5654,7 +5706,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
              * exact and inexact operands retain IEEE behavior. Compile the
              * sole operand once; the constant numerator has no effects. */
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[1], 0);
             chunk_emit(c, OP_DIV, 0);
             c->n_locals = saved;
@@ -5662,7 +5714,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_DIV, 0);
             c->n_locals = saved;
@@ -5710,7 +5762,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "display") && node->n_children == 3) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 2226);
@@ -5784,12 +5836,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
             chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
             int saved_locals = c->n_locals;
-            add_local(c, "__vec_literal__");
+            add_temporary_local(c, "__vec_literal__");
             for (int i = 1; i < node->n_children; i++) {
                 chunk_emit(c, OP_DUP, 0);                                   /* vec */
                 chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1)));/* idx */
                 int elem_locals = c->n_locals;
-                add_local(c, "__vec_literal_idx__");
+                add_temporary_local(c, "__vec_literal_idx__");
                 compile_expr(c, node->children[i], 0);                      /* val */
                 c->n_locals = elem_locals;
                 /* Operand 1 marks only the final store for large reader
@@ -5816,7 +5868,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         /* (make-vector n) or (make-vector n fill) — emit via NATIVE or direct */
         int s = c->n_locals;
         compile_expr(c, node->children[1], 0);
-        if (node->n_children >= 3) { add_local(c, "__operand__"); compile_expr(c, node->children[2], 0); c->n_locals = s; }
+        if (node->n_children >= 3) { add_operand_local(c); compile_expr(c, node->children[2], 0); c->n_locals = s; }
         else chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
         /* make-vector: n and fill are on stack, dispatch to runtime native */
         chunk_emit(c, OP_NATIVE_CALL, 218);
@@ -5847,7 +5899,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "exact-rational") && node->n_children == 3) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 330);
@@ -6077,7 +6129,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         /* Handled via NATIVE_CALL 70 which unpacks the list at runtime */
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0); /* push f */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0); /* push args list */
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 70); /* apply: takes f and args-list from stack */
@@ -6089,7 +6141,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         node->n_children == 3) {
         int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = saved;
         chunk_emit(c, OP_NATIVE_CALL, 70);
@@ -6284,7 +6336,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "cons") && node->n_children == 3) {
         int s = c->n_locals;
         compile_expr(c, node->children[2], 0); /* cdr first (SOS) */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[1], 0); /* car second (TOS) */
         c->n_locals = s;
         chunk_emit(c, OP_CONS, 0); return;
@@ -6300,7 +6352,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
          * the list came back as (). */
         int s = c->n_locals;
         chunk_emit(c, OP_NIL, 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         for (int i = node->n_children - 1; i >= 1; i--) {
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_CONS, 0);
@@ -6494,17 +6546,24 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         /* Note: self-reference upvalue is already patched by OP_CLOSE_UPVALUE
          * at line above (after OP_CLOSURE). No additional open_upvalues needed. */
 
-        /* Call the loop function with initial values */
+        /* Keep the live callee and preceding arguments in the compiler's
+         * slot model while lowering each initializer. A nested let otherwise
+         * assigns its first local to the callee's slot and reads a closure
+         * instead of its own value (e.g. Taylor-model Horner initialization). */
+        int call_locals = c->n_locals;
         chunk_emit(c, OP_GET_LOCAL, loop_slot);
+        add_operand_local(c);
         for (int i = 0; i < bindings->n_children; i++) {
             Node* b = bindings->children[i];
             if (b->type == N_LIST && b->n_children >= 2)
                 compile_expr(c, b->children[1], 0);
             else
                 chunk_emit(c, OP_NIL, 0);
+            add_operand_local(c);
         }
         int body_tail = 1 > 0 ? 0 : tail; /* don't tail-call — need POPN cleanup */
         chunk_emit(c, body_tail ? OP_TAIL_CALL : OP_CALL, bindings->n_children);
+        c->n_locals = call_locals; /* CALL consumed callee and initial values. */
 
         /* The loop is finished, so every by-reference slot it opened into THIS
          * frame must be closed (native 152) before the frame can go away.  A
@@ -6629,9 +6688,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
          eshkol_syntax_base_is(node->children[3]->symbol, "dtype"))) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[4], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 423);
@@ -6909,7 +6968,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             for (FuncChunk* p = c; p; p = p->enclosing) {
                 int li = -1;
                 for (int i = p->n_locals - 1; i >= 0; i--) {
-                    if (strcmp(p->locals[i].name, head->symbol) == 0) { li = i; break; }
+                    if (!p->locals[i].compiler_temporary && strcmp(p->locals[i].name, head->symbol) == 0) { li = i; break; }
                 }
                 if (li < 0) continue;
                 if (p->enclosing == NULL) {
@@ -6958,10 +7017,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
         int saved_locals = c->n_locals;
         compile_expr(c, head, 0);  /* push function */
-        add_local(c, "__call_func__");
+        add_temporary_local(c, "__call_func__");
         for (int i = 1; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
-            add_local(c, "__call_arg__");
+            add_temporary_local(c, "__call_arg__");
         }
         for (int i = 0; i < pad_absent_args; i++) {
             /* ESHKOL_ABSENT_ARG — the marker the native op reads as "this
@@ -6970,19 +7029,20 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
              * source program evaluates to, so an op cannot mistake a real
              * argument for an absent one. */
             chunk_emit(c, OP_VOID, 0);
-            add_local(c, "__call_arg__");
+            add_temporary_local(c, "__call_arg__");
             argc++;
         }
+        const int emit_tail_call = vm_tail_call_allowed(c, head, tail);
+        if (emit_tail_call) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
+        }
+        /* Keep the coverage marker adjacent to its actual call opcode. */
         if (head->type == N_SYMBOL && vm_language_coverage_compilation_enabled()) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (vm_tail_call_allowed(c, head, tail)) {
-            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
-                chunk_emit(c, OP_POP_HANDLER, 0);
-            vm_emit_call(c, argc, 1);
-        } else
-            chunk_emit(c, OP_CALL, argc);
+        vm_emit_call(c, argc, emit_tail_call);
         c->n_locals = saved_locals; /* CALL consumed func+args, restore n_locals */
         return;
     }

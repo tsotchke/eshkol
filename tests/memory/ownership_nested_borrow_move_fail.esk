@@ -1,0 +1,8 @@
+;;; Test: Moving through a nested borrow is rejected
+;;; Expected: Error - "Cannot move 'x' while it is borrowed"
+
+(define x (owned (cons 1 2)))
+(borrow x
+  (begin
+    (borrow x 0)
+    (move x)))

@@ -1,0 +1,16 @@
+;;; The public TLS API must reject encrypted PEM keys without prompting.
+(require stdlib)
+(require core.tls)
+(require core.capabilities)
+
+(capability-install-policy! '(file-read network))
+(define certificate "tests/network/fixtures/localhost-cert.pem")
+(define nonempty-key "tests/network/fixtures/encrypted-nonempty-password-key.pem")
+(define empty-key "tests/network/fixtures/encrypted-empty-password-key.pem")
+(define nonempty-context (tls-server-context certificate nonempty-key))
+(define empty-context (tls-server-context certificate empty-key))
+(if (and (tls-error? nonempty-context) (tls-error? empty-context))
+    (begin
+      (display "PASS: public TLS rejects encrypted keys without a prompt")
+      (newline))
+    (error "public TLS accepted an encrypted key without a password argument"))

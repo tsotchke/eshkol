@@ -13,11 +13,12 @@ description: >
   Verified by `icc architecture-verify --repo eshkol --model
   .icc/architecture-model.yaml`.
 
-  Ground truth: tests/coverage/language_surface.json (1,118 constructs including
+  Ground truth: tests/coverage/language_surface.json (1,470 constructs including
   22 opt-in Agent FFI quantum APIs, 116 special forms, 113 AST ops) and
-  scripts/language_coverage.py (dynamic execution-backed coverage tracker). 1,118
+  scripts/language_coverage.py (dynamic execution-backed coverage tracker). 1,470
   is the enforced floor in tests/coverage/coverage_policy.json (baseline_surface_total).
-  The latest additions are raise-continuable and type-name. Release qualification
+  The declared target is not a measured execution certificate; the historical
+  execution ledger still covers 1,118 names and must not be inflated. Release qualification
   requires fresh execution evidence for the complete surface at the candidate
   commit. scripts/check_surface_counts.py fails CI if this file drifts from the
   manifest again.

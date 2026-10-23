@@ -356,10 +356,11 @@ Of these 84, the current artifact weight-encodes 83.
 opcodes $\{0,1,\ldots,36,38,39,\ldots,83\}$ as weight-implemented and
 zero opcodes as native-delegated; the missing index is 37,
 `OP_NATIVE_CALL`. This is the deliberate external boundary for host
-runtime services (the Eshkol runtime uses native IDs in the 300+ range
+runtime services (the Eshkol VM uses native-call IDs in the 300+ range
 for cons, display, tensor ops, the consciousness engine, geometric
-manifolds, and AD subsystem entry points; see
-`lib/backend/eshkol_compiler.c` and the `vm_native.c` dispatcher).
+manifolds, and AD subsystem entry points; see the VM dispatcher in
+`lib/backend/vm_native.c`. The standalone compiler named in older revisions
+has been retired.
 
 ## 6. Two tiers of execution
 

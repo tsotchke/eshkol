@@ -152,7 +152,8 @@ typedef enum {
      * every lowered form; reaching it is execution evidence for that
      * construct. Normal compilation never emits this opcode. */
     OP_LANGUAGE_COVERAGE_FORM = 71,
-    OP_COUNT = 72
+    OP_LANGUAGE_COVERAGE_READ = 72, /* follows an executed binding load */
+    OP_COUNT = 73
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -985,6 +986,7 @@ typedef struct VM {
 
     uint32_t language_coverage_call_hash;
     int32_t language_coverage_call_pc;
+    int32_t language_coverage_load_pc; /* only the immediately executed load */
 
     /* Reverse-mode AD tracing context.
      * When active_tape != NULL, arithmetic operations (+,-,*,/,sin,cos,...)

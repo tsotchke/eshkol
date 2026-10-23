@@ -8,9 +8,10 @@
 ;;     loopback only (INADDR_LOOPBACK), so it's safe on shared hosts.
 ;;   - Unix domain socket connect — for IDE IPC (VS Code's
 ;;     VSCODE_IPC_HOOK socket etc.).
-;;   - WebSocket client — RFC 6455 text + binary frames; expects an
-;;     existing TCP fd post-handshake.  Sufficient for MCP over WS
-;;     and voice streaming.  No permessage-deflate, no fragmentation.
+;;   - WebSocket server upgrade and client fd wrapping — RFC 6455 text +
+;;     binary frames. Server upgrade validates the accepted HTTP request and
+;;     transfers that socket only after its 101 response succeeds. No
+;;     permessage-deflate or fragmentation.
 ;;
 ;; The native server is built with ESHKOL_BUILD_AGENT_FFI on macOS, Linux,
 ;; and Windows. It provides the same bounded-request and ownership contract
@@ -25,7 +26,7 @@
   ;; Unix domain socket
   unix-socket-connect
   ;; WebSocket
-  ws-wrap-fd ws-send-text ws-send-binary ws-receive ws-close
+  ws-server-upgrade ws-wrap-fd ws-send-text ws-send-binary ws-receive ws-close
   ;; Constants — frame types from ws-receive
   WS-FRAME-TEXT WS-FRAME-BINARY WS-FRAME-CLOSE WS-FRAME-PING WS-FRAME-PONG)
 
@@ -48,6 +49,7 @@
 (extern i64 unix-socket-connect-raw   ptr                 :real eshkol_unix_socket_connect)
 
 ;; WebSocket
+(extern i64 ws-server-upgrade-raw i64 ptr i32 :real eshkol_ws_server_upgrade)
 (extern i64 ws-wrap-fd-raw            i64                 :real eshkol_ws_wrap_fd)
 (extern i32 ws-send-text-raw          i64 ptr i32         :real eshkol_ws_send_text)
 (extern i32 ws-send-binary-raw        i64 ptr i32         :real eshkol_ws_send_binary)
@@ -102,6 +104,13 @@
   (unix-socket-connect-raw path))
 
 ;; ── WebSocket API ───────────────────────────────────────────────────
+(define (ws-server-upgrade server request)
+  "Validate and complete an RFC 6455 server upgrade for the ASCII request
+   returned by http-server-accept. Returns a WebSocket handle on success
+   or -1 on refusal. Buffered bytes after the HTTP header remain available
+   as the first WebSocket frame."
+  (ws-server-upgrade-raw server request (string-byte-length request)))
+
 (define (ws-wrap-fd fd)
   "Wrap an existing TCP/Unix fd as a WebSocket handle.  Caller is
    responsible for completing the HTTP/1.1 Upgrade handshake before
@@ -135,7 +144,7 @@
                                     timeout-ms)))
     (cond
       ((< n 0) #f)
-      ((= n 0) #f)  ; timeout
+      ((and (= n 0) (= (char->integer (string-ref ft-buf 0)) 0)) #f) ; timeout
       (else
         (let ((ft (char->integer (string-ref ft-buf 0))))
           (cons ft (substring buf 0 n)))))))

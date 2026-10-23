@@ -207,6 +207,36 @@ probe_external_ci_evidence() {
     printf '  \xE2\x9C\x97 %-42s UNVERIFIED (CI receipt needed): %s — %s\n' "$probe_id" "$workflow" "$reason"
 }
 
+# A native TLS event is emitted only after the compiled capability and all
+# registered C/JIT/AOT/Python-peer tests are present and pass in this run.
+probe_tls_acceptance() {
+    local compile_flags test_list required
+    compile_flags="$BUILD_DIR_PATH/CMakeCache.txt"
+    if [ ! -f "$compile_flags" ] || ! grep -Fq 'ESHKOL_TLS_AVAILABLE:INTERNAL=1' "$compile_flags"; then
+        probe_unverified v14_tls_handshake_verified \
+            "native OpenSSL TLS is unavailable in this build; no handshake PASS is emitted"
+        return
+    fi
+
+    test_list="$(ctest --test-dir "$BUILD_DIR_PATH" -N -R '^tls_' 2>&1)" || {
+        probe_unverified v14_tls_handshake_verified "CTest could not enumerate TLS acceptance tests"
+        return
+    }
+    for required in tls_context_native tls_public_scheme_jit tls_public_scheme_aot \
+                    tls_public_python_jit tls_public_python_aot \
+                    tls_public_fatal_jit tls_public_fatal_aot; do
+        if ! printf '%s\n' "$test_list" | grep -Fq "$required"; then
+            probe_unverified v14_tls_handshake_verified \
+                "required public TLS test is not registered: $required"
+            return
+        fi
+    done
+    probe_run v14_tls_handshake_verified \
+        'native TLS C/JIT/AOT and Python SSL peer acceptance suite' \
+        'ctest --test-dir "$BUILD_DIR_PATH" --output-on-failure -R "^tls_"' \
+        '100% tests passed'
+}
+
 echo "Running v1.4-connection oracle probes -> $TRACE_FILE"
 echo
 
@@ -307,10 +337,18 @@ probe_run v14_tcp_roundtrip 'public core.net TCP loopback round trip' \
     'python3 "$REPO_ROOT/scripts/run_net_gate.py" --runner "$ESHKOL_RUN"'
 probe_run v14_udp_roundtrip 'public core.net UDP loopback round trip' \
     'python3 "$REPO_ROOT/scripts/run_net_gate.py" --runner "$ESHKOL_RUN"'
-probe_unverified v14_tls_handshake_verified \
-    'requires a verified TLS handshake test'
-probe_unverified v14_websocket_server_echo \
-    'requires a WebSocket server upgrade and echo round-trip test'
+probe_tls_acceptance
+if [ -f "$BUILD_DIR_PATH/libeshkol-agent-ffi.a" ] &&
+   [ -x "$ESHKOL_RUN" ] &&
+   [ -x "$BUILD_DIR_PATH/eshkol-agent-websocket-server-test" ]; then
+    probe_run v14_websocket_server_echo \
+        'public agent.http_server WebSocket upgrade and echo through JIT/AOT; native frame, control, refusal, and backpressure contracts' \
+        '"$BUILD_DIR_PATH/eshkol-agent-websocket-server-test" && python3 "$REPO_ROOT/scripts/test_websocket_server_public.py" --eshkol-run "$ESHKOL_RUN" --source "$REPO_ROOT" --build-dir "$BUILD_DIR_PATH"' \
+        '^PASS: public Eshkol AOT WebSocket round-trip$'
+else
+    probe_unverified v14_websocket_server_echo \
+        'optional agent FFI archive or public server test targets are unavailable in this build'
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Concurrency (docs/COMPILER_ROADMAP.md #156-#160, M3)
@@ -419,17 +457,32 @@ probe_run v14_linear_consume_exactly_once_static \
     'Linear/affine kernel (ADR-0004): a program that uses a linear Qubit twice is REJECTED at compile time under --strict-types (no-cloning), proving the same mechanism v1.4 needs for Own/socket typestate' \
     '"$ESHKOL_RUN" --strict-types tests/typesystem/qubit_no_cloning_test.esk -o "$WORK/qubit_bad" >/dev/null 2>&1; rc=$?; [ "$rc" -ne 0 ] && [ ! -e "$WORK/qubit_bad" ]'
 
-# These requirements need end-to-end compile-fail evidence for resource
-# ownership diagnostics. The gate currently has no such probe attached.
-probe_unverified v14_socket_leak_rejected_statically \
-    'requires a source-bound compile-fail test proving leaked socket ownership is rejected'
-probe_unverified v14_double_close_rejected_statically \
-    'requires a source-bound compile-fail test proving a second close is rejected statically'
-
-# Borrow-pattern enforcement needs a source-bound program test through the
-# real checker, including the intended rejection/acceptance cases.
-probe_unverified v14_borrow_pattern_honored \
-    'requires source-bound program tests demonstrating borrow-pattern enforcement through the real checker'
+# The opt-in native checked fragment must accept real scoped owners and reject
+# the corresponding bad programs. Every static probe compiles a valid control
+# as well as the negative fixture; blanket refusal cannot earn a PASS.
+RESOURCE_COMPILED_TEST="$REPO_ROOT/tests/v1_4_resource_ownership/test_compiled.py"
+RESOURCE_RUNTIME_TEST="$REPO_ROOT/tests/v1_4_resource_ownership/test_runtime.py"
+if [ -f "$RESOURCE_COMPILED_TEST" ] && [ -f "$RESOURCE_RUNTIME_TEST" ]; then
+    probe_run v14_socket_leak_rejected_statically \
+        'native --strict-resources: real socket leak rejected, valid branch-close accepted' \
+        'python3 "$RESOURCE_COMPILED_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case positive-both-branches-close --case negative-leak --case negative-one-branch-leaks' \
+        '^PASS negative-leak: exit=1 resource_diagnostic=True artifact=False$'
+    probe_run v14_double_close_rejected_statically \
+        'native --strict-resources: duplicate close rejected, valid owner accepted' \
+        'python3 "$RESOURCE_COMPILED_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case positive-both-branches-close --case negative-double-close --case negative-use-after-close' \
+        '^PASS negative-double-close: exit=1 resource_diagnostic=True artifact=False$'
+    probe_run v14_borrow_pattern_honored \
+        'native --strict-resources: borrow compile controls and actual JIT/AOT port observations with one close' \
+        'python3 "$RESOURCE_COMPILED_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case positive-borrow-scope --case negative-consume-while-borrowed --case negative-loan-escape && python3 "$RESOURCE_RUNTIME_TEST" --runner "$ESHKOL_RUN" --lib-dir "$BUILD_DIR_PATH" --case borrow' \
+        '^PASS borrow aot marker=RESULT: PASS$'
+else
+    probe_unverified v14_socket_leak_rejected_statically \
+        'requires source-bound valid and leaked socket compile controls under --strict-resources'
+    probe_unverified v14_double_close_rejected_statically \
+        'requires source-bound valid and duplicate close compile controls under --strict-resources'
+    probe_unverified v14_borrow_pattern_honored \
+        'requires compiled borrow falsifiers and actual JIT/AOT borrow-scope observations'
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Stage 4 / v1.4.1 (docs/design/adr/0000-unified-trajectory.md Stage 4:

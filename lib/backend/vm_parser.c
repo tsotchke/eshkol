@@ -1,6 +1,6 @@
 /*******************************************************************************
  * Eshkol Source Compiler (parser + bytecode generator)
- * Merged from eshkol_compiler.c — single interpreter, one dispatch table.
+ * Historical parser code retained in the VM backend; the retired standalone compiler is not a live source.
  ******************************************************************************/
 
 #include "eshkol/backend/vm_limits.h"
@@ -992,6 +992,8 @@ typedef struct {
     int depth;
     int boxed;    /* 1 = variable is heap-boxed (stored in 1-element vector) */
     unsigned serial; /* creation order among all bindings (g_vm_binding_serial) */
+    uint32_t coverage_binding_id; /* exact exported origin; zero for user locals */
+    int compiler_temporary; /* stack accounting only; never a source binding */
 } Local;
 
 typedef struct {
@@ -1220,7 +1222,7 @@ static void patch(FuncChunk* c, int slot, uint8_t op, int32_t target) {
  */
 static int resolve_local(FuncChunk* c, const char* name) {
     for (int i = c->n_locals - 1; i >= 0; i--) {
-        if (strcmp(c->locals[i].name, name) == 0) return c->locals[i].slot;
+        if (!c->locals[i].compiler_temporary && strcmp(c->locals[i].name, name) == 0) return c->locals[i].slot;
     }
     return -1;
 }
@@ -1244,8 +1246,21 @@ static int add_local(FuncChunk* c, const char* name) {
     c->locals[c->n_locals].depth = c->scope_depth;
     c->locals[c->n_locals].boxed = 0;
     c->locals[c->n_locals].serial = ++g_vm_binding_serial;
+    c->locals[c->n_locals].coverage_binding_id = 0;
+    c->locals[c->n_locals].compiler_temporary = 0;
     c->n_locals++;
     return slot;
+}
+
+/* Compiler bookkeeping slots must never shadow legal Scheme identifiers. */
+static int add_temporary_local(FuncChunk* c, const char* label) {
+    int slot = add_local(c, label);
+    if (slot >= 0) c->locals[slot].compiler_temporary = 1;
+    return slot;
+}
+
+static int add_operand_local(FuncChunk* c) {
+    return add_temporary_local(c, "__operand__");
 }
 
 /**
@@ -1986,12 +2001,12 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
         chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
         int saved_locals = c->n_locals;
-        add_local(c, "__quoted_vec_literal__");
+        add_temporary_local(c, "__quoted_vec_literal__");
         for (int i = 1; i < datum->n_children; i++) {
             chunk_emit(c, OP_DUP, 0);                                    /* vec */
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1))); /* idx */
             int elem_locals = c->n_locals;
-            add_local(c, "__quoted_vec_idx__");
+            add_temporary_local(c, "__quoted_vec_idx__");
             compile_quote(c, datum->children[i]);                        /* val */
             c->n_locals = elem_locals;
             chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */

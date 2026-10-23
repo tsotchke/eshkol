@@ -2,6 +2,58 @@
   "arena_allocate_cons_with_header": [
     "arena_ptr"
   ],
+  "arena_tagged_cons_get_double": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_flags": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_int64": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_ptr": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_tagged_value": [
+    "tagged_out_ptr",
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_get_type": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_set_double": [
+    "cons_ptr",
+    "i32",
+    "f64",
+    "i32"
+  ],
+  "arena_tagged_cons_set_int64": [
+    "cons_ptr",
+    "i32",
+    "i64",
+    "i32"
+  ],
+  "arena_tagged_cons_set_null": [
+    "cons_ptr",
+    "i32"
+  ],
+  "arena_tagged_cons_set_ptr": [
+    "cons_ptr",
+    "i32",
+    "i64",
+    "i32"
+  ],
+  "arena_tagged_cons_set_tagged_value": [
+    "cons_ptr",
+    "i32",
+    "tagged_ptr"
+  ],
   "arena_allocate_multi_value": [
     "arena_ptr",
     "size_t"
@@ -159,6 +211,11 @@
   "eshkol_is_bignum_tagged": [
     "tagged_ptr"
   ],
+  "eshkol_make_string_checked": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_ptr"
+  ],
   "eshkol_is_rational_tagged_ptr": [
     "tagged_ptr"
   ],
@@ -176,6 +233,11 @@
     "tensor_ptr",
     "i32",
     "cstring_ptr"
+  ],
+  "eshkol_list_reverse_tagged": [
+    "arena_ptr",
+    "tagged_ptr",
+    "tagged_out_ptr"
   ],
   "eshkol_list_to_vector_sret": [
     "tagged_out_ptr",
@@ -279,6 +341,9 @@
     "tagged_ptr",
     "cstring_ptr"
   ],
+  "eshkol_string_byte_length": [
+    "cstring_ptr"
+  ],
   "eshkol_unwrap_list_index": [
     "tagged_ptr"
   ],
@@ -305,6 +370,11 @@
   "eshkol_write_value_to_port": [
     "tagged_ptr",
     "port_ptr"
+  ],
+  "memcmp": [
+    "memory_ptr",
+    "memory_ptr",
+    "byte_count"
   ],
   "memcpy": [
     "memory_ptr",

@@ -64,43 +64,49 @@ regenerated after the last ratchet.
 
 ## How the manifest is built (ground truth)
 
-`gen_language_surface.py` parses five sources directly so the surface can never
-silently drift from the compiler:
+`gen_language_surface.py` extracts the live surface from production sources:
 
-1. **Native first-class closure table** — `lib/backend/eshkol_compiler.c`
-   `static const BuiltinDef BUILTINS[]` (`{name, native_id, arity}`).
-2. **Bytecode VM table** — `lib/backend/eshkol_vm.c` `BUILTINS[]`.
-3. **LLVM AOT dispatch** — every `func_name == "name"` in
-   `lib/backend/llvm_codegen.cpp`. This is the AOT intrinsic surface and adds
-   240 builtins absent from the id-tables at v1.3.6-evolve (`counts.builtins_aot_only`
-   in `language_surface.json`) (R7RS IO/mutation, the NN/optimizer/
-   linalg surface, atomics, the extended numeric tower).
+1. **VM core builtin table** — `lib/backend/eshkol_vm.c`
+   `static const BuiltinDef BUILTINS[]` (`{name, id, arity}`), the sole core
+   ID/arity authority.
+2. **Production prelude sources** — VM bootstrap definitions in
+   `lib/backend/vm_prelude_source.h`, plus top-level definitions in
+   `lib/stdlib.esk` and exports from modules it directly requires. Recursive
+   dependency exports remain labeled `stdlib_closure_presence` unless a
+   directly required module explicitly re-exports them. Prelude entries carry
+   source module, path, and line provenance. The manifest also records each
+   closure module's exact exports and top-level definitions; private module
+   definitions are evidence, not public prelude names. Current production
+   files use simple symbol `require` and flat `provide`; modifiers or renamed
+   exports make generation fail until their import visibility is modeled.
+3. **LLVM AOT dispatch** — names from `lib/backend/llvm_codegen.cpp`. These
+   produce the `native_llvm` name-evidence label only; they provide no stable
+   IDs, arity or ABI claim.
 4. **Special forms** — `lib/frontend/parser.cpp` `get_operator_type`
-   (keyword → `eshkol_op_t`) plus the directly-dispatched forms
-   (`begin`, `define-library`, `delay`, `named-let`, ...), and the
+   (keyword → `eshkol_op_t`) plus directly dispatched forms and the
    `eshkol_op_t` enum from `inc/eshkol/eshkol.h`.
 5. **Tracked Agent FFI APIs** — the Moonlab `provide` surfaces in
-   `lib/agent/quantum.esk` and `lib/agent/pqc.esk`. These entries are marked
-   `agent_ffi`, not falsely attributed to the core VM/native builtin tables.
+   `lib/agent/quantum.esk` and `lib/agent/pqc.esk`.
 
-Each builtin records which backend(s) register it (`native`, `vm`,
-`native_llvm`) so a construct that exists in only one backend is visible.
+The obsolete compiler builtin rows are preserved in
+`retired_compiler_builtin_reference.json` as frozen historical evidence with
+the original source SHA-256; they are never a live input. VM `BUILTINS[]` is
+the sole source of core IDs and arity. Prelude entries identify `vm_bootstrap`
+and `stdlib` independently.
 
-A row in either `BUILTINS[]` table may also carry a trailing block comment
+A row in the VM `BUILTINS[]` table may also carry a trailing block comment
 reading `mirrors: <public-name>`, which the generator copies onto the entry as
 `"mirrors"`. It marks the row as one engine's private spelling of a public
 construct — an arity split (`_newline1` for the explicit-port `newline`, whose
 native codegen takes the optional port directly), or a lower-level handle form
 (`make-euclidean-manifold-handle` for `core.manifold`'s
-`make-euclidean-manifold`) — rather than a construct of its own. Registering a
-row on both engines makes the annotation redundant, and the generator then
-fails rather than letting a stale one stand.
+`make-euclidean-manifold`) — rather than a construct of its own. The annotation remains explicit source evidence even if LLVM also dispatches the public spelling.
 
 The annotation exists because the cross-surface gates could otherwise relate
 the two spellings only by name identity, so renaming a private spelling apart
 from its public one reported a backend asymmetry that did not exist. It cannot
 excuse a real gap: `scripts/p8/five_way_surface.py` resolves the named public
-construct on the native surface itself before it treats the row as covered.
+construct in the manifest through production LLVM/source relationships before it treats the row as covered.
 
 ## How coverage is measured (dynamic)
 
@@ -306,3 +312,28 @@ python3 scripts/check_doc_front_matter.py --update-baseline   # after adding fro
 
 CI runs it in the `assurance-gates` job, and `scripts/release_autopilot.py`
 runs it with the other documentation checks.
+
+
+VM binding-read evidence is distinct from invocation. `V ... @read` carries a
+collision-checked binding-origin identifier. The compiler associates that ID
+with a resolved module definition only when the generated module name, original
+line and source checksum agree, then preserves it through root slots, captures
+and deterministic bootstrap metadata. Markers follow actual symbol loads and
+survive ESKB; runtime requires the immediately executed load, and admission
+rejects invalid marker placement or IDs. User and lexical locals start untagged.
+Only a manifest binding proven to be a value can receive value-read coverage.
+Reading a procedure never proves it was called, and reading an origin does not
+prove differently named exported aliases were used. The strict 1470/100% and
+zero-deficit policy is unchanged. `gen_vm_binding_origins.py --check` checks the
+source-bound table; the runtime regression exercises both VM dispatchers with
+source and ESKB input, including lexical shadows, relay captures, renamed
+imports, assignments and untaken branches.
+
+
+Trust boundary: coverage markers and CRC-valid ESKB are not authenticated
+certificates. As with existing call/form markers, a hand-authored or edited
+bytecode file can forge a marker. Only trusted compiler outputs bound to the
+qualified source and verified bytecode/artifact hashes may supply release
+coverage evidence. Structural admission alone establishes no origin authority.
+The read runtime regression pins generated ESKB before and after execution;
+retained diagnostic or externally supplied bytecode is not qualification data.

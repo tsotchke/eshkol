@@ -164,6 +164,19 @@ if(Eshkol_FOUND AND NOT TARGET Eshkol::eshkol)
       endif()
     endforeach()
     list(APPEND _eshkol_interface_link_libraries "-lobjc")
+    # Relocatable macOS TLS packages carry static OpenSSL archives for
+    # downstream AOT consumers. Link by package-relative discovery so the
+    # consumer does not inherit the runner's Homebrew paths or dylib RPATHs.
+    get_filename_component(_eshkol_prefix "${Eshkol_COMPILER}" DIRECTORY)
+    get_filename_component(_eshkol_prefix "${_eshkol_prefix}" DIRECTORY)
+    set(_eshkol_tls_dir "${_eshkol_prefix}/lib/eshkol/runtime-deps")
+    foreach(_eshkol_tls_archive IN ITEMS libssl.a libcrypto.a)
+      if(EXISTS "${_eshkol_tls_dir}/${_eshkol_tls_archive}" AND
+         NOT IS_SYMLINK "${_eshkol_tls_dir}/${_eshkol_tls_archive}")
+        list(APPEND _eshkol_interface_link_libraries
+          "${_eshkol_tls_dir}/${_eshkol_tls_archive}")
+      endif()
+    endforeach()
   elseif(WIN32)
     list(APPEND _eshkol_interface_link_libraries bcrypt ws2_32)
   endif()

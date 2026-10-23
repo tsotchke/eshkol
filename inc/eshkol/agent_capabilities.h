@@ -5,11 +5,13 @@
  *
  * Every entry point is a plain C function over integers, doubles, byte
  * buffers and opaque integer handles, so that the same symbols can be bound
- * from compiled Eshkol code (`extern` declarations in lib/agent/*.esk), from
+ * from compiled Eshkol code (`extern` declarations in agent Eshkol modules), from
  * the JIT, and from the bytecode VM's native bridge.
  *
  * Conventions shared by the whole header:
- * - Handles are small positive integers indexing process-global tables.
+ * - Handles are positive integers indexing process-global tables. Some
+ *   network handles include a generation tag to reject stale references;
+ *   these remain exactly representable in Eshkol's numeric FFI surface.
  *   0 is never a valid handle; creation functions return -1 on failure.
  *   Passing a stale, out-of-range or never-issued handle is safe: void
  *   functions ignore it and value-returning functions report failure.
@@ -632,6 +634,22 @@ ESHKOL_AGENT_API void eshkol_yoga_node_calculate(int64_t, double, double);
  *         selector is unknown.
  */
 ESHKOL_AGENT_API double eshkol_yoga_node_get_computed(int64_t, int32_t);
+
+/* Loopback HTTP server and RFC 6455 WebSocket FFI used by
+ * lib/agent/http_server.esk. The accepted HTTP socket remains owned by its
+ * server handle until ws_server_upgrade returns a WebSocket handle. */
+ESHKOL_AGENT_API int64_t eshkol_http_server_create(int32_t);
+ESHKOL_AGENT_API int32_t eshkol_http_server_port(int64_t);
+ESHKOL_AGENT_API int32_t eshkol_http_server_accept(int64_t, char*, int32_t, int32_t);
+ESHKOL_AGENT_API void eshkol_http_server_respond(int64_t, int32_t, const char*, const char*);
+ESHKOL_AGENT_API void eshkol_http_server_close(int64_t);
+ESHKOL_AGENT_API int64_t eshkol_unix_socket_connect(const char*);
+ESHKOL_AGENT_API int64_t eshkol_ws_server_upgrade(int64_t, const char*, int32_t);
+ESHKOL_AGENT_API int64_t eshkol_ws_wrap_fd(int64_t);
+ESHKOL_AGENT_API int32_t eshkol_ws_send_text(int64_t, const char*, int32_t);
+ESHKOL_AGENT_API int32_t eshkol_ws_send_binary(int64_t, const char*, int32_t);
+ESHKOL_AGENT_API int32_t eshkol_ws_receive(int64_t, char*, int32_t, int32_t*, int32_t);
+ESHKOL_AGENT_API void eshkol_ws_close(int64_t);
 
 #ifdef __cplusplus
 }
