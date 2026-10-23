@@ -20,14 +20,14 @@ probe_run() {
     fi
 
     skip_status=0
-    if rg -qi '(^|[^[:alpha:]])(SKIP|UNVERIFIED)(:|[[:space:]]|$)' "$output_file"; then
+    if grep -Eqi '(^|[^[:alpha:]])(SKIP|UNVERIFIED)(:|[[:space:]]|$)' "$output_file"; then
         skip_status=0
     else
         skip_status=$?
     fi
     if [ "$skip_status" -gt 1 ]; then
         status="$skip_status"
-    elif [ -n "$marker" ] && ! rg -q "$marker" "$output_file"; then
+    elif [ -n "$marker" ] && ! grep -Eq "$marker" "$output_file"; then
         status=1
     fi
 

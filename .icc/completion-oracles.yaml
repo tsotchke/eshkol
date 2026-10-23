@@ -2361,7 +2361,7 @@ oracles:
           event_names: ["v14_socket_leak_rejected_statically"]
           event_values: ["PASS"]
         severity: high
-        label: 'A program that opens a socket/file/thread resource and never closes it on every path FAILS TO COMPILE with a static type error (negative test — the v1.4 exit gate ADR-0004 calls "every resource acquisition has a statically verified consume/cleanup path") — NOT YET IMPLEMENTED: no ESHKOL_VALUE_SOCKET / linear socket type exists; real OS resources (lib/core/system_builtins.c) are plain runtime integers checked only DYNAMICALLY ("use-after-close fails closed... a catchable condition")'
+        label: 'A program that opens a socket/file/thread resource and never closes it on every path FAILS TO COMPILE with a static type error (negative test — the v1.4 exit gate ADR-0004 calls "every resource acquisition has a statically verified consume/cleanup path") — implemented ONLY under the opt-in `--strict-resources` flag (exe/eshkol-run.cpp), exercised by tests/v1_4_resource_ownership/test_compiled.py''s leak/double-close/one-branch-leaks fixtures; outside `--strict-resources` (the default), real OS resources (lib/core/system_builtins.c) remain plain runtime integers checked only DYNAMICALLY ("use-after-close fails closed... a catchable condition"). Planned for v1.4.1: default-on enforcement without the flag'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2369,7 +2369,7 @@ oracles:
           event_names: ["v14_double_close_rejected_statically"]
           event_values: ["PASS"]
         severity: high
-        label: 'Double-close and use-after-close on a typed handle are STATIC errors when the type checker can see them (ADR-0004: "the compiler should reject double-close and obvious use-after-close where the type checker can see it") — NOT YET IMPLEMENTED: same gap as v14_socket_leak_rejected_statically — today both are only dynamic, catchable, runtime errors'
+        label: 'Double-close and use-after-close on a typed handle are STATIC errors when the type checker can see them (ADR-0004: "the compiler should reject double-close and obvious use-after-close where the type checker can see it") — implemented ONLY under the opt-in `--strict-resources` flag, exercised by tests/v1_4_resource_ownership/test_compiled.py''s double-close/use-after-close fixtures; outside `--strict-resources` (the default), same gap as v14_socket_leak_rejected_statically — both remain dynamic, catchable, runtime errors. Planned for v1.4.1: default-on enforcement without the flag'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2377,7 +2377,7 @@ oracles:
           event_names: ["v14_borrow_pattern_honored"]
           event_values: ["PASS"]
         severity: high
-        label: 'Borrow pattern for temporary resource access: a borrowed handle used after its borrow scope ends is rejected — NOT YET IMPLEMENTED for real resources: the BorrowChecker class (Owned/Moved/Dropped/BorrowedShared/BorrowedMut, move/drop/borrowShared/borrowMut) exists in lib/types/type_checker.cpp, but only canBorrowMut/getState are wired into the real checking pass (one mutation-target call site); move/drop/borrowShared/returnBorrow are exercised only by isolated gtest unit tests, never reachable by compiling an actual .esk program'
+        label: 'Borrow pattern for temporary resource access: a borrowed handle used after its borrow scope ends is rejected, and a valid borrow-then-close observes exactly one close on both JIT and AOT — implemented ONLY under the opt-in `--strict-resources` flag, exercised by tests/v1_4_resource_ownership/test_compiled.py''s borrow-scope/consume-while-borrowed/loan-escape fixtures plus test_runtime.py''s borrow case; outside `--strict-resources` (the default), the BorrowChecker class (Owned/Moved/Dropped/BorrowedShared/BorrowedMut, move/drop/borrowShared/borrowMut) in lib/types/type_checker.cpp is reachable only via isolated gtest unit tests, not by compiling an actual .esk program. Planned for v1.4.1: default-on enforcement without the flag'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────
@@ -2393,7 +2393,7 @@ oracles:
           event_names: ["v14_1_oalr_abi_v2_header"]
           event_values: ["PASS"]
         severity: low
-        label: 'v1.4.1-STAGE (S4): OALR ABI v2 — 8->32 byte header, exact layout descriptors ("every pointer-bearing layout registers a descriptor or startup fails"), alias-preserving escape ledgers, structured cross-thread transfer capsules — NOT YET IMPLEMENTED (the object header is still eshkol_object_header_t, statically asserted at 8 bytes in inc/eshkol/eshkol.h; zero hits anywhere for ESHKOL_MEMORY_ABI_V2 or a layout-descriptor/escape-ledger/transfer-capsule concept; design-only per ADR-0000/0004)'
+        label: 'v1.4.1-STAGE (S4): OALR ABI v2 — 8->32 byte header, exact layout descriptors ("every pointer-bearing layout registers a descriptor or startup fails"), alias-preserving escape ledgers, structured cross-thread transfer capsules — Phase A exists (inc/eshkol/memory_abi_v2.h declares the v2 header layout and the ESHKOL_MEMORY_ABI_V2_ENABLED build switch) but is OFF by default, is not wired into the live allocator/object-header path (eshkol_object_header_t, statically asserted at 8 bytes, remains the active header), and the migration is not stageable per subsystem (see ABI_V2_MIGRATION_INVENTORY.md). Planned for v1.4.1: default-path migration'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2401,7 +2401,7 @@ oracles:
           event_names: ["v14_1_portable_tail_transfer"]
           event_values: ["PASS"]
         severity: low
-        label: 'v1.4.1-STAGE (S4): portable tail transfer — internal i128 tagged-return ABI, a general tail-transfer dispatcher, heap-owned continuation chains, verified musttail on every target backend — NOT YET IMPLEMENTED (musttail is emitted conditionally on the LLVM backend only for matching self/named-let tail calls; docs/reference/language/tail-calls.md documents mutual tail recursion as a KNOWN, UNFIXED limitation — SIGILL past ~500k depth — and no VM-backend equivalent exists)'
+        label: 'v1.4.1-STAGE (S4): portable tail transfer — mutual tail calls lower to LLVM `musttail` (constant stack) on AArch64, and to a portable tail-transfer dispatcher on backends where `musttail` cannot express an aggregate-return mutual call (ESH-0171: non-AArch64); scripts/run_recursion_depth.sh''s mutual_tail_{cond,forms,arity} depth cells exercise both lowerings — including the spelling-independence (cond/when/or/case, ESH-0102b) and arity-independence (ESH-0102c) of the dispatcher — at up to 100,000,000 hops in constant stack, on JIT (-r), AOT `musttail`, and the AOT `aot-xfer` lane that forces the portable dispatcher (ESHKOL_TAIL_TRANSFER_ONLY=1) on an AArch64 host. No VM-backend (bytecode interpreter) equivalent exists; the internal i128 tagged-return ABI and heap-owned continuation-chain generalization ADR-0000 Stage 4 also names remain open. Planned for v1.4.1: VM-backend tail transfer and the general continuation-chain ABI'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────
@@ -2421,7 +2421,7 @@ oracles:
           event_names: ["v14_assurance_a10_packaging_manifest"]
           event_values: ["PASS"]
         severity: low
-        label: 'A10 — toolchain-driver/type-checker/packaging manifest categories (toolchain_flag/type_diagnostic/package_surface) + a packaging lane that installs and runs the artifact — NOT YET IMPLEMENTED (ADR-0010''s own gap table marks this row "Planned"; no such manifest categories exist in .icc/architecture-model.yaml or .icc/completion-oracles.yaml; adversarial-nightly.yml''s homebrew install step is a partial precursor, not the manifest-driven lane A10 asks for)'
+        label: 'A10 — toolchain-driver/type-checker/packaging manifest categories (toolchain_flag/type_diagnostic/package_surface). The `package_surface` category is implemented: .icc/package-manifest.yaml declares binaries, stdlib artifacts/sources, static libraries, docs, and CMake discovery modules; scripts/check_package_manifest.py checks a staged package directory against it and is wired into every release.yml packaging step and into this gate, which stages an install from the current build and checks it for real. The `toolchain_flag`/`type_diagnostic` categories and a dedicated install-and-run packaging lane beyond the existing verify_release_package.py smoke test remain open. Planned for v1.4.1: toolchain_flag/type_diagnostic categories + the dedicated packaging lane'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2429,7 +2429,7 @@ oracles:
           event_names: ["v14_assurance_a11_diagnostic_corpus"]
           event_values: ["PASS"]
         severity: low
-        label: 'A11 — diagnostic golden-corpus (input -> expected diagnostic code + span), gated per surface family — NOT YET IMPLEMENTED (no such corpus directory exists anywhere under tests/)'
+        label: 'A11 — diagnostic golden-corpus (input -> expected diagnostic code + span), gated per surface family — implemented: tests/diagnostics/<case>/ holds a corpus of real fixtures (compile-time, HoTT type-checker, and runtime diagnostic formats) each pinning file:line:col span plus message, checked by scripts/check_diagnostic_corpus.py and wired into both ci.yml and this gate'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2437,7 +2437,7 @@ oracles:
           event_names: ["v14_assurance_a12_lsan_lane"]
           event_values: ["PASS"]
         severity: medium
-        label: 'A12 — an LSan lane with an arena/JIT-cache suppression file (not blanket detect_leaks=0), plus region_evac POISON extended to the VM route — NOT YET IMPLEMENTED (.github/workflows/ci.yml''s ASan lanes explicitly set detect_leaks=0; lib/backend/vm_core.c has zero ESHKOL_ARENA_POISON hits)'
+        label: 'A12 — an LSan lane with an arena/JIT-cache suppression file (not blanket detect_leaks=0), plus region_evac POISON extended to the VM route — implemented: .github/workflows/ci.yml''s ASan matrix runs with detect_leaks=1 and .icc/lsan-suppressions.txt naming every known-acceptable retention one-by-one (scripts/check_leak_detection_selftest.sh proves the configuration still catches a real leak), and lib/backend/vm_region_evac.c''s evacuator delegates to the same ESHKOL_ARENA_POISON switch the native arena uses. This fast local gate cannot rebuild an ASan-enabled toolchain to reproduce the lane itself — only a real ASan-lane CI run feeds this event PASS'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2472,7 +2472,7 @@ oracles:
           event_names: ["v14_distribution_xla_multi_device_single_host"]
           event_values: ["PASS"]
         severity: low
-        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item: XLA multi-device single-host execution — NOT YET IMPLEMENTED (lib/backend/xla/ has zero hits for device_ordinal/num_replicas/num_partitions; docs/breakdown/GPU_ACCELERATION.md documents device-0-only enumeration and a single CUDA stream for all operations — XLA execution is single-device only today)'
+        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item: XLA multi-device single-host execution — the client-side call path exists (lib/backend/xla/pjrt_client.cpp''s PjrtClient::executeReplicated()), but it has no real multi-device PJRT plugin to execute against; docs/breakdown/GPU_ACCELERATION.md documents device-0-only enumeration and a single CUDA stream for all operations. Planned pending a real multi-device plugin'
         action: run_v14_connection_gate
 
       - runtime_event:

@@ -237,6 +237,204 @@ probe_tls_acceptance() {
         '100% tests passed'
 }
 
+# Stage a minimal, real package directory from THIS build (mirroring the
+# copy list in .github/workflows/release.yml's "Package Release Asset"
+# step, which is check_package_manifest.py's own ground truth) so A10's
+# producer can grade an actual staged install instead of only its synthetic
+# --self-test fixtures. Files the current build did not produce are simply
+# left unstaged — check_package_manifest.py then reports a real, honest
+# violation for them rather than this function fabricating a PASS.
+stage_v14_package_scratch() {
+    local pkg_dir="$1" f
+    mkdir -p "$pkg_dir/bin" "$pkg_dir/lib/eshkol" "$pkg_dir/share/eshkol/lib" "$pkg_dir/share/eshkol/cmake"
+
+    for f in eshkol-run eshkol-repl; do
+        [ -f "$BUILD_DIR_PATH/$f" ] && cp "$BUILD_DIR_PATH/$f" "$pkg_dir/bin/"
+    done
+    for f in stdlib.o stdlib.bc; do
+        if [ -f "$BUILD_DIR_PATH/$f" ]; then
+            cp "$BUILD_DIR_PATH/$f" "$pkg_dir/lib/"
+            cp "$BUILD_DIR_PATH/$f" "$pkg_dir/lib/eshkol/"
+        fi
+    done
+    for f in libeshkol-runtime.a libeshkol-agent-ffi.a eshkol-agent-pcre2.a eshkol-agent-sqlite3.a \
+             eshkol-agent-zlib.a eshkol-agent-tree-sitter-grammars.a eshkol-agent-tree-sitter.a \
+             eshkol-agent-yoga.a eshkol-agent-curl.a; do
+        if [ -f "$BUILD_DIR_PATH/$f" ]; then
+            cp "$BUILD_DIR_PATH/$f" "$pkg_dir/lib/"
+            cp "$BUILD_DIR_PATH/$f" "$pkg_dir/lib/eshkol/"
+        fi
+    done
+
+    [ -f "$REPO_ROOT/lib/stdlib.esk" ] && cp "$REPO_ROOT/lib/stdlib.esk" "$pkg_dir/share/eshkol/"
+    [ -f "$REPO_ROOT/lib/math.esk" ] && cp "$REPO_ROOT/lib/math.esk" "$pkg_dir/share/eshkol/"
+    [ -f "$REPO_ROOT/cmake/FindEshkol.cmake" ] && cp "$REPO_ROOT/cmake/FindEshkol.cmake" "$pkg_dir/share/eshkol/cmake/"
+    [ -f "$REPO_ROOT/cmake/EshkolCompile.cmake" ] && cp "$REPO_ROOT/cmake/EshkolCompile.cmake" "$pkg_dir/share/eshkol/cmake/"
+
+    while IFS= read -r -d '' source_file; do
+        local rel_path="${source_file#"$REPO_ROOT"/lib/}"
+        local dest_path="$pkg_dir/share/eshkol/lib/$rel_path"
+        mkdir -p "$(dirname "$dest_path")"
+        cp "$source_file" "$dest_path"
+    done < <(find "$REPO_ROOT/lib" -type f -name '*.esk' -print0)
+
+    for f in README.md LICENSE CHANGELOG.md RELEASE_NOTES.md; do
+        [ -f "$REPO_ROOT/$f" ] && cp "$REPO_ROOT/$f" "$pkg_dir/"
+    done
+
+    # macOS-only runtime_dependencies entries (OpenSSL/LLVM/zstd closure):
+    # staged for real via the same producer release.yml uses, on a best
+    # effort basis. If Homebrew or a formula is unavailable this leaves the
+    # category unstaged, and the manifest check below reports that honestly
+    # as a real violation rather than this function papering over it.
+    if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+        local openssl_prefix llvm_prefix zstd_prefix openssl_version llvm_version zstd_version
+        openssl_prefix="$(brew --prefix openssl@3 2>/dev/null)" || true
+        llvm_prefix="$(brew --prefix "llvm@${LLVM_MAJOR:-21}" 2>/dev/null)" || true
+        zstd_prefix="$(brew --prefix zstd 2>/dev/null)" || true
+        if [ -n "$openssl_prefix" ] && [ -n "$llvm_prefix" ] && [ -n "$zstd_prefix" ]; then
+            openssl_version="$("$openssl_prefix/bin/openssl" version 2>/dev/null | awk '{print $2}')"
+            llvm_version="$("$llvm_prefix/bin/llvm-config" --version 2>/dev/null)"
+            zstd_version="$("$zstd_prefix/bin/zstd" --version 2>/dev/null | sed -E 's/.* v([^, ]+).*/\1/')"
+            python3 "$REPO_ROOT/scripts/stage_macos_openssl_runtime.py" \
+                --openssl-prefix "$openssl_prefix" --llvm-prefix "$llvm_prefix" --zstd-prefix "$zstd_prefix" \
+                --package-dir "$pkg_dir" \
+                --openssl-version "${openssl_version:-0}" --llvm-version "${llvm_version:-0}" \
+                --zstd-version "${zstd_version:-0}" >/dev/null 2>&1 || true
+        fi
+    fi
+    python3 "$REPO_ROOT/scripts/stage_third_party_licenses.py" \
+        --build-dir "$BUILD_DIR_PATH" --package-dir "$pkg_dir" >/dev/null 2>&1 || true
+}
+
+# A10 (ADR-0010 gap A10, "no packaging manifest"): run the real producer
+# (scripts/check_package_manifest.py) against an actual package directory
+# staged from THIS build, the same way release.yml's "Package Release
+# Asset" step does before archiving. The `toolchain_flag`/`type_diagnostic`
+# manifest categories ADR-0010 also names for A10 are a separate, larger
+# schema/checker extension with no existing producer to wire (see the ADR's
+# own "remain open" note) — out of scope for this gate-wiring pass; they
+# stay unverified rather than this probe claiming them covered.
+probe_package_manifest_complete() {
+    local pkg_dir="$WORK/v14-package-scratch"
+    rm -rf "$pkg_dir"
+    stage_v14_package_scratch "$pkg_dir"
+    probe_run v14_assurance_a10_packaging_manifest \
+        'A10 packaging manifest (ADR-0010): a package directory staged from this build is checked against .icc/package-manifest.yaml (binaries, stdlib artifacts/sources, static libraries, docs, CMake discovery modules)' \
+        "python3 \"$REPO_ROOT/scripts/check_package_manifest.py\" --package-dir \"$pkg_dir\"" \
+        '^package_manifest_complete: PASS'
+}
+
+# A11 (ADR-0010 gap A11, "no diagnostic golden corpus"): run the real
+# producer (scripts/check_diagnostic_corpus.py) against tests/diagnostics/,
+# the same invocation ci.yml uses post-build.
+probe_diagnostic_corpus_clean() {
+    probe_run v14_assurance_a11_diagnostic_corpus \
+        'A11 diagnostic corpus (ADR-0010): every tests/diagnostics/<case>/ fixture reproduces its expected.json diagnostic code, message, and file:line:col span' \
+        "python3 \"$REPO_ROOT/scripts/check_diagnostic_corpus.py\" --build-dir \"$BUILD_DIR_PATH\"" \
+        '^diagnostic_corpus_clean: PASS'
+}
+
+# Portable tail transfer (v1.4.1-STAGE, S4): run the real producer
+# (scripts/run_recursion_depth.sh) and grade this criterion on exactly the
+# cells it emits for the mutual_tail_{cond,forms,arity} kinds — spelling-
+# independence (ESH-0102b) and arity-independence (ESH-0102c) of the tail-
+# transfer dispatcher — across every lane that producer runs them in: JIT
+# (-r), AOT via LLVM `musttail`, and the portable non-AArch64 `aot-xfer`
+# lane (ESHKOL_TAIL_TRANSFER_ONLY=1), which is the dispatcher this criterion
+# is actually named for. The producer's trace path is its own (it does not
+# honor this gate's TRACE_DIR), so it is read at its documented location.
+#
+# $(...) only guarantees the PRODUCER's own process has exited — guarded_exec.pl
+# (scripts/lib/harness_outcome.sh's eshkol_outcome_guarded, which every cell in
+# the producer runs through) SIGKILLs any process the command left behind in
+# its group on normal exit too, but does not wait() for that kill to land
+# before returning; a descendant still dying at that instant can hold a stdio
+# pipe open a moment longer. That is a pipe-closing delay, not a file-content
+# hazard by itself (the producer's own process writes the trace file directly
+# and sequentially, with no child involved in those writes) — but this probe
+# does not assume that proof holds forever as the producer evolves. Instead
+# it waits for the producer's OWN explicit completion record
+# (kind=recursion_depth, name=recursion_depth_gate, emitted as literally the
+# last write before the producer exits) to appear in the file it just read,
+# re-reading up to ~10s if it is not there yet, and fails closed with a clear
+# message if it never appears. Only a read that already contains that
+# completion record is trusted for the mutual_tail_{cond,forms,arity} match.
+probe_portable_tail_transfer() {
+    PROBE_TOTAL=$((PROBE_TOTAL + 1))
+    local depth_script="$REPO_ROOT/scripts/run_recursion_depth.sh"
+    local depth_trace="$REPO_ROOT/scripts/icc_traces/recursion_depth.jsonl"
+    local depth_out depth_rc verdict
+    if [ ! -x "$depth_script" ]; then
+        PROBE_FAILURES=$((PROBE_FAILURES + 1))
+        emit_event v14_1_portable_tail_transfer FAIL "producer missing: $depth_script"
+        printf '  \xE2\x9C\x97 %-42s producer missing\n' v14_1_portable_tail_transfer
+        return
+    fi
+
+    depth_out=$(BUILD_DIR="$BUILD_DIR_PATH" "$depth_script" 2>&1)
+    depth_rc=$?
+
+    verdict=$(python3 -c '
+import json, re, sys, time
+path, rc = sys.argv[1], sys.argv[2]
+# Names are scripts/run_recursion_depth.sh'"'"'s own `${f%.esk}_${mode}`,
+# e.g. rec_mutual_tail_cond_d100000000_r / _aot / _aot-xfer.
+name_re = re.compile(r"^rec_mutual_tail_(cond|forms|arity)_d\d+_(r|aot|aot-xfer)$")
+deadline = time.time() + 10.0
+rows, saw_completion, last_err = [], False, None
+while True:
+    rows, saw_completion = [], False
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                rows.append(row)
+                if row.get("kind") == "recursion_depth" and row.get("name") == "recursion_depth_gate":
+                    saw_completion = True
+    except OSError as exc:
+        last_err = str(exc)
+    if saw_completion or time.time() >= deadline:
+        break
+    time.sleep(0.25)
+if not saw_completion:
+    detail = (": " + last_err) if last_err else ""
+    print("producer trace at %s never showed its recursion_depth_gate completion record after waiting (exit %s)%s" % (path, rc, detail))
+    raise SystemExit(0)
+matches = [r for r in rows if r.get("kind") == "recursion_depth"
+           and name_re.match(str(r.get("name", "")))]
+if not matches:
+    print("producer trace has no mutual_tail_{cond,forms,arity} cells despite a complete trace (exit %s)" % rc)
+    raise SystemExit(0)
+bad = [r for r in matches if r.get("value") != "PASS"]
+if bad:
+    names = ", ".join(sorted("%s=%s" % (r.get("name", "?"), r.get("value")) for r in bad))
+    print("FAIL:%d/%d cells not PASS: %s" % (len(bad), len(matches), names[:400]))
+else:
+    print("OK:%d cells (JIT -r, AOT musttail, AOT portable aot-xfer dispatcher) all PASS" % len(matches))
+' "$depth_trace" "$depth_rc")
+
+    case "$verdict" in
+        OK:*)
+            emit_event v14_1_portable_tail_transfer PASS \
+                "mutual_tail_{cond,forms,arity} depth cells, $verdict (scripts/run_recursion_depth.sh)"
+            printf '  \xE2\x9C\x93 %-42s %s\n' v14_1_portable_tail_transfer "$verdict"
+            ;;
+        *)
+            PROBE_FAILURES=$((PROBE_FAILURES + 1))
+            emit_event v14_1_portable_tail_transfer FAIL \
+                "$verdict -- producer tail: $(printf '%s' "$depth_out" | tail -c 220)"
+            printf '  \xE2\x9C\x97 %-42s %s\n' v14_1_portable_tail_transfer "$verdict"
+            ;;
+    esac
+}
+
 echo "Running v1.4-connection oracle probes -> $TRACE_FILE"
 echo
 
@@ -497,8 +695,7 @@ fi
 # ─────────────────────────────────────────────────────────────────
 probe_unverified v14_1_oalr_abi_v2_header \
     'v1.4.1-STAGE (S4): requires a source-bound ABI v2 layout and compatibility contract check'
-probe_unverified v14_1_portable_tail_transfer \
-    'v1.4.1-STAGE (S4): requires deep mutual-tail-recursion evidence across supported backends'
+probe_portable_tail_transfer
 
 # ─────────────────────────────────────────────────────────────────
 # Assurance (docs/design/adr/0010-closed-loop-assurance.md A8, A10-A13)
@@ -506,12 +703,18 @@ probe_unverified v14_1_portable_tail_transfer \
 probe_external_ci_evidence v14_assurance_a8_tsan_lane \
     '.github/workflows/adversarial-nightly.yml' \
     'requires the applicable A8 policy evidence and a source-bound TSan CI receipt'
-probe_unverified v14_assurance_a10_packaging_manifest \
-    'requires a source-bound A10 packaging-manifest check and its recorded result'
-probe_unverified v14_assurance_a11_diagnostic_corpus \
-    'requires a source-bound diagnostic corpus check for expected diagnostic codes and spans'
-probe_unverified v14_assurance_a12_lsan_lane \
-    'requires source-bound leak-sanitizer and region-evacuation poison-path evidence'
+probe_package_manifest_complete
+probe_diagnostic_corpus_clean
+# A12's leak-detection lane (ci.yml's ASan matrix, ASAN_OPTIONS=detect_leaks=1
+# with .icc/lsan-suppressions.txt naming every known-acceptable retention) and
+# VM region-evacuation poison path (lib/backend/vm_region_evac.c's
+# ESHKOL_ARENA_POISON delegation) are real and already running; this fast
+# local gate cannot rebuild an ASan-enabled toolchain to reproduce the lane
+# itself, so it requests a source-bound CI receipt rather than inferring the
+# lane's state, the same way A8's TSan lane is handled.
+probe_external_ci_evidence v14_assurance_a12_lsan_lane \
+    '.github/workflows/ci.yml' \
+    'requires a source-bound ASan/LSan-lane CI receipt for the leak-detection and region-evacuation poison path'
 probe_external_ci_evidence v14_assurance_a13_hosted_gpu_lane \
     '.github/workflows/gpu-execution-gate.yml' \
     'requires a source-bound A13 hosted-GPU CI receipt; runner availability is not inferred here'
