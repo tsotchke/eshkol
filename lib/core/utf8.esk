@@ -1,0 +1,51 @@
+;;; core/utf8.esk
+;;;
+;;; Strict UTF-8 validation over bytevector ranges, shared by the wire-format
+;;; libraries (core.msgpack, core.protobuf). The runtime's utf8->string is
+;;; permissive; a wire format that declares a payload to be text validates it
+;;; here first.
+;;;
+;;; The first continuation-byte bounds exclude overlong encodings, UTF-16
+;;; surrogates and scalar values above U+10FFFF, so validation needs no
+;;; intermediate string.
+;;;
+;;; (require core.utf8)
+
+(provide utf8-require-valid utf8-valid-range?)
+
+(define (utf8-tail who bv pos end count minimum maximum)
+  (if (= count 0) pos
+      (if (>= pos end)
+          (error (string-append who ": truncated UTF-8 scalar") pos)
+          (let ((b (bytevector-u8-ref bv pos)))
+            (if (and (>= b minimum) (<= b maximum))
+                (utf8-tail who bv (+ pos 1) end (- count 1) 128 191)
+                (error (string-append who ": invalid UTF-8 continuation") pos))))))
+
+;; Raise an error naming WHO unless bytes [pos, pos+len) of BV are valid
+;; UTF-8. Returns #t. The caller guarantees the range lies inside BV.
+(define (utf8-require-valid who bv pos len)
+  (let ((end (+ pos len)))
+    (let loop ((i pos))
+      (if (= i end) #t
+          (let ((b (bytevector-u8-ref bv i)) (next (+ i 1)))
+            (cond
+              ((<= b 127) (loop next))
+              ((and (>= b 194) (<= b 223))
+               (loop (utf8-tail who bv next end 1 128 191)))
+              ((= b 224) (loop (utf8-tail who bv next end 2 160 191)))
+              ((and (>= b 225) (<= b 236))
+               (loop (utf8-tail who bv next end 2 128 191)))
+              ((= b 237) (loop (utf8-tail who bv next end 2 128 159)))
+              ((and (>= b 238) (<= b 239))
+               (loop (utf8-tail who bv next end 2 128 191)))
+              ((= b 240) (loop (utf8-tail who bv next end 3 144 191)))
+              ((and (>= b 241) (<= b 243))
+               (loop (utf8-tail who bv next end 3 128 191)))
+              ((= b 244) (loop (utf8-tail who bv next end 3 128 143)))
+              (else (error (string-append who ": invalid UTF-8 leading byte") i))))))))
+
+;; #t when bytes [pos, pos+len) of BV are valid UTF-8, #f otherwise.
+(define (utf8-valid-range? bv pos len)
+  (guard (e (#t #f))
+    (utf8-require-valid "utf8" bv pos len)))

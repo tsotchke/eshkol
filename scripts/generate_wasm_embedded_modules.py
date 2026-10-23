@@ -11,6 +11,7 @@ import sys
 
 MODULES = (
     ("core.msgpack", "lib/core/msgpack.esk"),
+    ("core.utf8", "lib/core/utf8.esk"),
     ("core.testing", "lib/core/testing.esk"),
     ("core.list.query", "lib/core/list/query.esk"),
     ("core.list.transform", "lib/core/list/transform.esk"),
