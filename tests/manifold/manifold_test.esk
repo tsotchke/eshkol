@@ -1,4 +1,5 @@
-;; core.manifold — Euclidean / Poincaré / spherical geometry + full DG surface.
+;; core.manifold — Euclidean / Poincaré / spherical geometry + full DG surface,
+;; in the ADR-0018 chart (metric I/(1 + K|x|^2/4)^2, alpha = 1).
 ;; Verifies geodesics, exp/log roundtrip, and curvature closed forms vs analytic.
 (require core.manifold)
 (define pass 0)(define fail 0)
@@ -14,7 +15,7 @@
   (let loop ((i 0) (sum 0.0))
     (if (< i (vector-length x))
         (loop (+ i 1) (+ sum (* (vector-ref x i) (vector-ref x i))))
-        (/ 2.0 (- 1.0 sum)))))
+        (/ 1.0 (- 1.0 (* 0.25 sum))))))
 (define (vector-approx= x y)
   (let loop ((i 0))
     (if (= i (vector-length x))
@@ -33,11 +34,19 @@
 (check "manifold-dimension Euclidean" (= (manifold-dimension E) 3))
 (define a #(0.1 0.2 0.0))(define b #(0.3 -0.1 0.0))
 
-;; geodesic distance vs analytic Poincaré
+;; geodesic distance vs analytic: K = -1, B = 1/4, ball of radius 2:
+;; d = arccosh(1 + 2B|a-b|^2/((1-B|a|^2)(1-B|b|^2))) / sqrt(B)
 (define na 0.05)(define nb 0.10)
 (define d2 (+ 0.04 0.09))
-(define arg (+ 1.0 (/ (* 2.0 d2) (* (- 1.0 na)(- 1.0 nb)))))
-(check "Poincaré distance = analytic" (approx= (manifold-distance H a b) (log (+ arg (sqrt (- (* arg arg) 1.0))))))
+(define arg (+ 1.0 (/ (* 0.5 d2) (* (- 1.0 (* 0.25 na))(- 1.0 (* 0.25 nb))))))
+(check "Poincaré distance = analytic" (approx= (manifold-distance H a b) (* 2.0 (log (+ arg (sqrt (- (* arg arg) 1.0)))))))
+(check "Poincaré distance = shared core value" (approx= (manifold-distance H a b) 0.36541571263232442))
+;; spherical chart: x = 3 e1, y = 3 e2 at K = 1 lie at angle acos(25/169)
+(check "stereographic sphere distance = arc length"
+       (approx= (manifold-distance S #(3.0 0.0 0.0) #(0.0 3.0 0.0)) (acos (/ 25.0 169.0))))
+(define sv #(0.1 0.2 -0.05))
+(check "stereographic sphere exp/log roundtrip"
+       (vector-approx= (manifold-log-map S a (manifold-exp-map S a sv)) sv))
 (check "Euclidean distance = L2" (approx= (manifold-distance E a b) (sqrt 0.13)))
 ;; exp/log roundtrip
 (define v #(0.05 -0.03 0.02))
@@ -67,8 +76,8 @@
 (check "scalar curvature S=+6" (approx= (manifold-scalar-curvature S) 6.0))
 ;; Christoffel: euclidean zero, hyperbolic closed form + symmetry
 (check "Euclidean Christoffel = 0" (approx= (christoffel-symbol E a 0 1 0) 0.0))
-(define lam (/ 2.0 (- 1.0 na)))
-(check "Hyperbolic Γ^0_00 = λ x0" (approx= (christoffel-symbol H a 0 0 0) (* lam 0.1)))
+(define lam (/ 1.0 (- 1.0 (* 0.25 na))))
+(check "Hyperbolic Γ^0_00 = λ x0 / 2" (approx= (christoffel-symbol H a 0 0 0) (* 0.5 lam 0.1)))
 (check "Christoffel symmetric in lower idx" (approx= (christoffel-symbol H a 2 0 1) (christoffel-symbol H a 2 1 0)))
 ;; metric + Ricci (Einstein) + Riemann (constant curvature)
 (check "metric g_00 = λ²" (approx= (metric-component H a 0 0) (* lam lam)))
