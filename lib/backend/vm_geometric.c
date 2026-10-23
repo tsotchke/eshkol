@@ -921,16 +921,10 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         if (!x || !y || !x->data || !y->data || x->total != y->total || x->total <= 0) {
             vm_push(vm, NIL_VAL); break;
         }
-        const char* why = eshkol_rm_check_point(x->data, K, (int)x->total);
-        if (!why) why = eshkol_rm_check_point(y->data, K, (int)y->total);
-        if (why) { vm_geometric_raise(vm, "mobius-add", why, K); break; }
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, x->shape, x->n_dims);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        eshkol_rm_mobius_add(x->data, y->data, eshkol_rm_ball_param(-K),
-                             (int)x->total, out->data);
-        why = eshkol_rm_check_output(out->data, (int)x->total,
-                                     "the Mobius sum is the pole of the chart");
-        if (!why) why = eshkol_rm_require_interior(out->data, K, (int)x->total);
+        const char* why = eshkol_rm_chart_mobius_add(x->data, y->data, K,
+                                                     (int)x->total, out->data);
         if (why) { vm_geometric_raise(vm, "mobius-add", why, K); break; }
         VM_PUSH_TENSOR(vm, out);
         break;

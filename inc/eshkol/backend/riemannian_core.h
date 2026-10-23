@@ -99,6 +99,7 @@
 #include <string.h>
 #include <float.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #ifdef __cplusplus
 #include <cmath>
 #include <vector>
@@ -362,9 +363,9 @@ static double eshkol_rm_scaled_square(double factor, double a) {
  * inside the exponent-scaled product.  In particular, do not form a[i]-b[i]
  * before scaling: opposite finite endpoints can have a difference above
  * DBL_MAX even when factor*|a-b|^2 is representable. */
-static double eshkol_rm_difference_norm2_times(const double* a,
-                                               const double* b,
-                                               double factor, int n) {
+static double eshkol_rm_difference_norm2_times2(const double* a,
+                                                const double* b, double factor,
+                                                double factor2, int n) {
     double max_abs = 0.0;
     for (int i = 0; i < n; ++i) {
         const double aa = fabs(a[i]), bb = fabs(b[i]);
@@ -388,7 +389,13 @@ static double eshkol_rm_difference_norm2_times(const double* a,
         sum_lo = next_lo;
     }
     return eshkol_rm_scaled_product4(factor, scale, scale,
-                                      sum_hi + sum_lo);
+                                      factor2 * (sum_hi + sum_lo));
+}
+
+static double eshkol_rm_difference_norm2_times(const double* a,
+                                               const double* b,
+                                               double factor, int n) {
+    return eshkol_rm_difference_norm2_times2(a, b, factor, 1.0, n);
 }
 
 /* A scaled dot product for formulas whose true value is multiplied by factor.
@@ -707,16 +714,18 @@ static double eshkol_rm_one_plus_dot(const double* a, const double* b, double B,
     return isfinite(result) ? result : 1.0 + eshkol_rm_scaled_dot_factor(a, b, B, n);
 }
 
-/** @brief 1 - B|x|^2, the ball chart's conformal denominator, to full relative
- *         precision. */
-static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
+/** @brief 1 - (f1 f2)|x|^2 to full relative precision, with the factor f1 f2
+ *         carried through the exponent-separated product (never formed as one
+ *         rounded double). */
+static double eshkol_rm_one_minus_factor_norm2(const double* x, double f1,
+                                               double f2, int n) {
     double max_abs = 0.0;
     for (int i = 0; i < n; ++i) {
         double ai = fabs(x[i]);
         if (!isfinite(ai)) return ai;
         if (ai > max_abs) max_abs = ai;
     }
-    if (max_abs == 0.0 || B == 0.0) return 1.0;
+    if (max_abs == 0.0 || f1 == 0.0 || f2 == 0.0) return 1.0;
     int max_exp = 0;
     (void)frexp(max_abs, &max_exp);
     /* scalbn(0.5, max_exp) is finite at both f64 exponent ends. */
@@ -738,7 +747,7 @@ static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
     }
 
     double bs2_hi = 0.0, bs2_lo = 0.0;
-    eshkol_rm_scaled_product4_dd(B, scale, scale, 1.0, &bs2_hi, &bs2_lo);
+    eshkol_rm_scaled_product4_dd(f1, scale, scale, f2, &bs2_hi, &bs2_lo);
     /* d_hi is fma(-B*s^2, sigma, 1); the remaining quantity is the single
      * carried error from the normalized sum and the scaled B*s^2 product. */
     const double d_hi = eshkol_rm_fma(-bs2_hi, sigma_hi, 1.0);
@@ -756,8 +765,24 @@ static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
         + eshkol_rm_scaled_product4(bs2_lo, sigma_lo, 1.0, 1.0);
     const double result = d_hi + high_correction - residual_product;
     if (isfinite(result)) return result;
-    return 1.0 - eshkol_rm_scaled_norm2_times(x, B, n);
+    return 1.0 - eshkol_rm_scaled_product4(
+        f2, 1.0, 1.0, eshkol_rm_scaled_norm2_times(x, f1, n));
 }
+
+/** @brief 1 - B|x|^2, the chart's conformal denominator, to full relative
+ *         precision. */
+static double eshkol_rm_one_minus_bnorm2(const double* x, double B, int n) {
+    return eshkol_rm_one_minus_factor_norm2(x, B, 1.0, n);
+}
+
+/** @brief The conformal denominator 1 + K alpha^2 |x|^2 / 4 (= 1 - B|x|^2)
+ *         from K directly, so it is exact in its parameter for EVERY finite K:
+ *         B = -K alpha^2/4 itself loses its low bits below |K| = 2^-1020. */
+static double eshkol_rm_chart_den(const double* x, double K, int n) {
+    return eshkol_rm_one_minus_factor_norm2(
+        x, -K * ESHKOL_RM_ALPHA * ESHKOL_RM_ALPHA, 0.25, n);
+}
+
 
 static const char* eshkol_rm_check_output(const double* out, int n,
                                           const char* reason) {
@@ -804,8 +829,48 @@ static double eshkol_rm_ball_param(double c) {
  *         denominator is not representable (the pole of a positive chart). */
 static double eshkol_rm_lambda(const double* x, double K, int n) {
     if (K == 0.0) return ESHKOL_RM_ALPHA;
-    double B = eshkol_rm_ball_param(-K);
-    return ESHKOL_RM_ALPHA / eshkol_rm_one_minus_bnorm2(x, B, n);
+    return ESHKOL_RM_ALPHA / eshkol_rm_chart_den(x, K, n);
+}
+
+/* ═══ Exact chart parameter at every binade of K ═════════════════════════
+ *
+ * B = -K alpha^2/4 is an exact double except in the bottom binades of K
+ * (|K| below about 2^-1020, where the quotient by 4 drops low bits and
+ * K = DBL_TRUE_MIN gives B = 0). There the ops use the scale covariance of
+ * the chart,
+ *
+ *     g_K(x) = s^2 g_{K s^2}(x / s),   s = 2,
+ *
+ * whose parameter -4K alpha^2/4 = -K alpha^2 is exact. Distances and
+ * coordinates scale by s, tangent vectors at the same point likewise, and
+ * the conformal denominator is unchanged. The halved coordinates are exact
+ * whenever the largest coordinate is at least 2^-1000; below that the whole
+ * curvature term B|x|^2 is beneath f64 resolution and the direct evaluation
+ * is already exact. */
+static int eshkol_rm_needs_rescale(double K, const double* x, const double* y,
+                                   int n) {
+    if (K == 0.0 || !isfinite(K)) return 0;
+    const double B = eshkol_rm_ball_param(-K);
+    if (B * 4.0 == -K * ESHKOL_RM_ALPHA * ESHKOL_RM_ALPHA) return 0;
+    double m = 0.0;
+    for (int i = 0; i < n; i++) {
+        if (fabs(x[i]) > m) m = fabs(x[i]);
+        if (y && fabs(y[i]) > m) m = fabs(y[i]);
+    }
+    return m >= 0x1p-1000;
+}
+
+/* Halved copies of up to three n-vectors in one allocation (the caller frees). */
+static double* eshkol_rm_halved(const double* a, const double* b,
+                                const double* c, int n) {
+    double* h = (double*)malloc((size_t)(3 * (n > 0 ? n : 1)) * sizeof(double));
+    if (!h) return NULL;
+    for (int i = 0; i < n; i++) {
+        h[i] = 0.5 * a[i];
+        h[n + i] = b ? 0.5 * b[i] : 0.0;
+        h[2 * n + i] = c ? 0.5 * c[i] : 0.0;
+    }
+    return h;
 }
 
 /** @brief The Riemannian norm of tangent vector @p v at @p x. */
@@ -876,7 +941,24 @@ static double eshkol_rm_psi(double w, double* d1, double* d2) {
          * the antipode u = 1, where it is pi/2. */
         psi = atan2(u, sqrt(1.0 + w)) / u;
     }
-    if (d1 || d2) {
+    if ((d1 || d2) && fabs(w) <= 0.5) {
+        /* psi' and psi'' from the convergent series (64 terms reach f64 at
+         * |w| = 1/2): the closed forms below cancel O(log2(1/|w|)) bits each,
+         * which is what the curvature jets would inherit. The value branch is
+         * unchanged. a_{n+1} = -a_n (2n+1)^2/((2n+2)(2n+3)). */
+        double an = 1.0, p1 = 0.0, p2 = 0.0, wk1 = 1.0, wk2 = 1.0;
+        for (int k = 1; k <= 64; k++) {
+            an *= -((2.0 * k - 1.0) * (2.0 * k - 1.0)) / ((2.0 * k) * (2.0 * k + 1.0));
+            p1 += (double)k * an * wk1;
+            if (k >= 2) {
+                p2 += (double)k * (double)(k - 1) * an * wk2;
+                wk2 *= w;
+            }
+            wk1 *= w;
+        }
+        if (d1) *d1 = p1;
+        if (d2) *d2 = p2;
+    } else if (d1 || d2) {
         const double g = 1.0 / sqrt(1.0 + w);
         const double p1 = (g - psi) / (2.0 * w);
         if (d1) *d1 = p1;
@@ -1032,6 +1114,34 @@ static void eshkol_rm_mobius_add(const double* x, const double* y, double B,
 }
 
 /**
+ * @brief Mobius addition on the chart of curvature @p K (every sign), with
+ *        the chart's domain checks: x (+)_B y, B = -K alpha^2/4. A sum that is
+ *        the pole of the positive chart, or that leaves the ball, is refused.
+ */
+static const char* eshkol_rm_check_point(const double* x, double K, int n);
+static const char* eshkol_rm_require_interior(const double* out, double K, int n);
+static const char* eshkol_rm_check_output(const double* out, int n,
+                                          const char* reason);
+static const char* eshkol_rm_chart_mobius_add(const double* x, const double* y,
+                                              double K, int n, double* out) {
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (!why) why = eshkol_rm_check_point(y, K, n);
+    if (why) return why;
+    if (eshkol_rm_needs_rescale(K, x, y, n)) {
+        double* h = eshkol_rm_halved(x, y, NULL, n);
+        if (!h) return "out of memory";
+        why = eshkol_rm_chart_mobius_add(h, h + n, 4.0 * K, n, out);
+        free(h);
+        if (!why) for (int i = 0; i < n; i++) out[i] *= 2.0;
+        return why;
+    }
+    eshkol_rm_mobius_add(x, y, eshkol_rm_ball_param(-K), n, out);
+    why = eshkol_rm_check_output(out, n, "the Mobius sum is the pole of the chart");
+    if (!why) why = eshkol_rm_require_interior(out, K, n);
+    return why;
+}
+
+/**
  * @brief The gyration gyr[a,b]w on the ball of parameter @p B, in CLOSED LINEAR
  *        FORM:
  *
@@ -1083,8 +1193,7 @@ static const char* eshkol_rm_check_point(const double* x, double K, int n) {
     for (int i = 0; i < n; i++)
         if (!isfinite(x[i])) return "a coordinate is not finite";
     if (K == 0.0) return NULL;
-    double B = eshkol_rm_ball_param(-K);
-    double den = eshkol_rm_one_minus_bnorm2(x, B, n);
+    double den = eshkol_rm_chart_den(x, K, n);
     if (K < 0.0) {
         if (!(den > 0.0))
             return "the point must lie strictly inside the ball of radius "
@@ -1109,8 +1218,7 @@ static const char* eshkol_rm_check_point(const double* x, double K, int n) {
  */
 static const char* eshkol_rm_require_interior(const double* out, double K, int n) {
     if (K == 0.0) return NULL;
-    double B = eshkol_rm_ball_param(-K);
-    double den = eshkol_rm_one_minus_bnorm2(out, B, n);
+    double den = eshkol_rm_chart_den(out, K, n);
     if (K < 0.0 && !(den > 0.0))
         return "the result is on or outside the ball boundary: no strictly "
                "interior double-precision point exists at this magnitude";
@@ -1239,6 +1347,14 @@ static const char* eshkol_rm_distance(const double* x, const double* y, double K
         return NULL;
     }
 
+    if (eshkol_rm_needs_rescale(K, x, y, n)) {
+        double* h = eshkol_rm_halved(x, y, NULL, n);
+        if (!h) return "out of memory";
+        why = eshkol_rm_distance(h, h + n, 4.0 * K, n, out);
+        free(h);
+        if (!why) *out *= 2.0;
+        return why;
+    }
     double delta = 0.0;
     for (int i = 0; i < n; i++) delta = hypot(delta, x[i] - y[i]);
     if (K == 0.0) {
@@ -1312,6 +1428,14 @@ static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
         for (int i = 0; i < n; i++) out[i] = x[i] + v[i];
         return eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
     }
+    if (eshkol_rm_needs_rescale(K, x, v, n)) {
+        double* h = eshkol_rm_halved(x, v, NULL, n);
+        if (!h) return "out of memory";
+        why = eshkol_rm_exp_map(h, h + n, 4.0 * K, n, out, scratch);
+        free(h);
+        if (!why) for (int i = 0; i < n; i++) out[i] *= 2.0;
+        return why;
+    }
     double B   = eshkol_rm_ball_param(-K);
     double lam = eshkol_rm_lambda(x, K, n);
     double s   = eshkol_rm_scaled_square(B, lam * vn / ESHKOL_RM_ALPHA);
@@ -1323,6 +1447,61 @@ static const char* eshkol_rm_exp_map(const double* x, const double* v, double K,
     why = eshkol_rm_check_output(out, n, "the exponential-map result is not finite");
     if (why) return why;
     return eshkol_rm_require_interior(out, K, n);
+}
+
+/**
+ * @brief The unit direction @p u of log_x(y) on the chart of curvature
+ *        @p K != 0, and the distance *@p d_out.
+ *
+ * The direction is the Mobius numerator of (-x) (+)_B y written in the
+ * separation delta = y - x:
+ *
+ *     V = (1 - B|x|^2) delta - (B |delta|^2) x,
+ *
+ * which equals (1 - B|x|^2) y - (Dn + B|y|^2 (1 - B|x|^2)) x term for term
+ * (their x-coefficients differ by exactly B|y - x|^2) but has no O(1)
+ * cancellation as y -> x: a one-ulp separation keeps its direction. The
+ * coefficient pair is normalised before use so V never overflows, and the
+ * products are summed with their rounding residuals. Coincidence and the
+ * positive-chart antipode are refused here (callers handle coincidence).
+ *
+ * @param scratch n doubles.
+ */
+static const char* eshkol_rm_log_direction(const double* x, const double* y,
+                                           double K, int n, double* u,
+                                           double* scratch, double* d_out) {
+    const double B = eshkol_rm_ball_param(-K);
+    if (B < 0.0 && !(eshkol_rm_mobius_den_negx(x, y, B, n) > 0.0))
+        return "the two points are antipodal (the cut locus of the "
+               "positive-curvature chart): log is not single-valued there";
+    const char* why = eshkol_rm_distance(x, y, K, n, d_out);
+    if (why) return why;
+    double p = eshkol_rm_one_minus_bnorm2(x, B, n);
+    double q = -eshkol_rm_difference_norm2_times(y, x, B, n);
+    if (!isfinite(p) || !isfinite(q)) {
+        /* Both coefficients scaled by 2^-128 in the exponent-separated
+         * products (only the direction of V matters). When either overflowed
+         * B|x|^2 or B|y-x|^2 exceeds 2^1024, so the 1 in 1 - B|x|^2 is far
+         * below one ulp of the scaled value. */
+        p = (eshkol_rm_one_minus_factor_norm2(x, B, 0x1p-128, n) - 1.0) + 0x1p-128;
+        q = -eshkol_rm_difference_norm2_times2(y, x, B, 0x1p-128, n);
+    }
+    const double m = fmax(fabs(p), fabs(q));
+    if (!(m > 0.0) || !isfinite(m))
+        return "the logarithmic-map direction is not finite";
+    p /= m;
+    q /= m;
+    double* V = scratch;
+    for (int i = 0; i < n; i++) {
+        V[i] = y[i] - x[i];
+        if (!isfinite(V[i])) return "the point separation is not finite";
+    }
+    eshkol_rm_axpby_exact(p, V, q, x, n, V);
+    const double vn = eshkol_rm_norm(V, n);
+    if (!(vn > 0.0) || !isfinite(vn))
+        return "the logarithmic-map direction is not defined for this pair";
+    for (int i = 0; i < n; i++) u[i] = V[i] / vn;
+    return NULL;
 }
 
 /**
@@ -1361,27 +1540,22 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
         for (int i = 0; i < n; i++) out[i] = y[i] - x[i];
         return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
     }
-    double B  = eshkol_rm_ball_param(-K);
-    double By2 = eshkol_rm_scaled_norm2_times(y, B, n);
-    /* Numerator of (-x) (+)_B y; its denominator is positive and only scales
-     * the vector, so the direction is this alone. Both coefficients come from
-     * the well-conditioned pair (den, 1 - B|x|^2) rather than from their own
-     * cancelling sums -- see eshkol_rm_dot_dd. */
-    double* V = scratch;
-    double nb = eshkol_rm_one_minus_bnorm2(x, B, n);
-    double dn = eshkol_rm_mobius_den_negx(x, y, B, n);
-    if (!(dn > 0.0))
-        return "the two points are antipodal (the cut locus of the "
-               "positive-curvature chart): log is not single-valued there";
-    double na = dn + By2 * nb;
-    eshkol_rm_axpby_exact(nb, y, -na, x, n, V);
-    double Vn = eshkol_rm_norm(V, n);
-    double d = 0.0;
-    why = eshkol_rm_distance(x, y, K, n, &d);
+    if (eshkol_rm_needs_rescale(K, x, y, n)) {
+        double* h = eshkol_rm_halved(x, y, NULL, n);
+        if (!h) return "out of memory";
+        why = eshkol_rm_log_map(h, h + n, 4.0 * K, n, out, scratch);
+        free(h);
+        if (!why) for (int i = 0; i < n; i++) out[i] *= 2.0;
+        return why;
+    }
+    double d = 0.0, scale = 0.0;
+    why = eshkol_rm_log_direction(x, y, K, n, out, scratch, &d);
     if (why) return why;
-    double coef = (d / eshkol_rm_lambda(x, K, n)) / Vn;
-    for (int i = 0; i < n; i++) out[i] = coef * V[i];
-    return eshkol_rm_check_output(out, n, "the logarithmic-map result is not finite");
+    /* |log_x(y)| = d / lambda_x = d (1 - B|x|^2) / alpha */
+    scale = (d * eshkol_rm_chart_den(x, K, n)) / ESHKOL_RM_ALPHA;
+    for (int i = 0; i < n; i++) out[i] *= scale;
+    return eshkol_rm_check_output(out, n, "the logarithmic-map result is not "
+                                  "representable in f64");
 }
 
 /**
@@ -1399,21 +1573,54 @@ static const char* eshkol_rm_log_map(const double* x, const double* y, double K,
 static const char* eshkol_rm_sq_distance_grad(const double* x, const double* y,
                                               double K, int n, double* gx,
                                               double* gy, double* scratch) {
-    double* lg = scratch + n;
-    if (gx) {
-        const char* why = eshkol_rm_log_map(x, y, K, n, lg, scratch);
-        if (why) return why;
-        const double lam = eshkol_rm_lambda(x, K, n);
-        for (int i = 0; i < n; i++) gx[i] = -2.0 * lam * lam * lg[i];
-        why = eshkol_rm_check_output(gx, n, "the squared-distance gradient is not finite");
-        if (why) return why;
+    const char* why = eshkol_rm_check_point(x, K, n);
+    if (!why) why = eshkol_rm_check_point(y, K, n);
+    if (why) return why;
+    if (eshkol_rm_points_equal(x, y, n)) {
+        /* log_x(x) = 0: the gradient is exactly zero, no epsilon involved */
+        for (int i = 0; i < n; i++) {
+            if (gx) gx[i] = 0.0;
+            if (gy) gy[i] = 0.0;
+        }
+        return NULL;
     }
-    if (gy) {
-        const char* why = eshkol_rm_log_map(y, x, K, n, lg, scratch);
+    if (K == 0.0) {
+        for (int i = 0; i < n; i++) {
+            const double t = 2.0 * (x[i] - y[i]);
+            if (gx) gx[i] = t;
+            if (gy) gy[i] = -t;
+        }
+        if (gx && (why = eshkol_rm_check_output(gx, n, "the squared-distance gradient is not finite"))) return why;
+        if (gy && (why = eshkol_rm_check_output(gy, n, "the squared-distance gradient is not finite"))) return why;
+        return NULL;
+    }
+    if (eshkol_rm_needs_rescale(K, x, y, n)) {
+        /* d^2(K; x, y) = 4 d^2(4K; x/2, y/2): the gradient scales by 2. */
+        double* h = eshkol_rm_halved(x, y, NULL, n);
+        if (!h) return "out of memory";
+        why = eshkol_rm_sq_distance_grad(h, h + n, 4.0 * K, n, gx, gy, scratch);
+        free(h);
         if (why) return why;
-        const double lam = eshkol_rm_lambda(y, K, n);
-        for (int i = 0; i < n; i++) gy[i] = -2.0 * lam * lam * lg[i];
-        why = eshkol_rm_check_output(gy, n, "the squared-distance gradient is not finite");
+        for (int i = 0; i < n; i++) {
+            if (gx) gx[i] *= 2.0;
+            if (gy) gy[i] *= 2.0;
+        }
+        return NULL;
+    }
+    double* u = scratch + n;
+    for (int side = 0; side < 2; side++) {
+        double* g = side ? gy : gx;
+        if (!g) continue;
+        const double* a = side ? y : x;
+        const double* b = side ? x : y;
+        double d = 0.0;
+        why = eshkol_rm_log_direction(a, b, K, n, u, scratch, &d);
+        if (why) return why;
+        /* -2 lambda_a^2 log_a(b) = -2 lambda_a d u: lambda d is formed before
+         * the unit vector, never the possibly unrepresentable |log|. */
+        const double f = -2.0 * (ESHKOL_RM_ALPHA / eshkol_rm_chart_den(a, K, n)) * d;
+        for (int i = 0; i < n; i++) g[i] = f * u[i];
+        why = eshkol_rm_check_output(g, n, "the squared-distance gradient is not finite");
         if (why) return why;
     }
     return NULL;
@@ -1448,6 +1655,14 @@ static const char* eshkol_rm_transport(const double* x, const double* y,
     if (K == 0.0) {
         memcpy(out, v, (size_t)n * sizeof(double));
         return NULL;
+    }
+    if (eshkol_rm_needs_rescale(K, x, y, n)) {
+        /* transport is linear in v: only the points are rescaled */
+        double* h = eshkol_rm_halved(x, y, NULL, n);
+        if (!h) return "out of memory";
+        why = eshkol_rm_transport(h, h + n, v, 4.0 * K, n, out, scratch);
+        free(h);
+        return why;
     }
     double B = eshkol_rm_ball_param(-K);
     if (!(eshkol_rm_mobius_den_negx(x, y, B, n) > 0.0))
@@ -1486,6 +1701,14 @@ static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
         for (int i = 0; i < n; i++) out[i] = 0.0;
         return NULL;
     }
+    if (eshkol_rm_needs_rescale(K, x, NULL, n)) {
+        double* h = eshkol_rm_halved(x, NULL, NULL, n);
+        if (!h) return "out of memory";
+        why = eshkol_rm_mobius_scalar(r, h, 4.0 * K, n, out);
+        free(h);
+        if (!why) for (int i = 0; i < n; i++) out[i] *= 2.0;
+        return why;
+    }
     double B = eshkol_rm_ball_param(-K);
     double A = eshkol_rm_artan_ratio(eshkol_rm_scaled_norm2_times(x, B, n));
     double a = r * xn * A;
@@ -1516,7 +1739,9 @@ static const char* eshkol_rm_project(const double* x, double K, int n, double* o
         return NULL;
     }
     double xn = eshkol_rm_norm(x, n);
-    double R = 1.0 / eshkol_rm_sqrt_nonnegative(eshkol_rm_ball_param(-K));
+    /* radius 2/(alpha sqrt(-K)), formed from K so it is exact-parameter at
+     * every binade */
+    double R = 2.0 / (ESHKOL_RM_ALPHA * eshkol_rm_sqrt_nonnegative(-K));
     /* Leave a margin so the projected point is STRICTLY inside: a point exactly
      * on the boundary makes lambda infinite and every log map degenerate to
      * zero, which is the failure mode frechet_mean_core.h refuses to let look
@@ -1723,24 +1948,29 @@ static const char* eshkol_rm_distance_dK_small_q(
         -143.0 / 10240.0, 6435.0 / 557056.0, -12155.0 / 1245184.0,
         46189.0 / 5505024.0
     };
-    const double D = eshkol_rm_difference_norm2_times(x, y, 1.0, n);
+    /* sqrt(z) = |x-y| / sqrt(P), from the hypot separation so subnormal
+     * separations keep their bits; z itself enters only as root_z^2 inside
+     * the exponent-separated products. */
+    double delta = 0.0;
+    for (int i = 0; i < n; i++) delta = hypot(delta, x[i] - y[i]);
     const double U = eshkol_rm_scaled_norm2_times(x, 1.0, n);
     const double V = eshkol_rm_scaled_norm2_times(y, 1.0, n);
-    const double P = pa * pb;
-    if (!(D >= 0.0) || !(U >= 0.0) || !(V >= 0.0) || !(P > 0.0) ||
-        !isfinite(D) || !isfinite(U) || !isfinite(V) || !isfinite(P))
+    if (!(U >= 0.0) || !(V >= 0.0) || !(pa > 0.0) || !(pb > 0.0) ||
+        !isfinite(delta) || !isfinite(U) || !isfinite(V) ||
+        !isfinite(pa) || !isfinite(pb))
         return "the small-curvature series inputs are not finite";
 
-    const double z = D / P;
-    const double root_z = sqrt(z);
+    const double root_z = (delta / sqrt(pa)) / sqrt(pb);
     const double ru = U / pa;
     const double rv = V / pb;
     const double r = ru + rv;
     const double s2 = ru * ru + rv * rv;
-    const double R = B * r;
-    const double T = R + B * B * s2;
-    if (!isfinite(z) || !isfinite(root_z) || !isfinite(r) ||
-        !isfinite(s2) || !isfinite(R) || !isfinite(T))
+    /* R = B r and B^2 s2 = (B ru)^2 + (B rv)^2: dimensionless, formed without
+     * B^2 (which underflows) or s2 (which can overflow) on its own. */
+    const double bu = B * ru, bv = B * rv;
+    const double R = bu + bv;
+    const double T = R + bu * bu + bv * bv;
+    if (!isfinite(root_z) || !isfinite(r) || !isfinite(R) || !isfinite(T))
         return "the small-curvature series is not finite";
 
     double H = a[10];
@@ -1753,30 +1983,33 @@ static const char* eshkol_rm_distance_dK_small_q(
         power *= w;
     }
 
+    /* dB/dK enters every factor list, so d' and d'' are never formed as an
+     * intermediate B-derivative that could overflow before the 1/4 and 1/16
+     * are applied. */
     const double d_factors[] = {ESHKOL_RM_ALPHA, root_z, H};
     const double d = eshkol_rm_scaled_product_n(d_factors, 3);
-    const double dB1_zero_factors[] = {
-        ESHKOL_RM_ALPHA, root_z, 0.5 * r
+    const double d1_zero_factors[] = {
+        ESHKOL_RM_ALPHA, root_z, 0.5 * r, dBdK
     };
-    const double dB1_series_factors[] = {
-        ESHKOL_RM_ALPHA, z, root_z, first
+    const double d1_series_factors[] = {
+        ESHKOL_RM_ALPHA, root_z, root_z, root_z, first, dBdK
     };
-    const double dB1 = eshkol_rm_scaled_product_n(dB1_zero_factors, 3) +
-                       eshkol_rm_scaled_product_n(dB1_series_factors, 4);
+    const double d1 = eshkol_rm_scaled_product_n(d1_zero_factors, 4) +
+                      eshkol_rm_scaled_product_n(d1_series_factors, 6);
 
     /* The n=0 term is (T-R)/B^2 + R^2/B^2, with the quotients expanded
      * directly as s2 and r^2.  The n=1 term is treated the same way. */
-    const double dB2_zero_factors[] = {
-        ESHKOL_RM_ALPHA, root_z, 0.5 * s2 + 0.25 * r * r
+    const double d2_zero_factors[] = {
+        ESHKOL_RM_ALPHA, root_z, 0.5 * s2 + 0.25 * r * r, dBdK, dBdK
     };
     const double alpha1 = 1.5;
-    const double one_bracket = alpha1 * (2.0 * r + B * s2) +
-                               alpha1 * alpha1 * B * r * r;
-    const double dB2_one_factors[] = {
-        ESHKOL_RM_ALPHA, z, root_z, a[1] * one_bracket
+    const double one_bracket = alpha1 * (2.0 * r + (bu * ru + bv * rv)) +
+                               alpha1 * alpha1 * R * r;
+    const double d2_one_factors[] = {
+        ESHKOL_RM_ALPHA, root_z, root_z, root_z, a[1] * one_bracket, dBdK, dBdK
     };
-    double dB2 = eshkol_rm_scaled_product_n(dB2_zero_factors, 3) +
-                 eshkol_rm_scaled_product_n(dB2_one_factors, 4);
+    double d2 = eshkol_rm_scaled_product_n(d2_zero_factors, 5) +
+                eshkol_rm_scaled_product_n(d2_one_factors, 7);
 
     power = 1.0;
     for (int k = 2; k <= 10; ++k) {
@@ -1784,16 +2017,16 @@ static const char* eshkol_rm_distance_dK_small_q(
         const double log_derivative = (double)k + alpha * R;
         const double second_factor = log_derivative * log_derivative -
                                      log_derivative + alpha * T;
-        const double dB2_factors[] = {
-            ESHKOL_RM_ALPHA, z, z, root_z, a[k], power,
-            second_factor
+        const double d2_factors[] = {
+            ESHKOL_RM_ALPHA, root_z, root_z, root_z, root_z, root_z, a[k],
+            power, second_factor, dBdK, dBdK
         };
-        dB2 += eshkol_rm_scaled_product_n(dB2_factors, 7);
+        d2 += eshkol_rm_scaled_product_n(d2_factors, 11);
         power *= w;
     }
 
-    *d1_out = dB1 * dBdK;
-    *d2_out = dB2 * dBdK * dBdK;
+    *d1_out = d1;
+    *d2_out = d2;
     if (d_out) *d_out = d;
     if (!isfinite(d) || !isfinite(*d1_out) || !isfinite(*d2_out))
         return "the curvature derivative is not finite";
@@ -1844,6 +2077,21 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
         *d2_out = 0.0;
         return NULL;
     }
+    if (eshkol_rm_needs_rescale(K, x, y, n)) {
+        /* d(K; x, y) = 2 d(4K; x/2, y/2): d' scales by 8, d'' by 32. */
+        double* h = eshkol_rm_halved(x, y, NULL, n);
+        if (!h) return "out of memory";
+        double d = 0.0, d1 = 0.0, d2 = 0.0;
+        why = eshkol_rm_distance_dK(h, h + n, 4.0 * K, n, &d, &d1, &d2);
+        free(h);
+        if (why) return why;
+        if (d_out) *d_out = 2.0 * d;
+        *d1_out = 8.0 * d1;
+        *d2_out = 32.0 * d2;
+        if (!isfinite(*d1_out) || !isfinite(*d2_out))
+            return "the curvature derivative is not finite";
+        return NULL;
+    }
     const double B = eshkol_rm_ball_param(-K);
     /* Dimensionless quantities. A = B|x|^2, C = B|y|^2 and G = B|x-y|^2 remain
      * representable across all curvature binades in which the points are chart
@@ -1855,7 +2103,9 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
     const double pa  = eshkol_rm_one_minus_bnorm2(x, B, n);
     const double pb  = eshkol_rm_one_minus_bnorm2(y, B, n);
     const double w = (gamma / pa) / pb;
-    if (!(w >= -1.0) || !isfinite(w))
+    /* On the positive chart w in [-1, 0]; within an ulp of the antipode it
+     * may round below -1, and 1 + w is then taken from the Mobius form. */
+    if (!isfinite(w) || (B > 0.0 && w < 0.0))
         return "the dimensionless curvature argument is not finite";
 
     /* Do not require w to be nonzero: at the subnormal curvature floor and at
@@ -1882,26 +2132,49 @@ static const char* eshkol_rm_distance_dK(const double* x, const double* y,
     const double T = R + ra * ra + rb * rb;
     const double root_w = sqrt(fabs(w));
     const double h = (w > 0.0) ? asinh(root_w) : atan2(root_w, sqrt(onepw));
-    const double q = 0.5 * root_w / sqrt(onepw);
-    double psi1 = 0.0, psi2 = 0.0;
-    (void)eshkol_rm_psi(w, &psi1, &psi2);
-    /* Factor the cancellations in t1 and t2 through psi'(w) and psi''(w). The
-     * residual R/T terms are the dependence of P on B. */
+    double t1, t2;
     const double t0 = h;
-    const double t1 = root_w * w * psi1 + q * R;
-    const double t2 = root_w * w * w * psi2 +
-        q * (T + (2.0 * R + R * R) / (2.0 * onepw) - 2.0 * R);
+    if (fabs(w) <= 0.5) {
+        /* Factor the cancellations in t1 and t2 through psi'(w) and psi''(w)
+         * (series-evaluated here). The residual R/T terms are the dependence
+         * of P on B. */
+        const double q = 0.5 * root_w / sqrt(onepw);
+        double psi1 = 0.0, psi2 = 0.0;
+        (void)eshkol_rm_psi(w, &psi1, &psi2);
+        t1 = root_w * w * psi1 + q * R;
+        /* T + (2R + R^2)/(2(1+w)) - 2R, regrouped so the O(R) terms do not
+         * cancel: (ra^2 + rb^2) + R^2/(2(1+w)) - R w/(1+w). */
+        const double bracket = (ra * ra + rb * rb) + (R * R) / (2.0 * onepw) -
+                               R * (w / onepw);
+        t2 = root_w * w * w * psi2 + q * bracket;
+    } else {
+        /* sinh^2 h = w (ball) and sin^2 h = -w (sphere chart) give one form:
+         * with tau = sqrt|w| / sqrt(1+w) (tanh h, resp. tan h) and
+         * 1 + w = cosh^2 h, resp. cos^2 h,
+         *   Dh = tau L / 2,  D^2 h = tau L^2 / (4(1+w)) + tau T / 2.
+         * Near the positive-chart antipode tau ~ 1/eps while L ~ eps, so
+         * this is the form in which no O(1/eps^3) terms are formed only to
+         * cancel. */
+        const double L = 1.0 + R;
+        const double tau = root_w / sqrt(onepw);
+        const double Dh = 0.5 * tau * L;
+        const double D2h = 0.25 * tau * L * (L / onepw) + 0.5 * tau * T;
+        t1 = Dh - 0.5 * h;
+        t2 = D2h - 2.0 * Dh + 0.75 * h;
+    }
     const double abs_B = fabs(B);
     const double sign_B = (B > 0.0) ? 1.0 : -1.0;
+    /* dB/dK is folded in before the |B|^(-p/2) scaling so a representable
+     * d' or d'' is never preceded by an overflowing B-derivative. */
     const double d = ESHKOL_RM_ALPHA *
         eshkol_rm_inverse_power_mul(abs_B, 1, t0);
-    const double dB1 = sign_B * ESHKOL_RM_ALPHA *
-        eshkol_rm_inverse_power_mul(abs_B, 3, t1);
-    const double dB2 = ESHKOL_RM_ALPHA *
-        eshkol_rm_inverse_power_mul(abs_B, 5, t2);
+    const double d1 = sign_B * ESHKOL_RM_ALPHA *
+        eshkol_rm_inverse_power_mul(abs_B, 3, t1 * dBdK);
+    const double d2 = ESHKOL_RM_ALPHA *
+        eshkol_rm_inverse_power_mul(abs_B, 5, (t2 * dBdK) * dBdK);
     if (d_out) *d_out = d;
-    *d1_out = dB1 * dBdK;
-    *d2_out = dB2 * dBdK * dBdK;
+    *d1_out = d1;
+    *d2_out = d2;
     if (!isfinite(d) || !isfinite(*d1_out) || !isfinite(*d2_out))
         return "the curvature derivative is not finite";
     return NULL;

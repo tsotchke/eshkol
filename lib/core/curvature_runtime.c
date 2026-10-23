@@ -220,13 +220,7 @@ int32_t eshkol_curvature_mobius_add(const eshkol_tensor_t* x,
     const double *xd, *yd; double* o; int n;
     const char* why = curv_pair(x, y, &xd, &yd, &n);
     if (!why) why = curv_out(out, n, &o);
-    if (!why) why = eshkol_rm_check_point(xd, K, n);
-    if (!why) why = eshkol_rm_check_point(yd, K, n);
-    if (!why) {
-        eshkol_rm_mobius_add(xd, yd, eshkol_rm_ball_param(-K), n, o);
-        why = eshkol_rm_check_output(o, n, "the Mobius sum is the pole of the chart");
-        if (!why) why = eshkol_rm_require_interior(o, K, n);
-    }
+    if (!why) why = eshkol_rm_chart_mobius_add(xd, yd, K, n, o);
     return why ? curv_fail(why) : curv_ok();
 }
 
