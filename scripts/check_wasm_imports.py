@@ -137,6 +137,10 @@ SMOKE_PROGRAMS = {
     "strlen_widths":
         "(define pieces (string-split \"a,b\" \",\"))"
         " (display (car pieces)) (newline)",
+    "unicode_character_split":
+        '(define xs (string-split "aλbλ" #\\λ)) (display (car xs)) (newline)',
+    "nul_character_split":
+        '(define xs (string-split "abc" (integer->char 0))) (display (car xs)) (newline)',
     "parameters": "(define p (make-parameter 1)) (display (p)) (newline)",
     "regions": "(with-region (lambda () (define x (list 1 2 3)) (display (car x)) (newline)))",
     "bignum_rational": "(display (* 100000000000 100000000000)) (newline) (display (/ 1 3)) (newline)",
