@@ -2539,6 +2539,20 @@ class EshkolRepl {
                 eshkol_builtin_event_loop_close:      (out) => this.writeFalse(out),
                 eshkol_builtin_event_loop_backend:    (out) => this.writeFalse(out),
 
+                // Stackful coroutines need a second machine stack, which the
+                // browser sandbox does not provide; the coroutine surface fails
+                // closed with #f, like the event loop above. Native builds run
+                // lib/core/runtime_coroutines_hosted.cpp.
+                eshkol_builtin_make_coroutine: (out) => this.writeFalse(out),
+                eshkol_builtin_coroutine_resume: (out) => this.writeFalse(out),
+                eshkol_builtin_coroutine_raise: (out) => this.writeFalse(out),
+                eshkol_builtin_coroutine_yield: (out) => this.writeFalse(out),
+                eshkol_builtin_coroutine_status: (out) => this.writeFalse(out),
+                eshkol_builtin_coroutine_release: (out) => this.writeFalse(out),
+                eshkol_builtin_current_coroutine: (out) => this.writeFalse(out),
+                eshkol_builtin_coroutine_p: (out) => this.writeFalse(out),
+                eshkol_builtin_coroutine_stats: (out) => this.writeFalse(out),
+
                 eshkol_capability_runtime_begin_install: () => {},
                 eshkol_capability_runtime_allow:   () => {},
                 eshkol_capability_runtime_clear:   () => {},

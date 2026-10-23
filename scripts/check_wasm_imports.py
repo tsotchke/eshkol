@@ -156,6 +156,13 @@ SMOKE_PROGRAMS = {
     # browser has no descriptors for it to watch. Compiling it here is what
     # proves the fail-closed JS stubs in both glue files are actually declared,
     # rather than discovering it when the lite lane breaks.
+    # Stackful coroutines emit env imports of their own; compiling them here
+    # proves the fail-closed JS stubs exist in both glue files.
+    "coroutines":
+        "(define c (make-coroutine (lambda () (coroutine-yield 1) 2)))"
+        " (display (if c (coroutine-resume c) \"no-coroutines\")) (newline)"
+        " (display (list (coroutine? c) (current-coroutine) (coroutine-stats)))"
+        " (if c (begin (coroutine-status c) (coroutine-raise c 0) (coroutine-release! c)) #f)",
     "event_loop":
         "(define l (make-event-loop 4))"
         " (display (if l (event-loop-backend) \"no-event-loop\")) (newline)"
