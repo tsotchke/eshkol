@@ -30,9 +30,12 @@
 ;;   (sdnc-load-weights! θ path)       -> θ      QLMW weights (weight_matrices)
 ;;   (sdnc-mismatches θ transitions)   -> n      recorded transitions θ does
 ;;                                                not reproduce byte for byte
-;;   (sdnc-repair! θ transitions [beta]) -> alist tied-gate threshold repair;
-;;                                                forward exact, backward
-;;                                                smoothed at beta (default 1/30)
+;;   (sdnc-repair! θ transitions construction [beta])
+;;                                     -> alist  tied-gate threshold repair;
+;;                                                gates tied as in the
+;;                                                construction (QLMW); forward
+;;                                                exact, backward smoothed at
+;;                                                beta (default 1/30)
 ;;
 
 (provide sdnc-program
@@ -49,7 +52,7 @@
 
 (extern i32 sdnc-load-weights-raw ptr ptr :real eshkol_sdnc_load_weights)
 (extern i64 sdnc-mismatches-raw ptr ptr :real eshkol_sdnc_mismatches)
-(extern i64 sdnc-repair-raw ptr ptr double :real eshkol_sdnc_repair)
+(extern i64 sdnc-repair-raw ptr ptr ptr double :real eshkol_sdnc_repair)
 (extern i64 sdnc-report-raw ptr i32 :real eshkol_sdnc_report_field)
 
 ;; Backward inverse temperature for repair: 10 construction units over the
@@ -70,6 +73,12 @@
                               (else "unexpected status for "))
                         path)))
 
+(define (sdnc-repair-error transitions construction rc)
+  (cond ((= rc -5) (error (string-append "sdnc-repair!: cannot read construction " construction)))
+        ((= rc -6) (error (string-append "sdnc-repair!: construction is not an SDNC weight file for this architecture: "
+                                         construction)))
+        (else (sdnc-status-error "sdnc-repair!" transitions rc))))
+
 (define (sdnc-load-weights! th path)
   (sdnc-check-args! "sdnc-load-weights!" th path)
   (let ((rc (sdnc-load-weights-raw th path)))
@@ -80,14 +89,16 @@
   (let ((n (sdnc-mismatches-raw th transitions)))
     (if (>= n 0) n (sdnc-status-error "sdnc-mismatches" transitions n))))
 
-(define (sdnc-repair! th transitions . options)
+(define (sdnc-repair! th transitions construction . options)
   (sdnc-check-args! "sdnc-repair!" th transitions)
+  (if (not (string? construction))
+      (error "sdnc-repair!: construction must be a weight file path string"))
   (let ((beta (if (null? options) sdnc-default-repair-beta (car options))))
     (if (not (and (real? beta) (> beta 0)))
         (error "sdnc-repair!: beta must be a positive real"))
-    (let ((rc (sdnc-repair-raw th transitions (exact->inexact beta))))
+    (let ((rc (sdnc-repair-raw th transitions construction (exact->inexact beta))))
       (if (< rc 0)
-          (sdnc-status-error "sdnc-repair!" transitions rc)
+          (sdnc-repair-error transitions construction rc)
           (list (cons 'transitions (sdnc-report-raw th 0))
                 (cons 'tied-gates (sdnc-report-raw th 1))
                 (cons 'mismatched-before (sdnc-report-raw th 2))

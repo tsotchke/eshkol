@@ -8,7 +8,8 @@
 ;;;
 ;;;   (sdnc-load-weights! θ path)            QLMW weights into θ
 ;;;   (sdnc-mismatches θ transitions)        transitions θ does not reproduce
-;;;   (sdnc-repair! θ transitions [beta])    tied-gate threshold repair
+;;;   (sdnc-repair! θ transitions construction [beta])
+;;;                                          tied-gate threshold repair
 ;;;   (sdnc-weight-grad θ in target beta)    smoothed backward
 
 (require core.sdnc)
@@ -25,10 +26,11 @@
 (define dir (getenv "ESHKOL_SDNC_ARTIFACTS"))
 (check "ESHKOL_SDNC_ARTIFACTS is set" (string? dir))
 (define transitions (string-append dir "/transitions.sdtr"))
+(define construction (string-append dir "/constructed.qlmw"))
 
 ;; 1. The constructed weights reproduce every recorded transition.
 (define th (sdnc-program "interpreter"))
-(sdnc-load-weights! th (string-append dir "/constructed.qlmw"))
+(sdnc-load-weights! th construction)
 (check "constructed weights: 0 differing transitions" (= 0 (sdnc-mismatches th transitions)))
 
 ;; 2. The damaged weights do not.
@@ -38,7 +40,7 @@
 (check "damaged weights: some transitions differ" (> before 0))
 
 ;; 3. Repair: exact derivative is zero, smoothed derivative ranks, exact forward accepts.
-(define report (sdnc-repair! th transitions))
+(define report (sdnc-repair! th transitions construction))
 (define (field k) (cdr (assq k report)))
 (display "  report: ") (display report) (newline)
 (check "report counts the damaged transitions" (= (field 'mismatched-before) before))
@@ -53,7 +55,9 @@
 (check "a transition file is not a weight file"
        (guard (e (else #t)) (sdnc-load-weights! th transitions) #f))
 (check "beta must be positive"
-       (guard (e (else #t)) (sdnc-repair! th transitions 0) #f))
+       (guard (e (else #t)) (sdnc-repair! th transitions construction 0) #f))
+(check "a missing construction raises"
+       (guard (e (else #t)) (sdnc-repair! th transitions (string-append dir "/absent.qlmw")) #f))
 
 ;; 5. Backward smoothing option of sdnc-weight-grad.
 (define (vcopy src)

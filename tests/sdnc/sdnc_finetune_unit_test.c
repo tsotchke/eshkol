@@ -234,7 +234,11 @@ static void optimizer_checks(void) {
     SdncFinetuneOptions opt;
     sdnc_finetune_default_options(&opt);
     SdncFinetuneReport rep;
-    int rc = sdnc_control_finetune(w, &ts, NULL, &opt, &rep);
+    check("synthetic: tied gates are required", sdnc_control_finetune(w, &ts, NULL, &opt, &rep) == -2);
+    SdncGateGroups* groups = (SdncGateGroups*)malloc(sizeof(SdncGateGroups));
+    sdnc_gate_groups_build(w0, groups);   /* the construction's gates */
+    int rc = sdnc_control_finetune(w, &ts, groups, &opt, &rep);
+    free(groups);
     check("synthetic: one tied-gate move restores every transition",
           rc == 0 && rep.mismatched_before == 4 && rep.mismatched_after == 0 &&
           rep.gate_moves == 1 && rep.neuron_moves == 0 && rep.tied_gates == 1 &&

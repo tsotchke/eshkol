@@ -13,7 +13,8 @@
  *      the exact count of transitions whose output is not byte-identical to the
  *      teacher (sdnc_transition_objective).
  *   3. Gate thresholds are parameterized per construction gate: neurons whose
- *      gate column and bias are identical are one tied gate (SdncGateGroups).
+ *      gate column and bias are identical in the construction are one tied
+ *      gate (SdncGateGroups).
  *   4. The backward pass uses the logistic-perturbed gate
  *      (sdnc_backward_smoothed) to RANK threshold moves of one construction
  *      unit; the exact forward pass ACCEPTS a move only if it lowers the exact
@@ -83,7 +84,11 @@ typedef struct {
     int group[SDNC_N_LAYERS][SDNC_FFN_DIM];
 } SdncGateGroups;
 
-/* Group neurons whose gate column and gate bias are bit-identical. */
+/* Group neurons whose gate column and gate bias are equal. Build the groups
+ * from the CONSTRUCTION, not from the weights being repaired: the thresholds
+ * of neighbouring construction gates differ by whole construction units, so a
+ * threshold moved by a unit can coincide with another gate's and would be tied
+ * to it. */
 void sdnc_gate_groups_build(const SdncWeights* w, SdncGateGroups* out);
 
 /* ---- Optimizer ------------------------------------------------------------ */
@@ -123,8 +128,10 @@ void sdnc_control_gradient(const SdncWeights* w, const SdncTransitionSet* ts,
  * is exactly zero. */
 int  sdnc_control_gradient_is_zero(const SdncGrads* g);
 
-/* Fine-tune the gate thresholds of `w` in place against `ts`. `groups` may be
- * NULL (then built from `w`). Returns 0 on success, -1 on allocation failure. */
+/* Fine-tune the gate thresholds of `w` in place against `ts`, moving the tied
+ * gates of `groups` (built from the construction) and then their single
+ * neurons. `opt` may be NULL (defaults). Returns 0 on success, -1 on
+ * allocation failure, -2 when `groups` is NULL. */
 int  sdnc_control_finetune(SdncWeights* w, const SdncTransitionSet* ts,
                            const SdncGateGroups* groups,
                            const SdncFinetuneOptions* opt,

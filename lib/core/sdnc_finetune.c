@@ -542,8 +542,8 @@ int sdnc_control_finetune(SdncWeights* w, const SdncTransitionSet* ts,
     SdncFinetuneReport r; memset(&r, 0, sizeof(r));
     r.transitions = ts->n;
 
+    if (!groups) { if (rep) *rep = r; return -2; }
     int status = -1;
-    SdncGateGroups* own = NULL;
     FtGroupIndex gi; memset(&gi, 0, sizeof(gi));
     FtEval ev; memset(&ev, 0, sizeof(ev));
     SdncGrads* g = (SdncGrads*)malloc(sizeof(SdncGrads));
@@ -559,12 +559,6 @@ int sdnc_control_finetune(SdncWeights* w, const SdncTransitionSet* ts,
     ev.mm = (unsigned char*)malloc(n);
     if (!g || !cache || !old_b || !new_b || !ev.xpa || !ev.cur || !ev.huber || !ev.mm) goto done;
 
-    if (!groups) {
-        own = (SdncGateGroups*)malloc(sizeof(SdncGateGroups));
-        if (!own) goto done;
-        sdnc_gate_groups_build(w, own);
-        groups = own;
-    }
     if (ft_group_index(groups, &gi)) goto done;
     r.tied_gates = groups->n_groups;
     G = (double*)malloc(sizeof(double) * (size_t)(gi.n_groups ? gi.n_groups : 1));
@@ -657,7 +651,7 @@ int sdnc_control_finetune(SdncWeights* w, const SdncTransitionSet* ts,
     status = 0;
 
 done:
-    free(g); free(cache); free(G); free(rank); free(old_b); free(new_b); free(own);
+    free(g); free(cache); free(G); free(rank); free(old_b); free(new_b);
     ft_group_index_free(&gi);
     free(ev.xpa); free(ev.cur); free(ev.huber); free(ev.mm);
     if (rep) *rep = r;

@@ -22,7 +22,7 @@
  * facility in lib/core/sdnc_finetune.c):
  *   eshkol_sdnc_load_weights(θ, path)        QLMW weights into θ
  *   eshkol_sdnc_mismatches(θ, path)          transitions θ does not reproduce
- *   eshkol_sdnc_repair(θ, path, beta)        tied-gate threshold fine-tuning
+ *   eshkol_sdnc_repair(θ, path, constr, beta) tied-gate threshold fine-tuning
  *   eshkol_sdnc_report_field(θ, k)           fields of the last repair report
  *
  * The trainable core math (forward / backward_through_weights /
@@ -574,19 +574,31 @@ int64_t eshkol_sdnc_mismatches(void* theta, const char* path) {
     return mm;
 }
 
-int64_t eshkol_sdnc_repair(void* theta, const char* path, double beta) {
+/* Thresholds are tied per gate of the construction (`construction`, QLMW),
+ * the weights the repair works back towards. Status -5: unreadable
+ * construction file; -6: construction for another architecture. */
+int64_t eshkol_sdnc_repair(void* theta, const char* path, const char* construction,
+                           double beta) {
     SdncHandle* h = sdnc_handle_from_ptr(theta);
     if (!h) return -3;
     if (!(beta > 0.0) || !isfinite(beta)) return -2;
+    SdncWeights* cw = (SdncWeights*)malloc(sizeof(SdncWeights));
+    SdncGateGroups* groups = (SdncGateGroups*)malloc(sizeof(SdncGateGroups));
+    if (!cw || !groups) { free(cw); free(groups); return -4; }
+    int lc = construction ? sdnc_weights_load_qlmw(cw, construction) : -1;
+    if (lc != 0) { free(cw); free(groups); return lc == -2 ? -6 : -5; }
+    sdnc_gate_groups_build(cw, groups);
+    free(cw);
     SdncTransitionSet ts;
-    if (!path || sdnc_transitions_load(&ts, path) != 0) return -1;
+    if (!path || sdnc_transitions_load(&ts, path) != 0) { free(groups); return -1; }
     SdncFinetuneOptions opt;
     sdnc_finetune_default_options(&opt);
     opt.smoothing.gate_beta = (float)beta;
     opt.smoothing.attn_beta = (float)beta;
     SdncFinetuneReport rep;
-    int rc = sdnc_control_finetune(h->w, &ts, NULL, &opt, &rep);
+    int rc = sdnc_control_finetune(h->w, &ts, groups, &opt, &rep);
     sdnc_transitions_free(&ts);
+    free(groups);
     if (rc != 0) return -4;
     h->report = rep;
     h->has_report = 1;

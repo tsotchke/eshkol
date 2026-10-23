@@ -11900,7 +11900,7 @@ if(ESHKOL_BUILD_TESTS AND
     add_test(NAME sdnc_finetune_unit
              COMMAND sdnc_finetune_unit_test ${ESHKOL_SDNC_FINETUNE_UNIT_DIR})
     set_tests_properties(sdnc_finetune_unit PROPERTIES
-        PASS_REGULAR_EXPRESSION "Results: 20 passed, 0 failed")
+        PASS_REGULAR_EXPRESSION "Results: 21 passed, 0 failed")
 endif()
 
 # core.sdnc surface of the same repair (sdnc-load-weights!, sdnc-mismatches,
@@ -11914,7 +11914,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET weight_matrices AND TARGET eshkol-run AND
     set_tests_properties(sdnc_finetune_surface_jit PROPERTIES
         ENVIRONMENT "ESHKOL_SDNC_ARTIFACTS=${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune"
         FIXTURES_REQUIRED sdnc_finetune_artifacts
-        PASS_REGULAR_EXPRESSION "Results: 15 passed, 0 failed"
+        PASS_REGULAR_EXPRESSION "Results: 16 passed, 0 failed"
         TIMEOUT 1200)
 endif()
 

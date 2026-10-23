@@ -7336,14 +7336,21 @@ static int control_finetune_demo(const char* artifacts_dir) {
         cf_check("transitions written and read back (SDTR)", ok);
     }
 
-    /* 4. Repair: groups from the weights being tuned (what a caller has). */
+    /* 4. Repair. Thresholds are tied per gate of the construction. */
+    SdncGateGroups* groups = (SdncGateGroups*)malloc(sizeof(SdncGateGroups));
+    SdncWeights* construction = (SdncWeights*)malloc(sizeof(SdncWeights));
+    if (!groups || !construction) { printf("alloc failed\n"); return 1; }
+    memcpy(construction, w0, sizeof(SdncWeights));
+    sdnc_gate_groups_build(construction, groups);
+    free(construction);
     SdncFinetuneOptions opt;
     sdnc_finetune_default_options(&opt);
     opt.log = cf_log_line;
     SdncFinetuneReport rep;
     printf("\n  repair: backward beta %g (gate and attention), move %g, forward exact\n",
            (double)opt.smoothing.gate_beta, (double)opt.step);
-    int rc = sdnc_control_finetune(sw, &ts, NULL, &opt, &rep);
+    int rc = sdnc_control_finetune(sw, &ts, groups, &opt, &rep);
+    free(groups);
     cf_check("exact derivative of every control weight is identically zero on the damaged weights",
              rc == 0 && rep.exact_control_gradient_zero);
     printf("  tied gates %d; %d tied-gate moves, %d neuron moves; differing transitions %d -> %d\n",

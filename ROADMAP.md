@@ -777,6 +777,15 @@ under the same discipline that made `Qubit` linear.
       case + Python one-liner per new AD/quantum feature) goes live
 - [ ] qLLM backward completion: `input2` wiring for conv2d/batchnorm/
       layernorm/attention tape nodes
+- [x] SDNC control fine-tuning with an exact forward pass (ADR-0032): the
+      constructed interpreter's gate thresholds are fine-tuned while every
+      forward step stays exact — a smoothed backward (logistic-perturbed gate,
+      one shared rule with `qllm_backward.c`) ranks one-unit threshold moves
+      over tied construction gates, the exact forward accepts them; `core.sdnc`
+      gains `sdnc-load-weights!`, `sdnc-mismatches`, `sdnc-repair!` and a
+      smoothing argument to `sdnc-weight-grad`; a switched-off ADD dispatch is
+      repaired to 127/127 battery programs with every recorded transition
+      byte-identical (`ctest -R sdnc_control_finetune`)
 - [ ] Symbolic multivariate polynomial and truncated-series values (sparse
       ring over `Q` and `GF(p)`, series values carrying a coefficient norm),
       and polynomial-valued duals — the AD operators applied to a symbolic
