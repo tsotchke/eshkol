@@ -121,8 +121,13 @@ Fine-tune θ's gate thresholds in place against the recorded transitions: tied g
 (display report) (newline)
 ```
 ```
-EXAMPLE_OUTPUT
+constructed: 0
+damaged:     240
+repaired:    0
+((transitions . 3316) (tied-gates . 1102) (mismatched-before . 240) (mismatched-after . 0) (gate-moves . 13) (neuron-moves . 5) (exact-control-gradient-zero . #t))
 ```
+
+The repair takes about a minute and a half under `eshkol-run -r` (one core). Run the program with `ESHKOL_PATH` pointing at the repository's `lib/` when it lives outside the source tree.
 
 ## Edge cases
 - `sdnc?` on a non-SDNC value returns `#f` (does not error).
