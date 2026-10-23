@@ -199,6 +199,7 @@ set(CMAKE_CXX_STANDARD 20)
 
 # Options
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
+
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
 # OALR object/layout ABI v2 (ADR-0001 SS3, ADR-0000 Stage 4). MUST stay OFF by
@@ -12732,4 +12733,12 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 AND UNIX AND ESHKOL
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v2_engine_parity.py
             $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test> --self-test)
     set_tests_properties(eskm_v2_engine_parity_test PROPERTIES TIMEOUT 180)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    add_test(NAME mix_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_mix_gate.sh")
+    set_tests_properties(mix_gate PROPERTIES TIMEOUT 3600 LABELS "stdlib;compiler;parity")
 endif()
