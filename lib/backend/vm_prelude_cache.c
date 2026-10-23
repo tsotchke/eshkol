@@ -161,6 +161,15 @@ int main(void) {
     }
     printf("\n};\n");
 
+    /* Binding provenance is deterministic compiler metadata, even when
+     * instrumentation itself is disabled for bootstrap generation. */
+    printf("\n#define ESHKOL_VM_PRELUDE_BINDING_IDS 1\n");
+    printf("static const uint32_t prelude_binding_ids[] = {\n");
+    for (int i = 0; i < chunk.n_locals; ++i)
+        printf("    %u%s\n", chunk.locals[i].coverage_binding_id,
+               i + 1 < chunk.n_locals ? "," : "");
+    printf("};\n");
+
     /* Emit local names */
     printf("\nstatic const char* prelude_local_names[] = {\n");
     for (int i = 0; i < chunk.n_locals; i++) {

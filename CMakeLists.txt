@@ -14960,7 +14960,8 @@ endif()
 if(ESHKOL_BUILD_TESTS)
     foreach(_fixture IN ITEMS coverage_conversion_probes hosted_vm_char_order
             hash_ref_optional_contract string_split_byte_contract
-            coverage_pure_helpers coverage_interval_dataframe native_char_comparison_chains)
+            coverage_pure_helpers coverage_interval_dataframe native_char_comparison_chains
+            coverage_remaining_pure_calls named_let_initializer_slots)
         set(_fixture_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_fixture}_test.esk")
         set(_fixture_tests)
         if(TARGET eshkol-run)
@@ -15124,4 +15125,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-static)
     set_tests_properties(function_cache_type_contract PROPERTIES TIMEOUT 30
         PASS_REGULAR_EXPRESSION "PASS: function-cache declaration contracts 10 checks"
         FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Keep exported-origin read evidence separate from procedure invocation.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
+    add_test(NAME vm_binding_origins_current
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_vm_binding_origins.py" --check)
+    add_test(NAME binding_read_evidence_policy
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/test_binding_read_evidence.py")
+    if(TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND TARGET eshkol-vm-switch-dispatch-test)
+        add_test(NAME vm_binding_read_runtime
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/coverage/binding_read_runtime_test.py"
+                --compiler $<TARGET_FILE:eshkol-run>
+                --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+                --switch $<TARGET_FILE:eshkol-vm-switch-dispatch-test>)
+        set_tests_properties(vm_binding_read_runtime PROPERTIES TIMEOUT 180)
+    endif()
 endif()

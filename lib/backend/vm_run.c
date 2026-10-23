@@ -248,6 +248,7 @@ void vm_run(VM* vm) {
         [OP_LANGUAGE_COVERAGE] = &&lbl_LANGUAGE_COVERAGE,
         [OP_LANGUAGE_COVERAGE_CALL] = &&lbl_LANGUAGE_COVERAGE_CALL,
         [OP_LANGUAGE_COVERAGE_FORM] = &&lbl_LANGUAGE_COVERAGE_FORM,
+        [OP_LANGUAGE_COVERAGE_READ] = &&lbl_LANGUAGE_COVERAGE_READ,
         [OP_GLOBAL_MARK]   = &&lbl_GLOBAL_MARK,
         [OP_RAISE_SECONDARY] = &&lbl_RAISE_SECONDARY,
     };
@@ -260,6 +261,7 @@ void vm_run(VM* vm) {
                 goto vm_exit; \
         } \
         instr = vm->code[vm->pc++]; \
+        if (instr.op != OP_LANGUAGE_COVERAGE_READ) vm->language_coverage_load_pc = 0; \
         if (instr.op >= OP_COUNT) { \
             fprintf(stderr, "UNKNOWN OPCODE %u\n", (unsigned)instr.op); \
             vm->error = 1; \
@@ -402,6 +404,7 @@ void vm_run(VM* vm) {
     /* --- Variables --- */
 
     lbl_GET_LOCAL: {
+        vm->language_coverage_load_pc = vm->pc;
         int src;
         if (!vm_local_slot(vm, instr.operand, &src)) goto vm_exit;
         if (vm->sp >= 0 && vm->sp < STACK_SIZE)
@@ -416,7 +419,7 @@ void vm_run(VM* vm) {
         vm->stack[dst] = vm_peek(vm, 0);
         vm_pop(vm);
         DISPATCH(); }
-    lbl_GET_UPVALUE: vm_exec_get_upvalue(vm, instr.operand); DISPATCH();
+    lbl_GET_UPVALUE: vm->language_coverage_load_pc = vm->pc; vm_exec_get_upvalue(vm, instr.operand); DISPATCH();
     lbl_SET_UPVALUE: vm_exec_set_upvalue(vm, instr.operand); DISPATCH();
 
     /* --- Closures --- */
@@ -554,6 +557,10 @@ void vm_run(VM* vm) {
     lbl_LANGUAGE_COVERAGE_CALL:
         vm->language_coverage_call_hash = (uint32_t)instr.operand;
         vm->language_coverage_call_pc = vm->pc;
+        DISPATCH();
+
+    lbl_LANGUAGE_COVERAGE_READ:
+        vm_language_coverage_read(vm, instr.operand);
         DISPATCH();
 
     lbl_LANGUAGE_COVERAGE_FORM:
@@ -757,6 +764,7 @@ vm_exit:
             if (!vm_limits_checkpoint(vm, &vm->insns_executed, vm_max_insn)) break;
         }
         Instr instr = vm->code[vm->pc++];
+        if (instr.op != OP_LANGUAGE_COVERAGE_READ) vm->language_coverage_load_pc = 0;
 
         switch (instr.op) {
         case OP_NOP: break;
@@ -850,6 +858,7 @@ vm_exit:
 
         /* Variables */
         case OP_GET_LOCAL: {
+            vm->language_coverage_load_pc = vm->pc;
             int src;
             if (!vm_local_slot(vm, instr.operand, &src)) break;
             if (vm->sp >= 0 && vm->sp < STACK_SIZE)
@@ -864,7 +873,7 @@ vm_exit:
             vm->stack[dst] = vm_peek(vm, 0);
             vm_pop(vm);
             break; }
-        case OP_GET_UPVALUE: vm_exec_get_upvalue(vm, instr.operand); break;
+        case OP_GET_UPVALUE: vm->language_coverage_load_pc = vm->pc; vm_exec_get_upvalue(vm, instr.operand); break;
         case OP_SET_UPVALUE: vm_exec_set_upvalue(vm, instr.operand); break;
 
         /* Closures */
@@ -999,6 +1008,9 @@ vm_exit:
             vm->language_coverage_call_pc = vm->pc;
             break;
 
+        case OP_LANGUAGE_COVERAGE_READ:
+            vm_language_coverage_read(vm, instr.operand);
+            break;
         case OP_LANGUAGE_COVERAGE_FORM:
             vm_language_coverage_form(instr.operand);
             break;

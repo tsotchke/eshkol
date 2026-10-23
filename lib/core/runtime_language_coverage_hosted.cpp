@@ -340,6 +340,16 @@ extern "C" void eshkol_language_coverage_vm_form_hash(uint32_t name_hash) {
     sink.write(record.str());
 }
 
+extern "C" void eshkol_language_coverage_vm_read_hash(uint32_t binding_hash) {
+    countExecHookEntry();
+    CoverageTrace& sink = trace();
+    if (!sink.enabled) return;
+    if (!firstExecutionAtSite({"<vm>", "@read", 0, 0, binding_hash, 'V'})) return;
+    std::ostringstream record;
+    record << "V\t<vm>\t0\t0\t" << binding_hash << "\t@read";
+    sink.write(record.str());
+}
+
 extern "C" void eshkol_language_coverage_flush(void) {
     trace().flush();
 }

@@ -312,3 +312,28 @@ python3 scripts/check_doc_front_matter.py --update-baseline   # after adding fro
 
 CI runs it in the `assurance-gates` job, and `scripts/release_autopilot.py`
 runs it with the other documentation checks.
+
+
+VM binding-read evidence is distinct from invocation. `V ... @read` carries a
+collision-checked binding-origin identifier. The compiler associates that ID
+with a resolved module definition only when the generated module name, original
+line and source checksum agree, then preserves it through root slots, captures
+and deterministic bootstrap metadata. Markers follow actual symbol loads and
+survive ESKB; runtime requires the immediately executed load, and admission
+rejects invalid marker placement or IDs. User and lexical locals start untagged.
+Only a manifest binding proven to be a value can receive value-read coverage.
+Reading a procedure never proves it was called, and reading an origin does not
+prove differently named exported aliases were used. The strict 1470/100% and
+zero-deficit policy is unchanged. `gen_vm_binding_origins.py --check` checks the
+source-bound table; the runtime regression exercises both VM dispatchers with
+source and ESKB input, including lexical shadows, relay captures, renamed
+imports, assignments and untaken branches.
+
+
+Trust boundary: coverage markers and CRC-valid ESKB are not authenticated
+certificates. As with existing call/form markers, a hand-authored or edited
+bytecode file can forge a marker. Only trusted compiler outputs bound to the
+qualified source and verified bytecode/artifact hashes may supply release
+coverage evidence. Structural admission alone establishes no origin authority.
+The read runtime regression pins generated ESKB before and after execution;
+retained diagnostic or externally supplied bytecode is not qualification data.

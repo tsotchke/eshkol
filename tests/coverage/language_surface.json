@@ -28329,7 +28329,8 @@
       "sources": [
         "vm_bootstrap"
       ],
-      "provenance": []
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "char>=?",
@@ -28338,7 +28339,8 @@
       "sources": [
         "vm_bootstrap"
       ],
-      "provenance": []
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "christoffel-symbol",
@@ -33285,7 +33287,8 @@
       "sources": [
         "vm_bootstrap"
       ],
-      "provenance": []
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "hash-table->alist",

@@ -214,6 +214,7 @@ def load_runtime_evidence(trace_dirs, progress_path=None):
     direct_calls = set()
     vm_calls = set()
     vm_call_hashes = set()
+    vm_read_hashes = set()
     rejected_forms = set()
     counts = {kind: 0 for kind in ("P", "A", "G", "O", "C", "R", "V")}
 
@@ -282,7 +283,9 @@ def load_runtime_evidence(trace_dirs, progress_path=None):
                     # marker has to survive ESKB serialization; both are
                     # resolved against the manifest below, with collision
                     # rejection.
-                    if fields[5] in ("@call", "@form"):
+                    if fields[5] == "@read":
+                        vm_read_hashes.add(operation)
+                    elif fields[5] in ("@call", "@form"):
                         vm_call_hashes.add(operation)
                     else:
                         vm_calls.add(fields[5])
@@ -325,7 +328,38 @@ def load_runtime_evidence(trace_dirs, progress_path=None):
         if len(candidates) == 1:
             vm_calls.update(candidates)
 
-    covered = set(direct_calls) | set(vm_calls) | set(rejected_forms)
+    read_bindings = {}
+    public_reads = set()
+    value_reads = set()
+    read_candidates = {}
+    for item in manifest["builtins"]:
+        identity = "vm.builtin:" + item["name"]
+        read_candidates.setdefault(vm_call_name_hash(identity), {}).setdefault(
+            identity, {"names": set(), "categories": set()})["names"].add(item["name"])
+    for item in manifest["prelude"]:
+        for record in item.get("provenance", []):
+            identity = record.get("binding_identity")
+            if (not identity or record.get("resolved_binding_origin", {}).get("name") != item["name"]):
+                # Reading the origin does not prove a differently named
+                # exported alias was used. Keep that alias uncredited.
+                continue
+            candidate = read_candidates.setdefault(vm_call_name_hash(identity), {}).setdefault(
+                identity, {"names": set(), "categories": set()})
+            candidate["names"].add(item["name"])
+            candidate["categories"].add(record.get("binding_category", "unknown"))
+    for marker in vm_read_hashes:
+        candidates = read_candidates.get(marker, {})
+        if len(candidates) > 1:
+            raise RuntimeError("ambiguous serialized-VM binding hash %d" % marker)
+        if not candidates:
+            continue
+        identity, binding = next(iter(candidates.items()))
+        read_bindings[identity] = sorted(binding["names"])
+        public_reads.update(binding["names"])
+        if binding["categories"] == {"value"}:
+            value_reads.update(binding["names"])
+
+    covered = set(direct_calls) | set(vm_calls) | set(rejected_forms) | value_reads
     runtime_spelling_matches = set()
     compile_time_matches = set()
     spellings_by_position = {}
@@ -359,6 +393,9 @@ def load_runtime_evidence(trace_dirs, progress_path=None):
         "covered_names": covered,
         "direct_call_names": direct_calls,
         "vm_dispatch_names": vm_calls,
+        "binding_read_names": public_reads,
+        "value_read_names": value_reads,
+        "binding_reads": read_bindings,
         "rejected_compile_time_names": rejected_forms,
         "runtime_spelling_matches": runtime_spelling_matches,
         "compile_time_matches": compile_time_matches,
@@ -841,6 +878,9 @@ def main():
         "runtime_event_counts": runtime_evidence["event_counts"],
         "runtime_direct_call_names": sorted(runtime_evidence["direct_call_names"]),
         "runtime_vm_dispatch_names": sorted(runtime_evidence["vm_dispatch_names"]),
+        "runtime_binding_read_names": sorted(runtime_evidence["binding_read_names"]),
+        "runtime_value_read_names": sorted(runtime_evidence["value_read_names"]),
+        "runtime_binding_reads": runtime_evidence["binding_reads"],
         "runtime_rejected_compile_time_names": sorted(
             runtime_evidence["rejected_compile_time_names"]),
         "runtime_spelling_matches": sorted(runtime_evidence["runtime_spelling_matches"]),

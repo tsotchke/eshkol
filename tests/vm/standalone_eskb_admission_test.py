@@ -81,6 +81,11 @@ def main():
         root = pathlib.Path(tmp)
         cases = {
             "valid": eskb([(36, 0)]),
+            "valid-binding-read": eskb([(2, 0), (20, 0), (72, 123), (5, 0), (36, 0)]),
+            "invalid-binding-read-first": eskb([(72, 123), (36, 0)]),
+            "invalid-binding-read-predecessor": eskb([(2, 0), (72, 123), (36, 0)]),
+            "invalid-binding-read-zero-id": eskb([(2, 0), (20, 0), (72, 0), (36, 0)]),
+            "invalid-binding-read-negative-id": eskb([(2, 0), (20, 0), (72, -1), (36, 0)]),
             "valid-zero-argument-call": eskb_functions(
                 [("main", [(24, 0), (25, 0), (36, 0)]),
                  ("callee", [(2, 0), (27, 0)])],

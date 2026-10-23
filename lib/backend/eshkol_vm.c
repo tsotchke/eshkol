@@ -186,6 +186,7 @@ static int vm_language_coverage_compilation_enabled(void);
 static uint32_t vm_language_coverage_name_hash(const char* name);
 static void vm_language_coverage_named_call(VM* vm, Value func);
 static void vm_language_coverage_form(int name_hash);
+static void vm_language_coverage_read(VM* vm, int binding_hash);
 
 /* Compiler-only promise helpers.  They intentionally have no BUILTINS[]
  * spelling: public delay/force/make-promise/promise? forms lower to them. */
@@ -349,8 +350,12 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
         else v.as.i = prelude_const_ints[i];
         chunk_add_const(chunk, v);
     }
-    for (int i = 0; i < prelude_n_locals; i++)
-        add_local(chunk, prelude_local_names[i]);
+    for (int i = 0; i < prelude_n_locals; i++) {
+        int slot = add_local(chunk, prelude_local_names[i]);
+#ifdef ESHKOL_VM_PRELUDE_BINDING_IDS
+        if (slot >= 0) chunk->locals[slot].coverage_binding_id = prelude_binding_ids[i];
+#endif
+    }
     return 1;
 #else
     (void)chunk;
@@ -1200,6 +1205,7 @@ enum { VM_LANGUAGE_COVERAGE_SEEN_SLOTS = 4096 };
 static _Atomic uint32_t vm_language_coverage_seen_native[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
 static _Atomic uint32_t vm_language_coverage_seen_call[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
 static _Atomic uint32_t vm_language_coverage_seen_form[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
+static _Atomic uint32_t vm_language_coverage_seen_read[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
 
 static int vm_language_coverage_first_sighting(_Atomic uint32_t* slots,
                                                uint32_t key) {
@@ -1255,6 +1261,21 @@ static void vm_language_coverage_form(int name_hash) {
 #endif
 }
 
+static void vm_language_coverage_read(VM* vm, int binding_hash) {
+#ifndef ESHKOL_VM_WASM
+    if (!vm || vm->error || binding_hash <= 0 || vm->pc < 2 || vm->pc > vm->code_len) return;
+    if (vm->language_coverage_load_pc != vm->pc - 1) return;
+    vm->language_coverage_load_pc = 0;
+    const uint8_t previous = vm->code[vm->pc - 2].op;
+    if (previous != OP_GET_LOCAL && previous != OP_GET_UPVALUE) return;
+    if (!vm_language_coverage_first_sighting(vm_language_coverage_seen_read,
+                                             (uint32_t)binding_hash)) return;
+    eshkol_language_coverage_vm_read_hash((uint32_t)binding_hash);
+#else
+    (void)vm; (void)binding_hash;
+#endif
+}
+
 static void vm_language_coverage_named_call(VM* vm, Value func) {
 #ifndef ESHKOL_VM_WASM
     if (!vm || func.type != VAL_CLOSURE || vm->pc < 2 || vm->pc > vm->code_len)
@@ -1283,6 +1304,10 @@ static void emit_builtin_preamble(FuncChunk* c) {
     for (int b = 0; BUILTINS[b].name; b++) {
         const BuiltinDef* def = &BUILTINS[b];
         int func_slot = add_local(c, def->name);
+        char identity[256];
+        snprintf(identity, sizeof(identity), "vm.builtin:%s", def->name);
+        if (func_slot >= 0) c->locals[func_slot].coverage_binding_id =
+            vm_language_coverage_name_hash(identity);
 
         /* Emit: JUMP over body → body (GETL params, NATIVE_CALL, RET) → CLOSURE */
         int cfunc = chunk_add_const(c, INT_VAL(0)); /* placeholder for func PC */
@@ -1761,7 +1786,7 @@ static int compile_and_run(const char* source) {
         "PAIRP","NUMP","STRP","BOOLP","PROCP","VECP",
         "SETCR","SETCD","POPN","OCLOS","CCALL","IVCC",
         "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID","LCOV","LCAL",
-        "GMARK","CLOSL","CLOSC","RAISE_SECONDARY","TCALL_POPN","LFORM"
+        "GMARK","CLOSL","CLOSC","RAISE_SECONDARY","TCALL_POPN","LFORM","LREAD"
     };
     const size_t opn_count = sizeof(opn) / sizeof(opn[0]);
     for (int i = 0; i < main_chunk.code_len; i++) {
@@ -2564,6 +2589,11 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
                  mod->opcodes[pc + 1] != OP_TAIL_CALL_POPN)) {
                 return -1;
             }
+            break;
+        case OP_LANGUAGE_COVERAGE_READ:
+            if (operand <= 0 || pc == 0 ||
+                (mod->opcodes[pc - 1] != OP_GET_LOCAL &&
+                 mod->opcodes[pc - 1] != OP_GET_UPVALUE)) return -1;
             break;
         case OP_LANGUAGE_COVERAGE_FORM:
             /* A form marker precedes an arbitrary lowering, so there is no
