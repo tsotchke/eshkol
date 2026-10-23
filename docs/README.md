@@ -45,6 +45,7 @@ pages and lets them fan out to their siblings.
 - [Function Composition](breakdown/FUNCTION_COMPOSITION.md) — closures, lambda registry, mutable captures
 - [Long-Running Loops](LONG_RUNNING_LOOPS.md) — tail-call and loop behaviour for long-lived processes
 - [Binary Lambda Calculus in Eshkol](guide/BINARY_LAMBDA_CALCULUS.md) — the `core.blc` module: De Bruijn-indexed lambda terms as bit strings, encode/decode/reduce
+- [Stochastic Binary Lambda Calculus](reference/stdlib/sblc.md) — the `core.sblc` module: fair choice in the `sblc-v1` prefix code, seeded sampling, exact rational distributions under a step bound, the `2^-length` prior and exact conditioning (ADR-0017)
 
 ## Automatic Differentiation
 
@@ -209,7 +210,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0014 — Release invariant contracts are measured before grading](design/adr/0014-release-invariant-contracts.md) — Accepted — release invariants are executable, fail-closed contracts at each boundary, and the release workflow emits the ABI/layout, closed-enum, AD-counter and VM-parity receipts before the architecture grade is taken
 - [ADR 0015 — Static callee binding identity](design/adr/0015-static-callee-binding-identity.md) — Accepted — makes direct-call aliases depend on the binding storage that still owns them
 - [ADR 0016 — Staged dense-tensor reverse-mode AD and `value_and_grad`](design/adr/0016-ad-alt-architect.md) — Proposed — the typed static reverse schedule, the companion proposal to ADR 0002 (carried the number 0002 until 2026-09-17)
-- [ADR 0017 — Stochastic Binary Lambda Calculus](design/adr/0017-stochastic-binary-lambda-calculus.md) — Proposed — `core.sblc`, the self-delimiting binary program grammar, exact rational distribution semantics under a step bound (first slice targets v1.4.0); carried the number 0011 until 2026-09-17
+- [ADR 0017 — Stochastic Binary Lambda Calculus](design/adr/0017-stochastic-binary-lambda-calculus.md) — Proposed — `core.sblc`, the self-delimiting binary program grammar, exact rational distribution semantics under a step bound (first slice: [`core.sblc`](reference/stdlib/sblc.md), v1.4.0); carried the number 0011 until 2026-09-17
 - [ADR 0018 — Signed-curvature stereographic geometry](design/adr/0018-signed-curvature-stereographic-geometry.md) — Accepted — one κ-stereographic chart for all curvature signs, analytic through `K = 0`, and the execution contract it implies (targets v1.4.0); carried the number 0012 until 2026-09-17
 - [ADR 0019 — Evergreen documentation architecture](design/adr/0019-evergreen-documentation-architecture.md) — Partially implemented
 - [ADR 0020 — One store boundary for every container slot](design/adr/0020-container-slot-store-boundary.md) — Implemented — a value stored into a vector or tensor slot is always a value of the slot's declared representation.
