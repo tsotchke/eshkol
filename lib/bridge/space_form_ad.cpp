@@ -235,23 +235,29 @@ SfPair factor_sq(int form, double K, const double* x, const double* y, size_t n,
                 }
             }
         } else {
-            std::vector<double> log_x(n), log_y(n), scratch(n);
-            if (sf_log_map(form, x, y, K, n, log_x.data(), scratch.data()) ||
-                sf_log_map(form, y, x, K, n, log_y.data(), scratch.data())) {
-                return SfPair{0.0, false};
-            }
-            const bool sphere = (form == ESHKOL_SPACE_FORM_SPHERICAL);
-            double sx = !sphere ? eshkol_rm_lambda(x, K, (int)n) *
-                                  eshkol_rm_lambda(x, K, (int)n)
-                                : (1.0 / std::sqrt(K)) /
-                                  eshkol_rm_norm(x, (int)n);
-            double sy = !sphere ? eshkol_rm_lambda(y, K, (int)n) *
-                                  eshkol_rm_lambda(y, K, (int)n)
-                                : (1.0 / std::sqrt(K)) /
-                                  eshkol_rm_norm(y, (int)n);
-            for (size_t i = 0; i < n; ++i) {
-                if (grad_x) grad_x[i] = -2.0 * weight * sx * log_x[i];
-                if (grad_y) grad_y[i] = -2.0 * weight * sy * log_y[i];
+            if (form != ESHKOL_SPACE_FORM_SPHERICAL) {
+                /* The chart: the shared core's -2 lambda^2 log gradient, the
+                 * same kernel the attention reverse rule uses. */
+                std::vector<double> gx(n), gy(n), scratch(2 * n);
+                if (eshkol_rm_sq_distance_grad(x, y, K, (int)n, gx.data(),
+                                               gy.data(), scratch.data()))
+                    return SfPair{0.0, false};
+                for (size_t i = 0; i < n; ++i) {
+                    if (grad_x) grad_x[i] = weight * gx[i];
+                    if (grad_y) grad_y[i] = weight * gy[i];
+                }
+            } else {
+                std::vector<double> log_x(n), log_y(n), scratch(n);
+                if (sf_log_map(form, x, y, K, n, log_x.data(), scratch.data()) ||
+                    sf_log_map(form, y, x, K, n, log_y.data(), scratch.data())) {
+                    return SfPair{0.0, false};
+                }
+                double sx = (1.0 / std::sqrt(K)) / eshkol_rm_norm(x, (int)n);
+                double sy = (1.0 / std::sqrt(K)) / eshkol_rm_norm(y, (int)n);
+                for (size_t i = 0; i < n; ++i) {
+                    if (grad_x) grad_x[i] = -2.0 * weight * sx * log_x[i];
+                    if (grad_y) grad_y[i] = -2.0 * weight * sy * log_y[i];
+                }
             }
         }
     }

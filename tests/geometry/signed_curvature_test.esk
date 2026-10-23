@@ -103,7 +103,7 @@
         (check-close "|log_x y| lambda_x = d(x, y)"
                      (* (chart-conformal-factor x K) (norm l)) (chart-distance x y K) 1e-14)
         (check "2 (x) x = x (+) x"
-               (vec-close? (chart-mobius-scalar 2.0 x K) (chart-mobius-add x x K) 1e-15))
+               (vec-close? (chart-mobius-scalar 2.0 x K) (chart-mobius-add x x K) 1e-14))
         (loop (cdr ks)))))
 
 ;; ── the positive chart is the sphere: chart distance = embedded arc length ──

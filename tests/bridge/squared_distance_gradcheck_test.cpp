@@ -792,8 +792,11 @@ int main() {
          * rather than being trusted, and they are deliberately NOT what the
          * gradient checks above compare against: they share a file, and nearly
          * the algebra, with the backward they would be grading. */
+        /* K = -4 is the chart whose Mobius parameter is the references' c = 1:
+         * the coordinate log map is the same map, the distance is the
+         * alpha = 1 half of the alpha = 2 arcosh distance. */
         double got[3], want[3];
-        bool ok = eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0,
+        bool ok = eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, -4.0,
                                             kBallX, kBallY, 3, got);
         ball_log_ref(kBallX, kBallY, 1.0, 3, want);
         double w1 = max_rel(std::vector<double>(got, got + 3), want, 3);
@@ -809,9 +812,9 @@ int main() {
                ok && w1 < 1e-14 && w2 < 1e-13, detail);
     }
     {
-        double db = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0,
+        double db = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, -4.0,
                                                kBallX, kBallY, 3);
-        double wb = ball_dist_ref(kBallX, kBallY, 1.0, 3);
+        double wb = 0.5 * ball_dist_ref(kBallX, kBallY, 1.0, 3);
         double ds = eshkol_space_form_distance(ESHKOL_SPACE_FORM_SPHERICAL, 1.0,
                                                kSphX, kSphY, 3);
         double ws = std::acos(dotv(kSphX, kSphY, 3));
@@ -835,10 +838,10 @@ int main() {
         /* And the two agree with each other where the geometry says they must:
          * |log_x(y)|_g == d. On the ball that is lambda_x |log|_euclid. */
         double lg[3];
-        eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0,
+        eshkol_space_form_log_map(ESHKOL_SPACE_FORM_HYPERBOLIC, -4.0,
                                   kBallX, kBallY, 3, lg);
-        double lam = 2.0 / (1.0 - dotv(kBallX, kBallX, 3));
-        double d = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, -1.0,
+        double lam = 1.0 / (1.0 - dotv(kBallX, kBallX, 3));
+        double d = eshkol_space_form_distance(ESHKOL_SPACE_FORM_HYPERBOLIC, -4.0,
                                               kBallX, kBallY, 3);
         double rel = std::fabs(lam * normv(lg, 3) - d) / (1.0 + d);
         char detail[96];

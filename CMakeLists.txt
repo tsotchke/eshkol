@@ -12057,15 +12057,17 @@ if(ESHKOL_BUILD_TESTS AND
     target_compile_features(signed_curvature_reference_grid_test PRIVATE cxx_std_20)
     target_include_directories(signed_curvature_reference_grid_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        find_library(ESHKOL_QUADMATH_LIBRARY quadmath)
-        if(ESHKOL_QUADMATH_LIBRARY)
-            target_link_libraries(signed_curvature_reference_grid_test PRIVATE
-                ${ESHKOL_QUADMATH_LIBRARY})
-        else()
-            target_compile_definitions(signed_curvature_reference_grid_test PRIVATE
-                ESHKOL_DISABLE_BINARY128=1)
-        endif()
+    # The toolchain's own libquadmath (GCC ships it beside its runtime, outside
+    # the default library search path): probe by linking, not by find_library.
+    include(CheckCXXSourceCompiles)
+    set(_eshkol_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
+    set(CMAKE_REQUIRED_LIBRARIES quadmath)
+    check_cxx_source_compiles(
+        "#include <quadmath.h>\nint main() { __float128 x = 2; return (int)sqrtq(x); }"
+        ESHKOL_HAVE_LIBQUADMATH)
+    set(CMAKE_REQUIRED_LIBRARIES "${_eshkol_saved_required_libraries}")
+    if(ESHKOL_HAVE_LIBQUADMATH)
+        target_link_libraries(signed_curvature_reference_grid_test PRIVATE quadmath)
     else()
         target_compile_definitions(signed_curvature_reference_grid_test PRIVATE
             ESHKOL_DISABLE_BINARY128=1)
