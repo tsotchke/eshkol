@@ -1799,7 +1799,7 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.capabilities` | `lib/core/capabilities.esk` | Yes | Hosted allow-list capability policy |
 | `core.collections` | `lib/core/collections.esk` | **No** — `(require core.collections)` | Priority queue, hash set, deque |
 | `core.channels` | `lib/core/channels.esk` | **No** — `(require core.channels)` | Go-style bounded channels |
-| `core.threads` | `lib/core/threads.esk` | **No** — `(require core.threads)` | POSIX-mutex / condvar / thread primitives |
+| `core.threads` | `lib/core/threads.esk` | **No** — `(require core.threads)` | POSIX-mutex / condvar / semaphore / barrier / thread primitives |
 | `core.plot` | `lib/core/plot.esk` | Yes | Terminal sparkline / bar chart / histogram |
 | `core.sexp` | `lib/core/sexp.esk` | Yes | S-expression string + canonical-string formatters |
 | `core.files` | `lib/core/files.esk` | Yes | Path-component helpers + atomic-write |
@@ -1927,11 +1927,16 @@ Exports (`threads.esk`):
 ```scheme
 (provide
   make-mutex mutex-lock! mutex-trylock! mutex-unlock! mutex-destroy! with-mutex
-  make-condvar condvar-wait! condvar-signal! condvar-broadcast! condvar-destroy!
+  make-condvar condvar-wait! condvar-wait-timeout! condvar-signal!
+  condvar-broadcast! condvar-destroy!
+  make-semaphore semaphore? semaphore-acquire! semaphore-try-acquire!
+  semaphore-release! semaphore-value semaphore-destroy!
+  make-barrier barrier? barrier-wait! barrier-parties barrier-generation
+  barrier-destroy!
   make-thread thread-join thread? thread-result-ready?)
 ```
 
-POSIX-pthread wrappers. Mutexes are recursive (SRFI 18-compatible — re-entering the same mutex from the same thread does not deadlock). `make-thread` spawns the thunk on a thread-pool worker; `thread-join` blocks until completion. The Windows path is currently stubbed (returns `NULL` / error from every entry point pending the v1.4-platform program).
+POSIX-pthread wrappers. Counting semaphores (blocking, try and timed acquire) and reusable generation-counted barriers are built on the same mutex and condition variable; see [reference/stdlib/threads.md](reference/stdlib/threads.md). Mutexes are recursive (SRFI 18-compatible — re-entering the same mutex from the same thread does not deadlock). `make-thread` spawns the thunk on a thread-pool worker; `thread-join` blocks until completion. The Windows path is currently stubbed (returns `NULL` / error from every entry point pending the v1.4-platform program).
 
 ### B.7 `core.plot`
 
