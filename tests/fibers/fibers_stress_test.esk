@@ -81,7 +81,9 @@
 
 ;; ─── 5,000 ping-pong pairs over channels ───────────────────────────
 
-(define PAIRS 5000)
+(define PAIRS
+  (let ((v (get-environment-variable "FIBER_STRESS_PAIRS")))
+    (if v (string->number v) 5000)))
 (define MESSAGES 10)
 (define pong-total 0)
 (let pair ((p 0))
@@ -104,7 +106,7 @@
                               (loop (+ m 1)))))))
         (pair (+ p 1)))))
 (run-fibers)
-(check "5000 pairs completed every ping-pong exchange"
+(check "every ping-pong pair completed every exchange"
        (= pong-total (* PAIRS (/ (* MESSAGES (+ MESSAGES 1)) 2))))
 (check "no coroutine holds a stack after the ping-pong" (= (stat 'live) 0))
 
