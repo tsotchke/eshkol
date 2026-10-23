@@ -2285,15 +2285,16 @@ llvm::Value* ParallelCodegen::futureReady(const eshkol_operations_t* op) {
     llvm::Value* future_i64 = ctx_.builder().CreateExtractValue(future_val, {4}, "future_i64");
     llvm::Value* future_ptr = ctx_.builder().CreateIntToPtr(future_i64, ctx_.ptrType(), "future_ptr");
 
-    // Get or declare eshkol_lazy_future_is_ready(future_ptr) -> uint8
-    llvm::Function* ready_func = ctx_.module().getFunction("eshkol_lazy_future_is_ready");
+    // eshkol_lazy_future_result_available(future_ptr) -> uint8: forced, or an
+    // eagerly submitted pool task that has completed (force will not block).
+    llvm::Function* ready_func = ctx_.module().getFunction("eshkol_lazy_future_result_available");
     if (!ready_func) {
         llvm::FunctionType* ready_type = llvm::FunctionType::get(
             ctx_.int8Type(),
             {ctx_.ptrType()},
             false);
         ready_func = llvm::Function::Create(ready_type, llvm::Function::ExternalLinkage,
-            "eshkol_lazy_future_is_ready", &ctx_.module());
+            "eshkol_lazy_future_result_available", &ctx_.module());
     }
 
     // Call is_ready - returns 0 or 1

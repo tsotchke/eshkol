@@ -132,6 +132,7 @@
   "eshkol_lazy_future_is_async",
   "eshkol_lazy_future_is_ready",
   "eshkol_lazy_future_join_async",
+  "eshkol_lazy_future_result_available",
   "eshkol_lazy_future_set_result_ptr",
   "eshkol_list_reverse_tagged",
   "eshkol_list_to_svec",

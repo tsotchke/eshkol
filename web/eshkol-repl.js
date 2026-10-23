@@ -2559,6 +2559,7 @@ class EshkolRepl {
 
                 // Lazy futures — no async worker runtime in browser WASM yet.
                 eshkol_lazy_future_is_ready: () => 1,
+                eshkol_lazy_future_result_available: () => 1,
                 eshkol_lazy_future_is_async: () => 0,
                 eshkol_lazy_future_join_async: () => {},
                 eshkol_lazy_future_get_thunk_ptr: () => 0,
