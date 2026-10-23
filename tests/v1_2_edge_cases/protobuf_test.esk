@@ -342,6 +342,27 @@
                                        (list 'nodes (list (list 7 (protobuf-message 'Test1 '((a 1))))))
                                        '(kinds ((#f PERSONAL) (#t WORK))))))))
 
+;; ── sizes ──────────────────────────────────────────────────────────────
+
+(define (count-up n)
+  (let loop ((i (- n 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+(register-test "large repeated fields and payloads round-trip on every route"
+  (lambda ()
+    (let* ((ns (count-up 12000))
+           (back (protobuf-decode schema 'Lists
+                                  (protobuf-encode schema 'Lists
+                                                   (protobuf-message 'Lists (list (list 'nums ns)))))))
+      (check-equal? (length (protobuf-ref schema back 'nums)) 12000)
+      (check-true (equal? (protobuf-ref schema back 'nums) ns)))
+    ;; 70000 = varint f0 a2 04: tag 7a, three length bytes, then the payload.
+    (let ((wire (enc 'Scalars (list (list 'raw (make-bytevector 70000 7))))))
+      (check-equal? (bytevector-length wire) 70004)
+      (check-equal? (bv->list (bytevector-copy wire 0 4)) '(#x7a #xf0 #xa2 #x04))
+      (check-equal? (bytevector-length (protobuf-ref schema (protobuf-decode schema 'Scalars wire) 'raw))
+                    70000))))
+
 ;; ── malformed input ────────────────────────────────────────────────────
 
 (define (nested-nodes depth)

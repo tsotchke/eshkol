@@ -221,9 +221,9 @@ infinity and signed zero handled. NaN is written as the canonical quiet NaN
 
 ## Validation
 `python3 scripts/run_wire_format_gate.py --suite protobuf --all-routes`
-runs `tests/v1_2_edge_cases/protobuf_test.esk` (185 checks: the encoding
+runs `tests/v1_2_edge_cases/protobuf_test.esk` (190 checks: the encoding
 spec's worked examples, every scalar type at its boundaries, IEEE patterns,
-presence, packed/unpacked repeated, maps, oneof, merging, unknown-field
+presence, packed/unpacked repeated, maps, oneof, merging, large payloads, unknown-field
 preservation, malformed input and schema refusals) and
 `tests/v1_2_edge_cases/protobuf_proto_test.esk` (31 checks: `.proto` parsing,
 scoping, generated codecs and parser refusals) on JIT, O1 AOT, the VM from

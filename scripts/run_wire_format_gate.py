@@ -27,7 +27,7 @@ SUITES = {
     "protobuf": {
         "title": "Protocol Buffers",
         "tests": [
-            ("protobuf_test.esk", ("RESULT: OK", "Passed: 185", "Failed: 0")),
+            ("protobuf_test.esk", ("RESULT: OK", "Passed: 190", "Failed: 0")),
             ("protobuf_proto_test.esk", ("RESULT: OK", "Passed: 31", "Failed: 0")),
         ],
         "native_marker": "PASS: protobuf wire golden vectors",

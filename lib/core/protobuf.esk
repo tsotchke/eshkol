@@ -64,6 +64,18 @@
 ;; execution route, the bytecode VM included.
 (define (pb-exact-integer? v) (and (integer? v) (exact? v)))
 
+;; A finite proper list of any length; a circular list is refused
+;; (tortoise and hare over the whole spine).
+(define (pb-proper-list? x)
+  (let loop ((slow x) (fast x))
+    (cond ((null? fast) #t)
+          ((not (pair? fast)) #f)
+          ((null? (cdr fast)) #t)
+          ((not (pair? (cdr fast))) #f)
+          (else
+           (let ((slow (cdr slow)) (fast (cddr fast)))
+             (if (and (pair? fast) (eq? slow fast)) #f (loop slow fast)))))))
+
 (define (pb-memq x lst)
   (cond ((null? lst) #f) ((eq? x (car lst)) lst) (else (pb-memq x (cdr lst)))))
 
@@ -439,30 +451,45 @@
 
 ;; ── Encoding ───────────────────────────────────────────────────────────
 ;;
-;; Bytes accumulate in a reversed list; pb-acc->bytevector fills from the end.
+;; Bytes accumulate in a growable buffer #(bytevector length); every emit
+;; procedure takes the buffer and returns it. A length-delimited value is
+;; encoded into its own buffer first, then copied after its length prefix.
 
-(define (pb-emit-varint acc n)
+(define (pb-buf) (vector (make-bytevector 64 0) 0))
+(define (pb-buf-length b) (vector-ref b 1))
+
+(define (pb-buf-reserve! b n)
+  (let* ((data (vector-ref b 0)) (len (vector-ref b 1)) (cap (bytevector-length data)))
+    (if (> (+ len n) cap)
+        (let ((bigger (make-bytevector (max (* 2 cap) (+ len n)) 0)))
+          (bytevector-copy! bigger 0 data 0 len)
+          (vector-set! b 0 bigger)))))
+
+(define (pb-put! b byte)
+  (pb-buf-reserve! b 1)
+  (bytevector-u8-set! (vector-ref b 0) (vector-ref b 1) byte)
+  (vector-set! b 1 (+ (vector-ref b 1) 1))
+  b)
+
+(define (pb-emit-bytes b bv start end)
+  (pb-buf-reserve! b (- end start))
+  (bytevector-copy! (vector-ref b 0) (vector-ref b 1) bv start end)
+  (vector-set! b 1 (+ (vector-ref b 1) (- end start)))
+  b)
+
+(define (pb-buf->bytevector b) (bytevector-copy (vector-ref b 0) 0 (vector-ref b 1)))
+
+(define (pb-emit-varint b n)
   (if (< n 128)
-      (cons n acc)
-      (pb-emit-varint (cons (+ 128 (remainder n 128)) acc) (quotient n 128))))
+      (pb-put! b n)
+      (pb-emit-varint (pb-put! b (+ 128 (remainder n 128))) (quotient n 128))))
 
-(define (pb-emit-fixed acc n width)
-  (if (= width 0) acc
-      (pb-emit-fixed (cons (remainder n 256) acc) (quotient n 256) (- width 1))))
+(define (pb-emit-fixed b n width)
+  (if (= width 0) b
+      (pb-emit-fixed (pb-put! b (remainder n 256)) (quotient n 256) (- width 1))))
 
-(define (pb-emit-tag acc number wire-type)
-  (pb-emit-varint acc (+ (* number 8) wire-type)))
-
-(define (pb-acc->bytevector acc)
-  (let* ((n (length acc)) (bv (make-bytevector n 0)))
-    (let loop ((i (- n 1)) (rest acc))
-      (if (null? rest) bv
-          (begin (bytevector-u8-set! bv i (car rest))
-                 (loop (- i 1) (cdr rest)))))))
-
-(define (pb-emit-bytes acc bv start end)
-  (if (= start end) acc
-      (pb-emit-bytes (cons (bytevector-u8-ref bv start) acc) bv (+ start 1) end)))
+(define (pb-emit-tag b number wire-type)
+  (pb-emit-varint b (+ (* number 8) wire-type)))
 
 (define (pb-encode-error field what value)
   (error (string-append "protobuf-encode: " what) (pb-field-name field) value))
@@ -512,8 +539,13 @@
       ((= wt 5) (pb-emit-fixed acc (pb-scalar->wire schema field kind v) 4))
       (else (error "protobuf-encode: internal wire type" kind)))))
 
-(define (pb-emit-len acc number payload)
-  (append payload (pb-emit-varint (pb-emit-tag acc number 2) (length payload))))
+(define (pb-emit-len b number payload)
+  (pb-emit-bytes (pb-emit-varint (pb-emit-tag b number 2) (pb-buf-length payload))
+                 (vector-ref payload 0) 0 (pb-buf-length payload)))
+
+(define (pb-emit-len-bytes b number bv)
+  (pb-emit-bytes (pb-emit-varint (pb-emit-tag b number 2) (bytevector-length bv))
+                 bv 0 (bytevector-length bv)))
 
 (define (pb-text-bytes field v)
   (if (not (string? v)) (pb-encode-error field "expected a string" v))
@@ -527,13 +559,13 @@
     (cond
       ((eq? kind 'string)
        (let ((bv (pb-text-bytes field v)))
-         (pb-emit-len acc number (pb-emit-bytes '() bv 0 (bytevector-length bv)))))
+         (pb-emit-len-bytes acc number bv)))
       ((eq? kind 'bytes)
        (if (not (bytevector? v)) (pb-encode-error field "expected a bytevector" v))
-       (pb-emit-len acc number (pb-emit-bytes '() v 0 (bytevector-length v))))
+       (pb-emit-len-bytes acc number v))
       ((eq? kind 'message)
        (pb-emit-len acc number
-                    (pb-encode-message-acc '() schema
+                    (pb-encode-message-acc (pb-buf) schema
                                            (pb-lookup-message "protobuf-encode" schema
                                                               (pb-field-ref field))
                                            v (+ depth 1))))
@@ -550,11 +582,11 @@
       (else (and (pb-exact-integer? v) (= v 0))))))
 
 (define (pb-emit-repeated acc schema field values depth)
-  (if (not (list? values)) (pb-encode-error field "repeated field expects a list" values))
+  (if (not (pb-proper-list? values)) (pb-encode-error field "repeated field expects a list" values))
   (cond
     ((null? values) acc)
     ((pb-field-packed? field)
-     (let loop ((vs values) (payload '()))
+     (let loop ((vs values) (payload (pb-buf)))
        (if (null? vs)
            (pb-emit-len acc (pb-field-number field) payload)
            (loop (cdr vs) (pb-emit-scalar payload schema field (pb-field-kind field) (car vs))))))
@@ -564,7 +596,7 @@
            (loop (cdr vs) (pb-emit-value acc schema field (car vs) depth)))))))
 
 (define (pb-emit-map acc schema field entries depth)
-  (if (not (list? entries)) (pb-encode-error field "map field expects a list of (key value)" entries))
+  (if (not (pb-proper-list? entries)) (pb-encode-error field "map field expects a list of (key value)" entries))
   (let ((entry-type (pb-field-ref field)))
     (let loop ((es entries) (acc acc))
       (if (null? es) acc
@@ -638,7 +670,7 @@
 (define (protobuf-encoder schema type)
   (let ((desc (pb-lookup-message "protobuf-encoder" schema type)))
     (lambda (message)
-      (pb-acc->bytevector (pb-encode-message-acc '() schema desc message 0)))))
+      (pb-buf->bytevector (pb-encode-message-acc (pb-buf) schema desc message 0)))))
 
 (define (protobuf-encode schema type message)
   ((protobuf-encoder schema type) message))
@@ -813,8 +845,8 @@
 
 ;; Concatenate payload segments ((start . end) ...) in wire order.
 (define (pb-concat-segments bv segments)
-  (let loop ((ss segments) (acc '()))
-    (if (null? ss) (pb-acc->bytevector acc)
+  (let loop ((ss segments) (acc (pb-buf)))
+    (if (null? ss) (pb-buf->bytevector acc)
         (loop (cdr ss) (pb-emit-bytes acc bv (car (car ss)) (cdr (car ss)))))))
 
 ;; ENTRIES is in reverse wire order. A repeated key replaces the value in
@@ -833,7 +865,8 @@
   (let* ((fields (pb-msg-fields desc))
          (n (length fields))
          (slots (make-vector n 'pb-absent)))
-    (let loop ((pos start) (unknown '()))
+    (let ((unknown (pb-buf)))
+      (let loop ((pos start))
       (if (= pos end)
           (pb-finish-message schema desc bv slots unknown depth)
           (let* ((t (pb-read-tag bv pos end))
@@ -858,34 +891,35 @@
                            (old (vector-ref slots i)))
                       (vector-set! slots i
                                    (pb-map-put (if (eq? old 'pb-absent) '() old) key value))
-                      (loop (cdr r) unknown)))
+                      (loop (cdr r))))
                    ((eq? kind 'message)
                     ;; Keep payload segments: repeated fields decode each one,
                     ;; singular fields merge them (proto3 merge = concatenation).
                     (let ((r (pb-read-len bv body end)) (old (vector-ref slots i)))
                       (vector-set! slots i (cons r (if (eq? old 'pb-absent) '() old)))
-                      (loop (cdr r) unknown)))
+                      (loop (cdr r))))
                    ((eq? label 'repeated)
                     (let ((v (pb-read-value schema field bv body end))
                           (old (vector-ref slots i)))
                       (vector-set! slots i (cons (car v) (if (eq? old 'pb-absent) '() old)))
-                      (loop (cdr v) unknown)))
+                      (loop (cdr v))))
                    (else
                     (let ((v (pb-read-value schema field bv body end)))
                       (vector-set! slots i (car v))
-                      (loop (cdr v) unknown))))))
+                      (loop (cdr v)))))))
               ((and field (eq? label 'repeated) (= wt 2) (pb-packable? kind))
                (let* ((i (pb-field-index desc field))
                       (old (vector-ref slots i))
                       (r (pb-read-packed schema field bv body end
                                          (if (eq? old 'pb-absent) '() old))))
                  (vector-set! slots i (car r))
-                 (loop (cdr r) unknown)))
+                 (loop (cdr r))))
               (else
                ;; Unknown field, or a known field with a different wire type:
                ;; keep its bytes verbatim.
                (let ((next (pb-skip bv body end wt number (+ depth 1))))
-                 (loop next (pb-emit-bytes unknown bv pos next))))))))))
+                 (pb-emit-bytes unknown bv pos next)
+                 (loop next))))))))))
 
 (define (pb-clear-oneof desc slots field)
   (let loop ((fs (pb-msg-fields desc)) (i 0))
@@ -899,7 +933,7 @@
 (define (pb-finish-message schema desc bv slots unknown depth)
   (let loop ((fs (pb-msg-fields desc)) (i 0) (entries '()))
     (if (null? fs)
-        (protobuf-message (pb-msg-name desc) (reverse entries) (pb-acc->bytevector unknown))
+        (protobuf-message (pb-msg-name desc) (reverse entries) (pb-buf->bytevector unknown))
         (let* ((f (car fs)) (slot (vector-ref slots i)) (label (pb-field-label f))
                (present (not (eq? slot 'pb-absent))))
           (loop (cdr fs) (+ i 1)
@@ -935,9 +969,11 @@
                   (else entries)))))))
 
 (define (pb-decode-segments schema desc bv segments depth)
-  (if (null? segments) '()
-      (cons (pb-decode-message schema desc bv (car (car segments)) (cdr (car segments)) depth)
-            (pb-decode-segments schema desc bv (cdr segments) depth))))
+  (let loop ((ss segments) (out '()))
+    (if (null? ss) (reverse out)
+        (loop (cdr ss)
+              (cons (pb-decode-message schema desc bv (car (car ss)) (cdr (car ss)) depth)
+                    out)))))
 
 (define (protobuf-decoder schema type)
   (let ((desc (pb-lookup-message "protobuf-decoder" schema type)))
