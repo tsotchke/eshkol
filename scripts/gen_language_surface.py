@@ -892,6 +892,11 @@ def categorize(name):
     # below: descriptor plumbing over a kernel multiplexer.
     if n == "make-event-loop" or n.startswith("event-loop-"):
         return "ffi_system"
+    # Stackful coroutines: control transfer between stacks, the substrate of
+    # core.fibers — the same family as call/cc and dynamic-wind.
+    if (n in {"make-coroutine", "current-coroutine"}
+            or n.startswith("coroutine-") or n == "coroutine?"):
+        return "control_flow"
     # gpu compute
     if n.startswith("gpu-"):
         return "tensor_ad"

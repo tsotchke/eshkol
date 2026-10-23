@@ -9972,10 +9972,10 @@
     }
   },
   "counts": {
-    "builtins_total": 1057,
+    "builtins_total": 1066,
     "builtins_in_vm_table": 793,
-    "builtins_in_llvm_aot_dispatch": 799,
-    "builtins_aot_only": 242,
+    "builtins_in_llvm_aot_dispatch": 808,
+    "builtins_aot_only": 251,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
@@ -9994,9 +9994,9 @@
     "consciousness": 35,
     "vector": 24,
     "hash": 22,
+    "control_flow": 15,
     "higher_order": 13,
     "misc_core": 13,
-    "control_flow": 6,
     "memory_region": 4
   },
   "special_forms_by_category": {
@@ -12858,6 +12858,76 @@
       "category": "tensor_ad"
     },
     {
+      "name": "coroutine-raise",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
+    },
+    {
+      "name": "coroutine-release!",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
+    },
+    {
+      "name": "coroutine-resume",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
+    },
+    {
+      "name": "coroutine-stats",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
+    },
+    {
+      "name": "coroutine-status",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
+    },
+    {
+      "name": "coroutine-yield",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
+    },
+    {
+      "name": "coroutine?",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
+    },
+    {
       "name": "cos",
       "ids": [
         21
@@ -12940,6 +13010,16 @@
         "vm"
       ],
       "category": "tensor_ad"
+    },
+    {
+      "name": "current-coroutine",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
     },
     {
       "name": "current-directory",
@@ -16791,6 +16871,16 @@
         "vm"
       ],
       "category": "ffi_system"
+    },
+    {
+      "name": "make-coroutine",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "control_flow"
     },
     {
       "name": "make-dataloader",
