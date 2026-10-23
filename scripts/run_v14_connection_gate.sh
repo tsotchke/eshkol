@@ -360,9 +360,11 @@ probe_portable_tail_transfer() {
     depth_rc=$?
 
     verdict=$(python3 -c '
-import json, sys
+import json, re, sys
 path, rc = sys.argv[1], sys.argv[2]
-wanted = ("mutual_tail_cond_d", "mutual_tail_forms_d", "mutual_tail_arity_d")
+# Names are scripts/run_recursion_depth.sh'"'"'s own `${f%.esk}_${mode}`,
+# e.g. rec_mutual_tail_cond_d100000000_r / _aot / _aot-xfer.
+name_re = re.compile(r"^rec_mutual_tail_(cond|forms|arity)_d\d+_(r|aot|aot-xfer)$")
 rows = []
 try:
     with open(path, "r", encoding="utf-8") as fh:
@@ -378,7 +380,7 @@ except OSError as exc:
     print("no trace written by the producer (exit %s): %s" % (rc, exc))
     raise SystemExit(0)
 matches = [r for r in rows if r.get("kind") == "recursion_depth"
-           and any(str(r.get("name", "")).startswith(k) for k in wanted)]
+           and name_re.match(str(r.get("name", "")))]
 if not matches:
     print("producer trace has no mutual_tail_{cond,forms,arity} cells (exit %s)" % rc)
     raise SystemExit(0)
