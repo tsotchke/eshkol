@@ -27,10 +27,12 @@
 ;;       (tape-gradient t (some-scalar-loss t p) (list lg)))))
 ;;
 
+(require core.ad.tape)
+
 (provide gumbel-softmax gumbel-softmax-det
          straight-through straight-through-round straight-through-onehot
-         categorical-pick argmax-onehot softmax
-         sample-gumbel-noise)
+         categorical-pick argmax-onehot softmax softmax-vjp
+         sample-gumbel-noise sample-normal-noise)
 
 ;; ── Internal list/vector helpers ──
 ;; Self-contained: this is a core module loaded BEFORE the list stdlib, so we
@@ -80,6 +82,24 @@
                   (begin (vector-set! ex i (/ (vector-ref ex i) sum)) (loop (+ i 1)))
                   ex)))))))
 
+;; softmax-vjp: the vector-Jacobian product of softmax at output y = softmax(z)
+;; with cotangent g:  J(z)^T g = y ⊙ (g - <y, g>),  J(z) = diag(y) - y y^T.
+;; The one softmax pullback in the library; Gumbel-Softmax and
+;; core.ml.diffopt's softmax layer both use it.
+(define (softmax-vjp y g)
+  (let* ((gy (ge-vec-of g))
+         (n (vector-length y))
+         (dot (let dl ((i 0) (s 0.0))
+                (if (< i n)
+                    (dl (+ i 1) (+ s (* (vector-ref y i) (vector-ref gy i))))
+                    s)))
+         (out (make-vector n 0.0)))
+    (let dl ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (* (vector-ref y i) (- (vector-ref gy i) dot)))
+                 (dl (+ i 1)))
+          out))))
+
 ;; ── argmax index of a list/vector of numbers ──
 ;; categorical-pick: the HARD decision — index of the largest entry.
 (define (categorical-pick probs)
@@ -101,17 +121,40 @@
     (if (> n 0) (vector-set! r k 1.0))
     r))
 
-;; ── Gumbel noise ──
-;; g = -log(-log(u)),  u ~ Uniform(0,1).  Tests pass explicit noise for
-;; determinism; this is provided for stochastic use.
+;; ── Noise sources ──
+;; Every sampler draws its uniforms from ONE source: the shared generator
+;; `(random)` by default, or an isolated seeded generator made with
+;; `(make-prng seed)` when one is passed. The seeded form is what makes a
+;; Monte Carlo estimate reproducible: the same seed yields the same draws in
+;; JIT and AOT and does not disturb the shared generator.
 (define ge-eps 1.0e-20)
-(define (sample-gumbel-noise n)
-  (let ((r (make-vector n 0.0)))
+(define (ge-uniform prng) (if prng (prng-random prng) (random)))
+(define (ge-prng-arg opt)
+  (if (pair? opt) (car opt) #f))
+
+;; Gumbel noise: g = -log(-log(u)),  u ~ Uniform[0,1).
+(define (sample-gumbel-noise n . opt)
+  (let ((prng (ge-prng-arg opt)) (r (make-vector n 0.0)))
     (let loop ((i 0))
       (if (< i n)
-          (let ((u (random)))            ; (random) -> double in [0,1)
+          (let ((u (ge-uniform prng)))
             (vector-set! r i (- (log (+ (- (log (+ u ge-eps))) ge-eps))))
             (loop (+ i 1)))
+          r))))
+
+;; Standard normal noise by the Box-Muller transform: two uniforms give two
+;; independent N(0,1) draws. 1-u lies in (0,1], so the logarithm is finite.
+(define (sample-normal-noise n . opt)
+  (let ((prng (ge-prng-arg opt)) (r (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let* ((u1 (- 1.0 (ge-uniform prng)))
+                 (u2 (ge-uniform prng))
+                 (radius (sqrt (* -2.0 (log u1))))
+                 (angle (* 6.283185307179586 u2)))
+            (vector-set! r i (* radius (cos angle)))
+            (if (< (+ i 1) n) (vector-set! r (+ i 1) (* radius (sin angle))))
+            (loop (+ i 2)))
           r))))
 
 ;; ── Gumbel-Softmax (Concrete) relaxation ──
@@ -141,22 +184,12 @@
     (let ((y (softmax z)))
       (record-op! t (list logits-node) y
         (lambda (g)
-          ;; g is dL/dy (a vector). Return (list dL/dlogits).
-          (let* ((gy (ge-vec-of g))
-                 (dot (let dl ((i 0) (s 0.0))
-                        (if (< i n)
-                            (dl (+ i 1) (+ s (* (vector-ref y i) (vector-ref gy i))))
-                            s)))
-                 (out (make-vector n 0.0)))
+          ;; g is dL/dy. dL/dlogits = (1/tau) * softmax-vjp(y, g).
+          (let* ((v (softmax-vjp y g)) (out (make-vector n 0.0)))
             (let dl ((i 0))
               (if (< i n)
-                  (begin
-                    (vector-set! out i
-                      (* (/ 1.0 tau)
-                         (vector-ref y i)
-                         (- (vector-ref gy i) dot)))
-                    (dl (+ i 1)))))
-            (list out)))))))
+                  (begin (vector-set! out i (/ (vector-ref v i) tau)) (dl (+ i 1)))
+                  (list out)))))))))
 
 ;; Stochastic variant: draws fresh Gumbel noise internally.
 (define (gumbel-softmax t logits-node tau)

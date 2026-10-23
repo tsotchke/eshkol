@@ -6382,6 +6382,28 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # core.ml.diffopt (ADR-0031): blackbox solver, perturbed-optimizer,
+    # Fenchel-Young, implicit-differentiation and sparsemax/softmax pullbacks,
+    # each checked against an exact closed form, exact rationals or a central
+    # difference. Seeded noise makes the Monte Carlo checks deterministic, so
+    # the JIT and AOT legs see the same draws.
+    add_test(
+        NAME diffopt_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/diffopt_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_test(
+        NAME diffopt_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/diffopt_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/diffopt_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/diffopt_aot'"
+    )
+    set_tests_properties(diffopt_runtime_smoke diffopt_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # A libm math symbol must not bind to an unrelated symbol of the same name.
     # Measured on the v1.3.5 candidate: `(elu t 2)` followed by `(exp -2.0)` in
     # one program killed the COMPILER with SIGSEGV at address 0x10 -- a null

@@ -1,7 +1,7 @@
 # `core.ml.gradient_estimators` — gradient estimators for discrete operations
 
 **Source**: [`lib/core/ml/gradient_estimators.esk`](../../../lib/core/ml/gradient_estimators.esk)
-**Require**: `(require core.ml.gradient_estimators)` — **NOT** auto-loaded via `(require stdlib)`. This is a pure-Scheme module; using its functions without the require fails with *"called undefined function"*. It is built on the stateful tape, so also `(require core.ad.tape)`. **Name-collision caveat:** `softmax` here shadows a native tensor `softmax` builtin — without the require, `(softmax v)` resolves to the *builtin* tensor op (same result for a plain vector); with the require you get this module's numerically-stable Scheme `softmax`.
+**Require**: `(require core.ml.gradient_estimators)` — **NOT** auto-loaded via `(require stdlib)`. This is a pure-Scheme module; using its functions without the require fails with *"called undefined function"*. It is built on the stateful tape and requires `core.ad.tape` itself; programs that create tape nodes also `(require core.ad.tape)`. **Name-collision caveat:** `softmax` here shadows a native tensor `softmax` builtin — without the require, `(softmax v)` resolves to the *builtin* tensor op (same result for a plain vector); with the require you get this module's numerically-stable Scheme `softmax`.
 
 Discrete operations (argmax, categorical sampling, rounding) have zero derivative almost everywhere, so you cannot train through them directly. This module provides **biased-but-useful estimators** that substitute a surrogate backward pass, all recorded on the [`core.ad.tape`](ad_tape.md) via `record-op!` so a loss can route through them alongside builtin tape ops:
 
@@ -33,8 +33,25 @@ pick 1
 onehot #(0 1 0)
 ```
 
-### `(sample-gumbel-noise n)`
-Draw a length-`n` vector of Gumbel noise `g = -log(-log(u))`, `u ~ Uniform(0,1)`. **Nondeterministic** (uses `(random)`); tests pass explicit noise for reproducibility.
+### `(softmax-vjp y g)`
+The softmax pullback at an output `y = softmax(z)`: `J(z)^T g = y ⊙ (g − <y, g>)`, with `J(z) = diag(y) − y yᵀ`. The one softmax pullback in the library: `gumbel-softmax-det` scales it by `1/tau`, and [`core.ml.diffopt`](ml_diffopt.md)'s `tape-softmax`, `softmax-jacobian` and `fenchel-young-softmax` use it.
+
+### `(sample-gumbel-noise n [prng])`
+Draw a length-`n` vector of Gumbel noise `g = -log(-log(u))`, `u ~ Uniform[0,1)`. Without `prng` the uniforms come from the shared `(random)` generator (nondeterministic unless seeded). With a generator from `(make-prng seed)` the draws are reproducible — the same seed gives the same vector in JIT and AOT — and the shared generator is untouched.
+
+### `(sample-normal-noise n [prng])`
+Draw a length-`n` vector of standard Normal noise by the Box-Muller transform (two uniforms per pair of draws), from the same two sources as `sample-gumbel-noise`.
+
+```scheme
+;; ge-noise.esk — seeded noise is reproducible
+(require core.ml.gradient_estimators)
+(display (equal? (sample-normal-noise 4 (make-prng 7)) (sample-normal-noise 4 (make-prng 7)))) (newline)
+(display (vector-length (sample-gumbel-noise 3 (make-prng 7)))) (newline)
+```
+```
+#t
+3
+```
 
 ### `(gumbel-softmax-det t logits-node tau noise)`
 **Deterministic** Gumbel-Softmax recorded as one custom op on tape `t`. `logits-node` is a tape node whose value is a logit vector, `tau > 0` the temperature, `noise` an explicit Gumbel-noise vector. Forward output is the soft one-hot `softmax((logits+noise)/tau)`; the backward is the softmax Jacobian-vector product scaled by `1/tau`, so gradients flow to `logits-node`. Returns the output node.
