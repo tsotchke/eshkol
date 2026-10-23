@@ -395,22 +395,71 @@ probe_run v14_promises_futures \
     '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/future_force_test.esk' \
     '^Failed: 0$'
 
-# Atomic ops (unlisted #-number, "Atomic ops (CAS, fetch-add)" in the
-# Concurrency table): real atomic-store!/-load/-exchange!/-compare-exchange!/
-# -fetch-add!/-fetch-sub!/-fetch-and!/-fetch-or!/-fetch-xor! with explicit
-# memory-order args. The only test today is SEQUENTIAL (API-shape) — no
-# cross-thread CAS-under-contention probe exists, so this criterion proves
-# the primitive surface only, not cross-thread atomicity; the label says so.
-probe_run v14_atomics_surface \
-    'Atomic ops: store/load/exchange/compare-exchange/fetch-add/sub/and/or/xor pass the sequential API-surface test' \
-    '"$ESHKOL_RUN" -r tests/ffi/low_level_memory_surface_test.esk' \
-    'Low-level FFI surface:.*0 failed'
+# Run one core.threads behaviour test on both native routes: JIT (-r) and
+# AOT (compiled into $WORK, then executed).  Each route must exit 0 and
+# print the test's own PASS line.  The VM does not load core.threads (its
+# extern ABI admits only the agent.sqlite/agent.crypto signatures), so the
+# VM is not a route for these tests.
+run_threads_test_routes() {
+    local test_file="$1" marker="$2" name aot_bin rc
+    name="$(basename "$test_file" .esk)"
+    aot_bin="$WORK/${name}_aot"
+    echo "route jit: $test_file"
+    "$ESHKOL_RUN" -r "$test_file" >"$WORK/${name}_jit.out" 2>&1
+    rc=$?
+    cat "$WORK/${name}_jit.out"
+    [ "$rc" -eq 0 ] || return "$rc"
+    grep -Eq "$marker" "$WORK/${name}_jit.out" || return 1
+    echo "route aot: $test_file"
+    "$ESHKOL_RUN" "$test_file" -o "$aot_bin" >"$WORK/${name}_aot_compile.out" 2>&1 || {
+        cat "$WORK/${name}_aot_compile.out"
+        return 1
+    }
+    "$aot_bin" >"$WORK/${name}_aot.out" 2>&1
+    rc=$?
+    cat "$WORK/${name}_aot.out"
+    [ "$rc" -eq 0 ] || return "$rc"
+    grep -Eq "$marker" "$WORK/${name}_aot.out" || return 1
+    echo "routes passed: jit aot ($name)"
+}
 
-# #159 fibers/coroutines and semaphores/barriers require end-to-end evidence.
+# Atomic ops ("Atomic ops (CAS, fetch-add)" in the Concurrency table):
+# atomic-store!/-load/-exchange!/-compare-exchange!/-fetch-add!/-fetch-sub!/
+# -fetch-and!/-fetch-or!/-fetch-xor! with explicit memory-order args.  Two
+# producers: the sequential API-surface test, and the contention probe —
+# K pool workers lined up on a barrier each add N to one shared word with
+# atomic-fetch-add!, then with a load/CAS retry loop, then remove N with
+# atomic-fetch-sub!; every phase total must be exact (a lost update leaves
+# it short).  The contention probe runs on JIT and AOT.
+run_atomics_surface() {
+    "$ESHKOL_RUN" -r tests/ffi/low_level_memory_surface_test.esk >"$WORK/atomics_surface.out" 2>&1
+    local rc=$?
+    cat "$WORK/atomics_surface.out"
+    [ "$rc" -eq 0 ] || return "$rc"
+    grep -Eq 'Low-level FFI surface:.*0 failed' "$WORK/atomics_surface.out" || return 1
+    run_threads_test_routes tests/v1_2_edge_cases/atomics_contention_test.esk \
+        '^PASS: atomics_contention_test$'
+}
+probe_run v14_atomics_surface \
+    'Atomic ops: store/load/exchange/compare-exchange/fetch-add/sub/and/or/xor pass the sequential API-surface test, and fetch-add, a CAS retry loop and fetch-sub from K contending threads keep exact K*N totals on JIT and AOT' \
+    'run_atomics_surface' \
+    '^routes passed: jit aot \(atomics_contention_test\)$'
+
+# #159 fibers/coroutines require end-to-end evidence.
 probe_unverified v14_fibers_coroutines \
     'requires an end-to-end fibers or coroutines behavior test'
-probe_unverified v14_semaphores_barriers \
-    'requires an end-to-end semaphore or synchronization-barrier behavior test'
+
+# Semaphores and barriers: core.threads counting semaphores (acquire,
+# try-acquire, timed try-acquire, release) and reusable generation-counted
+# barriers, built on its mutex + condvar.  The test runs on pool workers:
+# a blocked acquire woken by another thread's release, K contenders never
+# exceeding P permits, N parties through R barrier phases with nobody
+# leaving a phase early and exactly one serial party per phase, and both
+# again while an extra worker injects spurious condvar wakeups.
+probe_run v14_semaphores_barriers \
+    'Semaphores/barriers: bounded permits under contention, cross-thread wakeup, timed acquire, and a reusable N-party phase barrier stay exact under injected spurious wakeups on JIT and AOT' \
+    'run_threads_test_routes tests/v1_2_edge_cases/threads_semaphore_barrier_test.esk "^PASS: threads_semaphore_barrier_test$"' \
+    '^routes passed: jit aot \(threads_semaphore_barrier_test\)$'
 
 # ─────────────────────────────────────────────────────────────────
 # Wire formats (docs/COMPILER_ROADMAP.md #162/#163/#175)

@@ -2126,7 +2126,7 @@ oracles:
   # under this family to prove the new oracle's own wiring end-to-end),
   # promises/futures (#160), MessagePack (#162), and CAS + Merkle trees
   # (#175). Genuinely absent: TCP/UDP/TLS, a WebSocket SERVER (only a
-  # client exists), fibers/coroutines, semaphores/barriers, Protocol
+  # client exists), fibers/coroutines, Protocol
   # Buffers, static (compile-time) rejection of a leaked or double-closed
   # socket, the borrow pattern wired to real resources, v1.4.1's OALR ABI
   # v2 and portable tail transfer (Stage 4 — included here per the task
@@ -2297,7 +2297,7 @@ oracles:
           event_names: ["v14_atomics_surface"]
           event_values: ["PASS"]
         severity: medium
-        label: 'Atomic ops (CAS, fetch-add): atomic-store!/-load/-exchange!/-compare-exchange!/-fetch-add!/-sub!/-and!/-or!/-xor! with explicit memory-order args are correct SEQUENTIALLY (tests/ffi/low_level_memory_surface_test.esk) — no cross-thread contention probe exists yet, so this criterion certifies the primitive surface only, not cross-thread atomicity'
+        label: 'Atomic ops (CAS, fetch-add): atomic-store!/-load/-exchange!/-compare-exchange!/-fetch-add!/-sub!/-and!/-or!/-xor! with explicit memory-order args pass the sequential surface test (tests/ffi/low_level_memory_surface_test.esk) AND the contention probe (tests/v1_2_edge_cases/atomics_contention_test.esk: K barrier-aligned pool workers x N fetch-add, CAS-retry and fetch-sub operations on one word keep exact K*N totals) on JIT and AOT'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2313,7 +2313,7 @@ oracles:
           event_names: ["v14_semaphores_barriers"]
           event_values: ["PASS"]
         severity: low
-        label: 'Semaphores/barriers — NOT YET IMPLEMENTED (no make-semaphore/make-barrier primitive exists; the only "barrier" hits in the tree are the GC region write-barrier in lib/core/runtime_regions.cpp, unrelated to concurrency)'
+        label: 'Semaphores/barriers: core.threads counting semaphores (acquire, try-acquire, timed try-acquire, release) and reusable generation-counted barriers on its mutex + condvar; tests/v1_2_edge_cases/threads_semaphore_barrier_test.esk proves bounded permits under contention, cross-thread wakeup, and an N-party R-phase barrier with no early leaver and one serial party per phase, also under injected spurious wakeups, on JIT and AOT'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────
