@@ -162,9 +162,9 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 | Factor Graph | `(make-factor-graph n)` | Probabilistic graphical model |
 | Workspace | `(make-workspace dim max-modules)` | Global workspace (consciousness) |
 
-### 1,053 Built-in Functions
+### 1,066 Built-in Functions
 
-Eshkol provides 1,057 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
+Eshkol provides 1,066 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
 
 **Arithmetic:** `+`, `-`, `*`, `/`, `abs`, `floor`, `ceiling`, `round`, `truncate`, `modulo`, `remainder`, `quotient`, `gcd`, `lcm`, `min`, `max`, `expt`, `exact->inexact`, `inexact->exact`
 
@@ -706,6 +706,46 @@ Eshkol v1.1 provides built-in parallel execution primitives that automatically d
   (lambda () (train-model-c data)))
 ```
 
+### Coroutines and Fibers
+
+Threads run work in parallel; fibers interleave many lightweight tasks on one
+thread. A fiber is a procedure on a stackful coroutine, scheduled by
+[`core.fibers`](reference/stdlib/fibers.md) over the event loop: it runs until
+it yields, sleeps, waits for a descriptor, a future, a channel or another
+fiber, or finishes. Each fiber keeps its own `dynamic-wind` extent, handlers
+and `parameterize` bindings, so switching between fibers runs no thunks, and
+cancelling a fiber unwinds it like a raise: its `after` thunks run exactly
+once.
+
+```scheme
+(require core.fibers)
+(require core.channels)
+
+(define ch (make-channel 1))
+(define producer
+  (spawn (lambda ()
+           (let loop ((i 1))
+             (if (<= i 3)
+                 (begin (channel-send! ch i) (loop (+ i 1)))
+                 (channel-close! ch))))))
+(define consumer
+  (spawn (lambda ()
+           (let loop ((sum 0))
+             (let ((v (channel-recv! ch)))
+               (if (eq? v (channel-closed-sentinel))
+                   sum
+                   (loop (+ sum v))))))))
+(display (fiber-join consumer)) (newline)
+```
+```
+6
+```
+
+The coroutine builtins underneath — `make-coroutine`, `coroutine-resume`,
+`coroutine-yield`, `coroutine-raise` — are documented in
+[the coroutines reference](reference/runtime/coroutines.md). Fibers run on
+native JIT and AOT; the bytecode VM is Planned for v1.4.1.
+
 ### Performance
 
 Parallel primitives use work-stealing thread pools and are optimized for scientific computing workloads. For small collections, they automatically fall back to sequential execution to avoid overhead.
@@ -1224,7 +1264,7 @@ Map Eshkol names to C names:
 
 ### Features
 
-- **Tab completion** for all 1,053 builtins
+- **Tab completion** for all 1,066 builtins
 - **Syntax highlighting** with ANSI colors
 - **Command history** (persistent across sessions)
 - **Multi-line input** with balanced parenthesis detection

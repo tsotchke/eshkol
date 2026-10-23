@@ -32,6 +32,7 @@
 #include "../../inc/eshkol/backend/thread_pool.h"
 #include "../core/arena_memory.h"
 #include "../../inc/eshkol/eshkol.h"
+#include "../../inc/eshkol/core/coroutine.h"
 #include "../../inc/eshkol/logger.h"
 
 #include <vector>
@@ -286,6 +287,7 @@ void eshkol_continuation_restore_handlers(void* state);
 void eshkol_continuation_resume(void* state);
 void eshkol_continuation_transfer_check(void* state);
 void eshkol_continuation_check_extent(void* state);
+void eshkol_continuation_check_owner(void* state);
 }
 
 // Kept out of line: setjmp needs a frame with no live C++ objects.
@@ -334,6 +336,10 @@ extern "C" void eshkol_continuation_transfer_check(void* state_void) {
     ParallelBoundaryFrame* b = t_parallel_boundary;
     auto* state = static_cast<eshkol_continuation_state_t*>(state_void);
     if (!state) return;
+    // A continuation captured on another coroutine's stack is refused where it
+    // is invoked, before the boundary could end this callback or coroutine for
+    // a transfer its resumer could not complete either.
+    eshkol_continuation_check_owner(state);
     if (!b) {
         eshkol_continuation_check_extent(state);
         return;
@@ -349,6 +355,59 @@ extern "C" void eshkol_continuation_transfer_check(void* state_void) {
     b->out->value = value;
     b->out->continuation = state;
     std::longjmp(*b->landing, 2);
+}
+
+static void reraise_on_caller(ParallelRaise raised);
+
+// ─── The boundary as an execution-context facility ─────────────────────────
+//
+// The boundary chain is per computation, like the handler chain it brackets: a
+// coroutine switch saves and loads it (inc/eshkol/core/coroutine.h), and a
+// coroutine body runs under its own boundary through the same run_in_boundary
+// the parallel schedulers use, so a raise or a foreign-continuation transfer
+// inside a coroutine is recorded at the coroutine's base and re-delivered in
+// whichever context resumed it.
+extern "C" void eshkol_parallel_boundary_context_save(eshkol_exec_context_t* ctx) {
+    ctx->parallel_boundary = t_parallel_boundary;
+}
+
+extern "C" void eshkol_parallel_boundary_context_load(const eshkol_exec_context_t* ctx) {
+    t_parallel_boundary = static_cast<ParallelBoundaryFrame*>(ctx->parallel_boundary);
+}
+
+extern "C" int eshkol_boundary_thunks_available(void) {
+    if (!g_parallel_execute_worker) eshkol_parallel_workers_lazy_resolve();
+    return g_parallel_execute_worker ? 1 : 0;
+}
+
+extern "C" int eshkol_boundary_call_thunk(const eshkol_tagged_value_t* thunk,
+                                          eshkol_tagged_value_t* result,
+                                          eshkol_boundary_raise_t* raised) {
+    if (!g_parallel_execute_worker) eshkol_parallel_workers_lazy_resolve();
+    if (!g_parallel_execute_worker || !thunk || !result || !raised) return 0;
+    eshkol_parallel_execute_task task;
+    task.closure_ptr = thunk->data.ptr_val;
+    task.closure_type = static_cast<uint64_t>(thunk->type);
+    task.closure_flags = static_cast<uint64_t>(thunk->flags);
+    task.result_ptr = reinterpret_cast<uint64_t>(result);
+    ParallelRaise r{};
+    run_in_boundary(g_parallel_execute_worker, &task, &r);
+    raised->pending = r.pending ? 1 : 0;
+    raised->reserved = 0;
+    raised->value = r.value;
+    raised->exception = r.exception;
+    raised->continuation = r.continuation;
+    return 1;
+}
+
+extern "C" void eshkol_boundary_redeliver(const eshkol_boundary_raise_t* raised) {
+    if (!raised || !raised->pending) return;
+    ParallelRaise r{};
+    r.pending = true;
+    r.value = raised->value;
+    r.exception = static_cast<eshkol_exception_t*>(raised->exception);
+    r.continuation = raised->continuation;
+    reraise_on_caller(r);
 }
 
 static void* parallel_boundary_worker(void* arg) {

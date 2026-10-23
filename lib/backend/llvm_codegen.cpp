@@ -16160,6 +16160,16 @@ private:
         if (func_name == "event-loop-poll") co_return system_->eventLoopPoll(op);
         if (func_name == "event-loop-close") co_return system_->eventLoopClose(op);
         if (func_name == "event-loop-backend") co_return system_->eventLoopBackend(op);
+        /* Stackful coroutines (inc/eshkol/core/coroutine.h). */
+        if (func_name == "make-coroutine") co_return system_->makeCoroutine(op);
+        if (func_name == "coroutine-resume") co_return system_->coroutineResume(op);
+        if (func_name == "coroutine-raise") co_return system_->coroutineRaise(op);
+        if (func_name == "coroutine-yield") co_return system_->coroutineYield(op);
+        if (func_name == "coroutine-status") co_return system_->coroutineStatus(op);
+        if (func_name == "coroutine-release!") co_return system_->coroutineRelease(op);
+        if (func_name == "current-coroutine") co_return system_->currentCoroutine(op);
+        if (func_name == "coroutine?") co_return system_->coroutinePredicate(op);
+        if (func_name == "coroutine-stats") co_return system_->coroutineStats(op);
         if (func_name == "fd-write") co_return system_->fdWrite(op);
         if (func_name == "make-line-reader") co_return system_->makeLineReader(op);
         if (func_name == "line-reader-poll") co_return system_->lineReaderPoll(op);
@@ -27869,6 +27879,9 @@ private:
             "line-reader-poll", "line-reader-close", "fd-close",
             "make-event-loop", "event-loop-add-fd!", "event-loop-remove-fd!",
             "event-loop-poll", "event-loop-close", "event-loop-backend",
+            "make-coroutine", "coroutine-resume", "coroutine-raise",
+            "coroutine-yield", "coroutine-status", "coroutine-release!",
+            "current-coroutine", "coroutine?", "coroutine-stats",
             "make-lru-cache", "lru-get", "lru-set!", "lru-has?",
             "lru-delete!", "lru-clear!", "lru-size", "format", "_format-list",
             "http-server-create", "http-server-port", "http-server-accept",
@@ -45323,6 +45336,11 @@ private:
             {"directory-list", {1}}, {"directory-walk", {1}}, {"emergency-exit", {0}},
             {"event-loop-add-fd!", {3}}, {"event-loop-backend", {0}}, {"event-loop-close", {1}},
             {"event-loop-poll", {2}}, {"event-loop-remove-fd!", {2}}, {"executable-path", {1}},
+            // Stackful coroutines: the transferred value is optional on both ends.
+            {"make-coroutine", {1}}, {"coroutine-resume", {1, true, VariadicRest::ByCount, nullptr, 2}},
+            {"coroutine-raise", {2}}, {"coroutine-yield", {0, true, VariadicRest::ByCount, nullptr, 1}},
+            {"coroutine-status", {1}}, {"coroutine-release!", {1}}, {"current-coroutine", {0}},
+            {"coroutine?", {1}}, {"coroutine-stats", {0}},
             {"execv", {2}}, {"fd-close", {1}}, {"fd-write", {2}},
             {"file-atime", {1}}, {"file-chmod", {2}}, {"file-copy", {2}},
             {"file-delete", {1}}, {"file-lock", {1}}, {"file-mmap", {3}},

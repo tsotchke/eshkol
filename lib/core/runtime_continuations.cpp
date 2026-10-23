@@ -9,6 +9,7 @@
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
 #include "../../inc/eshkol/eshkol.h"
+#include "../../inc/eshkol/core/coroutine.h"
 
 #include <cstdint>
 #include <cstring>
@@ -28,8 +29,29 @@ extern "C" void __asan_unpoison_memory_region(void const volatile* addr, size_t 
 extern "C" void __asan_handle_no_return(void);
 #endif
 
-// Dynamic extent belongs to the executing thread, like its exception stack.
+// Dynamic extent belongs to the executing context, like its exception stack:
+// the thread's own computation, or the coroutine running on it (the coroutine
+// runtime swaps this through eshkol_dynamic_wind_context_save/_load).
 thread_local eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
+
+// Id of the execution context running on this thread: 0 for the thread's own
+// stack, otherwise the running coroutine's. Stamped into every stack image so
+// a continuation is re-entered only on the stack it was captured from.
+static thread_local uint64_t t_exec_context_id = 0;
+
+extern "C" void eshkol_dynamic_wind_context_save(eshkol_exec_context_t* ctx) {
+    ctx->wind_stack = g_dynamic_wind_stack;
+    ctx->context_id = t_exec_context_id;
+}
+
+extern "C" void eshkol_dynamic_wind_context_load(const eshkol_exec_context_t* ctx) {
+    g_dynamic_wind_stack = (eshkol_dynamic_wind_entry_t*)ctx->wind_stack;
+    t_exec_context_id = ctx->context_id;
+}
+
+extern "C" uint64_t eshkol_exec_context_current_id(void) {
+    return t_exec_context_id;
+}
 
 /* ── Stack-copying re-entrant continuations ──────────────────────────────────
  *
@@ -109,8 +131,14 @@ static uintptr_t eshkol_stack_base(void) {
  * so such a continuation is refused at invocation rather than admitted
  * without the check. Only 0 (no bracketed evaluation at all) is admitted
  * unconditionally. */
-/* Bytes reserved in front of a stack image for its capture header. Kept a
- * multiple of 16 so the image itself stays 16-byte aligned. */
+/* Bytes reserved in front of a stack image for its capture header: the host
+ * evaluation (8 bytes) and the owning execution context (8 bytes). Kept a
+ * multiple of 16 so the image itself stays 16-byte aligned.
+ *
+ * An image taken on a coroutine stack holds only that coroutine's frames, never
+ * a host frame, so it records host evaluation 0: it stays valid across
+ * top-level evaluations for as long as its coroutine lives. What it records
+ * instead is its owner, and it is re-entered only while that owner runs. */
 #define ESHKOL_IMAGE_HEADER 16u
 /* Extent id of an evaluation whose entry could not be recorded. */
 #define ESHKOL_EXTENT_UNRECORDED UINT64_MAX
@@ -165,6 +193,14 @@ uint64_t image_extent(const eshkol_continuation_state_t* state) {
     memcpy(&id, (const char*)state->saved_stack - ESHKOL_IMAGE_HEADER, sizeof(id));
     return id;
 }
+
+uint64_t image_owner(const eshkol_continuation_state_t* state) {
+    if (!state->saved_stack || !state->saved_len) return 0;
+    uint64_t id = 0;
+    memcpy(&id, (const char*)state->saved_stack - ESHKOL_IMAGE_HEADER + sizeof(uint64_t),
+           sizeof(id));
+    return id;
+}
 } // namespace
 
 extern "C" uint64_t eshkol_continuation_extent_enter(void* host_frame) {
@@ -192,9 +228,42 @@ extern "C" void eshkol_continuation_extent_leave(uint64_t id) {
     }
 }
 
+/**
+ * @brief Refuse a continuation whose stack image belongs to another execution
+ *        context.
+ *
+ * Restoring an image writes it back to the addresses it was copied from. An
+ * image taken on coroutine A names A's stack; restoring it while B (or the
+ * thread's own computation) runs would overwrite A's suspended frames and
+ * resume on a stack nothing is scheduled to own. The invocation raises a
+ * catchable condition in the invoking context instead, before any dynamic
+ * state is touched. Images taken on the thread's own stack (owner 0) are
+ * governed by the host-extent rule and the parallel boundary instead.
+ */
+/* Refuse a continuation invocation with a catchable condition. Does not
+ * return. Shared by the owner and host-extent admission checks. */
+[[noreturn]] static void refuse_continuation(const char* reason) {
+    eshkol_exception_t* exc = eshkol_make_exception_with_header(ESHKOL_EXCEPTION_ERROR, reason);
+    if (exc) eshkol_raise(exc);   /* does not return */
+    eshkol_error("%s (and the condition object could not be allocated)", reason);
+    exit(1);
+}
+
+extern "C" void eshkol_continuation_check_owner(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    const uint64_t owner = image_owner(state);
+    if (owner == 0 || owner == t_exec_context_id) return;
+    refuse_continuation(
+        "continuation cannot be resumed: it was captured inside a different "
+        "coroutine, and a continuation is resumed only on the coroutine whose "
+        "stack it captured");
+}
+
 extern "C" void eshkol_continuation_check_extent(void* state_void) {
     auto* state = (eshkol_continuation_state_t*)state_void;
     if (!state) return;
+    eshkol_continuation_check_owner(state);
     const uint64_t captured = image_extent(state);
     if (!captured) return;
     volatile char here = 0;
@@ -205,15 +274,10 @@ extern "C" void eshkol_continuation_check_extent(void* state_void) {
             if (st.entries[i].id == captured) return;
         }
     }
-    eshkol_exception_t* exc = eshkol_make_exception_with_header(
-        ESHKOL_EXCEPTION_ERROR,
+    refuse_continuation(
         "continuation cannot be resumed: it was captured during an earlier "
         "top-level evaluation that has already returned, and this host resumes "
         "a continuation only within the evaluation that captured it");
-    if (exc) eshkol_raise(exc);   /* does not return */
-    eshkol_error("continuation captured by a finished top-level evaluation was invoked, "
-                 "and the condition object could not be allocated");
-    exit(1);
 }
 
 /**
@@ -245,9 +309,12 @@ extern "C" void eshkol_continuation_capture_stack(void* arena_void, void* state_
                                                 len + ESHKOL_IMAGE_HEADER, 16);
     if (!block) return;                    /* escape-only rather than half-captured */
 
-    /* Header: the host evaluation this image belongs to (see above). */
-    const uint64_t extent = current_host_extent();
+    /* Header: the host evaluation and the execution context this image
+     * belongs to (see above). A coroutine image has no host frames. */
+    const uint64_t owner = t_exec_context_id;
+    const uint64_t extent = owner ? 0 : current_host_extent();
     memcpy(block, &extent, sizeof(extent));
+    memcpy(block + sizeof(extent), &owner, sizeof(owner));
     char* copy = block + ESHKOL_IMAGE_HEADER;
     memcpy(copy, (const void*)lo, len);
     state->stack_lo = (void*)lo;

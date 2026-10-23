@@ -2305,7 +2305,7 @@ oracles:
           event_names: ["v14_fibers_coroutines"]
           event_values: ["PASS"]
         severity: medium
-        label: 'Fibers/coroutines (#159): lightweight cooperative tasks — NOT YET IMPLEMENTED (no make-fiber/fiber-*/coroutine primitive exists anywhere in lib/ or tests/)'
+        label: 'Fibers/coroutines (#159): stackful coroutines and the core.fibers scheduler over the event loop — scripts/run_fibers_gate.py runs ordering, fairness, cancellation (dynamic-wind after thunks exactly once), raises crossing fibers, a fiber parked on a pipe, channel ping-pong and a 10000-fiber stress through JIT and O1 AOT, and requires flat peak RSS across stress waves'
         action: run_v14_connection_gate
 
       - runtime_event:

@@ -2621,12 +2621,27 @@ class EshkolRuntime {
                 eshkol_builtin_event_loop_close:      (out) => rt.writeFalse(out),
                 eshkol_builtin_event_loop_backend:    (out) => rt.writeFalse(out),
 
+                // Stackful coroutines need a second machine stack, which the
+                // browser sandbox does not provide; the coroutine surface fails
+                // closed with #f, like the event loop above. Native builds run
+                // lib/core/runtime_coroutines_hosted.cpp.
+                eshkol_builtin_make_coroutine: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_resume: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_raise: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_yield: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_status: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_release: (out) => rt.writeFalse(out),
+                eshkol_builtin_current_coroutine: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_p: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_stats: (out) => rt.writeFalse(out),
+
                 eshkol_capability_runtime_begin_install: () => {},
                 eshkol_capability_runtime_allow:   () => {},
                 eshkol_capability_runtime_clear:   () => {},
 
                 // Lazy futures — no browser worker backing for this WASM glue.
                 eshkol_lazy_future_is_ready: () => 1,
+                eshkol_lazy_future_result_available: () => 1,
                 eshkol_lazy_future_is_async: () => 0,
                 eshkol_lazy_future_join_async: () => {},
                 eshkol_lazy_future_get_thunk_ptr: () => 0,

@@ -288,6 +288,18 @@ void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         function_return_types["event-loop-poll"] = BuiltinTypes::Value;
         function_return_types["event-loop-close"] = BuiltinTypes::Boolean;
         function_return_types["event-loop-backend"] = BuiltinTypes::String;
+        /* Stackful coroutines. Every result is a tagged value: resume and
+         * yield carry arbitrary values, status is a symbol, and the handle
+         * constructors share the event loop's integer-handle convention. */
+        function_return_types["make-coroutine"] = BuiltinTypes::Value;
+        function_return_types["coroutine-resume"] = BuiltinTypes::Value;
+        function_return_types["coroutine-raise"] = BuiltinTypes::Value;
+        function_return_types["coroutine-yield"] = BuiltinTypes::Value;
+        function_return_types["coroutine-status"] = BuiltinTypes::Value;
+        function_return_types["coroutine-release!"] = BuiltinTypes::Boolean;
+        function_return_types["current-coroutine"] = BuiltinTypes::Value;
+        function_return_types["coroutine?"] = BuiltinTypes::Boolean;
+        function_return_types["coroutine-stats"] = BuiltinTypes::Value;
         function_return_types["fd-write"] = BuiltinTypes::Integer;
         function_return_types["make-line-reader"] = BuiltinTypes::Integer;
         function_return_types["line-reader-poll"] = BuiltinTypes::String;
