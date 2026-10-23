@@ -8742,6 +8742,12 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
                 --compiler $<TARGET_FILE:eshkol-run> ${_wasm_flat_ad_node_args})
         set_tests_properties(wasm_string_split_runtime_test PROPERTIES
             LABELS "toolchain;wasm;imports;string" TIMEOUT 120 SKIP_RETURN_CODE 77)
+        add_test(NAME wasm_closure_runtime_test
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_closure_runtime_test.py
+                --compiler $<TARGET_FILE:eshkol-run> ${_wasm_flat_ad_node_args})
+        set_tests_properties(wasm_closure_runtime_test PROPERTIES
+            LABELS "toolchain;wasm;imports;closure" TIMEOUT 120 SKIP_RETURN_CODE 77)
     endif()
 endif()
 
