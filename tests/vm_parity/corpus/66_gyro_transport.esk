@@ -1,4 +1,6 @@
 ;;; Constant-curvature gyrovector transport must agree between native and VM.
+;;; core.manifold's hyperbolic space is the K = -1 member of the ADR-0018 chart
+;;; (ball of radius 2); the reference values are the shared core's.
 (require core.manifold)
 
 (define H (make-hyperbolic-manifold 3))
@@ -7,9 +9,9 @@
 (define v #(0.05 -0.03 0.02))
 (define moved (manifold-parallel-transport H a b v))
 
-(if (and (< (abs (- (vector-ref moved 0) 0.050896286401282395)) 1.0e-12)
-         (< (abs (- (vector-ref moved 1) -0.02147304301362543)) 1.0e-12)
-         (< (abs (- (vector-ref moved 2) 0.01894736842105263)) 1.0e-12))
+(if (and (< (abs (- (vector-ref moved 0) 0.050375696202531635)) 1.0e-12)
+         (< (abs (- (vector-ref moved 1) -0.027870379746835434)) 1.0e-12)
+         (< (abs (- (vector-ref moved 2) 0.019746835443037968)) 1.0e-12))
     (display "PASS: exact gyrovector transport")
     (display "FAIL: exact gyrovector transport"))
 (newline)

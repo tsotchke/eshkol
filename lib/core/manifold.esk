@@ -1,16 +1,19 @@
 ;;
 ;; core.manifold — Riemannian manifolds for geometric ML (Euclidean / Poincaré / sphere)
 ;;
-;; Provides constructors and operations for:
-;;   Euclidean (flat, K=0), Hyperbolic Poincaré ball (K=-1), Spherical (K=+1)
+;; Provides constructors and operations for the three constant-curvature spaces
+;; in ONE chart, the ADR-0018 kappa-stereographic chart in the alpha = 1 gauge
+;; (metric I/(1 + K|x|^2/4)^2, the same chart as inc/eshkol/backend/riemannian_core.h
+;; and core.curvature):
+;;   Euclidean (flat, K=0), Hyperbolic ball of radius 2 (K=-1), Spherical (K=+1,
+;;   stereographic; the pole is at infinity)
 ;; Operations: exponential map, logarithmic map, geodesic distance,
 ;;   parallel transport, curvature.
 ;;
-;; Pure-Scheme implementation on the core math builtins so it works under both
-;; the REPL/JIT and AOT paths (no native-builtin dependency). The Poincaré
-;; formulas are the standard K=-1 ball model — they agree with the GRR/qLLM dylib
-;; geometry (qllm_ffi_* / adaptive_*) up to convention; the dylib is the source of
-;; truth, this mirrors its analytic forms.
+;; Pure-Scheme implementation on the core math builtins so it works under the
+;; REPL/JIT, AOT and the VM (no native-builtin dependency). For signed curvature
+;; as a parameter, curvature jets, the binary128-gated f64 kernels and
+;; squared-distance attention, use core.curvature, which calls the shared core.
 ;;
 ;;   (define E (make-euclidean-manifold 16))
 ;;   (define H (make-hyperbolic-manifold 16))        ; Poincaré ball, K=-1
@@ -69,84 +72,75 @@
   (let ((t (manifold-type m)))
     (cond ((eq? t 'hyperbolic) -1.0) ((eq? t 'spherical) 1.0) (else 0.0))))
 
-;; ── Möbius addition (Poincaré ball, c=1):  x ⊕ y ──
-(define (mf-mobius-add x y)
+;; ── chart parameter B = -K/4 (alpha = 1) ──
+(define (mf-chart-b m) (* -0.25 (manifold-curvature m)))
+
+;; ── Möbius addition with the signed chart parameter B:  x ⊕_B y ──
+(define (mf-mobius-add-b x y B)
   (let* ((xy (mf-dot x y)) (x2 (mf-norm2 x)) (y2 (mf-norm2 y))
-         (c1 (+ 1.0 (* 2.0 xy) y2))
-         (c2 (- 1.0 x2))
-         (den (+ 1.0 (* 2.0 xy) (* x2 y2)))
+         (c1 (+ 1.0 (* 2.0 B xy) (* B y2)))
+         (c2 (- 1.0 (* B x2)))
+         (den (+ 1.0 (* 2.0 B xy) (* B B x2 y2)))
          (n (vector-length x)) (r (make-vector n 0.0)))
     (let loop ((i 0))
       (if (< i n)
           (begin (vector-set! r i (/ (+ (* c1 (vector-ref x i)) (* c2 (vector-ref y i))) den)) (loop (+ i 1)))))
     r))
 
-;; ── geodesic distance ──
+;; artan_B(r) = artanh(sqrt(B) r)/sqrt(B) (B > 0), atan(sqrt(-B) r)/sqrt(-B) (B < 0), r (B = 0)
+(define (mf-artan-b r B)
+  (cond ((> B 0.0) (let ((s (sqrt B))) (/ (mf-atanh (* s r)) s)))
+        ((< B 0.0) (let ((s (sqrt (- B)))) (/ (atan (* s r)) s)))
+        (else r)))
+;; tan_B(r) = tanh(sqrt(B) r)/sqrt(B), tan(sqrt(-B) r)/sqrt(-B), r
+(define (mf-tan-b r B)
+  (cond ((> B 0.0) (let ((s (sqrt B))) (/ (tanh (* s r)) s)))
+        ((< B 0.0) (let ((s (sqrt (- B)))) (/ (tan (* s r)) s)))
+        (else r)))
+
+;; ── geodesic distance: d = artan_B(|(-a) ⊕_B b|) ──
 (define (manifold-distance m a b)
-  (let ((t (manifold-type m)))
-    (cond
-      ((eq? t 'hyperbolic)
-       (let* ((na (mf-norm2 a)) (nb (mf-norm2 b))
-              (d (mf-sub a b)) (d2 (mf-norm2 d))
-              (arg (+ 1.0 (/ (* 2.0 d2) (* (- 1.0 na) (- 1.0 nb))))))
-         (mf-arccosh arg)))
-      ((eq? t 'spherical)
-       (let* ((na (mf-norm a)) (nb (mf-norm b))
-              (c (/ (mf-dot a b) (* (max na mf-eps) (max nb mf-eps))))
-              (cc (cond ((> c 1.0) 1.0) ((< c -1.0) -1.0) (else c))))
-         (acos cc)))
-      (else (mf-norm (mf-sub a b))))))   ; euclidean
+  (let ((B (mf-chart-b m)))
+    (if (= B 0.0)
+        (mf-norm (mf-sub a b))
+        (mf-artan-b (mf-norm (mf-mobius-add-b (mf-neg a) b B)) B))))
 
 ;; ── exponential map: move from `base` along tangent `v` ──
+;; exp_x(v) = x ⊕_B tan_B(lambda_x |v|) v/|v|
 (define (manifold-exp-map m base v)
-  (let ((t (manifold-type m)))
-    (cond
-      ((eq? t 'hyperbolic)
-       (let ((vn (mf-norm v)))
-         (if (< vn mf-eps) base
-             (let* ((lam (/ 2.0 (- 1.0 (mf-norm2 base))))
-                    (factor (/ (tanh (* 0.5 lam vn)) vn)))
-               (mf-mobius-add base (mf-scale factor v))))))
-      ((eq? t 'spherical)
-       (let ((vn (mf-norm v)))
-         (if (< vn mf-eps) base
-             (let ((r (make-vector (vector-length base) 0.0)))
-               (mf-axpy! r (cos vn) base)
-               (mf-axpy! r (/ (sin vn) vn) v)
-               r))))
-      (else (let ((r (make-vector (vector-length base) 0.0))) ; euclidean: base + v
-              (mf-axpy! r 1.0 base) (mf-axpy! r 1.0 v) r)))))
+  (let ((B (mf-chart-b m)) (vn (mf-norm v)))
+    (cond ((= B 0.0)
+           (let ((r (make-vector (vector-length base) 0.0)))
+             (mf-axpy! r 1.0 base) (mf-axpy! r 1.0 v) r))
+          ((< vn mf-eps) base)
+          (else
+           (let* ((lam (/ 1.0 (- 1.0 (* B (mf-norm2 base)))))
+                  (factor (/ (mf-tan-b (* lam vn) B) vn)))
+             (mf-mobius-add-b base (mf-scale factor v) B))))))
 
 ;; ── logarithmic map: tangent at `base` pointing to `p` (inverse of exp) ──
+;; log_x(y) = (1/lambda_x) artan_B(|u|) u/|u|,  u = (-x) ⊕_B y
 (define (manifold-log-map m base p)
-  (let ((t (manifold-type m)))
-    (cond
-      ((eq? t 'hyperbolic)
-       (let* ((y (mf-mobius-add (mf-neg base) p)) (yn (mf-norm y)))
-         (if (< yn mf-eps) (mf-zeros (vector-length base))
-             (let* ((lam (/ 2.0 (- 1.0 (mf-norm2 base))))
-                    (factor (/ (* (/ 2.0 lam) (mf-atanh yn)) yn)))
-               (mf-scale factor y)))))
-      ((eq? t 'spherical)
-       (let* ((c (mf-dot base p))
-              (cc (cond ((> c 1.0) 1.0) ((< c -1.0) -1.0) (else c)))
-              (theta (acos cc)) (s (sin theta)))
-         (if (< s mf-eps) (mf-zeros (vector-length base))
-             (let ((r (make-vector (vector-length base) 0.0)))    ; theta/sin(theta) * (p - cos(theta)*base)
-               (mf-axpy! r 1.0 p) (mf-axpy! r (- cc) base)
-               (mf-scale (/ theta s) r)))))
-      (else (mf-sub p base)))))   ; euclidean: p - base
+  (let ((B (mf-chart-b m)))
+    (if (= B 0.0)
+        (mf-sub p base)
+        (let* ((y (mf-mobius-add-b (mf-neg base) p B)) (yn (mf-norm y)))
+          (if (< yn mf-eps) (mf-zeros (vector-length base))
+              (let* ((lam (/ 1.0 (- 1.0 (* B (mf-norm2 base)))))
+                     (factor (/ (/ (mf-artan-b yn B) lam) yn)))
+                (mf-scale factor y)))))))
 
 ;; ── parallel transport of tangent `v` from `base-a` to `base-b` ──
-;; The hyperbolic branch uses the linear closed form for gyration. Expanding
+;; The linear closed form of the gyration with chart parameter B. Expanding
 ;; gyration through Mobius point addition is invalid for an arbitrary tangent
-;; vector because that vector is not required to lie inside the ball.
-(define (mf-gyration a b w)
+;; vector because that vector is not required to be a chart point.
+(define (mf-gyration-b a b w B)
   (let* ((ab (mf-dot a b)) (a2 (mf-norm2 a)) (b2 (mf-norm2 b))
          (aw (mf-dot a w)) (bw (mf-dot b w))
-         (den (+ (* (+ 1.0 ab) (+ 1.0 ab)) (- (* a2 b2) (* ab ab))))
-         (aa (+ (- (* aw b2)) bw (* 2.0 ab bw)))
-         (cc (- (- (* bw a2)) aw))
+         (q (+ 1.0 (* B ab)))
+         (den (+ (* q q) (* B B (- (* a2 b2) (* ab ab)))))
+         (aa (+ (- (* B B aw b2)) (* B bw) (* 2.0 B B ab bw)))
+         (cc (- (- (* B B bw a2)) (* B aw)))
          (n (vector-length w)) (r (make-vector n 0.0)))
     (let loop ((i 0))
       (if (< i n)
@@ -157,28 +151,24 @@
             (loop (+ i 1)))))
     r))
 
-;; Euclidean: identity. Spherical: projection onto the destination tangent
-;; space. Hyperbolic: (lambda_a / lambda_b) gyr[base-b,-base-a] v.
+;; Euclidean: identity. Curved: (lambda_a / lambda_b) gyr[base-b, -base-a] v.
 (define (manifold-parallel-transport m base-a base-b v)
-  (let ((t (manifold-type m)))
-    (cond
-      ((eq? t 'euclidean) v)
-      ((eq? t 'hyperbolic)
-       (let ((lam-a (/ 2.0 (- 1.0 (mf-norm2 base-a))))
-             (lam-b (/ 2.0 (- 1.0 (mf-norm2 base-b)))))
-         (mf-scale (/ lam-a lam-b)
-                   (mf-gyration base-b (mf-neg base-a) v))))
-      (else ;; spherical: remove component along base-b
-       (let ((r (make-vector (vector-length v) 0.0)) (c (mf-dot v base-b)))
-         (mf-axpy! r 1.0 v) (mf-axpy! r (- c) base-b) r)))))
+  (let ((B (mf-chart-b m)))
+    (if (= B 0.0)
+        v
+        (let ((lam-a (/ 1.0 (- 1.0 (* B (mf-norm2 base-a)))))
+              (lam-b (/ 1.0 (- 1.0 (* B (mf-norm2 base-b))))))
+          (mf-scale (/ lam-a lam-b)
+                    (mf-gyration-b base-b (mf-neg base-a) v B))))))
 
 ;; ═══════════════════════════════════════════════════════════════
 ;; Full differential-geometry surface
 ;;
-;; All three spaces are conformally flat: g_ij = λ(x)² δ_ij with
-;;   euclidean  λ = 1            (K=0)
-;;   hyperbolic λ = 2/(1-‖x‖²)   (K=-1, Poincaré ball)
-;;   spherical  λ = 2/(1+‖x‖²)   (K=+1, stereographic)
+;; All three spaces are conformally flat in the one chart: g_ij = λ(x)² δ_ij with
+;;   λ = 1/(1 + K‖x‖²/4)
+;;   euclidean  λ = 1               (K=0)
+;;   hyperbolic λ = 1/(1-‖x‖²/4)   (K=-1, ball of radius 2)
+;;   spherical  λ = 1/(1+‖x‖²/4)   (K=+1, stereographic)
 ;; so the connection/curvature have exact closed forms (no numeric
 ;; differentiation) — production-grade and O(1) per component.
 ;; ═══════════════════════════════════════════════════════════════
@@ -189,18 +179,12 @@
 ;; thread overhead for the small dims an encoder typically uses).
 (define mf-parallel-threshold 48)
 
-;; conformal factor λ(x)
+;; conformal factor λ(x) = 1/(1 - B‖x‖²), B = -K/4
 (define (mf-lambda m x)
-  (let ((t (manifold-type m)))
-    (cond ((eq? t 'hyperbolic) (/ 2.0 (- 1.0 (mf-norm2 x))))
-          ((eq? t 'spherical)  (/ 2.0 (+ 1.0 (mf-norm2 x))))
-          (else 1.0))))
-;; ∂_i ln λ  given precomputed λ:  hyperbolic = λ x_i, spherical = -λ x_i, euclidean = 0
+  (/ 1.0 (- 1.0 (* (mf-chart-b m) (mf-norm2 x)))))
+;; ∂_i ln λ given precomputed λ: 2 B λ x_i (zero for euclidean)
 (define (mf-dlnlambda m x lam i)
-  (let ((t (manifold-type m)))
-    (cond ((eq? t 'hyperbolic) (* lam (vector-ref x i)))
-          ((eq? t 'spherical)  (* (- lam) (vector-ref x i)))
-          (else 0.0))))
+  (* 2.0 (mf-chart-b m) lam (vector-ref x i)))
 
 ;; ── metric tensor ──
 (define (metric-component m x i j)

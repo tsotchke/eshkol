@@ -34,14 +34,17 @@
  * coincidence is reached by `delta` becoming zero rather than by two `O(1)`
  * quantities cancelling:
  *
- *   hyperbolic  (Poincare ball, signed sectional curvature K < 0)
- *       c = -K, B = c * ESHKOL_RM_LAMBDA0^2 / 4, and
+ *   hyperbolic / stereographic  (the ADR-0018 chart; hyperbolic is K < 0,
+ *       stereographic accepts every finite K)
+ *       B = -K * ESHKOL_RM_ALPHA^2 / 4 (alpha = 1), and
  *       P = (1-B|x|^2)(1-B|y|^2), E = |delta|^2
- *       d^2 = ESHKOL_RM_LAMBDA0^2 * (E/P) * psi(B*E/P)^2,
- *       psi(z) = asinh(sqrt(z))/sqrt(z), psi(0) = 1.
+ *       d^2 = ESHKOL_RM_ALPHA^2 * (E/P) * psi(B*E/P)^2,
+ *       psi(w) = asinh(sqrt(w))/sqrt(w) (w > 0), asin(sqrt(-w))/sqrt(-w)
+ *       (w < 0), psi(0) = 1, with the series near 0.
  *       The shared Riemannian core evaluates this form and its log map with
  *       full-relative-precision boundary denominators; it never rejects a
- *       valid pair because an intermediate artanh argument rounded to 1.
+ *       valid pair because an intermediate artanh argument rounded to 1. The
+ *       coordinate gradient is -2 lambda_x^2 log_x(y), lambda_x = 1/(1-B|x|^2).
  *
  *   spherical   (signed sectional curvature K > 0, radius R = 1/sqrt(K))
  *       points must already lie on the sphere within the shared core's
@@ -113,14 +116,19 @@ typedef struct ad_node ad_node_t;
 typedef enum {
     /** Flat `R^n`. `d^2 = |x-y|^2`. Curvature ignored. */
     ESHKOL_SPACE_FORM_EUCLIDEAN = 0,
-    /** `H^n` in the Poincare ball model of signed sectional curvature `K < 0`.
-     *  Points live in the open ball of radius `1/sqrt(-K)` at the shipped
-     *  chart normalisation. */
+    /** `H^n` in the ADR-0018 chart of signed sectional curvature `K < 0`.
+     *  Points live in the open ball of radius `2/sqrt(-K)` (alpha = 1). */
     ESHKOL_SPACE_FORM_HYPERBOLIC = 1,
     /** `S^n` of signed sectional curvature `K > 0`, as the sphere of radius
      *  `1/sqrt(K)` in ambient `R^{n+1}`. `dim` counts AMBIENT coordinates,
      *  so the round 2-sphere is `dim = 3`. Arguments must already be on it. */
-    ESHKOL_SPACE_FORM_SPHERICAL = 2
+    ESHKOL_SPACE_FORM_SPHERICAL = 2,
+    /** The ADR-0018 kappa-stereographic chart for EVERY finite signed `K`:
+     *  the ball of radius `2/sqrt(-K)` for `K < 0`, `R^n` for `K = 0`, the
+     *  sphere of radius `1/sqrt(K)` minus its pole for `K > 0`, with metric
+     *  `I/(1 + K|x|^2/4)^2`. `dim` counts chart coordinates. Real-analytic in
+     *  `K` through 0, so a learned curvature may change sign. */
+    ESHKOL_SPACE_FORM_STEREOGRAPHIC = 3
 } eshkol_space_form_t;
 
 /**
@@ -140,8 +148,8 @@ typedef struct {
     /** Number of AMBIENT coordinates this factor owns. */
     int64_t dim;
     /** Signed sectional curvature `K`: exactly `0` for Euclidean, negative for
-     *  hyperbolic, and positive for spherical. A form/sign mismatch and every
-     *  non-finite value are rejected. */
+     *  hyperbolic, positive for spherical, any finite value for stereographic.
+     *  A form/sign mismatch and every non-finite value are rejected. */
     double curvature;
     /** Finite `w_f >= 0` in `d^2_M = sum_f w_f d^2_f`. Zero is a genuine
      *  zero-weight factor and contributes neither value nor gradient. */

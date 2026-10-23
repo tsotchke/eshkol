@@ -75,8 +75,8 @@ static void vm_raise_error_msg(VM* vm, const char* msg);
 #include "eshkol/backend/frechet_mean_core.h"
 #include "eshkol/backend/riemannian_core.h"
 
-/* Closed-form constant-curvature geometry (Poincare ball / Euclidean / sphere)
- * in f64. Same reason as the header above for being a header: this file is a
+/* Closed-form constant-curvature geometry in f64: the ADR-0018 chart for every
+ * sign of K, and the embedded sphere behind spherical-*. Same reason as the header above for being a header: this file is a
  * unity-build include and `eshkol-vm-standalone-test` compiles it as one TU, so
  * there is no object file for it to call into. See that header for the K-sign
  * convention and for what these ops used to return. */
@@ -108,9 +108,10 @@ static double* vm_geometric_scratch(VM* vm, int n, int mult) {
 static void vm_geometric_raise(VM* vm, const char* op, const char* why, double K) {
     char msg[320];
     snprintf(msg, sizeof msg,
-             "%s: %s (sectional curvature K = %.17g; K < 0 is the Poincare ball "
-             "of radius 1/sqrt(-K), K = 0 is Euclidean, K > 0 is the sphere of "
-             "radius 1/sqrt(K))", op, why, K);
+             "%s: %s (sectional curvature K = %.17g; one stereographic chart "
+             "with metric I/(1 + K|x|^2/4)^2: K < 0 is the ball of radius "
+             "2/sqrt(-K), K = 0 is Euclidean, K > 0 is the sphere of radius "
+             "1/sqrt(K))", op, why, K);
     vm_raise_error_msg(vm, msg);
 }
 
@@ -703,9 +704,13 @@ static int vm_geometric_arity(int fid) {
  * ... , each of @p n coordinates). Every term's derivatives are the exact
  * closed forms in riemannian_core.h, so L' and L'' are exact too.
  *
+ * The points are held at FIXED CHART COORDINATES while K varies, which is a
+ * real-analytic family through K = 0 (ADR-0018), so the objective and its
+ * derivatives are defined for every finite K, including zero.
+ *
  * @return NULL on success, else the reason the objective is not evaluable at
- *         @p K (a point outside the ball, a point off the sphere, or K = 0
- *         where the metric family is discontinuous).
+ *         @p K (a point outside the ball, or an antipodal pair of the positive
+ *         chart).
  */
 static const char* vm_curvature_objective(const VmTensor* pairs, int n, double K,
                                           double* L, double* L1, double* L2) {
@@ -723,42 +728,6 @@ static const char* vm_curvature_objective(const VmTensor* pairs, int n, double K
     if (L)  *L  = sL;
     if (L1) *L1 = s1;
     if (L2) *L2 = s2;
-    return NULL;
-}
-
-/** @brief Evaluate a curvature trial in the family named by the objective.
- *
- * For K <= 0 the objective holds the supplied coordinates fixed. On the
- * spherical branch, changing K changes the sphere radius, so the documented
- * trial family holds each pair's angular positions fixed by rescaling every
- * point by sqrt(K/current_trial_K) before evaluating the trial distance. */
-static const char* vm_curvature_trial_objective(const VmTensor* pairs, int n,
-                                                double current_K, double trial_K,
-                                                double* L) {
-    if (!(current_K > 0.0 && trial_K > 0.0))
-        return vm_curvature_objective(pairs, n, trial_K, L, NULL, NULL);
-
-    double scale = sqrt(current_K / trial_K);
-    if (!(scale > 0.0) || !isfinite(scale))
-        return "the spherical curvature trial has a non-finite radius scale";
-    int64_t stride = (int64_t)2 * n;
-    int64_t np = pairs->total / stride;
-    double total = 0.0;
-    double x_trial[n > 0 ? n : 1];
-    double y_trial[n > 0 ? n : 1];
-    for (int64_t p = 0; p < np; p++) {
-        const double* x = pairs->data + p * stride;
-        const double* y = x + n;
-        for (int i = 0; i < n; i++) {
-            x_trial[i] = scale * x[i];
-            y_trial[i] = scale * y[i];
-        }
-        double d = 0.0;
-        const char* why = eshkol_rm_distance(x_trial, y_trial, trial_K, n, &d);
-        if (why) return why;
-        total += d;
-    }
-    if (L) *L = total;
     return NULL;
 }
 
@@ -861,7 +830,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
     case 810: case 822: { /* log-map(base, point, curvature) / spherical-log(base, point) */
         /* Was `point - base` for every curvature, i.e. the K = 0 answer under
          * both names. `spherical-log` carries no curvature argument: it is the
-         * unit sphere, K = +1. */
+         * EMBEDDED unit sphere (ambient coordinates, K = +1); `log-map` is the
+         * stereographic chart of curvature K. */
         double K = 1.0;
         if (fid == 810) K = as_number(vm_pop(vm));
         VmTensor* point = vm_get_tensor(vm, vm_pop(vm));
@@ -874,8 +844,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, base->shape, base->n_dims);
         double* scratch = vm_geometric_scratch(vm, n, VM_GEOMETRIC_SCRATCH_MULT);
         if (!out || !scratch) { vm_push(vm, NIL_VAL); break; }
-        const char* why = eshkol_rm_log_map(base->data, point->data, K, n,
-                                            out->data, scratch);
+        const char* why = (fid == 822)
+            ? eshkol_rm_sphere_log_map(base->data, point->data, K, n, out->data)
+            : eshkol_rm_log_map(base->data, point->data, K, n, out->data, scratch);
         if (why) { vm_geometric_raise(vm, fid == 822 ? "spherical-log" : "log-map", why, K); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -950,20 +921,10 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         if (!x || !y || !x->data || !y->data || x->total != y->total || x->total <= 0) {
             vm_push(vm, NIL_VAL); break;
         }
-        if (K > 0.0) {
-            vm_geometric_raise(vm, "mobius-add",
-                               "Mobius addition is the gyrogroup operation of the "
-                               "Poincare ball and is defined for K <= 0 only", K);
-            break;
-        }
-        const char* why = eshkol_rm_check_point(x->data, K, (int)x->total);
-        if (!why) why = eshkol_rm_check_point(y->data, K, (int)y->total);
-        if (why) { vm_geometric_raise(vm, "mobius-add", why, K); break; }
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, x->shape, x->n_dims);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        eshkol_rm_mobius_add(x->data, y->data, eshkol_rm_ball_param(-K),
-                             (int)x->total, out->data);
-        why = eshkol_rm_require_interior(out->data, K, (int)x->total);
+        const char* why = eshkol_rm_chart_mobius_add(x->data, y->data, K,
+                                                     (int)x->total, out->data);
         if (why) { vm_geometric_raise(vm, "mobius-add", why, K); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -976,13 +937,6 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* x = vm_get_tensor(vm, vm_pop(vm));
         double r = as_number(vm_pop(vm));
         if (!x || !x->data || x->total <= 0) { vm_push(vm, NIL_VAL); break; }
-        if (K > 0.0) {
-            vm_geometric_raise(vm, "mobius-scalar-mul",
-                               "Mobius scalar multiplication is the gyrovector "
-                               "operation of the Poincare ball and is defined for "
-                               "K <= 0 only", K);
-            break;
-        }
         const char* why = eshkol_rm_check_point(x->data, K, (int)x->total);
         if (why) { vm_geometric_raise(vm, "mobius-scalar-mul", why, K); break; }
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, x->shape, x->n_dims);
@@ -1049,8 +1003,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, base->shape, base->n_dims);
         double* scratch = vm_geometric_scratch(vm, n, VM_GEOMETRIC_SCRATCH_MULT);
         if (!out || !scratch) { vm_push(vm, NIL_VAL); break; }
-        const char* why = eshkol_rm_exp_map(base->data, tangent->data, 1.0, n,
-                                             out->data, scratch);
+        (void)scratch;
+        const char* why = eshkol_rm_sphere_exp_map(base->data, tangent->data, 1.0,
+                                                   n, out->data);
         if (why) { vm_geometric_raise(vm, "spherical-exp", why, 1.0); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -1066,7 +1021,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         if (!x || !x->data || x->total <= 0) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, x->shape, x->n_dims);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        const char* why = eshkol_rm_project(x->data, 1.0, (int)x->total, out->data);
+        const char* why = eshkol_rm_sphere_project(x->data, 1.0, (int)x->total,
+                                                   out->data);
         if (why) { vm_geometric_raise(vm, "spherical-project", why, 1.0); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
@@ -1433,22 +1389,23 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         int nk = (k->n_dims >= 2) ? (int)k->shape[0] : 1;
         int qdim = (q->n_dims >= 2) ? (int)q->shape[1] : (int)q->total;
         int kdim = (k->n_dims >= 2) ? (int)k->shape[1] : (int)k->total;
-        if (qdim != kdim) { vm_push(vm, NIL_VAL); break; }
+        if (qdim != kdim || qdim <= 0) { vm_push(vm, NIL_VAL); break; }
         int64_t shape[2] = {nq, nk};
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 2);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        /* Scored by the NEGATIVE GEODESIC distance, the same convention as
-         * `ad_geodesic_attention` in lib/bridge/qllm_bridge.cpp. This used to be
-         * the negative L2 distance for every curvature, so "geodesic attention"
-         * on the ball ranked keys by the ambient chord. */
+        /* The squared-distance logit -d^2/(2t) of ADR-0018 at the default
+         * temperature t = sqrt(dim), the same logit `ad_geodesic_attention`
+         * and geodesic-attention-forward normalise. d^2 is smooth at q == k;
+         * there is no curvature-dependent scale. */
+        const double t = eshkol_rm_default_temperature(qdim);
         for (int i = 0; i < nq; i++) {
             for (int j = 0; j < nk; j++) {
-                double dist = 0.0;
-                const char* why = eshkol_rm_distance(q->data + (int64_t)i * qdim,
-                                                     k->data + (int64_t)j * kdim,
-                                                     Kc, qdim, &dist);
+                double sq = 0.0;
+                const char* why = eshkol_rm_sq_distance(q->data + (int64_t)i * qdim,
+                                                        k->data + (int64_t)j * kdim,
+                                                        Kc, qdim, &sq);
                 if (why) { vm_geometric_raise(vm, "geodesic-attention-scores", why, Kc); return; }
-                out->data[i * nk + j] = -dist;
+                out->data[i * nk + j] = -sq / (2.0 * t);
             }
         }
         VM_PUSH_TENSOR(vm, out);
@@ -1474,20 +1431,32 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         break;
     }
     case 846: { /* curvature-softmax(scores, curvature) */
+        /* A max-shifted softmax over the scores. The scores of this surface
+         * are already in squared-distance units (-d^2/(2t)), so there is no
+         * curvature-dependent temperature: the 1/sqrt|K| factor this op used
+         * to apply diverges as K -> 0 and is gone (ADR-0018 decision 5). The
+         * curvature is validated, not used as a scale. */
         double c = as_number(vm_pop(vm));
         VmTensor* scores = vm_get_tensor(vm, vm_pop(vm));
         if (!scores || !scores->data || scores->total <= 0) { vm_push(vm, NIL_VAL); break; }
+        if (!isfinite(c)) {
+            vm_geometric_raise(vm, "curvature-softmax", "curvature is not finite", c);
+            break;
+        }
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, scores->shape, scores->n_dims);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        double scale = fabs(c) > 0.0 ? 1.0 / sqrt(fabs(c)) : 1.0;
         double maxv = scores->data[0];
         for (int64_t i = 1; i < scores->total; i++) if (scores->data[i] > maxv) maxv = scores->data[i];
         double sum = 0.0;
         for (int64_t i = 0; i < scores->total; i++) {
-            out->data[i] = exp((scores->data[i] - maxv) * scale);
+            out->data[i] = exp(scores->data[i] - maxv);
             sum += out->data[i];
         }
-        if (sum != 0.0) for (int64_t i = 0; i < scores->total; i++) out->data[i] /= sum;
+        if (!(sum > 0.0) || !isfinite(sum)) {
+            vm_geometric_raise(vm, "curvature-softmax", "softmax normalisation is not finite", c);
+            break;
+        }
+        for (int64_t i = 0; i < scores->total; i++) out->data[i] /= sum;
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -1501,59 +1470,26 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         }
         int nq = (int)q->shape[0], nk = (int)k->shape[0], dim = (int)q->shape[1];
         int vdim = (int)values->shape[1];
-        if ((int)k->shape[1] != dim || (int)values->shape[0] < nk) { vm_push(vm, NIL_VAL); break; }
+        if ((int)k->shape[1] != dim || (int)values->shape[0] < nk || nk <= 0 || dim <= 0) {
+            vm_push(vm, NIL_VAL); break;
+        }
         int64_t shape[2] = {nq, vdim};
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 2);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        /* Softmax over the NEGATIVE GEODESIC distance, scaled by
-         * 1/(sqrt(c) sqrt(dim)), then a Euclidean weighted sum of the value
-         * rows -- the aggregation `ad_geodesic_attention` performs. Two things
-         * changed here: the distance was the ambient L2 for every curvature, and
-         * the weights were exp() with no max-shift, which overflows to inf for
-         * strongly negative scores and then divides inf by inf. */
-        double sc = (Kc < 0.0) ? eshkol_rm_sqrt_nonnegative(-Kc) : 1.0;
-        double scale = 1.0 / (sc * sqrt((double)dim));
+        /* Softmax over -d^2/(2t), t = sqrt(dim), then a Euclidean weighted sum
+         * of the value rows. eshkol_rm_attention_row is the one stabilized row
+         * kernel shared with the AD bridge and the native module. */
+        double* sqd = vm_geometric_scratch(vm, nk, 1);
         double* row = vm_geometric_scratch(vm, nk, 1);
-        if (!row) { vm_push(vm, NIL_VAL); break; }
+        if (!sqd || !row) { vm_push(vm, NIL_VAL); break; }
+        const double t = eshkol_rm_default_temperature(dim);
         for (int i = 0; i < nq; i++) {
-            double min_dist = HUGE_VAL;
+            const char* why = eshkol_rm_attention_row(q->data + (int64_t)i * dim,
+                                                      k->data, dim, nk, dim, Kc,
+                                                      t, sqd, row);
+            if (why) { vm_geometric_raise(vm, "geodesic-attention-forward", why, Kc); return; }
             for (int j = 0; j < nk; j++) {
-                double dist = 0.0;
-                const char* domain_why = Kc > 0.0
-                    ? eshkol_rm_sphere_distance_domain(q->data + (int64_t)i * dim,
-                                                        k->data + (int64_t)j * dim,
-                                                        Kc, dim)
-                    : NULL;
-                if (domain_why) {
-                    vm_geometric_raise(vm, "geodesic-attention-forward",
-                                       domain_why, Kc);
-                    return;
-                }
-                const char* why = eshkol_rm_distance(q->data + (int64_t)i * dim,
-                                                     k->data + (int64_t)j * dim,
-                                                     Kc, dim, &dist);
-                if (why) { vm_geometric_raise(vm, "geodesic-attention-forward", why, Kc); return; }
-                row[j] = dist;
-                if (dist < min_dist) min_dist = dist;
-            }
-            double wsum = 0.0;
-            for (int j = 0; j < nk; j++) {
-                double shifted = -(row[j] - min_dist) * scale;
-                if (isnan(shifted) || shifted > 0.0) {
-                    vm_geometric_raise(vm, "geodesic-attention-forward",
-                                        "the shifted score is not finite", Kc);
-                    return;
-                }
-                row[j] = exp(shifted);
-                wsum += row[j];
-            }
-            if (!(wsum > 0.0) || !isfinite(wsum)) {
-                vm_geometric_raise(vm, "geodesic-attention-forward",
-                                   "softmax normalisation is not finite", Kc);
-                return;
-            }
-            for (int j = 0; j < nk; j++) {
-                double w = row[j] / wsum;
+                double w = row[j];
                 for (int d = 0; d < vdim; d++)
                     out->data[i * vdim + d] += w * values->data[j * vdim + d];
             }
@@ -1626,11 +1562,12 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
          *
          *   K <- K - t * L'(K) / max(L''(K), floor),
          *
-         * with t halved until the new curvature keeps the same sign (crossing
-         * K = 0 would change which geometry the manifold is), leaves the
-         * objective evaluable for every supplied pair, and does not increase
-         * it. Every one of those three conditions can fail, and when they all
-         * do the op raises instead of moving K to a value it cannot justify. */
+         * with t halved until the new curvature leaves the objective
+         * evaluable for every supplied pair and does not increase it. The
+         * chart is one analytic family through K = 0, so a step may cross
+         * zero (learnable sign crossing, ADR-0018). When no halving is
+         * admissible the op raises instead of moving K to a value it cannot
+         * justify. */
         Value mv; VmGeometricManifold* m; VmTensor* pairs; int n;
         if (!vm_curvature_args(vm, &mv, &m, &pairs, &n)) { vm_push(vm, NIL_VAL); break; }
         double K = m->curvature, L0 = 0.0, g = 0.0, h = 0.0;
@@ -1642,9 +1579,9 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         double t = 1.0;
         for (int i = 0; i < VM_CURVATURE_BACKTRACKS; i++, t *= 0.5) {
             double kn = K - t * delta;
-            if (!((K < 0.0 && kn < 0.0) || (K > 0.0 && kn > 0.0))) continue;
+            if (!isfinite(kn)) continue;
             double ln = 0.0;
-            if (vm_curvature_trial_objective(pairs, n, K, kn, &ln)) continue;
+            if (vm_curvature_objective(pairs, n, kn, &ln, NULL, NULL)) continue;
             if (!(ln <= L0)) continue;
             m->curvature = kn;
             accepted = 1;
@@ -1657,8 +1594,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
              * reader the one fact that says which geometry K names. */
             vm_geometric_raise(vm, "adaptive-curvature-step",
                 "no backtracked damped Newton step is admissible (each either "
-                "flipped the sign of K, moved a point off the manifold, or "
-                "raised the objective)", K);
+                "moved a point off the chart or raised the objective)", K);
             break;
         }
         vm_push(vm, mv);

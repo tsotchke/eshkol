@@ -1,0 +1,98 @@
+;; Standalone VM: the ADR-0018 signed-curvature chart through the geometry ops.
+;;
+;; geodesic-distance, curvature-gradient/-hessian (the curvature jet of the
+;; summed distance) and the attention ops call the same f64 core as the
+;; native core.curvature module and the AD bridge, so they must reproduce the
+;; binary128 reference values of tests/bridge/signed_curvature_reference_grid_test.cpp
+;; (configuration "fixed"). Every sign of K uses one chart with metric
+;; I/(1 + K|x|^2/4)^2: K = 0 is exactly Euclidean, and the K-derivatives are
+;; defined at K = 0.
+
+(define (report ok name)
+  (display (if ok "PASS" "FAIL")) (display ": ") (display name) (newline))
+(define (rel-near? a b tol) (or (= a b) (<= (abs (- a b)) (* tol (abs b)))))
+
+(define (vec3 a b c)
+  (let ((t (make-tensor '(3) 0.0)))
+    (tensor-set! t 0 a) (tensor-set! t 1 b) (tensor-set! t 2 c) t))
+(define (pair6 a b)
+  (let ((t (make-tensor '(6) 0.0)))
+    (let loop ((i 0))
+      (if (< i 3)
+          (begin (tensor-set! t i (tensor-ref a i))
+                 (tensor-set! t (+ i 3) (tensor-ref b i))
+                 (loop (+ i 1)))))
+    t))
+
+(define x (vec3 0.3 -0.2 0.1))
+(define y (vec3 -0.25 0.15 0.2))
+(define pairs (pair6 x y))
+(define m (make-hyperbolic-manifold-handle 3 -1.0))
+
+;; K, d, dd/dK, d2d/dK2 from the binary128 reference
+(define golden
+  (list (list 0.0 0.6595452979136459 -0.00989317946870469 0.000243825652322451)
+        (list 1.0 0.6497697847842886 -0.009661995865024349 0.00021892693222168538)
+        (list -1.0 0.6695648407377899 -0.010150463695776539 0.0002711760892963261)
+        (list 4.0 0.6216690142220734 -0.009102962572170208 0.00015663388402661904)
+        (list -4.0 0.7013757185512163 -0.01110686730219895 0.00037155602340704095)))
+
+(let loop ((rows golden))
+  (if (pair? rows)
+      (let* ((r (car rows)) (K (car r)))
+        (set-curvature! m K)
+        (report (rel-near? (geodesic-distance x y K) (cadr r) 1e-14)
+                "geodesic-distance matches the binary128 reference")
+        (report (rel-near? (curvature-gradient m pairs) (caddr r) 1e-14)
+                "curvature-gradient is the reference dd/dK")
+        (report (rel-near? (curvature-hessian m pairs) (cadddr r) 1e-13)
+                "curvature-hessian is the reference d2d/dK2")
+        (loop (cdr rows)))))
+
+;; K = 0 is canonical Euclidean and is not a special refusal any more.
+(report (rel-near? (geodesic-distance x y 0.0)
+                   (sqrt (+ (* 0.55 0.55) (* 0.35 0.35) (* 0.1 0.1))) 1e-15)
+        "K = 0 geodesic-distance is |x - y|")
+;; One analytic family: the jet at K = 0 equals the jets at +-1e-300.
+(set-curvature! m 1e-300)
+(define gp (curvature-gradient m pairs))
+(set-curvature! m -1e-300)
+(define gm (curvature-gradient m pairs))
+(set-curvature! m 0.0)
+(define g0 (curvature-gradient m pairs))
+(report (and (= g0 gp) (= g0 gm)) "curvature jets agree on both sides of K = 0")
+;; A Newton step may cross zero: the sign of K is learnable.
+(set-curvature! m 0.0)
+(report (not (null? (adaptive-curvature-step m pairs))) "adaptive-curvature-step at K = 0")
+
+;; Positive chart: every finite point is a point; the ball radius is 2/sqrt(-K).
+;; x = 3 e1 and y = 3 e2 at K = 1 are the sphere points (12/13, 0, 0, -5/13)
+;; and (0, 12/13, 0, -5/13): the far hemisphere, at angle acos(25/169).
+(report (rel-near? (geodesic-distance (vec3 3.0 0.0 0.0) (vec3 0.0 3.0 0.0) 1.0)
+                   (acos (/ 25.0 169.0)) 1e-14)
+        "positive-chart points beyond the equator are answered")
+(report (guard (e (#t #t)) (geodesic-distance (vec3 2.5 0.0 0.0) y -1.0) #f)
+        "a point outside the ball of radius 2/sqrt(-K) raises")
+(report (rel-near? (geodesic-distance (vec3 1.9 0.0 0.0) (vec3 0.0 0.0 0.0) -1.0)
+                   (* 2.0 (atanh 0.95)) 1e-14)
+        "radius 2/sqrt(-K): d(0, r e1) = 2 artanh(r/2) at K = -1")
+
+;; Squared-distance attention: no curvature scale, smooth at q = k.
+(define Q (make-tensor '(1 3) 0.0))
+(tensor-set! Q 0 0.3) (tensor-set! Q 1 -0.2) (tensor-set! Q 2 0.1)
+(define Ks (make-tensor '(2 3) 0.0))
+(tensor-set! Ks 0 0.3) (tensor-set! Ks 1 -0.2) (tensor-set! Ks 2 0.1)
+(tensor-set! Ks 3 -0.25) (tensor-set! Ks 4 0.15) (tensor-set! Ks 5 0.2)
+(define s0 (geodesic-attention-scores Q Ks 0.0))
+(report (= (tensor-ref s0 0) 0.0) "q = k scores exactly zero")
+(report (rel-near? (tensor-ref s0 1)
+                   (- (/ (+ (* 0.55 0.55) (* 0.35 0.35) (* 0.1 0.1)) (* 2.0 (sqrt 3.0))))
+                   1e-15)
+        "K = 0 score is -|q-k|^2/(2 sqrt dim)")
+(define sp (geodesic-attention-scores Q Ks 1e-300))
+(define sm (geodesic-attention-scores Q Ks -1e-300))
+(report (and (= (tensor-ref sp 1) (tensor-ref s0 1)) (= (tensor-ref sm 1) (tensor-ref s0 1)))
+        "scores continuous through K = 0")
+(define w (curvature-softmax (geodesic-attention-scores Q Ks -1.0) -1.0))
+(report (rel-near? (+ (tensor-ref w 0) (tensor-ref w 1)) 1.0 1e-15)
+        "curvature-softmax normalises without a curvature scale")

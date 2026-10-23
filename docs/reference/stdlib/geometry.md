@@ -91,10 +91,11 @@ older build's output needs to know. Before `SW-73` these ops computed their **fl
 `geodesic-distance` and `poincare-distance` the L2 distance, `mobius-add` addition,
 `parallel-transport` and `riemannian-grad` the identity. At K = 0 those forms are
 what this page's K = 0 branch still computes (see
-[The K = 0 branch](#the-k--0-branch) for the convention question that raises), and
-at every other curvature they were wrong without bound: two points of the unit
-ball a tenth of a unit inside the boundary are 1.8 apart in L2 and
-5.8888779583328814 apart in the metric the name promises. `tests/vm/geometric_riemannian_surface_regression.esk`
+[One chart for every sign of K](#one-chart-for-every-sign-of-k) for the chart those forms are now the `K = 0` member of), and
+at every other curvature they differ without bound from the metric the name
+promises: at K = −1 the points `(1.9, 0)` and `(−1.9, 0)`, a tenth of a unit inside
+the ball of radius 2, are 3.8 apart in L2 and `4·artanh(0.95)` = 7.327123292259292
+apart geodesically. `tests/vm/geometric_riemannian_surface_regression.esk`
 pins each of these against its closed form, with every assertion chosen so that the
 flat answer fails it.
 
@@ -110,51 +111,55 @@ update, none of which differentiated anything. They now measure the exact first
 and second derivatives of a **named objective** with respect to the curvature
 parameter: see [Curvature derivatives](#curvature-derivatives).
 
-## The K = 0 branch
+## One chart for every sign of K
 
-**There is an open convention question here, and it is stated rather than
-hidden.** The three promises "sectional curvature K", "ball of radius 1/√−K" and
-"canonical Euclidean geometry at K = 0, continuously" cannot all hold in one
-coordinate family, and this page used to make all three.
+Every op that takes a curvature argument reads it as the **signed sectional
+curvature K** and evaluates **one** coordinate chart for every sign — the
+κ-stereographic chart in the canonical-flat gauge `α = 1`
+([ADR-0018](../../design/adr/0018-signed-curvature-stereographic-geometry.md)):
 
-The ball chart's conformal factor is `λ_x = λ₀/(1 − B‖x‖²)` with `λ₀ = 2` and
-`B = c·λ₀²/4 = c` — the convention of Ganea et al., Nickel–Kiela and `geoopt`,
-and the one every in-tree call site passes. Because `λ₀ = 2` for **every** `c`,
-including in the limit, the K → 0⁻ limit of the ball branch is flat space with
-the metric `4⟨·,·⟩`: `d(x,y) → 2‖x−y‖` and `riemannian-grad → g/4`. The K = 0
-branch instead uses `λ = 1`, the canonical Euclidean metric, which is what
-"K = 0 is Euclidean" means to a caller and what every flat-reduction example on
-this page asserts.
+```
+g_K(x) = I / (1 + K‖x‖²/4)²        λ_x = 1/(1 + K‖x‖²/4)        B = −K/4
+```
 
-So **the family is discontinuous at K = 0**: the geodesic distance jumps by a
-factor of 2 and the Riemannian gradient by a factor of 4 as K crosses zero. Two
-points a tenth of a unit inside the unit ball are `1.8` apart at K = 0 and
-`3.6000000012` apart at K = −1e−9.
+| `K` | the chart is | a point is |
+|---|---|---|
+| `K < 0` | the open ball of radius `2/√−K` | strictly inside the ball |
+| `K = 0` | Euclidean `ℝⁿ`, `λ = 1` | any finite point |
+| `K > 0` | the sphere of radius `1/√K` minus its pole | any finite point whose `1 + K‖x‖²/4` is representable |
 
-Which of the two to keep is a **ruling**, not a bug fix, because it changes
-published numbers and the AD bridge's contract with them. Both resolutions are
-one line in `inc/eshkol/backend/riemannian_core.h`, which is why the model is
-centralized in exactly four named places there — `ESHKOL_RM_LAMBDA0`,
-`ESHKOL_RM_FLAT_LAMBDA`, `eshkol_rm_ball_param` and `eshkol_rm_lambda`:
+Möbius addition `⊕_B`, the exponential and logarithmic maps, parallel transport
+and the distance are the **same formulas for every sign**, with the signed chart
+parameter `B`. The generalized trigonometric ratios (`tanh`/`tan`,
+`artanh`/`atan`, `asinh`/`asin`) are functions of one dimensionless signed
+argument `q = K r²/4` and switch to a degree-10 series for `|q| ≤ 2⁻⁸`, so the
+family is **real-analytic in K through K = 0** at fixed chart coordinates:
+`K = 0` is the series evaluated at zero, not a separate branch, and the left and
+right curvature jets agree there.
 
-- setting `ESHKOL_RM_FLAT_LAMBDA` to `ESHKOL_RM_LAMBDA0` keeps the standard ball
-  and makes the family real-analytic in K on K ≤ 0. `geodesic-distance` at K = 0
-  becomes `2‖x−y‖` and `riemannian-grad` becomes `g/4`, and the curvature
-  derivatives stop refusing at K = 0;
-- setting `ESHKOL_RM_LAMBDA0` to `1` keeps canonical Euclidean at K = 0 by
-  re-charting the ball to radius `2/√c`, and moves every published hyperbolic
-  constant.
+The gauge `α = 1` keeps every exact `K = 0` result: `geodesic-distance` at
+`K = 0` is `‖x − y‖`, `riemannian-grad` is the identity, and a learned curvature
+can cross zero. Two points a tenth of a unit inside the ball of radius 2 at
+`K = −1`, `x = (0.9, 0)` and `y = (−0.9, 0)`, are `1.9388011143762072` apart; at
+`K = 0` they are `1.8` apart and at `K = 1` `1.6914157045317628` — one continuous
+family.
 
-Until it is ruled on, the shipped behaviour is the second column of the table
-above — `λ₀ = 2`, `flat λ = 1` — and the three curvature-derivative ops
-(`curvature-gradient`, `curvature-hessian`, `adaptive-curvature-step`) **raise at
-K = 0**, naming the discontinuity, rather than returning a one-sided derivative
-as if it were two-sided.
+The positive chart covers the sphere except one point, its **pole**, which lies
+at infinity in chart coordinates. The **antipode** of `x` is `−x/(K‖x‖²/4)`: it
+is the cut locus, where the log map, the distance's derivative and parallel
+transport are not unique, and those ops refuse an exactly antipodal pair. A
+geodesic that reaches the pole is refused by `exp-map`.
 
-Nothing else moves with the constant. `exp`, `log`, `parallel-transport`,
-`manifold-project` and Möbius addition are the **same maps** under either choice:
-a constant conformal rescale of a metric leaves the Levi-Civita connection
-unchanged, so only distances, norms and the gradient conversion carry the factor.
+**Coordinates of earlier releases.** The ball used to be the `α = 2` chart of
+radius `1/√−K` (`λ = 2/(1 − c‖x‖²)`), `K = 0` used `λ = 1`, and `K > 0` was the
+sphere in ambient coordinates — three conventions that did not form one family.
+A legacy ball point maps to this chart by `x_v2 = 2·x_v1` (tangent vectors and
+first-moment optimizer state likewise; distances are preserved), and a legacy
+ambient sphere point by the stereographic projection `2R·p′/(R + pₙ)`. The
+native module [`core.curvature`](curvature.md) provides the migration functions
+and the convention-id check for serialized geometry. The ops whose contract is
+the embedded sphere (`great-circle-distance`, `slerp`, `spherical-exp`,
+`spherical-log`, `spherical-project`) keep ambient coordinates.
 
 ## Error convention
 
@@ -171,24 +176,25 @@ rather than return a number because the alternative is the case this whole surfa
 exists to exclude — a plausible value the caller cannot tell from a real one. The
 conditions a caller can hit:
 
-- a point that is not **strictly inside** the Poincaré ball of radius `1/√−K`, for
-  any op taking K < 0;
+- a point that is not **strictly inside** the ball of radius `2/√−K`, for any op
+  taking K < 0;
 - any non-finite supplied coordinate, curvature, tangent/gradient component or
   metric entry, and any formula whose computed result is not finite;
-- a point that is not **on** the sphere of radius `1/√K`, for any op taking K > 0
-  (`manifold-project` is the op that moves it there);
-- a **tangent vector that is not tangent**, for any spherical op that takes one
-  (`spherical-exp`, `parallel-transport`/`vector-transport` at K > 0, the Adam
-  step): `⟨x,v⟩` must vanish, tested relative to `‖v‖`;
-- **antipodal endpoints** for spherical `log` and `parallel-transport`: neither
-  the connecting geodesic nor the transport along it is unique;
+- a point at the **pole** of the positive chart (where `1 + K‖x‖²/4` is not
+  representable in f64), for any op taking K > 0;
+- a point that is not **on** the unit sphere, and a tangent vector that is not
+  tangent (`⟨x,v⟩` must vanish, tested relative to `‖v‖`), for the embedded-sphere
+  ops `spherical-exp`, `spherical-log` and `spherical-project`;
+- **antipodal endpoints** — the cut locus — for `log-map`, `parallel-transport`
+  and the curvature derivatives at K > 0, and for `spherical-log`: neither the
+  connecting geodesic nor the transport along it is unique;
+- an `exp-map` whose geodesic reaches the pole of the positive chart;
 - a result that would land **on** the ball boundary rather than strictly inside
   it, for `hyperbolic-exp-map`, `mobius-add` and `mobius-scalar-mul`. `tanh`
-  rounds to exactly `1.0` beyond about 19, so `exp_0(20)` at K = −1 used to
-  return exactly `1.0` — not a point of the open ball, and the one place these
-  ops could return a value outside their own codomain;
-- `mobius-add` and `mobius-scalar-mul` with K > 0: they are the gyrogroup operations
-  of the ball and are not defined on the sphere;
+  rounds to exactly `1.0` beyond about 19, so `exp_0(40)` at K = −1 would be
+  exactly the boundary point — not a point of the open ball;
+- a `mobius-add` or `mobius-scalar-mul` result that is the pole of the positive
+  chart;
 - `frechet-mean`, when the Karcher iteration has not reached stationarity. A mean
   that has not is exactly the input whose implicit derivative is a plausible wrong
   gradient;
@@ -199,9 +205,10 @@ conditions a caller can hit:
   them is precisely the assertion of closedness this op no longer makes;
 - `hodge-star`, on a metric that is not symmetric positive definite: the star is
   defined by a Riemannian inner product on k-forms;
-- `curvature-gradient`, `curvature-hessian` and `adaptive-curvature-step`, at
-  **K = 0**, and whenever a supplied point is not a point of the manifold at the
-  curvature being differentiated;
+- `curvature-gradient`, `curvature-hessian` and `adaptive-curvature-step`,
+  whenever a supplied point is not a point of the chart at the curvature being
+  differentiated, a pair is antipodal on the positive chart, or a requested
+  derivative is not representable in f64;
 - `adaptive-curvature-step`, when no backtracked Newton step is admissible.
 
 ## Engine availability per builtin
@@ -266,13 +273,13 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `make-spherical-manifold` | 806 | 1 | manifold | type 2, K = 1.0 |
 | `make-product-manifold` | 807 | 2 | manifold | type 3, dim = d1+d2, K = mean of the two |
 | `manifold-curvature` | 808 | 1 | float | stored K |
-| `hyperbolic-exp-map` / `manifold-exp-map` | 809 | 3 | tensor | exp_base(tangent): Möbius (K<0) / great-circle (K>0) / `base + tangent` (K=0) |
+| `hyperbolic-exp-map` / `manifold-exp-map` | 809 | 3 | tensor | exp_base(tangent) in the signed chart (every K); `base + tangent` at K=0 |
 | `hyperbolic-log-map` / `manifold-log-map` | 810 | 3 | tensor | log_base(point), the inverse of 809; `point - base` at K=0 |
-| `geodesic-distance` / `manifold-distance` | 811 | 3 | float | stable shared-core hyperbolic form (K<0) / stable spherical form (K>0) / L2 (K=0) |
-| `parallel-transport` / `manifold-parallel-transport` | 812 | 4 | tensor | `(λ_x/λ_y)·gyr[y,−x]v` (K<0) / geodesic rotation (K>0) / identity (K=0) |
-| `manifold-project` | 813 | 2 | tensor | rescales onto the ball (K<0) or the sphere (K>0); a copy at K=0 |
-| `mobius-add` | 814 | 3 | tensor | the gyrogroup sum `x ⊕_c y`; `x + y` at K=0; **raises for K>0** |
-| `mobius-scalar-mul` | 815 | 3 | tensor | `(1/√c)·tanh(r·artanh(√c‖x‖))·x/‖x‖`; `r·x` at K=0; **raises for K>0** |
+| `geodesic-distance` / `manifold-distance` | 811 | 3 | float | stable shared-core chart distance, every K; L2 at K=0 |
+| `parallel-transport` / `manifold-parallel-transport` | 812 | 4 | tensor | `(λ_x/λ_y)·gyr[y,−x]v`, every K; identity at K=0 |
+| `manifold-project` | 813 | 2 | tensor | rescales onto the ball (K<0); a copy for K≥0 |
+| `mobius-add` | 814 | 3 | tensor | the gyrogroup sum `x ⊕_B y`, every K; `x + y` at K=0 |
+| `mobius-scalar-mul` | 815 | 3 | tensor | `tan_B(r·artan_B‖x‖)·x/‖x‖`, every K; `r·x` at K=0 |
 | `poincare-distance` | 816 | 3 | float | the geodesic distance (same op as 811) |
 | `frechet-mean` | 817 | 3 | tensor | **real** weighted Karcher mean, gated; raises |
 | `great-circle-distance` | 819 | 2 | float | scale-invariant `atan2` angle; raises only at exact antipodes |
@@ -297,13 +304,13 @@ Aliases share an id and are therefore the same op. `→` gives the result type:
 | `pullback` | 838 | 2 | tensor | `formᵀ · jacobian`, shape `(cols)` |
 | `riemannian-sgd-step` | 839 | 4 | tensor | `exp_point(−lr·grad)`; `point − lr·grad` at K=0 |
 | `riemannian-adam-step` | 840 | 6 | tensor | **raises** — an implicit pool cannot identify a parameter; use 861 |
-| `riemannian-grad` | 841 | 3 | tensor | `((1−c‖x‖²)²/4)·grad` (K<0) / tangent projection (K>0) / a copy (K=0) |
+| `riemannian-grad` | 841 | 3 | tensor | `(1 + K‖x‖²/4)²·grad`, every K; a copy at K=0 |
 | `retraction` | 842 | 3 | tensor | the exponential map (same op as 809) |
 | `vector-transport` | 843 | 4 | tensor | parallel transport (same op as 812) |
-| `geodesic-attention-scores` | 844 | 3 | tensor | `−d_K(q_i, k_j)`, shape `(nq nk)` |
+| `geodesic-attention-scores` | 844 | 3 | tensor | `−d_K(q_i, k_j)²/(2√d)`, shape `(nq nk)` |
 | `geodesic-attention-values` | 845 | 3 | tensor | score-weighted average of `V`'s rows |
-| `curvature-softmax` | 846 | 2 | tensor | softmax scaled by `1/√|K|` |
-| `geodesic-attention-forward` | 847 | 4 | tensor | softmax over `−d_K/(√c·√dim)` then a weighted sum of `V`, shape `(nq vdim)` |
+| `curvature-softmax` | 846 | 2 | tensor | max-shifted softmax; no curvature scale |
+| `geodesic-attention-forward` | 847 | 4 | tensor | softmax over `−d_K²/(2√dim)` then a weighted sum of `V`, shape `(nq vdim)` |
 | `set-curvature!` | 850 | 2 | manifold | mutates K, returns the manifold |
 | `get-curvature` | 851 | 1 | float | stored K (same case as 808) |
 | `curvature-gradient` | 852 | 2 | float | `dL/dK`, `L(K) = Σ d_K(xᵢ, yᵢ)` over the pair batch |
@@ -425,11 +432,13 @@ belongs to the VM region stack and is reclaimed when the region is popped.
 ## Maps, distances and gyrovector operations
 
 Every op in this group takes a trailing `curvature` argument, read as the
-**sectional curvature K**: `K < 0` is the Poincaré ball of radius `1/√−K`, `K = 0` is
-Euclidean space, `K > 0` is the sphere of radius `1/√K`. Each op reduces **exactly**
-to its flat form at `K = 0`. Arguments must lie on the manifold the curvature names —
-strictly inside the ball for `K < 0`, on the sphere for `K > 0` — or the op raises;
-see [Error convention](#error-convention).
+**signed sectional curvature K**, and evaluates the one chart of
+[One chart for every sign of K](#one-chart-for-every-sign-of-k): the ball of
+radius `2/√−K` for `K < 0`, Euclidean space for `K = 0`, the sphere of radius
+`1/√K` minus its pole for `K > 0`. Below, `B = −K/4`, `λ_x = 1/(1 − B‖x‖²)` and
+`⊕` is Möbius addition with parameter `B`. Each op reduces **exactly** to its
+flat form at `K = 0`. Arguments must be chart points — strictly inside the ball
+for `K < 0` — or the op raises; see [Error convention](#error-convention).
 
 ### `(hyperbolic-exp-map base tangent curvature)` / `(manifold-exp-map …)` / `(retraction base tangent curvature)` — id 809 / 842
 
@@ -439,10 +448,11 @@ direction `tangent` for the Riemannian length of `tangent`; `()` on a shape mism
 `retraction` is a second name on the same op — and it is a true exponential map, not
 merely a retraction.
 
-- `K < 0`: `base ⊕_c tanh(√c·λ·‖v‖/2)·v/(√c‖v‖)` with `λ = 2/(1−c‖base‖²)`, `c = −K`.
-- `K = 0`: `base + tangent`, exactly.
-- `K > 0`: `cos(‖v‖/R)·base + R·sin(‖v‖/R)·v/‖v‖` with `R = 1/√K`; `v` must be
-  tangent (`⟨base, v⟩ = 0`).
+- every `K`: `base ⊕ (λ·T(s)·v)` with `s = B·(λ‖v‖)²` and `T(s) = tanh(√s)/√s`
+  (`K < 0`), `tan(√−s)/√−s` (`K > 0`), the series near `s = 0`;
+- `K = 0`: `base + tangent`, exactly;
+- `K > 0`: a geodesic that reaches the pole raises; past it the chart formula
+  continues onto the far hemisphere.
 
 ```scheme
 (define base (make-tensor '(2) 0.0))
@@ -457,10 +467,11 @@ Returns `log_base(point)`, the inverse of id 809: the tangent vector at `base`
 whose exponential map is `point`. Its **Riemannian** length `λ_base·‖log‖` is the
 geodesic distance; its ambient Euclidean length is not.
 
-- `K < 0`: direction from the **Möbius numerator** of `(−base) ⊕_c point`,
-  magnitude `d(base, point)/λ_base`.
+- every `K`: direction from the **Möbius numerator** of `(−base) ⊕ point`,
+  written in the separation `δ = point − base` as
+  `(1 − B‖base‖²)·δ − (B‖δ‖²)·base` so that a one-ulp separation keeps its
+  direction; magnitude `d(base, point)/λ_base`;
 - `K = 0`: `point − base`, exactly.
-- `K > 0`: `θR·u/‖u‖` with `u = point − cos θ·base` and `θ` from `atan2`.
 
 **Every pair of strictly interior ball points has a finite log, and this op
 returns it.** It used to compute `(2/(√c·λ))·artanh(√c‖u‖)·u/‖u‖` and *refuse*
@@ -473,8 +484,8 @@ value. Splitting the computation — direction from the numerator alone, never
 divided by the near-zero Möbius denominator, magnitude from the stable distance
 below — removes both failures.
 
-The spherical branch raises for **antipodal** points, where the log is genuinely
-not single-valued.
+On the positive chart the op raises for **antipodal** points, where the log is
+genuinely not single-valued.
 
 ```scheme
 (define base (make-tensor '(2) 0.0))
@@ -490,42 +501,45 @@ Returns the geodesic distance as a float; `()` unless both arguments are tensors
 the same total size. `poincare-distance` is a second name on the same op, and it IS
 the Poincaré metric.
 
-- `K < 0`: `(2/√c)·asinh(√c‖x−y‖/√((1−c‖x‖²)(1−c‖y‖²)))`.
-- `K = 0`: `‖x − y‖` times the flat conformal factor — see
-  [The K = 0 branch](#the-k--0-branch).
-- `K > 0`: `R·θ` with `θ = atan2(‖y − cos θ·x‖/R, cos θ)`, the great-circle
-  distance.
+- every `K`: `√(E/P)·ψ(w)` with `E = ‖x−y‖²`, `P = (1−B‖x‖²)(1−B‖y‖²)`,
+  `w = B·E/P`, and `ψ(w) = asinh(√w)/√w` (`K < 0`), `asin(√−w)/√−w` (`K > 0`),
+  the series near `w = 0`;
+- `K = 0`: `‖x − y‖`, exactly;
+- `K > 0` outside the series window: `atan2(√(|B|E), √Dn)/√|B|` with `Dn` the
+  Möbius denominator of `(−x, y)`, well conditioned up to the antipode, where the
+  distance is `π/√K`.
 
-The hyperbolic distance is not bounded by the ball diameter the way the chord is: it
-diverges as either point approaches the boundary.
+On the ball the distance is not bounded by the diameter the way the chord is: it
+diverges as either point approaches the boundary. On the positive chart it is
+bounded by `π/√K`.
 
-Both curved branches are written in the **stable** form. The `asinh` expression
-is the same number as the `arccosh(1 + 2c‖x−y‖²/P)/√c` it replaces — the identity
-is `arccosh(1 + 2z²) = 2·asinh(z)` — but `arccosh(1 + ε)` throws away every digit
-of a small separation: at `c = 1`, `x = 0`, `y = 1e−9` the argument `1 + 2e−18`
-rounds to `1` and the old form returned **exactly zero** for a distance of
-`2e−9`. `atan2` does the same job for the sphere, where `acos(⟨x,y⟩/R²)` is
-ill-conditioned near both `0` and `π`.
+Both signs are written in the **stable** form. The `asinh` expression is the
+same number as `arccosh(1 + 2B‖x−y‖²/P)/√B` — the identity is
+`arccosh(1 + 2z²) = 2·asinh(z)` — but `arccosh(1 + ε)` throws away every digit
+of a small separation. `atan2` does the same job on the positive chart, where
+`acos` is ill-conditioned near both `0` and `π`. The f64 results are checked
+against an independent binary128 reference at every finite binade of `K` of
+both signs (`tests/bridge/signed_curvature_reference_grid_test.cpp`).
 
 ```scheme
 (define a (make-tensor '(2) 0.0))
 (tensor-set! a 0 0.9)
 (define b (make-tensor '(2) 0.0))
 (tensor-set! b 0 -0.9)
-(display (geodesic-distance a b -1.0)) (newline)   ; 5.888877958332881
+(display (geodesic-distance a b -1.0)) (newline)   ; 1.9388011143762072
 (display (geodesic-distance a b 0.0)) (newline)    ; 1.8
+(display (geodesic-distance a b 1.0)) (newline)    ; 1.6914157045317628
 ```
 
 ### `(parallel-transport x y v curvature)` / `(manifold-parallel-transport …)` / `(vector-transport x y v curvature)` — id 812 / 843
 
 Transports the tangent vector `v` from `x` to `y` along the connecting geodesic.
 
-- `K < 0`: `(λ_x/λ_y)·gyr[y, −x]v`, with the gyration in its **linear closed
-  form** `gyr[a,b]w = w + 2(A·a + C·b)/D`.
-- `K = 0`: the identity, exactly.
-- `K > 0`: `v − (⟨y,v⟩/(R² + ⟨x,y⟩))·(x + y)`, the closed form, which is exactly
-  tangent at `y` by construction. `v` must be tangent at `x` and the endpoints
-  must not be antipodal, or the op raises.
+- every `K`: `(λ_x/λ_y)·gyr[y, −x]v`, with the gyration in its **linear closed
+  form** `gyr[a,b]w = w + 2(A·a + C·b)/D`, whose only denominator `D` is the
+  Möbius denominator of the two points;
+- `K = 0`: the identity, exactly;
+- `K > 0`: antipodal endpoints raise (`D = 0`).
 
 Transport is an isometry of the Riemannian metric — `λ_y‖P v‖ = λ_x‖v‖` — even
 though it changes the ambient components. Transport from a point to itself is the
@@ -554,11 +568,12 @@ the Möbius denominator of the two validated **points**.
 
 Moves `x` onto the manifold of curvature `K`.
 
-- `K < 0`: rescales onto the open ball of radius `1/√−K` when `x` is on or outside
+- `K < 0`: rescales onto the open ball of radius `2/√−K` when `x` is on or outside
   it; interior points are returned unchanged. The result is **strictly** inside, so
   that `λ` stays finite and the log map does not degenerate.
-- `K = 0`: a copy.
-- `K > 0`: rescales to radius `1/√K`. Raises for the origin, which has no projection.
+- `K ≥ 0`: every finite point is a chart point, so a copy (a positive-chart point
+  at the pole raises). `spherical-project` is the op that moves an ambient vector
+  onto the embedded sphere.
 
 This is the op to call when a point may have drifted off the manifold: every other op
 in this group refuses an off-manifold argument rather than projecting silently.
@@ -569,19 +584,18 @@ in this group refuses an off-manifold argument rather than projecting silently.
 
 ### `(mobius-add x y curvature)` — id 814
 
-The gyrovector addition of the Poincaré ball model, `c = −K`:
+The gyrovector addition of the chart, `B = −K/4`, for every sign of `K`:
 
 ```
-x ⊕_c y = ((1 + 2c⟨x,y⟩ + c‖y‖²)x + (1 − c‖x‖²)y) / (1 + 2c⟨x,y⟩ + c²‖x‖²‖y‖²)
+x ⊕_B y = ((1 + 2B⟨x,y⟩ + B‖y‖²)x + (1 − B‖x‖²)y) / (1 + 2B⟨x,y⟩ + B²‖x‖²‖y‖²)
 ```
 
 It is **neither commutative nor associative** — `gyr[x,y]` is exactly the failure of
-commutativity. At `K = 0` it is `x + y`, exactly. It **raises for `K > 0`**: Möbius
-addition is the gyrogroup operation of the ball and is not defined on the sphere,
-and it raises when the result is not strictly interior.
+commutativity. At `K = 0` it is `x + y`, exactly. It raises when the result is not
+strictly interior (`K < 0`) or is the pole (`K > 0`).
 
 **Near the boundary the denominator is small but never zero**, and it is
-evaluated as `(1 + c⟨x,y⟩)² + c²(‖x‖²‖y‖² − ⟨x,y⟩²)` rather than as the sum
+evaluated as `(1 + B⟨x,y⟩)² + B²(‖x‖²‖y‖² − ⟨x,y⟩²)` rather than as the sum
 above — the same number, but the first term is a subtraction of two nearby
 values (hence exact in f64) and the second is a sum of squares by Lagrange's
 identity (hence free of cancellation). The direct sum computes a denominator of
@@ -590,10 +604,10 @@ what made the old `1e−15` *floor* look necessary; flooring the denominator
 without scaling the numerator returned `0.003` for a sum whose value is about
 `1/3`. The floor is gone.
 
-The quantities `1 − c‖x‖²` and `1 + c⟨x,y⟩` are computed by a double-double dot
+The quantities `1 − B‖x‖²` and `1 + B⟨x,y⟩` are computed by a double-double dot
 product closed with a fused multiply-add, to full **relative** precision. That
 matters because the ball chart destroys them near the boundary: a point at
-Euclidean distance `ε` from the boundary has `1 − c‖x‖² ≈ 2ε`, and computing it
+Euclidean distance `ε` from the boundary has `1 − B‖x‖²` of order `ε`, and computing it
 as one minus a rounded sum of squares knows it only to an *absolute* `1e−16` —
 eight significant digits at `ε = 1e−9`, none at `ε = 1e−16`. Near-boundary points
 are not an edge case on the Poincaré ball; they are the reason to use it.
@@ -607,13 +621,12 @@ are not an edge case on the Poincaré ball; they are the reason to use it.
 ### `(mobius-scalar-mul r x curvature)` — id 815
 
 Note the argument order: the **scalar comes first**. Returns the gyrovector scalar
-multiple `(1/√c)·tanh(r·artanh(√c‖x‖))·x/‖x‖`, which agrees with `mobius-add` — for
+multiple `tan_B(r·artan_B‖x‖)·x/‖x‖` — `(1/√B)·tanh(r·artanh(√B‖x‖))` on the ball,
+the `tan`/`atan` form on the positive chart — which agrees with `mobius-add`, for
 example `2 ⊗ x = x ⊕ x`. Because `tanh` is bounded, the result cannot leave the ball
-for any `r`, which `r · x` does. At `K = 0` it is `r · x`, exactly. It **raises for
-`K > 0`**, for the same reason `mobius-add` does, and it **raises when `tanh`
-saturates**: `tanh` rounds to exactly `1.0` beyond about 19, so
-`(mobius-scalar-mul 100 0.5 -1.0)` used to return exactly `1.0`, which is on the
-boundary and therefore not a point of the ball.
+for any `r`, which `r · x` does. At `K = 0` it is `r · x`, exactly. It **raises when
+`tanh` saturates** onto the ball boundary, and when the positive-chart result is the
+pole.
 
 ```scheme
 (mobius-scalar-mul 0.5 (make-tensor '(2) 0.4) -1.0)
@@ -629,7 +642,8 @@ closed form, which is why it is also the only one that can fail to converge.
 - `weights` — a tensor of `n_points` non-negative weights. They need not be
   normalised; only their positive sum matters. `()` weights are treated as absent.
 - `curvature` — real, and **must be ≤ 0**: the op is the hyperbolic/Euclidean
-  Karcher mean, and a positive curvature is rejected.
+  Karcher mean on the ball of radius `2/√−K`; the positive-chart Fréchet mean is
+  Planned for v1.4.1.
 - Returns a tensor of shape `(dim)`.
 
 The forward pass is `eshkol_frechet_mean_compute` in
@@ -643,7 +657,7 @@ If it cannot, the op raises a catchable error naming the cause, the point count,
 dimension, the curvature, the achieved residual and the tolerance. The refusals are
 explicit in the core header: fewer than one point or a non-positive dimension, a
 positive curvature, a NaN weight, a negative weight, a non-positive total weight, a
-NaN coordinate, a point outside the Poincaré ball, an iterate that reached the ball
+NaN coordinate, a point outside the ball, an iterate that reached the ball
 boundary, a `log_μ(xᵢ)` with no finite f64 value, and failure to reach stationarity.
 
 ```scheme
@@ -1145,16 +1159,15 @@ different question.
 
 Converts a Euclidean gradient at `point` into the Riemannian one.
 
-- `K < 0`: `((1 − c‖x‖²)² / 4) · grad`. The ball's metric is conformal with factor
-  `λ_x = 2/(1 − c‖x‖²)`, so the Riemannian gradient is `grad / λ_x²`; the factor goes
-  to zero at the boundary.
+- every `K`: `grad / λ_x² = (1 + K‖x‖²/4)² · grad` — the chart is conformal with
+  factor `λ_x = 1/(1 + K‖x‖²/4)`; on the ball the factor goes to zero at the
+  boundary;
 - `K = 0`: a copy, exactly.
-- `K > 0`: the ambient gradient projected onto the tangent space at `point`.
 
 ```scheme
 (define p (make-tensor '(2) 0.0)) (tensor-set! p 0 0.3) (tensor-set! p 1 -0.1)
 (define g (make-tensor '(2) 0.0)) (tensor-set! g 0 1.0)
-(riemannian-grad g p -1.0)   ; (0.2025 0)
+(riemannian-grad g p -1.0)   ; (0.950625 0)
 ```
 
 ---
@@ -1165,10 +1178,13 @@ Converts a Euclidean gradient at `point` into the Riemannian one.
 
 `Q` and `K` tensors. A rank-≥2 tensor is read as `(n, d)`; a rank-1 tensor is read as
 a single row of dimension `total`. The two feature dimensions must agree. Returns a
-tensor of shape `(nq nk)` whose entries are the **negated geodesic distances**
-`−d_K(qᵢ, kⱼ)` — closer keys score higher — which is the convention
-`ad_geodesic_attention` uses on the AD tape. `()` if either argument is not a tensor
-or the dimensions disagree; raises if a row is off the manifold.
+tensor of shape `(nq nk)` whose entries are the **squared-distance logits**
+`−d_K(qᵢ, kⱼ)²/(2t)` with the temperature `t = √d` in squared-distance units —
+closer keys score higher — the logit `ad_geodesic_attention` and
+`geodesic-attention-forward` normalise. There is no curvature-dependent scale, so
+the scores are continuous in `K` through zero, and `d²` is smooth at `qᵢ = kⱼ`
+(the score there is exactly `0`). `()` if either argument is not a tensor or the
+dimensions disagree; raises if a row is not a chart point.
 
 ```scheme
 (geodesic-attention-scores (make-tensor '(2 3) 0.1) (make-tensor '(2 3) 0.2) -1.0)
@@ -1190,9 +1206,11 @@ weighting.
 
 ### `(curvature-softmax scores curvature)` — id 846
 
-Numerically stable softmax (maximum subtracted before exponentiating) with the
-logits scaled by `1/√|K|`, or by `1.0` when `K` is exactly zero. Returns a tensor of
-the input's shape. `()` if `scores` is not a non-empty tensor.
+Numerically stable softmax (maximum subtracted before exponentiating). The scores
+of this surface are already in squared-distance units, so there is **no
+curvature-dependent temperature**: the curvature is validated (finite) and does
+not scale the logits — a `1/√|K|` factor would diverge as `K → 0`. Returns a
+tensor of the input's shape. `()` if `scores` is not a non-empty tensor.
 
 ```scheme
 (curvature-softmax (make-tensor '(4) 0.25) -1.0)
@@ -1203,13 +1221,14 @@ the input's shape. `()` if `scores` is not a non-empty tensor.
 The fused path. `Q`, `K` and `V` must all have rank ≥ 2; `K`'s feature dimension must
 equal `Q`'s and `V` must have at least as many rows as `K`. Returns a tensor of shape
 `(nq vdim)` where row `i` is the average of `V`'s rows weighted by the softmax of
-`−d_K(qᵢ, kⱼ)/(√c·√dim)`, the curvature-adaptive scaling `ad_geodesic_attention`
-applies. The finite distances are shifted by their row minimum before scaling,
-which is the same maximum shift without ever forming an overflowing absolute
-score. The aggregation of `V` is a
-Euclidean weighted sum, which is what the AD bridge also computes — only the SCORES
-carry the metric. Note this is still **not** the composition of ids 844/846/845,
-whose scalings differ.
+`−d_K(qᵢ, kⱼ)²/(2√dim)`. The softmax is shifted by the row's smallest squared
+distance, so no absolute logit is materialised and a gap whose scaled logit
+underflows has the exact weight `0`. The row kernel (`eshkol_rm_attention_row`) is
+the one the AD bridge and [`core.curvature`](curvature.md) run. The aggregation of
+`V` is a Euclidean weighted sum — only the SCORES carry the metric. It equals the
+composition `geodesic-attention-scores` → `curvature-softmax` → weighted sum of `V`.
+At `K = 0` the weights are `softmax(−‖q − k‖²/(2√dim))`, which differs from scaled
+dot-product attention only by terms constant in each row and the key-norm bias.
 
 ```scheme
 (geodesic-attention-forward (make-tensor '(2 3) 0.1)
@@ -1238,25 +1257,19 @@ packs, as a function of the **sectional curvature K** with the points held fixed
 from the manifold, so `set-curvature!` moves the point of evaluation.
 
 Both derivatives are the **exact closed forms** of the distance in `K`
-(`eshkol_rm_distance_dK` in `inc/eshkol/backend/riemannian_core.h`), not central
-differences: there is no step size to choose and no truncation error to bound. On
-the ball, the implementation uses the dimensionless quantities
+(`eshkol_rm_distance_dK` in `inc/eshkol/backend/riemannian_core.h`) at **fixed
+chart points**, not central differences: there is no step size to choose and no
+truncation error to bound. With `B = −K/4` and the dimensionless
 
-    A = c|x|²,  C = c|y|²,  G = c|x−y|²,
-    P = (1−A)(1−C),  w = G/P,  d = 2·asinh(√w)/√c
+    A = B|x|²,  C = B|y|²,  w = B|x−y|²/((1−A)(1−C))
 
-and evaluates the first two curvature derivatives from the log-derivatives of
-`w`, keeping powers of `c` as mantissa/exponent pairs. This is algebraically
-equivalent to the arccosh form but does not form dimensional squares or powers
-of `P` that can overflow or underflow before the final representable result.
-For `K < 0`, the refusal boundary is exactly non-finiteness of one of the
-requested f64 outputs after this calculation; no curvature binade is refused
-as a class. The positive-curvature branch has its separate fixed-angle
-representability boundary described below.
-
-and `L'`, `L''` are the chain rule on that composition. Coincident points are
-handled exactly rather than in the limit: `D = 0` makes `d` identically zero in
-`c`, so both derivatives are exactly `0`.
+the jet is evaluated from the degree-10 series in `q = −w` for `|w| ≤ 2⁻⁸` (which
+carries it **through K = 0**, where the left and right jets agree) and from the
+`tanh`/`tan` form of the log-derivatives of `w` otherwise, keeping powers of `|B|`
+as mantissa/exponent pairs so that every finite binade of `K` of both signs is
+representable. A requested derivative that is not representable in f64 is a
+refusal; no binade is refused as a class. Coincident points give an identically
+zero `d`, so both derivatives are exactly `0`.
 
 **The batch.** Points are packed consecutively — `(x₀, y₀, x₁, y₁, …)`, each of
 the manifold's `dim` coordinates. Only the element count matters, so any tensor
@@ -1264,25 +1277,11 @@ shape will do, but it must be a **positive multiple of `2·dim`**: a length that
 not a whole number of pairs is a shape failure (`()`), not a batch with a partial
 pair silently dropped.
 
-**Why `K > 0` is reparametrised.** On the sphere, a point of radius `1/√K` is
-*not* a point of a sphere of a different radius, so "hold the points fixed and
-vary `K`" is not a curve in any single manifold. The family these ops
-differentiate on the spherical branch holds each pair at **fixed angular
-position** and lets the radius follow `K`: with `θ = arccos(⟨x,y⟩/R²)` fixed,
-`d = θ·K^(−1/2)`, so `d' = −θK^(−3/2)/2` and `d'' = 3θK^(−5/2)/4`.
-
-The spherical derivative is returned only when both analytic values are
-representable in f64. At the positive subnormal curvature floor, a nonzero
-fixed angle can make either derivative exceed f64 even though the distance is
-finite; that case raises rather than returning a successful infinity. The zero
-angle limit is `d' = d'' = 0`.
-
-**Why `K = 0` refuses.** The Poincaré ball of curvature `K` has conformal factor
-`λ_x = 2/(1 − c|x|²)`, so its distance tends to `2|x−y|` as `K → 0⁻` — twice what
-the Euclidean branch of `geodesic-distance` returns at `K = 0` exactly — while the
-spherical branch diverges as `K → 0⁺`. The family is genuinely discontinuous
-there, so no number is the derivative, and returning one would be exactly the
-plausible-wrong-number case this surface exists to exclude.
+**One family through K = 0.** Earlier releases refused at `K = 0` because their
+ball (`λ = 2/(1 − c|x|²)`) tended to `2|x−y|` while the `K = 0` branch returned
+`|x−y|`, and their positive branch moved the points with the sphere radius. In
+the `α = 1` chart the points stay fixed for every `K` and the family is analytic
+at zero.
 
 ### `(curvature-gradient m pairs)` — id 852
 
@@ -1293,16 +1292,16 @@ Returns `dL/dK` at `m`'s stored curvature, where `L` is the
 
 over the point pairs `pairs` packs. Exact closed form, not a difference quotient.
 `()` if `m` is not a manifold, `pairs` is not a tensor, or `pairs`'s element count
-is not a positive multiple of `2·dim`. **Raises** at `K = 0` and whenever a
-supplied point is not a point of the manifold at `K`.
+is not a positive multiple of `2·dim`. **Raises** whenever a supplied point is not
+a point of the chart at `K` (and for an antipodal pair of the positive chart).
 
 This used to return the plain **sum** of its second argument's elements — a
 number with the type and the magnitude a gradient would have, and the derivative
 of nothing.
 
 ```scheme
-;; the origin and (1/2, 0) on the ball of curvature K = −1:
-;;   dL/dK = −(2/3 − artanh(1/2)) = −0.1173605223326118
+;; the origin and (1/2, 0) on the ball of curvature K = −1 (radius 2):
+;;   L = 2 artanh(1/4) = 0.5108256237659906, dL/dK = -0.011253854783671326
 (define pairs (make-tensor '(4) 0.0))   ; [0 0 | 0.5 0]
 (display (curvature-gradient (make-hyperbolic-manifold 2 -1.0) pairs))
 (newline)
@@ -1341,7 +1340,7 @@ which is the assertion that the objective is **affine in K**, made without
 examining an objective, and false for the geodesic distance at every curvature.
 
 ```scheme
-;; the same pair: d²L/dK² = 0.0461814387233047
+;; the same pair: d²L/dK² = 0.0008969956022707903
 (display (curvature-hessian (make-hyperbolic-manifold 2 -1.0) pairs))
 (newline)
 ```
@@ -1354,38 +1353,32 @@ mutating `m`, and returns the manifold:
     Δ = L'(K) / max(L''(K), 1e-8)
     K ← K − t·Δ,  t = 1, ½, ¼, … (at most 32 halvings)
 
-`t` is halved until the candidate `K` satisfies all three of:
+`t` is halved until the candidate `K` satisfies both of:
 
-1. it has the **same sign** as the current `K` — crossing `K = 0` would change
-   which geometry the manifold is, not merely how curved it is;
-2. every supplied point is still a point of the manifold at it — on the ball,
-   `c·|x|² < 1` can fail as `|K|` grows;
-3. it does **not increase** `L`.
+1. every supplied point is still a point of the chart at it — on the ball,
+   `|K|·|x|²/4 < 1` can fail as `|K|` grows;
+2. it does **not increase** `L`.
 
-On the spherical branch, each trial first rescales every supplied point by
-`sqrt(K / K_trial)`. This keeps its angular position fixed while the sphere
-radius changes, which is the documented objective family; evaluating the old
-coordinates directly would test points from the old sphere and reject the
-correct trial.
+The chart is one analytic family through `K = 0`, so a step may **cross zero**:
+the sign of the curvature is learnable.
 
 The floor on `L''` is Levenberg damping: where the objective is flat or concave
 in `K` the Newton quotient is meaningless or points uphill, and flooring the
 denominator turns the step back into a descent step without inventing a
 direction. **Raises** when no admissible `t` exists after 32 halvings — that is
 not a near-converged state (the step is down by 2⁻³²), it is the absence of a
-step, and the op says so rather than moving `K` somewhere it cannot justify. Also
-raises at `K = 0`, and returns `()` on the same shape failures as the two ops
-above.
+step, and the op says so rather than moving `K` somewhere it cannot justify.
+Returns `()` on the same shape failures as the two ops above.
 
 This used to be `K ← K − 0.01·Σgrad`: a fixed rate applied to a sum that was not
 a gradient, so nothing about the step adapted to anything.
 
 ```scheme
 (define h (make-hyperbolic-manifold 2 -1.0))
-;; the full Newton step lands at K = +1.54, which would change the geometry, so
-;; the first two trials are rejected and t = 1/4 is taken:
+;; total distance decreases as K grows (positive curvature shortens it), and
+;; the full damped Newton step is admissible: it crosses K = 0.
 (adaptive-curvature-step h pairs)
-(display (get-curvature h)) (newline)   ; -0.36467699157352285
+(display (get-curvature h)) (newline)   ; 11.546164947945806
 ```
 
 ---
