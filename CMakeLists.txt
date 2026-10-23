@@ -12045,6 +12045,39 @@ if(ESHKOL_BUILD_TESTS AND
         PASS_REGULAR_EXPRESSION "Results: 8 passed, 0 failed")
 endif()
 
+# ADR-0018 reference-grid gate: the f64 signed-curvature chart against an
+# independent binary128 reference at every finite binade of K, both signs.
+# Header-only. With binary128 (GCC/Clang + libquadmath) it runs the full grid
+# and re-derives the committed golden subset bit for bit; elsewhere it checks
+# the core against that golden subset.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/signed_curvature_reference_grid_test.cpp")
+    add_executable(signed_curvature_reference_grid_test
+        tests/bridge/signed_curvature_reference_grid_test.cpp)
+    target_compile_features(signed_curvature_reference_grid_test PRIVATE cxx_std_20)
+    target_include_directories(signed_curvature_reference_grid_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_library(ESHKOL_QUADMATH_LIBRARY quadmath)
+        if(ESHKOL_QUADMATH_LIBRARY)
+            target_link_libraries(signed_curvature_reference_grid_test PRIVATE
+                ${ESHKOL_QUADMATH_LIBRARY})
+        else()
+            target_compile_definitions(signed_curvature_reference_grid_test PRIVATE
+                ESHKOL_DISABLE_BINARY128=1)
+        endif()
+    else()
+        target_compile_definitions(signed_curvature_reference_grid_test PRIVATE
+            ESHKOL_DISABLE_BINARY128=1)
+    endif()
+    add_test(NAME signed_curvature_reference_grid
+             COMMAND signed_curvature_reference_grid_test)
+    set_tests_properties(signed_curvature_reference_grid PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "Results: [0-9]+ passed, 0 failed"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/qllm_bridge_geometry_surface_regression_test.cpp")
     add_executable(qllm_bridge_geometry_surface_regression_test
@@ -13817,6 +13850,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
         FIXTURES_REQUIRED exact_foundations_local_stdlib
         PASS_REGULAR_EXPRESSION "PASS: exact_affine_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    # core.curvature (ADR-0018) on both native modes, through the shared core.
+    add_test(NAME signed_curvature_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/geometry/signed_curvature_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME signed_curvature_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/geometry/signed_curvature_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/signed_curvature_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(signed_curvature_jit signed_curvature_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: signed_curvature_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 
     add_test(NAME exact_psd_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_psd_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")

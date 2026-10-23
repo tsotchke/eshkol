@@ -1,7 +1,9 @@
 /**
  * @file riemannian_core.h
- * @brief Closed-form constant-curvature geometry (Poincare ball, Euclidean
- *        space, round sphere) in f64, shared by the VM's geometric opcodes.
+ * @brief The ADR-0018 signed-curvature stereographic chart (one chart for
+ *        every sign of K, alpha = 1) and the embedded round sphere, in f64,
+ *        shared by the VM's geometric opcodes, the AD bridge and the native
+ *        core.curvature module.
  *
  * WHY THIS FILE EXISTS. `lib/backend/vm_geometric.c` used to implement the
  * curved operations as their FLAT counterparts: `hyperbolic-exp-map` was vector

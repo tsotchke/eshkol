@@ -2186,6 +2186,21 @@ oracles:
         label: Portable event loop (kqueue/epoll/IOCP) round-trips a pipe through event-loop-poll and releases the kernel resource on close
         action: run_icc_smoke
 
+      # ADR-0018 signed-curvature stereographic geometry. Real producer:
+      # scripts/run_signed_curvature_gate.sh runs the binary128 reference grid
+      # (every finite binade of K of both signs, all subnormal binades,
+      # DBL_TRUE_MIN, DBL_MAX and 0; value, squared distance, curvature jet and
+      # endpoint gradient per case, plus refusal classes), core.curvature under
+      # JIT and AOT, and the VM geometry ops against the same reference values.
+      # A build without binary128 arithmetic emits FAIL, never PASS.
+      - runtime_event:
+          event_kinds: [geometry_exact]
+          event_names: ["v14_signed_curvature_reference_grid"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Signed-curvature stereographic geometry (ADR-0018): one kappa-stereographic chart for every sign of K in the alpha = 1 gauge, analytic through K = 0 with curvature jets, squared-distance geodesic attention, versioned coordinate migration (x_v2 = 2 x_v1); the f64 shared core matches an independent binary128 reference across every K binade (tests/bridge/signed_curvature_reference_grid_test.cpp) and core.curvature reproduces it on JIT, AOT and the VM ops'
+        action: ./scripts/run_signed_curvature_gate.sh
+
       # ─────────────────────────────────────────────────────────
       # Networking (#145/#146/#148/#150/#161)
       # ─────────────────────────────────────────────────────────

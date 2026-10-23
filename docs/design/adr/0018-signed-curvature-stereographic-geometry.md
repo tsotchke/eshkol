@@ -1,6 +1,6 @@
 # ADR 0018: Signed-curvature stereographic geometry and the K = 0 execution contract
 
-- **Status:** Accepted (maintainer ruling 2026-08-30)
+- **Status:** Accepted (maintainer ruling 2026-08-30); implemented in v1.4.0-connection (see Implementation)
 - **Date:** 2026-08-30
 - **Renumbered:** was ADR 0012 until 2026-09-17; renumbered to give every record a unique id.
 - **Decision owners:** geometry core (`riemannian_core.h`), VM geometry, qLLM bridge, AD, Moonlab integration maintainers
@@ -65,3 +65,45 @@ The migration is a dedicated PR after the in-flight geometry PRs merge; it is no
 ## References
 
 Bachmann, Bécigneul, Ganea, *Constant Curvature Graph Convolutional Networks* (ICML 2020, arXiv:1911.05076); Skopek, Ganea, Bécigneul, *Mixed-curvature Variational Autoencoders* (ICLR 2020, arXiv:1911.08411); Ungar, *Analytic Hyperbolic Geometry and Albert Einstein's Special Theory of Relativity* (2008); Nickel & Kiela, *Poincaré Embeddings* (NeurIPS 2017, arXiv:1705.08039) and *Learning Continuous Hierarchies in the Lorentz Model* (ICML 2018, arXiv:1806.03417); Gu, Sala, Gunel, Ré, *Learning Mixed-Curvature Representations in Product Spaces* (ICLR 2019); Chami et al., *Hyperbolic Graph Convolutional Neural Networks* (NeurIPS 2019, arXiv:1910.12933).
+
+## Implementation (v1.4.0-connection)
+
+- **Core.** `inc/eshkol/backend/riemannian_core.h` evaluates the chart for every
+  sign with the signed parameter `B = -K alpha^2/4` (`ESHKOL_RM_ALPHA = 1`). The
+  conformal denominator `1 + K|x|^2/4` is formed from `K` directly, and below
+  `|K| = 2^-1020`, where `B` would drop bits, the ops use the chart's scale
+  covariance `g_K(x) = s^2 g_{K s^2}(x/s)` at `s = 2`. The ratios `psi`,
+  `tan_ratio` and `artan_ratio` switch to the degree-10 series at
+  `|q| <= 2^-8`. The curvature jet (`eshkol_rm_distance_dK`) differentiates the
+  series termwise inside the window, uses series-evaluated `psi'`/`psi''` up to
+  `|w| <= 1/2`, and the `tanh`/`tan` form of the log-derivatives beyond, with
+  `dB/dK` folded into the exponent-separated scaling.
+- **Embedded sphere.** The ambient-coordinate ops (`great-circle-distance`,
+  `slerp`, `spherical-*`, the space-form `SPHERICAL` factor) use the
+  `eshkol_rm_sphere_*` functions; `eshkol_rm_sphere_to_chart` and
+  `eshkol_rm_chart_to_sphere` are the isometry to the chart.
+- **Consumers.** The VM geometry ops, the AD bridge (Poincare primitives,
+  squared-distance attention with `ad_geodesic_attention_tempered`, the
+  space-form squared distance with the new `STEREOGRAPHIC` factor, the Frechet
+  mean with chart parameter `-K/4`) and the native `core.curvature` module
+  (`lib/core/curvature_runtime.c`) call the same core.
+- **Attention.** `eshkol_rm_attention_row` is the one stabilized row kernel:
+  logits `-d^2/(2t)`, default `t = sqrt(head_dim)`, max-shift by the row's
+  smallest squared distance. The reverse rule uses `-2 lambda^2 log`, exactly
+  zero at coincidence.
+- **Serialization.** `ESHKOL_GEOMETRY_CONVENTION_STEREOGRAPHIC_V2_ALPHA1` (2),
+  `eshkol_rm_check_geometry_header` (refuses unversioned, legacy, unknown or
+  `alpha != 1` records) and the migration helpers for points, tangents and
+  attention temperatures (`t = d_ref / s`, slope-matched at a recorded
+  reference distance).
+- **Gates.** `tests/bridge/signed_curvature_reference_grid_test.cpp` (binary128,
+  every finite binade of both signs; golden subset elsewhere),
+  `tests/geometry/signed_curvature_test.esk` (JIT and AOT),
+  `tests/vm/signed_curvature_surface_regression.esk` (VM), producer
+  `scripts/run_signed_curvature_gate.sh`.
+- **Planned for v1.4.1.** Routing the qLLM fp32 geometry through the versioned
+  core (Migration step 5), intrinsic Frechet aggregation in attention (step 6,
+  separately gated), the positive-curvature Frechet mean, mixed endpoint/K
+  directional derivatives in the reference grid, the chart for the bridge
+  Poincare primitives' K > 0 reverse rules, and `core.curvature` on the
+  bytecode VM.

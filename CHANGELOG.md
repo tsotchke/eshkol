@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **One chart for every sign of the curvature (ADR-0018).** Every
+  constant-curvature op evaluates the kappa-stereographic chart in the
+  canonical-flat gauge `alpha = 1`: the ball of radius `2/sqrt(-K)`, Euclidean
+  space at `K = 0`, and the sphere of radius `1/sqrt(K)` minus its pole, with
+  one set of formulas that is real-analytic through `K = 0`. Curvature jets
+  (value, `d/dK`, `d2/dK2`) are defined at zero, adaptive curvature steps may
+  change sign, geodesic attention scores are `-d^2/(2t)` with no curvature
+  scale, and serialized geometry carries a convention id. The new
+  `core.curvature` module exposes the shared core to JIT and AOT programs, and
+  an independent binary128 reference checks it at every finite binade of `K`
+  of both signs. Legacy ball coordinates migrate by `x_v2 = 2 x_v1`
+  (`migrate-legacy-ball-point`); distances are unchanged by the migration.
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix
   calculus (#794), coupled polynomial root towers (#795), preflighted packed
