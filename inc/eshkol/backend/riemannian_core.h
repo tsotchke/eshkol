@@ -1945,11 +1945,11 @@ static const char* eshkol_rm_chart_to_sphere(const double* x, double K, int n,
  * degree-10 series in q = K r^2 / 4 = -B z (either sign of K, and K = 0), where
  *
  *   z = |x-y|^2 / P,  P = (1-B|x|^2)(1-B|y|^2),
- *   d = LAMBDA0 sqrt(z) H(-q),
+ *   d = ALPHA sqrt(z) H(-q),
  *   H(w) = asinh(sqrt(w))/sqrt(w).
  *
  * The expressions below are the termwise derivatives of
- *   LAMBDA0 sqrt(D) sum_n a_n B^n D^n P^(-n-1/2),
+ *   ALPHA sqrt(D) sum_n a_n B^n D^n P^(-n-1/2),
  * with D = |x-y|^2.  The n=0 and n=1 pieces of d'' are divided by B^2
  * algebraically before evaluation.  This is the limit-preserving part: at
  * B = DBL_TRUE_MIN, B*D can round to zero while D, d' and d'' remain

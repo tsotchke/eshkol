@@ -75,8 +75,8 @@ static void vm_raise_error_msg(VM* vm, const char* msg);
 #include "eshkol/backend/frechet_mean_core.h"
 #include "eshkol/backend/riemannian_core.h"
 
-/* Closed-form constant-curvature geometry (Poincare ball / Euclidean / sphere)
- * in f64. Same reason as the header above for being a header: this file is a
+/* Closed-form constant-curvature geometry in f64: the ADR-0018 chart for every
+ * sign of K, and the embedded sphere behind spherical-*. Same reason as the header above for being a header: this file is a
  * unity-build include and `eshkol-vm-standalone-test` compiles it as one TU, so
  * there is no object file for it to call into. See that header for the K-sign
  * convention and for what these ops used to return. */
