@@ -2643,13 +2643,17 @@ public:
                     ConstantInt::get(int64_type, 0),
                     "__ad_pert_level"
                 );
-                // ESH-0190 P5: Taylor-tower differentiation context (internal, zero init)
+                // Taylor-tower/level nesting depth: one process-wide counter,
+                // defined in runtime_autodiff.cpp, in every compilation mode. A
+                // pass opened in one module (the precompiled stdlib) and a pass
+                // opened in another (the user program) are levels of the same
+                // nest, so both must read and write the same depth.
                 ad_tower_active = new GlobalVariable(
-                    *module, int64_type, false, GlobalValue::InternalLinkage,
-                    ConstantInt::get(int64_type, 0), "__ad_tower_active");
+                    *module, int64_type, false, GlobalValue::ExternalLinkage,
+                    nullptr, "__ad_tower_active");
                 ad_tower_order = new GlobalVariable(
-                    *module, int64_type, false, GlobalValue::InternalLinkage,
-                    ConstantInt::get(int64_type, 0), "__ad_tower_order");
+                    *module, int64_type, false, GlobalValue::ExternalLinkage,
+                    nullptr, "__ad_tower_order");
 
                 // DOUBLE BACKWARD: Create outer AD node storage globals (internal with null init)
                 outer_ad_node_storage = new GlobalVariable(

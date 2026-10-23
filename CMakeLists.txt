@@ -13868,6 +13868,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PASS_REGULAR_EXPRESSION "PASS: algebraic_field_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 
+    # core.symbolic: the Q suite and the coefficient-field / norm /
+    # polynomial-valued-dual suite, each under JIT and AOT.
+    foreach(_sym_suite symbolic symbolic_fields)
+        add_test(NAME ${_sym_suite}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sym_suite}_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${_sym_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sym_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_sym_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set(_sym_suite_tests ${_sym_suite}_jit ${_sym_suite}_aot)
+        if(TARGET eshkol-vm-standalone-test)
+            add_test(NAME ${_sym_suite}_vm COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+                "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sym_suite}_test.esk"
+                "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_sym_suite}_vm.eskb"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+            list(APPEND _sym_suite_tests ${_sym_suite}_vm)
+        endif()
+        set_tests_properties(${_sym_suite_tests} PROPERTIES TIMEOUT 900
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            FIXTURES_REQUIRED exact_foundations_local_stdlib
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    endforeach()
+
+    # SymPy differential oracle on the exact-AD surface (JIT + AOT). SKIPs
+    # (77) with the reason when no interpreter can import SymPy; point
+    # ESHKOL_SYMPY_PYTHON at one that can.
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME sympy_exact_ad_oracle
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sympy_exact_ad_oracle.py"
+                --eshkol-run $<TARGET_FILE:eshkol-run>
+                --lib-dir "${CMAKE_CURRENT_BINARY_DIR}"
+                --trace-dir "${CMAKE_CURRENT_BINARY_DIR}/icc_traces"
+                --work-dir "${CMAKE_CURRENT_BINARY_DIR}/sympy-oracle-work")
+        set_tests_properties(sympy_exact_ad_oracle PROPERTIES TIMEOUT 1800
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            FIXTURES_REQUIRED exact_foundations_local_stdlib
+            SKIP_RETURN_CODE 77
+            LABELS "oracle;ad;sympy")
+    endif()
+
     add_test(NAME dbsp_circuit_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_circuit_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME dbsp_circuit_aot COMMAND ${CMAKE_COMMAND}
         "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
