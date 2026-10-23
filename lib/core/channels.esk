@@ -14,6 +14,12 @@
 ;; with channels passed by value (the channel is a vector — pointer
 ;; equality across captures preserves identity).
 ;;
+;; Fibers: called from inside a fiber (core.fibers), a blocking send or
+;; receive parks the calling FIBER instead of the thread — the mutex is
+;; released, the scheduler runs other fibers, and the operation retries once
+;; the channel has room / an item / is closed. Producers and consumers may be
+;; fibers, pool threads, or any mix; the condvars still wake thread waiters.
+;;
 ;; Once a channel is CLOSED:
 ;;   - channel-send! errors
 ;;   - channel-recv! drains buffered items, then returns the
@@ -34,6 +40,7 @@
 
 (require stdlib)
 (require core.threads)
+(require core.fibers)
 
 (provide
   make-channel channel? channel-capacity channel-len channel-closed?
@@ -96,6 +103,15 @@
     (vector-set! ch 5 (- (vector-ref ch 5) 1))
     val))
 
+;; A fiber's wait condition: the channel is closed or `ok?` holds, read under
+;; the channel mutex because a thread on another core may be mutating it.
+(define (-ch-ready? ch ok?)
+  (let ((m (vector-ref ch 9)))
+    (mutex-lock! m)
+    (let ((r (or (vector-ref ch 6) (ok? ch))))
+      (mutex-unlock! m)
+      r)))
+
 ;; ── Blocking send/recv ──────────────────────────────────────────────
 
 (define (channel-send! ch val)
@@ -112,7 +128,12 @@
          (mutex-unlock! m)
          (error "channel-send!: send on closed channel"))
         ((>= (vector-ref ch 5) (vector-ref ch 1))
-         (condvar-wait! not-full m)
+         (if (current-fiber)
+             (begin
+               (mutex-unlock! m)
+               (fiber-wait-until (lambda () (-ch-ready? ch (lambda (c) (< (vector-ref c 5) (vector-ref c 1))))))
+               (mutex-lock! m))
+             (condvar-wait! not-full m))
          (loop))
         (else
          (-ch-buffer-push! ch val)
@@ -139,7 +160,12 @@
          (mutex-unlock! m)
          +channel-closed+)
         (else
-         (condvar-wait! not-empty m)
+         (if (current-fiber)
+             (begin
+               (mutex-unlock! m)
+               (fiber-wait-until (lambda () (-ch-ready? ch (lambda (c) (> (vector-ref c 5) 0)))))
+               (mutex-lock! m))
+             (condvar-wait! not-empty m))
          (loop))))))
 
 ;; ── Non-blocking variants ───────────────────────────────────────────
