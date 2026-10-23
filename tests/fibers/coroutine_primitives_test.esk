@@ -112,9 +112,9 @@
 (check "a coroutine whose body raised is failed"
        (eq? (coroutine-status thrower) 'failed))
 (check "a guard in the body handles its own raise"
-       (eq? (coroutine-resume
-             (make-coroutine (lambda () (guard (e (#t (list 'caught e))) (raise 'x)))))
-            'caught))
+       (equal? (coroutine-resume
+                (make-coroutine (lambda () (guard (e (#t (list 'caught e))) (raise 'x)))))
+               '(caught x)))
 
 ;; ─── Raising into a suspended coroutine (cancellation) ─────────────
 
