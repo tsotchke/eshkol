@@ -9,6 +9,7 @@
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
 #include "../../inc/eshkol/eshkol.h"
+#include "../../inc/eshkol/core/coroutine.h"
 
 #include <cctype>
 #include <cstdio>
@@ -1069,6 +1070,28 @@ static thread_local eshkol_exception_handler_t* g_exception_handler_free_list = 
 // can record a mark in O(1) and unwind to it without walking the chain
 // (SW-58). Thread-local for the same reason the free list is.
 static thread_local int64_t g_exception_handler_depth = 0;
+
+// The handler chain, the in-flight raise and the promise-evaluation chain are
+// state of the running computation. A coroutine switch saves and loads them
+// here (inc/eshkol/core/coroutine.h); the free list is a per-thread cache of
+// dead frames and stays with the thread.
+extern "C" void eshkol_exception_context_save(eshkol_exec_context_t* ctx) {
+    ctx->handler_stack = g_exception_handler_stack;
+    ctx->handler_depth = g_exception_handler_depth;
+    ctx->current_exception = g_current_exception;
+    ctx->raised_value = g_raised_tagged_value;
+    ctx->raised_value_set_by_user = g_raised_value_set_by_user ? 1 : 0;
+    ctx->promise_eval_head = g_promise_eval_head;
+}
+
+extern "C" void eshkol_exception_context_load(const eshkol_exec_context_t* ctx) {
+    g_exception_handler_stack = (eshkol_exception_handler_t*)ctx->handler_stack;
+    g_exception_handler_depth = ctx->handler_depth;
+    g_current_exception = (eshkol_exception_t*)ctx->current_exception;
+    g_raised_tagged_value = ctx->raised_value;
+    g_raised_value_set_by_user = ctx->raised_value_set_by_user != 0;
+    g_promise_eval_head = ctx->promise_eval_head;
+}
 
 // Prime the existing allocation condition before publishing a handler, so a
 // subsequent failed constructor/push can raise without allocating a condition.

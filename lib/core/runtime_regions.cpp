@@ -17,6 +17,7 @@
 #include "../../inc/eshkol/core/inference.h"   // eshkol_factor_graph_t / _factor_t
 #include "../../inc/eshkol/core/workspace.h"   // eshkol_workspace_t / _workspace_module_t
 #include "../../inc/eshkol/core/rational.h"    // eshkol_rational_t (bignum-backed exact rationals)
+#include "../../inc/eshkol/core/coroutine.h"   // eshkol_exec_context_t
 
 #include <cstring>
 #include <cstdlib>
@@ -766,6 +767,54 @@ extern "C" void eshkol_region_leave(arena_t* saved) {
         return;
     }
     eshkol_memctx_current()->allocation_domain = saved;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-execution-context region stack (inc/eshkol/core/coroutine.h).
+//
+// The lexical region stack is LIFO by construction, and one OS thread running
+// several coroutines interleaves their region extents: coroutine A opens R1 and
+// suspends, B opens R2 and suspends, and A's exit would pop R2. So the open
+// regions and the allocation domain they select belong to the execution
+// context, not the thread: a coroutine switch saves the outgoing context's
+// stack and installs the incoming one's. A coroutine starts with no region
+// open, allocating into the default domain, because it can outlive every
+// region that was open where it was created. This is ADR-0001's per-computation
+// memory context at execution-context granularity.
+
+extern "C" int eshkol_region_context_save(eshkol_exec_context_t* ctx) {
+    const uint64_t depth = __region_stack_depth;
+    if (depth > ctx->region_capacity) {
+        uint64_t want = ctx->region_capacity ? ctx->region_capacity * 2 : 4;
+        if (want < depth) want = depth;
+        void* grown = realloc(ctx->region_slots, (size_t)want * sizeof(void*));
+        if (!grown) return 0;
+        ctx->region_slots = (void**)grown;
+        ctx->region_capacity = want;
+    }
+    for (uint64_t i = 0; i < depth; ++i) ctx->region_slots[i] = __region_stack[i];
+    ctx->region_depth = depth;
+    ctx->allocation_domain = t_memctx.allocation_domain;
+    return 1;
+}
+
+extern "C" void eshkol_region_context_load(const eshkol_exec_context_t* ctx) {
+    const uint64_t depth = ctx->region_depth <= MAX_REGION_DEPTH
+        ? ctx->region_depth : (uint64_t)MAX_REGION_DEPTH;
+    for (uint64_t i = 0; i < depth; ++i) {
+        __region_stack[i] = (eshkol_region_t*)ctx->region_slots[i];
+    }
+    for (uint64_t i = depth; i < __region_stack_depth; ++i) __region_stack[i] = nullptr;
+    __region_stack_depth = depth;
+    t_memctx.allocation_domain = (arena_t*)ctx->allocation_domain;
+}
+
+extern "C" void eshkol_exec_context_dispose(eshkol_exec_context_t* ctx) {
+    if (!ctx) return;
+    free(ctx->region_slots);
+    ctx->region_slots = nullptr;
+    ctx->region_capacity = 0;
+    ctx->region_depth = 0;
 }
 
 /**

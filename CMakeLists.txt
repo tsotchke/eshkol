@@ -2534,6 +2534,9 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/runtime_shutdown_hooks_hosted.cpp
   lib/core/runtime_signals_hosted.cpp
   lib/core/runtime_stack_hosted.cpp
+  # Stackful coroutines (inc/eshkol/core/coroutine.h): stacks, the machine
+  # context switch and the coroutine builtins. Hosted: it maps memory.
+  lib/core/runtime_coroutines_hosted.cpp
   lib/core/linear_solve_hosted.cpp
   lib/core/runtime_string_ports_hosted.cpp
   lib/core/system_builtins.c

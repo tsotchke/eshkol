@@ -851,6 +851,9 @@ void eshkol_region_unwind_for_continuation(void* state);
 uint64_t eshkol_continuation_extent_enter(void* host_frame);
 void eshkol_continuation_extent_leave(uint64_t id);
 void eshkol_continuation_check_extent(void* state);
+// Raise a catchable condition when the continuation's stack image belongs to a
+// coroutine other than the running one (lib/core/runtime_continuations.cpp).
+void eshkol_continuation_check_owner(void* state);
 
 // Surface entry points, shared verbatim by native codegen and the bytecode VM so
 // arity coercions and error text cannot diverge. Optional arguments are passed
