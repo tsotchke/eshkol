@@ -72,6 +72,10 @@ ready, then return its value (`force` re-raises its raise).
 Park until `(pred)` is true. Conditions are checked when the run queue drains
 and, while it stays busy, at least once every max(64, waiters) scheduling steps.
 
+### `(fiber-wait-for pred obj)`
+Park until `(pred obj)` is true: `fiber-wait-until` without making a procedure
+per wait. Blocking channel operations wait this way.
+
 ### `(fiber-join f)`
 Wait for `f` to finish and return its value. Re-raises its raise; raises its
 fiber-cancelled condition when it was cancelled. A fiber cannot join itself.

@@ -111,6 +111,11 @@
 (check "no coroutine holds a stack after the ping-pong" (= (stat 'live) 0))
 
 (display "coroutine-stats: ") (display (coroutine-stats)) (newline)
+;; The arena holds the Scheme records every spawned fiber's program made
+;; (closures, fiber records); arena memory is reclaimed by regions, not per
+;; object, so it grows with the number of fibers spawned. The gate subtracts it
+;; from the peak-RSS growth to isolate what the coroutine runtime holds.
+(display "arena-bytes: ") (display (__arena-used)) (newline)
 
 ;; ─── Summary ───────────────────────────────────────────────────────
 (display "Results: ") (display passed) (display " passed, ")

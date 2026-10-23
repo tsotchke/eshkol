@@ -5,9 +5,12 @@ Runs tests/fibers/{coroutine_primitives,fibers,fibers_stress}_test.esk through
 the JIT (-r) and an O1 AOT binary, requiring each program's own PASS marker,
 exit status 0 and no FAIL line. Then it runs the AOT stress program with one
 wave and with four waves of 10,000 fibers and compares the peak resident set
-of the two processes: every extra wave may add only the fibers' small Scheme
-records, never their stacks. A stack that were not given back would cost at
-least two pages per fiber, which is 80 MiB or more per wave of 10,000.
+of the two processes. Each wave's fibers leave their Scheme records in the
+arena (closures and fiber records; the arena is reclaimed by regions, not per
+object), which the program reports as arena-bytes; what remains of the RSS
+growth after subtracting the arena growth is what the coroutine runtime kept,
+and it must stay under a few MiB. A stack that were not given back would cost
+at least two pages per fiber: 80 MiB or more per wave of 10,000.
 """
 import argparse
 import os
@@ -24,8 +27,9 @@ TESTS = (
     ("fibers_stress_test.esk", "PASS: fibers_stress_test"),
 )
 
-# Allowed peak-RSS growth per extra wave of 10,000 fibers.
-GROWTH_LIMIT_BYTES_PER_WAVE = 24 * 1024 * 1024
+# Allowed growth per extra wave of 10,000 fibers of peak RSS not explained by
+# the arena (malloc arenas and page-granular arena blocks round up).
+GROWTH_LIMIT_BYTES_PER_WAVE = 8 * 1024 * 1024
 
 
 def run_measured(command, env, cwd, timeout):
@@ -62,9 +66,12 @@ def main():
     env = dict(os.environ, ESHKOL_PATH=str(root / "lib"),
                ESHKOL_LIB_DIR=str(runner.parent), ESHKOL_JIT_CACHE="0")
 
+    outputs = {}
+
     def stage(label, command, marker=None, extra_env=None):
         e = dict(env, **(extra_env or {}))
         status, out, err, rss = run_measured(command, e, root, args.timeout)
+        outputs[label] = out
         print(out, end="")
         ok = (status == 0 and "FAIL:" not in out + err
               and (marker is None or marker in out.splitlines()))
@@ -98,9 +105,23 @@ def main():
                      "PASS: fibers_stress_test", {"FIBER_STRESS_WAVES": "4"})
         if one is None or four is None:
             return 1
-        growth = max(0, four - one) / 3
-        print(f"peak RSS: 1 wave {one / 2**20:.1f} MiB, 4 waves {four / 2**20:.1f} MiB, "
-              f"growth per extra wave {growth / 2**20:.2f} MiB "
+
+        def arena_bytes(label):
+            for line in outputs[label].splitlines():
+                if line.startswith("arena-bytes: "):
+                    return int(line.split()[1])
+            return None
+
+        arena_one = arena_bytes("stress, 1 wave of 10000 fibers")
+        arena_four = arena_bytes("stress, 4 waves of 10000 fibers")
+        if arena_one is None or arena_four is None:
+            print("FAIL: the stress program did not report arena-bytes")
+            return 1
+        arena_growth = max(0, arena_four - arena_one) / 3
+        growth = max(0, (four - one) - (arena_four - arena_one)) / 3
+        print(f"peak RSS: 1 wave {one / 2**20:.1f} MiB, 4 waves {four / 2**20:.1f} MiB; "
+              f"arena growth per extra wave {arena_growth / 2**20:.2f} MiB; "
+              f"growth beyond the arena per extra wave {growth / 2**20:.2f} MiB "
               f"(limit {GROWTH_LIMIT_BYTES_PER_WAVE / 2**20:.0f} MiB)")
         if growth > GROWTH_LIMIT_BYTES_PER_WAVE:
             print("FAIL: fiber memory grows with the number of finished fibers' stacks")

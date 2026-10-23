@@ -103,12 +103,20 @@
     (vector-set! ch 5 (- (vector-ref ch 5) 1))
     val))
 
-;; A fiber's wait condition: the channel is closed or `ok?` holds, read under
-;; the channel mutex because a thread on another core may be mutating it.
-(define (-ch-ready? ch ok?)
+;; A parked fiber's wait conditions: the channel is closed, or has room / an
+;; item. Read under the channel mutex because a thread on another core may be
+;; mutating it.
+(define (-ch-can-send? ch)
   (let ((m (vector-ref ch 9)))
     (mutex-lock! m)
-    (let ((r (or (vector-ref ch 6) (ok? ch))))
+    (let ((r (or (vector-ref ch 6) (< (vector-ref ch 5) (vector-ref ch 1)))))
+      (mutex-unlock! m)
+      r)))
+
+(define (-ch-can-recv? ch)
+  (let ((m (vector-ref ch 9)))
+    (mutex-lock! m)
+    (let ((r (or (vector-ref ch 6) (> (vector-ref ch 5) 0))))
       (mutex-unlock! m)
       r)))
 
@@ -131,7 +139,7 @@
          (if (current-fiber)
              (begin
                (mutex-unlock! m)
-               (fiber-wait-until (lambda () (-ch-ready? ch (lambda (c) (< (vector-ref c 5) (vector-ref c 1))))))
+               (fiber-wait-for -ch-can-send? ch)
                (mutex-lock! m))
              (condvar-wait! not-full m))
          (loop))
@@ -163,7 +171,7 @@
          (if (current-fiber)
              (begin
                (mutex-unlock! m)
-               (fiber-wait-until (lambda () (-ch-ready? ch (lambda (c) (> (vector-ref c 5) 0)))))
+               (fiber-wait-for -ch-can-recv? ch)
                (mutex-lock! m))
              (condvar-wait! not-empty m))
          (loop))))))

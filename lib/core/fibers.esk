@@ -50,7 +50,7 @@
 (provide
   spawn fiber? fiber-status fiber-result fiber-id current-fiber
   fiber-yield fiber-sleep fiber-await-readable fiber-await-writable
-  fiber-await fiber-wait-until fiber-join fiber-cancel!
+  fiber-await fiber-wait-until fiber-wait-for fiber-join fiber-cancel!
   fiber-cancelled? fiber-cancelled-fiber
   run-fibers fiber-scheduler-stats)
 
@@ -63,8 +63,8 @@
 ;;   4 joiners (list of fibers)   12 started?
 ;;   5 cancel requested?          13 wait argument: deadline, predicate,
 ;;   6 id                            joined fiber or fd
-;;   7 index in the waiter        14 descriptor interest bits
-;;     structure, or -1
+;;   7 index in the waiter        14 descriptor interest bits, or the
+;;     structure, or -1              predicate's argument
 ;;
 ;; state ∈ ready running waiting done failed cancelled
 ;;
@@ -238,8 +238,14 @@
 (define *io-waiters* (make-hash-table))
 (define *io-count* 0)
 
-;; Condition waiters (predicate in slot 13).
+;; Condition waiters (predicate in slot 13, its argument in slot 14, or
+;; +no-argument+ for a thunk).
 (define *cond-waiters* (-make-bag))
+(define +no-argument+ (cons 'fiber 'no-argument))
+
+(define (-condition-holds? f)
+  (let ((pred (vector-ref f 13)) (arg (vector-ref f 14)))
+    (if (eq? arg +no-argument+) (pred) (pred arg))))
 (define *idle-backoff* 1)
 
 ;; ── Parking and waking ──────────────────────────────────────────────
@@ -301,7 +307,7 @@
   (let loop ((i (- (-bag-count *cond-waiters*) 1)))
     (if (>= i 0)
         (let ((f (-bag-ref *cond-waiters* i)))
-          (if ((vector-ref f 13))
+          (if (-condition-holds? f)
               (begin (-bag-remove! *cond-waiters* f) (-wake! f #t)))
           (loop (- i 1))))))
 
@@ -508,17 +514,27 @@
   "Park the calling fiber until fd is writable. Returns the ready bits."
   (-await-fd fd 2 "fiber-await-writable"))
 
+(define (-wait-for pred arg where)
+  (let ((f (current-fiber)))
+    (cond ((if (eq? arg +no-argument+) (pred) (pred arg)) #t)
+          (f (vector-set! f 13 pred)
+             (vector-set! f 14 arg)
+             (-suspend! +wait-request+ where)
+             #t)
+          ((-run-until (lambda () (if (eq? arg +no-argument+) (pred) (pred arg)))) #t)
+          (else (error (string-append where ": no fiber is left that could make the condition true"))))))
+
 (define (fiber-wait-until pred)
   "Park the calling fiber until (pred) returns true; checked when the run
    queue drains and periodically while it is busy. Outside a fiber, runs the
    scheduler until (pred) holds."
-  (let ((f (current-fiber)))
-    (cond ((pred) #t)
-          (f (vector-set! f 13 pred)
-             (-suspend! +wait-request+ "fiber-wait-until")
-             #t)
-          ((-run-until pred) #t)
-          (else (error "fiber-wait-until: no fiber is left that could make the condition true")))))
+  (-wait-for pred +no-argument+ "fiber-wait-until"))
+
+(define (fiber-wait-for pred obj)
+  "Park the calling fiber until (pred obj) returns true. The same as
+   (fiber-wait-until (lambda () (pred obj))) without making a procedure per
+   wait, which is what blocking channel operations use."
+  (-wait-for pred obj "fiber-wait-for"))
 
 (define (fiber-await x)
   "Wait for a future made by (future thunk), or a core.threads handle, without
