@@ -49,7 +49,7 @@
  * Several runtime subsystems keep "the dynamic state of the running
  * computation" in thread-local storage: the dynamic-wind chain, the
  * exception-handler chain and the in-flight raise, the promise-evaluation
- * chain, the parallel unwind-boundary chain, the lexical region stack and the
+ * chain, the `parameterize` bindings, the parallel unwind-boundary chain, the lexical region stack and the
  * allocation domain it selects, the recursion-depth counter, and the stack
  * geometry the overflow guard and continuation capture read. With coroutines,
  * one OS thread runs several computations, so that state belongs to the
@@ -115,6 +115,12 @@ typedef struct eshkol_exec_context {
     uint64_t region_depth;
     uint64_t region_capacity;
     void* allocation_domain;             /**< memctx allocation domain */
+    /* runtime_parameters_hosted.cpp: the `parameterize` bindings this
+     * context made, oldest first, lifted off their parameters while the
+     * context is switched out. Elements are eshkol_parameter_binding_t. */
+    void* param_bindings;
+    uint64_t param_count;
+    uint64_t param_capacity;
     /* resource_limits.cpp */
     uint64_t limit_stack_depth;
     /* runtime_stack_hosted.cpp: [stack_low, stack_high) of a coroutine
@@ -138,7 +144,11 @@ void eshkol_resource_limits_context_save(eshkol_exec_context_t* ctx);
 void eshkol_resource_limits_context_load(const eshkol_exec_context_t* ctx);
 void eshkol_stack_context_load(const eshkol_exec_context_t* ctx);
 
-/** Release storage an execution context record owns (its region slots). */
+/** @return 0 when the binding record could not grow; nothing was changed. */
+int  eshkol_parameter_context_save(eshkol_exec_context_t* ctx);
+void eshkol_parameter_context_load(eshkol_exec_context_t* ctx);
+
+/** Release storage an execution context record owns (region slots, parameter bindings). */
 void eshkol_exec_context_dispose(eshkol_exec_context_t* ctx);
 
 /**

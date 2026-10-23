@@ -84,6 +84,25 @@
 (check "the after thunk ran exactly once, when the body left"
        (equal? (reverse wind-log) '(before after)))
 
+;; ─── parameterize belongs to the coroutine that made it ────────────
+
+(define level (make-parameter 'base))
+(define (param-reader tag)
+  (make-coroutine
+   (lambda ()
+     (parameterize ((level tag))
+       (coroutine-yield (level))
+       (coroutine-yield (level))
+       (level)))))
+(define pa (param-reader 'a))
+(define pb (param-reader 'b))
+(define param-seen
+  (list (coroutine-resume pa) (level) (coroutine-resume pb) (level)
+        (coroutine-resume pa) (coroutine-resume pb)
+        (coroutine-resume pa) (coroutine-resume pb) (level)))
+(check "each coroutine sees only its own parameterize binding"
+       (equal? param-seen '(a base b base a b a b base)))
+
 ;; ─── A raise in a body reaches the resumer with its original object ─
 
 (define thrower (make-coroutine (lambda () (coroutine-yield 1) (raise 'boom))))

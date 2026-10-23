@@ -519,7 +519,13 @@ void* stack_prepare(Coroutine* co) {
  * Raises (before changing anything) if `from`'s region slots cannot grow. */
 void switch_context(ThreadState& ts, Ctx* from, Ctx* to, Coroutine* to_co,
                     bool from_finished) {
+    /* The two saves that can need memory run first, so a failure raises
+     * before anything has moved. Parameter bindings are lifted after the
+     * region save succeeded; lifting itself cannot fail once room exists. */
     if (!from_finished && !eshkol_region_context_save(&from->exec)) {
+        eshkol_raise_allocation_failure("coroutine switch", 0);
+    }
+    if (!from_finished && !eshkol_parameter_context_save(&from->exec)) {
         eshkol_raise_allocation_failure("coroutine switch", 0);
     }
     eshkol_dynamic_wind_context_save(&from->exec);
@@ -528,6 +534,7 @@ void switch_context(ThreadState& ts, Ctx* from, Ctx* to, Coroutine* to_co,
     eshkol_resource_limits_context_save(&from->exec);
 
     eshkol_region_context_load(&to->exec);
+    eshkol_parameter_context_load(&to->exec);
     eshkol_dynamic_wind_context_load(&to->exec);
     eshkol_exception_context_load(&to->exec);
     eshkol_parallel_boundary_context_load(&to->exec);

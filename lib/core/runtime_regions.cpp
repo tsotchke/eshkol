@@ -813,6 +813,10 @@ extern "C" void eshkol_exec_context_dispose(eshkol_exec_context_t* ctx) {
     if (!ctx) return;
     free(ctx->region_slots);
     ctx->region_slots = nullptr;
+    free(ctx->param_bindings);
+    ctx->param_bindings = nullptr;
+    ctx->param_capacity = 0;
+    ctx->param_count = 0;
     ctx->region_capacity = 0;
     ctx->region_depth = 0;
 }
