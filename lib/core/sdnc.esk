@@ -15,10 +15,24 @@
 ;;   (sdnc-run θ input)                -> #(..)  D-dim forward output
 ;;   (sdnc-weight-grad θ input target) -> #(..)  flat dL/dWEIGHTS
 ;;                                                (= (sdnc-params θ) length)
+;;   (sdnc-weight-grad θ input target smoothing)
+;;                                     -> #(..)  same, backward smoothed:
+;;                                                smoothing = beta or
+;;                                                (gate-beta . attention-beta)
 ;;   (sdnc-params θ)                   -> #(..)  flattened trainable weights
 ;;   (sdnc-set-params! θ vec)          -> θ      write weights back
 ;;   (sdnc-improve! θ data steps lr)   -> θ      SGD on weights, returns θ
 ;;   (sdnc? x)                         -> bool
+;;
+;; Fine-tuning the constructed interpreter with an exact forward pass
+;; (lib/core/sdnc_finetune.c, docs/design/adr/0032-exact-forward-control-fine-tuning.md):
+;;
+;;   (sdnc-load-weights! θ path)       -> θ      QLMW weights (weight_matrices)
+;;   (sdnc-mismatches θ transitions)   -> n      recorded transitions θ does
+;;                                                not reproduce byte for byte
+;;   (sdnc-repair! θ transitions [beta]) -> alist tied-gate threshold repair;
+;;                                                forward exact, backward
+;;                                                smoothed at beta (default 1/30)
 ;;
 
 (provide sdnc-program
@@ -27,4 +41,57 @@
          sdnc-params
          sdnc-set-params!
          sdnc-improve!
-         sdnc?)
+         sdnc?
+         sdnc-load-weights!
+         sdnc-mismatches
+         sdnc-repair!
+         sdnc-default-repair-beta)
+
+(extern i32 sdnc-load-weights-raw ptr ptr :real eshkol_sdnc_load_weights)
+(extern i64 sdnc-mismatches-raw ptr ptr :real eshkol_sdnc_mismatches)
+(extern i64 sdnc-repair-raw ptr ptr double :real eshkol_sdnc_repair)
+(extern i64 sdnc-report-raw ptr i32 :real eshkol_sdnc_report_field)
+
+;; Backward inverse temperature for repair: 10 construction units over the
+;; construction scale 300 of the analytic interpreter weights.
+(define sdnc-default-repair-beta (/ 10.0 300.0))
+
+(define (sdnc-check-args! who th path)
+  (if (not (sdnc? th))
+      (error (string-append who ": first argument must be an sdnc program")))
+  (if (not (string? path))
+      (error (string-append who ": second argument must be a file path string"))))
+
+(define (sdnc-status-error who path rc)
+  (error (string-append who ": "
+                        (cond ((= rc -1) "cannot read ")
+                              ((= rc -2) "not an SDNC file for this architecture: ")
+                              ((= rc -4) "out of memory while reading ")
+                              (else "unexpected status for "))
+                        path)))
+
+(define (sdnc-load-weights! th path)
+  (sdnc-check-args! "sdnc-load-weights!" th path)
+  (let ((rc (sdnc-load-weights-raw th path)))
+    (if (= rc 0) th (sdnc-status-error "sdnc-load-weights!" path rc))))
+
+(define (sdnc-mismatches th transitions)
+  (sdnc-check-args! "sdnc-mismatches" th transitions)
+  (let ((n (sdnc-mismatches-raw th transitions)))
+    (if (>= n 0) n (sdnc-status-error "sdnc-mismatches" transitions n))))
+
+(define (sdnc-repair! th transitions . options)
+  (sdnc-check-args! "sdnc-repair!" th transitions)
+  (let ((beta (if (null? options) sdnc-default-repair-beta (car options))))
+    (if (not (and (real? beta) (> beta 0)))
+        (error "sdnc-repair!: beta must be a positive real"))
+    (let ((rc (sdnc-repair-raw th transitions (exact->inexact beta))))
+      (if (< rc 0)
+          (sdnc-status-error "sdnc-repair!" transitions rc)
+          (list (cons 'transitions (sdnc-report-raw th 0))
+                (cons 'tied-gates (sdnc-report-raw th 1))
+                (cons 'mismatched-before (sdnc-report-raw th 2))
+                (cons 'mismatched-after (sdnc-report-raw th 3))
+                (cons 'gate-moves (sdnc-report-raw th 4))
+                (cons 'neuron-moves (sdnc-report-raw th 5))
+                (cons 'exact-control-gradient-zero (= 1 (sdnc-report-raw th 6))))))))

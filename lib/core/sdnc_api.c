@@ -13,6 +13,17 @@
  *   (sdnc-set-params! θ vec)        -> θ        write flattened weights back
  *   (sdnc-improve! θ data steps lr) -> θ        SGD on weights, returns θ
  *   (sdnc? x)                       -> bool
+ *   (sdnc-weight-grad θ input target smoothing) -> #(...) same, with the
+ *                                               backward smoothing of
+ *                                               SdncBackwardSmoothing
+ *
+ * Fine-tuning the constructed interpreter (FFI entry points used by the
+ * core.sdnc wrappers sdnc-load-weights!, sdnc-mismatches, sdnc-repair!;
+ * facility in lib/core/sdnc_finetune.c):
+ *   eshkol_sdnc_load_weights(θ, path)        QLMW weights into θ
+ *   eshkol_sdnc_mismatches(θ, path)          transitions θ does not reproduce
+ *   eshkol_sdnc_repair(θ, path, beta)        tied-gate threshold fine-tuning
+ *   eshkol_sdnc_report_field(θ, k)           fields of the last repair report
  *
  * The trainable core math (forward / backward_through_weights /
  * apply_weight_gradient_step / param flatten) lives in lib/core/sdnc_core.h, a
@@ -39,6 +50,7 @@
 #include <eshkol/eshkol.h>
 
 #include "sdnc_core.h"
+#include "sdnc_finetune.h"
 
 /* Arena handle (defined in arena_memory.h; only used by pointer here). */
 typedef struct arena arena_t;
@@ -57,6 +69,8 @@ typedef struct {
     SdncWeights* w;
     int          np;
     float        pe[256][SDNC_D];
+    int                has_report;   /* set by eshkol_sdnc_repair */
+    SdncFinetuneReport report;
 } SdncHandle;
 
 /* Tensor layout mirroring #(...) literals. */
@@ -126,6 +140,13 @@ static SdncHandle* sdnc_extract_handle(const eshkol_tagged_value_t* tv) {
     eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(ptr);
     if (hdr->subtype != HEAP_SUBTYPE_SDNC) return NULL;
     return (SdncHandle*)ptr;
+}
+
+/** True iff `tv` is a heap pointer to a cons cell. */
+static int sdnc_is_cons(const eshkol_tagged_value_t* tv) {
+    if (!tv || tv->type != ESHKOL_VALUE_HEAP_PTR || !tv->data.ptr_val) return 0;
+    eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)tv->data.ptr_val);
+    return hdr->subtype == HEAP_SUBTYPE_CONS;
 }
 
 /** Coerce a tagged int64/double value to int, or return `dflt` if
@@ -246,6 +267,8 @@ void eshkol_sdnc_program_tagged(arena_t* arena,
     SdncHandle* h = (SdncHandle*)arena_allocate_with_header(
         arena, sizeof(SdncHandle), HEAP_SUBTYPE_SDNC, 0);
     if (!h) { result->type = ESHKOL_VALUE_NULL; return; }
+    h->has_report = 0;
+    memset(&h->report, 0, sizeof(h->report));
     h->w = (SdncWeights*)calloc(1, sizeof(SdncWeights));
     if (!h->w) { result->type = ESHKOL_VALUE_NULL; return; }
     sdnc_init_weights(h->w);
@@ -287,11 +310,13 @@ static void sdnc_grad_flatten_cb(size_t idx, float* slot, void* ud) {
     if (idx < fc->n) fc->dst[idx] = *slot;
 }
 
-void eshkol_sdnc_weight_grad_tagged(arena_t* arena,
-                                    const eshkol_tagged_value_t* theta,
-                                    const eshkol_tagged_value_t* input_tv,
-                                    const eshkol_tagged_value_t* target_tv,
-                                    eshkol_tagged_value_t* result) {
+/* Shared body of the 3- and 4-argument forms. */
+static void sdnc_weight_grad_with(arena_t* arena,
+                                  const eshkol_tagged_value_t* theta,
+                                  const eshkol_tagged_value_t* input_tv,
+                                  const eshkol_tagged_value_t* target_tv,
+                                  SdncBackwardSmoothing sm,
+                                  eshkol_tagged_value_t* result) {
     if (!result) return;
     memset(result, 0, sizeof(*result));
     SdncHandle* h = sdnc_extract_handle(theta);
@@ -316,7 +341,7 @@ void eshkol_sdnc_weight_grad_tagged(arena_t* arena,
     if (!g || !cache) { free(g); free(cache); result->type = ESHKOL_VALUE_NULL; return; }
 
     sdnc_zero_grads(g);
-    sdnc_backward(h->w, state, h->pe, h->np, dL_dnext, g, NULL, cache);
+    sdnc_backward_smoothed(h->w, state, h->pe, h->np, dL_dnext, sm, g, NULL, cache);
 
     size_t n = sdnc_param_count();
     float* flat = (float*)malloc(n * sizeof(float));
@@ -326,6 +351,53 @@ void eshkol_sdnc_weight_grad_tagged(arena_t* arena,
 
     sdnc_make_tensor_f(arena, flat, (int)n, result);
     free(flat); free(g); free(cache);
+}
+
+void eshkol_sdnc_weight_grad_tagged(arena_t* arena,
+                                    const eshkol_tagged_value_t* theta,
+                                    const eshkol_tagged_value_t* input_tv,
+                                    const eshkol_tagged_value_t* target_tv,
+                                    eshkol_tagged_value_t* result) {
+    sdnc_weight_grad_with(arena, theta, input_tv, target_tv,
+                          sdnc_backward_smoothing_exact(), result);
+}
+
+/* Read a positive, finite inverse temperature. */
+static int sdnc_read_beta(const eshkol_tagged_value_t* tv, float* out) {
+    if (!tv) return 0;
+    uint8_t t = tv->type & 0x0F;
+    if (t != ESHKOL_VALUE_DOUBLE && t != ESHKOL_VALUE_INT64) return 0;
+    double v = sdnc_get_double(tv, 0.0);
+    if (!(v > 0.0) || !isfinite(v)) return 0;
+    *out = (float)v;
+    return *out > 0.0f && isfinite(*out);
+}
+
+/* (sdnc-weight-grad θ input target smoothing): smoothing is a positive real
+ * beta (gate and attention) or a pair (gate-beta . attention-beta); 1 is the
+ * exact derivative. */
+void eshkol_sdnc_weight_grad_smoothed_tagged(arena_t* arena,
+                                             const eshkol_tagged_value_t* theta,
+                                             const eshkol_tagged_value_t* input_tv,
+                                             const eshkol_tagged_value_t* target_tv,
+                                             const eshkol_tagged_value_t* smoothing_tv,
+                                             eshkol_tagged_value_t* result) {
+    SdncBackwardSmoothing sm = sdnc_backward_smoothing_exact();
+    int ok = 0;
+    if (sdnc_is_cons(smoothing_tv)) {
+        const eshkol_tagged_value_t* car = (const eshkol_tagged_value_t*)(uintptr_t)smoothing_tv->data.ptr_val;
+        ok = sdnc_read_beta(car, &sm.gate_beta) && sdnc_read_beta(car + 1, &sm.attn_beta);
+    } else if (sdnc_read_beta(smoothing_tv, &sm.gate_beta)) {
+        sm.attn_beta = sm.gate_beta;
+        ok = 1;
+    }
+    if (!ok) {
+        if (result) { memset(result, 0, sizeof(*result)); result->type = ESHKOL_VALUE_NULL; }
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_TYPE_ERROR,
+            "sdnc-weight-grad: smoothing must be a positive real beta or a pair (gate-beta . attention-beta)");
+        return;
+    }
+    sdnc_weight_grad_with(arena, theta, input_tv, target_tv, sm, result);
 }
 
 /* ===== (sdnc-params θ) -> #(...) ===== */
@@ -413,8 +485,7 @@ void eshkol_sdnc_improve_tagged(arena_t* arena,
 
     /* If data is a cons (input . target), read both. */
     if (data_tv && data_tv->type == ESHKOL_VALUE_HEAP_PTR && data_tv->data.ptr_val) {
-        eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)data_tv->data.ptr_val);
-        if (hdr->subtype == HEAP_SUBTYPE_CONS) {
+        if (sdnc_is_cons(data_tv)) {
             eshkol_tagged_value_t* car = (eshkol_tagged_value_t*)(uintptr_t)data_tv->data.ptr_val;
             eshkol_tagged_value_t* cdr = car + 1;
             if (sdnc_read_vector_into(car, state, SDNC_D) >= 0 &&
@@ -468,4 +539,74 @@ void eshkol_sdnc_pred_tagged(arena_t* arena,
     memset(result, 0, sizeof(*result));
     result->type = ESHKOL_VALUE_BOOL;
     result->data.int_val = sdnc_extract_handle(x_tv) ? 1 : 0;
+}
+
+/* ===== Fine-tuning the constructed interpreter (FFI, core.sdnc) =====
+ * θ arrives as the raw handle pointer (`ptr` extern argument), paths as C
+ * strings. Status codes: -1 unreadable file, -2 not an SDNC file for this
+ * architecture, -3 not an sdnc program, -4 out of memory. */
+
+static SdncHandle* sdnc_handle_from_ptr(void* p) {
+    eshkol_tagged_value_t tv;
+    memset(&tv, 0, sizeof(tv));
+    tv.type = ESHKOL_VALUE_HEAP_PTR;
+    tv.data.ptr_val = (uint64_t)(uintptr_t)p;
+    SdncHandle* h = sdnc_extract_handle(&tv);
+    return h && h->w ? h : NULL;
+}
+
+int32_t eshkol_sdnc_load_weights(void* theta, const char* path) {
+    SdncHandle* h = sdnc_handle_from_ptr(theta);
+    if (!h) return -3;
+    if (!path) return -1;
+    h->has_report = 0;
+    return (int32_t)sdnc_weights_load_qlmw(h->w, path);
+}
+
+int64_t eshkol_sdnc_mismatches(void* theta, const char* path) {
+    SdncHandle* h = sdnc_handle_from_ptr(theta);
+    if (!h) return -3;
+    SdncTransitionSet ts;
+    if (!path || sdnc_transitions_load(&ts, path) != 0) return -1;
+    int mm = 0;
+    sdnc_transition_objective(h->w, &ts, &mm);
+    sdnc_transitions_free(&ts);
+    return mm;
+}
+
+int64_t eshkol_sdnc_repair(void* theta, const char* path, double beta) {
+    SdncHandle* h = sdnc_handle_from_ptr(theta);
+    if (!h) return -3;
+    if (!(beta > 0.0) || !isfinite(beta)) return -2;
+    SdncTransitionSet ts;
+    if (!path || sdnc_transitions_load(&ts, path) != 0) return -1;
+    SdncFinetuneOptions opt;
+    sdnc_finetune_default_options(&opt);
+    opt.smoothing.gate_beta = (float)beta;
+    opt.smoothing.attn_beta = (float)beta;
+    SdncFinetuneReport rep;
+    int rc = sdnc_control_finetune(h->w, &ts, NULL, &opt, &rep);
+    sdnc_transitions_free(&ts);
+    if (rc != 0) return -4;
+    h->report = rep;
+    h->has_report = 1;
+    return rep.mismatched_after;
+}
+
+/* Fields: 0 transitions, 1 tied gates, 2 differing before, 3 differing
+ * after, 4 tied-gate moves, 5 neuron moves, 6 exact control gradient zero
+ * (0/1). -1 when θ has no report or k is out of range. */
+int64_t eshkol_sdnc_report_field(void* theta, int32_t k) {
+    SdncHandle* h = sdnc_handle_from_ptr(theta);
+    if (!h || !h->has_report) return -1;
+    switch (k) {
+    case 0: return h->report.transitions;
+    case 1: return h->report.tied_gates;
+    case 2: return h->report.mismatched_before;
+    case 3: return h->report.mismatched_after;
+    case 4: return h->report.gate_moves;
+    case 5: return h->report.neuron_moves;
+    case 6: return h->report.exact_control_gradient_zero;
+    default: return -1;
+    }
 }

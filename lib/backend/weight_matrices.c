@@ -27,6 +27,11 @@
 #include <math.h>
 #include <stdint.h>
 
+/* Runtime SDNC weight kernels and the exact-forward control fine-tuning
+ * facility (lib/core/sdnc_core.h, lib/core/sdnc_finetune.h). Included before
+ * sdnc_isa.h: their short D/HD/N_LAYERS/FFN_DIM aliases are local to them. */
+#include "sdnc_finetune.h"
+
 /* ESKB binary format reader (single-file include pattern) */
 #include "eskb_reader.c"
 
@@ -83,7 +88,7 @@
  *
  * SCALE = 300 satisfies both with margin (gap ≈ 106 > 87, sigmoid
  * argument ≥ 150 ≫ 20). */
-#define SCALE 300.0f
+#define SCALE SDNC_CONSTRUCTION_UNIT   /* 300: the construction unit */
 #define AD_MAX_TAPE 8    /* max tape nodes in state vector */
 #define ARENA_KIND_EMPTY 0.0f
 #define ARENA_KIND_PAIR 1.0f
@@ -5383,6 +5388,11 @@ static void forward_with_weights(const InterpreterWeights* w,
  *        past the reference VM's halt).
  * @return The number of outputs produced.
  */
+/* When non-NULL, run_with_weights() records every forward transition
+ * (state, program embeddings, next state before the exec-loop postprocess)
+ * here: the teacher data of --control-finetune. */
+static SdncTransitionSet* g_transition_sink = NULL;
+
 static int run_with_weights(const InterpreterWeights* w,
                              const SdncInstr* prog, int n_instr,
                              float* outputs, int max_out) {
@@ -5432,6 +5442,9 @@ static int run_with_weights(const InterpreterWeights* w,
             backward_with_weights(w, next);
         } else {
             forward_with_weights(w,state,pe,n_instr,next);
+            if (g_transition_sink)
+                sdnc_transitions_add(g_transition_sink, state, &pe[0][0],
+                                     n_instr < 256 ? n_instr : 256, next);
             /* Capture IS_NATIVE before postprocess clears it. */
             is_native_pre = next[S_IS_NATIVE] > 0.5f ? 1 : 0;
             exec_loop_postprocess(next, prog, n_instr);
@@ -6112,65 +6125,12 @@ static void self_improve_demo(void) {
 }
 
 /**
- * @brief Entry point for the Eshkol VM weight compiler artifact.
- *
- * Supports `--self-improve` (runs self_improve_demo() and exits) and the
- * paper-artifact trace flags `--trace-vm`/`--trace-transformer`/
- * `--trace-simulated PATH` (opens JSONL trace files consumed by
- * scripts/paper/compare_traces.py). Otherwise generates the interpreter
- * weights (generate_weights()), runs the built-in test suite comparing the
- * reference/simulated/matrix execution modes (test()), and optionally
- * exports the weights to ESHKOL_WEIGHTS_OUT via export_weights_binary().
+ * @brief The verifier battery: every program runs on the reference
+ *        interpreter, the simulated transformer and the matrix forward pass
+ *        with g_weights (test()), accumulating n_pass/n_fail.
  */
-int main(int argc, char** argv) {
-    printf("=== Eshkol VM Weight Compiler ===\n\n");
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--self-improve") == 0) {
-            self_improve_demo();
-            return 0;
-        }
-    }
-
-    /* Paper artifact CLI:
-     *   --trace-vm <path>           emit per-step reference-VM JSONL trace
-     *   --trace-transformer <path>  emit per-step matrix-forward JSONL trace
-     * Consumed by scripts/paper/compare_traces.py (paper §4.4). */
-    const char* trace_vm_path = NULL;
-    const char* trace_tf_path = NULL;
-    const char* trace_sim_path = NULL;
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--trace-vm") == 0 && i + 1 < argc) {
-            trace_vm_path = argv[++i];
-        } else if (strcmp(argv[i], "--trace-transformer") == 0 && i + 1 < argc) {
-            trace_tf_path = argv[++i];
-        } else if (strcmp(argv[i], "--trace-simulated") == 0 && i + 1 < argc) {
-            trace_sim_path = argv[++i];
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("Usage: %s [--trace-vm PATH] [--trace-transformer PATH] [--trace-simulated PATH]\n", argv[0]);
-            printf("Env: ESHKOL_WEIGHTS_OUT=PATH, ESHKOL_BC=PATH\n");
-            return 0;
-        }
-    }
-    if (trace_vm_path) {
-        g_trace_vm_fp = fopen(trace_vm_path, "w");
-        if (!g_trace_vm_fp) { perror(trace_vm_path); return 1; }
-        printf("[TRACE] reference VM trace → %s\n", trace_vm_path);
-    }
-    if (trace_tf_path) {
-        g_trace_tf_fp = fopen(trace_tf_path, "w");
-        if (!g_trace_tf_fp) { perror(trace_tf_path); return 1; }
-        printf("[TRACE] matrix-forward trace → %s\n", trace_tf_path);
-    }
-    if (trace_sim_path) {
-        g_trace_sim_fp = fopen(trace_sim_path, "w");
-        if (!g_trace_sim_fp) { perror(trace_sim_path); return 1; }
-        printf("[TRACE] simulated-layer trace → %s\n", trace_sim_path);
-    }
-
-    g_weights = (InterpreterWeights*)calloc(1, sizeof(InterpreterWeights));
-    if (g_weights) generate_weights(g_weights);
-
+static void run_verifier_battery(void) {
+    n_pass = 0; n_fail = 0;
     printf("\n  Tests (ref=reference, sim=simulated, mat=matrix-based):\n\n");
 
     /* ── Stage 0: Original v1 tests (renumbered to canonical opcodes) ── */
@@ -7177,6 +7137,323 @@ int main(int argc, char** argv) {
       }; test("AD chain: d/dx (x^2+2x) at 3 = 8", p, 16, 8); }
 
     printf("\n  [metrics] peak_heap=%d/%d\n", g_heap_ptr, HEAP_SIZE);
+}
+
+/*******************************************************************************
+ * Control fine-tuning with an exact forward pass (--control-finetune)
+ *
+ * Reproduces docs/design/adr/0032-exact-forward-control-fine-tuning.md:
+ *   1. record every forward transition of the verifier battery on the
+ *      constructed weights (the teacher);
+ *   2. check the runtime kernels against this file's own: sdnc_forward and
+ *      sdnc_backward (= sdnc_backward_smoothed at beta = 1) must be
+ *      bit-identical to forward_with_weights / backward_through_weights;
+ *   3. damage the ADD dispatch: switch off every Layer-3 gate neuron that is
+ *      on at an ADD step and off at a CONST step;
+ *   4. show that the exact derivative of every control weight is identically
+ *      zero, then repair with sdnc_control_finetune (tied gates, then
+ *      neurons; smoothed backward ranks, exact forward accepts);
+ *   5. require the full battery to pass and every recorded transition to be
+ *      reproduced byte for byte by forward_with_weights.
+ * With --artifacts DIR it also writes DIR/constructed.qlmw, DIR/damaged.qlmw
+ * and DIR/transitions.sdtr for the core.sdnc surface test.
+ ******************************************************************************/
+
+static int cf_pass = 0, cf_fail = 0;
+
+static void cf_check(const char* what, int ok) {
+    printf("  [%s] %s\n", ok ? "PASS" : "FAIL", what);
+    if (ok) cf_pass++; else cf_fail++;
+}
+
+static void cf_log_line(void* ud, const char* line) {
+    (void)ud;
+    printf("    %s\n", line);
+    fflush(stdout);
+}
+
+static void cf_reset_vm(void) {
+    g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f;
+    g_current_closure_ptr = -1; g_wind_depth = 0;
+    if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
+}
+
+/* Deterministic upstream gradients for the backward identity check. */
+static float cf_rand(unsigned long* s) {
+    *s = *s * 6364136223846793005UL + 1442695040888963407UL;
+    return (float)((*s >> 33) & 0xffffff) / (float)0xffffff - 0.5f;
+}
+
+/* sdnc_backward (runtime kernel) against backward_through_weights (this
+ * file) on one input: gradients and input gradient must be bit-identical,
+ * and the explicit beta = 1 smoothing must equal sdnc_backward. */
+static int cf_backward_identical(const SdncWeights* sw, const float* state,
+                                 const float (*pe)[D], int np, unsigned long seed,
+                                 SdncGrads* ga, SdncGrads* gb, WeightGrads* gr,
+                                 SdncFwdCache* cache) {
+    float dn[D], dsa[D], dsb[D], dsr[D];
+    for (int i = 0; i < D; i++) dn[i] = cf_rand(&seed);
+    InterpreterWeights* iw = (InterpreterWeights*)malloc(sizeof(InterpreterWeights));
+    if (!iw) return 0;
+    memcpy(iw, sw, sizeof(InterpreterWeights));
+    sdnc_zero_grads(ga); sdnc_zero_grads(gb); zero_grads(gr);
+    sdnc_backward(sw, state, pe, np, dn, ga, dsa, cache);
+    sdnc_backward_smoothed(sw, state, pe, np, dn, sdnc_backward_smoothing_exact(), gb, dsb, cache);
+    backward_through_weights(iw, state, pe, np, dn, gr, dsr);
+    free(iw);
+    return memcmp(ga, gr, sizeof(SdncGrads)) == 0 && memcmp(dsa, dsr, sizeof(dsa)) == 0 &&
+           memcmp(ga, gb, sizeof(SdncGrads)) == 0 && memcmp(dsa, dsb, sizeof(dsa)) == 0;
+}
+
+static int cf_write_qlmw(const InterpreterWeights* w, const char* dir, const char* name) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    export_weights_binary(w, path);
+    SdncWeights* back = (SdncWeights*)malloc(sizeof(SdncWeights));
+    int ok = back && sdnc_weights_load_qlmw(back, path) == 0 &&
+             memcmp(back, w, sizeof(SdncWeights)) == 0;
+    free(back);
+    return ok;
+}
+
+static int control_finetune_demo(const char* artifacts_dir) {
+    printf("=== Control fine-tuning with an exact forward pass ===\n\n");
+    _Static_assert(sizeof(SdncWeights) == sizeof(InterpreterWeights), "weight layouts");
+    _Static_assert(sizeof(SdncGrads) == sizeof(WeightGrads), "gradient layouts");
+
+    InterpreterWeights* w0 = (InterpreterWeights*)calloc(1, sizeof(InterpreterWeights));
+    InterpreterWeights* wd = (InterpreterWeights*)calloc(1, sizeof(InterpreterWeights));
+    SdncWeights* sw = (SdncWeights*)calloc(1, sizeof(SdncWeights));
+    SdncGrads* ga = (SdncGrads*)calloc(1, sizeof(SdncGrads));
+    SdncGrads* gb = (SdncGrads*)calloc(1, sizeof(SdncGrads));
+    WeightGrads* gr = (WeightGrads*)calloc(1, sizeof(WeightGrads));
+    SdncFwdCache* ca = (SdncFwdCache*)calloc(1, sizeof(SdncFwdCache));
+    SdncFwdCache* cc = (SdncFwdCache*)calloc(1, sizeof(SdncFwdCache));
+    if (!w0 || !wd || !sw || !ga || !gb || !gr || !ca || !cc) { printf("alloc failed\n"); return 1; }
+
+    generate_weights(w0);
+    printf("  constructed interpreter, construction unit %g (forward never changed)\n", (double)SCALE);
+
+    /* 1. Teacher transitions from the full battery. */
+    SdncTransitionSet ts; sdnc_transitions_init(&ts);
+    g_weights = w0; g_transition_sink = &ts;
+    run_verifier_battery();
+    g_transition_sink = NULL;
+    printf("\n  battery on the constructed weights: %d passed, %d failed\n", n_pass, n_fail);
+    printf("  recorded %d transitions from %d program runs\n", ts.n, ts.n_progs);
+    cf_check("constructed weights pass the full battery", n_fail == 0 && n_pass > 0);
+    int battery_total = n_pass + n_fail;
+
+    /* 2. Runtime kernels are the artifact's arithmetic, bit for bit. */
+    memcpy(sw, w0, sizeof(SdncWeights));
+    {
+        int mm = -1;
+        sdnc_transition_objective(sw, &ts, &mm);
+        printf("  sdnc_forward vs recorded forward_with_weights: %d / %d transitions differ\n", mm, ts.n);
+        cf_check("sdnc_forward reproduces every recorded transition byte for byte", mm == 0);
+    }
+    {
+        int same = 1, checked = 0;
+        for (int t = 0; t < ts.n; t += 97, checked++) {
+            int k = ts.prog[t];
+            same &= cf_backward_identical(sw, ts.in + (size_t)t * D,
+                                          (const float (*)[D])(ts.pe_rows + ts.prog_row[k] * D),
+                                          ts.prog_len[k], 0x5EEDUL + (unsigned long)t, ga, gb, gr, ca);
+        }
+        SdncWeights* rw = (SdncWeights*)malloc(sizeof(SdncWeights));
+        static float pe_r[4][D];
+        float st[D];
+        unsigned long s = 0xC0FFEEUL;
+        if (rw) {
+            sdnc_init_weights(rw);   /* unsaturated: every derivative is live */
+            for (int r = 0; r < 4; r++) {
+                for (int p = 0; p < 4; p++) for (int i = 0; i < D; i++) pe_r[p][i] = cf_rand(&s) * 0.2f;
+                for (int i = 0; i < D; i++) st[i] = cf_rand(&s) * 0.2f;
+                same &= cf_backward_identical(rw, st, (const float (*)[D])pe_r, 4, s, ga, gb, gr, ca);
+                checked++;
+            }
+            free(rw);
+        } else same = 0;
+        printf("  sdnc_backward vs backward_through_weights: %d inputs compared\n", checked);
+        cf_check("sdnc_backward (beta = 1) is bit-identical to backward_through_weights", same);
+    }
+
+    /* 3. Damage the ADD dispatch. */
+    static SdncInstr p0[] = {{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_CONST,2},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
+    static float pe0[256][D];
+    memset(pe0, 0, sizeof(pe0));
+    for (int p = 0; p < 7; p++) embed_instruction(&p0[p], p, pe0[p]);
+    float st[D], nx[D], s_const[D], s_add[D];
+    cf_reset_vm();
+    memset(st, 0, sizeof(st)); st[S_OUTPUT] = -1; st[S_CUR_CLOSURE] = -100.0f;
+    for (int step = 0; step < 3; step++) {
+        for (int i = S_AD_CUR_OP; i <= S_AD_RIGHT_VALUE; i++) st[i] = 0;
+        st[S_AD_IS_FORWARD] = 0;
+        for (int i = S_AD_GRAD_ACCUM; i <= S_AD_SPARE8; i++) st[i] = 0;
+        for (int i = S_ARENA_TRANSIENT_START; i <= S_ARENA_TRANSIENT_END; i++) st[i] = 0;
+        if (step == 0) memcpy(s_const, st, sizeof(st));
+        if (step == 2) memcpy(s_add, st, sizeof(st));
+        forward_with_weights(w0, st, (const float (*)[D])pe0, 7, nx);
+        exec_loop_postprocess(nx, p0, 7);
+        memcpy(st, nx, sizeof(st));
+    }
+    sdnc_forward_cached(sw, s_add, (const float (*)[D])pe0, 7, nx, ca);
+    sdnc_forward_cached(sw, s_const, (const float (*)[D])pe0, 7, nx, cc);
+    int damaged = 0;
+    for (int i = 0; i < FFN_DIM; i++)
+        if (ca->ff_gate[3][i] == 1.0f && cc->ff_gate[3][i] == 0.0f && ca->ff_up[3][i] != 0.0f) {
+            sw->ff_gate_b[3][i] -= SCALE;
+            damaged++;
+        }
+    memcpy(wd, sw, sizeof(InterpreterWeights));
+    printf("\n  damage: %d ADD-dispatch gate neurons of Layer 3 switched off\n", damaged);
+    g_weights = wd;
+    run_verifier_battery();
+    printf("\n  battery on the damaged weights: %d passed, %d failed\n", n_pass, n_fail);
+    int mm_damaged = -1;
+    sdnc_transition_objective(sw, &ts, &mm_damaged);
+    printf("  damaged weights: %d / %d recorded transitions differ\n", mm_damaged, ts.n);
+    cf_check("the damage changes behaviour (battery fails, transitions differ)",
+             damaged > 0 && n_fail > 0 && mm_damaged > 0);
+
+    if (artifacts_dir) {
+        cf_check("constructed weights written and read back (QLMW)",
+                 cf_write_qlmw(w0, artifacts_dir, "constructed.qlmw"));
+        cf_check("damaged weights written and read back (QLMW)",
+                 cf_write_qlmw(wd, artifacts_dir, "damaged.qlmw"));
+        char path[4096];
+        snprintf(path, sizeof(path), "%s/transitions.sdtr", artifacts_dir);
+        SdncTransitionSet back; int ok = sdnc_transitions_save(&ts, path) == 0 &&
+                                         sdnc_transitions_load(&back, path) == 0;
+        if (ok) {
+            ok = back.n == ts.n && back.n_progs == ts.n_progs && back.n_rows == ts.n_rows &&
+                 memcmp(back.in, ts.in, sizeof(float) * D * (size_t)ts.n) == 0 &&
+                 memcmp(back.out, ts.out, sizeof(float) * D * (size_t)ts.n) == 0 &&
+                 memcmp(back.prog, ts.prog, sizeof(int) * (size_t)ts.n) == 0 &&
+                 memcmp(back.pe_rows, ts.pe_rows, sizeof(float) * D * ts.n_rows) == 0;
+            sdnc_transitions_free(&back);
+        }
+        cf_check("transitions written and read back (SDTR)", ok);
+    }
+
+    /* 4. Repair: groups from the weights being tuned (what a caller has). */
+    SdncFinetuneOptions opt;
+    sdnc_finetune_default_options(&opt);
+    opt.log = cf_log_line;
+    SdncFinetuneReport rep;
+    printf("\n  repair: backward beta %g (gate and attention), move %g, forward exact\n",
+           (double)opt.smoothing.gate_beta, (double)opt.step);
+    int rc = sdnc_control_finetune(sw, &ts, NULL, &opt, &rep);
+    cf_check("exact derivative of every control weight is identically zero on the damaged weights",
+             rc == 0 && rep.exact_control_gradient_zero);
+    printf("  tied gates %d; %d tied-gate moves, %d neuron moves; differing transitions %d -> %d\n",
+           rep.tied_gates, rep.gate_moves, rep.neuron_moves, rep.mismatched_before, rep.mismatched_after);
+    cf_check("repair reaches zero differing transitions", rc == 0 && rep.mismatched_after == 0);
+
+    /* 5. Verify with the artifact's own forward pass and the full battery. */
+    InterpreterWeights* wr = wd;
+    memcpy(wr, sw, sizeof(InterpreterWeights));
+    int identical = 0;
+    for (int t = 0; t < ts.n; t++) {
+        int k = ts.prog[t];
+        float out[D];
+        forward_with_weights(wr, ts.in + (size_t)t * D,
+                             (const float (*)[D])(ts.pe_rows + ts.prog_row[k] * D), ts.prog_len[k], out);
+        identical += memcmp(out, ts.out + (size_t)t * D, sizeof(out)) == 0;
+    }
+    printf("  repaired: %d / %d recorded transitions byte-identical (forward_with_weights)\n", identical, ts.n);
+    cf_check("every recorded transition byte-identical after repair", identical == ts.n);
+    g_weights = wr;
+    run_verifier_battery();
+    printf("\n  battery on the repaired weights: %d passed, %d failed\n", n_pass, n_fail);
+    cf_check("repaired weights pass the full battery", n_fail == 0 && n_pass == battery_total);
+    int moved = 0;
+    for (int L = 0; L < N_LAYERS; L++)
+        for (int i = 0; i < FFN_DIM; i++) moved += wr->ff_gate_b[L][i] != w0->ff_gate_b[L][i];
+    printf("  gate thresholds that differ from the construction: %d\n", moved);
+
+    printf("\n=== Control fine-tune: %d passed, %d failed ===\n", cf_pass, cf_fail);
+    printf("SDNC_FINETUNE battery=%d transitions=%d programs=%d damaged_neurons=%d "
+           "tied_gates=%d mismatched_before=%d mismatched_after=%d gate_moves=%d "
+           "neuron_moves=%d identical=%d\n",
+           battery_total, ts.n, ts.n_progs, damaged, rep.tied_gates, rep.mismatched_before,
+           rep.mismatched_after, rep.gate_moves, rep.neuron_moves, identical);
+    g_weights = NULL;
+    sdnc_transitions_free(&ts);
+    free(w0); free(wd); free(sw); free(ga); free(gb); free(gr); free(ca); free(cc);
+    return cf_fail == 0 ? 0 : 1;
+}
+
+/**
+ * @brief Entry point for the Eshkol VM weight compiler artifact.
+ *
+ * Supports `--self-improve` (runs self_improve_demo() and exits),
+ * `--control-finetune [--artifacts DIR]` (runs control_finetune_demo()) and the
+ * paper-artifact trace flags `--trace-vm`/`--trace-transformer`/
+ * `--trace-simulated PATH` (opens JSONL trace files consumed by
+ * scripts/paper/compare_traces.py). Otherwise generates the interpreter
+ * weights (generate_weights()), runs the built-in test suite comparing the
+ * reference/simulated/matrix execution modes (test()), and optionally
+ * exports the weights to ESHKOL_WEIGHTS_OUT via export_weights_binary().
+ */
+int main(int argc, char** argv) {
+    printf("=== Eshkol VM Weight Compiler ===\n\n");
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--self-improve") == 0) {
+            self_improve_demo();
+            return 0;
+        }
+        if (strcmp(argv[i], "--control-finetune") == 0) {
+            const char* artifacts = NULL;
+            for (int j = 1; j + 1 < argc; j++)
+                if (strcmp(argv[j], "--artifacts") == 0) artifacts = argv[j + 1];
+            return control_finetune_demo(artifacts);
+        }
+    }
+
+    /* Paper artifact CLI:
+     *   --trace-vm <path>           emit per-step reference-VM JSONL trace
+     *   --trace-transformer <path>  emit per-step matrix-forward JSONL trace
+     * Consumed by scripts/paper/compare_traces.py (paper §4.4). */
+    const char* trace_vm_path = NULL;
+    const char* trace_tf_path = NULL;
+    const char* trace_sim_path = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--trace-vm") == 0 && i + 1 < argc) {
+            trace_vm_path = argv[++i];
+        } else if (strcmp(argv[i], "--trace-transformer") == 0 && i + 1 < argc) {
+            trace_tf_path = argv[++i];
+        } else if (strcmp(argv[i], "--trace-simulated") == 0 && i + 1 < argc) {
+            trace_sim_path = argv[++i];
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            printf("Usage: %s [--trace-vm PATH] [--trace-transformer PATH] [--trace-simulated PATH]\n", argv[0]);
+            printf("       %s --self-improve\n", argv[0]);
+            printf("       %s --control-finetune [--artifacts DIR]\n", argv[0]);
+            printf("Env: ESHKOL_WEIGHTS_OUT=PATH, ESHKOL_BC=PATH\n");
+            return 0;
+        }
+    }
+    if (trace_vm_path) {
+        g_trace_vm_fp = fopen(trace_vm_path, "w");
+        if (!g_trace_vm_fp) { perror(trace_vm_path); return 1; }
+        printf("[TRACE] reference VM trace → %s\n", trace_vm_path);
+    }
+    if (trace_tf_path) {
+        g_trace_tf_fp = fopen(trace_tf_path, "w");
+        if (!g_trace_tf_fp) { perror(trace_tf_path); return 1; }
+        printf("[TRACE] matrix-forward trace → %s\n", trace_tf_path);
+    }
+    if (trace_sim_path) {
+        g_trace_sim_fp = fopen(trace_sim_path, "w");
+        if (!g_trace_sim_fp) { perror(trace_sim_path); return 1; }
+        printf("[TRACE] simulated-layer trace → %s\n", trace_sim_path);
+    }
+
+    g_weights = (InterpreterWeights*)calloc(1, sizeof(InterpreterWeights));
+    if (g_weights) generate_weights(g_weights);
+
+    run_verifier_battery();
 
     printf("\n=== Results: %d passed, %d failed ===\n", n_pass, n_fail);
 

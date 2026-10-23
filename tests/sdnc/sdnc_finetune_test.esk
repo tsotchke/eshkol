@@ -1,0 +1,86 @@
+;;; core.sdnc — exact-forward control fine-tuning of the constructed interpreter.
+;;;
+;;; Needs the artifacts written by
+;;;   weight_matrices --control-finetune --artifacts DIR
+;;; (constructed.qlmw, damaged.qlmw, transitions.sdtr) and DIR in the
+;;; environment variable ESHKOL_SDNC_ARTIFACTS. CTest wires both
+;;; (sdnc_control_finetune sets up the fixture).
+;;;
+;;;   (sdnc-load-weights! θ path)            QLMW weights into θ
+;;;   (sdnc-mismatches θ transitions)        transitions θ does not reproduce
+;;;   (sdnc-repair! θ transitions [beta])    tied-gate threshold repair
+;;;   (sdnc-weight-grad θ in target beta)    smoothed backward
+
+(require core.sdnc)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "  ok   ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "  FAIL ") (display name) (newline))))
+
+(define dir (getenv "ESHKOL_SDNC_ARTIFACTS"))
+(check "ESHKOL_SDNC_ARTIFACTS is set" (string? dir))
+(define transitions (string-append dir "/transitions.sdtr"))
+
+;; 1. The constructed weights reproduce every recorded transition.
+(define th (sdnc-program "interpreter"))
+(sdnc-load-weights! th (string-append dir "/constructed.qlmw"))
+(check "constructed weights: 0 differing transitions" (= 0 (sdnc-mismatches th transitions)))
+
+;; 2. The damaged weights do not.
+(sdnc-load-weights! th (string-append dir "/damaged.qlmw"))
+(define before (sdnc-mismatches th transitions))
+(display "  damaged: ") (display before) (display " differing transitions") (newline)
+(check "damaged weights: some transitions differ" (> before 0))
+
+;; 3. Repair: exact derivative is zero, smoothed derivative ranks, exact forward accepts.
+(define report (sdnc-repair! th transitions))
+(define (field k) (cdr (assq k report)))
+(display "  report: ") (display report) (newline)
+(check "report counts the damaged transitions" (= (field 'mismatched-before) before))
+(check "exact control gradient is identically zero" (field 'exact-control-gradient-zero))
+(check "repair reaches 0 differing transitions" (= 0 (field 'mismatched-after)))
+(check "repair moved at least one tied gate" (> (field 'gate-moves) 0))
+(check "repaired weights reproduce every transition" (= 0 (sdnc-mismatches th transitions)))
+
+;; 4. Errors are reported, not ignored.
+(check "missing weight file raises"
+       (guard (e (else #t)) (sdnc-load-weights! th (string-append dir "/absent.qlmw")) #f))
+(check "a transition file is not a weight file"
+       (guard (e (else #t)) (sdnc-load-weights! th transitions) #f))
+(check "beta must be positive"
+       (guard (e (else #t)) (sdnc-repair! th transitions 0) #f))
+
+;; 5. Backward smoothing option of sdnc-weight-grad.
+(define (vcopy src)
+  (let* ((n (vector-length src)) (out (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! out i (vector-ref src i)) (loop (+ i 1))) out))))
+(define (count-differences a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (k 0))
+      (if (< i n)
+          (loop (+ i 1) (if (= (vector-ref a i) (vector-ref b i)) k (+ k 1)))
+          k))))
+(define p (sdnc-program "fib"))
+(define input (make-vector 256 0.0))
+(vector-set! input 0 1.0)
+(vector-set! input 1 0.5)
+(define target (vcopy (sdnc-run p input)))
+(vector-set! target 0 (+ (vector-ref target 0) 0.5))
+(define g-exact (sdnc-weight-grad p input target))
+(define g-one (sdnc-weight-grad p input target 1.0))
+(define g-pair (sdnc-weight-grad p input target (cons 1.0 1.0)))
+(define g-soft (sdnc-weight-grad p input target 0.5))
+(check "smoothing 1 is the exact gradient" (= 0 (count-differences g-exact g-one)))
+(check "smoothing (1 . 1) is the exact gradient" (= 0 (count-differences g-exact g-pair)))
+(check "smoothing 1/2 has the same length" (= (vector-length g-soft) (vector-length g-exact)))
+(check "smoothing 1/2 changes the control derivatives" (> (count-differences g-exact g-soft) 0))
+
+(newline)
+(display "Results: ") (display pass-count) (display " passed, ")
+(display fail-count) (display " failed") (newline)

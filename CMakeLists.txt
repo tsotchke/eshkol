@@ -2592,6 +2592,9 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/inference.cpp
   lib/core/kb_persistence.cpp
   lib/core/sdnc_api.c
+  # Exact-forward control fine-tuning of the constructed SDNC interpreter
+  # (tied-gate threshold optimizer; ADR 0032).
+  lib/core/sdnc_finetune.c
   lib/core/logic.cpp
   lib/core/logic_builtins.cpp
   lib/core/merkle.c
@@ -11828,6 +11831,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
     target_include_directories(weight_matrices PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core
     )
     # The standalone interpreter includes VM units directly, while its arena
     # hooks come from the normal runtime archive. Permit the intentional
@@ -11853,7 +11857,65 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
         set_tests_properties(sdnc_paper_weight_tests PROPERTIES
             PASS_REGULAR_EXPRESSION "Results: [0-9]+ passed, 0 failed"
         )
+
+        # Exact-forward control fine-tuning (ADR 0032): record every
+        # transition of the verifier battery, switch off the ADD dispatch,
+        # show that the exact control derivative is identically zero, repair
+        # with smoothed-backward-ranked / exact-forward-accepted threshold
+        # moves, then require the full battery and every recorded transition
+        # byte for byte. Writes the weights and transitions the core.sdnc
+        # surface test loads. The 11 checks are pinned so a check that stops
+        # running cannot stay green.
+        set(ESHKOL_SDNC_FINETUNE_ARTIFACTS ${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune)
+        file(MAKE_DIRECTORY ${ESHKOL_SDNC_FINETUNE_ARTIFACTS})
+        add_test(
+            NAME sdnc_control_finetune
+            COMMAND $<TARGET_FILE:weight_matrices> --control-finetune
+                    --artifacts ${ESHKOL_SDNC_FINETUNE_ARTIFACTS}
+        )
+        set_tests_properties(sdnc_control_finetune PROPERTIES
+            PASS_REGULAR_EXPRESSION "Control fine-tune: 11 passed, 0 failed"
+            FIXTURES_SETUP sdnc_finetune_artifacts
+            TIMEOUT 1800
+        )
     endif()
+endif()
+
+# Unit checks of the fine-tuning facility: shared logistic/softmax VJP rule
+# against central differences, beta = 1 bit-identity, saturation, tied gates,
+# SDTR/QLMW round trips and a synthetic repair.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/sdnc/sdnc_finetune_unit_test.c")
+    add_executable(sdnc_finetune_unit_test
+        tests/sdnc/sdnc_finetune_unit_test.c
+        lib/core/sdnc_finetune.c)
+    target_include_directories(sdnc_finetune_unit_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+    if(NOT ESHKOL_USING_MSVC)
+        target_link_libraries(sdnc_finetune_unit_test PRIVATE m)
+    endif()
+    set(ESHKOL_SDNC_FINETUNE_UNIT_DIR ${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune_unit)
+    file(MAKE_DIRECTORY ${ESHKOL_SDNC_FINETUNE_UNIT_DIR})
+    add_test(NAME sdnc_finetune_unit
+             COMMAND sdnc_finetune_unit_test ${ESHKOL_SDNC_FINETUNE_UNIT_DIR})
+    set_tests_properties(sdnc_finetune_unit PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 20 passed, 0 failed")
+endif()
+
+# core.sdnc surface of the same repair (sdnc-load-weights!, sdnc-mismatches,
+# sdnc-repair!, smoothed sdnc-weight-grad) on the artifacts written above.
+if(ESHKOL_BUILD_TESTS AND TARGET weight_matrices AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/sdnc/sdnc_finetune_test.esk")
+    add_test(NAME sdnc_finetune_surface_jit
+             COMMAND $<TARGET_FILE:eshkol-run> -r
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/sdnc/sdnc_finetune_test.esk"
+                     "-L${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(sdnc_finetune_surface_jit PROPERTIES
+        ENVIRONMENT "ESHKOL_SDNC_ARTIFACTS=${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune"
+        FIXTURES_REQUIRED sdnc_finetune_artifacts
+        PASS_REGULAR_EXPRESSION "Results: 15 passed, 0 failed"
+        TIMEOUT 1200)
 endif()
 
 # ===== SDNC training-mode module: weight-matrix backward pass ==========# `lib/backend/qllm_backward.c` is the reverse-mode (backward) companion to the
