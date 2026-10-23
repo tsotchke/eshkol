@@ -683,8 +683,11 @@ int main() {
             ok = ok && r.ok &&
                  eshkol_rm_sq_distance(x, y, K, 3, &want) == nullptr &&
                  eshkol_rm_sq_distance_grad(x, y, K, 3, g, nullptr, scratch) == nullptr &&
-                 r.d2 == want;
-            for (int i = 0; ok && i < 3; ++i) ok = (r.gx[i] == g[i]);
+                 std::fabs(r.d2 - want) <= 4e-16 * want;
+            /* K = 0 sums squared differences, the core squares the hypot
+             * distance: the same number to the last couple of ulps */
+            for (int i = 0; ok && i < 3; ++i)
+                ok = std::fabs(r.gx[i] - g[i]) <= 4e-16 * std::fabs(g[i]);
         }
         Run h = run_single(x, y, 3, ESHKOL_SPACE_FORM_STEREOGRAPHIC, -1.0);
         /* run_single migrates HYPERBOLIC blocks by 2, so the halved fixture
@@ -695,7 +698,7 @@ int main() {
         double hb = bm.ok ? bm.d2 : -1.0;
         report("stereographic: d2 and grad equal the shared chart core at K in "
                "{-4,-1,0,1,4}; HYPERBOLIC is its K < 0 member",
-               ok && h.ok && hb == h.d2);
+               ok && h.ok && std::fabs(hb - h.d2) <= 4e-16 * h.d2);
     }
 
     /* ---- 2. coincidence is a value, not a refusal, and it is exactly 0 --- */
