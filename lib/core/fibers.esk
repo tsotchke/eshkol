@@ -62,11 +62,12 @@
 ;;   3 result / condition     9 value for the next resume
 ;;   4 joiners ((f . token))  10 queued?
 ;;   5 cancel requested?      11 cancellation condition (or #f)
+;;                            12 started?
 ;;
 ;; state ∈ ready running waiting done failed cancelled
 
 (define (fiber? x)
-  (and (vector? x) (= (vector-length x) 12) (eq? (vector-ref x 0) 'eshkol-fiber)))
+  (and (vector? x) (= (vector-length x) 13) (eq? (vector-ref x 0) 'eshkol-fiber)))
 
 (define (fiber-id f) (vector-ref f 6))
 (define (fiber-status f) (vector-ref f 2))
@@ -311,32 +312,45 @@
              (set! *cond-waiters* (cons (cons f (cons token (vector-ref r 2))) *cond-waiters*))))
           (else (vector-set! f 2 'ready) (-enqueue! f))))))
 
-;; One scheduling step allocates nothing: the raise, if any, is parked in
-;; *raised* and signalled by the private +raised+ marker.
+;; A fiber's body runs under one guard of its own (-fiber-body), entered once
+;; per fiber on the fiber's stack: a raise that escapes the body — including a
+;; cancellation, after the body's dynamic-wind after thunks ran — is parked in
+;; *raised* and the body returns the private +raised+ marker. A scheduling
+;; step therefore installs no handler and allocates nothing.
 (define +raised+ (cons 'fiber 'raised))
 (define *raised* #f)
 
+(define (-fiber-body thunk)
+  (guard (e (#t (set! *raised* e) +raised+))
+    (thunk)))
+
+(define (-finish-raised! f e)
+  (-finish! f (if (and (fiber-cancelled? e) (eq? (fiber-cancelled-fiber e) f))
+                  'cancelled 'failed)
+            e))
+
 (define (-step! f)
-  (set! *current* f)
-  (vector-set! f 2 'running)
-  (let* ((co (vector-ref f 1))
-         (cancel (and (vector-ref f 5) (vector-ref f 11)))
-         (outcome
-          (guard (e (#t (set! *raised* e) +raised+))
-            (if cancel
-                (begin (vector-set! f 5 #f) (coroutine-raise co cancel))
-                (coroutine-resume co (vector-ref f 9))))))
-    (set! *current* #f)
-    (cond
-      ((eq? outcome +raised+)
-       (let ((e *raised*))
-         (set! *raised* #f)
-         (-finish! f (if (and (fiber-cancelled? e) (eq? (fiber-cancelled-fiber e) f))
-                         'cancelled 'failed)
-                   e)))
-      ((eq? (coroutine-status co) 'done)
-       (-finish! f 'done outcome))
-      (else (-handle-request! f outcome)))))
+  (let ((co (vector-ref f 1))
+        (cancel (and (vector-ref f 5) (vector-ref f 11))))
+    (if (and cancel (not (vector-ref f 12)))
+        ;; Cancelled before it ever ran: its body never entered any extent,
+        ;; so there is nothing to unwind.
+        (-finish! f 'cancelled cancel)
+        (begin
+          (set! *current* f)
+          (vector-set! f 2 'running)
+          (vector-set! f 12 #t)
+          (let ((outcome (if cancel
+                             (begin (vector-set! f 5 #f) (coroutine-raise co cancel))
+                             (coroutine-resume co (vector-ref f 9)))))
+            (set! *current* #f)
+            (cond
+              ((not (eq? (coroutine-status co) 'done)) (-handle-request! f outcome))
+              ((eq? outcome +raised+)
+               (let ((e *raised*))
+                 (set! *raised* #f)
+                 (-finish-raised! f e)))
+              (else (-finish! f 'done outcome))))))))
 
 ;; ── Waiting for the outside world ───────────────────────────────────
 
@@ -397,8 +411,8 @@
 
 (define (spawn thunk)
   "Create a fiber running (thunk) and queue it. Returns the fiber."
-  (let ((f (vector 'eshkol-fiber #f 'ready #f '() #f *next-id* 0 0 #t #f #f)))
-    (vector-set! f 1 (make-coroutine thunk))
+  (let ((f (vector 'eshkol-fiber #f 'ready #f '() #f *next-id* 0 0 #t #f #f #f)))
+    (vector-set! f 1 (make-coroutine (lambda () (-fiber-body thunk))))
     (vector-set! f 11 (-make-cancelled f))
     (set! *next-id* (+ *next-id* 1))
     (set! *live* (+ *live* 1))

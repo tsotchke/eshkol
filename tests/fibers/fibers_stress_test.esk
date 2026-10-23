@@ -30,7 +30,9 @@
   (let ((v (get-environment-variable "FIBER_STRESS_WAVES")))
     (if v (string->number v) 3)))
 
-(define N 10000)
+(define N
+  (let ((v (get-environment-variable "FIBER_STRESS_N")))
+    (if v (string->number v) 10000)))
 (define ROUNDS 10)
 
 ;; progress[i] = rounds fiber i has completed. Round-robin scheduling keeps
@@ -53,7 +55,7 @@
                            (fiber-yield)
                            (loop (+ r 1)))))))
           (spawn-all (+ i 1)))))
-  (check "10000 fibers are live at once before the wave runs"
+  (check "every fiber of the wave is live at once before it runs"
          (>= (cdr (assq 'live (fiber-scheduler-stats))) N))
   (run-fibers)
   (let sum ((i 0) (total 0))
@@ -75,7 +77,7 @@
                (<= (stat 'stacks-pooled) 64))
         (wave (+ w 1)))))
 
-(check "10000 coroutines were live at the peak" (>= (stat 'peak-live) N))
+(check "every fiber of a wave held a coroutine at the peak" (>= (stat 'peak-live) N))
 
 ;; ─── 5,000 ping-pong pairs over channels ───────────────────────────
 
