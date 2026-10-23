@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 104** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1104** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 105** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1129** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -61,6 +61,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.ad.sparsity`](../../../lib/core/ad/sparsity.esk) | no | [ad_sparsity.md](ad_sparsity.md) | `hessian-color-graph` |
 | [`core.algebraic_batch`](../../../lib/core/algebraic_batch.esk) | no | [algebraic_batch.md](algebraic_batch.md) | `make-algebraic-multiplication-plan` `algebraic-batch-mul` |
 | [`core.control.trampoline`](../../../lib/core/control/trampoline.esk) | yes | [control_trampoline.md](control_trampoline.md) | `trampoline` `bounce` `done` |
+| [`core.curvature`](../../../lib/core/curvature.esk) | no | [curvature.md](curvature.md) | `chart-convention-id` `chart-alpha` `make-geometry-header` `geometry-header-check` `chart-distance` `chart-sq-distance` `chart-conformal-factor` `chart-distance-jet` `chart-sq-distance-jet` `chart-sq-distance-gradient` `chart-exp-map` `chart-log-map` `chart-transport` `chart-mobius-add` `chart-mobius-scalar` `chart-project` `chart-riemannian-grad` `chart-default-temperature` `chart-attention` `chart-attention-weights` `sphere->chart` `chart->sphere` `migrate-legacy-ball-point` `migrate-legacy-ball-tangent` `migrate-legacy-temperature` |
 | [`core.cyclotomic`](../../../lib/core/cyclotomic.esk) | no | [cyclotomic.md](cyclotomic.md) | `make-cyclotomic-field` `cyclotomic-order` `cyclotomic-degree` `cyclotomic-polynomial` `cyclotomic-element` `cyclotomic-coefficients` `cyclotomic-root` `cyclotomic-add` `cyclotomic-sub` `cyclotomic-scale` `cyclotomic-mul` `cyclotomic-inverse` `cyclotomic-zero?` `cyclotomic-equal?` `cyclotomic-rational` `cyclotomic-galois` `cyclotomic-norm` |
 | [`core.data.base64`](../../../lib/core/data/base64.esk) | yes | [data_base64.md](data_base64.md) | `base64-encode` `base64-decode` `base64-encode-string` `base64-decode-string` `string->bytes` `bytes->string` `base64-char-at` `base64-value` `string->bytes-helper` `base64-encode-helper` `base64-decode-helper` `base64-remove-padding` |
 | [`core.data.csv`](../../../lib/core/data/csv.esk) | yes | [data_csv.md](data_csv.md) | `csv-parse` `csv-parse-file` `csv-stringify` `csv-write-file` `csv-parse-line` `csv-parse-lines` `csv-split-fields` `csv-stringify-row` |
