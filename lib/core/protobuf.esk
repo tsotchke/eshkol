@@ -1,0 +1,1343 @@
+;;; core/protobuf.esk
+;;;
+;;; Protocol Buffers (proto3) for Eshkol values: a schema compiler, a .proto
+;;; parser for the proto3 message subset, and schema-driven encoders and
+;;; decoders over bytevectors in the protobuf binary wire format
+;;; (https://protobuf.dev/programming-guides/encoding/).
+;;;
+;;; (require core.protobuf)
+;;;
+;;; Schemas are plain Eshkol data, written by hand or produced from .proto
+;;; text by protobuf-parse-proto:
+;;;
+;;;   (define schema
+;;;     (protobuf-schema
+;;;       '((message Person
+;;;           (field 1 name string)
+;;;           (field 2 id int32)
+;;;           (field 3 email (optional string))
+;;;           (field 4 scores (repeated sint32))          ; packed
+;;;           (field 5 phones (repeated (message Phone)))
+;;;           (field 6 kind (enum Kind))
+;;;           (field 7 labels (map string int64))
+;;;           (oneof contact (field 8 home string) (field 9 work string)))
+;;;         (message Phone (field 1 number string))
+;;;         (enum Kind (KIND_UNSPECIFIED 0) (PERSONAL 1)))))
+;;;
+;;; Messages are (protobuf-message type-name entries), entries being
+;;; two-element lists (field-name value). Decoding yields every implicit-
+;;; presence and repeated field (defaults filled in) and the explicit-presence
+;;; fields that were on the wire, in field-number order; unknown fields are
+;;; kept as raw bytes and written back unchanged on re-encoding (proto3 rules).
+;;; Malformed input raises a catchable error and is never read past its end.
+;;;
+;;; The native wire primitives used by the ONNX writer and the PJRT client live
+;;; in inc/eshkol/core/protobuf_wire.h; both layers are pinned to the same
+;;; hand-derived vectors (tests/core/protobuf_wire_test.c and
+;;; tests/protobuf/protobuf_wire_test.esk).
+
+(require core.utf8)
+
+(provide
+  protobuf-schema protobuf-schema? protobuf-schema-from-proto protobuf-parse-proto
+  protobuf-message protobuf-message? protobuf-message-type
+  protobuf-message-entries protobuf-message-unknown
+  protobuf-ref protobuf-has?
+  protobuf-encode protobuf-decode protobuf-encoder protobuf-decoder
+  protobuf-enum-number protobuf-enum-name)
+
+;; ── Constants ───────────────────────────────────────────────────────────
+
+(define pb-two-31 2147483648)
+(define pb-two-32 4294967296)
+(define pb-two-63 9223372036854775808)
+(define pb-two-64 18446744073709551616)
+(define pb-max-field-number 536870911)
+(define pb-max-depth 100)
+
+(define pb-scalar-kinds
+  '(double float int32 int64 uint32 uint64 sint32 sint64
+    fixed32 fixed64 sfixed32 sfixed64 bool string bytes))
+
+;; Written with integer?/exact? (rather than exact-integer?) and the
+;; *->exact/*->inexact conversions so the library runs unchanged on every
+;; execution route, the bytecode VM included.
+(define (pb-exact-integer? v) (and (integer? v) (exact? v)))
+
+(define (pb-memq x lst)
+  (cond ((null? lst) #f) ((eq? x (car lst)) lst) (else (pb-memq x (cdr lst)))))
+
+;; Association on two-element entries (key value...) keyed by eq?.
+(define (pb-assq key lst)
+  (cond ((null? lst) #f)
+        ((eq? key (car (car lst))) (car lst))
+        (else (pb-assq key (cdr lst)))))
+
+(define (pb-wire-type kind)
+  (cond ((pb-memq kind '(int32 int64 uint32 uint64 sint32 sint64 bool enum)) 0)
+        ((pb-memq kind '(double fixed64 sfixed64)) 1)
+        ((pb-memq kind '(float fixed32 sfixed32)) 5)
+        (else 2)))
+
+(define (pb-packable? kind)
+  (not (pb-memq kind '(string bytes message))))
+
+;; ── Messages ───────────────────────────────────────────────────────────
+
+(define (pb-empty-bytes) (make-bytevector 0 0))
+
+(define (protobuf-message type entries . unknown)
+  (vector 'protobuf-message type entries
+          (if (null? unknown) (pb-empty-bytes) (car unknown))))
+
+(define (protobuf-message? value)
+  (and (vector? value) (= (vector-length value) 4)
+       (eq? (vector-ref value 0) 'protobuf-message)))
+
+(define (pb-require-message who value)
+  (if (protobuf-message? value) value
+      (error (string-append who ": expected a protobuf message") value)))
+
+(define (protobuf-message-type m)
+  (vector-ref (pb-require-message "protobuf-message-type" m) 1))
+(define (protobuf-message-entries m)
+  (vector-ref (pb-require-message "protobuf-message-entries" m) 2))
+(define (protobuf-message-unknown m)
+  (vector-ref (pb-require-message "protobuf-message-unknown" m) 3))
+
+;; ── Schema compilation ─────────────────────────────────────────────────
+;;
+;; field descriptor: #(pb-field number name label kind ref packed oneof)
+;;   label: implicit | optional | repeated | map
+;;   kind:  a scalar kind, enum or message; ref names the enum/message type
+;; message descriptor: #(pb-message name fields map-entry?)
+;; enum descriptor: #(pb-enum name values)  values: ((symbol number) ...)
+;; schema: #(protobuf-schema messages enums)  both ((name descriptor) ...)
+
+(define (pb-field number name label kind ref packed oneof)
+  (vector 'pb-field number name label kind ref packed oneof))
+(define (pb-field-number f) (vector-ref f 1))
+(define (pb-field-name f) (vector-ref f 2))
+(define (pb-field-label f) (vector-ref f 3))
+(define (pb-field-kind f) (vector-ref f 4))
+(define (pb-field-ref f) (vector-ref f 5))
+(define (pb-field-packed? f) (vector-ref f 6))
+(define (pb-field-oneof f) (vector-ref f 7))
+
+(define (pb-msg-name d) (vector-ref d 1))
+(define (pb-msg-fields d) (vector-ref d 2))
+(define (pb-msg-map-entry? d) (vector-ref d 3))
+
+(define (protobuf-schema? value)
+  (and (vector? value) (= (vector-length value) 3)
+       (eq? (vector-ref value 0) 'protobuf-schema)))
+
+(define (pb-schema-messages s) (vector-ref s 1))
+(define (pb-schema-enums s) (vector-ref s 2))
+
+(define (pb-schema-error . irritants)
+  (apply error "protobuf-schema: invalid schema" irritants))
+
+(define (pb-symbol-append a b)
+  (string->symbol (string-append (symbol->string a) "." (symbol->string b))))
+
+;; Capitalise the first letter of each underscore-separated word, as protoc
+;; names the synthesized entry message of a map field (labels -> LabelsEntry).
+(define (pb-camel name)
+  (let ((chars (string->list (symbol->string name))))
+    (let loop ((cs chars) (up #t) (out '()))
+      (cond ((null? cs) (list->string (reverse out)))
+            ((char=? (car cs) #\_) (loop (cdr cs) #t out))
+            (up (loop (cdr cs) #f (cons (char-upcase (car cs)) out)))
+            (else (loop (cdr cs) #f (cons (car cs) out)))))))
+
+(define (pb-scalar? kind) (and (symbol? kind) (pb-memq kind pb-scalar-kinds) #t))
+
+;; Parse one field's type form into (label kind ref packed).
+(define (pb-parse-type type)
+  (define (element t)
+    (cond ((pb-scalar? t) (list t #f))
+          ((and (pair? t) (eq? (car t) 'message) (pair? (cdr t)) (symbol? (cadr t)))
+           (list 'message (cadr t)))
+          ((and (pair? t) (eq? (car t) 'enum) (pair? (cdr t)) (symbol? (cadr t)))
+           (list 'enum (cadr t)))
+          (else (pb-schema-error "unknown field type" t))))
+  (cond ((and (pair? type) (eq? (car type) 'repeated) (pair? (cdr type)))
+         (let ((e (element (cadr type))))
+           (list 'repeated (car e) (cadr e)
+                 (and (pb-packable? (car e))
+                      (not (and (pair? (cddr type)) (eq? (caddr type) 'unpacked)))))))
+        ((and (pair? type) (eq? (car type) 'optional) (pair? (cdr type)))
+         (let ((e (element (cadr type))))
+           (list 'optional (car e) (cadr e) #f)))
+        (else
+         (let ((e (element type)))
+           ;; A singular message field always has explicit presence.
+           (list (if (eq? (car e) 'message) 'optional 'implicit) (car e) (cadr e) #f)))))
+
+(define (pb-valid-field-number? n)
+  (and (pb-exact-integer? n) (>= n 1) (<= n pb-max-field-number)
+       (not (and (>= n 19000) (<= n 19999)))))
+
+(define (pb-map-key-kind? k)
+  (pb-memq k '(int32 int64 uint32 uint64 sint32 sint64 fixed32 fixed64
+               sfixed32 sfixed64 bool string)))
+
+;; Compile one (message ...) form. Returns a list of (name descriptor)
+;; entries: the message itself followed by any synthesized map entries.
+(define (pb-compile-message form)
+  (if (not (and (pair? (cdr form)) (symbol? (cadr form))))
+      (pb-schema-error "message needs a name" form))
+  (let ((mname (cadr form)))
+    (let loop ((decls (cddr form)) (fields '()) (extra '()) (oneofs '()))
+      (cond
+        ((null? decls)
+         (list (cons (list mname (vector 'pb-message mname (pb-sort-fields mname fields) #f))
+                     extra)))
+        (else
+         (let ((d (car decls)))
+           (cond
+             ((and (pair? d) (eq? (car d) 'field))
+              (let ((f (pb-compile-field mname d #f)))
+                (loop (cdr decls) (cons (car f) fields) (append (cdr f) extra) oneofs)))
+             ((and (pair? d) (eq? (car d) 'oneof) (pair? (cdr d)) (symbol? (cadr d)))
+              (if (pb-memq (cadr d) oneofs) (pb-schema-error "duplicate oneof" (cadr d)))
+              (let oloop ((members (cddr d)) (fields fields))
+                (if (null? members)
+                    (loop (cdr decls) fields extra (cons (cadr d) oneofs))
+                    (let ((m (car members)))
+                      (if (not (and (pair? m) (eq? (car m) 'field)))
+                          (pb-schema-error "oneof members must be fields" m))
+                      (let ((f (pb-compile-field mname m (cadr d))))
+                        (oloop (cdr members) (cons (car f) fields)))))))
+             ((and (pair? d) (eq? (car d) 'reserved))
+              (loop (cdr decls) fields extra oneofs))
+             (else (pb-schema-error "unknown message declaration" d)))))))))
+
+;; Returns (field-descriptor extra-entry ...).
+(define (pb-compile-field mname d oneof)
+  (if (not (and (= (length d) 4) (symbol? (caddr d))))
+      (pb-schema-error "field form is (field number name type)" d))
+  (let ((number (cadr d)) (name (caddr d)) (type (cadddr d)))
+    (if (not (pb-valid-field-number? number))
+        (pb-schema-error "field number outside 1..2^29-1 or in 19000..19999" d))
+    (cond
+      ((and (pair? type) (eq? (car type) 'map))
+       (if oneof (pb-schema-error "map fields cannot be oneof members" d))
+       (if (not (= (length type) 3)) (pb-schema-error "map type is (map key value)" d))
+       (let ((k (cadr type)) (v (caddr type)))
+         (if (not (pb-map-key-kind? k)) (pb-schema-error "invalid map key type" d))
+         (let* ((entry-name (pb-symbol-append mname
+                              (string->symbol (string-append (pb-camel name) "Entry"))))
+                (vt (pb-parse-type v))
+                (value-label (if (eq? (cadr vt) 'message) 'optional 'implicit)))
+           (if (not (pb-memq (car vt) '(implicit optional)))
+               (pb-schema-error "map values cannot be repeated or optional" d))
+           (list (pb-field number name 'map 'message entry-name #f #f)
+                 (list entry-name
+                       (vector 'pb-message entry-name
+                               (list (pb-field 1 'key 'implicit k #f #f #f)
+                                     (pb-field 2 'value value-label (cadr vt) (caddr vt) #f #f))
+                               #t))))))
+      (else
+       (let ((t (pb-parse-type type)))
+         (if (and oneof (eq? (car t) 'repeated))
+             (pb-schema-error "oneof members cannot be repeated" d))
+         (list (pb-field number name (if oneof 'optional (car t)) (cadr t) (caddr t)
+                         (cadddr t) oneof)))))))
+
+(define (pb-sort-fields mname fields)
+  ;; Insertion sort by field number; reject duplicate numbers and names.
+  (define (insert f sorted)
+    (cond ((null? sorted) (list f))
+          ((= (pb-field-number f) (pb-field-number (car sorted)))
+           (pb-schema-error "duplicate field number" mname (pb-field-number f)))
+          ((< (pb-field-number f) (pb-field-number (car sorted))) (cons f sorted))
+          (else (cons (car sorted) (insert f (cdr sorted))))))
+  (let loop ((fs fields) (sorted '()) (names '()))
+    (cond ((null? fs) sorted)
+          ((pb-memq (pb-field-name (car fs)) names)
+           (pb-schema-error "duplicate field name" mname (pb-field-name (car fs))))
+          (else (loop (cdr fs) (insert (car fs) sorted)
+                      (cons (pb-field-name (car fs)) names))))))
+
+(define (pb-compile-enum form)
+  (if (not (and (pair? (cdr form)) (symbol? (cadr form)) (pair? (cddr form))))
+      (pb-schema-error "enum needs a name and at least one value" form))
+  (let loop ((vals (cddr form)) (out '()))
+    (if (null? vals)
+        (let ((values (reverse out)))
+          (if (not (= (cadr (car values)) 0))
+              (pb-schema-error "proto3 enums must start with a zero value" (cadr form)))
+          (list (cadr form) (vector 'pb-enum (cadr form) values)))
+        (let ((v (car vals)))
+          (if (not (and (pair? v) (symbol? (car v)) (pair? (cdr v))
+                        (pb-exact-integer? (cadr v))
+                        (>= (cadr v) (- pb-two-31)) (< (cadr v) pb-two-31)))
+              (pb-schema-error "enum value is (NAME int32)" v))
+          (if (pb-assq (car v) out) (pb-schema-error "duplicate enum value name" (car v)))
+          (loop (cdr vals) (cons (list (car v) (cadr v)) out))))))
+
+(define (protobuf-schema forms)
+  (let loop ((fs forms) (messages '()) (enums '()))
+    (if (null? fs)
+        (let ((schema (vector 'protobuf-schema (reverse messages) (reverse enums))))
+          (pb-check-references schema)
+          schema)
+        (let ((f (car fs)))
+          (cond
+            ((and (pair? f) (eq? (car f) 'message))
+             (let ((entries (car (pb-compile-message f))))
+               (pb-check-new-names (pb-entry-names entries) messages enums)
+               (loop (cdr fs) (append (reverse entries) messages) enums)))
+            ((and (pair? f) (eq? (car f) 'enum))
+             (let ((e (pb-compile-enum f)))
+               (pb-check-new-names (list (car e)) messages enums)
+               (loop (cdr fs) messages (cons e enums))))
+            (else (pb-schema-error "expected (message ...) or (enum ...)" f)))))))
+
+(define (pb-entry-names entries)
+  (if (null? entries) '() (cons (car (car entries)) (pb-entry-names (cdr entries)))))
+
+(define (pb-check-new-names names messages enums)
+  (if (pair? names)
+      (begin
+        (if (or (pb-assq (car names) messages) (pb-assq (car names) enums))
+            (pb-schema-error "duplicate type name" (car names)))
+        (pb-check-new-names (cdr names) messages enums))))
+
+(define (pb-check-references schema)
+  (let mloop ((ms (pb-schema-messages schema)))
+    (if (pair? ms)
+        (begin
+          (let floop ((fs (pb-msg-fields (cadr (car ms)))))
+            (if (pair? fs)
+                (let ((f (car fs)))
+                  (cond ((eq? (pb-field-kind f) 'message)
+                         (if (not (pb-assq (pb-field-ref f) (pb-schema-messages schema)))
+                             (pb-schema-error "unknown message type" (pb-field-ref f))))
+                        ((eq? (pb-field-kind f) 'enum)
+                         (if (not (pb-assq (pb-field-ref f) (pb-schema-enums schema)))
+                             (pb-schema-error "unknown enum type" (pb-field-ref f)))))
+                  (floop (cdr fs)))))
+          (mloop (cdr ms))))))
+
+(define (pb-lookup-message who schema name)
+  (if (not (protobuf-schema? schema))
+      (error (string-append who ": expected a protobuf schema") schema))
+  (let ((entry (pb-assq name (pb-schema-messages schema))))
+    (if entry (cadr entry)
+        (error (string-append who ": unknown message type") name))))
+
+(define (pb-lookup-enum schema name)
+  (cadr (pb-assq name (pb-schema-enums schema))))
+
+(define (protobuf-enum-number schema enum-name value-name)
+  (let* ((e (pb-assq enum-name (pb-schema-enums schema)))
+         (v (and e (pb-assq value-name (vector-ref (cadr e) 2)))))
+    (if v (cadr v) (error "protobuf-enum-number: unknown enum value" enum-name value-name))))
+
+;; The first name declared for NUMBER, or NUMBER itself when the enum has no
+;; such value (proto3 enums are open).
+(define (protobuf-enum-name schema enum-name number)
+  (let ((e (pb-assq enum-name (pb-schema-enums schema))))
+    (if (not e) (error "protobuf-enum-name: unknown enum" enum-name))
+    (let loop ((vs (vector-ref (cadr e) 2)))
+      (cond ((null? vs) number)
+            ((= (cadr (car vs)) number) (car (car vs)))
+            (else (loop (cdr vs)))))))
+
+;; ── IEEE-754 bit patterns ──────────────────────────────────────────────
+
+(define (pb-scale2 x k)
+  (cond ((> k 1000) (pb-scale2 (* x (expt 2.0 1000)) (- k 1000)))
+        ((< k -1000) (pb-scale2 (* x (expt 2.0 -1000)) (+ k 1000)))
+        (else (* x (expt 2.0 k)))))
+
+;; floor(log2 a) for a finite positive double, exactly.
+(define (pb-exponent a)
+  (let loop ((e (inexact->exact (floor (/ (log a) (log 2.0))))))
+    (cond ((< a (pb-scale2 1.0 e)) (loop (- e 1)))
+          ((>= a (pb-scale2 1.0 (+ e 1))) (loop (+ e 1)))
+          (else e))))
+
+(define (pb-negative-float? x)
+  (or (< x 0) (and (= x 0) (< (/ 1.0 x) 0))))
+
+;; Round a non-negative double holding an exact binary fraction to the
+;; nearest integer, ties to even.
+(define (pb-round-even m)
+  (let* ((fl (inexact->exact (floor m))) (diff (- m fl)))
+    (cond ((< diff 0.5) fl)
+          ((> diff 0.5) (+ fl 1))
+          ((even? fl) fl)
+          (else (+ fl 1)))))
+
+(define (pb-double->bits x)
+  (let ((x (exact->inexact x)))
+    (cond
+      ((nan? x) 9221120237041090560)                ; 0x7FF8000000000000
+      (else
+       (let ((sign (if (pb-negative-float? x) pb-two-63 0))
+             (a (abs x)))
+         (cond
+           ((infinite? a) (+ sign 9218868437227405312)) ; exponent all ones
+           ((= a 0) sign)
+           (else
+            (let ((e (pb-exponent a)))
+              (if (>= e -1022)
+                  (+ sign (* (+ e 1023) 4503599627370496)
+                     (- (inexact->exact (pb-scale2 a (- 52 e))) 4503599627370496))
+                  (+ sign (inexact->exact (pb-scale2 a 1074))))))))))))
+
+(define (pb-bits->double bits)
+  (let* ((negative (>= bits pb-two-63))
+         (rest (if negative (- bits pb-two-63) bits))
+         (exponent (quotient rest 4503599627370496))
+         (fraction (remainder rest 4503599627370496))
+         (magnitude
+          (cond ((= exponent 2047) (if (= fraction 0) (/ 1.0 0.0) (/ 0.0 0.0)))
+                ((= exponent 0) (pb-scale2 (exact->inexact fraction) -1074))
+                (else (pb-scale2 (exact->inexact (+ fraction 4503599627370496))
+                                 (- exponent 1075))))))
+    (if negative (* -1.0 magnitude) magnitude)))
+
+(define (pb-float->bits x)
+  (let ((x (exact->inexact x)))
+    (cond
+      ((nan? x) 2143289344)                           ; 0x7FC00000
+      (else
+       (let ((sign (if (pb-negative-float? x) pb-two-31 0))
+             (a (abs x)))
+         (cond
+           ((infinite? a) (+ sign 2139095040))         ; 0x7F800000
+           ((= a 0) sign)
+           (else
+            (let ((e (pb-exponent a)))
+              (if (>= e -126)
+                  (let* ((r (pb-round-even (pb-scale2 a (- 23 e))))
+                         (carry (= r 16777216))
+                         (e2 (if carry (+ e 1) e))
+                         (r2 (if carry 8388608 r)))
+                    (if (> e2 127)
+                        (+ sign 2139095040)
+                        (+ sign (* (+ e2 127) 8388608) (- r2 8388608))))
+                  ;; Subnormal: a carry into 2^23 is exactly the smallest
+                  ;; normal pattern, so no special case is needed.
+                  (+ sign (pb-round-even (pb-scale2 a 149))))))))))))
+
+(define (pb-bits->float bits)
+  (let* ((negative (>= bits pb-two-31))
+         (rest (if negative (- bits pb-two-31) bits))
+         (exponent (quotient rest 8388608))
+         (fraction (remainder rest 8388608))
+         (magnitude
+          (cond ((= exponent 255) (if (= fraction 0) (/ 1.0 0.0) (/ 0.0 0.0)))
+                ((= exponent 0) (pb-scale2 (exact->inexact fraction) -149))
+                (else (pb-scale2 (exact->inexact (+ fraction 8388608)) (- exponent 150))))))
+    (if negative (* -1.0 magnitude) magnitude)))
+
+;; ── Encoding ───────────────────────────────────────────────────────────
+;;
+;; Bytes accumulate in a reversed list; pb-acc->bytevector fills from the end.
+
+(define (pb-emit-varint acc n)
+  (if (< n 128)
+      (cons n acc)
+      (pb-emit-varint (cons (+ 128 (remainder n 128)) acc) (quotient n 128))))
+
+(define (pb-emit-fixed acc n width)
+  (if (= width 0) acc
+      (pb-emit-fixed (cons (remainder n 256) acc) (quotient n 256) (- width 1))))
+
+(define (pb-emit-tag acc number wire-type)
+  (pb-emit-varint acc (+ (* number 8) wire-type)))
+
+(define (pb-acc->bytevector acc)
+  (let* ((n (length acc)) (bv (make-bytevector n 0)))
+    (let loop ((i (- n 1)) (rest acc))
+      (if (null? rest) bv
+          (begin (bytevector-u8-set! bv i (car rest))
+                 (loop (- i 1) (cdr rest)))))))
+
+(define (pb-emit-bytes acc bv start end)
+  (if (= start end) acc
+      (pb-emit-bytes (cons (bytevector-u8-ref bv start) acc) bv (+ start 1) end)))
+
+(define (pb-encode-error field what value)
+  (error (string-append "protobuf-encode: " what) (pb-field-name field) value))
+
+(define (pb-int-in field v lo hi)
+  (if (and (pb-exact-integer? v) (>= v lo) (< v hi)) v
+      (pb-encode-error field "integer outside the field's range" v)))
+
+;; The unsigned integer a scalar value occupies on the wire.
+(define (pb-scalar->wire schema field kind v)
+  (cond
+    ((eq? kind 'int32)
+     (let ((n (pb-int-in field v (- pb-two-31) pb-two-31))) (if (< n 0) (+ n pb-two-64) n)))
+    ((eq? kind 'int64)
+     (let ((n (pb-int-in field v (- pb-two-63) pb-two-63))) (if (< n 0) (+ n pb-two-64) n)))
+    ((eq? kind 'uint32) (pb-int-in field v 0 pb-two-32))
+    ((eq? kind 'uint64) (pb-int-in field v 0 pb-two-64))
+    ((eq? kind 'sint32)
+     (let ((n (pb-int-in field v (- pb-two-31) pb-two-31))) (if (< n 0) (- (* -2 n) 1) (* 2 n))))
+    ((eq? kind 'sint64)
+     (let ((n (pb-int-in field v (- pb-two-63) pb-two-63))) (if (< n 0) (- (* -2 n) 1) (* 2 n))))
+    ((eq? kind 'fixed32) (pb-int-in field v 0 pb-two-32))
+    ((eq? kind 'fixed64) (pb-int-in field v 0 pb-two-64))
+    ((eq? kind 'sfixed32)
+     (let ((n (pb-int-in field v (- pb-two-31) pb-two-31))) (if (< n 0) (+ n pb-two-32) n)))
+    ((eq? kind 'sfixed64)
+     (let ((n (pb-int-in field v (- pb-two-63) pb-two-63))) (if (< n 0) (+ n pb-two-64) n)))
+    ((eq? kind 'bool)
+     (if (boolean? v) (if v 1 0) (pb-encode-error field "expected a boolean" v)))
+    ((eq? kind 'enum)
+     (cond ((symbol? v)
+            (let ((entry (pb-assq v (vector-ref (pb-lookup-enum schema (pb-field-ref field)) 2))))
+              (if entry (pb-scalar->wire schema field 'int32 (cadr entry))
+                  (pb-encode-error field "unknown enum value" v))))
+           (else (pb-scalar->wire schema field 'int32 v))))
+    ((eq? kind 'double)
+     (if (real? v) (pb-double->bits v) (pb-encode-error field "expected a real number" v)))
+    ((eq? kind 'float)
+     (if (real? v) (pb-float->bits v) (pb-encode-error field "expected a real number" v)))
+    (else (pb-encode-error field "not a numeric field" v))))
+
+(define (pb-emit-scalar acc schema field kind v)
+  (let ((wt (pb-wire-type kind)))
+    (cond
+      ((= wt 0) (pb-emit-varint acc (pb-scalar->wire schema field kind v)))
+      ((= wt 1) (pb-emit-fixed acc (pb-scalar->wire schema field kind v) 8))
+      ((= wt 5) (pb-emit-fixed acc (pb-scalar->wire schema field kind v) 4))
+      (else (error "protobuf-encode: internal wire type" kind)))))
+
+(define (pb-emit-len acc number payload)
+  (append payload (pb-emit-varint (pb-emit-tag acc number 2) (length payload))))
+
+(define (pb-text-bytes field v)
+  (if (not (string? v)) (pb-encode-error field "expected a string" v))
+  (let ((bv (string->utf8 v)))
+    (utf8-require-valid "protobuf-encode" bv 0 (bytevector-length bv))
+    bv))
+
+;; Emit one non-repeated value with its tag.
+(define (pb-emit-value acc schema field v depth)
+  (let ((kind (pb-field-kind field)) (number (pb-field-number field)))
+    (cond
+      ((eq? kind 'string)
+       (let ((bv (pb-text-bytes field v)))
+         (pb-emit-len acc number (pb-emit-bytes '() bv 0 (bytevector-length bv)))))
+      ((eq? kind 'bytes)
+       (if (not (bytevector? v)) (pb-encode-error field "expected a bytevector" v))
+       (pb-emit-len acc number (pb-emit-bytes '() v 0 (bytevector-length v))))
+      ((eq? kind 'message)
+       (pb-emit-len acc number
+                    (pb-encode-message-acc '() schema
+                                           (pb-lookup-message "protobuf-encode" schema
+                                                              (pb-field-ref field))
+                                           v (+ depth 1))))
+      (else (pb-emit-scalar (pb-emit-tag acc number (pb-wire-type kind)) schema field kind v)))))
+
+(define (pb-default-value? schema field v)
+  (let ((kind (pb-field-kind field)))
+    (cond
+      ((pb-memq kind '(double float)) (and (real? v) (= (pb-scalar->wire schema field kind v) 0)))
+      ((eq? kind 'bool) (eq? v #f))
+      ((eq? kind 'string) (and (string? v) (= (string-length v) 0)))
+      ((eq? kind 'bytes) (and (bytevector? v) (= (bytevector-length v) 0)))
+      ((eq? kind 'enum) (= (pb-scalar->wire schema field 'enum v) 0))
+      (else (and (pb-exact-integer? v) (= v 0))))))
+
+(define (pb-emit-repeated acc schema field values depth)
+  (if (not (list? values)) (pb-encode-error field "repeated field expects a list" values))
+  (cond
+    ((null? values) acc)
+    ((pb-field-packed? field)
+     (let loop ((vs values) (payload '()))
+       (if (null? vs)
+           (pb-emit-len acc (pb-field-number field) payload)
+           (loop (cdr vs) (pb-emit-scalar payload schema field (pb-field-kind field) (car vs))))))
+    (else
+     (let loop ((vs values) (acc acc))
+       (if (null? vs) acc
+           (loop (cdr vs) (pb-emit-value acc schema field (car vs) depth)))))))
+
+(define (pb-emit-map acc schema field entries depth)
+  (if (not (list? entries)) (pb-encode-error field "map field expects a list of (key value)" entries))
+  (let ((entry-type (pb-field-ref field)))
+    (let loop ((es entries) (acc acc))
+      (if (null? es) acc
+          (let ((e (car es)))
+            (if (not (and (pair? e) (pair? (cdr e)) (null? (cddr e))))
+                (pb-encode-error field "map entries are (key value)" e))
+            (loop (cdr es)
+                  (pb-emit-value acc schema field
+                                 (protobuf-message entry-type
+                                                   (list (list 'key (car e))
+                                                         (list 'value (cadr e))))
+                                 depth)))))))
+
+(define (pb-check-entries desc entries)
+  (let loop ((es entries) (seen '()))
+    (if (pair? es)
+        (let ((e (car es)))
+          (if (not (and (pair? e) (symbol? (car e)) (pair? (cdr e)) (null? (cddr e))))
+              (error "protobuf-encode: message entries are (field-name value)" e))
+          (if (pb-memq (car e) seen)
+              (error "protobuf-encode: field given twice" (car e)))
+          (let ((f (pb-field-by-name desc (car e))))
+            (if (not f) (error "protobuf-encode: no such field" (pb-msg-name desc) (car e)))
+            (if (and (pb-field-oneof f)
+                     (pb-oneof-set-elsewhere? desc entries f))
+                (error "protobuf-encode: more than one member of a oneof is set"
+                       (pb-field-oneof f))))
+          (loop (cdr es) (cons (car e) seen))))))
+
+(define (pb-oneof-set-elsewhere? desc entries field)
+  (let loop ((es entries))
+    (cond ((null? es) #f)
+          ((eq? (car (car es)) (pb-field-name field)) (loop (cdr es)))
+          (else
+           (let ((f (pb-field-by-name desc (car (car es)))))
+             (if (and f (eq? (pb-field-oneof f) (pb-field-oneof field))) #t
+                 (loop (cdr es))))))))
+
+(define (pb-field-by-name desc name)
+  (let loop ((fs (pb-msg-fields desc)))
+    (cond ((null? fs) #f)
+          ((eq? (pb-field-name (car fs)) name) (car fs))
+          (else (loop (cdr fs))))))
+
+(define (pb-encode-message-acc acc schema desc message depth)
+  (if (> depth pb-max-depth) (error "protobuf-encode: messages nested too deeply" depth))
+  (pb-require-message "protobuf-encode" message)
+  (if (not (eq? (protobuf-message-type message) (pb-msg-name desc)))
+      (error "protobuf-encode: message has the wrong type"
+             (pb-msg-name desc) (protobuf-message-type message)))
+  (let ((entries (protobuf-message-entries message))
+        (all (pb-msg-map-entry? desc)))
+    (pb-check-entries desc entries)
+    (let loop ((fs (pb-msg-fields desc)) (acc acc))
+      (if (null? fs)
+          (let ((unknown (protobuf-message-unknown message)))
+            (pb-emit-bytes acc unknown 0 (bytevector-length unknown)))
+          (let* ((f (car fs)) (entry (pb-assq (pb-field-name f) entries)))
+            (loop (cdr fs)
+                  (cond
+                    ((not entry) acc)
+                    ((eq? (pb-field-label f) 'repeated)
+                     (pb-emit-repeated acc schema f (cadr entry) depth))
+                    ((eq? (pb-field-label f) 'map)
+                     (pb-emit-map acc schema f (cadr entry) depth))
+                    ((and (eq? (pb-field-label f) 'implicit) (not all)
+                          (pb-default-value? schema f (cadr entry)))
+                     acc)
+                    (else (pb-emit-value acc schema f (cadr entry) depth)))))))))
+
+(define (protobuf-encoder schema type)
+  (let ((desc (pb-lookup-message "protobuf-encoder" schema type)))
+    (lambda (message)
+      (pb-acc->bytevector (pb-encode-message-acc '() schema desc message 0)))))
+
+(define (protobuf-encode schema type message)
+  ((protobuf-encoder schema type) message))
+
+;; ── Defaults and access ────────────────────────────────────────────────
+
+(define (pb-default schema field)
+  (let ((kind (pb-field-kind field)) (label (pb-field-label field)))
+    (cond
+      ((pb-memq label '(repeated map)) '())
+      ((eq? kind 'message) (protobuf-message (pb-field-ref field) '()))
+      ((pb-memq kind '(double float)) 0.0)
+      ((eq? kind 'bool) #f)
+      ((eq? kind 'string) "")
+      ((eq? kind 'bytes) (pb-empty-bytes))
+      ((eq? kind 'enum) (protobuf-enum-name schema (pb-field-ref field) 0))
+      (else 0))))
+
+;; The field's value, or its proto3 default when the message does not set it.
+(define (protobuf-ref schema message name)
+  (let* ((desc (pb-lookup-message "protobuf-ref" schema (protobuf-message-type message)))
+         (field (pb-field-by-name desc name))
+         (entry (pb-assq name (protobuf-message-entries message))))
+    (cond (entry (cadr entry))
+          (field (pb-default schema field))
+          (else (error "protobuf-ref: no such field" (pb-msg-name desc) name)))))
+
+;; #t when the message carries the field: present for explicit-presence
+;; fields, non-default for implicit ones, non-empty for repeated and map.
+(define (protobuf-has? schema message name)
+  (let* ((desc (pb-lookup-message "protobuf-has?" schema (protobuf-message-type message)))
+         (field (pb-field-by-name desc name))
+         (entry (pb-assq name (protobuf-message-entries message))))
+    (cond ((not field) (error "protobuf-has?: no such field" (pb-msg-name desc) name))
+          ((not entry) #f)
+          ((pb-memq (pb-field-label field) '(repeated map)) (pair? (cadr entry)))
+          ((eq? (pb-field-label field) 'implicit)
+           (not (pb-default-value? schema field (cadr entry))))
+          (else #t))))
+
+;; ── Decoding ───────────────────────────────────────────────────────────
+
+(define (pb-decode-error what pos)
+  (error (string-append "protobuf-decode: " what) pos))
+
+;; Returns (value . next-pos). At most ten bytes; the tenth may only carry
+;; bit 63, so every accepted varint is below 2^64.
+(define (pb-read-varint bv pos end)
+  (let loop ((i 0) (p pos) (acc 0) (scale 1))
+    (if (>= p end) (pb-decode-error "truncated varint" pos))
+    (let ((b (bytevector-u8-ref bv p)))
+      (if (and (= i 9) (> b 1)) (pb-decode-error "varint exceeds 64 bits" pos))
+      (let ((acc (+ acc (* (remainder b 128) scale))))
+        (if (< b 128)
+            (cons acc (+ p 1))
+            (loop (+ i 1) (+ p 1) acc (* scale 128)))))))
+
+(define (pb-read-fixed bv pos end width)
+  (if (> (+ pos width) end) (pb-decode-error "truncated fixed-width value" pos))
+  (let loop ((i (- width 1)) (acc 0))
+    (if (< i 0) acc
+        (loop (- i 1) (+ (* acc 256) (bytevector-u8-ref bv (+ pos i)))))))
+
+;; Returns (payload-start . payload-end) for a length-delimited value.
+(define (pb-read-len bv pos end)
+  (let* ((r (pb-read-varint bv pos end)) (start (cdr r)))
+    (if (> (car r) (- end start)) (pb-decode-error "length exceeds the input" pos))
+    (cons start (+ start (car r)))))
+
+(define (pb-signed n bits-half bits-full)
+  (if (>= n bits-half) (- n bits-full) n))
+
+(define (pb-zigzag n)
+  (if (even? n) (quotient n 2) (- (quotient (+ n 1) 2))))
+
+;; Convert the wire integer of a scalar to its Eshkol value.
+(define (pb-wire->scalar schema field kind n)
+  (cond
+    ((eq? kind 'int32) (pb-signed (remainder n pb-two-32) pb-two-31 pb-two-32))
+    ((eq? kind 'int64) (pb-signed n pb-two-63 pb-two-64))
+    ((eq? kind 'uint32) (remainder n pb-two-32))
+    ((eq? kind 'uint64) n)
+    ((eq? kind 'sint32) (pb-zigzag (remainder n pb-two-32)))
+    ((eq? kind 'sint64) (pb-zigzag n))
+    ((eq? kind 'bool) (not (= n 0)))
+    ((eq? kind 'enum)
+     (protobuf-enum-name schema (pb-field-ref field)
+                         (pb-signed (remainder n pb-two-32) pb-two-31 pb-two-32)))
+    ((eq? kind 'fixed32) n)
+    ((eq? kind 'fixed64) n)
+    ((eq? kind 'sfixed32) (pb-signed n pb-two-31 pb-two-32))
+    ((eq? kind 'sfixed64) (pb-signed n pb-two-63 pb-two-64))
+    ((eq? kind 'float) (pb-bits->float n))
+    ((eq? kind 'double) (pb-bits->double n))
+    (else (error "protobuf-decode: internal scalar kind" kind))))
+
+;; Read one scalar of KIND at POS. Returns (value . next-pos).
+(define (pb-read-scalar schema field kind bv pos end)
+  (let ((wt (pb-wire-type kind)))
+    (cond
+      ((= wt 0)
+       (let ((r (pb-read-varint bv pos end)))
+         (cons (pb-wire->scalar schema field kind (car r)) (cdr r))))
+      ((= wt 1) (cons (pb-wire->scalar schema field kind (pb-read-fixed bv pos end 8)) (+ pos 8)))
+      (else (cons (pb-wire->scalar schema field kind (pb-read-fixed bv pos end 4)) (+ pos 4))))))
+
+;; Skip one field body of wire type WT starting at POS; returns next-pos.
+(define (pb-skip bv pos end wt number depth)
+  (cond
+    ((= wt 0) (cdr (pb-read-varint bv pos end)))
+    ((= wt 1) (if (> (+ pos 8) end) (pb-decode-error "truncated fixed64" pos) (+ pos 8)))
+    ((= wt 5) (if (> (+ pos 4) end) (pb-decode-error "truncated fixed32" pos) (+ pos 4)))
+    ((= wt 2) (cdr (pb-read-len bv pos end)))
+    ((= wt 3)
+     (if (> depth pb-max-depth) (pb-decode-error "groups nested too deeply" pos))
+     (let loop ((p pos))
+       (let* ((t (pb-read-tag bv p end)) (n (car t)) (w (cadr t)) (next (caddr t)))
+         (cond ((= w 4)
+                (if (= n number) next (pb-decode-error "mismatched end-group" p)))
+               (else (loop (pb-skip bv next end w n (+ depth 1))))))))
+    (else (pb-decode-error "unexpected end-group" pos))))
+
+;; Returns (field-number wire-type next-pos).
+(define (pb-read-tag bv pos end)
+  (let* ((r (pb-read-varint bv pos end))
+         (key (car r))
+         (number (quotient key 8))
+         (wt (remainder key 8)))
+    (if (or (= number 0) (> number pb-max-field-number))
+        (pb-decode-error "invalid field number" pos))
+    (if (> wt 5) (pb-decode-error "invalid wire type" pos))
+    (list number wt (cdr r))))
+
+(define (pb-field-by-number desc number)
+  (let loop ((fs (pb-msg-fields desc)))
+    (cond ((null? fs) #f)
+          ((= (pb-field-number (car fs)) number) (car fs))
+          ((> (pb-field-number (car fs)) number) #f)
+          (else (loop (cdr fs))))))
+
+(define (pb-field-index desc field)
+  (let loop ((fs (pb-msg-fields desc)) (i 0))
+    (if (eq? (car fs) field) i (loop (cdr fs) (+ i 1)))))
+
+(define (pb-decode-text bv start end)
+  (utf8-require-valid "protobuf-decode" bv start (- end start))
+  (utf8->string (bytevector-copy bv start end)))
+
+;; Decode the singular (non-message) value of FIELD whose tag matched.
+(define (pb-read-value schema field bv pos end)
+  (let ((kind (pb-field-kind field)))
+    (cond
+      ((eq? kind 'string)
+       (let ((r (pb-read-len bv pos end)))
+         (cons (pb-decode-text bv (car r) (cdr r)) (cdr r))))
+      ((eq? kind 'bytes)
+       (let ((r (pb-read-len bv pos end)))
+         (cons (bytevector-copy bv (car r) (cdr r)) (cdr r))))
+      (else (pb-read-scalar schema field kind bv pos end)))))
+
+(define (pb-read-packed schema field bv pos end acc)
+  (let* ((r (pb-read-len bv pos end)) (stop (cdr r)) (kind (pb-field-kind field))
+         (wt (pb-wire-type kind)))
+    (if (and (pb-memq wt '(1 5))
+             (not (= (remainder (- stop (car r)) (if (= wt 1) 8 4)) 0)))
+        (pb-decode-error "packed fixed-width payload is not a whole number of values" pos))
+    (let loop ((p (car r)) (acc acc))
+      (if (= p stop)
+          (cons acc stop)
+          (let ((v (pb-read-scalar schema field kind bv p stop)))
+            (loop (cdr v) (cons (car v) acc)))))))
+
+;; Concatenate payload segments ((start . end) ...) in wire order.
+(define (pb-concat-segments bv segments)
+  (let loop ((ss segments) (acc '()))
+    (if (null? ss) (pb-acc->bytevector acc)
+        (loop (cdr ss) (pb-emit-bytes acc bv (car (car ss)) (cdr (car ss)))))))
+
+;; ENTRIES is in reverse wire order. A repeated key replaces the value in
+;; place (last value wins, first position kept); a new key is added.
+(define (pb-map-put entries key value)
+  (let loop ((es entries))
+    (cond ((null? es) (cons (list key value) entries))
+          ((equal? (car (car es)) key)
+           (let replace ((xs entries))
+             (if (eq? xs es) (cons (list key value) (cdr xs))
+                 (cons (car xs) (replace (cdr xs))))))
+          (else (loop (cdr es))))))
+
+(define (pb-decode-message schema desc bv start end depth)
+  (if (> depth pb-max-depth) (pb-decode-error "messages nested too deeply" start))
+  (let* ((fields (pb-msg-fields desc))
+         (n (length fields))
+         (slots (make-vector n 'pb-absent)))
+    (let loop ((pos start) (unknown '()))
+      (if (= pos end)
+          (pb-finish-message schema desc bv slots unknown depth)
+          (let* ((t (pb-read-tag bv pos end))
+                 (number (car t)) (wt (cadr t)) (body (caddr t))
+                 (field (pb-field-by-number desc number))
+                 (label (and field (pb-field-label field)))
+                 (kind (and field (pb-field-kind field))))
+            (cond
+              ((= wt 4) (pb-decode-error "unexpected end-group" pos))
+              ((and field (= wt (pb-wire-type kind)))
+               (let ((i (pb-field-index desc field)))
+                 (if (pb-field-oneof field) (pb-clear-oneof desc slots field))
+                 (cond
+                   ((eq? label 'map)
+                    (let* ((r (pb-read-len bv body end))
+                           (entry (pb-decode-message
+                                   schema (pb-lookup-message "protobuf-decode" schema
+                                                             (pb-field-ref field))
+                                   bv (car r) (cdr r) (+ depth 1)))
+                           (key (protobuf-ref schema entry 'key))
+                           (value (protobuf-ref schema entry 'value))
+                           (old (vector-ref slots i)))
+                      (vector-set! slots i
+                                   (pb-map-put (if (eq? old 'pb-absent) '() old) key value))
+                      (loop (cdr r) unknown)))
+                   ((eq? kind 'message)
+                    ;; Keep payload segments: repeated fields decode each one,
+                    ;; singular fields merge them (proto3 merge = concatenation).
+                    (let ((r (pb-read-len bv body end)) (old (vector-ref slots i)))
+                      (vector-set! slots i (cons r (if (eq? old 'pb-absent) '() old)))
+                      (loop (cdr r) unknown)))
+                   ((eq? label 'repeated)
+                    (let ((v (pb-read-value schema field bv body end))
+                          (old (vector-ref slots i)))
+                      (vector-set! slots i (cons (car v) (if (eq? old 'pb-absent) '() old)))
+                      (loop (cdr v) unknown)))
+                   (else
+                    (let ((v (pb-read-value schema field bv body end)))
+                      (vector-set! slots i (car v))
+                      (loop (cdr v) unknown))))))
+              ((and field (eq? label 'repeated) (= wt 2) (pb-packable? kind))
+               (let* ((i (pb-field-index desc field))
+                      (old (vector-ref slots i))
+                      (r (pb-read-packed schema field bv body end
+                                         (if (eq? old 'pb-absent) '() old))))
+                 (vector-set! slots i (car r))
+                 (loop (cdr r) unknown)))
+              (else
+               ;; Unknown field, or a known field with a different wire type:
+               ;; keep its bytes verbatim.
+               (let ((next (pb-skip bv body end wt number (+ depth 1))))
+                 (loop next (pb-emit-bytes unknown bv pos next))))))))))
+
+(define (pb-clear-oneof desc slots field)
+  (let loop ((fs (pb-msg-fields desc)) (i 0))
+    (if (pair? fs)
+        (begin
+          (if (and (not (eq? (car fs) field))
+                   (eq? (pb-field-oneof (car fs)) (pb-field-oneof field)))
+              (vector-set! slots i 'pb-absent))
+          (loop (cdr fs) (+ i 1))))))
+
+(define (pb-finish-message schema desc bv slots unknown depth)
+  (let loop ((fs (pb-msg-fields desc)) (i 0) (entries '()))
+    (if (null? fs)
+        (protobuf-message (pb-msg-name desc) (reverse entries) (pb-acc->bytevector unknown))
+        (let* ((f (car fs)) (slot (vector-ref slots i)) (label (pb-field-label f))
+               (present (not (eq? slot 'pb-absent))))
+          (loop (cdr fs) (+ i 1)
+                (cond
+                  ((and (eq? (pb-field-kind f) 'message) (not (eq? label 'map)))
+                   (let ((sub (pb-lookup-message "protobuf-decode" schema (pb-field-ref f))))
+                     (cond
+                       ((eq? label 'repeated)
+                        (cons (list (pb-field-name f)
+                                    (pb-decode-segments schema sub bv
+                                                        (if present (reverse slot) '())
+                                                        (+ depth 1)))
+                              entries))
+                       ((not present) entries)
+                       (else
+                        (let* ((segments (reverse slot))
+                               (value (if (null? (cdr segments))
+                                          (pb-decode-message schema sub bv
+                                                             (car (car segments))
+                                                             (cdr (car segments))
+                                                             (+ depth 1))
+                                          (let ((joined (pb-concat-segments bv segments)))
+                                            (pb-decode-message schema sub joined 0
+                                                               (bytevector-length joined)
+                                                               (+ depth 1))))))
+                          (cons (list (pb-field-name f) value) entries))))))
+                  ((pb-memq label '(repeated map))
+                   (cons (list (pb-field-name f) (if present (reverse slot) '())) entries))
+                  ((eq? label 'implicit)
+                   (cons (list (pb-field-name f) (if present slot (pb-default schema f)))
+                         entries))
+                  (present (cons (list (pb-field-name f) slot) entries))
+                  (else entries)))))))
+
+(define (pb-decode-segments schema desc bv segments depth)
+  (if (null? segments) '()
+      (cons (pb-decode-message schema desc bv (car (car segments)) (cdr (car segments)) depth)
+            (pb-decode-segments schema desc bv (cdr segments) depth))))
+
+(define (protobuf-decoder schema type)
+  (let ((desc (pb-lookup-message "protobuf-decoder" schema type)))
+    (lambda (bv)
+      (if (not (bytevector? bv)) (error "protobuf-decode: expected a bytevector" bv))
+      (pb-decode-message schema desc bv 0 (bytevector-length bv) 0))))
+
+(define (protobuf-decode schema type bv)
+  ((protobuf-decoder schema type) bv))
+
+;; ── .proto parser (proto3 message subset) ──────────────────────────────
+;;
+;; Accepts: syntax = "proto3"; package; option; message (nested messages
+;; and enums, scalar/message/enum fields, repeated, optional, map<K,V>,
+;; oneof, reserved, field options incl. [packed = false]); enum (values,
+;; options, reserved); service blocks are skipped. import and proto2
+;; constructs are refused with an error naming the construct.
+
+(define (pb-parse-error what token)
+  (error (string-append "protobuf-parse-proto: " what)
+         (if (vector? token) (vector-ref token 1) token)
+         (if (vector? token) (vector-ref token 2) 0)))
+
+(define (pb-ident-start? c) (or (char-alphabetic? c) (char=? c #\_)))
+(define (pb-ident-char? c) (or (char-alphabetic? c) (char-numeric? c) (char=? c #\_) (char=? c #\.)))
+
+;; Tokens: #(kind text line) with kind ident | number | string | punct.
+(define (pb-tokenize text)
+  (let ((n (string-length text)))
+    (define (scan-while i pred)
+      (if (and (< i n) (pred (string-ref text i))) (scan-while (+ i 1) pred) i))
+    (let loop ((i 0) (line 1) (out '()))
+      (if (>= i n)
+          (list->vector (reverse out))
+          (let ((c (string-ref text i)))
+            (cond
+              ((char=? c #\newline) (loop (+ i 1) (+ line 1) out))
+              ((char-whitespace? c) (loop (+ i 1) line out))
+              ((and (char=? c #\/) (< (+ i 1) n) (char=? (string-ref text (+ i 1)) #\/))
+               (loop (scan-while i (lambda (ch) (not (char=? ch #\newline)))) line out))
+              ((and (char=? c #\/) (< (+ i 1) n) (char=? (string-ref text (+ i 1)) #\*))
+               (let cloop ((j (+ i 2)) (line line))
+                 (cond ((>= (+ j 1) n) (pb-parse-error "unterminated comment" line))
+                       ((and (char=? (string-ref text j) #\*)
+                             (char=? (string-ref text (+ j 1)) #\/))
+                        (loop (+ j 2) line out))
+                       ((char=? (string-ref text j) #\newline) (cloop (+ j 1) (+ line 1)))
+                       (else (cloop (+ j 1) line)))))
+              ((or (pb-ident-start? c)
+                   (and (char=? c #\.) (< (+ i 1) n) (pb-ident-start? (string-ref text (+ i 1)))))
+               (let ((j (scan-while (+ i 1) pb-ident-char?)))
+                 (loop j line (cons (vector 'ident (substring text i j) line) out))))
+              ((char-numeric? c)
+               (let ((j (scan-while i (lambda (ch) (or (pb-ident-char? ch))))))
+                 (loop j line (cons (vector 'number (substring text i j) line) out))))
+              ((or (char=? c #\") (char=? c #\'))
+               (let sloop ((j (+ i 1)) (chars '()))
+                 (cond ((>= j n) (pb-parse-error "unterminated string" line))
+                       ((char=? (string-ref text j) c)
+                        (loop (+ j 1) line
+                              (cons (vector 'string (list->string (reverse chars)) line) out)))
+                       ((and (char=? (string-ref text j) #\\) (< (+ j 1) n))
+                        (sloop (+ j 2) (cons (string-ref text (+ j 1)) chars)))
+                       (else (sloop (+ j 1) (cons (string-ref text j) chars))))))
+              (else
+               (loop (+ i 1) line (cons (vector 'punct (string c) line) out)))))))))
+
+;; Parser state: #(tokens position).
+(define (pb-peek st)
+  (let ((ts (vector-ref st 0)) (p (vector-ref st 1)))
+    (if (< p (vector-length ts)) (vector-ref ts p) (vector 'eof "end of input" 0))))
+(define (pb-next! st)
+  (let ((t (pb-peek st)))
+    (if (eq? (vector-ref t 0) 'eof) (pb-parse-error "unexpected end of input" t))
+    (vector-set! st 1 (+ (vector-ref st 1) 1))
+    t))
+(define (pb-at? st text)
+  (let ((t (pb-peek st)))
+    (and (not (eq? (vector-ref t 0) 'string)) (string=? (vector-ref t 1) text))))
+(define (pb-expect! st text)
+  (let ((t (pb-next! st)))
+    (if (or (eq? (vector-ref t 0) 'string) (not (string=? (vector-ref t 1) text)))
+        (pb-parse-error (string-append "expected " text) t))
+    t))
+(define (pb-ident! st)
+  (let ((t (pb-next! st)))
+    (if (not (eq? (vector-ref t 0) 'ident)) (pb-parse-error "expected an identifier" t))
+    (vector-ref t 1)))
+
+(define (pb-digit-value c)
+  (cond ((char-numeric? c) (- (char->integer c) 48))
+        ((and (char>=? c #\a) (char<=? c #\f)) (- (char->integer c) 87))
+        ((and (char>=? c #\A) (char<=? c #\F)) (- (char->integer c) 55))
+        (else 99)))
+
+;; Decimal, 0x hexadecimal or 0-prefixed octal integer literal.
+(define (pb-parse-int-text text token)
+  (let* ((len (string-length text))
+         (hex (and (> len 2) (char=? (string-ref text 0) #\0)
+                   (or (char=? (string-ref text 1) #\x) (char=? (string-ref text 1) #\X))))
+         (octal (and (not hex) (> len 1) (char=? (string-ref text 0) #\0)))
+         (base (cond (hex 16) (octal 8) (else 10))))
+    (let loop ((i (cond (hex 2) (octal 1) (else 0))) (acc 0))
+      (if (= i len) acc
+          (let ((d (pb-digit-value (string-ref text i))))
+            (if (>= d base) (pb-parse-error "expected an integer" token))
+            (loop (+ i 1) (+ (* acc base) d)))))))
+
+(define (pb-int! st)
+  (let* ((negative (and (pb-at? st "-") (pb-next! st) #t))
+         (t (pb-next! st)))
+    (if (not (eq? (vector-ref t 0) 'number)) (pb-parse-error "expected an integer" t))
+    (let ((n (pb-parse-int-text (vector-ref t 1) t)))
+      (if negative (- n) n))))
+
+;; Skip tokens through the next ";" at bracket depth zero.
+(define (pb-skip-statement! st)
+  (let loop ((depth 0))
+    (let ((t (pb-next! st)) )
+      (cond ((and (= depth 0) (string=? (vector-ref t 1) ";") (eq? (vector-ref t 0) 'punct)) #t)
+            ((and (eq? (vector-ref t 0) 'punct)
+                  (or (string=? (vector-ref t 1) "{") (string=? (vector-ref t 1) "(")
+                      (string=? (vector-ref t 1) "[")))
+             (loop (+ depth 1)))
+            ((and (eq? (vector-ref t 0) 'punct)
+                  (or (string=? (vector-ref t 1) "}") (string=? (vector-ref t 1) ")")
+                      (string=? (vector-ref t 1) "]")))
+             (loop (- depth 1)))
+            (else (loop depth))))))
+
+(define (pb-skip-block! st)
+  (pb-expect! st "{")
+  (let loop ((depth 1))
+    (if (> depth 0)
+        (let ((t (pb-next! st)))
+          (cond ((and (eq? (vector-ref t 0) 'punct) (string=? (vector-ref t 1) "{"))
+                 (loop (+ depth 1)))
+                ((and (eq? (vector-ref t 0) 'punct) (string=? (vector-ref t 1) "}"))
+                 (loop (- depth 1)))
+                (else (loop depth)))))))
+
+;; Field options "[a = b, packed = false]". Returns #f when packed = false.
+(define (pb-field-options! st)
+  (if (pb-at? st "[")
+      (begin
+        (pb-next! st)
+        (let loop ((packed #t))
+          (let* ((name (vector-ref (pb-next! st) 1)))
+            (pb-expect! st "=")
+            (let* ((negative (and (pb-at? st "-") (pb-next! st)))
+                   (value (vector-ref (pb-next! st) 1))
+                   (packed (if (string=? name "packed") (string=? value "true") packed)))
+              (cond ((pb-at? st ",") (pb-next! st) (loop packed))
+                    (else (pb-expect! st "]") packed))))))
+      #t))
+
+;; A type reference recorded during parsing: #(pb-ref scope name token).
+(define (pb-type-form st scope text token)
+  (let ((sym (string->symbol text)))
+    (if (pb-memq sym pb-scalar-kinds) sym (vector 'pb-ref scope text token))))
+
+(define (pb-parse-field! st scope label)
+  (let* ((type-token (pb-peek st))
+         (type-text (pb-ident! st))
+         (name (pb-ident! st)))
+    (pb-expect! st "=")
+    (let* ((number (pb-int! st))
+           (packed (pb-field-options! st)))
+      (pb-expect! st ";")
+      (let ((base (pb-type-form st scope type-text type-token)))
+        (list 'field number (string->symbol name)
+              (cond ((string=? label "repeated")
+                     (if packed (list 'repeated base) (list 'repeated base 'unpacked)))
+                    ((string=? label "optional") (list 'optional base))
+                    (else base)))))))
+
+(define (pb-parse-map-field! st scope)
+  (pb-expect! st "map")
+  (pb-expect! st "<")
+  (let* ((key (string->symbol (pb-ident! st))))
+    (pb-expect! st ",")
+    (let* ((value-token (pb-peek st))
+           (value-text (pb-ident! st)))
+      (pb-expect! st ">")
+      (let ((name (pb-ident! st)))
+        (pb-expect! st "=")
+        (let ((number (pb-int! st)))
+          (pb-field-options! st)
+          (pb-expect! st ";")
+          (list 'field number (string->symbol name)
+                (list 'map key (pb-type-form st scope value-text value-token))))))))
+
+;; "reserved 2, 15, 9 to 11;" or "reserved "foo", "bar";" -> list of
+;; numbers, (lo . hi) ranges and name strings.
+(define (pb-parse-reserved! st)
+  (let loop ((out '()))
+    (let ((t (pb-peek st)))
+      (cond
+        ((eq? (vector-ref t 0) 'string)
+         (pb-next! st)
+         (pb-reserved-continue! st (cons (vector-ref t 1) out) loop))
+        (else
+         (let ((lo (pb-int! st)))
+           (if (pb-at? st "to")
+               (begin
+                 (pb-next! st)
+                 (let ((hi (if (pb-at? st "max") (begin (pb-next! st) pb-max-field-number)
+                               (pb-int! st))))
+                   (pb-reserved-continue! st (cons (cons lo hi) out) loop)))
+               (pb-reserved-continue! st (cons lo out) loop))))))))
+
+(define (pb-reserved-continue! st out loop)
+  (cond ((pb-at? st ",") (pb-next! st) (loop out))
+        (else (pb-expect! st ";") (reverse out))))
+
+;; Parse a message body; returns the list of (message ...)/(enum ...) forms
+;; it defines (itself first, then nested types), with unresolved references.
+(define (pb-parse-message! st scope)
+  (let* ((name (pb-ident! st))
+         (full (if scope (string-append scope "." name) name)))
+    (pb-expect! st "{")
+    (let loop ((decls '()) (nested '()) (reserved '()))
+      (cond
+        ((pb-at? st "}")
+         (pb-next! st)
+         (pb-check-reserved full decls reserved)
+         (cons (cons 'message (cons (string->symbol full) (reverse decls))) nested))
+        ((pb-at? st ";") (pb-next! st) (loop decls nested reserved))
+        ((pb-at? st "message")
+         (pb-next! st)
+         (loop decls (append nested (pb-parse-message! st full)) reserved))
+        ((pb-at? st "enum")
+         (pb-next! st)
+         (loop decls (append nested (list (pb-parse-enum! st full))) reserved))
+        ((pb-at? st "option") (pb-skip-statement! st) (loop decls nested reserved))
+        ((pb-at? st "reserved")
+         (pb-next! st)
+         (loop decls nested (append reserved (pb-parse-reserved! st))))
+        ((or (pb-at? st "extensions") (pb-at? st "extend") (pb-at? st "required")
+             (pb-at? st "group"))
+         (pb-parse-error "proto2 construct is not part of proto3" (pb-peek st)))
+        ((pb-at? st "map") (loop (cons (pb-parse-map-field! st full) decls) nested reserved))
+        ((pb-at? st "oneof")
+         (pb-next! st)
+         (let ((oneof-name (pb-ident! st)))
+           (pb-expect! st "{")
+           (let oloop ((members '()))
+             (cond ((pb-at? st "}")
+                    (pb-next! st)
+                    (loop (cons (cons 'oneof (cons (string->symbol oneof-name) (reverse members)))
+                                decls)
+                          nested reserved))
+                   ((pb-at? st "option") (pb-skip-statement! st) (oloop members))
+                   ((pb-at? st ";") (pb-next! st) (oloop members))
+                   (else (oloop (cons (pb-parse-field! st full "") members)))))))
+        ((or (pb-at? st "repeated") (pb-at? st "optional"))
+         (let ((label (vector-ref (pb-next! st) 1)))
+           (loop (cons (pb-parse-field! st full label) decls) nested reserved)))
+        (else (loop (cons (pb-parse-field! st full "") decls) nested reserved))))))
+
+(define (pb-check-reserved message decls reserved)
+  (define (fields-of ds)
+    (cond ((null? ds) '())
+          ((eq? (car (car ds)) 'oneof) (append (cddr (car ds)) (fields-of (cdr ds))))
+          (else (cons (car ds) (fields-of (cdr ds))))))
+  (let loop ((fs (fields-of decls)))
+    (if (pair? fs)
+        (let ((number (cadr (car fs))) (name (symbol->string (caddr (car fs)))))
+          (let rloop ((rs reserved))
+            (if (pair? rs)
+                (let ((r (car rs)))
+                  (if (or (and (string? r) (string=? r name))
+                          (and (pair? r) (>= number (car r)) (<= number (cdr r)))
+                          (and (pb-exact-integer? r) (= r number)))
+                      (pb-parse-error "field uses a reserved number or name" name))
+                  (rloop (cdr rs)))))
+          (loop (cdr fs))))))
+
+(define (pb-parse-enum! st scope)
+  (let* ((name (pb-ident! st))
+         (full (if scope (string-append scope "." name) name)))
+    (pb-expect! st "{")
+    (let loop ((values '()))
+      (cond
+        ((pb-at? st "}") (pb-next! st) (cons 'enum (cons (string->symbol full) (reverse values))))
+        ((pb-at? st ";") (pb-next! st) (loop values))
+        ((or (pb-at? st "option") (pb-at? st "reserved")) (pb-skip-statement! st) (loop values))
+        (else
+         (let ((value-name (pb-ident! st)))
+           (pb-expect! st "=")
+           (let ((number (pb-int! st)))
+             (pb-field-options! st)
+             (pb-expect! st ";")
+             (loop (cons (list (string->symbol value-name) number) values)))))))))
+
+;; Resolve "Name", "Outer.Name" or ".pkg.Name" against declared type names
+;; using protobuf scoping: innermost enclosing scope first.
+(define (pb-resolve ref names package)
+  (let* ((text (vector-ref ref 2))
+         (absolute (char=? (string-ref text 0) #\.))
+         (bare (if absolute (substring text 1 (string-length text)) text))
+         (prefix (if (and package (> (string-length bare) (string-length package)))
+                     (string-append package ".") #f))
+         (relative (if (and absolute prefix
+                            (string=? (substring bare 0 (string-length prefix)) prefix))
+                       (substring bare (string-length prefix) (string-length bare))
+                       bare)))
+    (define (found? s) (pb-memq (string->symbol s) names))
+    (if absolute
+        (if (found? relative) (string->symbol relative)
+            (pb-parse-error "unknown type" (vector-ref ref 3)))
+        (let loop ((scope (vector-ref ref 1)))
+          (let ((candidate (if scope (string-append scope "." relative) relative)))
+            (cond ((found? candidate) (string->symbol candidate))
+                  ((not scope) (pb-parse-error "unknown type" (vector-ref ref 3)))
+                  (else (loop (pb-parent-scope scope)))))))))
+
+(define (pb-parent-scope scope)
+  (let loop ((i (- (string-length scope) 1)))
+    (cond ((< i 0) #f)
+          ((char=? (string-ref scope i) #\.) (substring scope 0 i))
+          (else (loop (- i 1))))))
+
+(define (pb-resolve-type t messages enums package)
+  (cond
+    ((vector? t)
+     (let ((name (pb-resolve t (append messages enums) package)))
+       (if (pb-memq name messages) (list 'message name) (list 'enum name))))
+    ((pair? t)
+     (cons (car t)
+           (let loop ((rest (cdr t)))
+             (if (null? rest) '()
+                 (cons (pb-resolve-type (car rest) messages enums package)
+                       (loop (cdr rest)))))))
+    (else t)))
+
+(define (pb-resolve-decl d messages enums package)
+  (cond ((eq? (car d) 'field)
+         (list 'field (cadr d) (caddr d) (pb-resolve-type (cadddr d) messages enums package)))
+        ((eq? (car d) 'oneof)
+         (cons 'oneof (cons (cadr d)
+                            (let loop ((ms (cddr d)))
+                              (if (null? ms) '()
+                                  (cons (pb-resolve-decl (car ms) messages enums package)
+                                        (loop (cdr ms))))))))
+        (else d)))
+
+;; Parse proto3 source text into schema forms for protobuf-schema.
+(define (protobuf-parse-proto text)
+  (let ((st (vector (pb-tokenize text) 0)))
+    (if (not (pb-at? st "syntax"))
+        (pb-parse-error "the file must begin with syntax = \"proto3\";" (pb-peek st)))
+    (pb-next! st)
+    (pb-expect! st "=")
+    (let ((t (pb-next! st)))
+      (if (not (and (eq? (vector-ref t 0) 'string) (string=? (vector-ref t 1) "proto3")))
+          (pb-parse-error "only proto3 is supported" t)))
+    (pb-expect! st ";")
+    (let loop ((forms '()) (package #f))
+      (let ((t (pb-peek st)))
+        (cond
+          ((eq? (vector-ref t 0) 'eof) (pb-resolve-forms (reverse forms) package))
+          ((pb-at? st ";") (pb-next! st) (loop forms package))
+          ((pb-at? st "package")
+           (pb-next! st)
+           (let ((name (pb-ident! st))) (pb-expect! st ";") (loop forms name)))
+          ((pb-at? st "import")
+           (pb-parse-error "import is not supported; include the imported definitions" t))
+          ((pb-at? st "option") (pb-skip-statement! st) (loop forms package))
+          ((pb-at? st "message")
+           (pb-next! st)
+           (loop (append (reverse (pb-parse-message! st #f)) forms) package))
+          ((pb-at? st "enum")
+           (pb-next! st)
+           (loop (cons (pb-parse-enum! st #f) forms) package))
+          ((pb-at? st "service")
+           (pb-next! st) (pb-ident! st) (pb-skip-block! st) (loop forms package))
+          (else (pb-parse-error "unexpected token" t)))))))
+
+(define (pb-resolve-forms forms package)
+  (let* ((messages (let loop ((fs forms))
+                     (cond ((null? fs) '())
+                           ((eq? (car (car fs)) 'message) (cons (cadr (car fs)) (loop (cdr fs))))
+                           (else (loop (cdr fs))))))
+         (enums (let loop ((fs forms))
+                  (cond ((null? fs) '())
+                        ((eq? (car (car fs)) 'enum) (cons (cadr (car fs)) (loop (cdr fs))))
+                        (else (loop (cdr fs)))))))
+    (let loop ((fs forms))
+      (if (null? fs) '()
+          (cons (let ((f (car fs)))
+                  (if (eq? (car f) 'message)
+                      (cons 'message
+                            (cons (cadr f)
+                                  (let dloop ((ds (cddr f)))
+                                    (if (null? ds) '()
+                                        (cons (pb-resolve-decl (car ds) messages enums package)
+                                              (dloop (cdr ds)))))))
+                      f))
+                (loop (cdr fs)))))))
+
+(define (protobuf-schema-from-proto text)
+  (protobuf-schema (protobuf-parse-proto text)))

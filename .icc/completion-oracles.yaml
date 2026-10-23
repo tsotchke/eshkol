@@ -2340,7 +2340,7 @@ oracles:
           event_names: ["v14_protobuf_roundtrip"]
           event_values: ["PASS"]
         severity: medium
-        label: 'Protocol Buffers, proto3 (#163): a parser/compiler subset sufficient for generated encoders/decoders — NOT YET IMPLEMENTED (lib/core/onnx_export.c hand-writes protobuf wire bytes for ONE fixed ONNX schema; no .proto parser or schema compiler exists)'
+        label: 'Protocol Buffers, proto3 (#163): a parser/compiler subset sufficient for generated encoders/decoders — lib/core/protobuf.esk parses proto3 .proto text, compiles schemas and returns per-type encoder/decoder closures; scripts/run_wire_format_gate.py --suite protobuf --all-routes requires hand-derived spec wire bytes, unknown-field preservation and malformed-input refusal on JIT, O1 AOT, VM source and ESKB, plus the native wire primitives (inc/eshkol/core/protobuf_wire.h) shared by the ONNX writer and PJRT client'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────

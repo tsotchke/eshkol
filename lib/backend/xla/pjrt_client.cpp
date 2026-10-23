@@ -24,6 +24,7 @@
  */
 
 #include "eshkol/backend/xla/pjrt_client.h"
+#include "eshkol/core/protobuf_wire.h"
 
 #include <dlfcn.h>
 // findPjrtPlugin() below probes candidate plugin paths with ::access(..., R_OK);
@@ -106,25 +107,28 @@ std::string pjrtString(const char* data, size_t size) {
  * a compile with num_replicas = 2, 4 and 8 and no assignment loaded, reported
  * N addressable devices in order, and ran with per-replica argument lists.
  */
+// Tags and varints are written by the shared protobuf wire primitives
+// (inc/eshkol/core/protobuf_wire.h), the same encoder the ONNX writer uses.
 void appendVarint(std::vector<unsigned char>* out, uint64_t v) {
-    while (v >= 0x80) {
-        out->push_back(static_cast<unsigned char>((v & 0x7F) | 0x80));
-        v >>= 7;
-    }
-    out->push_back(static_cast<unsigned char>(v));
+    uint8_t bytes[ESHKOL_PB_VARINT_MAX_BYTES];
+    out->insert(out->end(), bytes, bytes + eshkol_pb_write_varint(bytes, v));
+}
+
+void appendTag(std::vector<unsigned char>* out, uint32_t field, uint32_t wire_type) {
+    appendVarint(out, eshkol_pb_tag_key(field, wire_type));
 }
 
 std::vector<unsigned char> encodeCompileOptions(int num_replicas) {
     // ExecutableBuildOptionsProto { 4: num_replicas, 5: num_partitions = 1 }
     std::vector<unsigned char> build_options;
-    build_options.push_back(0x20);                       // field 4, VARINT
+    appendTag(&build_options, 4, ESHKOL_PB_WIRE_VARINT);    // 0x20
     appendVarint(&build_options, static_cast<uint64_t>(num_replicas));
-    build_options.push_back(0x28);                       // field 5, VARINT
+    appendTag(&build_options, 5, ESHKOL_PB_WIRE_VARINT);    // 0x28
     appendVarint(&build_options, 1);
 
     // CompileOptionsProto { 3: build_options }
     std::vector<unsigned char> out;
-    out.push_back(0x1A);                                 // field 3, LEN
+    appendTag(&out, 3, ESHKOL_PB_WIRE_LEN);                 // 0x1A
     appendVarint(&out, build_options.size());
     out.insert(out.end(), build_options.begin(), build_options.end());
     return out;

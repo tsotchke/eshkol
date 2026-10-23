@@ -676,7 +676,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | CSV | Yes | - | Read and write |
 | Base64 | Yes | - | Encode and decode |
 | MessagePack | Yes | Stable | `lib/core/msgpack.esk`; see `docs/reference/stdlib/msgpack.md` |
-| Protocol Buffers | Planned | - | Planned |
+| Protocol Buffers | Yes | v1.4.0 | proto3: `.proto` parser, schema compiler and generated encoders/decoders in `lib/core/protobuf.esk`; see `docs/reference/stdlib/protobuf.md` |
 | **Databases** |
 | SQLite | Yes | v1.2 | `agent.sqlite` FFI module; see `docs/reference/agent/sqlite.md` |
 | PostgreSQL | Planned | - | Planned |

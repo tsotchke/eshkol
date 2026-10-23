@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 104** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1104** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 106** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1123** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -115,6 +115,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.operators.compare`](../../../lib/core/operators/compare.esk) | yes | [operators_compare.md](operators_compare.md) | `lt` `gt` `le` `ge` `eq` |
 | [`core.pde.ns-residual`](../../../lib/core/pde/ns-residual.esk) | yes | [ns-residual.md](ns-residual.md) | `ns-flow` `ns-flow-ur` `ns-flow-utheta` `ns-flow-uz` `ns-flow-p` `ns-flow-nu` `ns-cflow` `ns-cflow-u` `ns-cflow-p` `ns-cflow-nu` `ns-residual` `ns-residual-cartesian` `ns-divergence` `ns-divergence-cartesian` `ns-simpson-nodes` `ns-simpson-weights` `ns-simpson-step` `ns-grid-integral` `ns-energy` `ns-dissipation` `ns-similarity-field` `ns-residual-tau-series` `ns-singular-orders` `ns-force-smoothness-probe` |
 | [`core.plot`](../../../lib/core/plot.esk) | yes | [plot.md](plot.md) | `sparkline` `bar-chart` `histogram` |
+| [`core.protobuf`](../../../lib/core/protobuf.esk) | no | [protobuf.md](protobuf.md) | `protobuf-schema` `protobuf-schema?` `protobuf-schema-from-proto` `protobuf-parse-proto` `protobuf-message` `protobuf-message?` `protobuf-message-type` `protobuf-message-entries` `protobuf-message-unknown` `protobuf-ref` `protobuf-has?` `protobuf-encode` `protobuf-decode` `protobuf-encoder` `protobuf-decoder` `protobuf-enum-number` `protobuf-enum-name` |
 | [`core.reflection`](../../../lib/core/reflection.esk) | yes | [reflection.md](reflection.md) | `describe` `type-name` |
 | [`core.sdnc`](../../../lib/core/sdnc.esk) | no | [sdnc.md](sdnc.md) | `sdnc-program` `sdnc-run` `sdnc-weight-grad` `sdnc-params` `sdnc-set-params!` `sdnc-improve!` `sdnc?` |
 | [`core.sexp`](../../../lib/core/sexp.esk) | yes | [sexp.md](sexp.md) | `sexp->string` `sexp->canonical-string` |
@@ -124,6 +125,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.testing`](../../../lib/core/testing.esk) | no | [testing.md](testing.md) | `register-test` `check-equal?` `check-true` `check-false` `check-approx` `assert-close` `certify-kernel` `check-raises` `run-tests` `reset-tests!` `*tests*` `*test-pass-count*` `*test-fail-count*` `*current-test-fails*` `*current-test-name*` |
 | [`core.threads`](../../../lib/core/threads.esk) | no | [threads.md](threads.md) | `make-mutex` `mutex-lock!` `mutex-trylock!` `mutex-unlock!` `mutex-destroy!` `with-mutex` `make-condvar` `condvar-wait!` `condvar-signal!` `condvar-broadcast!` `condvar-destroy!` `make-thread` `thread-join` `thread?` `thread-result-ready?` |
 | [`core.url`](../../../lib/core/url.esk) | yes | [url.md](url.md) | `url-encode` `url-decode` `base64url-encode` `base64url-decode` |
+| [`core.utf8`](../../../lib/core/utf8.esk) | no | [utf8.md](utf8.md) | `utf8-require-valid` `utf8-valid-range?` |
 | [`math`](../../../lib/math.esk) | no | [math.md](math.md) | `mat-ref` `tensor-copy` `det` `inv` `solve` `cross` `dot` `normalize` `mat-vec-mul` `power-iteration` `integrate` `newton` `variance` `std` `covariance` |
 | [`ml.activations`](../../../lib/ml/activations.esk) | no | [ml_activations.md](ml_activations.md) | `relu-scalar` `sigmoid-scalar` `tanh-scalar` `softplus-scalar` `silu` `swish` `mish` `normalize-minmax` `normalize-zscore` |
 | [`ml.optimization`](../../../lib/ml/optimization.esk) | yes | [ml_optimization.md](ml_optimization.md) | `gradient-descent` `adam` `l-bfgs` `conjugate-gradient` `line-search` `tensor-dot` `tensor-norm` |

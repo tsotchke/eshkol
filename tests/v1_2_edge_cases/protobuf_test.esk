@@ -1,0 +1,414 @@
+;;; protobuf_test.esk — Protocol Buffers (proto3) wire format, core.protobuf
+;;;
+;;; Every expected byte string is derived by hand from the protobuf encoding
+;;; specification (https://protobuf.dev/programming-guides/encoding/); the
+;;; derivation is written beside each vector. No protoc is involved. The
+;;; native wire primitives are pinned to the same vectors by
+;;; tests/core/protobuf_wire_test.c.
+
+(require core.testing)
+(require core.protobuf)
+
+(reset-tests!)
+
+;; ── helpers ────────────────────────────────────────────────────────────
+
+(define (bv->list bv)
+  (let loop ((i (- (bytevector-length bv) 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons (bytevector-u8-ref bv i) acc)))))
+
+(define (list->bv bytes)
+  (let ((bv (make-bytevector (length bytes) 0)))
+    (let loop ((i 0) (rest bytes))
+      (if (null? rest) bv
+          (begin (bytevector-u8-set! bv i (car rest)) (loop (+ i 1) (cdr rest)))))))
+
+(define (repeat n x) (if (= n 0) '() (cons x (repeat (- n 1) x))))
+
+;; Structural equality that also compares bytevectors and protobuf messages
+;; (equal? on bytevectors is identity on some routes).
+(define (value=? a b)
+  (cond
+    ((and (bytevector? a) (bytevector? b)) (equal? (bv->list a) (bv->list b)))
+    ((and (protobuf-message? a) (protobuf-message? b))
+     (and (eq? (protobuf-message-type a) (protobuf-message-type b))
+          (value=? (protobuf-message-entries a) (protobuf-message-entries b))
+          (value=? (protobuf-message-unknown a) (protobuf-message-unknown b))))
+    ((and (pair? a) (pair? b)) (and (value=? (car a) (car b)) (value=? (cdr a) (cdr b))))
+    ((and (number? a) (number? b))
+     (if (and (inexact? a) (inexact? b) (nan? a)) (nan? b) (and (eq? (exact? a) (exact? b)) (= a b))))
+    ((and (string? a) (string? b)) (string=? a b))
+    (else (eqv? a b))))
+
+(define (check-wire bv expected) (check-equal? (bv->list bv) expected))
+
+(define schema
+  (protobuf-schema
+   '((message Test1 (field 1 a int32))
+     (message Test2 (field 2 b string))
+     (message Test3 (field 3 c (message Test1)))
+     (message Test4 (field 6 d (repeated int32)))
+     (message Scalars
+       (field 1 i32 int32) (field 2 i64 int64) (field 3 u32 uint32) (field 4 u64 uint64)
+       (field 5 s32 sint32) (field 6 s64 sint64) (field 7 f32 fixed32) (field 8 f64 fixed64)
+       (field 9 sf32 sfixed32) (field 10 sf64 sfixed64) (field 11 flag bool)
+       (field 12 fl float) (field 13 db double) (field 14 text string) (field 15 raw bytes)
+       (field 16 kind (enum Kind)))
+     (message Presence (field 1 opt (optional int32)) (field 2 plain int32)
+                       (field 3 sub (message Test1)))
+     (message Lists (field 1 nums (repeated int32)) (field 2 loose (repeated int32 unpacked))
+                    (field 3 fixed (repeated fixed32)) (field 4 names (repeated string))
+                    (field 5 kids (repeated (message Test1))) (field 6 dbl (repeated double)))
+     (message Maps (field 1 counts (map string int32)) (field 2 nodes (map int64 (message Test1)))
+                   (field 3 kinds (map bool (enum Kind))))
+     (message Choice (oneof pick (field 1 name string) (field 2 id int32)) (field 3 tail int32))
+     (message Node (field 1 child (message Node)) (field 2 v int32))
+     (enum Kind (KIND_UNSPECIFIED 0) (PERSONAL 1) (WORK 2)))))
+
+(define (enc type entries) (protobuf-encode schema type (protobuf-message type entries)))
+(define (dec type bytes) (protobuf-decode schema type (list->bv bytes)))
+(define (field-of type bytes name) (protobuf-ref schema (dec type bytes) name))
+
+;; ── specification worked examples ──────────────────────────────────────
+
+(register-test "spec examples: Test1 a=150, Test2 b=testing, Test3 nested, packed d"
+  (lambda ()
+    ;; tag (1<<3)|0 = 08; 150 = 0b1_0010110 -> 96 01
+    (check-wire (enc 'Test1 '((a 150))) '(#x08 #x96 #x01))
+    ;; tag (2<<3)|2 = 12; length 7; "testing"
+    (check-wire (enc 'Test2 '((b "testing"))) '(#x12 #x07 #x74 #x65 #x73 #x74 #x69 #x6e #x67))
+    ;; tag (3<<3)|2 = 1a; length 3; Test1 bytes
+    (check-wire (enc 'Test3 (list (list 'c (protobuf-message 'Test1 '((a 150))))))
+                '(#x1a #x03 #x08 #x96 #x01))
+    ;; tag (6<<3)|2 = 32; payload 03 | 8e 02 (270) | 9e a7 05 (86942)
+    (check-wire (enc 'Test4 '((d (3 270 86942)))) '(#x32 #x06 #x03 #x8e #x02 #x9e #xa7 #x05))
+    (check-equal? (field-of 'Test1 '(#x08 #x96 #x01) 'a) 150)
+    (check-equal? (field-of 'Test2 '(#x12 #x07 #x74 #x65 #x73 #x74 #x69 #x6e #x67) 'b) "testing")
+    (check-equal? (protobuf-ref schema (field-of 'Test3 '(#x1a #x03 #x08 #x96 #x01) 'c) 'a) 150)
+    (check-equal? (field-of 'Test4 '(#x32 #x06 #x03 #x8e #x02 #x9e #xa7 #x05) 'd) '(3 270 86942))))
+
+;; ── integer encodings ──────────────────────────────────────────────────
+
+(define ff9 (repeat 9 #xff))
+
+(register-test "varint integers: negative int32/int64 take ten bytes, uint64 reaches 2^64-1"
+  (lambda ()
+    ;; int32 -1 sign-extends to 64 bits: ff x9 01
+    (check-wire (enc 'Scalars '((i32 -1))) (cons #x08 (append ff9 '(#x01))))
+    (check-wire (enc 'Scalars '((i64 -1))) (cons #x10 (append ff9 '(#x01))))
+    ;; int32 min: 2^64 - 2^31 = ff ff ff ff ff ff ff ff ff 01 less high bits: 80 80 80 80 f8 ff ff ff ff 01
+    (check-wire (enc 'Scalars '((i32 -2147483648)))
+                '(#x08 #x80 #x80 #x80 #x80 #xf8 #xff #xff #xff #xff #x01))
+    (check-wire (enc 'Scalars '((i64 -9223372036854775808)))
+                '(#x10 #x80 #x80 #x80 #x80 #x80 #x80 #x80 #x80 #x80 #x01))
+    (check-wire (enc 'Scalars '((u32 4294967295))) '(#x18 #xff #xff #xff #xff #x0f))
+    (check-wire (enc 'Scalars '((u64 18446744073709551615))) (cons #x20 (append ff9 '(#x01))))
+    (check-wire (enc 'Scalars '((i64 9223372036854775807)))
+                (cons #x10 (append (repeat 8 #xff) '(#x7f))))
+    (check-equal? (field-of 'Scalars (cons #x08 (append ff9 '(#x01))) 'i32) -1)
+    (check-equal? (field-of 'Scalars (cons #x20 (append ff9 '(#x01))) 'u64) 18446744073709551615)
+    (check-equal? (field-of 'Scalars '(#x10 #x80 #x80 #x80 #x80 #x80 #x80 #x80 #x80 #x80 #x01) 'i64)
+                  -9223372036854775808)
+    ;; A 64-bit varint read as int32 keeps the low 32 bits (2^32 + 5 -> 5).
+    (check-equal? (field-of 'Scalars '(#x08 #x85 #x80 #x80 #x80 #x10) 'i32) 5)))
+
+(register-test "zigzag sint32/sint64 and bool"
+  (lambda ()
+    ;; zigzag: 0->0 -1->1 1->2 -2->3; int32 min -> 2^32-1; int64 min -> 2^64-1
+    (check-wire (enc 'Scalars '((s32 -1))) '(#x28 #x01))
+    (check-wire (enc 'Scalars '((s32 1))) '(#x28 #x02))
+    (check-wire (enc 'Scalars '((s32 -2))) '(#x28 #x03))
+    (check-wire (enc 'Scalars '((s32 -2147483648))) '(#x28 #xff #xff #xff #xff #x0f))
+    (check-wire (enc 'Scalars '((s32 2147483647))) '(#x28 #xfe #xff #xff #xff #x0f))
+    (check-wire (enc 'Scalars '((s64 -9223372036854775808))) (cons #x30 (append ff9 '(#x01))))
+    (check-wire (enc 'Scalars '((s64 9223372036854775807)))
+                (cons #x30 (append '(#xfe) (repeat 8 #xff) '(#x01))))
+    (check-equal? (field-of 'Scalars '(#x28 #x03) 's32) -2)
+    (check-equal? (field-of 'Scalars (cons #x30 (append ff9 '(#x01))) 's64) -9223372036854775808)
+    (check-wire (enc 'Scalars '((flag #t))) '(#x58 #x01))
+    (check-equal? (field-of 'Scalars '(#x58 #x01) 'flag) #t)
+    ;; Any non-zero varint is true.
+    (check-equal? (field-of 'Scalars '(#x58 #x02) 'flag) #t)))
+
+(register-test "fixed32/fixed64/sfixed32/sfixed64 are little-endian"
+  (lambda ()
+    ;; tags: 7<<3|5 = 3d, 8<<3|1 = 41, 9<<3|5 = 4d, 10<<3|1 = 51
+    (check-wire (enc 'Scalars '((f32 305419896))) '(#x3d #x78 #x56 #x34 #x12))
+    (check-wire (enc 'Scalars '((f64 1311768467294899695)))
+                '(#x41 #xef #xcd #xab #x90 #x78 #x56 #x34 #x12))
+    (check-wire (enc 'Scalars '((sf32 -1))) '(#x4d #xff #xff #xff #xff))
+    (check-wire (enc 'Scalars '((sf64 -2))) '(#x51 #xfe #xff #xff #xff #xff #xff #xff #xff))
+    (check-wire (enc 'Scalars '((f64 18446744073709551615))) (cons #x41 (repeat 8 #xff)))
+    (check-equal? (field-of 'Scalars '(#x4d #xff #xff #xff #xff) 'sf32) -1)
+    (check-equal? (field-of 'Scalars '(#x51 #x00 #x00 #x00 #x00 #x00 #x00 #x00 #x80) 'sf64)
+                  -9223372036854775808)
+    (check-equal? (field-of 'Scalars '(#x3d #x78 #x56 #x34 #x12) 'f32) 305419896)))
+
+;; ── floating point ─────────────────────────────────────────────────────
+
+(register-test "double and float IEEE-754 bit patterns"
+  (lambda ()
+    ;; double tag 13<<3|1 = 69; float tag 12<<3|5 = 65
+    ;; 1.0 = 0x3FF0000000000000; -2.5 = 0xC004000000000000; 0.1 = 0x3FB999999999999A
+    (check-wire (enc 'Scalars '((db 1.0))) '(#x69 0 0 0 0 0 0 #xf0 #x3f))
+    (check-wire (enc 'Scalars '((db -2.5))) '(#x69 0 0 0 0 0 0 #x04 #xc0))
+    (check-wire (enc 'Scalars '((db 0.1))) '(#x69 #x9a #x99 #x99 #x99 #x99 #x99 #xb9 #x3f))
+    ;; smallest subnormal 2^-1074 = bits 1; +inf = 0x7FF0000000000000
+    (check-wire (enc 'Scalars (list (list 'db (expt 2.0 -1074)))) '(#x69 1 0 0 0 0 0 0 0))
+    (check-wire (enc 'Scalars (list (list 'db (/ 1.0 0.0)))) '(#x69 0 0 0 0 0 0 #xf0 #x7f))
+    ;; -0.0 has a non-zero bit pattern, so implicit presence still writes it.
+    (check-wire (enc 'Scalars (list (list 'db (* -1.0 0.0)))) '(#x69 0 0 0 0 0 0 0 #x80))
+    ;; float: 1.0 = 0x3F800000; 0.1 rounds to 0x3DCCCCCD; max = 0x7F7FFFFF
+    (check-wire (enc 'Scalars '((fl 1.0))) '(#x65 0 0 #x80 #x3f))
+    (check-wire (enc 'Scalars '((fl 0.1))) '(#x65 #xcd #xcc #xcc #x3d))
+    (check-wire (enc 'Scalars '((fl 3.4028234663852886e38))) '(#x65 #xff #xff #x7f #x7f))
+    ;; ties to even: 1 + 2^-24 -> 1.0; 1 + 3*2^-24 -> 1 + 2^-22 (0x3F800002)
+    (check-wire (enc 'Scalars (list (list 'fl (+ 1.0 (expt 2.0 -24))))) '(#x65 0 0 #x80 #x3f))
+    (check-wire (enc 'Scalars (list (list 'fl (+ 1.0 (* 3.0 (expt 2.0 -24))))))
+                '(#x65 #x02 0 #x80 #x3f))
+    ;; smallest float subnormal 2^-149 = bits 1; beyond float range -> +inf
+    (check-wire (enc 'Scalars (list (list 'fl (expt 2.0 -149)))) '(#x65 1 0 0 0))
+    (check-wire (enc 'Scalars '((fl 1e39))) '(#x65 0 0 #x80 #x7f))
+    (check-wire (enc 'Scalars (list (list 'fl (/ 0.0 0.0)))) '(#x65 0 0 #xc0 #x7f))
+    (check-equal? (field-of 'Scalars '(#x69 #x9a #x99 #x99 #x99 #x99 #x99 #xb9 #x3f) 'db) 0.1)
+    (check-equal? (field-of 'Scalars '(#x69 1 0 0 0 0 0 0 0) 'db) (expt 2.0 -1074))
+    (check-equal? (field-of 'Scalars '(#x65 #xcd #xcc #xcc #x3d) 'fl) 0.10000000149011612)
+    (check-equal? (field-of 'Scalars '(#x65 1 0 0 0) 'fl) (expt 2.0 -149))
+    (check-true (nan? (field-of 'Scalars '(#x65 0 0 #xc0 #x7f) 'fl)))
+    (check-true (< (/ 1.0 (field-of 'Scalars '(#x69 0 0 0 0 0 0 0 #x80) 'db)) 0))))
+
+;; ── strings, bytes, enums ──────────────────────────────────────────────
+
+(register-test "strings are UTF-8, bytes are raw, enums are open"
+  (lambda ()
+    ;; tag 14<<3|2 = 72; "é" = c3 a9; tag 15<<3|2 = 7a
+    (check-wire (enc 'Scalars (list (list 'text (string (integer->char 233))))) '(#x72 #x02 #xc3 #xa9))
+    (check-wire (enc 'Scalars (list (list 'raw (bytevector 0 255 16)))) '(#x7a #x03 #x00 #xff #x10))
+    (check-equal? (field-of 'Scalars '(#x72 #x02 #xc3 #xa9) 'text) (string (integer->char 233)))
+    (check-true (value=? (field-of 'Scalars '(#x7a #x03 #x00 #xff #x10) 'raw) (bytevector 0 255 16)))
+    ;; tag 16<<3|0 = 128 -> 80 01
+    (check-wire (enc 'Scalars '((kind WORK))) '(#x80 #x01 #x02))
+    (check-wire (enc 'Scalars '((kind 2))) '(#x80 #x01 #x02))
+    (check-equal? (field-of 'Scalars '(#x80 #x01 #x02) 'kind) 'WORK)
+    ;; An undeclared enum number survives as its integer.
+    (check-equal? (field-of 'Scalars '(#x80 #x01 #x07) 'kind) 7)
+    (check-wire (enc 'Scalars '((kind 7))) '(#x80 #x01 #x07))
+    (check-equal? (protobuf-enum-number schema 'Kind 'PERSONAL) 1)
+    (check-equal? (protobuf-enum-name schema 'Kind 1) 'PERSONAL)))
+
+;; ── presence and defaults ──────────────────────────────────────────────
+
+(register-test "implicit presence omits defaults; optional and messages keep presence"
+  (lambda ()
+    (check-wire (enc 'Scalars '((i32 0) (text "") (flag #f) (db 0.0) (kind KIND_UNSPECIFIED))) '())
+    (check-wire (enc 'Presence '((opt 0))) '(#x08 #x00))
+    (check-wire (enc 'Presence '((plain 0))) '())
+    ;; An empty sub-message is present: tag 1a, length 0.
+    (check-wire (enc 'Presence (list (list 'sub (protobuf-message 'Test1 '())))) '(#x1a #x00))
+    (let ((empty (dec 'Presence '())))
+      (check-false (protobuf-has? schema empty 'opt))
+      (check-false (protobuf-has? schema empty 'sub))
+      (check-equal? (protobuf-ref schema empty 'opt) 0)
+      (check-equal? (protobuf-ref schema empty 'plain) 0)
+      (check-equal? (protobuf-ref schema (protobuf-ref schema empty 'sub) 'a) 0)
+      (check-equal? (protobuf-message-entries empty) '((plain 0))))
+    (let ((m (dec 'Presence '(#x08 #x00 #x1a #x00))))
+      (check-true (protobuf-has? schema m 'opt))
+      (check-true (protobuf-has? schema m 'sub)))
+    (let ((d (dec 'Scalars '())))
+      (check-equal? (protobuf-ref schema d 'kind) 'KIND_UNSPECIFIED)
+      (check-equal? (protobuf-ref schema d 'text) "")
+      (check-equal? (protobuf-ref schema d 'db) 0.0))))
+
+;; ── repeated fields ────────────────────────────────────────────────────
+
+(register-test "repeated: packed by default, unpacked on request, both accepted on decode"
+  (lambda ()
+    (check-wire (enc 'Lists '((nums (1 2 150)))) '(#x0a #x04 #x01 #x02 #x96 #x01))
+    (check-wire (enc 'Lists '((loose (1 2)))) '(#x10 #x01 #x10 #x02))
+    (check-wire (enc 'Lists '((fixed (1 2)))) '(#x1a #x08 1 0 0 0 2 0 0 0))
+    (check-wire (enc 'Lists '((names ("a" "")))) '(#x22 #x01 #x61 #x22 #x00))
+    (check-wire (enc 'Lists (list (list 'kids (list (protobuf-message 'Test1 '((a 1)))
+                                                    (protobuf-message 'Test1 '())))))
+                '(#x2a #x02 #x08 #x01 #x2a #x00))
+    (check-wire (enc 'Lists '((nums ()))) '())
+    ;; Unpacked elements of a packed field, packed elements of an unpacked
+    ;; field, and a mix of both all decode in wire order.
+    (check-equal? (field-of 'Lists '(#x08 #x01 #x08 #x02) 'nums) '(1 2))
+    (check-equal? (field-of 'Lists '(#x12 #x02 #x05 #x06) 'loose) '(5 6))
+    (check-equal? (field-of 'Lists '(#x08 #x01 #x0a #x02 #x02 #x03 #x08 #x04) 'nums) '(1 2 3 4))
+    (check-equal? (field-of 'Lists '(#x1d 7 0 0 0 #x1a #x04 8 0 0 0) 'fixed) '(7 8))
+    (check-equal? (field-of 'Lists '(#x32 #x08 0 0 0 0 0 0 #xf0 #x3f) 'dbl) '(1.0))
+    (check-equal? (length (field-of 'Lists '(#x2a #x02 #x08 #x01 #x2a #x00) 'kids)) 2)))
+
+;; ── maps ───────────────────────────────────────────────────────────────
+
+(register-test "map fields are repeated key/value entries; last key wins"
+  (lambda ()
+    ;; entry {1: "a", 2: 1} = 0a 01 61 10 01, wrapped in field 1 (0a 05 ...)
+    (check-wire (enc 'Maps '((counts (("a" 1))))) '(#x0a #x05 #x0a #x01 #x61 #x10 #x01))
+    ;; key and value are written even when they are defaults
+    (check-wire (enc 'Maps '((counts (("" 0))))) '(#x0a #x04 #x0a #x00 #x10 #x00))
+    (check-wire (enc 'Maps (list (list 'nodes (list (list -1 (protobuf-message 'Test1 '((a 5))))))))
+                (append '(#x12 #x0f #x08) ff9 '(#x01 #x12 #x02 #x08 #x05)))
+    (check-wire (enc 'Maps '((kinds ((#t WORK))))) '(#x1a #x04 #x08 #x01 #x10 #x02))
+    (check-equal? (field-of 'Maps '(#x0a #x05 #x0a #x01 #x61 #x10 #x01
+                                    #x0a #x05 #x0a #x01 #x62 #x10 #x02
+                                    #x0a #x05 #x0a #x01 #x61 #x10 #x03) 'counts)
+                  '(("a" 3) ("b" 2)))
+    ;; Missing key and value take their defaults.
+    (check-equal? (field-of 'Maps '(#x0a #x00) 'counts) '(("" 0)))))
+
+;; ── oneof ──────────────────────────────────────────────────────────────
+
+(register-test "oneof: the last member on the wire wins; encoding refuses two members"
+  (lambda ()
+    (check-wire (enc 'Choice '((id 0))) '(#x10 #x00))
+    (let ((m (dec 'Choice '(#x0a #x01 #x78 #x10 #x07 #x18 #x01))))
+      (check-equal? (protobuf-message-entries m) '((id 7) (tail 1))))
+    (let ((m (dec 'Choice '(#x10 #x07 #x0a #x01 #x78))))
+      (check-equal? (protobuf-message-entries m) '((name "x") (tail 0))))
+    (check-raises (lambda () (enc 'Choice '((name "x") (id 1)))))))
+
+;; ── merging and unknown fields ─────────────────────────────────────────
+
+(register-test "repeated singular fields: last scalar wins, messages merge"
+  (lambda ()
+    (check-equal? (field-of 'Test1 '(#x08 #x01 #x08 #x02) 'a) 2)
+    ;; Presence{sub={a=1}} then Presence{sub={}} merges to sub={a=1};
+    ;; then a second sub={a=9} overrides a.
+    (check-equal? (protobuf-ref schema (field-of 'Presence '(#x1a #x02 #x08 #x01 #x1a #x00) 'sub) 'a) 1)
+    (check-equal? (protobuf-ref schema (field-of 'Presence '(#x1a #x02 #x08 #x01 #x1a #x02 #x08 #x09) 'sub) 'a)
+                  9)))
+
+(define with-unknown
+  ;; Test1 bytes plus unknown fields of every wire type, in this order:
+  ;; a=150 | f2 varint 5 | f3 fixed64 | f4 LEN "hi" | f5 fixed32 | f6 group{f1=1} | f7 varint
+  (append '(#x08 #x96 #x01)
+          '(#x10 #x05)
+          '(#x19 1 2 3 4 5 6 7 8)
+          '(#x22 #x02 #x68 #x69)
+          '(#x2d 9 9 9 9)
+          '(#x33 #x08 #x01 #x34)
+          '(#x38 #x80 #x01)))
+
+(register-test "unknown fields of every wire type are preserved byte-for-byte"
+  (lambda ()
+    (let ((m (dec 'Test1 with-unknown)))
+      (check-equal? (protobuf-ref schema m 'a) 150)
+      (check-equal? (bv->list (protobuf-message-unknown m)) (list-tail with-unknown 3))
+      (check-wire (protobuf-encode schema 'Test1 m) with-unknown))
+    ;; A known field arriving with another wire type is kept as unknown.
+    (let ((m (dec 'Test1 '(#x0d 1 0 0 0))))
+      (check-equal? (protobuf-ref schema m 'a) 0)
+      (check-wire (protobuf-encode schema 'Test1 m) '(#x0d 1 0 0 0)))
+    ;; Unknown bytes inside a nested message stay with that message.
+    (let ((m (dec 'Test3 '(#x1a #x04 #x08 #x01 #x10 #x02))))
+      (check-equal? (bv->list (protobuf-message-unknown m)) '())
+      (check-equal? (bv->list (protobuf-message-unknown (protobuf-ref schema m 'c))) '(#x10 #x02))
+      (check-wire (protobuf-encode schema 'Test3 m) '(#x1a #x04 #x08 #x01 #x10 #x02)))))
+
+;; ── round trips ────────────────────────────────────────────────────────
+
+(define (roundtrip type entries)
+  (let* ((m (protobuf-message type entries))
+         (wire (protobuf-encode schema type m))
+         (back (protobuf-decode schema type wire)))
+    (and (value=? (bv->list (protobuf-encode schema type back)) (bv->list wire)) back)))
+
+(register-test "round trips through decode and re-encode"
+  (lambda ()
+    (let ((back (roundtrip 'Scalars
+                           (list '(i32 -123456) '(i64 -9000000000000) '(u32 4000000000)
+                                 '(u64 18000000000000000000) '(s32 -77) '(s64 123456789012)
+                                 '(f32 7) '(f64 9) '(sf32 -8) '(sf64 -9) '(flag #t)
+                                 '(fl 1.5) '(db -1e300) (list 'text (string-append "proto" (string #\nul) "buf"))
+                                 (list 'raw (bytevector 1 2 3)) '(kind PERSONAL)))))
+      (check-true back)
+      (check-equal? (protobuf-ref schema back 'u64) 18000000000000000000)
+      (check-equal? (protobuf-ref schema back 'i64) -9000000000000)
+      (check-equal? (protobuf-ref schema back 'db) -1e300)
+      (check-equal? (protobuf-ref schema back 'text) (string-append "proto" (string #\nul) "buf")))
+    (for-each
+     (lambda (n) (check-equal? (protobuf-ref schema (roundtrip 'Scalars (list (list 's64 n))) 's64) n))
+     '(0 1 -1 63 -64 64 -65 8191 -8192 2147483647 -2147483648 9223372036854775807))
+    (for-each
+     (lambda (x) (check-equal? (protobuf-ref schema (roundtrip 'Scalars (list (list 'db x))) 'db) x))
+     (list 3.141592653589793 -2.2250738585072014e-308 1.7976931348623157e308 4.9e-324 123.456))
+    (check-true (roundtrip 'Lists (list '(nums (-1 0 1)) '(loose (2147483647)) '(names ("x" "y"))
+                                        (list 'kids (list (protobuf-message 'Test1 '((a -5)))))
+                                        '(dbl (0.5 -0.25)))))
+    (check-true (roundtrip 'Maps (list '(counts (("k" 1) ("j" -1)))
+                                       (list 'nodes (list (list 7 (protobuf-message 'Test1 '((a 1))))))
+                                       '(kinds ((#f PERSONAL) (#t WORK))))))))
+
+;; ── malformed input ────────────────────────────────────────────────────
+
+(define (nested-nodes depth)
+  ;; Node { child = Node { ... } } nested DEPTH times, built inside out.
+  (let loop ((i 0) (inner '()))
+    (if (= i depth) inner
+        (loop (+ i 1) (append (list #x0a) (protobuf-length-bytes (length inner)) inner)))))
+
+(define (protobuf-length-bytes n)
+  (if (< n 128) (list n) (cons (+ 128 (remainder n 128)) (protobuf-length-bytes (quotient n 128)))))
+
+(register-test "malformed input raises and is never read past its end"
+  (lambda ()
+    (for-each
+     (lambda (bytes) (check-raises (lambda () (dec 'Scalars bytes))))
+     (list '(#x08)                                          ; tag without value
+           '(#x08 #x96)                                     ; truncated varint
+           (cons #x08 (append (repeat 10 #xff) '(#x01)))    ; 11-byte varint
+           (cons #x08 (append ff9 '(#x02)))                 ; varint above 2^64
+           '(#x72 #x07 #x74 #x65)                           ; LEN longer than input
+           '(#x72 #x01 #xff)                                ; invalid UTF-8 in string
+           '(#x72 #x02 #xc0 #x80)                           ; overlong UTF-8
+           '(#x00 #x01)                                     ; field number 0
+           '(#x0e)                                          ; wire type 6
+           '(#x0f)                                          ; wire type 7
+           '(#x0c)                                          ; end-group with no start
+           '(#x0b #x14)                                     ; start group 1, end group 2
+           '(#x0b #x08 #x01)                                ; group never ended
+           '(#x41 0 0 0)                                    ; truncated fixed64
+           '(#x3d 0 0)                                      ; truncated fixed32
+           '(#x80 #x80 #x80 #x80 #x10 #x00)))               ; field number 2^29
+    ;; packed fixed32 payload must be whole values
+    (check-raises (lambda () (dec 'Lists '(#x1a #x03 1 0 0))))
+    ;; a packed varint payload that ends inside a varint
+    (check-raises (lambda () (dec 'Lists '(#x0a #x01 #x96))))
+    ;; nesting is bounded (100 levels) instead of exhausting the stack
+    (check-true (protobuf-message? (dec 'Node (nested-nodes 50))))
+    (check-raises (lambda () (dec 'Node (nested-nodes 150))))
+    ;; non-bytevector input
+    (check-raises (lambda () (protobuf-decode schema 'Test1 '(8 1))))))
+
+(register-test "encoding refuses values outside the schema"
+  (lambda ()
+    (check-raises (lambda () (enc 'Scalars '((i32 2147483648)))))
+    (check-raises (lambda () (enc 'Scalars '((u32 -1)))))
+    (check-raises (lambda () (enc 'Scalars '((u64 18446744073709551616)))))
+    (check-raises (lambda () (enc 'Scalars '((s64 -9223372036854775809)))))
+    (check-raises (lambda () (enc 'Scalars '((i32 1.5)))))
+    (check-raises (lambda () (enc 'Scalars '((flag 1)))))
+    (check-raises (lambda () (enc 'Scalars '((text 5)))))
+    (check-raises (lambda () (enc 'Scalars '((kind NO_SUCH)))))
+    (check-raises (lambda () (enc 'Scalars '((nope 1)))))
+    (check-raises (lambda () (enc 'Scalars '((i32 1) (i32 2)))))
+    (check-raises (lambda () (enc 'Test3 (list (list 'c (protobuf-message 'Test2 '()))))))
+    (check-raises (lambda () (protobuf-encode schema 'Missing (protobuf-message 'Missing '()))))))
+
+(register-test "schema compiler refuses invalid schemas"
+  (lambda ()
+    (check-raises (lambda () (protobuf-schema '((message A (field 0 x int32))))))
+    (check-raises (lambda () (protobuf-schema '((message A (field 19000 x int32))))))
+    (check-raises (lambda () (protobuf-schema '((message A (field 536870912 x int32))))))
+    (check-raises (lambda () (protobuf-schema '((message A (field 1 x int32) (field 1 y int32))))))
+    (check-raises (lambda () (protobuf-schema '((message A (field 1 x int32) (field 2 x int32))))))
+    (check-raises (lambda () (protobuf-schema '((message A (field 1 x (message B)))))))
+    (check-raises (lambda () (protobuf-schema '((message A (field 1 x (map double int32)))))))
+    (check-raises (lambda () (protobuf-schema '((enum E (ONE 1))))))
+    (check-raises (lambda () (protobuf-schema '((message A (field 1 x quaternion))))))
+    (check-true (protobuf-schema? (protobuf-schema '((message A (field 536870911 x int32))))))))
+
+(run-tests)

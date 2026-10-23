@@ -1,0 +1,217 @@
+;;; protobuf_proto_test.esk — the proto3 .proto parser and generated codecs
+;;;
+;;; protobuf-parse-proto turns .proto text into schema forms; protobuf-schema
+;;; compiles them; protobuf-encoder/protobuf-decoder return the encoder and
+;;; decoder closures for one message type. Expected bytes are derived by hand
+;;; from the protobuf encoding specification, as in protobuf_test.esk.
+
+(require core.testing)
+(require core.protobuf)
+
+(reset-tests!)
+
+(define (bv->list bv)
+  (let loop ((i (- (bytevector-length bv) 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons (bytevector-u8-ref bv i) acc)))))
+
+(define (list->bv bytes)
+  (let ((bv (make-bytevector (length bytes) 0)))
+    (let loop ((i 0) (rest bytes))
+      (if (null? rest) bv
+          (begin (bytevector-u8-set! bv i (car rest)) (loop (+ i 1) (cdr rest)))))))
+
+;; The proto3 address book from the protobuf tutorial (without the
+;; Timestamp import), with comments, options and a service block.
+(define addressbook-proto "
+// Address book, proto3.
+syntax = \"proto3\";
+package tutorial;
+option java_package = \"com.example.tutorial\";
+
+/* A person and their phones. */
+message Person {
+  string name = 1;
+  int32 id = 2;   // unique id
+  string email = 3;
+
+  enum PhoneType {
+    option allow_alias = true;
+    MOBILE = 0;
+    HOME = 1;
+    WORK = 2;
+    OFFICE = 2;
+  }
+
+  message PhoneNumber {
+    string number = 1;
+    PhoneType type = 2;
+  }
+
+  repeated PhoneNumber phones = 4;
+}
+
+message AddressBook {
+  repeated Person people = 1;
+}
+
+service Directory {
+  rpc Lookup (Person) returns (AddressBook) { option deprecated = true; }
+}
+")
+
+(define addressbook-forms
+  '((message Person
+      (field 1 name string)
+      (field 2 id int32)
+      (field 3 email string)
+      (field 4 phones (repeated (message Person.PhoneNumber))))
+    (enum Person.PhoneType (MOBILE 0) (HOME 1) (WORK 2) (OFFICE 2))
+    (message Person.PhoneNumber
+      (field 1 number string)
+      (field 2 type (enum Person.PhoneType)))
+    (message AddressBook
+      (field 1 people (repeated (message Person))))))
+
+(register-test "address book .proto parses to the expected schema forms"
+  (lambda ()
+    (check-equal? (protobuf-parse-proto addressbook-proto) addressbook-forms)
+    (check-true (protobuf-schema? (protobuf-schema-from-proto addressbook-proto)))))
+
+(define book-schema (protobuf-schema-from-proto addressbook-proto))
+(define encode-book (protobuf-encoder book-schema 'AddressBook))
+(define decode-book (protobuf-decoder book-schema 'AddressBook))
+
+(define ada
+  (protobuf-message 'Person
+    (list '(name "Ada") '(id 1) '(email "a@b")
+          (list 'phones (list (protobuf-message 'Person.PhoneNumber
+                                                '((number "555") (type HOME))))))))
+
+;; Person = 0a 03 "Ada" | 10 01 | 1a 03 "a@b" | 22 07 [0a 03 "555" 10 01]  (21 bytes)
+;; AddressBook = 0a 15 Person
+(define ada-book-wire
+  '(#x0a #x15
+    #x0a #x03 #x41 #x64 #x61
+    #x10 #x01
+    #x1a #x03 #x61 #x40 #x62
+    #x22 #x07 #x0a #x03 #x35 #x35 #x35 #x10 #x01))
+
+(register-test "generated address book codecs produce and read the spec bytes"
+  (lambda ()
+    (let ((wire (encode-book (protobuf-message 'AddressBook (list (list 'people (list ada)))))))
+      (check-equal? (bv->list wire) ada-book-wire)
+      (let* ((book (decode-book wire))
+             (person (car (protobuf-ref book-schema book 'people)))
+             (phone (car (protobuf-ref book-schema person 'phones))))
+        (check-equal? (protobuf-ref book-schema person 'name) "Ada")
+        (check-equal? (protobuf-ref book-schema person 'email) "a@b")
+        (check-equal? (protobuf-ref book-schema phone 'type) 'HOME)
+        (check-equal? (bv->list (encode-book book)) ada-book-wire)))
+    ;; An alias decodes to the first name declared for its number.
+    (check-equal? (protobuf-enum-name book-schema 'Person.PhoneType 2) 'WORK)
+    (check-equal? (protobuf-enum-number book-schema 'Person.PhoneType 'OFFICE) 2)))
+
+(define features-proto "
+syntax = 'proto3';
+package demo.v1;
+
+enum Level { LEVEL_UNSPECIFIED = 0; LOW = 0x1; HIGH = 010; NEG = -3; }
+
+message Outer {
+  message Inner {
+    int64 v = 1;
+    message Leaf { bool on = 1; }
+    Leaf leaf = 2;
+  }
+  Inner inner = 1;
+  .demo.v1.Level level = 2;
+  map<string, Inner> by_name = 3;
+  oneof choice {
+    string label = 4;
+    Inner.Leaf leaf = 5;
+  }
+  repeated sint32 deltas = 6 [packed = false, deprecated = true];
+  repeated fixed64 ids = 7;
+  optional double ratio = 8;
+  reserved 9, 11 to 13, 100 to max;
+  reserved \"old_name\";
+  bytes blob = 14;
+}
+")
+
+(define features-forms
+  '((enum Level (LEVEL_UNSPECIFIED 0) (LOW 1) (HIGH 8) (NEG -3))
+    (message Outer
+      (field 1 inner (message Outer.Inner))
+      (field 2 level (enum Level))
+      (field 3 by_name (map string (message Outer.Inner)))
+      (oneof choice (field 4 label string) (field 5 leaf (message Outer.Inner.Leaf)))
+      (field 6 deltas (repeated sint32 unpacked))
+      (field 7 ids (repeated fixed64))
+      (field 8 ratio (optional double))
+      (field 14 blob bytes))
+    (message Outer.Inner
+      (field 1 v int64)
+      (field 2 leaf (message Outer.Inner.Leaf)))
+    (message Outer.Inner.Leaf
+      (field 1 on bool))))
+
+(register-test "nested scopes, absolute names, maps, oneof, options, reserved"
+  (lambda ()
+    (check-equal? (protobuf-parse-proto features-proto) features-forms)))
+
+(define features (protobuf-schema-from-proto features-proto))
+
+(register-test "parsed schema encodes like the hand-written one"
+  (lambda ()
+    (let* ((leaf (protobuf-message 'Outer.Inner.Leaf '((on #t))))
+           (inner (protobuf-message 'Outer.Inner (list '(v -2) (list 'leaf leaf))))
+           (m (protobuf-message 'Outer
+                (list (list 'inner inner) '(level HIGH)
+                      (list 'by_name (list (list "k" inner)))
+                      (list 'leaf leaf) '(deltas (-1 1)) '(ids (1)) '(ratio 0.0)
+                      (list 'blob (bytevector 7)))))
+           (wire (protobuf-encode features 'Outer m))
+           ;; inner = 08 fe ff ff ff ff ff ff ff ff 01 | 12 02 08 01  (15 bytes)
+           (inner-bytes '(#x08 #xfe #xff #xff #xff #xff #xff #xff #xff #xff #x01 #x12 #x02 #x08 #x01)))
+      (check-equal? (bv->list wire)
+                    (append (list #x0a 15) inner-bytes
+                            '(#x10 #x08)
+                            ;; map entry: 0a 01 "k" | 12 0f inner  (20 bytes)
+                            (list #x1a 20 #x0a #x01 #x6b #x12 15) inner-bytes
+                            '(#x2a #x02 #x08 #x01)
+                            '(#x30 #x01 #x30 #x02)
+                            '(#x3a #x08 1 0 0 0 0 0 0 0)
+                            '(#x41 0 0 0 0 0 0 0 0)
+                            '(#x72 #x01 #x07)))
+      (let ((back (protobuf-decode features 'Outer wire)))
+        (check-equal? (bv->list (protobuf-encode features 'Outer back)) (bv->list wire))
+        (check-equal? (protobuf-ref features back 'level) 'HIGH)
+        (check-equal? (protobuf-ref features back 'deltas) '(-1 1))
+        (check-true (protobuf-has? features back 'ratio))
+        (check-false (protobuf-has? features back 'label))
+        (check-equal? (protobuf-ref features (protobuf-ref features back 'inner) 'v) -2)))))
+
+(register-test "the parser refuses input outside the proto3 subset"
+  (lambda ()
+    (for-each
+     (lambda (text) (check-raises (lambda () (protobuf-parse-proto text))))
+     (list "message A { int32 x = 1; }"                                 ; no syntax line
+           "syntax = \"proto2\"; message A { optional int32 x = 1; }"
+           "syntax = \"proto3\"; import \"other.proto\";"
+           "syntax = \"proto3\"; message A { required int32 x = 1; }"
+           "syntax = \"proto3\"; message A { extensions 100 to 199; }"
+           "syntax = \"proto3\"; message A { reserved 2; int32 x = 2; }"
+           "syntax = \"proto3\"; message A { reserved \"x\"; int32 x = 1; }"
+           "syntax = \"proto3\"; message A { Missing m = 1; }"
+           "syntax = \"proto3\"; message A { int32 x = 0x1g; }"
+           "syntax = \"proto3\"; /* never closed"
+           "syntax = \"proto3\"; message A { int32 x = 1;"
+           "syntax = \"proto3\"; message A { string s = 1 }"))
+    ;; Parsed forms still go through the schema compiler's checks.
+    (check-raises (lambda () (protobuf-schema-from-proto
+                              "syntax = \"proto3\"; enum E { ONE = 1; }")))
+    (check-raises (lambda () (protobuf-schema-from-proto
+                              "syntax = \"proto3\"; message A { int32 x = 1; int32 y = 1; }")))))
+
+(run-tests)

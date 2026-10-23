@@ -8041,6 +8041,15 @@ if(ESHKOL_BUILD_TESTS)
     add_test(NAME handle_c_api_test COMMAND handle_c_api_test)
     set_tests_properties(handle_c_api_test PROPERTIES
         TIMEOUT 30 LABELS "resource;ffi")
+    # The shared protobuf wire primitives (ONNX export, PJRT compile options)
+    # against hand-derived golden vectors from the encoding specification.
+    add_executable(protobuf_wire_test tests/core/protobuf_wire_test.c)
+    target_compile_features(protobuf_wire_test PRIVATE c_std_11)
+    target_include_directories(protobuf_wire_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME protobuf_wire_test COMMAND protobuf_wire_test)
+    set_tests_properties(protobuf_wire_test PROPERTIES
+        TIMEOUT 30 LABELS "protobuf;wire"
+        PASS_REGULAR_EXPRESSION "PASS: protobuf wire golden vectors")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/resource_limits_test.cpp")
@@ -15022,6 +15031,15 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TA
         --all-routes)
     set_tests_properties(msgpack_wire_all_routes PROPERTIES TIMEOUT 900
         PASS_REGULAR_EXPRESSION "PASS: MessagePack four execution routes"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
+
+    add_test(NAME protobuf_wire_all_routes COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_wire_format_gate.py" --suite protobuf
+        --runner $<TARGET_FILE:eshkol-run> --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>
+        --native-test $<TARGET_FILE:protobuf_wire_test>
+        --all-routes)
+    set_tests_properties(protobuf_wire_all_routes PROPERTIES TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: Protocol Buffers four execution routes"
         FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
 
     set(_metadata_name_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/metadata_name_collision.esk")

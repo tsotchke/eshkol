@@ -163,13 +163,14 @@ The browser product VM also embeds these pure source modules, generated from
 their exact UTF-8 bytes by `scripts/build-wasm-repl.sh`:
 
 - `core.msgpack`
+- `core.utf8`
 - `core.testing`
 - `core.list.query`
 - `core.list.transform`
 
 They use the normal VM module compiler, including import aliases, exports,
 privacy, and per-compilation cache tracking. Product WASM has no filesystem or
-general source loader. A module outside this four-module set fails compilation
+general source loader. A module outside this five-module set fails compilation
 before the program runs; it is not treated as a successful no-op. The generated
 header records source hashes and can be checked with
 `python3 scripts/generate_wasm_embedded_modules.py --output build/generated/vm_embedded_modules.h --check`.
