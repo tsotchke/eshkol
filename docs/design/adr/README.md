@@ -54,6 +54,7 @@ documentation hub lists the same records in
 | [0026](0026-syntax-rules-one-engine-one-renaming-rule.md) | One `syntax-rules` engine and one renaming rule | Accepted — implemented (SW-192) | 2026-09-22 | v1.3.5 |
 | [0027](0027-recursive-taylor-level-carrier.md) | Nested differentiation uses one recursive Taylor level carrier | Accepted — implemented on native JIT and AOT | 2026-09-22 | v1.3.5 |
 | [0028](0028-one-number-syntax-recognizer.md) | One number-syntax recognizer for every reader | Accepted — implemented on native JIT, AOT and the bytecode VM | 2026-09-22 | v1.3.5 |
+| [0031](0031-differentiable-optimization.md) | Differentiating through optimization is one tape pullback per rule | Accepted — implemented in v1.4.0-connection | 2026-10-23 | `core.ml.diffopt` in `lib/core/ml/diffopt.esk`, gate `tests/ml/diffopt_test.esk` (CTest `diffopt_runtime_smoke`, `diffopt_aot_smoke`) |
 
 ## Numbering
 

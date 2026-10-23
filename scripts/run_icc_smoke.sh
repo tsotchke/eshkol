@@ -1087,6 +1087,26 @@ probe event_loop_works \
      exit 0'
 
 # ───────────────────────────────────────────────────────────────────
+# Differentiable optimization (ADR-0031, core.ml.diffopt): blackbox solver,
+# perturbed-optimizer, Fenchel-Young, implicit-differentiation and
+# sparsemax/softmax pullbacks against exact closed forms, exact rationals and
+# central differences, on JIT and AOT with the same seeded draws.
+# ───────────────────────────────────────────────────────────────────
+probe diffopt_pullbacks_exact \
+    'core.ml.diffopt: blackbox ranking and shortest-path pullbacks equal hand-computed exact rationals and train to their targets; Gumbel-perturbed argmax matches softmax(theta/eps) and its Jacobian, Normal noise matches Phi in two dimensions, the perturbed maximum matches eps logsumexp + eps gamma; the Fenchel-Young gradient is y_eps - y; implicit ridge sensitivity is the exact rational closed form and the compiled-AD default agrees to 1e-12; exact sparsemax and its Jacobian — green on JIT and AOT' \
+    'cd "$REPO_ROOT";
+     out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/ml/diffopt_test.esk -L"$BUILD_DIR_PATH" 2>&1) || exit 1;
+     echo "$out" | grep -q "=== ALL TESTS PASSED ===" || exit 1;
+     echo "$out" | grep -qE "^FAIL:" && exit 1;
+     bin=$(mktemp "$ESHKOL_SCRATCH_ROOT/eshkol-diffopt.XXXXXX");
+     ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" tests/ml/diffopt_test.esk -o "$bin" -L"$BUILD_DIR_PATH" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     aot=$("$bin" 2>&1); rc=$?; rm -f "$bin";
+     [ $rc -eq 0 ] || exit 1;
+     echo "$aot" | grep -q "=== ALL TESTS PASSED ===" || exit 1;
+     echo "$aot" | grep -qE "^FAIL:" && exit 1;
+     exit 0'
+
+# ───────────────────────────────────────────────────────────────────
 # Silent-wrong flaw gate. Every probe above certifies that something
 # WORKS; none of them can certify that nothing silently LIES. This one
 # grades .icc/silent-wrong-ledger.yaml — the enumeration of defects that

@@ -53,7 +53,8 @@ behind all of this live in
 9. [Differentiable control flow](#9-differentiable-control-flow)
 10. [Tower numerics — ODEs, roots, inversion](#10-tower-numerics--odes-roots-inversion)
 11. [Perturbation safety & how it works](#11-perturbation-safety--how-it-works)
-12. [API quick reference](#12-api-quick-reference)
+12. [Differentiating through optimization and discrete solvers](#12-differentiating-through-optimization-and-discrete-solvers)
+13. [API quick reference](#13-api-quick-reference)
 
 ---
 
@@ -844,7 +845,65 @@ tensor coefficient layouts, and the Taylor-model remainder arithmetic — see
 
 ---
 
-## 12. API quick reference
+## 12. Differentiating through optimization and discrete solvers
+
+Some layers return the *solution* of an optimization problem: a ranking, a
+shortest path, a top-k set, a ridge fit, a fixed point, a projection onto the
+simplex. Differentiating the solver's instructions gives zero almost everywhere
+for a combinatorial solver and an unrolled, unstable chain for an iterative
+one. [`core.ml.diffopt`](../reference/stdlib/ml_diffopt.md) instead installs the
+pullback the *problem* defines, as one custom op on the
+[reverse-mode tape](../reference/stdlib/ad_tape.md) per rule
+([ADR-0031](../design/adr/0031-differentiable-optimization.md)):
+
+| Rule | Pullback of `g = dL/dy` | Layer |
+|---|---|---|
+| Blackbox solver, `y = argmin_{y in Y} <w, y>` | `-(y(w) - y(w + λg)) / λ` | `blackbox-solve` |
+| Perturbed optimizer, `y_ε = E[argmax <y, θ + εZ>]` | `(1/ε) E[<y*(θ+εZ), g> ∇ν(Z)]` | `perturbed-solve`, `perturbed-argmax`, `perturbed-top-k` |
+| Fenchel-Young loss | `g (ŷ − y)` | `perturbed-fenchel-young`, `fenchel-young-softmax`, `fenchel-young-sparsemax` |
+| Implicit function theorem, `F(x*, θ) = 0` | `−(∂_θF)ᵀ u`, `(∂_xF)ᵀ u = g` | `implicit-root`, `implicit-fixed-point`, `implicit-argmin` |
+| Simplex projection | `softmax-vjp`, `sparsemax-vjp` | `tape-softmax`, `tape-sparsemax` |
+
+The implicit rule solves its adjoint system with `exact-solve` when every entry
+is exact, so a ridge least-squares sensitivity comes back as an exact rational:
+
+```scheme
+(require core.exact_linalg)
+(require core.ml.diffopt)
+;; d_w F = X^T X + lambda I and d_lambda F = w* for ridge least squares
+;; with X = ((1 2) (3 -1) (0 1/2)), y = (1 2/3 -1), lambda = 1/3
+(define A (vector (vector 31/3 -1) (vector -1 67/12)))
+(define w* (exact-solve A (vector 3 5/6)))
+(display w*) (newline)
+(display (implicit-root-vjp A (vector (vector (vector-ref w* 0)) (vector (vector-ref w* 1)))
+                            (vector 2 -3/7)))
+(newline)
+```
+
+Output:
+
+```
+#(633/2041 418/2041)
+#(-1457082/29159767)
+```
+
+That is `gᵀ dw*/dλ = −gᵀ (XᵀX + λI)⁻¹ w*` exactly. Passing no partial
+Jacobians makes `implicit-root` take them from the compiled `jacobian`
+(and `implicit-argmin` from `hessian` and the Jacobian of `gradient`), in f64.
+Perturbed optimizers draw their noise once, from a seeded generator, and use
+the same draws in the forward value and the pullback; with Gumbel noise the
+perturbed argmax is `softmax(θ/ε)` in expectation, which the tests check
+together with its Jacobian. No pullback in the module evaluates a finite
+difference.
+
+**When to use:** training through a combinatorial solver (blackbox or
+perturbed), a structured-prediction loss (Fenchel-Young), or a layer defined by
+an equation or an inner optimization (implicit), without unrolling the solver.
+The reference page has a runnable example for every rule.
+
+---
+
+## 13. API quick reference
 
 ### Built-in operators (no `require`)
 
@@ -961,6 +1020,7 @@ for the arity-recovery mechanism.
 | `core.ad.taylor_numerics` | `taylor-ode-solve`, `taylor-root`, `taylor-inverse-series`, `taylor-eval` | series-based ODE / root / inversion |
 | `core.ad.tape` | `make-tape`, `tape-input`, `tape-mul`/`-add`/…, `tape-gradient`, `tape-node-count`, … | explicit reverse-mode tape (Scheme level) |
 | `core.ad.algebraic_reverse` | `algebraic-value-and-pullback`, `algebraic-hvp`, `algebraic-reverse-*` | exact reverse-mode pullbacks and Hessian-vector products over algebraic coefficient domains |
+| `core.ml.diffopt` | `blackbox-solve`, `perturbed-solve`, `perturbed-fenchel-young`, `implicit-root`, `implicit-argmin`, `sparsemax`, … | differentiating through optimization and discrete solvers (§12) |
 
 Example: [`algebraic_reverse.esk`](../../examples/algebraic_reverse.esk) checks the exact value, gradient, and HVP against closed-form formulas.
 

@@ -752,6 +752,14 @@ under the same discipline that made `Qubit` linear.
       exact rational distribution semantics under a step bound, the exact
       `2^-length` prior, bounded enumeration and conditioning, and the SBLC gate
       (codec oracle, exact mass conservation, coin-trace oracle, JIT/AOT parity)
+- [x] Differentiable optimization: blackbox solvers, perturbed optimizers,
+      Fenchel-Young losses, implicit differentiation (ADR-0031):
+      `core.ml.diffopt` puts each rule on the reverse-mode tape as one
+      pullback — blackbox ranking and shortest-path solvers, Gumbel/Normal
+      perturbed argmax and top-k with a seeded Monte Carlo Jacobian,
+      perturbed/softmax/sparsemax Fenchel-Young losses, and implicit
+      root/fixed-point/argmin layers whose adjoint system is solved exactly on
+      exact data — gated on JIT and AOT by `tests/ml/diffopt_test.esk`
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve

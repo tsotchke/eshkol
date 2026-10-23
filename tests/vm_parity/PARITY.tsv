@@ -466,7 +466,7 @@ make-event-loop	vm-supported	ESH-0011: integer handle on both surfaces; #f where
 make-parameter	gap	no VM name binding
 make-pipe	vm-supported	
 make-polar	vm-supported	
-make-prng	gap	PRNG surface has no VM binding
+make-prng	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
 make-promise	gap	no VM name binding
 make-rational	gap	no VM name binding
 make-rectangular	vm-supported	
@@ -663,9 +663,9 @@ positional-encoding	gap	ml faculty has no VM fid coverage
 positive?	vm-supported	
 pow	vm-supported	
 prevent-sleep	vm-supported	
-prng-random	gap	PRNG surface has no VM binding
-prng-random-integer	gap	PRNG surface has no VM binding
-prng?	gap	PRNG surface has no VM binding
+prng-random	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
+prng-random-integer	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
+prng?	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
 procedure-arity	gap	no VM name binding
 procedure?	vm-supported	
 process-kill	vm-supported	
