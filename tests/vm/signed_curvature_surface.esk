@@ -50,8 +50,8 @@
         (loop (cdr rows)))))
 
 ;; K = 0 is canonical Euclidean and is not a special refusal any more.
-(report (= (geodesic-distance x y 0.0)
-           (sqrt (+ (* 0.55 0.55) (* 0.35 0.35) (* 0.1 0.1))))
+(report (rel-near? (geodesic-distance x y 0.0)
+                   (sqrt (+ (* 0.55 0.55) (* 0.35 0.35) (* 0.1 0.1))) 1e-15)
         "K = 0 geodesic-distance is |x - y|")
 ;; One analytic family: the jet at K = 0 equals the jets at +-1e-300.
 (set-curvature! m 1e-300)

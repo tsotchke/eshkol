@@ -1712,9 +1712,23 @@ static const char* eshkol_rm_mobius_scalar(double r, const double* x, double K,
         return why;
     }
     double B = eshkol_rm_ball_param(-K);
-    double A = eshkol_rm_artan_ratio(eshkol_rm_scaled_norm2_times(x, B, n));
+    double s0 = eshkol_rm_scaled_norm2_times(x, B, n);
+    double A = eshkol_rm_artan_ratio(s0);
     double a = r * xn * A;
-    double coef = r * A * eshkol_rm_tan_ratio(eshkol_rm_scaled_square(B, a), NULL);
+    double s1 = eshkol_rm_scaled_square(B, a);
+    double coef;
+    if (fabs(s0) <= ESHKOL_RM_Q_SERIES && fabs(s1) <= ESHKOL_RM_Q_SERIES) {
+        coef = r * A * eshkol_rm_tan_ratio(s1, NULL);
+    } else {
+        /* Closed form in the angle: t = r artan(sqrt|B| |x|) and the radius
+         * tan(t)/sqrt|B|, so a saturated tanh lands exactly on the boundary
+         * (and is refused below) instead of one rounding inside it. */
+        const double rb = eshkol_rm_sqrt_nonnegative(fabs(B));
+        const double u = rb * xn;
+        const double t = r * ((B > 0.0) ? atanh(u) : atan(u));
+        const double radius = ((B > 0.0) ? tanh(t) : tan(t)) / rb;
+        coef = radius / xn;
+    }
     for (int i = 0; i < n; i++) out[i] = coef * x[i];
     why = eshkol_rm_check_output(out, n, "the Mobius scalar result is not finite");
     if (why) return why;
