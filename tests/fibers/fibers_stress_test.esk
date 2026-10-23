@@ -90,7 +90,10 @@
                  (let loop ((m 0))
                    (if (< m MESSAGES)
                        (begin (channel-send! ping m)
-                              (set! pong-total (+ pong-total (channel-recv! pong)))
+                              ;; receive first: the receive parks, and the sum
+                              ;; must be read after other fibers updated it
+                              (let ((reply (channel-recv! pong)))
+                                (set! pong-total (+ pong-total reply)))
                               (loop (+ m 1)))))))
         (spawn (lambda ()
                  (let loop ((m 0))
