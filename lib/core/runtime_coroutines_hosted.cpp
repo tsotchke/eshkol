@@ -392,11 +392,14 @@ namespace {
 
 #if !defined(ESHKOL_CORO_UNAVAILABLE)
 
-[[noreturn]] void coroutine_main(Coroutine* co);
+void coroutine_run(Coroutine* co);
 
 #  if defined(ESHKOL_CORO_ASM)
+/* A fresh stack's first frame. coroutine_run's final switch never comes back
+ * here: a stack is re-laid-out before it is used again. */
 extern "C" [[noreturn]] void eshkol_coro_entry(void* arg) {
-    coroutine_main(static_cast<Coroutine*>(arg));
+    coroutine_run(static_cast<Coroutine*>(arg));
+    __builtin_trap();
 }
 
 bool stack_acquire(ThreadState& ts, Stack* out) {
@@ -471,10 +474,21 @@ struct WinFiberBox {
 
 VOID CALLBACK windows_fiber_proc(LPVOID param) {
     auto* box = static_cast<WinFiberBox*>(param);
-    for (;;) coroutine_main(box->co);   /* coroutine_main switches away for good */
+    /* A pooled fiber handed a new coroutine resumes right after the previous
+     * coroutine's final switch, returns here, and runs the next one. */
+    for (;;) coroutine_run(box->co);
+}
+
+/* The thread's own context must itself be a fiber before SwitchToFiber. */
+void windows_adopt_thread(ThreadState& ts) {
+    if (ts.converted) return;
+    ts.root.sp = IsThreadAFiber() ? GetCurrentFiber() : ConvertThreadToFiber(nullptr);
+    ts.converted = true;
 }
 
 bool stack_acquire(ThreadState& ts, Stack* out) {
+    windows_adopt_thread(ts);
+    if (!ts.root.sp) return false;
     if (!ts.pool.empty()) {
         *out = ts.pool.back();
         ts.pool.pop_back();
@@ -543,7 +557,9 @@ void switch_context(ThreadState& ts, Ctx* from, Ctx* to, Coroutine* to_co,
     ts.current = to_co;
 
 #  if defined(ESHKOL_CORO_TSAN)
-    if (!to->tsan_fiber) to->tsan_fiber = __tsan_get_current_fiber();
+    /* The thread's own fiber is named the first time it is left; every
+     * coroutine gets its own when its stack is set up. */
+    if (!from->tsan_fiber) from->tsan_fiber = __tsan_get_current_fiber();
     __tsan_switch_to_fiber(to->tsan_fiber, 0);
 #  endif
 #  if defined(ESHKOL_CORO_ASAN)
@@ -559,27 +575,18 @@ void switch_context(ThreadState& ts, Ctx* from, Ctx* to, Coroutine* to_co,
 #  endif
 
 #  if defined(ESHKOL_CORO_ASAN)
-    /* Back on `from`'s stack. The context that switched here tells the
-     * sanitizer which stack it left; the root learns its own bounds this way
-     * the first time a coroutine switches back to it. */
-    {
-        const void* old_bottom = nullptr;
-        size_t old_size = 0;
-        __sanitizer_finish_switch_fiber(from->asan_fake, &old_bottom, &old_size);
-        if (from == &ts.root && !ts.root.asan_bottom) {
-            /* nothing: the root's bounds were recorded on the way out */
-        }
-        (void)old_bottom;
-        (void)old_size;
-    }
+    /* Back on `from`'s stack. The thread's own stack bounds were recorded by
+     * the first coroutine it entered (coroutine_run). */
+    __sanitizer_finish_switch_fiber(from->asan_fake, nullptr, nullptr);
 #  endif
 }
 
 Ctx* ctx_of(ThreadState& ts, Coroutine* co) { return co ? &co->ctx : &ts.root; }
 
-/* Runs on the coroutine's own stack. Never returns: the final switch hands
- * the stack back to the resumer, which releases it. */
-[[noreturn]] void coroutine_main(Coroutine* co) {
+/* Runs on the coroutine's own stack. Its final switch hands the stack back to
+ * the resumer, which releases it; control returns from that switch only when a
+ * pooled Windows fiber is handed its next coroutine. */
+void coroutine_run(Coroutine* co) {
     ThreadState& ts = t_state;
 #  if defined(ESHKOL_CORO_ASAN)
     {
@@ -625,7 +632,6 @@ Ctx* ctx_of(ThreadState& ts, Coroutine* co) { return co ? &co->ctx : &ts.root; }
         eshkol_region_write_barrier_into(&co->transfer, co, &result);
     }
     switch_context(ts, &co->ctx, ctx_of(ts, co->resumer), co->resumer, true);
-    __builtin_trap();
 }
 
 #endif  /* !ESHKOL_CORO_UNAVAILABLE */
