@@ -35,7 +35,7 @@
  *      raise, or by cancellation), never because another fiber was scheduled.
  *   3. The REPL refuses continuations whose image belongs to a finished
  *      top-level evaluation. A fiber spawned in one evaluation and resumed in
- *      a later one would be refused, although nothing about it is stale.
+ *      a later one would be refused, although it is still current.
  *
  * A coroutine instead owns a stack and an execution context (below). A switch
  * saves the outgoing context's callee-saved registers and dynamic state and
