@@ -13,8 +13,9 @@
 #        signed_curvature_jit / signed_curvature_aot
 #          (tests/geometry/signed_curvature_test.esk, the ADR-0018 chart the
 #          atlases are built on, unchanged);
-#   2. every fenced example on docs/reference/stdlib/manifold.md through the
-#      documentation example harness, on the JIT and as AOT binaries,
+#   2. every fenced example on docs/reference/stdlib/manifold.md (a page of
+#      the documentation gate's `reference` scope) through the documentation
+#      example harness, on the JIT and as AOT binaries,
 #      comparing each example's output block with what the build printed.
 #
 # It writes one event to $TRACE_DIR/v14_manifold_atlas.jsonl:
@@ -76,8 +77,10 @@ summary=""
 ctest_log="$WORK/ctest.log"
 (cd "$BUILD_DIR_PATH" && ctest -R "$TESTS" --output-on-failure -j "${JOBS:-2}") > "$ctest_log" 2>&1
 ctest_status=$?
-ran=$(grep -cE '^ *[0-9]+/[0-9]+ Test +#[0-9]+: ' "$ctest_log" || true)
-passed=$(grep -cE '^ *[0-9]+/[0-9]+ Test +#[0-9]+: .* Passed' "$ctest_log" || true)
+# CTest also runs the fixture the suites require; count the four suites only.
+NAMES='(manifold_atlas_jit|manifold_atlas_aot|signed_curvature_jit|signed_curvature_aot)'
+ran=$(grep -cE "^ *[0-9]+/[0-9]+ Test +#[0-9]+: ${NAMES} " "$ctest_log" || true)
+passed=$(grep -cE "^ *[0-9]+/[0-9]+ Test +#[0-9]+: ${NAMES} .* Passed" "$ctest_log" || true)
 summary="ctest ${passed}/${EXPECTED} passed (ran ${ran}, exit ${ctest_status})"
 if [ "$ctest_status" -ne 0 ] || [ "$ran" -ne "$EXPECTED" ] || [ "$passed" -ne "$EXPECTED" ]; then
     status=1
@@ -87,6 +90,7 @@ doc_log="$WORK/doc-examples.log"
 python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --eshkol-run "$BUILD_DIR_PATH/eshkol-run" \
     --engines jit,aot \
+    --scope reference \
     --only "$PAGE" \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
