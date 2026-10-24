@@ -1,0 +1,832 @@
+;;; core.manifold.atlas -- manifolds glued from charts: atlases as gluing data.
+;;;
+;;; Usage: (require core.manifold.atlas)
+;;;
+;;; A manifold is the colimit of its charts. An atlas is the descent datum:
+;;; chart domains phi_i(U_i) in R^n, transition maps
+;;;     g_{i->j} = phi_j o phi_i^{-1} : phi_i(U_i cap U_j) -> phi_j(U_i cap U_j),
+;;; and the cocycle condition on triple overlaps
+;;;     g_{j->k} o g_{i->j} = g_{i->k}   on phi_i(U_i cap U_j cap U_k),
+;;;     g_{i->i} = id.
+;;; The glued space is the disjoint union of the chart domains modulo
+;;; x ~ g_{i->j}(x); the cocycle condition is exactly what makes ~ an
+;;; equivalence relation. This module checks it, glues points, tangent
+;;; vectors, covectors, bilinear forms and functions along it, and reads the
+;;; topology of the gluing off the nerve of the cover with core.sheaf: the
+;;; orientation character w1 as a Z/2 Cech class with an explicit
+;;; orientation-reversing loop when it is nonzero, and the Cech and derived
+;;; cohomology of the nerve with constant or orientation-twisted integer
+;;; coefficients.
+;;;
+;;; Carriers. An atlas is either `exact` (charts, transitions and samples are
+;;; exact rationals; every check is an equality, and an output that is not
+;;; exact is itself reported) or `(float tol)`: two coordinates a, b agree
+;;; when |a - b| <= tol * max(1, |a|, |b|). Jacobians of transitions are
+;;; computed with Eshkol's forward-mode AD (`derivative` along each
+;;; coordinate axis); seeded at an exact point they are exact, so the chain
+;;; rule g'_{j->k}(g_{i->j} x) g'_{i->j}(x) = g'_{i->k}(x) is checked exactly
+;;; on exact atlases.
+;;;
+;;; Checks run over the atlas's sample net: a finite list of points per
+;;; chart. Every check that a sample point admits is made; the result names
+;;; how many were made. Failures reuse core.sheaf's gluing result,
+;;; #(gluing obstructed (obstruction ...)), with obstructions
+;;;   (cocycle (i j k) x via-j direct)     g_{j->k} g_{i->j} x differs from g_{i->k} x
+;;;   (identity i x image)                 an explicit g_{i->i} moves x
+;;;   (domain (i j k) x)                   x is in U_i cap U_j, g_{i->j} x is in
+;;;                                        U_j cap U_k, but x is not in U_i cap U_k
+;;;   (outside i x)                        a sample of chart i is not in its domain
+;;;   (inexact (i j) x value)              an exact atlas produced an inexact value
+;;;   (jacobian-cocycle (i j k) x lhs rhs) the chain rule fails on the triple overlap
+;;;   (metric (i j) x pulled-back metric)  g_{i->j} is not an isometry of the chart metrics
+;;;   (orientation-varies (i j) x y)       det g'_{i->j} changes sign on U_i cap U_j
+;;;   (degenerate (i j) x)                 det g'_{i->j}(x) = 0
+;;;   (monodromy loop)                     a closed path in the nerve along which the
+;;;                                        orientation reverses (w1 is nonzero)
+;;; and, for local data that do not glue, core.sheaf's own
+;;;   (disagree i j overlap value-i value-j).
+;;;
+;;; Constructors of atlases provided here: `sphere-atlas` (the 2(n+1)
+;;; stereographic charts of the sphere of curvature K > 0 in the ADR-0018
+;;; alpha = 1 gauge, one of which is the chart of core.manifold and
+;;; core.curvature), `space-form-atlas` (every sign of K: the sphere atlas,
+;;; the single Euclidean chart at K = 0, the ball chart and the upper
+;;; half-space chart for K < 0) and `simplicial-surface-atlas` (the
+;;; piecewise-linear atlas of open vertex stars of a triangulated surface,
+;;; with or without boundary, whose nerve is the triangulation itself).
+;;;
+;;; Reference: docs/reference/stdlib/manifold.md (section "Atlases");
+;;; design: ADR-0018, amendment "Charts as gluing data".
+;;; Sources: A. Grothendieck, SGA 1 VIII (descent) and SGA 4 V (Cech
+;;; cohomology); R. Bott, L. Tu, "Differential Forms in Algebraic Topology"
+;;; (1982), I.5-I.8 (Cech-de Rham, orientation) and II.11; J. Milnor,
+;;; J. Stasheff, "Characteristic Classes" (1974), 4 and 12 (w1 and
+;;; orientability); M. C. McCord, Duke Math. J. 33 (1966) (the nerve as a
+;;; finite space).
+
+(require stdlib)
+(require core.integer_linalg)
+(require core.sheaf.site)
+(require core.sheaf.glue)
+(require core.sheaf.module)
+(require core.sheaf.cohomology)
+
+(provide make-chart chart? chart-name chart-dimension chart-domain? chart-metric
+         make-transition transition? transition-from transition-to transition-map transition-overlap?
+         make-atlas atlas? atlas-dimension atlas-carrier atlas-chart-names atlas-chart-count
+         atlas-chart atlas-chart-index atlas-samples atlas-transition atlas-overlap?
+         atlas-transition-map atlas-same-point? atlas-default-tolerance
+         ;; the cocycle and its derivatives
+         atlas-cocycle-violations atlas-check-cocycle
+         atlas-jacobian atlas-jacobian-violations atlas-metric atlas-metric-violations
+         atlas-check
+         ;; the glued space
+         atlas-point atlas-point? atlas-point-chart atlas-point-local atlas-point-coordinates
+         atlas-point-charts atlas-point-normalize atlas-point=?
+         atlas-transport-vector atlas-transport-covector atlas-transport-bilinear
+         atlas-glue-functions atlas-glue-vector-fields atlas-recoordinatize
+         ;; the nerve and its cohomology
+         atlas-nerve atlas-nerve-space atlas-orientation-signs atlas-w1 atlas-orientation
+         atlas-orientable? atlas-local-system atlas-cech-complex atlas-cech-cohomology
+         atlas-nerve-cohomology atlas-mod2-betti
+         ;; constructors
+         sphere-atlas sphere-atlas-core-chart sphere-atlas-chart-name
+         sphere-atlas->ambient sphere-atlas<-ambient
+         space-form-atlas space-form-conformal-factor simplicial-surface-atlas)
+
+;; ---------------------------------------------------------------------------
+;; Small exact-safe helpers (generic arithmetic only, no float literals)
+;; ---------------------------------------------------------------------------
+(define (at-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (at-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (at-all? pred (cdr xs))) (else #f)))
+(define (at-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (at-any? pred (cdr xs)))))
+(define (at-position x xs)
+  (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((equal? (car l) x) i) (else (loop (cdr l) (+ i 1))))))
+(define (at-dot a b)
+  (let loop ((i 0) (s 0)) (if (< i (vector-length a)) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s)))
+(define (at-norm2 a) (at-dot a a))
+(define (at-vec-map f a)
+  (let* ((n (vector-length a)) (r (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (f (vector-ref a i))) (loop (+ i 1))) r))))
+(define (at-scale s a) (at-vec-map (lambda (x) (* s x)) a))
+(define (at-shift x c t)
+  (let* ((n (vector-length x)) (r (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! r i (if (= i c) (+ (vector-ref x i) t) (vector-ref x i))) (loop (+ i 1))) r))))
+(define (at-matrix rows cols f)
+  (let ((m (make-vector rows 0)))
+    (let loop ((r 0))
+      (if (< r rows)
+          (begin (vector-set! m r (let ((row (make-vector cols 0)))
+                                    (let fill ((c 0)) (if (< c cols) (begin (vector-set! row c (f r c)) (fill (+ c 1))) row))))
+                 (loop (+ r 1)))
+          m))))
+(define (at-identity n) (at-matrix n n (lambda (r c) (if (= r c) 1 0))))
+(define (at-mat-vec M v) (at-vec-map (lambda (row) (at-dot row v)) M))
+(define (at-transpose M) (exact-matrix-transpose M))
+(define (at-mat-mul A B) (exact-matrix-mul A B))
+(define (at-exact-vector? v) (let loop ((i 0)) (cond ((= i (vector-length v)) #t) ((exact? (vector-ref v i)) (loop (+ i 1))) (else #f))))
+(define (at-exact-matrix? M) (at-all? at-exact-vector? (vector->list M)))
+(define (at-subsets xs)
+  (if (null? xs) (list '())
+      (let ((rest (at-subsets (cdr xs)))) (append rest (map (lambda (s) (cons (car xs) s)) rest)))))
+(define (at-insert-sorted x xs)
+  (cond ((null? xs) (list x)) ((< x (car xs)) (cons x xs)) ((= x (car xs)) xs) (else (cons (car xs) (at-insert-sorted x (cdr xs))))))
+(define (at-sort-ints xs) (let loop ((l xs) (acc '())) (if (null? l) acc (loop (cdr l) (at-insert-sorted (car l) acc)))))
+(define (at-list<? a b)
+  (cond ((null? a) (not (null? b))) ((null? b) #f) ((< (car a) (car b)) #t) ((> (car a) (car b)) #f) (else (at-list<? (cdr a) (cdr b)))))
+(define (at-simplex<? a b) (or (< (length a) (length b)) (and (= (length a) (length b)) (at-list<? a b))))
+
+;; ---------------------------------------------------------------------------
+;; Charts, transitions, atlases
+;; ---------------------------------------------------------------------------
+;; A chart: a name, a dimension, a decision procedure for phi(U) inside R^n,
+;; and optionally a Riemannian metric x -> n x n matrix (vectors of rows).
+(define (make-chart name dim domain? . metric)
+  (vector 'chart name dim domain? (if (null? metric) #f (car metric))))
+(define (chart? c) (and (vector? c) (= 5 (vector-length c)) (eq? (vector-ref c 0) 'chart)))
+(define (chart-name c) (vector-ref c 1))
+(define (chart-dimension c) (vector-ref c 2))
+(define (chart-domain? c x) ((vector-ref c 3) x))
+(define (chart-metric c) (vector-ref c 4))
+
+;; A transition from chart `from` to chart `to`: the map on from-coordinates
+;; and the decision procedure for phi_from(U_from cap U_to).
+(define (make-transition from to map overlap?) (vector 'transition from to map overlap?))
+(define (transition? t) (and (vector? t) (= 5 (vector-length t)) (eq? (vector-ref t 0) 'transition)))
+(define (transition-from t) (vector-ref t 1))
+(define (transition-to t) (vector-ref t 2))
+(define (transition-map t) (vector-ref t 3))
+(define (transition-overlap? t x) ((vector-ref t 4) x))
+
+(define (atlas-default-tolerance) (/ 1 1099511627776))   ; 2^-40, used as (float 2^-40)
+
+(define (at-carrier-check carrier)
+  (cond ((eq? carrier 'exact) carrier)
+        ((and (pair? carrier) (eq? (car carrier) 'float) (pair? (cdr carrier)) (real? (cadr carrier)) (> (cadr carrier) 0))
+         carrier)
+        (else (error "make-atlas: carrier must be 'exact or (float tol) with tol > 0" carrier))))
+
+;; #(atlas dim carrier charts names transitions samples)
+;; charts: list of charts; transitions: list of transitions (both directions
+;; of every overlap the gluing uses); samples: alist chart-name -> points.
+(define (make-atlas dim carrier charts transitions samples)
+  (let* ((cv (list->vector charts)) (m (vector-length cv))
+         (names (map chart-name charts))
+         (table (make-vector (* m m) #f))
+         (index (lambda (name)
+                  (let ((i (at-position name names)))
+                    (if (not i) (error "make-atlas: transition names an unknown chart" name))
+                    i))))
+    (at-carrier-check carrier)
+    (for-each (lambda (c) (if (not (= (chart-dimension c) dim)) (error "make-atlas: chart dimension differs from the atlas" (chart-name c)))) charts)
+    (for-each (lambda (t) (vector-set! table (+ (* m (index (transition-from t))) (index (transition-to t))) t)) transitions)
+    (vector 'atlas dim carrier cv names table
+            (list->vector (map (lambda (n) (let ((e (assoc n samples))) (if e (cdr e) '()))) names)))))
+(define (atlas? a) (and (vector? a) (= 7 (vector-length a)) (eq? (vector-ref a 0) 'atlas)))
+(define (atlas-dimension a) (vector-ref a 1))
+(define (atlas-carrier a) (vector-ref a 2))
+(define (atlas-chart-names a) (vector-ref a 4))
+(define (atlas-chart-count a) (vector-length (vector-ref a 3)))
+(define (atlas-chart-index a name)
+  (let ((i (at-position name (atlas-chart-names a)))) (if (not i) (error "atlas: no chart named" name)) i))
+(define (atlas-chart a name) (vector-ref (vector-ref a 3) (atlas-chart-index a name)))
+(define (at-chart a i) (vector-ref (vector-ref a 3) i))
+(define (at-name a i) (chart-name (at-chart a i)))
+(define (at-samples a i) (vector-ref (vector-ref a 6) i))
+(define (atlas-samples a name) (at-samples a (atlas-chart-index a name)))
+(define (at-trans a i j) (vector-ref (vector-ref a 5) (+ (* (atlas-chart-count a) i) j)))
+(define (atlas-transition a from to) (at-trans a (atlas-chart-index a from) (atlas-chart-index a to)))
+
+;; x in phi_i(U_i cap U_j) (i = j: x in phi_i(U_i))
+(define (at-overlap? a i j x)
+  (and (chart-domain? (at-chart a i) x)
+       (or (= i j) (let ((t (at-trans a i j))) (and t (transition-overlap? t x))))))
+(define (atlas-overlap? a from to x) (at-overlap? a (atlas-chart-index a from) (atlas-chart-index a to) x))
+(define (at-apply a i j x)
+  (if (and (= i j) (not (at-trans a i i))) x ((transition-map (at-trans a i j)) x)))
+(define (atlas-transition-map a from to x)
+  (let ((i (atlas-chart-index a from)) (j (atlas-chart-index a to)))
+    (if (not (at-overlap? a i j x)) (error "atlas-transition-map: the point is not in the overlap" (list from to x)))
+    (at-apply a i j x)))
+
+;; carrier equality of numbers, vectors and matrices
+(define (at-num-same? a x y)
+  (let ((c (atlas-carrier a)))
+    (if (eq? c 'exact) (= x y)
+        (<= (abs (- x y)) (* (cadr c) (max 1 (abs x) (abs y)))))))
+(define (at-same? a x y)
+  (cond ((vector? x) (and (vector? y) (= (vector-length x) (vector-length y))
+                          (let loop ((i 0)) (cond ((= i (vector-length x)) #t)
+                                                  ((at-same? a (vector-ref x i) (vector-ref y i)) (loop (+ i 1)))
+                                                  (else #f)))))
+        ((pair? x) (and (pair? y) (= (length x) (length y)) (at-all? (lambda (p) p) (map (lambda (u v) (at-same? a u v)) x y))))
+        (else (at-num-same? a x y))))
+(define (atlas-same-point? a x y) (at-same? a x y))
+(define (at-exact-ok? a v)
+  (or (not (eq? (atlas-carrier a) 'exact))
+      (if (vector? v) (if (and (> (vector-length v) 0) (vector? (vector-ref v 0))) (at-exact-matrix? v) (at-exact-vector? v)) (exact? v))))
+
+;; ---------------------------------------------------------------------------
+;; The cocycle condition
+;; ---------------------------------------------------------------------------
+;; For every chart i, sample x of i, and charts j, k: identity, domain
+;; consistency and g_{j->k}(g_{i->j} x) = g_{i->k} x (k = i: the inverse).
+;; Returns (violations checks).
+(define (at-cocycle-scan a)
+  (let ((m (atlas-chart-count a)) (out '()) (checks 0))
+    (define (bad! o) (set! out (cons o out)))
+    (for-each
+     (lambda (i)
+       (for-each
+        (lambda (x)
+          (cond
+           ((not (chart-domain? (at-chart a i) x)) (bad! (list 'outside (at-name a i) x)))
+           (else
+            (let ((tii (at-trans a i i)))
+              (if tii
+                  (let ((y ((transition-map tii) x)))
+                    (set! checks (+ checks 1))
+                    (if (not (at-same? a y x)) (bad! (list 'identity (at-name a i) x y))))))
+            (for-each
+             (lambda (j)
+               (if (and (not (= i j)) (at-overlap? a i j x))
+                   (let ((y (at-apply a i j x)))
+                     (cond
+                      ((not (at-exact-ok? a y)) (bad! (list 'inexact (list (at-name a i) (at-name a j)) x y)))
+                      ((not (chart-domain? (at-chart a j) y)) (bad! (list 'domain (list (at-name a i) (at-name a j) (at-name a j)) x)))
+                      (else
+                       (for-each
+                        (lambda (k)
+                          (if (not (= j k))
+                              (let ((in-jk (if (at-overlap? a j k y) #t #f)) (in-ik (if (at-overlap? a i k x) #t #f)))
+                                (cond
+                                 ((not (eq? in-jk in-ik))
+                                  (bad! (list 'domain (list (at-name a i) (at-name a j) (at-name a k)) x)))
+                                 (in-jk
+                                  (let ((via (at-apply a j k y)) (direct (at-apply a i k x)))
+                                    (set! checks (+ checks 1))
+                                    (cond ((not (at-exact-ok? a via)) (bad! (list 'inexact (list (at-name a j) (at-name a k)) y via)))
+                                          ((not (at-exact-ok? a direct)) (bad! (list 'inexact (list (at-name a i) (at-name a k)) x direct)))
+                                          ((not (at-same? a via direct))
+                                           (bad! (list 'cocycle (list (at-name a i) (at-name a j) (at-name a k)) x via direct))))))))))
+                        (at-range m)))))))
+             (at-range m)))))
+        (at-samples a i)))
+     (at-range m))
+    (list (reverse out) checks)))
+(define (atlas-cocycle-violations a) (car (at-cocycle-scan a)))
+(define (atlas-check-cocycle a)
+  (let ((r (at-cocycle-scan a)))
+    (if (null? (car r)) (gluing-success (list 'cocycle-checks (cadr r))) (gluing-failure (car r)))))
+
+;; ---------------------------------------------------------------------------
+;; Derivatives of transitions (forward-mode AD; exact at exact points)
+;; ---------------------------------------------------------------------------
+(define (at-jacobian-of f x)
+  (let ((n (vector-length x)))
+    (at-matrix n n (lambda (r c) (derivative (lambda (t) (vector-ref (f (at-shift x c t)) r)) 0)))))
+(define (at-jac a i j x)
+  (if (and (= i j) (not (at-trans a i i))) (at-identity (atlas-dimension a))
+      (at-jacobian-of (transition-map (at-trans a i j)) x)))
+(define (atlas-jacobian a from to x)
+  (let ((i (atlas-chart-index a from)) (j (atlas-chart-index a to)))
+    (if (not (at-overlap? a i j x)) (error "atlas-jacobian: the point is not in the overlap" (list from to x)))
+    (at-jac a i j x)))
+
+;; The chain rule on every triple overlap the samples meet:
+;; g'_{j->k}(g_{i->j} x) g'_{i->j}(x) = g'_{i->k}(x)  (k = i: = identity).
+(define (at-jacobian-scan a)
+  (let ((m (atlas-chart-count a)) (out '()) (checks 0))
+    (for-each
+     (lambda (i)
+       (for-each
+        (lambda (x)
+          (if (chart-domain? (at-chart a i) x)
+              (let ((Jik (make-vector m #f)))
+                (for-each (lambda (k) (if (at-overlap? a i k x) (vector-set! Jik k (at-jac a i k x)))) (at-range m))
+                (vector-set! Jik i (at-identity (atlas-dimension a)))
+                (for-each
+                 (lambda (j)
+                   (if (and (not (= i j)) (vector-ref Jik j))
+                       (let ((y (at-apply a i j x)) (Jij (vector-ref Jik j)))
+                         (for-each
+                          (lambda (k)
+                            (if (and (not (= j k)) (vector-ref Jik k) (at-overlap? a j k y))
+                                (let ((lhs (at-mat-mul (at-jac a j k y) Jij)) (rhs (vector-ref Jik k)))
+                                  (set! checks (+ checks 1))
+                                  (if (or (not (at-exact-ok? a lhs)) (not (at-same? a lhs rhs)))
+                                      (set! out (cons (list 'jacobian-cocycle (list (at-name a i) (at-name a j) (at-name a k)) x lhs rhs) out))))))
+                          (at-range m)))))
+                 (at-range m)))))
+        (at-samples a i)))
+     (at-range m))
+    (list (reverse out) checks)))
+(define (atlas-jacobian-violations a) (car (at-jacobian-scan a)))
+
+;; Riemannian atlases: every transition is an isometry of the chart metrics,
+;; g'^T G_j(g x) g' = G_i(x).
+(define (atlas-metric a name x)
+  (let ((G (chart-metric (atlas-chart a name)))) (if (not G) (error "atlas-metric: the chart has no metric" name)) (G x)))
+(define (at-metric-scan a)
+  (let ((m (atlas-chart-count a)) (out '()) (checks 0))
+    (for-each
+     (lambda (i)
+       (let ((Gi (chart-metric (at-chart a i))))
+         (if Gi
+             (for-each
+              (lambda (x)
+                (if (chart-domain? (at-chart a i) x)
+                    (for-each
+                     (lambda (j)
+                       (let ((Gj (chart-metric (at-chart a j))))
+                         (if (and Gj (not (= i j)) (at-overlap? a i j x))
+                             (let* ((J (at-jac a i j x)) (pulled (at-mat-mul (at-transpose J) (at-mat-mul (Gj (at-apply a i j x)) J))) (gi (Gi x)))
+                               (set! checks (+ checks 1))
+                               (if (or (not (at-exact-ok? a pulled)) (not (at-same? a pulled gi)))
+                                   (set! out (cons (list 'metric (list (at-name a i) (at-name a j)) x pulled gi) out)))))))
+                     (at-range m))))
+              (at-samples a i)))))
+     (at-range m))
+    (list (reverse out) checks)))
+(define (atlas-metric-violations a) (car (at-metric-scan a)))
+
+;; Every check at once. Success value: an alist of check counts.
+(define (atlas-check a)
+  (let* ((c (at-cocycle-scan a)) (j (at-jacobian-scan a)) (g (at-metric-scan a))
+         (bad (append (car c) (car j) (car g))))
+    (if (null? bad)
+        (gluing-success (list (cons 'charts (atlas-chart-count a)) (cons 'cocycle-checks (cadr c))
+                              (cons 'jacobian-checks (cadr j)) (cons 'metric-checks (cadr g))))
+        (gluing-failure bad))))
+
+;; ---------------------------------------------------------------------------
+;; The glued space: points as classes of chart representatives
+;; ---------------------------------------------------------------------------
+(define (atlas-point a name x)
+  (let ((i (atlas-chart-index a name)))
+    (if (not (chart-domain? (at-chart a i) x)) (error "atlas-point: not in the chart domain" (list name x)))
+    (vector 'atlas-point i x)))
+(define (atlas-point? p) (and (vector? p) (= 3 (vector-length p)) (eq? (vector-ref p 0) 'atlas-point)))
+(define (atlas-point-chart a p) (at-name a (vector-ref p 1)))
+(define (atlas-point-local p) (vector-ref p 2))
+;; coordinates of p in chart `name`, or #f when p is not in that chart
+(define (atlas-point-coordinates a p name)
+  (let ((i (vector-ref p 1)) (j (atlas-chart-index a name)) (x (vector-ref p 2)))
+    (if (at-overlap? a i j x) (at-apply a i j x) #f)))
+(define (atlas-point-charts a p)
+  (filter (lambda (n) (atlas-point-coordinates a p n)) (atlas-chart-names a)))
+;; the canonical representative: the first chart (in atlas order) containing p
+(define (atlas-point-normalize a p)
+  (let ((n (car (atlas-point-charts a p)))) (vector 'atlas-point (atlas-chart-index a n) (atlas-point-coordinates a p n))))
+(define (atlas-point=? a p q)
+  (let ((y (atlas-point-coordinates a q (atlas-point-chart a p))))
+    (and y (at-same? a y (atlas-point-local p)))))
+
+;; tangent vectors push forward by g', covectors by g'^{-T}, bilinear forms
+;; (metrics, (0,2)-tensors) by g'^{-T} B g'^{-1}
+(define (atlas-transport-vector a from to x v) (at-mat-vec (atlas-jacobian a from to x) v))
+(define (atlas-transport-covector a from to x w)
+  (at-mat-vec (at-transpose (exact-inverse (atlas-jacobian a from to x))) w))
+(define (atlas-transport-bilinear a from to x B)
+  (let ((Ji (exact-inverse (atlas-jacobian a from to x)))) (at-mat-mul (at-transpose Ji) (at-mat-mul B Ji))))
+
+;; Overlap data for core.sheaf's cover: the samples of U_i cap U_j (from
+;; either chart) in both charts' coordinates, as an alist
+;; ((i . coords-in-i) (j . coords-in-j)), or #f when the samples miss the overlap.
+(define (at-overlap-samples a i j)
+  (let* ((from-i (filter (lambda (x) (at-overlap? a i j x)) (at-samples a i)))
+         (from-j (filter (lambda (y) (at-overlap? a j i y)) (at-samples a j)))
+         (xs (append from-i (map (lambda (y) (at-apply a j i y)) from-j)))
+         (ys (append (map (lambda (x) (at-apply a i j x)) from-i) from-j)))
+    (if (null? xs) #f (list (cons (at-name a i) xs) (cons (at-name a j) ys)))))
+(define (at-sample-cover a restrict same?)
+  (make-cover (atlas-chart-names a)
+              (lambda (n1 n2) (at-overlap-samples a (atlas-chart-index a n1) (atlas-chart-index a n2)))
+              restrict same?))
+;; locals: alist chart-name -> procedure on chart coordinates. Glues when the
+;; local functions agree at every sample of every overlap; the glued value
+;; is a procedure on atlas points.
+(define (atlas-glue-functions a locals)
+  (glue-cover (at-sample-cover a (lambda (n ov f) (map f (cdr (assoc n ov)))) (lambda (u v) (at-same? a u v)))
+              locals
+              (lambda (locals)
+                (lambda (p) ((cdr (assoc (atlas-point-chart a p) locals)) (atlas-point-local p))))))
+;; locals: alist chart-name -> vector field (procedure x -> tangent vector).
+;; On each overlap both fields are compared in the later chart, the earlier
+;; one pushed forward by the Jacobian of the transition.
+(define (atlas-glue-vector-fields a locals)
+  (let ((names (atlas-chart-names a)))
+    (glue-cover (make-cover names
+                            (lambda (n1 n2)
+                              (let ((ov (at-overlap-samples a (atlas-chart-index a n1) (atlas-chart-index a n2))))
+                                (and ov (list n1 n2 ov))))
+                            (lambda (n ov field)
+                              (let* ((n1 (car ov)) (n2 (cadr ov)) (pts (caddr ov))
+                                     (xs (cdr (assoc n1 pts))) (ys (cdr (assoc n2 pts))))
+                                (if (equal? n n2) (map field ys)
+                                    (map (lambda (x) (atlas-transport-vector a n1 n2 x (field x))) xs))))
+                            (lambda (u v) (at-same? a u v)))
+                locals
+                (lambda (locals)
+                  (lambda (p) ((cdr (assoc (atlas-point-chart a p) locals)) (atlas-point-local p)))))))
+
+;; Change the coordinates of one chart by a diffeomorphism h (inverse h-inv):
+;; the new atlas differs from the old by a Cech coboundary and glues to the
+;; same space. Its chart metric (if any) is the pushforward of the old one.
+(define (atlas-recoordinatize a name h h-inv)
+  (let* ((i (atlas-chart-index a name)) (m (atlas-chart-count a)) (old (at-chart a i))
+         (G (chart-metric old))
+         (new-chart (make-chart name (atlas-dimension a)
+                                (lambda (y) (chart-domain? old (h-inv y)))
+                                (if G (lambda (y) (let ((J (at-jacobian-of h-inv y))) (at-mat-mul (at-transpose J) (at-mat-mul (G (h-inv y)) J)))) #f)))
+         (charts (map (lambda (k) (if (= k i) new-chart (at-chart a k))) (at-range m)))
+         (trans '()))
+    (for-each
+     (lambda (p)
+       (for-each
+        (lambda (q)
+          (let ((t (at-trans a p q)))
+            (if t
+                (set! trans
+                      (cons (cond ((and (= p i) (= q i)) (make-transition name name (lambda (y) (h ((transition-map t) (h-inv y)))) (lambda (y) (transition-overlap? t (h-inv y)))))
+                                  ((= p i) (make-transition name (at-name a q) (lambda (y) ((transition-map t) (h-inv y))) (lambda (y) (transition-overlap? t (h-inv y)))))
+                                  ((= q i) (make-transition (at-name a p) name (lambda (x) (h ((transition-map t) x))) (lambda (x) (transition-overlap? t x))))
+                                  (else t))
+                            trans)))))
+        (at-range m)))
+     (at-range m))
+    (make-atlas (atlas-dimension a) (atlas-carrier a) charts (reverse trans)
+                (map (lambda (k) (cons (at-name a k) (if (= k i) (map h (at-samples a k)) (at-samples a k)))) (at-range m)))))
+
+;; ---------------------------------------------------------------------------
+;; The nerve of the cover and the orientation character
+;; ---------------------------------------------------------------------------
+;; Simplices are ascending lists of chart indices whose common overlap
+;; contains a sample point; each comes with that witness (chart-index . x).
+;; Returns ((simplex . witness) ...) ordered by size, then lexicographically.
+(define (atlas-nerve a)
+  (let ((seen (make-hash-table)) (out '()))
+    (for-each
+     (lambda (i)
+       (for-each
+        (lambda (x)
+          (if (chart-domain? (at-chart a i) x)
+              (let ((members (filter (lambda (j) (at-overlap? a i j x)) (at-range (atlas-chart-count a)))))
+                (for-each (lambda (s)
+                            (if (and (not (null? s)) (not (hash-table-ref/default seen s #f)))
+                                (begin (hash-table-set! seen s #t) (set! out (cons (cons s (cons i x)) out)))))
+                          (at-subsets members)))))
+        (at-samples a i)))
+     (at-range (atlas-chart-count a)))
+    (sort out (lambda (u v) (at-simplex<? (car u) (car v))))))
+(define (at-nerve-simplices a) (map car (atlas-nerve a)))
+
+;; Sign of det g'_{i->j} on U_i cap U_j, for every nerve edge i < j.
+;; Returns (signs violations) with signs an alist ((i j) . +1/-1) on indices.
+(define (at-orientation-scan a)
+  (let ((m (atlas-chart-count a)) (signs '()) (out '()))
+    (for-each
+     (lambda (i)
+       (for-each
+        (lambda (j)
+          (if (< i j)
+              (let ((pts (filter (lambda (x) (at-overlap? a i j x)) (at-samples a i)))
+                    (pts-j (filter (lambda (y) (at-overlap? a j i y)) (at-samples a j))))
+                (let ((all (append pts (map (lambda (y) (at-apply a j i y)) pts-j))) (sign #f) (where #f) (ok #t))
+                  (for-each
+                   (lambda (x)
+                     (if ok
+                         (let ((d (exact-det (at-jac a i j x))))
+                           (cond ((at-num-same? a d 0) (set! ok #f) (set! out (cons (list 'degenerate (list (at-name a i) (at-name a j)) x) out)))
+                                 ((not sign) (set! sign (if (> d 0) 1 -1)) (set! where x))
+                                 ((not (= sign (if (> d 0) 1 -1)))
+                                  (set! ok #f)
+                                  (set! out (cons (list 'orientation-varies (list (at-name a i) (at-name a j)) where x) out)))))))
+                   all)
+                  (if (and ok sign) (set! signs (cons (cons (list i j) sign) signs)))))))
+        (at-range m)))
+     (at-range m))
+    (list (reverse signs) (reverse out))))
+(define (at-sign signs i j)
+  (cond ((= i j) 1)
+        ((< i j) (let ((e (assoc (list i j) signs))) (if e (cdr e) #f)))
+        (else (at-sign signs j i))))
+;; ((i-name j-name) . sign) for every nerve edge, or an error naming the obstruction
+(define (atlas-orientation-signs a)
+  (let ((r (at-orientation-scan a)))
+    (if (not (null? (cadr r))) (gluing-failure (cadr r))
+        (gluing-success (map (lambda (e) (cons (list (at-name a (car (car e))) (at-name a (cadr (car e)))) (cdr e))) (car r))))))
+
+;; Spanning forest of the nerve's 1-skeleton with orientations propagated
+;; from each root; a non-tree edge that disagrees closes an
+;; orientation-reversing loop.
+(define (at-tree-path parent v)
+  (let loop ((v v) (acc '())) (if (not v) (reverse acc) (loop (vector-ref parent v) (cons v acc)))))
+(define (at-loop parent a b)
+  ;; root..a and root..b share a prefix up to their meet; the loop is
+  ;; meet .. a, b .. meet
+  (let* ((pa (reverse (at-tree-path parent a))) (pb (reverse (at-tree-path parent b))))
+    (let strip ((pa pa) (pb pb) (meet #f))
+      (if (and (pair? pa) (pair? pb) (= (car pa) (car pb))) (strip (cdr pa) (cdr pb) (car pa))
+          (append (list meet) pa (reverse pb) (list meet))))))
+(define (at-w1-scan a signs)
+  (let* ((m (atlas-chart-count a)) (eps (make-vector m 0)) (parent (make-vector m #f)) (bad #f))
+    (for-each
+     (lambda (root)
+       (if (= 0 (vector-ref eps root))
+           (begin
+             (vector-set! eps root 1)
+             (let bfs ((queue (list root)))
+               (if (pair? queue)
+                   (let ((u (car queue)) (next '()))
+                     (for-each
+                      (lambda (v)
+                        (let ((s (and (not (= u v)) (at-sign signs u v))))
+                          (if s
+                              (cond ((= 0 (vector-ref eps v))
+                                     (vector-set! eps v (* s (vector-ref eps u))) (vector-set! parent v u) (set! next (cons v next)))
+                                    ((and (not bad) (not (= (vector-ref eps v) (* s (vector-ref eps u)))))
+                                     (set! bad (at-loop parent u v)))))))
+                      (at-range m))
+                     (bfs (append (cdr queue) (reverse next)))))))))
+     (at-range m))
+    (list eps bad)))
+;; w1: the Z/2 cochain of the orientation signs on the nerve's edges, whether
+;; it is a coboundary, and the evidence: the orientation (chart -> +1/-1)
+;; that trivializes it, or a loop of charts along which it is 1.
+;; Returns (w1 cochain trivial? evidence) with cochain ((i-name j-name) . 0|1).
+(define (atlas-w1 a)
+  (let* ((r (at-orientation-scan a)))
+    (if (not (null? (cadr r))) (gluing-failure (cadr r))
+        (let* ((signs (car r)) (w (at-w1-scan a signs)) (eps (car w)) (loop (cadr w))
+               (cochain (map (lambda (e) (cons (list (at-name a (car (car e))) (at-name a (cadr (car e)))) (if (= (cdr e) 1) 0 1))) signs))
+               ;; the cocycle condition of w1 on every nerve triangle
+               (tri (filter (lambda (s) (= 3 (length s))) (at-nerve-simplices a)))
+               (cobad (filter (lambda (s) (not (= (* (at-sign signs (car s) (cadr s)) (at-sign signs (cadr s) (caddr s))) (at-sign signs (car s) (caddr s)))))
+                              tri)))
+          (if (not (null? cobad))
+              (gluing-failure (map (lambda (s) (list 'cocycle (map (lambda (i) (at-name a i)) s) 'w1)) cobad))
+              (gluing-success
+               (list 'w1 cochain (not loop)
+                     (if loop (map (lambda (i) (at-name a i)) loop)
+                         (map (lambda (i) (cons (at-name a i) (vector-ref eps i))) (at-range (atlas-chart-count a)))))))))))
+;; The orientation sheaf has a global section exactly when w1 = 0: glued
+;; value the orientation (chart-name . +1/-1), obstruction the monodromy loop.
+(define (atlas-orientation a)
+  (let ((w (atlas-w1 a)))
+    (if (not (glued? w)) w
+        (let ((v (glued-value w)))
+          (if (list-ref v 2) (gluing-success (list-ref v 3)) (gluing-failure (list (list 'monodromy (list-ref v 3)))))))))
+(define (atlas-orientable? a) (glued? (atlas-orientation a)))
+
+;; ---------------------------------------------------------------------------
+;; Cohomology of the nerve with core.sheaf
+;; ---------------------------------------------------------------------------
+;; coefficients: 'Z (constant) or 'orientation (Z twisted by w1). Sections
+;; over U_J are trivialized in the chart min J; restricting from U_I to U_J
+;; (I inside J) multiplies by the orientation sign between charts min I and
+;; min J.
+(define (at-coefficient-sign a coefficients)
+  (cond ((eq? coefficients 'Z) (lambda (p q) 1))
+        ((eq? coefficients 'orientation)
+         (let ((r (at-orientation-scan a)))
+           (if (not (null? (cadr r))) (error "atlas: the orientation signs are not constant on an overlap" (cadr r)))
+           (let ((signs (car r))) (lambda (p q) (at-sign signs p q)))))
+        (else (error "atlas: coefficients must be 'Z or 'orientation" coefficients))))
+(define (atlas-cech-complex a kmax coefficients)
+  (let* ((simplices (at-nerve-simplices a)) (table (make-hash-table)) (s (at-coefficient-sign a coefficients)))
+    (for-each (lambda (J) (hash-table-set! table J #t)) simplices)
+    (cech-complex-from-nerve (atlas-chart-count a) kmax
+                             (lambda (J) (if (hash-table-ref/default table J #f) J #f))
+                             (lambda (U) (if U 1 0))
+                             (lambda (U V) (vector (vector (s (car U) (car V))))))))
+;; ((k betti torsion) ...) for k = 0 .. kmax: Cech cohomology of the cover.
+;; For a good cover (all nonempty finite intersections contractible) this is
+;; the cohomology of the glued manifold (Leray).
+(define (atlas-cech-cohomology a kmax coefficients)
+  (let ((cx (atlas-cech-complex a kmax coefficients)))
+    (ring-cochain-cohomology 'Z (car cx) (cadr cx))))
+;; The nerve as a finite space (McCord): its points are the nerve simplices
+;; J, with J <= I when J contains I, so the minimal open set of I is the
+;; overlap U_I. Returns (X simplices).
+(define (atlas-nerve-space a)
+  (let* ((simplices (at-nerve-simplices a)) (sv (list->vector simplices)) (n (vector-length sv)) (covers '()))
+    (for-each
+     (lambda (p)
+       (for-each
+        (lambda (q)
+          (let ((J (vector-ref sv p)) (I (vector-ref sv q)))
+            (if (and (= (length J) (+ 1 (length I))) (at-all? (lambda (i) (memv i J)) I))
+                (set! covers (cons (cons p q) covers)))))
+        (at-range n)))
+     (at-range n))
+    (list (make-finite-space n (reverse covers)) simplices)))
+;; the rank-one local system of the coefficients on the nerve space
+(define (atlas-local-system a coefficients)
+  (let* ((XS (atlas-nerve-space a)) (sv (list->vector (cadr XS))) (s (at-coefficient-sign a coefficients)))
+    (poset-local-system (car XS) (lambda (x y) (s (car (vector-ref sv x)) (car (vector-ref sv y)))))))
+;; derived-functor cohomology of the local system on the nerve space: an
+;; independent path to the same groups as atlas-cech-cohomology
+(define (atlas-nerve-cohomology a kmax coefficients)
+  (poset-module-cohomology (atlas-local-system a coefficients) kmax))
+;; dimensions of H^k(nerve; Z/2), k = 0 .. kmax, from the integral groups by
+;; the universal coefficient theorem: b_k + #even torsion of H^k + #even torsion of H^{k+1}
+(define (atlas-mod2-betti a kmax)
+  (let* ((H (atlas-cech-cohomology a (+ kmax 1) 'Z))
+         (even-torsion (lambda (k) (let ((e (assv k H))) (if e (length (filter even? (caddr e))) 0)))))
+    (map (lambda (k) (+ (cadr (assv k H)) (even-torsion k) (even-torsion (+ k 1)))) (at-range (+ kmax 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Space forms in the ADR-0018 chart (alpha = 1)
+;; ---------------------------------------------------------------------------
+;; lambda_x = 1 / (1 + K |x|^2 / 4): one expression for every sign of K, so
+;; K = 0 is the Euclidean factor 1 exactly.
+(define (space-form-conformal-factor K x) (/ 1 (+ 1 (/ (* K (at-norm2 x)) 4))))
+(define (at-conformal-metric K)
+  (lambda (x) (let* ((l (space-form-conformal-factor K x)) (l2 (* l l))) (at-matrix (vector-length x) (vector-length x) (lambda (r c) (if (= r c) l2 0))))))
+(define (at-carrier-for root)
+  (if (exact? root) 'exact (list 'float (atlas-default-tolerance))))
+(define (at-real-sqrt q) (sqrt q))   ; exact for an exact rational square, inexact otherwise
+
+;; The sphere of curvature K > 0 (radius R = 1/sqrt K) in R^{n+1}, with the
+;; 2(n+1) stereographic charts from the poles s R e_k (s = +1, -1). Chart
+;; (k, s) has coordinates x = 2R p_hat / (R - s p_k) (p_hat: p without
+;; coordinate k) and metric I / (1 + K|x|^2/4)^2; chart (n, -1) is the chart
+;; of core.manifold and core.curvature. Exact when K is the square of a
+;; rational, (float 2^-40) otherwise.
+(define (sphere-atlas-chart-name k s)
+  (string->symbol (string-append (if (< s 0) "-e" "+e") (number->string k))))
+(define (at-sphere-pole name)
+  (let* ((str (symbol->string name)))
+    (cons (string->number (substring str 2 (string-length str))) (if (char=? (string-ref str 0) #\-) -1 1))))
+(define (at-sphere-to-ambient K R k s x)
+  (let* ((n (vector-length x)) (l (space-form-conformal-factor K x)) (p (make-vector (+ n 1) 0)))
+    (let loop ((i 0) (src 0))
+      (if (<= i n)
+          (if (= i k) (begin (vector-set! p i (* (- s) R (- (* 2 l) 1))) (loop (+ i 1) src))
+              (begin (vector-set! p i (* l (vector-ref x src))) (loop (+ i 1) (+ src 1))))
+          p))))
+(define (at-sphere-den R k s p) (- R (* s (vector-ref p k))))
+(define (at-sphere-from-ambient R k s p)
+  (let* ((n (- (vector-length p) 1)) (den (at-sphere-den R k s p)) (x (make-vector n 0)))
+    (let loop ((i 0) (dst 0))
+      (if (<= i n)
+          (if (= i k) (loop (+ i 1) dst)
+              (begin (vector-set! x dst (/ (* 2 R (vector-ref p i)) den)) (loop (+ i 1) (+ dst 1))))
+          x))))
+(define (sphere-atlas n K . options)
+  (if (not (and (real? K) (> K 0))) (error "sphere-atlas: K must be positive" K))
+  (let* ((R (at-real-sqrt (/ 1 K)))
+         (poles (apply append (map (lambda (k) (list (cons k -1) (cons k 1))) (at-range (+ n 1)))))
+         (names (map (lambda (ps) (sphere-atlas-chart-name (car ps) (cdr ps))) poles))
+         (grid (if (null? options) (list -2 -1/2 0 1/3 3/2) (car options)))
+         (points (let build ((d n)) (if (= d 0) (list '()) (apply append (map (lambda (rest) (map (lambda (g) (cons g rest)) grid)) (build (- d 1)))))))
+         (samples (map (lambda (pt) (list->vector (if (exact? R) pt (map exact->inexact pt)))) points))
+         (charts (map (lambda (name) (make-chart name n (lambda (x) (= (vector-length x) n)) (at-conformal-metric K))) names))
+         (trans '()))
+    (for-each
+     (lambda (a)
+       (for-each
+        (lambda (b)
+          (if (not (equal? a b))
+              (let ((ka (car a)) (sa (cdr a)) (kb (car b)) (sb (cdr b)))
+                (set! trans
+                      (cons (make-transition (sphere-atlas-chart-name ka sa) (sphere-atlas-chart-name kb sb)
+                                             (lambda (x) (at-sphere-from-ambient R kb sb (at-sphere-to-ambient K R ka sa x)))
+                                             (lambda (x) (not (= 0 (at-sphere-den R kb sb (at-sphere-to-ambient K R ka sa x))))))
+                            trans)))))
+        poles))
+     poles)
+    (make-atlas n (at-carrier-for R) charts (reverse trans) (map (lambda (name) (cons name samples)) names))))
+(define (sphere-atlas-core-chart n) (sphere-atlas-chart-name n -1))
+;; chart coordinates <-> the embedded sphere of radius 1/sqrt K
+(define (sphere-atlas->ambient K name x)
+  (let ((ks (at-sphere-pole name)))
+    (at-sphere-to-ambient K (at-real-sqrt (/ 1 K)) (car ks) (cdr ks) x)))
+(define (sphere-atlas<-ambient K name p)
+  (let ((ks (at-sphere-pole name)) (R (at-real-sqrt (/ 1 K))))
+    (if (= 0 (at-sphere-den R (car ks) (cdr ks) p)) (error "sphere-atlas<-ambient: the point is the pole of the chart" name))
+    (at-sphere-from-ambient R (car ks) (cdr ks) p)))
+
+;; Every sign of K. K > 0: the sphere atlas. K = 0: one Euclidean chart.
+;; K < 0: the ADR-0018 ball of radius rho = 2/sqrt(-K) (chart `ball`) and the
+;; upper half-space (chart `half-space`, z_n > 0, metric I/(-K z_n^2)), glued
+;; by the inversion sigma(y) = c + 2 (y - c)/|y - c|^2, c = -e_n, which is
+;; its own inverse: z = sigma(x/rho), x = rho sigma(z).
+(define (at-sigma y)
+  (let* ((n (vector-length y)) (d (at-shift y (- n 1) 1)) (s (/ 2 (at-norm2 d))))
+    (at-shift (at-scale s d) (- n 1) -1)))
+(define (space-form-atlas n K)
+  (cond
+   ((> K 0) (sphere-atlas n K))
+   ((= K 0)
+    (let ((e (make-chart 'euclidean n (lambda (x) (= (vector-length x) n)) (at-conformal-metric K)))
+          (grid (map list->vector (let build ((d n)) (if (= d 0) (list '()) (apply append (map (lambda (rest) (map (lambda (g) (cons g rest)) (list -1 0 1/2))) (build (- d 1)))))))))
+      (make-atlas n 'exact (list e) '() (list (cons 'euclidean grid)))))
+   (else
+    (let* ((rho (/ 2 (at-real-sqrt (- K))))
+           (ball (make-chart 'ball n (lambda (x) (and (= (vector-length x) n) (< (at-norm2 x) (* rho rho)))) (at-conformal-metric K)))
+           (half (make-chart 'half-space n (lambda (z) (and (= (vector-length z) n) (> (vector-ref z (- n 1)) 0)))
+                             (lambda (z) (let ((h (/ 1 (* (- K) (vector-ref z (- n 1)) (vector-ref z (- n 1))))))
+                                           (at-matrix n n (lambda (r c) (if (= r c) h 0)))))))
+           (fracs (list -2/3 -1/4 0 1/5 1/2))
+           (ball-pts (map (lambda (pt) (at-scale (/ rho (+ 1 n)) (list->vector pt)))
+                          (let build ((d n)) (if (= d 0) (list '()) (apply append (map (lambda (rest) (map (lambda (g) (cons g rest)) fracs)) (build (- d 1))))))))
+           (half-pts (map (lambda (pt) (let ((v (list->vector pt))) (vector-set! v (- n 1) (+ 1/3 (abs (vector-ref v (- n 1))))) v))
+                          (let build ((d n)) (if (= d 0) (list '()) (apply append (map (lambda (rest) (map (lambda (g) (cons g rest)) (list -1 0 2/3))) (build (- d 1))))))))
+           (cv (lambda (v) (if (exact? rho) v (at-vec-map exact->inexact v)))))
+      (make-atlas n (at-carrier-for rho) (list ball half)
+                  (list (make-transition 'ball 'half-space (lambda (x) (at-sigma (at-scale (/ 1 rho) x))) (lambda (x) #t))
+                        (make-transition 'half-space 'ball (lambda (z) (at-scale rho (at-sigma z))) (lambda (z) #t)))
+                  (list (cons 'ball (map cv ball-pts)) (cons 'half-space (map cv half-pts))))))))
+
+;; ---------------------------------------------------------------------------
+;; Triangulated surfaces: the atlas of open vertex stars
+;; ---------------------------------------------------------------------------
+;; triangles: list of 3-element lists of vertex labels (integers). Chart v is
+;; the open star of v, mapped piecewise linearly onto a fan around the
+;; origin: v goes to 0 and the link of v, a cycle (interior vertex) or a path
+;; (boundary vertex), to exact rational points in angular order. The
+;; transition v -> w on st(v) cap st(w) is the affine map of each triangle
+;; containing the edge vw. The nerve of this cover is the triangulation.
+(define (at-member-all? xs ys) (at-all? (lambda (x) (memv x ys)) xs))
+(define (at-link triangles v)
+  ;; edges of the link of v
+  (map (lambda (t) (filter (lambda (u) (not (= u v))) t)) (filter (lambda (t) (memv v t)) triangles)))
+(define (at-link-order v edges)
+  ;; the link as an ordered list of vertices, and whether it is a cycle
+  (let* ((verts (at-sort-ints (apply append edges)))
+         (nbrs (lambda (u) (apply append (map (lambda (e) (cond ((= (car e) u) (list (cadr e))) ((= (cadr e) u) (list (car e))) (else '()))) edges))))
+         (degrees (map (lambda (u) (length (nbrs u))) verts)))
+    (if (at-any? (lambda (d) (> d 2)) degrees) (error "simplicial-surface-atlas: an edge lies in more than two triangles at vertex" v))
+    (let* ((ends (filter (lambda (u) (= 1 (length (nbrs u)))) verts))
+           (cycle? (null? ends))
+           (start (if cycle? (car verts) (car (at-sort-ints ends))))
+           (first-step (car (at-sort-ints (nbrs start)))))
+      (if (not (or cycle? (= 2 (length ends)))) (error "simplicial-surface-atlas: the link is not connected at vertex" v))
+      (let walk ((prev start) (cur first-step) (acc (list start)))
+        (if (or (= cur start) (memv cur acc))
+            (begin (if (not (= (length acc) (length verts))) (error "simplicial-surface-atlas: the link is not connected at vertex" v))
+                   (list (reverse acc) cycle?))
+            (let ((next (filter (lambda (u) (not (= u prev))) (nbrs cur))))
+              (if (null? next) (begin (if (not (= (+ 1 (length acc)) (length verts))) (error "simplicial-surface-atlas: the link is not connected at vertex" v))
+                                      (list (reverse (cons cur acc)) cycle?))
+                  (walk cur (car next) (cons cur acc)))))))))
+(define (at-pi) (* 4 (atan 1)))
+(define (at-rational-point theta)
+  (vector (/ (inexact->exact (round (* 64 (cos theta)))) 64) (/ (inexact->exact (round (* 64 (sin theta)))) 64)))
+(define (at-star-positions order cycle?)
+  ;; alist link-vertex -> exact position, angles increasing with gaps below pi
+  (let ((d (length order)))
+    (map (lambda (u m) (cons u (at-rational-point (if cycle? (/ (* 2 (at-pi) m) d) (/ (* (at-pi) m) d)))))
+         order (at-range d))))
+;; barycentric coordinates of x in the triangle (0, P, Q): x = bp P + bq Q
+(define (at-bary x P Q)
+  (let* ((det (- (* (vector-ref P 0) (vector-ref Q 1)) (* (vector-ref P 1) (vector-ref Q 0))))
+         (bp (/ (- (* (vector-ref x 0) (vector-ref Q 1)) (* (vector-ref x 1) (vector-ref Q 0))) det))
+         (bq (/ (- (* (vector-ref P 0) (vector-ref x 1)) (* (vector-ref P 1) (vector-ref x 0))) det)))
+    (list (- 1 bp bq) bp bq)))
+(define (simplicial-surface-atlas triangles)
+  (let* ((verts (at-sort-ints (apply append triangles)))
+         (pos (map (lambda (v) (let ((lo (at-link-order v (at-link triangles v))))
+                                 (cons v (cons (cons v (vector 0 0)) (at-star-positions (car lo) (cadr lo))))))
+                   verts))
+         (pos-of (lambda (v u) (cdr (assv u (cdr (assv v pos))))))
+         (star (lambda (v) (filter (lambda (t) (memv v t)) triangles)))
+         ;; barycentrics (alist vertex -> weight) of chart-v point x in triangle t
+         (bary (lambda (v t x)
+                 (let* ((others (filter (lambda (u) (not (= u v))) t)) (p (car others)) (q (cadr others))
+                        (b (at-bary x (pos-of v p) (pos-of v q))))
+                   (list (cons v (car b)) (cons p (cadr b)) (cons q (caddr b))))))
+         (in-closed? (lambda (b) (at-all? (lambda (e) (>= (cdr e) 0)) b)))
+         ;; the triangle of st(v) containing x with every vertex of `need` weighted positively
+         (locate (lambda (v x need)
+                   (let loop ((ts (filter (lambda (t) (at-member-all? need t)) (star v))))
+                     (if (null? ts) #f
+                         (let ((b (bary v (car ts) x)))
+                           (if (and (in-closed? b) (at-all? (lambda (u) (> (cdr (assv u b)) 0)) need)) b (loop (cdr ts))))))))
+         (image (lambda (w b) (let loop ((b b) (acc (vector 0 0)))
+                                (if (null? b) acc
+                                    (let ((P (pos-of w (car (car b)))))
+                                      (loop (cdr b) (vector (+ (vector-ref acc 0) (* (cdr (car b)) (vector-ref P 0)))
+                                                            (+ (vector-ref acc 1) (* (cdr (car b)) (vector-ref P 1))))))))))
+         (charts (map (lambda (v) (make-chart v 2 (lambda (x) (and (= 2 (vector-length x)) (locate v x (list v) ) #t)))) verts))
+         (edges (let loop ((ts triangles) (acc '()))
+                  (if (null? ts) acc
+                      (loop (cdr ts)
+                            (let add ((ps (list (list (car (car ts)) (cadr (car ts))) (list (car (car ts)) (caddr (car ts))) (list (cadr (car ts)) (caddr (car ts))))) (acc acc))
+                              (if (null? ps) acc
+                                  (add (cdr ps) (let ((e (at-sort-ints (car ps)))) (if (member e acc) acc (cons e acc))))))))))
+         (trans (apply append
+                       (map (lambda (e)
+                              (let ((v (car e)) (w (cadr e)))
+                                (list (make-transition v w (lambda (x) (image w (locate v x (list v w)))) (lambda (x) (and (locate v x (list v w)) #t)))
+                                      (make-transition w v (lambda (x) (image v (locate w x (list v w)))) (lambda (x) (and (locate w x (list v w)) #t))))))
+                            (reverse edges))))
+         (weights (list (list 1/3 1/3 1/3) (list 1/2 1/4 1/4) (list 1/4 1/2 1/4) (list 1/4 1/4 1/2)))
+         (samples (map (lambda (v)
+                         (cons v (apply append
+                                        (map (lambda (t) (map (lambda (wt) (image v (map cons t wt))) weights)) (star v)))))
+                       verts)))
+    (make-atlas 2 'exact charts trans samples)))
