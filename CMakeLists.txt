@@ -13785,6 +13785,12 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
+    add_executable(net_deadline_ready_test tests/network/net_deadline_ready_test.c)
+    target_include_directories(net_deadline_ready_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_deadline_ready_test PRIVATE Threads::Threads)
+    add_test(NAME net_deadline_ready_test COMMAND net_deadline_ready_test)
+    set_tests_properties(net_deadline_ready_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
     add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c)
     target_include_directories(net_close_concurrency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(net_close_concurrency_test PRIVATE Threads::Threads)
