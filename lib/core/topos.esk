@@ -745,7 +745,7 @@
       (let ((sym (tp-L-symbol L (car t))))
         (if (not (and sym (eq? (vector-ref sym 0) 'fun))) (error "unknown function symbol" (car t)))
         (let ((args (map (lambda (s) (tp-compile-term L ids ctx s)) (cdr t))))
-          (if (not (= (length args) (length (vector-ref sym 1)))) (error "wrong number of arguments" t))
+          (if (not (= (length args) (length (vector-ref sym 1)))) (error "argument count does not match the declaration" t))
           (for-each (lambda (a A) (tp-same-type! (tp-t-type a) A t)) args (vector-ref sym 1))
           (vector 't 'fun (vector-ref sym 2) (vector-ref sym 3) args #f)))))))
 
@@ -931,7 +931,7 @@
 (define (tp-F-context F) (tp-context (tp-F-T F) (vector-ref F 4)))
 (define (topos-formula-context F) (map (lambda (b) (cons (car b) (cdr b))) (tp-F-ctx F)))
 (define (tp-env-indices F U values)
-  (if (not (= (length values) (length (tp-F-ctx F)))) (error "environment has the wrong length" values))
+  (if (not (= (length values) (length (tp-F-ctx F)))) (error "environment length does not match the context" values))
   (reverse (map (lambda (b v) (let ((i (topos-type-index (cdr b) U v)))
                                 (if (not i) (error "not a generalized element at this stage" (list (car b) U v)))
                                 i))
