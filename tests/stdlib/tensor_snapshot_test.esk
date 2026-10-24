@@ -1,0 +1,99 @@
+(require stdlib)
+(require core.dbsp.tensor_snapshot)
+(require core.data.radix)
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+
+(define empty (radix-empty))
+(define first (radix-set empty 0 #f))
+(define second (radix-set first 9223372036854775807 'last))
+(check "radix stores false separately from absence" (and (eq? (radix-ref first 0 'missing) #f) (eq? (radix-ref first 1 'missing) 'missing)))
+(check "radix supports maximum machine-word key and old versions"
+  (and (eq? (radix-ref second 9223372036854775807 #f) 'last)
+       (eq? (radix-ref first 9223372036854775807 #f) #f)))
+(define removed (radix-delete second 0))
+(check "radix delete preserves other branch and old value" (and
+  (eq? (radix-ref removed 0 'missing) 'missing)
+  (eq? (radix-ref second 0 'missing) #f)
+  (= (radix-fold removed (lambda (key value n) (+ n 1)) 0) 1)))
+(check "radix invalid keys refuse" (and (raises? (lambda () (radix-set empty -1 0)))
+  (raises? (lambda () (radix-ref empty 1.0 #f)))))
+(define branch-zero (radix-set empty 0 'zero))
+(define branch-one (radix-set branch-zero 1 'one))
+(check "radix update physically shares untouched index branches"
+  (eq? (vector-ref branch-zero 0) (vector-ref branch-one 0)))
+
+;; Fixed one-block update against increasing cold payload. Identity checks
+;; inspect private storage solely to prove physical sharing, not just counters.
+(for-each (lambda (n)
+  (let* ((native (make-tensor (list n) 2.0)) (old (tensor-snapshot native))
+         (delta (tensor-delta (list n) '(((259) 3) ((260) -1))))
+         (next (tensor-snapshot-apply old delta)) (work (tensor-snapshot-work next))
+         (base (vector-ref old 2)) (changed (radix-ref (vector-ref next 3) 1 #f)))
+    (check "fixed edit copies one 256-cell block at every scale"
+      (equal? (vector->list work) '(1 256 16 256)))
+    (check "baseline table physically shared across snapshots" (eq? base (vector-ref next 2)))
+    (check "changed block owns fresh storage" (not (eq? changed (vector-ref base 1))))
+    (check "new values and historical version correct" (and
+      (= (tensor-snapshot-ref next '(259)) 5.0) (= (tensor-snapshot-ref next '(260)) 1.0)
+      (= (tensor-snapshot-ref old '(259)) 2.0) (= (tensor-snapshot-ref next '(0)) 2.0)))
+    (let* ((later (tensor-snapshot-apply next (tensor-delta (list n) '(((0) 1)))))
+           (retained (radix-ref (vector-ref later 3) 1 #f)))
+      (check "later edit physically shares an earlier override block"
+        (and (eq? retained changed) (= (tensor-snapshot-ref later '(259)) 5.0)
+             (= (tensor-snapshot-ref later '(0)) 3.0) (= (tensor-snapshot-ref next '(0)) 2.0))))
+    (tensor-set! native 0 99.0)
+    (check "snapshot constructor owns baseline cells" (= (tensor-snapshot-ref old '(0)) 2.0))
+    (let ((cancelled (tensor-snapshot-apply next
+            (tensor-delta (list n) '(((259) 3) ((259) -3))))))
+      (check "cancelling batch copies no blocks and shares override root"
+        (and (equal? (vector->list (tensor-snapshot-work cancelled)) '(0 0 0 0))
+             (eq? (vector-ref next 3) (vector-ref cancelled 3)))))
+    (let ((fork (tensor-snapshot-apply old (tensor-delta (list n) '(((0) 7))))))
+      (check "independent forks preserve historical data" (and
+        (= (tensor-snapshot-ref fork '(0)) 9.0) (= (tensor-snapshot-ref fork '(259)) 2.0)
+        (= (tensor-snapshot-ref next '(0)) 2.0))))
+    (display "SCALE: cells=") (display n) (display " copied=") (display (vector-ref work 1)) (newline)))
+ '(1024 65536 1048576))
+
+(define original (make-tensor '(2 3) 1.0))
+(define snapshot (tensor-snapshot original))
+(define changed (tensor-snapshot-apply snapshot (tensor-delta '(2 3) '(((1 2) 4)))))
+(define dense (tensor-snapshot->tensor changed))
+(check "partial block and rank-two coordinates" (and (= (tensor-ref dense 5) 5.0)
+  (equal? (vector->list (tensor-snapshot-work changed)) '(1 6 16 256))))
+(tensor-set! dense 5 99.0)
+(check "dense observation owns storage" (= (tensor-snapshot-ref changed '(1 2)) 5.0))
+(check "wrong shape refuses without damaging base" (and
+  (raises? (lambda () (tensor-snapshot-apply snapshot (tensor-delta '(6) '(((0) 1))))))
+  (= (tensor-snapshot-ref snapshot '(1 2)) 1.0)))
+(check "invalid coordinates refuse" (raises? (lambda () (tensor-snapshot-ref snapshot '(2 0)))))
+(check "empty tensor materializes empty native result"
+  (equal? (tensor-shape (tensor-snapshot->tensor (tensor-snapshot (make-tensor '(0 2) 0.0)))) '(0 2)))
+
+;; Feed persistent operands into the existing matrix delta kernel directly.
+(define matrix-a (make-tensor '(2 2) 0.0))
+(define matrix-b (make-tensor '(2 2) 0.0))
+(let fill ((i 0))
+  (if (< i 4) (begin (tensor-set! matrix-a i (+ i 1)) (tensor-set! matrix-b i (+ i 5)) (fill (+ i 1)))))
+(define view-a (tensor-snapshot matrix-a))
+(define view-b (tensor-snapshot matrix-b))
+(define da (tensor-delta '(2 2) '(((0 1) 2))))
+(define db (tensor-delta '(2 2) '(((1 0) -1))))
+(define product-change (tensor-matmul-delta (tensor-snapshot->reader view-a) (tensor-snapshot->reader view-b) da db))
+(check "snapshot readers preserve finite matrix cross term"
+  (equal? (tensor-delta-entries product-change) '(((0 0) 10.0) ((0 1) 16.0) ((1 0) -4.0))))
+(check "native and persistent operand paths agree"
+  (equal? (tensor-delta-entries product-change) (tensor-delta-entries (tensor-matmul-delta matrix-a matrix-b da db))))
+(check "read-view creation preserves historical operand"
+  (and (= (tensor-snapshot-ref view-a '(0 1)) 2.0) (= (tensor-snapshot-ref view-b '(1 0)) 7.0)))
+(check "reader nonnumeric result refuses before publication" (raises? (lambda ()
+  (tensor-matmul-delta (tensor-reader '(2 2) (lambda (i) 'invalid)) matrix-b da db))))
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: tensor_snapshot_test") (newline)
+(display "RESULT: PASS") (newline)
