@@ -1029,6 +1029,8 @@ static const BuiltinDef BUILTINS[] = {
     /* Seeded pseudorandom numbers — the native VM uses the same hosted
      * runtime state as AOT/JIT; the WASM VM uses the same algorithm locally. */
     {"random", 1863, 0}, {"srand48", 1864, 1},
+    {"make-prng", 1866, 1}, {"prng?", 1867, 1},
+    {"prng-random", 1868, 1}, {"prng-random-integer", 1869, 2},
     /* Quantum-inspired RNG — IDs 1860-1862 */
     {"quantum-random", 1860, 0},
     {"quantum-random-int", 1861, 1},

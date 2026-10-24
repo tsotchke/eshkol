@@ -91,7 +91,7 @@ re-verification; no AIXI implementation in this milestone.
 **v1.4 exit:** given `(seed, L, S, examples)`, Eshkol emits a deterministic receipt with the
 complete bounded program set, exact per-program likelihood and posterior mass, exact output
 and timeout distributions, and the shortest and MDL witnesses; byte-identical on JIT and AOT.
-The VM reports `unsupported` rather than falling back until its PRNG parity gaps close.
+The native VM now supports isolated int64-seeded PRNGs with JIT/AOT/VM-source/ESKB sampled-trace parity; unsupported argument domains refuse. The RNG gate is separate from wider VM qualification.
 
 ### v1.5
 
@@ -102,7 +102,8 @@ The VM reports `unsupported` rather than falling back until its PRNG parity gaps
 3. **DBSP / N3 integration** — incremental example deltas and structured
    accepted / rejected / timeout / failure receipts.
 4. **VM RNG parity** — close the four PRNG gaps (`make-prng`, `prng?`, `prng-random`,
-   `prng-random-integer`) and require JIT/AOT/VM trace equality.
+   `prng-random-integer`) and require JIT/AOT/VM trace equality. This native VM
+   binding/trace slice is implemented and gated by `scripts/run_sblc_rng_parity_gate.sh`.
 5. **Differentiable proposals** (experimental, `lib/core/sblc/relax.esk`) — exact finite-logit
    oracle on enumerated domains, REINFORCE with Rao–Blackwellized inner coins, Gumbel/Concrete
    grammar relaxation only under approximate receipts, every relaxed candidate projected to a

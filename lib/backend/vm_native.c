@@ -4,6 +4,7 @@
 #include <math.h>
 #include <limits.h>
 #include <stdint.h>
+#include "eshkol/core/prng_state.h"
 #include <stdlib.h>
 #include "vm_integer_arithmetic.h"
 #include "../core/model_io_atomic.h"
@@ -19941,6 +19942,38 @@ tensor_inverse_done:
      * Seeded pseudorandom numbers (1863-1865). Native VM uses the same
      * runtime state as AOT/JIT; rand is compiled as a variadic shape form.
      * ══════════════════════════════════════════════════════════════════════ */
+    case 1866: { /* make-prng: backend-owned leaf state */
+        Value seed = vm_pop(vm);
+        if (seed.type != VAL_INT) { vm_raise_error_msg(vm, "make-prng: expected an int64 seed"); break; }
+        int32_t ptr = heap_alloc(&vm->heap);
+        if (ptr < 0) { vm_raise_error_msg(vm, "make-prng: allocation failed"); break; }
+        vm->heap.objects[ptr]->type = HEAP_PRNG;
+        vm->heap.objects[ptr]->prng.state = eshkol_prng_state_seed(seed.as.i);
+        Value result = NIL_VAL; result.type = VAL_PRNG; result.as.ptr = ptr;
+        vm_push(vm, result); break;
+    }
+    case 1867: {
+        Value p = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(p.type == VAL_PRNG && is_valid_heap_ptr(vm, p.as.ptr) &&
+                            vm->heap.objects[p.as.ptr]->type == HEAP_PRNG));
+        break;
+    }
+    case 1868: case 1869: {
+        Value bound = INT_VAL(0);
+        if (fid == 1869) bound = vm_pop(vm);
+        Value p = vm_pop(vm);
+        if (p.type != VAL_PRNG || !is_valid_heap_ptr(vm, p.as.ptr) ||
+            vm->heap.objects[p.as.ptr]->type != HEAP_PRNG) {
+            vm_raise_error_msg(vm, "prng draw: expected an isolated PRNG"); break;
+        }
+        if (fid == 1869 && bound.type != VAL_INT) {
+            vm_raise_error_msg(vm, "prng-random-integer: expected an int64 bound"); break;
+        }
+        uint64_t* state = &vm->heap.objects[p.as.ptr]->prng.state;
+        if (fid == 1868) vm_push(vm, FLOAT_VAL(eshkol_prng_state_random(state)));
+        else vm_push(vm, INT_VAL(eshkol_prng_state_integer(state, bound.as.i)));
+        break;
+    }
     case 1863: { /* random() -> double in [0, 1) */
         vm_push(vm, FLOAT_VAL(vm_prng_next()));
         break;

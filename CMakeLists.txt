@@ -15162,3 +15162,11 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
         set_tests_properties(vm_binding_read_runtime PROPERTIES TIMEOUT 180)
     endif()
 endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND UNIX)
+    add_test(NAME sblc_rng_parity_gate
+        COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            "VM_BIN=$<TARGET_FILE:eshkol-vm-standalone-test>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_rng_parity_gate.sh")
+    set_tests_properties(sblc_rng_parity_gate PROPERTIES TIMEOUT 1800 LABELS "stdlib;sblc;vm;parity")
+endif()
