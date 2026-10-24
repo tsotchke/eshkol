@@ -167,7 +167,7 @@
          carrier)
         (else (error "make-atlas: carrier must be 'exact or (float tol) with tol > 0" carrier))))
 
-;; #(atlas dim carrier charts names transitions samples)
+;; #(atlas dim carrier charts names transitions samples cache)
 ;; charts: list of charts; transitions: list of transitions (both directions
 ;; of every overlap the gluing uses); samples: alist chart-name -> points.
 (define (make-atlas dim carrier charts transitions samples)
@@ -182,8 +182,14 @@
     (for-each (lambda (c) (if (not (= (chart-dimension c) dim)) (error "make-atlas: chart dimension differs from the atlas" (chart-name c)))) charts)
     (for-each (lambda (t) (vector-set! table (+ (* m (index (transition-from t))) (index (transition-to t))) t)) transitions)
     (vector 'atlas dim carrier cv names table
-            (list->vector (map (lambda (n) (let ((e (assoc n samples))) (if e (cdr e) '()))) names)))))
-(define (atlas? a) (and (vector? a) (= 7 (vector-length a)) (eq? (vector-ref a 0) 'atlas)))
+            (list->vector (map (lambda (n) (let ((e (assoc n samples))) (if e (cdr e) '()))) names))
+            (make-hash-table))))
+(define (atlas? a) (and (vector? a) (= 8 (vector-length a)) (eq? (vector-ref a 0) 'atlas)))
+;; derived data (nerve, orientation signs) computed once per atlas
+(define (at-cached a key thunk)
+  (let ((t (vector-ref a 7)))
+    (or (hash-table-ref/default t key #f)
+        (let ((v (thunk))) (hash-table-set! t key v) v))))
 (define (atlas-dimension a) (vector-ref a 1))
 (define (atlas-carrier a) (vector-ref a 2))
 (define (atlas-chart-names a) (vector-ref a 4))
@@ -210,18 +216,23 @@
     (if (not (at-overlap? a i j x)) (error "atlas-transition-map: the point is not in the overlap" (list from to x)))
     (at-apply a i j x)))
 
-;; carrier equality of numbers, vectors and matrices
+;; carrier equality of numbers, vectors and matrices. Float carriers compare
+;; entry by entry at the scale of the whole object:
+;;   |a_i - b_i| <= tol * max(1, max_i |a_i|, max_i |b_i|).
 (define (at-num-same? a x y)
   (let ((c (atlas-carrier a)))
     (if (eq? c 'exact) (= x y)
         (<= (abs (- x y)) (* (cadr c) (max 1 (abs x) (abs y)))))))
+(define (at-entries x)
+  (cond ((vector? x) (apply append (map at-entries (vector->list x))))
+        ((pair? x) (apply append (map at-entries x)))
+        (else (list x))))
 (define (at-same? a x y)
-  (cond ((vector? x) (and (vector? y) (= (vector-length x) (vector-length y))
-                          (let loop ((i 0)) (cond ((= i (vector-length x)) #t)
-                                                  ((at-same? a (vector-ref x i) (vector-ref y i)) (loop (+ i 1)))
-                                                  (else #f)))))
-        ((pair? x) (and (pair? y) (= (length x) (length y)) (at-all? (lambda (p) p) (map (lambda (u v) (at-same? a u v)) x y))))
-        (else (at-num-same? a x y))))
+  (let ((xs (at-entries x)) (ys (at-entries y)) (c (atlas-carrier a)))
+    (and (= (length xs) (length ys))
+         (if (eq? c 'exact) (at-all? (lambda (p) p) (map = xs ys))
+             (let ((scale (fold-left max 1 (map abs (append xs ys)))))
+               (at-all? (lambda (p) p) (map (lambda (u v) (<= (abs (- u v)) (* (cadr c) scale))) xs ys)))))))
 (define (atlas-same-point? a x y) (at-same? a x y))
 (define (at-exact-ok? a v)
   (or (not (eq? (atlas-carrier a) 'exact))
@@ -230,51 +241,57 @@
 ;; ---------------------------------------------------------------------------
 ;; The cocycle condition
 ;; ---------------------------------------------------------------------------
-;; For every chart i, sample x of i, and charts j, k: identity, domain
+;; Every scan visits the samples one at a time; each visit runs in its own
+;; region (with-region), so the arithmetic of a check is reclaimed when the
+;; visit returns its findings: (obstructions checks).
+(define (at-scan-samples a visit)
+  (let ((m (atlas-chart-count a)))
+    (let loop-i ((i 0) (obs '()) (n 0))
+      (if (= i m) (list (reverse obs) n)
+          (let loop-x ((xs (at-samples a i)) (obs obs) (n n))
+            (if (null? xs) (loop-i (+ i 1) obs n)
+                (let ((r (with-region (visit i (car xs)))))
+                  (loop-x (cdr xs) (append (reverse (car r)) obs) (+ n (cadr r))))))))))
+
+;; For a sample x of chart i and all charts j, k: identity, domain
 ;; consistency and g_{j->k}(g_{i->j} x) = g_{i->k} x (k = i: the inverse).
-;; Returns (violations checks).
-(define (at-cocycle-scan a)
+(define (at-cocycle-visit a i x)
   (let ((m (atlas-chart-count a)) (out '()) (checks 0))
     (define (bad! o) (set! out (cons o out)))
-    (for-each
-     (lambda (i)
-       (for-each
-        (lambda (x)
-          (cond
-           ((not (chart-domain? (at-chart a i) x)) (bad! (list 'outside (at-name a i) x)))
-           (else
-            (let ((tii (at-trans a i i)))
-              (if tii
-                  (let ((y ((transition-map tii) x)))
-                    (set! checks (+ checks 1))
-                    (if (not (at-same? a y x)) (bad! (list 'identity (at-name a i) x y))))))
-            (for-each
-             (lambda (j)
-               (if (and (not (= i j)) (at-overlap? a i j x))
-                   (let ((y (at-apply a i j x)))
-                     (cond
-                      ((not (at-exact-ok? a y)) (bad! (list 'inexact (list (at-name a i) (at-name a j)) x y)))
-                      ((not (chart-domain? (at-chart a j) y)) (bad! (list 'domain (list (at-name a i) (at-name a j) (at-name a j)) x)))
-                      (else
-                       (for-each
-                        (lambda (k)
-                          (if (not (= j k))
-                              (let ((in-jk (if (at-overlap? a j k y) #t #f)) (in-ik (if (at-overlap? a i k x) #t #f)))
-                                (cond
-                                 ((not (eq? in-jk in-ik))
-                                  (bad! (list 'domain (list (at-name a i) (at-name a j) (at-name a k)) x)))
-                                 (in-jk
-                                  (let ((via (at-apply a j k y)) (direct (at-apply a i k x)))
-                                    (set! checks (+ checks 1))
-                                    (cond ((not (at-exact-ok? a via)) (bad! (list 'inexact (list (at-name a j) (at-name a k)) y via)))
-                                          ((not (at-exact-ok? a direct)) (bad! (list 'inexact (list (at-name a i) (at-name a k)) x direct)))
-                                          ((not (at-same? a via direct))
-                                           (bad! (list 'cocycle (list (at-name a i) (at-name a j) (at-name a k)) x via direct))))))))))
-                        (at-range m)))))))
-             (at-range m)))))
-        (at-samples a i)))
-     (at-range m))
+    (cond
+     ((not (chart-domain? (at-chart a i) x)) (bad! (list 'outside (at-name a i) x)))
+     (else
+      (let ((tii (at-trans a i i)))
+        (if tii
+            (let ((y ((transition-map tii) x)))
+              (set! checks (+ checks 1))
+              (if (not (at-same? a y x)) (bad! (list 'identity (at-name a i) x y))))))
+      (for-each
+       (lambda (j)
+         (if (and (not (= i j)) (at-overlap? a i j x))
+             (let ((y (at-apply a i j x)))
+               (cond
+                ((not (at-exact-ok? a y)) (bad! (list 'inexact (list (at-name a i) (at-name a j)) x y)))
+                ((not (chart-domain? (at-chart a j) y)) (bad! (list 'domain (list (at-name a i) (at-name a j) (at-name a j)) x)))
+                (else
+                 (for-each
+                  (lambda (k)
+                    (if (not (= j k))
+                        (let ((in-jk (if (at-overlap? a j k y) #t #f)) (in-ik (if (at-overlap? a i k x) #t #f)))
+                          (cond
+                           ((not (eq? in-jk in-ik))
+                            (bad! (list 'domain (list (at-name a i) (at-name a j) (at-name a k)) x)))
+                           (in-jk
+                            (let ((via (at-apply a j k y)) (direct (at-apply a i k x)))
+                              (set! checks (+ checks 1))
+                              (cond ((not (at-exact-ok? a via)) (bad! (list 'inexact (list (at-name a j) (at-name a k)) y via)))
+                                    ((not (at-exact-ok? a direct)) (bad! (list 'inexact (list (at-name a i) (at-name a k)) x direct)))
+                                    ((not (at-same? a via direct))
+                                     (bad! (list 'cocycle (list (at-name a i) (at-name a j) (at-name a k)) x via direct))))))))))
+                  (at-range m)))))))
+       (at-range m))))
     (list (reverse out) checks)))
+(define (at-cocycle-scan a) (at-scan-samples a (lambda (i x) (at-cocycle-visit a i x))))
 (define (atlas-cocycle-violations a) (car (at-cocycle-scan a)))
 (define (atlas-check-cocycle a)
   (let ((r (at-cocycle-scan a)))
@@ -296,59 +313,47 @@
 
 ;; The chain rule on every triple overlap the samples meet:
 ;; g'_{j->k}(g_{i->j} x) g'_{i->j}(x) = g'_{i->k}(x)  (k = i: = identity).
-(define (at-jacobian-scan a)
+(define (at-jacobian-visit a i x)
   (let ((m (atlas-chart-count a)) (out '()) (checks 0))
-    (for-each
-     (lambda (i)
-       (for-each
-        (lambda (x)
-          (if (chart-domain? (at-chart a i) x)
-              (let ((Jik (make-vector m #f)))
-                (for-each (lambda (k) (if (at-overlap? a i k x) (vector-set! Jik k (at-jac a i k x)))) (at-range m))
-                (vector-set! Jik i (at-identity (atlas-dimension a)))
-                (for-each
-                 (lambda (j)
-                   (if (and (not (= i j)) (vector-ref Jik j))
-                       (let ((y (at-apply a i j x)) (Jij (vector-ref Jik j)))
-                         (for-each
-                          (lambda (k)
-                            (if (and (not (= j k)) (vector-ref Jik k) (at-overlap? a j k y))
-                                (let ((lhs (at-mat-mul (at-jac a j k y) Jij)) (rhs (vector-ref Jik k)))
-                                  (set! checks (+ checks 1))
-                                  (if (or (not (at-exact-ok? a lhs)) (not (at-same? a lhs rhs)))
-                                      (set! out (cons (list 'jacobian-cocycle (list (at-name a i) (at-name a j) (at-name a k)) x lhs rhs) out))))))
-                          (at-range m)))))
-                 (at-range m)))))
-        (at-samples a i)))
-     (at-range m))
+    (if (chart-domain? (at-chart a i) x)
+        (let ((Jik (make-vector m #f)))
+          (for-each (lambda (k) (if (at-overlap? a i k x) (vector-set! Jik k (at-jac a i k x)))) (at-range m))
+          (vector-set! Jik i (at-identity (atlas-dimension a)))
+          (for-each
+           (lambda (j)
+             (if (and (not (= i j)) (vector-ref Jik j))
+                 (let ((y (at-apply a i j x)) (Jij (vector-ref Jik j)))
+                   (for-each
+                    (lambda (k)
+                      (if (and (not (= j k)) (vector-ref Jik k) (at-overlap? a j k y))
+                          (let ((lhs (at-mat-mul (at-jac a j k y) Jij)) (rhs (vector-ref Jik k)))
+                            (set! checks (+ checks 1))
+                            (if (or (not (at-exact-ok? a lhs)) (not (at-same? a lhs rhs)))
+                                (set! out (cons (list 'jacobian-cocycle (list (at-name a i) (at-name a j) (at-name a k)) x lhs rhs) out))))))
+                    (at-range m)))))
+           (at-range m))))
     (list (reverse out) checks)))
+(define (at-jacobian-scan a) (at-scan-samples a (lambda (i x) (at-jacobian-visit a i x))))
 (define (atlas-jacobian-violations a) (car (at-jacobian-scan a)))
 
 ;; Riemannian atlases: every transition is an isometry of the chart metrics,
 ;; g'^T G_j(g x) g' = G_i(x).
 (define (atlas-metric a name x)
   (let ((G (chart-metric (atlas-chart a name)))) (if (not G) (error "atlas-metric: the chart has no metric" name)) (G x)))
-(define (at-metric-scan a)
-  (let ((m (atlas-chart-count a)) (out '()) (checks 0))
-    (for-each
-     (lambda (i)
-       (let ((Gi (chart-metric (at-chart a i))))
-         (if Gi
-             (for-each
-              (lambda (x)
-                (if (chart-domain? (at-chart a i) x)
-                    (for-each
-                     (lambda (j)
-                       (let ((Gj (chart-metric (at-chart a j))))
-                         (if (and Gj (not (= i j)) (at-overlap? a i j x))
-                             (let* ((J (at-jac a i j x)) (pulled (at-mat-mul (at-transpose J) (at-mat-mul (Gj (at-apply a i j x)) J))) (gi (Gi x)))
-                               (set! checks (+ checks 1))
-                               (if (or (not (at-exact-ok? a pulled)) (not (at-same? a pulled gi)))
-                                   (set! out (cons (list 'metric (list (at-name a i) (at-name a j)) x pulled gi) out)))))))
-                     (at-range m))))
-              (at-samples a i)))))
-     (at-range m))
+(define (at-metric-visit a i x)
+  (let ((m (atlas-chart-count a)) (out '()) (checks 0) (Gi (chart-metric (at-chart a i))))
+    (if (and Gi (chart-domain? (at-chart a i) x))
+        (for-each
+         (lambda (j)
+           (let ((Gj (chart-metric (at-chart a j))))
+             (if (and Gj (not (= i j)) (at-overlap? a i j x))
+                 (let* ((J (at-jac a i j x)) (pulled (at-mat-mul (at-transpose J) (at-mat-mul (Gj (at-apply a i j x)) J))) (gi (Gi x)))
+                   (set! checks (+ checks 1))
+                   (if (or (not (at-exact-ok? a pulled)) (not (at-same? a pulled gi)))
+                       (set! out (cons (list 'metric (list (at-name a i) (at-name a j)) x pulled gi) out)))))))
+         (at-range m)))
     (list (reverse out) checks)))
+(define (at-metric-scan a) (at-scan-samples a (lambda (i x) (at-metric-visit a i x))))
 (define (atlas-metric-violations a) (car (at-metric-scan a)))
 
 ;; Every check at once. Success value: an alist of check counts.
@@ -466,48 +471,60 @@
 ;; contains a sample point; each comes with that witness (chart-index . x).
 ;; Returns ((simplex . witness) ...) ordered by size, then lexicographically.
 (define (atlas-nerve a)
-  (let ((seen (make-hash-table)) (out '()))
-    (for-each
-     (lambda (i)
+  (at-cached a 'nerve
+   (lambda ()
+     (let ((seen (make-hash-table)) (out '()))
        (for-each
-        (lambda (x)
-          (if (chart-domain? (at-chart a i) x)
-              (let ((members (filter (lambda (j) (at-overlap? a i j x)) (at-range (atlas-chart-count a)))))
-                (for-each (lambda (s)
-                            (if (and (not (null? s)) (not (hash-table-ref/default seen s #f)))
-                                (begin (hash-table-set! seen s #t) (set! out (cons (cons s (cons i x)) out)))))
-                          (at-subsets members)))))
-        (at-samples a i)))
-     (at-range (atlas-chart-count a)))
-    (sort out (lambda (u v) (at-simplex<? (car u) (car v))))))
+        (lambda (i)
+          (for-each
+           (lambda (x)
+             (let ((members (with-region (if (chart-domain? (at-chart a i) x)
+                                             (filter (lambda (j) (at-overlap? a i j x)) (at-range (atlas-chart-count a)))
+                                             '()))))
+               (for-each (lambda (s)
+                           (if (and (not (null? s)) (not (hash-table-ref/default seen s #f)))
+                               (begin (hash-table-set! seen s #t) (set! out (cons (cons s (cons i x)) out)))))
+                         (at-subsets members))))
+           (at-samples a i)))
+        (at-range (atlas-chart-count a)))
+       (sort out (lambda (u v) (at-simplex<? (car u) (car v))))))))
 (define (at-nerve-simplices a) (map car (atlas-nerve a)))
 
-;; Sign of det g'_{i->j} on U_i cap U_j, for every nerve edge i < j.
-;; Returns (signs violations) with signs an alist ((i j) . +1/-1) on indices.
+;; Sign of det g'_{i->j} on U_i cap U_j, for every pair i < j whose overlap
+;; holds a sample. Returns (signs violations) with signs an alist
+;; ((i j) . +1/-1) on indices.
+(define (at-pair-orientation a i j)
+  ;; (sign-entry-or-#f obstruction-or-#f)
+  (let* ((pts (filter (lambda (x) (at-overlap? a i j x)) (at-samples a i)))
+         (pts-j (filter (lambda (y) (at-overlap? a j i y)) (at-samples a j)))
+         (own (append pts (map (lambda (y) (at-apply a j i y)) pts-j)))
+         ;; an edge witnessed only by a third chart's sample: use that witness
+         (all (if (pair? own) own
+                  (let ((w (assoc (list i j) (atlas-nerve a))))
+                    (if w (list (at-apply a (cadr w) i (cddr w))) '())))))
+    (let loop ((xs all) (sign #f) (where #f))
+      (if (null? xs) (list (and sign (cons (list i j) sign)) #f)
+          (let ((d (exact-det (at-jac a i j (car xs)))))
+            (cond ((at-num-same? a d 0) (list #f (list 'degenerate (list (at-name a i) (at-name a j)) (car xs))))
+                  ((not sign) (loop (cdr xs) (if (> d 0) 1 -1) (car xs)))
+                  ((not (= sign (if (> d 0) 1 -1)))
+                   (list #f (list 'orientation-varies (list (at-name a i) (at-name a j)) where (car xs))))
+                  (else (loop (cdr xs) sign where))))))))
 (define (at-orientation-scan a)
-  (let ((m (atlas-chart-count a)) (signs '()) (out '()))
-    (for-each
-     (lambda (i)
+  (at-cached a 'orientation
+   (lambda ()
+     (let ((m (atlas-chart-count a)) (signs '()) (out '()))
        (for-each
-        (lambda (j)
-          (if (< i j)
-              (let ((pts (filter (lambda (x) (at-overlap? a i j x)) (at-samples a i)))
-                    (pts-j (filter (lambda (y) (at-overlap? a j i y)) (at-samples a j))))
-                (let ((all (append pts (map (lambda (y) (at-apply a j i y)) pts-j))) (sign #f) (where #f) (ok #t))
-                  (for-each
-                   (lambda (x)
-                     (if ok
-                         (let ((d (exact-det (at-jac a i j x))))
-                           (cond ((at-num-same? a d 0) (set! ok #f) (set! out (cons (list 'degenerate (list (at-name a i) (at-name a j)) x) out)))
-                                 ((not sign) (set! sign (if (> d 0) 1 -1)) (set! where x))
-                                 ((not (= sign (if (> d 0) 1 -1)))
-                                  (set! ok #f)
-                                  (set! out (cons (list 'orientation-varies (list (at-name a i) (at-name a j)) where x) out)))))))
-                   all)
-                  (if (and ok sign) (set! signs (cons (cons (list i j) sign) signs)))))))
-        (at-range m)))
-     (at-range m))
-    (list (reverse signs) (reverse out))))
+        (lambda (i)
+          (for-each
+           (lambda (j)
+             (if (< i j)
+                 (let ((r (with-region (at-pair-orientation a i j))))
+                   (if (car r) (set! signs (cons (car r) signs)))
+                   (if (cadr r) (set! out (cons (cadr r) out))))))
+           (at-range m)))
+        (at-range m))
+       (list (reverse signs) (reverse out))))))
 (define (at-sign signs i j)
   (cond ((= i j) 1)
         ((< i j) (let ((e (assoc (list i j) signs))) (if e (cdr e) #f)))
@@ -652,14 +669,15 @@
 ;; The sphere of curvature K > 0 (radius R = 1/sqrt K) in R^{n+1}, with the
 ;; 2(n+1) stereographic charts from the poles s R e_k (s = +1, -1). Chart
 ;; (k, s) has coordinates x = 2R p_hat / (R - s p_k) (p_hat: p without
-;; coordinate k) and metric I / (1 + K|x|^2/4)^2; chart (n, -1) is the chart
-;; of core.manifold and core.curvature. Exact when K is the square of a
+;; coordinate k) and metric I / (1 + K|x|^2/4)^2. Chart (k, s) is named
+;; e<k>- or e<k>+; chart e<n>- (pole -R e_n) is the chart of core.manifold and
+;; core.curvature. Exact when K is the square of a
 ;; rational, (float 2^-40) otherwise.
 (define (sphere-atlas-chart-name k s)
-  (string->symbol (string-append (if (< s 0) "-e" "+e") (number->string k))))
+  (string->symbol (string-append "e" (number->string k) (if (< s 0) "-" "+"))))
 (define (at-sphere-pole name)
-  (let* ((str (symbol->string name)))
-    (cons (string->number (substring str 2 (string-length str))) (if (char=? (string-ref str 0) #\-) -1 1))))
+  (let* ((str (symbol->string name)) (len (string-length str)))
+    (cons (string->number (substring str 1 (- len 1))) (if (char=? (string-ref str (- len 1)) #\-) -1 1))))
 (define (at-sphere-to-ambient K R k s x)
   (let* ((n (vector-length x)) (l (space-form-conformal-factor K x)) (p (make-vector (+ n 1) 0)))
     (let loop ((i 0) (src 0))
