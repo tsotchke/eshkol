@@ -1,0 +1,461 @@
+;;; manifold_atlas_test.esk -- core.manifold.atlas on the native engines (JIT and AOT)
+;;;
+;;; Atlases as gluing data: the cocycle condition and the chain rule checked
+;;; exactly on exact atlases and to the stated tolerance on float ones, the
+;;; stereographic sphere atlas and the space-form atlas for every sign of K
+;;; cross-checked against core.manifold and core.curvature (the ADR-0018
+;;; chart), the K = 0 contract, transport of points, vectors, covectors and
+;;; metrics, gluing of functions and vector fields, and the nerve: w1 with an
+;;; orientation-reversing loop as witness, Cech and derived cohomology with
+;;; constant and orientation coefficients on triangulated surfaces. Every
+;;; obstruction kind is produced by a deliberately inconsistent atlas.
+
+(require stdlib)
+(require core.curvature)
+(require core.manifold.atlas)
+(require core.sheaf.glue)
+(require core.sheaf.cohomology)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? f) (guard (e (else #t)) (f) #f))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (vec . xs) (list->vector xs))
+(define (vmap f v) (list->vector (map f (vector->list v))))
+(define (fl v) (vmap exact->inexact v))
+(define (dot a b) (let loop ((i 0) (s 0)) (if (= i (vector-length a)) s (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))))))
+(define (sub a b) (list->vector (map - (vector->list a) (vector->list b))))
+(define (close? a b tol) (<= (abs (- a b)) (* tol (max 1 (abs a) (abs b)))))
+(define (vclose? a b tol) (all? (lambda (i) (close? (vector-ref a i) (vector-ref b i) tol)) (range (vector-length a))))
+(define (mclose? A B tol) (all? (lambda (i) (vclose? (vector-ref A i) (vector-ref B i) tol)) (range (vector-length A))))
+(define (exact-vec? v) (all? exact? (vector->list v)))
+(define (->tensor v)
+  (let ((t (make-tensor (list (vector-length v)) 0.0)))
+    (let loop ((i 0)) (if (< i (vector-length v)) (begin (tensor-set! t i (exact->inexact (vector-ref v i))) (loop (+ i 1)))))
+    t))
+(define (tensor->vec t) (list->vector (map (lambda (i) (tensor-ref t i)) (range (car (tensor-shape t))))))
+(define (obstruction-heads r) (map car (gluing-obstructions r)))
+(define (mat-vec M v) (list->vector (map (lambda (row) (dot row v)) (vector->list M))))
+(define (transpose M) (let ((n (vector-length M))) (list->vector (map (lambda (c) (list->vector (map (lambda (r) (vector-ref (vector-ref M r) c)) (range n)))) (range n)))))
+(define (mat-mul A B) (let ((Bt (transpose B))) (list->vector (map (lambda (row) (list->vector (map (lambda (col) (dot row col)) (vector->list Bt)))) (vector->list A)))))
+(define (arccosh x) (log (+ x (sqrt (- (* x x) 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Sphere atlases: exact cocycle, chain rule and isometry
+;; ---------------------------------------------------------------------------
+(define (check-sphere n K)
+  (let* ((A (sphere-atlas n K)) (r (atlas-check A)) (counts (if (glued? r) (glued-value r) '())))
+    (check (string-append "sphere-atlas: S^" (number->string n) " at K = " (number->string K) " glues") (glued? r))
+    (if (not (glued? r)) (begin (display (gluing-obstructions r)) (newline)))
+    (check "sphere-atlas: 2(n+1) charts" (= (atlas-chart-count A) (* 2 (+ n 1))))
+    (check "sphere-atlas: every check ran" (and (glued? r) (> (cdr (assq 'cocycle-checks counts)) 0)
+                                                (> (cdr (assq 'jacobian-checks counts)) 0) (> (cdr (assq 'metric-checks counts)) 0)))
+    (check "sphere-atlas: S^n is orientable, with an orientation that trivializes every sign"
+           (let ((o (atlas-orientation A)) (s (atlas-orientation-signs A)))
+             (and (glued? o) (glued? s)
+                  (all? (lambda (e) (= 1 (* (cdr e) (cdr (assoc (car (car e)) (glued-value o))) (cdr (assoc (cadr (car e)) (glued-value o))))))
+                        (glued-value s)))))
+    A))
+(define S1 (check-sphere 1 1))
+(define S2 (check-sphere 2 1))
+(define S2q (check-sphere 2 1/4))
+(define S2f (check-sphere 2 4))
+(check "sphere-atlas: exact carrier when K is a rational square" (and (eq? (atlas-carrier S2) 'exact) (eq? (atlas-carrier S2q) 'exact)))
+(define S3 (let ((A (sphere-atlas 3 1 (list -1 1/2 2))))
+             (check "sphere-atlas: S^3 glues" (glued? (atlas-check A)))
+             (check "sphere-atlas: S^3 is orientable" (atlas-orientable? A))
+             A))
+(define S2-float (sphere-atlas 2 2))
+(check "sphere-atlas: float carrier (float 2^-40) when sqrt K is irrational"
+       (and (pair? (atlas-carrier S2-float)) (eq? 'float (car (atlas-carrier S2-float))) (= (cadr (atlas-carrier S2-float)) (atlas-default-tolerance))))
+(check "sphere-atlas: the float atlas glues within its tolerance" (glued? (atlas-check S2-float)))
+(check "sphere-atlas: the core chart is -e_n" (equal? (sphere-atlas-core-chart 2) 'e2-))
+
+;; the antipodal charts differ by the inversion x -> 4x/(K|x|^2), exactly
+(check "sphere-atlas: -e_n -> +e_n is the inversion 4x/(K|x|^2)"
+       (all? (lambda (K)
+               (let ((A (sphere-atlas 2 K)))
+                 (all? (lambda (x) (or (= 0 (dot x x))
+                                       (equal? (atlas-transition-map A 'e2- 'e2+ x) (vmap (lambda (c) (/ (* 4 c) (* K (dot x x)))) x))))
+                       (atlas-samples A 'e2-))))
+             (list 1 1/4 4)))
+;; chart -> ambient sphere -> chart, and the ambient point lies on the sphere
+(check "sphere-atlas: ambient round trip is the identity and lands on |p|^2 = 1/K"
+       (all? (lambda (name)
+               (all? (lambda (x)
+                       (let ((p (sphere-atlas->ambient 1/4 name x)))
+                         (and (= (dot p p) 4) (equal? (sphere-atlas<-ambient 1/4 name p) x) (exact-vec? p))))
+                     (atlas-samples S2q name)))
+             (atlas-chart-names S2q)))
+(check "sphere-atlas: the pole of a chart has no coordinates"
+       (raises? (lambda () (sphere-atlas<-ambient 1 'e2- (vec 0 0 -1)))))
+
+;; core.curvature: the core chart is sphere->chart / chart->sphere of the shared core
+(check "core.curvature: chart->sphere agrees with the atlas core chart for K = 1, 1/4, 2"
+       (all? (lambda (K)
+               (all? (lambda (x)
+                       (vclose? (tensor->vec (chart->sphere (->tensor x) (exact->inexact K))) (fl (sphere-atlas->ambient K 'e2- x)) 1e-14))
+                     (atlas-samples S2 'e2-)))
+             (list 1 1/4 2)))
+(check "core.curvature: sphere->chart inverts it on the core chart"
+       (all? (lambda (x)
+               (vclose? (tensor->vec (sphere->chart (->tensor (sphere-atlas->ambient 1/4 'e2- x)) 0.25)) (fl x) 1e-14))
+             (atlas-samples S2q 'e2-)))
+(check "core.curvature: chart-conformal-factor equals space-form-conformal-factor for every sign of K"
+       (all? (lambda (K)
+               (all? (lambda (x) (close? (chart-conformal-factor (->tensor x) (exact->inexact K)) (exact->inexact (space-form-conformal-factor K x)) 1e-15))
+                     (list (vec 1/2 -1/3) (vec 0 0) (vec 1/10 1/5))))
+             (list 1 1/4 2 0 -1 -1/4)))
+
+;; core.manifold: the metric of the core chart, and chart independence of the
+;; manifold's distance, exponential map and parallel transport
+(define Ms (make-spherical-manifold 2))
+(check "core.manifold: manifold-metric of the spherical manifold is the atlas metric at K = 1"
+       (all? (lambda (x) (mclose? (manifold-metric Ms (fl x)) (atlas-metric S2 'e2- x) 1e-15)) (atlas-samples S2 'e2-)))
+(define pts (list (vec 1/2 -1/3) (vec 1/3 3/2) (vec -1 1/2) (vec 2 1)))
+(check "core.manifold: geodesic distance is the same in every chart containing both points"
+       (all? (lambda (p)
+               (all? (lambda (q)
+                       (let ((d0 (manifold-distance Ms (fl p) (fl q))))
+                         (all? (lambda (name)
+                                 (let ((pp (atlas-transition-map S2 'e2- name p)) (qq (atlas-transition-map S2 'e2- name q)))
+                                   (close? (manifold-distance Ms (fl pp) (fl qq)) d0 1e-12)))
+                               (filter (lambda (name) (and (atlas-overlap? S2 'e2- name p) (atlas-overlap? S2 'e2- name q))) (atlas-chart-names S2)))))
+                     pts))
+             pts))
+(check "core.manifold: the exponential map commutes with every transition"
+       (all? (lambda (name)
+               (let* ((x (vec 1/2 -1/3)) (v (vec 1/5 1/7)) (e (manifold-exp-map Ms (fl x) (fl v))))
+                 (vclose? (atlas-transition-map S2 'e2- name e)
+                          (manifold-exp-map Ms (fl (atlas-transition-map S2 'e2- name x)) (fl (atlas-transport-vector S2 'e2- name x v)))
+                          1e-10)))
+             (list 'e0+ 'e0- 'e1+ 'e1- 'e2+)))
+(check "core.manifold: parallel transport commutes with every transition"
+       (all? (lambda (name)
+               (let* ((x (vec 1/2 -1/3)) (y (vec -1/4 2/5)) (v (vec 1/5 1/7))
+                      (pt (manifold-parallel-transport Ms (fl x) (fl y) (fl v))))
+                 (vclose? (fl (mat-vec (atlas-jacobian S2 'e2- name y) pt))
+                          (manifold-parallel-transport Ms (fl (atlas-transition-map S2 'e2- name x)) (fl (atlas-transition-map S2 'e2- name y))
+                                                       (fl (atlas-transport-vector S2 'e2- name x v)))
+                          1e-10)))
+             (list 'e0+ 'e1- 'e2+)))
+(check "core.curvature: chart-distance at K = 1/4 is the same in every chart containing both points"
+       (all? (lambda (name)
+               (let ((p (vec 1/2 -1/3)) (q (vec 1 3/2)))
+                 (close? (chart-distance (->tensor (atlas-transition-map S2q 'e2- name p)) (->tensor (atlas-transition-map S2q 'e2- name q)) 0.25)
+                         (chart-distance (->tensor p) (->tensor q) 0.25) 1e-12)))
+             (list 'e0+ 'e0- 'e1+ 'e1- 'e2+)))
+
+;; tensors: exact transport, inverse transport, invariant pairing, metric pushforward
+(check "transport: vectors return exactly through the inverse transition"
+       (all? (lambda (name)
+               (let* ((x (vec 1/2 -1/3)) (v (vec 3 -5)) (y (atlas-transition-map S2 'e2- name x)) (w (atlas-transport-vector S2 'e2- name x v)))
+                 (and (exact-vec? w) (equal? (atlas-transport-vector S2 name 'e2- y w) v))))
+             (list 'e0+ 'e0- 'e1+ 'e1- 'e2+)))
+(check "transport: covector-vector pairing is chart independent, exactly"
+       (let* ((x (vec 1/3 3/2)) (v (vec 2 7)) (w (vec -1 4)))
+         (all? (lambda (name) (= (dot (atlas-transport-covector S2 'e2- name x w) (atlas-transport-vector S2 'e2- name x v)) (dot w v)))
+               (list 'e0+ 'e1- 'e2+))))
+(check "transport: the chart metric pushes forward to the target chart's metric, exactly"
+       (let ((x (vec 1/3 3/2)))
+         (all? (lambda (name) (equal? (atlas-transport-bilinear S2q 'e2- name x (atlas-metric S2q 'e2- x)) (atlas-metric S2q name (atlas-transition-map S2q 'e2- name x))))
+               (list 'e0+ 'e0- 'e1+ 'e1- 'e2+))))
+(check "jacobian: exact at exact points"
+       (all? (lambda (row) (exact-vec? row)) (vector->list (atlas-jacobian S2 'e0- 'e1+ (vec 1/2 1/3)))))
+
+;; ---------------------------------------------------------------------------
+;; The glued space: points
+;; ---------------------------------------------------------------------------
+(define p0 (atlas-point S2 'e2+ (vec 0 0)))   ; the ambient point -R e_2, the pole of chart e2-
+(check "points: x = 0 in chart e2+ is in every chart but e2-"
+       (equal? (atlas-point-charts S2 p0) (list 'e0- 'e0+ 'e1- 'e1+ 'e2+)))
+(check "points: the canonical representative is in the first chart containing the point"
+       (let ((q (atlas-point-normalize S2 p0))) (and (equal? (atlas-point-chart S2 q) 'e0-) (atlas-point=? S2 q p0) (atlas-point=? S2 p0 q))))
+(check "points: different points are not identified"
+       (not (atlas-point=? S2 p0 (atlas-point S2 'e2+ (vec 1/2 0)))))
+(check "points: a point outside a chart domain is refused"
+       (raises? (lambda () (atlas-point (space-form-atlas 2 -1) 'ball (vec 3 0)))))
+
+;; ---------------------------------------------------------------------------
+;; Gluing local data through core.sheaf.glue
+;; ---------------------------------------------------------------------------
+(define (height name) (lambda (x) (vector-ref (sphere-atlas->ambient 1 name x) 2)))
+(define heights (map (lambda (name) (cons name (height name))) (atlas-chart-names S2)))
+(define glued-height (atlas-glue-functions S2 heights))
+(check "glue: the chart formulas of the height function glue" (glued? glued-height))
+(check "glue: the glued function evaluates through any representative"
+       (let ((f (glued-value glued-height)))
+         (all? (lambda (name) (= (f (atlas-point S2 name (vec 1/2 1/3))) ((height name) (vec 1/2 1/3)))) (atlas-chart-names S2))))
+(check "glue: a chart without a local result is refused" (raises? (lambda () (atlas-glue-functions S2 (cdr heights)))))
+(let ((r (atlas-glue-functions S2 (map (lambda (e) (if (eq? (car e) 'e1-) (cons 'e1- (lambda (x) (+ 1/7 ((height 'e1-) x)))) e)) heights))))
+  (check "glue: a perturbed chart formula is obstructed by core.sheaf disagree obstructions naming it"
+         (and (not (glued? r)) (all? (lambda (o) (and (eq? (car o) 'disagree) (or (eq? (cadr o) 'e1-) (eq? (caddr o) 'e1-)))) (gluing-obstructions r))
+              (= 5 (length (gluing-obstructions r))))))
+;; the rotation field about the e_2 axis, written in each chart
+(define (rotation-field name)
+  (lambda (x)
+    (let ((p (sphere-atlas->ambient 1 name x)))
+      (list->vector (map (lambda (c) (derivative (lambda (t) (vector-ref (sphere-atlas<-ambient 1 name (vec (- (vector-ref p 0) (* t (vector-ref p 1))) (+ (vector-ref p 1) (* t (vector-ref p 0))) (vector-ref p 2))) c)) 0))
+                         (list 0 1))))))
+(define fields (map (lambda (name) (cons name (rotation-field name))) (atlas-chart-names S2)))
+(check "glue: the rotation vector field glues from its chart expressions, exactly" (glued? (atlas-glue-vector-fields S2 fields)))
+(check "glue: a field scaled in one chart does not glue"
+       (not (glued? (atlas-glue-vector-fields S2 (map (lambda (e) (if (eq? (car e) 'e0+) (cons 'e0+ (lambda (x) (vmap (lambda (c) (* 2 c)) ((cdr e) x)))) e)) fields)))))
+
+;; a coboundary: recoordinatizing one chart changes the cocycle, not the space
+(define swap (lambda (x) (vec (vector-ref x 1) (vector-ref x 0))))
+(define S2-swapped (atlas-recoordinatize S2 'e0- swap swap))
+(check "recoordinatize: the swapped atlas glues (metric pushed forward)" (glued? (atlas-check S2-swapped)))
+(check "recoordinatize: swapping reverses exactly that chart's orientation"
+       (let ((o1 (glued-value (atlas-orientation S2))) (o2 (glued-value (atlas-orientation S2-swapped))))
+         (= -1 (* (cdr (assq 'e0- o1)) (cdr (assq 'e0- o2)) (cdr (assq 'e0+ o1)) (cdr (assq 'e0+ o2))))))
+(define S2-scaled (atlas-recoordinatize S2q 'e1+ (lambda (x) (vmap (lambda (c) (* 3 c)) x)) (lambda (y) (vmap (lambda (c) (/ c 3)) y))))
+(check "recoordinatize: a scaled chart still glues as a Riemannian atlas" (glued? (atlas-check S2-scaled)))
+
+;; ---------------------------------------------------------------------------
+;; Every sign of K and the K = 0 contract
+;; ---------------------------------------------------------------------------
+(define E2 (space-form-atlas 2 0))
+(check "K = 0: one Euclidean chart" (equal? (atlas-chart-names E2) (list 'euclidean)))
+(check "K = 0: the chart metric is the identity, exactly"
+       (all? (lambda (x) (equal? (atlas-metric E2 'euclidean x) (vec (vec 1 0) (vec 0 1)))) (atlas-samples E2 'euclidean)))
+(check "K = 0: the atlas glues" (glued? (atlas-check E2)))
+(check "K = 0: the conformal factor is 1 exactly and its K-derivative is -|x|^2/4 from the one expression"
+       (all? (lambda (x) (and (= 1 (space-form-conformal-factor 0 x))
+                              (= (derivative (lambda (K) (space-form-conformal-factor K x)) 0) (- (/ (dot x x) 4)))))
+             (list (vec 1/2 -1/3) (vec 2 3) (vec 0 0))))
+(check "K = 0: the core charts of K > 0, K = 0 and K < 0 carry the same metric expression"
+       (let ((x (vec 1/3 -1/5)))
+         (all? (lambda (K)
+                 (let ((A (space-form-atlas 2 K)) (l (space-form-conformal-factor K x)))
+                   (equal? (atlas-metric A (car (filter (lambda (n) (memq n '(e2- euclidean ball))) (atlas-chart-names A))) x)
+                           (vec (vec (* l l) 0) (vec 0 (* l l))))))
+               (list 1 1/4 0 -1 -1/4))))
+(check "K = 0: core.curvature's chart at K = 0 is the Euclidean chart (distance |x - y|)"
+       (close? (chart-distance (->tensor (vec 1/2 -1/3)) (->tensor (vec 1/3 3/2)) 0.0) (sqrt (exact->inexact (dot (sub (vec 1/2 -1/3) (vec 1/3 3/2)) (sub (vec 1/2 -1/3) (vec 1/3 3/2))))) 1e-15))
+(define (check-hyperbolic n K)
+  (let* ((A (space-form-atlas n K)) (r (atlas-check A)))
+    (check (string-append "K < 0: ball and half-space glue isometrically at K = " (number->string K)) (glued? r))
+    (if (not (glued? r)) (begin (display (gluing-obstructions r)) (newline)))
+    (check "K < 0: the inversion reverses orientation; orientable" (and (equal? (glued-value (atlas-orientation-signs A)) (list (cons (list 'ball 'half-space) -1)))
+                                                                         (atlas-orientable? A)))
+    A))
+(define H2 (check-hyperbolic 2 -1))
+(define H3 (check-hyperbolic 3 -1/4))
+(define H2b (check-hyperbolic 2 -4))
+(check "K < 0: float carrier at K = -2 glues" (glued? (atlas-check (space-form-atlas 2 -2))))
+;; core.manifold's radius-2 ball against the independent half-space distance formula
+(check "core.manifold: ball distance at K = -1 equals arccosh(1 + |z - w|^2 / (2 z_n w_n)) in the half-space chart"
+       (let ((Mh (make-hyperbolic-manifold 2)))
+         (all? (lambda (pq)
+                 (let* ((x (car pq)) (y (cadr pq)) (z (atlas-transition-map H2 'ball 'half-space x)) (w (atlas-transition-map H2 'ball 'half-space y)))
+                   (close? (manifold-distance Mh (fl x) (fl y))
+                           (arccosh (exact->inexact (+ 1 (/ (dot (sub z w) (sub z w)) (* 2 (vector-ref z 1) (vector-ref w 1)))))) 1e-12)))
+               (list (list (vec 1/2 -1/3) (vec -1 1/2)) (list (vec 0 0) (vec 3/2 0)) (list (vec 1/5 1/7) (vec 1/5 -1/7))))))
+(check "core.curvature: chart-distance at K = -1/4 equals the half-space distance / sqrt(-K)"
+       (let* ((A (space-form-atlas 2 -1/4)) (x (vec 1 -1/2)) (y (vec -3/2 1/3))
+              (z (atlas-transition-map A 'ball 'half-space x)) (w (atlas-transition-map A 'ball 'half-space y)))
+         (close? (chart-distance (->tensor x) (->tensor y) -0.25)
+                 (/ (arccosh (exact->inexact (+ 1 (/ (dot (sub z w) (sub z w)) (* 2 (vector-ref z 1) (vector-ref w 1)))))) 0.5) 1e-12)))
+
+;; ---------------------------------------------------------------------------
+;; Triangulated surfaces: nerve, w1 and cohomology
+;; ---------------------------------------------------------------------------
+(define tetrahedron (list (list 0 1 2) (list 0 1 3) (list 0 2 3) (list 1 2 3)))
+(define octahedron (list (list 0 2 4) (list 0 4 3) (list 0 3 5) (list 0 5 2) (list 1 2 4) (list 1 4 3) (list 1 3 5) (list 1 5 2)))
+(define torus7 (apply append (map (lambda (i) (list (map (lambda (d) (modulo (+ i d) 7)) (list 0 1 3)) (map (lambda (d) (modulo (+ i d) 7)) (list 0 2 3)))) (range 7))))
+(define rp2 (list (list 1 2 3) (list 1 3 4) (list 1 4 5) (list 1 5 6) (list 1 6 2) (list 2 3 5) (list 3 4 6) (list 4 5 2) (list 5 6 3) (list 6 2 4)))
+(define moebius (list (list 0 1 2) (list 1 2 3) (list 2 3 4) (list 3 4 0) (list 4 0 1)))
+(define annulus (apply append (map (lambda (i) (let ((a i) (b (modulo (+ i 1) 4)) (c (+ 4 i)) (d (+ 4 (modulo (+ i 1) 4)))) (list (list a b c) (list b c d)))) (range 4))))
+;; the 3 x 3 grid on the square, glued as a torus or (one side reversed) a Klein bottle
+(define (grid-surface twist)
+  (let ((v (lambda (i j) (if (= i 3) (if twist (+ 0 (* 3 (modulo (- 3 j) 3))) (* 3 (modulo j 3))) (+ (* 3 (modulo j 3)) i)))))
+    (apply append (map (lambda (ij) (let ((i (car ij)) (j (cadr ij)))
+                                      (list (list (v i j) (v (+ i 1) j) (v (+ i 1) (+ j 1))) (list (v i j) (v i (+ j 1)) (v (+ i 1) (+ j 1))))))
+                       (apply append (map (lambda (i) (map (lambda (j) (list i j)) (range 3))) (range 3)))))))
+(define klein (grid-surface #t))
+(define torus9 (grid-surface #f))
+
+(define (faces-of triangles)
+  (let* ((verts (let loop ((l (apply append triangles)) (acc '())) (if (null? l) acc (loop (cdr l) (if (memv (car l) acc) acc (cons (car l) acc))))))
+         (edges (let loop ((ts triangles) (acc '()))
+                  (if (null? ts) acc
+                      (loop (cdr ts) (let add ((ps (let ((t (car ts))) (list (list (car t) (cadr t)) (list (car t) (caddr t)) (list (cadr t) (caddr t))))) (acc acc))
+                                       (if (null? ps) acc (add (cdr ps) (let ((e (if (< (car (car ps)) (cadr (car ps))) (car ps) (reverse (car ps))))) (if (member e acc) acc (cons e acc)))))))))))
+    (list (length verts) (length edges) (length triangles))))
+;; expected: (H^*(Z) H^*(orientation) mod-2 betti orientable?)
+(define (check-surface name triangles expected-Z expected-w expected-mod2 orientable)
+  (let* ((A (simplicial-surface-atlas triangles)) (r (atlas-check A))
+         (nerve (map car (atlas-nerve A))) (fv (faces-of triangles))
+         (HZ (atlas-cech-cohomology A 2 'Z)) (Hw (atlas-cech-cohomology A 2 'orientation)))
+    (check (string-append name ": the vertex-star atlas glues exactly") (glued? r))
+    (check (string-append name ": the nerve is the triangulation (vertices, edges, triangles)")
+           (and (= (length (filter (lambda (s) (= 1 (length s))) nerve)) (car fv))
+                (= (length (filter (lambda (s) (= 2 (length s))) nerve)) (cadr fv))
+                (= (length (filter (lambda (s) (= 3 (length s))) nerve)) (caddr fv))
+                (null? (filter (lambda (s) (> (length s) 3)) nerve))))
+    (check (string-append name ": Cech cohomology with Z coefficients") (equal? HZ expected-Z))
+    (check (string-append name ": Cech cohomology with orientation coefficients") (equal? Hw expected-w))
+    (check (string-append name ": derived cohomology of the nerve space agrees (Z)") (equal? (atlas-nerve-cohomology A 2 'Z) HZ))
+    (check (string-append name ": derived cohomology of the nerve space agrees (orientation)") (equal? (atlas-nerve-cohomology A 2 'orientation) Hw))
+    (check (string-append name ": Euler characteristic V - E + F from the Betti numbers")
+           (= (- (+ (car fv) (caddr fv)) (cadr fv)) (+ (cadr (assv 0 HZ)) (- (cadr (assv 1 HZ))) (cadr (assv 2 HZ)))))
+    (check (string-append name ": Z/2 Betti numbers") (equal? (atlas-mod2-betti A 2) expected-mod2))
+    (check (string-append name ": orientability") (eq? (atlas-orientable? A) orientable))
+    (let* ((w (glued-value (atlas-w1 A))) (signs (glued-value (atlas-orientation-signs A)))
+           (sign (lambda (a b) (if (equal? a b) 1 (let ((e (or (assoc (list a b) signs) (assoc (list b a) signs)))) (if e (cdr e) 0))))))
+      (if orientable
+          (check (string-append name ": the orientation trivializes w1 on every edge")
+                 (all? (lambda (e) (= 1 (* (cdr e) (cdr (assv (car (car e)) (list-ref w 3))) (cdr (assv (cadr (car e)) (list-ref w 3)))))) signs))
+          (let ((loop (list-ref w 3)))
+            (check (string-append name ": the monodromy loop is a closed path of nerve edges reversing orientation")
+                   (and (equal? (car loop) (car (reverse loop)))
+                        (let walk ((l loop) (prod 1))
+                          (if (null? (cdr l)) (= prod -1)
+                              (let ((s (sign (car l) (cadr l)))) (and (not (= s 0)) (walk (cdr l) (* prod s))))))
+                        (equal? (gluing-obstructions (atlas-orientation A)) (list (list 'monodromy loop))))))))
+    A))
+(check-surface "tetrahedron (S^2)" tetrahedron '((0 1 ()) (1 0 ()) (2 1 ())) '((0 1 ()) (1 0 ()) (2 1 ())) '(1 0 1) #t)
+(check-surface "octahedron (S^2)" octahedron '((0 1 ()) (1 0 ()) (2 1 ())) '((0 1 ()) (1 0 ()) (2 1 ())) '(1 0 1) #t)
+(check-surface "7-vertex torus" torus7 '((0 1 ()) (1 2 ()) (2 1 ())) '((0 1 ()) (1 2 ()) (2 1 ())) '(1 2 1) #t)
+(check-surface "9-vertex torus" torus9 '((0 1 ()) (1 2 ()) (2 1 ())) '((0 1 ()) (1 2 ()) (2 1 ())) '(1 2 1) #t)
+(define RP2 (check-surface "6-vertex RP^2" rp2 '((0 1 ()) (1 0 ()) (2 0 (2))) '((0 0 ()) (1 0 (2)) (2 1 ())) '(1 1 1) #f))
+(check-surface "Klein bottle" klein '((0 1 ()) (1 1 ()) (2 0 (2))) '((0 0 ()) (1 1 (2)) (2 1 ())) '(1 2 1) #f)
+(check-surface "5-vertex Moebius band" moebius '((0 1 ()) (1 1 ()) (2 0 ())) '((0 0 ()) (1 0 (2)) (2 0 ())) '(1 1 0) #f)
+(check-surface "annulus" annulus '((0 1 ()) (1 1 ()) (2 0 ())) '((0 1 ()) (1 1 ()) (2 0 ())) '(1 1 0) #t)
+(check "RP^2: the twisted H^1 class has an explicit order-2 cocycle (core.sheaf generators)"
+       (equal? (map car (cohomology-generators (atlas-cech-complex RP2 2 'orientation) 1)) (list 2)))
+(check "RP^2: the twisted H^2 = Z and the untwisted H^2 = Z/2 have explicit generators"
+       (and (equal? (map car (cohomology-generators (atlas-cech-complex RP2 2 'orientation) 2)) (list 0))
+            (equal? (map car (cohomology-generators (atlas-cech-complex RP2 2 'Z) 2)) (list 2))))
+(check "surfaces: a vertex whose edge lies in three triangles is refused"
+       (raises? (lambda () (simplicial-surface-atlas (list (list 0 1 2) (list 0 1 3) (list 0 1 4))))))
+(check "surfaces: a pinched vertex (disconnected link) is refused"
+       (raises? (lambda () (simplicial-surface-atlas (list (list 0 1 2) (list 0 3 4))))))
+
+;; ---------------------------------------------------------------------------
+;; A smooth Moebius band from three strips: the seam makes w1 nonzero
+;; ---------------------------------------------------------------------------
+;; M = R x (-1, 1) / (s, t) ~ (s + 2, -t); strips C0: 0 < s < 1, C1: 2/3 < s < 5/3,
+;; C2: 4/3 < s < 7/3, all in the coordinates (s, t); C2 meets C0 across the seam.
+(define (strip lo hi) (lambda (x) (and (= 2 (vector-length x)) (< lo (vector-ref x 0) hi) (< -1 (vector-ref x 1) 1))))
+(define (seam x) (vec (+ 2 (vector-ref x 0)) (- (vector-ref x 1))))
+(define (unseam x) (vec (- (vector-ref x 0) 2) (- (vector-ref x 1))))
+(define (ident x) x)
+(define (strip-samples lo hi) (apply append (map (lambda (s) (map (lambda (t) (vec s t)) (list -1/2 1/3))) (list (+ lo 1/12) (/ (+ lo hi) 2) (- hi 1/12)))))
+(define mob3
+  (make-atlas 2 'exact
+              (list (make-chart 'C0 2 (strip 0 1)) (make-chart 'C1 2 (strip 2/3 5/3)) (make-chart 'C2 2 (strip 4/3 7/3)))
+              (list (make-transition 'C0 'C1 ident (lambda (x) (< 2/3 (vector-ref x 0))))
+                    (make-transition 'C1 'C0 ident (lambda (x) (< (vector-ref x 0) 1)))
+                    (make-transition 'C1 'C2 ident (lambda (x) (< 4/3 (vector-ref x 0))))
+                    (make-transition 'C2 'C1 ident (lambda (x) (< (vector-ref x 0) 5/3)))
+                    (make-transition 'C0 'C2 seam (lambda (x) (< (vector-ref x 0) 1/3)))
+                    (make-transition 'C2 'C0 unseam (lambda (x) (< 2 (vector-ref x 0)))))
+              (list (cons 'C0 (strip-samples 0 1)) (cons 'C1 (strip-samples 2/3 5/3)) (cons 'C2 (strip-samples 4/3 7/3)))))
+(check "three-strip Moebius band: the atlas glues" (glued? (atlas-check mob3)))
+(check "three-strip Moebius band: the nerve is a triangle boundary (no triple overlap)"
+       (equal? (map car (atlas-nerve mob3)) '((0) (1) (2) (0 1) (0 2) (1 2))))
+(check "three-strip Moebius band: w1 is nonzero and the witness is the loop through the seam"
+       (equal? (gluing-obstructions (atlas-orientation mob3)) '((monodromy (C0 C1 C2 C0)))))
+(check "three-strip Moebius band: H^1(Z) = Z, twisted H^0 = 0 and H^1 = Z/2"
+       (and (equal? (atlas-cech-cohomology mob3 1 'Z) '((0 1 ()) (1 1 ())))
+            (equal? (atlas-cech-cohomology mob3 1 'orientation) '((0 0 ()) (1 0 (2))))))
+;; two strips: the overlap has two components with opposite orientation signs
+(define mob2
+  (make-atlas 2 'exact
+              (list (make-chart 'A 2 (strip 0 2)) (make-chart 'B 2 (strip 1 3)))
+              (list (make-transition 'A 'B (lambda (x) (if (< (vector-ref x 0) 1) (seam x) x)) (lambda (x) (not (= 1 (vector-ref x 0)))))
+                    (make-transition 'B 'A (lambda (x) (if (> (vector-ref x 0) 2) (unseam x) x)) (lambda (x) (not (= 2 (vector-ref x 0))))))
+              (list (cons 'A (strip-samples 0 2)) (cons 'B (strip-samples 1 3)))))
+(check "two-strip Moebius band: the atlas glues" (glued? (atlas-check mob2)))
+(check "two-strip Moebius band: the orientation sign varies on the disconnected overlap"
+       (equal? (obstruction-heads (atlas-orientation mob2)) '(orientation-varies)))
+
+;; ---------------------------------------------------------------------------
+;; Every obstruction kind, from a deliberately inconsistent atlas
+;; ---------------------------------------------------------------------------
+(define (perturbed-sphere from to perturb)
+  ;; S^2 at K = 1 with the transition from -> to post-composed with perturb
+  (let* ((names (atlas-chart-names S2))
+         (charts (map (lambda (n) (atlas-chart S2 n)) names))
+         (trans (apply append (map (lambda (a) (filter (lambda (t) t) (map (lambda (b) (atlas-transition S2 a b)) names))) names))))
+    (make-atlas 2 'exact charts
+                (map (lambda (t) (if (and (eq? (transition-from t) from) (eq? (transition-to t) to))
+                                     (make-transition from to (lambda (x) (perturb ((transition-map t) x))) (lambda (x) (transition-overlap? t x)))
+                                     t))
+                     trans)
+                (map (lambda (n) (cons n (atlas-samples S2 n))) names))))
+(define bumped (perturbed-sphere 'e0- 'e1+ (lambda (y) (vec (+ (vector-ref y 0) 1/1000) (vector-ref y 1)))))
+(let ((r (atlas-check-cocycle bumped)))
+  (check "witness: a shifted transition breaks the cocycle" (not (glued? r)))
+  (check "witness: every witness names the shifted transition's charts (cocycle with both values, or domain)"
+         (all? (lambda (o) (and (or (and (eq? (car o) 'cocycle) (= 5 (length o)) (not (equal? (list-ref o 3) (list-ref o 4))))
+                                    (and (eq? (car o) 'domain) (= 3 (length o))))
+                                (let ((ijk (cadr o))) (or (and (eq? (car ijk) 'e0-) (or (eq? (cadr ijk) 'e1+) (eq? (caddr ijk) 'e1+)))
+                                                          (and (eq? (cadr ijk) 'e0-) (eq? (caddr ijk) 'e1+))))))
+               (gluing-obstructions r)))
+  (check "witness: the shift moves points off the poles they were mapped to (domain)"
+         (memq 'domain (obstruction-heads r)))
+  (check "witness: on a triple (i e0- e1+) the discrepancy is exactly the shift, in chart e1+"
+         (let ((o (filter (lambda (o) (and (eq? (cadr (cadr o)) 'e0-) (eq? (caddr (cadr o)) 'e1+))) (gluing-obstructions r))))
+           (and (pair? o) (all? (lambda (o) (equal? (sub (list-ref o 3) (list-ref o 4)) (vec 1/1000 0))) o)))))
+(define sheared (perturbed-sphere 'e0- 'e1+ (lambda (y) (vec (+ (vector-ref y 0) (/ (vector-ref y 1) 1000)) (vector-ref y 1)))))
+(check "witness: a sheared transition breaks the chain rule (jacobian-cocycle)"
+       (and (pair? (atlas-jacobian-violations sheared)) (all? (lambda (o) (eq? (car o) 'jacobian-cocycle)) (atlas-jacobian-violations sheared))))
+(check "witness: a sheared transition is no longer an isometry (metric)"
+       (and (pair? (atlas-metric-violations sheared)) (all? (lambda (o) (eq? (car o) 'metric)) (atlas-metric-violations sheared))))
+(define rooted (perturbed-sphere 'e0- 'e1+ (lambda (y) (vec (* (sqrt 2) (vector-ref y 0)) (vector-ref y 1)))))
+(check "witness: an exact atlas reports a transition that leaves the exact carrier (inexact)"
+       (memq 'inexact (obstruction-heads (atlas-check-cocycle rooted))))
+(define line-charts (list (make-chart 'L 1 (lambda (x) (< (vector-ref x 0) 1))) (make-chart 'R 1 (lambda (x) (> (vector-ref x 0) 0)))))
+(define line-samples (list (cons 'L (list (vec -1) (vec 1/2))) (cons 'R (list (vec 1/2) (vec 2)))))
+(define line-good (make-atlas 1 'exact line-charts
+                              (list (make-transition 'L 'R ident (lambda (x) (> (vector-ref x 0) 0))) (make-transition 'R 'L ident (lambda (x) (< (vector-ref x 0) 1))))
+                              line-samples))
+(check "line: two overlapping intervals glue" (glued? (atlas-check line-good)))
+(check "line: the nerve witnesses the overlap with a sample point"
+       (equal? (assoc (list 0 1) (atlas-nerve line-good)) (cons (list 0 1) (cons 0 (vec 1/2)))))
+(define line-domain (make-atlas 1 'exact line-charts
+                                (list (make-transition 'L 'R ident (lambda (x) #t)) (make-transition 'R 'L ident (lambda (x) (< (vector-ref x 0) 1))))
+                                line-samples))
+(check "witness: an overlap predicate that overreaches lands outside the target chart (domain)"
+       (equal? (gluing-obstructions (atlas-check-cocycle line-domain)) (list (list 'domain (list 'L 'R 'R) (vec -1)))))
+(define line-outside (make-atlas 1 'exact line-charts
+                                 (list (make-transition 'L 'R ident (lambda (x) (> (vector-ref x 0) 0))) (make-transition 'R 'L ident (lambda (x) (< (vector-ref x 0) 1))))
+                                 (list (cons 'L (list (vec 3))) (cons 'R (list (vec 2))))))
+(check "witness: a sample outside its chart is named (outside)"
+       (equal? (gluing-obstructions (atlas-check-cocycle line-outside)) (list (list 'outside 'L (vec 3)))))
+(define line-identity (make-atlas 1 'exact line-charts
+                                  (list (make-transition 'L 'L (lambda (x) (vec (- (vector-ref x 0) 1/2))) (lambda (x) #t))
+                                        (make-transition 'L 'R ident (lambda (x) (> (vector-ref x 0) 0))) (make-transition 'R 'L ident (lambda (x) (< (vector-ref x 0) 1))))
+                                  line-samples))
+(check "witness: an explicit g_ii that moves points (identity)"
+       (memq 'identity (obstruction-heads (atlas-check-cocycle line-identity))))
+(define flat-line (make-atlas 1 'exact
+                              (list (make-chart 'P 1 (lambda (x) #t)) (make-chart 'Q 1 (lambda (x) #t)))
+                              (list (make-transition 'P 'Q (lambda (x) (vec (* (vector-ref x 0) (vector-ref x 0) (vector-ref x 0)))) (lambda (x) #t))
+                                    (make-transition 'Q 'P (lambda (x) (vec (vector-ref x 0))) (lambda (x) #t)))
+                              (list (cons 'P (list (vec 0))) (cons 'Q '()))))
+(check "witness: a transition with zero Jacobian determinant (degenerate)"
+       (equal? (obstruction-heads (atlas-orientation-signs flat-line)) '(degenerate)))
+;; the float tolerance contract: the same gluing passes at 2^-40 and fails at 1e-300
+(define (thirds tol)
+  (make-atlas 1 (list 'float tol)
+              (list (make-chart 'U 1 (lambda (x) #t)) (make-chart 'V 1 (lambda (x) #t)))
+              (list (make-transition 'U 'V (lambda (x) (vec (* 3.0 (vector-ref x 0)))) (lambda (x) #t))
+                    (make-transition 'V 'U (lambda (x) (vec (/ (vector-ref x 0) 3.0))) (lambda (x) #t)))
+              (list (cons 'U (map (lambda (k) (vec (/ k 10.0))) (range 30))) (cons 'V '()))))
+(check "float: 3x and x/3 glue within the default tolerance" (glued? (atlas-check (thirds (atlas-default-tolerance)))))
+(check "float: the same atlas at tolerance 1e-300 reports the rounding as cocycle witnesses"
+       (let ((r (atlas-check-cocycle (thirds 1e-300)))) (and (not (glued? r)) (all? (lambda (o) (eq? (car o) 'cocycle)) (gluing-obstructions r)))))
+(check "atlas: a bad carrier is refused" (raises? (lambda () (make-atlas 1 'approximate line-charts '() '()))))
+(check "atlas: a transition naming an unknown chart is refused" (raises? (lambda () (make-atlas 1 'exact line-charts (list (make-transition 'L 'Z ident ident)) '()))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: manifold_atlas_test") (newline) (display "RESULT: PASS") (newline)

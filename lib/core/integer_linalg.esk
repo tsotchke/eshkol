@@ -1,0 +1,396 @@
+;;; core.integer_linalg -- exact linear algebra over the integers (a PID)
+;;; and over Q by clearing denominators.
+;;;
+;;; Usage: (require core.integer_linalg)
+;;;
+;;; Matrices use the representation of core.exact_linalg: an m x n matrix is
+;;; (vector row0 ... row(m-1)), each row a length-n vector of exact numbers.
+;;; A matrix with no rows cannot record its width, so every operation whose
+;;; answer depends on the column count of a possibly empty matrix takes that
+;;; count explicitly, and #f is accepted wherever "no constraints" is meant.
+;;;
+;;; Entries are exact integers (fixnums or bignums); the Smith normal form,
+;;; kernels, ranks and lattice tests are computed without any division that
+;;; can leave Z. Rational matrices are handled by `matrix-clear-denominators`,
+;;; which scales each row by the least common multiple of its denominators
+;;; using integer arithmetic only, so Q-ranks and Q-kernels come from the same
+;;; integer engine. Rational solutions are checked to stay exact.
+;;;
+;;; The Smith form follows the classical algorithm (H. Cohen, "A Course in
+;;; Computational Algebraic Number Theory", GTM 138, Algorithm 2.4.14; the
+;;; existence theorem is in any algebra text, e.g. Jacobson, Basic Algebra I,
+;;; 3.7): U A V = D with U, V unimodular and d_1 | d_2 | ... on the diagonal.
+;;; Cochain cohomology reads Betti numbers from ranks and torsion from the
+;;; invariant factors, and `cochain-cohomology-generators` returns explicit
+;;; cocycles generating each cohomology group.
+
+(require stdlib)
+
+(provide integer-matrix integer-identity-matrix integer-matrix-rows integer-matrix-cols
+         integer-matrix-ref integer-matrix-set! integer-matrix-copy integer-matrix-mul
+         integer-matrix-equal? integer-matrix-from-columns integer-matrix-column
+         integer-matrix-vector integer-matrix-vstack integer-matrix-hstack
+         smith-normal-form smith-diagonal smith-left smith-right
+         integer-rank integer-kernel integer-solve-in-basis integer-in-column-span?
+         integer-same-lattice? integer-invariant-factors
+         matrix-clear-denominators rational-rank rational-kernel rational-solve
+         rational-same-span?
+         cochain-cohomology cochain-cohomology-generators)
+
+;; ---------------------------------------------------------------------------
+;; Matrix basics
+;; ---------------------------------------------------------------------------
+(define (integer-matrix rows cols)
+  (let ((M (make-vector rows 0)))
+    (let loop ((i 0))
+      (if (< i rows) (begin (vector-set! M i (make-vector cols 0)) (loop (+ i 1)))))
+    M))
+(define (integer-matrix-rows A) (vector-length A))
+(define (integer-matrix-cols A) (if (= 0 (vector-length A)) 0 (vector-length (vector-ref A 0))))
+(define (integer-matrix-ref A i j) (vector-ref (vector-ref A i) j))
+(define (integer-matrix-set! A i j v) (vector-set! (vector-ref A i) j v))
+(define (integer-identity-matrix m)
+  (let ((I (integer-matrix m m)))
+    (let loop ((i 0)) (if (< i m) (begin (integer-matrix-set! I i i 1) (loop (+ i 1)))))
+    I))
+(define (integer-matrix-copy A)
+  (let ((B (make-vector (integer-matrix-rows A) 0)))
+    (let loop ((i 0))
+      (if (< i (integer-matrix-rows A))
+          (begin (vector-set! B i (vector-copy (vector-ref A i))) (loop (+ i 1)))))
+    B))
+(define (integer-matrix-mul A B)
+  (let* ((m (integer-matrix-rows A)) (k (integer-matrix-cols A)) (n (integer-matrix-cols B))
+         (C (integer-matrix m n)))
+    (let li ((i 0))
+      (if (< i m)
+          (begin
+            (let lj ((j 0))
+              (if (< j n)
+                  (begin
+                    (integer-matrix-set! C i j
+                      (let inner ((l 0) (s 0))
+                        (if (= l k) s
+                            (inner (+ l 1) (+ s (* (integer-matrix-ref A i l) (integer-matrix-ref B l j)))))))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    C))
+(define (integer-matrix-equal? A B)
+  (and (= (integer-matrix-rows A) (integer-matrix-rows B))
+       (= (integer-matrix-cols A) (integer-matrix-cols B))
+       (let li ((i 0))
+         (cond ((= i (integer-matrix-rows A)) #t)
+               ((let lj ((j 0))
+                  (cond ((= j (integer-matrix-cols A)) #t)
+                        ((= (integer-matrix-ref A i j) (integer-matrix-ref B i j)) (lj (+ j 1)))
+                        (else #f)))
+                (li (+ i 1)))
+               (else #f)))))
+(define (integer-matrix-column M j)
+  (let ((v (make-vector (integer-matrix-rows M) 0)))
+    (let loop ((i 0))
+      (if (< i (integer-matrix-rows M))
+          (begin (vector-set! v i (integer-matrix-ref M i j)) (loop (+ i 1)))))
+    v))
+(define (integer-matrix-from-columns cols nrows)
+  (let ((M (integer-matrix nrows (length cols))))
+    (let loop ((cs cols) (j 0))
+      (if (not (null? cs))
+          (begin
+            (let fill ((i 0))
+              (if (< i nrows) (begin (integer-matrix-set! M i j (vector-ref (car cs) i)) (fill (+ i 1)))))
+            (loop (cdr cs) (+ j 1)))))
+    M))
+(define (integer-matrix-vector M z)
+  (let ((w (make-vector (integer-matrix-rows M) 0)))
+    (let loop ((i 0))
+      (if (< i (integer-matrix-rows M))
+          (let ((r (vector-ref M i)))
+            (vector-set! w i (let inner ((j 0) (s 0))
+                               (if (= j (vector-length r)) s
+                                   (inner (+ j 1) (+ s (* (vector-ref r j) (vector-ref z j)))))))
+            (loop (+ i 1)))))
+    w))
+;; Stack blocks vertically. Blocks without rows carry no width and are
+;; skipped; when no block has a row the result is #f ("no constraints").
+(define (integer-matrix-vstack blocks)
+  (let ((bs (filter (lambda (B) (> (integer-matrix-rows B) 0)) blocks)))
+    (if (null? bs) #f
+        (let* ((rows (fold-left + 0 (map integer-matrix-rows bs)))
+               (cols (integer-matrix-cols (car bs)))
+               (M (make-vector rows 0)))
+          (let loop ((bs bs) (r 0))
+            (if (not (null? bs))
+                (begin
+                  (let fill ((i 0))
+                    (if (< i (integer-matrix-rows (car bs)))
+                        (begin (vector-set! M (+ r i) (vector-copy (vector-ref (car bs) i))) (fill (+ i 1)))))
+                  (loop (cdr bs) (+ r (integer-matrix-rows (car bs)))))))
+          M))))
+;; Place blocks with equal row counts side by side.
+(define (integer-matrix-hstack blocks nrows)
+  (let* ((cols (fold-left + 0 (map integer-matrix-cols blocks))) (M (integer-matrix nrows cols)))
+    (let loop ((bs blocks) (c 0))
+      (if (not (null? bs))
+          (begin
+            (let fill ((i 0))
+              (if (< i nrows)
+                  (begin
+                    (let fj ((j 0))
+                      (if (< j (integer-matrix-cols (car bs)))
+                          (begin (integer-matrix-set! M i (+ c j) (integer-matrix-ref (car bs) i j)) (fj (+ j 1)))))
+                    (fill (+ i 1)))))
+            (loop (cdr bs) (+ c (integer-matrix-cols (car bs)))))))
+    M))
+
+;; ---------------------------------------------------------------------------
+;; Smith normal form with both transforms
+;; ---------------------------------------------------------------------------
+(define (zl-swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (zl-swap-cols! A i j)
+  (let loop ((r 0))
+    (if (< r (integer-matrix-rows A))
+        (let ((t (integer-matrix-ref A r i)))
+          (integer-matrix-set! A r i (integer-matrix-ref A r j))
+          (integer-matrix-set! A r j t)
+          (loop (+ r 1))))))
+(define (zl-add-row! A dst src q)
+  (let ((rd (vector-ref A dst)) (rs (vector-ref A src)))
+    (let loop ((j 0))
+      (if (< j (vector-length rd))
+          (begin
+            (if (not (= 0 (vector-ref rs j)))
+                (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j)))))
+            (loop (+ j 1)))))))
+(define (zl-add-col! A dst src q)
+  (let loop ((r 0))
+    (if (< r (integer-matrix-rows A))
+        (begin
+          (if (not (= 0 (integer-matrix-ref A r src)))
+              (integer-matrix-set! A r dst (+ (integer-matrix-ref A r dst) (* q (integer-matrix-ref A r src)))))
+          (loop (+ r 1))))))
+(define (zl-negate-row! A i)
+  (let ((r (vector-ref A i)))
+    (let loop ((j 0))
+      (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+;; Pivot of least nonzero absolute value in the lower-right block from t; a
+;; unit is taken at once.
+(define (zl-find-pivot A t)
+  (let ((m (integer-matrix-rows A)) (n (integer-matrix-cols A)))
+    (let loop-i ((i t) (best #f) (bi 0) (bj 0))
+      (if (= i m) (if best (list bi bj) #f)
+          (let loop-j ((j t) (best best) (bi bi) (bj bj))
+            (if (= j n) (loop-i (+ i 1) best bi bj)
+                (let ((a (abs (integer-matrix-ref A i j))))
+                  (cond ((= a 1) (list i j))
+                        ((and (not (= a 0)) (or (not best) (< a best))) (loop-j (+ j 1) a i j))
+                        (else (loop-j (+ j 1) best bi bj))))))))))
+(define (zl-snf! A U V)
+  (let ((m (integer-matrix-rows A)) (n (integer-matrix-cols A)))
+    (let outer ((t 0) (diag '()))
+      (if (or (= t m) (= t n)) (reverse diag)
+          (let ((p (zl-find-pivot A t)))
+            (if (not p) (reverse diag)
+                (begin
+                  (zl-swap-rows! A t (car p)) (zl-swap-rows! U t (car p))
+                  (zl-swap-cols! A t (cadr p)) (zl-swap-cols! V t (cadr p))
+                  (let inner ()
+                    (let ((pivot (integer-matrix-ref A t t)) (clean #t))
+                      (let loop ((i (+ t 1)))
+                        (if (< i m)
+                            (let ((a (integer-matrix-ref A i t)))
+                              (if (not (= a 0))
+                                  (let ((q (quotient a pivot)))
+                                    (zl-add-row! A i t (- 0 q)) (zl-add-row! U i t (- 0 q))
+                                    (if (not (= 0 (integer-matrix-ref A i t))) (set! clean #f))))
+                              (loop (+ i 1)))))
+                      (let loop ((j (+ t 1)))
+                        (if (< j n)
+                            (let ((a (integer-matrix-ref A t j)))
+                              (if (not (= a 0))
+                                  (let ((q (quotient a pivot)))
+                                    (zl-add-col! A j t (- 0 q)) (zl-add-col! V j t (- 0 q))
+                                    (if (not (= 0 (integer-matrix-ref A t j))) (set! clean #f))))
+                              (loop (+ j 1)))))
+                      (if (not clean)
+                          (let ((q (zl-find-pivot A t)))
+                            (zl-swap-rows! A t (car q)) (zl-swap-rows! U t (car q))
+                            (zl-swap-cols! A t (cadr q)) (zl-swap-cols! V t (cadr q))
+                            (inner))
+                          ;; divisibility: a remaining entry not divisible by the
+                          ;; pivot is folded into row t and the step repeats
+                          (let ((bad (let loop-i ((i (+ t 1)))
+                                       (if (= i m) #f
+                                           (let loop-j ((j (+ t 1)))
+                                             (if (= j n) (loop-i (+ i 1))
+                                                 (if (= 0 (remainder (integer-matrix-ref A i j) pivot))
+                                                     (loop-j (+ j 1))
+                                                     (list i j))))))))
+                            (if bad
+                                (begin (zl-add-row! A t (car bad) 1) (zl-add-row! U t (car bad) 1) (inner))
+                                #t)))))
+                  (if (< (integer-matrix-ref A t t) 0) (begin (zl-negate-row! A t) (zl-negate-row! U t)))
+                  (outer (+ t 1) (cons (integer-matrix-ref A t t) diag)))))))))
+;; (list diag U V) with U A V = D, d_1 | d_2 | ..., A left intact. diag holds
+;; the nonzero invariant factors, so its length is the rank.
+(define (smith-normal-form A)
+  (let* ((B (integer-matrix-copy A))
+         (U (integer-identity-matrix (integer-matrix-rows A)))
+         (V (integer-identity-matrix (integer-matrix-cols A)))
+         (d (zl-snf! B U V)))
+    (list d U V)))
+(define (smith-diagonal s) (car s))
+(define (smith-left s) (cadr s))
+(define (smith-right s) (caddr s))
+(define (zl-empty? A) (or (not A) (= 0 (integer-matrix-rows A)) (= 0 (integer-matrix-cols A))))
+(define (integer-rank A) (if (zl-empty? A) 0 (length (car (smith-normal-form A)))))
+(define (integer-invariant-factors A) (if (zl-empty? A) '() (car (smith-normal-form A))))
+
+;; Basis of the lattice {x in Z^ncols : A x = 0}: the last ncols - rank
+;; columns of V. A = #f (or a matrix without rows) means no constraints.
+(define (integer-kernel A ncols)
+  (cond ((= 0 ncols) '())
+        ((or (not A) (= 0 (integer-matrix-rows A)))
+         (map (lambda (j) (integer-matrix-column (integer-identity-matrix ncols) j)) (iota ncols)))
+        (else
+         (let* ((s (smith-normal-form A)) (r (length (car s))) (V (caddr s)))
+           (let loop ((j (- ncols 1)) (acc '()))
+             (if (< j r) acc (loop (- j 1) (cons (integer-matrix-column V j) acc))))))))
+
+;; Solve B y = v given the Smith form `snf` of B (ncols columns). Returns the
+;; integer vector y, or #f when v is not in the integer column span of B.
+;; When B has full column rank the solution is unique.
+(define (integer-solve-in-basis snf ncols v)
+  (let* ((d (car snf)) (U (cadr snf)) (V (caddr snf)) (w (integer-matrix-vector U v))
+         (y0 (make-vector ncols 0)))
+    (let loop ((i 0) (ds d))
+      (cond ((< i (length d))
+             (if (= 0 (remainder (vector-ref w i) (car ds)))
+                 (begin (vector-set! y0 i (quotient (vector-ref w i) (car ds))) (loop (+ i 1) (cdr ds)))
+                 #f))
+            ((< i (vector-length w))
+             (if (= 0 (vector-ref w i)) (loop (+ i 1) ds) #f))
+            (else (integer-matrix-vector V y0))))))
+(define (integer-in-column-span? A v)
+  (if (= 0 (integer-matrix-cols A))
+      (let loop ((i 0)) (cond ((= i (vector-length v)) #t) ((= 0 (vector-ref v i)) (loop (+ i 1))) (else #f)))
+      (if (integer-solve-in-basis (smith-normal-form A) (integer-matrix-cols A) v) #t #f)))
+;; Do the columns of A and of B generate the same sublattice?
+(define (integer-same-lattice? A B)
+  (and (let loop ((j 0))
+         (cond ((= j (integer-matrix-cols B)) #t)
+               ((integer-in-column-span? A (integer-matrix-column B j)) (loop (+ j 1)))
+               (else #f)))
+       (let loop ((j 0))
+         (cond ((= j (integer-matrix-cols A)) #t)
+               ((integer-in-column-span? B (integer-matrix-column A j)) (loop (+ j 1)))
+               (else #f)))))
+
+;; ---------------------------------------------------------------------------
+;; Q by clearing denominators
+;; ---------------------------------------------------------------------------
+(define (zl-check-exact x)
+  (if (not (and (rational? x) (exact? x)))
+      (error "core.integer_linalg: entries must be exact rationals" x))
+  x)
+(define (zl-row-lcm r)
+  (let loop ((j 0) (l 1))
+    (if (= j (vector-length r)) l
+        (loop (+ j 1) (lcm l (denominator (zl-check-exact (vector-ref r j))))))))
+;; Each row scaled by the lcm of its denominators: an integer matrix with the
+;; same kernel and the same rank over Q. Only integer products are formed.
+(define (matrix-clear-denominators A)
+  (if (not A) #f
+      (let ((B (make-vector (integer-matrix-rows A) 0)))
+        (let loop ((i 0))
+          (if (< i (integer-matrix-rows A))
+              (let* ((r (vector-ref A i)) (l (zl-row-lcm r)) (s (make-vector (vector-length r) 0)))
+                (let fill ((j 0))
+                  (if (< j (vector-length r))
+                      (let ((x (vector-ref r j)))
+                        (vector-set! s j (* (numerator x) (quotient l (denominator x))))
+                        (fill (+ j 1)))))
+                (vector-set! B i s)
+                (loop (+ i 1)))))
+        B)))
+(define (rational-rank A) (integer-rank (matrix-clear-denominators A)))
+(define (rational-kernel A ncols) (integer-kernel (matrix-clear-denominators A) ncols))
+;; Solve B y = v over Q for B with full column rank; #f when v is outside the
+;; Q-span. Rows of the augmented system are cleared together.
+(define (rational-solve B ncols v)
+  (let* ((m (vector-length v))
+         (aug (let ((M (make-vector m 0)))
+                (let loop ((i 0))
+                  (if (< i m)
+                      (let ((row (make-vector (+ ncols 1) 0)))
+                        (let fill ((j 0)) (if (< j ncols) (begin (vector-set! row j (integer-matrix-ref B i j)) (fill (+ j 1)))))
+                        (vector-set! row ncols (vector-ref v i))
+                        (vector-set! M i row)
+                        (loop (+ i 1)))))
+                (matrix-clear-denominators M)))
+         (Bz (let ((M (make-vector m 0)))
+               (let loop ((i 0)) (if (< i m) (begin (vector-set! M i (vector-copy (vector-ref aug i) 0 ncols)) (loop (+ i 1)))))
+               M))
+         (vz (let ((w (make-vector m 0))) (let loop ((i 0)) (if (< i m) (begin (vector-set! w i (integer-matrix-ref aug i ncols)) (loop (+ i 1))))) w))
+         (s (smith-normal-form Bz)) (d (car s)) (U (cadr s)) (V (caddr s))
+         (w (integer-matrix-vector U vz)) (y0 (make-vector ncols 0)))
+    (let loop ((i 0) (ds d))
+      (cond ((< i (length d))
+             (vector-set! y0 i (zl-check-exact (/ (vector-ref w i) (car ds))))
+             (loop (+ i 1) (cdr ds)))
+            ((< i (vector-length w)) (if (= 0 (vector-ref w i)) (loop (+ i 1) ds) #f))
+            (else (integer-matrix-vector V y0))))))
+(define (rational-same-span? A B nrows)
+  (let ((ra (rational-rank A)) (rb (rational-rank B)))
+    (and (= ra rb)
+         (= ra (rational-rank (integer-matrix-hstack (list A B) nrows))))))
+
+;; ---------------------------------------------------------------------------
+;; Cochain complexes
+;; ---------------------------------------------------------------------------
+;; dims = (dim C^0 ... dim C^kmax), Ds = (D_0 ... D_kmax), D_k : C^k -> C^{k+1}
+;; as a (dim C^{k+1}) x (dim C^k) integer matrix. Returns ((k betti torsion) ...)
+;; where torsion lists the invariant factors greater than 1 of D_{k-1}.
+(define (cochain-cohomology dims Ds)
+  (let loop ((k 0) (ds Ds) (dims dims) (rank-prev 0) (prev #f) (acc '()))
+    (if (null? ds) (reverse acc)
+        (let* ((D (car ds)) (dim-k (car dims))
+               (rank-k (integer-rank D))
+               (betti (- dim-k rank-prev rank-k))
+               (tors (if (and prev (> (integer-matrix-rows prev) 0) (> (integer-matrix-cols prev) 0))
+                         (filter (lambda (x) (> x 1)) (car (smith-normal-form prev)))
+                         '())))
+          (loop (+ k 1) (cdr ds) (cdr dims) rank-k D (cons (list k betti tors) acc))))))
+
+;; Explicit generators of H^k = ker D_k / im D_{k-1}: a list of (order . cocycle)
+;; where cocycle is a vector in C^k with D_k cocycle = 0, and order is 0 for an
+;; infinite cyclic summand or the invariant factor d > 1 of a torsion summand.
+;; D_prev is #f for k = 0. The generators form a basis adapted to the Smith
+;; form of im D_{k-1} inside the kernel lattice, so H^k is their direct sum.
+(define (cochain-cohomology-generators dim-k D-prev D-k)
+  (let* ((K (integer-kernel D-k dim-k))
+         (z (length K)))
+    (if (= z 0) '()
+        (let* ((KM (integer-matrix-from-columns K dim-k))
+               (snfK (smith-normal-form KM))
+               (images (if (or (not D-prev) (= 0 (integer-matrix-cols D-prev))) '()
+                           (map (lambda (j) (integer-matrix-column D-prev j)) (iota (integer-matrix-cols D-prev)))))
+               (coords (map (lambda (b)
+                              (let ((y (integer-solve-in-basis snfK z b)))
+                                (if (not y) (error "cochain-cohomology-generators: D_k D_{k-1} is not zero"))
+                                y))
+                            images)))
+          (if (null? coords)
+              (map (lambda (v) (cons 0 v)) K)
+              (let* ((A (integer-matrix-from-columns coords z))
+                     (s (smith-normal-form A)) (d (car s)) (U (cadr s))
+                     ;; U^{-1} from the Smith form of the unimodular U: P U Q = I
+                     (su (smith-normal-form U))
+                     (Uinv (integer-matrix-mul (caddr su) (cadr su)))
+                     (Kp (integer-matrix-mul KM Uinv)))
+                (let loop ((i 0) (ds d) (acc '()))
+                  (if (= i z) (reverse acc)
+                      (let ((col (integer-matrix-column Kp i)))
+                        (cond ((null? ds) (loop (+ i 1) ds (cons (cons 0 col) acc)))
+                              ((= 1 (car ds)) (loop (+ i 1) (cdr ds) acc))
+                              (else (loop (+ i 1) (cdr ds) (cons (cons (car ds) col) acc)))))))))))))

@@ -2506,6 +2506,35 @@ oracles:
         label: 'Running-total sweep: every v1.4-connection probe above is green. Expected FAIL until the release actually ships — this criterion is a progress counter, not a release gate (see scripts/run_v14_connection_gate.sh''s summary line for the live pass/fail count)'
         action: run_v14_connection_gate
 
+      # core.sheaf (ADR-0033): sheaf theory on finite sites as one library.
+      # Producer: scripts/run_sheaf_gate.sh runs the six CTest entries that
+      # own the behaviour (the suite and the two examples written on the
+      # library, JIT and AOT) and every documentation example on the
+      # reference pages; PASS only when all of them ran and passed.
+      - id: v14_core_sheaf
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_sheaf"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.sheaf (ADR-0033): finite sites and Grothendieck topologies checked against the three axioms, presheaves of sets and of Z-modules / Q-vector spaces, gluing with named obstructions, the plus construction, and Cech and derived cohomology with torsion and cocycle generators; sheaf_jit/sheaf_aot, the two library-based sheaf examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_sheaf_gate.sh
+
+      # core.manifold.atlas (ADR-0018 amendment, charts as gluing data):
+      # atlases on core.sheaf. Producer: scripts/run_manifold_atlas_gate.sh
+      # runs manifold_atlas_{jit,aot} and signed_curvature_{jit,aot} and every
+      # documentation example of the reference scope (manifold.md with the
+      # core.sheaf pages); PASS only
+      # when all of them ran and passed.
+      - id: v14_manifold_atlas
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_manifold_atlas"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Manifolds glued from charts (ADR-0018 amendment): core.manifold.atlas checks the cocycle condition and the chain rule of transition Jacobians exactly on exact atlases and to a stated tolerance on float ones, with core.sheaf obstructions as witnesses; the stereographic sphere atlas and the ball/half-space atlas contain the ADR-0018 chart and agree with core.manifold and core.curvature, with the K = 0 contract preserved; w1 and Cech and derived cohomology of the nerve with constant and orientation coefficients on triangulated surfaces; manifold_atlas_jit/aot, signed_curvature_jit/aot and the manifold.md examples all pass'
+        action: ./scripts/run_manifold_atlas_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
