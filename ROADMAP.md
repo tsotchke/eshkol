@@ -801,8 +801,9 @@ under the same discipline that made `Qubit` linear.
       the numeric tower, the forward-mode and Taylor AD carriers, modular,
       symbolic and Z-set arithmetic, with multimodular computation over
       Spec Z (fibres F_p, CRT, rational reconstruction under a proven bound).
-      In v1.4.0-connection: the record, with a pure-Eshkol evidence program
-      (29 checks, JIT and AOT, no compiler change). Planned for v1.4.1 (library `core.ring`,
+      In v1.4.0-connection: the record and the evidence program
+      `examples/mathematics_functor_of_points.esk` (29 checks, CTest
+      `rings_functor_of_points` JIT and AOT, no compiler change). Planned for v1.4.1 (library `core.ring`,
       `core.multimodular`) through v1.5.0 (carriers in the type system), one
       stage per rung as the record lists
 - [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane, SymPy

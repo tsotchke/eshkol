@@ -15,6 +15,7 @@ sources:
   - lib/core/algebraic_domain.esk
   - lib/core/symbolic.esk
   - lib/core/dbsp.esk
+  - examples/mathematics_functor_of_points.esk
 ---
 # ADR-0034: Ring carriers: the functor-of-points evaluation model
 
@@ -23,7 +24,7 @@ sources:
 - **Decision owners:** numeric tower, AD, VM, `core.symbolic`, `core.dbsp` and exact linear algebra maintainers
 - **Depends on:** ADR-0027 (recursive Taylor level carrier), ADR-0025 (complex values carry derivatives), ADR-0009 (DBSP), ADR-0004 (type system), ADR-0012 (object ABI)
 - **Scope:** every place a number is added, subtracted, multiplied, negated, inverted, compared for equality or built from an integer, on native code generation (JIT and AOT), the native runtime, the bytecode VM and the browser VM, and the library carriers built on them
-- **Evidence:** a pure-Eshkol prototype on the released 1.3.6 compiler (29 checks, no compiler change), described under Evidence
+- **Evidence:** `examples/mathematics_functor_of_points.esk` (29 checks, pure Eshkol, no compiler change)
 
 ## Context
 
@@ -113,7 +114,11 @@ and hyper-dual (`vm_native.c:11563`, ids 1905-1909); `vm_dual_add`,
 `1160`, `1175`, `1195`), each a four-arm ladder (level, Taylor, exact dual,
 float dual); `vm_bignum_arith` (`vm_native.c:7787`).
 
-**Total: 31 dispatch sites carrying more than 100 carrier arms.**
+**Total: 31 dispatch sites carrying more than 100 carrier arms.** Twenty-nine
+of them select value arithmetic and move onto the registry of section 2. The
+two reverse-tape wrappers (`withADBinaryDispatch`, `withADUnaryDispatch`)
+select recording, not arithmetic, and stay as the one tape interceptor of
+section 10.
 
 **Nine implementations of the same series algebra.** The truncated-series
 recurrences (Cauchy product, series division, `exp`, `log`, `sin`/`cos`,
@@ -179,16 +184,18 @@ and optional structure, each a declared capability rather than a convention:
 | `characteristic` | n >= 0 with ker(Z -> R) = nZ |
 | `field?` | every nonzero element is a unit |
 | `nilpotency` | n when the carrier is K[e]/e^n over a base K, with its `base`, `seed` and `coefficient` maps |
-| `exact?` | the operations satisfy the laws exactly (false for flonums) |
+| `lawful?` | the ring laws hold as equalities (section 4); false for the IEEE tier |
+| `exact?` | every element is an exact number or built from exact numbers |
 | `primal` | the ring map to the base carrier (e -> 0); branches and comparisons read it |
 | `analytic` | `exp`, `log`, `sin`, ... defined on the carrier; requires a Q-algebra (characteristic 0) |
 | `order` | a total order compatible with the ring (R and Q; not F_p, not jets beyond the primal) |
 | `euclidean` | `quotient`, `remainder`, `gcd` (Z, K[x]) |
 
 **Laws.** `(add, zero, neg)` is an abelian group, `(mul, one)` a commutative
-monoid, `mul` distributes over `add`, and `from-integer` is a ring map. For an
-`exact?` carrier the laws are equalities and are checked by a property gate;
-for flonums they hold to rounding, and the carrier says so.
+monoid, `mul` distributes over `add`, and `from-integer` is a ring map. A
+carrier that satisfies them as equalities is *lawful*. Binary64 floating
+point is not a ring; section 4 says exactly what is checked for which carrier
+and how the floating tier is specified instead.
 
 **Ring maps** are first-class too: a *base change* is a map of carriers that
 commutes with the operations (Z -> Q, Q -> R, Z -> F_p, Q -> Q[e]/e^n,
@@ -209,9 +216,10 @@ source:
   `rationals`.
 - **Native runtime:** one table `eshkol_ring_carrier_t` (id, name,
   characteristic, capability bits, `primal`, and the operation entry points)
-  indexed by a carrier id. The tower carriers (int64, bignum, rational,
-  double, i128, complex), the series carriers (8-jet, Taylor tower, level) and
-  the reverse-tape node are rows of this table.
+  indexed by a carrier id, laid out as section 9 versions it. The tower
+  carriers (int64, bignum, rational, double, i128, complex) and the series
+  carriers (8-jet, Taylor tower, level) are rows of this table. Reverse-tape
+  nodes are not (section 10).
 - **VM:** the same table, compiled from the same C sources into the VM and the
   browser VM, so a carrier is one implementation on both substrates (the
   property `.icc/ad-carrier-manifest.yaml` calls `shared: true`).
@@ -236,19 +244,109 @@ carrier adds one row; it does not edit a ladder.
   outlined helper that code generation already emits per operator holds the
   one call.
 
-A value never changes carrier implicitly except along a lattice edge. F_p and
-Z/m are not in the tower lattice: combining an element of F_p with a rational
-raises, as #852's coefficient fields already do.
+A value never changes carrier implicitly except along a lattice edge; the
+edges, and what happens when there is none, are section 5.
 
-### 4. Exactness
+### 4. Lawful carriers and the IEEE tier
 
-An `exact?` carrier never produces an inexact element: an operation that
-would leave it raises (`core.cyclotomic` and #852 already behave this way).
-The tower keeps R7RS contagion as the lattice edge Q -> R. Series carriers
-inherit exactness coefficientwise, as ADR-0027 requires: a coefficient is
-exact while everything it was computed from is exact.
+Two kinds of carrier are registered, and the record never calls the second a
+ring.
 
-### 5. AD nesting
+**Lawful carriers.** Exact integers (int64 promoting to bignum), exact
+rationals, Z/m, Q(alpha) and Q(zeta_n), K[e]/e^n, K[x] and Z[G] over a lawful
+K, and their nestings. The law gate checks, as equalities with the carrier's
+own `equal?`, on generated samples that include 0, 1, -1, units, non-units,
+zero divisors (composite m), nilpotents, the int64 boundary values and
+bignum-sized elements:
+
+- commutativity and associativity of `add` and `mul`, distributivity,
+  `add` with `zero`, `mul` with `one`, `a + neg(a) = zero`;
+- `from-integer` is a homomorphism on those samples (sums and products of
+  integers, including across the int64 boundary);
+- `mul(a, inverse(a)) = one` for every sampled unit, and a refusal (section
+  5) for every sampled non-unit;
+- the declared `characteristic`: `from-integer(n) = zero` exactly for the
+  multiples of n.
+
+An exact carrier never produces an inexact element: an operation that would
+leave it raises (`core.cyclotomic` and #852 already behave this way).
+
+**The IEEE tier.** The flonum carrier, and K[e]/e^n, K[x] or a level carrier
+whose coefficients are flonums, is specified per operation, not by ring
+laws:
+
+- elements are IEEE 754 binary64 values, including -0.0, the infinities and
+  NaN; `equal?` is numeric `=`, so NaN is not equal to itself and the carrier
+  has no reflexive equality;
+- `add`, `mul`, `neg` and division are the IEEE operations rounded to nearest,
+  ties to even: for finite operands the result is the exact rational result
+  rounded once, `fl(a op b)` (an infinity when that rounding overflows); division by zero gives an infinity or NaN and
+  does not raise;
+- no implicit reassociation and no implicit contraction into fused
+  multiply-add, so a program has one floating result on every engine;
+- series coefficients over the IEEE tier are computed by the same recurrences
+  as the lawful tier with every coefficient operation rounded; the AD
+  contract is that of `.icc/ad-carrier-manifest.yaml`: the derivative the
+  mathematics defines, to within the rounding of the elementary operations.
+
+What the gate checks for the IEEE tier is the specification itself: for
+finite binary64 operands `a`, `b`, the carrier's `add`, `mul` and division
+return exactly `(exact->inexact (op (inexact->exact a) (inexact->exact b)))`
+whenever that value is finite;
+commutativity of `add` and `mul` and the identities `a + 0.0`, `a * 1.0` hold
+as equalities except for the sign of zero (`-0.0 + 0.0` is `+0.0`); and the
+results are bitwise equal on native JIT, AOT and the VM. Associativity and
+distributivity are not checked as laws, because they do not hold.
+
+Series carriers inherit exactness coefficientwise, as ADR-0027 requires: a
+coefficient is exact while everything it was computed from is exact, and an
+IEEE coefficient makes only the coefficients computed from it inexact.
+
+### 5. Partial operations and coercion
+
+**Division and inverse.** `a / b` is `mul(a, inverse(b))`, defined exactly
+when `b` is a unit:
+
+| Carrier | Units | Non-unit divisor |
+|---|---|---|
+| exact integers | +-1 | promotes to Q along the tower edge, as R7RS requires (`(/ 1 3)` is `1/3`); exact zero raises |
+| Q, F_p, Q(alpha) | every nonzero element | zero raises |
+| Z/m, m composite | gcd(a, m) = 1 | raises; no implicit localization |
+| K[e]/e^n | constant term a unit of K | raises; no promotion to Laurent series |
+| K[x] | nonzero constants that are units of K | raises; no promotion to rational functions |
+| Z[G] | +-g | raises |
+| IEEE tier | every value | IEEE result (infinity or NaN), no raise |
+
+A refusal is a catchable condition naming the operation, the carrier and the
+element (`ring-not-a-unit`). It never returns a substitute value. A carrier
+of fractions (Q(x), Laurent series) is a separate registered carrier reached
+by an explicit map, never by a division that happened to fail.
+
+**Mixed-carrier arithmetic.** For operands in carriers A and B:
+
+1. A = B: the operation of A.
+2. Exact integers enter every carrier through `from-integer`, because Z is
+   initial; this is how a program constant means the same thing in every ring.
+3. Exact rationals enter a carrier implicitly only when it is a Q-algebra
+   (characteristic 0 and lawful). Entering Z/m is the partial map
+   `n/d -> n * d^-1` and happens only through an explicit `ring-admit`,
+   which refuses when d is not a unit mod m.
+4. A K-element enters K[e]/e^n, K[x] or a level of K as a constant (the
+   "constant series" of ADR-0027); two series carriers of different epochs
+   meet in their tensor product, which the level carrier represents.
+5. The tower edge Q -> IEEE: an exact operand meeting a flonum is rounded,
+   R7RS contagion. A flonum never enters a lawful carrier implicitly.
+6. Otherwise there is no common carrier and the operation raises
+   `ring-no-common-carrier` naming both carriers: F_7 with F_11, F_7 with
+   Z/7^16 (the map Z/7^16 -> F_7 exists but forgets information, so it is
+   never implicit), F_p with a rational, Q(alpha) with Q(beta) before a
+   compositum is declared.
+
+Nothing in rules 1-6 converts to a flonum except rule 5. Ordering
+comparisons need the `order` capability and raise without it; `=` follows
+rules 1-6.
+
+### 6. AD nesting
 
 A differentiation pass of epoch E and order n evaluates its function over the
 carrier K[e_E]/e_E^(n+1), where K is the carrier of the enclosing passes.
@@ -265,10 +363,7 @@ instead of a private ladder. The hyper-dual k[e1,e2]/(e1^2,e2^2) and the
 8-jet are fixed-shape instances of the same tower and become registered
 carriers with monomorphised arithmetic.
 
-Reverse mode is not a carrier: the cotangent map is the transpose of the
-tangent map, and the tape (ADR-0002, ADR-0016) stays its own facility. The
-reverse-tape node remains a row of the registry only so that the lattice
-places it, as the ladders do today.
+Reverse mode is not a carrier; section 10 states the boundary.
 
 DBSP fits the same picture. A Z-set is an element of the free Z-module on
 rows, and of the group ring Z[G] when rows form an abelian group; the
@@ -277,13 +372,14 @@ the product rule in a carrier where the square of the change is kept
 (an exact difference), against k[e]/e^2 where it is truncated (a
 linearization). Z-set weights become a carrier parameter, Z by default.
 
-### 6. Computation over Spec Z
+### 7. Computation over Spec Z
 
 `core.multimodular` provides, for any computation written against the
 protocol:
 
 - the fibre evaluation: run the computation over `(make-zmod p)` for primes p
-  chosen below the machine-word bound, skipping primes where a required
+  below 2^31, so a product of two residues fits a signed 64-bit integer on
+  every target including wasm32, skipping primes where a required
   element is not a unit (an "unlucky" prime);
 - CRT gluing to a residue modulo M, the product of the primes;
 - the symmetric lift for an integer result and Wang's rational reconstruction
@@ -296,7 +392,7 @@ protocol:
 Correctness is base change: an integer polynomial map commutes with Z -> F_p,
 and Z/M is the product of the F_p.
 
-### 7. The VM path
+### 8. The VM path
 
 The VM keeps one arithmetic opcode per operation. `vm_op_arith` and the
 `vm_exec_*` comparisons call `vm_ring_binary`, and the native-call groups for
@@ -305,11 +401,83 @@ complex, i128, rational, dual and hyper-dual arithmetic become registry rows.
 carriers. The browser VM is rebuilt from the same sources. The VM parity
 table gains one row per registered carrier.
 
-### 8. What this retires
+### 9. A versioned carrier ABI, caches and the browser
+
+- **Registry source.** Carrier families are rows of one X-macro table,
+  `ring_carriers.def`, in the manner of `taylor_recurrences.def`. Each family
+  has a stable numeric id that is never reused, as ADR numbers are not.
+  Parameterised carriers (Z/m, K[e]/e^n, K[x], Q(alpha)) are *instances*: a
+  family id plus canonical parameters, interned once per process into one
+  descriptor.
+- **Descriptor.** `eshkol_ring_carrier_t` begins with `abi_version` (1 at
+  introduction) and `size`, then the family id, capability bits and the
+  operation table. Adding a family or appending a capability bit keeps the
+  version. Changing the layout of the descriptor, of the operation table or of
+  an element's representation increments it.
+- **Elements.** A heap element records its family id and a pointer to its
+  interned instance descriptor (during v1.4.2-v1.4.4 inside the existing heap
+  subtypes; a general element header through the ADR-0012 object ABI
+  migration). Serialised and persisted values (model files, checkpoints, DBSP
+  state) record the family id, the canonical parameters and `abi_version`,
+  never a process-local pointer, and a reader refuses a version it does not
+  know.
+- **Caches and links.** The registry fingerprint (`abi_version` plus a hash
+  of `ring_carriers.def`) is part of the JIT object cache key, the stdlib
+  object cache key and `ESHKOL_OBJECT_ABI_CACHE_TAG` (ADR-0012), so code
+  monomorphised against one registry is never loaded against another; a cache
+  entry with a different fingerprint is rebuilt. Every object that uses the
+  registry references a guard symbol carrying the version, so linking objects
+  built against two versions is refused at link time, as the object ABI guard
+  does.
+- **Browser and WASM.** The browser VM compiles the registry from the same C
+  sources, so it has the same families with the same ids. The WASM module
+  exports its registry fingerprint and the site loader refuses a module whose
+  fingerprint differs from the one the page was built against. A carrier
+  operation implemented as a host import has its stub in both JavaScript
+  runtimes (`eshkol-runtime.js`, `eshkol-repl.js`). Element layouts never
+  assume 64-bit pointers (wasm32), and word-size modular arithmetic uses
+  64-bit integers with primes below 2^31 on every target. A family that needs
+  a host facility the browser lacks (for example accelerated F_p kernels)
+  declares a CPU fallback or an explicit refusal; it is never absent silently.
+
+### 10. Tape graph nodes are not value carriers
+
+A value carrier is a ring: its elements are values, its operations are pure
+and close in the carrier, equal inputs give equal outputs, and the ring laws
+of section 4 apply. Evaluating a program over a value carrier is an R-point
+of the program, and forward-mode AD is one of these evaluations.
+
+A reverse-mode tape node (`ad_node_t` on native, `AdNode` of the shared
+node model on the VM) is none of these. It is a reference into a mutable
+graph owned by a tape with a lifetime; "adding" two nodes appends a node to
+the graph and returns a new reference, so two nodes with equal values are
+distinct and recording `a + b` twice makes two nodes. Its meaning appears
+only when the tape runs backward, which computes the transpose of the
+tangent map on cotangents (a pullback), not an evaluation over a ring.
+
+So:
+
+- tape nodes are not registry rows and have no carrier id, laws or lattice
+  position;
+- the tape keeps one interceptor in front of carrier dispatch (today
+  `withADBinaryDispatch`/`withADUnaryDispatch` on native and the tape arm of
+  `vm_op_arith`), which records the operation and then computes the node's
+  value by carrier dispatch;
+- a node's value may be an element of any value carrier, which is how
+  reverse-over-forward composes; forward-over-reverse keeps the existing
+  rule that a forward pass lifts a tape operand to its value carrier before
+  arithmetic;
+- the carriers each operator uses on each engine stay declared in
+  `.icc/ad-carrier-manifest.yaml`, whose `shared-node-model` and
+  `native-ad-node` rows describe the tape and whose forward rows become
+  registry carriers.
+
+### 11. What this retires
 
 - the carrier arms of the seven operator ladders in
-  `arithmetic_codegen.cpp` and the three wrapper dispatchers (they become one
-  outlined dynamic dispatch plus monomorphised fast paths);
+  `arithmetic_codegen.cpp` and the complex-carrier wrapper (they become one
+  outlined dynamic dispatch plus monomorphised fast paths); the two tape
+  wrappers remain as the interceptor of section 10;
 - the private coefficient ladder of `num_binary` and the separate
   `exact_binary` dispatch;
 - eight of the nine series-algebra tiers: one generic recurrence set over a
@@ -331,11 +499,11 @@ Planned for the rung named.
 
 | Release | Stage | Gate |
 |---|---|---|
-| v1.4.0-connection | This record. The evidence program joins `examples/` as `mathematics_functor_of_points.esk` once it has passed native JIT and AOT on Linux x86-64 as well as macOS arm64. | The program's 29 checks on native JIT and AOT on both platforms. |
-| v1.4.1 | Library protocol `core.ring` and `core.multimodular`. `algebraic-domain` returns a ring carrier; `core.symbolic` coefficient fields and `core.dbsp` weights take a carrier. | Ring-law property gate on every exact carrier; the 1.4.0 example rewritten against `core.ring`; existing `algebraic_*`, `symbolic_*` and `dbsp` suites unchanged in output. |
-| v1.4.2 | Native runtime registry `eshkol_ring_carrier_t` and `eshkol_ring_binary`; `num_binary` and `exact_binary` dispatch through it; one generic series recurrence set over a coefficient carrier, the double tier its monomorphised instance. | `tests/ad/nested_towers_matrix_test.esk`, `nested_operator_matrix_test.esk` and the exact-arithmetic suites byte-identical; the Taylor unary route guard; benchmark gate on the double tier (no slowdown beyond noise). |
+| v1.4.0-connection | This record and the evidence program `examples/mathematics_functor_of_points.esk`, registered as the CTest pair `rings_functor_of_points_jit` / `_aot` (no compiler change). | The program's 29 checks on native JIT and AOT on macOS arm64 and Linux x86-64. |
+| v1.4.1 | Library protocol `core.ring` and `core.multimodular`, with the refusals of section 5. `algebraic-domain` returns a ring carrier; `core.symbolic` coefficient fields and `core.dbsp` weights take a carrier. | The law gate of section 4 on every lawful carrier and the IEEE-tier specification checks; the 1.4.0 example rewritten against `core.ring`; existing `algebraic_*`, `symbolic_*` and `dbsp` suites unchanged in output. |
+| v1.4.2 | Native runtime registry `ring_carriers.def` / `eshkol_ring_carrier_t` (ABI version 1, fingerprint in the cache keys and guard symbol, section 9) and `eshkol_ring_binary`; `num_binary` and `exact_binary` dispatch through it; one generic series recurrence set over a coefficient carrier, the double tier its monomorphised instance. | `tests/ad/nested_towers_matrix_test.esk`, `nested_operator_matrix_test.esk` and the exact-arithmetic suites byte-identical; the Taylor unary route guard; benchmark gate on the double tier (no slowdown beyond noise). |
 | v1.4.3 | Code generation: the operator ladders become monomorphised fast paths plus one outlined registry call; static base change when the carrier is known. | Full native suite on JIT and AOT; AD composition oracle; codegen size and compile-time measurements against v1.4.2. |
-| v1.4.4 | VM and browser VM on the same registry; `VmDual`/`VmHyperDual` as registered carriers; one VM parity row per carrier. | VM parity corpus; `ad_carrier_model_clean` with `forked_carrier_budget` lowered; browser VM rebuilt from the same sources. |
+| v1.4.4 | VM and browser VM on the same registry; `VmDual`/`VmHyperDual` as registered carriers; one VM parity row per carrier; the WASM fingerprint check. | VM parity corpus; IEEE-tier bitwise agreement across native and VM; `ad_carrier_model_clean` with `forked_carrier_budget` lowered; browser VM rebuilt from the same sources. |
 | v1.4.5-accelerate | Fibre-parallel kernels: batched F_p arithmetic on CPU vector units, GPU and XLA (word-size modular GEMM), CRT on the host; jets over F_p batched the same way. | Multimodular determinant and solve against `exact-det`/`exact-solve` on growing sizes; throughput measured against the bignum path. |
 | v1.5.0 | Carriers in the type system (ADR-0004): a ring constraint on type variables, base change as functoriality, guaranteed monomorphisation; `define-ring-carrier` for user carriers so that plain `+` reaches them. | Type-directed monomorphisation coverage; user-carrier conformance suite; the laws gate extended to user carriers. |
 
@@ -344,10 +512,11 @@ Planned for the rung named.
 | Risk | Build item |
 |---|---|
 | Dynamic dispatch costs time on the hot path. | Monomorphised int64/double paths stay inline (v1.4.3); the registry call is reached only where today's ladder would reach a heap carrier; the v1.4.2 and v1.4.3 benchmark gates. |
-| Flonums do not satisfy the ring laws exactly. | The `exact?` capability; the laws gate is exact only on exact carriers, and the flonum carrier states "laws to rounding". |
+| Flonums do not form a ring. | The IEEE tier is specified per operation (section 4) and checked against that specification, never against ring laws; `lawful?` is false for it. |
+| A cached object or a browser module built against another registry. | The registry fingerprint in every cache key, the link-time guard symbol and the WASM fingerprint check (section 9). |
 | Transcendental functions do not exist on every ring. | The `analytic` capability, defined only on Q-algebras; jets over F_p of order >= p need divided powers and are refused until a divided-power carrier is registered. |
 | Unlucky primes in the multimodular method. | Detected per fibre (a required unit is zero mod p) and skipped; the bound counts usable primes only, as the evidence example does. |
-| Perturbation confusion when carriers nest. | One nilpotent generator per epoch (section 5), the ADR-0027 invariant; the nested AD matrices are the gate. |
+| Perturbation confusion when carriers nest. | One nilpotent generator per epoch (section 6), the ADR-0027 invariant; the nested AD matrices are the gate. |
 | A carrier id needs a place in the object representation. | Carrier ids ride the existing heap subtypes during v1.4.2-v1.4.4; a general ring-element header goes through the ADR-0012 object ABI migration. |
 | The VM has no dual-carrying tensor. | Tensors over a carrier are K-modules; the module extension of the registry is the v1.4.4 item that also closes the blocker named in the AD carrier manifest. |
 | Library carriers and the compiler registry could drift. | One law suite run against both; v1.5.0 makes the library carriers registry rows. |
@@ -366,8 +535,8 @@ Planned for the rung named.
 
 ## Evidence
 
-The evidence program (planned as `examples/mathematics_functor_of_points.esk`)
-defines a ring-carrier record of closures, writes one polynomial `f(x) = 3x^5 - 2x^3 + x^2 - 7x + 4` once
+`examples/mathematics_functor_of_points.esk` defines a ring-carrier record of
+closures, writes one polynomial `f(x) = 3x^5 - 2x^3 + x^2 - 7x + 4` once
 against it, and evaluates it over R, Q, Q[e]/e^2, Q[e]/e^6, F_7, F_7[e]/e^6,
 Q[x] and Z[t, 1/t] (the latter as `core.dbsp` Z-sets, with the ring product a
 DBSP join on the trivial key). Each result is checked against an independent
@@ -380,10 +549,17 @@ ring. A 6x6 integer matrix with 13-digit entries has its determinant computed
 in 9 fibres F_p near 2^30 (the Hadamard bound has 79 digits) and glued by
 CRT, equal to the bignum Bareiss determinant of `core.exact_linalg`, and the
 first component of the solution of A x = b is recovered by CRT and rational
-reconstruction, equal to `exact-solve`. The program runs on the released
-1.3.6 compiler with no change: 29 checks pass on native JIT and AOT on
-macOS arm64. Linux x86-64 qualification is the remaining step before it joins
-`examples/`.
+reconstruction, equal to `exact-solve`. The program needs no compiler change: its 29 checks
+pass on native JIT and AOT on macOS arm64 with the released 1.3.6 compiler and
+on Linux x86-64 with the v1.4 integration build this record is based on. The
+CTest pair `rings_functor_of_points_jit` and `rings_functor_of_points_aot`
+pins its `RESULT: ALL PASS` verdict.
+
+The prototype checks the lawful tier on samples (commutativity, associativity,
+distributivity, identities and additive inverses for Q, F_7, Q[e]/e^6, Q[x]
+and Z[t, 1/t]) and the units of F_7. The homomorphism property of
+`from-integer`, the refusals of section 5 and the IEEE-tier specification of
+section 4 are gate items of v1.4.1.
 
 ## References
 
