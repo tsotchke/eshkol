@@ -1,0 +1,293 @@
+;; core.sheaf and core.integer_linalg: exhaustive small cases with independent
+;; cross-checks (Q-ranks against core.exact_linalg, Cech against derived
+;; limits, sheafification against the component formula, two Cech paths).
+(require stdlib)
+(require core.sheaf)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? f) (guard (e (else #t)) (f) #f))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (mat rows) (list->vector (map list->vector rows)))
+(define (exact-matrix-mul-vec A v) (list->vector (map (lambda (row) (let loop ((j 0) (s 0)) (if (= j (vector-length row)) s (loop (+ j 1) (+ s (* (vector-ref row j) (vector-ref v j))))))) (vector->list A))))
+(define (zero-vector? v) (all? (lambda (x) (= x 0)) (vector->list v)))
+
+;; ---------------------------------------------------------------------------
+;; core.integer_linalg
+;; ---------------------------------------------------------------------------
+(define test-matrices
+  (list (mat '((2 4) (6 8)))
+        (mat '((1 2 3) (4 5 6) (7 8 9)))
+        (mat '((0 0) (0 0)))
+        (mat '((6 0 0) (0 10 0) (0 0 15)))
+        (mat '((2 0) (0 3) (4 6)))
+        (mat '((123456789012 2) (3 987654321098)))
+        (mat '((1 -1 0 0) (0 1 -1 0) (0 0 1 -1) (-1 0 0 1)))))
+(define (diag-matrix d m n)
+  (let ((D (integer-matrix m n)))
+    (let loop ((i 0) (ds d)) (if (not (null? ds)) (begin (integer-matrix-set! D i i (car ds)) (loop (+ i 1) (cdr ds)))))
+    D))
+(for-each
+ (lambda (A)
+   (let* ((m (integer-matrix-rows A)) (n (integer-matrix-cols A)) (s (smith-normal-form A)) (d (smith-diagonal s)))
+     (check "smith: U A V = D" (integer-matrix-equal? (integer-matrix-mul (integer-matrix-mul (smith-left s) A) (smith-right s))
+                                                     (diag-matrix d m n)))
+     (check "smith: divisibility chain" (let loop ((l d)) (or (null? l) (null? (cdr l)) (and (= 0 (remainder (cadr l) (car l))) (loop (cdr l))))))
+     (check "smith: rank agrees with exact-rank over Q (core.exact_linalg)" (= (integer-rank A) (exact-rank A)))
+     (check "kernel: every basis vector is killed and the count is n - rank"
+            (let ((K (integer-kernel A n)))
+              (and (= (length K) (- n (integer-rank A))) (all? (lambda (k) (zero-vector? (integer-matrix-vector A k))) K))))))
+ test-matrices)
+(check "smith: invariant factors of ((2 4) (6 8)) are (2 4)" (equal? (integer-invariant-factors (mat '((2 4) (6 8)))) '(2 4)))
+(check "smith: diag(6, 10, 15) has invariant factors (1 30 30)" (equal? (integer-invariant-factors (mat '((6 0 0) (0 10 0) (0 0 15)))) '(1 30 30)))
+(check "lattice: (1, 1) is in the span of the columns of diag(1, 1) but (1, 1) is not in 2Z^2"
+       (and (integer-in-column-span? (mat '((1 0) (0 1))) (vector 1 1)) (not (integer-in-column-span? (mat '((2 0) (0 2))) (vector 1 1)))))
+(check "lattice: columns (1 1), (1 -1) span an index-2 sublattice, not Z^2"
+       (and (not (integer-same-lattice? (mat '((1 1) (1 -1))) (mat '((1 0) (0 1)))))
+            (integer-same-lattice? (mat '((1 1) (1 -1))) (mat '((2 1) (0 1))))))
+(check "solve: the unique integer coordinates are found, and a non-member returns #f"
+       (let ((s (smith-normal-form (mat '((2 0) (0 3))))))
+         (and (equal? (vector->list (integer-solve-in-basis s 2 (vector 4 9))) '(2 3)) (not (integer-solve-in-basis s 2 (vector 1 0))))))
+(check "Q: rational rank and kernel agree with core.exact_linalg"
+       (let ((A (mat (list (list 1/2 1/3 1) (list 1 2/3 2) (list 0 1/7 5)))))
+         (and (= (rational-rank A) (exact-rank A) 2)
+              (all? (lambda (k) (zero-vector? (exact-matrix-mul-vec A k))) (rational-kernel A 3)))))
+(check "Q: rational solve returns exact rational coordinates"
+       (equal? (vector->list (rational-solve (mat '((2 0) (0 3))) 2 (vector 1 1))) (list 1/2 1/3)))
+(check "Q: a non-exact entry is refused" (raises? (lambda () (rational-rank (mat '((0.5 1)))))))
+;; cochain complex of the simplicial circle (3 vertices, 3 edges): H = (Z, Z)
+(define circle-d0 (mat '((-1 1 0) (0 -1 1) (1 0 -1))))
+(check "cochains: the triangle has H^0 = Z, H^1 = Z"
+       (equal? (cochain-cohomology (list 3 3) (list circle-d0 (integer-matrix 0 3))) (list (list 0 1 '()) (list 1 1 '()))))
+(define rp2-like (mat '((2))))                  ;; Z --2--> Z: H^0 = 0, H^1 = Z/2
+(define gens1 (cochain-cohomology-generators 1 rp2-like (integer-matrix 0 1)))
+(check "generators: Z -2-> Z has one torsion generator of order 2 in degree 1"
+       (and (= 1 (length gens1)) (= 2 (car (car gens1)))))
+(define gens-circle (cochain-cohomology-generators 3 circle-d0 (integer-matrix 0 3)))
+(check "generators: the triangle's H^1 generator is free and not a coboundary"
+       (and (= 1 (length gens-circle)) (= 0 (car (car gens-circle)))
+            (not (integer-in-column-span? circle-d0 (cdr (car gens-circle))))))
+
+;; ---------------------------------------------------------------------------
+;; Sites, sieves, topologies
+;; ---------------------------------------------------------------------------
+(define S (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define S2 (make-finite-space 6 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4) (cons 2 5) (cons 3 5))))
+(define site (finite-space-site S))
+(define C (site-category site))
+(define (obj U) (category-object-of-label C U))
+(define (arr V U) (category-thin-arrow C (obj V) (obj U)))
+(check "finite space: 7 opens, 26 inclusions, the category laws hold, the category is thin"
+       (and (= 7 (category-object-count C)) (= 26 (category-arrow-count C)) (category-laws? C) (category-thin? C)))
+(check "sites: the open-cover topology satisfies the three axioms" (grothendieck-topology? site))
+(check "sites: the trivial and dense topologies on the same category satisfy the axioms"
+       (and (grothendieck-topology? (trivial-site C)) (grothendieck-topology? (dense-site C))))
+(define ab (obj (list 0 1)))
+(define S-ab (sieve-generated C ab (list (arr (list 0) (list 0 1)) (arr (list 1) (list 0 1)))))
+(check "sieves: ({a}, {b}) generates the sieve {empty, {a}, {b}} on {a, b}, which covers"
+       (and (sieve? C ab S-ab) (= 3 (length S-ab)) (site-covering? site ab S-ab)))
+(check "sieves: the maximal sieve is a sieve; a non-closed set of arrows is not"
+       (and (sieve? C ab (sieve-maximal C ab)) (not (sieve? C ab (list (arr (list 0) (list 0 1)))))))
+(check "sieves: pulling back along an identity is the identity, along {a} -> {a,b} gives the maximal sieve of {a}"
+       (and (equal? (sieve-pullback C (category-identity C ab) S-ab) S-ab)
+            (equal? (sieve-pullback C (arr (list 0) (list 0 1)) S-ab) (sieve-maximal C (obj (list 0))))))
+(check "sieves: there are 6 sieves on {a, b} (the down-closed sets of its 4 subopens)" (= 6 (length (sieves-on C ab))))
+(check "sites: the smallest covering sieve of X is generated by the minimal opens"
+       (equal? (site-minimal-covering-sieve site (obj (list 0 1 2 3)))
+               (let ((all (site-covering-sieves site (obj (list 0 1 2 3)))))
+                 (let loop ((l (cdr all)) (m (car all))) (if (null? l) m (loop (cdr l) (sieve-intersection m (car l))))))))
+;; a "topology" missing the maximal sieve on {a, b}, and one that is not stable
+(define bad-1 (make-site C (lambda (c S) (and (not (= c ab)) (site-covering? site c S)))))
+(define bad-2 (make-site C (lambda (c S) (or (site-covering? site c S) (and (= c (obj (list 0 1 2 3))) (= (length S) 4))))))
+(define v1 (grothendieck-topology-violations bad-1))
+(check "topology axioms: removing the covers of {a, b} is reported as a maximal-sieve violation at {a, b}"
+       (and (member (list 'maximal ab) v1) #t))
+(check "topology axioms: a non-stable extra cover is reported with the arrow that breaks stability"
+       (let ((v2 (grothendieck-topology-violations bad-2)))
+         (and (not (null? v2)) (all? (lambda (v) (memq (car v) '(stability transitivity))) v2)
+              (not (null? (filter (lambda (v) (eq? (car v) 'stability)) v2))))))
+(check "make-site-from-sieves: the extensional topology agrees with the predicate"
+       (let ((J (map (lambda (c) (site-covering-sieves site c)) (iota 7))))
+         (let ((s2 (make-site-from-sieves C J)))
+           (all? (lambda (c) (equal? (site-covering-sieves s2 c) (site-covering-sieves site c))) (iota 7)))))
+;; a presented category: the walking commutative square, and its opposite
+(define (square-nf w) (if (equal? w (list 3 1)) (list 2 0) w))
+(define square (make-category-from-presentation 4 (list (list 0 1 'a) (list 0 2 'b) (list 1 3 'c) (list 2 3 'd)) square-nf 2))
+(check "presented category: the commutative square has 9 arrows, satisfies the laws, and so does its opposite"
+       (and (= 9 (category-arrow-count square)) (category-laws? square) (category-laws? (category-opposite square))))
+(check "presented category: the dense topology on the square satisfies the axioms" (grothendieck-topology? (dense-site square)))
+
+;; ---------------------------------------------------------------------------
+;; Presheaves of sets
+;; ---------------------------------------------------------------------------
+(define F2 (constant-set-presheaf C (list 'p 'q)))
+(check "set presheaf: the constant presheaf and representables are functorial"
+       (and (presheaf-functorial? F2) (all? (lambda (c) (presheaf-functorial? (representable-presheaf C c))) (iota 7))))
+(check "set presheaf: a non-functorial assignment is reported"
+       (let ((bad (make-set-presheaf-from-indices C (map (lambda (c) (list 'p 'q)) (iota 7))
+                                                 (map (lambda (a) (if (and (= (arrow-target C a) (obj (list 0 1 2 3))) (= (arrow-source C a) (obj (list 0))))
+                                                                      (vector 1 0) (vector 0 1)))
+                                                      (iota (category-arrow-count C))))))
+         (not (presheaf-functorial? bad))))
+(check "set presheaf: the constant presheaf is not a sheaf; the violations name F(empty) and are all separatedness or gluing"
+       (let ((v (presheaf-sheaf-violations site F2))) (and (not (null? v)) (member (list (obj '()) '() 'not-separated) v) #t)))
+(define aF2 (sheafify site F2))
+(check "sheafification: a(F)(U) has |A|^(components of U) elements on every open (components computed independently)"
+       (all? (lambda (c) (= (presheaf-element-count aF2 c)
+                            (expt 2 (length (finite-space-components S (category-object-label C c))))))
+             (iota 7)))
+(check "sheafification: aF is a sheaf and sheafifying again changes no set size"
+       (and (presheaf-sheaf? site aF2)
+            (let ((aaF (sheafify site aF2)))
+              (all? (lambda (c) (= (presheaf-element-count aaF c) (presheaf-element-count aF2 c))) (iota 7)))))
+(check "sheafification: the unit of a sheaf is a bijection on every open"
+       (let ((u (presheaf-unit-map site aF2 (presheaf-plus site aF2))))
+         (all? (lambda (c) (let ((img (vector->list (vector-ref u c))) (n (presheaf-element-count aF2 c)))
+                             (and (= n (length img)) (all? (lambda (i) (memv i img)) (iota n)))))
+               (iota 7))))
+(check "sheafification: the representable presheaves of the open site are sheaves (subcanonical)"
+       (all? (lambda (c) (presheaf-sheaf? site (representable-presheaf C c))) (iota 7)))
+;; gluing with obstructions on the sieve ({a}, {b}) of {a, b}
+(define e-ab (arr '() (list 0 1)))
+(define a-ab (arr (list 0) (list 0 1)))
+(define b-ab (arr (list 1) (list 0 1)))
+(define (fam xe xa xb) (list (cons e-ab xe) (cons a-ab xa) (cons b-ab xb)))
+(check "gluing: a matching family of the sheaf aF on {a, b} glues to a unique section"
+       (let* ((fams (matching-families aF2 ab S-ab)) (r (glue-family aF2 ab S-ab (car (cdr fams)))))
+         (and (= 4 (length fams)) (glued? r))))
+(check "gluing: F(empty) has two points, so the constant presheaf's matching families on ({a}, {b}) are constant and glue"
+       (let ((r (glue-family F2 ab S-ab (fam 'p 'p 'p))))      ;; matching, F(empty) forces equality here
+         (glued? r)))
+(check "gluing: an incompatible family is named by the failing composite"
+       (let ((r (glue-family F2 ab S-ab (fam 'p 'p 'q))))
+         (and (not (glued? r)) (all? (lambda (o) (eq? (car o) 'incompatible)) (gluing-obstructions r))
+              (member (list 'incompatible b-ab (car (category-hom C (obj '()) (obj (list 1))))) (gluing-obstructions r)) #t)))
+
+;; ---------------------------------------------------------------------------
+;; Module presheaves
+;; ---------------------------------------------------------------------------
+(define constant-sheaf (poset-module->module-presheaf site (constant-poset-module S)))
+(define (rank-at F U) (module-presheaf-rank F (obj U)))
+(check "module: Gamma of the constant sheaf has rank = number of components on every open"
+       (all? (lambda (c) (= (module-presheaf-rank constant-sheaf c) (length (finite-space-components S (category-object-label C c))))) (iota 7)))
+(check "module: the constant sheaf is functorial and a sheaf for every covering sieve"
+       (and (module-presheaf-functorial? constant-sheaf) (module-presheaf-sheaf? site constant-sheaf)))
+(define constant-presheaf
+  (make-module-presheaf C 'Z (lambda (c) (if (null? (category-object-label C c)) 0 1))
+                        (lambda (a) (if (null? (category-object-label C (arrow-source C a)))
+                                        (integer-matrix 0 (if (null? (category-object-label C (arrow-target C a))) 0 1))
+                                        (integer-identity-matrix 1)))))
+(check "module: the constant presheaf is separated but not a sheaf, and the failure is at {a, b}"
+       (let ((v (module-presheaf-sheaf-violations site constant-presheaf)))
+         (and (not (null? v)) (all? (lambda (x) (and (= (car x) ab) (eq? (caddr x) 'not-a-sheaf))) v))))
+(define plusZ (module-presheaf-plus site constant-presheaf))
+(check "module plus: F^+ has the constant sheaf's ranks and is a sheaf; plus of the sheaf keeps its ranks"
+       (and (all? (lambda (c) (= (module-presheaf-rank plusZ c) (module-presheaf-rank constant-sheaf c))) (iota 7))
+            (module-presheaf-sheaf? site plusZ)
+            (let ((pp (module-presheaf-plus site constant-sheaf)))
+              (all? (lambda (c) (= (module-presheaf-rank pp c) (module-presheaf-rank constant-sheaf c))) (iota 7)))))
+(define (vfam xe xa xb) (list (cons e-ab xe) (cons a-ab xa) (cons b-ab xb)))
+(check "module gluing: local sections 3 on {a} and 5 on {b} glue for the sheaf to (3, 5) and fail for the presheaf"
+       (let ((rs (module-glue constant-sheaf ab S-ab (vfam (vector) (vector 3) (vector 5))))
+             (rp (module-glue constant-presheaf ab S-ab (vfam (vector) (vector 3) (vector 5)))))
+         (and (glued? rs) (equal? (vector->list (glued-value rs)) '(3 5))
+              (not (glued? rp)) (equal? (gluing-obstructions rp) (list (list 'no-amalgamation))))))
+;; Q coefficients: the constant presheaf rescaled by phi(U) = 1/(1 + |U|) is
+;; isomorphic over Q, so it has the same sheaf behaviour
+(define (phi U) (/ 1 (+ 1 (length U))))
+(define scaledQ
+  (make-module-presheaf C 'Q (lambda (c) (if (null? (category-object-label C c)) 0 1))
+                        (lambda (a) (let ((U (category-object-label C (arrow-target C a))) (V (category-object-label C (arrow-source C a))))
+                                      (if (null? V) (integer-matrix 0 (if (null? U) 0 1))
+                                          (vector (vector (/ (phi V) (phi U)))))))))
+(check "module over Q: the rescaled presheaf is functorial and fails exactly where the constant presheaf fails"
+       (and (module-presheaf-functorial? scaledQ)
+            (equal? (map car (module-presheaf-sheaf-violations site scaledQ)) (map car (module-presheaf-sheaf-violations site constant-presheaf)))))
+(check "module over Q: its sheafification has the constant sheaf's ranks"
+       (let ((p (module-presheaf-plus site scaledQ)))
+         (all? (lambda (c) (= (module-presheaf-rank p c) (module-presheaf-rank constant-sheaf c))) (iota 7))))
+
+;; ---------------------------------------------------------------------------
+;; Cohomology
+;; ---------------------------------------------------------------------------
+(define ZS (constant-poset-module S))
+(define twistS (poset-local-system S (lambda (x y) (if (and (= x 3) (= y 1)) -1 1))))
+(check "derived: the pseudocircle has H^* = (Z, Z) and the twisted system (0, Z/2)"
+       (and (equal? (poset-module-cohomology ZS 2) (list (list 0 1 '()) (list 1 1 '()) (list 2 0 '())))
+            (equal? (poset-module-cohomology twistS 2) (list (list 0 0 '()) (list 1 0 (list 2)) (list 2 0 '())))))
+(check "derived over Q: the twisted system is acyclic rationally (Z/2 vanishes)"
+       (equal? (poset-module-cohomology (poset-local-system S (lambda (x y) (if (and (= x 3) (= y 1)) -1 1)) 'Q) 2)
+               (list (list 0 0 '()) (list 1 0 '()) (list 2 0 '()))))
+(define cover-S (list (finite-space-down-set S 2) (finite-space-down-set S 3)))
+(check "Cech = derived on the Leray cover {U_c, U_d}, for Z and the twisted system"
+       (and (equal? (poset-module-cech-cohomology ZS cover-S 1) (list (list 0 1 '()) (list 1 1 '())))
+            (equal? (poset-module-cech-cohomology twistS cover-S 1) (list (list 0 0 '()) (list 1 0 (list 2))))))
+(check "two Cech paths agree: stalk sections versus the module presheaf on the site of opens"
+       (equal? (poset-module-cech-cohomology ZS cover-S 1)
+               (module-cech-cohomology site constant-sheaf (map obj cover-S) 1)))
+(check "Cech generators: H^1 of the pseudocircle for {U_c, U_d} is generated by one free cocycle, not a coboundary"
+       (let* ((cx (poset-module-cech-complex ZS cover-S 1)) (g (cohomology-generators cx 1)))
+         (and (= 1 (length g)) (= 0 (car (car g)))
+              (zero-vector? (integer-matrix-vector (cadr (cadr cx)) (cdr (car g))))
+              (not (integer-in-column-span? (car (cadr cx)) (cdr (car g)))))))
+(check "derived generators: the twisted H^1 = Z/2 has a cocycle of order 2, twice a coboundary but not one"
+       (let* ((cx (poset-module-cochain-complex twistS 2)) (g (cohomology-generators cx 1)) (z (cdr (car g))))
+         (and (= 1 (length g)) (= 2 (car (car g)))
+              (integer-in-column-span? (car (cadr cx)) (list->vector (map (lambda (x) (* 2 x)) (vector->list z))))
+              (not (integer-in-column-span? (car (cadr cx)) z)))))
+;; the pseudo-2-sphere covered by its two maximal opens: each is a cone, but
+;; they meet in a pseudocircle, so the cover is not Leray and Cech misses H^2
+(define ZS2 (constant-poset-module S2))
+(define cover-S2 (list (finite-space-down-set S2 4) (finite-space-down-set S2 5)))
+(define derived-S2 (poset-module-cohomology ZS2 3))
+(define cech-S2 (poset-module-cech-cohomology ZS2 cover-S2 2))
+(check "non-Leray: the intersection of the cover of the 2-sphere has H^1 = Z"
+       (equal? (cadr (poset-module-cohomology ZS2 2 (sheaf-intersect-all cover-S2))) (list 1 1 '())))
+(check "non-Leray: derived H^2 = Z but the Cech H^2 of the two-open cover is 0 (H^0 and H^1 still agree)"
+       (and (equal? (list-ref derived-S2 2) (list 2 1 '())) (equal? (list-ref cech-S2 2) (list 2 0 '()))
+            (equal? (car derived-S2) (car cech-S2)) (equal? (cadr derived-S2) (cadr cech-S2))))
+(define (betti h) (map cadr h))
+(define (alt-sum l) (let loop ((l l) (k 0) (s 0)) (if (null? l) s (loop (cdr l) (+ k 1) (+ s (* (if (even? k) 1 -1) (car l)))))))
+(check "Euler characteristic: the alternating Betti sum equals the alternating chain count (sphere 2, circle 0)"
+       (and (= (alt-sum (betti derived-S2)) (finite-space-euler-characteristic S2 3) 2)
+            (= (alt-sum (betti (poset-module-cohomology ZS 2))) (finite-space-euler-characteristic S 2) 0)))
+(check "Kunneth: the product of two pseudocircles has Betti numbers (1, 2, 1)"
+       (equal? (betti (poset-module-cohomology (constant-poset-module (finite-space-product S S)) 2)) '(1 2 1)))
+(check "functoriality: a non-functorial stalk assignment is reported"
+       (not (poset-module-functorial? (poset-local-system (make-finite-space 3 (list (cons 0 1) (cons 1 2)))
+                                                          (lambda (x y) (if (and (= x 2) (= y 0)) -1 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Gluing data on a cover
+;; ---------------------------------------------------------------------------
+(define domains (list (cons 'shard-1 (list 1 2 3)) (cons 'shard-2 (list 3 4 5)) (cons 'shard-3 (list 5 6))))
+(define good (list (cons 'shard-1 (list (cons 1 'a) (cons 2 'b) (cons 3 'c)))
+                   (cons 'shard-2 (list (cons 3 'c) (cons 4 'd) (cons 5 'e)))
+                   (cons 'shard-3 (list (cons 5 'e) (cons 6 'f)))))
+(define bad (list (cons 'shard-1 (list (cons 1 'a) (cons 2 'b) (cons 3 'c)))
+                  (cons 'shard-2 (list (cons 3 'X) (cons 4 'd) (cons 5 'e)))
+                  (cons 'shard-3 (list (cons 5 'e) (cons 6 'f)))))
+(check "keyed cover: agreeing shards glue to the union, each key once"
+       (let ((r (glue-keyed-sections domains good)))
+         (and (glued? r) (equal? (glued-value r) (list (cons 1 'a) (cons 2 'b) (cons 3 'c) (cons 4 'd) (cons 5 'e) (cons 6 'f))))))
+(check "keyed cover: a disagreement names the two shards, the overlap and both values"
+       (let ((r (glue-keyed-sections domains bad)))
+         (and (not (glued? r)) (equal? (gluing-obstructions r) (list (list 'disagree 'shard-1 'shard-2 (list 3) (list 'c) (list 'X)))))))
+(check "keyed cover: a shard missing part of its piece is reported as incomplete"
+       (let ((r (glue-keyed-sections domains (list (car good) (cons 'shard-2 (list (cons 3 'c))) (caddr good)))))
+         (and (not (glued? r)) (equal? (gluing-obstructions r) (list (list 'incomplete 'shard-2 (list 4 5)))))))
+(check "general cover: time windows with a numeric tolerance glue through a user-supplied equality"
+       (let* ((windows (list (cons 'w1 (cons 0 10)) (cons 'w2 (cons 8 20))))
+              (cover (make-cover (map car windows)
+                                 (lambda (i j) (let ((a (cdr (assq i windows))) (b (cdr (assq j windows))))
+                                                 (let ((lo (max (car a) (car b))) (hi (min (cdr a) (cdr b)))) (if (< lo hi) (cons lo hi) #f))))
+                                 (lambda (i ov v) (filter (lambda (e) (and (>= (car e) (car ov)) (< (car e) (cdr ov)))) v))
+                                 (lambda (x y) (and (= (length x) (length y)) (all? (lambda (p) (< (abs (- (cdr (car p)) (cdr (cadr p)))) 1/100)) (map list x y))))))
+              (locals (list (cons 'w1 (list (cons 8 1) (cons 9 2))) (cons 'w2 (list (cons 8 1) (cons 9 2001/1000) (cons 15 3))))))
+         (glued? (glue-cover cover locals (lambda (ls) 'ok)))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: sheaf_test") (newline) (display "RESULT: PASS") (newline)

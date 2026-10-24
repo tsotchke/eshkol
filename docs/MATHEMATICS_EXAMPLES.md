@@ -16,7 +16,7 @@ sources:
 
 **49 programs**, each reproducing a published or classical result by computation. Exact finite constructions, bilinear/polynomial identity certificates, finite formal expansions and numerical comparisons have different scopes, stated per entry under **Arithmetic** and **Limits**.
 
-Measurement snapshot for these 49 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **44** completed in both modes; **43** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 1 prints diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Not run:** [Exact a-posteriori linear solve admission](#mathematics-certified-linear-solve), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
+Measurement snapshot for these 49 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **42** completed in both modes; **41** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 1 prints diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Not run:** [Exact a-posteriori linear solve admission](#mathematics-certified-linear-solve), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator), [Integral plus construction on a finite site](#mathematics-finite-site-sheafification), [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
 
 Each entry gives: the published result being reproduced and its references; what the program computes and by which algorithm; the domain and parameters; the arithmetic and its scope; the checks the source asserts; the honest limits; and the measured outcome at the release SHA with the computed values that matter, quoted verbatim from the program's output. A reference marked *as cited in the program's source comments* is taken from the program header; *(citation unverified)* marks one whose bibliographic details could not be confirmed.
 
@@ -50,8 +50,8 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Fermat Hodge and linear-cycle sweep](#mathematics-fermat-hodge-classes-sweep) | PASS / PASS | `hodge_fermat_sweep_default` |
 | [Finite categories and Kan extensions](#mathematics-finite-categories-kan-extensions) | PASS / PASS | `cat_finite_categories_kan` |
 | [Dijkgraaf–Witten on a finite three-torus](#mathematics-finite-model-three-torus-gauge-theory) | PASS / PASS | `dw_finite_model_three_torus` |
-| [Integral plus construction on a finite site](#mathematics-finite-site-sheafification) | PASS / PASS | `sheaf_finite_site_sheafification` |
-| [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology) | PASS / PASS | `sheaf_finite_spaces_cech_descent` |
+| [Integral plus construction on a finite site](#mathematics-finite-site-sheafification) | NOT-RUN / NOT-RUN | `sheaf_finite_site_sheafification` |
+| [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology) | NOT-RUN / NOT-RUN | `sheaf_finite_spaces_cech_descent` |
 | [Cup-square obstruction in four-manifold models](#mathematics-four-manifolds-second-k-invariant) | PASS / PASS | `postnikov_four_manifolds_second_k` |
 | [Explicit 512-cap in AG(8,3)](#mathematics-funsearch-cap-set) | PASS / PASS | `funsearch_cap_set_512` |
 | [Integral homology and twists of order-eight groups](#mathematics-group-cohomology-order-eight) | PASS / PASS | `dw_group_cohomology_order_eight` |
@@ -840,7 +840,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Integral plus construction on a finite site
 
-Source: [mathematics_finite_site_sheafification.esk](../examples/mathematics_finite_site_sheafification.esk#L1). SHA-256: `7bfec621ecbd1420e4c8ff0150d6ffee911c568ff831a6bb312f6cd577309cf2`.
+Source: [mathematics_finite_site_sheafification.esk](../examples/mathematics_finite_site_sheafification.esk#L1). SHA-256: `70b533022160c3507301494b5507e7bd3130af05bcd1e7068a7c49c64f6fb102`.
 
 **Published result:** Sheafification by the plus construction (Mac Lane–Moerdijk III.5): F⁺ is separated, F⁺⁺ is a sheaf, and one application suffices when F is already separated. The program verifies the sheaf and separatedness conditions on every cover of every open of the pseudocircle's open-set lattice, with free-abelian-group presheaves and integer restriction matrices, and shows that the constant presheaf Z (separated but not a sheaf) loses H¹ of the circle, which sheafification restores.
 
@@ -852,7 +852,7 @@ Source: [mathematics_finite_site_sheafification.esk](../examples/mathematics_fin
 
 **Purpose:** Check the sheaf condition throughout the finite open-set site.
 
-**Implemented algorithm:** Build integer restriction matrices, enumerate every cover, compute matching-family kernels and the finest-cover plus construction.
+**Implemented algorithm:** Build integer restriction matrices as core.sheaf module presheaves on the site of opens, enumerate every cover, decide the sheaf condition on the generated sieves and compute the plus construction at the smallest covering sieve.
 
 **Domain and parameters:** Supplied pseudocircle open-set lattice; constant, separated and nonseparated free-abelian presheaves.
 
@@ -862,20 +862,11 @@ Source: [mathematics_finite_site_sheafification.esk](../examples/mathematics_fin
 
 **Limits:** The exhaustive quantifiers apply to this finite site. They are not a proof for arbitrary infinite sites.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 17, Failed: 0; 4.56 s); native AOT **PASS** (Passed: 17, Failed: 0; compile 10.1 s, run 0.48 s). CTest: `sheaf_finite_site_sheafification_jit` Passed (11.8 s), `sheaf_finite_site_sheafification_aot` Passed (11.2 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.sheaf and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  number of covers of X, of U_c, of {a, b} = (40 8 5)
-  first cover on which the constant presheaf fails to glue (open, cover) = ((0 1) ((1) (0)))
-  ranks of F^+ on the opens (empty, {a}, {b}, {a,b}, U_c, U_d, X) = (0 1 1 2 1 1 1)
-  Cech (H^0, H^1) of (U_c, U_d): constant presheaf, constant sheaf, F^+ = ((1 (0 ())) (1 (1 ())) (1 (1 ())))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_finite_site_sheafification.esk#L1), [line 48](../examples/mathematics_finite_site_sheafification.esk#L48), [line 49](../examples/mathematics_finite_site_sheafification.esk#L49), [line 339](../examples/mathematics_finite_site_sheafification.esk#L339), [line 354](../examples/mathematics_finite_site_sheafification.esk#L354), [line 356](../examples/mathematics_finite_site_sheafification.esk#L356).
+Implementation/check anchors: [line 1](../examples/mathematics_finite_site_sheafification.esk#L1), [line 42](../examples/mathematics_finite_site_sheafification.esk#L42), [line 104](../examples/mathematics_finite_site_sheafification.esk#L104), [line 146](../examples/mathematics_finite_site_sheafification.esk#L146), [line 158](../examples/mathematics_finite_site_sheafification.esk#L158), [line 160](../examples/mathematics_finite_site_sheafification.esk#L160).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -888,7 +879,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Sheaf cohomology of finite spaces
 
-Source: [mathematics_finite_spaces_sheaf_cohomology.esk](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L1). SHA-256: `53c55836b821e593f8749f058b67ab43f93b6f25fde7b64e0f92569ff60bfcc1`.
+Source: [mathematics_finite_spaces_sheaf_cohomology.esk](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L1). SHA-256: `a2f12e11edcb35737f904296c0066df3e781ebb2fbe52da8df6e3775182e45f5`.
 
 **Published result:** McCord (1966): a finite T₀ space is weakly equivalent to the order complex of its poset, so the pseudocircle (4 points) and the pseudo-2-sphere (6 points) have the cohomology of S¹ and S². Sheaf cohomology on a finite space is the derived limit over the poset (Bousfield–Kan XI.6–7), and Čech cohomology computes it on a Leray cover (Bredon III.4). The program computes these with integer coefficients, so torsion from local systems (monodromy −1) is visible.
 
@@ -901,7 +892,7 @@ Source: [mathematics_finite_spaces_sheaf_cohomology.esk](../examples/mathematics
 
 **Purpose:** Compute derived limits and compare Leray-cover Cech descent while retaining torsion.
 
-**Implemented algorithm:** Form cosimplicial-replacement cochain matrices with local restriction maps and compute Smith forms and cover complexes.
+**Implemented algorithm:** Form the cosimplicial-replacement cochain matrices of core.sheaf poset modules and compute Smith forms; Cech complexes of covers come from the same library's sections over down-sets.
 
 **Domain and parameters:** 4-point pseudocircle, 6-point pseudo-2-sphere, a cone and 16-point torus; constant and sign-monodromy integer local systems.
 
@@ -911,22 +902,11 @@ Source: [mathematics_finite_spaces_sheaf_cohomology.esk](../examples/mathematics
 
 **Limits:** The comparisons apply to the listed finite models and coefficient systems; non-Leray covers require the separate descent construction.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 23, Failed: 0; 3.77 s); native AOT **PASS** (Passed: 23, Failed: 0; compile 8.36 s, run 0.30 s). CTest: `sheaf_finite_spaces_cech_descent_jit` Passed (9.46 s), `sheaf_finite_spaces_cech_descent_aot` Passed (8.69 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.sheaf and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  H^*(pseudocircle; Z) = ((0 1 ()) (1 1 ()) (2 0 ()))
-  H^*(pseudo-2-sphere; Z) = ((0 1 ()) (1 0 ()) (2 1 ()) (3 0 ()))
-  H^*(torus model; Z) = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))
-  H^*(pseudocircle; Z twisted by -1) = ((0 0 ()) (1 0 (2)) (2 0 ()))
-  H^*(torus model; Z twisted by (-1, +1)) = ((0 0 ()) (1 0 (2)) (2 0 (2)) (3 0 ()))
-  Cech H^*(torus model; Z) for the four maximal opens = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L1), [line 56](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L56), [line 57](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L57), [line 383](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L383), [line 385](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L385), [line 387](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L387).
+Implementation/check anchors: [line 1](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L1), [line 50](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L50), [line 68](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L68), [line 170](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L170), [line 172](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L172), [line 174](../examples/mathematics_finite_spaces_sheaf_cohomology.esk#L174).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
