@@ -2523,7 +2523,8 @@ oracles:
       # core.manifold.atlas (ADR-0018 amendment, charts as gluing data):
       # atlases on core.sheaf. Producer: scripts/run_manifold_atlas_gate.sh
       # runs manifold_atlas_{jit,aot} and signed_curvature_{jit,aot} and every
-      # documentation example on docs/reference/stdlib/manifold.md; PASS only
+      # documentation example of the reference scope (manifold.md with the
+      # core.sheaf pages); PASS only
       # when all of them ran and passed.
       - id: v14_manifold_atlas
         runtime_event:

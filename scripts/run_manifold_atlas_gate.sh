@@ -13,15 +13,15 @@
 #        signed_curvature_jit / signed_curvature_aot
 #          (tests/geometry/signed_curvature_test.esk, the ADR-0018 chart the
 #          atlases are built on, unchanged);
-#   2. every fenced example on docs/reference/stdlib/manifold.md (a page of
-#      the documentation gate's `reference` scope) through the documentation
-#      example harness, on the JIT and as AOT binaries,
+#   2. every fenced example in the documentation gate's `reference` scope
+#      (docs/reference/stdlib/manifold.md with the core.sheaf pages it builds
+#      on) through the documentation example harness, on the JIT and as AOT binaries,
 #      comparing each example's output block with what the build printed.
 #
 # It writes one event to $TRACE_DIR/v14_manifold_atlas.jsonl:
 #   {"kind": "v1_4_connection", "name": "v14_manifold_atlas", "value": PASS|FAIL}
 # PASS only when all four CTest entries ran and passed and every
-# documentation example on the page ran and matched. Absence of a test is a
+# documentation example in the scope ran and matched. Absence of a test is a
 # FAIL, never a skip.
 #
 #   BUILD_DIR  (env, default "build")   the CMake build directory
@@ -91,7 +91,6 @@ python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --eshkol-run "$BUILD_DIR_PATH/eshkol-run" \
     --engines jit,aot \
     --scope reference \
-    --only "$PAGE" \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
 doc_status=$?
@@ -101,7 +100,7 @@ doc_counts=$(grep -oE 'examples=[0-9]+ executed=[0-9]+ passed=[0-9]+' "$doc_log"
 doc_examples=$(printf '%s' "$doc_counts" | sed -E 's/examples=([0-9]+).*/\1/')
 doc_executed=$(printf '%s' "$doc_counts" | sed -E 's/.*executed=([0-9]+).*/\1/')
 doc_passed=$(printf '%s' "$doc_counts" | sed -E 's/.*passed=([0-9]+).*/\1/')
-summary="$summary; $PAGE examples ${doc_counts:-none reported} (exit ${doc_status})"
+summary="$summary; reference documentation examples (incl. $PAGE) ${doc_counts:-none reported} (exit ${doc_status})"
 if [ "$doc_status" -ne 0 ] || [ -z "$doc_counts" ] || [ "${doc_examples:-0}" -eq 0 ] \
    || [ "$doc_executed" -ne "$doc_examples" ] || [ "$doc_passed" -ne "$doc_examples" ]; then
     status=1
