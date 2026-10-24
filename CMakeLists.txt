@@ -13889,6 +13889,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PASS_REGULAR_EXPRESSION "PASS: signed_curvature_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 
+    # core.manifold.atlas: atlases as gluing data (ADR-0018 amendment, charts
+    # as gluing data) on core.sheaf; cross-checks the sphere and space-form
+    # atlases against core.manifold and core.curvature, so it runs beside them.
+    add_test(NAME manifold_atlas_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/manifold/manifold_atlas_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME manifold_atlas_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/manifold/manifold_atlas_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/manifold_atlas_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(manifold_atlas_jit manifold_atlas_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: manifold_atlas_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+
     add_test(NAME exact_psd_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_psd_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME exact_psd_aot COMMAND ${CMAKE_COMMAND}
         "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
