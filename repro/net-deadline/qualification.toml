@@ -1,0 +1,43 @@
+format = "eshkol-net-deadline-qualification-v1"
+base_revision = "8789164ad4656b7e0e14e3b87edbb6e26afb1b95"
+compiler_flags = ["-std=c11", "-O2", "-Wall", "-Wextra", "-pthread", "-I", "inc"]
+tests = ["net_deadline_ready_test", "net_close_concurrency_test", "net_clock_failure_test", "net_runtime_test"]
+scoped_native_c_tests_only = true
+whole_eshkol_runtime_rebuilt = false
+macos_windows_qualified = false
+
+[x86_64]
+compiler = "GCC 11.4.0"
+all_four_tests_pass = true
+original_source_control_exit = 1
+original_source_control_failures = 4
+
+[aarch64]
+compiler = "Ubuntu clang version 21.1.8 (++20251221032922+2078da43e25a-1~exp1~20251221153059.70)"
+all_four_tests_pass = true
+original_source_control_exit = 1
+original_source_control_failures = 4
+source_hashes_unchanged_during_verification = true
+
+[original_integration_qualification]
+unique_ctests = 117
+passed = 116
+failed = ["net_close_concurrency_test"]
+skipped = 0
+native_vm_parity_passed = 431
+native_vm_parity_failed = 0
+native_vm_parity_infrastructure_errors = 0
+original_sources_and_artifacts_unchanged = true
+full_integration_rerun_with_fix = false
+
+[[input]]
+path = "lib/core/net.c"
+sha256 = "4389960c7493a3f936f930117500ca742304aad17f00268cdf5b42de1e33bb9f"
+
+[[input]]
+path = "tests/network/net_deadline_ready_test.c"
+sha256 = "dd50edf0e295c8a6b381bf105b10a3a7be1bff126c8a33cbb4491ab0625fab40"
+
+[[input]]
+path = "CMakeLists.txt"
+sha256 = "8952e7dc7987a01cd04ba7426491a38f62a9669410765823d39c08d769ab4143"

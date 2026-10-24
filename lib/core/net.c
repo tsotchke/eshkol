@@ -38,8 +38,11 @@ static int wait_fd(int fd, short events, int64_t deadline) {
         int64_t current = now_ms();
         if (current < 0) return -1;
         int64_t remaining = deadline - current;
+        /* Readiness can persist while the next nonblocking syscall yields
+         * EAGAIN (for example, UDP shutdown). It must not extend the deadline. */
+        if (remaining <= 0) return -2;
         struct pollfd p = {fd, events, 0};
-        int r = poll(&p, 1, remaining > 0 ? (int)remaining : 0);
+        int r = poll(&p, 1, (int)remaining);
         if (r < 0 && errno == EINTR) continue;
         if (r < 0) return -1;
         if (!r) return -2;
