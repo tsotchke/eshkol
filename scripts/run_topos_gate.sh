@@ -86,13 +86,22 @@ python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
 doc_status=$?
-# The harness reports "examples=N executed=E passed=P failed=F"; an example
-# that was not executed is not evidence, so all of them must run and pass.
+# The harness reports "examples=N executed=E passed=P failed=F" for the whole
+# scope while executing only this page; an example that was not executed is
+# not evidence, so every example on topos.md (counted by the same extractor)
+# must run and pass.
 doc_counts=$(grep -oE 'examples=[0-9]+ executed=[0-9]+ passed=[0-9]+' "$doc_log" | tail -n 1)
-doc_examples=$(printf '%s' "$doc_counts" | sed -E 's/examples=([0-9]+).*/\1/')
+doc_examples=$(python3 - "$REPO_ROOT" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/scripts/doc_audit")
+import extract_examples
+records = extract_examples.extract(sys.argv[1], ["docs/reference/stdlib/topos.md"])
+print(sum(1 for r in records if r.get("klass") != "data-file"))
+PY
+)
 doc_executed=$(printf '%s' "$doc_counts" | sed -E 's/.*executed=([0-9]+).*/\1/')
 doc_passed=$(printf '%s' "$doc_counts" | sed -E 's/.*passed=([0-9]+).*/\1/')
-summary="$summary; documentation examples ${doc_counts:-none reported} (exit ${doc_status})"
+summary="$summary; documentation examples on topos.md ${doc_examples:-?}, harness ${doc_counts:-none reported} (exit ${doc_status})"
 if [ "$doc_status" -ne 0 ] || [ -z "$doc_counts" ] || [ "${doc_examples:-0}" -eq 0 ] \
    || [ "$doc_executed" -ne "$doc_examples" ] || [ "$doc_passed" -ne "$doc_examples" ]; then
     status=1
