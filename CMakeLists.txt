@@ -4339,6 +4339,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         LABELS "stdlib;sblc;parity"
         PASS_REGULAR_EXPRESSION "SBLC GATE: PASS"
         FAIL_REGULAR_EXPRESSION "SBLC GATE: FAIL|LLVM module verification failed|fatal signal")
+    if(UNIX)
+        add_test(NAME sblc_resume_gate
+            COMMAND ${CMAKE_COMMAND} -E env
+                "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_resume_gate.sh")
+        set_tests_properties(sblc_resume_gate PROPERTIES
+            TIMEOUT 600 LABELS "stdlib;sblc;parity")
+        add_test(NAME sblc_checkpoint_gate
+            COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_checkpoint_gate.sh")
+        set_tests_properties(sblc_checkpoint_gate PROPERTIES
+            TIMEOUT 1800 LABELS "stdlib;sblc;parity")
+    endif()
 endif()
 
 # Mathematics examples with exact verdicts: the incompressible porous media
