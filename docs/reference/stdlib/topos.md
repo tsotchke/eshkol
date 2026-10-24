@@ -102,6 +102,7 @@ arguments returns the same object (`eq?`).
 | `(topos-morphisms T A B)` | Every natural transformation `A -> B`, each a vector over objects of index vectors. |
 | `(topos-type-size X c)` `(topos-type-elements X c)` `(topos-type-element X c i)` `(topos-type-index X c v)` | Elements of `X(c)`. |
 | `(topos-type-restrict X a v)` | `X(a)(v)` for an arrow `a : d -> c` and `v` in `X(c)`. |
+| `(topos-type? x)` | Whether `x` is a type of some topos. |
 | `(topos-type-kind X)` `(topos-type-factors X)` | `base`, `terminal`, `omega`, `product` or `exponential`; the factors `(A B)` of a product or of `B^A`. |
 | `(topos-exponential-apply T E U theta a)` | Evaluation `B^A x A -> B` at stage U: `theta_U(id_U, a)`. |
 
@@ -166,7 +167,8 @@ Quantifiers range over every type, including `Omega`, `P(A)` and
 exponentials, so the logic is higher order.
 
 `(topos-formula L context phi)` type-checks and compiles `phi`; `context` lists
-the free variables as `((x A) ...)`. Ill-typed formulas, unknown symbols and
+the free variables as `((x A) ...)`, and `(topos-formula-context F)` returns
+them as `((x . type) ...)`. Ill-typed formulas, unknown symbols and
 unbound variables raise. The compiled formula is immutable.
 
 ## Queries
