@@ -2507,8 +2507,8 @@ oracles:
 
       # core.topos (ADR-0035): the internal language of the topos of a finite
       # site with Kripke-Joyal forcing. Producer: scripts/run_topos_gate.sh
-      # runs the ten CTest entries that own the behaviour (four suites and the
-      # presheaf-topos example written on the library, JIT and AOT) and every
+      # runs the fourteen CTest entries that own the behaviour (six suites and
+      # the presheaf-topos example written on the library, JIT and AOT) and every
       # documentation example on the reference page; PASS only when all of
       # them ran and passed.
       - id: v14_core_topos

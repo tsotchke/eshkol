@@ -91,7 +91,7 @@
          topos-function topos-constant topos-predicate make-topos-language topos-language-topos topos-language-type
          topos-formula topos-formula-context topos-forces? topos-truth topos-environments
          topos-extension topos-valid? topos-counter-witness topos-cross-check
-         topos-monotone? topos-local? topos-instance-count)
+         topos-monotone? topos-local? topos-forcing-report topos-instance-count)
 
 ;; ---------------------------------------------------------------------------
 ;; Private list utilities (prefixed tp-)
@@ -963,8 +963,9 @@
 ;; The forcing theorem on every stage and environment: U ||- p(alpha) iff
 ;; [[p]]_U(alpha) is the maximal sieve, and every [[p]]_U(alpha) is a closed
 ;; sieve. Returns (instances #t) or (instances #f stage env forced truth).
-(define (topos-cross-check F)
-  (let ((T (tp-F-T F)) (p (tp-F-node F)) (M (tp-F-context F)))
+(define (topos-cross-check F) (tp-cross-check F (tp-F-context F)))
+(define (tp-cross-check F M)
+  (let ((T (tp-F-T F)) (p (tp-F-node F)))
     (let loop ((Us (tp-stages F)) (count 0))
       (if (null? Us) (list count #t)
           (let inner ((es (tp-envs F (car Us))) (count count))
@@ -974,16 +975,23 @@
                       (inner (cdr es) (+ count 1))
                       (list count #f U (tp-env-values F U e) forced (tp-unmask T U S))))))))))
 ;; monotonicity: U ||- p(alpha) implies V ||- p(alpha f) for every f : V -> U
-(define (topos-monotone? F)
-  (let ((T (tp-F-T F)) (p (tp-F-node F)) (M (tp-F-context F)) (types (tp-f-ctx (tp-F-node F))))
+(define (topos-monotone? F) (tp-monotone? F (tp-F-context F)))
+(define (tp-monotone? F M)
+  (let ((T (tp-F-T F)) (p (tp-F-node F)) (types (tp-f-ctx (tp-F-node F))))
     (tp-all? (lambda (U) (tp-all? (lambda (e) (or (not (tp-force M p U e))
                                                   (tp-all? (lambda (f) (tp-force M p (tp-src T f) (tp-restrict-env types e f))) (tp-into T U))))
                                   (tp-envs F U)))
              (tp-stages F))))
 ;; local character: if the sieve {f : V ||- p(alpha f)} covers U, then U ||- p(alpha)
-(define (topos-local? F)
-  (let ((T (tp-F-T F)) (p (tp-F-node F)) (M (tp-F-context F)) (types (tp-f-ctx (tp-F-node F))))
+(define (topos-local? F) (tp-local? F (tp-F-context F)))
+(define (tp-local? F M)
+  (let ((T (tp-F-T F)) (p (tp-F-node F)) (types (tp-f-ctx (tp-F-node F))))
     (tp-all? (lambda (U) (tp-all? (lambda (e) (or (tp-force M p U e)
                                                   (not (tp-covering? T U (filter (lambda (f) (tp-force M p (tp-src T f) (tp-restrict-env types e f))) (tp-into T U))))))
                                   (tp-envs F U)))
              (tp-stages F))))
+;; the three checks above on one memo context: (instances forcing-theorem?
+;; monotone? local?)
+(define (topos-forcing-report F)
+  (let* ((M (tp-F-context F)) (r (tp-cross-check F M)))
+    (list (car r) (cadr r) (tp-monotone? F M) (tp-local? F M))))

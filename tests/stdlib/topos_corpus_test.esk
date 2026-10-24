@@ -1,6 +1,8 @@
 ;;; core.topos: Kripke-Joyal forcing against the Omega-valued interpretation on
-;;; an exhaustively enumerated formula corpus over five sites; the Kripke and
-;;; Beth reductions and the j-translation are in topos_reductions_test.esk.
+;;; an exhaustively enumerated formula corpus, on the presheaf toposes of the
+;;; walking arrow, the pseudocircle and BZ/2. The sheaf toposes are in
+;;; topos_corpus_sheaf_test.esk, the Kripke and Beth reductions in
+;;; topos_reductions_test.esk and the j-translation in topos_jtranslation_test.esk.
 (require stdlib)
 (require core.sheaf.site)
 (require core.sheaf.presheaf)
@@ -141,8 +143,8 @@
   (let loop ((fs corpus) (n 0) (inst 0) (bad 0) (mono 0) (loc 0))
     (if (null? fs) (list n inst bad mono loc)
         (let ((r (with-region
-                  (let* ((F (topos-formula L ctx (car fs))) (r (topos-cross-check F)))
-                    (list (car r) (if (cadr r) 0 1) (if (topos-monotone? F) 0 1) (if (topos-local? F) 0 1))))))
+                  (let ((r (topos-forcing-report (topos-formula L ctx (car fs)))))
+                    (list (car r) (if (cadr r) 0 1) (if (caddr r) 0 1) (if (cadddr r) 0 1))))))
           (if (= 1 (cadr r)) (begin (display "  disagreement: ") (display (car fs)) (newline)))
           (loop (cdr fs) (+ n 1) (+ inst (car r)) (+ bad (cadr r)) (+ mono (caddr r)) (+ loc (cadddr r)))))))
 (define fo-ctx '((x X) (y X)))
@@ -150,8 +152,7 @@
 ;; (name language higher-order-corpus): the tree is the Beth frame, checked on
 ;; the first-order corpus; P(X) at the top stage has 40 elements on the
 ;; pseudocircle and 49 on the space, where the higher-order bound is 2
-(define sites (list (list "walking arrow" L-WA ho-corpus) (list "pseudocircle" L-S4 ho-corpus-2) (list "BZ/2" L-BZ2 ho-corpus)
-                    (list "sheaves on the pseudocircle space" L-ShX ho-corpus-2) (list "tree with bars" L-TR '())))
+(define sites (list (list "walking arrow" L-WA ho-corpus) (list "pseudocircle" L-S4 ho-corpus-2) (list "BZ/2" L-BZ2 ho-corpus)))
 (define total-formulas 0)
 (define total-instances 0)
 (for-each

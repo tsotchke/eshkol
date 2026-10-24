@@ -4,7 +4,8 @@
 #
 # Runs, from an existing CMake build:
 #   1. the CTest entries that own the behaviour, in native JIT and AOT:
-#        topos_test, topos_corpus_test, topos_reductions_test and
+#        topos_test, topos_corpus_test, topos_corpus_sheaf_test,
+#        topos_reductions_test, topos_jtranslation_test and
 #        topos_local_ring_test ({jit,aot}), and the presheaf-topos example
 #        written on the library, cat_presheaf_topos_internal_logic_{jit,aot};
 #   2. every fenced example on docs/reference/stdlib/topos.md through the
@@ -13,7 +14,7 @@
 #
 # It writes one event to $TRACE_DIR/v14_core_topos.jsonl:
 #   {"kind": "v1_4_connection", "name": "v14_core_topos", "value": PASS|FAIL}
-# PASS only when all ten CTest entries ran and passed and every documentation
+# PASS only when all fourteen CTest entries ran and passed and every documentation
 # example matched. Absence of a test is a FAIL, never a skip.
 #
 #   BUILD_DIR  (env, default "build")   the CMake build directory
@@ -47,8 +48,8 @@ WORK="$BUILD_DIR_PATH/test-work/topos-gate"
 mkdir -p "$WORK"
 export ESHKOL_PATH="$REPO_ROOT/lib${ESHKOL_PATH:+:$ESHKOL_PATH}"
 
-TESTS='^(topos_test_jit|topos_test_aot|topos_corpus_test_jit|topos_corpus_test_aot|topos_reductions_test_jit|topos_reductions_test_aot|topos_local_ring_test_jit|topos_local_ring_test_aot|cat_presheaf_topos_internal_logic_jit|cat_presheaf_topos_internal_logic_aot)$'
-EXPECTED=10
+TESTS='^((topos_test|topos_corpus_test|topos_corpus_sheaf_test|topos_reductions_test|topos_jtranslation_test|topos_local_ring_test|cat_presheaf_topos_internal_logic)_(jit|aot))$'
+EXPECTED=14
 
 emit_event() { # PASS|FAIL snippet
     python3 - "$TRACE_FILE" "$1" "$2" <<'PY'

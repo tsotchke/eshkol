@@ -7,6 +7,9 @@ sources:
   - lib/core/topos.esk
   - tests/stdlib/topos_test.esk
   - tests/stdlib/topos_corpus_test.esk
+  - tests/stdlib/topos_corpus_sheaf_test.esk
+  - tests/stdlib/topos_reductions_test.esk
+  - tests/stdlib/topos_jtranslation_test.esk
   - tests/stdlib/topos_local_ring_test.esk
   - examples/mathematics_presheaf_topos_internal_logic.esk
 ---
@@ -181,6 +184,7 @@ value for `x : A` at stage U is an element of `A(U)`, a generalized element
 | `(topos-valid? F)` `(topos-counter-witness F)` | Whether every stage forces `phi` for every environment, and otherwise the first `(stage env)` that does not. |
 | `(topos-cross-check F)` | `(instances #t)` when forcing and the Omega-valued truth agree everywhere and every truth value is a closed sieve; otherwise `(instances #f stage env forced truth)`. |
 | `(topos-monotone? F)` `(topos-local? F)` | Monotonicity under restriction, and local character: if the sieve of arrows along which `phi` is forced covers U, then U forces `phi`. |
+| `(topos-forcing-report F)` | `(instances forcing-theorem? monotone? local?)`: the three checks above on one memo context. |
 | `(topos-instance-count F)` | The number of (stage, environment) pairs. |
 
 ### The forcing clauses
@@ -203,7 +207,7 @@ The covering sieves are enumerated. Only the minimal covering sieves are
 needed, because J(U) is upward closed. The clauses are not reduced to the
 identity cover. For the trivial topology on a poset these clauses are
 Kripke's; for a non-trivial topology on a poset they are Beth's. Both
-reductions are checked in `tests/stdlib/topos_corpus_test.esk` against
+reductions are checked in `tests/stdlib/topos_reductions_test.esk` against
 independent Kripke and Beth evaluators.
 
 ### The Omega-valued interpretation
@@ -225,7 +229,7 @@ presheaf topos on C, with J' the topology of a site, this gives the
 Lawvere-Tierney translation: for a J'-sheaf X, `Sh(C, J')` forces phi at U
 iff `Psh(C)` forces phi^j at U. Here phi^j wraps atoms, `false`, every `or` and
 every `exists` in `locally`, and turns `(not p)` into
-`(implies p^j (locally false))`. `tests/stdlib/topos_corpus_test.esk` checks
+`(implies p^j (locally false))`. `tests/stdlib/topos_jtranslation_test.esk` checks
 the theorem on its whole first-order corpus over the open-cover topology of a
 finite space.
 
@@ -329,18 +333,25 @@ meant for exact computation on small finite sites.
   pseudocircle space. De Morgan's law for not-and is refuted on the latter two
   and holds on the walking arrow (a De Morgan topos), and all of these laws
   hold on BZ/2.
-- `tests/stdlib/topos_corpus_test.esk`: every formula up to a size bound over
-  fixed atoms, first-order and higher-order (quantifiers over X, P(X) and
-  Omega). It checks forcing against the Omega-valued truth at every stage and
-  every environment on five sites, and the Kripke and Beth reductions against
-  independent evaluators.
+- `tests/stdlib/topos_corpus_test.esk` and `topos_corpus_sheaf_test.esk`:
+  every formula up to a size bound over fixed atoms, first-order (size 4,
+  1980 formulas) and higher-order (quantifiers over X, P(X) and Omega; size 3,
+  276 formulas, and size 2, 32 formulas, where P(X) has 40 or more elements at
+  a stage). They check forcing against the Omega-valued truth, monotonicity and
+  local character at every stage and every environment of the presheaf
+  toposes of the walking arrow, the pseudocircle and BZ/2, and of the sheaf
+  toposes of the pseudocircle space and a tree with bars.
+- `tests/stdlib/topos_reductions_test.esk`: the Kripke and Beth reductions
+  against independent evaluators on the first-order corpus.
+- `tests/stdlib/topos_jtranslation_test.esk`: the j-translation theorem of
+  [the modality](#the-locally-modality) on the first-order corpus.
 - `tests/stdlib/topos_local_ring_test.esk`: the flagship above.
 - [`examples/mathematics_presheaf_topos_internal_logic.esk`](../../../examples/mathematics_presheaf_topos_internal_logic.esk)
   uses the library for Omega, exponentials, the Heyting operations and
   Lawvere-Tierney topologies.
 
-Registered in CTest as `topos_test_jit`/`_aot`, `topos_corpus_test_jit`/`_aot`
-and `topos_local_ring_test_jit`/`_aot`.
+Registered in CTest as `<suite>_jit` and `<suite>_aot` for the six suites
+above.
 
 ## Notes
 

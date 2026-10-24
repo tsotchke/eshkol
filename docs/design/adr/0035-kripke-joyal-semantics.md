@@ -7,6 +7,9 @@ sources:
   - lib/core/topos.esk
   - tests/stdlib/topos_test.esk
   - tests/stdlib/topos_corpus_test.esk
+  - tests/stdlib/topos_corpus_sheaf_test.esk
+  - tests/stdlib/topos_reductions_test.esk
+  - tests/stdlib/topos_jtranslation_test.esk
   - tests/stdlib/topos_local_ring_test.esk
   - examples/mathematics_presheaf_topos_internal_logic.esk
 ---
@@ -156,7 +159,7 @@ J-sheaf X, **Sh(C, J) forces phi at U iff Psh(C) forces phi^j at U**.
 Here phi^j applies `locally` to the atoms, to false, to every disjunction and
 to every existential, and leaves conjunction, implication and the universal
 quantifier unchanged (Johnstone A4.4, D4.6; Mac Lane-Moerdijk V.3).
-`tests/stdlib/topos_corpus_test.esk` checks this on the whole first-order
+`tests/stdlib/topos_jtranslation_test.esk` checks this on the whole first-order
 corpus over the open-cover topology of the pseudocircle space. The same
 corpus shows that the untranslated presheaf reading differs on some formulas.
 
@@ -235,7 +238,7 @@ v1.4.0-connection.
 
 | Release | Stage | Gate |
 |---|---|---|
-| v1.4.0-connection | `core.topos` (sections 1-3): the internal language, forcing and the Omega-valued interpretation, Lawvere-Tierney topologies, the `locally` modality over a modal topology, and this record. | `topos_test`, `topos_corpus_test` and `topos_local_ring_test` on JIT and AOT, the rewritten presheaf-topos example with unchanged output, on Linux x86-64 and macOS arm64. |
+| v1.4.0-connection | `core.topos` (sections 1-3): the internal language, forcing and the Omega-valued interpretation, Lawvere-Tierney topologies, the `locally` modality over a modal topology, and this record. | `topos_test`, `topos_corpus_test`, `topos_corpus_sheaf_test`, `topos_reductions_test`, `topos_jtranslation_test` and `topos_local_ring_test` on JIT and AOT, the rewritten presheaf-topos example with unchanged output, on Linux x86-64 and macOS arm64. |
 | v1.4.1 | Planned for v1.4.1: sites given by a coverage (generating families), so that forcing ranges over generating covers without enumerating every covering sieve. Forcing over the keyed covers of `core.sheaf.glue` (shards, devices, time windows): `topos-check-locally`, which checks a formula piece by piece and glues the verdict with the obstruction report of the gluing layer. | The corpus cross-check on coverage-generated sites equal to the enumerated sites; glue-layer verdicts equal to forcing at the global stage on sharded fixtures. |
 | v1.4.2 | Planned for v1.4.2: an assertion surface as library macros (no compiler change). `(define-site name ...)`, and `(assert-forced site stage phi)` that reports the counter-witness stage and environment when it fails. `(locally p)` usable in those assertions. | The assertion forms produce the same verdicts as `topos-forces?` on the corpus; counter-witness reports match `topos-counter-witness`. |
 | v1.4.3 | Planned for v1.4.3: incremental forcing on DBSP. The forcing tables of a formula are maintained as a DBSP view while sections and covers change, so a long-running assertion over streaming local data is re-decided by differences. | Incremental tables equal to recomputation after every change on randomized fixtures; differences bounded by the changed stages. |
@@ -278,9 +281,12 @@ v1.4.0-connection.
   Lawvere-Tierney bijection (4 of 108 endomaps on the walking arrow, and the
   inverse), the classifier and exponential adjunction by counting, soundness
   and the classical-law counter-witnesses.
-- `tests/stdlib/topos_corpus_test.esk`: forcing against the Omega-valued
-  truth on the enumerated corpus over five sites, the Kripke and Beth
-  reductions against independent evaluators, and the j-translation theorem.
+- `tests/stdlib/topos_corpus_test.esk` and `topos_corpus_sheaf_test.esk`:
+  forcing against the Omega-valued truth on the enumerated corpus over five
+  sites (three presheaf toposes, two sheaf toposes).
+- `tests/stdlib/topos_reductions_test.esk`: the Kripke and Beth reductions
+  against independent evaluators.
+- `tests/stdlib/topos_jtranslation_test.esk`: the j-translation theorem.
 - `tests/stdlib/topos_local_ring_test.esk`: the internally local structure
   sheaf of Spec(Z/12) and Spec(Z/30), the covering witnesses D(x) and
   D(1 - x), the refutation in the presheaf topos, and the field statements

@@ -1,7 +1,7 @@
 ;;; core.topos: the reductions of Kripke-Joyal forcing to Kripke semantics
 ;;; (trivial topology on a poset) and to Beth semantics (bar and open-cover
-;;; topologies), each against an independent evaluator, and sheaf forcing as
-;;; the j-translation of presheaf forcing, on the first-order corpus.
+;;; topologies), each against an independent evaluator, on the first-order
+;;; corpus.
 (require stdlib)
 (require core.sheaf.site)
 (require core.sheaf.presheaf)
@@ -245,40 +245,6 @@
             (all? (lambda (e) (not (or (topos-forces? (topos-formula L-ShX '((x X)) '(P x)) split e)
                                        (topos-forces? (topos-formula L-ShX '((x X)) '(Q x)) split e))))
                   mixed)))
-
-;; ---------------------------------------------------------------------------
-;; 3. Sheaf semantics as the j-translation of presheaf semantics: for a J-sheaf
-;;    X, Sh(C, J) forces phi at U iff Psh(C) forces phi^j at U, where phi^j
-;;    applies the modality (locally -) of J to atoms, false, or and exists
-;;    (Johnstone, Elephant A4.4 and D4.6; Mac Lane-Moerdijk V.3)
-;; ---------------------------------------------------------------------------
-(define T-PshX (presheaf-topos CX))
-(define X-PshX (topos-object T-PshX (topos-type-presheaf X-ShX)))
-(define L-PshX (make-topos-language T-PshX (list (cons 'X X-PshX))
-                                    (list (topos-predicate 'P '(X) (lambda (U x) (member x ((space-pred 0) U))))
-                                          (topos-predicate 'Q '(X) (lambda (U x) (member x ((space-pred 1) U)))))
-                                    site-X))
-(define (j-translate p)
-  (cond ((eq? p 'false) '(locally false))
-        ((eq? p 'true) 'true)
-        ((memq (car p) '(P Q =)) (list 'locally p))
-        ((eq? (car p) 'or) (list 'locally (cons 'or (map j-translate (cdr p)))))
-        ((eq? (car p) 'exists) (list 'locally (list 'exists (cadr p) (j-translate (caddr p)))))
-        ((eq? (car p) 'forall) (list 'forall (cadr p) (j-translate (caddr p))))
-        ((eq? (car p) 'not) (list 'implies (j-translate (cadr p)) '(locally false)))
-        (else (cons (car p) (map j-translate (cdr p))))))
-(define jt-result
-  (let loop ((fs fo-corpus) (agree 0) (plain-differs 0) (bad 0))
-    (if (null? fs) (list agree plain-differs bad)
-        (let ((r (with-region
-                  (let ((sh (topos-extension (topos-formula L-ShX fo-ctx (car fs))))
-                        (pj (topos-formula L-PshX fo-ctx (j-translate (car fs)))))
-                    (list (if (and (equal? sh (topos-extension pj)) (cadr (topos-cross-check pj))) 1 0)
-                          (if (equal? sh (topos-extension (topos-formula L-PshX fo-ctx (car fs)))) 0 1))))))
-          (loop (cdr fs) (+ agree (car r)) (+ plain-differs (cadr r)) (+ bad (- 1 (car r))))))))
-(show "j-translation on the pseudocircle space (agreeing formulas, formulas whose untranslated presheaf reading differs, disagreements)" jt-result)
-(check "for every formula of the first-order corpus, sheaf forcing on the space equals presheaf forcing of its j-translation (and forcing equals the Omega-valued truth there), while the untranslated presheaf reading differs on some"
-       (and (= 0 (caddr jt-result)) (= (car jt-result) (length fo-corpus)) (> (cadr jt-result) 0)))
 
 (if (= failed 0)
     (begin (display "PASS: topos_reductions_test (") (display passed) (display " checks)") (newline))
