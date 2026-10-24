@@ -2418,6 +2418,81 @@
       ]
     },
     {
+      "path": "examples/mathematics_functor_of_points.esk",
+      "source_sha256": "22e792fcffb22dda5d704a95464f865ae7220370e67ae42838c4462b06b5dd4b",
+      "title": "The functor of points: one program over many rings",
+      "kind": "mathematics",
+      "purpose": "Evaluate one polynomial, one Newton step and one elimination over many commutative rings through a ring-carrier record, as the evidence for ADR-0034.",
+      "algorithm": "A ring carrier is a record of closures (zero, one, add, neg, mul, from-integer, equal?, unit?, inverse). Constructors build Z/m, K[e]/e^n and K[x] over any base carrier, and Z[t,1/t] as core.dbsp Z-sets whose product is a join on the trivial key. Determinants and Cramer numerators are computed in fibres F_p near 2^30, glued by CRT, and lifted symmetrically or by Wang rational reconstruction under Hadamard bounds.",
+      "domain": "f(x) = 3x^5 - 2x^3 + x^2 - 7x + 4 over R, Q, Q[e]/e^2, Q[e]/e^6, F_7, F_7[e]/e^6, Q[x] and Z[t,1/t]; x^2 = 2 over R and Z/7^16; a 6x6 integer matrix with entries below 10^13.",
+      "arithmetic": "Exact integers, bignums and rationals for every exact carrier; flonums only for the R carrier and the dual numbers over R.",
+      "validation": "29 checks: ring laws on samples; agreement with the built-in derivative and taylor operators, the direct formula, reduction mod 7, evaluation at seven rationals and four characters of the group ring; the Hensel root mod 7^16; the CRT determinant and the reconstructed solution component against exact-det and exact-solve of core.exact_linalg. Prints RESULT: ALL PASS and exits 0, or exits 1.",
+      "limitations": "A library prototype: operations dispatch through closures and fibres run sequentially, so the multimodular determinant is slower than bignum Bareiss at this size. Ring laws are checked on samples, not proved; flonum laws hold only to rounding. No compiler or VM change is involved.",
+      "prerequisites": "Built eshkol-run and stdlib with core.exact_linalg and core.dbsp; native JIT or AOT.",
+      "literature_review": "Grothendieck's functor of points identifies a scheme with its points in every commutative ring; a polynomial program is a natural transformation, so evaluation over k[e]/e^2 is forward-mode differentiation (the tangent space), over k[e]/e^(n+1) Taylor jets, over F_p reduction, and Newton iteration over Z/p^k is Hensel lifting. The multimodular method computes an exact integer or rational result in prime fields and recovers it by the Chinese remainder theorem and rational reconstruction, with the number of primes fixed by Hadamard's bound.",
+      "review_status": "source-inspected",
+      "registrations": [
+        {
+          "family": "ESHKOL_IPM_EXAMPLES",
+          "criterion": "rings_functor_of_points",
+          "modes": [
+            "jit",
+            "aot"
+          ]
+        }
+      ],
+      "source_anchors": [
+        {
+          "line": 1,
+          "text": ";;; mathematics_functor_of_points.esk -- one program, evaluated over many rings"
+        },
+        {
+          "line": 68,
+          "text": "(define (make-ring-carrier name characteristic nilpotency field?"
+        },
+        {
+          "line": 290,
+          "text": "(define (f R x)"
+        },
+        {
+          "line": 394,
+          "text": "(check \"Hensel over Z/7^16: four steps lift 3 to a root of x^2 - 2 mod 7^16\""
+        },
+        {
+          "line": 498,
+          "text": "(check \"Spec Z: det by CRT over the fibres F_p = bignum Bareiss det\""
+        }
+      ],
+      "references": [
+        {
+          "citation": "A. Grothendieck, J. Dieudonné, \"Éléments de géométrie algébrique I\", Publ. Math. IHÉS 4 (1960).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "D. Eisenbud, J. Harris, The Geometry of Schemes, Graduate Texts in Mathematics 197, Springer (2000).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "J. von zur Gathen, J. Gerhard, Modern Computer Algebra, 3rd ed., Cambridge University Press (2013).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "P. S. Wang, M. J. T. Guy, J. H. Davenport, \"P-adic reconstruction of rational numbers\", SIGSAM Bulletin 16 (1982).",
+          "verification": "source-comment"
+        },
+        {
+          "citation": "M. Budiu, T. Chajed, F. McSherry, L. Ryzhyk, V. Tannen, \"DBSP: Automatic incremental view maintenance for rich query languages\", PVLDB 16 (2023).",
+          "verification": "source-comment"
+        }
+      ],
+      "key_output": [
+        "^   Hadamard bound has",
+        "^PASS: Spec Z: det by CRT",
+        "^PASS: Hensel over Z/7\\^16",
+        "^RESULT: ALL PASS"
+      ]
+    },
+    {
       "path": "examples/mathematics_funsearch_cap_set.esk",
       "source_sha256": "45d91a4f2f3503bb752ee024d6dca7e50eb8e3fb2fe66cd46e598fbfe6b600a6",
       "title": "Explicit 512-cap in AG(8,3)",
