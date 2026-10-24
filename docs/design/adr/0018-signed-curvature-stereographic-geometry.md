@@ -107,3 +107,125 @@ Bachmann, Bécigneul, Ganea, *Constant Curvature Graph Convolutional Networks* (
   directional derivatives in the reference grid, the chart for the bridge
   Poincare primitives' K > 0 reverse rules, and `core.curvature` on the
   bytecode VM.
+
+## Amendment (v1.4.0-connection): charts as gluing data
+
+- **Date:** 2026-10-24
+- **Scope:** how a manifold is represented when one chart is not enough: the
+  sphere of curvature `K > 0`, the hyperbolic space with a second model,
+  triangulated surfaces, and any space a program assembles from local
+  coordinate patches. The one-chart kernels of this ADR are unchanged.
+
+### Context
+
+The decision above fixes *one* chart per space form. That chart is a
+computational kernel, not the manifold: the sphere chart misses its pole,
+and a program that needs the whole sphere, a second model of hyperbolic
+space, or a surface that has no global chart has to glue charts by hand,
+with nothing that checks the gluing. In Grothendieck's terms the manifold is
+the colimit of its charts and an atlas is a descent datum; `core.sheaf`
+(ADR-0033) already represents gluing and its failure, so the atlas belongs on
+top of it rather than beside it.
+
+### Decision
+
+1. **An atlas is gluing data.** `core.manifold.atlas` represents charts
+   (a name, a dimension, a decision procedure for the chart image
+   `phi_i(U_i)` and an optional metric), transitions
+   `g_{i->j} = phi_j o phi_i^{-1}` with a decision procedure for
+   `phi_i(U_i ∩ U_j)`, and a finite sample net per chart. The glued space is
+   `⊔ phi_i(U_i) / (x ~ g_{i->j} x)`; its points are chart representatives,
+   with a canonical representative in the first chart that contains the point.
+2. **The cocycle condition is checked, not assumed.** For every sample `x` of
+   every chart `i` and all charts `j, k`: `g_{j->k} g_{i->j} x = g_{i->k} x`
+   on triple overlaps (with `k = i` the inverse, and an explicit `g_{i->i}`
+   the identity), and domain consistency (`g_{i->j} x ∈ U_j ∩ U_k` exactly
+   when `x ∈ U_i ∩ U_k`). The chain rule
+   `g'_{j->k}(g_{i->j} x) g'_{i->j}(x) = g'_{i->k}(x)` is checked with
+   forward-mode AD along each axis, and for Riemannian atlases every
+   transition is checked to be an isometry of the chart metrics.
+3. **Two carriers, each with a stated contract.** An `exact` atlas compares
+   by `=`, and any output that is not exact is itself reported; AD seeded at
+   an exact point is exact, so the derivative cocycle is exact too. A
+   `(float tol)` atlas compares entry by entry at the scale of the whole
+   object: `|a_i - b_i| <= tol * max(1, max |a_j|, max |b_j|)`; the default
+   is `2^-40`.
+4. **Failure is a core.sheaf gluing result.** Every check returns
+   `#(gluing glued value)` or `#(gluing obstructed (obstruction ...))` with
+   the obstructions `cocycle`, `identity`, `domain`, `outside`, `inexact`,
+   `jacobian-cocycle`, `metric`, `orientation-varies`, `degenerate` and
+   `monodromy`, each naming the charts, the point and the two values; local
+   functions and vector fields glue through `glue-cover`, so a family that
+   does not glue reports core.sheaf's own `disagree`.
+5. **The nerve is a finite site.** The nerve is the set of chart index sets
+   whose common overlap holds a sample (each simplex carries its witness
+   point). As a finite space (McCord) its points are the overlaps `U_J`,
+   ordered by inclusion, so a sheaf on it is a sheaf on the cover. The
+   orientation sheaf `Z^w` is the rank-one local system whose restrictions
+   are the signs of `det g'_{i->j}`. `w1` is that sign cochain in
+   `C^1(N; Z/2)`: when it is a coboundary the library returns the orientation
+   that trivializes it, otherwise a closed path of charts along which the
+   orientation reverses. Cech cohomology with constant or orientation
+   coefficients comes from `cech-complex-from-nerve`, derived cohomology of
+   the nerve space from `poset-module-cohomology` (two independent paths that
+   the suite compares), and Z/2 Betti numbers from the integral groups by the
+   universal coefficient theorem. For a good cover (the vertex-star atlas of
+   a triangulation) these are the groups of the manifold.
+6. **The chart of this ADR is one chart of each space-form atlas.**
+   `sphere-atlas` has the `2(n+1)` stereographic charts from the poles
+   `±R e_k`; chart `e<n>-` (pole `-R e_n`) is the chart of `core.manifold`
+   and `core.curvature`, and every chart carries the metric
+   `I/(1 + K|x|^2/4)^2`. For `K < 0` the ball of radius `2/sqrt(-K)` is glued
+   to the upper half-space by the inversion in the sphere about `-e_n` of
+   radius `sqrt 2`. The sphere atlas is exact when `K` is the square of a
+   rational, the hyperbolic atlas when `-K` is.
+7. **The K = 0 contract is preserved.** `space-form-conformal-factor` is the
+   single expression `1/(1 + K|x|^2/4)` used by the core chart for every sign;
+   at `K = 0` the atlas is one Euclidean chart with the identity metric,
+   exactly, and the `K`-derivative at zero is `-|x|^2/4` from that same
+   expression.
+
+### Alternatives considered
+
+- **Checking transitions symbolically.** A rational transition identity of
+  bounded degree is decided by enough sample points (a nonzero polynomial of
+  degree `d` does not vanish on a grid with `d + 1` values per axis), which
+  would turn the sample check into a proof on the whole overlap. Planned for
+  v1.4.1 on the same representation: it needs a degree bound carried by the
+  transition.
+- **Declaring the nerve instead of witnessing it.** A declared nerve can
+  name an overlap that is empty; a witnessed one cannot, and every simplex
+  carries its point. The vertex-star atlas of a triangulation witnesses
+  exactly the triangulation.
+- **Orientation from chart pairs.** The sign of one transition says nothing
+  about a loop of charts; orientability is a property of the whole sign
+  cocycle, so it is decided on the nerve, and the same signs feed the
+  orientation sheaf.
+
+### Verification
+
+`tests/manifold/manifold_atlas_test.esk` (CTest `manifold_atlas_jit`,
+`manifold_atlas_aot`): the sphere atlases of `S^1`, `S^2`, `S^3` at
+`K = 1, 1/4, 4` (exact) and `K = 2` (float); the antipodal transition is the
+inversion `4x/(K|x|^2)`; chart, ambient sphere and `core.curvature`'s
+`sphere->chart` / `chart->sphere` agree; `manifold-metric` is the atlas
+metric; the geodesic distance, exponential map and parallel transport of
+`core.manifold` commute with every transition; `core.manifold`'s ball
+distance equals the independent half-space formula; the `K = 0` contract;
+exact transport of vectors, covectors and metrics; gluing of the height
+function and of the rotation field; recoordinatization as a coboundary;
+the tetrahedron, octahedron, two tori, `RP^2`, the Klein bottle, the Möbius
+band and the annulus (nerve = triangulation, Cech equal to derived
+cohomology with both coefficients, Euler characteristics, Z/2 Betti numbers,
+orientability, monodromy loops, an order-2 generator for the twisted `H^1`
+of `RP^2`); two smooth Möbius atlases; and every obstruction kind from a
+deliberately broken atlas. Producer: `scripts/run_manifold_atlas_gate.sh`
+(criterion `v14_manifold_atlas`).
+
+### References
+
+A. Grothendieck, *SGA 1*, Exposé VIII (descent); *SGA 4*, Exposé V (Cech
+cohomology); R. Bott, L. W. Tu, *Differential Forms in Algebraic Topology*
+(1982), §§5–8 and 11; J. W. Milnor, J. D. Stasheff, *Characteristic Classes*
+(1974), §§4 and 12; M. C. McCord, Duke Math. J. 33 (1966); N. Alon, *Combinatorial
+Nullstellensatz*, Combin. Probab. Comput. 8 (1999) (polynomials on grids).
