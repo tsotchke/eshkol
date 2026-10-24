@@ -845,6 +845,20 @@ under the same discipline that made `Qubit` linear.
       at the v1.3.5 cut)
 - [ ] PGO: canonical training workload + one-shot `llvm-profdata` merge
 - [ ] Codebase: decompose `bignum.cpp`; shell-hardening epic wave 1
+- [x] Ring carriers as a library (ADR-0034, library rung): `core.ring` gives
+      versioned carrier descriptors with stable family ids for Z, Q, the IEEE
+      binary64 tier, the native tower, Z/m, K[e]/e^n, K[x], Z[G] over
+      `core.dbsp` Z-sets and (through `core.algebraic_domain`) Q(alpha) and its
+      exact AD lifts; generic operations, the coercion lattice with explicit
+      admission and named refusals, ring maps and elimination over a carrier.
+      `core.multimodular` computes exact determinants, solves over Q and gcds
+      in Z[x] in fibres F_p below 2^31 with CRT and rational reconstruction
+      under Hadamard and Mignotte bounds. Gates: the ring-law gate, the IEEE
+      specification check with a pinned bit-pattern digest, and the
+      multimodular cross-checks, each in JIT and AOT; the functor-of-points
+      example runs on the libraries
+- [ ] `core.symbolic` coefficient fields and `core.dbsp` weights taking a
+      `core.ring` carrier (ADR-0034, library rung)
 
 ---
 

@@ -87,6 +87,8 @@ GATED_SCOPES = {
     # under the gate. A path may be a directory or a single file.
     "guides": ["docs/guide/GRADUAL_TYPING.md"],
     "upgrading": ["docs/UPGRADING.md"],
+    # Reference pages join one page at a time, like the guides.
+    "reference": ["docs/reference/stdlib/ring.md", "docs/reference/stdlib/multimodular.md"],
 }
 
 SKIP_REASONS = (
