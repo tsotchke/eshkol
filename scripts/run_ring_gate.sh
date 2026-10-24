@@ -86,9 +86,12 @@ python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
 doc_status=$?
-# The harness reports "examples=N executed=E passed=P failed=F"; an example
-# that was not executed is not evidence, so all of them must run and pass.
-doc_counts=$(grep -oE 'examples=[0-9]+ executed=[0-9]+ passed=[0-9]+' "$doc_log" | tail -n 1)
+# The harness reports "examples=N executed=E passed=P failed=F" under a
+# "scope=... paths=..." header for every gated scope; the counts that matter
+# are those under the header naming these two pages. An example that was not
+# executed is not evidence, so all of them must run and pass.
+doc_counts=$(awk -v pages="paths=$PAGES" 'index($0, "doc example gate: ") && index($0, pages) {grab=1; next}
+    grab && match($0, /examples=[0-9]+ executed=[0-9]+ passed=[0-9]+/) {print substr($0, RSTART, RLENGTH); grab=0}' "$doc_log" | tail -n 1)
 doc_examples=$(printf '%s' "$doc_counts" | sed -E 's/examples=([0-9]+).*/\1/')
 doc_executed=$(printf '%s' "$doc_counts" | sed -E 's/.*executed=([0-9]+).*/\1/')
 doc_passed=$(printf '%s' "$doc_counts" | sed -E 's/.*passed=([0-9]+).*/\1/')
