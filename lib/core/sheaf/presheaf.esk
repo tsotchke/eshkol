@@ -1,0 +1,218 @@
+;;; core.sheaf.presheaf -- presheaves of sets on a finite category: restriction,
+;;; functoriality, matching families, the sheaf condition with explicit
+;;; gluing, and sheafification by the plus construction.
+;;;
+;;; Usage: (require core.sheaf.presheaf)   or   (require core.sheaf)
+;;;
+;;; Sources: S. Mac Lane, I. Moerdijk, "Sheaves in Geometry and Logic" (1992),
+;;; I.1 (presheaves), III.4 (matching families and amalgamations, the sheaf
+;;; condition for a sieve), III.5 (the plus construction: F^+ is separated,
+;;; F^{++} is a sheaf, Lemma III.5.3 and Theorem III.5.1); SGA 4 II.3.
+;;;
+;;; Representation (public and stable; core.topos builds on it):
+;;;
+;;;   presheaf of sets  #(set-presheaf C sets maps)
+;;;       sets: vector, object c -> list of the elements of F(c) (any values
+;;;       compared with equal?); maps: vector, arrow a : d -> c -> vector of
+;;;       indices, entry i is the index in F(d) of F(a)(the i-th element of
+;;;       F(c)). F is contravariant: F(g o f) = F(f) F(g).
+;;;   family on a sieve S: an alist ((f . x_f) ...) with one entry per arrow
+;;;       f of S, x_f an element of F(source f).
+;;;
+;;; On a finite site the covering sieves of c are closed under intersection,
+;;; so the colimit over covering sieves in F^+(c) = colim Match(R, F) is
+;;; attained at the smallest covering sieve R_min(c), and
+;;; F^+(c) = Match(R_min(c), F) with restriction (x_g) |-> (x_{a o h}).
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.sheaf.glue)
+
+(provide make-set-presheaf make-set-presheaf-from-indices set-presheaf? presheaf-category
+         presheaf-elements presheaf-element-count presheaf-element-index
+         presheaf-restrict presheaf-restrict-index
+         presheaf-functoriality-violations presheaf-functorial?
+         constant-set-presheaf representable-presheaf
+         family-incompatibilities matching-family? matching-families family-amalgamations
+         restriction-family glue-family
+         presheaf-sheaf-violations presheaf-sheaf? presheaf-separated?
+         presheaf-plus sheafify presheaf-unit-map presheaf-natural?)
+
+(define (ps-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ps-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (ps-all? pred (cdr xs))) (else #f)))
+(define (ps-position item items)
+  (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+
+(define (make-set-presheaf-from-indices C sets maps)
+  (vector 'set-presheaf C
+          (if (vector? sets) sets (list->vector sets))
+          (list->vector (map (lambda (m) (if (vector? m) m (list->vector m)))
+                             (if (vector? maps) (vector->list maps) maps)))))
+;; sets: list/vector over objects of element lists; restrict: (a x) -> F(a)(x)
+;; for a : d -> c and x in F(c). Identities need not be supplied by restrict:
+;; they are filled in.
+(define (make-set-presheaf C sets restrict)
+  (let ((sv (if (vector? sets) sets (list->vector sets))))
+    (make-set-presheaf-from-indices
+     C sv
+     (map (lambda (a)
+            (let ((d (arrow-source C a)) (c (arrow-target C a)))
+              (list->vector
+               (map (lambda (x)
+                      (if (= a (category-identity C c)) (ps-position x (vector-ref sv c))
+                          (let ((i (ps-position (restrict a x) (vector-ref sv d))))
+                            (if (not i) (error "make-set-presheaf: restriction leaves the target set" (list a x)))
+                            i)))
+                    (vector-ref sv c)))))
+          (ps-range (category-arrow-count C))))))
+(define (set-presheaf? F) (and (vector? F) (= 4 (vector-length F)) (eq? (vector-ref F 0) 'set-presheaf)))
+(define (presheaf-category F) (vector-ref F 1))
+(define (presheaf-elements F c) (vector-ref (vector-ref F 2) c))
+(define (presheaf-element-count F c) (length (presheaf-elements F c)))
+(define (presheaf-element-index F c x) (ps-position x (presheaf-elements F c)))
+(define (presheaf-restrict-index F a i) (vector-ref (vector-ref (vector-ref F 3) a) i))
+(define (presheaf-restrict F a x)
+  (let* ((C (presheaf-category F)) (i (presheaf-element-index F (arrow-target C a) x)))
+    (if (not i) (error "presheaf-restrict: not an element of F(target a)" x))
+    (list-ref (presheaf-elements F (arrow-source C a)) (presheaf-restrict-index F a i))))
+;; identities act trivially and F(g o f) = F(f) o F(g); violations listed
+(define (presheaf-functoriality-violations F)
+  (let* ((C (presheaf-category F)) (out '()) (as (ps-range (category-arrow-count C))))
+    (for-each (lambda (c)
+                (if (not (ps-all? (lambda (i) (= i (presheaf-restrict-index F (category-identity C c) i)))
+                                  (ps-range (presheaf-element-count F c))))
+                    (set! out (cons (list 'identity c) out))))
+              (ps-range (category-object-count C)))
+    (for-each (lambda (g)
+                (for-each (lambda (f)
+                            (if (and (category-composable? C g f)
+                                     (not (ps-all? (lambda (i) (= (presheaf-restrict-index F (category-compose C g f) i)
+                                                                  (presheaf-restrict-index F f (presheaf-restrict-index F g i))))
+                                                   (ps-range (presheaf-element-count F (arrow-target C g))))))
+                                (set! out (cons (list 'composite g f) out))))
+                          as))
+              as)
+    (reverse out)))
+(define (presheaf-functorial? F) (null? (presheaf-functoriality-violations F)))
+(define (constant-set-presheaf C elems)
+  (make-set-presheaf C (map (lambda (c) elems) (ps-range (category-object-count C))) (lambda (a x) x)))
+;; the Yoneda presheaf y(c) = Hom(-, c): elements of y(c)(d) are arrow indices
+(define (representable-presheaf C c)
+  (make-set-presheaf C (map (lambda (d) (category-hom C d c)) (ps-range (category-object-count C)))
+                     (lambda (a f) (category-compose C f a))))
+;; eta: vector, object -> vector of indices F(c) -> G(c)
+(define (presheaf-natural? F G eta)
+  (let ((C (presheaf-category F)))
+    (ps-all? (lambda (a)
+               (let ((d (arrow-source C a)) (c (arrow-target C a)))
+                 (ps-all? (lambda (i) (= (vector-ref (vector-ref eta d) (presheaf-restrict-index F a i))
+                                         (presheaf-restrict-index G a (vector-ref (vector-ref eta c) i))))
+                          (ps-range (presheaf-element-count F c)))))
+             (ps-range (category-arrow-count C)))))
+
+;; ---------------------------------------------------------------------------
+;; Matching families and gluing
+;; ---------------------------------------------------------------------------
+(define (ps-fam-ref fam f) (let ((e (assv f fam))) (if e (cdr e) (error "family has no entry for arrow" f))))
+;; (f g) with f in S, tgt g = src f and F(g)(x_f) /= x_{f o g}
+(define (family-incompatibilities F S fam)
+  (let ((C (presheaf-category F)) (out '()))
+    (for-each (lambda (f)
+                (for-each (lambda (g)
+                            (let ((fg (category-compose C f g)))
+                              (if (and (memv fg S)
+                                       (not (equal? (presheaf-restrict F g (ps-fam-ref fam f)) (ps-fam-ref fam fg))))
+                                  (set! out (cons (list 'incompatible f g) out)))))
+                          (category-arrows-into C (arrow-source C f))))
+              S)
+    (reverse out)))
+(define (matching-family? F S fam) (null? (family-incompatibilities F S fam)))
+;; the family of restrictions of x in F(c) to the arrows of S
+(define (restriction-family F S x) (map (lambda (f) (cons f (presheaf-restrict F f x))) S))
+;; All matching families for S on c, by backtracking with propagation:
+;; choosing x_f forces x_{f o g} = F(g)(x_f).
+(define (matching-families F c S)
+  (let* ((C (presheaf-category F)) (Sv (list->vector S)) (n (vector-length Sv))
+         (pos (lambda (f) (let loop ((i 0)) (cond ((= i n) #f) ((= f (vector-ref Sv i)) i) (else (loop (+ i 1)))))))
+         (forced (list->vector
+                  (map (lambda (f)
+                         (filter (lambda (p) p)
+                                 (map (lambda (g) (let ((q (pos (category-compose C f g)))) (if q (cons g q) #f)))
+                                      (category-arrows-into C (arrow-source C f)))))
+                       S)))
+         (results '()))
+    (let search ((p 0) (assign (make-vector n #f)))
+      (cond ((= p n)
+             (let ((fam (map (lambda (i) (cons (vector-ref Sv i)
+                                               (list-ref (presheaf-elements F (arrow-source C (vector-ref Sv i))) (vector-ref assign i))))
+                             (ps-range n))))
+               (if (matching-family? F S fam) (set! results (cons fam results)))))
+            ((vector-ref assign p) (search (+ p 1) assign))
+            (else
+             (let ((f (vector-ref Sv p)))
+               (for-each (lambda (i)
+                           (let ((a (vector-copy assign)) (ok #t))
+                             (vector-set! a p i)
+                             (for-each (lambda (gq)
+                                         (let ((v (presheaf-restrict-index F (car gq) i)))
+                                           (cond ((not (vector-ref a (cdr gq))) (vector-set! a (cdr gq) v))
+                                                 ((not (= v (vector-ref a (cdr gq)))) (set! ok #f)))))
+                                       (vector-ref forced p))
+                             (if ok (search (+ p 1) a))))
+                         (ps-range (presheaf-element-count F (arrow-source C f))))))))
+    (reverse results)))
+(define (family-amalgamations F c S fam)
+  (filter (lambda (x) (equal? (restriction-family F S x) fam)) (presheaf-elements F c)))
+;; Glue a family on a sieve: the unique amalgamation, or the obstruction.
+(define (glue-family F c S fam)
+  (let ((bad (family-incompatibilities F S fam)))
+    (if (not (null? bad)) (gluing-failure bad)
+        (let ((xs (family-amalgamations F c S fam)))
+          (cond ((null? xs) (gluing-failure (list (list 'no-amalgamation))))
+                ((null? (cdr xs)) (gluing-success (car xs)))
+                (else (gluing-failure (list (list 'not-unique (length xs))))))))))
+
+;; ---------------------------------------------------------------------------
+;; The sheaf condition over a site
+;; ---------------------------------------------------------------------------
+;; For each covering sieve S of each object c: (c S not-separated) when two
+;; sections restrict to the same family, (c S not-glueing k) when k matching
+;; families have no amalgamation.
+(define (presheaf-sheaf-violations site F)
+  (let ((C (site-category site)) (out '()))
+    (for-each
+     (lambda (c)
+       (for-each
+        (lambda (S)
+          (let* ((restricted (map (lambda (x) (restriction-family F S x)) (presheaf-elements F c)))
+                 (fams (matching-families F c S))
+                 (unglued (filter (lambda (fam) (not (member fam restricted))) fams))
+                 (distinct (let loop ((l restricted) (acc '())) (cond ((null? l) acc) ((member (car l) acc) (loop (cdr l) acc)) (else (loop (cdr l) (cons (car l) acc)))))))
+            (if (< (length distinct) (length restricted)) (set! out (cons (list c S 'not-separated) out)))
+            (if (not (null? unglued)) (set! out (cons (list c S 'not-glueing (length unglued)) out)))))
+        (site-covering-sieves site c)))
+     (ps-range (category-object-count C)))
+    (reverse out)))
+(define (presheaf-sheaf? site F) (null? (presheaf-sheaf-violations site F)))
+(define (presheaf-separated? site F)
+  (ps-all? (lambda (v) (not (eq? (caddr v) 'not-separated))) (presheaf-sheaf-violations site F)))
+
+;; F^+(c) = Match(R_min(c), F); elements are families (alists) on R_min(c).
+(define (presheaf-plus site F)
+  (let* ((C (site-category site)) (objs (ps-range (category-object-count C)))
+         (R (list->vector (map (lambda (c) (site-minimal-covering-sieve site c)) objs)))
+         (sets (map (lambda (c) (matching-families F c (vector-ref R c))) objs)))
+    (make-set-presheaf C sets
+                       (lambda (a fam)
+                         (map (lambda (h) (cons h (ps-fam-ref fam (category-compose C a h))))
+                              (vector-ref R (arrow-source C a)))))))
+(define (sheafify site F) (presheaf-plus site (presheaf-plus site F)))
+;; the unit F -> F^+: object c -> vector sending x to its restriction family
+(define (presheaf-unit-map site F Fplus)
+  (let ((C (site-category site)))
+    (list->vector
+     (map (lambda (c)
+            (let ((R (site-minimal-covering-sieve site c)))
+              (list->vector (map (lambda (x) (presheaf-element-index Fplus c (restriction-family F R x)))
+                                 (presheaf-elements F c)))))
+          (ps-range (category-object-count C))))))
