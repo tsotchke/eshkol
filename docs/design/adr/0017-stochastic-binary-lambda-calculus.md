@@ -104,8 +104,11 @@ The VM reports `unsupported` rather than falling back until its PRNG parity gaps
    handles retain exact unfinished frontiers and completed outcomes, and project
    through the existing conditioning receipt constructor. The separate
    `scripts/run_sblc_resume_gate.sh` requires fresh/resumed receipt equality and
-   JIT/AOT parity. Durable checkpoints and distributed shard composition remain
-   undelivered; in-memory handles do not attest serialized execution history.
+   JIT/AOT parity. Versioned checkpoint data and expected-context restoration now
+   preserve exact residual partitions across process restart. The checkpoint gate
+   requires cold JIT/AOT transport and corruption/context refusal. SHA-256 binds
+   content, not authenticated execution history. Distributed shard composition
+   remains undelivered.
 3. **DBSP / N3 integration** — incremental example deltas and structured
    accepted / rejected / timeout / failure receipts.
 4. **VM RNG parity** — close the four PRNG gaps (`make-prng`, `prng?`, `prng-random`,
