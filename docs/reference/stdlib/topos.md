@@ -59,12 +59,12 @@ of topoi" (1975); S. Kripke, "Semantical analysis of intuitionistic logic I"
 (define L (make-topos-language T '() '()))
 
 (define lem (topos-formula L '() '(forall (p Omega) (or (holds p) (not (holds p))))))
-(display (topos-valid? lem)) (newline)            ; => #f
-(display (topos-counter-witness lem)) (newline)   ; => (1 ()) : refuted at stage 1
-(display (topos-cross-check lem)) (newline)       ; => (2 #t) : 2 instances, forcing = Omega
+(topos-valid? lem)          ;; => #f
+(topos-counter-witness lem) ;; => (1 ()) refuted at stage 1, no free variables
+(topos-cross-check lem)     ;; => (2 #t) two instances, forcing agrees with Omega
 
 (define dn (topos-formula L '((p Omega)) '(implies (holds p) (not (not (holds p))))))
-(display (topos-valid? dn)) (newline)             ; => #t
+(topos-valid? dn)           ;; => #t
 ```
 
 Stage 1 has three sieves, so `Omega(1)` has three elements. The middle sieve
@@ -128,14 +128,12 @@ declared symbol is checked to be a morphism of the topos when the language is
 built: functions and constants must be natural, and predicates must define
 sub-presheaves.
 
-```scheme
-(make-topos-language T sorts declarations [modal-site])
-;; sorts: alist (name . type)
-;; declarations, each one of
-(topos-function name arg-types result-type proc)   ; proc: (U x ...) -> value at U
-(topos-constant name type proc)                     ; proc: U -> value at U (a global element)
-(topos-predicate name arg-types pred)               ; pred: (U x ...) -> boolean, a sub-presheaf
-```
+| Procedure | Contract |
+|---|---|
+| `(make-topos-language T sorts declarations [modal-site])` | `sorts` is an alist `(name . type)`; `declarations` is a list of the three kinds below. |
+| `(topos-function name arg-types result-type proc)` | `proc` maps `(U x ...)`, element values at U, to the result value at U. |
+| `(topos-constant name type proc)` | `proc` maps U to a value at U: a global element. |
+| `(topos-predicate name arg-types pred)` | `pred` maps `(U x ...)` to a boolean and must define a sub-presheaf. |
 
 The optional `modal-site` is a second Grothendieck topology J' on the
 category of `T`. It gives meaning to `(locally p)`: p holds on a J'-cover (see
@@ -244,8 +242,7 @@ presheaves on Z/2 it holds:
 (define BZ2 (make-category-from-presentation 1 (list (list 0 0 's)) z2-nf 2))
 (define T (presheaf-topos BZ2))
 (define L (make-topos-language T '() '()))
-(display (topos-valid? (topos-formula L '() '(forall (p Omega) (or (holds p) (not (holds p)))))))
-(newline)   ; => #t
+(topos-valid? (topos-formula L '() '(forall (p Omega) (or (holds p) (not (holds p)))))) ;; => #t
 ```
 
 On a finite space with the open-cover topology, disjunction is local. The
@@ -270,10 +267,9 @@ locally constant sheaf that is 0 on one point and 1 on the other forces
                                      (topos-constant 'one 'X (lambda (U) (global 1 U))))))
 (define F (topos-formula L '((x X)) '(or (= x zero) (= x one))))
 (define ab (category-object-of-label C '(0 1)))
-(display (map (lambda (e) (topos-forces? F ab e)) (topos-environments F ab)))
-(newline)   ; => (#t #t #t #t) : every section on {0, 1} is locally zero or one
-(display (topos-valid? F)) (newline)            ; => #t
-(display (cadr (topos-cross-check F))) (newline) ; => #t
+(map (lambda (e) (topos-forces? F ab e)) (topos-environments F ab)) ;; => (#t #t #t #t)
+(topos-valid? F)            ;; => #t
+(cadr (topos-cross-check F)) ;; => #t
 ```
 
 ### Flagship: the structure sheaf of Spec(Z/n) is internally local
@@ -286,12 +282,7 @@ restriction is reduction mod m', and its ring operations are declared
 morphisms. The test checks that the topology from unit ideals agrees with
 covers by unions, and that the structure sheaf is a sheaf (the Chinese
 remainder theorem). It then forces
-
-```scheme
-(forall (x O) (or (exists (y O) (= (mul x y) one))
-                  (exists (y O) (= (mul (sub one x) y) one))))
-```
-
+`(forall (x O) (or (exists (y O) (= (mul x y) one)) (exists (y O) (= (mul (sub one x) y) one))))`
 at every stage of Spec(Z/12) and of Spec(Z/30). The reason is that x and 1 - x
 generate the unit ideal, so `D(x)` and `D(1 - x)` cover; x is a unit on
 `D(x)` and 1 - x is a unit on `D(1 - x)`. The global rings are not local: in
@@ -306,11 +297,8 @@ internally a field in both senses (`x = 0 or x invertible`, and
 ## Memory
 
 A query builds its own memo tables, and the compiled formula keeps none. Wrapping a
-query in `with-region` releases everything it allocated:
-
-```scheme
-(with-region (car (topos-cross-check (topos-formula L ctx phi))))
-```
+query in `with-region` releases everything it allocated, for example
+`(with-region (car (topos-cross-check (topos-formula L ctx phi))))`.
 
 Types are memoized in the topos. A type first mentioned inside a region
 would be stored in the topos's table, so create every type a formula may
