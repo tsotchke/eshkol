@@ -4351,6 +4351,11 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_checkpoint_gate.sh")
         set_tests_properties(sblc_checkpoint_gate PROPERTIES
             TIMEOUT 1800 LABELS "stdlib;sblc;parity")
+        add_test(NAME sblc_update_gate
+            COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_update_gate.sh")
+        set_tests_properties(sblc_update_gate PROPERTIES
+            TIMEOUT 1800 LABELS "stdlib;sblc;dbsp;parity")
     endif()
 endif()
 
