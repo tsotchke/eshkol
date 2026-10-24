@@ -17,6 +17,7 @@
   (display label) (newline))
 (define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
 (define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (all2? pred xs ys) (cond ((null? xs) #t) ((pred (car xs) (car ys)) (all2? pred (cdr xs) (cdr ys))) (else #f)))
 (define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
 (define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
 (define (raises? thunk) (guard (e (#t #t)) (thunk) #f))
@@ -59,7 +60,7 @@
 ;; ---------------------------------------------------------------------------
 (show "Omega: walking arrow, pseudocircle, BZ/2, sheaves on the pseudocircle space"
       (list (sizes T-WA (topos-omega T-WA)) (sizes T-S4 (topos-omega T-S4)) (sizes T-BZ2 (topos-omega T-BZ2)) (sizes T-ShX (topos-omega T-ShX))))
-(check "Omega has (2, 3) sieves on the walking arrow, (2, 2, 5, 5) on the pseudocircle, 2 on BZ/2, and the closed sieves (1, 2, 2, 4, 5, 5, 7) on the opens of the pseudocircle space (opens of the down-set, as for Sh(X) = O(X)-valued truth)"
+(check "Omega has (2, 3) sieves on the walking arrow, (2, 2, 5, 5) on the pseudocircle, 2 on BZ/2, and the closed sieves (1, 2, 2, 4, 5, 5, 7) on the opens of the pseudocircle space"
        (and (equal? (sizes T-WA (topos-omega T-WA)) '(2 3)) (equal? (sizes T-S4 (topos-omega T-S4)) '(2 2 5 5))
             (equal? (sizes T-BZ2 (topos-omega T-BZ2)) '(2)) (equal? (sizes T-ShX (topos-omega T-ShX)) '(1 2 2 4 5 5 7))
             (all? (lambda (c) (equal? (topos-closed-sieves T-WA c) (sieves-on WA c))) '(0 1))
@@ -102,20 +103,19 @@
                (let ((s0 (subsets-of (sieves-on WA 0))) (s1 (subsets-of (sieves-on WA 1))))
                  (apply append (map (lambda (a) (map (lambda (b) (list a b)) s1)) s0))))))
 (define WA-js (map (lambda (site) (topos-lawvere-tierney (make-topos site))) WA-topologies))
+(define (cartesian lists)          ;; all tuples, first component outermost
+  (if (null? lists) (list '())
+      (let ((tails (cartesian (cdr lists))))
+        (apply append (map (lambda (x) (map (lambda (t) (cons x t)) tails)) (car lists))))))
+(define (functions-into k) (map list->vector (cartesian (map (lambda (i) (range k)) (range k)))))
 (define (all-endomaps C)       ;; every family of functions Omega(c) -> Omega(c)
-  (let ((ns (map (lambda (c) (length (sieves-on C c))) (range (category-object-count C)))))
-    (map list->vector
-         (let loop ((ns ns))
-           (if (null? ns) (list '())
-               (let ((rest (loop (cdr ns)))
-                     (fs (let fl ((k (car ns)) (acc (list '()))) (if (= k 0) (map list->vector acc) (fl (- k 1) (apply append (map (lambda (t) (map (lambda (v) (cons v t)) (range (car ns)))) acc)))))))
-                 (apply append (map (lambda (f) (map (lambda (r) (cons f r)) rest)) fs))))))))
+  (map list->vector (cartesian (map (lambda (c) (functions-into (length (sieves-on C c)))) (range (category-object-count C))))))
 (define WA-lt (filter (lambda (j) (topos-lawvere-tierney? WA j)) (all-endomaps WA)))
 (show "walking arrow: Grothendieck topologies, Lawvere-Tierney topologies among all endomaps of Omega" (list (length WA-topologies) (length WA-lt) (length (all-endomaps WA))))
 (check "Theorem V.1.2 by exhaustion on the walking arrow: the 4 Grothendieck topologies give 4 distinct Lawvere-Tierney topologies, which are all of them among the 108 endomaps of Omega, and each j gives back its topology"
        (and (= 4 (length WA-topologies)) (= 4 (length WA-lt)) (= 108 (length (all-endomaps WA)))
             (all? (lambda (j) (member j WA-lt)) WA-js)
-            (all? (lambda (site j) (let ((back (topos-lawvere-tierney-site WA j)))
+            (all2? (lambda (site j) (let ((back (topos-lawvere-tierney-site WA j)))
                                      (all? (lambda (c) (all? (lambda (S) (eq? (site-covering? site c S) (site-covering? back c S))) (sieves-on WA c))) '(0 1))))
                   WA-topologies WA-js)))
 (check "the open-cover topology of the space gives a Lawvere-Tierney topology whose fixed points are exactly the closed sieves"
@@ -136,15 +136,13 @@
                                                                    (list-ref A (arrow-source C a))))
                                                 (list-ref A (arrow-target C a))))
                               (range (category-arrow-count C))))
-            (let loop ((cs (range n)))
-              (if (null? cs) (list '())
-                  (let ((rest (loop (cdr cs)))) (apply append (map (lambda (s) (map (lambda (r) (cons s r)) rest)) (subsets-of (range (topos-type-size X (car cs))))))))))))
+            (cartesian (map (lambda (c) (subsets-of (range (topos-type-size X c)))) (range n))))))
 (define (classifier-counts T X)
   (let* ((subs (sub-presheaves T X)) (chis (map (lambda (A) (topos-classifying-map T X A)) subs))
          (nats (topos-morphisms T X (topos-omega T))))
     (list (length subs) (length nats)
           (all? (lambda (chi) (member chi nats)) chis)
-          (all? (lambda (A chi) (equal? (map (lambda (l) (sort l <)) A) (topos-classified-subobject T X chi))) subs chis))))
+          (all2? (lambda (A chi) (equal? (map (lambda (l) (sort l <)) A) (topos-classified-subobject T X chi))) subs chis))))
 (define cc-WA (classifier-counts T-WA X-WA))
 (define cc-S4 (classifier-counts T-S4 X-S4))
 (show "sub-presheaves, morphisms X -> Omega, every chi is one, chi recovers A: walking arrow, pseudocircle" (list cc-WA cc-S4))
@@ -246,7 +244,7 @@
             (raises? (lambda () (topos-formula L-WA '() '(R zz))))
             (raises? (lambda () (topos-formula L-WA '((x X)) '(holds x))))
             (raises? (lambda () (make-topos-language T-WA (list (cons 'X X-WA)) (list (topos-predicate 'B '(X) (lambda (U x) (and (= U 1) (eq? x 'u))))))))
-            (raises? (lambda () (make-topos-language T-WA (list (cons 'X X-WA)) (list (topos-function 'g '(X) 'X (lambda (U x) (if (= U 1) 'v x))))))
+            (raises? (lambda () (make-topos-language T-WA (list (cons 'X X-WA)) (list (topos-function 'g '(X) 'X (lambda (U x) (if (= U 1) 'v x)))))))
             (not (raises? (lambda () (make-topos-language T-WA (list (cons 'X X-WA)) (list (topos-predicate 'B '(X) (lambda (U x) (eq? x 'u))))))))))
 (check "environments are generalized elements: a value outside X(U) is refused"
        (raises? (lambda () (topos-forces? (topos-formula L-WA '((x X)) '(P x)) 1 (list 'r)))))

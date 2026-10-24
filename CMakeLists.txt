@@ -4344,6 +4344,28 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# core.topos: the internal language of the topos of a finite site, with
+# Kripke-Joyal forcing cross-checked against the Omega-valued interpretation,
+# the Kripke and Beth reductions, soundness of intuitionistic higher-order
+# logic, and the internally local structure sheaf of Spec(Z/n) (ADR-0035).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_topos_suite topos_test topos_corpus_test topos_local_ring_test)
+        add_test(NAME ${_topos_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_topos_suite}.esk")
+        add_test(NAME ${_topos_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_topos_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_topos_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_topos_suite}_jit ${_topos_suite}_aot PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_topos_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
