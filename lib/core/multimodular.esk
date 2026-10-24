@@ -29,6 +29,8 @@
 
 (require core.ring)
 
+(define (mm-exact-integer? x) (and (number? x) (exact? x) (integer? x)))
+
 (provide multimodular-prime multimodular-primes chinese-remainder symmetric-residue
          rational-reconstruct hadamard-bound mignotte-gcd-bound
          multimodular-integer multimodular-rational
@@ -60,7 +62,7 @@
         (loop (- c 2)))))
 ;; The i-th prime below 2^31 counting downward from 2^31 - 1 (i = 0).
 (define (multimodular-prime i)
-  (if (not (and (exact-integer? i) (>= i 0))) (error "multimodular-prime: expected an index >= 0" i))
+  (if (not (and (mm-exact-integer? i) (>= i 0))) (error "multimodular-prime: expected an index >= 0" i))
   (let loop () (if (<= mm-prime-count i) (begin (mm-grow!) (loop))))
   (vector-ref mm-prime-table i))
 
@@ -189,7 +191,7 @@
                       (else (loop (+ i 1) x m used (cons p unlucky))))))))))
 
 (define (mm-check-bound b who)
-  (if (not (and (exact-integer? b) (>= b 0))) (error (string-append who ": the bound must be an exact integer >= 0") b)))
+  (if (not (and (mm-exact-integer? b) (>= b 0))) (error (string-append who ": the bound must be an exact integer >= 0") b)))
 
 (define (mm-report value run)
   (list (cons 'value value) (cons 'modulus (cadr run))
@@ -294,7 +296,7 @@
 
 (define (mm-poly-input p who)
   (let ((cs (cond ((vector? p) (vector->list p)) ((list? p) p) (else (error (string-append who ": expected a coefficient list") p)))))
-    (for-each (lambda (x) (if (not (exact-integer? x)) (error (string-append who ": coefficients must be exact integers") x))) cs)
+    (for-each (lambda (x) (if (not (mm-exact-integer? x)) (error (string-append who ": coefficients must be exact integers") x))) cs)
     (mm-trim cs)))
 
 ;; The coefficient bound B on the normalised gcd of the primitive parts:

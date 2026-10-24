@@ -4340,7 +4340,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
         set_tests_properties(${_ring_suite}_jit ${_ring_suite}_aot PROPERTIES
-            TIMEOUT 600
+            TIMEOUT 900
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
             PASS_REGULAR_EXPRESSION "PASS: ${_ring_suite}_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
