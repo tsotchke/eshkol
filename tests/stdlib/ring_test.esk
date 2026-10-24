@@ -1,0 +1,375 @@
+;;; ring_test.esk -- the core.ring law gate (ADR-0034 section 4 and 5).
+;;;
+;;; 1. Exhaustive law checks on small lawful carriers: every element of Z/n
+;;;    for n = 1..13, small jets K[e]/e^k over Z/n, a nested jet carrier,
+;;;    and Z/4[x] in degree <= 1 (which has units with nilpotent parts).
+;;; 2. Randomized law checks with a fixed seed on infinite carriers: Z, Q,
+;;;    Q[e]/e^4, Q[x], F_101[x], Z/10^30, Z/2^64, Z/7^16, Z[t,1/t] as Z-sets,
+;;;    Q(sqrt 2) and its exact Taylor lift, jets over F_7.
+;;; 3. from-integer is a ring map (across the int64 boundary), the declared
+;;;    characteristic, nilpotency, the unit group and named refusals.
+;;; 4. The coercion lattice (rules 1-6), explicit admission, ring maps and
+;;;    interoperation with core.algebraic_domain and core.symbolic fields.
+;;;
+;;; Prints one summary line per section and ends with "PASS: ring_test"
+;;; and "RESULT: PASS", or FAIL lines and "RESULT: FAIL".
+
+(require core.ring)
+(require core.dbsp)
+(require core.algebraic_domain)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (set! passed (+ passed 1))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display label) (newline))))
+
+;; Law evaluations performed, for the summary.
+(define law-triples 0)
+(define (laws-hold label R samples . ints)
+  (set! law-triples (+ law-triples (* (length samples) (length samples) (length samples))))
+  (let ((bad (if (null? ints) (ring-law-violations R samples) (ring-law-violations R samples (car ints)))))
+    (if (pair? bad)
+        (begin (display "  violations in ") (display label) (display ": ")
+               (display (list-head-safe bad 3)) (newline)))
+    (check label (null? bad))))
+(define (list-head-safe xs k) (if (or (null? xs) (= k 0)) '() (cons (car xs) (list-head-safe (cdr xs) (- k 1)))))
+
+;; A refusal check: thunk must raise the named refusal with these irritants.
+(define (refuses? kind irritants thunk)
+  (guard (e ((ring-refusal? e)
+             (and (eq? (ring-refusal-kind e) kind)
+                  (or (eq? irritants 'any) (equal? (ring-refusal-irritants e) irritants))))
+            (else #f))
+    (thunk)
+    #f))
+
+;; Deterministic generator (64-bit LCG), fixed seed.
+(define seed 20261024)
+(define (next!)
+  (set! seed (modulo (+ (* seed 6364136223846793005) 1442695040888963407) 18446744073709551616))
+  (quotient seed 65536))
+(define (rand-int lo hi) (+ lo (modulo (next!) (+ 1 (- hi lo)))))
+(define (rand-big) (* (if (odd? (next!)) 1 -1) (next!) (next!) (next!)))
+(define (rand-rat) (/ (rand-int -1000 1000) (rand-int 1 97)))
+(define (iota-from a n) (if (= n 0) '() (cons a (iota-from (+ a 1) (- n 1)))))
+
+;; Every tuple of length k over the list xs.
+(define (tuples xs k)
+  (if (= k 0) (list '())
+      (let ((rest (tuples xs (- k 1))))
+        (apply append (map (lambda (x) (map (lambda (t) (cons x t)) rest)) xs)))))
+
+;; ===========================================================================
+;; 1. Exhaustive checks on small lawful carriers
+;; ===========================================================================
+
+(define small-ints (list 0 1 -1 2 -2 3 5 7 12 13 26 -169 4611686018427387904 9223372036854775807
+                         -9223372036854775808 9223372036854775808))
+
+(let loop ((n 1))
+  (if (<= n 13)
+      (begin
+        (laws-hold (string-append "exhaustive laws: Z/" (number->string n)) (make-zmod n) (iota-from 0 n) small-ints)
+        (loop (+ n 1)))))
+
+(define (all-jets J K elems)
+  (map (lambda (cs) (make-jet J cs)) (tuples elems (ring-ref J 'nilpotency))))
+(define F2 (make-zmod 2))
+(define F3 (make-zmod 3))
+(define Z4 (make-zmod 4))
+(define J-F2-3 (make-jets F2 3))
+(define J-F3-2 (make-jets F3 2))
+(define J-Z4-2 (make-jets Z4 2))
+(laws-hold "exhaustive laws: F_2[e]/e^3 (8 elements)" J-F2-3 (all-jets J-F2-3 F2 (list 0 1)) small-ints)
+(laws-hold "exhaustive laws: F_3[e]/e^2 (9 elements)" J-F3-2 (all-jets J-F3-2 F3 (list 0 1 2)) small-ints)
+(laws-hold "exhaustive laws: Z/4[e]/e^2 (16 elements)" J-Z4-2 (all-jets J-Z4-2 Z4 (list 0 1 2 3)) small-ints)
+;; Two generators by explicit nesting: (F_2[e]/e^2)[d]/d^2, 16 elements.
+(define J-F2-e (make-jets F2 2 'e))
+(define J-F2-ed (make-jets J-F2-e 2 'd))
+(define inner (all-jets J-F2-e F2 (list 0 1)))
+(laws-hold "exhaustive laws: (F_2[e]/e^2)[d]/d^2 (16 elements)" J-F2-ed
+           (map (lambda (cs) (make-jet J-F2-ed cs)) (tuples inner 2)) small-ints)
+(define Z4x (make-polys Z4))
+(laws-hold "exhaustive laws: Z/4[x] in degree <= 1 (16 elements)" Z4x
+           (map (lambda (cs) (ring-poly Z4x cs)) (tuples (list 0 1 2 3) 2)) small-ints)
+;; Units of Z/4[x] in degree <= 1 are a + bx with a odd: 1, 3, 1+2x, 3+2x.
+(check "Z/4[x]: the units of degree <= 1 are exactly a + bx with a odd and b even"
+       (let ((units (filter (lambda (p) (r-unit? Z4x p))
+                            (map (lambda (cs) (ring-poly Z4x cs)) (tuples (list 0 1 2 3) 2)))))
+         (equal? (map ring-poly-coefficients units) (list '(1) '(1 2) '(3) '(3 2)))))
+(check "Z/4[x]: (1 + 2x)^-1 = 1 + 2x"
+       (equal? (ring-poly-coefficients (r-inv Z4x (ring-poly Z4x '(1 2)))) '(1 2)))
+(define Z8x (make-polys (make-zmod 8)))
+(check "Z/8[x]: (1 + 2x)^-1 = 1 - 2x + 4x^2 by Newton's iteration"
+       (let ((u (ring-poly Z8x '(1 2))))
+         (and (equal? (ring-poly-coefficients (r-inv Z8x u)) '(1 6 4))
+              (r-one? Z8x (r* Z8x u (r-inv Z8x u))))))
+
+(display "exhaustive: Z/1..Z/13, 3 small jet carriers, a nested jet carrier, Z/4[x]_{<=1}: ")
+(display law-triples) (display " triples") (newline)
+
+;; ===========================================================================
+;; 2. Randomized checks with a fixed seed on infinite carriers
+;; ===========================================================================
+
+(define random-triples-before law-triples)
+(laws-hold "random laws: Z (int64 boundary and bignums)" integers
+           (append (list 0 1 -1 9223372036854775807 -9223372036854775808 4294967296)
+                   (map (lambda (i) (rand-big)) (iota 4))))
+(laws-hold "random laws: Q" rationals (append (list 0 1 -1 1/3) (map (lambda (i) (rand-rat)) (iota 5))))
+(define JQ4 (make-jets rationals 4))
+(laws-hold "random laws: Q[e]/e^4" JQ4
+           (append (list (jet-seed JQ4 0) (r-int JQ4 3))
+                   (map (lambda (i) (make-jet JQ4 (map (lambda (j) (rand-rat)) (iota 4)))) (iota 5))))
+(define Qx (make-polys rationals))
+(laws-hold "random laws: Q[x]" Qx
+           (append (list (r0 Qx) (r1 Qx) (ring-poly-variable Qx))
+                   (map (lambda (i) (ring-poly Qx (map (lambda (j) (rand-rat)) (iota (rand-int 1 4))))) (iota 5))))
+(define F101 (make-zmod 101))
+(define F101x (make-polys F101))
+(laws-hold "random laws: F_101[x]" F101x
+           (map (lambda (i) (ring-poly F101x (map (lambda (j) (rand-int 0 100)) (iota (rand-int 0 4))))) (iota 7)))
+(define Z1030 (make-zmod (expt 10 30)))
+(laws-hold "random laws: Z/10^30 (zero divisors)" Z1030
+           (append (list 0 1 (expt 2 30) (* 5 (expt 10 29)) (- (expt 10 30) 1))
+                   (map (lambda (i) (modulo (rand-big) (expt 10 30))) (iota 4))))
+(define Z264 (make-zmod 18446744073709551616))
+(laws-hold "random laws: Z/2^64" Z264
+           (append (list 0 1 9223372036854775808 18446744073709551615)
+                   (map (lambda (i) (modulo (rand-big) 18446744073709551616)) (iota 4))))
+(define Z7^16 (make-zmod (expt 7 16)))
+(laws-hold "random laws: Z/7^16 (a local ring)" Z7^16
+           (append (list 0 1 7 (expt 7 15)) (map (lambda (i) (modulo (rand-big) (expt 7 16))) (iota 4))))
+(define F7 (make-zmod 7))
+(define JF7 (make-jets F7 6))
+(laws-hold "random laws: F_7[e]/e^6" JF7
+           (map (lambda (i) (make-jet JF7 (map (lambda (j) (rand-int 0 6)) (iota 6)))) (iota 7)))
+(define laurent (zset-group-ring (lambda (g h) (+ g h)) 0 (lambda (g) (- g)) "Z[t,1/t]"))
+(define (rand-zset) (zset-from-weighted (map (lambda (i) (list (rand-int -3 3) (rand-int -2 2))) (iota 3))))
+(laws-hold "random laws: Z[t,1/t] as Z-sets" laurent
+           (append (list (r0 laurent) (r1 laurent) (zset-singleton 1 1)) (map (lambda (i) (rand-zset)) (iota 5))))
+(define sqrt2 (make-algebraic-field '(-2 0 1) 3 1))
+(define Qs2 (algebraic-domain sqrt2))
+(define (rand-s2) (algebraic-element sqrt2 (list (rand-rat) (rand-rat))))
+(laws-hold "random laws: Q(sqrt 2) (core.algebraic_domain)" Qs2
+           (append (list 0 1 (algebraic-generator sqrt2)) (map (lambda (i) (rand-s2)) (iota 4)))
+           (list 0 1 -1 7 9223372036854775807 -9223372036854775808 9223372036854775808))
+(define T2 (make-algebraic-taylor sqrt2 2))
+(define Qs2T (algebraic-domain T2))
+(laws-hold "random laws: Q(sqrt 2)[e]/e^3 (exact Taylor lift)" Qs2T
+           (append (list 0 1 (algebraic-ad-seed T2 (algebraic-generator sqrt2)))
+                   (map (lambda (i) (algebraic-ad-value T2 (vector (rand-s2) (rand-s2) (rand-s2)))) (iota 3)))
+           (list 0 1 -1 9223372036854775808))
+(display "randomized (seed 20261024): 12 infinite carriers, ")
+(display (- law-triples random-triples-before)) (display " triples") (newline)
+
+;; ===========================================================================
+;; 3. Characteristic, nilpotency, units and the descriptor
+;; ===========================================================================
+
+(check "characteristic: Z/12 is 12, Q is 0, F_7[e]/e^6 is 7, Z[G] is 0"
+       (equal? (map (lambda (R) (ring-ref R 'characteristic)) (list (make-zmod 12) rationals JF7 laurent)) (list 12 0 7 0)))
+(check "field?: Z/13 yes, Z/12 no, Q yes, Q[e]/e^4 no, Q(sqrt 2) yes, Z/1 no"
+       (equal? (map (lambda (R) (ring-ref R 'field?)) (list (make-zmod 13) (make-zmod 12) rationals JQ4 Qs2 (make-zmod 1)))
+               (list #t #f #t #f #t #f)))
+(define (nilpotency-exact? J)
+  (let* ((n (ring-ref J 'nilpotency)) (e (jet-seed J 0)))
+    (and (r-zero? J (r-expt J e n)) (not (r-zero? J (r-expt J e (- n 1)))))))
+(check "nilpotency: e^n = 0 and e^(n-1) /= 0 in K[e]/e^n for n = 1..7 over Q, F_2, Z/4"
+       (let loop ((n 2) (ok #t))
+         (if (> n 7) ok
+             (loop (+ n 1) (and ok (nilpotency-exact? (make-jets rationals n)) (nilpotency-exact? (make-jets F2 n))
+                                (nilpotency-exact? (make-jets Z4 n)))))))
+(check "nilpotency: the declared order of Q(sqrt 2)[e]/e^3 is 3" (= (ring-ref Qs2T 'nilpotency) 3))
+(check "units: F_13 has 12, Z/12 has 4 (1 5 7 11), Z/1 has its one element"
+       (and (= (length (filter (lambda (a) (r-unit? (make-zmod 13) a)) (iota 13))) 12)
+            (equal? (filter (lambda (a) (r-unit? (make-zmod 12) a)) (iota 12)) '(1 5 7 11))
+            (r-unit? (make-zmod 1) 0)))
+(check "descriptor: ABI version 1, stable family ids, one interned descriptor per parameter"
+       (and (= (ring-abi-version) 1) (= (ring-carrier-abi-version F7) 1)
+            (equal? (map ring-carrier-family-id (list integers rationals flonums F7 JF7 Qx laurent Qs2 numeric-tower))
+                    (list 1 2 3 4 5 6 7 8 9))
+            (eq? (make-zmod 7) F7) (eq? (make-jets F7 6) JF7) (eq? (make-polys rationals) Qx)
+            (not (eq? (make-jets rationals 2 'e) (make-jets rationals 2 'd)))))
+(check "descriptor: identity-keyed carriers compare by identity without being retained"
+       (and (ring-carrier=? (algebraic-domain sqrt2) Qs2)
+            (not (memq (algebraic-domain sqrt2) (ring-registered-carriers)))))
+(check "ring-ref: names and capabilities"
+       (and (equal? (ring-ref JF7 'name) "Z/7[e]/e^6") (eq? (ring-ref JF7 'base) F7)
+            (eq? (ring-ref flonums 'tier) 'ieee) (not (ring-ref flonums 'lawful?)) (ring-ref rationals 'exact?)))
+(check "a user carrier: Z/5 written by hand passes the exhaustive law check"
+       (let ((Z5 (make-ring-carrier "Z/5 by hand" 'characteristic 5 'field? #t
+                   'zero 0 'one 1 'add (lambda (a b) (modulo (+ a b) 5)) 'neg (lambda (a) (modulo (- a) 5))
+                   'mul (lambda (a b) (modulo (* a b) 5)) 'from-integer (lambda (n) (modulo n 5))
+                   'equal? = 'unit? (lambda (a) (not (= a 0)))
+                   'inverse (lambda (a) (modulo (expt a 3) 5)))))
+         (and (null? (ring-law-violations Z5 (iota 5) small-ints))
+              (refuses? 'ring-not-a-unit (list 'r-inv "Z/5 by hand" 0) (lambda () (r-inv Z5 0))))))
+
+;; ===========================================================================
+;; 4. Refusals (ADR-0034 section 5)
+;; ===========================================================================
+
+(define Z6 (make-zmod 6))
+(define F11 (make-zmod 11))
+(check "refusal: non-units of Z/6 (0 2 3 4) are named"
+       (and (refuses? 'ring-not-a-unit (list 'r-inv "Z/6" 0) (lambda () (r-inv Z6 0)))
+            (refuses? 'ring-not-a-unit (list 'r-inv "Z/6" 2) (lambda () (r-inv Z6 2)))
+            (refuses? 'ring-not-a-unit (list 'r-inv "Z/6" 3) (lambda () (r-inv Z6 3)))
+            (refuses? 'ring-not-a-unit (list 'r-inv "Z/6" 4) (lambda () (r-inv Z6 4)))))
+(check "refusal: zero in F_7 and Q, and r-inv of a non-unit integer"
+       (and (refuses? 'ring-not-a-unit (list 'r-inv "Z/7" 0) (lambda () (r-inv F7 0)))
+            (refuses? 'ring-not-a-unit (list 'r-inv "Q" 0) (lambda () (r-inv rationals 0)))
+            (refuses? 'ring-not-a-unit (list 'r-inv "Z" 2) (lambda () (r-inv integers 2)))))
+(check "Z: a non-unit divisor promotes to Q along the tower edge; exact zero is refused"
+       (and (= (r/ integers 1 3) 1/3) (= (r/ integers 6 3) 2)
+            (refuses? 'ring-not-a-unit (list 'r/ "Z" 0) (lambda () (r/ integers 1 0)))))
+(check "refusal: a jet whose constant term is not a unit (Q: e; Z/4: 2 + e)"
+       (and (refuses? 'ring-not-a-unit 'any (lambda () (r-inv JQ4 (jet-seed JQ4 0))))
+            (refuses? 'ring-not-a-unit 'any (lambda () (r-inv J-Z4-2 (jet-seed J-Z4-2 2))))))
+(check "refusal: x in Q[x] and 2x in Z/4[x] are not units (no rational functions)"
+       (and (refuses? 'ring-not-a-unit 'any (lambda () (r-inv Qx (ring-poly-variable Qx))))
+            (refuses? 'ring-not-a-unit 'any (lambda () (r-inv Z4x (ring-poly Z4x '(0 2)))))))
+(check "refusal: 2t and 1 + t in Z[t,1/t] are not units; t^-1 is"
+       (and (refuses? 'ring-not-a-unit 'any (lambda () (r-inv laurent (zset-singleton 1 2))))
+            (refuses? 'ring-not-a-unit 'any (lambda () (r-inv laurent (zset-from-weighted '((1 0) (1 1))))))
+            (zset=? (r-inv laurent (zset-singleton 1 1)) (zset-singleton -1 1))))
+(check "refusal: zero in Q(sqrt 2) is not a unit; 1 + sqrt 2 is"
+       (and (refuses? 'ring-not-a-unit 'any (lambda () (r-inv Qs2 0)))
+            (r-one? Qs2 (r* Qs2 (algebraic-element sqrt2 '(1 1)) (r-inv Qs2 (algebraic-element sqrt2 '(1 1)))))))
+(check "rule 3: a rational enters Z/m only by explicit ring-admit, refused when d is not a unit"
+       (and (= (ring-admit F7 1/3) 5) (= (ring-admit Z6 1/5) 5)
+            (refuses? 'ring-not-a-unit (list 'ring-admit "Z/6" 2) (lambda () (ring-admit Z6 1/2)))
+            (refuses? 'ring-no-common-carrier (list 'r+ "Q" "Z/7") (lambda () (r+ F7 1/2 1)))
+            (r-one? JF7 (r* JF7 (ring-admit JF7 1/2) 2))))
+(check "rule 6: F_7 with F_11, F_7 with Z/7^16, F_p with a rational have no common carrier"
+       (and (refuses? 'ring-no-common-carrier (list 'ring-join "Z/7" "Z/11")
+                      (lambda () (ring-binary 'add (ring-element F7 3) (ring-element F11 3))))
+            (refuses? 'ring-no-common-carrier (list 'ring-join "Z/7" (ring-carrier-name Z7^16))
+                      (lambda () (ring-binary 'mul (ring-element F7 3) (ring-element Z7^16 3))))
+            (refuses? 'ring-no-common-carrier (list 'ring-join "Q" "Z/7")
+                      (lambda () (ring-binary 'add 1/2 (ring-element F7 3))))))
+(check "rule 6: Q(sqrt 2) with Q(sqrt 3) before a compositum is declared"
+       (let ((sqrt3 (make-algebraic-field '(-3 0 1) 5 1)))
+         (refuses? 'ring-no-common-carrier 'any
+                   (lambda () (ring-binary 'add (algebraic-generator sqrt2) (algebraic-generator sqrt3))))))
+(check "rule 6: two jet generators meet only by explicit nesting"
+       (let ((Je (make-jets rationals 2 'e)) (Jd (make-jets rationals 2 'd)))
+         (refuses? 'ring-no-common-carrier (list 'ring-join "Q[e]/e^2" "Q[d]/d^2")
+                   (lambda () (ring-binary 'add (jet-seed Je 0) (jet-seed Jd 0))))))
+(check "rule 5: a flonum never enters a lawful carrier implicitly"
+       (and (refuses? 'ring-no-common-carrier (list 'r+ "R (binary64)" "Q") (lambda () (r+ rationals 0.5 1)))
+            (refuses? 'ring-no-common-carrier (list 'r* "R (binary64)" "Q[e]/e^4") (lambda () (r* JQ4 0.5 (r1 JQ4))))
+            (refuses? 'ring-no-common-carrier 'any (lambda () (r+ F7 2.0 1)))))
+(check "an exact carrier never produces an inexact element"
+       (let ((x (r* rationals (r+ rationals 1/3 2) (r-inv rationals 7/5))))
+         (and (exact? x) (= x 5/3) (exact? (jet-coefficient (r* JQ4 (jet-seed JQ4 1/2) 1/3) 0)))))
+(check "refusal: a value in no carrier is not an element"
+       (refuses? 'ring-not-an-element (list 'r+ "Z/7" 'banana) (lambda () (r+ F7 'banana 1))))
+(check "refusal: order needs the order capability (F_p, jets have none)"
+       (and (refuses? 'ring-missing-capability (list 'r< "Z/7" 'order) (lambda () (r< F7 1 2)))
+            (refuses? 'ring-missing-capability 'any (lambda () (r< JQ4 1 2)))
+            (r< rationals 1/3 1/2) (r< integers -5 3)
+            (r< rationals (ring-primal JQ4 (jet-seed JQ4 1/3)) (ring-primal JQ4 (jet-seed JQ4 1/2)))))
+(check "refusal: analytic functions need the analytic capability (not Q, not Z/m)"
+       (and (refuses? 'ring-missing-capability (list 'r-analytic "Q" 'analytic) (lambda () (r-analytic rationals 'exp 1)))
+            (refuses? 'ring-missing-capability 'any (lambda () (r-analytic F7 'exp 1)))
+            (= (r-analytic flonums 'sqrt 4.0) 2.0)))
+(check "refusal: euclidean division needs a field of coefficients (Z[x] has none)"
+       (and (refuses? 'ring-missing-capability 'any (lambda () (r-gcd (make-polys integers) (r1 (make-polys integers)) (r1 (make-polys integers)))))
+            (= (r-gcd integers -12 18) 6)))
+(check "refusal: the IEEE tier and the native tower are not checked as rings"
+       (and (refuses? 'ring-missing-capability (list 'ring-law-violations "R (binary64)" 'lawful?)
+                      (lambda () (ring-law-violations flonums (list 1.0))))
+            (refuses? 'ring-missing-capability 'any (lambda () (ring-law-violations numeric-tower (list 1))))))
+(check "refusal: reduction exists only to a divisor of the modulus"
+       (and (refuses? 'ring-no-ring-map (list 'zmod-reduction "Z/6" "Z/4") (lambda () (zmod-reduction Z6 Z4)))
+            (= (ring-map-apply (zmod-reduction Z7^16 F7) (+ 3 (* 7 1234567))) 3)))
+
+;; ===========================================================================
+;; 5. The coercion lattice and ring maps
+;; ===========================================================================
+
+(check "rule 2: exact integers enter every carrier through from-integer"
+       (and (= (r* F7 3 10) 2) (r= JQ4 (r+ JQ4 (jet-seed JQ4 0) 3) (make-jet JQ4 '(3 1)))
+            (r= laurent (r+ laurent (zset-singleton 1 1) 2) (zset-from-weighted '((1 1) (2 0))))
+            (r= Qs2 (r+ Qs2 (algebraic-generator sqrt2) 1) (algebraic-element sqrt2 '(1 1)))))
+(check "rule 3: rationals enter Q-algebras: Q[x], Q[e]/e^n, Q(sqrt 2) and its lifts"
+       (and (equal? (ring-poly-coefficients (r+ Qx (ring-poly-variable Qx) 1/2)) '(1/2 1))
+            (equal? (jet-coefficients (r* JQ4 (jet-seed JQ4 0) 2/3)) '(0 2/3 0 0))
+            (r= Qs2 (r* Qs2 (algebraic-generator sqrt2) 1/2) (algebraic-element sqrt2 '(0 1/2)))
+            (r= Qs2T (r+ Qs2T (algebraic-ad-seed T2 (algebraic-generator sqrt2)) 1/3)
+                (algebraic-ad-seed T2 (algebraic-element sqrt2 '(1/3 1))))))
+(check "rule 4: a K-element enters K[e]/e^n and K[x] as a constant, along nested bases"
+       (and (r= JF7 (r+ JF7 (ring-element F7 3) (jet-seed JF7 0)) (make-jet JF7 '(3 1)))
+            (r= J-F2-ed (r+ J-F2-ed (jet-seed J-F2-e 1) (jet-seed J-F2-ed 0))
+                (make-jet J-F2-ed (list (jet-seed J-F2-e 1) 1)))
+            (r= Qs2T (r+ Qs2T (algebraic-generator sqrt2) 0) (algebraic-ad-constant T2 (algebraic-generator sqrt2)))))
+(check "rule 5: exact meets flonum by rounding (R7RS contagion)"
+       (and (= (ring-binary 'add 1/3 0.5) (+ 1/3 0.5)) (inexact? (ring-binary 'mul 3 0.5))
+            (= (r+ flonums 1/3 0) (exact->inexact 1/3))))
+(check "rule 1 and dynamic dispatch: the join, with results located in it"
+       (and (eq? (ring-join integers F7) F7) (eq? (ring-join F7 JF7) JF7) (eq? (ring-join rationals flonums) flonums)
+            (eq? (ring-join rationals Qx) Qx) (eq? (ring-join F7 F7) F7)
+            (= (ring-element-value (ring-binary 'add (ring-element F7 5) 4)) 2)
+            (eq? (ring-carrier-of (ring-binary 'mul (ring-element F7 5) 4)) F7)
+            (ring-equal? (ring-element F7 10) (ring-element F7 3))))
+(define (map-respects? phi samples)
+  (let ((S (ring-map-source phi)) (T (ring-map-target phi)) (ap (lambda (x) (ring-map-apply phi x))))
+    (and (r-one? T (ap (r1 S)))
+         (all? (lambda (a) (all? (lambda (b) (and (r= T (ap (r+ S a b)) (r+ T (ap a) (ap b)))
+                                                   (r= T (ap (r* S a b)) (r* T (ap a) (ap b)))))
+                                 samples))
+               samples))))
+(define (all? p xs) (or (null? xs) (and (p (car xs)) (all? p (cdr xs)))))
+(define Qx-samples (list (ring-poly-variable Qx) (ring-poly Qx '(1 -2/3 5)) (ring-poly Qx '(0 0 0 7))))
+(check "ring maps: Z -> F_7, Q -> Q[e]/e^4, Q -> binary64 are lattice base changes"
+       (and (map-respects? (ring-base-change integers F7) (list 12 -5 (expt 10 30)))
+            (map-respects? (ring-base-change rationals JQ4) (list 1/3 -7/2 5))
+            (= (ring-map-apply (ring-base-change rationals flonums) 1/4) 0.25)
+            (refuses? 'ring-no-common-carrier 'any (lambda () (ring-base-change F7 rationals)))))
+(check "ring maps: Q[x] -> Q[e]/e^4 by x -> 2/3 + e, Z/7^16 -> F_7, Z[t,1/t] -> Q by t -> 2, the primal"
+       (and (map-respects? (ring-poly-evaluation Qx JQ4 (jet-seed JQ4 2/3)) Qx-samples)
+            (map-respects? (zmod-reduction Z7^16 F7) (list 3 (expt 7 15) 123456789))
+            (map-respects? (group-ring-character laurent rationals (lambda (g) (expt 2 g)))
+                           (list (zset-singleton 1 1) (zset-from-weighted '((2 0) (-1 -1))) (zset-singleton 3 -4)))
+            (map-respects? (jet-primal JQ4) (list (jet-seed JQ4 1/2) (make-jet JQ4 '(2 0 1 -1))))))
+(check "ring maps: composition Z -> Z/7^16 -> F_7 is the reduction Z -> F_7"
+       (let ((g (ring-map-compose (zmod-reduction Z7^16 F7) (ring-base-change integers Z7^16))))
+         (all? (lambda (n) (= (ring-map-apply g n) (modulo n 7))) (list 0 -1 123456789 (expt 10 40)))))
+
+;; ===========================================================================
+;; 6. Interoperation
+;; ===========================================================================
+
+(check "core.algebraic_domain: the domain is a carrier and keeps its coefficient vocabulary"
+       (let ((add (algebraic-domain-ref Qs2 'add)) (a (algebraic-element sqrt2 '(1 2))) (b (algebraic-element sqrt2 '(3 -1))))
+         (and (ring-carrier? Qs2) (eq? (algebraic-domain-ref Qs2 'owner) sqrt2)
+              (eq? (algebraic-domain-ref Qs2 'kind) 'field) (= (algebraic-domain-ref Qs2 'dimension) 2)
+              (= (algebraic-domain-ref Qs2T 'depth) 1)
+              (r= Qs2 (add a b) (r+ Qs2 a b))
+              ((algebraic-domain-ref Qs2 'zero?) (algebraic-domain-ref Qs2 'zero))
+              (r= Qs2 (r* Qs2 (algebraic-generator sqrt2) (algebraic-generator sqrt2)) 2))))
+(check "core.algebraic_domain: an algebraic element names its carrier"
+       (ring-carrier=? (ring-carrier-of (algebraic-generator sqrt2)) Qs2))
+(check "core.symbolic coefficient fields: GF(p) is (make-zmod p), Q is rationals"
+       (and (eq? (coefficient-field->ring (vector 'eshkol-coefficient-field 7)) F7)
+            (eq? (coefficient-field->ring (vector 'eshkol-coefficient-field 0)) rationals)
+            (equal? (ring->coefficient-field F11) (vector 'eshkol-coefficient-field 11))
+            (refuses? 'ring-no-ring-map 'any (lambda () (ring->coefficient-field Z6)))))
+(check "core.dbsp: Z-set sum, negation and join are the ring operations of Z[G]"
+       (let ((a (zset-from-weighted '((2 1) (-1 0)))) (b (zset-singleton 2 3)))
+         (and (zset=? (r+ laurent a b) (zset-add a b)) (zset=? (r-neg laurent a) (zset-negate a))
+              (= (zset-count (r* laurent a b)) (* (zset-count a) (zset-count b))))))
+(check "numeric-tower: the compiler's derivative and taylor differentiate a program written on core.ring"
+       (let ((f (lambda (x) (r- numeric-tower (r* numeric-tower 3 (r-expt numeric-tower x 3)) (r* numeric-tower 2 x)))))
+         (and (= (derivative f 2) 34) (equal? (taylor f 1 3) (list 1 7 9 3)))))
+
+(newline)
+(display "ring_test: ") (display passed) (display " checks passed, ") (display failed) (display " failed; ")
+(display law-triples) (display " law triples") (newline)
+(if (= failed 0)
+    (begin (display "PASS: ring_test") (newline) (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
