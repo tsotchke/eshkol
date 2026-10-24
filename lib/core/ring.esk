@@ -43,7 +43,7 @@
   ;; descriptor and registry
   make-ring-carrier make-family-carrier ring-carrier? ring-ref ring-carrier=?
   ring-carrier-name ring-carrier-family ring-carrier-family-id
-  ring-carrier-parameters ring-carrier-abi-version ring-abi-version
+  ring-carrier-parameters ring-carrier-abi-version ring-carrier-extra ring-abi-version
   ring-families ring-registered-carriers ring-register-recognizer!
   ;; generic operations
   r0 r1 r+ r- r* r-neg r-inv r/ r-expt r= r-int r-zero? r-one? r-unit?
@@ -252,6 +252,8 @@
         ((assq key (vector-ref R 30)) => cdr)
         (else (error "ring-ref: unknown field" key (vector-ref R 5)))))
 (define (rc-extra R key) (let ((p (assq key (vector-ref R 30)))) (if p (cdr p) #f)))
+;; A family's own data, by key (#f when absent).
+(define (ring-carrier-extra R key) (rc-extra (rc-check R "ring-carrier-extra") key))
 
 ;; ===========================================================================
 ;; Located elements and coercion (ADR-0034 section 5)
