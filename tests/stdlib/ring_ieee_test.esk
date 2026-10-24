@@ -30,7 +30,6 @@
       (set! passed (+ passed 1))
       (begin (set! failed (+ failed 1)) (display "FAIL: ") (display label) (newline))))
 
-(define R flonums)
 
 ;; ---------------------------------------------------------------------------
 ;; Exact reference: binary64 rounding of an exact rational
@@ -136,7 +135,7 @@
   (if (not (matches-reference? result q))
       (begin (set! spec-ok #f) (display "  off-spec: ") (display result) (newline)))
   ;; rule 5: the carrier's admission of the exact value rounds it the same way
-  (if (not (matches-reference? (r+ R q 0.0) q)) (set! convert-ok #f))
+  (if (not (matches-reference? (r+ flonums q 0.0) q)) (set! convert-ok #f))
   (fold! result))
 
 (for-each
@@ -144,10 +143,10 @@
    (for-each
     (lambda (b)
       (let ((ea (inexact->exact a)) (eb (inexact->exact b)))
-        (spec-check! (r+ R a b) (+ ea eb))
-        (spec-check! (r- R a b) (- ea eb))
-        (spec-check! (r* R a b) (* ea eb))
-        (if (not (= b 0)) (spec-check! (r/ R a b) (/ ea eb)))))
+        (spec-check! (r+ flonums a b) (+ ea eb))
+        (spec-check! (r- flonums a b) (- ea eb))
+        (spec-check! (r* flonums a b) (* ea eb))
+        (if (not (= b 0)) (spec-check! (r/ flonums a b) (/ ea eb)))))
     samples))
  samples)
 (check "add, sub, mul and division are the exact result rounded once, ties to even" spec-ok)
@@ -161,32 +160,32 @@
 (define (bits= x y) (= (f64-bits x) (f64-bits y)))
 (define (all? p xs) (or (null? xs) (and (p (car xs)) (all? p (cdr xs)))))
 (check "add and mul are commutative bit for bit"
-       (all? (lambda (a) (all? (lambda (b) (and (bits= (r+ R a b) (r+ R b a)) (bits= (r* R a b) (r* R b a)))) samples)) samples))
+       (all? (lambda (a) (all? (lambda (b) (and (bits= (r+ flonums a b) (r+ flonums b a)) (bits= (r* flonums a b) (r* flonums b a)))) samples)) samples))
 (check "a + 0.0 = a and a * 1.0 = a, bit for bit except -0.0 + 0.0 = +0.0"
-       (all? (lambda (a) (and (if (eqv? a -0.0) (bits= (r+ R a 0.0) 0.0) (bits= (r+ R a 0.0) a))
-                              (bits= (r* R a 1.0) a)))
+       (all? (lambda (a) (and (if (eqv? a -0.0) (bits= (r+ flonums a 0.0) 0.0) (bits= (r+ flonums a 0.0) a))
+                              (bits= (r* flonums a 1.0) a)))
              samples))
 
 ;; ---------------------------------------------------------------------------
 ;; 3. Negation, division by zero, NaN
 ;; ---------------------------------------------------------------------------
 
-(define inf (r/ R 1.0 0.0))
-(define nan (r/ R 0.0 0.0))
+(define inf (r/ flonums 1.0 0.0))
+(define nan (r/ flonums 0.0 0.0))
 (check "negation is the sign flip: -(0.0) = -0.0, -(-0.0) = 0.0, -(inf) = -inf"
-       (and (bits= (fold! (r-neg R 0.0)) -0.0) (bits= (fold! (r-neg R -0.0)) 0.0)
-            (bits= (fold! (r-neg R inf)) (r/ R -1.0 0.0)) (nan? (r-neg R nan))
-            (all? (lambda (a) (bits= (r-neg R (r-neg R a)) a)) samples)))
+       (and (bits= (fold! (r-neg flonums 0.0)) -0.0) (bits= (fold! (r-neg flonums -0.0)) 0.0)
+            (bits= (fold! (r-neg flonums inf)) (r/ flonums -1.0 0.0)) (nan? (r-neg flonums nan))
+            (all? (lambda (a) (bits= (r-neg flonums (r-neg flonums a)) a)) samples)))
 (check "division by zero gives an infinity or NaN and does not raise"
-       (and (infinite? (fold! inf)) (> inf 0) (infinite? (fold! (r/ R -1.0 0.0))) (< (r/ R -1.0 0.0) 0)
-            (< (fold! (r/ R 1.0 -0.0)) 0) (nan? (fold! nan)) (= (fold! (r-inv R 0.0)) inf)))
+       (and (infinite? (fold! inf)) (> inf 0) (infinite? (fold! (r/ flonums -1.0 0.0))) (< (r/ flonums -1.0 0.0) 0)
+            (< (fold! (r/ flonums 1.0 -0.0)) 0) (nan? (fold! nan)) (= (fold! (r-inv flonums 0.0)) inf)))
 (check "NaN is not equal to itself; equal? is numeric ="
-       (and (not (r= R nan nan)) (r= R 0.0 -0.0) (not (r= R 1.0 nan))))
+       (and (not (r= flonums nan nan)) (r= flonums 0.0 -0.0) (not (r= flonums 1.0 nan))))
 (check "every value is a unit of the IEEE tier"
-       (and (r-unit? R 0.0) (r-unit? R nan) (r-unit? R inf)))
+       (and (r-unit? flonums 0.0) (r-unit? flonums nan) (r-unit? flonums inf)))
 (check "an exact operand meets a flonum by rounding (rule 5)"
-       (and (bits= (fold! (r+ R 1/3 0.0)) (exact->inexact 1/3)) (bits= (fold! (r* R 1/10 1.0)) 0.1)
-            (bits= (fold! (r-int R (expt 10 400))) inf)))
+       (and (bits= (fold! (r+ flonums 1/3 0.0)) (exact->inexact 1/3)) (bits= (fold! (r* flonums 1/10 1.0)) 0.1)
+            (bits= (fold! (r-int flonums (expt 10 400))) inf)))
 
 ;; ---------------------------------------------------------------------------
 ;; 4. No reassociation and no contraction
@@ -195,17 +194,17 @@
 (define u (double-from 0 1023 (expt 2 22)))           ; 1 + 2^-30
 (define w (double-from 0 1022 (- two52 (expt 2 23)))) ; 1 - 2^-30
 (check "(a * b) + c rounds twice: no fused multiply-add"
-       (and (= (inexact->exact (r* R u w)) 1) (bits= (fold! (r+ R (r* R u w) -1.0)) 0.0)
+       (and (= (inexact->exact (r* flonums u w)) 1) (bits= (fold! (r+ flonums (r* flonums u w) -1.0)) 0.0)
             (not (= (* (inexact->exact u) (inexact->exact w)) 1))))
 (check "(a + b) + c and a + (b + c) are each computed as written"
-       (and (bits= (fold! (r+ R (r+ R 1e16 -1e16) 1.0)) 1.0)
-            (bits= (fold! (r+ R 1e16 (r+ R -1e16 1.0))) 0.0)))
+       (and (bits= (fold! (r+ flonums (r+ flonums 1e16 -1e16) 1.0)) 1.0)
+            (bits= (fold! (r+ flonums 1e16 (r+ flonums -1e16 1.0))) 0.0)))
 
 ;; ---------------------------------------------------------------------------
 ;; 5. Jets over flonums: the lawful recurrence with each operation rounded
 ;; ---------------------------------------------------------------------------
 
-(define J (make-jets R 4))
+(define J (make-jets flonums 4))
 (check "jets over flonums are in the IEEE tier"
        (and (eq? (ring-ref J 'tier) 'ieee) (not (ring-ref J 'lawful?))))
 (define (cauchy a b)                     ; c_k = a0 b_k + a1 b_{k-1} + ... in that order
