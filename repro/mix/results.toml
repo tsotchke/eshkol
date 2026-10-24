@@ -7,8 +7,9 @@ compiler_sha256 = "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1
 compiler_rebuilt = false
 jit_cache_enabled = false
 source_manifest = "SOURCE.toml"
-source_manifest_sha256 = "d9c29f789d78e4a233022a4617e44965d2738e0d46eb8fa7ae262a30486e4448"
-source_manifest_verified_before_gate = true
+source_manifest_sha256 = "60d60c1095b35531df32c464d0c65869056e108623b2c3caba9cfa7869fca6a9"
+source_manifest_verified_before_gate = false
+source_manifest_generated_after_gate = true
 source_manifest_verified_after_gate = true
 whole_project_test_sweep = false
 vm_wasm_qualified = false
@@ -38,6 +39,7 @@ erased_input_guard_rejects_noninteger_on_both_engines = true
 address_space_limit_kib = 4194304
 
 [observations]
+measured_revision = "5c9f15eca7126d55c19c5bf6de267b8744673248"
 measurement_scope = "complete shell gate including compilation and child processes"
 wall_seconds = 108.03
 user_seconds = 90.90
@@ -61,3 +63,16 @@ fixed_identifier_probe = "normal"
 original_modulo_export_native_timeout_seconds = 3
 original_modulo_export_native_exit_code = 124
 scope = "grammar-aware call discovery and generated wrapper export identity"
+
+[verification]
+command = "ESHKOL_BIN=/path/to/eshkol-run bash scripts/run_mix_verify_gate.sh"
+checks_per_engine = 64
+engines = ["LLVM JIT", "separately compiled and executed AOT"]
+stdout_identical = true
+verdict = "pass"
+fragment = "exact integer literals/statics, variables, sequential let, binary + - *, reached acyclic first-order calls"
+unsupported_verdict = "unknown"
+producer_origin_trusted = false
+sample_battery_counterfeit_rejected = true
+original_workbench_gate_rerun = "pass: 4668 checks, 571 emitted and 41 self-hosted comparisons per engine"
+native_emitter_verified_by_polynomial_checker = false

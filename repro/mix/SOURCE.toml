@@ -1,4 +1,5 @@
 format = "eshkol-mix-contribution-v1"
+verification_parent_revision = "5c9f15eca7126d55c19c5bf6de267b8744673248"
 target_repository = "https://github.com/tsotchke/eshkol"
 target_revision = "341ac812ed600fd9d27c28e9509d66ab71363947"
 reference_mix_revision = "5bc97a539d8911442fd48238513a56841746a08c"
@@ -37,7 +38,7 @@ sha256 = "80c1b0f3ae19a2e87f79f57f06e71b7fc495ba4a876ca25e464137f91ace0a9c"
 
 [[file]]
 path = "CMakeLists.txt"
-sha256 = "8a655c6f4fc1150aa80ce7247c2ec1ce0d758e3749e79c5ce3f8e121a747b9a5"
+sha256 = "25f28487624783d8f2aacd4333d6ed668fbae3de5352f21f7c62403a710d8984"
 
 [[file]]
 path = "lib/core/compiler/mix.esk"
@@ -77,8 +78,20 @@ sha256 = "245ff4cb5fb9909de425b7d041449fb9d2135a30e46038128db8999e0f0a4b62"
 
 [[file]]
 path = "docs/reference/stdlib/mix.md"
-sha256 = "e2974fdbfd2a5f1c696fde422999f0e10331ec5189859343d1503db085b3d119"
+sha256 = "b911eb2b61ce7ebd6990a587ba19a35330243c0fbc0de4e3055732d18659db3b"
 
 [[file]]
 path = "docs/reference/stdlib/INDEX.md"
-sha256 = "825691ba60b643fc25164539d313ea4ae928e5b1c0fa0bef4fa51ba94235d126"
+sha256 = "289031d258fc2abbc3f71f318bc74826fd79acbf01b1ad1edf3b4d0d04aa1032"
+
+[[file]]
+path = "lib/core/compiler/mix/verify.esk"
+sha256 = "4a78f6d39c04a91dfb70c46cf725a1538909e061b73d8964286e9d8a9a412dd6"
+
+[[file]]
+path = "tests/stdlib/mix_verify_test.esk"
+sha256 = "3527c2c091949d29d7df664a5436f3c3dd615df0e257d01ff5b84cff1ced3b76"
+
+[[file]]
+path = "scripts/run_mix_verify_gate.sh"
+sha256 = "b9c31666bce1d675288c12f968ddbe48d5257c8a08dfa9aa316126ffebae78b7"

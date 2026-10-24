@@ -100,6 +100,63 @@ fallback; it never publishes that fallback under the normalized input ABI.
 
 ## Source emission and qualification
 
+### Optional exact specialization check
+
+`core.compiler.mix.verify` independently compares an admitted source program
+under its static bindings with a specialization result:
+
+```scheme
+(require core.compiler.mix.verify)
+(define source '(program () (prim + (var x) (var k))))
+(define specialized (mix-specialize source '((k . 4)) options limits))
+(define verification
+  (mix-verify-specialization source '((k . 4)) specialized
+                            (mix-verification-limits 100000 64 256 300000)))
+(mix-verification-status verification) ; equivalent
+```
+
+The checker uses `core.symbolic` integer polynomial arithmetic and canonical
+equality. It does not call the specializer, emitter, or either program to
+produce its verdict. It admits exact integer literals and static values,
+integer variables, sequential `let`, binary `+`, `-`, `*`, and reached acyclic
+first-order function calls. Every evaluated binding and argument must belong
+to that fragment, even when its value is later erased. Conditionals, recursive
+calls, other primitives and noninteger values return `unknown`.
+
+Results are `#(mix-verification-v1 status reason)`, read with
+`mix-verification-status` and `mix-verification-reason`. `equivalent` means the
+two admitted expressions define the same integer polynomial for every exact
+integer assignment to the declared dynamic inputs. `different` means their
+polynomials differ, without supplying a particular counterexample. `unknown`
+also covers invalid data, a non-normal result, an input-contract mismatch or
+an exhausted admission budget. Producer `origin` is ignored. The residual's
+input list must exactly match the source's dynamic input contract after
+removing static bindings; erased inputs remain required. Static alists retain
+the first-binding-wins rule.
+
+`mix-verification-limits work depth terms nodes` bounds shared expression
+visits plus polynomial-operation work, expression/call nesting, unreduced
+term counts per arithmetic operation, and input data occurrences respectively.
+For multiplication, the term Cartesian product is checked before allocation.
+Data admission applies separately to source/statics and residual/ABI. The
+current profile caps those limits at 1000000, 128, 512 and 300000; intermediate
+coefficients must be exact integers of at most 1024 printed characters and
+polynomial degree at most 1000000. These conservative bounds can return
+`unknown` for an algebraically simple expression with a large expansion.
+They do not measure host instructions, RSS or every arithmetic allocation.
+
+This checks mathematical return-value equivalence in the admitted fragment.
+It does not equate reference fuel or allocation counters, check emitted native
+source, or establish correctness of arbitrary generated compilers. The checker
+and Eshkol's exact integer/polynomial implementation remain trusted code.
+
+Run `ESHKOL_BIN=/path/to/eshkol-run bash scripts/run_mix_verify_gate.sh` for
+the separate JIT/AOT gate. Its negative controls include changed coefficients,
+forged producer metadata, invalid/erased input contracts and a polynomial that
+agrees with identity at every integer in `[-7,7]` but differs elsewhere.
+
+### Native emission
+
 The emitter admits exact integer parameters, sequential integer bindings,
 integer-valued named functions with acyclic calls, conditionals and arithmetic/comparison
 primitives. It prunes unreachable helpers, assigns fresh local identifiers and
