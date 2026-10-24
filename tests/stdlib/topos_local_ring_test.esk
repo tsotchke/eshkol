@@ -1,0 +1,139 @@
+;;; core.topos flagship: the structure sheaf of Spec(Z/n) is internally a local
+;;; ring, a statement that only forcing semantics with covers can express.
+;;;
+;;; The site: the basic opens D(f) = {p prime, p | n, p does not divide f} of
+;;; Spec(Z/n) under inclusion; a family covers D(f) when its members generate
+;;; the unit ideal in the localization O(D(f)) = (Z/n)[1/f] = Z/m, where m is
+;;; n with the primes dividing f removed. The structure sheaf is D |-> O(D),
+;;; restriction is reduction mod m'.
+;;;
+;;; Why the theorem holds (Mac Lane-Moerdijk ch. VIII, the Zariski topos and
+;;; local rings; Johnstone, "Sketches of an Elephant", D3): for any
+;;; ring R and x in R the elements x and 1 - x generate the unit ideal, since
+;;; x + (1 - x) = 1. So the basic opens D(x) and D(1 - x) cover Spec R; on D(x)
+;;; the element x is invertible and on D(1 - x) so is 1 - x. Kripke-Joyal
+;;; forcing of a disjunction asks for exactly such a cover. The global ring Z/n
+;;; itself is not local when n has two prime factors: x = 3 in Z/12 is neither
+;;; a unit nor has 1 - x a unit, so the same formula fails in the presheaf
+;;; topos on the same poset, where a disjunction must be decided at the stage.
+(require stdlib)
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+(require core.topos)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display label) (newline))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (subsets-of xs) (if (null? xs) (list '()) (let ((r (subsets-of (cdr xs)))) (append r (map (lambda (s) (cons (car xs) s)) r)))))
+
+(define (prime-divisors n)
+  (let loop ((p 2) (m n) (acc '()))
+    (cond ((= m 1) (reverse acc))
+          ((= 0 (remainder m p)) (loop p (let strip ((m m)) (if (= 0 (remainder m p)) (strip (quotient m p)) m)) (cons p acc)))
+          (else (loop (+ p 1) m acc)))))
+;; the localization (Z/n)[1/f] = Z/m: remove from n every prime dividing f
+(define (localize-modulus n f)
+  (let loop ((m n)) (let ((g (gcd m f))) (if (= g 1) m (loop (quotient m g))))))
+(define (unit? m x) (= 1 (gcd x m)))
+
+;; The Zariski site of Z/n. Objects: the distinct basic opens, as sorted prime
+;; lists; for each open a generator f with D(f) = that open and its modulus.
+(define (zariski n)
+  (let* ((ps (prime-divisors n))
+         (opens (subsets-of ps))
+         (sorted (map (lambda (U) (sort U <)) opens))
+         (gen (lambda (U) (apply * (filter (lambda (p) (not (memv p U))) ps))))      ;; f with D(f) = U
+         (nobj (length sorted))
+         (ov (list->vector sorted))
+         (C (poset-category nobj (lambda (i j) (all? (lambda (p) (memv p (vector-ref ov j))) (vector-ref ov i))) sorted))
+         (modulus (lambda (c) (localize-modulus n (gen (vector-ref ov c)))))
+         ;; covering: the generators of the members generate the unit ideal of O(c)
+         (site (make-site C (lambda (c S)
+                              (let ((m (modulus c)))
+                                (= 1 (gcd m (apply gcd (cons 0 (map (lambda (f) (remainder (gen (vector-ref ov (arrow-source C f))) m)) S))))))))))
+    (list C site modulus ov gen)))
+(define (structure-sheaf Z)
+  (let ((C (car Z)) (modulus (caddr Z)))
+    (make-set-presheaf C (map (lambda (c) (range (modulus c))) (range (category-object-count C)))
+                       (lambda (a x) (remainder x (modulus (arrow-source C a)))))))
+(define (ring-language T O modulus)
+  (make-topos-language T (list (cons 'O O))
+                       (list (topos-function 'add '(O O) 'O (lambda (U x y) (remainder (+ x y) (modulus U))))
+                             (topos-function 'mul '(O O) 'O (lambda (U x y) (remainder (* x y) (modulus U))))
+                             (topos-function 'sub '(O O) 'O (lambda (U x y) (modulo (- x y) (modulus U))))
+                             (topos-constant 'zero 'O (lambda (U) 0))
+                             (topos-constant 'one 'O (lambda (U) (remainder 1 (modulus U)))))))
+(define local-ring
+  '(forall (x O) (or (exists (y O) (= (mul x y) one)) (exists (y O) (= (mul (sub one x) y) one)))))
+(define nontrivial '(not (= zero one)))
+(define field-decidable '(forall (x O) (or (= x zero) (exists (y O) (= (mul x y) one)))))
+(define field-kock '(forall (x O) (implies (not (= x zero)) (exists (y O) (= (mul x y) one)))))
+
+(define (study n)
+  (let* ((Z (zariski n)) (C (car Z)) (site (cadr Z)) (modulus (caddr Z)) (ov (cadddr Z))
+         (top (category-object-of-label C (sort (prime-divisors n) <)))
+         (Ofun (structure-sheaf Z))
+         (T (make-topos site)) (O (topos-object T Ofun)) (L (ring-language T O modulus))
+         (Tp (presheaf-topos C)) (Op (topos-object Tp Ofun)) (Lp (ring-language Tp Op modulus)))
+    (list Z C site T L Tp Lp top O)))
+
+(define (union-cover? C ov c S)
+  (equal? (sort (let loop ((fs S) (acc '())) (if (null? fs) acc (loop (cdr fs) (append (filter (lambda (p) (not (memv p acc))) (vector-ref ov (arrow-source C (car fs)))) acc)))) <)
+          (vector-ref ov c)))
+
+(for-each
+ (lambda (n)
+   (let* ((st (study n)) (Z (list-ref st 0)) (C (list-ref st 1)) (site (list-ref st 2)) (T (list-ref st 3)) (L (list-ref st 4))
+          (Tp (list-ref st 5)) (Lp (list-ref st 6)) (top (list-ref st 7)) (O (list-ref st 8))
+          (modulus (caddr Z)) (ov (cadddr Z)) (gen (list-ref Z 4))
+          (name (string-append "Spec(Z/" (number->string n) ")")))
+     (show (string-append name ": opens and the moduli of O on them") (map (lambda (c) (list (vector-ref ov c) (modulus c))) (range (category-object-count C))))
+     (check (string-append name ": the unit-ideal covers form a Grothendieck topology and agree with covers by unions of basic opens; O is a sheaf (Chinese remainder theorem)")
+            (and (grothendieck-topology? site)
+                 (all? (lambda (c) (all? (lambda (S) (eq? (site-covering? site c S) (union-cover? C ov c S))) (sieves-on C c))) (range (category-object-count C)))
+                 (presheaf-sheaf? site (topos-type-presheaf O))))
+     (let ((F (topos-formula L '() local-ring)) (Fp (topos-formula Lp '() local-ring)))
+       (check (string-append name ": the structure sheaf is internally local: every stage forces (forall x. (exists y. x y = 1) or (exists y. (1 - x) y = 1)), and forcing agrees with the Omega-valued truth")
+              (and (topos-valid? F) (cadr (topos-cross-check F))
+                   (topos-valid? (topos-formula L '() nontrivial))))
+       ;; the witnessing cover at the global stage: D(x) and D(1 - x)
+       (let* ((m (modulus top))
+              (bad (filter (lambda (x) (not (or (unit? m x) (unit? m (modulo (- 1 x) m))))) (range m)))
+              (Dx (lambda (x) (car (filter (lambda (c) (equal? (vector-ref ov c) (filter (lambda (p) (not (= 0 (remainder x p)))) (vector-ref ov top)))) (range (category-object-count C)))))))
+         (show (string-append name ": global elements with neither x nor 1 - x a unit (the ring Z/n is not local)") bad)
+         (check (string-append name ": for every such x the sieve generated by D(x) and D(1 - x) covers the global stage, x is a unit on D(x) and 1 - x on D(1 - x)")
+                (and (not (null? bad))
+                     (all? (lambda (x)
+                             (let* ((a (Dx x)) (b (Dx (modulo (- 1 x) m)))
+                                    (S (sieve-generated C top (list (car (category-hom C a top)) (car (category-hom C b top))))))
+                               (and (site-covering? site top S)
+                                    (unit? (modulus a) (remainder x (modulus a)))
+                                    (unit? (modulus b) (remainder (modulo (- 1 x) m) (modulus b))))))
+                           bad)))
+         (let ((w (topos-counter-witness Fp)))
+           (show (string-append name ": presheaf topos on the same poset, first stage refuting locality") (and w (vector-ref ov (car w))))
+           (check (string-append name ": with the trivial topology the same formula fails at the global stage (a disjunction there must be decided at the stage itself)")
+                  (and w (not (topos-forces? Fp top))
+                       (not (any? (lambda (x) (topos-forces? (topos-formula Lp '((x O)) '(or (exists (y O) (= (mul x y) one)) (exists (y O) (= (mul (sub one x) y) one)))) top (list x))) bad)))))))
+       ;; reduced rings (n squarefree) have internally decidable fields of fractions
+       (let* ((sqfree (= n (apply * (prime-divisors n))))
+              (Fd (topos-formula L '() field-decidable)) (Fk (topos-formula L '() field-kock))
+              (wd (topos-counter-witness Fd)) (wk (topos-counter-witness Fk)))
+         (show (string-append name ": counter-witness to (x = 0 or x invertible), and to (not x = 0 implies x invertible)")
+               (list (and wd (list (vector-ref ov (car wd)) (cadr wd))) (and wk (list (vector-ref ov (car wk)) (cadr wk)))))
+         (check (string-append name (if sqfree ": n is squarefree and O is internally a field in both senses" ": n is not squarefree and O is not internally a field: a nilpotent at a local stage is a counter-witness"))
+                (if sqfree (and (not wd) (not wk))
+                    (and wd wk (cadr (topos-cross-check Fd)) (cadr (topos-cross-check Fk))))))))
+ '(12 30))
+
+(if (= failed 0)
+    (begin (display "PASS: topos_local_ring_test (") (display passed) (display " checks)") (newline))
+    (begin (display "FAIL: topos_local_ring_test (") (display failed) (display " failed)") (newline)))
