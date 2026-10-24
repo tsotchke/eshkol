@@ -119,8 +119,8 @@ operation quantifies over them.
 (display (grothendieck-topology? site)) ;; => #t
 ;; a "topology" in which {a, b} has no cover fails the maximal-sieve axiom there
 (define ab (category-object-of-label C (list 0 1)))
-(define broken (make-site C (lambda (c S) (and (not (= c ab)) (site-covering? site c S)))))
-(display (car (grothendieck-topology-violations broken))) ;; => (maximal 3)
+(define without-ab (make-site C (lambda (c S) (and (not (= c ab)) (site-covering? site c S)))))
+(display (car (grothendieck-topology-violations without-ab))) ;; => (maximal 3)
 ```
 
 ### Finite spaces
