@@ -992,7 +992,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## The functor of points: one program over many rings
 
-Source: [mathematics_functor_of_points.esk](../examples/mathematics_functor_of_points.esk#L1). SHA-256: `22e792fcffb22dda5d704a95464f865ae7220370e67ae42838c4462b06b5dd4b`.
+Source: [mathematics_functor_of_points.esk](../examples/mathematics_functor_of_points.esk#L1). SHA-256: `81cf237b8423d59eb74d36e8404eec05bc8609c626a5a9f6688b3aeed738507a`.
 
 **Published result:** Grothendieck's functor of points identifies a scheme with its points in every commutative ring; a polynomial program is a natural transformation, so evaluation over k[e]/e^2 is forward-mode differentiation (the tangent space), over k[e]/e^(n+1) Taylor jets, over F_p reduction, and Newton iteration over Z/p^k is Hensel lifting. The multimodular method computes an exact integer or rational result in prime fields and recovers it by the Chinese remainder theorem and rational reconstruction, with the number of primes fixed by Hadamard's bound.
 
@@ -1004,9 +1004,9 @@ Source: [mathematics_functor_of_points.esk](../examples/mathematics_functor_of_p
 - P. S. Wang, M. J. T. Guy, J. H. Davenport, "P-adic reconstruction of rational numbers", SIGSAM Bulletin 16 (1982). (as cited in the program's source comments)
 - M. Budiu, T. Chajed, F. McSherry, L. Ryzhyk, V. Tannen, "DBSP: Automatic incremental view maintenance for rich query languages", PVLDB 16 (2023). (as cited in the program's source comments)
 
-**Purpose:** Evaluate one polynomial, one Newton step and one elimination over many commutative rings through a ring-carrier record, as the evidence for ADR-0034.
+**Purpose:** Evaluate one polynomial, one Newton step and one elimination over many commutative rings through core.ring carriers, as the evidence for ADR-0034.
 
-**Implemented algorithm:** A ring carrier is a record of closures (zero, one, add, neg, mul, from-integer, equal?, unit?, inverse). Constructors build Z/m, K[e]/e^n and K[x] over any base carrier, and Z[t,1/t] as core.dbsp Z-sets whose product is a join on the trivial key. Determinants and Cramer numerators are computed in fibres F_p near 2^30, glued by CRT, and lifted symmetrically or by Wang rational reconstruction under Hadamard bounds.
+**Implemented algorithm:** core.ring carriers (versioned descriptors of zero, one, add, neg, mul, from-integer, equal?, unit?, inverse and declared capabilities) for Z/m, K[e]/e^n and K[x] over any base carrier, and Z[t,1/t] as core.dbsp Z-sets whose product is a join on the trivial key. core.multimodular computes the determinant and the solution in fibres F_p below 2^31, glued by CRT and lifted symmetrically or by Wang rational reconstruction under Hadamard bounds.
 
 **Domain and parameters:** f(x) = 3x^5 - 2x^3 + x^2 - 7x + 4 over R, Q, Q[e]/e^2, Q[e]/e^6, F_7, F_7[e]/e^6, Q[x] and Z[t,1/t]; x^2 = 2 over R and Z/7^16; a 6x6 integer matrix with entries below 10^13.
 
@@ -1014,13 +1014,13 @@ Source: [mathematics_functor_of_points.esk](../examples/mathematics_functor_of_p
 
 **Checks in the source:** 29 checks: ring laws on samples; agreement with the built-in derivative and taylor operators, the direct formula, reduction mod 7, evaluation at seven rationals and four characters of the group ring; the Hensel root mod 7^16; the CRT determinant and the reconstructed solution component against exact-det and exact-solve of core.exact_linalg. Prints RESULT: ALL PASS and exits 0, or exits 1.
 
-**Limits:** A library prototype: operations dispatch through closures and fibres run sequentially, so the multimodular determinant is slower than bignum Bareiss at this size. Ring laws are checked on samples, not proved; flonum laws hold only to rounding. No compiler or VM change is involved.
+**Limits:** Operations dispatch through the carrier descriptors in library code and fibres run sequentially. Ring laws are checked on samples here (the exhaustive and seeded law gate is tests/stdlib/ring_test.esk); flonum identities hold only to rounding. No compiler or VM change is involved.
 
-**Prerequisites:** Built eshkol-run and stdlib with core.exact_linalg and core.dbsp; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib with core.ring, core.multimodular, core.exact_linalg and core.dbsp; native JIT or AOT.
 
 **Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. New example pending configured release qualification; local focused evidence is separate.
 
-Implementation/check anchors: [line 1](../examples/mathematics_functor_of_points.esk#L1), [line 68](../examples/mathematics_functor_of_points.esk#L68), [line 290](../examples/mathematics_functor_of_points.esk#L290), [line 394](../examples/mathematics_functor_of_points.esk#L394), [line 498](../examples/mathematics_functor_of_points.esk#L498).
+Implementation/check anchors: [line 1](../examples/mathematics_functor_of_points.esk#L1), [line 42](../examples/mathematics_functor_of_points.esk#L42), [line 79](../examples/mathematics_functor_of_points.esk#L79), [line 184](../examples/mathematics_functor_of_points.esk#L184), [line 218](../examples/mathematics_functor_of_points.esk#L218).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
