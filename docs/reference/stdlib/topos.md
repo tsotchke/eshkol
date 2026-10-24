@@ -40,9 +40,10 @@ the maximal sieve, that is, iff `alpha` factors through the subobject `[[phi]]`.
 environment.
 
 Sources: S. Mac Lane, I. Moerdijk, *Sheaves in Geometry and Logic* (1992),
-I.4, I.6, III.7, V.1 and chapter VI (the Mitchell-Benabou language VI.5,
-Kripke-Joyal semantics VI.6 for presheaves and VI.7 for sheaves, and the
-local rings and the Zariski topos in ch. VIII); P. T. Johnstone, *Sketches of an Elephant* (2002),
+I.4, I.6, III.7, V.1, chapter VI (the Mitchell-Benabou language VI.5,
+Kripke-Joyal semantics VI.6 for presheaves and VI.7 for sheaves) and chapter
+VIII (the Zariski topos and local rings); P. T. Johnstone, *Sketches of an
+Elephant* (2002),
 D1 (the internal language) and D4 (the higher-order logic of toposes, local
 operators, De Morgan toposes D4.6); A. Joyal's forcing semantics as written
 up by G. Osius, "A note on Kripke-Joyal semantics for the internal language
