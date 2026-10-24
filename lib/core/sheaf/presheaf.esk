@@ -161,8 +161,10 @@
                              (if ok (search (+ p 1) a))))
                          (ps-range (presheaf-element-count F (arrow-source C f))))))))
     (reverse results)))
+;; elements x of F(c) with F(f) x = x_f for every f in S (fam in any order)
 (define (family-amalgamations F c S fam)
-  (filter (lambda (x) (equal? (restriction-family F S x) fam)) (presheaf-elements F c)))
+  (filter (lambda (x) (ps-all? (lambda (f) (equal? (presheaf-restrict F f x) (ps-fam-ref fam f))) S))
+          (presheaf-elements F c)))
 ;; Glue a family on a sieve: the unique amalgamation, or the obstruction.
 (define (glue-family F c S fam)
   (let ((bad (family-incompatibilities F S fam)))
