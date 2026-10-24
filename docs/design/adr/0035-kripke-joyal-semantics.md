@@ -37,7 +37,7 @@ layers split work over shards. ADR-0034 proposes running exact computations
 in every fibre F_p and gluing by the Chinese remainder theorem. What none of
 these has is a semantics for *propositions* about such data. A Boolean test
 evaluated on the assembled whole is the only reading available, and it is
-the wrong one, for two reasons.
+not enough, for two reasons.
 
 1. A property can hold of every piece without holding of the whole. On
    Spec(Z/12) every element x has x or 1 - x invertible *locally*: on
