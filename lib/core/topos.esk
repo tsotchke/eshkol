@@ -35,6 +35,8 @@
 ;;;   true  false  (= s t)  (and p ...)  (or p ...)  (implies p q)  (iff p q)
 ;;;   (not p)  (forall (x A) p)  (exists (x A) p)  (in t s)  (holds t)
 ;;;   (R t ...)              R a declared predicate (a map into Omega)
+;;   (locally p)            p holds on a cover of a modal topology J' given to
+;;                          the language (the Lawvere-Tierney modality j')
 ;;;
 ;;; Terms: variables, declared constants, (f t ...) for declared morphisms,
 ;;; (pair s t) (fst t) (snd t) (app f t) (lambda (x A) t) (set (x A) p)
@@ -547,7 +549,8 @@
 (define (topos-constant name type proc) (vector 'constant name type proc))
 (define (topos-predicate name args pred) (vector 'predicate name args pred))
 
-;; #(topos-language T sorts symbols)  symbols: hash name -> #(kind arg-types result table)
+;; #(topos-language T sorts symbols modality)  symbols: hash name -> #(kind arg-types result table)
+;;   modality: #f, or the data of a modal topology J' for (locally p)
 ;;   kind 'fun (table: hash (U . arg-indices) -> index), 'const (table: vector U -> index)
 (define (tp-L-T L) (vector-ref L 1))
 (define (tp-L-sorts L) (vector-ref L 2))
@@ -557,8 +560,8 @@
 (define (topos-language-type L e) (tp-type-expr L e))
 
 (define (tp-arg-tuples T types U) (tp-cartesian (map (lambda (A) (tp-range (topos-type-size A U))) types)))
-(define (make-topos-language T sorts decls)
-  (let* ((L (vector 'topos-language T sorts (make-hash-table)))
+(define (make-topos-language T sorts decls . modal)
+  (let* ((L (vector 'topos-language T sorts (make-hash-table) (if (null? modal) #f (tp-modality T (car modal)))))
          (n (tp-T-n T)) (C (tp-T-C T)) (narr (category-arrow-count C)))
     (for-each
      (lambda (d)
@@ -612,6 +615,22 @@
      decls)
     L))
 
+;; A modal topology J' on the same category, for (locally p): its minimal
+;; covering sieves per object (arrow lists) and its covering masks.
+(define (tp-modality T site)
+  (let ((C (tp-T-C T)))
+    (if (not (eq? (site-category site) C)) (error "make-topos-language: the modal site must be on the category of the topos"))
+    (if (not (grothendieck-topology? site)) (error "make-topos-language: the modal covering sieves do not form a Grothendieck topology"))
+    (let* ((objs (tp-range (tp-T-n T)))
+           (all (map (lambda (c) (site-covering-sieves site c)) objs)))
+      (vector (list->vector (map (lambda (cs) (filter (lambda (S) (not (tp-any? (lambda (R) (and (not (equal? R S)) (tp-subset? R S))) cs))) cs)) all))
+              (list->vector (map (lambda (c cs) (let ((h (make-hash-table))) (for-each (lambda (S) (hash-table-set! h (tp-mask T c S) #t)) cs) h)) objs all))))))
+(define (tp-modal-closure-mask T md c m)
+  (let ((v (tp-intov T c)) (covers (vector-ref md 1)))
+    (let loop ((i 0) (r 0))
+      (if (= i (vector-length v)) r
+          (loop (+ i 1) (let ((f (vector-ref v i)))
+                          (if (hash-table-ref/default (vector-ref covers (tp-src T f)) (tp-pullback-mask T f m) #f) (bitwise-or r (arithmetic-shift 1 i)) r)))))))
 ;; type expressions
 (define (tp-type-expr L e)
   (let ((TT (tp-L-T L)))
@@ -680,6 +699,9 @@
               (let ((b (tp-binder L bs)))
                 (tp-fnode ids h ctx (cdr b) (tp-compile-formula L ids (cons b ctx) (caddr p)))))))
        ((eq? h 'in) (tp-compile-formula L ids ctx (list 'holds (list 'app (caddr p) (cadr p)))))
+       ((eq? h 'locally)
+        (if (not (vector-ref L 4)) (error "locally: the language has no modal topology" p))
+        (tp-fnode ids 'locally ctx (vector-ref L 4) (tp-compile-formula L ids ctx (cadr p))))
        ((eq? h 'holds) (let ((t (tp-compile-term L ids ctx (cadr p))))
                          (tp-same-type! (tp-t-type t) (topos-omega (tp-L-T L)) p)
                          (tp-fnode ids 'holds ctx t #f)))
@@ -831,6 +853,10 @@
                             S))
                  (tp-covers T U))))
      ((eq? k 'holds) (= (tp-eval M (tp-f-a p) U env 'force) (tp-maxidx T U)))
+     ((eq? k 'locally)     ;; a (minimal) covering sieve of the modal topology all of whose members force p
+      (tp-any? (lambda (S)
+                 (tp-all? (lambda (f) (tp-force M (tp-f-b p) (tp-src T f) (tp-restrict-env types env f))) S))
+               (vector-ref (vector-ref (tp-f-a p) 0) U)))
      (else (error "bad compiled formula" k)))))
 
 ;; ---------------------------------------------------------------------------
@@ -885,6 +911,7 @@
                         (if (= b (topos-type-size A V)) R
                             (lb (+ b 1) (bitwise-and R (tp-forall-mask T f (tp-omega M (tp-f-b p) V (cons b env2)))))))))))))
      ((eq? k 'holds) (vector-ref (tp-closed-masks T U) (tp-eval M (tp-f-a p) U env 'omega)))
+     ((eq? k 'locally) (tp-closure-mask T U (tp-modal-closure-mask T (tp-f-a p) U (tp-omega M (tp-f-b p) U env))))
      (else (error "bad compiled formula" k)))))
 
 ;; ---------------------------------------------------------------------------

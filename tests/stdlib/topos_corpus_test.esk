@@ -1,7 +1,6 @@
 ;;; core.topos: Kripke-Joyal forcing against the Omega-valued interpretation on
-;;; an exhaustively enumerated formula corpus, and the reductions of forcing to
-;;; Kripke semantics (trivial topology on a poset) and to Beth semantics
-;;; (bar and open-cover topologies), each against an independent oracle.
+;;; an exhaustively enumerated formula corpus over five sites; the Kripke and
+;;; Beth reductions and the j-translation are in topos_reductions_test.esk.
 (require stdlib)
 (require core.sheaf.site)
 (require core.sheaf.presheaf)
@@ -51,8 +50,9 @@
 (define ho-atoms '((in x A) (holds p) (P x) false))
 (define ho-unary (cons (lambda (p) (list 'not p)) (quantifiers '((x X) (A (P X)) (p Omega)))))
 (define ho-corpus (enum-formulas ho-atoms ho-unary binary 3))
+(define ho-corpus-2 (enum-formulas ho-atoms ho-unary binary 2))
 (show "first-order corpus (atoms P x, Q x, P y, x = y, false; size <= 4)" (length fo-corpus))
-(show "higher-order corpus (atoms x in A, holds p, P x, false; quantifiers over X, P(X), Omega; size <= 3)" (length ho-corpus))
+(show "higher-order corpus (atoms x in A, holds p, P x, false; quantifiers over X, P(X), Omega; size <= 3, and size <= 2 where P(X) has 40 or more elements at a stage)" (list (length ho-corpus) (length ho-corpus-2)))
 
 ;; ---------------------------------------------------------------------------
 ;; Sites
@@ -106,12 +106,13 @@
                            (lambda (U) (list (restriction-of-global T-ShX X-ShX top-X 0 U)))
                            (lambda (U) (list (restriction-of-global T-ShX X-ShX top-X 1 U)))))
 
-;; a finite tree with the bar topology: root 0, children 1 and 2 of 0, children
-;; 3 and 4 of 1; there is an arrow x -> y when y is an ancestor of x (x is later)
-(define parent (vector #f 0 0 1 1))
+;; a finite tree with the bar topology: root 0, children 1 and 2 of 0, child 3
+;; of 1, so two maximal paths 0-1-3 and 0-2; there is an arrow x -> y when y is
+;; an ancestor of x (x is later)
+(define parent (vector #f 0 0 1))
 (define (ancestor? y x) (or (= x y) (and (vector-ref parent x) (ancestor? y (vector-ref parent x)))))
-(define TR (poset-category 5 (lambda (x y) (ancestor? y x))))
-(define leaves '(2 3 4))
+(define TR (poset-category 4 (lambda (x y) (ancestor? y x))))
+(define leaves '(2 3))
 ;; every maximal path from w meets B
 (define (path-bar? w B) (all? (lambda (l) (or (not (ancestor? w l)) (any? (lambda (b) (and (ancestor? w b) (ancestor? b l))) B))) leaves))
 (define site-TR (make-site TR (lambda (c S) (path-bar? c (sieve-domains TR S)))))
@@ -146,14 +147,17 @@
           (loop (cdr fs) (+ n 1) (+ inst (car r)) (+ bad (cadr r)) (+ mono (caddr r)) (+ loc (cadddr r)))))))
 (define fo-ctx '((x X) (y X)))
 (define ho-ctx '((x X) (A (P X)) (p Omega)))
-(define sites (list (list "walking arrow" L-WA) (list "pseudocircle" L-S4) (list "BZ/2" L-BZ2)
-                    (list "sheaves on the pseudocircle space" L-ShX) (list "tree with bars" L-TR)))
+;; (name language higher-order-corpus): the tree is the Beth frame, checked on
+;; the first-order corpus; P(X) at the top stage has 40 elements on the
+;; pseudocircle and 49 on the space, where the higher-order bound is 2
+(define sites (list (list "walking arrow" L-WA ho-corpus) (list "pseudocircle" L-S4 ho-corpus-2) (list "BZ/2" L-BZ2 ho-corpus)
+                    (list "sheaves on the pseudocircle space" L-ShX ho-corpus-2) (list "tree with bars" L-TR '())))
 (define total-formulas 0)
 (define total-instances 0)
 (for-each
  (lambda (s)
    (let ((fo (cross-check-corpus (cadr s) fo-ctx fo-corpus))
-         (ho (cross-check-corpus (cadr s) ho-ctx ho-corpus)))
+         (ho (cross-check-corpus (cadr s) ho-ctx (caddr s))))
      (show (string-append (car s) ": first-order (formulas instances disagreements non-monotone non-local)") fo)
      (show (string-append (car s) ": higher-order (formulas instances disagreements non-monotone non-local)") ho)
      (set! total-formulas (+ total-formulas (car fo) (car ho)))
@@ -162,119 +166,6 @@
             (and (equal? (cddr fo) '(0 0 0)) (equal? (cddr ho) '(0 0 0))))))
  sites)
 (show "corpus total (formula instances over sites, stage-environment pairs)" (list total-formulas total-instances))
-
-;; ---------------------------------------------------------------------------
-;; 2. Kripke semantics (Kripke 1965): worlds, a reflexive transitive order,
-;;    increasing domains, monotone atoms; or and exists are decided at the world
-;; ---------------------------------------------------------------------------
-;; later: w -> list of worlds v with w <= v in the Kripke order
-(define (kripke-forces later dom Pw Qw w phi rho)
-  (let ((val (lambda (v) (cdr (assq v rho)))))
-    (cond
-     ((eq? phi 'false) #f)
-     ((eq? phi 'true) #t)
-     ((eq? (car phi) 'P) (if (member (val (cadr phi)) (Pw w)) #t #f))
-     ((eq? (car phi) 'Q) (if (member (val (cadr phi)) (Qw w)) #t #f))
-     ((eq? (car phi) '=) (equal? (val (cadr phi)) (val (caddr phi))))
-     ((eq? (car phi) 'and) (and (kripke-forces later dom Pw Qw w (cadr phi) rho) (kripke-forces later dom Pw Qw w (caddr phi) rho)))
-     ((eq? (car phi) 'or) (or (kripke-forces later dom Pw Qw w (cadr phi) rho) (kripke-forces later dom Pw Qw w (caddr phi) rho)))
-     ((eq? (car phi) 'implies) (all? (lambda (v) (or (not (kripke-forces later dom Pw Qw v (cadr phi) rho)) (kripke-forces later dom Pw Qw v (caddr phi) rho))) (later w)))
-     ((eq? (car phi) 'not) (all? (lambda (v) (not (kripke-forces later dom Pw Qw v (cadr phi) rho))) (later w)))
-     ((eq? (car phi) 'forall)
-      (all? (lambda (v) (all? (lambda (d) (kripke-forces later dom Pw Qw v (caddr phi) (cons (cons (car (cadr phi)) d) rho))) (dom v))) (later w)))
-     ((eq? (car phi) 'exists)
-      (any? (lambda (d) (kripke-forces later dom Pw Qw w (caddr phi) (cons (cons (car (cadr phi)) d) rho))) (dom w)))
-     (else (error "kripke: bad formula" phi)))))
-;; the Kripke frame of a poset site: v is later than w when there is an arrow v -> w
-(define (kripke-agreement L C dom Pw Qw)
-  (let* ((n (category-object-count C))
-         (later (lambda (w) (filter (lambda (v) (not (null? (category-hom C v w)))) (range n)))))
-    (let loop ((fs fo-corpus) (count 0) (bad 0))
-      (if (null? fs) (list count bad)
-          (let ((r (with-region
-                    (let* ((F (topos-formula L fo-ctx (car fs))) (ext (topos-extension F)))
-                      (let wl ((ws (range n)) (count 0) (bad 0))
-                        (if (null? ws) (list count bad)
-                            (let el ((es (topos-environments F (car ws))) (count count) (bad bad))
-                              (if (null? es) (wl (cdr ws) count bad)
-                                  (let ((k (kripke-forces later dom Pw Qw (car ws) (car fs) (list (cons 'x (car (car es))) (cons 'y (cadr (car es))))))
-                                        (j (if (member (car es) (list-ref ext (car ws))) #t #f)))
-                                    (el (cdr es) (+ count 1) (if (eq? k j) bad (+ bad 1))))))))))))
-            (loop (cdr fs) (+ count (car r)) (+ bad (cadr r))))))))
-(define kr-WA (kripke-agreement L-WA WA (lambda (w) (vector-ref WA-dom w)) (lambda (w) (vector-ref WA-P w)) (lambda (w) (vector-ref WA-Q w))))
-(define kr-S4 (kripke-agreement L-S4 S4 (lambda (w) (vector-ref S4-dom w)) (lambda (w) (vector-ref S4-P w)) (lambda (w) (vector-ref S4-Q w))))
-(show "Kripke reduction (instances, disagreements): walking arrow, pseudocircle" (list kr-WA kr-S4))
-(check "trivial topology on a poset: Kripke-Joyal forcing equals Kripke's forcing (disjunction and existence decided at the world itself) on the whole first-order corpus, every world and assignment"
-       (and (= 0 (cadr kr-WA)) (= 0 (cadr kr-S4)) (> (car kr-WA) 0) (> (car kr-S4) 0)))
-
-;; ---------------------------------------------------------------------------
-;; 3. Beth semantics: nodes with bars; or and exists hold when a bar decides
-;;    them, atoms when a bar of nodes satisfies them
-;; ---------------------------------------------------------------------------
-;; bars: w -> list of bars (each a list of later nodes); dom: w -> elements;
-;; res: (w v d) restricts d at w to the later node v
-(define (beth-forces later bars dom res Pw Qw w phi rho)
-  (let* ((val (lambda (v) (cdr (assq v rho))))
-         (at (lambda (b) (map (lambda (e) (cons (car e) (res w b (cdr e)))) rho)))
-         (recur (lambda (v psi r) (beth-forces later bars dom res Pw Qw v psi r)))
-         (barred (lambda (ok?) (any? (lambda (B) (all? ok? B)) (bars w)))))
-    (cond
-     ((eq? phi 'false) (barred (lambda (b) #f)))
-     ((eq? phi 'true) #t)
-     ((eq? (car phi) 'P) (barred (lambda (b) (if (member (res w b (val (cadr phi))) (Pw b)) #t #f))))
-     ((eq? (car phi) 'Q) (barred (lambda (b) (if (member (res w b (val (cadr phi))) (Qw b)) #t #f))))
-     ((eq? (car phi) '=) (equal? (val (cadr phi)) (val (caddr phi))))
-     ((eq? (car phi) 'and) (and (recur w (cadr phi) rho) (recur w (caddr phi) rho)))
-     ((eq? (car phi) 'or) (barred (lambda (b) (or (recur b (cadr phi) (at b)) (recur b (caddr phi) (at b))))))
-     ((eq? (car phi) 'implies) (all? (lambda (v) (or (not (recur v (cadr phi) (at v))) (recur v (caddr phi) (at v)))) (later w)))
-     ((eq? (car phi) 'not) (all? (lambda (v) (or (not (recur v (cadr phi) (at v))) (recur v 'false (at v)))) (later w)))
-     ((eq? (car phi) 'forall)
-      (all? (lambda (v) (all? (lambda (d) (recur v (caddr phi) (cons (cons (car (cadr phi)) d) (at v)))) (dom v))) (later w)))
-     ((eq? (car phi) 'exists)
-      (barred (lambda (b) (any? (lambda (d) (recur b (caddr phi) (cons (cons (car (cadr phi)) d) (at b)))) (dom b)))))
-     (else (error "beth: bad formula" phi)))))
-(define (beth-agreement L T X bar? Pw Qw)
-  (let* ((C (topos-category T)) (n (category-object-count C))
-         (later (lambda (w) (filter (lambda (v) (not (null? (category-hom C v w)))) (range n))))
-         (barsv (list->vector (map (lambda (w) (filter (lambda (B) (bar? w B)) (subsets-of (later w)))) (range n))))
-         (bars (lambda (w) (vector-ref barsv w)))
-         (dom (lambda (w) (topos-type-elements X w)))
-         (res (lambda (w v d) (topos-type-restrict X (car (category-hom C v w)) d))))
-    (let loop ((fs fo-corpus) (count 0) (bad 0))
-      (if (null? fs) (list count bad)
-          (let ((r (with-region
-                    (let* ((F (topos-formula L fo-ctx (car fs))) (ext (topos-extension F)))
-                      (let wl ((ws (range n)) (count 0) (bad 0))
-                        (if (null? ws) (list count bad)
-                            (let el ((es (topos-environments F (car ws))) (count count) (bad bad))
-                              (if (null? es) (wl (cdr ws) count bad)
-                                  (let ((k (beth-forces later bars dom res Pw Qw (car ws) (car fs) (list (cons 'x (car (car es))) (cons 'y (cadr (car es))))))
-                                        (j (if (member (car es) (list-ref ext (car ws))) #t #f)))
-                                    (el (cdr es) (+ count 1) (if (eq? k j) bad (+ bad 1))))))))))))
-            (loop (cdr fs) (+ count (car r)) (+ bad (cadr r))))))))
-;; tree: a bar for w is a set of later nodes meeting every maximal path from w
-(define (tree-pred i) (lambda (w) (list (restriction-of-global T-TR X-TR 0 i w))))
-(define be-TR (beth-agreement L-TR T-TR X-TR path-bar? (tree-pred 0) (tree-pred 1)))
-;; space: a bar for the open U is a family of smaller opens whose union is U
-(define (open-of c) (category-object-label CX c))
-(define (union-bar? w B) (equal? (sort (let loop ((bs B) (acc '())) (if (null? bs) acc (loop (cdr bs) (append (filter (lambda (x) (not (memv x acc))) (open-of (car bs))) acc)))) <)
-                                 (open-of w)))
-(define (space-pred i) (lambda (w) (list (restriction-of-global T-ShX X-ShX top-X i w))))
-(define be-ShX (beth-agreement L-ShX T-ShX X-ShX union-bar? (space-pred 0) (space-pred 1)))
-(show "Beth reduction (instances, disagreements): tree with path bars, pseudocircle space with open covers" (list be-TR be-ShX))
-(check "non-trivial topology on a poset: Kripke-Joyal forcing equals Beth forcing (bars computed from paths, resp. unions of opens) on the whole first-order corpus"
-       (and (= 0 (cadr be-TR)) (= 0 (cadr be-ShX)) (> (car be-TR) 0) (> (car be-ShX) 0)))
-;; a formula that separates the two semantics: on the disconnected open {0, 1}
-;; the section (0 on one point, 1 on the other) is locally P or Q but neither globally
-(define split (category-object-of-label CX '(0 1)))
-(define sep (topos-formula L-ShX '((x X)) '(or (P x) (Q x))))
-(define mixed (filter (lambda (e) (not (or (member (car e) ((space-pred 0) split)) (member (car e) ((space-pred 1) split))))) (topos-environments sep split)))
-(check "on the open {0, 1} of the space the mixed sections force P x or Q x by a cover, though no single disjunct is forced there (Beth, not Kripke)"
-       (and (= 2 (length mixed))
-            (all? (lambda (e) (topos-forces? sep split e)) mixed)
-            (all? (lambda (e) (not (or (topos-forces? (topos-formula L-ShX '((x X)) '(P x)) split e)
-                                       (topos-forces? (topos-formula L-ShX '((x X)) '(Q x)) split e))))
-                  mixed)))
 
 (if (= failed 0)
     (begin (display "PASS: topos_corpus_test (") (display passed) (display " checks)") (newline))

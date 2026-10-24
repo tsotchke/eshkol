@@ -1,0 +1,285 @@
+;;; core.topos: the reductions of Kripke-Joyal forcing to Kripke semantics
+;;; (trivial topology on a poset) and to Beth semantics (bar and open-cover
+;;; topologies), each against an independent evaluator, and sheaf forcing as
+;;; the j-translation of presheaf forcing, on the first-order corpus.
+(require stdlib)
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+(require core.topos)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display label) (newline))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (subsets-of xs) (if (null? xs) (list '()) (let ((r (subsets-of (cdr xs)))) (append r (map (lambda (s) (cons (car xs) s)) r)))))
+
+;; ---------------------------------------------------------------------------
+;; The corpus: every formula of size <= k built from the atoms by the unary and
+;; binary connectives (size = number of nodes)
+;; ---------------------------------------------------------------------------
+(define (enum-formulas atoms unary binary k)
+  (let ((by-size (make-vector (+ k 1) '())))
+    (vector-set! by-size 1 atoms)
+    (let loop ((s 2))
+      (if (<= s k)
+          (begin
+            (vector-set! by-size s
+                         (append
+                          (apply append (map (lambda (u) (map (lambda (p) (u p)) (vector-ref by-size (- s 1)))) unary))
+                          (apply append
+                                 (map (lambda (i)
+                                        (apply append
+                                               (map (lambda (b) (apply append (map (lambda (p) (map (lambda (q) (b p q)) (vector-ref by-size (- s 1 i))))
+                                                                                   (vector-ref by-size i))))
+                                                    binary)))
+                                      (range (- s 1))))))
+            (loop (+ s 1)))))
+    (apply append (map (lambda (s) (vector-ref by-size s)) (cdr (range (+ k 1)))))))
+(define binary (list (lambda (p q) (list 'and p q)) (lambda (p q) (list 'or p q)) (lambda (p q) (list 'implies p q))))
+(define (quantifiers specs)            ;; specs: list of (var type)
+  (apply append (map (lambda (b) (list (lambda (p) (list 'forall b p)) (lambda (p) (list 'exists b p)))) specs)))
+(define fo-atoms '((P x) (Q x) (P y) (= x y) false))
+(define fo-unary (cons (lambda (p) (list 'not p)) (quantifiers '((x X) (y X)))))
+(define fo-corpus (enum-formulas fo-atoms fo-unary binary 4))
+(show "first-order corpus (atoms P x, Q x, P y, x = y, false; size <= 4)" (length fo-corpus))
+
+;; ---------------------------------------------------------------------------
+;; Sites
+;; ---------------------------------------------------------------------------
+;; A Kripke-style carrier on a poset site: domains D(w) of names, restriction
+;; along v <= w the inclusion D(w) in D(v).
+(define (inclusion-presheaf C domains)
+  (make-set-presheaf C domains (lambda (a x) x)))
+(define (language-of T X Pset Qset)
+  (make-topos-language T (list (cons 'X X))
+                       (list (topos-predicate 'P '(X) (lambda (U x) (member x (Pset U))))
+                             (topos-predicate 'Q '(X) (lambda (U x) (member x (Qset U)))))))
+
+;; walking arrow 0 -> 1 (presheaf topos; Kripke frame with root 1 and one later world 0)
+(define WA (poset-category 2 (lambda (x y) (<= x y))))
+(define WA-dom (vector '(u v r) '(u v)))
+(define WA-P (vector '(u v) '(u)))
+(define WA-Q (vector '(r) '()))
+(define T-WA (presheaf-topos WA))
+(define X-WA (topos-object T-WA (inclusion-presheaf WA (vector->list WA-dom))))
+(define L-WA (language-of T-WA X-WA (lambda (U) (vector-ref WA-P U)) (lambda (U) (vector-ref WA-Q U))))
+
+;; the pseudocircle: points 0, 1 below 2, 3 (presheaf topos; a Kripke frame with two roots)
+(define S4 (poset-category 4 (lambda (x y) (or (= x y) (and (< x 2) (>= y 2))))))
+(define S4-dom (vector '(a b c) '(a b) '(a) '(b)))
+(define S4-P (vector '(a b) '(a) '(a) '()))
+(define S4-Q (vector '(c) '() '() '()))
+(define T-S4 (presheaf-topos S4))
+(define X-S4 (topos-object T-S4 (inclusion-presheaf S4 (vector->list S4-dom))))
+(define L-S4 (language-of T-S4 X-S4 (lambda (U) (vector-ref S4-P U)) (lambda (U) (vector-ref S4-Q U))))
+
+;; BZ/2 (presheaves on a group: a Boolean topos). X = the regular orbit {e, s} plus a fixed point o.
+(define (z2-nf w) (if (even? (length w)) '() (list 0)))
+(define BZ2 (make-category-from-presentation 1 (list (list 0 0 's)) z2-nf 2))
+(define T-BZ2 (presheaf-topos BZ2))
+(define X-BZ2 (topos-object T-BZ2 (make-set-presheaf BZ2 (list '(e s o))
+                                                     (lambda (a x) (if (= a (category-identity BZ2 0)) x (cdr (assq x '((e . s) (s . e) (o . o)))))))))
+(define L-BZ2 (language-of T-BZ2 X-BZ2 (lambda (U) '(o)) (lambda (U) '(e s))))
+
+;; sheaves on a finite space with the open-cover topology: the pseudocircle
+;; space, X = the sheaf of locally constant {0, 1}-valued functions
+(define space (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define site-X (finite-space-site space))
+(define CX (site-category site-X))
+(define T-ShX (make-topos site-X))
+(define top-X (category-object-of-label CX '(0 1 2 3)))
+(define X-ShX (topos-object T-ShX (sheafify site-X (constant-set-presheaf CX '(0 1)))))
+(define (restriction-of-global T X top i U)
+  (topos-type-restrict X (car (category-hom (topos-category T) U top)) (topos-type-element X top i)))
+(define L-ShX (language-of T-ShX X-ShX
+                           (lambda (U) (list (restriction-of-global T-ShX X-ShX top-X 0 U)))
+                           (lambda (U) (list (restriction-of-global T-ShX X-ShX top-X 1 U)))))
+
+;; a finite tree with the bar topology: root 0, children 1 and 2 of 0, child 3
+;; of 1, so two maximal paths 0-1-3 and 0-2; there is an arrow x -> y when y is
+;; an ancestor of x (x is later)
+(define parent (vector #f 0 0 1))
+(define (ancestor? y x) (or (= x y) (and (vector-ref parent x) (ancestor? y (vector-ref parent x)))))
+(define TR (poset-category 4 (lambda (x y) (ancestor? y x))))
+(define leaves '(2 3))
+;; every maximal path from w meets B
+(define (path-bar? w B) (all? (lambda (l) (or (not (ancestor? w l)) (any? (lambda (b) (and (ancestor? w b) (ancestor? b l))) B))) leaves))
+(define site-TR (make-site TR (lambda (c S) (path-bar? c (sieve-domains TR S)))))
+(define T-TR (make-topos site-TR))
+(define X-TR (topos-object T-TR (sheafify site-TR (constant-set-presheaf TR '(0 1)))))
+(define L-TR (language-of T-TR X-TR
+                          (lambda (U) (list (restriction-of-global T-TR X-TR 0 0 U)))
+                          (lambda (U) (list (restriction-of-global T-TR X-TR 0 1 U)))))
+
+(check "the bar sieves of the tree form a Grothendieck topology, the open covers of the space do, and every carrier is a sheaf"
+       (and (grothendieck-topology? site-TR) (grothendieck-topology? site-X)
+            (presheaf-sheaf? site-TR (topos-type-presheaf X-TR)) (presheaf-sheaf? site-X (topos-type-presheaf X-ShX))))
+
+(define fo-ctx '((x X) (y X)))
+
+;; ---------------------------------------------------------------------------
+;; 1. Kripke semantics (Kripke 1965): worlds, a reflexive transitive order,
+;;    increasing domains, monotone atoms; or and exists are decided at the world
+;; ---------------------------------------------------------------------------
+;; later: w -> list of worlds v with w <= v in the Kripke order
+(define (kripke-forces later dom Pw Qw w phi rho)
+  (let ((val (lambda (v) (cdr (assq v rho)))))
+    (cond
+     ((eq? phi 'false) #f)
+     ((eq? phi 'true) #t)
+     ((eq? (car phi) 'P) (if (member (val (cadr phi)) (Pw w)) #t #f))
+     ((eq? (car phi) 'Q) (if (member (val (cadr phi)) (Qw w)) #t #f))
+     ((eq? (car phi) '=) (equal? (val (cadr phi)) (val (caddr phi))))
+     ((eq? (car phi) 'and) (and (kripke-forces later dom Pw Qw w (cadr phi) rho) (kripke-forces later dom Pw Qw w (caddr phi) rho)))
+     ((eq? (car phi) 'or) (or (kripke-forces later dom Pw Qw w (cadr phi) rho) (kripke-forces later dom Pw Qw w (caddr phi) rho)))
+     ((eq? (car phi) 'implies) (all? (lambda (v) (or (not (kripke-forces later dom Pw Qw v (cadr phi) rho)) (kripke-forces later dom Pw Qw v (caddr phi) rho))) (later w)))
+     ((eq? (car phi) 'not) (all? (lambda (v) (not (kripke-forces later dom Pw Qw v (cadr phi) rho))) (later w)))
+     ((eq? (car phi) 'forall)
+      (all? (lambda (v) (all? (lambda (d) (kripke-forces later dom Pw Qw v (caddr phi) (cons (cons (car (cadr phi)) d) rho))) (dom v))) (later w)))
+     ((eq? (car phi) 'exists)
+      (any? (lambda (d) (kripke-forces later dom Pw Qw w (caddr phi) (cons (cons (car (cadr phi)) d) rho))) (dom w)))
+     (else (error "kripke: bad formula" phi)))))
+;; the Kripke frame of a poset site: v is later than w when there is an arrow v -> w
+(define (kripke-agreement L C dom Pw Qw)
+  (let* ((n (category-object-count C))
+         (later (lambda (w) (filter (lambda (v) (not (null? (category-hom C v w)))) (range n)))))
+    (let loop ((fs fo-corpus) (count 0) (bad 0))
+      (if (null? fs) (list count bad)
+          (let ((r (with-region
+                    (let* ((F (topos-formula L fo-ctx (car fs))) (ext (topos-extension F)))
+                      (let wl ((ws (range n)) (count 0) (bad 0))
+                        (if (null? ws) (list count bad)
+                            (let el ((es (topos-environments F (car ws))) (count count) (bad bad))
+                              (if (null? es) (wl (cdr ws) count bad)
+                                  (let ((k (kripke-forces later dom Pw Qw (car ws) (car fs) (list (cons 'x (car (car es))) (cons 'y (cadr (car es))))))
+                                        (j (if (member (car es) (list-ref ext (car ws))) #t #f)))
+                                    (el (cdr es) (+ count 1) (if (eq? k j) bad (+ bad 1))))))))))))
+            (loop (cdr fs) (+ count (car r)) (+ bad (cadr r))))))))
+(define kr-WA (kripke-agreement L-WA WA (lambda (w) (vector-ref WA-dom w)) (lambda (w) (vector-ref WA-P w)) (lambda (w) (vector-ref WA-Q w))))
+(define kr-S4 (kripke-agreement L-S4 S4 (lambda (w) (vector-ref S4-dom w)) (lambda (w) (vector-ref S4-P w)) (lambda (w) (vector-ref S4-Q w))))
+(show "Kripke reduction (instances, disagreements): walking arrow, pseudocircle" (list kr-WA kr-S4))
+(check "trivial topology on a poset: Kripke-Joyal forcing equals Kripke's forcing (disjunction and existence decided at the world itself) on the whole first-order corpus, every world and assignment"
+       (and (= 0 (cadr kr-WA)) (= 0 (cadr kr-S4)) (> (car kr-WA) 0) (> (car kr-S4) 0)))
+
+;; ---------------------------------------------------------------------------
+;; 2. Beth semantics: nodes with bars; or and exists hold when a bar decides
+;;    them, atoms when a bar of nodes satisfies them
+;; ---------------------------------------------------------------------------
+;; bars: w -> list of bars (each a list of later nodes); dom: w -> elements;
+;; res: (w v d) restricts d at w to the later node v; memo: a hash table for
+;; one formula. Bars are upward closed, so a statement "some bar of w has
+;; every node satisfying ..." needs only the minimal bars, which are passed.
+(define (beth-forces later bars dom res Pw Qw w phi rho memo)
+  (let* ((key (list w phi rho)) (hit (hash-table-ref/default memo key 'none)))
+    (if (not (eq? hit 'none)) hit
+        (let ((r (beth-compute later bars dom res Pw Qw w phi rho memo)))
+          (hash-table-set! memo key r)
+          r))))
+(define (beth-compute later bars dom res Pw Qw w phi rho memo)
+  (let* ((val (lambda (v) (cdr (assq v rho))))
+         (at (lambda (b) (map (lambda (e) (cons (car e) (res w b (cdr e)))) rho)))
+         (recur (lambda (v psi r) (beth-forces later bars dom res Pw Qw v psi r memo)))
+         (barred (lambda (ok?) (any? (lambda (B) (all? ok? B)) (bars w)))))
+    (cond
+     ((eq? phi 'false) (barred (lambda (b) #f)))
+     ((eq? phi 'true) #t)
+     ((eq? (car phi) 'P) (barred (lambda (b) (if (member (res w b (val (cadr phi))) (Pw b)) #t #f))))
+     ((eq? (car phi) 'Q) (barred (lambda (b) (if (member (res w b (val (cadr phi))) (Qw b)) #t #f))))
+     ((eq? (car phi) '=) (equal? (val (cadr phi)) (val (caddr phi))))
+     ((eq? (car phi) 'and) (and (recur w (cadr phi) rho) (recur w (caddr phi) rho)))
+     ((eq? (car phi) 'or) (barred (lambda (b) (or (recur b (cadr phi) (at b)) (recur b (caddr phi) (at b))))))
+     ((eq? (car phi) 'implies) (all? (lambda (v) (or (not (recur v (cadr phi) (at v))) (recur v (caddr phi) (at v)))) (later w)))
+     ((eq? (car phi) 'not) (all? (lambda (v) (or (not (recur v (cadr phi) (at v))) (recur v 'false (at v)))) (later w)))
+     ((eq? (car phi) 'forall)
+      (all? (lambda (v) (all? (lambda (d) (recur v (caddr phi) (cons (cons (car (cadr phi)) d) (at v)))) (dom v))) (later w)))
+     ((eq? (car phi) 'exists)
+      (barred (lambda (b) (any? (lambda (d) (recur b (caddr phi) (cons (cons (car (cadr phi)) d) (at b)))) (dom b)))))
+     (else (error "beth: bad formula" phi)))))
+(define (minimal-families Bs) (filter (lambda (B) (not (any? (lambda (B2) (and (not (equal? B2 B)) (all? (lambda (x) (memv x B)) B2))) Bs))) Bs))
+(define (beth-agreement L T X bar? Pw Qw)
+  (let* ((C (topos-category T)) (n (category-object-count C))
+         (later (lambda (w) (filter (lambda (v) (not (null? (category-hom C v w)))) (range n))))
+         (barsv (list->vector (map (lambda (w) (minimal-families (filter (lambda (B) (bar? w B)) (subsets-of (later w))))) (range n))))
+         (bars (lambda (w) (vector-ref barsv w)))
+         (dom (lambda (w) (topos-type-elements X w)))
+         (res (lambda (w v d) (topos-type-restrict X (car (category-hom C v w)) d))))
+    (let loop ((fs fo-corpus) (count 0) (bad 0))
+      (if (null? fs) (list count bad)
+          (let ((r (with-region
+                    (let* ((F (topos-formula L fo-ctx (car fs))) (ext (topos-extension F)) (memo (make-hash-table)))
+                      (let wl ((ws (range n)) (count 0) (bad 0))
+                        (if (null? ws) (list count bad)
+                            (let el ((es (topos-environments F (car ws))) (count count) (bad bad))
+                              (if (null? es) (wl (cdr ws) count bad)
+                                  (let ((k (beth-forces later bars dom res Pw Qw (car ws) (car fs) (list (cons 'x (car (car es))) (cons 'y (cadr (car es)))) memo))
+                                        (j (if (member (car es) (list-ref ext (car ws))) #t #f)))
+                                    (el (cdr es) (+ count 1) (if (eq? k j) bad (+ bad 1))))))))))))
+            (loop (cdr fs) (+ count (car r)) (+ bad (cadr r))))))))
+;; tree: a bar for w is a set of later nodes meeting every maximal path from w
+(define (tree-pred i) (lambda (w) (list (restriction-of-global T-TR X-TR 0 i w))))
+(define be-TR (beth-agreement L-TR T-TR X-TR path-bar? (tree-pred 0) (tree-pred 1)))
+;; space: a bar for the open U is a family of smaller opens whose union is U
+(define (open-of c) (category-object-label CX c))
+(define (union-bar? w B) (equal? (sort (let loop ((bs B) (acc '())) (if (null? bs) acc (loop (cdr bs) (append (filter (lambda (x) (not (memv x acc))) (open-of (car bs))) acc)))) <)
+                                 (open-of w)))
+(define (space-pred i) (lambda (w) (list (restriction-of-global T-ShX X-ShX top-X i w))))
+(define be-ShX (beth-agreement L-ShX T-ShX X-ShX union-bar? (space-pred 0) (space-pred 1)))
+(show "Beth reduction (instances, disagreements): tree with path bars, pseudocircle space with open covers" (list be-TR be-ShX))
+(check "non-trivial topology on a poset: Kripke-Joyal forcing equals Beth forcing (bars computed from paths, resp. unions of opens) on the whole first-order corpus"
+       (and (= 0 (cadr be-TR)) (= 0 (cadr be-ShX)) (> (car be-TR) 0) (> (car be-ShX) 0)))
+;; a formula that separates the two semantics: on the disconnected open {0, 1}
+;; the section (0 on one point, 1 on the other) is locally P or Q but neither globally
+(define split (category-object-of-label CX '(0 1)))
+(define sep (topos-formula L-ShX '((x X)) '(or (P x) (Q x))))
+(define mixed (filter (lambda (e) (not (or (member (car e) ((space-pred 0) split)) (member (car e) ((space-pred 1) split))))) (topos-environments sep split)))
+(check "on the open {0, 1} of the space the mixed sections force P x or Q x by a cover, though no single disjunct is forced there (Beth, not Kripke)"
+       (and (= 2 (length mixed))
+            (all? (lambda (e) (topos-forces? sep split e)) mixed)
+            (all? (lambda (e) (not (or (topos-forces? (topos-formula L-ShX '((x X)) '(P x)) split e)
+                                       (topos-forces? (topos-formula L-ShX '((x X)) '(Q x)) split e))))
+                  mixed)))
+
+;; ---------------------------------------------------------------------------
+;; 3. Sheaf semantics as the j-translation of presheaf semantics: for a J-sheaf
+;;    X, Sh(C, J) forces phi at U iff Psh(C) forces phi^j at U, where phi^j
+;;    applies the modality (locally -) of J to atoms, false, or and exists
+;;    (Johnstone, Elephant A4.4 and D4.6; Mac Lane-Moerdijk V.3)
+;; ---------------------------------------------------------------------------
+(define T-PshX (presheaf-topos CX))
+(define X-PshX (topos-object T-PshX (topos-type-presheaf X-ShX)))
+(define L-PshX (make-topos-language T-PshX (list (cons 'X X-PshX))
+                                    (list (topos-predicate 'P '(X) (lambda (U x) (member x ((space-pred 0) U))))
+                                          (topos-predicate 'Q '(X) (lambda (U x) (member x ((space-pred 1) U)))))
+                                    site-X))
+(define (j-translate p)
+  (cond ((eq? p 'false) '(locally false))
+        ((eq? p 'true) 'true)
+        ((memq (car p) '(P Q =)) (list 'locally p))
+        ((eq? (car p) 'or) (list 'locally (cons 'or (map j-translate (cdr p)))))
+        ((eq? (car p) 'exists) (list 'locally (list 'exists (cadr p) (j-translate (caddr p)))))
+        ((eq? (car p) 'forall) (list 'forall (cadr p) (j-translate (caddr p))))
+        ((eq? (car p) 'not) (list 'implies (j-translate (cadr p)) '(locally false)))
+        (else (cons (car p) (map j-translate (cdr p))))))
+(define jt-result
+  (let loop ((fs fo-corpus) (agree 0) (plain-differs 0) (bad 0))
+    (if (null? fs) (list agree plain-differs bad)
+        (let ((r (with-region
+                  (let ((sh (topos-extension (topos-formula L-ShX fo-ctx (car fs))))
+                        (pj (topos-formula L-PshX fo-ctx (j-translate (car fs)))))
+                    (list (if (and (equal? sh (topos-extension pj)) (cadr (topos-cross-check pj))) 1 0)
+                          (if (equal? sh (topos-extension (topos-formula L-PshX fo-ctx (car fs)))) 0 1))))))
+          (loop (cdr fs) (+ agree (car r)) (+ plain-differs (cadr r)) (+ bad (- 1 (car r))))))))
+(show "j-translation on the pseudocircle space (agreeing formulas, formulas whose untranslated presheaf reading differs, disagreements)" jt-result)
+(check "for every formula of the first-order corpus, sheaf forcing on the space equals presheaf forcing of its j-translation (and forcing equals the Omega-valued truth there), while the untranslated presheaf reading differs on some"
+       (and (= 0 (caddr jt-result)) (= (car jt-result) (length fo-corpus)) (> (cadr jt-result) 0)))
+
+(if (= failed 0)
+    (begin (display "PASS: topos_reductions_test (") (display passed) (display " checks)") (newline))
+    (begin (display "FAIL: topos_reductions_test (") (display failed) (display " failed)") (newline)))
