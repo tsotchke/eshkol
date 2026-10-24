@@ -35,7 +35,7 @@
          arrow-source arrow-target arrow-name category-identity category-compose
          category-composable? category-hom category-arrows-into category-arrows-from
          category-object-label category-object-of-label category-laws-violations category-laws?
-         category-arrow-named category-thin? category-meet
+         category-arrow-named category-thin? category-meet category-thin-arrow
          sieve? sieve-maximal sieve-generated sieve-pullback sieve-intersection sieve-union
          sieve-contains? sieve-subset? sieves-on sieve-domains
          make-site make-site-from-sieves site? site-category site-covering? site-covering-sieves
@@ -214,6 +214,8 @@
 (define (category-thin? C)
   (st-all? (lambda (x) (st-all? (lambda (y) (<= (length (category-hom C x y)) 1)) (st-range (category-object-count C))))
            (st-range (category-object-count C))))
+;; the unique arrow x -> y of a thin category, or #f
+(define (category-thin-arrow C x y) (let ((h (category-hom C x y))) (if (null? h) #f (car h))))
 ;; Meet (product) of x and y in a thin category: the lower bound through which
 ;; every lower bound factors; #f when there is none.
 (define (category-meet C x y)
