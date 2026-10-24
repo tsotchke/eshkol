@@ -39,39 +39,14 @@
 ;; Word-size primes
 ;; ===========================================================================
 
-;; Miller-Rabin with the bases 2, 3, 5, 7 is exact below 3215031751, which
-;; covers every candidate below 2^31.
-(define (mm-expt-mod a e m)
-  (let loop ((b (modulo a m)) (e e) (acc 1))
-    (cond ((= e 0) acc)
-          ((odd? e) (loop (modulo (* b b) m) (quotient e 2) (modulo (* acc b) m)))
-          (else (loop (modulo (* b b) m) (quotient e 2) acc)))))
-(define (mm-word-prime? n)
-  (cond ((< n 2) #f)
-        ((memv n '(2 3 5 7)) #t)
-        ((or (even? n) (= (modulo n 3) 0) (= (modulo n 5) 0) (= (modulo n 7) 0)) #f)
-        (else
-         (let split ((d (- n 1)) (s 0))
-           (if (even? d)
-               (split (quotient d 2) (+ s 1))
-               (let check ((bases '(2 3 5 7)))
-                 (if (null? bases)
-                     #t
-                     (let ((x (mm-expt-mod (car bases) d n)))
-                       (if (or (= x 1) (= x (- n 1)))
-                           (check (cdr bases))
-                           (let sq ((x x) (r 1))
-                             (cond ((>= r s) #f)
-                                   ((= (modulo (* x x) n) (- n 1)) (check (cdr bases)))
-                                   (else (sq (modulo (* x x) n) (+ r 1))))))))))))))
-
+;; Candidates are decided by core.ring's deterministic `exact-prime?`.
 ;; The primes below 2^31 in descending order, found on demand and kept.
 (define mm-prime-table (make-vector 64 0))
 (define mm-prime-count 0)
 (define mm-next-candidate 2147483647)
 (define (mm-grow!)
   (let loop ((c mm-next-candidate))
-    (if (mm-word-prime? c)
+    (if (exact-prime? c)
         (begin
           (if (= mm-prime-count (vector-length mm-prime-table))
               (let ((bigger (make-vector (* 2 mm-prime-count) 0)))
