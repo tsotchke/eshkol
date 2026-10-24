@@ -333,14 +333,36 @@ against every example and returns a receipt:
 
 - per program: code bits, length, prior `2^-length`, per-example likelihoods
   and timeout masses, likelihood (their product), weight (`prior ×
-  likelihood`) and posterior (`weight / evidence`);
+  likelihood`) and posterior (`weight / evidence`, or a zero sentinel when
+  evidence is zero; that sentinel is not a normalized posterior);
 - the evidence (sum of weights), the **shortest** witness (the first program
   with positive weight) and the **MDL** witness (the largest weight, ties to
   the earlier program);
-- status `'consistent`, or `'no-consistent-program` when no program in the set
-  explains the examples;
+- status `'consistent` when bounded evidence is positive; `'unresolved` when
+  evidence is zero but at least one candidate has positive
+  `likelihood + timeout mass` on **every** example; or `'no-consistent-program`
+  when every candidate is definitively ruled out by some example (including
+  an empty program set);
 - seeded runs of the MDL witness on each example input, drawing from
   `(make-prng seed)`.
+
+Unfinished trials preserve the possibility of matching. For independent trials,
+a program's joint likelihood is bounded above by the product of its per-example
+`likelihood + timeout mass` values. This upper bound is positive only if all
+factors are positive: a timed-out trial does not rescue a candidate contradicted
+by a different completed trial. The status is relative to the declared finite
+program set, not a claim about all programs. Positive-evidence behavior and the
+receipt layout are unchanged; both zero-evidence statuses have no selected
+witness and retain the zero-posterior sentinel.
+
+For example, identity needs one beta step to return its identity input:
+
+```scheme
+(define status-identity (sblc-decode "1000"))
+(define status-example (list (cons status-identity status-identity)))
+(sblc-receipt-status (sblc-condition 7 4 0 status-example)) ; unresolved
+(sblc-receipt-status (sblc-condition 7 4 1 status-example)) ; consistent
+```
 
 `(sblc-receipt->string r)` is the canonical text of a receipt; identical
 tuples `(seed, L, S, examples)` give byte-identical text on JIT and AOT.

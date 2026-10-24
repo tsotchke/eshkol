@@ -125,7 +125,11 @@ The VM reports `unsupported` rather than falling back until its PRNG parity gaps
   primary.
 - Semantics: lazy choice (`K I (Ω ⊕ M)`), exact half mass per branch, `M ⊕ M` merging to
   mass one, step-bound edges reconciling beta and coin counters, iteration-order invariance,
-  alpha-identical merging, impossible evidence returning `no-consistent-program`.
+  alpha-identical merging, zero evidence with a still-possible candidate returning
+  `unresolved`, and definitive rejection of every bounded candidate returning
+  `no-consistent-program`. Possibility requires positive likelihood plus timeout
+  mass on every independent example; a separate contradiction still rules out
+  that candidate.
 - Reproducibility: identical tuples reproduce identical receipts; v1.4 JIT/AOT, v1.5 JIT/AOT/VM.
 
 ## Consequences

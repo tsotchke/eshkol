@@ -589,7 +589,9 @@
 ;; Receipt:
 ;;   (sblc-receipt STATUS FORMAT RNG SEED L S N-EXAMPLES
 ;;                 PROGRAMS EVIDENCE SHORTEST MDL WITNESS-RUNS)
-;; STATUS is 'consistent or 'no-consistent-program. PROGRAMS is the complete
+;; STATUS is 'consistent, 'unresolved, or 'no-consistent-program. With zero
+;; evidence, unresolved means at least one candidate has a positive likelihood
+;; + timeout upper bound on every example. PROGRAMS is the complete
 ;; bounded program set (every closed program of length <= L, sorted by
 ;; length then bits); each entry is
 ;;   (bits length prior likelihoods timeouts likelihood weight posterior)
@@ -632,6 +634,21 @@
         (let ((r (sblc-likelihood program (car exs) bound)))
           (loop (cdr exs) (cons (car r) lks) (cons (cadr r) tos))))))
 
+;; Trials are independent: the joint likelihood lies between product(l_i)
+;; and product(l_i + t_i). The upper bound is positive iff every factor is
+;; positive. A timeout on one trial cannot undo a definitive zero on another.
+(define (sblc-entry-may-match? entry)
+  (let loop ((likelihoods (sblc-entry-likelihoods entry))
+             (timeouts (sblc-entry-timeouts entry)))
+    (if (null? likelihoods) #t
+        (if (> (+ (car likelihoods) (car timeouts)) 0)
+            (loop (cdr likelihoods) (cdr timeouts)) #f))))
+
+(define (sblc-may-have-consistent-program? entries)
+  (if (null? entries) #f
+      (if (sblc-entry-may-match? (car entries)) #t
+          (sblc-may-have-consistent-program? (cdr entries)))))
+
 (define (sblc-condition seed L bound examples)
   (let* ((raw (sblc-condition-entries (sblc-bounded-programs L) examples bound))
          (evidence (let loop ((xs raw) (acc 0))
@@ -639,7 +656,9 @@
          (entries (sblc-attach-posterior raw evidence))
          (shortest (sblc-first-positive entries))
          (mdl (sblc-max-weight entries))
-         (status (if (= evidence 0) 'no-consistent-program 'consistent)))
+         (status (if (> evidence 0) 'consistent
+                     (if (sblc-may-have-consistent-program? raw)
+                         'unresolved 'no-consistent-program))))
     (list 'sblc-receipt status sblc-format-version sblc-rng-policy seed L bound
           (length examples) entries evidence shortest mdl
           (if mdl (sblc-witness-runs (sblc-decode (sblc-entry-bits mdl))
