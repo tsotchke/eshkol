@@ -88,7 +88,8 @@ GATED_SCOPES = {
     "guides": ["docs/guide/GRADUAL_TYPING.md"],
     "upgrading": ["docs/UPGRADING.md"],
     # Reference pages join one page at a time, like the guides.
-    "reference": ["docs/reference/stdlib/sheaf.md", "docs/reference/stdlib/integer_linalg.md"],
+    "reference": ["docs/reference/stdlib/sheaf.md", "docs/reference/stdlib/integer_linalg.md",
+                  "docs/reference/stdlib/topos.md"],
 }
 
 SKIP_REASONS = (

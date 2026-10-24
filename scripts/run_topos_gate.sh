@@ -8,8 +8,9 @@
 #        topos_reductions_test, topos_jtranslation_test and
 #        topos_local_ring_test ({jit,aot}), and the presheaf-topos example
 #        written on the library, cat_presheaf_topos_internal_logic_{jit,aot};
-#   2. every fenced example on docs/reference/stdlib/topos.md through the
-#      documentation example harness, on the JIT and as AOT binaries,
+#   2. every fenced example on docs/reference/stdlib/topos.md (a page of the
+#      documentation gate's `reference` scope) through the documentation
+#      example harness, on the JIT and as AOT binaries,
 #      comparing each `;; =>` annotation with what the build printed.
 #
 # It writes one event to $TRACE_DIR/v14_core_topos.jsonl:
@@ -80,12 +81,22 @@ doc_log="$WORK/doc-examples.log"
 python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --eshkol-run "$BUILD_DIR_PATH/eshkol-run" \
     --engines jit,aot \
+    --scope reference \
     --only docs/reference/stdlib/topos.md \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
 doc_status=$?
-summary="$summary; documentation examples exit ${doc_status}: $(tail -n 1 "$doc_log")"
-[ "$doc_status" -eq 0 ] || status=1
+# The harness reports "examples=N executed=E passed=P failed=F"; an example
+# that was not executed is not evidence, so all of them must run and pass.
+doc_counts=$(grep -oE 'examples=[0-9]+ executed=[0-9]+ passed=[0-9]+' "$doc_log" | tail -n 1)
+doc_examples=$(printf '%s' "$doc_counts" | sed -E 's/examples=([0-9]+).*/\1/')
+doc_executed=$(printf '%s' "$doc_counts" | sed -E 's/.*executed=([0-9]+).*/\1/')
+doc_passed=$(printf '%s' "$doc_counts" | sed -E 's/.*passed=([0-9]+).*/\1/')
+summary="$summary; documentation examples ${doc_counts:-none reported} (exit ${doc_status})"
+if [ "$doc_status" -ne 0 ] || [ -z "$doc_counts" ] || [ "${doc_examples:-0}" -eq 0 ] \
+   || [ "$doc_executed" -ne "$doc_examples" ] || [ "$doc_passed" -ne "$doc_examples" ]; then
+    status=1
+fi
 
 if [ "$status" -eq 0 ]; then
     emit_event PASS "$summary"
