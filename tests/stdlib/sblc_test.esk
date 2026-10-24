@@ -355,6 +355,71 @@
             (= (sblc-receipt-evidence impossible) 0)
             (not (sblc-receipt-shortest impossible))
             (not (sblc-receipt-mdl impossible))))
+
+;; Work exhaustion is not a contradiction. With L=4 the complete catalogue
+;; contains only I, whose application to I needs exactly one beta step.
+(define identity-unfinished (sblc-condition 7 4 0 (list (cons I I))))
+(check "zero-work identity conditioning remains unresolved"
+       (and (eq? (sblc-receipt-status identity-unfinished) 'unresolved)
+            (= (sblc-receipt-evidence identity-unfinished) 0)))
+(check "unresolved receipt retains the unfinished identity trial"
+       (let ((entries (sblc-receipt-programs identity-unfinished)))
+         (and (= (length entries) 1)
+              (string=? (sblc-entry-bits (car entries)) "1000")
+              (= (sblc-entry-prior (car entries)) (/ 1 16))
+              (equal? (sblc-entry-likelihoods (car entries)) '(0))
+              (equal? (sblc-entry-timeouts (car entries)) '(1)))))
+(check "zero evidence retains the posterior sentinel and no selected witness"
+       (and (not (sblc-receipt-shortest identity-unfinished))
+            (not (sblc-receipt-mdl identity-unfinished))
+            (null? (sblc-receipt-witness-runs identity-unfinished))
+            (= (sblc-entry-posterior (car (sblc-receipt-programs identity-unfinished))) 0)))
+(define identity-finished (sblc-condition 7 4 1 (list (cons I I))))
+(check "one beta step resolves the identity witness"
+       (and (eq? (sblc-receipt-status identity-finished) 'consistent)
+            (= (sblc-receipt-evidence identity-finished) (/ 1 16))
+            (= (sblc-entry-posterior (car (sblc-receipt-programs identity-finished))) 1)
+            (equal? (sblc-entry-timeouts (car (sblc-receipt-programs identity-finished))) '(0))))
+(define identity-rejected (sblc-condition 7 4 1 (list (cons I K))))
+(check "a completed wrong identity output is definitively rejected"
+       (and (eq? (sblc-receipt-status identity-rejected) 'no-consistent-program)
+            (= (sblc-receipt-evidence identity-rejected) 0)
+            (equal? (sblc-entry-timeouts (car (sblc-receipt-programs identity-rejected))) '(0))))
+;; I applied to (I I) needs two beta steps; the other trial finishes at one.
+(define slow-identity-example (cons (blc-app I I) I))
+(define fast-rejection-example (cons I K))
+(define timeout-and-contradiction
+  (sblc-condition 7 4 1 (list slow-identity-example fast-rejection-example)))
+(check "a definite contradiction rules out a separately timed-out candidate"
+       (and (eq? (sblc-receipt-status timeout-and-contradiction) 'no-consistent-program)
+            (= (sblc-receipt-evidence timeout-and-contradiction) 0)
+            (equal? (sblc-entry-timeouts (car (sblc-receipt-programs timeout-and-contradiction))) '(1 0))))
+(check "contradiction-first ordering retains definitive rejection"
+       (eq? (sblc-receipt-status
+             (sblc-condition 7 4 1 (list fast-rejection-example slow-identity-example)))
+            'no-consistent-program))
+(define timeout-and-match
+  (sblc-condition 7 4 1 (list slow-identity-example (cons I I))))
+(check "an unfinished trial with a compatible completed trial stays unresolved"
+       (and (eq? (sblc-receipt-status timeout-and-match) 'unresolved)
+            (equal? (sblc-entry-likelihoods (car (sblc-receipt-programs timeout-and-match))) '(0 1))
+            (equal? (sblc-entry-timeouts (car (sblc-receipt-programs timeout-and-match))) '(1 0))))
+(check "a larger zero-work catalogue stays unresolved"
+       (eq? (sblc-receipt-status (sblc-condition 7 11 0 (list (cons I I)))) 'unresolved))
+(define positive-with-timeout (sblc-condition 7 11 1 (list (cons I I))))
+(check "positive bounded evidence stays consistent with unfinished alternatives"
+       (and (eq? (sblc-receipt-status positive-with-timeout) 'consistent)
+            (> (sblc-receipt-evidence positive-with-timeout) 0)
+            (let loop ((entries (sblc-receipt-programs positive-with-timeout)))
+              (if (null? entries) #f
+                  (if (> (car (sblc-entry-timeouts (car entries))) 0) #t (loop (cdr entries)))))))
+(check "an empty catalogue has no consistent program"
+       (and (eq? (sblc-receipt-status (sblc-condition 7 3 0 (list (cons I I)))) 'no-consistent-program)
+            (null? (sblc-receipt-programs (sblc-condition 7 3 0 (list (cons I I)))))))
+(check "no examples is consistent when the catalogue contains identity"
+       (let ((receipt (sblc-condition 7 4 0 '())))
+         (and (eq? (sblc-receipt-status receipt) 'consistent)
+              (= (sblc-receipt-evidence receipt) (/ 1 16)))))
 (gate-line "semantics")
 
 ;; ============================================================================
