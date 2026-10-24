@@ -475,6 +475,49 @@
                        (else (check (cdr bs))))))))))
 
 ;; ===========================================================================
+;; Exact -> binary64, rounded once to nearest, ties to even
+;; ===========================================================================
+;;
+;; Rule 5 rounds an exact operand meeting a flonum. The rounding is done
+;; here in exact integer arithmetic so that it is the single correct
+;; rounding the IEEE tier specifies, whatever the size of the numerator and
+;; denominator: the scaled significand is rounded as an exact rational and
+;; the double is assembled from it by exact power-of-two scalings.
+
+(define (rc-bit-length n)               ; n >= 1: the least k with n < 2^k
+  (let up ((k 1))
+    (if (< n (expt 2 k))
+        (let down ((lo (quotient k 2)) (hi k))
+          (if (<= (- hi lo) 1) hi
+              (let ((mid (quotient (+ lo hi) 2))) (if (< n (expt 2 mid)) (down lo mid) (down mid hi)))))
+        (up (* k 2)))))
+(define (rc-floor-log2 a)               ; a exact rational > 0
+  (let ((e (- (rc-bit-length (numerator a)) (rc-bit-length (denominator a)))))
+    (if (< a (expt 2 e)) (- e 1) e)))
+(define (rc-round-half-even x)          ; x exact rational >= 0
+  (let* ((f (floor x)) (r (- x f)))
+    (cond ((< r 1/2) f) ((> r 1/2) (+ f 1)) ((even? f) f) (else (+ f 1)))))
+(define (rc-pow2 k) (exact->inexact (expt 2 k)))   ; exact for -1022 <= k <= 1023
+(define (rc-exact->binary64 q)
+  (cond
+    ((= q 0) 0.0)
+    ;; numerator and denominator are exact doubles: one IEEE division
+    ((and (< (abs (numerator q)) 9007199254740992) (< (denominator q) 9007199254740992))
+     (exact->inexact q))
+    (else
+     (let* ((a (abs q)) (e (rc-floor-log2 a)))
+       (if (>= e 1024)
+           (if (< q 0) (/ -1.0 0.0) (/ 1.0 0.0))
+           (let* ((qe (if (< e -1022) -1074 (- e 52)))
+                  (m (rc-round-half-even (/ a (expt 2 qe)))))
+             (if (>= (* m (expt 2 qe)) (expt 2 1024))
+                 (if (< q 0) (/ -1.0 0.0) (/ 1.0 0.0))
+                 (let ((x (if (< qe -1022)
+                              (* (* (exact->inexact m) (rc-pow2 -537)) (rc-pow2 (+ qe 537)))
+                              (* (exact->inexact m) (rc-pow2 qe)))))
+                   (if (< q 0) (* -1.0 x) x)))))))))
+
+;; ===========================================================================
 ;; The tower carriers: Z, Q, binary64 and the native tower
 ;; ===========================================================================
 
@@ -539,8 +582,8 @@
               (cons 'add (lambda (a b) (+ a b)))
               (cons 'neg (lambda (a) (* -1.0 a)))
               (cons 'mul (lambda (a b) (* a b)))
-              (cons 'from-integer (lambda (n) (exact->inexact n)))
-              (cons 'from-rational (lambda (q) (exact->inexact q)))
+              (cons 'from-integer rc-exact->binary64)
+              (cons 'from-rational rc-exact->binary64)
               (cons 'equal? (lambda (a b) (= a b)))
               (cons 'unit? (lambda (a) #t))
               (cons 'inverse (lambda (a) (/ 1.0 a)))

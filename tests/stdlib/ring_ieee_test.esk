@@ -1,0 +1,242 @@
+;;; ring_ieee_test.esk -- the IEEE tier of core.ring against its specification
+;;; (ADR-0034 section 4).
+;;;
+;;; The flonum carrier is not a ring and is not checked against ring laws.
+;;; It is checked against its per-operation specification:
+;;;   - for finite binary64 operands a, b, add, sub, mul and division return
+;;;     the exact rational result rounded once to nearest, ties to even,
+;;;     whenever that value is finite (an infinity when the rounding
+;;;     overflows); the reference rounding below is written in exact integer
+;;;     arithmetic, independently of the runtime's conversions, and the
+;;;     runtime's exact->inexact is checked against it as well;
+;;;   - add and mul are commutative bit for bit, a + 0.0 and a * 1.0 return
+;;;     a except for the sign of zero (-0.0 + 0.0 is +0.0);
+;;;   - negation is the sign flip (-0.0 from 0.0); division by zero gives an
+;;;     infinity or NaN and does not raise; NaN is not equal to itself;
+;;;   - no implicit reassociation and no contraction into fused multiply-add;
+;;;   - jets over flonums compute every coefficient by the lawful recurrence
+;;;     with each coefficient operation rounded.
+;;; Every result is folded into a digest of its binary64 bit pattern (each
+;;; non-NaN value bit for bit, each NaN as the canonical quiet NaN), which is
+;;; pinned below, so native JIT and AOT agree bit for bit with each other and
+;;; with the run that pinned it.
+
+(require core.ring)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (set! passed (+ passed 1))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display label) (newline))))
+
+(define R flonums)
+
+;; ---------------------------------------------------------------------------
+;; Exact reference: binary64 rounding of an exact rational
+;; ---------------------------------------------------------------------------
+
+;; floor(log2 q) for an exact rational q > 0.
+(define (bit-length n)
+  (let up ((k 1)) (if (< n (expt 2 k)) (down 0 k n) (up (* k 2)))))
+(define (down lo hi n)                ; least k in (lo, hi] with n < 2^k
+  (if (= (+ lo 1) hi) hi
+      (let ((mid (quotient (+ lo hi) 2))) (if (< n (expt 2 mid)) (down lo mid n) (down mid hi n)))))
+(define (floor-log2 q)
+  (let ((e (- (bit-length (numerator q)) (bit-length (denominator q)))))
+    (if (< q (expt 2 e)) (- e 1) e)))
+
+;; Round an exact rational to binary64: returns the exact value of the
+;; nearest double (ties to even), or 'inf / '-inf on overflow.
+(define (round-half-even x)          ; x exact rational >= 0
+  (let* ((f (floor x)) (r (- x f)))
+    (cond ((< r 1/2) f) ((> r 1/2) (+ f 1)) ((even? f) f) (else (+ f 1)))))
+(define (reference-round q)
+  (if (= q 0)
+      0
+      (let* ((s (if (< q 0) -1 1)) (a (abs q))
+             (e (floor-log2 a))
+             (quantum (if (< e -1022) (expt 2 -1074) (expt 2 (- e 52))))
+             (v (* (round-half-even (/ a quantum)) quantum)))
+        (if (>= v (expt 2 1024)) (if (< s 0) '-inf 'inf) (* s v)))))
+
+(define (matches-reference? result q)
+  (let ((ref (reference-round q)))
+    (cond ((eq? ref 'inf) (and (infinite? result) (> result 0)))
+          ((eq? ref '-inf) (and (infinite? result) (< result 0)))
+          (else (and (not (nan? result)) (not (infinite? result)) (= (inexact->exact result) ref))))))
+
+;; ---------------------------------------------------------------------------
+;; Bit patterns and the digest
+;; ---------------------------------------------------------------------------
+
+(define two52 (expt 2 52))
+(define (f64-bits x)
+  (cond ((nan? x) (* 4095 (expt 2 51)))                 ; 0x7FF8000000000000
+        ((infinite? x) (+ (if (> x 0) 0 (expt 2 63)) (* 2047 two52)))
+        ((= x 0) (if (eqv? x -0.0) (expt 2 63) 0))
+        (else
+         (let* ((q (inexact->exact x)) (sign (if (< q 0) (expt 2 63) 0)) (a (abs q)) (e (floor-log2 a)))
+           (if (< e -1022)
+               (+ sign (* a (expt 2 1074)))
+               (+ sign (* (+ e 1023) two52) (- (* a (expt 2 (- 52 e))) two52)))))))
+
+(define digest 0)
+(define digest-count 0)
+(define (fold! x)
+  (set! digest (modulo (+ (* digest 1099511628211) (f64-bits x) 1) 18446744073709551616))
+  (set! digest-count (+ digest-count 1))
+  x)
+
+;; ---------------------------------------------------------------------------
+;; Samples: special values and seeded random doubles over the whole range
+;; ---------------------------------------------------------------------------
+
+(define seed 20261024)
+(define (next!)
+  (set! seed (modulo (+ (* seed 6364136223846793005) 1442695040888963407) 18446744073709551616))
+  (quotient seed 2048))
+;; A double from a sign, a biased exponent in [0, 2046] and a 52-bit mantissa.
+(define (double-from sign biased mantissa)
+  (let ((v (if (= biased 0)
+               (* mantissa (expt 2 -1074))
+               (* (+ two52 mantissa) (expt 2 (- biased 1075))))))
+    (exact->inexact (if (= sign 1) (- v) v))))
+(define (random-double)
+  (double-from (modulo (next!) 2) (modulo (next!) 2047) (modulo (next!) two52)))
+(define (random-moderate)                 ; exponents near 1, where most cases mix
+  (double-from (modulo (next!) 2) (+ 1013 (modulo (next!) 20)) (modulo (next!) two52)))
+
+(define specials
+  (list 0.0 -0.0 1.0 -1.0 0.1 0.5 3.0 (exact->inexact 1/3) 2.0
+        (double-from 0 0 1)                     ; least subnormal 2^-1074
+        (double-from 0 0 (- two52 1))           ; greatest subnormal
+        (double-from 0 1 0)                     ; least normal 2^-1022
+        (double-from 0 2046 (- two52 1))        ; greatest finite
+        (double-from 1 2046 (- two52 1))
+        (double-from 0 1023 1)                  ; 1 + 2^-52
+        (double-from 0 1022 (- two52 1))        ; 1 - 2^-53
+        (exact->inexact (expt 2 53)) (exact->inexact (+ (expt 2 53) 2)) 1e308 1e-308 -3.5
+        123456.789 6.02214076e23 -2.718281828459045))
+(define randoms (append (map (lambda (i) (random-double)) (iota 24)) (map (lambda (i) (random-moderate)) (iota 24))))
+(define samples (append specials randoms))
+
+(check "the sample doubles are exactly the values they were built from"
+       (= (inexact->exact (double-from 0 0 1)) (expt 2 -1074)))
+
+;; ---------------------------------------------------------------------------
+;; 1. Every operation is the exactly rounded result
+;; ---------------------------------------------------------------------------
+
+(define op-count 0)
+(define spec-ok #t)
+(define convert-ok #t)
+(define (spec-check! result q)
+  (set! op-count (+ op-count 1))
+  (if (not (matches-reference? result q))
+      (begin (set! spec-ok #f) (display "  off-spec: ") (display result) (newline)))
+  ;; rule 5: the carrier's admission of the exact value rounds it the same way
+  (if (not (matches-reference? (r+ R q 0.0) q)) (set! convert-ok #f))
+  (fold! result))
+
+(for-each
+ (lambda (a)
+   (for-each
+    (lambda (b)
+      (let ((ea (inexact->exact a)) (eb (inexact->exact b)))
+        (spec-check! (r+ R a b) (+ ea eb))
+        (spec-check! (r- R a b) (- ea eb))
+        (spec-check! (r* R a b) (* ea eb))
+        (if (not (= b 0)) (spec-check! (r/ R a b) (/ ea eb)))))
+    samples))
+ samples)
+(check "add, sub, mul and division are the exact result rounded once, ties to even" spec-ok)
+(check "an exact operand entering the IEEE tier (rule 5) is rounded once, ties to even" convert-ok)
+(display "IEEE operations checked against the exact reference: ") (display op-count) (newline)
+
+;; ---------------------------------------------------------------------------
+;; 2. Commutativity and identities, bit for bit
+;; ---------------------------------------------------------------------------
+
+(define (bits= x y) (= (f64-bits x) (f64-bits y)))
+(define (all? p xs) (or (null? xs) (and (p (car xs)) (all? p (cdr xs)))))
+(check "add and mul are commutative bit for bit"
+       (all? (lambda (a) (all? (lambda (b) (and (bits= (r+ R a b) (r+ R b a)) (bits= (r* R a b) (r* R b a)))) samples)) samples))
+(check "a + 0.0 = a and a * 1.0 = a, bit for bit except -0.0 + 0.0 = +0.0"
+       (all? (lambda (a) (and (if (eqv? a -0.0) (bits= (r+ R a 0.0) 0.0) (bits= (r+ R a 0.0) a))
+                              (bits= (r* R a 1.0) a)))
+             samples))
+
+;; ---------------------------------------------------------------------------
+;; 3. Negation, division by zero, NaN
+;; ---------------------------------------------------------------------------
+
+(define inf (r/ R 1.0 0.0))
+(define nan (r/ R 0.0 0.0))
+(check "negation is the sign flip: -(0.0) = -0.0, -(-0.0) = 0.0, -(inf) = -inf"
+       (and (bits= (fold! (r-neg R 0.0)) -0.0) (bits= (fold! (r-neg R -0.0)) 0.0)
+            (bits= (fold! (r-neg R inf)) (r/ R -1.0 0.0)) (nan? (r-neg R nan))
+            (all? (lambda (a) (bits= (r-neg R (r-neg R a)) a)) samples)))
+(check "division by zero gives an infinity or NaN and does not raise"
+       (and (infinite? (fold! inf)) (> inf 0) (infinite? (fold! (r/ R -1.0 0.0))) (< (r/ R -1.0 0.0) 0)
+            (< (fold! (r/ R 1.0 -0.0)) 0) (nan? (fold! nan)) (= (fold! (r-inv R 0.0)) inf)))
+(check "NaN is not equal to itself; equal? is numeric ="
+       (and (not (r= R nan nan)) (r= R 0.0 -0.0) (not (r= R 1.0 nan))))
+(check "every value is a unit of the IEEE tier"
+       (and (r-unit? R 0.0) (r-unit? R nan) (r-unit? R inf)))
+(check "an exact operand meets a flonum by rounding (rule 5)"
+       (and (bits= (fold! (r+ R 1/3 0.0)) (exact->inexact 1/3)) (bits= (fold! (r* R 1/10 1.0)) 0.1)
+            (bits= (fold! (r-int R (expt 10 400))) inf)))
+
+;; ---------------------------------------------------------------------------
+;; 4. No reassociation and no contraction
+;; ---------------------------------------------------------------------------
+
+(define u (double-from 0 1023 (expt 2 22)))           ; 1 + 2^-30
+(define w (double-from 0 1022 (- two52 (expt 2 23)))) ; 1 - 2^-30
+(check "(a * b) + c rounds twice: no fused multiply-add"
+       (and (= (inexact->exact (r* R u w)) 1) (bits= (fold! (r+ R (r* R u w) -1.0)) 0.0)
+            (not (= (* (inexact->exact u) (inexact->exact w)) 1))))
+(check "(a + b) + c and a + (b + c) are each computed as written"
+       (and (bits= (fold! (r+ R (r+ R 1e16 -1e16) 1.0)) 1.0)
+            (bits= (fold! (r+ R 1e16 (r+ R -1e16 1.0))) 0.0)))
+
+;; ---------------------------------------------------------------------------
+;; 5. Jets over flonums: the lawful recurrence with each operation rounded
+;; ---------------------------------------------------------------------------
+
+(define J (make-jets R 4))
+(check "jets over flonums are in the IEEE tier"
+       (and (eq? (ring-ref J 'tier) 'ieee) (not (ring-ref J 'lawful?))))
+(define (cauchy a b)                     ; c_k = a0 b_k + a1 b_{k-1} + ... in that order
+  (map (lambda (k)
+         (let loop ((j 1) (s (* (list-ref a 0) (list-ref b k))))
+           (if (> j k) s (loop (+ j 1) (+ s (* (list-ref a j) (list-ref b (- k j))))))))
+       (iota 4)))
+(define (jet-ok? a b)
+  (let ((p (r* J (make-jet J a) (make-jet J b))))
+    (for-each fold! (jet-coefficients p))
+    (all? (lambda (pair) (bits= (car pair) (cdr pair))) (map cons (jet-coefficients p) (cauchy a b)))))
+(check "the jet product is the truncated Cauchy product with each operation rounded"
+       (all? (lambda (i) (jet-ok? (map (lambda (j) (random-moderate)) (iota 4))
+                                  (map (lambda (j) (random-moderate)) (iota 4))))
+             (iota 12)))
+(check "the jet inverse is the series recurrence: (x + e)^-1 at x = 3.0"
+       (let ((inv (jet-coefficients (r-inv J (jet-seed J 3.0)))))
+         (for-each fold! inv)
+         (and (bits= (list-ref inv 0) (/ 1.0 3.0))
+              (bits= (list-ref inv 1) (* -1.0 (* (/ 1.0 3.0) (* 1.0 (/ 1.0 3.0))))))))
+
+;; ---------------------------------------------------------------------------
+;; The pinned digest: native JIT and AOT agree bit for bit
+;; ---------------------------------------------------------------------------
+
+(define expected-digest 13588365150251886005)
+(display "IEEE digest: ") (display digest) (display " over ") (display digest-count) (display " results") (newline)
+(check "the binary64 results agree bit for bit with the pinned digest" (= digest expected-digest))
+
+(newline)
+(display "ring_ieee_test: ") (display passed) (display " checks passed, ") (display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: ring_ieee_test") (newline) (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
