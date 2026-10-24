@@ -1,0 +1,28 @@
+;;; Copyright (C) 2026 Richard Hoekstra. SPDX-License-Identifier: MIT
+;;; Public facade for mix-v1 specialization. Results keep their declared ABI.
+(require core.compiler.mix.runtime)
+(require core.compiler.mix.source)
+(require core.compiler.mix.emit)
+(provide mix-limits mix-options mix-run mix-specialize mix-apply-compiler mix-compile
+         mix-result-status mix-result-value mix-result-work mix-result-allocations mix-inputs
+         mix-source mix-bytecode-interpreter mix-bytecode-interpreter-alt
+         mix-self-interpreter mix-combined-source mix-emit-eshkol)
+(define (mix-specialize p statics options limits)
+  (mix-specialize-with (mix-source) p statics options limits))
+(define (mix-apply-compiler compiler target statics options limits)
+  (mix-apply-with compiler target statics options limits))
+;; Compile valid integer source through the self-hosted normalizer. Unsupported
+;; object normalization retains raw code inside J; this scalar facade refuses
+;; that outcome instead of publishing it under the transported input ABI.
+(define (mix-compile p options limits)
+  (let ((pre (mix-run p '() (mix-limits 0 512 0 300000))))
+    (if (not (eq? (mix-result-status pre) 'work-bound))
+        (mx-result 'invalid-program '() 0 0 '() 'self-specialization)
+        (let* ((source (mix-combined-source)) (interpreter (mix-self-interpreter))
+               (r (mix-specialize-with source interpreter (list (cons 'program p)) options limits)))
+          (if (and (eq? (mix-result-status r) 'normal) (null? (cadr (mix-result-value r))))
+              (mx-result 'normal (mix-result-value r) (mix-result-work r) (mix-result-allocations r)
+                         (mx-free (caddr p) '())
+                         (mx-copy (list 'self-specialization source interpreter p (list (vector-ref options 1) (vector-ref options 2)))))
+              (mx-result (if (eq? (mix-result-status r) 'normal) 'unsupported-residual (mix-result-status r))
+                         '() (mix-result-work r) (mix-result-allocations r) '() 'self-specialization))))))
