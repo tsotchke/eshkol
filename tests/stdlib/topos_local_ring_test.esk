@@ -7,8 +7,8 @@
 ;;; n with the primes dividing f removed. The structure sheaf is D |-> O(D),
 ;;; restriction is reduction mod m'.
 ;;;
-;;; Why the theorem holds (Mac Lane-Moerdijk VI.10, Johnstone D4.6 for the
-;;; general statement; Kock, "Synthetic Differential Geometry" III.11): for any
+;;; Why the theorem holds (Mac Lane-Moerdijk ch. VIII, the Zariski topos and
+;;; local rings; Johnstone, "Sketches of an Elephant", D3): for any
 ;;; ring R and x in R the elements x and 1 - x generate the unit ideal, since
 ;;; x + (1 - x) = 1. So the basic opens D(x) and D(1 - x) cover Spec R; on D(x)
 ;;; the element x is invertible and on D(1 - x) so is 1 - x. Kripke-Joyal

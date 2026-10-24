@@ -126,7 +126,7 @@
 ;; Sheaf semantics as the j-translation of presheaf semantics: for a J-sheaf
 ;;    X, Sh(C, J) forces phi at U iff Psh(C) forces phi^j at U, where phi^j
 ;;    applies the modality (locally -) of J to atoms, false, or and exists
-;;    (Johnstone, Elephant A4.4 and D4.6; Mac Lane-Moerdijk V.3)
+;;    (Johnstone, Elephant A4.4 and D4; Mac Lane-Moerdijk V.1-V.3 and VI.7)
 ;; ---------------------------------------------------------------------------
 (define (space-pred i) (lambda (w) (list (restriction-of-global T-ShX X-ShX top-X i w))))
 (define T-PshX (presheaf-topos CX))

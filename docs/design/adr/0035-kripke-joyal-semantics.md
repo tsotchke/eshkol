@@ -158,7 +158,8 @@ The precise statement adopted is the Lawvere-Tierney translation: for a
 J-sheaf X, **Sh(C, J) forces phi at U iff Psh(C) forces phi^j at U**.
 Here phi^j applies `locally` to the atoms, to false, to every disjunction and
 to every existential, and leaves conjunction, implication and the universal
-quantifier unchanged (Johnstone A4.4, D4.6; Mac Lane-Moerdijk V.3).
+quantifier unchanged (Johnstone, *Elephant*, A4.4 and D4; Mac Lane-Moerdijk
+V.1-V.3 and VI.7).
 `tests/stdlib/topos_jtranslation_test.esk` checks this on the whole first-order
 corpus over the open-cover topology of the pseudocircle space. The same
 corpus shows that the untranslated presheaf reading differs on some formulas.
@@ -296,15 +297,13 @@ v1.4.0-connection.
 
 - S. Mac Lane, I. Moerdijk, *Sheaves in Geometry and Logic* (1992),
   ch. III, V and VI (VI.5-VI.7 the Mitchell-Benabou language and Kripke-Joyal
-  semantics; VI.10 the generic local ring).
+  semantics; ch. VIII, the Zariski topos and local rings).
 - P. T. Johnstone, *Sketches of an Elephant* (2002), A4.4 (local operators),
   D1 (the internal language), D4 (higher-order logic; D4.6 De Morgan toposes).
 - G. Osius, "A note on Kripke-Joyal semantics for the internal language of
   topoi", in *Model Theory and Topoi*, LNM 445 (1975).
 - S. Kripke, "Semantical analysis of intuitionistic logic I" (1965).
 - E. W. Beth, "Semantic construction of intuitionistic logic" (1956).
-- A. Kock, *Synthetic Differential Geometry* (2nd ed. 2006), III.11
-  (the internally local ring of the Zariski topos).
 - E. Rijke, M. Shulman, B. Spitters, "Modalities in homotopy type theory",
   LMCS 16 (2020).
 - A. Grothendieck, J. Dieudonne, EGA I (1960), the functor of points.
