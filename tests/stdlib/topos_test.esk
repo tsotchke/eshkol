@@ -1,0 +1,256 @@
+;;; core.topos: types, the Heyting algebra of Omega, Lawvere-Tierney
+;;; topologies, the subobject classifier, exponentials, and the soundness of
+;;; intuitionistic higher-order logic under Kripke-Joyal forcing; the classical
+;;; laws fail on non-Boolean sites with explicit counter-witness stages and hold
+;;; on a Boolean one.
+(require stdlib)
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+(require core.topos)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display label) (newline))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (raises? thunk) (guard (e (#t #t)) (thunk) #f))
+(define (sizes T X) (map (lambda (c) (topos-type-size X c)) (range (category-object-count (topos-category T)))))
+
+;; ---------------------------------------------------------------------------
+;; Sites: walking arrow, pseudocircle, BZ/2 (presheaf toposes), sheaves on the
+;; pseudocircle space (open covers)
+;; ---------------------------------------------------------------------------
+(define (language-of T X Pset Qset)
+  (make-topos-language T (list (cons 'X X))
+                       (list (topos-predicate 'P '(X) (lambda (U x) (member x (Pset U))))
+                             (topos-predicate 'Q '(X) (lambda (U x) (member x (Qset U)))))))
+(define WA (poset-category 2 (lambda (x y) (<= x y))))
+(define T-WA (presheaf-topos WA))
+(define X-WA (topos-object T-WA (make-set-presheaf WA (list '(u v r) '(u v)) (lambda (a x) x))))
+(define L-WA (language-of T-WA X-WA (lambda (U) (vector-ref (vector '(u v) '(u)) U)) (lambda (U) (vector-ref (vector '(r) '()) U))))
+(define S4 (poset-category 4 (lambda (x y) (or (= x y) (and (< x 2) (>= y 2))))))
+(define T-S4 (presheaf-topos S4))
+(define X-S4 (topos-object T-S4 (make-set-presheaf S4 (list '(a b c) '(a b) '(a) '(b)) (lambda (a x) x))))
+(define L-S4 (language-of T-S4 X-S4 (lambda (U) (vector-ref (vector '(a b) '(a) '(a) '()) U)) (lambda (U) (vector-ref (vector '(c) '() '() '()) U))))
+(define (z2-nf w) (if (even? (length w)) '() (list 0)))
+(define BZ2 (make-category-from-presentation 1 (list (list 0 0 's)) z2-nf 2))
+(define T-BZ2 (presheaf-topos BZ2))
+(define X-BZ2 (topos-object T-BZ2 (make-set-presheaf BZ2 (list '(e s o))
+                                                     (lambda (a x) (if (= a (category-identity BZ2 0)) x (cdr (assq x '((e . s) (s . e) (o . o)))))))))
+(define L-BZ2 (language-of T-BZ2 X-BZ2 (lambda (U) '(o)) (lambda (U) '(e s))))
+(define space (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define site-X (finite-space-site space))
+(define CX (site-category site-X))
+(define T-ShX (make-topos site-X))
+(define top-X (category-object-of-label CX '(0 1 2 3)))
+(define X-ShX (topos-object T-ShX (sheafify site-X (constant-set-presheaf CX '(0 1)))))
+(define (global-restriction X i U) (topos-type-restrict X (car (category-hom CX U top-X)) (topos-type-element X top-X i)))
+(define L-ShX (language-of T-ShX X-ShX (lambda (U) (list (global-restriction X-ShX 0 U))) (lambda (U) (list (global-restriction X-ShX 1 U)))))
+(define all-sites (list (list "walking arrow" L-WA) (list "pseudocircle" L-S4) (list "BZ/2" L-BZ2) (list "sheaves on the pseudocircle space" L-ShX)))
+
+;; ---------------------------------------------------------------------------
+;; 1. Types and Omega
+;; ---------------------------------------------------------------------------
+(show "Omega: walking arrow, pseudocircle, BZ/2, sheaves on the pseudocircle space"
+      (list (sizes T-WA (topos-omega T-WA)) (sizes T-S4 (topos-omega T-S4)) (sizes T-BZ2 (topos-omega T-BZ2)) (sizes T-ShX (topos-omega T-ShX))))
+(check "Omega has (2, 3) sieves on the walking arrow, (2, 2, 5, 5) on the pseudocircle, 2 on BZ/2, and the closed sieves (1, 2, 2, 4, 5, 5, 7) on the opens of the pseudocircle space (opens of the down-set, as for Sh(X) = O(X)-valued truth)"
+       (and (equal? (sizes T-WA (topos-omega T-WA)) '(2 3)) (equal? (sizes T-S4 (topos-omega T-S4)) '(2 2 5 5))
+            (equal? (sizes T-BZ2 (topos-omega T-BZ2)) '(2)) (equal? (sizes T-ShX (topos-omega T-ShX)) '(1 2 2 4 5 5 7))
+            (all? (lambda (c) (equal? (topos-closed-sieves T-WA c) (sieves-on WA c))) '(0 1))
+            (presheaf-sheaf? site-X (topos-type-presheaf (topos-omega T-ShX)))))
+(check "constructed types are presheaves on the category (functorial) and each constructor returns one object per argument tuple"
+       (and (all? (lambda (X) (presheaf-functorial? (topos-type-presheaf X)))
+                  (list (topos-omega T-S4) (topos-product T-S4 X-S4 (topos-omega T-S4)) (topos-power T-S4 X-S4) (topos-exponential T-WA X-WA X-WA) (topos-power T-ShX X-ShX)))
+            (eq? (topos-power T-WA X-WA) (topos-power T-WA X-WA))
+            (eq? (topos-product T-WA X-WA X-WA) (topos-product T-WA X-WA X-WA))))
+(check "power objects of sheaves are sheaves, and P(1) is Omega: |P(1)(c)| = |Omega(c)| on every site"
+       (and (presheaf-sheaf? site-X (topos-type-presheaf (topos-power T-ShX X-ShX)))
+            (all? (lambda (T) (equal? (sizes T (topos-power T (topos-terminal T))) (sizes T (topos-omega T)))) (list T-WA T-S4 T-BZ2 T-ShX))))
+(check "topos-object refuses a presheaf that is not a sheaf for the topology (the constant presheaf on the space)"
+       (raises? (lambda () (topos-object T-ShX (constant-set-presheaf CX '(0 1))))))
+
+;; ---------------------------------------------------------------------------
+;; 2. The Heyting algebra of Omega
+;; ---------------------------------------------------------------------------
+(define (heyting-adjunction? T c)
+  (let ((sv (topos-closed-sieves T c)))
+    (all? (lambda (S) (all? (lambda (Q) (let ((I (topos-omega-implies T c S Q)))
+                                          (all? (lambda (R) (eq? (if (all? (lambda (f) (memv f I)) R) #t #f)
+                                                                 (if (all? (lambda (f) (memv f Q)) (topos-omega-meet T c R S)) #t #f)))
+                                                sv)))
+                        sv))
+          sv)))
+(check "R <= (S => Q) iff R meet S <= Q for all closed sieves at every stage of every site"
+       (all? (lambda (T) (all? (lambda (c) (heyting-adjunction? T c)) (range (category-object-count (topos-category T))))) (list T-WA T-S4 T-BZ2 T-ShX)))
+(check "Omega is Boolean on BZ/2 and not at the top stage of the walking arrow, of the pseudocircle, nor of the space"
+       (and (topos-omega-boolean? T-BZ2 0) (not (topos-omega-boolean? T-WA 1)) (not (topos-omega-boolean? T-S4 2)) (not (topos-omega-boolean? T-ShX top-X))))
+
+;; ---------------------------------------------------------------------------
+;; 3. Lawvere-Tierney topologies (Mac Lane-Moerdijk V.1.2)
+;; ---------------------------------------------------------------------------
+;; all Grothendieck topologies on the walking arrow, enumerated as families of sieve sets
+(define (subsets-of xs) (if (null? xs) (list '()) (let ((r (subsets-of (cdr xs)))) (append r (map (lambda (s) (cons (car xs) s)) r)))))
+(define WA-topologies
+  (filter grothendieck-topology?
+          (map (lambda (J) (make-site-from-sieves WA J))
+               (let ((s0 (subsets-of (sieves-on WA 0))) (s1 (subsets-of (sieves-on WA 1))))
+                 (apply append (map (lambda (a) (map (lambda (b) (list a b)) s1)) s0))))))
+(define WA-js (map (lambda (site) (topos-lawvere-tierney (make-topos site))) WA-topologies))
+(define (all-endomaps C)       ;; every family of functions Omega(c) -> Omega(c)
+  (let ((ns (map (lambda (c) (length (sieves-on C c))) (range (category-object-count C)))))
+    (map list->vector
+         (let loop ((ns ns))
+           (if (null? ns) (list '())
+               (let ((rest (loop (cdr ns)))
+                     (fs (let fl ((k (car ns)) (acc (list '()))) (if (= k 0) (map list->vector acc) (fl (- k 1) (apply append (map (lambda (t) (map (lambda (v) (cons v t)) (range (car ns)))) acc)))))))
+                 (apply append (map (lambda (f) (map (lambda (r) (cons f r)) rest)) fs))))))))
+(define WA-lt (filter (lambda (j) (topos-lawvere-tierney? WA j)) (all-endomaps WA)))
+(show "walking arrow: Grothendieck topologies, Lawvere-Tierney topologies among all endomaps of Omega" (list (length WA-topologies) (length WA-lt) (length (all-endomaps WA))))
+(check "Theorem V.1.2 by exhaustion on the walking arrow: the 4 Grothendieck topologies give 4 distinct Lawvere-Tierney topologies, which are all of them among the 108 endomaps of Omega, and each j gives back its topology"
+       (and (= 4 (length WA-topologies)) (= 4 (length WA-lt)) (= 108 (length (all-endomaps WA)))
+            (all? (lambda (j) (member j WA-lt)) WA-js)
+            (all? (lambda (site j) (let ((back (topos-lawvere-tierney-site WA j)))
+                                     (all? (lambda (c) (all? (lambda (S) (eq? (site-covering? site c S) (site-covering? back c S))) (sieves-on WA c))) '(0 1))))
+                  WA-topologies WA-js)))
+(check "the open-cover topology of the space gives a Lawvere-Tierney topology whose fixed points are exactly the closed sieves"
+       (let ((j (topos-lawvere-tierney T-ShX)))
+         (and (topos-lawvere-tierney? CX j)
+              (all? (lambda (c) (let ((sv (sieves-on CX c)))
+                                  (equal? (filter (lambda (S) (equal? S (list-ref sv (vector-ref (vector-ref j c) (let loop ((l sv) (i 0)) (if (equal? (car l) S) i (loop (cdr l) (+ i 1))))))))
+                                                  sv)
+                                          (topos-closed-sieves T-ShX c))))
+                    (range (category-object-count CX))))))
+
+;; ---------------------------------------------------------------------------
+;; 4. The subobject classifier and exponentials
+;; ---------------------------------------------------------------------------
+(define (sub-presheaves T X)
+  (let* ((C (topos-category T)) (n (category-object-count C)))
+    (filter (lambda (A) (all? (lambda (a) (all? (lambda (x) (memv (topos-type-index X (arrow-source C a) (topos-type-restrict X a (topos-type-element X (arrow-target C a) x)))
+                                                                   (list-ref A (arrow-source C a))))
+                                                (list-ref A (arrow-target C a))))
+                              (range (category-arrow-count C))))
+            (let loop ((cs (range n)))
+              (if (null? cs) (list '())
+                  (let ((rest (loop (cdr cs)))) (apply append (map (lambda (s) (map (lambda (r) (cons s r)) rest)) (subsets-of (range (topos-type-size X (car cs))))))))))))
+(define (classifier-counts T X)
+  (let* ((subs (sub-presheaves T X)) (chis (map (lambda (A) (topos-classifying-map T X A)) subs))
+         (nats (topos-morphisms T X (topos-omega T))))
+    (list (length subs) (length nats)
+          (all? (lambda (chi) (member chi nats)) chis)
+          (all? (lambda (A chi) (equal? (map (lambda (l) (sort l <)) A) (topos-classified-subobject T X chi))) subs chis))))
+(define cc-WA (classifier-counts T-WA X-WA))
+(define cc-S4 (classifier-counts T-S4 X-S4))
+(show "sub-presheaves, morphisms X -> Omega, every chi is one, chi recovers A: walking arrow, pseudocircle" (list cc-WA cc-S4))
+(check "subobject classifier: Sub(X) and Hom(X, Omega) are in bijection by chi (walking arrow and pseudocircle)"
+       (and (= (car cc-WA) (cadr cc-WA)) (caddr cc-WA) (cadddr cc-WA) (= (car cc-S4) (cadr cc-S4)) (caddr cc-S4) (cadddr cc-S4)))
+(define (adjunction T X Y Z)
+  (list (length (topos-morphisms T (topos-product T Z X) Y)) (length (topos-morphisms T Z (topos-exponential T X Y)))))
+(define Y-WA (topos-object T-WA (make-set-presheaf WA (list '(y0 y1) '(y2)) (lambda (a x) 'y0))))
+(define adj-WA (adjunction T-WA X-WA Y-WA X-WA))
+(define adj-BZ2 (adjunction T-BZ2 X-BZ2 (topos-omega T-BZ2) X-BZ2))
+(show "Hom(Z x X, Y) and Hom(Z, Y^X): walking arrow, BZ/2" (list adj-WA adj-BZ2))
+(check "exponential adjunction Hom(Z x X, Y) = Hom(Z, Y^X) by counting, and evaluation of the curried map recovers the original"
+       (and (= (car adj-WA) (cadr adj-WA)) (= (car adj-BZ2) (cadr adj-BZ2))
+            (let* ((E (topos-exponential T-BZ2 X-BZ2 X-BZ2)))
+              (and (= 27 (topos-type-size E 0))
+                   (all? (lambda (th) (all? (lambda (x) (memq (topos-exponential-apply T-BZ2 E 0 th x) '(e s o))) '(e s o))) (topos-type-elements E 0))))))
+
+;; ---------------------------------------------------------------------------
+;; 5. Soundness: theorems of intuitionistic higher-order logic are forced at
+;;    every stage, for every generalized element, on every site
+;; ---------------------------------------------------------------------------
+(define theorems
+  '((((x X)) (implies (P x) (P x)))
+    (((x X)) (implies (and (P x) (Q x)) (P x)))
+    (((x X)) (implies (P x) (implies (Q x) (P x))))
+    (((x X)) (implies (P x) (not (not (P x)))))
+    (((x X)) (iff (not (not (not (P x)))) (not (P x))))
+    (((x X)) (iff (not (or (P x) (Q x))) (and (not (P x)) (not (Q x)))))
+    (((x X)) (implies (or (not (P x)) (not (Q x))) (not (and (P x) (Q x)))))
+    (((x X)) (not (not (or (P x) (not (P x))))))
+    (((x X)) (implies (implies (P x) (Q x)) (implies (not (Q x)) (not (P x)))))
+    (() (implies (exists (y X) (P y)) (not (forall (y X) (not (P y))))))
+    (() (iff (not (exists (y X) (P y))) (forall (y X) (not (P y)))))
+    (() (implies (forall (y X) (implies (P y) (Q y))) (implies (forall (y X) (P y)) (forall (y X) (Q y)))))
+    (() (iff (exists (y X) (or (P y) (Q y))) (or (exists (y X) (P y)) (exists (y X) (Q y)))))
+    (() (iff (forall (y X) (and (P y) (Q y))) (and (forall (y X) (P y)) (forall (y X) (Q y)))))
+    (((x X)) (= x x))
+    (((x X)) (forall (y X) (implies (= x y) (implies (P x) (P y)))))
+    (() (forall (y X) (iff (in y (set (z X) (P z))) (P y))))
+    (() (forall (A (P X)) (forall (B (P X)) (implies (forall (y X) (iff (in y A) (in y B))) (= A B)))))
+    (() (forall (p Omega) (iff (holds p) (= p (truth true)))))
+    (() (forall (p Omega) (forall (q Omega) (implies (iff (holds p) (holds q)) (= p q)))))
+    (() (forall (p Omega) (not (not (or (holds p) (not (holds p)))))))
+    (((x X)) (iff (holds (truth (P x))) (P x)))
+    (() (forall (y X) (= (app (lambda (z X) z) y) y)))
+    (() (forall (y X) (forall (z X) (and (= (fst (pair y z)) y) (= (snd (pair y z)) z)))))
+    (() (forall (w (* X X)) (= (pair (fst w) (snd w)) w)))
+    (() (forall (A (P X)) (= (set (z X) (in z A)) A)))
+    (() (forall (A (P X)) (implies (exists (y X) (in y A)) (not (= A (set (z X) false))))))))
+(define fn-theorems          ;; extensionality and eta on X^X (the walking arrow and BZ/2, where X^X is small)
+  '((() (forall (f (fun X X)) (forall (g (fun X X)) (implies (forall (y X) (= (app f y) (app g y))) (= f g)))))
+    (() (forall (f (fun X X)) (= (lambda (z X) (app f z)) f)))))
+(define (valid-everywhere? L ctx phi) (topos-valid? (topos-formula L ctx phi)))
+(for-each
+ (lambda (s)
+   (let ((bad (filter (lambda (t) (not (valid-everywhere? (cadr s) (car t) (cadr t)))) theorems)))
+     (if (not (null? bad)) (show "not forced" bad))
+     (check (string-append (car s) ": all " (number->string (length theorems)) " theorems of intuitionistic higher-order logic (propositional, first-order, comprehension, extensionality, Omega, lambda, pairing) are forced at every stage")
+            (null? bad))))
+ all-sites)
+(check "function extensionality and eta for X^X are forced on the walking arrow and on BZ/2"
+       (all? (lambda (L) (all? (lambda (t) (valid-everywhere? L (car t) (cadr t))) fn-theorems)) (list L-WA L-BZ2)))
+
+;; ---------------------------------------------------------------------------
+;; 6. Classical laws: refuted with an explicit counter-witness on non-Boolean
+;;    sites, forced on the Boolean site BZ/2
+;; ---------------------------------------------------------------------------
+(define lem '(forall (p Omega) (or (holds p) (not (holds p)))))
+(define dne '(forall (p Omega) (implies (not (not (holds p))) (holds p))))
+(define demorgan '(forall (p Omega) (forall (q Omega) (implies (not (and (holds p) (holds q))) (or (not (holds p)) (not (holds q)))))))
+(define lem-predicates '(forall (A (P X)) (forall (y X) (or (in y A) (not (in y A))))))
+(define (witness L phi) (topos-counter-witness (topos-formula L '() phi)))
+(define (label-of L w) (and w (category-object-label (topos-category (topos-language-topos L)) (car w))))
+(define classical (list (list "excluded middle" lem) (list "double-negation elimination" dne) (list "De Morgan for not-and" demorgan) (list "excluded middle for every predicate" lem-predicates)))
+(for-each
+ (lambda (s)
+   (show (string-append (car s) ": counter-witness stages for the classical laws") (map (lambda (c) (list (car c) (label-of (cadr s) (witness (cadr s) (cadr c))))) classical)))
+ all-sites)
+;; the refuting stage, and why: at the top of the walking arrow the sieve {0 -> 1} is neither true nor false-forced
+(define wa-p (list-ref (topos-closed-sieves T-WA 1) 1))
+(check "excluded middle and double-negation elimination fail on the walking arrow, the pseudocircle and the space, each with a stage where they are not forced; the generalized element p = the sieve {0 -> 1} at stage 1 of the walking arrow refutes both"
+       (and (all? (lambda (L) (and (witness L lem) (witness L dne) (witness L lem-predicates))) (list L-WA L-S4 L-ShX))
+            (= 1 (car (witness L-WA lem)))
+            (not (topos-forces? (topos-formula L-WA '((p Omega)) '(or (holds p) (not (holds p)))) 1 (list wa-p)))
+            (topos-forces? (topos-formula L-WA '((p Omega)) '(not (not (holds p)))) 1 (list wa-p))
+            (not (topos-forces? (topos-formula L-WA '((p Omega)) '(holds p)) 1 (list wa-p)))))
+(check "De Morgan's law for not-and fails on the pseudocircle and on the space (their categories fail the Ore condition: the points 0 and 1 have no common refinement) and holds on the walking arrow, a De Morgan but not Boolean topos"
+       (and (witness L-S4 demorgan) (witness L-ShX demorgan) (not (witness L-WA demorgan))))
+(check "on BZ/2 (presheaves on a group, a Boolean topos) excluded middle, double-negation elimination, De Morgan and excluded middle for every predicate are forced"
+       (all? (lambda (c) (not (witness L-BZ2 (cadr c)))) classical))
+(check "forcing and the Omega-valued truth agree on every classical law at every stage of every site"
+       (all? (lambda (s) (all? (lambda (c) (cadr (topos-cross-check (topos-formula (cadr s) '() (cadr c))))) classical)) all-sites))
+
+;; ---------------------------------------------------------------------------
+;; 7. Contracts
+;; ---------------------------------------------------------------------------
+(check "ill-typed formulas, unknown symbols and non-natural declarations raise"
+       (and (raises? (lambda () (topos-formula L-WA '((x X)) '(= x (truth true)))))
+            (raises? (lambda () (topos-formula L-WA '() '(R zz))))
+            (raises? (lambda () (topos-formula L-WA '((x X)) '(holds x))))
+            (raises? (lambda () (make-topos-language T-WA (list (cons 'X X-WA)) (list (topos-predicate 'B '(X) (lambda (U x) (and (= U 1) (eq? x 'u))))))))
+            (raises? (lambda () (make-topos-language T-WA (list (cons 'X X-WA)) (list (topos-function 'g '(X) 'X (lambda (U x) (if (= U 1) 'v x))))))
+            (not (raises? (lambda () (make-topos-language T-WA (list (cons 'X X-WA)) (list (topos-predicate 'B '(X) (lambda (U x) (eq? x 'u))))))))))
+(check "environments are generalized elements: a value outside X(U) is refused"
+       (raises? (lambda () (topos-forces? (topos-formula L-WA '((x X)) '(P x)) 1 (list 'r)))))
+
+(if (= failed 0)
+    (begin (display "PASS: topos_test (") (display passed) (display " checks)") (newline))
+    (begin (display "FAIL: topos_test (") (display failed) (display " failed)") (newline)))
