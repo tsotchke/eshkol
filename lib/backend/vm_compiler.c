@@ -947,7 +947,7 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
 
 /** @brief Compile a `(case key-expr ((datum...) body...)... [(else
  *         body...)])` special form: evaluates the key once, then for each
- *         clause tests it (via OP_EQ against each quoted datum) and
+ *         clause tests it (via the existing eqv? native against each quoted datum) and
  *         branches to the matching clause's body, with `else` always
  *         taken as a fallback. */
 static void compile_form_case(FuncChunk* c, Node* node, int tail) {
@@ -969,12 +969,12 @@ static void compile_form_case(FuncChunk* c, Node* node, int tail) {
         /* ((val1 val2 ...) body ...) */
         Node* vals = clause->children[0];
         if (vals->type != N_LIST) continue;
-        /* Test key against each val: DUP, EQ, if true → jump to body */
+        /* case uses eqv?, not numeric =: OP_EQ coerces symbols to zero. */
         int body_patches[16]; int n_bp = 0;
         for (int v = 0; v < vals->n_children; v++) {
             chunk_emit(c, OP_DUP, 0);
             compile_quote(c, vals->children[v]);
-            chunk_emit(c, OP_EQ, 0);
+            chunk_emit(c, OP_NATIVE_CALL, 133); /* eqv? */
             /* If true, jump to body */
             if (n_bp < 16) body_patches[n_bp++] = c->code_len;
             chunk_emit(c, OP_JUMP_IF_FALSE, 0); /* placeholder: if false, continue */
