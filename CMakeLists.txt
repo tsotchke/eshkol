@@ -4326,6 +4326,26 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# core.sheaf: finite sites, sieves, presheaves, gluing, sheafification and
+# cohomology (ADR-0033), with core.integer_linalg. The suite cross-checks
+# against core.exact_linalg and between independent cohomology paths; the
+# finite-site and finite-space sheaf examples below consume the library.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME sheaf_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/sheaf_test.esk")
+    add_test(NAME sheaf_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/sheaf_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/sheaf_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(sheaf_jit sheaf_aot PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: sheaf_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
@@ -4391,6 +4411,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
     # These consumers now require the shared field module from this checkout.
     set_property(TEST torsion_lens_spaces_reidemeister_jit tv_turaev_viro_cyclotomic_jit
+                      sheaf_finite_spaces_cech_descent_jit sheaf_finite_site_sheafification_jit
         APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # The order-eight program eliminates five 343 x 2401 integer matrices;
     # about 90 s on an arm64 laptop, so it gets its own budget.

@@ -752,6 +752,15 @@ under the same discipline that made `Qubit` linear.
       exact rational distribution semantics under a step bound, the exact
       `2^-length` prior, bounded enumeration and conditioning, and the SBLC gate
       (codec oracle, exact mass conservation, coin-trace oracle, JIT/AOT parity)
+- [x] Sheaf theory as a library (ADR-0033): `core.sheaf` provides finite
+      sites with Grothendieck topologies given by covering sieves and checked
+      against the three axioms, finite spaces, presheaves of sets and of
+      Z-modules / Q-vector spaces, the sheaf condition as gluing that returns
+      the global section or the overlaps where it fails (also for data split
+      over shards, devices or time windows), sheafification by the plus
+      construction, and Cech and derived cohomology with torsion and cocycle
+      generators, over `core.integer_linalg` (Smith normal form). The
+      finite-site and finite-space sheaf examples run on it
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve

@@ -2506,6 +2506,20 @@ oracles:
         label: 'Running-total sweep: every v1.4-connection probe above is green. Expected FAIL until the release actually ships — this criterion is a progress counter, not a release gate (see scripts/run_v14_connection_gate.sh''s summary line for the live pass/fail count)'
         action: run_v14_connection_gate
 
+      # core.sheaf (ADR-0033): sheaf theory on finite sites as one library.
+      # Producer: scripts/run_sheaf_gate.sh runs the six CTest entries that
+      # own the behaviour (the suite and the two examples written on the
+      # library, JIT and AOT) and every documentation example on the
+      # reference pages; PASS only when all of them ran and passed.
+      - id: v14_core_sheaf
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_sheaf"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.sheaf (ADR-0033): finite sites and Grothendieck topologies checked against the three axioms, presheaves of sets and of Z-modules / Q-vector spaces, gluing with named obstructions, the plus construction, and Cech and derived cohomology with torsion and cocycle generators; sheaf_jit/sheaf_aot, the two library-based sheaf examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_sheaf_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
