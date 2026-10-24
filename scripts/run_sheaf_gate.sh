@@ -8,8 +8,9 @@
 #        examples written on the library,
 #        sheaf_finite_site_sheafification_{jit,aot} and
 #        sheaf_finite_spaces_cech_descent_{jit,aot};
-#   2. every fenced example on docs/reference/stdlib/sheaf.md and
-#      docs/reference/stdlib/integer_linalg.md through the documentation
+#   2. every fenced example in the documentation gate's `reference` scope
+#      (docs/reference/stdlib/sheaf.md and
+#      docs/reference/stdlib/integer_linalg.md) through the documentation
 #      example harness, on the JIT and as AOT binaries, comparing each
 #      `;; =>` annotation with what the build printed.
 #
@@ -81,12 +82,21 @@ doc_log="$WORK/doc-examples.log"
 python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --eshkol-run "$BUILD_DIR_PATH/eshkol-run" \
     --engines jit,aot \
-    --only docs/reference/stdlib/sheaf.md,docs/reference/stdlib/integer_linalg.md \
+    --scope reference \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
 doc_status=$?
-summary="$summary; documentation examples exit ${doc_status}: $(tail -n 1 "$doc_log")"
-[ "$doc_status" -eq 0 ] || status=1
+# The harness reports "examples=N executed=E passed=P failed=F"; an example
+# that was not executed is not evidence, so all of them must run and pass.
+doc_counts=$(grep -oE 'examples=[0-9]+ executed=[0-9]+ passed=[0-9]+' "$doc_log" | tail -n 1)
+doc_examples=$(printf '%s' "$doc_counts" | sed -E 's/examples=([0-9]+).*/\1/')
+doc_executed=$(printf '%s' "$doc_counts" | sed -E 's/.*executed=([0-9]+).*/\1/')
+doc_passed=$(printf '%s' "$doc_counts" | sed -E 's/.*passed=([0-9]+).*/\1/')
+summary="$summary; documentation examples ${doc_counts:-none reported} (exit ${doc_status})"
+if [ "$doc_status" -ne 0 ] || [ -z "$doc_counts" ] || [ "${doc_examples:-0}" -eq 0 ] \
+   || [ "$doc_executed" -ne "$doc_examples" ] || [ "$doc_passed" -ne "$doc_examples" ]; then
+    status=1
+fi
 
 if [ "$status" -eq 0 ]; then
     emit_event PASS "$summary"
