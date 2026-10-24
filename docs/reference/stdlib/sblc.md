@@ -333,17 +333,172 @@ against every example and returns a receipt:
 
 - per program: code bits, length, prior `2^-length`, per-example likelihoods
   and timeout masses, likelihood (their product), weight (`prior ×
-  likelihood`) and posterior (`weight / evidence`);
+  likelihood`) and posterior (`weight / evidence`, or a zero sentinel when
+  evidence is zero; that sentinel is not a normalized posterior);
 - the evidence (sum of weights), the **shortest** witness (the first program
   with positive weight) and the **MDL** witness (the largest weight, ties to
   the earlier program);
-- status `'consistent`, or `'no-consistent-program` when no program in the set
-  explains the examples;
+- status `'consistent` when bounded evidence is positive; `'unresolved` when
+  evidence is zero but at least one candidate has positive
+  `likelihood + timeout mass` on **every** example; or `'no-consistent-program`
+  when every candidate is definitively ruled out by some example (including
+  an empty program set);
 - seeded runs of the MDL witness on each example input, drawing from
   `(make-prng seed)`.
 
+Unfinished trials preserve the possibility of matching. For independent trials,
+a program's joint likelihood is bounded above by the product of its per-example
+`likelihood + timeout mass` values. This upper bound is positive only if all
+factors are positive: a timed-out trial does not rescue a candidate contradicted
+by a different completed trial. The status is relative to the declared finite
+program set, not a claim about all programs. Positive-evidence behavior and the
+receipt layout are unchanged; both zero-evidence statuses have no selected
+witness and retain the zero-posterior sentinel.
+
+For example, identity needs one beta step to return its identity input:
+
+```scheme
+(define status-identity (sblc-decode "1000"))
+(define status-example (list (cons status-identity status-identity)))
+(sblc-receipt-status (sblc-condition 7 4 0 status-example)) ; unresolved
+(sblc-receipt-status (sblc-condition 7 4 1 status-example)) ; consistent
+```
+
 `(sblc-receipt->string r)` is the canonical text of a receipt; identical
 tuples `(seed, L, S, examples)` give byte-identical text on JIT and AOT.
+
+### Resuming bounded search in memory
+
+```scheme
+(define pending (sblc-search-start 7 4 0 status-example))
+(sblc-receipt-status (sblc-search-receipt pending)) ; unresolved
+(define refined (sblc-search-resume pending 1))
+(sblc-receipt-status (sblc-search-receipt refined)) ; consistent
+(sblc-search-work refined) ; (1 1): newly selected, cumulative transitions
+```
+
+`sblc-search-start` fixes `(seed, L, examples)` and captures a detached snapshot
+of the complete bounded catalogue's independent program/example trials.
+`sblc-search-resume` accepts the handle and a nondecreasing exact step bound;
+it advances unfinished probability frontiers with their exact masses and
+retains completed outcomes. Same-bound continuation selects no transitions.
+The returned handle is a separate continuation: the original remains usable
+for independent forks. There is no worker or implicit filesystem write.
+
+`sblc-search-receipt` returns the existing conditioning receipt format, using
+the same likelihood, posterior, shortest/MDL and seeded witness construction
+as `sblc-condition`. Increasing a bound produces the same canonical receipt as
+fresh evaluation at that bound, including witness traces. Returned receipt
+pairs and strings are detached from the handle. Changing the catalogue,
+examples, their order/multiplicity or the seed requires a new search. Repeated
+examples remain independent trials; the continuation never couples their coins.
+
+`sblc-search-work` returns `(newly-selected cumulative-selected)` transition
+counts for the exact distribution exploration. One beta contraction or choice
+expansion of a merged frontier term counts once. These counts exclude normality
+inspection, term traversal, receipt construction and seeded witness replay;
+they are not elapsed time, total kernel invocations or allocation measurements.
+
+Handles are opaque in-memory procedures produced by this module. Pass trusted
+module-created handles to the accessors; arbitrary procedures are not admitted
+as authenticated execution history. They are not portable certificates. The
+explicit checkpoint operations below transport trusted execution state;
+deterministic shard composition remains separate work. Bounds must be exact
+nonnegative integers; the seed must
+be an exact integer. Example admission allows at most 64 finite, structurally
+valid term pairs, 300000 datum occurrences and 256 car-nesting levels, rejecting
+cycles before copying. Search expansion retains the existing bounded evaluator's
+costs and can still require substantial memory for a large catalogue/frontier.
+
+Run `ESHKOL_BIN=/path/to/eshkol-run bash scripts/run_sblc_resume_gate.sh`.
+The gate checks fresh/resumed equality across 168 context/bound combinations,
+partially completed probability, independent repeated trials, same-bound zero
+work, detached mutation/forks and invalid continuation bounds in JIT and AOT.
+
+### Durable search checkpoints
+
+`(sblc-search-checkpoint handle)` returns detached finite data containing syntax,
+reduction and RNG versions, seed, bounds, examples, canonical programme identities,
+completed outcomes, unfinished frontiers and cumulative selected work. The
+existing DBSP canonical data key and SHA-256 seal the payload.
+
+Save/read this datum with ordinary Scheme `write`/`read` or existing file utilities.
+`(sblc-search-restore checkpoint seed L examples)` requires the expected job
+context, verifies digest/versions, requires every canonical programme and trial
+exactly once, and checks exact positive masses, complete unit mass, normal outcomes,
+reducible frontiers and compatible counters. It returns a detached handle with
+zero newly selected transitions. Continuing it agrees with uninterrupted and fresh
+evaluation. Reading errors must propagate; admission applies to decoded data.
+
+```scheme
+(define checkpoint (sblc-search-checkpoint pending))
+(define recovered (sblc-search-restore checkpoint 7 4 status-example))
+(sblc-receipt-status (sblc-search-receipt (sblc-search-resume recovered 1))) ; consistent
+```
+
+The current checkpoint profile bounds L to 16, the step bound to 1024, decoded
+data to 300000 occurrences, car nesting to 256, list spines to 2048 and strings
+to 4096 characters. Data contains finite pairs, symbols, strings and exact
+rationals only. A search exceeding this portable profile refuses checkpoint
+creation; its data is never truncated. This is not an arbitrary untrusted byte
+parser or a host-memory bound.
+
+Checkpoints come from trusted execution/storage. A self-hash detects corruption;
+it does not authenticate a fabricated reachable history. Restoration checks the
+saved partition/counters without replaying every historic step. No implicit file
+access, worker, migration or shard merge is installed. Run
+`scripts/run_sblc_checkpoint_gate.sh` for 273 checks per engine, JIT/AOT wire
+parity, and separate producer/consumer processes in both transport directions.
+
+### Signed observations and catalogue growth
+
+`(sblc-search-update handle delta L S)` integrates an existing `core.dbsp` Z-set
+whose rows are two-element `(input-term output-term)` lists and whose exact
+integer weights insert/retract independent trial occurrences. Resulting
+multiplicities must be nonnegative, with at most 64 active examples. L and S
+may stay equal or increase. DBSP owns consolidation and canonical observation
+order; fixed-context resume continues to preserve its original order.
+
+```scheme
+(define update (sblc-search-update pending
+  (zset-singleton (list status-identity status-identity) 1) 11 2))
+(define next-search (sblc-update-search update))
+(define outcome-delta (sblc-update-delta update))
+```
+
+For each retained programme, each old trial occurrence can be reused once.
+New occurrences and longer programmes start fresh. Retraction drops trials and
+rebuilds products from the remaining likelihoods; it never divides out zero
+support. Repeated examples retain independent likelihood multiplication.
+Updated handles remain resumable and checkpointable.
+
+The result is `#(sblc-update-v1 handle outcome-delta stats)`, observed with
+`sblc-update-search`, `sblc-update-delta` and `sblc-update-stats`. Stats are
+`#(reused-trials started-trials removed-trials newly-selected-transitions)`.
+The new handle's cumulative work belongs to its current retained trial set;
+removed-trial history is not carried forward as lifetime work. Normality,
+capture, enumeration, products, normalization and receipt generation remain
+paid work outside selected-transition counts.
+
+Outcome rows are `(program-bits event exact-raw-mass)`, with integer Z-set
+multiplicities. Let l_i and t_i be one programme's per-example match and timeout
+masses. Accepted mass is prior times product(l_i), rejected mass is prior times
+`1 - product(l_i+t_i)`, and timeout mass is the remaining difference. A completed
+contradiction therefore dominates a different unfinished trial. Zero masses are
+absent; replacing a mass retracts its old row and inserts the new one. These
+are raw joint event masses, not normalized posteriors or fractional Z-set weights.
+Inexact or inconsistent probability bounds refuse publication.
+
+Feed the delta directly to an existing DBSP circuit's named input. Its integral
+reconstructs the current event relation. The update gate executes an actual
+compiled DBSP filter observer and analytic independent-trial controls.
+All input deltas are captured before group/evaluation work; returned deltas and
+stats are detached from both handles. Failures return no partial handle or event
+delta, and the parent remains unchanged. No implicit I/O, unbounded scheduler,
+distributed service or general throughput improvement is claimed.
+
+Run `scripts/run_sblc_update_gate.sh` for 61 checks per JIT/AOT engine and a cold
+checkpoint-to-update comparison with fresh recomputation.
 
 | Function | Contract |
 |---|---|
