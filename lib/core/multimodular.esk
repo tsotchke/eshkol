@@ -256,7 +256,7 @@
 (define (multimodular-solve A b)
   (let* ((rows (mm-rows A "multimodular-solve")) (n (mm-square-check rows "multimodular-solve"))
          (bs (cond ((vector? b) (vector->list b)) ((list? b) b) (else (error "multimodular-solve: expected a vector" b)))))
-    (if (not (= (length bs) n)) (error "multimodular-solve: the right-hand side has the wrong length" n))
+    (if (not (= (length bs) n)) (error "multimodular-solve: the right-hand side and the matrix differ in size (right-hand side length, matrix rows)" (length bs) n))
     (for-each (lambda (x) (if (not (and (number? x) (exact? x) (rational? x)))
                               (error "multimodular-solve: entries must be exact rationals" x)))
               bs)

@@ -1111,7 +1111,7 @@
          (rhs (list->vector (map (lambda (x) (rc-admit K x 'ring-solve)) (if (vector? b) (vector->list b) b))))
          (zero (vector-ref K 12)) (add (vector-ref K 14)) (neg (vector-ref K 15)) (mul (vector-ref K 16))
          (same (vector-ref K 18)) (unit? (vector-ref K 19)) (inv (vector-ref K 20)))
-    (if (not (= (vector-length rhs) n)) (error "ring-solve: right-hand side has the wrong length" n))
+    (if (not (= (vector-length rhs) n)) (error "ring-solve: the right-hand side and the matrix differ in size (right-hand side length, matrix rows)" (vector-length rhs) n))
     (let col ((k 0))
       (if (= k n)
           rhs
