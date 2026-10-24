@@ -154,7 +154,7 @@ gluing fails, and cohomology measures the failure exactly.
 - `tests/stdlib/sheaf_test.esk` (CTest `sheaf_jit`, `sheaf_aot`): Smith forms
   verified by `U A V = D` and the divisibility chain; ranks and kernels
   cross-checked against `core.exact_linalg` over Q; the three topology axioms
-  with deliberately broken topologies; sheafification against the
+  with deliberately invalid topologies; sheafification against the
   `|A|^{π0(U)}` formula computed from components; idempotence; gluing
   successes and every obstruction kind; Q-coefficient presheaves; derived
   cohomology of the pseudocircle (`H^1 = Z`), its twisted local system
