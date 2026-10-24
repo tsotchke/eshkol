@@ -219,7 +219,7 @@ band and the annulus (nerve = triangulation, Cech equal to derived
 cohomology with both coefficients, Euler characteristics, Z/2 Betti numbers,
 orientability, monodromy loops, an order-2 generator for the twisted `H^1`
 of `RP^2`); two smooth Möbius atlases; and every obstruction kind from a
-deliberately broken atlas. Producer: `scripts/run_manifold_atlas_gate.sh`
+deliberately inconsistent atlas. Producer: `scripts/run_manifold_atlas_gate.sh`
 (criterion `v14_manifold_atlas`).
 
 ### References

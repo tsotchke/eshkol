@@ -8,7 +8,7 @@
 ;;; metrics, gluing of functions and vector fields, and the nerve: w1 with an
 ;;; orientation-reversing loop as witness, Cech and derived cohomology with
 ;;; constant and orientation coefficients on triangulated surfaces. Every
-;;; obstruction kind is produced by a deliberately broken atlas.
+;;; obstruction kind is produced by a deliberately inconsistent atlas.
 
 (require stdlib)
 (require core.curvature)
@@ -377,9 +377,9 @@
        (equal? (obstruction-heads (atlas-orientation mob2)) '(orientation-varies)))
 
 ;; ---------------------------------------------------------------------------
-;; Every obstruction kind, from a deliberately broken atlas
+;; Every obstruction kind, from a deliberately inconsistent atlas
 ;; ---------------------------------------------------------------------------
-(define (broken-sphere from to perturb)
+(define (perturbed-sphere from to perturb)
   ;; S^2 at K = 1 with the transition from -> to post-composed with perturb
   (let* ((names (atlas-chart-names S2))
          (charts (map (lambda (n) (atlas-chart S2 n)) names))
@@ -390,7 +390,7 @@
                                      t))
                      trans)
                 (map (lambda (n) (cons n (atlas-samples S2 n))) names))))
-(define bumped (broken-sphere 'e0- 'e1+ (lambda (y) (vec (+ (vector-ref y 0) 1/1000) (vector-ref y 1)))))
+(define bumped (perturbed-sphere 'e0- 'e1+ (lambda (y) (vec (+ (vector-ref y 0) 1/1000) (vector-ref y 1)))))
 (let ((r (atlas-check-cocycle bumped)))
   (check "witness: a shifted transition breaks the cocycle" (not (glued? r)))
   (check "witness: every witness names the shifted transition's charts (cocycle with both values, or domain)"
@@ -404,12 +404,12 @@
   (check "witness: on a triple (i e0- e1+) the discrepancy is exactly the shift, in chart e1+"
          (let ((o (filter (lambda (o) (and (eq? (cadr (cadr o)) 'e0-) (eq? (caddr (cadr o)) 'e1+))) (gluing-obstructions r))))
            (and (pair? o) (all? (lambda (o) (equal? (sub (list-ref o 3) (list-ref o 4)) (vec 1/1000 0))) o)))))
-(define sheared (broken-sphere 'e0- 'e1+ (lambda (y) (vec (+ (vector-ref y 0) (/ (vector-ref y 1) 1000)) (vector-ref y 1)))))
+(define sheared (perturbed-sphere 'e0- 'e1+ (lambda (y) (vec (+ (vector-ref y 0) (/ (vector-ref y 1) 1000)) (vector-ref y 1)))))
 (check "witness: a sheared transition breaks the chain rule (jacobian-cocycle)"
        (and (pair? (atlas-jacobian-violations sheared)) (all? (lambda (o) (eq? (car o) 'jacobian-cocycle)) (atlas-jacobian-violations sheared))))
 (check "witness: a sheared transition is no longer an isometry (metric)"
        (and (pair? (atlas-metric-violations sheared)) (all? (lambda (o) (eq? (car o) 'metric)) (atlas-metric-violations sheared))))
-(define rooted (broken-sphere 'e0- 'e1+ (lambda (y) (vec (* (sqrt 2) (vector-ref y 0)) (vector-ref y 1)))))
+(define rooted (perturbed-sphere 'e0- 'e1+ (lambda (y) (vec (* (sqrt 2) (vector-ref y 0)) (vector-ref y 1)))))
 (check "witness: an exact atlas reports a transition that leaves the exact carrier (inexact)"
        (memq 'inexact (obstruction-heads (atlas-check-cocycle rooted))))
 (define line-charts (list (make-chart 'L 1 (lambda (x) (< (vector-ref x 0) 1))) (make-chart 'R 1 (lambda (x) (> (vector-ref x 0) 0)))))

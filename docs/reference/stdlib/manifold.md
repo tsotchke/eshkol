@@ -465,7 +465,7 @@ data that do not are reported with `disagree` obstructions naming the charts.
 (a Cech coboundary): the result glues to the same space, with the chart's
 metric pushed forward.
 
-### Building an atlas, and a broken one
+### Building an atlas, and an inconsistent one
 
 ```scheme
 (require core.manifold.atlas)
