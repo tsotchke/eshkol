@@ -69,6 +69,7 @@
          ;; observations and conditioning
          sblc-bits-example sblc-bytes-example sblc-likelihood
          sblc-condition
+         sblc-search-start sblc-search-resume sblc-search-receipt sblc-search-work
          sblc-receipt-status sblc-receipt-evidence sblc-receipt-programs
          sblc-receipt-shortest sblc-receipt-mdl sblc-receipt-witness-runs
          sblc-entry-bits sblc-entry-length sblc-entry-prior sblc-entry-likelihoods
@@ -401,36 +402,47 @@
         (and (= la lb) (string<? (sblc-encode a) (sblc-encode b))))))
 
 (define (sblc-distribution t bound)
-  (sblc-dist-layer (list (cons t 1)) 0 bound '()))
+  (sblc-dist-state->dist (sblc-dist-layer (list (cons t 1)) 0 bound '() 0)))
 
-(define (sblc-dist-layer frontier k bound outcomes)
+;; Private continuation: #(contraction-layer outcomes unfinished cumulative-work).
+;; No caller can replace this frontier through the public search handle.
+(define (sblc-dist-layer frontier k bound outcomes work)
   (if (null? frontier)
-      (sblc-dist-make outcomes 0)
-      (sblc-dist-scan frontier k bound outcomes '() 0)))
+      (vector k outcomes '() work)
+      (sblc-dist-scan frontier k bound outcomes '() '() work)))
 
-(define (sblc-dist-scan frontier k bound outcomes next timeout)
+(define (sblc-dist-scan frontier k bound outcomes next unfinished work)
   (if (null? frontier)
       (if (null? next)
-          (sblc-dist-make outcomes timeout)
-          (sblc-dist-layer (reverse next) (+ k 1) bound outcomes))
+          (vector k outcomes (reverse unfinished) work)
+          (sblc-dist-layer (reverse next) (+ k 1) bound outcomes work))
       (let* ((t (caar frontier))
              (m (cdar frontier))
              (r (sblc-step t)))
         (cond
           ((eq? (car r) 'normal)
            (sblc-dist-scan (cdr frontier) k bound
-                           (sblc-mass-add outcomes t m) next timeout))
+                           (sblc-mass-add outcomes t m) next unfinished work))
           ((>= k bound)
-           (sblc-dist-scan (cdr frontier) k bound outcomes next (+ timeout m)))
+           (sblc-dist-scan (cdr frontier) k bound outcomes next (cons (car frontier) unfinished) work))
           ((eq? (car r) 'beta)
            (sblc-dist-scan (cdr frontier) k bound outcomes
-                           (sblc-mass-add next (cadr r) m) timeout))
+                           (sblc-mass-add next (cadr r) m) unfinished (+ work 1)))
           (else
            (let ((half (/ m 2)))
              (sblc-dist-scan (cdr frontier) k bound outcomes
                              (sblc-mass-add (sblc-mass-add next (cadr r) half)
                                             (caddr r) half)
-                             timeout)))))))
+                             unfinished (+ work 1))))))))
+
+(define (sblc-dist-state->dist state)
+  (sblc-dist-make (vector-ref state 1)
+                 (let loop ((xs (vector-ref state 2)) (mass 0))
+                   (if (null? xs) mass (loop (cdr xs) (+ mass (cdar xs)))))))
+
+(define (sblc-dist-state-resume state bound)
+  (sblc-dist-layer (vector-ref state 2) (vector-ref state 0) bound
+                   (vector-ref state 1) (vector-ref state 3)))
 
 (define (sblc-dist-make outcomes timeout)
   (list 'sblc-dist
@@ -626,13 +638,14 @@
 (define (sblc-condition-entry program examples bound)
   (let loop ((exs examples) (lks '()) (tos '()))
     (if (null? exs)
-        (let* ((lk (reverse lks))
-               (prior (sblc-weight program))
-               (likelihood (sblc-product lk)))
-          (list (sblc-encode program) (sblc-length program) prior
-                lk (reverse tos) likelihood (* prior likelihood)))
+        (sblc-entry-from-likelihoods program (reverse lks) (reverse tos))
         (let ((r (sblc-likelihood program (car exs) bound)))
           (loop (cdr exs) (cons (car r) lks) (cons (cadr r) tos))))))
+
+(define (sblc-entry-from-likelihoods program likelihoods timeouts)
+  (let ((prior (sblc-weight program)) (likelihood (sblc-product likelihoods)))
+    (list (sblc-encode program) (sblc-length program) prior
+          likelihoods timeouts likelihood (* prior likelihood))))
 
 ;; Trials are independent: the joint likelihood lies between product(l_i)
 ;; and product(l_i + t_i). The upper bound is positive iff every factor is
@@ -650,8 +663,11 @@
           (sblc-may-have-consistent-program? (cdr entries)))))
 
 (define (sblc-condition seed L bound examples)
-  (let* ((raw (sblc-condition-entries (sblc-bounded-programs L) examples bound))
-         (evidence (let loop ((xs raw) (acc 0))
+  (sblc-condition-receipt seed L bound examples
+                          (sblc-condition-entries (sblc-bounded-programs L) examples bound)))
+
+(define (sblc-condition-receipt seed L bound examples raw)
+  (let* ((evidence (let loop ((xs raw) (acc 0))
                      (if (null? xs) acc (loop (cdr xs) (+ acc (list-ref (car xs) 6))))))
          (entries (sblc-attach-posterior raw evidence))
          (shortest (sblc-first-positive entries))
@@ -664,6 +680,99 @@
           (if mdl (sblc-witness-runs (sblc-decode (sblc-entry-bits mdl))
                                      examples seed bound)
               '()))))
+
+;; ============================================================================
+;; In-memory residual search. Handles close over one fixed, detached context.
+;; They are trusted execution objects, not readable/authenticated checkpoints.
+;; ============================================================================
+
+(define (sblc-search-integer? x) (and (integer? x) (exact? x)))
+(define (sblc-search-bound? x) (and (sblc-search-integer? x) (>= x 0)))
+(define (sblc-search-data? datum)
+  ;; Bound admission before any recursive term checking/copying. Cycles refuse.
+  (let loop ((pending (list (cons datum 0))) (n 0))
+    (if (null? pending) #t
+        (if (>= n 300000) #f
+            (let ((x (caar pending)) (depth (cdar pending)) (rest (cdr pending)))
+              (and (<= depth 256)
+                   (if (pair? x)
+                       (loop (cons (cons (car x) (+ depth 1))
+                                   (cons (cons (cdr x) depth) rest)) (+ n 1))
+                       (and (or (null? x) (symbol? x) (sblc-search-integer? x))
+                            (loop rest (+ n 1))))))))))
+(define (sblc-search-term? t)
+  (and (list? t)
+       (cond ((and (= (length t) 2) (eq? (car t) 'var))
+              (and (sblc-search-integer? (cadr t)) (> (cadr t) 0)))
+             ((and (= (length t) 2) (eq? (car t) 'lam)) (sblc-search-term? (cadr t)))
+             ((and (= (length t) 3) (or (eq? (car t) 'app) (eq? (car t) 'choice)))
+              (and (sblc-search-term? (cadr t)) (sblc-search-term? (caddr t))))
+             (else #f))))
+(define (sblc-search-examples? examples)
+  (and (sblc-search-data? examples) (list? examples) (<= (length examples) 64)
+       (let loop ((xs examples))
+         (if (null? xs) #t
+             (and (pair? (car xs)) (sblc-search-term? (caar xs))
+                  (sblc-search-term? (cdar xs)) (loop (cdr xs)))))))
+(define (sblc-search-copy x)
+  (cond ((pair? x) (cons (sblc-search-copy (car x)) (sblc-search-copy (cdr x))))
+        ((string? x) (substring x 0 (string-length x)))
+        (else x)))
+(define (sblc-search-trials program examples bound)
+  (if (null? examples) '()
+      (cons (sblc-dist-layer (list (cons (blc-app program (caar examples)) 1)) 0 bound '() 0)
+            (sblc-search-trials program (cdr examples) bound))))
+(define (sblc-search-matrix programs examples bound)
+  (if (null? programs) '()
+      (cons (sblc-search-trials (car programs) examples bound)
+            (sblc-search-matrix (cdr programs) examples bound))))
+(define (sblc-search-advance-trials trials bound)
+  (if (null? trials) '()
+      (cons (sblc-dist-state-resume (car trials) bound)
+            (sblc-search-advance-trials (cdr trials) bound))))
+(define (sblc-search-advance matrix bound)
+  (if (null? matrix) '()
+      (cons (sblc-search-advance-trials (car matrix) bound)
+            (sblc-search-advance (cdr matrix) bound))))
+(define (sblc-search-entry program examples trials)
+  (let loop ((es examples) (ts trials) (ls '()) (tos '()))
+    (if (null? es) (sblc-entry-from-likelihoods program (reverse ls) (reverse tos))
+        (let ((d (sblc-dist-state->dist (car ts))))
+          (loop (cdr es) (cdr ts) (cons (sblc-dist-mass-of d (cdar es)) ls)
+                (cons (sblc-dist-timeout d) tos))))))
+(define (sblc-search-entries programs examples matrix)
+  (if (null? programs) '()
+      (cons (sblc-search-entry (car programs) examples (car matrix))
+            (sblc-search-entries (cdr programs) examples (cdr matrix)))))
+(define (sblc-search-total-work matrix)
+  (let rows ((xs matrix) (n 0))
+    (if (null? xs) n
+        (rows (cdr xs) (let trials ((ts (car xs)) (n n))
+                        (if (null? ts) n (trials (cdr ts) (+ n (vector-ref (car ts) 3)))))))))
+(define (sblc-search-capture seed L bound examples programs matrix previous-work)
+  (let* ((work (sblc-search-total-work matrix))
+         (receipt (sblc-condition-receipt seed L bound examples
+                                         (sblc-search-entries programs examples matrix))))
+    (lambda (request value)
+      (case request
+        ((receipt) (sblc-search-copy receipt))
+        ((work) (list (- work previous-work) work))
+        ((resume)
+         (if (not (and (sblc-search-bound? value) (>= value bound)))
+             (error "sblc-search-resume: expected a nondecreasing exact step bound")
+             (sblc-search-capture seed L value examples programs
+                                  (if (= value bound) matrix (sblc-search-advance matrix value)) work)))
+        (else (error "sblc-search: unknown handle operation"))))))
+(define (sblc-search-start seed L bound examples)
+  (if (not (and (sblc-search-integer? seed) (sblc-search-bound? L)
+                (sblc-search-bound? bound) (sblc-search-examples? examples)))
+      (error "sblc-search-start: invalid seed, bounds or finite examples")
+      (let ((owned (sblc-search-copy examples)) (programs (sblc-bounded-programs L)))
+        (sblc-search-capture seed L bound owned programs
+                             (sblc-search-matrix programs owned bound) 0))))
+(define (sblc-search-resume search bound) (search 'resume bound))
+(define (sblc-search-receipt search) (search 'receipt #f))
+(define (sblc-search-work search) (search 'work #f))
 
 (define (sblc-condition-entries programs examples bound)
   (if (null? programs) '()
