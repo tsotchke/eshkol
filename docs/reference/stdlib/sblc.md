@@ -422,17 +422,38 @@ reads them.
 
 ## Engines
 
-JIT and AOT run the whole module. On the bytecode VM, the exact path
-(codec, enumeration, counts, prior masses and `sblc-distribution`) runs; the
-sampled functions (`sblc-sample`, `sblc-sample-prng`, `sblc-coins-from-prng`,
-`sblc-sample-program`, `sblc-sample-closed-program`) and `sblc-condition`,
-whose receipts carry seeded witness runs, draw from `make-prng`, which the VM
-does not bind: the VM refuses those calls instead of substituting another
-generator. VM support for them is Planned for v1.4.1 (recorded in
-[`tests/vm_parity/PARITY.tsv`](../../../tests/vm_parity/PARITY.tsv)).
+JIT and AOT run the whole module. The native bytecode VM also binds the isolated
+PRNG operations used by sampled semantics and conditioning witness runs. The
+seeded parity gate below compares JIT, executed AOT, VM source and emitted ESKB
+with int64 seeds and integer bounds. The engine ledger records that admitted
+profile; physical browser/WASM execution is a separate qualification.
 
 ## Scope of this slice
 
 This page covers the first slice of ADR-0017. The universal interpreter
 `U⊕`, resumable mesh-sharded search, DBSP/N3 receipt integration and
 differentiable proposals are later ADR-0017 stages.
+
+
+## Isolated PRNG engine parity
+
+The native VM implements `make-prng`, `prng?`, `prng-random` and
+`prng-random-integer` using the same `drand48-msb-v1` state operations as the
+native runtime. Each VM generator is an owned leaf with inline 48-bit state;
+region/closure escape preserves alias identity and the sequence. Isolated
+states do not advance or reseed the global generator.
+
+VM seeds and integer bounds must be int64 values. A nonpositive integer bound
+returns zero without drawing, matching the native contract. Other argument
+kinds refuse on the VM. `prng-random` returns the same binary64 fraction and
+integer sampling retains the existing multiply/truncate policy; this is not a
+new unbiased sampler. Concurrent access to one state and cross-worker transport
+are outside this slice. Physical browser/WASM execution is not qualified here.
+
+Build the native runtime, `stdlib` and `eshkol-vm-standalone-test`, then run
+`scripts/run_sblc_rng_parity_gate.sh`. It compares 121 state/ownership assertions
+and 120 sampled SBLC run tuples plus four sampling/conditioning API panels across
+JIT, separately executed AOT, VM source and emitted ESKB. Eight VM-only invalid-domain runs require a diagnostic, nonzero
+exit and no post-error sentinel. Seeded outputs include lazy discarded choices,
+nontermination bounds and repeated-seed traces; they do not change exact SBLC
+probability semantics.

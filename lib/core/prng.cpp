@@ -24,6 +24,7 @@
 #include "../../inc/eshkol/eshkol.h"
 #include <cstddef>
 #include <cstdint>
+#include "eshkol/core/prng_state.h"
 
 /* Forward-declare arena_t (the full struct lives in arena_memory.cpp;
  * we only need the pointer here). */
@@ -38,23 +39,6 @@ extern "C" {
     void eshkol_srand48(int64_t seed);
 }
 
-namespace {
-constexpr uint64_t kDrand48Multiplier = 0x5DEECE66DULL;
-constexpr uint64_t kDrand48Addend     = 0xBULL;
-constexpr uint64_t kDrand48Mask       = (1ULL << 48) - 1;
-constexpr uint64_t kDrand48Range      = (1ULL << 48);
-
-/** Advance a drand48-style LCG state by one step. */
-inline uint64_t step_lcg(uint64_t state) {
-    return (state * kDrand48Multiplier + kDrand48Addend) & kDrand48Mask;
-}
-
-inline uint64_t seed_to_state(int64_t seed) {
-    /* Match POSIX srand48: state = (seed << 16) | 0x330E */
-    return ((static_cast<uint64_t>(seed) << 16) | 0x330EULL) & kDrand48Mask;
-}
-} // namespace
-
 /* PRNG state on the heap is just one uint64. The arena header (subtype +
  * length) sits 8 bytes before the returned pointer per the bignum pattern,
  * so callers can validate via the standard subtype check. */
@@ -65,24 +49,21 @@ extern "C" uint64_t* eshkol_prng_make(int64_t seed) {
                                             HEAP_SUBTYPE_PRNG, 0);
     if (!ptr) return nullptr;
     uint64_t* state = static_cast<uint64_t*>(ptr);
-    *state = seed_to_state(seed);
+    *state = eshkol_prng_state_seed(seed);
     return state;
 }
 
 /** Advance `state` and return the next uniform double in [0.0, 1.0). */
 extern "C" double eshkol_prng_random(uint64_t* state) {
     if (!state) return 0.0;
-    *state = step_lcg(*state);
-    return static_cast<double>(*state) / static_cast<double>(kDrand48Range);
+    return eshkol_prng_state_random(state);
 }
 
 extern "C" int64_t eshkol_prng_random_integer(uint64_t* state, int64_t n) {
     if (!state || n <= 0) return 0;
     /* Multiply-then-floor preserves uniformity for the [0, n) range we
      * need; bias is < 1/2^48 which is well below user-visible. */
-    *state = step_lcg(*state);
-    double r = static_cast<double>(*state) / static_cast<double>(kDrand48Range);
-    return static_cast<int64_t>(r * static_cast<double>(n));
+    return eshkol_prng_state_integer(state, n);
 }
 
 /* Explicit seed for the global PRNG. Callers also need to mark

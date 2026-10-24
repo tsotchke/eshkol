@@ -145,7 +145,6 @@ make-dataloader	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml fa
 make-directory	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 make-dnc-memory	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
 make-parameter	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-make-prng	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 make-promise	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 make-rational	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 matrix-to-string	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
@@ -192,9 +191,6 @@ padding-mask	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml facul
 peek-char	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 peek-u8	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 positional-encoding	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
-prng-random	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
-prng-random-integer	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
-prng?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 procedure-arity	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 randint	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 randn	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
@@ -208,12 +204,6 @@ remv	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name bindi
 right?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 rmsprop-step	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
 rotary-embedding	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
-sblc-coins-from-prng	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
-sblc-condition	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM. sblc-condition needs the PRNG for the seeded witness runs its receipt carries.
-sblc-sample	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
-sblc-sample-closed-program	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
-sblc-sample-prng	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
-sblc-sample-program	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
 scheme-report-environment	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 sdnc-improve!	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 sdnc-params	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids

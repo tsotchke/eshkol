@@ -226,7 +226,7 @@ static const VmEvacSpec vm_evac_subtype_table[VM_EVAC_TYPE_COUNT] = {
                                      "payload only (moment buffer, scalar moment, owner identity)" },
     [HEAP_FUTURE]       = { "future",       VM_EVAC_ROOT, "thunk/result Values, plus a live pthread mutex+cond" },
     [HEAP_I128]         = { "i128",         VM_EVAC_WALK, "payload only (flat {lo,hi})" },
-    [28]                = { "<unassigned 28>", VM_EVAC_PIN, "no such tag; pin if one ever appears" },
+    [HEAP_PRNG]         = { "prng", VM_EVAC_WALK, "inline uint64 state; no outgoing references or payload" },
     [29]                = { "<unassigned 29>", VM_EVAC_PIN, "no such tag; pin if one ever appears" },
     [30]                = { "manifold",     VM_EVAC_ROOT, "payload may be owned by semiclassical_qllm, not the arena" },
     [31]                = { "manifold-point", VM_EVAC_PIN, "no constructor exists; pin rather than guess a layout" },
@@ -235,11 +235,11 @@ static const VmEvacSpec vm_evac_subtype_table[VM_EVAC_TYPE_COUNT] = {
 
 /* Compile-time half of the totality guard: the table must span the whole tag
  * space, and the last enumerated HeapType must still be inside it. Adding a
- * HeapType past HEAP_I128 without widening VM_EVAC_TYPE_COUNT fails the build
+ * HeapType past HEAP_PRNG without widening VM_EVAC_TYPE_COUNT fails the build
  * here rather than silently falling through at run time. */
 typedef char vm_evac_table_is_total[
     (sizeof(vm_evac_subtype_table) / sizeof(vm_evac_subtype_table[0]) == VM_EVAC_TYPE_COUNT) &&
-    ((int)HEAP_I128 < VM_EVAC_TYPE_COUNT) ? 1 : -1];
+    ((int)HEAP_PRNG < VM_EVAC_TYPE_COUNT) ? 1 : -1];
 
 /**
  * @brief Startup half of the totality guard: every row must be filled in.
@@ -299,7 +299,7 @@ static VmEvacRefKind vm_evac_value_ref(Value v, int32_t* out_index) {
     case VAL_PARAMETER_OBJ: case VAL_AD_TAPE: case VAL_ERROR_OBJ:
     case VAL_MANIFOLD: case VAL_PORT: case VAL_HYPER_DUAL:
     case VAL_RIEMANNIAN_ADAM_STATE: case VAL_FUTURE: case VAL_MULTI_VALUE:
-    case VAL_SYMBOL: case VAL_I128:
+    case VAL_SYMBOL: case VAL_I128: case VAL_PRNG:
         *out_index = v.as.ptr;
         return VM_EVAC_REF_INDEX;
     default:
@@ -450,6 +450,7 @@ static int vm_evac_walk_object(VM* vm, int32_t idx) {
     case HEAP_DUAL:                   /* primal/tangent (+ exact halves)         */
     case HEAP_HYPER_DUAL:             /* f/f1/f2/f12                             */
     case HEAP_I128:                   /* {lo, hi}                                */
+    case HEAP_PRNG:                   /* inline state, no outgoing references    */
     case HEAP_BYTEVECTOR:             /* len/uint8_t* data                       */
     case HEAP_TENSOR:                 /* shape/strides/data, all numeric         */
     case HEAP_FACTOR_GRAPH:           /* var_dims/beliefs/factors/messages       */
@@ -762,7 +763,7 @@ static void vm_evac_walk_dual(VmEvacBlocks* bs, const VmDual* d, int depth) {
 
 static void vm_evac_scan_object_payload(VmEvacBlocks* bs, const HeapObject* o) {
     switch ((int)o->type) {
-    case HEAP_CONS: case HEAP_FACT:
+    case HEAP_CONS: case HEAP_FACT: case HEAP_PRNG:
         return;   /* payload is inline in the HeapObject */
     case HEAP_CLOSURE:
         if (o->closure.n_upvalues > 0 && o->closure.upvalues &&
