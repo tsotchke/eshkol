@@ -2491,6 +2491,21 @@ oracles:
         label: 'Running-total sweep: every v1.4-connection probe above is green. Expected FAIL until the release actually ships — this criterion is a progress counter, not a release gate (see scripts/run_v14_connection_gate.sh''s summary line for the live pass/fail count)'
         action: run_v14_connection_gate
 
+      # core.ring and core.multimodular (ADR-0034, library rung).
+      # Producer: scripts/run_ring_gate.sh runs the eight CTest entries that
+      # own the behaviour (the ring-law gate, the IEEE-tier specification
+      # check, the multimodular cross-checks and the functor-of-points
+      # example, each in JIT and AOT) and every documentation example on the
+      # two reference pages; PASS only when all of them ran and passed.
+      - id: v14_core_ring
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_ring"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.ring and core.multimodular (ADR-0034 library rung): versioned ring-carrier descriptors for Z, Q, the IEEE tier, Z/m, jets, polynomials, Z[G] and algebraic fields; the ring laws exhaustive on small carriers and seeded on infinite ones, from-integer a ring map across the int64 boundary, characteristic, nilpotency and named refusals; the IEEE tier against its per-operation specification with a pinned bit-pattern digest; multimodular determinant, solve and Z[x] gcd equal to the exact paths; ring_jit/aot, ring_ieee_jit/aot, multimodular_jit/aot, rings_functor_of_points_jit/aot and the reference-page examples all pass'
+        action: ./scripts/run_ring_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
