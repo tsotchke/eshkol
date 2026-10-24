@@ -1,0 +1,527 @@
+;;; mathematics_functor_of_points.esk -- one program, evaluated over many rings
+;;;
+;;; Grothendieck's functor of points: a space is known by its points with
+;;; values in every commutative ring R. Read a numeric program as a morphism
+;;; and evaluation as taking R-points. Then ordinary evaluation, exact
+;;; evaluation, forward-mode differentiation, Taylor jets, modular arithmetic,
+;;; Hensel lifting, symbolic evaluation and Z-set (group-ring) evaluation are
+;;; one facility with different carriers.
+;;;
+;;; This example is the library-level prototype of ADR-0034
+;;; (docs/design/adr/0034-ring-carriers-functor-of-points.md). A ring carrier
+;;; is a record of closures. The polynomial `f` below is written ONCE against
+;;; the carrier interface and evaluated over
+;;;
+;;;   R              flonums
+;;;   Q              exact rationals
+;;;   Q[e]/e^2       dual numbers           -- checked against `derivative`
+;;;   Q[e]/e^6       truncated Taylor jets  -- checked against `taylor`
+;;;   F_7            the prime field        -- checked against reduction mod 7
+;;;   F_7[e]/e^6     jets over F_7          -- base change commutes with d/dx
+;;;   Q[x]           polynomials            -- checked by evaluation at points
+;;;   Z[Z]           the group ring, as core.dbsp Z-sets -- checked by characters
+;;;
+;;; and two algorithms use the same carriers end to end:
+;;;
+;;;   Newton = Hensel: one Newton step function finds sqrt(2) over R and the
+;;;   7-adic square root of 2 over Z/7^16, with the derivative taken by the
+;;;   dual carrier over each ring.
+;;;
+;;;   Computation over Spec Z: an exact determinant and an exact rational
+;;;   solve of a 6x6 integer system with 13-digit entries, computed in the
+;;;   fibres F_p by one generic elimination, glued by CRT and rational
+;;;   reconstruction with a Hadamard prime-count bound, and checked against
+;;;   the bignum results of core.exact_linalg.
+;;;
+;;; Every check prints a PASS: or FAIL: line; the program ends with
+;;; "RESULT: ALL PASS" and exit status 0, or exit status 1.
+;;; Run: eshkol-run -r examples/mathematics_functor_of_points.esk
+
+(require core.exact_linalg)
+(require core.dbsp)
+
+;; ===========================================================================
+;; Report
+;; ===========================================================================
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check label ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display label) (newline))))
+
+;; ===========================================================================
+;; The ring-carrier record
+;; ===========================================================================
+;;
+;; (vector 'ring-carrier-v1 name characteristic nilpotency field? ops)
+;;   characteristic : exact integer >= 0 (0 for Q, R, Z; n for Z/n)
+;;   nilpotency     : #f, or n when the carrier is K[e]/e^n
+;;   field?         : every nonzero element is a unit
+;;   ops            : (vector zero one add neg mul from-integer equal? unit? inverse)
+;; `inverse` is defined on units; on a non-unit it raises.
+;; Laws (checked on samples by `check-ring-laws` below): (add, zero, neg) is
+;; an abelian group, (mul, one) a commutative monoid, mul distributes over
+;; add, and from-integer is the unique ring map Z -> R.
+
+(define (make-ring-carrier name characteristic nilpotency field?
+                           zero one add neg mul from-integer equal? unit? inverse)
+  (vector 'ring-carrier-v1 name characteristic nilpotency field?
+          (vector zero one add neg mul from-integer equal? unit? inverse)))
+
+(define (ring-carrier? x)
+  (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'ring-carrier-v1)))
+
+(define (ring-ref R key)
+  (if (not (ring-carrier? R)) (error "ring-ref: expected a ring carrier" R))
+  (let ((ops (vector-ref R 5)))
+    (cond ((eq? key 'name) (vector-ref R 1))
+          ((eq? key 'characteristic) (vector-ref R 2))
+          ((eq? key 'nilpotency) (vector-ref R 3))
+          ((eq? key 'field?) (vector-ref R 4))
+          ((eq? key 'zero) (vector-ref ops 0))
+          ((eq? key 'one) (vector-ref ops 1))
+          ((eq? key 'add) (vector-ref ops 2))
+          ((eq? key 'neg) (vector-ref ops 3))
+          ((eq? key 'mul) (vector-ref ops 4))
+          ((eq? key 'from-integer) (vector-ref ops 5))
+          ((eq? key 'equal?) (vector-ref ops 6))
+          ((eq? key 'unit?) (vector-ref ops 7))
+          ((eq? key 'inverse) (vector-ref ops 8))
+          (else (error "ring-ref: unknown key" key)))))
+
+;; Generic arithmetic: every procedure below takes the carrier first.
+(define (r0 R) (ring-ref R 'zero))
+(define (r1 R) (ring-ref R 'one))
+(define (r+ R a b) ((ring-ref R 'add) a b))
+(define (r-neg R a) ((ring-ref R 'neg) a))
+(define (r- R a b) (r+ R a (r-neg R b)))
+(define (r* R a b) ((ring-ref R 'mul) a b))
+(define (r-int R n) ((ring-ref R 'from-integer) n))
+(define (r= R a b) ((ring-ref R 'equal?) a b))
+(define (r-unit? R a) ((ring-ref R 'unit?) a))
+(define (r-inv R a) ((ring-ref R 'inverse) a))
+(define (r-zero? R a) (r= R a (r0 R)))
+(define (r-expt R a n)
+  (let loop ((base a) (n n) (acc (r1 R)))
+    (cond ((= n 0) acc)
+          ((odd? n) (loop (r* R base base) (quotient n 2) (r* R acc base)))
+          (else (loop (r* R base base) (quotient n 2) acc)))))
+
+;; ===========================================================================
+;; Carriers
+;; ===========================================================================
+
+;; The numeric tower itself: exactness follows the operands (R7RS contagion),
+;; so the same carrier is Q on exact points and R on flonum points.
+(define tower
+  (make-ring-carrier 'tower 0 #f #t 0 1
+    (lambda (a b) (+ a b)) (lambda (a) (- a)) (lambda (a b) (* a b))
+    (lambda (n) n) (lambda (a b) (= a b))
+    (lambda (a) (not (= a 0))) (lambda (a) (/ 1 a))))
+
+;; R: flonums only.
+(define reals
+  (make-ring-carrier 'R 0 #f #t 0.0 1.0
+    (lambda (a b) (+ a b)) (lambda (a) (- a)) (lambda (a b) (* a b))
+    (lambda (n) (exact->inexact n)) (lambda (a b) (= a b))
+    (lambda (a) (not (= a 0.0))) (lambda (a) (/ 1.0 a))))
+
+;; Q: exact rationals only; an inexact value is refused, never rounded.
+(define (q-admit x)
+  (if (and (rational? x) (exact? x)) x (error "Q carrier: inexact value" x)))
+(define rationals
+  (make-ring-carrier 'Q 0 #f #t 0 1
+    (lambda (a b) (q-admit (+ a b))) (lambda (a) (- a))
+    (lambda (a b) (q-admit (* a b))) (lambda (n) (q-admit n))
+    (lambda (a b) (= a b)) (lambda (a) (not (= a 0))) (lambda (a) (/ 1 a))))
+
+;; Z/m: canonical representatives in [0, m). A field exactly when m is prime.
+(define (prime? n)
+  (and (> n 1)
+       (let loop ((d 2))
+         (cond ((> (* d d) n) #t)
+               ((= (modulo n d) 0) #f)
+               (else (loop (+ d 1)))))))
+(define (ext-gcd a b)                        ; (g s t) with s*a + t*b = g
+  (let loop ((r0 a) (r1 b) (s0 1) (s1 0) (t0 0) (t1 1))
+    (if (= r1 0)
+        (list r0 s0 t0)
+        (let ((q (quotient r0 r1)))
+          (loop r1 (- r0 (* q r1)) s1 (- s0 (* q s1)) t1 (- t0 (* q t1)))))))
+(define (make-zmod m)
+  (make-ring-carrier (list 'Z/ m) m #f (prime? m) 0 (modulo 1 m)
+    (lambda (a b) (modulo (+ a b) m)) (lambda (a) (modulo (- a) m))
+    (lambda (a b) (modulo (* a b) m)) (lambda (n) (modulo n m))
+    (lambda (a b) (= a b)) (lambda (a) (= (car (ext-gcd a m)) 1))
+    (lambda (a)
+      (let ((gst (ext-gcd a m)))
+        (if (= (car gst) 1)
+            (modulo (cadr gst) m)
+            (error "Z/m: not a unit" a m))))))
+
+;; K[e]/e^n over any base carrier K: coefficient lists of length n.
+;; n = 2 is the dual numbers (the tangent space Spec K[e]/e^2); n = k+1 is
+;; the k-jet. The product is the truncated Cauchy product; a jet is a unit
+;; exactly when its constant term is a unit of K.
+(define (make-jets K n)
+  (define (zero-list k) (if (= k 0) '() (cons (r0 K) (zero-list (- k 1)))))
+  (define (const c) (cons c (zero-list (- n 1))))
+  (define (coef a i) (list-ref a i))
+  (define (mul a b)
+    (let loop ((k 0) (acc '()))
+      (if (= k n)
+          (reverse acc)
+          (loop (+ k 1)
+                (cons (let sum ((j 0) (s (r0 K)))
+                        (if (> j k) s (sum (+ j 1) (r+ K s (r* K (coef a j) (coef b (- k j)))))))
+                      acc)))))
+  (define (inverse a)
+    ;; b0 = a0^-1, b_k = -a0^-1 * sum_{j=1..k} a_j b_{k-j}
+    (let ((u (r-inv K (coef a 0))))
+      (let loop ((k 1) (bs (list u)))          ; bs holds b_{k-1} ... b_0
+        (if (= k n)
+            (reverse bs)
+            (let ((s (let sum ((j 1) (s (r0 K)))
+                       (if (> j k) s (sum (+ j 1) (r+ K s (r* K (coef a j) (list-ref bs (- j 1)))))))))
+              (loop (+ k 1) (cons (r-neg K (r* K u s)) bs)))))))
+  (make-ring-carrier (list (ring-ref K 'name) "[e]/e^" n)
+    (ring-ref K 'characteristic) n #f
+    (const (r0 K)) (const (r1 K))
+    (lambda (a b) (map (lambda (x y) (r+ K x y)) a b))
+    (lambda (a) (map (lambda (x) (r-neg K x)) a))
+    mul
+    (lambda (m) (const (r-int K m)))
+    (lambda (a b) (let loop ((a a) (b b))
+                    (or (null? a) (and (r= K (car a) (car b)) (loop (cdr a) (cdr b))))))
+    (lambda (a) (r-unit? K (coef a 0)))
+    inverse))
+
+;; The point a + e of K[e]/e^n: the generic tangent vector at a.
+(define (jet-seed J K a)
+  (let ((n (ring-ref J 'nilpotency)))
+    (cons a (cons (r1 K) (let loop ((k (- n 2))) (if (= k 0) '() (cons (r0 K) (loop (- k 1)))))))))
+
+;; K[x] over any base carrier K: coefficient lists, lowest degree first,
+;; trailing zeros dropped (so equal? is list equality).
+(define (make-polys K)
+  (define (trim p)
+    (let loop ((r (reverse p)))
+      (cond ((null? r) '())
+            ((r-zero? K (car r)) (loop (cdr r)))
+            (else (reverse r)))))
+  (define (add a b)
+    (trim (let loop ((a a) (b b))
+            (cond ((null? a) b)
+                  ((null? b) a)
+                  (else (cons (r+ K (car a) (car b)) (loop (cdr a) (cdr b))))))))
+  (define (scale c p) (map (lambda (x) (r* K c x)) p))
+  (define (mul a b)
+    (if (null? a)
+        '()
+        (add (trim (scale (car a) b)) (let ((rest (mul (cdr a) b))) (if (null? rest) '() (cons (r0 K) rest))))))
+  (make-ring-carrier (list (ring-ref K 'name) "[x]") (ring-ref K 'characteristic) #f #f
+    '() (list (r1 K)) add
+    (lambda (a) (map (lambda (x) (r-neg K x)) a))
+    mul
+    (lambda (n) (trim (list (r-int K n))))
+    (lambda (a b) (let loop ((a a) (b b))
+                    (cond ((and (null? a) (null? b)) #t)
+                          ((or (null? a) (null? b)) #f)
+                          (else (and (r= K (car a) (car b)) (loop (cdr a) (cdr b)))))))
+    (lambda (a) (and (= (length a) 1) (r-unit? K (car a))))
+    (lambda (a) (if (= (length a) 1) (list (r-inv K (car a))) (error "K[x]: not a unit" a)))))
+(define (poly-eval K p c)                    ; Horner
+  (let loop ((r (reverse p)) (acc (r0 K)))
+    (if (null? r) acc (loop (cdr r) (r+ K (r* K acc c) (car r))))))
+
+;; Z[G] for an abelian group G, as core.dbsp Z-sets: a Z-set is a finitely
+;; supported function G -> Z, the Z-set sum is the ring sum, and the ring
+;; product is a DBSP join on the trivial key that emits the group product.
+;; Here G = (Z, +), so Z[G] = Z[t, 1/t] with the row g standing for t^g.
+(define (zset-group-ring op identity)
+  (make-ring-carrier 'Z-sets 0 #f #f
+    (zset-empty) (zset-singleton identity 1)
+    zset-add zset-negate
+    (lambda (a b) (zset-join a b (lambda (r) 0) (lambda (r) 0) op))
+    (lambda (n) (zset-singleton identity n))
+    zset=?
+    (lambda (a) (and (= (zset-size a) 1) (= (abs (car (car (zset-entries a)))) 1)))
+    (lambda (a)
+      (let ((e (car (zset-entries a))))
+        (zset-singleton (- (cadr e)) (car e))))))
+(define laurent (zset-group-ring (lambda (g h) (+ g h)) 0))
+;; The character t |-> c: the ring map Z[t, 1/t] -> Q.
+(define (laurent-at z c)
+  (fold-left (lambda (acc e) (+ acc (* (car e) (expt c (cadr e))))) 0 (zset-entries z)))
+
+;; ===========================================================================
+;; Ring laws on samples
+;; ===========================================================================
+
+(define (check-ring-laws R samples)
+  (let ((ok #t))
+    (for-each
+     (lambda (a)
+       (for-each
+        (lambda (b)
+          (for-each
+           (lambda (c)
+             (if (not (and (r= R (r+ R a b) (r+ R b a))
+                           (r= R (r* R a b) (r* R b a))
+                           (r= R (r+ R (r+ R a b) c) (r+ R a (r+ R b c)))
+                           (r= R (r* R (r* R a b) c) (r* R a (r* R b c)))
+                           (r= R (r* R a (r+ R b c)) (r+ R (r* R a b) (r* R a c)))
+                           (r= R (r+ R a (r0 R)) a)
+                           (r= R (r* R a (r1 R)) a)
+                           (r-zero? R (r+ R a (r-neg R a)))))
+                 (set! ok #f)))
+           samples))
+        samples))
+     samples)
+    ok))
+
+;; ===========================================================================
+;; THE program: one definition, written against the carrier interface.
+;;   f(x) = 3x^5 - 2x^3 + x^2 - 7x + 4
+;; ===========================================================================
+
+(define (f R x)
+  (r+ R (r- R (r+ R (r- R (r* R (r-int R 3) (r-expt R x 5))
+                          (r* R (r-int R 2) (r-expt R x 3)))
+                    (r-expt R x 2))
+              (r* R (r-int R 7) x))
+      (r-int R 4)))
+
+;; The same definition instantiated over the tower, as an ordinary procedure;
+;; the built-in AD operators differentiate it through the carrier closures.
+(define (f-tower x) (f tower x))
+
+;; Independent reference: the polynomial written out by hand.
+(define (f-direct x) (+ (* 3 x x x x x) (* -2 x x x) (* x x) (* -7 x) 4))
+
+;; ===========================================================================
+;; 1. Evaluation over each carrier
+;; ===========================================================================
+
+(display "-- ring laws on samples") (newline)
+(define F7 (make-zmod 7))
+(define dual-Q (make-jets rationals 2))
+(define jets-Q (make-jets rationals 6))
+(define jets-F7 (make-jets F7 6))
+(define Qx (make-polys rationals))
+(check "ring laws: Q" (check-ring-laws rationals (list 0 1 -2/3 5/7)))
+(check "ring laws: F_7" (check-ring-laws F7 (list 0 1 3 6)))
+(check "ring laws: Q[e]/e^6" (check-ring-laws jets-Q (list (jet-seed jets-Q rationals 1/2) (r-int jets-Q 3)
+                                                          (list 0 0 1 -1 0 2))))
+(check "ring laws: Q[x]" (check-ring-laws Qx (list '() (list 1) (list 0 1) (list -1/2 0 3))))
+(check "ring laws: Z[t,1/t] as Z-sets"
+       (check-ring-laws laurent (list (zset-singleton 1 1) (zset-from-weighted (list (list 2 0) (list -1 -1)))
+                                      (zset-singleton 3 -4))))
+
+(display "-- R and Q") (newline)
+(check "R: f(0.5) agrees with the direct formula"
+       (< (abs (- (f reals 0.5) (f-direct 0.5))) 1e-12))
+(check "Q: f(2/3) is exact and equals the direct formula"
+       (and (exact? (f rationals 2/3)) (= (f rationals 2/3) (f-direct 2/3))))
+
+(display "-- Q[e]/e^2: forward-mode AD as a ring") (newline)
+(define d23 (f dual-Q (jet-seed dual-Q rationals 2/3)))
+(check "dual: primal part = f(2/3)" (= (car d23) (f-direct 2/3)))
+(check "dual: e-part = (derivative f-tower 2/3), exact" (= (cadr d23) (derivative f-tower 2/3)))
+(define dual-R (make-jets reals 2))
+(define dr (f dual-R (jet-seed dual-R reals 0.5)))
+(check "dual over R: e-part = (derivative f-tower 0.5)"
+       (< (abs (- (cadr dr) (derivative f-tower 0.5))) 1e-12))
+
+(display "-- Q[e]/e^6: the Taylor tower as a ring") (newline)
+(define j23 (f jets-Q (jet-seed jets-Q rationals 2/3)))
+(check "jets: coefficients = (taylor f-tower 2/3 5)" (equal? j23 (taylor f-tower 2/3 5)))
+(define j0 (f jets-Q (jet-seed jets-Q rationals 0)))
+(check "jets: coefficients at 0 = (taylor f-tower 0 5)" (equal? j0 (taylor f-tower 0 5)))
+
+(display "-- F_7: reduction mod 7 is a ring map") (newline)
+(define (all? pred xs) (or (null? xs) (and (pred (car xs)) (all? pred (cdr xs)))))
+(check "F_7: f(a mod 7) = f(a) mod 7 for every a in 0..6"
+       (all? (lambda (a) (= (f F7 a) (modulo (f-direct a) 7))) (list 0 1 2 3 4 5 6)))
+(define big (+ (expt 10 30) 12345))
+(check "F_7: f(10^30 + 12345 mod 7) = f(10^30 + 12345) mod 7"
+       (= (f F7 (r-int F7 big)) (modulo (f-direct big) 7)))
+(check "F_7: every nonzero element is a unit"
+       (all? (lambda (a) (= (r* F7 a (r-inv F7 a)) 1)) (list 1 2 3 4 5 6)))
+(define jf7 (f jets-F7 (jet-seed jets-F7 F7 (r-int F7 5))))
+(check "F_7[e]/e^6: jets over F_7 = exact Taylor coefficients at 5, reduced mod 7"
+       (equal? jf7 (map (lambda (c) (modulo c 7)) (taylor f-tower 5 5))))
+
+(display "-- Q[x]: symbolic evaluation") (newline)
+(define fx (f Qx (list 0 1)))                ; f at the generic point x
+(check "Q[x]: f(x) has the coefficients (4 -7 1 -2 0 3)" (equal? fx (list 4 -7 1 -2 0 3)))
+(check "Q[x]: evaluating f(x) at 7 rationals reproduces f there"
+       (all? (lambda (q) (= (poly-eval rationals fx q) (f-direct q))) (list 0 1 -1 2/3 -5/4 7 1/9)))
+(define fx+a (f Qx (list 2/3 1)))            ; f at the point x + 2/3
+(check "Q[x] -> Q[e]/e^6: f(x + 2/3) has the Taylor coefficients at 2/3"
+       (equal? fx+a j23))
+
+(display "-- Z[t,1/t]: Z-sets of core.dbsp as a group ring") (newline)
+;; z = t - 1/t + 2
+(define z (zset-from-weighted (list (list 1 1) (list -1 -1) (list 2 0))))
+(define fz (f laurent z))
+(check "Z-sets: every character t |-> c is a ring map (c = 2, -3, 1/2, 5/7)"
+       (all? (lambda (c) (= (laurent-at fz c) (f-direct (+ c (- (/ 1 c)) 2)))) (list 2 -3 1/2 5/7)))
+(check "Z-sets: zset-count is the augmentation t |-> 1"
+       (= (zset-count fz) (f-direct 2)))
+(check "Z-sets: f(z) has support -5..5 with leading weight 3"
+       (and (= (zset-size fz) 11) (= (zset-weight fz 5) 3) (= (zset-weight fz -5) -3)))
+
+;; ===========================================================================
+;; 2. Newton = Hensel: one step function over R and over Z/7^16
+;; ===========================================================================
+
+(display "-- Newton = Hensel lifting") (newline)
+(define (h R x) (r- R (r* R x x) (r-int R 2)))           ; x^2 - 2
+;; One Newton step over any carrier K whose derivative values are units.
+;; The derivative is the e-part of h over the dual carrier K[e]/e^2.
+(define (newton-step K x)
+  (let* ((D (make-jets K 2))
+         (hd (h D (jet-seed D K x))))
+    (r- K x (r* K (car hd) (r-inv K (cadr hd))))))
+(define (iterate step x k) (if (= k 0) x (iterate step (step x) (- k 1))))
+(define sqrt2-R (iterate (lambda (x) (newton-step reals x)) 1.5 6))
+(check "Newton over R: x^2 = 2 to 1e-15" (< (abs (- (* sqrt2-R sqrt2-R) 2.0)) 1e-15))
+(define Z7^16 (make-zmod (expt 7 16)))
+(define sqrt2-7adic (iterate (lambda (x) (newton-step Z7^16 x)) 3 4))   ; 3^2 = 2 mod 7
+(check "Hensel over Z/7^16: four steps lift 3 to a root of x^2 - 2 mod 7^16"
+       (= (modulo (- (* sqrt2-7adic sqrt2-7adic) 2) (expt 7 16)) 0))
+(check "Hensel: the lifted root reduces to 3 mod 7" (= (modulo sqrt2-7adic 7) 3))
+
+;; ===========================================================================
+;; 3. Computation over Spec Z: fibres F_p, glued by CRT
+;; ===========================================================================
+
+(display "-- multimodular determinant and solve") (newline)
+
+;; Generic determinant over any field carrier: Gaussian elimination.
+(define (mat-ref m i j) (vector-ref (vector-ref m i) j))
+(define (mat-map K m) (vector-map (lambda (row) (vector-map (lambda (x) (r-int K x)) row)) m))
+(define (field-det K m0)
+  (let* ((n (vector-length m0))
+         (m (vector-map (lambda (row) (vector-map (lambda (x) x) row)) m0)))
+    (let col ((k 0) (det (r1 K)))
+      (if (= k n)
+          det
+          (let find ((p k))
+            (cond
+              ((= p n) (r0 K))
+              ((r-zero? K (mat-ref m p k)) (find (+ p 1)))
+              (else
+               (let ((det (if (= p k) det (r-neg K det))))
+                 (if (not (= p k))
+                     (let ((tmp (vector-ref m p)))
+                       (vector-set! m p (vector-ref m k))
+                       (vector-set! m k tmp)))
+                 (let ((inv (r-inv K (mat-ref m k k))))
+                   (let rows ((i (+ k 1)))
+                     (if (< i n)
+                         (let ((factor (r* K (mat-ref m i k) inv)))
+                           (let cols ((j k))
+                             (if (< j n)
+                                 (begin
+                                   (vector-set! (vector-ref m i) j
+                                                (r- K (mat-ref m i j) (r* K factor (mat-ref m k j))))
+                                   (cols (+ j 1)))))
+                           (rows (+ i 1)))))
+                   (col (+ k 1) (r* K det (mat-ref m k k))))))))))))
+
+;; A deterministic 6x6 integer matrix with entries below 10^13 in magnitude.
+(define (lcg s) (modulo (+ (* s 6364136223846793005) 1442695040888963407) (expt 2 64)))
+(define n 6)
+(define A
+  (let ((seed 20261024))
+    (vector-map (lambda (i)
+                  (vector-map (lambda (j)
+                                (set! seed (lcg seed))
+                                (- (modulo (quotient seed 65536) (* 2 (expt 10 13))) (expt 10 13)))
+                              (list->vector (iota n))))
+                (list->vector (iota n)))))
+(define b (vector-map (lambda (i) (- (* 1000003 (+ i 1)) 77)) (list->vector (iota n))))
+
+;; Hadamard bound: |det M| <= prod_i ||row_i||_2 <= isqrt(prod_i ||row_i||^2) + 1.
+(define (isqrt k) (call-with-values (lambda () (exact-integer-sqrt k)) (lambda (s r) s)))
+(define (hadamard m)
+  (+ 1 (isqrt (fold-left (lambda (acc row)
+                           (* acc (fold-left (lambda (s x) (+ s (* x x))) 0 (vector->list row))))
+                         1 (vector->list m)))))
+(define (replace-col m j v)
+  (vector-map (lambda (i) (let ((row (vector-map (lambda (x) x) (vector-ref m i))))
+                            (vector-set! row j (vector-ref v i)) row))
+              (list->vector (iota (vector-length m)))))
+
+;; Primes below 2^30 that `usable?` admits, until their product exceeds `bound`.
+(define (primes-for bound usable?)
+  (let loop ((c 1073741823) (acc '()) (m 1))
+    (cond ((> m bound) (reverse acc))
+          ((and (prime? c) (usable? c)) (loop (- c 1) (cons c acc) (* m c)))
+          (else (loop (- c 1) acc m)))))
+
+;; CRT: combine residues r_i mod p_i into one residue mod prod p_i.
+(define (crt residues primes)
+  (let loop ((rs residues) (ps primes) (x 0) (m 1))
+    (if (null? rs)
+        (list x m)
+        (let* ((p (car ps)) (Fp (make-zmod p))
+               (t (r* Fp (r-int Fp (- (car rs) x)) (r-inv Fp (r-int Fp m)))))
+          (loop (cdr rs) (cdr ps) (+ x (* m t)) (* m p))))))
+(define (symmetric x m) (if (> (* 2 x) m) (- x m) x))
+
+;; Wang's rational reconstruction: the unique n/d with |n| <= N, 0 < d <= D
+;; and n = d*u mod m, which exists and is unique when m > 2*N*D.
+(define (rational-reconstruct u m N D)
+  (let loop ((r0 m) (r1 u) (t0 0) (t1 1))
+    (if (<= r1 N)
+        (if (and (> (abs t1) 0) (<= (abs t1) D))
+            (/ (if (< t1 0) (- r1) r1) (abs t1))
+            (error "rational reconstruction: no solution within the bounds"))
+        (let ((q (quotient r0 r1)))
+          (loop r1 (- r0 (* q r1)) t1 (- t0 (* q t1)))))))
+
+(define H (hadamard A))
+(define primes (primes-for (* 2 H) (lambda (p) #t)))
+(define t0 (current-time-ms))
+(define det-mod-p (map (lambda (p) (field-det (make-zmod p) (mat-map (make-zmod p) A))) primes))
+(define det-crt (let ((xm (crt det-mod-p primes))) (symmetric (car xm) (cadr xm))))
+(define t1 (current-time-ms))
+(define det-exact (exact-det A))
+(define t2 (current-time-ms))
+(display "   Hadamard bound has ") (display (string-length (number->string H)))
+(display " digits; ") (display (length primes)) (display " primes near 2^30") (newline)
+(check "Spec Z: det by CRT over the fibres F_p = bignum Bareiss det"
+       (= det-crt det-exact))
+(check "Spec Z: the same generic elimination over Q gives the same det"
+       (= (field-det rationals A) det-exact))
+(check "Spec Z: det mod p is (det mod p) in every fibre"
+       (all? (lambda (dp) (= (car dp) (modulo det-exact (cdr dp)))) (map cons det-mod-p primes)))
+
+;; x_1 = det(A_1)/det(A) (Cramer), computed in each fibre where det A is a unit.
+(define A1 (replace-col A 0 b))
+(define N1 (hadamard A1))
+;; A prime is usable when det A is a unit mod p; the bound counts usable primes only.
+(define primes2 (primes-for (* 2 N1 H) (lambda (p) (not (= 0 (modulo det-exact p))))))
+(define x1-mod-p
+  (map (lambda (p) (let ((Fp (make-zmod p)))
+                     (r* Fp (field-det Fp (mat-map Fp A1)) (r-inv Fp (field-det Fp (mat-map Fp A))))))
+       primes2))
+(define x1-rr (let ((xm (crt x1-mod-p primes2))) (rational-reconstruct (car xm) (cadr xm) N1 H)))
+(check "Spec Z: x_1 by CRT + rational reconstruction = (exact-solve A b)_1"
+       (= x1-rr (vector-ref (exact-solve A b) 0)))
+(display "   x_1 = ") (display x1-rr) (newline)
+(display "   timing ms: multimodular det ") (display (- t1 t0))
+(display ", bignum Bareiss det ") (display (- t2 t1)) (newline)
+
+(newline)
+(display "The functor of points: one program over R, Q, Q[e]/e^2, Q[e]/e^6, F_7, F_7[e]/e^6, Q[x], Z[t,1/t] and the fibres of Spec Z") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: ALL PASS") (newline) (exit 0))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))
