@@ -7851,6 +7851,25 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/abi_lay
     add_test(NAME abi_layout_pin_test COMMAND abi_layout_pin_test)
 endif()
 
+# Native CE gradient values and loss refusal contracts on both tape lowerings.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        foreach(ce_mode jit aot)
+            foreach(ce_dense 0 1)
+                add_test(NAME cross_entropy_gradient_${ce_mode}_dense${ce_dense}
+                    COMMAND ${Python3_EXECUTABLE}
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/cross_entropy_gradient_test.py"
+                        --compiler $<TARGET_FILE:eshkol-run>
+                        --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
+                        --mode ${ce_mode} --dense ${ce_dense})
+                set_tests_properties(cross_entropy_gradient_${ce_mode}_dense${ce_dense}
+                    PROPERTIES TIMEOUT 900)
+            endforeach()
+        endforeach()
+    endif()
+endif()
+
 # The layout-dependence ratchet. Regenerable machine inventory of every site
 # that depends on the current object header, baselined at .icc/abi-header-baseline.json;
 # fails when a commit introduces a new one outside the accessor.

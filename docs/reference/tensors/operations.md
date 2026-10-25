@@ -13,6 +13,9 @@ summarized in [Known limitations](#known-limitations).
 
 ## Shape operations
 
+For the native differentiation contract of the loss functions, see
+[Loss autodiff](loss-autodiff.md).
+
 | Op | Signature | Example → output |
 |----|-----------|------------------|
 | `tensor-shape` | `(tensor-shape t)` | 2×3 → `(2 3)` |

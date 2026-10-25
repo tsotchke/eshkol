@@ -92,9 +92,8 @@ static ad_node_t* var_node(const double* data, const int64_t* shape, size_t ndim
 /**
  * @brief Backpropagate a scalar loss node through the whole tape.
  *
- * Seeds the loss node's upstream gradient (both the scalar mirror, which
- * tensor_cross_entropy_backward reads, and the 1-element tensor gradient,
- * which its non-null guard requires) and then walks the tape in reverse
+ * Seeds both scalar and one-element tensor representations of the loss
+ * node's upstream gradient and then walks the tape in reverse
  * evaluation order, exactly as the runtime's reverse sweep does.
  */
 static void backward(ad_tape_t* tape, ad_node_t* loss) {

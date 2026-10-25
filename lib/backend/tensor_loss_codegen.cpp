@@ -17,6 +17,7 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <eshkol/backend/autodiff_codegen.h>
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -36,7 +37,27 @@ namespace eshkol {
 
 // ===== LOSS FUNCTIONS (Track 6.3) =====
 
+// These loss kernels only implement their numeric forward pass. Do not let
+// them read tape-node addresses as doubles and publish an unrelated scalar
+// during reverse differentiation. The runtime gate also covers indirect calls
+// to a function compiled before the enclosing gradient was encountered.
+void TensorCodegen::refuseUnsupportedLossAD(const char* name) {
+    if (!ctx_.adModeActive()) return;
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* numeric = llvm::BasicBlock::Create(ctx_.context(), "loss_numeric", fn);
+    llvm::BasicBlock* unsupported = llvm::BasicBlock::Create(ctx_.context(), "loss_ad_unsupported", fn);
+    b.CreateCondBr(b.CreateLoad(ctx_.int1Type(), ctx_.adModeActive()), unsupported, numeric);
+    b.SetInsertPoint(unsupported);
+    std::string message = std::string(name) +
+        ": reverse-mode differentiation is not implemented for this loss; "
+        "express the loss using differentiable tensor operations";
+    emitCatchableError(message.c_str());
+    b.SetInsertPoint(numeric);
+}
+
 llvm::Value* TensorCodegen::mseLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("mse-loss");
     // mse-loss: (mse-loss predictions targets)
     // MSE = (1/n) * sum((pred - target)^2)
     if (op->call_op.num_vars < 2) {
@@ -171,23 +192,105 @@ llvm::Value* TensorCodegen::crossEntropyLoss(const eshkol_operations_t* op) {
         ce_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                        "eshkol_cross_entropy_forward", ctx_.module());
     }
-    llvm::Value* result_slot = builder.CreateAlloca(ctx_.doubleType());
-    llvm::Value* status = builder.CreateCall(ce_fn,
-        {logits_elems, logits_dims, logits_ndim, targets_elems, targets_dims,
-         targets_ndim, llvm::ConstantInt::get(ctx_.int32Type(), 1), result_slot});
+    auto forward = [&](llvm::Value* logits, llvm::Value* targets) {
+        llvm::Value* result_slot = builder.CreateAlloca(ctx_.doubleType());
+        llvm::Value* status = builder.CreateCall(ce_fn,
+            {logits, logits_dims, logits_ndim, targets, targets_dims,
+             targets_ndim, llvm::ConstantInt::get(ctx_.int32Type(), 1), result_slot});
+        emitConditionGuard(builder.CreateICmpEQ(status,
+            llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_CROSS_ENTROPY_OK)),
+            "cross-entropy-loss: invalid logits or targets (expected finite logits and either normalized probability rows or integral in-range class indices)",
+            "ce_valid");
+        return builder.CreateLoad(ctx_.doubleType(), result_slot);
+    };
+    if (!autodiff_ || !ctx_.adModeActive())
+        return tagged_.packDouble(forward(logits_elems, targets_elems));
 
-    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
-    llvm::BasicBlock* ok = llvm::BasicBlock::Create(ctx_.context(), "ce_ok", current_func);
-    llvm::BasicBlock* bad = llvm::BasicBlock::Create(ctx_.context(), "ce_bad", current_func);
-    builder.CreateCondBr(builder.CreateICmpEQ(status,
-        llvm::ConstantInt::get(ctx_.int32Type(), ESHKOL_CROSS_ENTROPY_OK)), ok, bad);
-    builder.SetInsertPoint(bad);
-    emitCatchableError("cross-entropy-loss: invalid logits or targets (expected finite logits and either normalized probability rows or integral in-range class indices)");
-    builder.SetInsertPoint(ok);
-    return tagged_.packDouble(builder.CreateLoad(ctx_.doubleType(), result_slot));
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* numeric = llvm::BasicBlock::Create(ctx_.context(), "ce_numeric", fn);
+    llvm::BasicBlock* reverse = llvm::BasicBlock::Create(ctx_.context(), "ce_reverse", fn);
+    llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "ce_merge", fn);
+    builder.CreateCondBr(builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive()), reverse, numeric);
+
+    builder.SetInsertPoint(numeric);
+    llvm::Value* numeric_result = tagged_.packDouble(forward(logits_elems, targets_elems));
+    llvm::BasicBlock* numeric_exit = builder.GetInsertBlock();
+    builder.CreateBr(merge);
+
+    builder.SetInsertPoint(reverse);
+    llvm::Value* logits_total = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, logits_ptr, 3));
+    llvm::Value* targets_total = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateStructGEP(tensor_type, targets_ptr, 3));
+
+    // The existing CE VJP differentiates logits, not labels. Indexed labels
+    // are discrete and probability labels have a normalization constraint;
+    // refuse AD-carried labels until their own differentiation contract exists.
+    llvm::Value* target_i = builder.CreateAlloca(ctx_.int64Type(), nullptr, "ce_target_i");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), target_i);
+    llvm::BasicBlock* check = llvm::BasicBlock::Create(ctx_.context(), "ce_target_check", fn);
+    llvm::BasicBlock* body = llvm::BasicBlock::Create(ctx_.context(), "ce_target_body", fn);
+    llvm::BasicBlock* target_node = llvm::BasicBlock::Create(ctx_.context(), "ce_target_node", fn);
+    llvm::BasicBlock* next = llvm::BasicBlock::Create(ctx_.context(), "ce_target_next", fn);
+    llvm::BasicBlock* ready = llvm::BasicBlock::Create(ctx_.context(), "ce_targets_ready", fn);
+    builder.CreateBr(check);
+    builder.SetInsertPoint(check);
+    llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), target_i);
+    builder.CreateCondBr(builder.CreateICmpULT(i, targets_total), body, ready);
+    builder.SetInsertPoint(body);
+    llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(),
+        builder.CreateGEP(ctx_.int64Type(), targets_elems, i));
+    builder.CreateCondBr(autodiff_->emitAdNodeProbe(bits, -1), target_node, next);
+    builder.SetInsertPoint(target_node);
+    llvm::Value* label_node = builder.CreateIntToPtr(bits, ctx_.ptrType());
+    llvm::Value* label_type = builder.CreateLoad(ctx_.int32Type(),
+        builder.CreateStructGEP(ctx_.adNodeType(), label_node, TypeSystem::AD_NODE_TYPE_IDX));
+    emitConditionGuard(builder.CreateICmpEQ(label_type,
+        llvm::ConstantInt::get(ctx_.int32Type(), AD_NODE_CONSTANT)),
+        "cross-entropy-loss: differentiation of targets is not supported; supply constant labels",
+        "ce_constant_labels");
+    builder.CreateBr(next);
+    builder.SetInsertPoint(next);
+    builder.CreateStore(builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), target_i);
+    builder.CreateBr(check);
+    builder.SetInsertPoint(ready);
+
+    // The checked operand boundary projects a dense AD node into element
+    // nodes. Packing preserves those edges and also handles ordinary seeded
+    // tensors; the numeric kernel must never receive the original node slots.
+    llvm::Value* logits_dense = nullptr;
+    llvm::Value* targets_dense = nullptr;
+    llvm::Value* logits_parent = autodiff_->emitDenseTensorOperand(nullptr,
+        logits_elems, logits_total, logits_dims, logits_ndim, &logits_dense, "ce_logits");
+    llvm::Value* targets_parent = autodiff_->emitDenseTensorOperand(nullptr,
+        targets_elems, targets_total, targets_dims, targets_ndim, &targets_dense, "ce_targets");
+    if (!logits_parent || !targets_parent || !logits_dense || !targets_dense) return nullptr;
+    llvm::Value* loss = forward(logits_dense, targets_dense);
+    llvm::Value* arena = allocationArena();
+    llvm::Value* output = builder.CreateCall(mem_.getArenaAllocate(),
+        {arena, llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double))}, "ce_output");
+    builder.CreateStore(loss, output);
+    llvm::Value* shape = builder.CreateCall(mem_.getArenaAllocate(),
+        {arena, llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t))}, "ce_shape");
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), shape);
+    llvm::Value* node = autodiff_->recordADNodeTensor(AD_NODE_TENSOR_CROSS_ENTROPY,
+        logits_parent, targets_parent, nullptr, nullptr, output,
+        nullptr, llvm::ConstantInt::get(ctx_.int64Type(), 0),
+        shape, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    if (!node) return nullptr;
+    builder.CreateStore(loss, builder.CreateStructGEP(ctx_.adNodeType(), node, 1));
+    llvm::Value* reverse_result = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
+    llvm::BasicBlock* reverse_exit = builder.GetInsertBlock();
+    builder.CreateBr(merge);
+    builder.SetInsertPoint(merge);
+    llvm::PHINode* result = builder.CreatePHI(ctx_.taggedValueType(), 2, "ce_result");
+    result->addIncoming(numeric_result, numeric_exit);
+    result->addIncoming(reverse_result, reverse_exit);
+    return result;
 }
 
 llvm::Value* TensorCodegen::bceLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("bce-loss");
     // bce-loss: (bce-loss predictions targets)
     // BCE = -sum(target * log(pred) + (1-target) * log(1-pred)) / n
     if (op->call_op.num_vars < 2) {
@@ -301,6 +404,7 @@ llvm::Value* TensorCodegen::bceLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::huberLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("huber-loss");
     // huber-loss: (huber-loss predictions targets [delta])
     // L_δ(a) = 0.5 * a² if |a| ≤ δ, else δ * (|a| - 0.5 * δ)
     if (op->call_op.num_vars < 2) {
@@ -412,6 +516,7 @@ llvm::Value* TensorCodegen::huberLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::maeLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("mae-loss");
     // mae-loss: (mae-loss predictions targets)
     // MAE = (1/n) * sum(|pred - target|)
     if (op->call_op.num_vars != 2) {
@@ -512,6 +617,7 @@ llvm::Value* TensorCodegen::maeLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("binary-cross-entropy-loss");
     // binary-cross-entropy-loss: (binary-cross-entropy-loss predictions targets)
     // BCE = -(1/n) * sum(target * log(pred) + (1-target) * log(1-pred))
     if (op->call_op.num_vars != 2) {
@@ -633,6 +739,7 @@ llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op
 }
 
 llvm::Value* TensorCodegen::klDivLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("kl-div-loss");
     // KL Divergence: KL(P || Q) = sum(P * log(P / Q))
     // Args: P (true distribution), Q (predicted distribution)
     // Both must be probability distributions (non-negative, sum to 1)
@@ -742,6 +849,7 @@ llvm::Value* TensorCodegen::klDivLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::hingeLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("hinge-loss");
     // Hinge Loss: (1/n) * sum(max(0, 1 - y * f(x)))
     // Args: predictions (f(x)), targets (y, should be +1 or -1)
     if (op->call_op.num_vars != 2) {
@@ -837,6 +945,7 @@ llvm::Value* TensorCodegen::hingeLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::smoothL1Loss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("smooth-l1-loss");
     // Smooth L1 (Huber variant):
     // if |x| < beta: 0.5 * x^2 / beta
     // else: |x| - 0.5 * beta
@@ -965,6 +1074,7 @@ llvm::Value* TensorCodegen::smoothL1Loss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::focalLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("focal-loss");
     // Focal Loss (Lin et al., 2017): L = -(1 - p_t)^gamma * log(p_t), where
     // p_t is the predicted probability of the TRUE class. Default gamma = 2.0.
     //
@@ -1040,6 +1150,7 @@ llvm::Value* TensorCodegen::focalLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::tripletLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("triplet-loss");
     // Triplet Loss: max(d(anchor, positive) - d(anchor, negative) + margin, 0)
     // Args: anchor tensor, positive tensor, negative tensor [, margin]
     // Default margin = 1.0
@@ -1145,6 +1256,7 @@ llvm::Value* TensorCodegen::tripletLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::contrastiveLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("contrastive-loss");
     // Contrastive Loss: (1-y)*d^2 + y*max(margin-d, 0)^2
     // Args: tensor1, tensor2, labels (0=similar, 1=dissimilar) [, margin]
     // Default margin = 1.0
@@ -1239,6 +1351,7 @@ llvm::Value* TensorCodegen::contrastiveLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::labelSmoothingLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("label-smoothing-loss");
     // Label Smoothing Cross-Entropy: CE with softened targets
     // smoothed_target = (1 - epsilon) * one_hot + epsilon / num_classes
     // Loss = -sum(smoothed_target * log(softmax(logits)))
@@ -1391,6 +1504,7 @@ llvm::Value* TensorCodegen::labelSmoothingLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::cosineEmbeddingLoss(const eshkol_operations_t* op) {
+    refuseUnsupportedLossAD("cosine-embedding-loss");
     // Cosine Embedding Loss:
     // if y == 1:  1 - cos(x1, x2)
     // if y == -1: max(0, cos(x1, x2) - margin)
