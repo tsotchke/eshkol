@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Static quantum circuits export a validated OpenQASM 3 subset.**
+  Add opt-in `core.quantum.circuit` with 25 standard gate kinds, measurement,
+  reset, barriers, explicit zero-state initialization and logical resource
+  counts. A portable AOT contract gate and optional independent OpenQASM/Qiskit
+  oracle cover all gate kinds and 100 deterministic generated circuits.
+  This module exports descriptions; it does not simulate or submit hardware jobs.
+
 ## [1.3.6-evolve] - 2026-10-15
 
 PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.

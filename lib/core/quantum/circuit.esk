@@ -1,0 +1,191 @@
+;; Portable, validated circuit descriptions and an OpenQASM 3.0 exporter.
+;; This module does not simulate qubits or submit jobs to quantum hardware.
+;; Gate names and argument order follow the OpenQASM standard gate library.
+
+(provide make-quantum-circuit quantum-circuit->openqasm3
+         quantum-circuit-resources)
+
+(define (qc-error message)
+  (error (string-append "core.quantum.circuit: " message)))
+
+(define (qc-proper-list? value)
+  ;; Do not delegate this boundary to list?: callers can mutate pairs into
+  ;; cycles, and a linear proper-list predicate would never return on them.
+  (let loop ((slow value) (fast value))
+    (cond
+      ((null? fast) #t)
+      ((not (pair? fast)) #f)
+      ((null? (cdr fast)) #t)
+      ((not (pair? (cdr fast))) #f)
+      (else
+       (let ((next-slow (cdr slow)) (next-fast (cdr (cdr fast))))
+         (if (eq? next-slow next-fast) #f (loop next-slow next-fast)))))))
+
+(define (qc-count xs)
+  (let loop ((rest xs) (n 0))
+    (if (null? rest) n (loop (cdr rest) (+ n 1)))))
+
+(define (qc-reverse xs)
+  (let loop ((rest xs) (out '()))
+    (if (null? rest) out (loop (cdr rest) (cons (car rest) out)))))
+
+(define (qc-copy xs) (qc-reverse (qc-reverse xs)))
+
+(define (qc-copy-ops ops)
+  (let loop ((rest ops) (out '()))
+    (if (null? rest) (qc-reverse out)
+        (loop (cdr rest) (cons (qc-copy (car rest)) out)))))
+
+(define (qc-member? value xs)
+  (and (not (null? xs))
+       (or (eq? value (car xs)) (qc-member? value (cdr xs)))))
+
+(define (qc-natural? value)
+  (and (integer? value) (exact? value) (>= value 0)))
+
+(define (qc-index! value limit)
+  (if (not (and (qc-natural? value) (< value limit)))
+      (qc-error "register index must be an exact integer within bounds")))
+
+(define (qc-angle! value)
+  (if (not (and (real? value) (finite? value)))
+      (qc-error "gate angle must be a finite real number"))
+  ;; Exported angles use binary64 decimal literals. A finite bignum can still
+  ;; overflow this conversion, so validate the exported representation too.
+  (if (not (finite? (exact->inexact value)))
+      (qc-error "gate angle is outside the finite binary64 export range")))
+
+(define (qc-distinct! wires)
+  (let outer ((rest wires))
+    (if (not (null? rest))
+        (begin
+          (let inner ((tail (cdr rest)))
+            (if (not (null? tail))
+                (if (= (car rest) (car tail))
+                    (qc-error "an operation cannot repeat a qubit")
+                    (inner (cdr tail)))))
+          (outer (cdr rest))))))
+
+;; #(number-of-angle-parameters number-of-qubit-operands), or #f.
+(define (qc-gate-shape gate)
+  (cond
+    ((qc-member? gate '(id x y z h s sdg t tdg sx)) (vector 0 1))
+    ((qc-member? gate '(p rx ry rz)) (vector 1 1))
+    ((qc-member? gate '(cx cy cz ch swap)) (vector 0 2))
+    ((qc-member? gate '(cp crx cry crz)) (vector 1 2))
+    ((qc-member? gate '(ccx cswap)) (vector 0 3))
+    (else #f)))
+
+(define (qc-wire-list! wires nq)
+  (let loop ((rest wires))
+    (if (not (null? rest))
+        (begin (qc-index! (car rest) nq) (loop (cdr rest)))))
+  (qc-distinct! wires))
+
+(define (qc-operation! op nq nb)
+  (if (not (and (qc-proper-list? op) (not (null? op)) (symbol? (car op))))
+      (qc-error "each operation must be a nonempty list beginning with a gate symbol"))
+  (let* ((gate (car op)) (args (cdr op)) (n (qc-count args))
+         (shape (qc-gate-shape gate)))
+    (cond
+      (shape
+       (let ((np (vector-ref shape 0)) (nw (vector-ref shape 1)))
+         (if (not (= n (+ np nw))) (qc-error "wrong gate arity"))
+         (if (= np 1) (qc-angle! (car args)))
+         (qc-wire-list! (if (= np 1) (cdr args) args) nq)))
+      ((eq? gate 'measure)
+       (if (not (= n 2)) (qc-error "measure requires a qubit and a classical bit"))
+       (qc-index! (car args) nq)
+       (qc-index! (cadr args) nb))
+      ((eq? gate 'reset)
+       (if (not (= n 1)) (qc-error "reset requires one qubit"))
+       (qc-index! (car args) nq))
+      ((eq? gate 'barrier)
+       (if (= n 0) (qc-error "barrier requires at least one qubit"))
+       (qc-wire-list! args nq))
+      (else (qc-error "unsupported gate or operation")))))
+
+(define (qc-validate! circuit)
+  (if (not (and (vector? circuit) (= (vector-length circuit) 4)))
+      (qc-error "expected a quantum circuit"))
+  (if (not (eq? (vector-ref circuit 0) 'eshkol-quantum-circuit-v1))
+      (qc-error "invalid circuit tag"))
+  (let ((nq (vector-ref circuit 1)) (nb (vector-ref circuit 2))
+        (ops (vector-ref circuit 3)))
+    (if (not (and (qc-natural? nq) (> nq 0)))
+        (qc-error "qubit count must be a positive exact integer"))
+    (if (not (qc-natural? nb))
+        (qc-error "classical bit count must be a nonnegative exact integer"))
+    (if (not (qc-proper-list? ops)) (qc-error "operations must form an acyclic proper list"))
+    (let loop ((rest ops))
+      (if (not (null? rest))
+          (begin (qc-operation! (car rest) nq nb) (loop (cdr rest))))))
+  circuit)
+
+(define (make-quantum-circuit qubits bits operations)
+  "Construct a validated circuit from operation lists, copying their list structure."
+  (qc-validate! (vector 'eshkol-quantum-circuit-v1 qubits bits operations))
+  (vector 'eshkol-quantum-circuit-v1 qubits bits (qc-copy-ops operations)))
+
+(define (qc-wire-text index)
+  (string-append "q[" (number->string index) "]"))
+
+(define (qc-write-wires wires port)
+  (display (qc-wire-text (car wires)) port)
+  (let loop ((rest (cdr wires)))
+    (if (not (null? rest))
+        (begin
+          (display ", " port)
+          (display (qc-wire-text (car rest)) port)
+          (loop (cdr rest))))))
+
+(define (qc-write-op op port)
+  (let* ((gate (car op)) (args (cdr op)) (shape (qc-gate-shape gate)))
+    (cond
+      ((eq? gate 'measure)
+       (display (string-append "c[" (number->string (cadr args)) "] = measure "
+                               (qc-wire-text (car args)) ";\n") port))
+      (else
+       (display (symbol->string gate) port)
+       (if (and shape (= (vector-ref shape 0) 1))
+           (display (string-append "(" (number->string (exact->inexact (car args))) ")") port))
+       (display " " port)
+       (qc-write-wires (if (and shape (= (vector-ref shape 0) 1)) (cdr args) args) port)
+       (display ";\n" port)))))
+
+(define (quantum-circuit->openqasm3 circuit)
+  "Export the supported static circuit subset, initialized in the all-zero state."
+  ;; Revalidate because Eshkol vectors and lists can be mutated by callers.
+  (qc-validate! circuit)
+  (let ((port (open-output-string)) (nq (vector-ref circuit 1))
+        (nb (vector-ref circuit 2)) (ops (vector-ref circuit 3)))
+    (display "OPENQASM 3.0;\ninclude \"stdgates.inc\";\n" port)
+    (display (string-append "qubit[" (number->string nq) "] q;\n") port)
+    (if (> nb 0) (display (string-append "bit[" (number->string nb) "] c;\n") port))
+    ;; OpenQASM does not promise an initial state for newly declared qubits.
+    (display "reset q;\n" port)
+    (let loop ((rest ops))
+      (if (not (null? rest))
+          (begin (qc-write-op (car rest) port) (loop (cdr rest)))))
+    (let ((result (get-output-string port)))
+      (close-output-port port)
+      result)))
+
+(define (quantum-circuit-resources circuit)
+  "Return logical counts; these are not hardware duration or fault-tolerant cost estimates."
+  (qc-validate! circuit)
+  (let loop ((ops (vector-ref circuit 3)) (count 0) (gates 0) (two 0)
+             (measurements 0) (resets 0) (barriers 0))
+    (if (null? ops)
+        (list (cons 'qubits (vector-ref circuit 1))
+              (cons 'classical-bits (vector-ref circuit 2))
+              (cons 'operations count) (cons 'gates gates) (cons 'two-qubit-gates two)
+              (cons 'measurements measurements) (cons 'resets resets)
+              (cons 'barriers barriers)
+              (cons 'initialization-resets (vector-ref circuit 1)))
+        (let* ((gate (car (car ops))) (shape (qc-gate-shape gate)))
+          (loop (cdr ops) (+ count 1) (+ gates (if shape 1 0))
+                (+ two (if (and shape (= (vector-ref shape 1) 2)) 1 0))
+                (+ measurements (if (eq? gate 'measure) 1 0))
+                (+ resets (if (eq? gate 'reset) 1 0))
+                (+ barriers (if (eq? gate 'barrier) 1 0)))))))
