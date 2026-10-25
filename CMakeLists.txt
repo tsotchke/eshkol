@@ -3192,7 +3192,6 @@ if(REPL_SRC)
       # PE/COFF: export only the bounded Eshkol runtime namespace via a
       # generated .def (--export-all-symbols overflows the 65535 PE export
       # limit because the exe statically links all of LLVM).
-      eshkol_windows_export_runtime(eshkol-repl)
     else()
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
     endif()
@@ -3256,7 +3255,6 @@ if(REPL_SRC)
       "$<TARGET_FILE:eshkol-static>"
       "$<TARGET_FILE:eshkol-repl-lib>"
       "-Wl,--no-whole-archive")
-    eshkol_windows_export_runtime(eshkol-run)
   else()
     target_link_options(eshkol-run PRIVATE
       "-Wl,--whole-archive"
@@ -12136,18 +12134,6 @@ if(ESHKOL_BUILD_AGENT_FFI)
             endif()
         endif()
 
-        # Build one bounded PE export table after the optional agent archive is
-        # defined. This avoids competing /DEF files and makes both core and
-        # agent-generated calls resolvable in cache-disabled ORC JIT sessions.
-        if(WIN32)
-            if(TARGET eshkol-run)
-                eshkol_windows_export_runtime(eshkol-run)
-            endif()
-            if(TARGET eshkol-repl)
-                eshkol_windows_export_runtime(eshkol-repl)
-            endif()
-        endif()
-
         # The standalone hosted-VM executables resolve optional native
         # capabilities through the same process-wide symbol lookup used by
         # eshkol-run.  Force-load the production agent archive here as well;
@@ -12253,6 +12239,18 @@ if(ESHKOL_BUILD_AGENT_FFI)
         endif()
     else()
         message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")
+    endif()
+endif()
+
+# Export core JIT symbols even when the optional agent FFI is disabled. Register
+# each table once, after the optional archive is known, for both Windows driver
+# families. Previously the MSVC/ClangCL call lived inside the agent-only block.
+if(WIN32)
+    if(TARGET eshkol-run)
+        eshkol_windows_export_runtime(eshkol-run)
+    endif()
+    if(TARGET eshkol-repl)
+        eshkol_windows_export_runtime(eshkol-repl)
     endif()
 endif()
 
