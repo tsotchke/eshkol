@@ -34,6 +34,7 @@
 #include "jit_coff_memory_manager.h"  // Co-located Windows ARM64 RuntimeDyld arena
 #include "jitlink_branch26_range_extension.h"  // AArch64 Branch26 range-extension plugin
 #include "jit_target_config.h"  // Windows ARM64 external-data import indirection
+#include "jit_parallel_init.h"  // JIT-only worker initializer visibility
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -2421,6 +2422,11 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     // every live REPL module before validation and ConcurrentIRCompiler.
     eshkol::prepare_jit_module_for_target(*module, jit_->getTargetTriple());
 
+    const std::string parallel_initializer =
+        eshkol::expose_jit_parallel_initializer(
+            *module, "__repl_init_parallel_workers_" +
+                         std::to_string(parallel_initializer_counter_++));
+
     // Verify the module
     std::string error_msg;
     raw_string_ostream error_stream(error_msg);
@@ -2443,9 +2449,6 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
 #endif
         std::cerr << "[REPL] LLJIT DataLayout: " << jit_->getDataLayout().getStringRepresentation() << std::endl;
     }
-
-    Function* parallel_init = module->getFunction("__eshkol_init_parallel_workers");
-    bool has_parallel_initializer = parallel_init && !parallel_init->isDeclaration();
 
     // Wrap module with its OWN context (each module gets its own ThreadSafeContext).
     // This is LLVM's recommended ORC JIT pattern — module and context must match.
@@ -2472,16 +2475,19 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     // ORC does not reliably run this Eshkol-specific worker-registration
     // initializer for REPL snippets. If the just-added module generated
     // parallel-map workers, register them before the entry function runs.
-    if (has_parallel_initializer) {
-        if (auto pw_init = jit_->lookup("__eshkol_init_parallel_workers")) {
+    if (!parallel_initializer.empty()) {
+        if (auto pw_init = jit_->lookup(parallel_initializer)) {
             using PWInitFn = void (*)(void);
             auto fn = reinterpret_cast<PWInitFn>(pw_init->getValue());
             fn();
         } else {
-            consumeError(pw_init.takeError());
-            std::cerr << "[REPL] Warning: module defines __eshkol_init_parallel_workers "
-                         "but the symbol could not be resolved after JIT add."
-                      << std::endl;
+            const std::string detail = toString(pw_init.takeError());
+            if (auto remove_error = module_tracker->remove()) {
+                consumeError(std::move(remove_error));
+            }
+            throw std::runtime_error(
+                "failed to resolve JIT parallel worker initializer " +
+                parallel_initializer + ": " + detail);
         }
     }
 
@@ -2963,7 +2969,13 @@ bool ReplJITContext::loadStdlib() {
         // execution. Call it explicitly so the parallel runtime sees the same
         // worker registrations regardless of whether stdlib came from bitcode,
         // an object file, or a future loader path.
-        if (auto pw_init = jit_->lookup("__eshkol_init_parallel_workers")) {
+        auto pw_init = jit_->lookup(eshkol::kJitStdlibParallelInitializer);
+        if (!pw_init) {
+            consumeError(pw_init.takeError());
+            // Legacy AOT objects on ELF/Mach-O expose the original name.
+            pw_init = jit_->lookup("__eshkol_init_parallel_workers");
+        }
+        if (pw_init) {
             using PWInitFn = void (*)(void);
             auto fn = reinterpret_cast<PWInitFn>(pw_init->getValue());
             fn();
@@ -2998,7 +3010,7 @@ bool ReplJITContext::loadStdlib() {
                 std::filesystem::path bc_fs(bc_path);
                 // Bump the version tag whenever the emit config below changes
                 // (code model, sections, opt level, or external-data import
-                // lowering) so an existing cached object built with a different
+                // lowering or exported initializer names) so an existing cached object built with a different
                 // contract is not reused.
                 //
                 // The object ABI is part of that contract and is named
@@ -3011,9 +3023,12 @@ bool ReplJITContext::loadStdlib() {
                 // other header layout — which links, runs, and reads the wrong
                 // bytes. The tag comes from the same four numbers as the link
                 // guard, so it renames itself when the layout moves.
+                // v5 additionally exports the JIT-specific worker initializer;
+                // a v4 Windows object keeps that initializer local and cannot
+                // satisfy LLJIT's explicit registration lookup.
                 std::filesystem::path cache_o =
                     bc_fs.parent_path() /
-                    ("stdlib-jit-v4-" + llvm::utohexstr(content_hash) + "-" +
+                    ("stdlib-jit-v5-" + llvm::utohexstr(content_hash) + "-" +
                      triple + "-" + ESHKOL_OBJECT_ABI_CACHE_TAG + ".o");
 
                 std::error_code ec;
@@ -3033,6 +3048,9 @@ bool ReplJITContext::loadStdlib() {
                                     (*emit_tm)->getTargetTriple());
                                 eshkol::prepare_jit_module_for_target(
                                     **emit_mod, (*emit_tm)->getTargetTriple());
+                                eshkol::expose_jit_parallel_initializer(
+                                    **emit_mod,
+                                    eshkol::kJitStdlibParallelInitializer);
                                 std::filesystem::path tmp_o = cache_o;
                                 tmp_o += ".tmp";
                                 std::error_code wec;
@@ -3122,6 +3140,8 @@ bool ReplJITContext::loadStdlib() {
                 }
                 eshkol::prepare_jit_module_for_target(
                     *stdlib_module, jit_->getTargetTriple());
+                eshkol::expose_jit_parallel_initializer(
+                    *stdlib_module, eshkol::kJitStdlibParallelInitializer);
 
                 auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
                 auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);

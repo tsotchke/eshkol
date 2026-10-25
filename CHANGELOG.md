@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Give each native JIT module a resolvable parallel-worker initializer while
+  preserving Windows AOT internal linkage. Rebuild stdlib JIT object caches
+  with the same initializer contract instead of reusing objects whose local
+  initializer cannot be found by the JIT.
+
 ### Added
 
 - Opt-in Windows in-process JIT regression probes with exact-output checks,

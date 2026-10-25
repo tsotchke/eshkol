@@ -186,7 +186,7 @@ a valid intermediate state either.
 
 - **Precompiled stdlib bitcode / object cache.** `lib/repl/repl_jit.cpp:2617`
   keys the cached stdlib object on a *content hash of the stdlib sources* plus
-  the target triple: `"stdlib-jit-v4-" + utohexstr(content_hash) + "-" + triple`.
+  the target triple: `"stdlib-jit-v5-" + utohexstr(content_hash) + "-" + triple`.
   It does **not** include the object ABI. Flipping `ESHKOL_MEMORY_ABI_V2` and
   re-running therefore reuses a stdlib object compiled against the other header
   — a silent miscompile, not a cache miss. Phase B must fold the ABI version

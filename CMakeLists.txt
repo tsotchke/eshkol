@@ -8651,6 +8651,20 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ji
         COMMAND jit_aarch64_coff_target_config_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS)
+    add_executable(jit_parallel_init_test tests/toolchain/jit_parallel_init_test.cpp)
+    target_compile_features(jit_parallel_init_test PRIVATE cxx_std_17)
+    target_include_directories(jit_parallel_init_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
+    eshkol_target_llvm_includes(jit_parallel_init_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(jit_parallel_init_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(jit_parallel_init_test PRIVATE
+        ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME jit_parallel_init_test COMMAND jit_parallel_init_test)
+endif()
+
 if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_runtime_link_args_test.cpp")
     add_executable(cuda_runtime_link_args_test
