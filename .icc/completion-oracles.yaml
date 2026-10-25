@@ -728,6 +728,13 @@ oracles:
         action: ./scripts/run_ctest_gate.sh
       - runtime_event:
           event_kinds: [ctest]
+          event_names: ["quantum_circuit_contract_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Static quantum circuit descriptions reject invalid bounds, arities, angles and cyclic lists before export; AOT contract and deliberate-failure driver self-test both pass. The CTest group requires both members and does not require optional Qiskit dependencies.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
           event_names: ["exact_input_ad_identity_gate"]
           event_values: ["PASS"]
         severity: high
@@ -4168,3 +4175,15 @@ oracles:
         severity: high
         label: Classifying-space homology, cocycle classes and Dijkgraaf-Witten state sums agree with two independent routes, JIT and AOT
         action: ./scripts/run_math_example_gate.sh mathematics_classifying_space_dijkgraaf_witten dw_classifying_space dw_classifying_space_state_sums
+
+  # Optional interoperability evidence, separate from the default native gate.
+  - name: quantum-circuit-interoperability
+    aliases: [quantum-circuit-oracle]
+    requires:
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["quantum_circuit_export_qiskit_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'OpenQASM parser and independent Qiskit matrix/state/probability checks pass for all 25 supported gate kinds and 100 deterministic generated circuits; missing Python extras fail explicitly.'
+        action: cmake -S . -B build -DESHKOL_QUANTUM_CIRCUIT_QISKIT_ORACLE=ON && ./scripts/run_ctest_gate.sh
