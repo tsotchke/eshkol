@@ -23,6 +23,16 @@ CASES = {
     "callcc_escape": "42\n",
     "guard_raise": "42\n",
     "parallel_map": "(1 4 9 16 25)\n",
+    "parallel_continuation_escape": (
+        "escaped\n(short 2)\nthunk\nfiltered\n(-1 2 -3 4 -5 6 -7 8)\n"
+        "wound\n(after)\nparallel continuation escape PASS\n"
+    ),
+    "callcc_multishot_returned_frame": "1\n37\n73\ndone\n",
+    "guard_handler_snapshot": "(caught 3 boom)\n" * 3,
+}
+CASE_SOURCE_PATHS = {
+    "parallel_continuation_escape": "tests/vm_parity/corpus/parallel_continuation_escape.esk",
+    "guard_handler_snapshot": "tests/continuations/guard_handler_snapshot.esk",
 }
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ERROR = re.compile(
@@ -110,7 +120,7 @@ def main(argv=None):
                         help="Parent for a new, retained evidence directory")
     parser.add_argument("--timeout", type=float, default=30.0, help="Seconds per subprocess (default: 30)")
     parser.add_argument("--case", action="append", choices=CASES,
-                        help="Run selected cases; default is all four")
+                        help="Run selected cases; default is all cases")
     args = parser.parse_args(argv)
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         parser.error("--timeout must be finite and positive")
@@ -145,7 +155,8 @@ def main(argv=None):
         "features": run_command([runner, "--features"], cwd=work, env=env, timeout=args.timeout),
     }
     for name in args.case or CASES:
-        fixture = fixture_dir / f"{name}.esk"
+        fixture = (repository / CASE_SOURCE_PATHS[name] if name in CASE_SOURCE_PATHS
+                   else fixture_dir / f"{name}.esk")
         expected = CASES[name]
         binary = work / (name + (".exe" if os.name == "nt" else ".out"))
         compile_result = run_command(

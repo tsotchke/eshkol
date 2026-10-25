@@ -1120,6 +1120,8 @@ void ReplJITContext::initializeJIT() {
                                 return std::make_unique<
                                     eshkol::WindowsX64SectionMemoryManager>();
                             }
+#else
+                            (void)windows_x64_coff;
 #endif
                             return std::make_unique<
                                 eshkol::CoLocatedSectionMemoryManager>();
@@ -1138,8 +1140,8 @@ void ReplJITContext::initializeJIT() {
         // share the memory manager LLJIT already owns instead of making its
         // own.  This layer is RTDyld-backed, not JITLink-backed: it takes a
         // RuntimeDyld::MemoryManager factory, a different and incompatible
-        // manager interface, and deliberately supplies
-        // CoLocatedSectionMemoryManager for the Windows-ARM64 arena above.
+        // manager interface, and deliberately supplies the platform's native
+        // RuntimeDyld memory manager above.
         // The JITLink manager therefore has nothing to bind to here and is
         // intentionally unused; it stays owned by LLJIT, so nothing leaks and
         // no second manager of the same kind is constructed.
@@ -3024,7 +3026,8 @@ bool ReplJITContext::loadStdlib() {
                 std::filesystem::path bc_fs(bc_path);
                 // Bump the version tag whenever the emit config below changes
                 // (code model, sections, opt level, or external-data import
-                // lowering or exported initializer names) so an existing cached object built with a different
+                // lowering or exported initializer names) so an existing
+                // cached object built with a different
                 // contract is not reused.
                 //
                 // The object ABI is part of that contract and is named

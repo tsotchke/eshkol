@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restore saved native continuation stacks on Windows x64 without running the
+  CRT unwinder over overwritten frames. The hosted runtime uses the documented
+  Windows context-restoration API after stack copying, preserving ordinary
+  exception and escape-only unwinding. Add repeated returned-frame, captured
+  guard-handler, and parallel-callback continuation regressions. (#869)
 - Register native Windows x64 JIT unwind tables with the operating system and
   unregister them before unloading each module, so native nonlocal exits can
   walk generated frames.

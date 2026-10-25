@@ -66,9 +66,14 @@ thread_local eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
  * simply keeps escape-only continuations, which is the right answer for a
  * target with no thread-stack notion to interrogate. */
 static eshkol_stack_base_fn g_stack_base_hook = nullptr;
+static eshkol_continuation_restore_fn g_continuation_restore_hook = nullptr;
 
 extern "C" void eshkol_set_stack_base_hook(eshkol_stack_base_fn fn) {
     g_stack_base_hook = fn;
+}
+
+extern "C" void eshkol_set_continuation_restore_hook(eshkol_continuation_restore_fn fn) {
+    g_continuation_restore_hook = fn;
 }
 
 /** @brief Highest address of the current thread's stack, or 0 if unknown. */
@@ -297,6 +302,14 @@ static void resume_trampoline(eshkol_continuation_state_t* state) {
 #endif
 
     memcpy(state->stack_lo, state->saved_stack, (size_t)state->saved_len);
+    // Windows longjmp normally walks native unwind metadata. After memcpy,
+    // those intervening frames have been replaced by the captured stack and
+    // cannot be unwound again. Hosted targets can provide a context restore;
+    // the freestanding core retains its ordinary longjmp fallback.
+    if (g_continuation_restore_hook) {
+        g_continuation_restore_hook(state->jmp_buf_ptr, 1);
+        abort();  // A context-restoration hook must not return.
+    }
     longjmp(*(jmp_buf*)state->jmp_buf_ptr, 1);
 }
 

@@ -1,0 +1,11 @@
+;; Re-enter a captured frame after its function returned, twice. The mutable
+;; stage must survive both stack restores, and continuation values are distinct
+;; from the native setjmp dispatch flag. No stdlib is required.
+(define saved #f)
+(define stage 0)
+(define (capture-and-return)
+  (+ 1 (call/cc (lambda (k) (set! saved k) 0))))
+(display (capture-and-return)) (newline)
+(set! stage (+ stage 1))
+(if (< stage 3) (saved (* stage 36)))
+(display "done") (newline)

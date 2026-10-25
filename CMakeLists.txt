@@ -8696,6 +8696,14 @@ if(ESHKOL_BUILD_TESTS AND WIN32 AND
         ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME jit_windows_x64_unwind_test COMMAND jit_windows_x64_unwind_test)
     set_tests_properties(jit_windows_x64_unwind_test PROPERTIES TIMEOUT 30)
+    add_executable(windows_x64_continuation_restore_test
+        tests/toolchain/windows_x64_continuation_restore_test.cpp)
+    target_compile_features(windows_x64_continuation_restore_test PRIVATE cxx_std_17)
+    target_include_directories(windows_x64_continuation_restore_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+    add_test(NAME windows_x64_continuation_restore_test
+        COMMAND windows_x64_continuation_restore_test)
+    set_tests_properties(windows_x64_continuation_restore_test PROPERTIES TIMEOUT 30)
 endif()
 
 if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND

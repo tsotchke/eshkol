@@ -13,7 +13,7 @@ if(ESHKOL_BUILD_TESTS AND WIN32 AND TARGET eshkol-run)
                 --work-dir ${CMAKE_CURRENT_BINARY_DIR}/windows-jit-regressions
                 --timeout 30)
         set_tests_properties(windows_jit_regressions PROPERTIES
-            LABELS "windows;jit;regression" TIMEOUT 420)
+            LABELS "windows;jit;regression" TIMEOUT 750)
         add_test(NAME windows_jit_regressions_harness
             COMMAND ${Python3_EXECUTABLE}
                 ${_eshkol_native_jit_probe_root}/tests/toolchain/test_native_jit_regressions.py)
