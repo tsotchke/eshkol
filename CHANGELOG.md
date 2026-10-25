@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Correct the Linux download instructions, native REPL command, RK4 accuracy
+  description, and exact-rational power reference. Qualify AD overhead and
+  arena-memory timing claims on the website.
+
 ## [1.3.6-evolve] - 2026-10-15
 
 PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.
