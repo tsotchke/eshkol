@@ -4174,6 +4174,51 @@
       ]
     },
     {
+      "path": "examples/quantum/bell_openqasm3.esk",
+      "source_sha256": "306d5ed031fcd6db88fac83a63cbab0c88a170ca14b60f9cf58ed3ecb7e9a760",
+      "title": "Bell circuit OpenQASM 3 export",
+      "kind": "example",
+      "purpose": "Construct a two-qubit Bell circuit description and print a validated OpenQASM 3 program.",
+      "algorithm": "Apply Hadamard then controlled X, followed by two measurements; the exporter inserts explicit all-zero initialization.",
+      "domain": "Two qubits and two classical bits; gate and measurement indices are zero-based.",
+      "arithmetic": "Exact integer register indices; this circuit has no rotation parameters or quantum numerical calculation.",
+      "validation": "Prints OpenQASM text without a self-verdict; tests/quantum/circuit_export_test.esk asserts this exact text, and the optional independent oracle checks the Bell state and measurement probabilities.",
+      "limitations": "Exports a static description only. It does not run a quantum simulator, connect to hardware, or establish quantum advantage.",
+      "prerequisites": "Native eshkol-run and lib/core/quantum/circuit.esk; compile with --no-stdlib -L ./lib. No Moonlab or quantum hardware is required.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 2,
+          "text": "(require core.quantum.circuit)"
+        },
+        {
+          "line": 3,
+          "text": "(define bell (make-quantum-circuit 2 2"
+        },
+        {
+          "line": 4,
+          "text": "  '((h 0) (cx 0 1) (measure 0 0) (measure 1 1))))"
+        },
+        {
+          "line": 5,
+          "text": "(display (quantum-circuit->openqasm3 bell))"
+        }
+      ],
+      "literature_review": "An interoperability example using the OpenQASM 3 standard gate library; no novel physical result is claimed.",
+      "references": [
+        {
+          "citation": "OpenQASM live specification, standard gate library.",
+          "verification": "checked",
+          "link": "https://openqasm.com/language/standard_library.html"
+        },
+        {
+          "citation": "Eshkol static circuit reference, docs/reference/stdlib/quantum_circuit.md.",
+          "verification": "repository"
+        }
+      ]
+    },
+    {
       "path": "examples/streaming_stats.esk",
       "source_sha256": "fd101dfcf7bf4cbe3364fd2a4f6baea167de332bb4fd8d13c913b0c7550d4c8b",
       "title": "Online mean and variance",

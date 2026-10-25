@@ -2545,6 +2545,18 @@
         "Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)"
       ]
     },
+    "examples/quantum/bell_openqasm3.esk": {
+      "source_sha256": "306d5ed031fcd6db88fac83a63cbab0c88a170ca14b60f9cf58ed3ecb7e9a760",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This example was added after the historical release measurement recorded in this document. The portable circuit contract and optional Qiskit oracle are separate current checks, not receipts for that earlier release."
+    },
     "examples/streaming_stats.esk": {
       "source_sha256": "fd101dfcf7bf4cbe3364fd2a4f6baea167de332bb4fd8d13c913b0c7550d4c8b",
       "jit": {

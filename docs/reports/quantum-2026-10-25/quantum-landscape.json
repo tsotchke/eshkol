@@ -1,0 +1,2903 @@
+{
+  "metadata": {
+    "date": "2026-10-25",
+    "eshkol_source_commit": "341ac812ed600fd9d27c28e9509d66ab71363947",
+    "comparator_count": 25,
+    "target_count": 100,
+    "universal_missing_claim": false,
+    "all_targets_implemented": false,
+    "comparison_method": "Primary-source qualitative capability comparison; no comparative execution benchmark was performed.",
+    "baseline_scope": "Inspected Eshkol public quantum module/shim and linked source snapshot, not all Moonlab capabilities or all Eshkol modules.",
+    "baseline_states": {
+      "partial": 22,
+      "implemented": 2,
+      "absent": 71,
+      "unknown": 5
+    },
+    "target_classes": {
+      "foundation": 24,
+      "parity": 37,
+      "advanced": 29,
+      "open research": 10
+    },
+    "phases": {
+      "P0": 20,
+      "P1": 20,
+      "P2": 30,
+      "P3": 20,
+      "R": 10
+    }
+  },
+  "comparators": [
+    {
+      "id": "C01",
+      "name": "Q#",
+      "classification": "standalone quantum language",
+      "host": "QDK; Python interoperability",
+      "documented_strength": "Hardware-independent quantum programs with qubit management and classical control.",
+      "comparison_boundary": "Language safety and hardware portability do not establish application advantage.",
+      "implication_for_eshkol": "Make resource lifetimes and target capabilities explicit in the quantum API.",
+      "source_ids": [
+        "C01"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C02",
+      "name": "OpenQASM 3",
+      "classification": "quantum/classical language and interchange specification",
+      "host": "toolchain-neutral",
+      "documented_strength": "Gates, classical control, timing, measurement and calibration syntax.",
+      "comparison_boundary": "A specification is not an execution service; implementations support different subsets.",
+      "implication_for_eshkol": "Export a declared subset, reject unsupported constructs and test round trips.",
+      "source_ids": [
+        "C02"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C03",
+      "name": "Quil",
+      "classification": "quantum instruction language / IR",
+      "host": "Rigetti ecosystem and other consumers",
+      "documented_strength": "Gate modifiers, classical memory/control and pulse-control annex.",
+      "comparison_boundary": "The inspected specification labels itself 2021.1 DRAFT; do not assume every backend implements it.",
+      "implication_for_eshkol": "Separate abstract circuit intent from backend-specific instructions.",
+      "source_ids": [
+        "C03"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C04",
+      "name": "Quipper",
+      "classification": "embedded functional quantum language",
+      "host": "Haskell",
+      "documented_strength": "Hierarchical circuit construction, reversible synthesis and multiple staging phases.",
+      "comparison_boundary": "Research-language documentation is not a current hardware-service support guarantee.",
+      "implication_for_eshkol": "Add composable circuit transforms and explicit circuit-generation versus execution stages.",
+      "source_ids": [
+        "C04"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C05",
+      "name": "Silq",
+      "classification": "standalone research quantum language",
+      "host": "dedicated compiler",
+      "documented_strength": "Strong static types and safe automatic uncomputation.",
+      "comparison_boundary": "Its research design is useful precedent, not evidence of broad production deployment.",
+      "implication_for_eshkol": "Integrate quantum resource types with a sound uncomputation discipline.",
+      "source_ids": [
+        "C05"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C06",
+      "name": "Qiskit",
+      "classification": "SDK and compiler ecosystem",
+      "host": "Python",
+      "documented_strength": "Circuit workflows, optimization, specialized packages and IBM QPU execution.",
+      "comparison_boundary": "Qiskit, runtime services and addons are separate components; do not count the whole ecosystem as one language.",
+      "implication_for_eshkol": "Prioritize real provider adapters, portable circuits and execution provenance.",
+      "source_ids": [
+        "C06"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C07",
+      "name": "Cirq",
+      "classification": "circuit SDK / Python library",
+      "host": "Python",
+      "documented_strength": "Hardware-aware circuits plus state-vector, density-matrix and noisy simulation.",
+      "comparison_boundary": "Hardware access and noise models are target-specific; a simulator is still classical.",
+      "implication_for_eshkol": "Represent devices, noise and shot-based results explicitly.",
+      "source_ids": [
+        "C07"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C08",
+      "name": "PennyLane",
+      "classification": "differentiable quantum framework and compiler ecosystem",
+      "host": "Python; Catalyst/Lightning",
+      "documented_strength": "Quantum/classical differentiable workflows, chemistry tools, simulators and hardware integrations.",
+      "comparison_boundary": "Gradient methods and devices have domains of validity; broad platform claims are not benchmarks.",
+      "implication_for_eshkol": "Generalize the fixed VQE bridge while testing gradients against independent oracles.",
+      "source_ids": [
+        "C08"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C09",
+      "name": "CUDA-Q",
+      "classification": "hybrid programming model, embedded languages and toolchain",
+      "host": "C++ and Python",
+      "documented_strength": "CPU/GPU/QPU workflows, simulator backends, dynamics and multi-GPU execution.",
+      "comparison_boundary": "Current docs distinguish logical tooling preview and pulse research preview from supported features.",
+      "implication_for_eshkol": "Define device/runtime interfaces and measure transfer-inclusive performance.",
+      "source_ids": [
+        "C09"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C10",
+      "name": "Qrisp",
+      "classification": "high-level embedded quantum language",
+      "host": "Python; JAX/Jasp integration",
+      "documented_strength": "Typed quantum variables, automatic uncomputation, arithmetic and block-encoding abstractions.",
+      "comparison_boundary": "Its large-qubit sparse-simulation examples apply to some circuits, not arbitrary states.",
+      "implication_for_eshkol": "Build reusable quantum data abstractions without hiding state-size assumptions.",
+      "source_ids": [
+        "C10"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C11",
+      "name": "Qmod",
+      "classification": "high-level quantum modeling language",
+      "host": "native syntax and Python embedding",
+      "documented_strength": "Functional models compiled and synthesized under circuit-property constraints.",
+      "comparison_boundary": "Native and Python forms are the same language, not two comparators; graphical support is a subset.",
+      "implication_for_eshkol": "Offer explicit resource constraints and inspectable synthesized circuits.",
+      "source_ids": [
+        "C11"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C12",
+      "name": "BQSKit",
+      "classification": "quantum compiler and synthesis framework",
+      "host": "Python",
+      "documented_strength": "Circuit IR, numerical synthesis, extensible compiler passes and distributed compilation.",
+      "comparison_boundary": "A compiler framework does not itself supply all algorithm or hardware services.",
+      "implication_for_eshkol": "Adopt pass contracts, cost functions and verification for circuit optimization.",
+      "source_ids": [
+        "C12"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C13",
+      "name": "TKET / pytket",
+      "classification": "compiler toolkit and SDK",
+      "host": "C++ core; Python interface",
+      "documented_strength": "Native-gate compilation, placement, routing and multiple backend integrations.",
+      "comparison_boundary": "Device feasibility must be checked after transformations; optimization is workload-dependent.",
+      "implication_for_eshkol": "Treat routing and native-gate legality as independently tested compiler stages.",
+      "source_ids": [
+        "C13"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C14",
+      "name": "Amazon Braket SDK",
+      "classification": "cloud SDK / managed-service interface",
+      "host": "Python",
+      "documented_strength": "Common access to simulators, gate devices, analog hardware and hybrid workflows.",
+      "comparison_boundary": "Provider availability, charges and hardware characteristics are service-specific.",
+      "implication_for_eshkol": "Add explicit job state, shot budgets and result provenance, with simulator-only defaults.",
+      "source_ids": [
+        "C14"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C15",
+      "name": "Qibo",
+      "classification": "quantum computing framework",
+      "host": "Python",
+      "documented_strength": "Backend drivers, algorithm examples, tomography and hybrid research workflows.",
+      "comparison_boundary": "The fetched stable docs identify v0.3.6; optional components are not all core functions.",
+      "implication_for_eshkol": "Provide backend-independent experiments with numerical reference results.",
+      "source_ids": [
+        "C15"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C16",
+      "name": "Qulacs",
+      "classification": "quantum circuit simulator / SDK",
+      "host": "C++ with Python interface",
+      "documented_strength": "Noisy and parametric circuit simulation, density matrices and circuit-learning examples.",
+      "comparison_boundary": "Simulation speed and scale depend on circuit/state representation and hardware.",
+      "implication_for_eshkol": "Benchmark specialized simulation kernels against strong classical baselines.",
+      "source_ids": [
+        "C16"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C17",
+      "name": "Yao.jl",
+      "classification": "quantum framework / embedded block DSL",
+      "host": "Julia",
+      "documented_strength": "Composable quantum blocks, algorithm construction and GPU/tensor-network companion packages.",
+      "comparison_boundary": "The repository calls itself early-release beta; companion packages are distinct dependencies.",
+      "implication_for_eshkol": "Use compositional circuits and expose backend extensions without overstating core scope.",
+      "source_ids": [
+        "C17"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C18",
+      "name": "QuantumOptics.jl",
+      "classification": "open-system scientific simulation framework",
+      "host": "Julia",
+      "documented_strength": "Hilbert-space-aware objects, master equations, trajectories, steady states and correlations.",
+      "comparison_boundary": "This is a scientific simulator, not a gate-QPU programming language.",
+      "implication_for_eshkol": "Separate open-system dynamics from gate circuits while sharing typed observables.",
+      "source_ids": [
+        "C18"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C19",
+      "name": "Strawberry Fields",
+      "classification": "photonic quantum SDK / embedded circuit DSL",
+      "host": "Python",
+      "documented_strength": "Photonic circuits, simulation backends and differentiable program optimization.",
+      "comparison_boundary": "The stable URL redirects to 0.24.0-dev documentation; current cloud access was not verified.",
+      "implication_for_eshkol": "Treat continuous-variable photonics as a distinct model with truncation checks.",
+      "source_ids": [
+        "C19"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C20",
+      "name": "Perceval",
+      "classification": "discrete-variable photonic SDK",
+      "host": "Python with compiled backends",
+      "documented_strength": "Linear-optics components, Fock states, source-error models and Quandela QPU interface.",
+      "comparison_boundary": "Discrete-photon and continuous-variable models are not interchangeable.",
+      "implication_for_eshkol": "Add a separate photonic adapter and preserve heralding and postselection statistics.",
+      "source_ids": [
+        "C20"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C21",
+      "name": "Pulser",
+      "classification": "neutral-atom pulse SDK / DSL",
+      "host": "Python",
+      "documented_strength": "Device-constrained pulse sequences and analog neutral-atom simulation.",
+      "comparison_boundary": "Pulse validity depends on a particular device, not just a circuit equivalence relation.",
+      "implication_for_eshkol": "Validate geometry, timing and waveform constraints in an analog execution layer.",
+      "source_ids": [
+        "C21"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C22",
+      "name": "Qadence",
+      "classification": "differentiable digital-analog framework",
+      "host": "Python; PyTorch",
+      "documented_strength": "Block-based programs, symbolic parameters, analog generators and differentiable workflows.",
+      "comparison_boundary": "Model/backend support must be checked per operation; not every pulse is differentiable.",
+      "implication_for_eshkol": "Keep digital/analog differentiation contracts explicit and testable.",
+      "source_ids": [
+        "C22"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C23",
+      "name": "Bloqade",
+      "classification": "neutral-atom SDK and compiler DSL ecosystem",
+      "host": "Python; multiple components",
+      "documented_strength": "Analog/digital experiment workflows, atom movement, noisy near-Clifford simulation and QEC tools.",
+      "comparison_boundary": "The current site exposes multiple packages and target products, not one universal language.",
+      "implication_for_eshkol": "Model hardware geometry, losses and logical execution rather than assuming ideal gates.",
+      "source_ids": [
+        "C23"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C24",
+      "name": "ProjectQ",
+      "classification": "embedded quantum DSL and compiler framework",
+      "host": "Python",
+      "documented_strength": "Extensible compiler pipeline and quantum algorithm execution on simulators/devices.",
+      "comparison_boundary": "The fetched docs are a development build; individual backend support must be rechecked.",
+      "implication_for_eshkol": "Make compiler extensions small, inspectable and covered by functional tests.",
+      "source_ids": [
+        "C24"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    },
+    {
+      "id": "C25",
+      "name": "Guppy",
+      "classification": "statically typed embedded quantum language",
+      "host": "Python",
+      "documented_strength": "Linear qubit ownership, measurement-dependent control, metaprogramming and fault-tolerant extensions.",
+      "comparison_boundary": "Guppy, its FT extension and Selene emulator have separate responsibilities.",
+      "implication_for_eshkol": "Make the typed quantum language, runtime handles and execution model agree.",
+      "source_ids": [
+        "C25"
+      ],
+      "measured_score": null,
+      "independently_benchmarked": false
+    }
+  ],
+  "targets": [
+    {
+      "id": "T001",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Runtime quantum capability query",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Build flag and unavailable stubs exist; no unified Scheme capability report found.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "E03",
+        "C01"
+      ],
+      "acceptance_criteria": "A query reports build flag, simulator backend, ABI, supported operations and derivative modes; ON/OFF CI asserts each field without executing an unavailable operation.",
+      "dependencies": [],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T002",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Reproducible optional quantum packages",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Opt-in source integration exists; this stream has not validated packaged ON builds.",
+      "source_ids": [
+        "E03",
+        "C09"
+      ],
+      "acceptance_criteria": "Clean Windows, Linux and macOS jobs install a pinned ON package, run Bell/VQE smoke tests, and verify OFF builds return documented unavailability.",
+      "dependencies": [
+        "T001"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T003",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Honest execution and entropy provenance",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Source labels exist but some prose conflates simulated Bell tests with physical certification.",
+      "source_ids": [
+        "E04",
+        "E05",
+        "E10",
+        "R09"
+      ],
+      "acceptance_criteria": "Every result identifies classical simulator or named physical device; entropy output reports actual source and fallback events; no simulation is labelled device-independent certified entropy.",
+      "dependencies": [
+        "T001"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T004",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Moonlab ABI and revision manifest",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "CMake pins a commit while nearby comments/reference text mention other revisions.",
+      "source_ids": [
+        "E02",
+        "E03",
+        "E05"
+      ],
+      "acceptance_criteria": "Generated manifest records exact dependency commit and ABI; intentional mismatches fail before allocation; release docs are generated from the same manifest.",
+      "dependencies": [
+        "T001"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T005",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Generational quantum handles",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Opaque integer tables and destroy helpers exist; stale-handle reuse needs a specified contract.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C25"
+      ],
+      "acceptance_criteria": "Allocate/free/reallocate fuzzing never lets a stale handle access a new state; double destruction is defined; invalid handles produce catchable errors under sanitizers.",
+      "dependencies": [
+        "T004"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T006",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Typed qubit ownership through public APIs",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Linear Qubit exists, but state-handle plus integer-index wrappers do not establish full resource typing.",
+      "source_ids": [
+        "E01",
+        "E06",
+        "E07",
+        "C05",
+        "C25"
+      ],
+      "acceptance_criteria": "Compile-fail tests cover duplicate use, escaping aliases and interprocedural returns; valid scoped gates compile; runtime state ownership agrees with the static qubit identity.",
+      "dependencies": [
+        "T005"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T007",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Uniform quantum error contract",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "C shim uses error codes/NaN and wrappers translate selected failures.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C24"
+      ],
+      "acceptance_criteria": "Invalid counts, indices, angles, destroyed handles and allocation failures all produce documented catchable errors; no invalid case silently returns a plausible numeric result.",
+      "dependencies": [
+        "T005"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T008",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Dense ideal-state correctness gate",
+      "baseline_state": "implemented",
+      "target_class": "foundation",
+      "baseline_evidence": "Dense state creation, gates, measurement and Z expectation have public wrappers and source tests.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "E08",
+        "C16"
+      ],
+      "acceptance_criteria": "Exhaustively compare all exposed 1- and 2-qubit gates with independent complex matrices; norm and expectation errors stay below 1e-12 in float64 fixtures.",
+      "dependencies": [
+        "T002"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T009",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Seeded simulator replay",
+      "baseline_state": "absent",
+      "target_class": "foundation",
+      "baseline_evidence": "Measurement wrapper uses a process entropy context; caller-supplied seed is not exposed.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C07"
+      ],
+      "acceptance_criteria": "A seed plus serialized program reproduces samples on the same version; different seeds pass distribution checks; deterministic replay is never advertised as physical entropy.",
+      "dependencies": [
+        "T003"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T010",
+      "workstream": "Reliable foundations",
+      "phase": "P0",
+      "title": "Backend conformance ledger",
+      "baseline_state": "unknown",
+      "target_class": "foundation",
+      "baseline_evidence": "Source tests exist but no fresh complete native/VM/browser quantum matrix was run here.",
+      "source_ids": [
+        "E03",
+        "E08",
+        "E09",
+        "R08"
+      ],
+      "acceptance_criteria": "Publish operation-by-engine supported/refused/untested statuses tied to executable tests; zero unsupported cases silently succeed; include release hashes and test logs.",
+      "dependencies": [
+        "T002",
+        "T007"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T011",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "OpenQASM 3 export",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public circuit export API found in the inspected module/shim.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C02"
+      ],
+      "acceptance_criteria": "Export a declared gate/measurement subset; an independent OpenQASM parser accepts 100 fixtures and simulation probabilities match within 1e-10.",
+      "dependencies": [
+        "T015"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T012",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "OpenQASM 3 import",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public parser/import adapter found in the quantum surface.",
+      "source_ids": [
+        "E01",
+        "C02"
+      ],
+      "acceptance_criteria": "Parse the declared subset with source locations; reject pulse/unsupported dynamic constructs explicitly; imported Bell, QFT and adaptive fixtures match reference behavior.",
+      "dependencies": [
+        "T015"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T013",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "QIR target profile",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "LLVM compilation alone is not a QIR emitter; none found in inspected quantum interface.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "R13"
+      ],
+      "acceptance_criteria": "Emit a named QIR profile with verified LLVM IR and required metadata; run at least 20 programs on an independent compatible executor.",
+      "dependencies": [
+        "T015",
+        "T025"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T014",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "Quil interchange adapter",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public Quil serializer/parser found in the quantum interface.",
+      "source_ids": [
+        "E01",
+        "C03"
+      ],
+      "acceptance_criteria": "Round-trip gates, classical memory and measurement for a documented Quil subset; preserve bit order and reject pulse annexes until implemented.",
+      "dependencies": [
+        "T015",
+        "T017"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T015",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "Typed circuit intermediate representation",
+      "baseline_state": "absent",
+      "target_class": "foundation",
+      "baseline_evidence": "Current public API mutates opaque simulator state directly rather than exposing circuit objects.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C12",
+        "C24"
+      ],
+      "acceptance_criteria": "Represent qubits, gates, parameters, measurements and dependencies with a versioned schema; validation catches dangling wires and parameter-type errors before execution.",
+      "dependencies": [
+        "T006",
+        "T007"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T016",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "Portable observable and Hamiltonian interchange",
+      "baseline_state": "partial",
+      "target_class": "parity",
+      "baseline_evidence": "Pauli-string Hamiltonian construction exists; no general import/export schema found.",
+      "source_ids": [
+        "E01",
+        "C10",
+        "C08"
+      ],
+      "acceptance_criteria": "Serialize arbitrary Pauli sums, units, constants and wire order; round-trip 50 fixtures with identical coefficients and expectation values within 1e-12.",
+      "dependencies": [
+        "T015"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T017",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "Shot-result and bit-order schema",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Single-qubit measurement returns an integer; no portable batch-result schema found.",
+      "source_ids": [
+        "E01",
+        "C14",
+        "C07"
+      ],
+      "acceptance_criteria": "Specify endianness, register mapping, counts, shots, uncertainty and provenance; adapters pass asymmetric-bitstring tests that detect reversal errors.",
+      "dependencies": [
+        "T003",
+        "T015"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T018",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "Backend plugin contract",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Moonlab is compiled into the shim; no public quantum backend plugin contract found.",
+      "source_ids": [
+        "E02",
+        "E03",
+        "C09",
+        "C15"
+      ],
+      "acceptance_criteria": "Two independent simulator adapters implement capability discovery, execute, sample and observe; unsupported operations fail consistently without implicit backend substitution.",
+      "dependencies": [
+        "T001",
+        "T015",
+        "T017"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T019",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "PennyLane device integration",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No PennyLane-facing device plugin found in inspected Eshkol quantum surface.",
+      "source_ids": [
+        "E01",
+        "C08"
+      ],
+      "acceptance_criteria": "A separately versioned plugin passes its declared device-conformance tests and a 20-case expectation/gradient comparison without copying parameters incorrectly.",
+      "dependencies": [
+        "T018",
+        "T041"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T020",
+      "workstream": "Interoperability",
+      "phase": "P1",
+      "title": "Quantum array interchange",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Quantum state is opaque; VQE parameters are marshalled through a dedicated context.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C17",
+        "C16"
+      ],
+      "acceptance_criteria": "Exchange complex amplitudes and parameter arrays through a documented C/Python boundary; shape, ownership, dtype and lifetime tests catch aliasing and precision loss.",
+      "dependencies": [
+        "T005",
+        "T017"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T021",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "Complete practical gate vocabulary",
+      "baseline_state": "partial",
+      "target_class": "parity",
+      "baseline_evidence": "H, X, Y, Z, CNOT, RX, RY and RZ are exposed; many standard gates are not.",
+      "source_ids": [
+        "E01",
+        "E05",
+        "C02",
+        "C12"
+      ],
+      "acceptance_criteria": "Add S, T, CZ, SWAP and controlled rotations or verified decompositions; compare matrices including global-phase conventions and invalid-wire cases.",
+      "dependencies": [
+        "T008",
+        "T015"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T022",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "Controlled and adjoint circuit combinators",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No general circuit modifier API is exposed.",
+      "source_ids": [
+        "E01",
+        "C03",
+        "C04"
+      ],
+      "acceptance_criteria": "Controlled and inverse transforms compose over supported circuits; random unitary fixtures satisfy U-dagger times U within 1e-10 and measurement inversion is rejected.",
+      "dependencies": [
+        "T015",
+        "T021"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T023",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "Safe automatic uncomputation",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Classical region memory does not implement quantum uncomputation.",
+      "source_ids": [
+        "E01",
+        "E06",
+        "C05",
+        "C10"
+      ],
+      "acceptance_criteria": "For a declared reversible subset, compiler-generated cleanup returns ancillas to zero and preserves output coherence; unsafe erasures fail static checking.",
+      "dependencies": [
+        "T006",
+        "T022"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T024",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "Ancilla allocation and reuse planner",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "State allocation exists, but no circuit-level ancilla liveness planner is exposed.",
+      "source_ids": [
+        "E01",
+        "C04",
+        "C10"
+      ],
+      "acceptance_criteria": "Report peak live ancillas and verified reuse intervals; transformed circuits match references and never reuse an entangled live ancilla.",
+      "dependencies": [
+        "T015",
+        "T023"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T025",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "Measurement-dependent circuit control",
+      "baseline_state": "partial",
+      "target_class": "parity",
+      "baseline_evidence": "Host Scheme can branch on measurement; portable in-circuit feedback representation is not established.",
+      "source_ids": [
+        "E01",
+        "C02",
+        "C25"
+      ],
+      "acceptance_criteria": "Represent mid-circuit measurement, reset, conditionals and bounded loops; teleportation and repeat-until-success fixtures match simulator/reference distributions.",
+      "dependencies": [
+        "T015",
+        "T017"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T026",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "Topology-aware routing",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No target connectivity/routing abstraction found in public quantum interface.",
+      "source_ids": [
+        "E01",
+        "C13"
+      ],
+      "acceptance_criteria": "Route 50 fixed circuits to line/grid/device graphs; every two-qubit operation is legal, semantics preserved, and swap overhead is reported.",
+      "dependencies": [
+        "T015",
+        "T018"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T027",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "Native-gate synthesis",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Direct simulator gate calls do not form a target synthesis pipeline.",
+      "source_ids": [
+        "E01",
+        "C11",
+        "C12"
+      ],
+      "acceptance_criteria": "Compile arbitrary tested 1-/2-qubit unitaries to a declared basis with chosen error budget; verify achieved error and report gate count and synthesis time.",
+      "dependencies": [
+        "T021",
+        "T026"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T028",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "Local circuit optimization passes",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No quantum pass-manager API found in exposed surface.",
+      "source_ids": [
+        "E01",
+        "C12",
+        "C24"
+      ],
+      "acceptance_criteria": "Cancellation, rotation fusion and commuting passes preserve 100 random small-circuit unitaries within 1e-10; publish before/after depth and count.",
+      "dependencies": [
+        "T015",
+        "T022"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T029",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "ZX optimization interoperability",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No ZX diagram adapter found in quantum surface.",
+      "source_ids": [
+        "E01",
+        "R15"
+      ],
+      "acceptance_criteria": "Export/import a defined Clifford+T subset to PyZX; certify equality or clearly report unverifiable cases; record T-count and extraction failures.",
+      "dependencies": [
+        "T011",
+        "T028"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T030",
+      "workstream": "Circuit language and compilation",
+      "phase": "P1",
+      "title": "Proof-checked unitary rewrite kernel",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "General Eshkol proof types do not constitute verified quantum rewrite rules.",
+      "source_ids": [
+        "E01",
+        "R10"
+      ],
+      "acceptance_criteria": "Mechanize semantics and prove at least five implemented rewrites; generated optimizer only uses checked rules, with numeric tests as secondary evidence.",
+      "dependencies": [
+        "T028"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T031",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "Density-matrix simulator adapter",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Public binding exposes dense pure states, not density matrices.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C07",
+        "C16"
+      ],
+      "acceptance_criteria": "Bell-state partial trace gives maximally mixed marginals; trace and positivity tests pass; small noisy circuits match an independent density simulator within 1e-10.",
+      "dependencies": [
+        "T018",
+        "T020"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T032",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "Validated Kraus and noise channels",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public channel/noise-model constructor found.",
+      "source_ids": [
+        "E01",
+        "C07",
+        "C16"
+      ],
+      "acceptance_criteria": "Implement depolarizing, dephasing and amplitude damping; validate completeness within tolerance and reject non-physical channel inputs.",
+      "dependencies": [
+        "T031"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T033",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "Quantum trajectory simulation",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No trajectory ensemble API found in public binding.",
+      "source_ids": [
+        "E01",
+        "C18",
+        "C07"
+      ],
+      "acceptance_criteria": "Ensemble averages converge to density-matrix references with declared confidence intervals; logs record trajectory count, seeds and sampling error separately from solver error.",
+      "dependencies": [
+        "T009",
+        "T032"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T034",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "Lindblad time evolution",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Moonlab integration references other engines; public module has no open-system solver.",
+      "source_ids": [
+        "E01",
+        "E05",
+        "C18"
+      ],
+      "acceptance_criteria": "Damped two-level analytic solutions and independent solver fixtures agree under a documented tolerance; step refinement verifies convergence and trace preservation.",
+      "dependencies": [
+        "T031",
+        "T032"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T035",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "Stabilizer simulator backend",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No tableau/stabilizer operations exposed in the binding.",
+      "source_ids": [
+        "E01",
+        "R14",
+        "C04"
+      ],
+      "acceptance_criteria": "Execute Clifford circuits through a tested adapter; match exact small-system probabilities and run a 1000-qubit stabilizer fixture without exponential state storage.",
+      "dependencies": [
+        "T018",
+        "T021"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T036",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "Tensor-network simulation binding",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Design names Moonlab CA-MPS/TDVP APIs but public module does not bind them.",
+      "source_ids": [
+        "E01",
+        "E05",
+        "C17"
+      ],
+      "acceptance_criteria": "Expose bond/truncation controls with discarded-weight diagnostics; match small exact references and show convergence as bond dimension increases.",
+      "dependencies": [
+        "T018",
+        "T020"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T037",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "GPU-resident quantum state execution",
+      "baseline_state": "unknown",
+      "target_class": "advanced",
+      "baseline_evidence": "Integration config disables optional Moonlab accelerators; general Eshkol GPU support does not prove this path.",
+      "source_ids": [
+        "E02",
+        "E03",
+        "E05",
+        "C09"
+      ],
+      "acceptance_criteria": "Demonstrate actual device-resident gate execution and synchronization tests; report memory, correctness and end-to-end speed versus CPU including transfers.",
+      "dependencies": [
+        "T018",
+        "T020"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T038",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "Distributed quantum simulation",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No multi-node quantum state partitioning API found in exposed binding.",
+      "source_ids": [
+        "E01",
+        "C09"
+      ],
+      "acceptance_criteria": "Run one reproducible distributed state-vector fixture on two nodes; compare checksum/observables to a serial reference and report communication-inclusive scaling.",
+      "dependencies": [
+        "T037"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T039",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "Qudit state and gate support",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Public API uses qubit counts and binary gates.",
+      "source_ids": [
+        "E01",
+        "C12"
+      ],
+      "acceptance_criteria": "Support dimension-3 registers and mixed-dimension validation; qutrit Fourier/controlled-shift fixtures preserve norm and match independent matrices.",
+      "dependencies": [
+        "T015",
+        "T020"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T040",
+      "workstream": "Simulation and noise",
+      "phase": "P2",
+      "title": "Continuous-variable photonic model",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Public API is qubit state-vector/VQE, with no Fock/Gaussian abstraction.",
+      "source_ids": [
+        "E01",
+        "C19"
+      ],
+      "acceptance_criteria": "Implement or adapt Gaussian/Fock operations; coherent/squeezed-state observables agree with references and cutoff-convergence reports quantify truncation error.",
+      "dependencies": [
+        "T018",
+        "T020"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T041",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "Preserve ideal VQE adjoint correctness",
+      "baseline_state": "implemented",
+      "target_class": "foundation",
+      "baseline_evidence": "vqe-energy custom VJP and vqe-gradient plus adversarial source tests exist.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "E09",
+        "C08"
+      ],
+      "acceptance_criteria": "On quantum-enabled releases, compare AD, direct VJP and central differences over random nonstationary points; maximum gradient error below 1e-6 and no unexplained zero gradients.",
+      "dependencies": [
+        "T002",
+        "T010"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T042",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "User-defined variational ansatz",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Public VQE uses a fixed one-layer hardware-efficient ansatz.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C08",
+        "C22"
+      ],
+      "acceptance_criteria": "Users construct 3 distinct trainable circuit families; arbitrary parameter mapping is preserved and expectations/gradients match independent references.",
+      "dependencies": [
+        "T015",
+        "T022",
+        "T041"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T043",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "Shot-based parameter-shift gradients",
+      "baseline_state": "partial",
+      "target_class": "parity",
+      "baseline_evidence": "A native analytic fallback is documented, but user-controlled shot-based gradient execution is not exposed.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C15"
+      ],
+      "acceptance_criteria": "Estimate eligible gate derivatives with shot budgets and confidence intervals; 95% interval coverage is checked over repeated seeds against analytic small cases.",
+      "dependencies": [
+        "T017",
+        "T042"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T044",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "General adjoint circuit differentiation",
+      "baseline_state": "partial",
+      "target_class": "advanced",
+      "baseline_evidence": "Adjoint path exists for default ideal VQE, not arbitrary exposed circuit objects.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C08",
+        "C17"
+      ],
+      "acceptance_criteria": "Differentiate user circuits with 1, 10 and 100 parameters; match parameter-shift references and publish peak memory/runtime as depth and width vary.",
+      "dependencies": [
+        "T042"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T045",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "Second-order quantum derivative contract",
+      "baseline_state": "unknown",
+      "target_class": "advanced",
+      "baseline_evidence": "Arbitrary-order host AD does not establish arbitrary higher-order derivatives through the opaque VQE primitive.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "E09",
+        "C08"
+      ],
+      "acceptance_criteria": "Specify supported Hessian/JVP compositions; test symmetry and finite differences; unsupported nesting raises a named error rather than returning zero.",
+      "dependencies": [
+        "T041",
+        "T044"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T046",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "General quantum geometric tensor",
+      "baseline_state": "partial",
+      "target_class": "advanced",
+      "baseline_evidence": "vqe-qgt currently assumes four parameters and returns 4x4 entries.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C08"
+      ],
+      "acceptance_criteria": "Accept variable parameter counts; compare to state-derivative references, test symmetry/positive semidefiniteness, and state gauge and regularization conventions.",
+      "dependencies": [
+        "T042",
+        "T044"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T047",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "Differentiation through noisy channels",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Public VQE bridge describes ideal-state energy and gradients.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C22"
+      ],
+      "acceptance_criteria": "Differentiate at least two parameterized CPTP channels; compare with density-matrix finite differences and distinguish stochastic estimator variance from numerical bias.",
+      "dependencies": [
+        "T032",
+        "T044"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T048",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "Batched parameter sweeps and gradients",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Public VQE evaluator takes one parameter vector per call.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C09",
+        "C08"
+      ],
+      "acceptance_criteria": "Batch 32 independent parameter sets; outputs match serial runs, ordering is stable, and timing includes marshaling and device transfers.",
+      "dependencies": [
+        "T042",
+        "T044"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T049",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "Restartable hybrid optimizer workflow",
+      "baseline_state": "partial",
+      "target_class": "parity",
+      "baseline_evidence": "vqe-optimize offers an iteration count with a fixed default optimizer; general state/checkpoint control is not exposed.",
+      "source_ids": [
+        "E01",
+        "C14",
+        "C22"
+      ],
+      "acceptance_criteria": "Export optimizer state, RNG and parameters; an interrupted run resumes to the same seeded result, with loss/gradient/shot histories preserved.",
+      "dependencies": [
+        "T009",
+        "T043",
+        "T048"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T050",
+      "workstream": "Differentiation and hybrid training",
+      "phase": "P2",
+      "title": "Quantum derivative refusal and coverage manifest",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Dedicated VQE checks exist; generic derivative coverage across new backends is not established.",
+      "source_ids": [
+        "E02",
+        "E09",
+        "C08",
+        "R04"
+      ],
+      "acceptance_criteria": "Every operation/backend/order combination is supported or explicitly refused; negative tests cover measurement branches, unsupported channels and nested AD without silent zeros.",
+      "dependencies": [
+        "T010",
+        "T041"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T051",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "General chemistry Hamiltonian import",
+      "baseline_state": "partial",
+      "target_class": "parity",
+      "baseline_evidence": "Fixed H2/LiH/H2O constructors and arbitrary Pauli sums exist.",
+      "source_ids": [
+        "E01",
+        "C08",
+        "R02"
+      ],
+      "acceptance_criteria": "Import a documented electronic-integral or Pauli dataset with basis, geometry and units; validate at least five small molecules against independent diagonalization.",
+      "dependencies": [
+        "T016"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T052",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "Symmetry tapering and sector selection",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Public Hamiltonian construction accepts an HF bitmask but no tapering transformation.",
+      "source_ids": [
+        "E01",
+        "C08"
+      ],
+      "acceptance_criteria": "Identify supported commuting symmetries; reduced and unreduced sector spectra agree on small fixtures; invalid sector requests are rejected.",
+      "dependencies": [
+        "T016",
+        "T051"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T053",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "Excited-state and spectral workflows",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Public helpers focus on ground-state reference/VQE energy.",
+      "source_ids": [
+        "E01",
+        "C16"
+      ],
+      "acceptance_criteria": "Compute two excited energies and overlaps for small Hamiltonians with declared method; independent eigensolver agreement and orthogonality checks are mandatory.",
+      "dependencies": [
+        "T042",
+        "T051"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T054",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "Quantum phase estimation library",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public QPE combinator found in quantum module.",
+      "source_ids": [
+        "E01",
+        "C04"
+      ],
+      "acceptance_criteria": "Known eigenphase fixtures recover each phase to the requested bits; account for ancillas, controlled-evolution synthesis and failure probability.",
+      "dependencies": [
+        "T022",
+        "T024",
+        "T025"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T055",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "Amplitude estimation library",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No exposed amplitude-estimation routine found.",
+      "source_ids": [
+        "E01",
+        "C15"
+      ],
+      "acceptance_criteria": "Estimate a set of known Bernoulli amplitudes; observed confidence coverage matches declared guarantees and oracle-call counts include state preparation.",
+      "dependencies": [
+        "T022",
+        "T025"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T056",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "QAOA with explicit classical baseline",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Public quantum layer exposes VQE but no QAOA constructor.",
+      "source_ids": [
+        "E01",
+        "C07",
+        "C22"
+      ],
+      "acceptance_criteria": "Small MaxCut instances match exhaustive optimum bounds; report approximation ratio, shots and total time against named classical solvers without claiming generic advantage.",
+      "dependencies": [
+        "T042",
+        "T049"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T057",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "Hamiltonian time-evolution circuits",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Gate wrappers do not expose a compositional simulation algorithm library.",
+      "source_ids": [
+        "E01",
+        "C18",
+        "R03"
+      ],
+      "acceptance_criteria": "Trotter/Suzuki evolution matches matrix exponentials on small models; refinement demonstrates expected convergence and error budgets include synthesis.",
+      "dependencies": [
+        "T016",
+        "T022",
+        "T027"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T058",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "Block encoding and quantum signal processing",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No public block-encoding/QSP construction API found.",
+      "source_ids": [
+        "E01",
+        "C10",
+        "R03"
+      ],
+      "acceptance_criteria": "For bounded small matrices, verify top-left block encoding and polynomial transformation numerically; report normalization, oracle and approximation costs.",
+      "dependencies": [
+        "T022",
+        "T024",
+        "T027"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T059",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "Tomography and classical-shadow experiments",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Z expectation exists; reconstruction/measurement-design workflows are not exposed.",
+      "source_ids": [
+        "E01",
+        "C15"
+      ],
+      "acceptance_criteria": "Reconstruct specified small states/observables with uncertainty intervals, record shot counts and test coverage over independent seeds.",
+      "dependencies": [
+        "T017",
+        "T021",
+        "T032"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T060",
+      "workstream": "Scientific algorithm libraries",
+      "phase": "P2",
+      "title": "Discrete-photon experiment adapter",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No public linear-optics/Fock-state interface found.",
+      "source_ids": [
+        "E01",
+        "C20"
+      ],
+      "acceptance_criteria": "Run Hong-Ou-Mandel and a heralded small-circuit fixture through an adapter; preserve raw/postselected counts and model source/detector errors explicitly.",
+      "dependencies": [
+        "T018",
+        "T017"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T061",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "First physical gate-QPU adapter",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Exposed Moonlab interface is a classical simulator; no QPU submission path found.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C06",
+        "C14"
+      ],
+      "acceptance_criteria": "Submit a validated small program to one named physical device, record job ID/calibration/shots and reproduce retrieval; mocked tests never count as hardware validation.",
+      "dependencies": [
+        "T011",
+        "T018",
+        "T017"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T062",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "Device topology and calibration snapshot",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public physical-device model found.",
+      "source_ids": [
+        "E01",
+        "C07",
+        "C13"
+      ],
+      "acceptance_criteria": "Version connectivity, basis gates, durations and calibration timestamp; compilation rejects incompatible circuits and records exactly which snapshot it used.",
+      "dependencies": [
+        "T026",
+        "T061"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T063",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "Durable asynchronous quantum jobs",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "Local simulator calls are synchronous and no quantum job handle API is exposed.",
+      "source_ids": [
+        "E01",
+        "C14"
+      ],
+      "acceptance_criteria": "Submission, polling, cancellation and restart recovery are idempotent; mocked failure tests cannot double-submit a chargeable job and preserve final provenance.",
+      "dependencies": [
+        "T061"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T064",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "Execution and shot budget enforcement",
+      "baseline_state": "absent",
+      "target_class": "foundation",
+      "baseline_evidence": "No QPU cost/shot budget API found.",
+      "source_ids": [
+        "E01",
+        "C14"
+      ],
+      "acceptance_criteria": "A preflight policy caps shots, retries and estimated spend; tests show retries cannot exceed caps; actual usage reconciles against recorded jobs.",
+      "dependencies": [
+        "T063"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T065",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "Pulse and timing representation",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No public pulse/frame/waveform representation found.",
+      "source_ids": [
+        "E01",
+        "C02",
+        "C03"
+      ],
+      "acceptance_criteria": "Represent frames, durations and waveforms with units; enforce target sample/timing limits; round-trip a documented pulse subset with no unit conversion ambiguity.",
+      "dependencies": [
+        "T015",
+        "T062"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T066",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "Neutral-atom geometry and waveform adapter",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Public API has no atom positions, blockade model or analog program object.",
+      "source_ids": [
+        "E01",
+        "C21",
+        "C23"
+      ],
+      "acceptance_criteria": "Validate inter-atom spacing, channel limits and waveform schedules against one device schema; compare Rabi and small Ising simulations with references.",
+      "dependencies": [
+        "T065",
+        "T034"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T067",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "Digital-analog program composition",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Quantum module exposes gates and fixed VQE, not mixed analog blocks.",
+      "source_ids": [
+        "E01",
+        "C22"
+      ],
+      "acceptance_criteria": "Compose gate and Hamiltonian-evolution blocks with explicit units; ideal small-system results and parameter derivatives match an independent solver.",
+      "dependencies": [
+        "T066",
+        "T044"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T068",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "Hardware feedback latency contract",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Host branching does not guarantee device-resident or bounded-latency feedback.",
+      "source_ids": [
+        "E01",
+        "C25",
+        "C09"
+      ],
+      "acceptance_criteria": "Measure control round-trip distributions on one backend and declare limits; unsupported feedback is rejected, with no claim of hard real-time bounds from arena allocation.",
+      "dependencies": [
+        "T025",
+        "T061"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T069",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "Readout mitigation with uncertainty",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public physical measurement-calibration model found.",
+      "source_ids": [
+        "E01",
+        "C06",
+        "R06"
+      ],
+      "acceptance_criteria": "Calibrate a small readout matrix; report corrected estimates, uncertainty and conditioning; held-out tests show when correction worsens results.",
+      "dependencies": [
+        "T061",
+        "T059"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T070",
+      "workstream": "Hardware execution and control",
+      "phase": "P3",
+      "title": "Error mitigation under a fixed budget",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No ZNE/PEC experiment framework exposed.",
+      "source_ids": [
+        "E01",
+        "C22",
+        "R06"
+      ],
+      "acceptance_criteria": "Implement one mitigation protocol with raw and corrected outputs; compare mean-squared error at equal total shots, including calibration overhead and failure regimes.",
+      "dependencies": [
+        "T032",
+        "T064",
+        "T069"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T071",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Logical-versus-physical qubit model",
+      "baseline_state": "absent",
+      "target_class": "foundation",
+      "baseline_evidence": "Qubit type and simulator count do not encode code distance or logical operations.",
+      "source_ids": [
+        "E01",
+        "E06",
+        "R12",
+        "C25"
+      ],
+      "acceptance_criteria": "Resource objects distinguish logical qubits, physical qubits, code distance and gate level; mixing incompatible levels fails validation.",
+      "dependencies": [
+        "T015",
+        "T006"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T072",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Stabilizer-code construction library",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public QEC code constructor found.",
+      "source_ids": [
+        "E01",
+        "R14",
+        "C23"
+      ],
+      "acceptance_criteria": "Generate repetition and distance-3/5 surface-code circuits; ideal syndromes and every single-Pauli injection match independently checked expectations.",
+      "dependencies": [
+        "T035",
+        "T071"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T073",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Detector error model interchange",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No detector/syndrome schema exposed.",
+      "source_ids": [
+        "E01",
+        "R14"
+      ],
+      "acceptance_criteria": "Export detector models for declared noise assumptions; an independent decoder consumes them and fault-injection checks preserve detector/observable mappings.",
+      "dependencies": [
+        "T032",
+        "T072"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T074",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Decoder plugin and throughput harness",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "Moonlab design names decoder registries; Eshkol module does not expose them.",
+      "source_ids": [
+        "E01",
+        "E05",
+        "R14"
+      ],
+      "acceptance_criteria": "Two decoders consume the same syndrome batches; publish logical error, latency percentiles and throughput on fixed seeds/hardware with no unmeasured real-time claim.",
+      "dependencies": [
+        "T073"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T075",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Logical error scaling experiments",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No public code-distance/noise sweep workflow found.",
+      "source_ids": [
+        "E01",
+        "R07",
+        "R14"
+      ],
+      "acceptance_criteria": "Sweep at least three code distances and noise rates with confidence intervals; fit suppression only in measured regimes and expose insufficient-statistics outcomes.",
+      "dependencies": [
+        "T072",
+        "T074"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T076",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Clifford+T synthesis error budget",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No fault-tolerant gate/resource compiler surface found.",
+      "source_ids": [
+        "E01",
+        "C09",
+        "R12"
+      ],
+      "acceptance_criteria": "Lower supported rotations to Clifford+T with a declared synthesis bound; verify small unitaries and account separately for algorithmic, synthesis and physical error.",
+      "dependencies": [
+        "T027",
+        "T071"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T077",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Magic-state factory resource model",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No public distillation/factory model found.",
+      "source_ids": [
+        "E01",
+        "R01",
+        "R12"
+      ],
+      "acceptance_criteria": "Compute physical-qubit/time estimates for named protocols under explicit input errors; reproduce a published small reference table and include parameter sensitivity.",
+      "dependencies": [
+        "T076"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T078",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Logical scheduling and lattice-surgery plan",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No logical layout/schedule representation found.",
+      "source_ids": [
+        "E01",
+        "R12",
+        "C25"
+      ],
+      "acceptance_criteria": "Compile a small logical workload into a legal schedule for one architecture model; report space-time volume and validate resource conflicts.",
+      "dependencies": [
+        "T071",
+        "T076",
+        "T077"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T079",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Fault-tolerant resource estimation adapter",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public estimator bridge found; language compilation alone is insufficient.",
+      "source_ids": [
+        "E01",
+        "R12",
+        "C01"
+      ],
+      "acceptance_criteria": "Export a supported workload to an external estimator; preserve assumptions and compare physical qubits/runtime across at least three hardware/code scenarios.",
+      "dependencies": [
+        "T013",
+        "T076"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T080",
+      "workstream": "Error correction and resource estimation",
+      "phase": "P3",
+      "title": "Cross-layer resource and error budget ledger",
+      "baseline_state": "absent",
+      "target_class": "advanced",
+      "baseline_evidence": "No unified algorithm-to-physical cost ledger found.",
+      "source_ids": [
+        "E01",
+        "R01",
+        "R02",
+        "R12"
+      ],
+      "acceptance_criteria": "A chemistry or phase-estimation example records precision, success probability, logical operations, factories and physical resources without double-counting overhead.",
+      "dependencies": [
+        "T054",
+        "T077",
+        "T079"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T081",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Executable quantum documentation",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Quantum examples/source tests exist but this stream did not execute every published example on every target.",
+      "source_ids": [
+        "E04",
+        "E08",
+        "E09",
+        "C24"
+      ],
+      "acceptance_criteria": "CI extracts all quantum examples, runs declared supported targets, and marks external hardware prerequisites; wrong expected outputs block release.",
+      "dependencies": [
+        "T002",
+        "T010"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T082",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Quantum-aware diagnostics",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Wrapper error messages exist; circuit source mapping and richer diagnostics are absent.",
+      "source_ids": [
+        "E01",
+        "E02",
+        "C25"
+      ],
+      "acceptance_criteria": "Invalid wires, nonunitary gates, impossible ownership and unsupported target features report source spans and actionable reasons in 30 negative fixtures.",
+      "dependencies": [
+        "T007",
+        "T015"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T083",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Circuit and state visualization",
+      "baseline_state": "absent",
+      "target_class": "parity",
+      "baseline_evidence": "No public circuit object/visualizer found in the binding.",
+      "source_ids": [
+        "E01",
+        "C20",
+        "C07"
+      ],
+      "acceptance_criteria": "Render circuits with parameter/measurement labels and small-state plots; snapshots preserve wire order and explicitly mark simulator-only state access.",
+      "dependencies": [
+        "T015",
+        "T017"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T084",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Quantum profiling trace",
+      "baseline_state": "absent",
+      "target_class": "foundation",
+      "baseline_evidence": "No unified quantum compile/execute/transfer/shot trace exposed.",
+      "source_ids": [
+        "E01",
+        "C09",
+        "R08"
+      ],
+      "acceptance_criteria": "Emit machine-readable spans for compilation, marshaling, transfers, execution and sampling; totals reconcile with wall time within documented instrumentation overhead.",
+      "dependencies": [
+        "T018"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T085",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Pinned reproducible experiment bundles",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Dependency pinning exists; no universal experiment/result bundle schema was established here.",
+      "source_ids": [
+        "E03",
+        "R08"
+      ],
+      "acceptance_criteria": "Bundle program, dependency hashes, seeds, device snapshot, environment, raw results and analysis; a clean runner reproduces a seeded simulator experiment.",
+      "dependencies": [
+        "T004",
+        "T009",
+        "T017"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T086",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Differential quantum fuzzing",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Source quantum tests exist; broad cross-tool randomized differential evidence is not established.",
+      "source_ids": [
+        "E08",
+        "E09",
+        "C07",
+        "C16"
+      ],
+      "acceptance_criteria": "Generate 1000 small valid circuits and compare independent engines with phase/shot-aware tolerances; minimize every mismatch into a retained regression.",
+      "dependencies": [
+        "T008",
+        "T018",
+        "T085"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T087",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Application benchmark protocol",
+      "baseline_state": "absent",
+      "target_class": "foundation",
+      "baseline_evidence": "Existing quantum microbenchmarks do not establish a 25-system application ranking.",
+      "source_ids": [
+        "E01",
+        "R08"
+      ],
+      "acceptance_criteria": "Freeze workload families, precision, hardware, seeds and time-to-solution metrics before measurement; publish failures and tuning budgets alongside successes.",
+      "dependencies": [
+        "T084",
+        "T085"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T088",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Independent replication package",
+      "baseline_state": "unknown",
+      "target_class": "foundation",
+      "baseline_evidence": "No independent replication of this proposed comparative protocol has occurred.",
+      "source_ids": [
+        "E08",
+        "R08"
+      ],
+      "acceptance_criteria": "A second team or isolated environment reruns the published bundle; discrepancies are logged and resolved before any leadership claim.",
+      "dependencies": [
+        "T087"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T089",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Quantum extension compatibility governance",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "General project contribution rules exist; quantum plugin/version promises are not established.",
+      "source_ids": [
+        "E03",
+        "C24",
+        "R13"
+      ],
+      "acceptance_criteria": "Publish semantic-version and deprecation rules; two plugin versions run through a compatibility matrix and a deliberately incompatible ABI fails clearly.",
+      "dependencies": [
+        "T004",
+        "T018"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T090",
+      "workstream": "Developer experience and reproducible evidence",
+      "phase": "P0",
+      "title": "Scientific claim-to-evidence registry",
+      "baseline_state": "partial",
+      "target_class": "foundation",
+      "baseline_evidence": "Existing docs mix implementation, historical design and performance/physical claims.",
+      "source_ids": [
+        "E04",
+        "E05",
+        "R08",
+        "R09"
+      ],
+      "acceptance_criteria": "Every public quantum capability claim links to source, passing test or measured report and declares scope; simulation, hardware, projection and open research are distinct fields.",
+      "dependencies": [
+        "T003",
+        "T081",
+        "T087"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T091",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "Fault-tolerant chemistry beyond toy molecules",
+      "baseline_state": "absent",
+      "target_class": "open research",
+      "baseline_evidence": "Public molecular constructors/VQE do not demonstrate practical fault-tolerant chemistry.",
+      "source_ids": [
+        "E01",
+        "R02",
+        "R03"
+      ],
+      "acceptance_criteria": "Reproduce one small active-space reference end to end, then publish a larger-case resource estimate with basis/truncation/error budgets; independent chemistry review is required before a scientific claim.",
+      "dependencies": [
+        "T051",
+        "T058",
+        "T080"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T092",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "End-to-end advantage for a materials workload",
+      "baseline_state": "unknown",
+      "target_class": "open research",
+      "baseline_evidence": "No matched classical-versus-quantum advantage experiment was established here.",
+      "source_ids": [
+        "E01",
+        "R03",
+        "R08"
+      ],
+      "acceptance_criteria": "Pre-register a meaningful observable, precision and total-cost metric; beat tuned classical baselines with reproducible evidence, or publish the null result. Simulation speed alone cannot close this target.",
+      "dependencies": [
+        "T057",
+        "T087",
+        "T088"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T093",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "Trainability-aware variational compiler",
+      "baseline_state": "absent",
+      "target_class": "open research",
+      "baseline_evidence": "Native AD supplies derivatives but does not remove barren plateaus or shot complexity.",
+      "source_ids": [
+        "E01",
+        "R04",
+        "C08"
+      ],
+      "acceptance_criteria": "On predefined circuit families, predict and measure gradient-variance scaling; compare initialization/ansatz strategies at equal budgets and publish counterexamples to claimed improvements.",
+      "dependencies": [
+        "T043",
+        "T044",
+        "T087"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T094",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "Mitigation with defensible cost guarantees",
+      "baseline_state": "absent",
+      "target_class": "open research",
+      "baseline_evidence": "No Eshkol result establishes mitigation benefit under general noise and equal sampling cost.",
+      "source_ids": [
+        "E01",
+        "R06"
+      ],
+      "acceptance_criteria": "Derive assumptions and overhead bounds for one method, then test equal-cost error across increasing depth; explicitly report regimes where mitigation loses.",
+      "dependencies": [
+        "T070",
+        "T087"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T095",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "Useful logical computation beyond memory experiments",
+      "baseline_state": "absent",
+      "target_class": "open research",
+      "baseline_evidence": "No logical hardware execution path or result exists in the inspected binding.",
+      "source_ids": [
+        "E01",
+        "R07",
+        "C25"
+      ],
+      "acceptance_criteria": "Execute a logical algorithm with repeated correction and compare to a defined physical implementation at equal task error; distinguish code-memory success from useful algorithmic advantage.",
+      "dependencies": [
+        "T061",
+        "T075",
+        "T078"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T096",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "Verified adaptive quantum compilation",
+      "baseline_state": "absent",
+      "target_class": "open research",
+      "baseline_evidence": "No proof links the quantum interface, dynamic control and backend lowering end to end.",
+      "source_ids": [
+        "E01",
+        "R10",
+        "R16"
+      ],
+      "acceptance_criteria": "Formalize a bounded adaptive subset and prove selected lowerings preserve measurement semantics; publish assumptions and proof artifacts, with adversarial tests for unproved boundaries.",
+      "dependencies": [
+        "T025",
+        "T030",
+        "T013"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T097",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "Learning from coherent experimental quantum data",
+      "baseline_state": "absent",
+      "target_class": "open research",
+      "baseline_evidence": "Simulator-generated datasets do not establish coherent-data experimental advantage.",
+      "source_ids": [
+        "E01",
+        "R05"
+      ],
+      "acceptance_criteria": "Reproduce a small coherent-copy learning task with a physical-data protocol and explicit classical access model; compare sample complexity and account for state preparation/readout.",
+      "dependencies": [
+        "T061",
+        "T059",
+        "T087"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T098",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "Physical device-independent entropy integration",
+      "baseline_state": "absent",
+      "target_class": "open research",
+      "baseline_evidence": "Current simulated Bell/entropy layer is not a loophole-controlled physical Bell experiment.",
+      "source_ids": [
+        "E02",
+        "E10",
+        "R09"
+      ],
+      "acceptance_criteria": "Consume authenticated physical experiment records with stated independence assumptions, finite-size entropy bounds and extractor parameters; simulation-only mode must be incapable of claiming certification.",
+      "dependencies": [
+        "T003",
+        "T063",
+        "T090"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T099",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "Distributed quantum network programming",
+      "baseline_state": "absent",
+      "target_class": "open research",
+      "baseline_evidence": "No quantum network, entanglement-distribution or remote-state API is exposed.",
+      "source_ids": [
+        "E01",
+        "R11"
+      ],
+      "acceptance_criteria": "Implement a simulator protocol with loss, fidelity and classical latency, then validate one hardware-linked entanglement task; report end-to-end success rates and assumptions.",
+      "dependencies": [
+        "T018",
+        "T063",
+        "T071"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    },
+    {
+      "id": "T100",
+      "workstream": "Open scientific research programs",
+      "phase": "R",
+      "title": "Reproducible frontier resource co-design",
+      "baseline_state": "absent",
+      "target_class": "open research",
+      "baseline_evidence": "No end-to-end hardware/code/algorithm Pareto study is exposed in Eshkol.",
+      "source_ids": [
+        "E01",
+        "R01",
+        "R12",
+        "R02"
+      ],
+      "acceptance_criteria": "Reproduce a published resource scenario, vary algorithm/code/hardware assumptions, and publish non-dominated cost/error tradeoffs with sensitivity and independent checks; estimates remain projections.",
+      "dependencies": [
+        "T079",
+        "T080",
+        "T088"
+      ],
+      "delivery_status": "planned",
+      "completed_in_this_research": false
+    }
+  ],
+  "sources": [
+    {
+      "id": "C01",
+      "title": "Q#",
+      "url": "https://learn.microsoft.com/en-us/azure/quantum/qsharp-overview",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C02",
+      "title": "OpenQASM 3",
+      "url": "https://openqasm.com/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C03",
+      "title": "Quil",
+      "url": "https://quil-lang.github.io/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C04",
+      "title": "Quipper",
+      "url": "https://www.mathstat.dal.ca/~selinger/quipper/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C05",
+      "title": "Silq",
+      "url": "https://silq.ethz.ch/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C06",
+      "title": "Qiskit",
+      "url": "https://quantum.cloud.ibm.com/docs/en/guides",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C07",
+      "title": "Cirq",
+      "url": "https://quantumai.google/cirq",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C08",
+      "title": "PennyLane",
+      "url": "https://github.com/PennyLaneAI/pennylane",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": "Official stable index fetched; two deeper documentation URLs returned HTTP 429, so repository used as fallback."
+    },
+    {
+      "id": "C09",
+      "title": "CUDA-Q",
+      "url": "https://nvidia.github.io/cuda-quantum/latest/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C10",
+      "title": "Qrisp",
+      "url": "https://www.qrisp.eu/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C11",
+      "title": "Qmod",
+      "url": "https://docs.classiq.io/qmod-reference",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C12",
+      "title": "BQSKit",
+      "url": "https://bqskit.readthedocs.io/en/latest/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C13",
+      "title": "TKET / pytket",
+      "url": "https://docs.quantinuum.com/tket/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C14",
+      "title": "Amazon Braket SDK",
+      "url": "https://docs.aws.amazon.com/braket/latest/developerguide/what-is-braket.html",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C15",
+      "title": "Qibo",
+      "url": "https://qibo.science/qibo/stable/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C16",
+      "title": "Qulacs",
+      "url": "https://docs.qulacs.org/en/latest/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C17",
+      "title": "Yao.jl",
+      "url": "https://github.com/QuantumBFS/Yao.jl",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": "docs.yaoquantum.org/stable was inaccessible to the browser tool; official repository supplied evidence."
+    },
+    {
+      "id": "C18",
+      "title": "QuantumOptics.jl",
+      "url": "https://docs.qojulia.org/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C19",
+      "title": "Strawberry Fields",
+      "url": "https://strawberryfields.readthedocs.io/en/latest/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": "strawberryfields.ai redirected to Xanadu; documentation used instead."
+    },
+    {
+      "id": "C20",
+      "title": "Perceval",
+      "url": "https://github.com/Quandela/Perceval",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": "v1.0 docs were readable and linked v1.3; v1.3 retrieval failed, so current official repository used."
+    },
+    {
+      "id": "C21",
+      "title": "Pulser",
+      "url": "https://pulser.readthedocs.io/en/stable/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C22",
+      "title": "Qadence",
+      "url": "https://pasqal-io.github.io/qadence/latest/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C23",
+      "title": "Bloqade",
+      "url": "https://bloqade.quera.com/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C24",
+      "title": "ProjectQ",
+      "url": "https://projectq.readthedocs.io/en/latest/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "C25",
+      "title": "Guppy",
+      "url": "https://docs.quantinuum.com/guppy/",
+      "evidence": "Official documentation or project repository",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R01",
+      "title": "Gidney and Ekera: fault-tolerant factoring resource estimate",
+      "url": "https://arxiv.org/abs/1905.09749",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R02",
+      "title": "Reiher et al.: Elucidating Reaction Mechanisms on Quantum Computers",
+      "url": "https://arxiv.org/abs/1605.03590",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R03",
+      "title": "Low and Chuang: Hamiltonian Simulation by Qubitization",
+      "url": "https://arxiv.org/abs/1610.06546",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R04",
+      "title": "McClean et al.: Barren plateaus in quantum neural network training landscapes",
+      "url": "https://arxiv.org/abs/1803.11173",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R05",
+      "title": "Huang et al.: Quantum advantage in learning from experiments",
+      "url": "https://arxiv.org/abs/2112.00778",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R06",
+      "title": "Takagi et al.: Fundamental limits of quantum error mitigation",
+      "url": "https://arxiv.org/abs/2109.04457",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R07",
+      "title": "Acharya et al.: Quantum error correction below the surface code threshold",
+      "url": "https://arxiv.org/abs/2408.13687",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R08",
+      "title": "Lubinski et al.: Application-Oriented Performance Benchmarks for Quantum Computing",
+      "url": "https://arxiv.org/abs/2110.03137",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R09",
+      "title": "Pironio et al.: Random Numbers Certified by Bells Theorem",
+      "url": "https://arxiv.org/abs/0911.3427",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R10",
+      "title": "Hietala et al.: A Verified Optimizer for Quantum Circuits",
+      "url": "https://arxiv.org/abs/1912.02250",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R11",
+      "title": "Wehner, Elkouss and Hanson: Quantum internet, a vision for the road ahead",
+      "url": "https://repository.tudelft.nl/record/uuid%3Af2b04894-ece4-4443-984b-71ddb11a5ab2",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R12",
+      "title": "Microsoft Quantum resource estimator",
+      "url": "https://learn.microsoft.com/en-us/azure/quantum/intro-to-resource-estimation",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R13",
+      "title": "QIR specification",
+      "url": "https://github.com/qir-alliance/qir-spec",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R14",
+      "title": "Stim: official stabilizer/QEC simulator",
+      "url": "https://github.com/quantumlib/Stim",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R15",
+      "title": "PyZX: official diagrammatic optimization library",
+      "url": "https://github.com/zxcalc/pyzx",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "R16",
+      "title": "Mahadev: Classical Verification of Quantum Computations",
+      "url": "https://arxiv.org/abs/1804.01082",
+      "evidence": "Primary paper, author repository, specification, or official technical documentation",
+      "checked": "2026-10-25",
+      "note": ""
+    },
+    {
+      "id": "E01",
+      "title": "Public quantum module",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/lib/agent/quantum.esk",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Full exported surface and wrapper implementations inspected; opaque integer handles, eight gate operations, Z expectation, measurement, Hamiltonian/VQE/QGT APIs.",
+      "repository_path": "lib/agent/quantum.esk"
+    },
+    {
+      "id": "E02",
+      "title": "Quantum C shim",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/lib/agent/c/agent_quantum.c",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Dense-state/VQE shim, handle tables, conditional Moonlab implementation and unavailable stubs inspected; QGT limited to four parameters.",
+      "repository_path": "lib/agent/c/agent_quantum.c"
+    },
+    {
+      "id": "E03",
+      "title": "Build configuration",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/CMakeLists.txt",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Quantum option OFF by default; exact Moonlab GIT_TAG is 4bf83a6c47e7f1c53db14fcb2a61053499fd82df. Nearby comments mention older revisions.",
+      "repository_path": "CMakeLists.txt"
+    },
+    {
+      "id": "E04",
+      "title": "Quantum reference",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/docs/reference/agent/quantum.md",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Public usage, ideal VQE adjoint bridge and availability descriptions; prose alone is not runtime evidence.",
+      "repository_path": "docs/reference/agent/quantum.md"
+    },
+    {
+      "id": "E05",
+      "title": "Moonlab integration design",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/docs/design/MOONLAB_INTEGRATION.md",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Mixed shipped header/historical design. Mentions broader Moonlab tensor-network and decoder APIs, many explicitly deferred from Eshkol binding.",
+      "repository_path": "docs/design/MOONLAB_INTEGRATION.md"
+    },
+    {
+      "id": "E06",
+      "title": "Qubit type definition",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/lib/types/hott_types.cpp",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Qubit is registered as a linear type with Int64 representation; public state/gate wrappers still use state handles and integer indices.",
+      "repository_path": "lib/types/hott_types.cpp"
+    },
+    {
+      "id": "E07",
+      "title": "Linearity boundary regression",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/tests/typesystem/qubit_alias_laundering_not_enforced_test.esk",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Fixture describes caught immediate-lambda aliasing and a remaining separately defined unannotated-return boundary; filename alone is misleading.",
+      "repository_path": "tests/typesystem/qubit_alias_laundering_not_enforced_test.esk"
+    },
+    {
+      "id": "E08",
+      "title": "Quantum surface regression",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/tests/quantum/quantum_surface_coverage_test.esk",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Source test covers exposed gates and molecular construction; not executed in this research stream.",
+      "repository_path": "tests/quantum/quantum_surface_coverage_test.esk"
+    },
+    {
+      "id": "E09",
+      "title": "VQE adversarial AD regression",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/tests/quantum/vqe_ad_adversarial.esk",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Source contains independent finite-difference checks around the ideal VQE bridge; not executed in this research stream.",
+      "repository_path": "tests/quantum/vqe_ad_adversarial.esk"
+    },
+    {
+      "id": "E10",
+      "title": "Entropy wrapper",
+      "url": "https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/lib/quantum/quantum_rng_wrapper.c",
+      "evidence": "Inspected local source snapshot",
+      "checked": "2026-10-25",
+      "note": "Build-dependent Moonlab or classical source; a simulated Bell statistic is not device-independent physical entropy certification.",
+      "repository_path": "lib/quantum/quantum_rng_wrapper.c"
+    }
+  ]
+}

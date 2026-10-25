@@ -1,0 +1,5 @@
+;; Export without requiring Moonlab, cloud credentials, or quantum hardware.
+(require core.quantum.circuit)
+(define bell (make-quantum-circuit 2 2
+  '((h 0) (cx 0 1) (measure 0 0) (measure 1 1))))
+(display (quantum-circuit->openqasm3 bell))
