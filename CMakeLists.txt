@@ -8667,6 +8667,8 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND WIN32 AND
    (CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$" OR
+    CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64" OR
+    MSVC_CXX_ARCHITECTURE_ID STREQUAL "x64" OR
     CMAKE_VS_PLATFORM_NAME STREQUAL "x64"))
     add_executable(jit_windows_x64_unwind_test
         tests/toolchain/jit_windows_x64_unwind_test.cpp
