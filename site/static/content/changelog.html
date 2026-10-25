@@ -4,7 +4,7 @@
 <h2 id="unreleased">[Unreleased]</h2>
 <h3 id="added">Added</h3>
 <ul>
-<li><strong>Static quantum circuits export a validated OpenQASM 3 subset.</strong> Add opt-in <code>core.quantum.circuit</code> with 25 standard gate kinds, measurement, reset, barriers, explicit zero-state initialization and logical resource counts. A portable AOT contract gate and optional independent OpenQASM/Qiskit oracle cover all gate kinds and 100 deterministic generated circuits. This module exports descriptions; it does not simulate or submit hardware jobs.</li>
+<li><strong>Static quantum circuits export a validated OpenQASM 3 subset.</strong> Add opt-in <code>core.quantum.circuit</code> with 25 standard gate kinds, measurement, reset, barriers, explicit zero-state initialization and logical resource counts. A portable AOT contract gate and optional independent OpenQASM/Qiskit oracle cover all gate kinds and 100 deterministic generated circuits. This module exports descriptions; it does not simulate or submit hardware jobs. (#872)</li>
 </ul>
 <h2 id="136-evolve---2026-10-15">[1.3.6-evolve] - 2026-10-15</h2>
 <p>PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026. The final measurement contract requires <!-- release-record:ctest -->CTest <strong>823/823</strong><!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential <strong>411/411</strong><!-- /release-record -->. Full source-bound preparation passed 823 configured CTest cases and 411 VM parity cases (<a href="https://github.com/tsotchke/eshkol/actions/runs/38657799489">run</a>). Publication requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)</p>

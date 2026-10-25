@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reset, barriers, explicit zero-state initialization and logical resource
   counts. A portable AOT contract gate and optional independent OpenQASM/Qiskit
   oracle cover all gate kinds and 100 deterministic generated circuits.
-  This module exports descriptions; it does not simulate or submit hardware jobs.
+  This module exports descriptions; it does not simulate or submit hardware jobs. (#872)
 
 ## [1.3.6-evolve] - 2026-10-15
 
