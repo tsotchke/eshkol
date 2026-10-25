@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Native cross-entropy preserves reverse derivatives.** Record its tensor
+  tape node, retain logit edges and consume the actual upstream cotangent.
+  Constant probability and class-index labels are supported; differentiable
+  labels and the 13 numeric-only loss builtins refuse unsupported reverse
+  differentiation explicitly. Four native execution/lowering gates check
+  analytical derivatives, every MLP weight slope and a wrong-zero canary. (#871)
+
 ## [1.3.6-evolve] - 2026-10-15
 
 PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.
