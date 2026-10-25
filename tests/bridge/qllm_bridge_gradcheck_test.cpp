@@ -141,10 +141,10 @@ static double bridge_relacc_value(const BridgeRelAcc* a) {
     return (den > 0.0) ? std::sqrt(a->dn) / den : 0.0;
 }
 
-static unsigned long g_rng = 0x9e3779b97f4a7c15UL;
+static uint64_t g_rng = UINT64_C(0x9e3779b97f4a7c15);
 static double urand(void) { /* deterministic uniform in [-1, 1] */
     g_rng ^= g_rng << 13; g_rng ^= g_rng >> 7; g_rng ^= g_rng << 17;
-    return ((double)(g_rng >> 11) / (double)(1UL << 53)) * 2.0 - 1.0;
+    return ((double)(g_rng >> 11) / (double)(UINT64_C(1) << 53)) * 2.0 - 1.0;
 }
 
 /* --------------------------------------------------------------- fixtures */
