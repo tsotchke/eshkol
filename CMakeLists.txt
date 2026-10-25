@@ -12684,6 +12684,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-s
 endif()
 
 include(cmake/AllocationHardeningTests.cmake)
+include(cmake/NativeJitRegressionTests.cmake)
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
     set(_program_entry_vm_args)

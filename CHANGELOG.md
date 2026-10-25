@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in Windows in-process JIT regression probes with exact-output checks,
+  native AOT controls, bounded subprocesses, and retained JSON evidence. The
+  v1.3.6 Windows x64 baseline exposes call/cc and guard/raise crashes and a
+  parallel-map worker-registration failure; this adds reproductions, not fixes.
+
 ## [1.3.6-evolve] - 2026-10-15
 
 PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.
