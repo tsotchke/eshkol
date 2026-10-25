@@ -2,9 +2,15 @@
 <p>All notable changes to Eshkol will be documented in this file.</p>
 <p>The format is based on <a href="https://keepachangelog.com/en/1.0.0/">Keep a Changelog</a>, and this project adheres to <a href="https://semver.org/spec/v2.0.0.html">Semantic Versioning</a>.</p>
 <h2 id="unreleased">[Unreleased]</h2>
+<h3 id="fixed">Fixed</h3>
+<ul>
+<li>Restore saved native continuation stacks on Windows x64 without running the CRT unwinder over overwritten frames. The hosted runtime uses the documented Windows context-restoration API after stack copying, preserving ordinary exception and escape-only unwinding. Add repeated returned-frame, captured guard-handler, and parallel-callback continuation regressions. (#869)</li>
+<li>Register native Windows x64 JIT unwind tables with the operating system and unregister them before unloading each module, so native nonlocal exits can walk generated frames. Keep runtime exports available without optional agent modules and register VM-only tests only when their target exists. (#869)</li>
+<li>Give each native JIT module a resolvable parallel-worker initializer while preserving Windows AOT internal linkage. Rebuild stdlib JIT object caches with the same initializer contract instead of reusing objects whose local initializer cannot be found by the JIT. (#869)</li>
+</ul>
 <h3 id="added">Added</h3>
 <ul>
-<li>Opt-in Windows in-process JIT regression probes with exact-output checks, native AOT controls, bounded subprocesses, and retained JSON evidence. The v1.3.6 Windows x64 baseline exposes call/cc and guard/raise crashes and a parallel-map worker-registration failure; this adds reproductions, not fixes. (#869)</li>
+<li>Windows in-process JIT regression probes with exact-output checks, native AOT controls, bounded subprocesses, and retained JSON evidence. Seven cases cover immediate and repeated continuations, guard-handler restoration, parallel callbacks, and forward AD; harness negative controls reject crashes, incorrect output, silent errors, timeouts, and missing AOT evidence. Enable the gate by default on Windows x64 and bind its five CTest events to a separate platform-specific completion oracle. (#869)</li>
 </ul>
 <h2 id="136-evolve---2026-10-15">[1.3.6-evolve] - 2026-10-15</h2>
 <p>PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026. The final measurement contract requires <!-- release-record:ctest -->CTest <strong>823/823</strong><!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential <strong>411/411</strong><!-- /release-record -->. Full source-bound preparation passed 823 configured CTest cases and 411 VM parity cases (<a href="https://github.com/tsotchke/eshkol/actions/runs/38657799489">run</a>). Publication requires independent exact-commit evidence and an ICC ready/100 verdict. (#747)</p>
@@ -107,7 +113,7 @@
 <li><p><strong>WebGPU GPU dispatch in the browser.</strong> The ordinary GPU dispatch that selects Metal or CUDA now selects WebGPU in the browser: <code>eshkol_matmul_dispatch</code> and the <code>eshkol_gpu_*</code> entry points are served by <code>web/eshkol-webgpu.js</code> (mirrored to <code>site/static/</code>), which both WASM loaders install, and by <code>gpu_memory_webgpu.cpp</code> in Emscripten builds. The f64 kernels are sf64 – IEEE binary64 on integer words, like Metal’s <code>metal_softfloat.h</code> – so the default <code>exact</code> tier gives matmul and elementwise results bit-identical to the CPU path, and reductions within <code>1e-9</code>. Without WebGPU, JSPI or an adapter, <code>initWebGPU()</code> reports why and the program runs on the CPU; with a device, every call the GPU does not serve is counted and explained in the backend’s diagnostics. <code>scripts/lib/webgpu_diff_runner.mjs</code> gates every kernel against the CPU in Chrome, including random f64 bit patterns and edge values, and proves itself red on five kernel corruptions. See <code>docs/breakdown/GPU_ACCELERATION.md</code>, “Enabling WebGPU in a page”. (#715)</p></li>
 <li><p><strong>WebGPU for the browser bytecode VM.</strong> The VM’s tensor natives already call the ordinary GPU seam; the WASM VM build now links it (<code>gpu_memory_webgpu.cpp</code>), and <code>EshkolWebGPU.attachVm()</code> connects it to the page’s WebGPU backend through JSPI. Its compute imports become suspending, and <code>repl_eval</code>/<code>run_program</code> become promising, only when the browser has JSPI and a device (ADR-0029). The VM’s matmul, same-shape elementwise arithmetic and full reductions run on the same sf64 kernels as compiled programs. Without WebGPU or JSPI the VM runs on the CPU and reports why. The site’s REPL and runnable examples use it. The VM builds with native wasm exceptions, because JSPI cannot suspend across Emscripten’s JavaScript <code>setjmp</code>/<code>longjmp</code> trampolines. <code>tests/webgpu/webgpu_vm_test.mjs</code> gates it in Chrome. (#716)</p></li>
 </ul>
-<h3 id="fixed">Fixed</h3>
+<h3 id="fixed-1">Fixed</h3>
 <ul>
 <li><p><strong>The website playground loads the current browser VM.</strong> The site runtime provides the two imports the rebuilt site WASM links, and the playground page states the bundle’s measured size. (#717) (#723)</p></li>
 <li><p>The parser builds on toolchains whose standard headers do not provide <code>std::strlen</code> transitively. (#719)</p></li>
@@ -285,7 +291,7 @@
 <li>A <strong>continuation captured inside a region</strong> pins that region.</li>
 <li>Objects promoted out of a region live in the enclosing arena for its lifetime, which is OALR’s semantics and is equally true natively.</li>
 </ul>
-<h3 id="fixed-1">Fixed</h3>
+<h3 id="fixed-2">Fixed</h3>
 <ul>
 <li><p><strong>Gradient of a rest-parameter procedure.</strong> Natively, the gradient of an inline variadic lambda such as <code>(lambda args (apply * args))</code> returned <code>#(0 0)</code> with a cons-cell error, and <code>(lambda (a . r) ...)</code> failed to compile; the point is now spread element by element on every route, as on the VM. (SW-248)</p></li>
 <li><p><strong>Variadic builtins are variadic values.</strong> <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code> and the numeric, string and char comparison chains passed as values used to be their 2-argument form natively, so <code>(apply f (append a m))</code> with <code>+</code> over three arguments raised an arity mismatch. They are now the R7RS variadic procedures on both engines. (SW-241)</p></li>
@@ -459,7 +465,7 @@
 <li><strong>Build and platform.</strong> A universal Linux build script provisions LLVM 21 per distro family; CMake <code>&lt; 3.24</code> no longer errors on <code>DOWNLOAD_EXTRACT_TIMESTAMP</code>; the WASM <code>scheme_main</code> re-entry export is JS-safe with a null-guarded data layout; documentation-site section anchor links resolve (heading ids + fragment scroll). The language-surface coverage manifest was regenerated for the new VM tensor special forms (builtin count unchanged). A CI identity guard rejects new commits that carry a forbidden private author email.</li>
 <li><strong><code>Rational</code> in the compile-time numeric tower.</strong> Eshkol has had R7RS exact rationals at runtime (<code>HEAP_SUBTYPE_RATIONAL</code>, <code>rational?</code>) with no corresponding type, so <code>rational</code> was not a spellable type name. It is now a registered exact type under <code>Number</code>, a sibling of <code>Integer</code>/<code>Real</code> — matching how <code>Complex</code> already sits beside <code>Real</code> in this graph rather than above it.</li>
 </ul>
-<h3 id="fixed-2">Fixed</h3>
+<h3 id="fixed-3">Fixed</h3>
 <ul>
 <li><p><strong>A resident daemon loop leaked 48 bytes per tick for as long as it ran, because every <code>guard</code> entry took a handler frame that was never given back (SW-57).</strong> The catch-all <code>guard</code> error boundary is <em>the</em> resident-loop idiom this project documents, and <code>eshkol_push_exception_handler</code> bump-allocated each frame out of the process-global arena while <code>eshkol_pop_exception_handler</code> returned nothing — by design (“we leak here, but exception handlers should be short-lived”). In a tick loop the guard is re-entered once per tick, forever, so “short-lived” frames accumulated linearly in an arena that is never reset.</p>
 <p>It stayed invisible because ESH-0214b’s iter-scope reclamation rewinds the <em>global</em> arena at each back edge, which reclaimed the frame as a side effect — so a non-mutating tick loop measured flat. ESH-0214e then lowered every persistent-mutation tick loop (the actual daemon shape) through a nursery region instead, and a nursery back edge resets only the <em>nursery</em> arena. From that point on the frames were never reclaimed at all.</p>
@@ -667,7 +673,7 @@
 <li>Taylor monomorphization equivalence: <strong>441/441 JIT + 441/441 AOT</strong>, bit-exact through order eight.</li>
 <li>ICC architecture model: <strong>8/8 invariants</strong>; ICC release readiness: <strong>100/100, oracle complete</strong> (recorded in the readiness report).</li>
 </ul>
-<h3 id="fixed-3">Fixed</h3>
+<h3 id="fixed-4">Fixed</h3>
 <ul>
 <li><p><strong>CUDA-labeled release assets contain the real CUDA backend.</strong> Linux x64 and ARM64-SBSA lanes install a pinned NVIDIA CUDA 12.4 toolkit; Windows x64 uses the matching NVIDIA network installer. CMake now fails closed when a required GPU backend is absent, and a build-graph gate requires <code>nvcc</code>, the CUDA runtime, cuBLAS, and both real CUDA sources while rejecting <code>gpu_memory_stub.cpp</code>. NVIDIA does not ship a native Windows ARM64 CUDA toolkit, so that unsupported archive is no longer advertised. Portable <code>sm_72/75/80/86/89/90</code> code keeps Xavier and current RTX/datacenter GPUs in the 15 honest artifacts. CUDA 12 builds on newer GNU hosts also fail early unless the whole build uses a supported compiler, preventing nvcc-only host overrides from mixing libstdc++ ABI and search paths at final link time. Unix configure steps pass the toolkit root as a scalar CMake definition, retaining compatibility with the Bash 3.2 <code>set -u</code> environment on hosted macOS runners.</p></li>
 <li><p><strong>Generated CUDA links resolve the consumer toolkit.</strong> Release packages no longer serialize hosted-runner <code>CUDA::cudart</code>/cuBLAS absolute paths into AOT and persistent-cache commands. Logical CUDA library names are resolved from explicit roots, <code>nvcc</code>, and standard Linux multiarch/toolkit layouts on the consumer, with the configured ABI major required in each selected directory and exact-major ELF link names preventing silent CUDA 12/13 substitution. Windows driver arguments retain native path separators, avoiding the newer MSVC STL <code>__std_replace_copy_2</code> helper that current build headers introduce for generic-path conversion but older compatible consumer import libraries do not provide.</p></li>
@@ -703,7 +709,7 @@
 <li><strong><code>core.blc</code> — Binary Lambda Calculus</strong>: a pure-Eshkol module implementing John Tromp’s Binary Lambda Calculus, showcasing the language’s lambda-calculus foundations. De Bruijn-indexed terms are represented homoiconically as s-expressions (<code>(var i)</code>, <code>(lam B)</code>, <code>(app M N)</code>); <code>blc-encode</code>/<code>blc-decode</code> convert to and from Tromp’s self-delimiting bit encoding, and <code>blc-eval</code> reduces to beta normal form using <strong>normal-order (leftmost-outermost)</strong> reduction with correct De Bruijn shift/substitution and a divergence step-cap. Loaded on demand via <code>(require core.blc)</code>. The reference encodings are reproduced exactly (<code>I</code> = <code>0010</code>, <code>K</code> = <code>0000110</code>, pairing <code>λλλ.132</code> = <code>0000000101101110110</code>). See <code>docs/guide/BINARY_LAMBDA_CALCULUS.md</code>.</li>
 <li><strong><code>core.blc</code> — universal machine U, BLC8 byte I/O, and lambda diagrams</strong>: three deepenings of the BLC module. <code>(blc-U)</code> decodes Tromp’s 232-bit (29-byte) self-interpreter <code>U</code>; applied via <code>(blc-encode-input (blc-encode M) input)</code> it runs the encoded program <code>M</code> on the input bit stream (Scott-list of <code>True</code>/<code>False</code> bits built with the <code>blc-pair</code> combinator), demonstrated on identity and constant-output programs. <code>blc-bytes-&gt;term</code>/<code>blc-term-&gt;bytes</code> (plus <code>blc-string-&gt;term</code>/<code>blc-term-&gt;string</code>) implement the BLC8 convention — a byte is a delimited big-endian list of 8 bits — round-tripping byte strings through lambda terms. <code>(blc-diagram term)</code> renders a term as a Tromp-style ASCII lambda diagram (abstractions as horizontal bars, variables as vertical lines, applications as horizontal links). Ground-truth <code>U</code> bits cross-checked against Tromp’s De Bruijn term.</li>
 </ul>
-<h3 id="fixed-4">Fixed</h3>
+<h3 id="fixed-5">Fixed</h3>
 <ul>
 <li><strong>Region escape evacuator now covers logic and workspace subtypes (ESH-0214d).</strong> The deep transitive escape evacuator (ESH-0214c) only deep-walked <code>CONS</code>/<code>VECTOR</code>/<code>HASH</code>/<code>TENSOR</code>/<code>EXCEPTION</code>/<code>CLOSURE</code>; the logic and workspace subtypes it mutates into persistent state — <code>SUBSTITUTION</code>, <code>FACT</code>, <code>KNOWLEDGE_BASE</code>, <code>FACTOR_GRAPH</code>, <code>WORKSPACE</code> — fell through to a shallow leaf copy that left their interior pointers dangling into the popped region arena (observed as <code>car</code>/<code>cdr</code> corruption in a resident tick loop). The evacuator now deep-walks these subtypes; records gain an explicit <code>RECORD -&gt; VECTOR</code> mapping; and <code>arena_destroy</code> is poisoned under <code>ESHKOL_ARENA_POISON</code> so region use-after-free crashes loudly instead of passing by luck. New gate <code>region_evac_subtype_coverage_test</code> runs flat at ~110MB over 1,000,000 iterations under poison. (#226)</li>
 <li><strong>Thread-safe region scope stack (parallel-map + <code>with-region</code>).</strong> <code>parallel-map</code>/future callbacks that opened a <code>with-region</code> raced on the shared current-arena slot and could crash under concurrency; the region hijack moved into the runtime with a parallel-scope guard, and new <code>eshkol_region_enter</code>/<code>eshkol_region_leave</code> runtime functions carry matching WebAssembly stubs so the lite build’s import surface stays complete. (#217)</li>
@@ -715,7 +721,7 @@
 </ul>
 <h2 id="131-evolve---2026-07-09">[1.3.1-evolve] - 2026-07-09</h2>
 <p>A resident-robustness point release over v1.3.0-evolve: two fixes that matter specifically for long-running/daemon and large-persisted-state workloads, plus a comprehensive documentation pass.</p>
-<h3 id="fixed-5">Fixed</h3>
+<h3 id="fixed-6">Fixed</h3>
 <ul>
 <li><strong>Iterative <code>read_list</code></strong> (#191): the reader’s list-parsing path was rewritten from per-element native recursion to an iterative loop, so reading long flat lists — e.g. a 46K-entry persisted-state file — no longer overflows the native stack. Verified: the pre-fix reader SIGBUS’d at 20M elements; post-fix, the same input reads cleanly.</li>
 <li><strong>ESH-0214b per-iteration arena scope for <code>define</code> loops + catch-all guard</strong> (#192): automatic per-iteration arena-scope reclamation, previously named-let-only, now also applies to self-tail-recursive top-level <code>define</code> loops, and the escape analysis that gates it no longer rejects a guard body outright — it accepts a catch-all guard clause (<code>#t</code>/<code>else</code>) whose body is itself escape-free. This enables flat-memory resident/daemon workloads built on the <code>define</code>-loop-plus-guard idiom. Verified in AOT mode: a 1,000,000-iteration allocating guard-wrapped <code>define</code> loop holds peak RSS at 27MB with the fix on, versus 2608MB with the fix off.</li>
@@ -823,7 +829,7 @@
 </ul>
 <h2 id="123-scale---2026-05-25">[1.2.3-scale] - 2026-05-25</h2>
 <p>Packaging closeout for the v1.2 line. This patch supersedes the unpublished <code>v1.2.2-scale</code> tag attempt, which failed before GitHub release publication in the hosted Windows x64 artifact job.</p>
-<h3 id="fixed-6">Fixed</h3>
+<h3 id="fixed-7">Fixed</h3>
 <ul>
 <li>Fixed hosted Windows x64 release packaging links by keeping generated parallel worker initializer symbols module-local on native Windows.</li>
 </ul>
@@ -843,7 +849,7 @@
 <ul>
 <li>Added <code>examples/milli_mag_bohrification.esk</code>, a public executable sketch that keeps the milli-magnetic Bohrification model inside today’s Eshkol surface and passes the examples suite.</li>
 </ul>
-<h3 id="fixed-7">Fixed</h3>
+<h3 id="fixed-8">Fixed</h3>
 <ul>
 <li>Closed the remaining Noesis-filed Eshkol issues W, Z, BB, GG, JJ, KK, and LL, with the Noesis tracker reconciled to zero open filed substrate bugs.</li>
 <li>Fixed the intermittent Noesis dual-neural crash by serializing runtime hash-table access.</li>

@@ -140,8 +140,8 @@ def main(argv=None):
                ESHKOL_JIT_CACHE_DIR=str(work / "jit-cache"),
                ESHKOL_AOT_MODULE_CACHE_DIR=str(work / "module-cache"),
                TMPDIR=str(work / "tmp"), TMP=str(work / "tmp"), TEMP=str(work / "tmp"))
-    # All fixtures use compiler primitives and run --no-stdlib on both routes.
-    # No installed stdlib object cache needs to be touched or trusted.
+    # All fixtures use compiler primitives and request --no-stdlib on both
+    # routes. Retain stderr, including any artifact discovery the runner logs.
     results = []
     replacements = [(str(work), "<work>"), (str(repository), "<source>"),
                     (str(runner), "<eshkol-run>")]
@@ -176,7 +176,7 @@ def main(argv=None):
         report = {"schema": "eshkol.native-jit-regressions.v1",
                   "platform": sys.platform,
                   "machine": platform.machine() or sysconfig.get_platform(), "runner": metadata,
-                  "jit_cache": "disabled", "stdlib": "disabled",
+                  "jit_cache": "disabled", "stdlib": "--no-stdlib requested",
                   "timeout_seconds": args.timeout, "cases": results}
         (work / "results.json").write_text(
             json.dumps(sanitize(report, replacements), indent=2) + "\n", encoding="utf-8")
