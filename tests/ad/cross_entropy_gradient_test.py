@@ -59,27 +59,28 @@ def main() -> int:
         # Cache isolation matters: the lowering selection is made at codegen.
         env["ESHKOL_JIT_CACHE_DIR"] = str(scratch / "cache")
 
-        def execute(source: Path):
+        def execute(source: Path, no_stdlib: bool = True):
+            options = ["--no-stdlib"] if no_stdlib else []
             if args.mode == "jit":
-                return invoke([str(compiler), "-r", str(source), "-L" + str(build)])
+                return invoke([str(compiler), *options, "-r", str(source), "-L" + str(build)])
             binary = scratch / (source.stem + (".exe" if os.name == "nt" else ""))
-            code, output = invoke([str(compiler), str(source), "-o", str(binary),
+            code, output = invoke([str(compiler), *options, str(source), "-o", str(binary),
                                    "-L" + str(build)])
             if code != 0 or not binary.is_file():
                 raise RuntimeError(f"compilation failed for {source.name}: {code}\n{output}")
             return invoke([str(binary)])
 
         cases = [
-            (ROOT / "tests/ad/cross_entropy_gradient_test.esk", SUCCESS),
-            (ROOT / "tests/ml/loss_functions_test.esk", "PASS: smooth L1 with large diff"),
-            (ROOT / "tests/vm_parity/corpus/73_cross_entropy_targets.esk", "PASS: indexed targets"),
+            (ROOT / "tests/ad/cross_entropy_gradient_test.esk", SUCCESS, True),
+            (ROOT / "tests/ml/loss_functions_test.esk", "PASS: smooth L1 with large diff", False),
+            (ROOT / "tests/vm_parity/corpus/73_cross_entropy_targets.esk", "PASS: indexed targets", True),
         ]
-        for source, marker in cases:
-            code, output = execute(source)
+        for source, marker, no_stdlib in cases:
+            code, output = execute(source, no_stdlib)
             if code != 0 or marker not in output or "FAIL" in output:
                 failures.append(f"{source.name}: exit={code}\n{output}")
             else:
-                print(f"PASS {args.mode} dense={args.dense}: {source.name}")
+                print(f"PASS {args.mode} dense={args.dense}: {source.name}", flush=True)
 
         for name, (program, message) in REFUSALS.items():
             source = scratch / (name + ".esk")
@@ -89,7 +90,7 @@ def main() -> int:
             if code != 1 or message not in output or "UNEXPECTED SUCCESS" in output:
                 failures.append(f"refusal {name}: exit={code}\n{output}")
             else:
-                print(f"PASS {args.mode} dense={args.dense}: refuses {name}")
+                print(f"PASS {args.mode} dense={args.dense}: refuses {name}", flush=True)
 
     for failure in failures:
         print(f"FAIL: {failure}")
