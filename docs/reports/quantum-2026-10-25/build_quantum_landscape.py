@@ -186,7 +186,7 @@ local_sources = [
 for sid,title,path,note in local_sources:
     source(sid,title,f'https://github.com/tsotchke/eshkol/blob/{BASE}/{path}',
            'Inspected local source snapshot',note)
-    sources[sid]['local_path'] = str(Path('Z:/Tools/eshkol/source') / path)
+    sources[sid]['repository_path'] = path
 
 targets=[]
 def group(workstream, phase, default_class, text):
@@ -455,6 +455,6 @@ lines.append('\n## Source and coverage ledger\n')
 for sid,s in sources.items():
     lines.append(f"\n- {link(sid)} — {s['evidence']}; checked {s['checked']}. {s['note']}")
 lines.append('\n\n## Machine-checked inventory\n\n```json\n'+json.dumps(meta,indent=2)+'\n```\n')
-lines.append('\nThe generator validates exactly 25 distinct comparator names, exactly 100 distinct target titles, allowed classifications, existing source IDs, valid dependency IDs and an acyclic dependency graph. These checks validate the artifact structure, not the scientific feasibility or completion of the roadmap. No source repository files were edited and no external publication was performed in this research stream.\n')
+lines.append('\nThe generator validates exactly 25 distinct comparator names, exactly 100 distinct target titles, allowed classifications, existing source IDs, valid dependency IDs and an acyclic dependency graph. These checks validate the artifact structure, not the scientific feasibility or completion of the roadmap. The baseline research stage was read-only. Later implementation and publication status are documented separately.\n')
 (OUT/'quantum-landscape.md').write_text('\n'.join(line.rstrip() for line in '\n'.join(lines).splitlines())+'\n',encoding='utf-8')
 print(json.dumps(meta,indent=2))

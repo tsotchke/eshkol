@@ -1173,4 +1173,4 @@ Dependencies: T079, T080, T088. Sources: [E01: Public quantum module](https://gi
 ```
 
 
-The generator validates exactly 25 distinct comparator names, exactly 100 distinct target titles, allowed classifications, existing source IDs, valid dependency IDs and an acyclic dependency graph. These checks validate the artifact structure, not the scientific feasibility or completion of the roadmap. No source repository files were edited and no external publication was performed in this research stream.
+The generator validates exactly 25 distinct comparator names, exactly 100 distinct target titles, allowed classifications, existing source IDs, valid dependency IDs and an acyclic dependency graph. These checks validate the artifact structure, not the scientific feasibility or completion of the roadmap. The baseline research stage was read-only. Later implementation and publication status are documented separately.

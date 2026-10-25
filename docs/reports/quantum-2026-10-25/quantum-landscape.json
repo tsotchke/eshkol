@@ -2816,7 +2816,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Full exported surface and wrapper implementations inspected; opaque integer handles, eight gate operations, Z expectation, measurement, Hamiltonian/VQE/QGT APIs.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\lib\\agent\\quantum.esk"
+      "repository_path": "lib/agent/quantum.esk"
     },
     {
       "id": "E02",
@@ -2825,7 +2825,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Dense-state/VQE shim, handle tables, conditional Moonlab implementation and unavailable stubs inspected; QGT limited to four parameters.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\lib\\agent\\c\\agent_quantum.c"
+      "repository_path": "lib/agent/c/agent_quantum.c"
     },
     {
       "id": "E03",
@@ -2834,7 +2834,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Quantum option OFF by default; exact Moonlab GIT_TAG is 4bf83a6c47e7f1c53db14fcb2a61053499fd82df. Nearby comments mention older revisions.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\CMakeLists.txt"
+      "repository_path": "CMakeLists.txt"
     },
     {
       "id": "E04",
@@ -2843,7 +2843,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Public usage, ideal VQE adjoint bridge and availability descriptions; prose alone is not runtime evidence.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\docs\\reference\\agent\\quantum.md"
+      "repository_path": "docs/reference/agent/quantum.md"
     },
     {
       "id": "E05",
@@ -2852,7 +2852,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Mixed shipped header/historical design. Mentions broader Moonlab tensor-network and decoder APIs, many explicitly deferred from Eshkol binding.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\docs\\design\\MOONLAB_INTEGRATION.md"
+      "repository_path": "docs/design/MOONLAB_INTEGRATION.md"
     },
     {
       "id": "E06",
@@ -2861,7 +2861,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Qubit is registered as a linear type with Int64 representation; public state/gate wrappers still use state handles and integer indices.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\lib\\types\\hott_types.cpp"
+      "repository_path": "lib/types/hott_types.cpp"
     },
     {
       "id": "E07",
@@ -2870,7 +2870,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Fixture describes caught immediate-lambda aliasing and a remaining separately defined unannotated-return boundary; filename alone is misleading.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\tests\\typesystem\\qubit_alias_laundering_not_enforced_test.esk"
+      "repository_path": "tests/typesystem/qubit_alias_laundering_not_enforced_test.esk"
     },
     {
       "id": "E08",
@@ -2879,7 +2879,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Source test covers exposed gates and molecular construction; not executed in this research stream.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\tests\\quantum\\quantum_surface_coverage_test.esk"
+      "repository_path": "tests/quantum/quantum_surface_coverage_test.esk"
     },
     {
       "id": "E09",
@@ -2888,7 +2888,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Source contains independent finite-difference checks around the ideal VQE bridge; not executed in this research stream.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\tests\\quantum\\vqe_ad_adversarial.esk"
+      "repository_path": "tests/quantum/vqe_ad_adversarial.esk"
     },
     {
       "id": "E10",
@@ -2897,7 +2897,7 @@
       "evidence": "Inspected local source snapshot",
       "checked": "2026-10-25",
       "note": "Build-dependent Moonlab or classical source; a simulated Bell statistic is not device-independent physical entropy certification.",
-      "local_path": "Z:\\Tools\\eshkol\\source\\lib\\quantum\\quantum_rng_wrapper.c"
+      "repository_path": "lib/quantum/quantum_rng_wrapper.c"
     }
   ]
 }
