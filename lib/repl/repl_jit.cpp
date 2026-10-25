@@ -32,6 +32,7 @@
 #include <llvm/ExecutionEngine/JITLink/JITLinkMemoryManager.h>  // ObjectLinkingLayerCreator arg (LLVM 24)
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
 #include "jit_coff_memory_manager.h"  // Co-located Windows ARM64 RuntimeDyld arena
+#include "jit_windows_x64_memory_manager.h"  // Native Windows unwind registration
 #include "jitlink_branch26_range_extension.h"  // AArch64 Branch26 range-extension plugin
 #include "jit_target_config.h"  // Windows ARM64 external-data import indirection
 #include "jit_parallel_init.h"  // JIT-only worker initializer visibility
@@ -1087,26 +1088,39 @@ void ReplJITContext::initializeJIT() {
     }
     const bool windows_aarch64_coff =
         eshkol::is_windows_aarch64_coff(jtmb->getTargetTriple());
+    const bool windows_x64_coff =
+        jtmb->getTargetTriple().isOSWindows() &&
+        jtmb->getTargetTriple().getArch() == Triple::x86_64 &&
+        jtmb->getTargetTriple().getObjectFormat() == Triple::COFF;
     LLJITBuilder jit_builder;
     jit_builder
         .setJITTargetMachineBuilder(std::move(*jtmb))
         .setNumCompileThreads(compile_threads);
 
-    if (windows_aarch64_coff) {
+    if (windows_aarch64_coff || windows_x64_coff) {
         // LLVM 21 selects RuntimeDyld rather than JITLink for AArch64 COFF.
         // Its default SectionMemoryManager uses three independent OS mapping
         // pools, so Small-model PAGEBASE/PAGEOFFSET relocations between JIT-
         // owned code and data can truncate when ASLR places those pools more
         // than 4 GiB apart. Reserve all sections for each object in one bounded
         // arena while retaining LLJIT's normal COFF symbol-claiming behavior.
-        auto make_colocated_rtdyld_layer =
-            [](orc::ExecutionSession& execution_session)
+        // On x64 the normal section allocation is retained, but .pdata must
+        // be registered with Windows: LLVM's default __register_frame hook
+        // does not make COFF frames visible to the native SEH unwinder.
+        auto make_windows_rtdyld_layer =
+            [windows_x64_coff](orc::ExecutionSession& execution_session)
                 -> Expected<std::unique_ptr<orc::ObjectLayer>> {
                 auto layer =
                     std::make_unique<orc::RTDyldObjectLinkingLayer>(
                         execution_session,
-                        [](const MemoryBuffer&)
+                        [windows_x64_coff](const MemoryBuffer&)
                             -> std::unique_ptr<RuntimeDyld::MemoryManager> {
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+                            if (windows_x64_coff) {
+                                return std::make_unique<
+                                    eshkol::WindowsX64SectionMemoryManager>();
+                            }
+#endif
                             return std::make_unique<
                                 eshkol::CoLocatedSectionMemoryManager>();
                         });
@@ -1130,14 +1144,14 @@ void ReplJITContext::initializeJIT() {
         // intentionally unused; it stays owned by LLJIT, so nothing leaks and
         // no second manager of the same kind is constructed.
         jit_builder.setObjectLinkingLayerCreator(
-            [make_colocated_rtdyld_layer](
+            [make_windows_rtdyld_layer](
                 orc::ExecutionSession& execution_session,
                 jitlink::JITLinkMemoryManager& /*unused: RTDyld layer*/)
                 -> Expected<std::unique_ptr<orc::ObjectLayer>> {
-                return make_colocated_rtdyld_layer(execution_session);
+                return make_windows_rtdyld_layer(execution_session);
             });
 #else
-        jit_builder.setObjectLinkingLayerCreator(make_colocated_rtdyld_layer);
+        jit_builder.setObjectLinkingLayerCreator(make_windows_rtdyld_layer);
 #endif
     }
 

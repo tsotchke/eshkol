@@ -8665,6 +8665,25 @@ if(ESHKOL_BUILD_TESTS)
     add_test(NAME jit_parallel_init_test COMMAND jit_parallel_init_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND WIN32 AND
+   (CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$" OR
+    CMAKE_VS_PLATFORM_NAME STREQUAL "x64"))
+    add_executable(jit_windows_x64_unwind_test
+        tests/toolchain/jit_windows_x64_unwind_test.cpp
+        lib/repl/jit_windows_x64_memory_manager.cpp)
+    target_compile_features(jit_windows_x64_unwind_test PRIVATE cxx_std_17)
+    target_include_directories(jit_windows_x64_unwind_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
+    eshkol_target_llvm_includes(jit_windows_x64_unwind_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(jit_windows_x64_unwind_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(jit_windows_x64_unwind_test PRIVATE
+        ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME jit_windows_x64_unwind_test COMMAND jit_windows_x64_unwind_test)
+    set_tests_properties(jit_windows_x64_unwind_test PROPERTIES TIMEOUT 30)
+endif()
+
 if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_runtime_link_args_test.cpp")
     add_executable(cuda_runtime_link_args_test
