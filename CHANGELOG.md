@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Correct the Linux download instructions, native REPL command, RK4 accuracy
   description, and exact-rational power reference. Qualify AD overhead and
-  arena-memory timing claims on the website.
+  arena-memory timing claims on the website. (#870)
 
 ## [1.3.6-evolve] - 2026-10-15
 
