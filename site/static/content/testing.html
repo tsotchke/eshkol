@@ -10,6 +10,7 @@
 <pre class="bash"><code># Build the compiler + stdlib once
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target eshkol-run stdlib -j</code></pre>
+<p>The native cross-entropy regression is <code>tests/ad/cross_entropy_gradient_test.py</code>. CTest registers JIT and AOT runs under both tensor AD lowerings, plus its deliberate-failure self-test. It checks analytical logit derivatives, all eight weights of a composed two-layer network against numerical slopes, constant indexed/probability labels, scalar loss composition, and explicit unsupported-loss refusals. The <code>native_cross_entropy_gradient_gate</code> readiness group requires all five entries together with <code>tensor_backward_dual_impl_gradcheck</code> and <code>qllm_bridge_gradcheck</code> (seven-member floor). Empty output, wrong verdicts, nonzero exits, reported errors hidden behind a success marker, and crashes masquerading as refusals are rejected by the harness self-test.</p>
 <hr />
 <h2 id="the-ctest-gate">The CTest gate</h2>
 <p><code>scripts/run_ctest_gate.sh</code> runs the CTest suite and turns its verdicts into oracle evidence. It is how a completion-oracle criterion consumes a CTest <em>result</em>: otherwise <code>.icc/completion-oracles.yaml</code> names <code>ctest</code> only in <code>action:</code> strings, and the <code>test_evidence</code> criteria are index-level (“the tests exist and are runnable”). Without it, a pillar could ship with a perfectly good CTest gate and still be unmeasured by the target that judges the release cut.</p>

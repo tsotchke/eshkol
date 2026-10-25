@@ -7855,6 +7855,10 @@ endif()
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME cross_entropy_gradient_harness_selftest
+            COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/cross_entropy_gradient_test.py"
+                --self-test)
         foreach(ce_mode jit aot)
             foreach(ce_dense 0 1)
                 add_test(NAME cross_entropy_gradient_${ce_mode}_dense${ce_dense}

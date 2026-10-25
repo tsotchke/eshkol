@@ -1599,6 +1599,14 @@ oracles:
         action: ./scripts/run_dense_tensor_ad_gate.sh
 
       - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["native_cross_entropy_gradient_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Native cross-entropy preserves analytical and composed MLP gradients on JIT/AOT and both tensor tape lowerings; unsupported loss differentiation refuses explicitly, and harness negative controls and both C++ backward suites pass'
+        action: ./scripts/run_ctest_gate.sh
+
+      - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["ad_carrier_model_clean"]
           event_values: ["PASS"]

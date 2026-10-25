@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: ad
+since: v1.3.6
+sources:
+  - lib/backend/tensor_loss_codegen.cpp
+  - lib/bridge/tensor_backward.cpp
+  - tests/ad/cross_entropy_gradient_test.esk
+  - tests/ad/cross_entropy_gradient_test.py
+---
 # Native loss differentiation
 
 `cross-entropy-loss` supports first-order native reverse differentiation with
