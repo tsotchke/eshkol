@@ -5896,7 +5896,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot'"
     )
-    add_test(
+    if(TARGET eshkol-vm-standalone-test)
+      add_test(
         NAME exact_collection_intermediates_vm_smoke
         COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk"
@@ -5906,11 +5907,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb'"
     )
+      set_tests_properties(
+        exact_collection_intermediates_vm_smoke
+        exact_collection_intermediates_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    endif()
     set_tests_properties(
         exact_collection_intermediates_runtime_smoke
         exact_collection_intermediates_aot_smoke
-        exact_collection_intermediates_vm_smoke
-        exact_collection_intermediates_vm_eskb_smoke
         PROPERTIES
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
@@ -5929,7 +5936,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot'"
     )
-    add_test(
+    if(TARGET eshkol-vm-standalone-test)
+      add_test(
         NAME nested_level_through_tensor_vm_smoke
         COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk"
@@ -5939,11 +5947,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb'"
     )
+      set_tests_properties(
+        nested_level_through_tensor_vm_smoke
+        nested_level_through_tensor_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    endif()
     set_tests_properties(
         nested_level_through_tensor_runtime_smoke
         nested_level_through_tensor_aot_smoke
-        nested_level_through_tensor_vm_smoke
-        nested_level_through_tensor_vm_eskb_smoke
         PROPERTIES
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"
