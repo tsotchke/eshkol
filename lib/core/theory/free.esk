@@ -28,7 +28,7 @@
 ;;; A theory of kind 'user with equations has no decision procedure here,
 ;;; and is refused by name.
 ;;;
-;;; Sources: J. M. Whitman, "Free lattices", Ann. of Math. 42 (1941);
+;;; Sources: P. M. Whitman, "Free lattices", Ann. of Math. 42 (1941);
 ;;; R. Dyckhoff, "Contraction-free sequent calculi for intuitionistic
 ;;; logic", J. Symbolic Logic 57 (1992); W. Magnus, A. Karrass, D. Solitar,
 ;;; "Combinatorial Group Theory" (1966), 1.4 (free reduction); Burris and
