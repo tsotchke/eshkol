@@ -1,0 +1,272 @@
+;;; nLab conformance: simplicial sets, Kan complexes, nerves, group cohomology,
+;;; cup products, Steenrod squares, spectral sequences and crossed modules.
+;;;
+;;; Each claim below is quoted from the nLab page named in its header
+;;; (https://ncatlab.org/nlab/show/<page>, read 2026-10-29) and decided exactly
+;;; with core.simplicial (simplicial sets, horns and Kan conditions, nerves,
+;;; classifying spaces, finite groups and crossed modules) and core.homological
+;;; (normalized chains and cochains over core.ring carriers, cup and cup-i
+;;; products, Steenrod squares, the Bockstein, group (co)homology through the
+;;; bar construction, spectral sequences of filtered complexes). A claim prints
+;;; "PASS: [page#k] ..." or "FAIL: [page#k] ..." with the computed value.
+;;; Coverage and planned claims: docs/reports/NLAB_CONFORMANCE.md.
+(require stdlib)
+(require core.ring)
+(require core.sheaf.site)
+(require core.category)
+(require core.simplicial)
+(require core.homological)
+
+(define passed 0)
+(define failed 0)
+(define (claim page k text value ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display "[") (display page) (display "#") (display k) (display "] ")
+  (display text) (display " => ") (write value) (newline))
+(define (all? p xs) (cond ((null? xs) #t) ((p (car xs)) (all? p (cdr xs))) (else #f)))
+(define (any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (any? p (cdr xs)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (count p xs) (length (filter p xs)))
+(define (binomial n k) (if (or (< k 0) (> k n)) 0 (let loop ((i 0) (acc 1)) (if (= i k) acc (loop (+ i 1) (/ (* acc (- n i)) (+ i 1)))))))
+(define F2 (make-zmod 2))
+(define (zero-vector? v) (all? (lambda (x) (= x 0)) (vector->list v)))
+(define (vadd R u v) (coefficient-vector-add R u v))
+(define (vneg R u) (coefficient-vector-scale R -1 u))
+
+(define Z2 (cyclic-group 2))
+(define Z3 (cyclic-group 3))
+(define BZ2 (classifying-space Z2))
+(define BZ3 (classifying-space Z3))
+
+;; ---------------------------------------------------------------------------
+;; simplicial set
+;; ---------------------------------------------------------------------------
+;; [simplicial set#1] "the represented presheaf Δ(−,[n]), typically written as
+;; Δ[n] is an example of a simplicial set. In particular we have Δ[n]_m =
+;; Hom_Δ([m],[n])": all m-simplices of the standard simplex, degenerate ones
+;; included, number the monotone maps [m] -> [n], binomial(n + m + 1, m + 1)
+(let ((rows (apply append (map (lambda (n) (map (lambda (m) (list n m (length (simplicial-set-simplices (standard-simplex n) m)))) (range 4))) (range 4)))))
+  (claim "simplicial set" 1 "|Delta[n]_m| for n, m = 0..3" (map caddr rows)
+         (all? (lambda (r) (= (caddr r) (binomial (+ (car r) (cadr r) 1) (+ (cadr r) 1)))) rows)))
+;; [simplicial set#2] face maps d_i and degeneracy maps s_i "such that these
+;; functions satisfy the simplicial identities"
+(let* ((X (list (standard-simplex 3) (simplex-boundary 3) (horn 3 1) BZ3 (category-nerve (span-category))))
+       (v (map (lambda (Y) (length (simplicial-set-identity-violations Y 3))) X)))
+  (claim "simplicial set" 2 "simplicial-identity violations through degree 3 for Delta[3], its boundary, a horn, BZ/3, the nerve of a span" v
+         (all? (lambda (n) (= n 0)) v)))
+
+;; ---------------------------------------------------------------------------
+;; Kan complex and nerve
+;; ---------------------------------------------------------------------------
+;; [Kan complex#1] "all horns of S have fillers (that is, extend to simplices)":
+;; BZ/3 is a Kan complex; Delta[1] and the boundary of Delta[2] are not
+(let ((v (list (kan-complex-through? BZ3 3) (kan-complex-through? (standard-simplex 1) 2) (kan-complex-through? (simplex-boundary 2) 2))))
+  (claim "Kan complex" 1 "Kan through degree 3: (BZ/3, Delta[1], boundary of Delta[2])" v (equal? v '(#t #f #f))))
+;; [nerve#3] "The nerve N(C) of a small category is a Kan complex precisely if
+;; C is a groupoid"
+(let* ((cats (list (cons "BZ2" (cyclic-group-category 2)) (cons "iso" (category-full-subcategory (category-product (cyclic-group-category 1) (cyclic-group-category 1)) '(0)))
+                   (cons "discrete2" (discrete-category 2)) (cons "arrow" (walking-arrow-category)) (cons "span" (span-category))
+                   (cons "BZ3 monoid" (monoid-category 2 (lambda (g f) (if (or (= g 1) (= f 1)) 1 0)) 0))))
+       (rows (map (lambda (p) (list (car p) (category-groupoid? (cdr p)) (kan-complex-through? (category-nerve (cdr p)) 3))) cats)))
+  (claim "nerve" 3 "(category, groupoid?, nerve Kan through degree 3?)" rows (all? (lambda (r) (eq? (cadr r) (caddr r))) rows)))
+;; [nerve#4] "A simplicial set is the nerve of a small category precisely if all
+;; inner horns have unique fillers": nerves have exactly one filler for every
+;; inner horn in degrees 2 and 3; the boundary of Delta[2] has an inner horn with none
+(let* ((inner (lambda (Y n) (filter (lambda (r) (and (> (car r) 0) (< (car r) n))) (horn-filler-report Y n))))
+       (unique? (lambda (Y) (all? (lambda (n) (all? (lambda (r) (and (= 1 (caddr r)) (= 1 (cadddr r)))) (inner Y n))) '(2 3))))
+       (nerves (map category-nerve (list (walking-arrow-category) (span-category) (commutative-square-category) (cyclic-group-category 2))))
+       (sphere (inner (simplex-boundary 2) 2)))
+  (claim "nerve" 4 "(inner horns of four nerves uniquely filled?, inner-horn report of the boundary of Delta[2])"
+         (list (map unique? nerves) sphere)
+         (and (all? unique? nerves) (any? (lambda (r) (= 0 (caddr r))) sphere))))
+
+;; ---------------------------------------------------------------------------
+;; bar construction, group cohomology, real projective space
+;; ---------------------------------------------------------------------------
+;; [bar construction#1] "U Bar_T(A)[n] = T^n A": the classifying space BG has
+;; the n-tuples of group elements as n-simplices, the normalized ones being the
+;; tuples of non-identity elements; its homology is the group homology
+(let* ((S3 (symmetric-group 3))
+       (rows (map (lambda (G) (map (lambda (n) (list (simplicial-set-count (classifying-space G) n) (expt (- (group-order G) 1) n))) (range 4))) (list Z3 S3)))
+       (h (homology (simplicial-chain-complex BZ3 4))))
+  (claim "bar construction" 1 "(nondegenerate n-simplices of BZ/3 and BS_3, (|G| - 1)^n); H_*(BZ/3; Z)" (list rows h)
+         (and (all? (lambda (r) (all? (lambda (p) (= (car p) (cadr p))) r)) rows)
+              (equal? h '((0 1 ()) (1 0 (3)) (2 0 ()) (3 0 (3)) (4 0 ()))))))
+;; group cohomology over F_p and homomorphisms counted by enumeration
+(define (homomorphism-count G p)
+  (let* ((H (cyclic-group p)) (n (group-order G))
+         (fns (let loop ((k n) (acc (list '()))) (if (= k 0) acc (loop (- k 1) (apply append (map (lambda (f) (map (lambda (v) (cons v f)) (range p))) acc)))))))
+    (count (lambda (f) (let ((fv (list->vector f))) (group-homomorphism? G H (lambda (g) (vector-ref fv g))))) fns)))
+;; [group cohomology#1] "A degree-one group cocycle c, [c] ∈ H¹_Grp(G,A) is just
+;; group homomorphism G → A": |Hom(G, Z/p)| = p^dim H^1(G; F_p) (trivial action)
+(let* ((groups (list (cons "Z/4" (cyclic-group 4)) (cons "Z/2xZ/2" (group-direct-product Z2 Z2)) (cons "S3" (symmetric-group 3)) (cons "Q8" (quaternion-group))))
+       (rows (apply append (map (lambda (g) (map (lambda (p) (list (car g) p (homomorphism-count (cdr g) p) (expt p (cadr (list-ref (group-cohomology (cdr g) 1 (make-zmod p)) 1))))) '(2 3))) groups))))
+  (claim "group cohomology" 1 "(G, p, |Hom(G, Z/p)|, p^dim H^1(G; F_p))" rows (all? (lambda (r) (= (caddr r) (cadddr r))) rows)))
+;; [group cohomology#2] "c(g₁,g₂) - c(g₁,g₂·g₃) + c(g₁·g₂,g₃) - c(g₂,g₃) = 0":
+;; for every normalized 2-cochain of Z/3 and of Z/2 x Z/2 over F_2, the bar
+;; differential vanishes exactly when the formula holds on all triples
+(let* ((check (lambda (G)
+                (let* ((C (group-cochain-complex G 3 F2)) (D (complex-out-map C 2))
+                       (nonid (filter (lambda (g) (not (= g (group-identity G)))) (group-elements G)))
+                       (pairs (apply append (map (lambda (a) (map (lambda (b) (list a b)) nonid)) nonid)))
+                       (cochains (let loop ((k (length pairs)) (acc (list '()))) (if (= k 0) acc (loop (- k 1) (apply append (map (lambda (f) (list (cons 0 f) (cons 1 f))) acc))))))
+                       (value (lambda (f a b) (let loop ((ps pairs) (vs f)) (cond ((null? ps) 0) ((equal? (car ps) (list a b)) (car vs)) (else (loop (cdr ps) (cdr vs)))))))
+                       (els (group-elements G)))
+                  (all? (lambda (f)
+                          (eq? (zero-vector? (coefficient-matrix-vector F2 D (list->vector f)))
+                               (all? (lambda (g1) (all? (lambda (g2) (all? (lambda (g3)
+                                                                             (= 0 (modulo (+ (value f g1 g2) (- (value f g1 (group-mul G g2 g3))) (value f (group-mul G g1 g2) g3) (- (value f g2 g3))) 2)))
+                                                                           els)) els)) els)))
+                        cochains))))
+       (v (list (check Z3) (check (group-direct-product Z2 Z2)))))
+  (claim "group cohomology" 2 "D c = 0 iff the 2-cocycle formula, all 16 resp. 512 normalized 2-cochains of Z/3, Z/2 x Z/2 over F_2" v (equal? v '(#t #t))))
+;; [group cohomology#3] "H^• (ℤ₂ⁿ, ℤ₂) ≅ ℤ₂[e₁,…,eₙ]": dim H^k = the number of
+;; monomials of degree k, for n = 1, 2 and k = 0..3
+(let* ((dims (lambda (G) (map cadr (group-cohomology G 3 F2))))
+       (d1 (dims Z2)) (d2 (dims (group-direct-product Z2 Z2))))
+  (claim "group cohomology" 3 "dim H^k(Z/2; F_2), dim H^k(Z/2 x Z/2; F_2), k = 0..3" (list d1 d2)
+         (and (equal? d1 '(1 1 1 1)) (equal? d2 (map (lambda (k) (binomial (+ k 1) 1)) (range 4))))))
+;; [real projective space#4] "infinite real projective space ℝP^∞ has the homotopy
+;; type of the Eilenberg-MacLane space K(ℤ/2,1) = B ℤ/2": H_k(BZ/2; Z) follows the
+;; pattern of H_k(RP^n) for k < n (Z/2 in odd degrees, 0 in positive even degrees)
+(let ((h (homology (simplicial-chain-complex BZ2 6) 5)))
+  (claim "real projective space" 4 "H_k(BZ/2; Z), k = 0..5" h
+         (all? (lambda (e) (let ((k (car e))) (equal? (cdr e) (cond ((= k 0) '(1 ())) ((odd? k) '(0 (2))) (else '(0 ())))))) h)))
+
+;; ---------------------------------------------------------------------------
+;; cup product
+;; ---------------------------------------------------------------------------
+(define torus (make-simplicial-complex
+               (let ((V (lambda (i j) (+ (* 3 (modulo i 3)) (modulo j 3)))))
+                 (apply append (map (lambda (i) (apply append (map (lambda (j) (list (list (V i j) (V (+ i 1) j) (V (+ i 1) (+ j 1))) (list (V i j) (V i (+ j 1)) (V (+ i 1) (+ j 1))))) (range 3)))) (range 3))))))
+(define rp2 (make-simplicial-complex '((1 2 3) (1 3 4) (1 4 5) (1 5 6) (1 6 2) (2 3 5) (3 4 6) (4 5 2) (5 6 3) (6 2 4))))
+;; [cup product#1] "d(a ∪ b) = (da) ∪ b + (-1)^p a ∪ (db)": on every pair of basis
+;; cochains of the triangulated torus over Z with p + q <= 1
+(let* ((X torus) (R integers) (n 0)
+       (ok (all? (lambda (pq)
+                   (let ((p (car pq)) (q (cadr pq)))
+                     (all? (lambda (i) (all? (lambda (j)
+                                               (set! n (+ n 1))
+                                               (let* ((a (cochain-basis-vector X p i)) (b (cochain-basis-vector X q j))
+                                                      (lhs (simplicial-coboundary X (cup-product X a p b q) (+ p q)))
+                                                      (rhs (vadd R (cup-product X (simplicial-coboundary X a p) (+ p 1) b q)
+                                                                 (coefficient-vector-scale R (if (even? p) 1 -1) (cup-product X a p (simplicial-coboundary X b q) (+ q 1))))))
+                                                 (equal? lhs rhs)))
+                                             (range (simplicial-set-count X q))))
+                           (range (simplicial-set-count X p)))))
+                 '((0 0) (0 1) (1 0)))))
+  (claim "cup product" 1 "Leibniz rule on basis cochain pairs of the torus" n ok))
+;; [cup product#2] "the cup product makes H^•(C^•(X)) into a ring: the cohomology
+;; ring": in H^*(RP^2; F_2) the square of the generator of H^1 is the nonzero
+;; class of H^2; on the torus over Z the product of the two generators of H^1
+;; generates H^2 and each generator squares to zero
+(let* ((C (simplicial-cochain-complex rp2 2 F2))
+       (a (cdr (car (homology-generators C 1))))
+       (aa (cup-product rp2 a 1 a 1 F2))
+       (Ct (simplicial-cochain-complex torus 2))
+       (gens (map cdr (homology-generators Ct 1)))
+       (x (car gens)) (y (cadr gens))
+       (xy (cup-product torus x 1 y 1)) (xx (cup-product torus x 1 x 1))
+       (top (cdr (car (homology-generators Ct 2))))
+       (multiple (lambda (v w) ;; v = +- w modulo coboundaries
+                   (or (homology-boundary? Ct 2 (vadd integers v (vneg integers w))) (homology-boundary? Ct 2 (vadd integers v w))))))
+  (claim "cup product" 2 "(a^2 nonzero in H^2(RP^2; F_2)?, xy = +- generator of H^2(T^2; Z)?, x^2 = 0 in H^2(T^2)?)"
+         (list (not (homology-boundary? C 2 aa)) (multiple xy top) (homology-boundary? Ct 2 xx))
+         (and (homology-cycle? C 2 aa) (not (homology-boundary? C 2 aa)) (multiple xy top) (homology-boundary? Ct 2 xx))))
+
+;; ---------------------------------------------------------------------------
+;; Steenrod square: on BZ/2 = RP^infinity over F_2 every normalized n-cochain is
+;; a multiple of the single nondegenerate n-simplex, the class x^n
+;; ---------------------------------------------------------------------------
+(define (xpow n) (vector 1))
+(define (sq k n u) (vector-ref (steenrod-square BZ2 u n k) 0))
+;; [Steenrod square#1] "for n = 0 it is the identity", "if n > deg(x) then
+;; Sq^n(x) = 0" and "for k = n the morphism Sq^n ... is the cup product x ↦ x ∪
+;; x": Sq^i(x^n) = binomial(n, i) x^(n+i) mod 2, n = 1..4
+(let* ((rows (map (lambda (n) (map (lambda (i) (sq i n (xpow n))) (range (+ n 2)))) '(1 2 3 4)))
+       (ok (all? (lambda (n) (and (= 1 (sq 0 n (xpow n))) (= 0 (sq (+ n 1) n (xpow n)))
+                                  (= (sq n n (xpow n)) (vector-ref (cup-product BZ2 (xpow n) n (xpow n) n F2) 0))
+                                  (all? (lambda (i) (= (sq i n (xpow n)) (modulo (binomial n i) 2))) (range (+ n 2)))))
+                 '(1 2 3 4))))
+  (claim "Steenrod square" 1 "Sq^i(x^n) on RP^infinity for n = 1..4, i = 0..n+1" rows ok))
+;; [Steenrod square#2] "Sq^1 is the Bockstein homomorphism of the short exact
+;; sequence ℤ_2 → ℤ_4 → ℤ_2": on x^n in BZ/2, n = 1..5, and on the generator of H^1(RP^2)
+(let* ((bz (map (lambda (n) (list (sq 1 n (xpow n)) (vector-ref (bockstein BZ2 (xpow n) n 2) 0))) '(1 2 3 4 5)))
+       (C (simplicial-cochain-complex rp2 2 F2)) (a (cdr (car (homology-generators C 1))))
+       (diff (vadd F2 (steenrod-square rp2 a 1 1) (bockstein rp2 a 1 2))))
+  (claim "Steenrod square" 2 "(Sq^1 x^n, Bockstein x^n) for n = 1..5; Sq^1 a - beta a a coboundary on RP^2" (list bz (homology-boundary? C 2 diff))
+         (and (all? (lambda (r) (= (car r) (cadr r))) bz) (homology-boundary? C 2 diff))))
+;; [Steenrod square#3] "Sq^1 ∘ Sq^j = {Sq^{j+1} | j even; 0 | j odd}" (Adem)
+(let* ((rows (apply append (map (lambda (n) (map (lambda (j) (list n j (sq 1 (+ n j) (vector (sq j n (xpow n)))) (if (even? j) (sq (+ j 1) n (xpow n)) 0))) (range (+ n 1)))) '(1 2 3 4 5)))))
+  (claim "Steenrod square" 3 "Sq^1 Sq^j x^n = (j even ? Sq^(j+1) : 0) x^n, n = 1..5, j = 0..n; cases" (length rows)
+         (all? (lambda (r) (= (caddr r) (cadddr r))) rows)))
+;; [Steenrod square#4] "Sq^n(x ∪ y) = ∑_{i + j = n} (Sq^i x) ∪ (Sq^j y)" (Cartan)
+(let* ((rows (apply append (map (lambda (a) (map (lambda (b) (map (lambda (n)
+                                                                    (list (sq n (+ a b) (cup-product BZ2 (xpow a) a (xpow b) b F2))
+                                                                          (modulo (apply + (map (lambda (i) (* (sq i a (xpow a)) (sq (- n i) b (xpow b)))) (range (+ n 1)))) 2)))
+                                                                  (range (+ a b 1))))
+                                                 '(1 2 3)))
+                                 '(1 2)))))
+  (claim "Steenrod square" 4 "Cartan formula on x^a cup x^b, a = 1, 2, b = 1..3, every n" (length rows)
+         (all? (lambda (r) (all? (lambda (p) (= (car p) (cadr p))) r)) rows)))
+
+;; ---------------------------------------------------------------------------
+;; spectral sequence: the filtration of the cochains of the 2-sphere (boundary
+;; of Delta[3]) by the circle A spanned by the vertices 0, 1, 2 (relative
+;; cochains in filtration degree 1), over F_2
+;; ---------------------------------------------------------------------------
+(define sphere2 (simplex-boundary 3))
+(define sphere-filtered
+  (let* ((C (simplicial-cochain-complex sphere2 2 F2))
+         (in-A? (lambda (x) (and (all? (lambda (v) (< v 3)) x) (< (length x) 3)))))
+    (make-filtered-complex C (lambda (n) (list->vector (map (lambda (x) (if (in-A? x) 0 1)) (vector->list (simplicial-set-nondegenerate sphere2 n))))))))
+;; [spectral sequence#1] "a morphism (called the differential) d^{p,q}_r :
+;; E^{p,q}_r ⟶ E^{p+r,q−r+1}_r satisfying d_r^2 = 0": each page is the
+;; cohomology of the previous one under d_r
+(let ((v (list (filtered-complex-violations sphere-filtered) (spectral-sequence-page-violations sphere-filtered 3 2))))
+  (claim "spectral sequence" 1 "(filtration violations, E_(r+1) /= H(E_r, d_r) violations); E_1 page" (list v (spectral-sequence-page sphere-filtered 1 2))
+         (equal? v '(() ()))))
+;; [spectral sequence#2] "a spectral sequence converges weakly to a graded object
+;; H_• with exhaustive filtering F_• H_•" when "E^∞_{p,q} ≃ G_p H_{p+q}"
+(let ((v (spectral-sequence-convergence-violations sphere-filtered 2)))
+  (claim "spectral sequence" 2 "E_infinity vs the associated graded of H^*(S^2; F_2): violations; limit page" (list v (spectral-sequence-limit-page sphere-filtered))
+         (null? v)))
+
+;; ---------------------------------------------------------------------------
+;; crossed module and Postnikov tower
+;; ---------------------------------------------------------------------------
+;; [crossed module#1] "δ(^g₁g₂) = g₁δ(g₂)g₁⁻¹" and "^δ(g₂)g'₂ = g₂g'₂g₂⁻¹", with
+;; the example "AUT(H) ≔ (G₂ = H, G₁ = Aut(H), δ = Ad, α = Id)": for H = Z/5,
+;; Aut(H) = Z/4 acting by m |-> 2^n m and Ad trivial; giving Z/5 -> Z/5 the
+;; identity boundary with that action breaks the axioms
+(let* ((aut (abelian-crossed-module 5 4 0 (lambda (n m) (modulo (* (expt 2 n) m) 5))))
+       (bad (abelian-crossed-module 5 5 1 (lambda (n m) (modulo (* (expt 2 n) m) 5)))))
+  (claim "crossed module" 1 "(violations of AUT(Z/5), |pi_1|, |pi_2|; a non-example has violations)"
+         (list (crossed-module-violations aut) (crossed-module-pi1-order aut) (crossed-module-pi2-order aut) (pair? (crossed-module-violations bad)))
+         (and (null? (crossed-module-violations aut)) (= 4 (crossed-module-pi1-order aut)) (= 5 (crossed-module-pi2-order aut))
+              (pair? (crossed-module-violations bad)))))
+;; [crossed module#2] "The kernel of δ is inside the center of H: ker(δ) ⊂ Z(H)":
+;; for the central extension Q_8 -> Q_8/{+-1} (action by conjugation through the
+;; section), ker d = {+-1} is central in Q_8
+(let* ((Q (quaternion-group)) (minus-one (let loop ((g 0)) (if (and (not (= g (group-identity Q))) (= (group-identity Q) (group-mul Q g g)) (all? (lambda (h) (group-commute? Q g h)) (group-elements Q))) g (loop (+ g 1)))))
+       (qd (group-quotient Q (list (group-identity Q) minus-one))) (N (car qd)) (section (cadr qd)) (proj (caddr qd))
+       (X (make-crossed-module Q N proj (lambda (n m) (let ((s (section n))) (group-mul Q (group-mul Q s m) (group-inv Q s))))))
+       (ker (crossed-module-pi2 X)))
+  (claim "crossed module" 2 "(violations, |ker d|, ker d central in Q_8?)" (list (crossed-module-violations X) (length ker) (all? (lambda (m) (all? (lambda (h) (group-commute? Q m h)) (group-elements Q))) ker))
+         (and (null? (crossed-module-violations X)) (= 2 (length ker))
+              (all? (lambda (m) (all? (lambda (h) (group-commute? Q m h)) (group-elements Q))) ker))))
+;; [Postnikov tower#1] "for all vertices v ∈ X_0 we have for the homotopy groups
+;; π_{>n}(X_n, v) = 0" and "(i_n)_* : π_i (X,v) →^≃ π_i X_n for i ≤ n": the nerve
+;; of a crossed module is a 2-type: Kan's combinatorial pi_1 and pi_2 of the nerve
+;; of Z/2 -> Z/2 (zero boundary) are the crossed module's, and pi_3 vanishes
+(let* ((X (abelian-crossed-module 2 2 0 (lambda (n m) m))) (Y (crossed-module-nerve X))
+       (v (vector-ref (simplicial-set-nondegenerate Y 0) 0))
+       (pis (map (lambda (n) (length (kan-homotopy-classes Y v n))) '(1 2 3))))
+  (claim "Postnikov tower" 1 "(|pi_1|, |pi_2|, |pi_3|) of the nerve of Z/2 -0-> Z/2" pis
+         (equal? pis (list (crossed-module-pi1-order X) (crossed-module-pi2-order X) 1))))
+
+(if (= failed 0)
+    (begin (display "PASS: nlab_simplicial_test (") (display passed) (display " claims)") (newline))
+    (begin (display "FAIL: nlab_simplicial_test (") (display failed) (display " of ") (display (+ passed failed)) (display " claims failed)") (newline)))

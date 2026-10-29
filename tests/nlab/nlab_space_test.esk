@@ -7,12 +7,13 @@
 ;;; derived cohomology over Z with torsion) and core.integer_linalg. Spaces are
 ;;; finite T_0 spaces (McCord): a simplicial complex enters as its face poset,
 ;;; whose cohomology with constant coefficients is the singular cohomology of
-;;; the complex. A claim prints "PASS: [page#k] ..." or "FAIL: [page#k] ..."
+;;; the complex (face posets from core.simplicial). A claim prints "PASS: [page#k] ..." or "FAIL: [page#k] ..."
 ;;; with the computed value. Coverage and planned claims: docs/reports/NLAB_CONFORMANCE.md.
 (require stdlib)
 (require core.sheaf)
 (require core.topos)
 (require core.integer_linalg)
+(require core.simplicial)
 
 (define passed 0)
 (define failed 0)
@@ -38,25 +39,11 @@
 ;; ---------------------------------------------------------------------------
 (define (insert-sorted x l) (cond ((null? l) (list x)) ((< x (car l)) (cons x l)) ((= x (car l)) l) (else (cons (car l) (insert-sorted x (cdr l))))))
 (define (sort-set l) (let loop ((l l) (acc '())) (if (null? l) acc (loop (cdr l) (insert-sorted (car l) acc)))))
-;; all nonempty faces of the given facets, without repetition
-(define (faces-of facets)
-  (let loop ((fs facets) (acc '()))
-    (if (null? fs) (reverse acc)
-        (loop (cdr fs)
-              (let add ((ss (filter pair? (sheaf-subsets (sort-set (car fs))))) (acc acc))
-                (if (null? ss) acc (add (cdr ss) (if (member (car ss) acc) acc (cons (car ss) acc)))))))))
-;; the face poset: points are faces, x <= y when x is a face of y
-(define (face-poset facets)
-  (let* ((fs (faces-of facets)) (v (list->vector fs)) (n (vector-length v))
-         (covers (apply append (map (lambda (i) (map (lambda (j) (cons i j))
-                                                      (filter (lambda (j) (and (= (length (vector-ref v j)) (+ 1 (length (vector-ref v i))))
-                                                                               (subset? (vector-ref v i) (vector-ref v j))))
-                                                              (range n))))
-                                    (range n)))))
-    (make-finite-space n covers)))
+;; a simplicial complex given by its facets, as its face poset (core.simplicial:
+;; McCord's finite model, points the nondegenerate simplices)
+(define (facet-poset facets) (face-poset (make-simplicial-complex facets) 3))
 (define (cells-by-dimension facets)
-  (let ((fs (faces-of facets)))
-    (map (lambda (d) (length (filter (lambda (f) (= (length f) (+ d 1))) fs))) (range (apply max (map length fs))))))
+  (let ((K (make-simplicial-complex facets))) (map (lambda (d) (simplicial-set-count K d)) (range (apply max (map length facets))))))
 (define (sort-opens os) (let loop ((l (map sort-set os)) (acc '()))
                           (if (null? l) acc
                               (loop (cdr l) (let ins ((a acc)) (cond ((null? a) (list (car l))) ((opens<? (car l) (car a)) (cons (car l) a)) (else (cons (car a) (ins (cdr a))))))))))
@@ -79,7 +66,7 @@
 (define (betti h) (map cadr h))
 (define (alternating xs) (let loop ((l xs) (s 1) (acc 0)) (if (null? l) acc (loop (cdr l) (- s) (+ acc (* s (car l)))))))
 
-(define (simplex-boundary n) ;; the facets of the boundary of the n-simplex
+(define (boundary-facets n) ;; the facets of the boundary of the n-simplex
   (map (lambda (i) (filter (lambda (v) (not (= v i))) (range (+ n 1)))) (range (+ n 1))))
 (define rp2-facets '((1 2 3) (1 3 4) (1 4 5) (1 5 6) (1 6 2) (2 3 5) (3 4 6) (4 5 2) (5 6 3) (6 2 4)))
 ;; 3 x 3 grids with sides identified: torus, and Klein bottle (one side reversed)
@@ -289,7 +276,7 @@
 ;; homotopy types as finite simplicial complexes / finite CW-complexes." (McCord):
 ;; the face posets of the boundaries of the 2- and 3-simplex have the cohomology of
 ;; S^1 and S^2, the same as the 4- and 6-point minimal models
-(let* ((s1 (Z-cohomology (face-poset (simplex-boundary 2)) 2)) (s2 (Z-cohomology (face-poset (simplex-boundary 3)) 3))
+(let* ((s1 (Z-cohomology (facet-poset (boundary-facets 2)) 2)) (s2 (Z-cohomology (facet-poset (boundary-facets 3)) 3))
        (m1 (Z-cohomology (minimal-sphere 1) 2)) (m2 (Z-cohomology (minimal-sphere 2) 3)))
   (claim "finite topological space" 2 "H^* of the face posets of the boundary of the 2- and 3-simplex" (list s1 s2)
          (and (equal? s1 m1) (equal? s2 m2) (equal? (betti s1) '(1 1 0)) (equal? (betti s2) '(1 0 1 0)))))
@@ -297,7 +284,7 @@
 ;; intersections of open subsets are still open" and "Declare a subset A of P to
 ;; be an open subset if it is upwards-closed": the opens of a finite space are the
 ;; up-sets of the opposite order (core.sheaf orders points so that opens are down-sets)
-(let* ((spaces (list pseudocircle (minimal-sphere 2) (face-poset (simplex-boundary 2)) (make-finite-space 3 (list (cons 0 1) (cons 1 2)))))
+(let* ((spaces (list pseudocircle (minimal-sphere 2) (facet-poset (boundary-facets 2)) (make-finite-space 3 (list (cons 0 1) (cons 1 2)))))
        (ok (all? (lambda (X)
                    (let* ((n (finite-space-size X)) (opens (sort-opens (finite-space-opens X)))
                           (up-sets-of-op (filter (lambda (A) (all? (lambda (a) (all? (lambda (b) (or (not (finite-space-leq? X b a)) (memv b A))) (range n))) A))
@@ -329,7 +316,7 @@
 ;; that of the triangulated circle (the face poset of the boundary of a triangle)
 (let ((h (Z-cohomology pseudocircle 2)))
   (claim "pseudocircle" 2 "H^*(pseudocircle; Z)" h
-         (and (equal? h '((0 1 ()) (1 1 ()) (2 0 ()))) (equal? h (Z-cohomology (face-poset (simplex-boundary 2)) 2)))))
+         (and (equal? h '((0 1 ()) (1 1 ()) (2 0 ()))) (equal? h (Z-cohomology (facet-poset (boundary-facets 2)) 2)))))
 
 ;; ---------------------------------------------------------------------------
 ;; sphere, torus, real projective space, Klein bottle, Euler characteristic
@@ -342,40 +329,40 @@
          (equal? rows '((2 0) (1 1 0) (1 0 1 0) (1 0 0 1 0)))))
 ;; [sphere#2] "The n-sphere is the boundary of the (n+1)-ball.": the boundary of
 ;; the (n+1)-simplex has H^n = Z and no other reduced cohomology, n = 1..3
-(let ((rows (map (lambda (n) (Z-cohomology (face-poset (simplex-boundary (+ n 1))) n)) '(1 2 3))))
+(let ((rows (map (lambda (n) (Z-cohomology (facet-poset (boundary-facets (+ n 1))) n)) '(1 2 3))))
   (claim "sphere" 2 "top cohomology of the boundary of the 2-, 3-, 4-simplex" (map (lambda (h) (list-ref h (- (length h) 1))) rows)
          (all? (lambda (h) (let ((n (- (length h) 1))) (equal? (betti h) (map (lambda (k) (if (or (= k 0) (= k n)) 1 0)) (range (+ n 1)))))) rows)))
 ;; [torus#1] "As a homotopy type the torus is the product of two copies of the
 ;; circle": the product of two pseudocircles and a triangulated torus have the
 ;; same integral cohomology Z, Z^2, Z
 (let* ((prod (Z-cohomology (finite-space-product pseudocircle pseudocircle) 2))
-       (tri (Z-cohomology (face-poset torus-facets) 2)))
+       (tri (Z-cohomology (facet-poset torus-facets) 2)))
   (claim "torus" 1 "H^* of pseudocircle x pseudocircle and of the 3 x 3 triangulated torus" (list prod tri)
          (and (equal? prod tri) (equal? prod '((0 1 ()) (1 2 ()) (2 1 ()))))))
 ;; [torus#2] "the stable homotopy type of the torus is the wedge sum of 2 circles
 ;; and one 2-sphere": reduced Betti numbers of T^2 = 2 x those of S^1 + those of S^2
 (let* ((red (lambda (b) (cons (- (car b) 1) (cdr b))))
-       (t (red (betti (Z-cohomology (face-poset torus-facets) 2))))
+       (t (red (betti (Z-cohomology (facet-poset torus-facets) 2))))
        (s1 (red (betti (Z-cohomology pseudocircle 2)))) (s2 (red (betti (Z-cohomology (minimal-sphere 2) 2)))))
   (claim "torus" 2 "reduced Betti numbers of T^2, S^1, S^2" (list t s1 s2) (equal? t (map (lambda (a b) (+ (* 2 a) b)) s1 s2))))
 ;; [real projective space#1] "H^k(ℝP^n) = {ℤ if k=0 or k=n if odd; ℤ_2 if k even
 ;; and 1≤k<n; 0 otherwise}" — for n = 2 the top group is the Z/2 of the
 ;; non-orientable surface: H^0 = Z, H^1 = 0, H^2 = Z/2 (6-vertex RP^2)
-(let ((h (Z-cohomology (face-poset rp2-facets) 2)))
+(let ((h (Z-cohomology (facet-poset rp2-facets) 2)))
   (claim "real projective space" 1 "H^*(RP^2; Z)" h (equal? h '((0 1 ()) (1 0 ()) (2 0 (2))))))
 ;; [real projective space#2] "H_k(ℝP^n) = {ℤ if k=0 or k=n if odd; ℤ_2 if k odd and
 ;; 1≤k<n; 0 otherwise}": H_0 = Z, H_1 = Z/2, H_2 = 0
-(let ((h (Z-homology (face-poset rp2-facets) 2)))
+(let ((h (Z-homology (facet-poset rp2-facets) 2)))
   (claim "real projective space" 2 "H_*(RP^2; Z)" h (equal? h '((0 1 ()) (1 0 (2)) (2 0 ())))))
 ;; [real projective space#3] "ℝP^n is orientable iff n is odd": the top integral
 ;; cohomology is Z for RP^1 = S^1 and torsion for RP^2
-(let ((top1 (list-ref (Z-cohomology (face-poset (simplex-boundary 2)) 1) 1))
-      (top2 (list-ref (Z-cohomology (face-poset rp2-facets) 2) 2)))
+(let ((top1 (list-ref (Z-cohomology (facet-poset (boundary-facets 2)) 1) 1))
+      (top2 (list-ref (Z-cohomology (facet-poset rp2-facets) 2) 2)))
   (claim "real projective space" 3 "top cohomology of RP^1 and RP^2" (list top1 top2)
          (and (equal? top1 '(1 1 ())) (equal? top2 '(2 0 (2))))))
 ;; [Klein bottle#1] "A closed surface that does not admit an orientation.": a
 ;; triangulated Klein bottle has H^2 = Z/2 (no fundamental class) and H^1 = Z
-(let ((h (Z-cohomology (face-poset klein-facets) 2)))
+(let ((h (Z-cohomology (facet-poset klein-facets) 2)))
   (claim "Klein bottle" 1 "H^*(K; Z) of the 3 x 3 triangulated Klein bottle" h (equal? h '((0 1 ()) (1 1 ()) (2 0 (2))))))
 ;; [Euler characteristic#1] "χ(S^n) = {2 if n is even; 0 otherwise}"
 (let ((rows (map (lambda (n) (finite-space-euler-characteristic (minimal-sphere n) (+ n 1))) (range 5))))
@@ -383,14 +370,14 @@
 ;; [Euler characteristic#2] "χ(X) = Σ_{k ∈ ℕ} (-1)^k |cell(X)_k|" and "χ(V) ≔
 ;; Σ_{n ∈ ℤ} (-1)^n rk_R H_n(V)": the alternating cell count equals the
 ;; alternating sum of Betti numbers for RP^2, T^2 and the Klein bottle
-(let ((rows (map (lambda (f) (list (alternating (cells-by-dimension f)) (alternating (betti (Z-cohomology (face-poset f) 2)))))
+(let ((rows (map (lambda (f) (list (alternating (cells-by-dimension f)) (alternating (betti (Z-cohomology (facet-poset f) 2)))))
                  (list rp2-facets torus-facets klein-facets))))
   (claim "Euler characteristic" 2 "(cell count chi, Betti chi) for RP^2, T^2, K" rows
          (and (equal? rows '((1 1) (0 0) (0 0))))))
 ;; [Euler characteristic#3] "χ(X) = χ(P_T(X))" (poset of triangulation simplices)
 ;; and "χ(X) ≔ |Vertices(X)| - |Edges(X)| + |Faces(X)|"
-(let ((rows (map (lambda (f) (list (alternating (cells-by-dimension f)) (finite-space-euler-characteristic (face-poset f) 3)))
-                 (list rp2-facets torus-facets klein-facets (simplex-boundary 3)))))
+(let ((rows (map (lambda (f) (list (alternating (cells-by-dimension f)) (finite-space-euler-characteristic (facet-poset f) 3)))
+                 (list rp2-facets torus-facets klein-facets (boundary-facets 3)))))
   (claim "Euler characteristic" 3 "(V - E + F, chi of the face poset) for RP^2, T^2, K, S^2" rows
          (all? (lambda (r) (= (car r) (cadr r))) rows)))
 
@@ -404,7 +391,7 @@
                                     (let ((k (rational-solve Z n (make-vector n 1)))) (and k (apply + (vector->list k)))))))
        (poset-of (lambda (X) (poset-category (finite-space-size X) (lambda (x y) (finite-space-leq? X x y)))))
        (BZ3 (make-category-from-presentation 1 (list (list 0 0 's)) (lambda (w) (let loop ((k (remainder (length w) 3)) (acc '())) (if (= k 0) acc (loop (- k 1) (cons 0 acc))))) 3))
-       (spaces (list (face-poset (simplex-boundary 3)) (face-poset rp2-facets)))
+       (spaces (list (facet-poset (boundary-facets 3)) (facet-poset rp2-facets)))
        (rows (map (lambda (X) (list (weighting-chi (poset-of X)) (finite-space-euler-characteristic X 3))) spaces)))
   (claim "Euler characteristic" 4 "(weighting chi, chain chi) for S^2 and RP^2 face posets; weighting chi of BZ/3"
          (list rows (weighting-chi BZ3))
@@ -416,7 +403,7 @@
 (let* ((chi (lambda (S pts) (let loop ((k 0) (acc 0)) (let ((n (length (finite-space-chains S k pts)))) (if (= n 0) acc (loop (+ k 1) (+ acc (* (if (even? k) 1 -1) n))))))))
        (cases (list (list pseudocircle (finite-space-down-set pseudocircle 2) (finite-space-down-set pseudocircle 3))
                     (list (minimal-sphere 2) (finite-space-down-set (minimal-sphere 2) 4) (finite-space-down-set (minimal-sphere 2) 5))
-                    (let ((K (face-poset rp2-facets))) (list K (filter (lambda (x) (any? (lambda (y) (finite-space-leq? K x y)) (range 5))) (range (finite-space-size K)))
+                    (let ((K (facet-poset rp2-facets))) (list K (filter (lambda (x) (any? (lambda (y) (finite-space-leq? K x y)) (range 5))) (range (finite-space-size K)))
                                                              (filter (lambda (x) (any? (lambda (y) (finite-space-leq? K x y)) (filter (lambda (x) (>= x 3)) (range (finite-space-size K))))) (range (finite-space-size K)))))))
        (rows (map (lambda (c) (let* ((S (car c)) (X (cadr c)) (Y (caddr c)) (Z (filter (lambda (x) (memv x Y)) X))
                                      (W (sort-set (append X Y))))

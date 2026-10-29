@@ -2,9 +2,9 @@
 #
 # nLab conformance gate (v1.4.0-connection).
 #
-# Runs, from an existing CMake build, the six CTest entries of the nLab
-# conformance suite (tests/nlab/nlab_{topos,space,ring}_test.esk, native JIT and
-# AOT) and checks their claim lines against the manifest tests/nlab/claims.tsv:
+# Runs, from an existing CMake build, the ten CTest entries of the nLab
+# conformance suite (tests/nlab/nlab_{topos,space,ring,category,simplicial}_test.esk,
+# native JIT and AOT) and checks their claim lines against the manifest tests/nlab/claims.tsv:
 #   - every claim marked `computed` printed "PASS: [page#k]" exactly once in
 #     both the JIT and the AOT run;
 #   - no claim printed FAIL, and every claim line is in the manifest;
@@ -47,8 +47,8 @@ WORK="$BUILD_DIR_PATH/test-work/nlab-conformance"
 mkdir -p "$WORK"
 export ESHKOL_PATH="$REPO_ROOT/lib${ESHKOL_PATH:+:$ESHKOL_PATH}"
 
-TESTS='^(nlab_(topos|space|ring)_(jit|aot))$'
-EXPECTED=6
+TESTS='^(nlab_(topos|space|ring|category|simplicial)_(jit|aot))$'
+EXPECTED=10
 
 ctest_log="$WORK/ctest.log"
 (cd "$BUILD_DIR_PATH" && ctest -R "$TESTS" -V -j "${JOBS:-2}") > "$ctest_log" 2>&1

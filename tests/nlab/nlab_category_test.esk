@@ -1,0 +1,169 @@
+;;; nLab conformance: functors, adjunctions, Kan extensions, ends and comma
+;;; categories.
+;;;
+;;; Each claim below is quoted from the nLab page named in its header
+;;; (https://ncatlab.org/nlab/show/<page>, read 2026-10-29) and decided exactly
+;;; with core.category (functors and natural transformations between finite
+;;; categories, Set-valued functors, limits, colimits, ends, Kan extensions by
+;;; the pointwise and the (co)end formula, comma categories and adjunctions).
+;;; A claim prints "PASS: [page#k] ..." or "FAIL: [page#k] ..." with the
+;;; computed value. Coverage and planned claims: docs/reports/NLAB_CONFORMANCE.md.
+(require stdlib)
+(require core.sheaf.site)
+(require core.category)
+
+(define passed 0)
+(define failed 0)
+(define (claim page k text value ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display "[") (display page) (display "#") (display k) (display "] ")
+  (display text) (display " => ") (write value) (newline))
+(define (all? p xs) (cond ((null? xs) #t) ((p (car xs)) (all? p (cdr xs))) (else #f)))
+(define (any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (any? p (cdr xs)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (objects C) (range (category-object-count C)))
+(define (arrows C) (range (category-arrow-count C)))
+(define (count p xs) (length (filter p xs)))
+
+(define arrow (walking-arrow-category))
+(define span (span-category))
+(define cospan (cospan-category))
+(define square (commutative-square-category))
+(define BZ2 (cyclic-group-category 2))
+(define (chain n) (poset-category n (lambda (x y) (<= x y))))
+;; a monotone map of chains as a functor of thin categories
+(define (monotone->functor C D f)
+  (make-functor C D (list->vector (map f (objects C)))
+                (list->vector (map (lambda (a) (category-thin-arrow D (f (arrow-source C a)) (f (arrow-target C a)))) (arrows C)))))
+
+;; Set-valued functors on the span 1 <- 0 -> 2 and the cospan 1 -> 0 <- 2
+(define (span-functor s0 s1 s2 m1 m2) ;; m1 : S0 -> S1, m2 : S0 -> S2 as alists
+  (make-set-functor span (list s0 s1 s2)
+                    (lambda (a x) (let ((t (arrow-target span a)))
+                                    (cond ((= t (arrow-source span a)) x) ((= t 1) (cdr (assoc x m1))) (else (cdr (assoc x m2))))))))
+(define G-span (span-functor '(x y) '(a b c) '(p q) '((x . a) (y . a)) '((x . p) (y . q))))
+(define G-span2 (span-functor '(x) '(a b) '(c) '((x . a)) '((x . c))))
+
+;; ---------------------------------------------------------------------------
+;; Kan extension
+;; ---------------------------------------------------------------------------
+;; [Kan extension#1] "(Lan_p F)(c') ≅ ∫^{c ∈ C} C'(p(c),c') · F(c)" and
+;; "(Ran_p F)(c') ≅ ∫_{c ∈ C} [C'(c',p(c)),F(c)]": the pointwise (comma
+;; category) Kan extensions and the (co)end formulas agree up to the canonical
+;; natural isomorphism, along every functor span -> arrow and arrow -> BZ/2
+(let* ((cases (append (map (lambda (F) (list F G-span)) (functors-between span arrow))
+                      (map (lambda (F) (list F (constant-set-functor arrow '(u v)))) (functors-between arrow BZ2))))
+       (ok (all? (lambda (c) (let ((F (car c)) (G (cadr c)))
+                               (and (set-natural-isomorphism? (set-lan F G) (set-lan-coend F G) (set-lan-comparison F G))
+                                    (set-natural-isomorphism? (set-ran F G) (set-ran-end F G) (set-ran-comparison F G)))))
+                 cases)))
+  (claim "Kan extension" 1 "Lan = coend formula and Ran = end formula, canonically isomorphic; functors checked" (length cases) ok))
+;; [Kan extension#2] "If C' = * is the terminal category, then the left Kan
+;; extension operation forms the colimit of a functor; the right Kan extension
+;; operation forms the limit of a functor.": the pushout of {a b c} <- {x y} ->
+;; {p q} (x, y -> a; x -> p, y -> q) has the 3 classes {a p q x y}, {b}, {c}, and the limit 2
+(let* ((rows (map (lambda (G) (let ((T (terminal-functor span)))
+                                (list (set-functor-element-count (set-lan T G) 0) (set-colimit-size (set-colimit G))
+                                      (set-functor-element-count (set-ran T G) 0) (set-limit-size G))))
+                  (list G-span G-span2))))
+  (claim "Kan extension" 2 "(|Lan_! G|, |colim G|, |Ran_! G|, |lim G|) for two span diagrams" rows
+         (and (all? (lambda (r) (and (= (car r) (cadr r)) (= (caddr r) (cadddr r)))) rows)
+              (equal? rows '((3 3 2 2) (2 2 1 1))))))
+;; [Kan extension#3] When p is fully faithful the Kan extension "restricts back
+;; to F" via the universal natural transformation η_F: F ⇒ p^* Lan_p F: the unit
+;; is a bijection along the full inclusion of {0, 1} in the commutative square,
+;; and not along the functor discrete 2 -> arrow, which is not full
+(let* ((inc (inclusion-functor square '(0 1))) (S (car inc)) (F (cdr inc))
+       (G (make-set-functor S (list '(x y) '(a b c)) (lambda (a x) (if (= (arrow-source S a) (arrow-target S a)) x (if (eq? x 'x) 'a 'b)))))
+       (full (set-transformation-bijective? G (set-functor-restrict (set-lan F G) F) (set-lan-unit F G)))
+       (D2 (discrete-category 2)) (F2 (make-functor D2 arrow (vector 0 1) (vector (category-identity arrow 0) (category-identity arrow 1))))
+       (G2 (constant-set-functor D2 '(u v)))
+       (not-full (set-transformation-bijective? G2 (set-functor-restrict (set-lan F2 G2) F2) (set-lan-unit F2 G2))))
+  (claim "Kan extension" 3 "(unit bijective along a full inclusion?, along discrete 2 -> arrow?)" (list full not-full)
+         (and full (not not-full))))
+
+;; ---------------------------------------------------------------------------
+;; adjoint functor
+;; ---------------------------------------------------------------------------
+(define C4 (chain 4))
+(define C2 (chain 2))
+(define floor-half (monotone->functor C4 C2 (lambda (x) (quotient x 2))))
+;; [adjoint functor#1] "Hom_D(L(c),d) ≃ Hom_C(c,R(d))" "which is natural in c
+;; and d": floor(c/2) on the chain 0 < 1 < 2 < 3 has the right adjoint d |-> 2d + 1,
+;; found from the terminal objects of the comma categories (L | d); a functor that
+;; does not preserve the bottom element has none
+(let* ((A (right-adjoint floor-half)) (R (adjunction-right A))
+       (shifted (monotone->functor C2 C4 (lambda (x) (+ x 1))))) ;; 0 |-> 1 is not bottom-preserving
+  (claim "adjoint functor" 1 "R d for d = 0, 1; hom-bijection violations; right adjoint of 0 |-> 1, 1 |-> 2"
+         (list (map (lambda (d) (functor-object R d)) (objects C2)) (adjunction-hom-bijection-violations A) (right-adjoint shifted))
+         (and (equal? (map (lambda (d) (functor-object R d)) (objects C2)) '(1 3))
+              (null? (adjunction-hom-bijection-violations A))
+              (not (right-adjoint shifted)))))
+;; [adjoint functor#2] the triangle identities "id_L(c): L(c) → L(R(L(c))) →
+;; L(c)" and "id_R(d): R(d) → R(L(R(d))) → R(d)", and "adjoint functors are, if
+;; they exist, unique up to natural isomorphism": of all functors D -> C, exactly
+;; one has floor(c/2) as its left adjoint
+(let* ((A (right-adjoint floor-half)) (R (adjunction-right A))
+       (Rs (functors-between C2 C4))
+       (with-L (filter (lambda (R2) (let ((B (left-adjoint R2))) (and B (functor-equal? (adjunction-left B) floor-half)))) Rs)))
+  (claim "adjoint functor" 2 "(triangle-identity violations, functors D -> C, those right adjoint to L)"
+         (list (adjunction-violations A) (length Rs) (length with-L))
+         (and (null? (adjunction-violations A)) (= 1 (length with-L)) (functor-equal? (car with-L) R))))
+
+;; ---------------------------------------------------------------------------
+;; end
+;; ---------------------------------------------------------------------------
+;; [end#1] "A classical example of an end is the V-object of natural
+;; transformations between V-enriched functors.": Nat(X, Y) = ∫_c Y(c)^X(c)
+(let* ((pairs (list (list (constant-set-functor arrow '(0 1)) (corepresentable-set-functor arrow 0))
+                    (list (corepresentable-set-functor arrow 0) (constant-set-functor arrow '(0 1 2)))
+                    (list G-span G-span2) (list G-span2 G-span) (list G-span G-span)
+                    (list (constant-set-functor BZ2 '(a b)) (constant-set-functor BZ2 '(a b)))))
+       (rows (map (lambda (p) (list (length (set-natural-transformations-end (car p) (cadr p))) (set-natural-transformation-count (car p) (cadr p)))) pairs)))
+  (claim "end" 1 "(|end of Y(c)^X(c)|, |Nat(X, Y)|) for six pairs" rows (all? (lambda (r) (= (car r) (cadr r))) rows)))
+
+;; ---------------------------------------------------------------------------
+;; comma category
+;; ---------------------------------------------------------------------------
+;; [comma category#1] "If f is the identity functor of C and g is the inclusion
+;; 1→C of an object c∈C, then (f/g) is the slice category C/c": objects are the
+;; arrows into c, morphisms the h with v h = u, counted directly
+(let* ((cats (list arrow span square BZ2 (chain 3)))
+       (rows (map (lambda (C) (map (lambda (c)
+                                     (let* ((into (category-arrows-into C c))
+                                            (morphisms (apply + (map (lambda (u) (apply + (map (lambda (v) (count (lambda (h) (and (= (arrow-source C h) (arrow-source C u)) (= (arrow-target C h) (arrow-source C v))
+                                                                                                                               (eqv? (category-compose C v h) u)))
+                                                                                                                  (arrows C)))
+                                                                                       into)))
+                                                              into)))
+                                            (K (slice-category C c)))
+                                       (list (category-object-count K) (length into) (category-arrow-count K) morphisms)))
+                                   (objects C)))
+                  cats)))
+  (claim "comma category" 1 "(|ob C/c|, |arrows into c|, |ar C/c|, morphisms counted) per object of five categories"
+         (map (lambda (r) (map (lambda (x) (list (car x) (caddr x))) r)) rows)
+         (all? (lambda (r) (all? (lambda (x) (and (= (car x) (cadr x)) (= (caddr x) (cadddr x)))) r)) rows)))
+;; [comma category#2] "If f and g are both the identity functor of a category C,
+;; then (f/g) is the arrow category C²": objects the arrows of C, morphisms the
+;; commutative squares
+(let* ((cats (list arrow span square BZ2))
+       (rows (map (lambda (C)
+                    (let* ((K (comma-category (identity-functor C) (identity-functor C)))
+                           (squares (apply + (map (lambda (u) (apply + (map (lambda (u2)
+                                                                               (apply + (map (lambda (f) (count (lambda (g) (and (= (arrow-source C f) (arrow-source C u)) (= (arrow-target C f) (arrow-source C u2))
+                                                                                                                                 (= (arrow-source C g) (arrow-target C u)) (= (arrow-target C g) (arrow-target C u2))
+                                                                                                                                 (eqv? (category-compose C g u) (category-compose C u2 f))))
+                                                                                                                (arrows C)))
+                                                                             (arrows C))))
+                                                                           (arrows C))))
+                                                  (arrows C)))))
+                      (list (category-object-count K) (category-arrow-count C) (category-arrow-count K) squares)))
+                  cats)))
+  (claim "comma category" 2 "(|ob (id/id)|, |ar C|, |ar (id/id)|, commutative squares) for four categories" rows
+         (all? (lambda (r) (and (= (car r) (cadr r)) (= (caddr r) (cadddr r)))) rows)))
+
+(if (= failed 0)
+    (begin (display "PASS: nlab_category_test (") (display passed) (display " claims)") (newline))
+    (begin (display "FAIL: nlab_category_test (") (display failed) (display " of ") (display (+ passed failed)) (display " claims failed)") (newline)))

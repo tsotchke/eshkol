@@ -4391,12 +4391,13 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
 endif()
 
 # nLab conformance: claims quoted from nLab pages, each decided exactly on the
-# libraries (core.sheaf, core.topos, core.ring, core.multimodular,
-# core.integer_linalg). One PASS/FAIL line per claim; the page-by-page coverage
-# is docs/reports/NLAB_CONFORMANCE.md and scripts/run_nlab_conformance.sh
+# libraries (core.sheaf, core.topos, core.ring, core.multimodular, core.category,
+# core.simplicial, core.homological, core.integer_linalg). One PASS/FAIL line
+# per claim; the page-by-page coverage is
+# docs/reports/NLAB_CONFORMANCE.md and scripts/run_nlab_conformance.sh
 # counts the claims.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    foreach(_nlab_suite nlab_topos nlab_space nlab_ring)
+    foreach(_nlab_suite nlab_topos nlab_space nlab_ring nlab_category nlab_simplicial)
         add_test(NAME ${_nlab_suite}_jit
             COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/nlab/${_nlab_suite}_test.esk")
         add_test(NAME ${_nlab_suite}_aot COMMAND ${CMAKE_COMMAND}
