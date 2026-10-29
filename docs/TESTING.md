@@ -169,15 +169,16 @@ it in the script's coverage manifest.
 
 `tests/nlab/` decides claims quoted from nLab pages exactly on the mathematics
 libraries (`core.sheaf`, `core.topos`, `core.ring`, `core.multimodular`,
-`core.integer_linalg`), one `PASS: [page#k] ... => value` line per claim, in
-three suites registered as `nlab_{topos,space,ring}_{jit,aot}`.
+`core.integer_linalg`, `core.category`, `core.simplicial`, `core.homological`),
+one `PASS: [page#k] ... => value` line per claim, in five suites registered as
+`nlab_{topos,space,ring,category,simplicial}_{jit,aot}`.
 `scripts/run_nlab_conformance.sh` runs them and checks every claim line against
 the manifest `tests/nlab/claims.tsv` and the coverage line of
 [the nLab conformance report](reports/NLAB_CONFORMANCE.md).
 
 ```bash
 BUILD_DIR=build scripts/run_nlab_conformance.sh
-# => nLab conformance gate: PASS (ctest 6/6; claims PASS jit 103/103, aot 103/103; coverage pages=51 computed-pages=37 computed=103 planned=33)
+# => nLab conformance gate: PASS (ctest 10/10; claims PASS jit 132/132, aot 132/132; coverage pages=51 computed-pages=50 computed=132 planned=9)
 ```
 
 Trace: `scripts/icc_traces/v14_nlab_conformance.jsonl`.

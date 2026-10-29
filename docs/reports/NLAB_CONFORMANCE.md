@@ -5,37 +5,40 @@ measured claim by claim. Each computed claim is a sentence quoted from an nLab
 page (read 2026-10-29), turned into a finite statement and decided exactly by an
 Eshkol program on the mathematics libraries: [`core.sheaf`](../reference/stdlib/sheaf.md),
 [`core.topos`](../reference/stdlib/topos.md), [`core.ring`](../reference/stdlib/ring.md),
-[`core.multimodular`](../reference/stdlib/multimodular.md) and
-[`core.integer_linalg`](../reference/stdlib/integer_linalg.md). Every check can
-fail: it compares the library's answer with an independent computation (a
-definition re-evaluated by enumeration, a second algorithm, a closed formula)
-or with the value nLab states.
+[`core.multimodular`](../reference/stdlib/multimodular.md),
+[`core.integer_linalg`](../reference/stdlib/integer_linalg.md), `core.category`
+(ADR-0036), and `core.simplicial` with `core.homological` (ADR-0037). Every
+check can fail: it compares the library's answer with an independent
+computation (a definition re-evaluated by enumeration, a second algorithm, a
+closed formula) or with the value nLab states.
 
-<!-- nlab-coverage: pages=51 computed-pages=37 computed=103 planned=33 -->
+<!-- nlab-coverage: pages=51 computed-pages=50 computed=132 planned=9 -->
 
 | | Pages | Claims |
 |---|---:|---:|
-| Computed, passing in native JIT and AOT | 37 | 103 |
-| Listed, not yet computed (facility named below) | 14 further pages, and 10 of the pages above | 33 |
-| Total | 51 | 136 |
+| Computed, passing in native JIT and AOT | 50 | 132 |
+| Listed, not yet computed (facility named below) | 1 further page, and 8 of the pages above | 9 |
+| Total | 51 | 141 |
 
 ## How it runs
 
 | File | Contents |
 |---|---|
-| [`tests/nlab/nlab_topos_test.esk`](../../tests/nlab/nlab_topos_test.esk) | subobject classifiers, sieves, Heyting algebras, topologies, Boolean and De Morgan toposes, Kripke-Joyal semantics, Yoneda, exponentials, power objects |
+| [`tests/nlab/nlab_topos_test.esk`](../../tests/nlab/nlab_topos_test.esk) | subobject classifiers, sieves, Heyting algebras, Grothendieck and Lawvere-Tierney topologies, Boolean and De Morgan toposes, Kripke-Joyal semantics, Yoneda, exponentials, power objects |
 | [`tests/nlab/nlab_space_test.esk`](../../tests/nlab/nlab_space_test.esk) | sheaves, sheafification, descent, Cech cohomology, finite spaces and the homotopy types they model, Euler characteristics, nerves |
 | [`tests/nlab/nlab_ring_test.esk`](../../tests/nlab/nlab_ring_test.esk) | dual numbers, local rings, nilpotents, units mod n and the Chinese remainder theorem, quadratic reciprocity, group algebras, functor of points, jets, Smith normal form, prime spectra |
+| [`tests/nlab/nlab_category_test.esk`](../../tests/nlab/nlab_category_test.esk) | Kan extensions, adjunctions, ends, comma categories |
+| [`tests/nlab/nlab_simplicial_test.esk`](../../tests/nlab/nlab_simplicial_test.esk) | simplicial sets, Kan complexes, nerves, the bar construction, group cohomology, cup products, Steenrod squares, spectral sequences, crossed modules, Postnikov sections |
 | [`tests/nlab/claims.tsv`](../../tests/nlab/claims.tsv) | the manifest: one row per claim, computed or planned |
-| [`scripts/run_nlab_conformance.sh`](../../scripts/run_nlab_conformance.sh) | runs the six CTest entries and checks every claim line against the manifest and the coverage line above |
+| [`scripts/run_nlab_conformance.sh`](../../scripts/run_nlab_conformance.sh) | runs the ten CTest entries and checks every claim line against the manifest and the coverage line above |
 
 Each claim prints one line, `PASS: [page#k] <what was computed> => <value>`, so
 the output is the evidence. The header comment of each claim quotes the nLab
-sentence it checks. CTest: `nlab_topos_{jit,aot}`, `nlab_space_{jit,aot}`,
-`nlab_ring_{jit,aot}`; ICC criterion `v14_nlab_conformance`.
+sentence it checks. CTest: `nlab_{topos,space,ring,category,simplicial}_{jit,aot}`;
+ICC criterion `v14_nlab_conformance`.
 
 ```text
-ctest --test-dir build --output-on-failure -R '^nlab_(topos|space|ring)_(jit|aot)$'
+ctest --test-dir build --output-on-failure -R '^nlab_(topos|space|ring|category|simplicial)_(jit|aot)$'
 BUILD_DIR=build ./scripts/run_nlab_conformance.sh
 ```
 
@@ -45,8 +48,10 @@ objects, BZ/2, BZ/3, the walking isomorphism) and sheaf toposes on finite
 spaces; homotopy types enter as finite T_0 spaces (McCord): the minimal
 models of spheres and face posets of triangulations (boundaries of simplices,
 the 6-vertex RP^2, 3 x 3 grids for the torus and the Klein bottle), whose
-cohomology with constant coefficients is singular cohomology; rings are Z/n,
-F_p[e]/e^k, Q[e]/e^k, polynomial rings, Z[C_n] and Z[C2 x C2].
+cohomology with constant coefficients is singular cohomology, and as
+simplicial sets (standard simplices and horns, classifying spaces BG, nerves
+of categories and of crossed modules); rings are Z/n, F_p[e]/e^k, Q[e]/e^k,
+polynomial rings, Z[C_n] and Z[C2 x C2]; groups are Z/n, Z/2 x Z/2, S_3, Q_8.
 
 ## Computed claims, page by page
 
@@ -75,10 +80,10 @@ F_p[e]/e^k, Q[e]/e^k, polynomial rings, Z[C_n] and Z[C2 x C2].
 | pseudocircle | `nlab_space_test` | 2 | #1 the opens of the 4-point space with l, r < t, b; #2 H^*(pseudocircle; Z) |
 | sphere | `nlab_space_test` | 2 | #1 Betti numbers of the (2n+2)-point model, n = 0..3; #2 top cohomology of the boundary of the 2-, 3-, 4-simplex |
 | torus | `nlab_space_test` | 2 | #1 H^* of pseudocircle x pseudocircle and of the 3 x 3 triangulated torus; #2 reduced Betti numbers of T^2, S^1, S^2 |
-| real projective space | `nlab_space_test` | 3 | #1 H^*(RP^2; Z); #2 H_*(RP^2; Z); #3 top cohomology of RP^1 and RP^2 |
+| real projective space | `nlab_space_test` | 4 | #1 H^*(RP^2; Z); #2 H_*(RP^2; Z); #3 top cohomology of RP^1 and RP^2; #4 H_k(BZ/2; Z), k = 0..5 |
 | Klein bottle | `nlab_space_test` | 1 | #1 H^*(K; Z) of the 3 x 3 triangulated Klein bottle |
 | Euler characteristic | `nlab_space_test` | 5 | #1 chi of the minimal models of S^0 .. S^4; #2 (cell count chi, Betti chi) for RP^2, T^2, K; #3 (V - E + F, chi of the face poset) for RP^2, T^2, K, S^2; #4 (weighting chi, chain chi) for S^2 and RP^2 face posets; weighting chi of BZ/3; #5 (chi(X union Y), chi(X) + chi(Y) - chi(X meet Y)) for open covers of S^1, S^2 and RP^2 models |
-| nerve | `nlab_space_test` | 2 | #1 \|N([1])_n\| for n = 0..5; #2 (non-degenerate 1- and 2-simplices of N(P), strict chains) for the 6-point S^2 model |
+| nerve | `nlab_space_test` | 4 | #1 \|N([1])_n\| for n = 0..5; #2 (non-degenerate 1- and 2-simplices of N(P), strict chains) for the 6-point S^2 model; #3 (category, groupoid?, nerve Kan through degree 3?); #4 (inner horns of four nerves uniquely filled?, inner-horn report of the boundary of Delta[2]) |
 | dual number | `nlab_ring_test` | 3 | #1 e * e in Q[e]/e^2, and Q[x] -> Q[e]/e^2 a surjective ring map with kernel (x^2); #2 (field?, e unit?, units of F_5[e]/e^2 of 25); #3 \|a + e b\| for (3 4) (-2 1/2) (0 7) (5/3 -1) (-1 0) |
 | local ring | `nlab_ring_test` | 6 | #1 local Z/n for n = 2..60; #2 Z/n whose non-units form an ideal, n = 2..60; #3 (n, k, Z/n[x]/x^k local?); #4 F_p is a field and local, p <= 47; #5 Z/n with exactly one maximal ideal, n = 2..40; #6 F_5[e]-points of y = x^2 and of y^2 = x^3, and the cusp's points over the origin |
 | nilpotent element | `nlab_ring_test` | 2 | #1 (nilpotents of Z/72, count of nilpotents in F_7[e]/e^3); #2 (1 - x)(1 + x + ... + x^(n-1)) = 1 for nilpotents of Z/72, Z/4[x], Q[e]/e^4 |
@@ -89,6 +94,19 @@ F_p[e]/e^k, Q[e]/e^k, polynomial rings, Z[C_n] and Z[C2 x C2].
 | jet | `nlab_ring_test` | 1 | #1 5-jet of 1/(1 + x) at 2; polynomial jets = Taylor coefficients |
 | Smith normal form | `nlab_ring_test` | 2 | #1 (diagonal of P A Q, diagonal?, \|det P\|, \|det Q\|) for six integer matrices; #2 (nonzero invariant factors, rows, det or #f) for six matrices |
 | prime spectrum | `nlab_ring_test` | 1 | #1 \|Spec Z/n\| for n = 12, 30, 49, 60 (primes dividing n); preimages of primes are prime |
+| Kan extension | `nlab_category_test` | 3 | #1 Lan = coend formula and Ran = end formula, canonically isomorphic; functors checked; #2 (\|Lan_! G\|, \|colim G\|, \|Ran_! G\|, \|lim G\|) for two span diagrams; #3 (unit bijective along a full inclusion?, along discrete 2 -> arrow?) |
+| adjoint functor | `nlab_category_test` | 2 | #1 R d for d = 0, 1; hom-bijection violations; right adjoint of 0 \|-> 1, 1 \|-> 2; #2 (triangle-identity violations, functors D -> C, those right adjoint to L) |
+| end | `nlab_category_test` | 1 | #1 (\|end of Y(c)^X(c)\|, \|Nat(X, Y)\|) for six pairs |
+| comma category | `nlab_category_test` | 2 | #1 (\|ob C/c\|, \|arrows into c\|, \|ar C/c\|, morphisms counted) per object of five categories; #2 (\|ob (id/id)\|, \|ar C\|, \|ar (id/id)\|, commutative squares) for four categories |
+| simplicial set | `nlab_simplicial_test` | 2 | #1 \|Delta[n]_m\| for n, m = 0..3; #2 simplicial-identity violations through degree 3 for Delta[3], its boundary, a horn, BZ/3, the nerve of a span |
+| Kan complex | `nlab_simplicial_test` | 1 | #1 Kan through degree 3: (BZ/3, Delta[1], boundary of Delta[2]) |
+| bar construction | `nlab_simplicial_test` | 1 | #1 (nondegenerate n-simplices of BZ/3 and BS_3, (\|G\| - 1)^n); H_*(BZ/3; Z) |
+| group cohomology | `nlab_simplicial_test` | 3 | #1 (G, p, \|Hom(G, Z/p)\|, p^dim H^1(G; F_p)); #2 D c = 0 iff the 2-cocycle formula, all 16 resp. 512 normalized 2-cochains of Z/3, Z/2 x Z/2 over F_2; #3 dim H^k(Z/2; F_2), dim H^k(Z/2 x Z/2; F_2), k = 0..3 |
+| cup product | `nlab_simplicial_test` | 2 | #1 Leibniz rule on basis cochain pairs of the torus; #2 (a^2 nonzero in H^2(RP^2; F_2)?, xy = +- generator of H^2(T^2; Z)?, x^2 = 0 in H^2(T^2)?) |
+| Steenrod square | `nlab_simplicial_test` | 4 | #1 Sq^i(x^n) on RP^infinity for n = 1..4, i = 0..n+1; #2 (Sq^1 x^n, Bockstein x^n) for n = 1..5; Sq^1 a - beta a a coboundary on RP^2; #3 Sq^1 Sq^j x^n = (j even ? Sq^(j+1) : 0) x^n, n = 1..5, j = 0..n; cases; #4 Cartan formula on x^a cup x^b, a = 1, 2, b = 1..3, every n |
+| spectral sequence | `nlab_simplicial_test` | 2 | #1 (filtration violations, E_(r+1) /= H(E_r, d_r) violations); E_1 page; #2 E_infinity vs the associated graded of H^*(S^2; F_2): violations; limit page |
+| crossed module | `nlab_simplicial_test` | 2 | #1 (violations of AUT(Z/5), \|pi_1\|, \|pi_2\|; a non-example has violations); #2 (violations, \|ker d\|, ker d central in Q_8?) |
+| Postnikov tower | `nlab_simplicial_test` | 1 | #1 (\|pi_1\|, \|pi_2\|, \|pi_3\|) of the nerve of Z/2 -0-> Z/2 |
 
 Values worth reading in the output: the walking arrow has 108 endomaps of
 Omega, of which exactly 4 are Lawvere-Tierney topologies, matching its 4
@@ -97,41 +115,18 @@ for the five groupoids and De Morgan exactly for the seven Ore categories;
 there are 29 topologies and 29 preorders on a 3-point set; the 6-vertex RP^2
 gives H^2 = Z/2 and H_1 = Z/2; the weighting of BZ/3 gives Euler
 characteristic 1/3; |Spec Z/60| = 3; F_5[e]-points of the cusp y^2 = x^3 over
-the origin form a 2-dimensional tangent space (25 of 45 points).
+the origin form a 2-dimensional tangent space (25 of 45 points); of the 10
+functors from the chain 0 < 1 to the chain 0 < 1 < 2 < 3 exactly one is right
+adjoint to floor(c/2); Sq^i(x^n) on RP^infinity is binomial(n, i) mod 2; the
+nerve of the crossed module Z/2 -0-> Z/2 has pi_1 = pi_2 = Z/2 and pi_3 = 0.
 
 ## Not yet computed
 
-Each row is a claim the suite does not compute yet, with the facility it
-needs. Where the computation already runs as a worked program, the program is
-named: extracting it into a library makes the claim a test.
+Each row is a claim the suite does not compute yet, with what it needs.
 
 | nLab page | Claim (quoted) | Needs | Worked program today |
 |---|---|---|---|
-| Kan extension #1 | "(Lan_p F)(c') ≅ ∫^{c ∈ C} C'(p(c),c') · F(c)" | functors between finite categories, coends, pointwise Kan extensions (`core.category`, ADR-0036): Planned for v1.4.0-connection | [mathematics_finite_categories_kan_extensions](../../examples/mathematics_finite_categories_kan_extensions.esk) |
-| Kan extension #2 | "If C' = * is the terminal category, then the left Kan extension operation forms the colimit of a functor" | colimits of finite set-valued diagrams (`core.category`): Planned for v1.4.0-connection | same |
-| adjoint functor #1 | "Hom_D(L(c),d) ≃ Hom_C(c,R(d))" | functors and natural hom-set bijections (`core.category`): Planned for v1.4.0-connection | - |
-| adjoint functor #2 | "id_L(c): L(c) →^{L(η_c)} L(R(L(c))) →^{ε_{L(c)}} L(c)" | units, counits, triangle identities (`core.category`): Planned for v1.4.0-connection | - |
-| end #1 | "A classical example of an end is the V-object of natural transformations between V-enriched functors." | ends and coends of finite set-valued bifunctors (`core.category`): Planned for v1.4.0-connection | - |
-| comma category #1 | "If f is the identity functor of C and g is the inclusion 1→C of an object c∈C, then (f/g) is the slice category C/c" | comma, slice and coslice categories (`core.category`): Planned for v1.4.0-connection | - |
-| Sierpinski topos #2 | "(Π ⊣ Disc ⊣ Γ ⊣ coDisc) : H^I ← → ← → H" | functors between toposes and their adjunctions (`core.category` with `core.topos`): Planned for v1.4.0-connection | - |
-| simplicial set #1 | "Δ[n]_m = Hom_Δ([m],[n])" | simplicial sets with face and degeneracy maps (`core.simplicial`, ADR-0037): Planned for v1.4.0-connection | - |
-| Kan complex #1 | "all horns of S have fillers (that is, extend to simplices)" | horns and horn fillers (`core.simplicial`): Planned for v1.4.0-connection | [mathematics_kan_complexes_horns](../../examples/mathematics_kan_complexes_horns.esk) |
-| nerve #3 | "The nerve N(C) of a small category is a Kan complex precisely if C is a groupoid" | the nerve as a simplicial set with horn filling (`core.simplicial`): Planned for v1.4.0-connection | same |
-| nerve #4 | "A simplicial set is the nerve of a category precisely if it satisfies the Segal condition" | Segal maps of a simplicial set (`core.simplicial`): Planned for v1.4.0-connection | - |
-| bar construction #1 | "U Bar_T(A)[n] = T^n A" | the bar construction and BG (`core.homological`, ADR-0037): Planned for v1.4.0-connection | [mathematics_classifying_space_dijkgraaf_witten](../../examples/mathematics_classifying_space_dijkgraaf_witten.esk) |
-| group cohomology #1 | "A degree-one group cocycle c, [c] ∈ H¹_Grp(G,A) is just group homomorphism G → A" | group cochains with coefficients in a G-module (`core.homological`): Planned for v1.4.0-connection | [mathematics_group_cohomology_sweep](../../examples/mathematics_group_cohomology_sweep.esk) |
-| group cohomology #2 | "c(g₁,g₂) - c(g₁,g₂·g₃) + c(g₁·g₂,g₃) - c(g₂,g₃) = 0" | the inhomogeneous cochain complex (`core.homological`): Planned for v1.4.0-connection | [mathematics_group_cohomology_order_eight](../../examples/mathematics_group_cohomology_order_eight.esk) |
-| group cohomology #3 | "H^• (ℤ₂ⁿ, ℤ₂) ≅ ℤ₂[e₁,…,eₙ]" | cup products and F_p coefficients (`core.homological`; `core.sheaf` coefficients are Z and Q): Planned for v1.4.0-connection | [mathematics_cohomology_rings_cup_products](../../examples/mathematics_cohomology_rings_cup_products.esk) |
-| cup product #1 | "d(a ∪ b) = (da) ∪ b + (-1)^p a ∪ (db)" | the cochain-level cup product (`core.homological`): Planned for v1.4.0-connection | same |
-| cup product #2 | "the cup product makes H^•(C^•(X)) into a ring: the cohomology ring" | cohomology rings (`core.homological`): Planned for v1.4.0-connection | same |
-| spectral sequence #1 | "d^{p,q}_r : E^{p,q}_r ⟶ E^{p+r,q−r+1}_r satisfying d_r^2 = 0" | the spectral sequence of a filtered complex (`core.homological`): Planned for v1.4.0-connection | - |
-| spectral sequence #2 | "E^∞_{p,q} ≃ G_p H_{p+q}" | convergence to the associated graded (`core.homological`): Planned for v1.4.0-connection | - |
-| real projective space #4 | "infinite real projective space ℝP^∞ has the homotopy type of the Eilenberg-MacLane space K(ℤ/2,1) = B ℤ/2" | group cohomology of Z/2 through the bar construction (`core.homological`): Planned for v1.4.0-connection | - |
-| Steenrod square #1 | "Sq^1 ∘ Sq^j = {Sq^{j+1} \| j even; 0 \| j odd}" | cup-i products and Steenrod squares over F_2: Planned for v1.4.1 | - |
-| Steenrod square #2 | "Sq^1 is the Bockstein homomorphism of the short exact sequence ℤ_2 → ℤ_4 → ℤ_2" | Z/2 and Z/4 coefficients and the Bockstein: Planned for v1.4.1 | - |
-| crossed module #1 | "δ(^g₁g₂) = g₁δ(g₂)g₁⁻¹" and "^δ(g₂)g'₂ = g₂g'₂g₂⁻¹" | finite groups, actions and automorphism groups as library values: Planned for v1.4.1 | [mathematics_two_groups_postnikov](../../examples/mathematics_two_groups_postnikov.esk) |
-| crossed module #2 | "The kernel of δ is inside the center of H: ker(δ) ⊂ Z(H)" | finite groups (kernels, centres): Planned for v1.4.1 | same |
-| Postnikov tower #1 | "(i_n)_* : π_i (X,v) →^≃ π_i X_n for i ≤ n" | homotopy groups of Kan complexes and Postnikov sections: Planned for v1.4.1 | same |
+| Sierpinski topos #2 | "(Π ⊣ Disc ⊣ Γ ⊣ coDisc) : H^I ← → ← → H" | functors between toposes and their adjunctions (`core.category` with `core.topos`): Planned for v1.4.1 | - |
 | structure sheaf #1 | "For a ringed topos (𝒳, 𝒪) the ring object 𝒪 ∈ 𝒳 is called the structure sheaf." (with 𝒪 internally local) | the Zariski site of a finite ring and its structure sheaf as a library constructor: Planned for v1.4.1 | [topos_local_ring_test](../../tests/stdlib/topos_local_ring_test.esk) builds the site by hand |
 | local ring #7 | "whenever a + b = 1, a or b is invertible", read in the Zariski topos | the same constructor: Planned for v1.4.1 | same |
 | prime spectrum #2 | "given by the basis of open sets D_f = Spec R[f^{-1}] ⊂ Spec R" | the localization carrier R[1/f] in `core.ring`: Planned for v1.4.1 | - |
@@ -149,9 +144,6 @@ named: extracting it into a library makes the claim a test.
   are filed under the page that holds them. nLab has no page "Chinese remainder
   theorem"; the theorem is checked as stated on "multiplicative group of
   integers modulo n".
-- Simplicial complexes enter the suite as face posets built inside
-  `nlab_space_test.esk`; a library constructor (simplicial complex to finite
-  space, with the chain complex) is part of `core.simplicial`.
 - `ring-det` over Z eliminates with unit pivots, so the unimodularity of the
   Smith transforms is checked with `multimodular-det`.
 - Adding a claim: write it in the suite with its quote, add its row to
