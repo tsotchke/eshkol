@@ -538,6 +538,17 @@
                       (begin (vector-set! chosen 3 #f) (loop (+ i 1) groups (+ checks 1))))
                   (begin (vector-set! chosen 3 cand) (loop (+ i 1) groups checks)))))))))
 
+;; Buchberger on the homogenization: the basis of <f^h> under
+;; (homogenized o), dehomogenized and interreduced, is the reduced basis of
+;; <f> under o. Under an order that is not graded (lex, block orders) this
+;; keeps the computation degree by degree.
+(define (gb-buchberger-homogenized cx fs)
+  (let* ((n (cx-n cx)) (vars (cx-vars cx)) (hv (gb-fresh-variable vars))
+         (H (make-polys (cx-K cx) (append vars (list hv)) (list 'homogenized (cx-order cx))))
+         (cxH (gb-context H "groebner-basis"))
+         (r (gb-buchberger cxH (map (lambda (f) (gb-homogenize f n)) fs) #f)))
+    (cons (gb-interreduce cx (map (lambda (g) (gb-dehomogenize g n)) (car r))) (cdr r))))
+
 ;; The exact check over Q of step 3.
 (define (gb-verify-candidate cxH G fh)
   (and (pair? G)
@@ -556,19 +567,24 @@
           ((eq? (car os) key) (cadr os))
           (else (loop (cddr os))))))
 
-;; (groebner-basis-report fs ['method 'buchberger | 'multimodular])
+;; (groebner-basis-report fs ['method m])
+;; m = multimodular (the default over Q), buchberger (the default over
+;; other fields; under an order that is not graded it runs on the
+;; homogenization), or buchberger-direct.
 ;; => alist: basis, method, pairs-reduced, zero-reductions, primes,
 ;;    unlucky-primes, verifications.
 (define (groebner-basis-report fs . options)
   (let* ((P (gb-carrier-of fs "groebner-basis")) (cx (gb-context P "groebner-basis"))
-         (method (gb-option options 'method 'buchberger))
+         (method (gb-option options 'method (if (ring-carrier=? (cx-K cx) rationals) 'multimodular 'buchberger)))
          (input (filter pair? (gb-input cx fs)))
          (wrap (lambda (G) (map (cx-wrap cx) G))))
     (cond ((null? input)
            (list (cons 'basis '()) (cons 'method method)))
-          ((eq? method 'buchberger)
-           (let ((r (gb-buchberger cx input #f)))
-             (list (cons 'basis (wrap (car r))) (cons 'method 'buchberger)
+          ((or (eq? method 'buchberger) (eq? method 'buchberger-direct))
+           (let ((r (if (or (eq? method 'buchberger-direct) (gb-graded-order? (cx-order cx)))
+                        (gb-buchberger cx input #f)
+                        (gb-buchberger-homogenized cx input))))
+             (list (cons 'basis (wrap (car r))) (cons 'method method)
                    (cons 'pairs-reduced (cadr r)) (cons 'zero-reductions (caddr r)))))
           ((eq? method 'multimodular)
            (if (not (ring-carrier=? (cx-K cx) rationals))

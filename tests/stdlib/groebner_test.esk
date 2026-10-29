@@ -1,0 +1,340 @@
+;;; groebner_test.esk -- core.ring K[x1..xn] and core.groebner.
+;;;
+;;; The carrier: monomial orders, the ring laws over Q and F_7, the
+;;; embeddings of fewer variables and of other orders, evaluation maps.
+;;; Groebner bases: the textbook examples of Cox, Little and O'Shea (Ideals,
+;;; Varieties, and Algorithms, chapters 2-4 and 9) with their printed
+;;; answers, cyclic-n and Katsura-n, Buchberger against the multimodular
+;;; method, F_p against Q, a forced unlucky prime, the ideal operations,
+;;; Hilbert polynomials and zero-dimensional solving, and the refusals.
+
+(require core.ring)
+(require core.groebner)
+(require core.symbolic)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (set! passed (+ passed 1))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display label) (newline))))
+(define (all? p xs) (or (null? xs) (and (p (car xs)) (all? p (cdr xs)))))
+(define (refuses? kind thunk)
+  (guard (e ((eq? (ring-refusal-kind e) kind) #t) (#t #f)) (thunk) #f))
+(define (raises? thunk) (guard (e (#t #t)) (thunk) #f))
+
+;; A basis as data: each element's terms (coefficient e1 ... en).
+(define (terms-of G) (map ring-poly-terms G))
+(define (same-polys? P A B)
+  (and (= (length A) (length B)) (all? (lambda (ab) (r= P (car ab) (cadr ab))) (map list A B))))
+(define (vars-of P) (ring-poly-variables P))
+
+;; ===========================================================================
+;; The carrier K[x1..xn]
+;; ===========================================================================
+
+(define Qlex (make-polys rationals '(x y z) 'lex))
+(define Qgrlex (make-polys rationals '(x y z) 'grlex))
+(define Qgrevlex (make-polys rationals '(x y z)))
+
+;; Cox-Little-O'Shea ch. 2 sec. 2: x y^2 z^... comparisons
+(check "monomial orders: lex, grlex and grevlex on the textbook pairs"
+       (and (= (monomial-compare Qlex '(1 2 0) '(0 3 4)) 1)
+            (= (monomial-compare Qlex '(3 2 4) '(3 2 1)) 1)
+            (= (monomial-compare Qgrlex '(1 2 3) '(3 2 0)) 1)
+            (= (monomial-compare Qgrlex '(1 2 4) '(1 1 5)) 1)
+            (= (monomial-compare Qgrevlex '(4 7 1) '(4 2 3)) 1)
+            (= (monomial-compare Qgrevlex '(1 5 2) '(4 1 3)) 1)
+            (= (monomial-compare Qgrevlex '(1 1 1) '(1 1 1)) 0)))
+(check "block, elimination and weight orders"
+       (let ((B (make-polys rationals '(t x y) '(elimination 1)))
+             (W (make-polys rationals '(x y) '(weight (2 1) lex))))
+         (and (= (monomial-compare B '(1 0 0) '(0 5 5)) 1)
+              (= (monomial-compare B '(0 2 0) '(0 1 1)) 1)
+              (= (monomial-compare W '(0 3) '(1 0)) 1)
+              (= (monomial-compare W '(1 1) '(0 3)) 1)
+              (= (monomial-compare W '(1 1) '(1 1)) 0)
+              (equal? (ring-poly-monomial-order B) '(block (1 grevlex) (2 grevlex))))))
+(check "carriers are interned by field, variables and order"
+       (and (eq? Qlex (make-polys rationals '(x y z) 'lex))
+            (not (ring-carrier=? Qlex Qgrevlex))
+            (equal? (ring-carrier-name Qgrevlex) "Q[x,y,z]")
+            (equal? (ring-carrier-name Qlex) "Q[x,y,z; lex]")
+            (equal? (ring-poly-variable-names Qlex) '(x y z))))
+
+(define x (car (vars-of Qgrevlex))) (define y (cadr (vars-of Qgrevlex))) (define z (caddr (vars-of Qgrevlex)))
+(define f (r+ Qgrevlex (r* Qgrevlex 4 (r* Qgrevlex x (r* Qgrevlex y y)))
+              (r+ Qgrevlex (r* Qgrevlex -5 (r-expt Qgrevlex z 3)) (r* Qgrevlex 7/2 (r* Qgrevlex (r* Qgrevlex x x) z)))))
+(check "terms in decreasing order, leading term and degree"
+       (and (equal? (ring-poly-terms f) '((4 1 2 0) (7/2 2 0 1) (-5 0 0 3)))
+            (equal? (ring-poly-terms (ring-admit Qlex f)) '((7/2 2 0 1) (4 1 2 0) (-5 0 0 3)))
+            (equal? (ring-poly-leading-monomial (ring-admit Qgrlex f)) '(2 0 1))
+            (= (ring-poly-leading f) 4) (= (ring-poly-degree f) 3) (= (ring-poly-degree (r0 Qgrevlex)) -1)))
+(check "ring-poly builds from terms and adds repeated monomials"
+       (r= Qgrevlex (ring-poly Qgrevlex '((3 1 0 0) (-3 1 0 0) (2 0 1 0) (5 0 1 0) (1 0 0 0)))
+           (r+ Qgrevlex (r* Qgrevlex 7 y) 1)))
+(check "ring laws over Q[x,y,z] and F_7[x,y]"
+       (let* ((F7 (make-zmod 7)) (P7 (make-polys F7 '(x y)))
+              (a (ring-poly-variable P7 'x)) (b (ring-poly-variable P7 'y)))
+         (and (null? (ring-law-violations Qgrevlex (list (r0 Qgrevlex) (r1 Qgrevlex) x (r+ Qgrevlex y 1/3) f (r- Qgrevlex (r* Qgrevlex x z) 2))))
+              (null? (ring-law-violations P7 (list (r0 P7) (r1 P7) a (r+ P7 b 3) (r* P7 a (r+ P7 a b))))))))
+(check "Frobenius in characteristic 7 and the unit group"
+       (let* ((F7 (make-zmod 7)) (P7 (make-polys F7 '(x y)))
+              (a (ring-poly-variable P7 'x)) (b (ring-poly-variable P7 'y)))
+         (and (r= P7 (r-expt P7 (r+ P7 a b) 7) (r+ P7 (r-expt P7 a 7) (r-expt P7 b 7)))
+              (r-unit? P7 (r-int P7 3)) (not (r-unit? P7 a))
+              (refuses? 'ring-not-a-unit (lambda () (r-inv P7 (r+ P7 a 1)))))))
+(check "units with nilpotent coefficients: (1 + 2x)^-1 over Z/4[x,y]"
+       (let* ((Z4 (make-zmod 4)) (P4 (make-polys Z4 '(x y))) (u (r+ P4 1 (r* P4 2 (ring-poly-variable P4 'x)))))
+         (and (r-unit? P4 u) (r-one? P4 (r* P4 u (r-inv P4 u))))))
+(check "Q[x] and Q[y,z] enter Q[x,y,z]; orders re-sort on entry"
+       (let* ((Qx (make-polys rationals 'x)) (Qyz (make-polys rationals '(y z) 'lex))
+              (s (r+ Qgrevlex (ring-poly Qx '(1 0 3)) (r* Qyz (ring-poly-variable Qyz 'y) (ring-poly-variable Qyz 'z)))))
+         (and (equal? (ring-poly-terms s) '((3 2 0 0) (1 0 1 1) (1 0 0 0)))
+              (eq? (ring-join Qx Qgrevlex) Qgrevlex)
+              (refuses? 'ring-no-common-carrier (lambda () (r+ Qgrevlex x (ring-poly-variable (make-polys rationals '(w)) 'w)))))))
+(check "evaluation at a point and the evaluation ring map"
+       (let* ((Qt (make-polys rationals 't)) (t (ring-poly-variable Qt))
+              (phi (ring-poly-evaluation Qgrevlex Qt (list t 2 3))))
+         (and (= (ring-poly-eval f '(1 2 3)) (+ 16 -135 21/2))
+              (r= Qt (ring-map-apply phi f) (ring-poly Qt '(-135 16 21/2))))))
+
+;; ===========================================================================
+;; Division (Cox-Little-O'Shea ch. 2 sec. 3)
+;; ===========================================================================
+
+(define L2 (make-polys rationals '(x y) 'lex))
+(define lx (ring-poly-variable L2 'x)) (define ly (ring-poly-variable L2 'y))
+(define (L2p spec) (ring-poly L2 spec))
+(check "division of x^2 y + x y^2 + y^2 by (xy - 1, y^2 - 1) under lex"
+       (let ((d (groebner-divide (L2p '((1 2 1) (1 1 2) (1 0 2))) (list (L2p '((1 1 1) (-1 0 0))) (L2p '((1 0 2) (-1 0 0)))))))
+         (and (same-polys? L2 (car d) (list (L2p '((1 1 0) (1 0 1))) (L2p '((1 0 0)))))
+              (r= L2 (cadr d) (L2p '((1 1 0) (1 0 1) (1 0 0)))))))
+(check "the same division with the divisors swapped: remainder 2x + 1"
+       (let ((d (groebner-divide (L2p '((1 2 1) (1 1 2) (1 0 2))) (list (L2p '((1 0 2) (-1 0 0))) (L2p '((1 1 1) (-1 0 0)))))))
+         (and (same-polys? L2 (car d) (list (L2p '((1 1 0) (1 0 0))) (L2p '((1 1 0)))))
+              (r= L2 (cadr d) (L2p '((2 1 0) (1 0 0)))))))
+(check "the division identity f = sum q_i f_i + r"
+       (let* ((fs (list (L2p '((1 1 1) (-1 0 0))) (L2p '((1 0 2) (-1 0 0)))))
+              (g (L2p '((1 3 2) (-2 2 1) (5 0 3) (1 1 0))))
+              (d (groebner-divide g fs)))
+         (r= L2 g (r+ L2 (r-sum L2 (map (lambda (q h) (r* L2 q h)) (car d) fs)) (cadr d)))))
+(check "s-polynomial of x^3 y^2 - x^2 y^3 + x and 3x^4 y + y^2 under grlex"
+       (let* ((G2 (make-polys rationals '(x y) 'grlex)))
+         (r= G2 (s-polynomial (ring-poly G2 '((1 3 2) (-1 2 3) (1 1 0))) (ring-poly G2 '((3 4 1) (1 0 2))))
+             (ring-poly G2 '((-1 3 3) (1 2 0) (-1/3 0 3))))))
+
+;; ===========================================================================
+;; Groebner bases: Cox-Little-O'Shea
+;; ===========================================================================
+
+(define G2 (make-polys rationals '(x y) 'grlex))
+(define clo-27 (list (ring-poly G2 '((1 3 0) (-2 1 1))) (ring-poly G2 '((1 2 1) (-2 0 2) (1 1 0)))))
+(check "ch. 2 sec. 7: <x^3 - 2xy, x^2 y - 2y^2 + x> under grlex is {x^2, xy, y^2 - x/2}"
+       (and (equal? (terms-of (groebner-basis clo-27)) '(((1 2 0)) ((1 1 1)) ((1 0 2) (-1/2 1 0))))
+            (equal? (terms-of (groebner-basis clo-27 'method 'buchberger)) '(((1 2 0)) ((1 1 1)) ((1 0 2) (-1/2 1 0))))))
+(check "groebner-basis? and groebner-reduced? on the generators and the basis"
+       (and (not (groebner-basis? clo-27)) (groebner-basis? (groebner-basis clo-27)) (groebner-reduced? (groebner-basis clo-27))
+            (not (groebner-reduced? (cons (r* G2 2 (car (groebner-basis clo-27))) (cdr (groebner-basis clo-27)))))))
+
+(define L3 Qlex)
+(define (L3p spec) (ring-poly L3 spec))
+(define clo-28 (list (L3p '((1 2 0 0) (1 0 1 0) (1 0 0 1) (-1 0 0 0)))
+                     (L3p '((1 1 0 0) (1 0 2 0) (1 0 0 1) (-1 0 0 0)))
+                     (L3p '((1 1 0 0) (1 0 1 0) (1 0 0 2) (-1 0 0 0)))))
+(define clo-28-basis
+  '(((1 1 0 0) (1 0 1 0) (1 0 0 2) (-1 0 0 0))
+    ((1 0 2 0) (-1 0 1 0) (-1 0 0 2) (1 0 0 1))
+    ((1 0 1 2) (1/2 0 0 4) (-1/2 0 0 2))
+    ((1 0 0 6) (-4 0 0 4) (4 0 0 3) (-1 0 0 2))))
+(check "ch. 2 sec. 8: x^2+y+z = x+y^2+z = x+y+z^2 = 1 under lex, every method"
+       (and (equal? (terms-of (groebner-basis clo-28)) clo-28-basis)
+            (equal? (terms-of (groebner-basis clo-28 'method 'buchberger)) clo-28-basis)
+            (equal? (terms-of (groebner-basis clo-28 'method 'buchberger-direct)) clo-28-basis)))
+(check "ch. 2 sec. 8: its solutions: 8 with multiplicity, 3 rational"
+       (and (= (ideal-solution-count clo-28) 8)
+            (equal? (ideal-solutions clo-28) '((0 0 1) (0 1 0) (1 0 0)))
+            (= (ideal-dimension clo-28) 0) (ideal-zero-dimensional? clo-28)))
+
+;; Lagrange multipliers (ch. 2 sec. 8, example 3): extremes of x^3 + 2xyz - z^2
+;; on the unit sphere; variables lambda > x > y > z under lex. The eight
+;; rational critical points; the other four have z^2 = 11/128.
+(define LG (make-polys rationals '(l x y z) 'lex))
+(define (LGp spec) (ring-poly LG spec))
+(define lagrange (list (LGp '((3 0 2 0 0) (2 0 0 1 1) (-2 1 1 0 0)))
+                       (LGp '((2 0 1 0 1) (-2 1 0 1 0)))
+                       (LGp '((2 0 1 1 0) (-2 0 0 0 1) (-2 1 0 0 1)))
+                       (LGp '((1 0 2 0 0) (1 0 0 2 0) (1 0 0 0 2) (-1 0 0 0 0)))))
+(define lagrange-basis (groebner-basis lagrange))
+(check "ch. 2 sec. 8: the Lagrange system's eliminant z^7 - 1763/1152 z^5 + 655/1152 z^3 - 11/288 z"
+       (and (= (length lagrange-basis) 8)
+            (equal? (ring-poly-terms (car lagrange-basis))
+                    '((1 1 0 0 0) (-3/2 0 1 0 0) (-3/2 0 0 1 1) (-167616/3835 0 0 0 6) (36717/590 0 0 0 4) (-134419/7670 0 0 0 2)))
+            (equal? (ring-poly-terms (car (reverse lagrange-basis)))
+                    '((1 0 0 0 7) (-1763/1152 0 0 0 5) (655/1152 0 0 0 3) (-11/288 0 0 0 1)))))
+(check "ch. 2 sec. 8: Lagrange system, rational critical points"
+       (let ((sols (ideal-solutions lagrange)))
+         (and (all? (lambda (pt) (all? (lambda (g) (r-zero? rationals (ring-poly-eval g pt))) lagrange)) sols)
+              (equal? sols '((-3/2 -1 0 0) (-4/3 -2/3 -1/3 -2/3) (-4/3 -2/3 1/3 2/3) (-1 0 0 -1)
+                             (-1 0 0 1) (0 0 -1 0) (0 0 1 0) (3/2 1 0 0))))))
+
+(check "ideal membership (ch. 2 sec. 8): -4x^2y^2z^2 + y^6 + 3z^5 is in <xz - y^2, x^3 - z^2> under grlex"
+       (let* ((P (make-polys rationals '(x y z) 'grlex)) (gs (list (ring-poly P '((1 1 0 1) (-1 0 2 0))) (ring-poly P '((1 3 0 0) (-1 0 0 2))))))
+         (and (ideal-member? (ring-poly P '((-4 2 2 2) (1 0 6 0) (3 0 0 5))) gs)
+              (not (ideal-member? (ring-poly P '((1 1 1 1) (-1 0 0 1))) gs)))))
+
+;; ===========================================================================
+;; Elimination, intersection, quotient, saturation, radical
+;; ===========================================================================
+
+(define T4 (make-polys rationals '(t x y z) 'lex))
+(define (T4p spec) (ring-poly T4 spec))
+(define cubic (list (T4p '((1 1 0 0 0) (-1 0 1 0 0))) (T4p '((1 2 0 0 0) (-1 0 0 1 0))) (T4p '((1 3 0 0 0) (-1 0 0 0 1)))))
+(define cubic-implicit (ideal-eliminate cubic '(t)))
+(check "implicitization of the twisted cubic (t, t^2, t^3): eliminating t"
+       (and (equal? (ring-poly-variable-names (ring-carrier-of (car cubic-implicit))) '(x y z))
+            (equal? (terms-of cubic-implicit)
+                    '(((1 2 0 0) (-1 0 1 0)) ((1 1 1 0) (-1 0 0 1)) ((1 1 0 1) (-1 0 2 0)) ((1 0 3 0) (-1 0 0 2))))))
+(check "the elimination ideal under the elimination order equals the lex answer"
+       (let* ((E (make-polys rationals '(t x y z) '(elimination 1))) (es (ideal-eliminate (map (lambda (g) (ring-admit E g)) cubic) '(t))))
+         (ideal-equal? (map (lambda (g) (ring-admit Qlex g)) es) (map (lambda (g) (ring-admit Qlex g)) cubic-implicit))))
+
+(define I2 (make-polys rationals '(x y)))
+(define ix (ring-poly-variable I2 'x)) (define iy (ring-poly-variable I2 'y))
+(check "intersection: <x^2 y> with <x y^2> is <x^2 y^2>; <x> with <y> is <xy>"
+       (and (equal? (terms-of (ideal-intersection (list (r* I2 (r* I2 ix ix) iy)) (list (r* I2 ix (r* I2 iy iy))))) '(((1 2 2))))
+            (equal? (terms-of (ideal-intersection (list ix) (list iy))) '(((1 1 1))))))
+(check "quotient: <xz, yz> : <z> = <x, y>; <x^2, xy> : <x> = <x, y>"
+       (and (equal? (terms-of (ideal-quotient (list (r* Qgrevlex x z) (r* Qgrevlex y z)) (list z))) '(((1 1 0 0)) ((1 0 1 0))))
+            (equal? (terms-of (ideal-quotient (list (r* I2 ix ix) (r* I2 ix iy)) (list ix))) '(((1 1 0)) ((1 0 1))))))
+(check "saturation: <x^2 y, x y^2> : x^infinity = <y>"
+       (equal? (terms-of (ideal-saturation (list (r* I2 (r* I2 ix ix) iy) (r* I2 ix (r* I2 iy iy))) (list ix))) '(((1 0 1)))))
+(check "radical membership: x + y is in rad <x^2, y^2>, x + 1 is not"
+       (and (ideal-radical-member? (r+ I2 ix iy) (list (r* I2 ix ix) (r* I2 iy iy)))
+            (not (ideal-radical-member? (r+ I2 ix 1) (list (r* I2 ix ix) (r* I2 iy iy))))))
+(check "sum, product, subset and equality"
+       (and (equal? (terms-of (ideal-sum (list ix) (list iy))) '(((1 1 0)) ((1 0 1))))
+            (equal? (terms-of (ideal-product (list ix iy) (list ix iy))) '(((1 2 0)) ((1 1 1)) ((1 0 2))))
+            (ideal-subset? (list (r* I2 ix iy)) (list ix)) (not (ideal-subset? (list ix) (list (r* I2 ix iy))))
+            (ideal-equal? (list (r+ I2 ix iy) (r- I2 ix iy)) (list ix iy))))
+
+;; ===========================================================================
+;; Dimension and Hilbert polynomials (Cox-Little-O'Shea ch. 9)
+;; ===========================================================================
+
+(define Qs (make-polys rationals 's))
+(define (qs coeffs) (ring-poly Qs coeffs))
+(check "the affine twisted cubic: dimension 1, affine Hilbert polynomial 3s + 1, degree 3"
+       (and (= (ideal-dimension cubic-implicit) 1)
+            (r= Qs (ideal-hilbert-polynomial cubic-implicit) (qs '(1 3)))
+            (= (ideal-degree cubic-implicit) 3)))
+(check "the projective twisted cubic in P^3: Hilbert polynomial 3s + 1"
+       (let* ((P (make-polys rationals '(x y z w))) (p (lambda (spec) (ring-poly P spec)))
+              (I (list (p '((1 1 0 1 0) (-1 0 2 0 0))) (p '((1 0 1 0 1) (-1 0 0 2 0))) (p '((1 1 0 0 1) (-1 0 1 1 0))))))
+         (and (r= Qs (ideal-hilbert-polynomial I 'projective) (qs '(1 3)))
+              (equal? (ideal-hilbert-series I 'projective) '((1 2) 2)))))
+(check "a plane curve of degree 4 in P^2: Hilbert polynomial 4s - 2"
+       (let* ((P (make-polys rationals '(x y z))))
+         (r= Qs (ideal-hilbert-polynomial (list (ring-poly P '((1 4 0 0) (1 0 4 0) (1 0 0 4)))) 'projective) (qs '(-2 4)))))
+(check "dimensions: a point, a line, a plane, the unit ideal"
+       (and (= (ideal-dimension (list x y z)) 0) (= (ideal-dimension (list x y)) 1) (= (ideal-dimension (list x)) 2)
+            (= (ideal-dimension (list (r* Qgrevlex x y) (r* Qgrevlex x z))) 2)
+            (= (ideal-dimension (list (r+ Qgrevlex x 1) x)) -1)))
+
+;; ===========================================================================
+;; Benchmark families: cyclic-n and Katsura-n
+;; ===========================================================================
+
+(define (cyclic n K order)
+  (let* ((names (map (lambda (i) (string->symbol (string-append "x" (number->string i)))) (iota n)))
+         (P (make-polys K names order)) (xs (list->vector (ring-poly-variables P))))
+    (append
+     (map (lambda (d)
+            (r-sum P (map (lambda (i) (r-product P (map (lambda (j) (vector-ref xs (modulo (+ i j) n))) (iota (+ d 1))))) (iota n))))
+          (iota (- n 1)))
+     (list (r- P (r-product P (vector->list xs)) 1)))))
+(define (katsura n K order)
+  (let* ((names (map (lambda (i) (string->symbol (string-append "u" (number->string i)))) (iota (+ n 1))))
+         (P (make-polys K names order)) (us (list->vector (ring-poly-variables P)))
+         (u (lambda (l) (let ((l (abs l))) (if (> l n) (r0 P) (vector-ref us l))))))
+    (cons (r- P (r-sum P (map u (iota (+ (* 2 n) 1) (- n)))) 1)
+          (map (lambda (m) (r- P (r-sum P (map (lambda (l) (r* P (u l) (u (- m l)))) (iota (+ (* 2 n) 1) (- n)))) (u m)))
+               (iota n)))))
+
+(define c4 (cyclic 4 rationals 'grevlex))
+(define c4-basis (groebner-basis c4))
+(check "cyclic-4: 7 elements under grevlex, dimension 1, both methods agree"
+       (and (= (length c4-basis) 7) (= (ideal-dimension c4) 1)
+            (same-polys? (ring-carrier-of (car c4)) c4-basis (groebner-basis c4 'method 'buchberger))))
+(define c5 (cyclic 5 rationals 'grevlex))
+(define c5-basis (groebner-basis c5))
+(check "cyclic-5: 20 elements under grevlex, 70 solutions with multiplicity"
+       (and (= (length c5-basis) 20) (= (ideal-solution-count c5) 70) (= (ideal-degree c5) 70)))
+(define k3 (katsura 3 rationals 'lex))
+(check "Katsura-3 under lex: 4 elements in triangular shape position, 8 solutions"
+       (let ((tri (ideal-triangular-form k3)))
+         (and (= (length (groebner-basis k3)) 4) (= (ideal-solution-count k3) 8)
+              (equal? (map car tri) '(u3 u2 u1 u0))
+              (all? (lambda (grp) (= (length (cdr grp)) 1)) tri)
+              (= (ring-poly-degree (car (cdr (car tri)))) 8))))
+(check "Katsura-4 under grevlex: 16 solutions; the multimodular and Buchberger bases agree"
+       (let ((k4 (katsura 4 rationals 'grevlex)))
+         (and (= (ideal-solution-count k4) 16)
+              (same-polys? (ring-carrier-of (car k4)) (groebner-basis k4) (groebner-basis k4 'method 'buchberger)))))
+
+;; ===========================================================================
+;; F_p against Q, and the multimodular method
+;; ===========================================================================
+
+;; Reduce a basis over Q modulo p (p prime to every denominator).
+(define (basis-mod-p G p order)
+  (let* ((P (ring-carrier-of (car G))) (Fp (make-zmod p)) (Pp (make-polys Fp (ring-poly-variable-names P) order)))
+    (map (lambda (g) (ring-poly Pp (map (lambda (t) (cons (ring-admit Fp (car t)) (cdr t))) (ring-poly-terms g)))) G)))
+(check "F_p against Q: the reduced bases of cyclic-5, Katsura-3 and the textbook systems reduce to the F_p bases"
+       (all? (lambda (case)
+               (let* ((fs (car case)) (order (cadr case)) (p (caddr case))
+                      (Pp (make-polys (make-zmod p) (ring-poly-variable-names (ring-carrier-of (car fs))) order))
+                      (Gp (groebner-basis (map (lambda (f) (ring-poly Pp (map (lambda (t) (cons (ring-admit (make-zmod p) (car t)) (cdr t))) (ring-poly-terms f)))) fs))))
+                 (same-polys? Pp Gp (basis-mod-p (groebner-basis fs) p order))))
+             (list (list c5 'grevlex 32003) (list k3 'lex 32003) (list k3 'lex 1000003)
+                   (list clo-28 'lex 101) (list lagrange 'lex 10007) (list clo-27 'grlex 65521))))
+(check "an unlucky prime: 2^31 - 1 changes the leading monomials and is set aside"
+       (let* ((P (make-polys rationals '(x y)))
+              (fs (list (ring-poly P (list (list 2147483647 0 3) '(1 2 0) '(1 0 1))) (ring-poly P '((1 1 1) (-1 0 0)))))
+              (r (groebner-basis-report fs 'method 'multimodular)))
+         (and (member 2147483647 (cdr (assq 'unlucky-primes r)))
+              (not (member 2147483647 (cdr (assq 'primes r))))
+              (same-polys? P (cdr (assq 'basis r)) (groebner-basis fs 'method 'buchberger)))))
+(check "multimodular and Buchberger agree on the textbook systems and Katsura-3 under lex"
+       (all? (lambda (fs) (same-polys? (ring-carrier-of (car fs)) (groebner-basis fs 'method 'multimodular)
+                                       (groebner-basis fs 'method 'buchberger)))
+             (list clo-27 clo-28 lagrange cubic k3)))
+(check "large coefficients: <x^2 - (10^30+57)/7, y - x/3> stays exact"
+       (let* ((P (make-polys rationals '(x y) 'lex)) (c (/ (+ (expt 10 30) 57) 7))
+              (G (groebner-basis (list (ring-poly P (list '(1 2 0) (list (- c) 0 0))) (ring-poly P '((1 0 1) (-1/3 1 0)))))))
+         (equal? (terms-of G) (list (list '(1 1 0) '(-3 0 1)) (list '(1 0 2) (list (- (/ c 9)) 0 0))))))
+
+;; ===========================================================================
+;; Zero-dimensional solving over F_p, core.symbolic, refusals
+;; ===========================================================================
+
+(check "solutions over F_7: x^2 + y^2 = 1, x = y + 1"
+       (let* ((P (make-polys (make-zmod 7) '(x y) 'lex)) (gs (list (ring-poly P '((1 2 0) (1 0 2) (-1 0 0))) (ring-poly P '((1 1 0) (-1 0 1) (-1 0 0))))))
+         (equal? (ideal-solutions gs) '((0 6) (1 0)))))
+(check "core.symbolic polynomials enter and leave Q[x,y,z]"
+       (let* ((sp (poly '(y x) (list (cons '(2 1) 3) (cons '(0 0) -1)))) (q (symbolic->ring-poly Qgrevlex sp)))
+         (and (equal? (ring-poly-terms q) '((3 1 2 0) (-1 0 0 0)))
+              (poly=? (ring-poly->symbolic q) (poly '(x y z) (list (cons '(1 2 0) 3) (cons '(0 0 0) -1)))))))
+(check "refusals: a coefficient ring that is not a field, a non-zero-dimensional ideal, the multimodular method off Q"
+       (let ((Zxy (make-polys integers '(x y))))
+         (and (refuses? 'ring-missing-capability (lambda () (groebner-basis (list (ring-poly-variable Zxy 'x)))))
+              (raises? (lambda () (ideal-standard-monomials c4)))
+              (raises? (lambda () (groebner-basis (list (ring-poly-variable (make-polys (make-zmod 5) '(a b)) 'a)) 'method 'multimodular)))
+              (raises? (lambda () (make-polys rationals '(x x))))
+              (raises? (lambda () (make-polys rationals '(x y) '(elimination 2)))))))
+
+(newline)
+(display "groebner_test: ") (display passed) (display " checks passed, ") (display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: groebner_test") (newline) (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
