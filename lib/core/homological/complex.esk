@@ -329,21 +329,28 @@
             (hc-range (+ (complex-top-degree C) 1)))))
 
 ;; ((k betti torsion) ...) for k = 0 .. kmax (default: the top degree).
-;; Over a field betti is the dimension and torsion is empty.
+;; Over a field betti is the dimension and torsion is empty. Over Z each
+;; differential is put in Smith normal form once: its rank is the number of
+;; invariant factors and the torsion of the homology it bounds is the list
+;; of those greater than 1.
 (define (homology C . kmax)
   (let* ((R (complex-ring C)) (top (if (null? kmax) (complex-top-degree C) (min (car kmax) (complex-top-degree C))))
          (Z? (eq? (coefficient-kind R) 'Z))
-         (ranks (make-vector (+ (vector-length (vector-ref C 4)) 1) #f))
-         (rank-of (lambda (k) (let ((A (complex-map C k)))
-                                (if (or (< k 0) (>= k (vector-length (vector-ref C 4)))) 0
-                                    (or (vector-ref ranks k)
-                                        (let ((r (coefficient-rank R A))) (vector-set! ranks k r) r)))))))
+         (nmaps (vector-length (vector-ref C 4)))
+         (memo (make-vector (+ nmaps 1) #f))
+         (factors (lambda (k)                       ;; Z: invariant factors; a field: (rank)
+                    (if (or (< k 0) (>= k nmaps)) '()
+                        (or (vector-ref memo k)
+                            (let* ((A (complex-map C k))
+                                   (r (cond ((hc-empty? A) '())
+                                            (Z? (integer-invariant-factors A))
+                                            (else (list (coefficient-rank R A))))))
+                              (vector-set! memo k r) r)))))
+         (rank-of (lambda (k) (let ((f (factors k))) (if Z? (length f) (if (null? f) 0 (car f)))))))
     (map (lambda (k)
-           (let* ((out-k (if (eq? (complex-kind C) 'cochain) k k))
-                  (in-k (if (eq? (complex-kind C) 'cochain) (- k 1) (+ k 1)))
-                  (betti (- (complex-dim C k) (rank-of out-k) (rank-of in-k)))
-                  (A (complex-map C in-k)))
-             (list k betti (if (and Z? (not (hc-empty? A))) (filter (lambda (d) (> d 1)) (integer-invariant-factors A)) '()))))
+           (let* ((in-k (if (eq? (complex-kind C) 'cochain) (- k 1) (+ k 1)))
+                  (betti (- (complex-dim C k) (rank-of k) (rank-of in-k))))
+             (list k betti (if Z? (filter (lambda (d) (> d 1)) (factors in-k)) '()))))
          (hc-range (+ top 1)))))
 (define (cohomology C . kmax) (apply homology C kmax))
 (define (homology-betti H k) (cadr (list-ref H k)))
