@@ -38,6 +38,7 @@
 ;;; Reference: docs/reference/stdlib/ring.md.
 
 (require core.dbsp)
+(require core.theory.equational)
 
 (provide
   ;; descriptor and registry
@@ -66,6 +67,8 @@
   ring-poly-evaluation group-ring-character
   ;; algorithms over a carrier
   ring-det ring-solve ring-law-violations exact-prime?
+  ;; a carrier as a model of the theory of commutative rings (ADR-0039)
+  ring-carrier->model
   ;; interoperation with core.symbolic coefficient fields
   coefficient-field->ring ring->coefficient-field)
 
@@ -1215,6 +1218,28 @@
                  (col (+ k 1))))))))))
 
 ;; ===========================================================================
+;; A carrier as a model of the theory of commutative rings (ADR-0039)
+;; ===========================================================================
+;;
+;; A ring carrier is a model of core.theory's commutative-ring-theory: the
+;; operations zero, one, add, neg and mul are the descriptor's own, and the
+;; model's equality is the carrier's equal?. The model of Z/m lists its m
+;; elements; any other carrier is infinite unless its elements are given.
+
+(define (ring-carrier->model R . elements)
+  (rc-check R "ring-carrier->model")
+  (make-model commutative-ring-theory (vector-ref R 5)
+              'operations (list (cons 'zero (vector-ref R 12)) (cons 'one (vector-ref R 13))
+                                (cons 'add (vector-ref R 14)) (cons 'neg (vector-ref R 15))
+                                (cons 'mul (vector-ref R 16)))
+              'elements (cond ((pair? elements) (car elements))
+                              ((= (vector-ref R 2) 4) (iota (car (vector-ref R 4))))
+                              (else #f))
+              'equal? (vector-ref R 18)
+              'member? (vector-ref R 21)
+              'extra (list (cons 'ring-carrier R))))
+
+;; ===========================================================================
 ;; The law check (ADR-0034 section 4)
 ;; ===========================================================================
 ;;
@@ -1225,6 +1250,11 @@
 ;; and the declared characteristic. It returns the violations as lists
 ;; (law element ...); the empty list means every law held. The IEEE tier
 ;; and the native tower are not rings, and are refused.
+;;
+;; The ring laws are the equations of core.theory's commutative-ring-theory,
+;; checked by its law check on the carrier as a model; the unit group,
+;; from-integer and the characteristic are the carrier protocol's own
+;; declarations and are checked here.
 
 (define rc-default-integer-samples
   (list 0 1 -1 2 -3 7 1000003 4611686018427387904 9223372036854775807 -9223372036854775808
@@ -1239,28 +1269,14 @@
          (zero (vector-ref R 12)) (one (vector-ref R 13))
          (add (vector-ref R 14)) (neg (vector-ref R 15)) (mul (vector-ref R 16))
          (fi (vector-ref R 17)) (same (vector-ref R 18)) (unit? (vector-ref R 19)) (inv (vector-ref R 20))
-         (bad '())
+         (bad (reverse (model-law-violations (ring-carrier->model R) xs)))
          (note! (lambda (v) (set! bad (cons v bad)))))
     (for-each
      (lambda (a)
-       (if (not (same (add a zero) a)) (note! (list 'additive-identity a)))
-       (if (not (same (mul a one) a)) (note! (list 'multiplicative-identity a)))
-       (if (not (same (add a (neg a)) zero)) (note! (list 'additive-inverse a)))
        (if (unit? a)
            (if (not (same (mul a (inv a)) one)) (note! (list 'unit-inverse a)))
            (if (not (guard (e ((eq? (ring-refusal-kind e) 'ring-not-a-unit) #t) (else #f)) (inv a) #f))
-               (note! (list 'non-unit-refusal a))))
-       (for-each
-        (lambda (b)
-          (if (not (same (add a b) (add b a))) (note! (list 'additive-commutativity a b)))
-          (if (not (same (mul a b) (mul b a))) (note! (list 'multiplicative-commutativity a b)))
-          (for-each
-           (lambda (c)
-             (if (not (same (add (add a b) c) (add a (add b c)))) (note! (list 'additive-associativity a b c)))
-             (if (not (same (mul (mul a b) c) (mul a (mul b c)))) (note! (list 'multiplicative-associativity a b c)))
-             (if (not (same (mul a (add b c)) (add (mul a b) (mul a c)))) (note! (list 'distributivity a b c))))
-           xs))
-        xs))
+               (note! (list 'non-unit-refusal a)))))
      xs)
     (if (not (same (fi 0) zero)) (note! (list 'from-integer-zero)))
     (if (not (same (fi 1) one)) (note! (list 'from-integer-one)))
