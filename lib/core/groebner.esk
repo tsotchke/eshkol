@@ -1,0 +1,1023 @@
+;;; core.groebner -- Groebner bases and ideal operations over core.ring.
+;;;
+;;; ADR-0040 (docs/design/adr/0040-groebner-bases.md). Polynomials are
+;;; elements of a core.ring carrier K[x1..xn] (make-polys K vars order)
+;;; over a field K: the rationals, a prime field (make-zmod p), or any
+;;; field carrier such as a number field from core.algebraic_domain.
+;;; Every result is exact: no operation here produces or consumes a
+;;; floating-point value.
+;;;
+;;;   division           the division algorithm by an ordered list
+;;;                      (Cox, Little, O'Shea, Ideals, Varieties, and
+;;;                      Algorithms, ch. 2 sec. 3), normal forms,
+;;;                      S-polynomials
+;;;   Buchberger         Buchberger's algorithm (1965) with the
+;;;                      Gebauer-Moeller installation of his two criteria
+;;;                      (1988) and the sugar selection strategy of
+;;;                      Giovini, Mora, Niesi, Robbiano and Traverso (1991);
+;;;                      the result is the reduced Groebner basis
+;;;   multimodular       over Q: reduced bases of the homogenized ideal in
+;;;                      fibres F_p (core.multimodular primes), lucky-prime
+;;;                      selection by leading-monomial ideals, CRT and
+;;;                      rational reconstruction, then an exact check over
+;;;                      Q that makes the answer correct whatever the
+;;;                      primes were (Arnold, Modular algorithms for
+;;;                      computing Groebner bases, 2003)
+;;;   ideals             membership, containment, equality, sum, product,
+;;;                      elimination, intersection, quotient, saturation,
+;;;                      radical membership
+;;;   invariants         Krull dimension, Hilbert series and Hilbert
+;;;                      polynomial (affine and projective), degree
+;;;   zero dimension     the standard monomials, the number of solutions
+;;;                      with multiplicity, the triangular form of the lex
+;;;                      basis, and the solutions with coordinates in the
+;;;                      coefficient field
+;;;
+;;; Reference: docs/reference/stdlib/groebner.md.
+
+(require stdlib)
+(require core.ring)
+(require core.multimodular)
+(require core.symbolic)
+
+(provide
+  ;; division and Groebner bases
+  groebner-divide groebner-normal-form s-polynomial
+  groebner-basis groebner-basis-report groebner-basis? groebner-reduced?
+  ;; ideals
+  ideal-member? ideal-subset? ideal-equal? ideal-sum ideal-product
+  ideal-eliminate ideal-intersection ideal-quotient ideal-saturation
+  ideal-radical-member?
+  ;; invariants
+  ideal-dimension ideal-hilbert-series ideal-hilbert-polynomial ideal-degree
+  ;; zero-dimensional ideals
+  ideal-zero-dimensional? ideal-standard-monomials ideal-solution-count
+  ideal-triangular-form ideal-solutions
+  ;; core.symbolic polynomials
+  symbolic->ring-poly ring-poly->symbolic)
+
+;; ===========================================================================
+;; The working context of a carrier
+;; ===========================================================================
+;;
+;; Inside this module a polynomial is the carrier's term list: pairs
+;; (exponent-vector . coefficient), nonzero coefficients, strictly
+;; decreasing in the monomial order. Exponent vectors are never mutated
+;; after they are built.
+
+(define (gb-refuse kind who . irritants) (apply error (symbol->string kind) who irritants))
+
+(define (gb-mpolys? P) (and (ring-carrier? P) (eq? (ring-carrier-family P) 'mpolys)))
+
+;; #(P K compare terms from-terms zero one add neg mul inverse equal? n vars order)
+(define (gb-context P who)
+  (if (not (gb-mpolys? P))
+      (error (string-append who ": expected polynomials in a carrier K[x1..xn]")
+             (if (ring-carrier? P) (ring-carrier-name P) P)))
+  (let ((K (ring-ref P 'base)))
+    (if (not (ring-ref K 'field?))
+        (gb-refuse 'ring-missing-capability who (ring-carrier-name P) 'field?))
+    (vector P K (ring-carrier-extra P 'compare) (ring-carrier-extra P 'terms) (ring-carrier-extra P 'from-terms)
+            (ring-ref K 'zero) (ring-ref K 'one) (ring-ref K 'add) (ring-ref K 'neg) (ring-ref K 'mul)
+            (ring-ref K 'inverse) (ring-ref K 'equal?)
+            (length (ring-carrier-extra P 'variables)) (ring-carrier-extra P 'variables)
+            (ring-carrier-extra P 'order))))
+(define (cx-P c) (vector-ref c 0))
+(define (cx-K c) (vector-ref c 1))
+(define (cx-cmp c) (vector-ref c 2))
+(define (cx-terms c) (vector-ref c 3))
+(define (cx-wrap c) (vector-ref c 4))
+(define (cx-zero c) (vector-ref c 5))
+(define (cx-one c) (vector-ref c 6))
+(define (cx-add c) (vector-ref c 7))
+(define (cx-neg c) (vector-ref c 8))
+(define (cx-mul c) (vector-ref c 9))
+(define (cx-inv c) (vector-ref c 10))
+(define (cx-eq c) (vector-ref c 11))
+(define (cx-n c) (vector-ref c 12))
+(define (cx-vars c) (vector-ref c 13))
+(define (cx-order c) (vector-ref c 14))
+(define (cx-zero? c x) ((vector-ref c 11) x (vector-ref c 5)))
+
+;; The carrier of a nonempty list of polynomials, and their term lists.
+(define (gb-carrier-of fs who)
+  (if (or (not (list? fs)) (null? fs)) (error (string-append who ": expected a nonempty list of polynomials") fs))
+  (let ((P (ring-carrier-of (car fs))))
+    (if (not (gb-mpolys? P))
+        (error (string-append who ": expected polynomials in a carrier K[x1..xn]") (car fs)))
+    P))
+(define (gb-terms-in cx f) ((cx-terms cx) (ring-admit (cx-P cx) f)))
+(define (gb-input cx fs) (map (lambda (f) (gb-terms-in cx f)) fs))
+
+;; ===========================================================================
+;; Monomials
+;; ===========================================================================
+
+(define (mono-mul a b)
+  (let* ((n (vector-length a)) (v (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! v i (+ (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
+    v))
+(define (mono-div b a)                  ; b / a, a dividing b
+  (let* ((n (vector-length a)) (v (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! v i (- (vector-ref b i) (vector-ref a i))) (loop (+ i 1)))))
+    v))
+(define (mono-lcm a b)
+  (let* ((n (vector-length a)) (v (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! v i (max (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
+    v))
+(define (mono-gcd a b)
+  (let* ((n (vector-length a)) (v (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! v i (min (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
+    v))
+(define (mono-divides? a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0)) (or (= i n) (and (<= (vector-ref a i) (vector-ref b i)) (loop (+ i 1)))))))
+(define (mono=? a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0)) (or (= i n) (and (= (vector-ref a i) (vector-ref b i)) (loop (+ i 1)))))))
+(define (mono-coprime? a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0))
+      (or (= i n) (and (or (= (vector-ref a i) 0) (= (vector-ref b i) 0)) (loop (+ i 1)))))))
+(define (mono-degree a)
+  (let ((n (vector-length a))) (let loop ((i 0) (d 0)) (if (= i n) d (loop (+ i 1) (+ d (vector-ref a i)))))))
+(define (mono-one n) (make-vector n 0))
+(define (mono-constant? a) (= (mono-degree a) 0))
+
+;; ===========================================================================
+;; Term-list arithmetic used by division
+;; ===========================================================================
+
+(define (gb-append-reverse rev tail)
+  (if (null? rev) tail (gb-append-reverse (cdr rev) (cons (car rev) tail))))
+
+;; p - c x^m g, one merge pass; when c x^m LT(g) = LT(p) the leading terms
+;; cancel inside the merge.
+(define (gb-sub-shift cx p g c m)
+  (let ((cmp (cx-cmp cx)) (kadd (cx-add cx)) (kmul (cx-mul cx)) (nc ((cx-neg cx) c)))
+    (let loop ((p p) (g g) (acc '()) (gm #f) (gc #f))
+      (cond ((not gm)
+             (if (null? g)
+                 (gb-append-reverse acc p)
+                 (loop p (cdr g) acc (mono-mul (car (car g)) m) (kmul nc (cdr (car g))))))
+            ((null? p) (loop p g (if (cx-zero? cx gc) acc (cons (cons gm gc) acc)) #f #f))
+            (else
+             (let ((s (cmp (car (car p)) gm)))
+               (cond ((> s 0) (loop (cdr p) g (cons (car p) acc) gm gc))
+                     ((< s 0) (loop p g (if (cx-zero? cx gc) acc (cons (cons gm gc) acc)) #f #f))
+                     (else (let ((t (kadd (cdr (car p)) gc)))
+                             (loop (cdr p) g (if (cx-zero? cx t) acc (cons (cons gm t) acc)) #f #f))))))))))
+
+(define (gb-scale cx p c)
+  (let ((kmul (cx-mul cx))) (map (lambda (t) (cons (car t) (kmul c (cdr t)))) p)))
+(define (gb-monic cx p)
+  (if (null? p) p
+      (let ((lc (cdr (car p))))
+        (if ((cx-eq cx) lc (cx-one cx)) p (gb-scale cx p ((cx-inv cx) lc))))))
+(define (gb-shift cx p m c)
+  (let ((kmul (cx-mul cx)))
+    (let loop ((p p) (acc '()))
+      (if (null? p) (reverse acc)
+          (loop (cdr p) (cons (cons (mono-mul (car (car p)) m) (kmul c (cdr (car p)))) acc))))))
+(define (gb-homogeneous? p)
+  (or (null? p)
+      (let ((d (mono-degree (car (car p)))))
+        (let loop ((p (cdr p))) (or (null? p) (and (= (mono-degree (car (car p))) d) (loop (cdr p))))))))
+(define (gb-total-degree p)
+  (let loop ((p p) (d -1)) (if (null? p) d (loop (cdr p) (max d (mono-degree (car (car p))))))))
+
+;; The first basis element (a term list) whose leading monomial divides m.
+(define (gb-find-divisor m basis)
+  (cond ((null? basis) #f)
+        ((mono-divides? (car (car (car basis))) m) (car basis))
+        (else (gb-find-divisor m (cdr basis)))))
+
+;; Remainder of p on division by the basis (every term reduced).
+(define (gb-reduce cx p basis)
+  (let ((kmul (cx-mul cx)) (kinv (cx-inv cx)))
+    (let loop ((p p) (rem '()))
+      (if (null? p)
+          (reverse rem)
+          (let* ((m (car (car p))) (g (gb-find-divisor m basis)))
+            (if g
+                (loop (gb-sub-shift cx p g (kmul (cdr (car p)) (kinv (cdr (car g)))) (mono-div m (car (car g)))) rem)
+                (loop (cdr p) (cons (car p) rem))))))))
+
+;; Reduce only while the leading term is divisible.
+(define (gb-top-reduce cx p basis)
+  (let ((kmul (cx-mul cx)) (kinv (cx-inv cx)))
+    (let loop ((p p))
+      (if (null? p)
+          p
+          (let* ((m (car (car p))) (g (gb-find-divisor m basis)))
+            (if g
+                (loop (gb-sub-shift cx p g (kmul (cdr (car p)) (kinv (cdr (car g)))) (mono-div m (car (car g)))))
+                p))))))
+
+(define (gb-spoly cx f g)
+  (let* ((L (mono-lcm (car (car f)) (car (car g))))
+         (kinv (cx-inv cx))
+         (a (gb-shift cx f (mono-div L (car (car f))) (kinv (cdr (car f))))))
+    (gb-sub-shift cx a g (kinv (cdr (car g))) (mono-div L (car (car g))))))
+
+;; ===========================================================================
+;; Division by an ordered list (Cox-Little-O'Shea ch. 2 sec. 3, Theorem 3)
+;; ===========================================================================
+
+;; (groebner-divide f (f1 ... fs)) => (list (q1 ... qs) r) with
+;; f = q1 f1 + ... + qs fs + r, no term of r divisible by any LT(fi), and
+;; LT(qi fi) <= LT(f). The order of the divisors matters unless they form a
+;; Groebner basis.
+(define (groebner-divide f fs)
+  (let* ((P (gb-carrier-of (cons f fs) "groebner-divide"))
+         (cx (gb-context P "groebner-divide"))
+         (divs (list->vector (gb-input cx fs)))
+         (s (vector-length divs))
+         (qs (make-vector s '()))
+         (kmul (cx-mul cx)) (kinv (cx-inv cx)))
+    (let loop ((i 0))
+      (if (< i s) (begin (if (null? (vector-ref divs i)) (error "groebner-divide: a divisor is zero" i)) (loop (+ i 1)))))
+    (let loop ((p (gb-terms-in cx f)) (rem '()))
+      (if (null? p)
+          (list (map (lambda (q) ((cx-wrap cx) (reverse q))) (vector->list qs))
+                ((cx-wrap cx) (reverse rem)))
+          (let ((m (car (car p))))
+            (let find ((i 0))
+              (cond ((= i s) (loop (cdr p) (cons (car p) rem)))
+                    ((mono-divides? (car (car (vector-ref divs i))) m)
+                     (let* ((g (vector-ref divs i))
+                            (c (kmul (cdr (car p)) (kinv (cdr (car g)))))
+                            (u (mono-div m (car (car g)))))
+                       (vector-set! qs i (cons (cons u c) (vector-ref qs i)))
+                       (loop (gb-sub-shift cx p g c u) rem)))
+                    (else (find (+ i 1))))))))))
+
+;; The remainder of f on division by fs (with a Groebner basis: the
+;; normal form, independent of the order of fs).
+(define (groebner-normal-form f fs)
+  (let* ((P (gb-carrier-of (cons f fs) "groebner-normal-form")) (cx (gb-context P "groebner-normal-form")))
+    ((cx-wrap cx) (gb-reduce cx (gb-terms-in cx f) (filter pair? (gb-input cx fs))))))
+
+(define (s-polynomial f g)
+  (let* ((P (gb-carrier-of (list f g) "s-polynomial")) (cx (gb-context P "s-polynomial"))
+         (a (gb-terms-in cx f)) (b (gb-terms-in cx g)))
+    (if (or (null? a) (null? b)) (error "s-polynomial: both polynomials must be nonzero"))
+    ((cx-wrap cx) (gb-spoly cx a b))))
+
+;; ===========================================================================
+;; Buchberger's algorithm with the Gebauer-Moeller criteria
+;; ===========================================================================
+;;
+;; The state holds every polynomial ever added (index -> terms, leading
+;; monomial, sugar), the active basis G (indices) and the pair set B.
+;; A pair is #(i j lcm sugar). UPDATE is Gebauer and Moeller's procedure
+;; (Becker-Weispfenning, Groebner Bases, 1993, sec. 5.5): a new pair
+;; (h, g) is dropped when another new pair's lcm divides its lcm (the
+;; chain criterion) or when LT(h) and LT(g) are coprime (the product
+;; criterion); an old pair (g1, g2) is dropped when LT(h) divides its lcm
+;; strictly; elements whose leading monomial LT(h) divides leave G.
+
+(define (gb-state) (vector (make-vector 16 #f) (make-vector 16 #f) (make-vector 16 0) 0 '() '() 0 0))
+(define (st-poly st i) (vector-ref (vector-ref st 0) i))
+(define (st-lm st i) (vector-ref (vector-ref st 1) i))
+(define (st-sugar st i) (vector-ref (vector-ref st 2) i))
+(define (st-count st) (vector-ref st 3))
+(define (st-G st) (vector-ref st 4))
+(define (st-B st) (vector-ref st 5))
+(define (gb-grow v n fill)
+  (let ((w (make-vector (* 2 n) fill)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! w i (vector-ref v i)) (loop (+ i 1)))))
+    w))
+(define (st-add! st p sugar)
+  (let ((k (st-count st)))
+    (if (= k (vector-length (vector-ref st 0)))
+        (begin (vector-set! st 0 (gb-grow (vector-ref st 0) k #f))
+               (vector-set! st 1 (gb-grow (vector-ref st 1) k #f))
+               (vector-set! st 2 (gb-grow (vector-ref st 2) k 0))))
+    (vector-set! (vector-ref st 0) k p)
+    (vector-set! (vector-ref st 1) k (car (car p)))
+    (vector-set! (vector-ref st 2) k sugar)
+    (vector-set! st 3 (+ k 1))
+    k))
+
+(define (gb-make-pair st i j)
+  (let* ((li (st-lm st i)) (lj (st-lm st j)) (L (mono-lcm li lj)) (dL (mono-degree L)))
+    (vector i j L (max (+ (st-sugar st i) (- dL (mono-degree li))) (+ (st-sugar st j) (- dL (mono-degree lj)))))))
+
+(define (gb-any? p xs) (and (pair? xs) (or (p (car xs)) (gb-any? p (cdr xs)))))
+
+(define (gb-update! st h)
+  (let* ((lmh (st-lm st h))
+         (C (map (lambda (g) (gb-make-pair st g h)) (st-G st)))
+         (D (let loop ((C C) (D '()))
+              (if (null? C)
+                  D
+                  (let* ((p (car C)) (L (vector-ref p 2))
+                         (divides-L? (lambda (q) (mono-divides? (vector-ref q 2) L))))
+                    (if (or (mono-coprime? lmh (st-lm st (vector-ref p 0)))
+                            (not (or (gb-any? divides-L? (cdr C)) (gb-any? divides-L? D))))
+                        (loop (cdr C) (cons p D))
+                        (loop (cdr C) D))))))
+         (E (filter (lambda (p) (not (mono-coprime? lmh (st-lm st (vector-ref p 0))))) D))
+         (B (filter (lambda (p)
+                      (let ((L (vector-ref p 2)))
+                        (or (not (mono-divides? lmh L))
+                            (mono=? (mono-lcm (st-lm st (vector-ref p 0)) lmh) L)
+                            (mono=? (mono-lcm lmh (st-lm st (vector-ref p 1))) L))))
+                    (st-B st)))
+         (G (filter (lambda (g) (not (mono-divides? lmh (st-lm st g)))) (st-G st))))
+    (vector-set! st 4 (append G (list h)))
+    (vector-set! st 5 (append B E))))
+
+;; The pair of least sugar, ties by least lcm; returns it and removes it.
+(define (gb-select! st cmp)
+  (let loop ((ps (cdr (st-B st))) (best (car (st-B st))))
+    (if (null? ps)
+        (begin (vector-set! st 5 (let drop ((xs (st-B st)) (acc '()))
+                                   (cond ((null? xs) (reverse acc))
+                                         ((eq? (car xs) best) (gb-append-reverse acc (cdr xs)))
+                                         (else (drop (cdr xs) (cons (car xs) acc))))))
+               best)
+        (let ((p (car ps)))
+          (loop (cdr ps)
+                (if (or (< (vector-ref p 3) (vector-ref best 3))
+                        (and (= (vector-ref p 3) (vector-ref best 3)) (< (cmp (vector-ref p 2) (vector-ref best 2)) 0)))
+                    p best))))))
+
+;; Buchberger over the context; fs are nonzero term lists. With check-only
+;; the run stops at the first S-polynomial that does not reduce to zero
+;; and returns #f (the input is then not a Groebner basis); otherwise the
+;; result is (basis-term-lists pairs-reduced zero-reductions).
+(define (gb-buchberger cx fs check-only)
+  (let ((st (gb-state)) (cmp (cx-cmp cx)))
+    (for-each (lambda (f)
+                (let ((h (gb-monic cx f)))
+                  (gb-update! st (st-add! st h (gb-total-degree h)))))
+              (gb-sort-ascending cx fs))
+    (let loop ((reduced 0) (zeros 0))
+      (if (null? (st-B st))
+          (list (gb-interreduce cx (map (lambda (g) (st-poly st g)) (st-G st))) reduced zeros)
+          (let* ((pr (gb-select! st cmp))
+                 (basis (map (lambda (g) (st-poly st g)) (st-G st)))
+                 (h (gb-top-reduce cx (gb-spoly cx (st-poly st (vector-ref pr 0)) (st-poly st (vector-ref pr 1))) basis)))
+            (cond ((null? h) (loop (+ reduced 1) (+ zeros 1)))
+                  (check-only #f)
+                  (else
+                   (gb-update! st (st-add! st (gb-monic cx h) (vector-ref pr 3)))
+                   (loop (+ reduced 1) zeros))))))))
+
+(define (gb-sort-ascending cx fs)
+  (let ((cmp (cx-cmp cx))) (sort fs (lambda (a b) (< (cmp (car (car a)) (car (car b))) 0)))))
+(define (gb-sort-descending cx fs)
+  (let ((cmp (cx-cmp cx))) (sort fs (lambda (a b) (> (cmp (car (car a)) (car (car b))) 0)))))
+
+;; Minimal basis (no leading monomial divides another), every element
+;; monic and reduced by the others: the reduced Groebner basis when the
+;; input is a Groebner basis. Sorted by decreasing leading monomial.
+(define (gb-interreduce cx G)
+  (let* ((G (gb-sort-ascending cx (map (lambda (g) (gb-monic cx g)) (filter pair? G))))
+         (minimal (let loop ((gs G) (acc '()))
+                    (cond ((null? gs) (reverse acc))
+                          ((gb-any? (lambda (h) (mono-divides? (car (car h)) (car (car (car gs))))) acc) (loop (cdr gs) acc))
+                          (else (loop (cdr gs) (cons (car gs) acc)))))))
+    (gb-sort-descending cx
+      (map (lambda (g)
+             (let ((others (filter (lambda (h) (not (eq? h g))) minimal)))
+               (cons (car g) (gb-reduce cx (cdr g) others))))
+           minimal))))
+
+;; ===========================================================================
+;; The multimodular path over Q
+;; ===========================================================================
+;;
+;; 1. Clear denominators (each generator a primitive integer polynomial)
+;;    and homogenize with a new last variable h under the order
+;;    (homogenized o): the ideal J = <f^h> is homogeneous and its basis
+;;    dehomogenizes (h = 1) to a Groebner basis of I under o.
+;; 2. In fibres F_p (primes below 2^31 from core.multimodular) compute the
+;;    reduced basis G_p of J_p = <f^h mod p>. Primes are grouped by their
+;;    set of leading monomials; the group kept is one whose leading
+;;    monomial ideal is not strictly contained in another group's (for a
+;;    homogeneous J, dim_k (J_p)_d <= dim_Q J_d, so the lucky primes are
+;;    those with the largest leading ideal), and among those the largest.
+;; 3. Glue the coefficients by CRT over the group and reconstruct each
+;;    rationally (Wang). When two consecutive reconstructions agree, check
+;;    the candidate G over Q: every element homogeneous, every f^h reduces
+;;    to 0 modulo G, and every Gebauer-Moeller pair of G reduces to 0.
+;;    Then G is a Groebner basis of <G> containing J with LM(G) = LM(G_p),
+;;    so for every degree d, dim (J_p)_d = dim <G>_d >= dim J_d >= dim (J_p)_d
+;;    and <G> = J: the answer is exact whatever primes were used.
+;; 4. Dehomogenize and interreduce over Q.
+
+(define (gb-fresh-variable vars)
+  (let loop ((k 0))
+    (let ((v (string->symbol (if (= k 0) "h" (string-append "h" (number->string k))))))
+      (if (memq v vars) (loop (+ k 1)) v))))
+
+(define (gb-primitive-integer p)          ; term list over Q -> integer terms
+  (let* ((l (fold-left (lambda (acc t) (lcm acc (denominator (cdr t)))) 1 p))
+         (ints (map (lambda (t) (* l (cdr t))) p))
+         (g (fold-left (lambda (acc c) (gcd acc c)) 0 ints)))
+    (map (lambda (t c) (cons (car t) (quotient c g))) p ints)))
+
+(define (gb-homogenize p n)                ; exponent vectors gain a last entry
+  (let ((d (gb-total-degree p)))
+    (map (lambda (t)
+           (let ((v (make-vector (+ n 1) 0)) (e (car t)))
+             (let loop ((i 0)) (if (< i n) (begin (vector-set! v i (vector-ref e i)) (loop (+ i 1)))))
+             (vector-set! v n (- d (mono-degree e)))
+             (cons v (cdr t))))
+         p)))
+(define (gb-dehomogenize p n)
+  (map (lambda (t)
+         (let ((v (make-vector n 0)))
+           (let loop ((i 0)) (if (< i n) (begin (vector-set! v i (vector-ref (car t) i)) (loop (+ i 1)))))
+           (cons v (cdr t))))
+       p))
+
+(define (gb-lm-set G) (map (lambda (g) (car (car g))) G))
+(define (gb-lm-sets-equal? A B)
+  (and (= (length A) (length B))
+       (let loop ((a A) (b B)) (or (null? a) (and (mono=? (car a) (car b)) (loop (cdr a) (cdr b)))))))
+;; ideal(A) contains ideal(B)
+(define (gb-lm-ideal-contains? A B)
+  (let loop ((b B)) (or (null? b) (and (gb-any? (lambda (a) (mono-divides? a (car b))) A) (loop (cdr b))))))
+
+;; One coefficient table per basis element: the union of the monomials of
+;; the fibre images, each with its residue in every fibre (0 when absent).
+(define (gb-union-monomials cx polys)
+  (let* ((all (gb-sort-descending-monos cx (apply append (map (lambda (p) (map car p)) polys)))))
+    (let loop ((ms all) (acc '()))
+      (cond ((null? ms) (reverse acc))
+            ((and (pair? acc) (mono=? (car ms) (car acc))) (loop (cdr ms) acc))
+            (else (loop (cdr ms) (cons (car ms) acc)))))))
+(define (gb-sort-descending-monos cx ms)
+  (let ((cmp (cx-cmp cx))) (sort ms (lambda (a b) (> (cmp a b) 0)))))
+(define (gb-coefficient-at p m)
+  (let loop ((p p)) (cond ((null? p) 0) ((mono=? (car (car p)) m) (cdr (car p))) (else (loop (cdr p))))))
+
+;; Reconstruct the group's bases over Q, or #f when some coefficient has
+;; no fraction within the bounds yet.
+;; Reconstruct the group's bases over Q, or #f when some coefficient has
+;; no fraction within the bounds yet.
+(define (gb-reconstruct cxH primes bases)
+  (let* ((M (fold-left * 1 primes))
+         (s (call-with-values (lambda () (exact-integer-sqrt (quotient M 2))) (lambda (r rest) r)))
+         (N (max 1 (- s 1))))
+    (guard (e ((and (error-object? e) (equal? (error-object-message e) "rational-reconstruct: no fraction within the bounds")) #f))
+      (let element ((k 0) (out '()))
+        (if (= k (length (car bases)))
+            (reverse out)
+            (let* ((images (map (lambda (G) (list-ref G k)) bases))
+                   (ms (gb-union-monomials cxH images)))
+              (element (+ k 1)
+                       (cons (let terms ((ms ms) (acc '()))
+                               (if (null? ms)
+                                   (reverse acc)
+                                   (let* ((u (chinese-remainder (map (lambda (g) (gb-coefficient-at g (car ms))) images) primes))
+                                          (q (rational-reconstruct u M N N)))
+                                     (terms (cdr ms) (if (= q 0) acc (cons (cons (car ms) q) acc))))))
+                             out))))))))
+
+(define (gb-same-candidate? A B)
+  (and A B (= (length A) (length B))
+       (let loop ((a A) (b B))
+         (or (null? a)
+             (and (= (length (car a)) (length (car b)))
+                  (let terms ((x (car a)) (y (car b)))
+                    (or (null? x) (and (mono=? (car (car x)) (car (car y))) (= (cdr (car x)) (cdr (car y)))
+                                       (terms (cdr x) (cdr y)))))
+                  (loop (cdr a) (cdr b)))))))
+
+(define gb-max-primes 400)
+
+(define (gb-multimodular cx fs)
+  (let* ((n (cx-n cx)) (vars (cx-vars cx)) (hv (gb-fresh-variable vars))
+         (H (make-polys rationals (append vars (list hv)) (list 'homogenized (cx-order cx))))
+         (cxH (gb-context H "groebner-basis"))
+         (fh (map (lambda (f) (gb-homogenize (gb-primitive-integer f) n)) fs)))
+    ;; groups: list of #(lm-set primes bases last-candidate)
+    (let loop ((i 0) (groups '()) (checks 0))
+      (if (>= i gb-max-primes)
+          (error "groebner-basis: the multimodular method did not close within the prime budget" gb-max-primes))
+      (let* ((p (multimodular-prime i))
+             (Hp (make-polys (make-zmod p) (append vars (list hv)) (list 'homogenized (cx-order cx))))
+             (cxp (gb-context Hp "groebner-basis"))
+             (images (filter pair? (map (lambda (f) (filter (lambda (t) (not (= (cdr t) 0)))
+                                                          (map (lambda (t) (cons (car t) (modulo (cdr t) p))) f)))
+                                        fh)))
+             (Gp (if (null? images) '() (car (gb-buchberger cxp images #f))))
+             (lms (gb-lm-set Gp))
+             (found (let find ((gs groups)) (cond ((null? gs) #f) ((gb-lm-sets-equal? (vector-ref (car gs) 0) lms) (car gs)) (else (find (cdr gs))))))
+             (groups (if found
+                         (begin (vector-set! found 1 (append (vector-ref found 1) (list p)))
+                                (vector-set! found 2 (append (vector-ref found 2) (list Gp)))
+                                groups)
+                         (cons (vector lms (list p) (list Gp) #f) groups)))
+             ;; the chosen group: maximal leading ideal, then most primes
+             (maximal (filter (lambda (g)
+                                (not (gb-any? (lambda (o) (and (not (eq? o g))
+                                                               (gb-lm-ideal-contains? (vector-ref o 0) (vector-ref g 0))
+                                                               (not (gb-lm-ideal-contains? (vector-ref g 0) (vector-ref o 0)))))
+                                              groups)))
+                              groups))
+             (chosen (fold-left (lambda (b g) (if (> (length (vector-ref g 1)) (length (vector-ref b 1))) g b))
+                                (car maximal) (cdr maximal))))
+        (if (not (eq? (if found found (car groups)) chosen))
+            (loop (+ i 1) groups checks)
+            (let ((cand (gb-reconstruct cxH (vector-ref chosen 1) (vector-ref chosen 2))))
+              (if (and cand (gb-same-candidate? cand (vector-ref chosen 3)))
+                  (if (gb-verify-candidate cxH cand fh)
+                      (let* ((unlucky-all (apply append (map (lambda (g) (if (eq? g chosen) '() (vector-ref g 1))) groups))))
+                        (list (gb-interreduce cx (map (lambda (g) (gb-dehomogenize g n)) cand))
+                              (vector-ref chosen 1) unlucky-all (+ checks 1)))
+                      (begin (vector-set! chosen 3 #f) (loop (+ i 1) groups (+ checks 1))))
+                  (begin (vector-set! chosen 3 cand) (loop (+ i 1) groups checks)))))))))
+
+;; The exact check over Q of step 3.
+(define (gb-verify-candidate cxH G fh)
+  (and (pair? G)
+       (let loop ((gs G)) (or (null? gs) (and (gb-homogeneous? (car gs)) (loop (cdr gs)))))
+       (let loop ((fs fh)) (or (null? fs) (and (null? (gb-reduce cxH (car fs) G)) (loop (cdr fs)))))
+       (if (gb-buchberger cxH G #t) #t #f)))
+
+;; ===========================================================================
+;; Groebner bases: the public surface
+;; ===========================================================================
+
+(define (gb-option options key default)
+  (let loop ((os options))
+    (cond ((null? os) default)
+          ((null? (cdr os)) (error "groebner: an option without a value" (car os)))
+          ((eq? (car os) key) (cadr os))
+          (else (loop (cddr os))))))
+
+;; (groebner-basis-report fs ['method 'buchberger | 'multimodular])
+;; => alist: basis, method, pairs-reduced, zero-reductions, primes,
+;;    unlucky-primes, verifications.
+(define (groebner-basis-report fs . options)
+  (let* ((P (gb-carrier-of fs "groebner-basis")) (cx (gb-context P "groebner-basis"))
+         (method (gb-option options 'method 'buchberger))
+         (input (filter pair? (gb-input cx fs)))
+         (wrap (lambda (G) (map (cx-wrap cx) G))))
+    (cond ((null? input)
+           (list (cons 'basis '()) (cons 'method method)))
+          ((eq? method 'buchberger)
+           (let ((r (gb-buchberger cx input #f)))
+             (list (cons 'basis (wrap (car r))) (cons 'method 'buchberger)
+                   (cons 'pairs-reduced (cadr r)) (cons 'zero-reductions (caddr r)))))
+          ((eq? method 'multimodular)
+           (if (not (ring-carrier=? (cx-K cx) rationals))
+               (error "groebner-basis: the multimodular method computes over the rationals" (ring-carrier-name P)))
+           (let ((r (gb-multimodular cx input)))
+             (list (cons 'basis (wrap (car r))) (cons 'method 'multimodular)
+                   (cons 'primes (cadr r)) (cons 'unlucky-primes (caddr r)) (cons 'verifications (cadddr r)))))
+          (else (error "groebner-basis: unknown method" method)))))
+
+;; The reduced Groebner basis of the ideal generated by fs under the
+;; carrier's monomial order: monic, sorted by decreasing leading monomial,
+;; unique for the ideal and the order. The zero ideal has the empty basis.
+(define (groebner-basis fs . options)
+  (cdr (assq 'basis (apply groebner-basis-report fs options))))
+
+;; Is gs a Groebner basis of the ideal it generates?
+(define (groebner-basis? gs)
+  (let* ((P (gb-carrier-of gs "groebner-basis?")) (cx (gb-context P "groebner-basis?"))
+         (G (filter pair? (gb-input cx gs))))
+    (or (null? G) (if (gb-buchberger cx G #t) #t #f))))
+
+;; Is gs the reduced Groebner basis (monic, no term of an element divisible
+;; by another element's leading monomial)?
+(define (groebner-reduced? gs)
+  (let* ((P (gb-carrier-of gs "groebner-reduced?")) (cx (gb-context P "groebner-reduced?"))
+         (G (gb-input cx gs)))
+    (and (not (gb-any? null? G))
+         (groebner-basis? gs)
+         (let loop ((gs G))
+           (or (null? gs)
+               (and ((cx-eq cx) (cdr (car (car gs))) (cx-one cx))
+                    (let ((others (filter (lambda (h) (not (eq? h (car gs)))) G)))
+                      (not (gb-any? (lambda (t) (gb-any? (lambda (h) (mono-divides? (car (car h)) (car t))) others))
+                                    (car gs))))
+                    (loop (cdr gs))))))))
+
+;; ===========================================================================
+;; Ideals
+;; ===========================================================================
+
+(define (gb-basis-terms cx fs . options)
+  (map (cx-terms cx) (apply groebner-basis fs options)))
+
+(define (ideal-member? f fs)
+  (let* ((P (gb-carrier-of (cons f fs) "ideal-member?")) (cx (gb-context P "ideal-member?")))
+    (null? (gb-reduce cx (gb-terms-in cx f) (gb-basis-terms cx (map (lambda (g) (ring-admit P g)) fs))))))
+
+;; <fs> is contained in <gs>.
+(define (ideal-subset? fs gs)
+  (let* ((P (gb-carrier-of (append fs gs) "ideal-subset?")) (cx (gb-context P "ideal-subset?"))
+         (G (gb-basis-terms cx (map (lambda (g) (ring-admit P g)) gs))))
+    (let loop ((fs fs)) (or (null? fs) (and (null? (gb-reduce cx (gb-terms-in cx (car fs)) G)) (loop (cdr fs)))))))
+
+;; Equal ideals have equal reduced bases.
+(define (ideal-equal? fs gs)
+  (let* ((P (gb-carrier-of (append fs gs) "ideal-equal?"))
+         (A (groebner-basis (map (lambda (f) (ring-admit P f)) fs)))
+         (B (groebner-basis (map (lambda (g) (ring-admit P g)) gs))))
+    (and (= (length A) (length B))
+         (let loop ((a A) (b B)) (or (null? a) (and (r= P (car a) (car b)) (loop (cdr a) (cdr b))))))))
+
+(define (ideal-sum fs gs) (groebner-basis (append fs gs)))
+(define (ideal-product fs gs)
+  (let ((P (gb-carrier-of (append fs gs) "ideal-product")))
+    (groebner-basis (apply append (map (lambda (f) (map (lambda (g) (r* P f g)) gs)) fs)))))
+
+;; The order kept on the variables that remain after an elimination.
+(define (gb-rest-order order) (if (symbol? order) order 'grevlex))
+
+;; Generators of <fs> intersected with K[rest] (rest = the variables not
+;; in elim), as the reduced basis in K[rest] under the carrier's order when
+;; it is lex, grlex or grevlex, and under grevlex otherwise (Elimination
+;; Theorem, Cox-Little-O'Shea ch. 3 sec. 1).
+(define (ideal-eliminate fs elim)
+  (let* ((P (gb-carrier-of fs "ideal-eliminate")) (cx (gb-context P "ideal-eliminate"))
+         (vars (cx-vars cx)) (K (cx-K cx))
+         (elim (if (symbol? elim) (list elim) elim)))
+    (for-each (lambda (v) (if (not (memq v vars)) (error "ideal-eliminate: not a variable of the carrier" v vars))) elim)
+    (let ((rest (filter (lambda (v) (not (memq v elim))) vars)))
+      (if (null? rest) (error "ideal-eliminate: no variable would remain" elim))
+      (gb-eliminate K fs elim rest (gb-rest-order (cx-order cx))))))
+
+(define (gb-eliminate K fs elim rest rest-order)
+  (let* ((E (make-polys K (append elim rest) (list 'block (list (length elim) 'grevlex) (list (length rest) rest-order))))
+         (R (make-polys K rest rest-order))
+         (cxE (gb-context E "ideal-eliminate"))
+         (cxR (gb-context R "ideal-eliminate"))
+         (k (length elim)) (m (length rest))
+         (G (gb-basis-terms cxE (map (lambda (f) (ring-admit E f)) fs)))
+         (free (filter (lambda (g) (gb-free-of-first? g k)) G)))
+    (map (lambda (g)
+           ((cx-wrap cxR)
+            (map (lambda (t)
+                   (let ((v (make-vector m 0)))
+                     (let loop ((i 0)) (if (< i m) (begin (vector-set! v i (vector-ref (car t) (+ i k))) (loop (+ i 1)))))
+                     (cons v (cdr t))))
+                 g)))
+         free)))
+(define (gb-free-of-first? g k)
+  (let loop ((g g))
+    (or (null? g)
+        (and (let zero ((i 0)) (or (= i k) (and (= (vector-ref (car (car g)) i) 0) (zero (+ i 1)))))
+             (loop (cdr g))))))
+
+;; I with t*f for f in fs and (1 - t)*g for g in gs, t eliminated:
+;; the intersection of <fs> and <gs> (Cox-Little-O'Shea ch. 4 sec. 3).
+(define (ideal-intersection fs gs)
+  (let* ((P (gb-carrier-of (append fs gs) "ideal-intersection")) (cx (gb-context P "ideal-intersection"))
+         (vars (cx-vars cx)) (t (gb-fresh-variable vars)) (K (cx-K cx))
+         (T (make-polys K (cons t vars) (list 'block (list 1 'grevlex) (list (length vars) (gb-rest-order (cx-order cx))))))
+         (tv (ring-poly-variable T t)))
+    (if (or (null? fs) (null? gs)) (error "ideal-intersection: both ideals need generators"))
+    (gb-in-carrier P
+      (gb-eliminate K
+                    (append (map (lambda (f) (r* T tv f)) fs)
+                            (map (lambda (g) (r* T (r- T 1 tv) g)) gs))
+                    (list t) vars (gb-rest-order (cx-order cx))))))
+(define (gb-in-carrier P gs)
+  (if (null? gs) '() (groebner-basis (map (lambda (g) (ring-admit P g)) gs))))
+
+;; I : J = { h : h J in I }, the intersection of I : g over the generators
+;; g of J, with I : g = (I intersect <g>) / g.
+(define (ideal-quotient fs gs)
+  (let* ((P (gb-carrier-of (append fs gs) "ideal-quotient"))
+         (gs (filter (lambda (g) (not (r-zero? P g))) (map (lambda (g) (ring-admit P g)) gs))))
+    (if (null? gs)
+        (list (r1 P))
+        (let loop ((gs (cdr gs)) (acc (gb-quotient-by P fs (car gs))))
+          (if (null? gs) acc (loop (cdr gs) (ideal-intersection acc (gb-quotient-by P fs (car gs)))))))))
+(define (gb-quotient-by P fs g)
+  (let ((I (ideal-intersection fs (list g))))
+    (groebner-basis
+     (map (lambda (h)
+            (let ((d (groebner-divide h (list g))))
+              (if (not (r-zero? P (cadr d))) (error "ideal-quotient: an element of the intersection is not divisible" h g))
+              (car (car d))))
+          I))))
+
+;; I : J^infinity, by I + <1 - t g> with t eliminated, intersected over the
+;; generators g of J.
+(define (ideal-saturation fs gs)
+  (let* ((P (gb-carrier-of (append fs gs) "ideal-saturation")) (cx (gb-context P "ideal-saturation"))
+         (vars (cx-vars cx)) (K (cx-K cx)) (t (gb-fresh-variable vars))
+         (T (make-polys K (cons t vars) (list 'block (list 1 'grevlex) (list (length vars) (gb-rest-order (cx-order cx))))))
+         (tv (ring-poly-variable T t))
+         (by (lambda (g)
+               (gb-in-carrier P (gb-eliminate K (cons (r- T 1 (r* T tv g)) fs) (list t) vars (gb-rest-order (cx-order cx)))))))
+    (let loop ((gs (cdr gs)) (acc (by (car gs))))
+      (if (null? gs) acc (loop (cdr gs) (ideal-intersection acc (by (car gs))))))))
+
+;; f is in the radical of <fs> exactly when 1 is in <fs, 1 - t f>
+;; (Rabinowitsch).
+(define (ideal-radical-member? f fs)
+  (let* ((P (gb-carrier-of (cons f fs) "ideal-radical-member?")) (cx (gb-context P "ideal-radical-member?"))
+         (vars (cx-vars cx)) (t (gb-fresh-variable vars))
+         (T (make-polys (cx-K cx) (cons t vars) 'grevlex))
+         (G (groebner-basis (cons (r- T 1 (r* T (ring-poly-variable T t) f)) (map (lambda (g) (ring-admit T g)) fs)))))
+    (and (= (length G) 1) (r-one? T (car G)))))
+
+;; ===========================================================================
+;; Hilbert series, Hilbert polynomial, dimension
+;; ===========================================================================
+;;
+;; For a monomial ideal M in n variables the Hilbert series of K[x]/M is
+;; N(t)/(1-t)^n; N is computed by N(M + <m>) = N(M) - t^deg(m) N(M : m)
+;; (Bayer-Stillman; Cox-Little-O'Shea ch. 9 sec. 2). The leading ideal of
+;; I under a graded order has the Hilbert function of I (Macaulay), and
+;; under any order the same Krull dimension.
+
+(define (hs-add a b)
+  (cond ((null? a) b) ((null? b) a) (else (cons (+ (car a) (car b)) (hs-add (cdr a) (cdr b))))))
+(define (hs-negate a) (map (lambda (x) (- x)) a))
+(define (hs-shift a k) (if (= k 0) a (cons 0 (hs-shift a (- k 1)))))
+(define (hs-trim a)
+  (let loop ((r (reverse a))) (cond ((null? r) '()) ((= (car r) 0) (loop (cdr r))) (else (reverse r)))))
+(define (hs-mul a b)
+  (if (null? a) '() (hs-add (map (lambda (x) (* (car a) x)) b) (cons 0 (hs-mul (cdr a) b)))))
+
+(define (hs-minimalize ms)
+  (let* ((sorted (sort ms (lambda (a b) (< (mono-degree a) (mono-degree b))))))
+    (let loop ((ms sorted) (acc '()))
+      (cond ((null? ms) (reverse acc))
+            ((gb-any? (lambda (a) (mono-divides? a (car ms))) acc) (loop (cdr ms) acc))
+            (else (loop (cdr ms) (cons (car ms) acc)))))))
+(define (hs-single-variable? m)
+  (let loop ((i 0) (seen 0))
+    (cond ((= i (vector-length m)) (<= seen 1))
+          ((> (vector-ref m i) 0) (loop (+ i 1) (+ seen 1)))
+          (else (loop (+ i 1) seen)))))
+(define (hs-numerator ms)
+  (let ((ms (hs-minimalize ms)))
+    (cond ((null? ms) (list 1))
+          ((gb-any? (lambda (m) (= (mono-degree m) 0)) ms) '())
+          ((let loop ((xs ms)) (or (null? xs) (and (hs-single-variable? (car xs)) (loop (cdr xs)))))
+           (fold-left (lambda (acc m) (hs-mul acc (hs-add (list 1) (hs-negate (hs-shift (list 1) (mono-degree m)))))) (list 1) ms))
+          (else
+           (let* ((m (car (reverse ms))) (rest (reverse (cdr (reverse ms))))
+                  (colon (map (lambda (g) (mono-div g (mono-gcd g m))) rest)))
+             (hs-trim (hs-add (hs-numerator rest) (hs-negate (hs-shift (hs-numerator colon) (mono-degree m))))))))))
+;; N(t)/(1-t)^d with N(1) /= 0 (or N = 0).
+(define (hs-reduce N d)
+  (if (or (null? N) (= d 0) (not (= (fold-left + 0 N) 0)))
+      (list N d)
+      (hs-reduce (hs-trim (let loop ((xs N) (s 0) (acc '()))
+                            (if (null? xs) (reverse acc) (loop (cdr xs) (+ s (car xs)) (cons (+ s (car xs)) acc)))))
+                 (- d 1))))
+
+(define (gb-graded-order? o) (or (memq o '(grlex grevlex)) (and (pair? o) (eq? (car o) 'homogenized))))
+
+;; The leading monomials of the reduced basis, in a graded order when
+;; graded is true (the basis is recomputed under grevlex if the carrier's
+;; order is not graded).
+(define (gb-leading-monomials fs graded who)
+  (let* ((P (gb-carrier-of fs who)) (cx (gb-context P who)))
+    (if (and graded (not (gb-graded-order? (cx-order cx))))
+        (let* ((Q (make-polys (cx-K cx) (cx-vars cx) 'grevlex)) (cxQ (gb-context Q who)))
+          (list cxQ (map (lambda (g) (car (car g))) (gb-basis-terms cxQ (map (lambda (f) (ring-admit Q f)) fs)))))
+        (list cx (map (lambda (g) (car (car g))) (gb-basis-terms cx fs))))))
+
+;; (ideal-hilbert-series fs ['affine | 'projective]) => (N d): the series is
+;; N(t)/(1-t)^d with N a list of integer coefficients, lowest degree first,
+;; and N(1) /= 0. Affine (the default): the series of the affine Hilbert
+;; function s -> dim K[x]_{<=s} / I_{<=s}. Projective: of K[x]/I graded
+;; by degree, for an ideal generated by homogeneous polynomials.
+(define (ideal-hilbert-series fs . kind)
+  (let* ((kind (if (null? kind) 'affine (car kind)))
+         (r (gb-leading-monomials fs #t "ideal-hilbert-series"))
+         (cx (car r)) (n (cx-n cx)))
+    (if (eq? kind 'projective)
+        (let ((cx0 (gb-context (gb-carrier-of fs "ideal-hilbert-series") "ideal-hilbert-series")))
+          (for-each (lambda (f) (if (not (gb-homogeneous? (gb-terms-in cx0 f)))
+                                    (error "ideal-hilbert-series: projective series need homogeneous generators" f)))
+                    fs))
+        (if (not (eq? kind 'affine)) (error "ideal-hilbert-series: kind is affine or projective" kind)))
+    (hs-reduce (hs-numerator (cadr r)) (if (eq? kind 'affine) (+ n 1) n))))
+
+;; The Hilbert polynomial as an element of Q[s]: for s large enough it
+;; equals the Hilbert function. From N(t)/(1-t)^d it is
+;; sum_k N_k binomial(s - k + d - 1, d - 1).
+(define (ideal-hilbert-polynomial fs . kind)
+  (let* ((hs (apply ideal-hilbert-series fs kind)) (N (car hs)) (d (cadr hs))
+         (Qs (make-polys rationals 's)) (s (ring-poly-variable Qs)))
+    (if (or (= d 0) (null? N))
+        (r0 Qs)
+        (let loop ((k 0) (N N) (acc (r0 Qs)))
+          (if (null? N)
+              acc
+              (loop (+ k 1) (cdr N)
+                    (r+ Qs acc (r* Qs (car N) (gb-binomial-poly Qs s (- d 1 k) (- d 1))))))))))
+;; binomial(s + a, r) as a polynomial in s.
+(define (gb-binomial-poly Qs s a r)
+  (let loop ((j 0) (acc (r1 Qs)))
+    (if (= j r) acc
+        (loop (+ j 1) (r* Qs acc (r* Qs (/ 1 (+ j 1)) (r+ Qs s (- a j))))))))
+
+;; Krull dimension of K[x]/I; -1 for the unit ideal.
+(define (ideal-dimension fs)
+  (let* ((r (gb-leading-monomials fs #f "ideal-dimension")) (hs (hs-reduce (hs-numerator (cadr r)) (cx-n (car r)))))
+    (if (null? (car hs)) -1 (cadr hs))))
+
+;; The degree: (dim)! times the leading coefficient of the affine Hilbert
+;; polynomial; for a zero-dimensional ideal, the number of solutions
+;; counted with multiplicity. 0 for the unit ideal.
+(define (ideal-degree fs)
+  (let ((hs (ideal-hilbert-series fs 'affine)))
+    (if (null? (car hs)) 0 (fold-left + 0 (car hs)))))
+
+;; ===========================================================================
+;; Zero-dimensional ideals
+;; ===========================================================================
+
+(define (gb-pure-power? m i)
+  (and (> (vector-ref m i) 0) (hs-single-variable? m)))
+(define (gb-zero-dim-lms? lms n)
+  (let loop ((i 0)) (or (= i n) (and (gb-any? (lambda (m) (gb-pure-power? m i)) lms) (loop (+ i 1))))))
+
+;; Finitely many solutions over an algebraic closure: every variable has a
+;; pure power among the leading monomials.
+(define (ideal-zero-dimensional? fs)
+  (let* ((r (gb-leading-monomials fs #f "ideal-zero-dimensional?")) (lms (cadr r)))
+    (and (pair? lms) (not (gb-any? mono-constant? lms)) (gb-zero-dim-lms? lms (cx-n (car r))))))
+
+;; The monomials outside the leading ideal (a K-basis of K[x]/I), as
+;; exponent lists in increasing order; refused unless I is
+;; zero-dimensional.
+(define (ideal-standard-monomials fs)
+  (let* ((r (gb-leading-monomials fs #f "ideal-standard-monomials")) (cx (car r)) (lms (cadr r)) (n (cx-n cx)))
+    (if (not (or (gb-any? mono-constant? lms) (gb-zero-dim-lms? lms n)))
+        (error "ideal-standard-monomials: the ideal is not zero-dimensional"))
+    (let loop ((frontier (if (gb-any? mono-constant? lms) '() (list (mono-one n)))) (seen '()))
+      (if (null? frontier)
+          (map vector->list (sort seen (lambda (a b) (< ((cx-cmp cx) a b) 0))))
+          (let* ((m (car frontier))
+                 (next (let up ((i 0) (acc '()))
+                         (if (= i n) acc
+                             (let ((v (vector-copy m)))
+                               (vector-set! v i (+ (vector-ref v i) 1))
+                               (up (+ i 1)
+                                   (if (or (gb-any? (lambda (l) (mono-divides? l v)) lms)
+                                           (gb-any? (lambda (s) (mono=? s v)) seen)
+                                           (gb-any? (lambda (s) (mono=? s v)) frontier)
+                                           (gb-any? (lambda (s) (mono=? s v)) acc))
+                                       acc (cons v acc))))))))
+            (loop (append (cdr frontier) next) (cons m seen)))))))
+
+;; dim_K K[x]/I: the number of solutions with multiplicity.
+(define (ideal-solution-count fs) (length (ideal-standard-monomials fs)))
+
+;; The reduced lex basis of a zero-dimensional ideal, arranged by the
+;; least variable each element involves beyond the later ones:
+;; ((xn g...) (x(n-1) g...) ... (x1 g...)), each group in K[x1..xn] lex.
+;; The first group is the eliminant in xn alone; each later group lies in
+;; K[xi, ..., xn] (Cox-Little-O'Shea ch. 3, the Elimination Theorem).
+(define (ideal-triangular-form fs)
+  (let* ((P (gb-carrier-of fs "ideal-triangular-form")) (cx (gb-context P "ideal-triangular-form"))
+         (L (make-polys (cx-K cx) (cx-vars cx) 'lex)) (cxL (gb-context L "ideal-triangular-form"))
+         (G (gb-basis-terms cxL (map (lambda (f) (ring-admit L f)) fs))) (n (cx-n cx)))
+    (if (not (gb-zero-dim-lms? (map (lambda (g) (car (car g))) G) n))
+        (if (and (pair? G) (mono-constant? (car (car (car G)))))
+            (error "ideal-triangular-form: the ideal is the unit ideal (no solutions)")
+            (error "ideal-triangular-form: the ideal is not zero-dimensional")))
+    (let level ((i (- n 1)) (acc '()))
+      (if (< i 0)
+          (reverse acc)
+          (level (- i 1)
+                 (cons (cons (list-ref (cx-vars cx) i)
+                             (map (cx-wrap cxL) (filter (lambda (g) (= (gb-first-variable g n) i)) G)))
+                       acc))))))
+;; The least index i with a nonzero exponent of xi in some term.
+(define (gb-first-variable g n)
+  (let loop ((ts g) (best n))
+    (if (null? ts) best
+        (loop (cdr ts)
+              (let find ((i 0)) (cond ((>= i best) best) ((> (vector-ref (car (car ts)) i) 0) i) (else (find (+ i 1)))))))))
+
+;; The solutions of a zero-dimensional ideal with every coordinate in the
+;; coefficient field, as lists of values in variable order: over Q the
+;; rational solutions, over F_p (p < 2^16) all solutions. Found by back
+;; substitution in the triangular form; every solution is checked on the
+;; generators.
+(define (ideal-solutions fs)
+  (let* ((P (gb-carrier-of fs "ideal-solutions")) (cx (gb-context P "ideal-solutions"))
+         (K (cx-K cx)) (n (cx-n cx)) (tri (ideal-triangular-form fs))
+         (root-finder (gb-root-finder K)))
+    (let level ((groups tri) (i (- n 1)) (points (list '())))
+      (if (null? groups)
+          (let ((sols points))
+            (for-each (lambda (pt)
+                        (for-each (lambda (f) (if (not (r-zero? K (ring-poly-eval f pt)))
+                                                  (error "ideal-solutions: a solution does not satisfy a generator" pt)))
+                                  fs))
+                      sols)
+            (sort sols (lambda (a b) (gb-point<? K a b))))
+          (let ((gs (cdr (car groups))))
+            (level (cdr groups) (- i 1)
+                   (apply append
+                          (map (lambda (pt)
+                                 (map (lambda (r) (cons r pt))
+                                      (root-finder (gb-univariate-gcd K gs i pt n))))
+                               points))))))))
+
+;; The univariate gcd in xi of the elements gs evaluated at the point
+;; (values of x(i+1)..xn).
+(define (gb-univariate-gcd K gs i pt n)
+  (let ((Kx (make-polys K 'x)))
+    (fold-left (lambda (acc g) (r-gcd Kx acc (gb-specialize Kx K g i pt n))) (r0 Kx) gs)))
+(define (gb-specialize Kx K g i pt n)
+  (let* ((terms (ring-poly-terms g)) (vals (list->vector pt)))
+    (fold-left (lambda (acc t)
+                 (let* ((c (car t)) (es (list->vector (cdr t)))
+                        (v (let loop ((j (+ i 1)) (v c))
+                             (if (= j n) v (loop (+ j 1) (r* K v (r-expt K (vector-ref vals (- j i 1)) (vector-ref es j))))))))
+                   (r+ Kx acc (r* Kx v (r-expt Kx (ring-poly-variable Kx) (vector-ref es i))))))
+               (r0 Kx) terms)))
+
+(define (gb-point<? K a b)
+  (cond ((null? a) #f)
+        ((r= K (car a) (car b)) (gb-point<? K (cdr a) (cdr b)))
+        ((ring-carrier=? K rationals) (< (car a) (car b)))
+        (else (< (car a) (car b)))))
+
+;; Roots in K of a univariate polynomial over K (an element of K[x]).
+(define (gb-root-finder K)
+  (cond ((ring-carrier=? K rationals) gb-rational-roots)
+        ((and (eq? (ring-carrier-family K) 'zmod) (< (ring-ref K 'characteristic) 65536))
+         (lambda (u)
+           (if (null? (ring-poly-coefficients u)) (error "ideal-solutions: a fibre is not finite"))
+           (let ((p (ring-ref K 'characteristic)))
+             (let loop ((a 0) (acc '()))
+               (if (= a p) (reverse acc) (loop (+ a 1) (if (= (ring-poly-eval u a) 0) (cons a acc) acc)))))))
+        (else (gb-refuse 'ring-missing-capability 'ideal-solutions (ring-carrier-name K) 'root-finding))))
+
+;; Rational roots of a polynomial in Q[x], by the rational root theorem on
+;; its primitive integer form: p/q with p | a0 and q | ad.
+(define gb-trial-division-limit 10000000)
+(define (gb-divisors m)
+  (let ((m (abs m)))
+    (if (> m (* gb-trial-division-limit gb-trial-division-limit))
+        (gb-refuse 'ring-missing-capability 'ideal-solutions "Q" 'integer-factorization m))
+    (let loop ((d 1) (acc '()))
+      (cond ((> (* d d) m) acc)
+            ((= (modulo m d) 0) (loop (+ d 1) (if (= (* d d) m) (cons d acc) (cons d (cons (quotient m d) acc)))))
+            (else (loop (+ d 1) acc))))))
+(define (gb-rational-roots u)
+  (let* ((cs (ring-poly-coefficients u)))
+    (if (null? cs) (error "ideal-solutions: a fibre is not finite"))
+    (let* ((l (fold-left (lambda (a c) (lcm a (denominator c))) 1 cs))
+           (ints (map (lambda (c) (* l c)) cs))
+           (zero-root (= (car ints) 0))
+           (ints (let strip ((xs ints)) (if (= (car xs) 0) (strip (cdr xs)) xs)))
+           (a0 (car ints)) (ad (list-ref ints (- (length ints) 1)))
+           (cands (if (= (length ints) 1) '()
+                      (apply append (map (lambda (p) (apply append (map (lambda (q) (list (/ p q) (- (/ p q)))) (gb-divisors ad))))
+                                         (gb-divisors a0)))))
+           (roots (filter (lambda (r) (= (ring-poly-eval u r) 0)) cands))
+           (all (if zero-root (cons 0 roots) roots)))
+      (let dedupe ((xs (sort all <)) (acc '()))
+        (cond ((null? xs) (reverse acc))
+              ((and (pair? acc) (= (car xs) (car acc))) (dedupe (cdr xs) acc))
+              (else (dedupe (cdr xs) (cons (car xs) acc))))))))
+
+;; ===========================================================================
+;; core.symbolic polynomials
+;; ===========================================================================
+;;
+;; A core.symbolic polynomial (eshkol-poly vars terms [field]) names its
+;; variables; it enters K[x1..xn] when they are among the carrier's.
+
+(define (symbolic->ring-poly P sp)
+  (if (not (poly? sp)) (error "symbolic->ring-poly: expected a core.symbolic polynomial" sp))
+  (if (not (gb-mpolys? P)) (error "symbolic->ring-poly: expected a carrier K[x1..xn]" P))
+  (let* ((vars (ring-poly-variable-names P)) (svars (cadr sp))
+         (pos (map (lambda (v) (let ((i (gb-index-of v vars)))
+                                 (if i i (error "symbolic->ring-poly: a variable is not in the carrier" v vars))))
+                   svars))
+         (n (length vars)))
+    (ring-poly P
+      (map (lambda (t)
+             (let ((es (make-vector n 0)))
+               (let loop ((ps pos) (j 0))
+                 (if (pair? ps) (begin (vector-set! es (car ps) (vector-ref (car t) j)) (loop (cdr ps) (+ j 1)))))
+               (cons (cdr t) (vector->list es))))
+           (caddr sp)))))
+(define (gb-index-of x xs)
+  (let loop ((xs xs) (i 0)) (cond ((null? xs) #f) ((eq? (car xs) x) i) (else (loop (cdr xs) (+ i 1))))))
+
+;; A polynomial over Q as a core.symbolic polynomial.
+(define (ring-poly->symbolic p)
+  (let ((P (ring-carrier-of p)))
+    (if (not (and (gb-mpolys? P) (ring-carrier=? (ring-ref P 'base) rationals)))
+        (error "ring-poly->symbolic: expected a polynomial over Q in a carrier Q[x1..xn]" p))
+    (poly (ring-poly-variable-names P) (map (lambda (t) (cons (cdr t) (car t))) (ring-poly-terms p)))))
