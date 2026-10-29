@@ -131,10 +131,14 @@ independent of the primes:
 The verification is what makes the result exact; the lucky-prime rule only
 saves time. A failed check moves on to further primes.
 
-Over Q the default is `buchberger` (on the homogenization for orders that are
-not graded): at the sizes measured (cyclic-6, Katsura-5) it is faster than the
-multimodular method, whose exact check over Q repeats a large part of the
-work. The multimodular method is selected with `'method 'multimodular`.
+Over Q the default is the multimodular method; over other fields it is
+Buchberger. Measured on Linux x64 (JIT), Buchberger over Q is faster on small
+systems (Katsura-5 under grevlex in 4.7 s against 42 s, Katsura-4 under lex in
+5.3 s against 34 s), where the exact check over Q dominates the multimodular
+run, but its rational coefficients can grow without bound: cyclic-6 under
+grevlex did not finish in Buchberger over Q within the hour it was given, and
+takes 151 s by the multimodular method (25 s over F_32003). The default
+bounds the worst case; `'method 'buchberger` remains available.
 
 ### 4. Ideals and invariants
 

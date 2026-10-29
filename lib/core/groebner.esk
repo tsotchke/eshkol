@@ -568,13 +568,14 @@
           (else (loop (cddr os))))))
 
 ;; (groebner-basis-report fs ['method m])
-;; m = buchberger (the default; under an order that is not graded it runs
-;; on the homogenization), buchberger-direct, or multimodular (over Q).
+;; m = multimodular (the default over Q), buchberger (the default over
+;; other fields; under an order that is not graded it runs on the
+;; homogenization), or buchberger-direct.
 ;; => alist: basis, method, pairs-reduced, zero-reductions, primes,
 ;;    unlucky-primes, verifications.
 (define (groebner-basis-report fs . options)
   (let* ((P (gb-carrier-of fs "groebner-basis")) (cx (gb-context P "groebner-basis"))
-         (method (gb-option options 'method 'buchberger))
+         (method (gb-option options 'method (if (ring-carrier=? (cx-K cx) rationals) 'multimodular 'buchberger)))
          (input (filter pair? (gb-input cx fs)))
          (wrap (lambda (G) (map (cx-wrap cx) G))))
     (cond ((null? input)

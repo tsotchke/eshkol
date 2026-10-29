@@ -72,9 +72,9 @@ carrier must be a field; any other is refused with `ring-missing-capability`
 
 | Method | What runs |
 |---|---|
-| `buchberger` (the default) | Buchberger's algorithm with the Gebauer-Moeller installation of his two criteria and the sugar selection strategy; under an order that is not graded (`lex`, block and weight orders) it runs on the homogenization and dehomogenizes, so the computation proceeds degree by degree |
+| `multimodular` (the default over Q) | reduced bases of the homogenized ideal in fibres F_p, lucky-prime selection, CRT and rational reconstruction, then an exact check over Q (below) |
+| `buchberger` (the default over other fields) | Buchberger's algorithm with the Gebauer-Moeller installation of his two criteria and the sugar selection strategy; under an order that is not graded (`lex`, block and weight orders) it runs on the homogenization and dehomogenizes, so the computation proceeds degree by degree |
 | `buchberger-direct` | the same algorithm in the given order, without homogenizing |
-| `multimodular` | over Q only: reduced bases of the homogenized ideal in fibres F_p, lucky-prime selection, CRT and rational reconstruction, then an exact check over Q (below) |
 
 `(groebner-basis-report fs ...)` returns the same basis in an association list
 with what the run did: `basis`, `method`, and `pairs-reduced` and
@@ -95,7 +95,7 @@ whether `gs` is a Groebner basis of the ideal it generates;
 ;; the last element is the eliminant z^6 - 4z^4 + 4z^3 - z^2
 (display (ring-poly-terms (car (reverse G)))) ;; => ((1 0 0 6) (-4 0 0 4) (4 0 0 3) (-1 0 0 2))
 (newline)
-(define M (groebner-basis F 'method 'multimodular))
+(define M (groebner-basis F 'method 'buchberger))
 (display (map ring-poly-terms M)) ;; prints: (((1 1 0 0) (1 0 1 0) (1 0 0 2) (-1 0 0 0)) ((1 0 2 0) (-1 0 1 0) (-1 0 0 2) (1 0 0 1)) ((1 0 1 2) (1/2 0 0 4) (-1/2 0 0 2)) ((1 0 0 6) (-4 0 0 4) (4 0 0 3) (-1 0 0 2)))
 (newline)
 (display (length (cdr (assq 'primes (groebner-basis-report F 'method 'multimodular))))) ;; => 2
