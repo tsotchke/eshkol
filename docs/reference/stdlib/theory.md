@@ -59,14 +59,14 @@ any data compared with `equal?`, so a family such as the scalars of a module,
 
 | Procedure | Meaning |
 |---|---|
-| `(make-signature '((op arity) ...))`, `signature-operations`, `signature-arity` | a signature |
+| `(make-signature '((op arity) ...))`, `signature?`, `signature-operations`, `signature-arity` | a signature |
 | `(well-formed-term? S-or-T t)` | every application has its operation's arity |
 | `(term-variables t)` | variables in order of first appearance |
 | `(term-substitute t '((x . s) ...))` | simultaneous substitution |
 | `(term-size t)`, `(term-operations t)` | size; operations used |
-| `(make-equation name lhs rhs)`, `equation-name`, `equation-lhs`, `equation-rhs`, `equation-variables` | an equational law; its variables are those of the left side then the right |
+| `(make-equation name lhs rhs)`, `equation?`, `equation-name`, `equation-lhs`, `equation-rhs`, `equation-variables` | an equational law; its variables are those of the left side then the right |
 | `(make-theory name signature equations [kind parameters])` | a theory; equations may be `(name lhs rhs)` lists; an ill-formed side is refused |
-| `theory-name`, `theory-signature`, `theory-equations`, `theory-operations`, `theory-arity`, `theory-kind`, `theory-parameters` | accessors; the kind names the decision procedure of `core.theory.free` |
+| `theory?`, `theory-name`, `theory-signature`, `theory-equations`, `theory-operations`, `theory-arity`, `theory-kind`, `theory-parameters` | accessors; the kind names the decision procedure of `core.theory.free` |
 | `(theory-extend T name equations [operations])` | more equations and operations (kind `user`) |
 
 A theory with no equations has kind `absolutely-free`: its models are the
@@ -97,7 +97,7 @@ representatives. A missing operation is refused.
 
 | Procedure | Meaning |
 |---|---|
-| `model-theory`, `model-name`, `model-elements`, `model-finite?`, `model-size`, `model-operation`, `model-equal?`, `model-member?`, `model-ref` | accessors |
+| `model?`, `model-theory`, `model-name`, `model-elements`, `model-finite?`, `model-size`, `model-operation`, `model-equal?`, `model-member?`, `model-extra`, `model-ref` | accessors; `model-extra` is the alist given as `'extra`, `model-ref` one of its values |
 | `(model-evaluate M t env)` | the value of a term under an alist of variable values |
 | `(term->procedure M t vars)` | the term compiled to a procedure of one vector of values |
 | `(model-law-violations M [samples])` | the laws checked under every assignment of the samples (every element when M is finite) |
@@ -172,7 +172,8 @@ Carriers, their operations and every call site of `core.ring` are unchanged.
 ## Interpretations
 
 An interpretation S -> T sends each operation of S to a term of T:
-`(make-interpretation S T (list (list op (x ...) term) ...))`.
+`(make-interpretation S T (list (list op (x ...) term) ...))`
+(`interpretation?`, `interpretation-source`, `interpretation-target`).
 `(interpretation-translate I t)` translates terms; `(model-reduct I M)` makes
 a T-model an S-model (the forgetful functor); `(interpretation-violations I)`
 lists the S-laws whose translation T does not prove, decided by T's word
@@ -243,7 +244,8 @@ A theory of kind `user` with equations (for instance one made by
 
 ## The Lawvere theory
 
-`(lawvere-category T)` is L_T. A morphism n -> m is
+`(lawvere-category T)` is L_T (`lawvere-category?`,
+`lawvere-category-theory`; morphisms answer `lawvere-morphism?`). A morphism n -> m is
 `(lawvere-morphism L n terms)`, m terms in the variables
 `(lawvere-variables n)` = `x1 ... xn`.
 
@@ -291,10 +293,12 @@ shared finite-category representation, so `category-laws?` of
 ## Finite coalgebras
 
 A coalgebra for F X = O x X^A (a Moore machine) is
-`(make-coalgebra states alphabet output step)`.
+`(make-coalgebra states alphabet output step)` (`coalgebra?`,
+`coalgebra-states`, `coalgebra-alphabet`, `(coalgebra-output C x)`,
+`(coalgebra-step C x a)`).
 `coalgebra-homomorphism?` checks outputs and transitions;
 `coalgebra-bisimilarity` is the largest bisimulation by partition
-refinement; `coalgebra-minimize` is the quotient by it (the image in the final
+refinement and `(coalgebra-bisimilar? C x y)` asks it of two states; `coalgebra-minimize` is the quotient by it (the image in the final
 coalgebra); `coalgebra-sum` is the disjoint sum and
 `(coalgebra-behaviour C x n)` the outputs after every word of length at most n.
 

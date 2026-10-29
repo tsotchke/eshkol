@@ -57,6 +57,7 @@ documentation hub lists the same records in
 | [0033](0033-core-sheaf-finite-sites.md) | `core.sheaf`: one sheaf-theory facility on finite sites | Proposed — implemented in `core.sheaf` | 2026-10-24 | `lib/core/sheaf.esk`, `lib/core/sheaf/`, `lib/core/integer_linalg.esk`; suite `tests/stdlib/sheaf_test.esk`; reference [`sheaf.md`](../../reference/stdlib/sheaf.md) |
 | [0034](0034-ring-carriers-functor-of-points.md) | Ring carriers: the functor-of-points evaluation model | Proposed | 2026-10-24 | — (evidence program [`mathematics_functor_of_points.esk`](../../../examples/mathematics_functor_of_points.esk); first stage targets v1.4.1) |
 | [0035](0035-kripke-joyal-semantics.md) | Kripke-Joyal semantics for local truth | Proposed — library implemented in `core.topos` | 2026-10-24 | `lib/core/topos.esk`; suites `tests/stdlib/topos_test.esk`, `topos_corpus_test.esk`, `topos_corpus_sheaf_test.esk`, `topos_reductions_test.esk`, `topos_jtranslation_test.esk`, `topos_local_ring_test.esk`; reference [`topos.md`](../../reference/stdlib/topos.md) |
+| [0039](0039-lawvere-theories.md) | Algebraic theories as data: Lawvere theories and their models | Proposed — library implemented in `core.theory` | 2026-10-29 | `lib/core/theory.esk`, `lib/core/theory/`; `core.ring`'s law check; suites `tests/stdlib/theory_test.esk`, `theory_topos_test.esk`; reference [`theory.md`](../../reference/stdlib/theory.md) |
 
 ## Numbering
 

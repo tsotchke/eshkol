@@ -770,6 +770,16 @@ under the same discipline that made `Qubit` linear.
       Lawvere-Tierney bijection, the `locally` modality as the j-translation,
       and the internally local structure sheaf of Spec(Z/n). The presheaf-topos
       example runs on it. Language adoption is staged in ADR-0035 (v1.4.1 to v1.5.0)
+- [x] Algebraic theories as data (ADR-0039): `core.theory` gives signatures,
+      terms, equational theories and their models, with the catalogue of
+      semigroups, monoids, groups, abelian groups, rings, commutative rings,
+      R-modules, lattices, Boolean and Heyting algebras; laws checked
+      exhaustively on finite models and on seeded samples otherwise;
+      homomorphisms, products, congruences and quotients; free models with the
+      word problem decided for every catalogue theory; and the Lawvere theory
+      as a category with finite products. `core.ring` carriers are models of
+      the theory of commutative rings, and `core.topos`'s truth values are
+      Heyting algebras. Theories in the type system are Planned for v1.5.0
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve

@@ -4367,6 +4367,30 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# core.theory (ADR-0039): algebraic theories as data. The suite checks the
+# laws exhaustively on finite models (every group of order <= 8, Z/n through
+# core.ring, matrix rings, modules, lattices, Heyting and Boolean algebras),
+# on seeded samples on infinite ones, the word problem of every catalogue
+# theory against evaluation in finite models, and the Lawvere theory; the
+# topos suite checks Omega_J(c) of core.topos toposes as Heyting algebras.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_theory_suite theory theory_topos)
+        add_test(NAME ${_theory_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_theory_suite}_test.esk")
+        add_test(NAME ${_theory_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_theory_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_theory_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_theory_suite}_jit ${_theory_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_theory_suite}_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # core.ring and core.multimodular (ADR-0034, library rung): the ring-law gate
 # (exhaustive on small lawful carriers, seeded on infinite ones, refusals,
 # coercion lattice, ring maps), the IEEE tier against its per-operation
