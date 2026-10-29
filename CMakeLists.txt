@@ -4344,6 +4344,29 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# core.topos: the internal language of the topos of a finite site, with
+# Kripke-Joyal forcing cross-checked against the Omega-valued interpretation,
+# the Kripke and Beth reductions, soundness of intuitionistic higher-order
+# logic, and the internally local structure sheaf of Spec(Z/n) (ADR-0035).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_topos_suite topos_test topos_corpus_test topos_corpus_sheaf_test topos_reductions_test topos_jtranslation_test topos_local_ring_test)
+        add_test(NAME ${_topos_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_topos_suite}.esk")
+        add_test(NAME ${_topos_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_topos_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_topos_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=540"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_topos_suite}_jit ${_topos_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_topos_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
@@ -4410,6 +4433,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # These consumers now require the shared field module from this checkout.
     set_property(TEST torsion_lens_spaces_reidemeister_jit tv_turaev_viro_cyclotomic_jit
                       sheaf_finite_spaces_cech_descent_jit sheaf_finite_site_sheafification_jit
+                      cat_presheaf_topos_internal_logic_jit
         APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # The order-eight program eliminates five 343 x 2401 integer matrices;
     # about 90 s on an arm64 laptop, so it gets its own budget.

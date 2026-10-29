@@ -2505,6 +2505,21 @@ oracles:
         label: 'core.sheaf (ADR-0033): finite sites and Grothendieck topologies checked against the three axioms, presheaves of sets and of Z-modules / Q-vector spaces, gluing with named obstructions, the plus construction, and Cech and derived cohomology with torsion and cocycle generators; sheaf_jit/sheaf_aot, the two library-based sheaf examples in JIT and AOT, and the reference-page examples all pass'
         action: ./scripts/run_sheaf_gate.sh
 
+      # core.topos (ADR-0035): the internal language of the topos of a finite
+      # site with Kripke-Joyal forcing. Producer: scripts/run_topos_gate.sh
+      # runs the fourteen CTest entries that own the behaviour (six suites and
+      # the presheaf-topos example written on the library, JIT and AOT) and every
+      # documentation example on the reference page; PASS only when all of
+      # them ran and passed.
+      - id: v14_core_topos
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_topos"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.topos (ADR-0035): the Mitchell-Benabou language of Sh(C, J) for finite sites, Kripke-Joyal forcing cross-checked against the Omega-valued interpretation on an enumerated corpus over five sites, the Kripke and Beth reductions, the j-translation, soundness of intuitionistic higher-order logic with classical-law counter-witnesses, and the internally local structure sheaf of Spec(Z/n); the topos suites, the library-based presheaf-topos example in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_topos_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
