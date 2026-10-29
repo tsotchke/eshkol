@@ -60,7 +60,7 @@ fibres F_p.
 | `(make-zmod m)` | Z/m, m >= 1 | integers in `[0, m)` | a field exactly when m is prime (decided by deterministic Miller-Rabin below 3317044064679887385961981; above it a modulus not proven composite is refused) |
 | `(make-jets K n [e])` | K[e]/e^n | `n` coefficients in K | n = 2: dual numbers (forward-mode AD); n = k+1: k-jets; a unit when the constant term is a unit of K |
 | `(make-polys K [x])` | K[x] | coefficient lists, lowest degree first | a unit when the constant term is a unit and every other coefficient is nilpotent; euclidean when K is a field |
-| `(zset-group-ring op identity inverse [name])` | Z[G], G abelian | [`core.dbsp`](dbsp.md) Z-sets | the Z-set sum is the ring sum; the product is the DBSP join on the trivial key emitting `(op g h)`; units recognised are +-g |
+| `(zset-group-ring op identity inverse [name] [options])` | Z[G], G abelian | [`core.dbsp`](dbsp.md) Z-sets | the Z-set sum is the ring sum; the product is the DBSP join on the trivial key emitting `(op g h)`; the unit group is decided exactly for a finite G (`'elements`) or a torsion-free G (`'torsion-free #t`), see [Jets, polynomials and group rings](#jets-polynomials-and-group-rings) |
 | `(algebraic-domain owner)` | Q(alpha) and its exact Taylor / hyper-dual lifts | algebraic elements and AD values | from [`core.algebraic_domain`](algebraic_linalg.md); see [Interoperation](#interoperation) |
 
 Parameterised carriers whose parameters are canonical data are interned once
@@ -200,7 +200,7 @@ explicit map, never by a division that happened to fail.
 | `ring-not-a-unit` | operation, carrier, element | `r-inv` / `r/` of a non-unit; `ring-admit` of n/d with d not a unit; elimination without a unit pivot |
 | `ring-no-common-carrier` | operation, carrier, carrier | rule 6 of [Coercion](#coercion) |
 | `ring-not-an-element` | operation, carrier, value | a value that is in no carrier (a symbol, a string) |
-| `ring-missing-capability` | operation, carrier, capability | `r<` without `order`, `r-gcd` without `euclidean`, `r-analytic` without `analytic`, the law check on a carrier that is not lawful |
+| `ring-missing-capability` | operation, carrier, capability | `r<` without `order`, `r-gcd` without `euclidean`, `r-analytic` without `analytic`, a unit question in Z[G] for an undeclared G (`unit-group`), the law check on a carrier that is not lawful |
 | `ring-no-ring-map` | operation, source, target | a reduction or composition with no ring map |
 
 `(ring-refusal? e)`, `(ring-refusal-kind e)` (a symbol) and
@@ -229,6 +229,22 @@ them like any other error.
 | `(ring-poly-coefficients p)` `(ring-poly-degree p)` `(ring-poly-leading p)` | coefficients (lowest first, no trailing zeros), degree (-1 for zero), leading coefficient |
 | `(ring-poly-eval p c)` | Horner evaluation at c in the coefficient carrier |
 
+The unit group of Z[G] is decided exactly. Every `+-g` is a unit, and an
+element whose augmentation (the sum of its weights, the ring map Z[G] -> Z)
+is not +-1 is not. Beyond that the answer depends on G, which the caller
+declares after the optional name:
+
+- `'elements (g0 g1 ...)` declares G finite with these elements (closure
+  under the operation and the inverse is checked). Then u is a unit exactly
+  when the integer matrix of multiplication by u on the basis G has
+  determinant +-1, and its inverse is the exact solution of u x = 1. In
+  Z[C5], u = -1 + t + t^4 is a unit with inverse -1 + t^2 + t^3.
+- `'torsion-free #t` declares G torsion-free; then Z[G] is a domain whose
+  units are exactly the `+-g` (Z[t,1/t] is the case G = Z).
+
+With neither declaration any other unit question is refused with
+`ring-missing-capability` (capability `unit-group`), never guessed.
+
 ```scheme
 (require core.ring)
 (define Z4x (make-polys (make-zmod 4)))
@@ -240,12 +256,20 @@ them like any other error.
 (define Qx (make-polys rationals))
 (display (ring-poly-coefficients (r-gcd Qx (ring-poly Qx '(-1 0 1)) (ring-poly Qx '(1 2 1))))) ;; => (1 1)
 (newline)
-(define L (zset-group-ring (lambda (g h) (+ g h)) 0 (lambda (g) (- g)) "Z[t,1/t]"))
+(define L (zset-group-ring (lambda (g h) (+ g h)) 0 (lambda (g) (- g)) "Z[t,1/t]" 'torsion-free #t))
 (define t (zset-singleton 1 1))
 ;; (t + 1)(t - 1) = t^2 - 1, as (weight row) entries
 (display (zset-entries (r* L (r+ L t 1) (r- L t 1)))) ;; => ((-1 0) (1 2))
 (newline)
 (display (zset-entries (r-inv L t))) ;; => ((1 -1))
+(newline)
+;; Z[C5]: a unit that is not +-g
+(define C5 (zset-group-ring (lambda (g h) (modulo (+ g h) 5)) 0 (lambda (g) (modulo (- g) 5))
+                            "Z[C5]" 'elements '(0 1 2 3 4)))
+(define u (zset-from-weighted '((-1 0) (1 1) (1 4))))
+(display (r-unit? C5 u)) ;; => #t
+(newline)
+(display (zset-entries (r-inv C5 u))) ;; => ((-1 0) (1 2) (1 3))
 ```
 
 ## Ring maps
@@ -399,8 +423,9 @@ n = 1..13, three small jet carriers, a nested jet carrier and Z/4[x] in degree
 at most 1 (21,810 triples), and with a fixed seed on twelve infinite carriers
 (Z across the int64 boundary, Q, Q[e]/e^4, Q[x], F_101[x], Z/10^30, Z/2^64,
 Z/7^16, Z[t,1/t], Q(sqrt 2) and its Taylor lift, F_7[e]/e^6), plus
-characteristic, nilpotency, the unit groups, every refusal, the coercion
-lattice and the ring maps. `examples/mathematics_functor_of_points.esk` runs
+characteristic, nilpotency, the unit groups (including Z[C5] against the
+circulant determinant over all 243 elements with coefficients in {-1, 0, 1}),
+every refusal, the coercion lattice and the ring maps. `examples/mathematics_functor_of_points.esk` runs
 one program over eight carriers and the fibres of Spec Z on this library.
 
 The native runtime registry (`ring_carriers.def`, `eshkol_ring_carrier_t`) is

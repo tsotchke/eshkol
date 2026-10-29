@@ -2419,7 +2419,7 @@
     },
     {
       "path": "examples/mathematics_functor_of_points.esk",
-      "source_sha256": "81cf237b8423d59eb74d36e8404eec05bc8609c626a5a9f6688b3aeed738507a",
+      "source_sha256": "1b84cae1ad998c6d74e0917c35c74aa2513c15e54774590cb859cd8ac4ebfb4a",
       "title": "The functor of points: one program over many rings",
       "kind": "mathematics",
       "purpose": "Evaluate one polynomial, one Newton step and one elimination over many commutative rings through core.ring carriers, as the evidence for ADR-0034.",

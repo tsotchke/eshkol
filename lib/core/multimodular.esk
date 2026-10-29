@@ -1,13 +1,20 @@
 ;;; core.multimodular -- exact computation over Spec Z in the fibres F_p.
 ;;;
-;;; ADR-0034 section 7. An integer polynomial computation commutes with
-;;; every reduction Z -> F_p, and Z/M is the product of the F_p for the
-;;; primes p dividing a squarefree M. So an exact integer or rational answer
-;;; is computed in several word-size prime fields, glued by the Chinese
-;;; remainder theorem, and recovered by the symmetric lift (integers) or
-;;; Wang's rational reconstruction (rationals). The number of primes is
-;;; fixed before the first fibre runs by a proven bound on the answer, so
-;;; the result is proven, never a probabilistic early termination.
+;;; ADR-0034 section 7. Two steps, kept distinct:
+;;;
+;;;   Descent over Spec(Z/M). For a squarefree M = p1 ... pk the Chinese
+;;;   remainder theorem is the ring isomorphism Z/M = F_p1 x ... x F_pk, so
+;;;   residues computed in the fibres F_p (where every integer polynomial
+;;;   computation commutes with reduction) glue to the answer modulo M,
+;;;   and to nothing more: the closed points Spec F_p do not cover Spec Z.
+;;;
+;;;   Reconstruction over Z or Q. The answer modulo M determines the answer
+;;;   itself only inside a window: the symmetric lift for an integer of
+;;;   absolute value at most B when M > 2B, Wang's rational reconstruction
+;;;   for n/d with |n| <= N, 0 < d <= D when M > 2ND. The proven bounds
+;;;   below are what put the answer inside the window; the number of primes
+;;;   is fixed by them before the first fibre runs, so the result is
+;;;   proven, never a probabilistic early termination.
 ;;;
 ;;; Primes are taken downward from 2^31 - 1, so a product of two residues
 ;;; fits a signed 64-bit integer on every target, including wasm32. A prime
@@ -177,8 +184,10 @@
 ;; The fibres until the product of usable primes exceeds target. Returns
 ;; (residue modulus used-primes unlucky-primes).
 (define (mm-run proc target usable? who)
+  ;; At least one fibre always runs, so the result has the shape proc
+  ;; returns even when the bound is 0 (M = 1 would already exceed it).
   (let loop ((i 0) (x #f) (m 1) (used '()) (unlucky '()))
-    (if (> m target)
+    (if (and x (> m target))
         (list x m (reverse used) (reverse unlucky))
         (let ((p (multimodular-prime i)))
           (if (not (usable? p))

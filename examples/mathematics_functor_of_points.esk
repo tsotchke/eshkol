@@ -66,7 +66,7 @@
 ;; (make-zmod m)  Z/m
 ;; (make-jets K n), (make-polys K), (zset-group-ring op identity inverse)
 
-(define laurent (zset-group-ring (lambda (g h) (+ g h)) 0 (lambda (g) (- g)) "Z[t,1/t]"))
+(define laurent (zset-group-ring (lambda (g h) (+ g h)) 0 (lambda (g) (- g)) "Z[t,1/t]" 'torsion-free #t))
 ;; The character t |-> c: the ring map Z[t, 1/t] -> Q.
 (define (laurent-at z c) (ring-map-apply (group-ring-character laurent rationals (lambda (g) (expt c g))) z))
 (define (check-ring-laws R samples) (null? (ring-law-violations R samples)))

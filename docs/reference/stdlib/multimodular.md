@@ -11,15 +11,26 @@ sources:
 
 # `core.multimodular` — exact computation over Spec Z
 
-`(require core.multimodular)` computes exact integer and rational answers in
-the fibres F_p of Spec Z ([ADR-0034](../../design/adr/0034-ring-carriers-functor-of-points.md)
-section 7). An integer polynomial computation commutes with every reduction
-Z -> F_p, and Z/M is the product of the F_p for the primes dividing a
-squarefree M, so the answer is computed in several word-size prime fields,
-glued by the Chinese remainder theorem, and recovered by the symmetric lift
-(integers) or Wang's rational reconstruction (rationals). The number of primes
-is fixed before the first fibre runs by a proven bound on the answer: the
-result is proven, never a probabilistic early termination.
+`(require core.multimodular)` computes exact integer and rational answers
+from word-size prime fields ([ADR-0034](../../design/adr/0034-ring-carriers-functor-of-points.md)
+section 7), in two distinct steps:
+
+1. **Descent over Spec(Z/M).** For a squarefree M = p1 ... pk the Chinese
+   remainder theorem is the ring isomorphism Z/M = F_p1 x ... x F_pk. An
+   integer polynomial computation commutes with every reduction Z -> F_p, so
+   it runs in each fibre F_p and the residues glue to the answer **modulo
+   M**, and to nothing more: the finitely many closed points Spec F_p do not
+   form a cover of Spec Z.
+2. **Bounded reconstruction over Z or Q.** The residue modulo M determines
+   the answer only inside a window: the symmetric lift recovers an integer of
+   absolute value at most B when M > 2B, and Wang's rational reconstruction
+   recovers n/d with |n| <= N, 0 < d <= D when M > 2ND. The proven bounds
+   (Hadamard, Cramer, Mignotte; see below) are what place the answer inside
+   the window. The number of primes is fixed by them before the first fibre
+   runs, so the result is proven, never a probabilistic early termination.
+
+At least one fibre always runs, so a bound of 0 still returns a value of the
+shape the computation returns.
 
 Computations are written against [`core.ring`](ring.md) and run over
 `(make-zmod p)`. Primes are taken downward from 2^31 - 1, so a product of two

@@ -962,32 +962,102 @@
 ;; For an abelian group G given by its operation, identity and inverse, a
 ;; Z-set (a finitely supported function G -> Z) is an element of Z[G]: the
 ;; Z-set sum is the ring sum and the ring product is the DBSP join on the
-;; trivial key emitting the group product. The units recognised are the
-;; trivial units +-g, which are all of them when G is torsion-free.
+;; trivial key emitting the group product.
+;;
+;; The unit group is decided exactly from what the caller declares about G,
+;; after two tests that hold for every G: +-g is a unit, and an element whose
+;; augmentation (sum of weights, the ring map Z[G] -> Z) is not +-1 is not.
+;;   (zset-group-ring op e inv [name] 'elements (g0 g1 ...))
+;;     G is finite with these elements (closure is checked). u is a unit
+;;     exactly when the integer matrix of multiplication by u on the basis G
+;;     has determinant +-1; its inverse is the exact solution of u x = 1.
+;;   (zset-group-ring op e inv [name] 'torsion-free #t)
+;;     Z[G] is a domain whose units are exactly the trivial ones +-g.
+;; With neither declaration a unit question beyond the two tests above is
+;; refused (ring-missing-capability ... unit-group) rather than guessed.
 
-(define (zset-group-ring op identity inverse . name)
+(define (rc-group-ring-options rest)
+  (let loop ((xs rest) (name #f) (elements #f) (torsion-free #f))
+    (cond ((null? xs) (list name elements torsion-free))
+          ((eq? (car xs) 'elements)
+           (if (or (null? (cdr xs)) (not (list? (cadr xs))) (null? (cadr xs)))
+               (error "zset-group-ring: 'elements needs a nonempty list of the group's elements"))
+           (loop (cddr xs) name (cadr xs) torsion-free))
+          ((eq? (car xs) 'torsion-free)
+           (if (null? (cdr xs)) (error "zset-group-ring: 'torsion-free needs a value"))
+           (loop (cddr xs) name elements (if (cadr xs) #t #f)))
+          ((and (not name) (or (string? (car xs)) (symbol? (car xs))))
+           (loop (cdr xs) (if (symbol? (car xs)) (symbol->string (car xs)) (car xs)) elements torsion-free))
+          (else (error "zset-group-ring: unexpected option" (car xs))))))
+
+(define (rc-index-of x xs)
+  (let loop ((xs xs) (i 0))
+    (cond ((null? xs) #f) ((equal? (car xs) x) i) (else (loop (cdr xs) (+ i 1))))))
+
+(define (zset-group-ring op identity inverse . options)
   (if (not (procedure? op)) (error "zset-group-ring: the group operation must be a procedure" op))
   (if (not (or (procedure? inverse) (not inverse)))
       (error "zset-group-ring: the group inverse must be a procedure or #f" inverse))
-  (let* ((label (cond ((null? name) "Z[G]") ((symbol? (car name)) (symbol->string (car name))) (else (car name))))
-         (unit? (lambda (a) (and (= (zset-size a) 1) (= (abs (car (car (zset-entries a)))) 1)))))
-    (rc-descriptor 7 'group-ring (list op identity inverse) label
-      (list (cons 'characteristic 0) (cons 'field? #f) (cons 'lawful? #t) (cons 'exact? #t)
-            (cons 'zero (zset-empty)) (cons 'one (zset-singleton identity 1))
-            (cons 'add zset-add) (cons 'neg zset-negate)
-            (cons 'mul (lambda (a b) (zset-join a b (lambda (r) 0) (lambda (r) 0) op)))
-            (cons 'from-integer (lambda (n) (zset-singleton identity n)))
-            (cons 'equal? zset=?)
-            (cons 'unit? unit?)
-            (cons 'inverse (lambda (a)
-                             (if (not (unit? a)) (rc-refuse 'ring-not-a-unit 'r-inv label a))
-                             (if (not inverse) (rc-refuse 'ring-missing-capability 'r-inv label 'group-inverse))
-                             (let ((e (car (zset-entries a))))
-                               (zset-singleton (inverse (cadr e)) (car e)))))
-            (cons 'inverse-checks? #t)
-            (cons 'member? zset?)
-            (cons 'nilpotent? zset-empty?)
-            (cons 'extra (list (cons 'identity identity)))))))
+  (let* ((opts (rc-group-ring-options options))
+         (label (or (car opts) "Z[G]"))
+         (elements (cadr opts))
+         (torsion-free (caddr opts)))
+    (if (and elements torsion-free) (error "zset-group-ring: a finite group is not torsion-free" label))
+    (if elements
+        (begin
+          (if (not inverse) (error "zset-group-ring: a finite group needs its inverse" label))
+          (if (not (rc-index-of identity elements)) (error "zset-group-ring: the identity is not among the elements" identity))
+          (for-each (lambda (g)
+                      (if (not (rc-index-of (inverse g) elements)) (error "zset-group-ring: the elements are not closed under inverse" g))
+                      (for-each (lambda (h)
+                                  (if (not (rc-index-of (op g h) elements))
+                                      (error "zset-group-ring: the elements are not closed under the operation" g h)))
+                                elements))
+                    elements)))
+    (let* ((augmentation (lambda (a) (fold-left (lambda (s e) (+ s (car e))) 0 (zset-entries a))))
+           (trivial? (lambda (a) (and (= (zset-size a) 1) (= (abs (car (car (zset-entries a)))) 1))))
+           ;; The matrix of x -> a x on the basis `elements`: entry (i, j) is the
+           ;; weight of g_i g_j^-1 in a.
+           (mult-matrix (lambda (a)
+                     (list->vector
+                      (map (lambda (gi)
+                             (list->vector (map (lambda (gj) (zset-weight a (op gi (inverse gj)))) elements)))
+                           elements))))
+           (finite-unit? (lambda (a) (= (abs (ring-det rc-Q (mult-matrix a))) 1)))
+           (unit? (lambda (a)
+                    (cond ((trivial? a) #t)
+                          ((not (= (abs (augmentation a)) 1)) #f)
+                          (elements (finite-unit? a))
+                          (torsion-free #f)
+                          (else (rc-refuse 'ring-missing-capability 'r-unit? label 'unit-group))))))
+      (rc-descriptor 7 'group-ring (list op identity inverse) label
+        (list (cons 'characteristic 0) (cons 'field? #f) (cons 'lawful? #t) (cons 'exact? #t)
+              (cons 'zero (zset-empty)) (cons 'one (zset-singleton identity 1))
+              (cons 'add zset-add) (cons 'neg zset-negate)
+              (cons 'mul (lambda (a b) (zset-join a b (lambda (r) 0) (lambda (r) 0) op)))
+              (cons 'from-integer (lambda (n) (zset-singleton identity n)))
+              (cons 'equal? zset=?)
+              (cons 'unit? unit?)
+              (cons 'inverse
+                    (lambda (a)
+                      (cond
+                        ((trivial? a)
+                         (if (not inverse) (rc-refuse 'ring-missing-capability 'r-inv label 'group-inverse))
+                         (let ((e (car (zset-entries a)))) (zset-singleton (inverse (cadr e)) (car e))))
+                        ((not (unit? a)) (rc-refuse 'ring-not-a-unit 'r-inv label a))
+                        (else
+                         ;; u x = 1: solve M x = coordinates of the identity
+                         (let ((x (ring-solve rc-Q (mult-matrix a)
+                                              (map (lambda (g) (if (equal? g identity) 1 0)) elements))))
+                           (zset-from-weighted
+                            (let loop ((gs elements) (i 0) (acc '()))
+                              (if (null? gs) (reverse acc)
+                                  (loop (cdr gs) (+ i 1) (cons (list (vector-ref x i) (car gs)) acc))))))))))
+              (cons 'inverse-checks? #t)
+              (cons 'member? zset?)
+              (cons 'nilpotent? zset-empty?)
+              (cons 'extra (list (cons 'identity identity) (cons 'elements elements)
+                                 (cons 'torsion-free torsion-free))))))))
 
 ;; ===========================================================================
 ;; Ring maps

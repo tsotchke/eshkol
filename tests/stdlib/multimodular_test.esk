@@ -69,6 +69,17 @@
 (check "an unlucky fibre (a required unit is zero mod p) is skipped and not counted"
        (and (= (cdr (assq 'value report)) 1) (equal? (cdr (assq 'unlucky report)) (list 2147483647))
             (equal? (cdr (assq 'primes report)) (list 2147483629))))
+(check "bound 0: one fibre still runs and the result keeps the callback's shape"
+       (and (equal? (multimodular-integer (lambda (F) (vector (r-int F 0) (r-int F 0))) 0) (vector 0 0))
+            (= (multimodular-integer (lambda (F) (r0 F)) 0) 0)
+            (equal? (multimodular-rational (lambda (F) (list (r0 F))) 0 1) (list 0))
+            (= (length (cdr (assq 'primes (multimodular-integer-report (lambda (F) 0) 0)))) 1)))
+(check "a 1x1 zero matrix has determinant 0; a zero row gives 0"
+       (and (= (multimodular-det (vector (vector 0))) 0) (= (multimodular-det '((0 0) (3 4))) 0)
+            (= (exact-det (vector (vector 0 0) (vector 3 4))) 0)))
+(check "an invertible system with a zero right-hand side has the zero solution"
+       (and (equal? (multimodular-solve (vector (vector 2 1) (vector 1 3)) (vector 0 0)) (vector 0 0))
+            (equal? (multimodular-solve '((7)) '(0)) (vector 0))))
 (check "a vector result is glued componentwise"
        (equal? (multimodular-integer (lambda (F) (vector (r-int F -5) (r-int F (expt 10 30)))) (expt 10 30))
                (vector -5 (expt 10 30))))

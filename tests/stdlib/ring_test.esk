@@ -17,6 +17,7 @@
 (require core.ring)
 (require core.dbsp)
 (require core.algebraic_domain)
+(require core.exact_linalg)
 
 (define passed 0)
 (define failed 0)
@@ -146,7 +147,7 @@
 (define JF7 (make-jets F7 6))
 (laws-hold "random laws: F_7[e]/e^6" JF7
            (map (lambda (i) (make-jet JF7 (map (lambda (j) (rand-int 0 6)) (iota 6)))) (iota 7)))
-(define laurent (zset-group-ring (lambda (g h) (+ g h)) 0 (lambda (g) (- g)) "Z[t,1/t]"))
+(define laurent (zset-group-ring (lambda (g h) (+ g h)) 0 (lambda (g) (- g)) "Z[t,1/t]" 'torsion-free #t))
 (define (rand-zset) (zset-from-weighted (map (lambda (i) (list (rand-int -3 3) (rand-int -2 2))) (iota 3))))
 (laws-hold "random laws: Z[t,1/t] as Z-sets" laurent
            (append (list (r0 laurent) (r1 laurent) (zset-singleton 1 1)) (map (lambda (i) (rand-zset)) (iota 5))))
@@ -236,6 +237,52 @@
        (and (refuses? 'ring-not-a-unit 'any (lambda () (r-inv laurent (zset-singleton 1 2))))
             (refuses? 'ring-not-a-unit 'any (lambda () (r-inv laurent (zset-from-weighted '((1 0) (1 1))))))
             (zset=? (r-inv laurent (zset-singleton 1 1)) (zset-singleton -1 1))))
+;; Z[C_n] with the elements declared: the unit group is decided exactly.
+(define (cyclic-group-ring n)
+  (zset-group-ring (lambda (g h) (modulo (+ g h) n)) 0 (lambda (g) (modulo (- g) n))
+                   (string-append "Z[C" (number->string n) "]") 'elements (iota n)))
+(define C3 (cyclic-group-ring 3))
+(define C5 (cyclic-group-ring 5))
+(define (cyclic-element cs) (zset-from-weighted (map (lambda (c i) (list c i)) cs (iota (length cs)))))
+;; Independent reference: the circulant matrix of multiplication by u in Z[C_n].
+(define (circulant cs)
+  (let ((n (length cs)))
+    (list->vector (map (lambda (i) (list->vector (map (lambda (j) (list-ref cs (modulo (- i j) n))) (iota n))))
+                       (iota n)))))
+(define u5 (cyclic-element '(-1 1 0 0 1)))           ; -1 + t + t^4
+(define v5 (cyclic-element '(-1 0 1 1 0)))           ; -1 + t^2 + t^3
+(check "Z[C5]: -1 + t + t^4 is a unit with inverse -1 + t^2 + t^3"
+       (and (r-unit? C5 u5) (r-one? C5 (r* C5 u5 v5)) (r= C5 (r-inv C5 u5) v5) (r= C5 (r-inv C5 v5) u5)))
+(check "Z[C5]: 3 - t - t^2 has augmentation 1 but circulant determinant /= +-1, so it is refused"
+       (let ((w (cyclic-element '(3 -1 -1 0 0))))
+         (and (not (= (abs (exact-det (circulant '(3 -1 -1 0 0)))) 1)) (not (r-unit? C5 w))
+              (refuses? 'ring-not-a-unit (list 'r-inv "Z[C5]" w) (lambda () (r-inv C5 w))))))
+(check "Z[C5]: over all 243 elements with coefficients in {-1, 0, 1}, unit? agrees with the circulant determinant and every unit times its inverse is 1"
+       (all? (lambda (cs)
+               (let* ((w (cyclic-element cs)) (unit (r-unit? C5 w)))
+                 (and (eq? unit (= (abs (exact-det (circulant cs))) 1))
+                      (or (not unit) (r-one? C5 (r* C5 w (r-inv C5 w)))))))
+             (tuples (list -1 0 1) 5)))
+(check "Z[C3]: the units with coefficients in {-1, 0, 1} are exactly +-g"
+       (all? (lambda (cs)
+               (let ((w (cyclic-element cs)))
+                 (eq? (r-unit? C3 w) (and (= (zset-size w) 1) (= (abs (car (car (zset-entries w)))) 1)))))
+             (tuples (list -1 0 1) 3)))
+(laws-hold "random laws: Z[C5] with its unit group" C5
+           (append (list u5 v5 (r1 C5) (cyclic-element '(3 -1 -1 0 0)))
+                   (map (lambda (i) (cyclic-element (map (lambda (j) (rand-int -2 2)) (iota 5)))) (iota 3))))
+(check "Z[G] for an undeclared G: a unit question beyond +-g and the augmentation is refused"
+       (let ((G (zset-group-ring (lambda (g h) (+ g h)) 0 (lambda (g) (- g)) "Z[G]")))
+         (and (r-unit? G (zset-singleton 3 -1)) (not (r-unit? G (zset-from-weighted '((1 0) (1 1)))))
+              (refuses? 'ring-missing-capability (list 'r-unit? "Z[G]" 'unit-group)
+                        (lambda () (r-unit? G (zset-from-weighted '((-1 0) (1 1) (1 4))))))
+              (refuses? 'ring-missing-capability 'any
+                        (lambda () (r-inv G (zset-from-weighted '((-1 0) (1 1) (1 4)))))))))
+(check "Z[t,1/t] declared torsion-free: only +-t^k are units"
+       (and (not (r-unit? laurent (zset-from-weighted '((-1 0) (1 1) (1 4))))) (r-unit? laurent (zset-singleton -3 -1))))
+(check "zset-group-ring checks the declared finite group"
+       (guard (e ((error-object? e) #t))
+         (zset-group-ring (lambda (g h) (+ g h)) 0 (lambda (g) (- g)) 'elements '(0 1 2)) #f))
 (check "refusal: zero in Q(sqrt 2) is not a unit; 1 + sqrt 2 is"
        (and (refuses? 'ring-not-a-unit 'any (lambda () (r-inv Qs2 0)))
             (r-one? Qs2 (r* Qs2 (algebraic-element sqrt2 '(1 1)) (r-inv Qs2 (algebraic-element sqrt2 '(1 1)))))))

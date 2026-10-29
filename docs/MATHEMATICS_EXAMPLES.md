@@ -992,7 +992,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## The functor of points: one program over many rings
 
-Source: [mathematics_functor_of_points.esk](../examples/mathematics_functor_of_points.esk#L1). SHA-256: `81cf237b8423d59eb74d36e8404eec05bc8609c626a5a9f6688b3aeed738507a`.
+Source: [mathematics_functor_of_points.esk](../examples/mathematics_functor_of_points.esk#L1). SHA-256: `1b84cae1ad998c6d74e0917c35c74aa2513c15e54774590cb859cd8ac4ebfb4a`.
 
 **Published result:** Grothendieck's functor of points identifies a scheme with its points in every commutative ring; a polynomial program is a natural transformation, so evaluation over k[e]/e^2 is forward-mode differentiation (the tangent space), over k[e]/e^(n+1) Taylor jets, over F_p reduction, and Newton iteration over Z/p^k is Hensel lifting. The multimodular method computes an exact integer or rational result in prime fields and recovers it by the Chinese remainder theorem and rational reconstruction, with the number of primes fixed by Hadamard's bound.
 
