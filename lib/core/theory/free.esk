@@ -74,26 +74,19 @@
                             "" gens)
                  ")"))
 
+;; Builtins are passed as values only through a lambda, as core.ring does.
+(define (tf-equal? a b) (equal? a b))
+
 ;; ---------------------------------------------------------------------------
 ;; The dispatcher
 ;; ---------------------------------------------------------------------------
 
 (define (theory-free-model T gens)
   (for-each (lambda (g) (if (not (symbol? g)) (error "theory-free-model: a generator must be a symbol" g))) gens)
-  (let ((k (theory-kind T)))
-    (cond ((eq? k 'absolutely-free) (tf-term-model T gens))
-          ((eq? k 'semigroup) (tf-words T gens #f))
-          ((eq? k 'monoid) (tf-words T gens #t))
-          ((eq? k 'group) (tf-free-group T gens))
-          ((eq? k 'abelian-group) (tf-free-abelian T gens))
-          ((eq? k 'ring) (tf-free-ring T gens))
-          ((eq? k 'commutative-ring) (tf-free-commutative-ring T gens))
-          ((eq? k 'lattice) (tf-decided-terms T gens lattice-leq?))
-          ((eq? k 'heyting-algebra) (tf-decided-terms T gens heyting-provable?))
-          ((eq? k 'distributive-lattice) (tf-truth-tables T gens #f))
-          ((eq? k 'boolean-algebra) (tf-truth-tables T gens #t))
-          ((eq? k 'module) (tf-free-module T gens))
-          (else (error "theory-no-decision-procedure" 'theory-free-model (theory-name T))))))
+  (let ((builder (assq (theory-kind T) tf-builders)))
+    (if builder
+        ((cdr builder) T gens)
+        (error "theory-no-decision-procedure" 'theory-free-model (theory-name T)))))
 
 (define (free-model-generator F g)
   (let ((p (assq g (or (model-ref F 'generators) (error "free-model-generator: not a free model" (model-name F))))))
@@ -101,7 +94,7 @@
 (define (free-element->term F x) ((model-ref F 'to-term) x))
 ;; The homomorphism F -> M sending each generator g to (cdr (assq g images)).
 (define (free-model-lift F M images)
-  (let ((to-term (model-ref F 'to-term)) (gens (map car (model-ref F 'generators))))
+  (let ((to-term (model-ref F 'to-term)) (gens (map (lambda (x) (car x)) (model-ref F 'generators))))
     (lambda (x)
       (model-evaluate M (to-term x) (map (lambda (g) (cons g (cdr (assq g images)))) gens)))))
 
@@ -137,7 +130,7 @@
          (cons op (if (= 0 (theory-arity T op)) (list op) (lambda args (cons op args)))))
        (theory-operations T)))
 (define (tf-term-model T gens)
-  (tf-model T (tf-name T gens) (tf-term-ops T) #f equal?
+  (tf-model T (tf-name T gens) (tf-term-ops T) #f tf-equal?
             (map (lambda (g) (cons g g)) gens) (lambda (x) x)))
 (define (tf-decided-terms T gens leq?)
   (tf-model T (tf-name T gens) (tf-term-ops T) #f
@@ -217,7 +210,7 @@
   (tf-model T (tf-name T gens)
             (append (list (cons 'mul (lambda (a b) (append a b))))
                     (if unit? (list (cons 'one '())) '()))
-            #f equal?
+            #f tf-equal?
             (map (lambda (g) (cons g (list g))) gens)
             (lambda (w) (tf-fold-op 'mul w '(one)))))
 
@@ -234,16 +227,16 @@
             (list (cons 'one '())
                   (cons 'mul tf-reduce-product)
                   (cons 'inv (lambda (w) (map (lambda (l) (cons (car l) (- (cdr l)))) (reverse w)))))
-            #f equal?
+            #f tf-equal?
             (map (lambda (g) (cons g (list (cons g 1)))) gens)
             (lambda (w) (tf-fold-op 'mul (map (lambda (l) (if (= (cdr l) 1) (car l) (list 'inv (car l)))) w) '(one)))))
 
 (define (tf-free-abelian T gens)
   (tf-model T (tf-name T gens)
             (list (cons 'zero (map (lambda (g) 0) gens))
-                  (cons 'add (lambda (a b) (map + a b)))
-                  (cons 'neg (lambda (a) (map - a))))
-            #f equal?
+                  (cons 'add (lambda (a b) (map (lambda (x y) (+ x y)) a b)))
+                  (cons 'neg (lambda (a) (map (lambda (x) (- x)) a))))
+            #f tf-equal?
             (map (lambda (g) (cons g (map (lambda (h) (if (eq? g h) 1 0)) gens))) gens)
             (lambda (v) (tf-fold-op 'add (filter (lambda (t) (not (equal? t '(zero))))
                                                  (map tf-multiple v gens))
@@ -261,7 +254,7 @@
   (tf-model T (tf-name T gens)
             (list (cons 'zero (zset-empty)) (cons 'one (zset-singleton '() 1))
                   (cons 'add zset-add) (cons 'neg zset-negate)
-                  (cons 'mul (lambda (a b) (zset-join a b (lambda (r) 0) (lambda (r) 0) append))))
+                  (cons 'mul (lambda (a b) (zset-join a b (lambda (r) 0) (lambda (r) 0) (lambda (u v) (append u v))))))
             #f zset=?
             (map (lambda (g) (cons g (zset-singleton (list g) 1))) gens)
             (lambda (z) (tf-linear-term (lambda (w) (tf-fold-op 'mul w '(one))) z))))
@@ -270,7 +263,7 @@
 ;; (exponent vectors), the same construction as its group rings Z[G].
 (define (tf-free-commutative-ring T gens)
   (let* ((unit (map (lambda (g) 0) gens))
-         (R (zset-group-ring (lambda (a b) (map + a b)) unit #f (tf-name T gens)))
+         (R (zset-group-ring (lambda (a b) (map (lambda (x y) (+ x y)) a b)) unit #f (tf-name T gens)))
          (M (ring-carrier->model R))
          (monomial (lambda (exps)
                      (tf-fold-op 'mul (apply append (map (lambda (e g) (tf-repeat g e)) exps gens)) '(one)))))
@@ -293,7 +286,7 @@
   (let* ((n (length gens)) (points (tf-tuples '(0 1) n))
          (gen-table (lambda (i) (map (lambda (p) (list-ref p i)) points)))
          (all (lambda (v) (map (lambda (p) v) points)))
-         (meet (lambda (a b) (map min a b))) (join (lambda (a b) (map max a b)))
+         (meet (lambda (a b) (map (lambda (x y) (min x y)) a b))) (join (lambda (a b) (map (lambda (x y) (max x y)) a b)))
          (minterm (lambda (p) (tf-fold-op 'meet (map (lambda (v g) (if (= v 1) g (list 'complement g))) p gens) '(top))))
          (monotone? (lambda (f) (tf-monotone? points f)))
          (to-term
@@ -320,12 +313,12 @@
                           (list (cons 'bottom (all 0)) (cons 'top (all 1))
                                 (cons 'complement (lambda (a) (map (lambda (v) (- 1 v)) a))))
                           '()))
-              elements equal?
+              elements tf-equal?
               (map (lambda (g i) (cons g (gen-table i))) gens (tf-range n))
               to-term)))
 ;; f(p) = 1 and p <= q imply f(q) = 1
 (define (tf-monotone? points f)
-  (let ((pairs (map cons points f)))
+  (let ((pairs (map (lambda (p v) (cons p v)) points f)))
     (tf-every? (lambda (pv)
                  (or (= (cdr pv) 0)
                      (tf-every? (lambda (qw) (or (= (cdr qw) 1) (not (tf-below? (car pv) (car qw))))) pairs)))
@@ -356,3 +349,21 @@
                                       (filter (lambda (x) x)
                                               (map (lambda (c g) (and (not (model-equal? R c zero)) (list (list 'scale c) g))) v gens))
                                       '(zero))))))
+
+;; ---------------------------------------------------------------------------
+;; The decision procedure of each kind of presentation
+;; ---------------------------------------------------------------------------
+
+(define tf-builders
+  (list (cons 'absolutely-free tf-term-model)
+        (cons 'semigroup (lambda (T gens) (tf-words T gens #f)))
+        (cons 'monoid (lambda (T gens) (tf-words T gens #t)))
+        (cons 'group tf-free-group)
+        (cons 'abelian-group tf-free-abelian)
+        (cons 'ring tf-free-ring)
+        (cons 'commutative-ring tf-free-commutative-ring)
+        (cons 'lattice (lambda (T gens) (tf-decided-terms T gens lattice-leq?)))
+        (cons 'heyting-algebra (lambda (T gens) (tf-decided-terms T gens heyting-provable?)))
+        (cons 'distributive-lattice (lambda (T gens) (tf-truth-tables T gens #f)))
+        (cons 'boolean-algebra (lambda (T gens) (tf-truth-tables T gens #t)))
+        (cons 'module tf-free-module)))

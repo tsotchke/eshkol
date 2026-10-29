@@ -1,0 +1,411 @@
+;;; theory_test.esk -- core.theory (ADR-0039): algebraic theories as data.
+;;;
+;;; 1. The fourteen groups of order <= 8 as models of group-theory, laws
+;;;    exhaustive, pairwise non-isomorphic within each order, abelian
+;;;    exactly when the reduct along abelian-group->group is lawful;
+;;;    homomorphism counts, quotients by congruences, products, kernels.
+;;; 2. Rings: core.ring's Z/n carriers as models of commutative-ring-theory
+;;;    (n = 1..12, exhaustive, equal to ring-law-violations), 2x2 matrices
+;;;    over Z/2 (a ring, not commutative), seeded checks on Z and Q, ring
+;;;    quotients and products.
+;;; 3. Modules over Z/n, lattices, distributive lattices, Heyting and Boolean
+;;;    algebras, finite and from orders.
+;;; 4. Free models and the word problem for every catalogue theory, checked
+;;;    against evaluation in finite models; the universal property; the
+;;;    standard interpretations.
+;;; 5. The Lawvere theory: category laws, products, models as functors, the
+;;;    contravariant free homomorphisms, hom-set counts for finite free models.
+;;; 6. Finite coalgebras: bisimilarity, minimization, homomorphisms.
+;;; 7. Named refusals.
+;;;
+;;; Prints one summary line per section, the number of law evaluations, and
+;;; ends with "PASS: theory_test" and "RESULT: PASS", or FAIL lines and
+;;; "RESULT: FAIL".
+
+(require core.theory)
+(require core.ring)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (set! passed (+ passed 1))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display label) (newline))))
+(define (section name)
+  (display "section ") (display name) (display ": ") (display passed) (display " checks passed so far")
+  (newline))
+
+;; Law evaluations: for each equation, (number of samples)^(its variables).
+(define law-evaluations 0)
+(define (count-laws! M n)
+  (for-each (lambda (e) (set! law-evaluations (+ law-evaluations (expt n (length (equation-variables e))))))
+            (theory-equations (model-theory M))))
+(define (lawful? M)
+  (count-laws! M (model-size M))
+  (null? (model-law-violations M)))
+(define (lawful-on? M samples)
+  (count-laws! M (length samples))
+  (null? (model-law-violations M samples)))
+
+(define (refuses? kind thunk)
+  (guard (e ((theory-refusal? e) (eq? (theory-refusal-kind e) kind))
+            (else #f))
+    (thunk)
+    #f))
+(define (all? p xs) (cond ((null? xs) #t) ((p (car xs)) (all? p (cdr xs))) (else #f)))
+(define (count-if p xs) (fold-left (lambda (n x) (if (p x) (+ n 1) n)) 0 xs))
+;; Every list of length k over xs.
+(define (tuples-of xs k)
+  (if (= k 0) (list '()) (apply append (map (lambda (x) (map (lambda (r) (cons x r)) (tuples-of xs (- k 1)))) xs))))
+(define (distinct xs) (cond ((null? xs) '()) ((member (car xs) (cdr xs)) (distinct (cdr xs))) (else (cons (car xs) (distinct (cdr xs))))))
+(define (pairs xs) (if (null? xs) '() (append (map (lambda (y) (cons (car xs) y)) (cdr xs)) (pairs (cdr xs)))))
+
+;; Deterministic generator (64-bit LCG), fixed seed.
+(define seed 20261029)
+(define (next!)
+  (set! seed (modulo (+ (* seed 6364136223846793005) 1442695040888963407) 18446744073709551616))
+  (quotient seed 65536))
+(define (rand-int lo hi) (+ lo (modulo (next!) (+ 1 (- hi lo)))))
+(define (pick xs) (list-ref xs (rand-int 0 (- (length xs) 1))))
+;; A random term of the theory T over vars of depth at most d.
+(define (random-term T vars d)
+  (let* ((ops (theory-operations T))
+         (op (pick ops)) (n (theory-arity T op)))
+    (cond ((or (= d 0) (= (rand-int 0 3) 0)) (if (= (rand-int 0 5) 0) (if (= n 0) (list op) (pick vars)) (pick vars)))
+          ((= n 0) (list op))
+          (else (cons op (map (lambda (i) (random-term T vars (- d 1))) (iota n)))))))
+
+;; ===========================================================================
+;; 1. Groups
+;; ===========================================================================
+
+(define groups (small-groups))
+(define orders (map model-size groups))
+(check "fourteen groups of orders 1..8" (equal? orders '(1 2 3 4 4 5 6 6 7 8 8 8 8 8)))
+(check "every group of order <= 8 satisfies the group laws exhaustively" (all? lawful? groups))
+(define (abelian? G) (lawful? (model-reduct group->abelian-group G)))
+(define abelian-names (map model-name (filter abelian? groups)))
+(check "exactly S3, D4 and Q8 are not abelian"
+       (equal? (map model-name (filter (lambda (G) (not (abelian? G))) groups)) '("S3" "D4" "Q8")))
+(check "a non-abelian group's violations are commutativity witnesses"
+       (let ((bad (model-law-violations (model-reduct group->abelian-group (list-ref groups 7)))))
+         (and (pair? bad) (all? (lambda (v) (eq? (car v) 'additive-commutativity)) bad)
+              ;; S3 has 36 ordered pairs, 18 of which commute
+              (= (length bad) 18))))
+(define (same-order-pairs gs) (filter (lambda (p) (= (model-size (car p)) (model-size (cdr p)))) (pairs gs)))
+(check "groups of the same order are pairwise non-isomorphic (12 pairs among orders 4, 6 and 8)"
+       (let ((ps (same-order-pairs groups)))
+         (and (= (length ps) 12) (all? (lambda (p) (not (model-isomorphic? (car p) (cdr p)))) ps))))
+(check "every group is isomorphic to itself" (all? (lambda (G) (model-isomorphic? G G)) groups))
+(define Z2 (list-ref groups 1)) (define Z3 (list-ref groups 2)) (define Z4 (list-ref groups 3))
+(define V4 (list-ref groups 4)) (define Z6 (list-ref groups 6)) (define S3 (list-ref groups 7))
+(define Z8 (list-ref groups 9)) (define Z2^3 (list-ref groups 11))
+(define D4 (list-ref groups 12)) (define Q8 (list-ref groups 13))
+(check "|Hom(Z4, Z2)| = 2, |Hom(Z6, Z6)| = 6, |Hom(S3, Z2)| = 2"
+       (and (= 2 (length (model-homomorphisms Z4 Z2))) (= 6 (length (model-homomorphisms Z6 Z6)))
+            (= 2 (length (model-homomorphisms S3 Z2)))))
+(check "|Hom(D4, Z2)| = |Hom(Q8, Z2)| = 4 (both abelianize to Z2 x Z2)"
+       (and (= 4 (length (model-homomorphisms D4 Z2))) (= 4 (length (model-homomorphisms Q8 Z2)))))
+(define endos (model-homomorphisms Z2^3 Z2^3))
+(check "End(Z2^3) has 512 elements, of which |GL(3, F2)| = 168 are automorphisms"
+       (and (= 512 (length endos))
+            (= 168 (count-if (lambda (g) (= 8 (length (distinct (map (lambda (p) (cdr p)) g))))) endos))))
+(check "the homomorphisms found commute with every operation"
+       (all? (lambda (g) (model-homomorphism? (lambda (x) (finite-map-apply D4 g x)) D4 Z2)) (model-homomorphisms D4 Z2)))
+;; centre of D4 is {1, r^2}: r^2 is encoded 4; -1 in Q8 is encoded 1
+(define D4/Z (model-quotient D4 (model-congruence-closure D4 (list (cons 0 4)))))
+(define Q8/Z (model-quotient Q8 (model-congruence-closure Q8 (list (cons 0 1)))))
+(check "D4 and Q8 modulo their centres are Klein four-groups"
+       (and (= 4 (model-size D4/Z)) (lawful? D4/Z) (model-isomorphic? D4/Z V4)
+            (= 4 (model-size Q8/Z)) (model-isomorphic? Q8/Z V4)))
+(check "the quotient map is a homomorphism" (model-homomorphism? (model-quotient-map D4 D4/Z) D4 D4/Z))
+(check "the congruence generated by a reflection s in D4 is its normal closure {1, s, r^2, r^2 s}: D4/~ = Z2"
+       (let ((P (model-congruence-closure D4 (list (cons 0 1)))))
+         (and (= 2 (length P)) (equal? (car P) '(0 1 4 5)) (model-isomorphic? (model-quotient D4 P) Z2))))
+(define mod4 (lambda (x) (modulo x 4)))
+(define ker (model-kernel mod4 Z8 Z4))
+(check "the kernel of Z8 -> Z4 is a congruence with classes {x, x+4}, and Z8/ker = Z4"
+       (and (model-congruence? Z8 ker) (equal? ker '((0 4) (1 5) (2 6) (3 7)))
+            (model-isomorphic? (model-quotient Z8 ker) Z4)))
+(check "a partition that is not a congruence is refused"
+       (and (not (model-congruence? Z4 '((0 1) (2) (3))))
+            (refuses? 'theory-not-a-congruence (lambda () (model-quotient Z4 '((0 1) (2) (3)))))))
+(define Z2xZ3 (model-product Z2 Z3))
+(check "Z2 x Z3 (componentwise product) is a group isomorphic to Z6; Z2 x Z2 is not Z4"
+       (and (lawful? Z2xZ3) (model-isomorphic? Z2xZ3 Z6) (not (model-isomorphic? (model-product Z2 Z2) Z4))))
+(check "the projections of a product are homomorphisms"
+       (and (model-homomorphism? (model-projection Z2xZ3 0) Z2xZ3 Z2) (model-homomorphism? (model-projection Z2xZ3 1) Z2xZ3 Z3)))
+(check "the subgroup generated by 2 in Z8 is {0, 2, 4, 6}, a group"
+       (and (equal? (model-subalgebra Z8 '(2)) '(0 2 4 6)) (lawful? (model-submodel Z8 '(2)))))
+(check "the reduct of S3 along group->monoid is a monoid, and along monoid->semigroup a semigroup"
+       (let ((M (model-reduct group->monoid S3))) (and (lawful? M) (lawful? (model-reduct monoid->semigroup M)))))
+(section "groups")
+
+;; ===========================================================================
+;; 2. Rings
+;; ===========================================================================
+
+(define zmods (map zmod-ring-model (cdr (iota 13))))
+(check "Z/n for n = 1..12 are models of commutative-ring-theory, laws exhaustive" (all? lawful? zmods))
+(check "the same carriers satisfy ring-theory (through commutative-ring->ring)"
+       (all? (lambda (R) (lawful? (model-reduct commutative-ring->ring R))) zmods))
+(check "ring-law-violations agrees on every Z/n (it runs the same law check)"
+       (all? (lambda (n) (null? (ring-law-violations (make-zmod n) (iota n) '(0 1 -1 7)))) (cdr (iota 13))))
+(define bad-ring (make-ring-carrier "bad" 'characteristic 0
+  'zero 0 'one 1 'add (lambda (a b) (- a b)) 'neg (lambda (a) (- a)) 'mul (lambda (a b) (* a b))
+  'from-integer (lambda (n) n) 'equal? (lambda (a b) (= a b)) 'unit? (lambda (a) (= (abs a) 1)) 'inverse (lambda (a) a)))
+(check "ring-law-violations still reports (additive-inverse 1) first for subtraction in place of addition"
+       (equal? (car (ring-law-violations bad-ring '(1 2 3))) '(additive-inverse 1)))
+(check "a ring carrier and its model agree on the equational violations"
+       (let ((v (model-law-violations (ring-carrier->model bad-ring) '(1 2 3))))
+         (and (pair? v) (all? (lambda (x) (member x (ring-law-violations bad-ring '(1 2 3)))) v))))
+(define F2 (list-ref zmods 1))
+(define M2 (matrix-ring-model F2 2))
+(check "M2(Z/2) has 16 elements and satisfies the ring laws" (and (= 16 (model-size M2)) (lawful? M2)))
+(define m2-comm (model-law-violations (model-reduct ring->commutative-ring M2)))
+(check "M2(Z/2) is not commutative: 256 - 88 = 168 non-commuting ordered pairs reported"
+       (and (all? (lambda (v) (eq? (car v) 'multiplicative-commutativity)) m2-comm) (= 168 (length m2-comm))))
+(define seeded-ints (append '(0 1 -1 9223372036854775807 -9223372036854775808 18446744073709551616)
+                           (map (lambda (i) (* (rand-int -1000000 1000000) (rand-int 1 1000000000000))) (iota 6))))
+(check "Z (core.ring integers) satisfies the commutative ring laws on seeded samples across the int64 boundary"
+       (lawful-on? (ring-carrier->model integers) seeded-ints))
+(check "Q satisfies them on seeded rationals"
+       (lawful-on? (ring-carrier->model rationals) (map (lambda (i) (/ (rand-int -1000 1000) (rand-int 1 97))) (iota 10))))
+(define Z12 (list-ref zmods 11))
+(check "Z/12 modulo the ideal generated by 4 is Z/4; Z/6 is Z/2 x Z/3 as rings"
+       (and (model-isomorphic? (model-quotient Z12 (model-congruence-closure Z12 (list (cons 0 4)))) (list-ref zmods 3))
+            (model-isomorphic? (model-product (list-ref zmods 1) (list-ref zmods 2)) (list-ref zmods 5))))
+(check "unital ring maps: Z/12 -> Z/4 has one, Z/4 -> Z/12 none"
+       (and (= 1 (length (model-homomorphisms Z12 (list-ref zmods 3))))
+            (= 0 (length (model-homomorphisms (list-ref zmods 3) Z12)))))
+(check "the additive group of Z/6 (reduct along ring->abelian-group) is abelian and its multiplicative monoid a monoid"
+       (and (lawful? (model-reduct (make-interpretation abelian-group-theory commutative-ring-theory
+                                                         (list (list 'zero '() '(zero)) (list 'add '(x y) '(add x y)) (list 'neg '(x) '(neg x))))
+                                   (list-ref zmods 5)))
+            (lawful? (model-reduct ring->monoid (model-reduct commutative-ring->ring (list-ref zmods 5))))))
+(section "rings")
+
+;; ===========================================================================
+;; 3. Modules and order structures
+;; ===========================================================================
+
+(define Z4r (list-ref zmods 3))
+(check "Z/4 as a module over itself" (lawful? (regular-module Z4r)))
+(check "Z/2 is a Z/4-module through Z/4 -> Z/2"
+       (lawful? (make-module Z4r "Z/2" '(0 1) 0 (lambda (a b) (modulo (+ a b) 2)) (lambda (a) a)
+                             (lambda (r x) (modulo (* r x) 2)))))
+(define Z4-over-Z2 (make-module F2 "Z/4" '(0 1 2 3) 0 (lambda (a b) (modulo (+ a b) 4)) (lambda (a) (modulo (- a) 4))
+                                (lambda (r x) (modulo (* r x) 4))))
+(check "Z/4 is not a Z/2-module: (1 + 1) x = 0 but x + x = 2"
+       (let ((v (model-law-violations Z4-over-Z2)))
+         (and (pair? v) (member '((scalar-sum 1 1) 1) v) #t)))
+(define F3^2 (theory-free-model (module-theory (list-ref zmods 2)) '(u v)))
+(check "the free Z/3-module on two generators has 9 elements and satisfies the module laws"
+       (and (= 9 (model-size F3^2)) (lawful? F3^2)))
+
+(define lattices (list (chain-lattice 4) (divisor-lattice 12) (diamond-lattice) (pentagon-lattice)))
+(check "C4, Div(12), M3 and N5 satisfy the lattice laws" (all? lawful? lattices))
+(define (distributive? L)
+  (count-laws! L (model-size L))
+  (null? (equations-violations L (theory-equations distributive-lattice-theory) (model-elements L))))
+(check "C4 and Div(12) are distributive, M3 and N5 are not"
+       (equal? (map distributive? lattices) '(#t #t #f #f)))
+(define C3h (finite-heyting-algebra "C3" '(0 1 2) (lambda (a b) (<= a b))))
+(define D12h (finite-heyting-algebra "Div(12)" '(1 2 3 4 6 12) (lambda (a b) (= 0 (remainder b a)))))
+(check "the three-element chain and Div(12) are Heyting algebras" (and (lawful? C3h) (lawful? D12h)))
+(define excluded-middle (list (make-equation 'excluded-middle '(join x (implies x (bottom))) '(top))))
+(check "excluded middle fails in C3 exactly at the middle element"
+       (equal? (equations-violations C3h excluded-middle (model-elements C3h)) '((excluded-middle 1))))
+(check "M3 has no relative pseudo-complement and is refused as a Heyting algebra"
+       (refuses? 'theory-not-a-lattice (lambda () (finite-heyting-algebra "M3" '(0 1 2 3 4) (lambda (a b) (or (= a b) (= a 0) (= b 4)))))))
+(define P3 (powerset-boolean-algebra 3))
+(check "P(3) and Div(30) are Boolean algebras, isomorphic to each other"
+       (and (lawful? P3) (lawful? (divisor-boolean-algebra 30)) (model-isomorphic? P3 (divisor-boolean-algebra 30))))
+(check "a Boolean algebra is a Heyting algebra (reduct along heyting-algebra->boolean-algebra)"
+       (lawful? (model-reduct heyting-algebra->boolean-algebra P3)))
+(check "the lattice reduct of a Heyting algebra is distributive"
+       (distributive? (model-reduct lattice->heyting-algebra D12h)))
+(section "modules and order structures")
+
+;; ===========================================================================
+;; 4. Free models and the word problem
+;; ===========================================================================
+
+(define (wp T s t) (theory-word-problem T s t))
+(check "groups: (xy)^-1 = y^-1 x^-1, xy /= yx, x x^-1 y = y"
+       (and (wp group-theory '(inv (mul x y)) '(mul (inv y) (inv x))) (not (wp group-theory '(mul x y) '(mul y x)))
+            (wp group-theory '(mul (mul x (inv x)) y) 'y)))
+(check "monoids and semigroups: words; abelian groups: Z^n"
+       (and (wp monoid-theory '(mul (one) (mul x y)) '(mul (mul x y) (one))) (not (wp semigroup-theory '(mul x x) 'x))
+            (wp abelian-group-theory '(add x (add y (neg x))) 'y)))
+(check "commutative rings: (x + y)^2 = x^2 + 2xy + y^2; rings: not, but (x + y)^2 = x^2 + xy + yx + y^2"
+       (and (wp commutative-ring-theory '(mul (add x y) (add x y)) '(add (mul x x) (add (add (mul x y) (mul x y)) (mul y y))))
+            (not (wp ring-theory '(mul (add x y) (add x y)) '(add (mul x x) (add (add (mul x y) (mul x y)) (mul y y)))))
+            (wp ring-theory '(mul (add x y) (add x y)) '(add (mul x x) (add (add (mul x y) (mul y x)) (mul y y))))))
+(check "lattices: not distributive (Whitman); distributive lattices and Boolean algebras: De Morgan"
+       (and (not (wp lattice-theory '(meet x (join y z)) '(join (meet x y) (meet x z))))
+            (wp lattice-theory '(join x (meet x y)) 'x)
+            (wp distributive-lattice-theory '(meet x (join y z)) '(join (meet x y) (meet x z)))
+            (wp boolean-algebra-theory '(complement (meet x y)) '(join (complement x) (complement y)))))
+(check "Heyting algebras (G4ip): no excluded middle, no Peirce, but not-not of excluded middle and triple negation"
+       (and (not (wp heyting-algebra-theory '(join x (implies x (bottom))) '(top)))
+            (not (wp heyting-algebra-theory '(implies (implies (implies x y) x) x) '(top)))
+            (wp heyting-algebra-theory '(implies (implies (join x (implies x (bottom))) (bottom)) (bottom)) '(top))
+            (wp heyting-algebra-theory '(implies (implies (implies x (bottom)) (bottom)) (bottom)) '(implies x (bottom)))))
+(check "the normal form of (x + 1)(x - 1) in Z[x] is x^2 - 1"
+       (equal? (free-element->term (theory-free-model commutative-ring-theory '(x))
+                                   (theory-normal-form commutative-ring-theory '(mul (add x (one)) (add x (neg (one)))) '(x)))
+               '(add (neg (one)) (mul x x))))
+
+;; Seeded law checks on the infinite free models.
+(define (free-samples T gens k)
+  (let ((F (theory-free-model T gens)))
+    (cons F (map (lambda (i) (model-evaluate F (random-term T gens 3) (model-ref F 'generators))) (iota k)))))
+(define infinite-theories (list semigroup-theory monoid-theory group-theory abelian-group-theory ring-theory
+                                commutative-ring-theory lattice-theory heyting-algebra-theory))
+(check "free models of the infinite catalogue theories satisfy their laws on seeded elements"
+       (all? (lambda (T) (let ((Fs (free-samples T '(x y z) 7))) (lawful-on? (car Fs) (cdr Fs)))) infinite-theories))
+(define B2 (theory-free-model boolean-algebra-theory '(a b)))
+(define D3 (theory-free-model distributive-lattice-theory '(a b c)))
+(check "the free Boolean algebra on 2 generators has 16 elements, the free distributive lattice on 3 has 18; laws exhaustive"
+       (and (= 16 (model-size B2)) (= 18 (model-size D3)) (lawful? B2) (lawful? D3)))
+
+;; The word problem against evaluation in finite models.
+(define (bind vars vals) (map (lambda (x v) (cons x v)) vars vals))
+(define (agree-everywhere? M s t vars)
+  (all? (lambda (vals) (model-equal? M (model-evaluate M s (bind vars vals)) (model-evaluate M t (bind vars vals))))
+        (tuples-of (model-elements M) (length vars))))
+(define (random-pairs T k) (map (lambda (i) (cons (random-term T '(x y) 3) (random-term T '(x y) 3))) (iota k)))
+(define (sound? T models k)
+  ;; when T proves s = t, every finite model agrees on every assignment
+  (all? (lambda (p) (or (not (wp T (car p) (cdr p))) (all? (lambda (M) (agree-everywhere? M (car p) (cdr p) '(x y))) models)))
+        (random-pairs T k)))
+(check "group word problem sound against S3, D4 and Q8 on 40 seeded pairs" (sound? group-theory (list S3 D4 Q8) 40))
+(check "lattice word problem sound against M3 and N5 on 40 seeded pairs" (sound? lattice-theory (list (diamond-lattice) (pentagon-lattice)) 40))
+(check "Heyting word problem sound against C3 and Div(12) on 40 seeded pairs" (sound? heyting-algebra-theory (list C3h D12h) 40))
+(define two (powerset-boolean-algebra 1))
+(check "Boolean word problem equals agreement in the two-element algebra on 40 seeded pairs"
+       (all? (lambda (p) (eq? (wp boolean-algebra-theory (car p) (cdr p)) (agree-everywhere? two (car p) (cdr p) '(x y))))
+             (random-pairs boolean-algebra-theory 40)))
+(check "excluded middle is refuted in C3 and in Div(12)'s Heyting algebra, as G4ip says"
+       (and (not (agree-everywhere? C3h '(join x (implies x (bottom))) '(top) '(x)))
+            (not (agree-everywhere? D12h '(join x (implies x (bottom))) '(top) '(x)))))
+
+;; The universal property.
+(define Fg (theory-free-model group-theory '(x y)))
+(define lift (free-model-lift Fg S3 (list (cons 'x 1) (cons 'y 3))))
+(define words (map (lambda (i) (model-evaluate Fg (random-term group-theory '(x y) 4) (model-ref Fg 'generators))) (iota 6)))
+(check "the lift F(x, y) -> S3 of x -> 1, y -> 3 is a homomorphism on seeded words and sends x to 1"
+       (and (model-homomorphism? lift Fg S3 words) (= 1 (lift (free-model-generator Fg 'x)))))
+(check "interpretations between the catalogue theories are morphisms of theories"
+       (all? (lambda (I) (null? (interpretation-violations I)))
+             (list monoid->semigroup group->monoid abelian-group->group ring->abelian-group ring->monoid
+                   commutative-ring->ring lattice->heyting-algebra lattice->distributive-lattice
+                   distributive-lattice->boolean-algebra heyting-algebra->boolean-algebra)))
+(check "reading rings as commutative rings, or groups as abelian groups, is not: commutativity is not provable"
+       (and (equal? (interpretation-violations ring->commutative-ring) '(multiplicative-commutativity))
+            (equal? (interpretation-violations group->abelian-group) '(additive-commutativity))))
+(check "an abelian group is a group: Z/5 (core.ring) through ring->abelian-group and abelian-group->group"
+       (lawful? (model-reduct abelian-group->group (model-reduct ring->abelian-group (model-reduct commutative-ring->ring (list-ref zmods 4))))))
+(section "free models and the word problem")
+
+;; ===========================================================================
+;; 5. The Lawvere theory
+;; ===========================================================================
+
+(define LG (lawvere-category group-theory))
+(define f (lawvere-morphism LG 2 '((mul x1 x2) (inv x1))))            ; 2 -> 2
+(define g (lawvere-morphism LG 2 '((mul x2 x1))))                     ; 2 -> 1
+(define h (lawvere-morphism LG 1 '((inv x1) (mul x1 x1))))            ; 1 -> 2
+(check "identities are units for composition"
+       (and (lawvere-morphism=? (lawvere-compose f (lawvere-identity LG 2)) f)
+            (lawvere-morphism=? (lawvere-compose (lawvere-identity LG 2) f) f)))
+(check "composition is associative: (g f) h = g (f h)"
+       (lawvere-morphism=? (lawvere-compose (lawvere-compose g f) h) (lawvere-compose g (lawvere-compose f h))))
+(check "g f is the projection (x1, x2) -> x2, so g f h is x -> x x"
+       (and (lawvere-morphism=? (lawvere-compose g f) (lawvere-morphism LG 2 '(x2)))
+            (lawvere-morphism=? (lawvere-compose g (lawvere-compose f h)) (lawvere-morphism LG 1 '((mul x1 x1))))))
+(define ps (lawvere-projections LG 2 1))
+(define u (lawvere-morphism LG 1 '((mul x1 x1) (one))))
+(define v (lawvere-morphism LG 1 '((inv x1))))
+(define uv (lawvere-pairing u v))
+(check "the product 2 + 1: projections after the pairing give back each factor"
+       (and (lawvere-morphism=? (lawvere-compose (car ps) uv) u) (lawvere-morphism=? (lawvere-compose (cadr ps) uv) v)))
+(check "uniqueness of the pairing: any w with the same projections equals <u, v>"
+       (let ((w (lawvere-morphism LG 1 '((mul x1 (mul (inv x1) (mul x1 x1))) (mul x1 (inv x1)) (mul (one) (inv x1))))))
+         (and (lawvere-morphism=? (lawvere-compose (car ps) w) u) (lawvere-morphism=? (lawvere-compose (cadr ps) w) v)
+              (lawvere-morphism=? w uv))))
+(define (functorial? M g f)
+  (all? (lambda (xs) (equal? (lawvere-apply M (lawvere-compose g f) xs) (lawvere-apply M g (lawvere-apply M f xs))))
+        (tuples-of (model-elements M) (lawvere-source f))))
+(check "every group of order <= 8 is a functor on L_groups: (g f)_M = g_M f_M on all of M^2"
+       (all? (lambda (M) (functorial? M g f)) groups))
+(define Hgf (lawvere-free-homomorphism (lawvere-compose g f)))
+(define Hf (lawvere-free-homomorphism f))
+(define Hg (lawvere-free-homomorphism g))
+(check "free homomorphisms are contravariant: F(g f) = F(f) F(g) on seeded elements of F(1)"
+       (let* ((F1 (car Hg)) (elems (map (lambda (i) (model-evaluate F1 (random-term group-theory '(x1) 4) (model-ref F1 'generators))) (iota 5))))
+         (all? (lambda (w) (model-equal? (cadr Hf) ((caddr Hgf) w) ((caddr Hf) ((caddr Hg) w)))) elems)))
+(define LB (lawvere-category boolean-algebra-theory))
+(check "L_Boolean: |Hom(n, 1)| = |F(n)| = 2, 4, 16, 256 for n = 0..3"
+       (equal? (map (lambda (n) (model-size (theory-free-model boolean-algebra-theory (lawvere-variables n)))) '(0 1 2 3))
+               '(2 4 16 256)))
+(check "L_Boolean: the morphism (x1 and not x1) : 1 -> 1 equals the constant false"
+       (lawvere-morphism=? (lawvere-morphism LB 1 '((meet x1 (complement x1)))) (lawvere-morphism LB 1 '((bottom)))))
+(check "L_rings over Z/4: a polynomial map 1 -> 1 acts on Z/4 by evaluation"
+       (equal? (map (lambda (x) (car (lawvere-apply Z4r (lawvere-morphism (lawvere-category commutative-ring-theory) 1
+                                                                       '((add (mul x1 x1) (one))))
+                                                      (list x))))
+                    '(0 1 2 3))
+               '(1 2 1 2)))
+(section "Lawvere theories")
+
+;; ===========================================================================
+;; 6. Finite coalgebras
+;; ===========================================================================
+
+;; Moore machines over {a, b}: states 0..5 counting a's modulo 3 twice over.
+(define C (make-coalgebra '(0 1 2 3 4 5) '(a b)
+                          (lambda (x) (if (= 0 (modulo x 3)) 1 0))
+                          (lambda (x l) (if (eq? l 'a) (modulo (+ x 1) 6) x))))
+(define Cmin (coalgebra-minimize C))
+(check "bisimilarity identifies x and x + 3; the minimal coalgebra has 3 states"
+       (and (equal? (coalgebra-bisimilarity C) '((0 3) (1 4) (2 5))) (= 3 (length (coalgebra-states Cmin)))))
+(check "the quotient map is a coalgebra homomorphism"
+       (coalgebra-homomorphism? (lambda (x) (modulo x 3)) C Cmin))
+(check "bisimilar exactly when the behaviours agree to depth 6"
+       (all? (lambda (p) (eq? (coalgebra-bisimilar? C (car p) (cdr p))
+                              (equal? (coalgebra-behaviour C (car p) 6) (coalgebra-behaviour C (cdr p) 6))))
+             (pairs '(0 1 2 3 4 5))))
+(define S (coalgebra-sum C Cmin))
+(check "in the sum, every state is bisimilar to its image in the minimal coalgebra"
+       (all? (lambda (x) (coalgebra-bisimilar? S (cons 0 x) (cons 1 (modulo x 3)))) '(0 1 2 3 4 5)))
+(section "coalgebras")
+
+;; ===========================================================================
+;; 7. Refusals
+;; ===========================================================================
+
+(check "the elements of an infinite model are refused"
+       (refuses? 'theory-infinite-model (lambda () (model-elements (ring-carrier->model integers)))))
+(check "a law check on an infinite model without samples is refused"
+       (refuses? 'theory-infinite-model (lambda () (model-law-violations (ring-carrier->model rationals)))))
+(check "a theory with equations and no decision procedure is refused for free models"
+       (refuses? 'theory-no-decision-procedure
+                 (lambda () (theory-free-model (theory-extend group-theory "groups of exponent 2"
+                                                              (list (make-equation 'exponent-2 '(mul x x) '(one))))
+                                               '(x)))))
+(check "an ill-formed term is refused (wrong arity)"
+       (refuses? 'theory-ill-formed-term (lambda () (make-theory "bad" '((mul 2)) (list (list 'oops '(mul x) 'x))))))
+(check "a model missing an operation is refused"
+       (refuses? 'theory-missing-operation (lambda () (make-model group-theory "partial" 'operations (list (cons 'one 0))))))
+(check "a theory without equations is absolutely free: its free model is the term model"
+       (let ((T (make-theory "magmas" '((mul 2)) '())))
+         (and (eq? (theory-kind T) 'absolutely-free) (not (wp T '(mul x (mul y z)) '(mul (mul x y) z))) (wp T '(mul x y) '(mul x y)))))
+(section "refusals")
+
+(display "law evaluations: ") (display law-evaluations) (newline)
+(display "checks: ") (display passed) (display " passed, ") (display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: theory_test") (newline) (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline)))

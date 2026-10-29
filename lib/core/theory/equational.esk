@@ -116,6 +116,9 @@
   (let loop ((xs xs) (k 0))
     (if (null? xs) '() (cons (if (= k i) v (car xs)) (loop (cdr xs) (+ k 1))))))
 
+;; Builtins are passed as values only through a lambda.
+(define (th-equal? a b) (equal? a b))
+
 ;; ===========================================================================
 ;; Signatures and terms
 ;; ===========================================================================
@@ -128,7 +131,7 @@
             ops)
   (vector 'signature-v1 ops))
 (define (signature? x) (and (vector? x) (= (vector-length x) 2) (eq? (vector-ref x 0) 'signature-v1)))
-(define (signature-operations S) (map car (vector-ref S 1)))
+(define (signature-operations S) (map (lambda (x) (car x)) (vector-ref S 1)))
 (define (signature-arity S op)
   (let ((p (assoc op (vector-ref S 1)))) (if p (cadr p) #f)))
 
@@ -363,7 +366,7 @@
 (define (th-build-model T name props)
   (let* ((ops (th-prop props 'operations '()))
          (elements (th-prop props 'elements #f))
-         (same (th-prop props 'equal? equal?))
+         (same (th-prop props 'equal? th-equal?))
          (member (th-prop props 'member?
                           (if elements (lambda (x) (th-any? (lambda (y) (same x y)) elements)) (lambda (x) #t)))))
     (for-each (lambda (op)
@@ -413,8 +416,8 @@
 
 ;; The value of t in M under env, an alist variable -> element.
 (define (model-evaluate M t env)
-  (let ((vars (map car env)))
-    ((term->procedure M t vars) (list->vector (map cdr env)))))
+  (let ((vars (map (lambda (x) (car x)) env)))
+    ((term->procedure M t vars) (list->vector (map (lambda (x) (cdr x)) env)))))
 
 ;; ===========================================================================
 ;; The law check
@@ -556,7 +559,7 @@
                (let ((n (theory-arity T op)) (fm (model-operation M op)) (fn (model-operation N op)))
                  (if (> n 0)
                      (for-each (lambda (pairs)
-                                 (if ok (bind! (apply fm (map car pairs)) (apply fn (map cdr pairs)))))
+                                 (if ok (bind! (apply fm (map (lambda (x) (car x)) pairs)) (apply fn (map (lambda (x) (cdr x)) pairs)))))
                                (th-tuples known n)))))
              ops)
             (grow size0))))
@@ -570,7 +573,7 @@
 (define (model-isomorphic? M N)
   (and (= (model-size M) (model-size N))
        (th-any? (lambda (g)
-                  (let ((images (map cdr g)))
+                  (let ((images (map (lambda (x) (cdr x)) g)))
                     (th-all? (lambda (y) (th-any? (lambda (z) (model-equal? N y z)) images)) (model-elements N))))
                 (model-homomorphisms M N))))
 
@@ -669,7 +672,7 @@
         (if changed (pass))))
     (let collect ((i 0) (classes '()))
       (if (= i n)
-          (map reverse classes)
+          (map (lambda (c) (reverse c)) classes)
           (let* ((r (find i)) (x (list-ref es i))
                  (pos (let loop ((cs classes) (j 0)) (cond ((null? cs) #f) ((= (find (th-index M (car (car cs)))) r) j) (else (loop (cdr cs) (+ j 1)))))))
             (if pos
@@ -680,7 +683,7 @@
 (define (model-kernel f M N)
   (let loop ((es (model-elements M)) (classes '()))
     (if (null? es)
-        (map reverse classes)
+        (map (lambda (c) (reverse c)) classes)
         (let* ((x (car es)) (y (f x))
                (pos (let find ((cs classes) (j 0))
                       (cond ((null? cs) #f) ((model-equal? N (f (car (car cs))) y) j) (else (find (cdr cs) (+ j 1)))))))
@@ -690,7 +693,7 @@
 ;; Its elements are the first element of each class.
 (define (model-quotient M partition . name)
   (if (not (model-congruence? M partition)) (th-refuse 'theory-not-a-congruence 'model-quotient (model-name M)))
-  (let* ((T (model-theory M)) (reps (map car partition))
+  (let* ((T (model-theory M)) (reps (map (lambda (x) (car x)) partition))
          (rep (lambda (x) (list-ref reps (th-class-index M partition x)))))
     (make-model T (if (pair? name) (car name) (string-append (model-name M) "/~"))
                 'operations (map (lambda (op)
@@ -732,7 +735,7 @@
 (define (interpretation-translate I t)
   (if (pair? t)
       (let ((m (assoc (car t) (vector-ref I 3))))
-        (term-substitute (caddr m) (map cons (cadr m) (th-translate-list I (cdr t)))))
+        (term-substitute (caddr m) (map (lambda (x y) (cons x y)) (cadr m) (th-translate-list I (cdr t)))))
       t))
 (define (th-translate-list I ts)
   (if (null? ts) '() (cons (interpretation-translate I (car ts)) (th-translate-list I (cdr ts)))))
@@ -793,7 +796,7 @@
   (th-any? (lambda (cls) (and (member x cls) (member y cls) #t)) (coalgebra-bisimilarity C)))
 ;; The quotient by bisimilarity: states are the first state of each class.
 (define (coalgebra-minimize C)
-  (let* ((P (coalgebra-bisimilarity C)) (reps (map car P))
+  (let* ((P (coalgebra-bisimilarity C)) (reps (map (lambda (x) (car x)) P))
          (rep (lambda (x) (let loop ((cs P)) (if (member x (car cs)) (car (car cs)) (loop (cdr cs)))))))
     (make-coalgebra reps (coalgebra-alphabet C)
                     (lambda (x) (coalgebra-output C x))
