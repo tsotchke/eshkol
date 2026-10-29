@@ -115,7 +115,9 @@
 ;; Active handle: a real write, then read the file back and verify the
 ;; recorded hash against an independently recomputed one.
 ;; ===========================================================================
-(define out-path ".scratch/v14-lanes/crosscheck/transcript_unit_test_output.json")
+;; A throwaway CTest-run temp file, same convention as e.g.
+;; reader_long_list_test.esk's flat-file/nested-file: not a durable fixture.
+(define out-path "/tmp/eshkol_transcript_test_output.json")
 (setenv "ESHKOL_TRANSCRIPT" out-path)
 (define h (transcript-open "transcript_test"))
 (check "transcript-open is active once ESHKOL_TRANSCRIPT is set" (transcript-active? h))

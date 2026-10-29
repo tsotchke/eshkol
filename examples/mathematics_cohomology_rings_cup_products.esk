@@ -416,10 +416,10 @@
 (for-each
   (lambda (spec)
     (let* ((label (car spec)) (G (cadr spec)) (n (caddr spec)) (p (list-ref spec 3))
-           (image (coboundary-image G n p)) (rows (map vector->list image)))
+           (image (coboundary-image G n p)))   ;; a list of VECTORS: rank-mod-p needs that shape
       (transcript-record! TRANSCRIPT "rank_mod_p" label
-        (list (cons "matrix" (tv-matrix-rows rows)) (cons "p" (tv-int p)))
-        (tv-int (rank-mod-p rows p)))))
+        (list (cons "matrix" (tv-matrix-rows (map vector->list image))) (cons "p" (tv-int p)))
+        (tv-int (rank-mod-p image p)))))
   (list (list "Z2_coboundary_image_n2" Z2 2 2)
         (list "Z2_coboundary_image_n3" Z2 3 2)
         (list "Z2_coboundary_image_n4" Z2 4 2)

@@ -2535,6 +2535,21 @@ oracles:
         label: 'core.ring and core.multimodular (ADR-0034 library rung): versioned ring-carrier descriptors for Z, Q, the IEEE tier, Z/m, jets, polynomials, Z[G] and algebraic fields; the ring laws exhaustive on small carriers and seeded on infinite ones, from-integer a ring map across the int64 boundary, characteristic, nilpotency and named refusals; the IEEE tier against its per-operation specification with a pinned bit-pattern digest; multimodular determinant, solve and Z[x] gcd equal to the exact paths; ring_jit/aot, ring_ieee_jit/aot, multimodular_jit/aot, rings_functor_of_points_jit/aot and the reference-page examples all pass'
         action: ./scripts/run_ring_gate.sh
 
+      # core.transcript: content-addressed transcripts of certified
+      # mathematical quantities, independently cross-checked. Producer:
+      # scripts/run_transcript_gate.sh runs the eleven CTest entries that own
+      # the behaviour (the unit suite, the four wired examples/tests in JIT
+      # and AOT, and the pure-Python replay check against the committed
+      # fixtures); PASS only when all of them ran and passed.
+      - id: v14_math_transcripts
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_math_transcripts"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.transcript: a canonical, bignum-safe value encoding and an fnv1a-64-hashed (core.merkle) JSON claim format for a determinant, Smith normal form, rank mod p or polynomial gcd together with its exact inputs, off by default and never changing a program''s output; scripts/math_crosscheck/replay_check.py independently recomputes every known claim kind from pure-Python-stdlib (a tamper check on the hash plus a correctness check on the mathematics), and the atlas-only crosscheck_pari_sympy.py additionally checks against PARI/GP and SymPy; wired into mathematics_group_cohomology_order_eight, mathematics_cohomology_rings_cup_products, mathematics_fermat_hodge_classes_sweep and multimodular_test; transcript_jit/aot, the four wired programs'' own CTest entries, and transcript_replay_check over the committed fixtures all pass'
+        action: ./scripts/run_transcript_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
