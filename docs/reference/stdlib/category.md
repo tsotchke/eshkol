@@ -8,8 +8,10 @@ sources:
   - lib/core/category/finite.esk
   - lib/core/category/functor.esk
   - lib/core/category/set.esk
+  - lib/core/category/kan.esk
   - lib/core/category/linear.esk
   - lib/core/category/descent.esk
+  - lib/core/category/cohomology.esk
   - tests/stdlib/category_test.esk
   - tests/stdlib/category_s62_test.esk
   - examples/mathematics_finite_categories_kan_extensions.esk
@@ -19,12 +21,14 @@ sources:
 
 # `core.category` — finite category theory
 
-**Source:** [category.esk](../../../lib/core/category.esk) and the five modules in
+**Source:** [category.esk](../../../lib/core/category.esk) and the seven modules in
 [lib/core/category/](../../../lib/core/category/).
 **Require:** `(require core.category)` for everything, or one layer:
 `core.category.finite`, `core.category.functor`, `core.category.set`,
-`core.category.linear`, `core.category.descent` (each loads the layers it
-builds on). Not part of `(require stdlib)`.
+`core.category.kan`, `core.category.linear`, `core.category.descent`,
+`core.category.cohomology` (each loads the layers it builds on, and a program
+that needs one layer compiles faster by requiring only it). Not part of
+`(require stdlib)`.
 **Design record:** [ADR-0036](../../design/adr/0036-core-category-finite-categories.md).
 
 `core.category` computes with finite categories as data: functors and natural
@@ -115,7 +119,7 @@ nerve of B(Z/2), Quillen's classifying space BZ/2.
 `category-full-subcategory` `category-full-subcategory-inclusion`
 `category-arrow-list` `category-object-list` `category-identity?`
 `category-isomorphism?` `category-inverse` `category-groupoid?`
-`category-initial-objects` `category-terminal-objects` `category-nerve`
+`category-initial-objects` `category-terminal-objects` `category-components` `category-nerve`
 `category-nerve-coboundary` `category-nerve-cohomology`.
 
 **`core.category.functor`:** `make-functor` `functor-from-procedures`
@@ -129,7 +133,7 @@ nerve of B(Z/2), Quillen's classifying space BZ/2.
 `whisker-left` `whisker-right` `horizontal-compose` `natural-isomorphism?`
 `functor-category` `functor-category-functors` `comma-category`
 `comma-domain-projection` `comma-codomain-projection` `slice-category`
-`coslice-category` `make-category-diagram` `category-diagram?`
+`coslice-category` `sieve-category` `make-category-diagram` `category-diagram?`
 `category-diagram-base` `category-diagram-category` `category-diagram-functor`
 `category-diagram-violations` `grothendieck-construction`
 `grothendieck-projection` `make-adjunction` `adjunction?` `adjunction-left`
@@ -146,16 +150,14 @@ its nerve is the homotopy colimit of the nerves (Thomason). The
 [homotopy-colimit example](../../../examples/mathematics_homotopy_colimits_grothendieck.esk)
 computes suspensions and Borel constructions this way.
 
-## Set-valued functors, Yoneda and Kan extensions
+## Set-valued functors, limits, ends and Yoneda
 
 nLab: [limit](https://ncatlab.org/nlab/show/limit),
 [colimit](https://ncatlab.org/nlab/show/colimit),
 [end](https://ncatlab.org/nlab/show/end),
 [Yoneda lemma](https://ncatlab.org/nlab/show/Yoneda+lemma),
-[category of elements](https://ncatlab.org/nlab/show/category+of+elements),
-[Kan extension](https://ncatlab.org/nlab/show/Kan+extension),
-[pointwise Kan extension](https://ncatlab.org/nlab/show/pointwise+Kan+extension).
-CWM III, IX, X; Riehl 2, 3, 6; Kelly 2-4.
+[category of elements](https://ncatlab.org/nlab/show/category+of+elements).
+CWM III, IX; Riehl 2, 3; Kelly 2.
 
 ```scheme
 (require stdlib)
@@ -163,33 +165,24 @@ CWM III, IX, X; Riehl 2, 3, 6; Kelly 2-4.
 ;; a Z/2-set: the generator swaps x and y and fixes z
 (define BZ2 (cyclic-group-category 2))
 (define X (make-set-functor-from-names BZ2 (list (list 'x 'y 'z)) (list (cons 1 (vector 1 0 2)))))
-(define F (terminal-functor BZ2))
-(set-functor-sizes (set-lan F X))                ;; => (2)
-(set-functor-sizes (set-ran F X))                ;; => (1)
-(set-functor-elements (set-lan F X) 0)           ;; => ((0 0 x) (0 0 z))
-(set-natural-isomorphism? (set-lan F X) (set-lan-coend F X) (set-lan-comparison F X))  ;; => #t
-(set-lan-adjunction-violations F X (set-lan F X))  ;; => ()
+(list (set-limit-size X) (set-colimit-size (set-colimit X)))  ;; => (1 2)
 (set-natural-transformation-count X X)           ;; => 3
+(length (set-natural-transformations-end X X))   ;; => 3
 (yoneda-violations X 0)                          ;; => ()
 ;; the pullback of p p q <- {0 1 2} and {0 1} -> q p
 (define P (make-set-functor-from-names (cospan-category) (list (list 'p 'q) (list 0 1 2) (list 0 1))
                                        (list (cons (list 0) (vector 0 0 1)) (cons (list 1) (vector 1 0)))))
-(list (set-limit-size P) (set-colimit-size (set-colimit P)))  ;; => (3 2)
+(list (set-limit-size P) (set-colimit-size (set-colimit P)) (set-cone-count P 2))  ;; => (3 2 9)
 ```
 
-Along B(Z/2) -> 1 the left Kan extension is the orbit set and the right one
-the fixed points. An element of Lan_F G(d) is printed as the representative
-`(c u x)` of its class: an object c, an arrow u : F c -> d and x in G(c).
-`set-lan` and `set-ran` use the comma-category formulas; `set-lan-coend`
-and `set-ran-end` use Lan_F G = int^c D(Fc, -) x G(c) and
-Ran_F G = int_c G(c)^{D(-, Fc)}; the comparisons are natural isomorphisms.
-`set-lan-adjunction-violations F G Y` checks Lan -| F^* at G and Y (unit
-and counit natural, both triangle identities), and
-`set-ran-adjunction-violations F Y G` checks F^* -| Ran.
+The limit of a Z/2-set is its fixed points and its colimit its orbits.
 `set-natural-transformations` solves Nat(X, Y) as a limit over the category of
 elements of X; `set-natural-transformations-end` uses the end
 int_c Y(c)^X(c). `yoneda-violations X c` compares Nat(C(c, -), X) with X(c)
-by counting and through the two explicit maps.
+by counting and through the two explicit maps; `presheaf-yoneda-violations`
+does the same for a presheaf and y(c). Ends and coends take a bifunctor
+H : C^op x C -> Set as a set-functor on
+`(category-product (category-opposite C) C)`; `hom-set-functor` is C(-, -).
 
 **`core.category.set`:** `make-set-functor` `make-set-functor-from-indices`
 `make-set-functor-from-names` `set-functor?` `set-functor-category`
@@ -208,14 +201,46 @@ by counting and through the two explicit maps.
 `yoneda-element` `yoneda-transformation` `yoneda-violations`
 `presheaf-yoneda-violations` `elements-category` `elements-projection`
 `presheaf-elements-category` `presheaf-elements-projection`
-`discrete-opfibration?` `discrete-fibration?` `set-lan` `set-ran`
-`set-lan-coend` `set-ran-end` `set-lan-comparison` `set-ran-comparison`
-`set-lan-unit` `set-lan-counit` `set-lan-map` `set-ran-unit` `set-ran-counit`
-`set-ran-map` `set-restrict-map` `set-lan-adjunction-violations`
-`set-ran-adjunction-violations`.
+`discrete-opfibration?` `discrete-fibration?`.
 
-Ends and coends take a bifunctor H : C^op x C -> Set as a set-functor on
-`(category-product (category-opposite C) C)`; `hom-set-functor` is C(-, -).
+## Kan extensions
+
+nLab: [Kan extension](https://ncatlab.org/nlab/show/Kan+extension),
+[pointwise Kan extension](https://ncatlab.org/nlab/show/pointwise+Kan+extension).
+CWM X; Riehl 6; Kelly 4.
+
+```scheme
+(require stdlib)
+(require core.category.kan)
+(define BZ2 (cyclic-group-category 2))
+(define X (make-set-functor-from-names BZ2 (list (list 'x 'y 'z)) (list (cons 1 (vector 1 0 2)))))
+(define F (terminal-functor BZ2))
+(set-functor-sizes (set-lan F X))                ;; => (2)
+(set-functor-sizes (set-ran F X))                ;; => (1)
+(set-functor-elements (set-lan F X) 0)           ;; => ((0 0 x) (0 0 z))
+(set-natural-isomorphism? (set-lan F X) (set-lan-coend F X) (set-lan-comparison F X))  ;; => #t
+(set-lan-adjunction-violations F X (set-lan F X))  ;; => ()
+(set-ran-adjunction-violations F (set-ran F X) X)  ;; => ()
+```
+
+Along B(Z/2) -> 1 the left Kan extension is the orbit set and the right one
+the fixed points. An element of Lan_F G(d) is printed as the representative
+`(c u x)` of its class: an object c, an arrow u : F c -> d and x in G(c).
+`set-lan` and `set-ran` use the comma-category formulas; `set-lan-coend`
+and `set-ran-end` use Lan_F G = int^c D(Fc, -) x G(c) and
+Ran_F G = int_c G(c)^{D(-, Fc)}; the comparisons are natural isomorphisms.
+`set-lan-adjunction-violations F G Y` checks Lan -| F^* at G and Y (unit
+and counit natural, both triangle identities), and
+`set-ran-adjunction-violations F Y G` checks F^* -| Ran.
+`presheaf-ran-along-inclusion F objs` is descent as a right Kan extension on
+a thin site: Ran along the inclusion of the objects of a sieve, whose value
+at c is Match(S, F).
+
+**`core.category.kan`:** `set-lan` `set-ran` `set-lan-coend` `set-ran-end`
+`set-lan-comparison` `set-ran-comparison` `set-lan-unit` `set-lan-counit`
+`set-lan-map` `set-ran-unit` `set-ran-counit` `set-ran-map`
+`set-restrict-map` `set-lan-adjunction-violations`
+`set-ran-adjunction-violations` `presheaf-ran-along-inclusion`.
 
 ## Linear diagrams and derived limits
 
@@ -277,36 +302,61 @@ Mac Lane-Moerdijk I.4, III.4-III.5, V.3; Johnstone, *Elephant*, A4.4 and C2.
 (define ab (category-object-of-label C (list 0 1)))
 (define S (site-minimal-covering-sieve site ab))
 (list (length (sieve-matching-limit F ab S)) (sieve-descent-violations F ab S))  ;; => (2 ())
-;; Cech cohomology of the cover by the two maximal opens, as lim^n over the nerve category of the cover
-(define M (poset-module->point-presheaf (constant-poset-module X)))
-(define cover (list (finite-space-down-set X 2) (finite-space-down-set X 3)))
-(module-presheaf-derived-limits (cdr (finite-space-cover-sections-presheaf M cover)) 1)  ;; => ((0 1 ()) (1 1 ()))
 ```
 
 `sieve-matching-limit F c S` is Match(S, F) computed as the limit of F over
-the category of the sieve (the full subcategory of C/c on S); it is the value
-at S of the right Kan extension of F along the Yoneda embedding, and on a
-thin site `presheaf-ran-along-inclusion` gives it as Ran along the inclusion
-of the sieve's objects. `cech-equalizer` is the equalizer form for a family of
-arrows. `sheafification-counit` glues twice; `sheafification-adjunction-violations
-site F G` checks a -| i for a presheaf F and a sheaf G: naturality, both triangle
-identities, |Nat(F, G)| = |Nat(aF, G)| and the explicit bijection
+the category of the sieve (`sieve-category`, the full subcategory of C/c on
+S); it is the value at S of the right Kan extension of F along the Yoneda
+embedding. `cech-equalizer` is the equalizer form for a family of arrows.
+`sheafification-counit` glues twice; `sheafification-adjunction-violations
+site F G` checks a -| i for a presheaf F and a sheaf G: naturality, both
+triangle identities, |Nat(F, G)| = |Nat(aF, G)| and the explicit bijection
 psi |-> psi eta. `sheafification-monad-violations` checks the unit,
-right-unit and associativity laws of i a. For finite spaces,
-`finite-space-cover-descent-category` is the Grothendieck construction of
-J |-> U_J, whose derived limits give sheaf cohomology for every cover, and
-`finite-space-cech-nerve-category` is the face category of the Cech nerve.
+right-unit and associativity laws of i a.
+
+**`core.category.descent`:** `sieve-matching-limit`
+`sieve-descent-violations` `cech-equalizer` `cech-descent-violations`
+`presheaf-sheaf-violations-by-limit` `presheaf-plus-map`
+`sheafification-unit` `sheafify-map` `sheafification-counit`
+`sheafification-adjunction-violations` `sheafification-monad-violations`.
+
+## Abelian descent
+
+nLab: [Cech cohomology](https://ncatlab.org/nlab/show/Cech+cohomology),
+[Cech nerve](https://ncatlab.org/nlab/show/Cech+nerve),
+[homotopy colimit](https://ncatlab.org/nlab/show/homotopy+colimit).
+Godement II.5; Bousfield-Kan XI-XII; Thomason (1979); Deligne, *Theorie de
+Hodge III*, 5.3.
+
+```scheme
+(require stdlib)
+(require core.category.cohomology)
+(define X (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define M (poset-module->point-presheaf (constant-poset-module X)))
+(define cover (list (finite-space-down-set X 2) (finite-space-down-set X 3)))
+;; Cech cohomology of the cover by the two maximal opens: lim^n over the nerve category of the cover
+(module-presheaf-derived-limits (cdr (finite-space-cover-sections-presheaf M cover)) 1)  ;; => ((0 1 ()) (1 1 ()))
+;; sheaf cohomology for any cover: lim^n over the Grothendieck construction of J |-> U_J
+(module-presheaf-derived-limits (module-presheaf-restrict M (cdr (finite-space-cover-descent-category X cover))) 2)  ;; => ((0 1 ()) (1 1 ()) (2 0 ()))
+(cech-nerve-cell-counts (finite-space-cech-nerve-category X cover) cover 1)  ;; => (2 2)
+```
+
+`finite-space-cover-sections-presheaf M cover` returns the nerve category of
+the cover and J |-> Gamma(U_J; M), sections computed as limits over the
+points of U_J (`finite-space-sections`). `finite-space-cover-descent-category`
+is the Grothendieck construction of J |-> U_J with its projection to the
+points; its derived limits are the sheaf cohomology for every cover, Leray or
+not. `finite-space-cech-nerve-category` is the face category of the Cech
+nerve (cells (J, component)). For a module presheaf on a thin category with
+meets, `cech-derived-limits F objs kmax` is Cech cohomology of the cover
+`objs`, and `module-sieve-limit`, `module-sheaf-at-by-limit` and
+`module-sieve-unit-shape` give the plus construction, the sheaf condition and
+the unit F -> F^+ through limits over sieve categories.
 `tests/stdlib/category_s62_test.esk` uses these to reproduce the numbers of
 the finite-site sheafification, finite-space cohomology, descent and
 2-descent examples.
 
-**`core.category.descent`:** `sieve-category` `sieve-matching-limit`
-`sieve-descent-violations` `presheaf-ran-along-inclusion` `cech-equalizer`
-`cech-descent-violations` `presheaf-sheaf-violations-by-limit`
-`presheaf-plus-map` `sheafification-unit` `sheafify-map`
-`sheafification-counit` `sheafification-adjunction-violations`
-`sheafification-monad-violations` `category-components`
-`cover-nerve-category` `cech-derived-limits`
+**`core.category.cohomology`:** `cover-nerve-category` `cech-derived-limits`
 `finite-space-cover-descent-category` `finite-space-cech-nerve-category`
 `cech-nerve-cell-counts` `module-sieve-limit` `module-sheaf-at-by-limit`
 `module-sieve-unit-shape` `finite-space-cover-sections-presheaf`

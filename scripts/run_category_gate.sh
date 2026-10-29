@@ -23,6 +23,11 @@
 #   BUILD_DIR  (env, default "build")   the CMake build directory
 #   TRACE_DIR  (env, default scripts/icc_traces)
 #   JOBS       (env, default 2)          parallel CTest jobs
+#   DOC_TIMEOUT (env, default 360)       per-example limit for the reference
+#              page: each example is also compiled as an AOT binary, and an
+#              example that loads core.category.descent or .cohomology compiles
+#              the whole library stack (about 100 s on a loaded Linux x86-64
+#              node), above the harness default of 120 s
 
 set -u
 set -o pipefail
@@ -85,6 +90,7 @@ python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --engines jit,aot \
     --scope reference \
     --only docs/reference/stdlib/category.md \
+    --timeout "${DOC_TIMEOUT:-360}" \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
 doc_status=$?

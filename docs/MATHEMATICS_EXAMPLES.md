@@ -739,7 +739,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Finite categories and Kan extensions
 
-Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathematics_finite_categories_kan_extensions.esk#L1). SHA-256: `ab420b6534cea349818eaede88085606ec74d54de68432c6ec43b20ccad9c77a`.
+Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathematics_finite_categories_kan_extensions.esk#L1). SHA-256: `1927c08b17a438122261889cd8f11d2f63b0ca868a4f2112602bf88851e205d0`.
 
 **Published result:** The pointwise formulas for Kan extensions, Lan_F G(d) = colim over (c, Fc → d) of Gc and Ran_F G(d) = lim over (c, d → Fc) of Gc (Mac Lane X.3; Riehl §6.2), the unit/counit triangle identities of the adjunction Lan ⊣ F*, the Grothendieck construction of a presheaf of sets as a discrete fibration, and lim^n over a poset as the right derived functors of lim (Weibel §2.6). The program builds small categories from presentations and checks each statement on them.
 
@@ -2054,7 +2054,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Sheafification, reflector and Kan descent
 
-Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_sheafification_descent_kan.esk#L1). SHA-256: `0992914a7af06d34f6db88f1b248be7ccba50a935fe1ee242c868cc127a49c0a`.
+Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_sheafification_descent_kan.esk#L1). SHA-256: `e2ed4c0dc14726cb3961bfef73a9b642c86ce4f97bb428dd1f9d265fdc15746b`.
 
 **Published result:** Sheafification a = (−)⁺⁺ is left adjoint to the inclusion of sheaves (Mac Lane–Moerdijk Theorem III.5.1), and the sheaf condition for a covering sieve says that F(U) is the limit of F over the sieve — equivalently, the right Kan extension of F restricted to the sieve (Johnstone C2.2; Lurie 6.2.2). The program verifies the Grothendieck axioms for the canonical topology on two finite sites, counts matching families, computes the plus construction twice, and checks the reflector's universal property and the Kan-extension form of descent by counting.
 
@@ -2082,7 +2082,7 @@ Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_she
 
 **Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Implementation/check anchors: [line 1](../examples/mathematics_sheafification_descent_kan.esk#L1), [line 57](../examples/mathematics_sheafification_descent_kan.esk#L57), [line 180](../examples/mathematics_sheafification_descent_kan.esk#L180), [line 195](../examples/mathematics_sheafification_descent_kan.esk#L195), [line 200](../examples/mathematics_sheafification_descent_kan.esk#L200).
+Implementation/check anchors: [line 1](../examples/mathematics_sheafification_descent_kan.esk#L1), [line 57](../examples/mathematics_sheafification_descent_kan.esk#L57), [line 181](../examples/mathematics_sheafification_descent_kan.esk#L181), [line 196](../examples/mathematics_sheafification_descent_kan.esk#L196), [line 201](../examples/mathematics_sheafification_descent_kan.esk#L201).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 

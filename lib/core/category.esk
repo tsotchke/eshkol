@@ -16,14 +16,18 @@
 ;;;                            categories, comma and slice categories, the
 ;;;                            Grothendieck construction, adjunctions, monads
 ;;;   core.category.set        Set-valued functors: limits, colimits, ends,
-;;;                            coends, Yoneda, categories of elements, Kan
-;;;                            extensions with Lan -| F^* -| Ran
-;;;   core.category.linear     limits and colimits of diagrams of free
-;;;                            Z-modules and Q-vector spaces
-;;;   core.category.descent    sheafification as the reflector a -| i, the
-;;;                            sheafification monad, the sheaf condition as a
-;;;                            limit, descent as a Kan extension, the Cech
-;;;                            equalizer
+;;;                            coends, Yoneda, categories of elements
+;;;   core.category.kan        Kan extensions by the pointwise and the (co)end
+;;;                            formulas, Lan -| F^* -| Ran, descent as a right
+;;;                            Kan extension on thin sites
+;;;   core.category.linear     limits, colimits and derived limits of diagrams
+;;;                            of free Z-modules and Q-vector spaces
+;;;   core.category.descent    the sheaf condition as a limit over sieve
+;;;                            categories, the Cech equalizer, sheafification
+;;;                            as the reflector a -| i and its monad
+;;;   core.category.cohomology abelian descent: Cech cohomology and
+;;;                            cohomological descent as derived limits over
+;;;                            nerve categories and Grothendieck constructions
 ;;;
 ;;; Reference: docs/reference/stdlib/category.md; design: ADR-0036
 ;;; (docs/design/adr/0036-core-category-finite-categories.md).
@@ -37,5 +41,7 @@
 (require core.category.finite)
 (require core.category.functor)
 (require core.category.set)
+(require core.category.kan)
 (require core.category.linear)
 (require core.category.descent)
+(require core.category.cohomology)

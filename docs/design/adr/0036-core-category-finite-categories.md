@@ -8,8 +8,10 @@ sources:
   - lib/core/category/finite.esk
   - lib/core/category/functor.esk
   - lib/core/category/set.esk
+  - lib/core/category/kan.esk
   - lib/core/category/linear.esk
   - lib/core/category/descent.esk
+  - lib/core/category/cohomology.esk
   - tests/stdlib/category_test.esk
   - tests/stdlib/category_s62_test.esk
 ---
@@ -54,21 +56,24 @@ the simplicial and homological lane (ADR-0037) and the Lawvere-theory lane
    exists; `core.sheaf` and `core.topos` are unchanged.
 
 2. **Layers, loaded together by `(require core.category)`.**
-   `core.category.finite` (constructions and the nerve with its integral
-   cohomology), `core.category.functor` (functors, natural transformations,
-   enumeration of functors and transformations, functor categories, comma
-   categories, category diagrams and their Grothendieck construction,
-   adjunctions, adjoints found through comma categories, monads and their
-   algebras), `core.category.set` (Set-valued functors, limits, colimits,
-   ends, coends, Yoneda, categories of elements, Kan extensions),
+   `core.category.finite` (constructions, connected components, the nerve
+   with its integral cohomology), `core.category.functor` (functors, natural
+   transformations, enumeration of functors and transformations, functor
+   categories, comma, slice and sieve categories, category diagrams and their
+   Grothendieck construction, adjunctions, adjoints found through comma
+   categories, monads and their algebras), `core.category.set` (Set-valued
+   functors, limits, colimits, ends, coends, Yoneda, categories of
+   elements), `core.category.kan` (Kan extensions by both formulas,
+   Lan -| F^* -| Ran, descent as a right Kan extension on thin sites),
    `core.category.linear` (diagrams of free Z-modules and Q-vector spaces:
    limits, colimits with torsion, derived limits, hypercohomology of a
-   two-term complex) and `core.category.descent` (sieve categories, the sheaf
-   condition and Cech descent as limits, sheafification as the reflector
-   a -| i, abelian descent through nerve categories of covers and
-   Grothendieck constructions). They are ordinary modules outside the
-   `(require stdlib)` closure; the VM prelude and its generated tables are
-   unchanged.
+   two-term complex), `core.category.descent` (the sheaf condition and Cech
+   descent as limits, sheafification as the reflector a -| i and its monad)
+   and `core.category.cohomology` (abelian descent through nerve categories of
+   covers and Grothendieck constructions). A program requires only the
+   layers it uses; the AOT compile time grows with the layers loaded. They
+   are ordinary modules outside the `(require stdlib)` closure; the VM
+   prelude and its generated tables are unchanged.
 
 3. **Values are data, laws are checks.** A functor is
    `#(functor C D objects arrows)`; a natural transformation is a vector of

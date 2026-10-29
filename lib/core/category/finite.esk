@@ -35,7 +35,7 @@
          category-product category-product-object category-product-arrow
          category-coproduct category-full-subcategory category-full-subcategory-inclusion
          category-arrow-list category-object-list category-identity? category-isomorphism?
-         category-inverse category-groupoid? category-initial-objects category-terminal-objects
+         category-inverse category-groupoid? category-initial-objects category-terminal-objects category-components
          category-nerve category-nerve-coboundary category-nerve-cohomology)
 
 (define (cc-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
@@ -146,6 +146,15 @@
   (filter (lambda (t) (cc-all? (lambda (x) (= 1 (length (category-hom C x t)))) (category-object-list C))) (category-object-list C)))
 (define (category-initial-objects C)
   (filter (lambda (i) (cc-all? (lambda (x) (= 1 (length (category-hom C i x)))) (category-object-list C))) (category-object-list C)))
+
+;; pi_0: the number of connected components (objects joined by a zigzag of
+;; arrows), by union-find over the arrows
+(define (category-components C)
+  (let* ((n (category-object-count C)) (parent (list->vector (cc-range n)))
+         (root (lambda (x) (let loop ((x x)) (if (= x (vector-ref parent x)) x (loop (vector-ref parent x)))))))
+    (for-each (lambda (a) (let ((p (root (arrow-source C a))) (q (root (arrow-target C a)))) (if (not (= p q)) (vector-set! parent p q))))
+              (category-arrow-list C))
+    (length (filter (lambda (x) (= x (root x))) (cc-range n)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The nerve

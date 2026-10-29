@@ -823,7 +823,7 @@
       "output_lines": 4
     },
     "examples/mathematics_finite_categories_kan_extensions.esk": {
-      "source_sha256": "ab420b6534cea349818eaede88085606ec74d54de68432c6ec43b20ccad9c77a",
+      "source_sha256": "1927c08b17a438122261889cd8f11d2f63b0ca868a4f2112602bf88851e205d0",
       "jit": {
         "status": "NOT-RUN"
       },
@@ -2125,7 +2125,7 @@
       "output_lines": 21
     },
     "examples/mathematics_sheafification_descent_kan.esk": {
-      "source_sha256": "0992914a7af06d34f6db88f1b248be7ccba50a935fe1ee242c868cc127a49c0a",
+      "source_sha256": "e2ed4c0dc14726cb3961bfef73a9b642c86ce4f97bb428dd1f9d265fdc15746b",
       "jit": {
         "status": "NOT-RUN"
       },
