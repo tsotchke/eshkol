@@ -24,6 +24,7 @@
 
 (require core.theory)
 (require core.ring)
+(require core.sheaf.site)
 
 (define passed 0)
 (define failed 0)
@@ -358,6 +359,19 @@
                                                       (list x))))
                     '(0 1 2 3))
                '(1 2 1 2)))
+(define (hom-size C x y) (length (category-hom C x y)))
+(define LB1 (lawvere-truncation boolean-algebra-theory 1))
+(define LM2 (lawvere-truncation (module-theory F2) 2))
+(define LD2 (lawvere-truncation distributive-lattice-theory 2))
+(check "truncations of L_T are finite categories satisfying the category laws (core.sheaf.site)"
+       (and (category-laws? LB1) (category-laws? LM2) (category-laws? LD2)))
+(check "L_Boolean on {0, 1} has 1 + 2 + 1 + 4 = 8 arrows; L_(Z/2-modules) on {0, 1, 2} has 31 (matrices over F2)"
+       (and (= 8 (category-arrow-count LB1)) (= 31 (category-arrow-count LM2))))
+(check "0 is terminal and 2 = 1 x 1: |Hom(x, 0)| = 1 and |Hom(x, 2)| = |Hom(x, 1)|^2"
+       (all? (lambda (C) (all? (lambda (x) (and (= 1 (hom-size C x 0)) (= (hom-size C x 2) (expt (hom-size C x 1) 2)))) '(0 1 2)))
+             (list LM2 LD2)))
+(check "the free distributive lattice on 0 generators is empty: Hom(0, 1) is empty in L_distributive"
+       (= 0 (hom-size LD2 0 1)))
 (section "Lawvere theories")
 
 ;; ===========================================================================

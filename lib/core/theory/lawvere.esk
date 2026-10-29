@@ -15,9 +15,13 @@
 ;;; homomorphism F(m) -> F(n) sending generator x_j to t_j. A model M is the
 ;;; product-preserving functor n -> M^n, a morphism acting by evaluation.
 ;;;
-;;; The category part is kept to what L_T needs (objects, morphisms,
-;;; identities, composition, products, pairing, equality); a general
-;;; finite-category facility belongs to core.category (ADR-0036).
+;;;; The symbolic category part is kept to what L_T needs (objects,
+;;; morphisms, identities, composition, products, pairing, equality). When
+;;; the free models on at most N generators are finite (Boolean algebras,
+;;; distributive lattices, modules over a finite ring),
+;;; (lawvere-truncation T N) is the full subcategory on 0 .. N as a finite
+;;; category in the representation of core.sheaf.site, the one core.category
+;;; (ADR-0036) builds on, so its category laws and constructions apply.
 ;;;
 ;;; References: F. W. Lawvere, "Functorial Semantics of Algebraic Theories"
 ;;; (1963); Adamek, Rosicky, Vitale, "Algebraic Theories" (2011), chapters
@@ -25,11 +29,12 @@
 
 (require core.theory.equational)
 (require core.theory.free)
+(require core.sheaf.site)
 
 (provide lawvere-category lawvere-category? lawvere-category-theory lawvere-variables
          lawvere-morphism lawvere-morphism? lawvere-source lawvere-target lawvere-terms
          lawvere-identity lawvere-compose lawvere-projections lawvere-pairing
-         lawvere-morphism=? lawvere-apply lawvere-free-homomorphism
+         lawvere-morphism=? lawvere-apply lawvere-free-homomorphism lawvere-truncation
          monoid->semigroup group->monoid abelian-group->group group->abelian-group ring->abelian-group ring->monoid
          commutative-ring->ring ring->commutative-ring lattice->heyting-algebra
          heyting-algebra->boolean-algebra lattice->distributive-lattice
@@ -106,6 +111,38 @@
          (images (map (lambda (x t) (cons x (model-evaluate Fn t (model-ref Fn 'generators))))
                       (lawvere-variables m) (lawvere-terms f))))
     (list Fm Fn (free-model-lift Fm Fn images))))
+
+;; The full subcategory of L_T on the objects 0 .. N as a core.sheaf.site
+;; finite category. Arrow n -> m is named (n m (e1 ... em)), the ei elements
+;; of the free model on x1 ... xn; composition evaluates in free models.
+(define (lawvere-truncation T N)
+  (let* ((objs (tl-range (+ N 1)))
+         (frees (list->vector (map (lambda (n) (theory-free-model T (lawvere-variables n))) objs)))
+         (checked (for-each (lambda (n) (if (not (model-finite? (vector-ref frees n)))
+                                      (error "theory-infinite-model" 'lawvere-truncation (theory-name T))))
+                      objs))
+         (arrows '()) (index (make-hash-table)) (count 0))
+    (for-each (lambda (n)
+                (for-each (lambda (m)
+                            (for-each (lambda (tuple)
+                                        (hash-table-set! index (list n m tuple) count)
+                                        (set! arrows (cons (vector n m (list n m tuple)) arrows))
+                                        (set! count (+ count 1)))
+                                      (tl-tuples (model-elements (vector-ref frees n)) m)))
+                          objs))
+              objs)
+    (let* ((av (list->vector (reverse arrows)))
+           (compose (lambda (g f)
+                      (let* ((fn (vector-ref av f)) (gn (vector-ref av g))
+                             (n (vector-ref fn 0)) (m (vector-ref fn 1)) (k (vector-ref gn 1))
+                             (Fm (vector-ref frees m)) (Fn (vector-ref frees n))
+                             (lift (free-model-lift Fm Fn (map (lambda (x e) (cons x e)) (lawvere-variables m) (caddr (vector-ref fn 2))))))
+                        (hash-table-ref/default index (list n k (map (lambda (e) (lift e)) (caddr (vector-ref gn 2)))) #f))))
+           (ids (map (lambda (n) (hash-table-ref/default index (list n n (map (lambda (x) (free-model-generator (vector-ref frees n) x)) (lawvere-variables n))) #f))
+                     objs)))
+      (make-finite-category (+ N 1) (vector->list av) compose ids objs))))
+(define (tl-tuples xs k)
+  (if (= k 0) (list '()) (apply append (map (lambda (x) (map (lambda (r) (cons x r)) (tl-tuples xs (- k 1)))) xs))))
 
 ;; ---------------------------------------------------------------------------
 ;; Interpretations between the catalogue theories (morphisms of Lawvere
