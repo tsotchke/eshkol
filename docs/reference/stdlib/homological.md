@@ -250,6 +250,11 @@ nondegenerate n-simplices, a cochain a vector on it.
 - [`examples/mathematics_group_cohomology_order_eight.esk`](../../../examples/mathematics_group_cohomology_order_eight.esk):
   integral homology of the groups of order eight, normalized against
   unnormalized bar complexes.
+- [`examples/mathematics_cohomology_rings_nonabelian.esk`](../../../examples/mathematics_cohomology_rings_nonabelian.esk):
+  the mod-2 cohomology rings of D_4 and Q_8, which the ring structure separates.
+- [`examples/mathematics_group_cohomology_sweep.esk`](../../../examples/mathematics_group_cohomology_sweep.esk):
+  integral homology receipts of a chosen finite group (driven by
+  `scripts/run_math_sweep.sh`).
 - [`examples/mathematics_two_groups_postnikov.esk`](../../../examples/mathematics_two_groups_postnikov.esk):
   cohomology of 2-group nerves over `Z/2` and `Z`.
 - [`examples/mathematics_descent_hypercohomology.esk`](../../../examples/mathematics_descent_hypercohomology.esk):

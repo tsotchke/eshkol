@@ -126,10 +126,12 @@ builds on.
 
 ## Consequences
 
-- The Kan-complex, 2-group Postnikov, cup-product, order-eight group
-  cohomology and descent/hypercohomology examples are written against the
-  libraries, each byte-identical to the previous program in JIT and AOT
-  (see the PR for line counts). The homotopy-colimit example was moved by
+- Seven examples are written against the libraries, each byte-identical to
+  the previous program in JIT and AOT: Kan complexes and horns, 2-group
+  Postnikov invariants, cohomology rings by cup products, the cohomology
+  rings of D_4 and Q_8, group cohomology of order eight, the group-homology
+  sweep (identical receipts on nine group specifications) and
+  descent/hypercohomology; together they shrink from 2727 to 1352 lines. The homotopy-colimit example was moved by
   the category lane (ADR-0036).
 - Programs that load the whole libraries pay JIT compilation time; a program
   can require only the layers it uses.

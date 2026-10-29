@@ -25,7 +25,8 @@
 (provide make-finite-group finite-group? group-order group-mul group-inv group-identity group-elements
          group-label group-axioms-violations group-abelian? group-element-order group-power
          group-conjugacy-classes group-centralizer group-commute?
-         cyclic-group group-direct-product dihedral-group quaternion-group symmetric-group
+         cyclic-group group-direct-product dihedral-group quaternion-group symmetric-group alternating-group
+         permutation-sign
          group-homomorphism? group-quotient
          make-crossed-module crossed-module? crossed-module-source crossed-module-target
          crossed-module-boundary crossed-module-act crossed-module-violations
@@ -133,6 +134,22 @@
                       items))))
 (define (symmetric-group n)
   (let* ((perms (list->vector (fg-permutations (fg-range n))))
+         (index (make-hash-table)))
+    (let loop ((i 0)) (if (< i (vector-length perms)) (begin (hash-table-set! index (vector-ref perms i) i) (loop (+ i 1)))))
+    (make-finite-group (vector-length perms)
+                       (lambda (a b)
+                         (let ((p (vector-ref perms a)) (q (vector-ref perms b)))
+                           (hash-table-ref/default index (map (lambda (i) (list-ref p (list-ref q i))) (fg-range n)) -1)))
+                       (vector->list perms))))
+
+;; the sign of a permutation of 0..n-1 (a list), by counting inversions
+(define (permutation-sign p)
+  (let loop ((l p) (inv 0))
+    (if (null? l) (if (even? inv) 1 -1)
+        (loop (cdr l) (+ inv (fg-count (lambda (y) (> (car l) y)) (cdr l)))))))
+;; A_n: the even permutations, in lexicographic order (identity first)
+(define (alternating-group n)
+  (let* ((perms (list->vector (filter (lambda (p) (= 1 (permutation-sign p))) (fg-permutations (fg-range n)))))
          (index (make-hash-table)))
     (let loop ((i 0)) (if (< i (vector-length perms)) (begin (hash-table-set! index (vector-ref perms i) i) (loop (+ i 1)))))
     (make-finite-group (vector-length perms)

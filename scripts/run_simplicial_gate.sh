@@ -6,10 +6,11 @@
 #   1. the CTest entries that own the behaviour, in native JIT and AOT:
 #        simplicial_jit / simplicial_aot (tests/stdlib/simplicial_test.esk),
 #        homological_jit / homological_aot (tests/stdlib/homological_test.esk)
-#        and the five examples written on the libraries:
+#        and the six examples written on the libraries:
 #        hocolim_kan_complexes_horns, hocolim_two_groups_postnikov,
-#        dw_cohomology_rings_cup_products, dw_group_cohomology_order_eight,
-#        sheaf_descent_hypercohomology (each _jit and _aot);
+#        dw_cohomology_rings_cup_products, dw_cohomology_rings_nonabelian,
+#        dw_group_cohomology_order_eight, sheaf_descent_hypercohomology
+#        (each _jit and _aot);
 #   2. every fenced example on docs/reference/stdlib/simplicial.md and
 #      docs/reference/stdlib/homological.md through the documentation example
 #      harness, on the JIT and as AOT binaries, comparing each `;; =>`
@@ -17,7 +18,7 @@
 #
 # It writes one event to $TRACE_DIR/v14_simplicial_homological.jsonl:
 #   {"kind": "v1_4_connection", "name": "v14_simplicial_homological", "value": PASS|FAIL}
-# PASS only when all fourteen CTest entries ran and passed and every
+# PASS only when all sixteen CTest entries ran and passed and every
 # documentation example matched. Absence of a test is a FAIL, never a skip.
 #
 #   BUILD_DIR  (env, default "build")   the CMake build directory
@@ -51,8 +52,8 @@ WORK="$BUILD_DIR_PATH/test-work/simplicial-gate"
 mkdir -p "$WORK"
 export ESHKOL_PATH="$REPO_ROOT/lib${ESHKOL_PATH:+:$ESHKOL_PATH}"
 
-TESTS='^(simplicial|homological|hocolim_kan_complexes_horns|hocolim_two_groups_postnikov|dw_cohomology_rings_cup_products|dw_group_cohomology_order_eight|sheaf_descent_hypercohomology)_(jit|aot)$'
-EXPECTED=14
+TESTS='^(simplicial|homological|hocolim_kan_complexes_horns|hocolim_two_groups_postnikov|dw_cohomology_rings_cup_products|dw_cohomology_rings_nonabelian|dw_group_cohomology_order_eight|sheaf_descent_hypercohomology)_(jit|aot)$'
+EXPECTED=16
 
 emit_event() { # PASS|FAIL snippet
     python3 - "$TRACE_FILE" "$1" "$2" <<'PY'

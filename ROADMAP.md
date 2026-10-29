@@ -780,7 +780,7 @@ under the same discipline that made `Qubit` linear.
       torsion through `core.integer_linalg`, Q, F_p), cones and long exact
       sequences, Ext and Tor over Z, spectral sequences of filtered and double
       complexes checked page by page and in the limit, cup and cup-i products,
-      Steenrod squares and group cohomology with twisted coefficients. Five
+      Steenrod squares and group cohomology with twisted coefficients. Seven
       algebraic-topology examples run on them
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
