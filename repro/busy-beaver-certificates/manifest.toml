@@ -1,0 +1,51 @@
+schema_version = 1
+license = "MIT"
+upstream_base = "fb8a9415b3dd05bb82ebf42db2fe894240f8b4f0"
+upstream_pr = 865
+qualification_base = "fb8a9415b3dd05bb82ebf42db2fe894240f8b4f0"
+prerequisite_pr = 865
+upstream_destination = "repro/busy-beaver-certificates"
+
+[[prerequisite]]
+path = "lib/core/ring.esk"
+sha256 = "9cd82bfc8b36dc99b72145946a0b3325842077ed4f45ef62d4a3682f6937f5c8"
+
+[[prerequisite]]
+path = "lib/core/symbolic.esk"
+sha256 = "b75c7e6533c8568f1c7d42f9dacd6a7ac2c9991a1603c8e77982c6cee30be9b8"
+
+[[file]]
+path = "LICENSE"
+sha256 = "6528219548a5bc069aeaa8d5d7791568fbc907ed38660224907a7ddee31be714"
+
+[[file]]
+path = "README.md"
+sha256 = "050cbbdd8ad3bbdfb6775b6a526a72f410cb2f4976cc35e2a7b519f30ede1834"
+
+[[file]]
+path = "bb5_certificate.esk"
+sha256 = "f9fda0933cdf4ae958f6896e5c19fac4406c308493cb65f04732c4463a286b3a"
+
+[[file]]
+path = "bb5_certificate_test.esk"
+sha256 = "d17d12cea8755c2a025880a4a10e152bd2de0ac2fa147f8bd648e97291a82765"
+
+[[file]]
+path = "bb6_cost_algebra.esk"
+sha256 = "c91a3ac621aac76fb9846982769959d8858813f4246000e289c4cbcd4de14a52"
+
+[[file]]
+path = "direct_reference.c"
+sha256 = "ff35b97371a73a8d9e0f28ac5462648f4b062a6643ca27ded5cfb18ea763047e"
+
+[[file]]
+path = "results.json"
+sha256 = "8e7ab9db0221bc8410c09e419329e22a9dd21d57257d3a898494f322152be66e"
+
+[[file]]
+path = "run_gate.py"
+sha256 = "c5b9ed93edf2c0db3d7340ea7ae3fce7b18f721e09135f4876e85267e697c545"
+
+[[file]]
+path = "self_test.py"
+sha256 = "6ab00ae641af2c4d6398bae7be907ba2d2c3a5fb16d3b5b5e7631c8e2d01427a"

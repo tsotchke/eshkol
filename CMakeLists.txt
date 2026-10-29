@@ -15172,3 +15172,17 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
         set_tests_properties(vm_binding_read_runtime PROPERTIES TIMEOUT 180)
     endif()
 endif()
+
+# Standalone source-bound cost proof: require clean JIT/AOT exits and a red control.
+if(UNIX AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND Python3_Interpreter_FOUND)
+    add_test(NAME busy_beaver_certificates
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-certificates/run_gate.py"
+            --eshkol-bin "$<TARGET_FILE:eshkol-run>"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME busy_beaver_certificates_self_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-certificates/self_test.py")
+    set_tests_properties(busy_beaver_certificates busy_beaver_certificates_self_test
+        PROPERTIES TIMEOUT 480 LABELS "stdlib;exact")
+endif()
