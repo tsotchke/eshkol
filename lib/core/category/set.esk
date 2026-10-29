@@ -47,7 +47,7 @@
 (require core.category.finite)
 (require core.category.functor)
 
-(provide make-set-functor make-set-functor-from-indices set-functor? set-functor-category
+(provide make-set-functor make-set-functor-from-indices make-set-functor-from-names set-functor? set-functor-category
          set-functor-elements set-functor-element-count set-functor-element-index set-functor-sizes
          set-functor-apply set-functor-apply-index
          set-functor-functoriality-violations set-functor-functorial?
@@ -98,6 +98,21 @@
                             (if (not i) (error "make-set-functor: the image leaves the target set" (list a e)))
                             i)))
                     (vector-ref sv x)))))
+          (cs-arrows C)))))
+;; maps given by arrow name: alist name -> index vector; identities filled
+;; in, every other arrow must be named in the alist (a functor on a
+;; presented category is determined by these images; functoriality is the
+;; caller's to check with set-functor-functoriality-violations)
+(define (make-set-functor-from-names C sets alist)
+  (let ((sv (cs-vec sets)))
+    (make-set-functor-from-indices
+     C sv
+     (map (lambda (a)
+            (if (= a (category-identity C (arrow-source C a)))
+                (list->vector (cs-range (length (vector-ref sv (arrow-source C a)))))
+                (let ((e (assoc (arrow-name C a) alist)))
+                  (if (not e) (error "make-set-functor-from-names: no map for arrow" (arrow-name C a)))
+                  (cdr e))))
           (cs-arrows C)))))
 (define (set-functor? X) (and (vector? X) (= 4 (vector-length X)) (eq? (vector-ref X 0) 'set-functor)))
 (define (set-functor-category X) (vector-ref X 1))
