@@ -82,20 +82,31 @@ doc_log="$WORK/doc-examples.log"
 python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --eshkol-run "$BUILD_DIR_PATH/eshkol-run" \
     --engines jit,aot \
+    --scope reference \
     --only "$PAGES" \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
 doc_status=$?
-# The harness reports "examples=N executed=E passed=P failed=F" under a
-# "scope=... paths=..." header for every gated scope; the counts that matter
-# are those under the header naming these two pages. An example that was not
-# executed is not evidence, so all of them must run and pass.
-doc_counts=$(awk -v pages="paths=$PAGES" 'index($0, "doc example gate: ") && index($0, pages) {grab=1; next}
-    grab && match($0, /examples=[0-9]+ executed=[0-9]+ passed=[0-9]+/) {print substr($0, RSTART, RLENGTH); grab=0}' "$doc_log" | tail -n 1)
-doc_examples=$(printf '%s' "$doc_counts" | sed -E 's/examples=([0-9]+).*/\1/')
+# The harness reports "examples=N executed=E passed=P failed=F" for the whole
+# `reference` scope while executing only these two pages (the scope also
+# covers core.sheaf/core.topos's reference pages; --only restricts execution
+# to this gate's pages without changing the scope's declared total). The
+# count that matters is how many of THESE two pages' examples exist, counted
+# independently the same way run_topos_gate.sh does for its own page; an
+# example that was not executed is not evidence, so all of them must run and
+# pass.
+doc_counts=$(grep -oE 'examples=[0-9]+ executed=[0-9]+ passed=[0-9]+' "$doc_log" | tail -n 1)
+doc_examples=$(python3 - "$REPO_ROOT" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/scripts/doc_audit")
+import extract_examples
+records = extract_examples.extract(sys.argv[1], ["docs/reference/stdlib/ring.md", "docs/reference/stdlib/multimodular.md"])
+print(sum(1 for r in records if r.get("klass") != "data-file"))
+PY
+)
 doc_executed=$(printf '%s' "$doc_counts" | sed -E 's/.*executed=([0-9]+).*/\1/')
 doc_passed=$(printf '%s' "$doc_counts" | sed -E 's/.*passed=([0-9]+).*/\1/')
-summary="$summary; documentation examples ${doc_counts:-none reported} (exit ${doc_status})"
+summary="$summary; documentation examples on ring.md/multimodular.md ${doc_examples:-?}, harness ${doc_counts:-none reported} (exit ${doc_status})"
 if [ "$doc_status" -ne 0 ] || [ -z "$doc_counts" ] || [ "${doc_examples:-0}" -eq 0 ] \
    || [ "$doc_executed" -ne "$doc_examples" ] || [ "$doc_passed" -ne "$doc_examples" ]; then
     status=1
