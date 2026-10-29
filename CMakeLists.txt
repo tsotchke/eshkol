@@ -4367,6 +4367,29 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# core.ring and core.multimodular (ADR-0034, library rung): the ring-law gate
+# (exhaustive on small lawful carriers, seeded on infinite ones, refusals,
+# coercion lattice, ring maps), the IEEE tier against its per-operation
+# specification with a pinned digest of the binary64 results, and the
+# multimodular determinant, solve and polynomial gcd against the exact paths.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_ring_suite ring ring_ieee multimodular)
+        add_test(NAME ${_ring_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_ring_suite}_test.esk")
+        add_test(NAME ${_ring_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_ring_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_ring_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_ring_suite}_jit ${_ring_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_ring_suite}_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
@@ -4404,7 +4427,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         cat_sheafification_descent_kan   mathematics_sheafification_descent_kan
         cat_abelian_sheaves_finite_site  mathematics_abelian_sheaves_finite_site
         hodge_aoki_cycles_fermat_sextic  mathematics_aoki_cycles_fermat_sextic
-        hodge_aoki_surface_sweep_default mathematics_aoki_cycles_fermat_surfaces_sweep)
+        hodge_aoki_surface_sweep_default mathematics_aoki_cycles_fermat_surfaces_sweep
+        rings_functor_of_points          mathematics_functor_of_points)
     list(LENGTH ESHKOL_IPM_EXAMPLES _ipm_len)
     math(EXPR _ipm_last "${_ipm_len} - 1")
     foreach(_ipm_i RANGE 0 ${_ipm_last} 2)
@@ -4434,6 +4458,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_property(TEST torsion_lens_spaces_reidemeister_jit tv_turaev_viro_cyclotomic_jit
                       sheaf_finite_spaces_cech_descent_jit sheaf_finite_site_sheafification_jit
                       cat_presheaf_topos_internal_logic_jit
+        APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+    # The functor-of-points example runs on core.ring and core.multimodular.
+    set_property(TEST rings_functor_of_points_jit
         APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # The order-eight program eliminates five 343 x 2401 integer matrices;
     # about 90 s on an arm64 laptop, so it gets its own budget.

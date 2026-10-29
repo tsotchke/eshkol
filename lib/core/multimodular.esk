@@ -1,0 +1,380 @@
+;;; core.multimodular -- exact computation over Spec Z in the fibres F_p.
+;;;
+;;; ADR-0034 section 7. Two steps, kept distinct:
+;;;
+;;;   Descent over Spec(Z/M). For a squarefree M = p1 ... pk the Chinese
+;;;   remainder theorem is the ring isomorphism Z/M = F_p1 x ... x F_pk, so
+;;;   residues computed in the fibres F_p (where every integer polynomial
+;;;   computation commutes with reduction) glue to the answer modulo M,
+;;;   and to nothing more: the closed points Spec F_p do not cover Spec Z.
+;;;
+;;;   Reconstruction over Z or Q. The answer modulo M determines the answer
+;;;   itself only inside a window: the symmetric lift for an integer of
+;;;   absolute value at most B when M > 2B, Wang's rational reconstruction
+;;;   for n/d with |n| <= N, 0 < d <= D when M > 2ND. The proven bounds
+;;;   below are what put the answer inside the window; the number of primes
+;;;   is fixed by them before the first fibre runs, so the result is
+;;;   proven, never a probabilistic early termination.
+;;;
+;;; Primes are taken downward from 2^31 - 1, so a product of two residues
+;;; fits a signed 64-bit integer on every target, including wasm32. A prime
+;;; at which the computation needs a non-unit (it raises ring-not-a-unit in
+;;; that fibre) is unlucky: it is skipped and does not count toward the
+;;; bound.
+;;;
+;;; Bounds used:
+;;;   determinant     Hadamard: |det A| <= prod_i ||row_i||_2
+;;;   solve A x = b   x_i = det(A_i)/det(A) (Cramer): numerators bounded by
+;;;                   Hadamard on A_i (column i replaced by b), denominators
+;;;                   by Hadamard on A; reconstruction is unique for
+;;;                   M > 2 N D
+;;;   gcd in Z[x]     Mignotte: a factor g of degree m of a in Z[x] has
+;;;                   ||g||_inf <= ||g||_1 <= 2^m ||a||_2; the normalised gcd
+;;;                   h = (lc-gcd / lc g) g obeys the same bound
+;;;
+;;; Reference: docs/reference/stdlib/multimodular.md.
+
+(require core.ring)
+
+(define (mm-exact-integer? x) (and (number? x) (exact? x) (integer? x)))
+
+(provide multimodular-prime multimodular-primes chinese-remainder symmetric-residue
+         rational-reconstruct hadamard-bound mignotte-gcd-bound
+         multimodular-integer multimodular-rational
+         multimodular-integer-report multimodular-rational-report
+         multimodular-det multimodular-solve multimodular-poly-gcd)
+
+;; ===========================================================================
+;; Word-size primes
+;; ===========================================================================
+
+;; Candidates are decided by core.ring's deterministic `exact-prime?`.
+;; The primes below 2^31 in descending order, found on demand and kept.
+(define mm-prime-table (make-vector 64 0))
+(define mm-prime-count 0)
+(define mm-next-candidate 2147483647)
+(define (mm-grow!)
+  (let loop ((c mm-next-candidate))
+    (if (exact-prime? c)
+        (begin
+          (if (= mm-prime-count (vector-length mm-prime-table))
+              (let ((bigger (make-vector (* 2 mm-prime-count) 0)))
+                (let copy ((i 0))
+                  (if (< i mm-prime-count)
+                      (begin (vector-set! bigger i (vector-ref mm-prime-table i)) (copy (+ i 1)))))
+                (set! mm-prime-table bigger)))
+          (vector-set! mm-prime-table mm-prime-count c)
+          (set! mm-prime-count (+ mm-prime-count 1))
+          (set! mm-next-candidate (- c 2)))
+        (loop (- c 2)))))
+;; The i-th prime below 2^31 counting downward from 2^31 - 1 (i = 0).
+(define (multimodular-prime i)
+  (if (not (and (mm-exact-integer? i) (>= i 0))) (error "multimodular-prime: expected an index >= 0" i))
+  (let loop () (if (<= mm-prime-count i) (begin (mm-grow!) (loop))))
+  (vector-ref mm-prime-table i))
+
+;; The primes, from the top, that satisfy usable? until their product
+;; exceeds bound.
+(define (multimodular-primes bound . usable)
+  (let ((ok? (if (null? usable) (lambda (p) #t) (car usable))))
+    (let loop ((i 0) (acc '()) (m 1))
+      (if (> m bound)
+          (reverse acc)
+          (let ((p (multimodular-prime i)))
+            (if (ok? p) (loop (+ i 1) (cons p acc) (* m p)) (loop (+ i 1) acc m)))))))
+
+;; ===========================================================================
+;; CRT, the symmetric lift and rational reconstruction
+;; ===========================================================================
+
+;; The residue x mod prod(moduli) with x = r_i mod m_i (pairwise coprime).
+(define (chinese-remainder residues moduli)
+  (let loop ((rs residues) (ms moduli) (x 0) (m 1))
+    (if (null? rs)
+        x
+        (let* ((p (car ms))
+               (t (modulo (* (- (car rs) x) (mm-inverse (modulo m p) p)) p)))
+          (loop (cdr rs) (cdr ms) (+ x (* m t)) (* m p))))))
+(define (mm-inverse a m)
+  (let loop ((r0 m) (r1 a) (t0 0) (t1 1))
+    (if (= r1 0)
+        (if (= r0 1) (modulo t0 m) (error "chinese-remainder: moduli are not coprime" a m))
+        (let ((q (quotient r0 r1)))
+          (loop r1 (- r0 (* q r1)) t1 (- t0 (* q t1)))))))
+
+;; The representative of x mod m in (-m/2, m/2].
+(define (symmetric-residue x m)
+  (let ((r (modulo x m))) (if (> (* 2 r) m) (- r m) r)))
+
+;; Wang's rational reconstruction: the unique n/d with |n| <= N, 0 < d <= D,
+;; gcd(n, d) = 1 and n = d u (mod m); it exists and is unique when
+;; m > 2 N D and such an n/d is congruent to u.
+(define (rational-reconstruct u m N D)
+  (let loop ((r0 m) (r1 (modulo u m)) (t0 0) (t1 1))
+    (if (<= r1 N)
+        (if (and (> (abs t1) 0) (<= (abs t1) D) (= (gcd r1 t1) 1))
+            (/ (if (< t1 0) (- r1) r1) (abs t1))
+            (error "rational-reconstruct: no fraction within the bounds" u m N D))
+        (let ((q (quotient r0 r1)))
+          (loop r1 (- r0 (* q r1)) t1 (- t0 (* q t1)))))))
+
+;; ===========================================================================
+;; Bounds
+;; ===========================================================================
+
+(define (mm-isqrt-ceiling k)
+  (call-with-values (lambda () (exact-integer-sqrt k))
+    (lambda (s r) (if (= r 0) s (+ s 1)))))
+
+(define (mm-rows A who)
+  (let ((rows (cond ((vector? A) (vector->list A)) ((list? A) A) (else (error (string-append who ": expected a matrix") A)))))
+    (map (lambda (row)
+           (let ((xs (cond ((vector? row) (vector->list row)) ((list? row) row)
+                           (else (error (string-append who ": expected a matrix row") row)))))
+             (for-each (lambda (x) (if (not (and (number? x) (exact? x) (rational? x)))
+                                       (error (string-append who ": entries must be exact rationals") x)))
+                       xs)
+             xs))
+         rows)))
+
+;; An integer H >= |det A| for an integer matrix A: Hadamard's inequality,
+;; |det A| <= prod_i ||row_i||_2 <= ceil(sqrt(prod_i ||row_i||_2^2)).
+(define (hadamard-bound A)
+  (let ((rows (mm-rows A "hadamard-bound")))
+    (mm-isqrt-ceiling
+     (fold-left (lambda (acc row) (* acc (fold-left (lambda (s x) (+ s (* x x))) 0 row))) 1 rows))))
+
+;; ===========================================================================
+;; Fibre evaluation
+;; ===========================================================================
+;;
+;; (multimodular-integer proc bound) runs (proc Fp) over Fp = (make-zmod p)
+;; for usable primes until their product M exceeds 2 * bound, glues the
+;; residues by CRT and returns the symmetric lift: the unique integer of
+;; absolute value at most bound in the residue class. proc returns an
+;; element of Fp, or a list or vector of them (glued componentwise). A
+;; fibre that raises ring-not-a-unit is unlucky and is skipped; a
+;; computation refused in more than 64 fibres beyond those it needed is
+;; refused as a whole.
+
+(define mm-unlucky (list 'unlucky-fibre))
+
+(define (mm-try proc p)
+  (guard (e ((eq? (ring-refusal-kind e) 'ring-not-a-unit) mm-unlucky))
+    (proc (make-zmod p))))
+
+;; One CRT step on a shape: x (mod m) and r (mod p) -> residue mod m p.
+(define (mm-glue x m r p)
+  (cond ((not x) (mm-glue (mm-shape-zero r) 1 r p))
+        ((vector? r) (list->vector (mm-glue (vector->list x) m (vector->list r) p)))
+        ((pair? r) (map (lambda (xi ri) (mm-glue xi m ri p)) x r))
+        ((null? r) '())
+        (else (+ x (* m (modulo (* (- (ring-element-value r) x) (mm-inverse (modulo m p) p)) p))))))
+(define (mm-shape-zero r)
+  (cond ((vector? r) (list->vector (map mm-shape-zero (vector->list r))))
+        ((pair? r) (map mm-shape-zero r))
+        ((null? r) '())
+        (else 0)))
+(define (mm-map-shape f x)
+  (cond ((vector? x) (list->vector (map (lambda (y) (mm-map-shape f y)) (vector->list x))))
+        ((pair? x) (map (lambda (y) (mm-map-shape f y)) x))
+        ((null? x) '())
+        (else (f x))))
+
+;; The fibres until the product of usable primes exceeds target. Returns
+;; (residue modulus used-primes unlucky-primes).
+(define (mm-run proc target usable? who)
+  ;; At least one fibre always runs, so the result has the shape proc
+  ;; returns even when the bound is 0 (M = 1 would already exceed it).
+  (let loop ((i 0) (x #f) (m 1) (used '()) (unlucky '()))
+    (if (and x (> m target))
+        (list x m (reverse used) (reverse unlucky))
+        (let ((p (multimodular-prime i)))
+          (if (not (usable? p))
+              (loop (+ i 1) x m used (cons p unlucky))
+              (let ((r (mm-try proc p)))
+                (cond ((not (eq? r mm-unlucky))
+                       (loop (+ i 1) (mm-glue x m r p) (* m p) (cons p used) unlucky))
+                      ((> (length unlucky) (+ 64 (length used)))
+                       (error (string-append who ": the computation is refused in every fibre tried") (length unlucky)))
+                      (else (loop (+ i 1) x m used (cons p unlucky))))))))))
+
+(define (mm-check-bound b who)
+  (if (not (and (mm-exact-integer? b) (>= b 0))) (error (string-append who ": the bound must be an exact integer >= 0") b)))
+
+(define (mm-report value run)
+  (list (cons 'value value) (cons 'modulus (cadr run))
+        (cons 'primes (caddr run)) (cons 'unlucky (cadddr run))))
+
+(define (multimodular-integer-report proc bound . usable)
+  (mm-check-bound bound "multimodular-integer")
+  (let* ((run (mm-run proc (* 2 bound) (if (null? usable) (lambda (p) #t) (car usable)) "multimodular-integer"))
+         (m (cadr run)))
+    (mm-report (mm-map-shape (lambda (x) (symmetric-residue x m)) (car run)) run)))
+(define (multimodular-integer proc bound . usable)
+  (cdr (assq 'value (apply multimodular-integer-report proc bound usable))))
+
+;; (multimodular-rational proc N D): as multimodular-integer, for an answer
+;; whose numerators are at most N and denominators at most D in absolute
+;; value; M exceeds 2 N D and each component is reconstructed by Wang's
+;; algorithm.
+(define (multimodular-rational-report proc N D . usable)
+  (mm-check-bound N "multimodular-rational") (mm-check-bound D "multimodular-rational")
+  (let* ((run (mm-run proc (* 2 N D) (if (null? usable) (lambda (p) #t) (car usable)) "multimodular-rational"))
+         (m (cadr run)))
+    (mm-report (mm-map-shape (lambda (x) (rational-reconstruct x m N D)) (car run)) run)))
+(define (multimodular-rational proc N D . usable)
+  (cdr (assq 'value (apply multimodular-rational-report proc N D usable))))
+
+;; ===========================================================================
+;; Determinant and solve over Q
+;; ===========================================================================
+
+;; Clear denominators row by row: (scaled-integer-rows . product-of-scales).
+(define (mm-lcm-denominators xs) (fold-left (lambda (l x) (lcm l (denominator x))) 1 xs))
+(define (mm-integer-rows rows extra)
+  (let loop ((rows rows) (extra extra) (out '()) (out-extra '()) (scale 1))
+    (if (null? rows)
+        (list (reverse out) (reverse out-extra) scale)
+        (let* ((row (car rows)) (e (if (null? extra) '() (list (car extra))))
+               (l (mm-lcm-denominators (append row e))))
+          (loop (cdr rows) (if (null? extra) '() (cdr extra))
+                (cons (map (lambda (x) (* l x)) row) out)
+                (if (null? e) out-extra (cons (* l (car e)) out-extra))
+                (* scale l))))))
+(define (mm-square-check rows who)
+  (let ((n (length rows)))
+    (for-each (lambda (row) (if (not (= (length row) n)) (error (string-append who ": expected a square matrix") n))) rows)
+    n))
+
+;; The exact determinant of a square matrix of exact rationals, computed in
+;; the fibres F_p by elimination over core.ring and glued with the
+;; Hadamard bound (no fibre is unlucky for a determinant).
+(define (multimodular-det A)
+  (let* ((rows (mm-rows A "multimodular-det")) (n (mm-square-check rows "multimodular-det")))
+    (if (= n 0)
+        1
+        (let* ((scaled (mm-integer-rows rows '())) (B (list->vector (map list->vector (car scaled)))))
+          (/ (multimodular-integer (lambda (Fp) (ring-det Fp B)) (hadamard-bound B))
+             (caddr scaled))))))
+
+;; The exact solution x of A x = b (A square and invertible over Q) as a
+;; vector of exact rationals. Fibres where det A vanishes are skipped
+;; before they run; numerators and denominators are bounded by Hadamard on
+;; the Cramer matrices.
+(define (multimodular-solve A b)
+  (let* ((rows (mm-rows A "multimodular-solve")) (n (mm-square-check rows "multimodular-solve"))
+         (bs (cond ((vector? b) (vector->list b)) ((list? b) b) (else (error "multimodular-solve: expected a vector" b)))))
+    (if (not (= (length bs) n)) (error "multimodular-solve: the right-hand side and the matrix differ in size (right-hand side length, matrix rows)" (length bs) n))
+    (for-each (lambda (x) (if (not (and (number? x) (exact? x) (rational? x)))
+                              (error "multimodular-solve: entries must be exact rationals" x)))
+              bs)
+    (let* ((scaled (mm-integer-rows rows bs))
+           (B (car scaled)) (c (cadr scaled))
+           (Bv (list->vector (map list->vector B)))
+           (det (multimodular-integer (lambda (Fp) (ring-det Fp Bv)) (hadamard-bound Bv))))
+      (if (= det 0) (error "multimodular-solve: the matrix is singular"))
+      (let* ((D (hadamard-bound Bv))
+             (N (let loop ((i 0) (best 0))
+                  (if (= i n) best
+                      (loop (+ i 1)
+                            (max best (hadamard-bound
+                                       (map (lambda (row ci)
+                                              (let put ((j 0) (r row) (acc '()))
+                                                (cond ((null? r) (reverse acc))
+                                                      ((= j i) (put (+ j 1) (cdr r) (cons ci acc)))
+                                                      (else (put (+ j 1) (cdr r) (cons (car r) acc))))))
+                                            B c))))))))
+        (multimodular-rational (lambda (Fp) (ring-solve Fp Bv c)) N D
+                               (lambda (p) (not (= (modulo det p) 0))))))))
+
+;; ===========================================================================
+;; Polynomial gcd over Z
+;; ===========================================================================
+
+(define (mm-trim cs)
+  (let loop ((r (reverse cs))) (cond ((null? r) '()) ((= (car r) 0) (loop (cdr r))) (else (reverse r)))))
+(define (mm-content cs) (fold-left (lambda (g c) (gcd g c)) 0 cs))
+(define (mm-lead cs) (list-ref cs (- (length cs) 1)))
+;; The primitive part with a positive leading coefficient.
+(define (mm-primitive cs)
+  (if (null? cs) '()
+      (let* ((c (mm-content cs)) (s (if (< (mm-lead cs) 0) (- c) c)))
+        (map (lambda (x) (quotient x s)) cs))))
+(define (mm-norm-ceiling cs) (mm-isqrt-ceiling (fold-left (lambda (s x) (+ s (* x x))) 0 cs)))
+
+(define (mm-poly-input p who)
+  (let ((cs (cond ((vector? p) (vector->list p)) ((list? p) p) (else (error (string-append who ": expected a coefficient list") p)))))
+    (for-each (lambda (x) (if (not (mm-exact-integer? x)) (error (string-append who ": coefficients must be exact integers") x))) cs)
+    (mm-trim cs)))
+
+;; The coefficient bound B on the normalised gcd of the primitive parts:
+;; 2^k min(ceil ||a||_2, ceil ||b||_2), k = min(deg a, deg b).
+(define (mignotte-gcd-bound a b)
+  (let ((a (mm-primitive (mm-poly-input a "mignotte-gcd-bound")))
+        (b (mm-primitive (mm-poly-input b "mignotte-gcd-bound"))))
+    (if (or (null? a) (null? b)) (error "mignotte-gcd-bound: both polynomials must be nonzero"))
+    (* (expt 2 (min (- (length a) 1) (- (length b) 1))) (min (mm-norm-ceiling a) (mm-norm-ceiling b)))))
+
+;; Does g divide f in Q[x] (g primitive, so in Z[x] by Gauss's lemma)?
+(define (mm-divides? g f)
+  (let* ((Qx (make-polys rationals)))
+    (r-zero? Qx (r-remainder Qx (ring-poly Qx f) (ring-poly Qx g)))))
+
+;; The gcd in Z[x] of two integer polynomials (coefficient lists, lowest
+;; degree first), with a positive leading coefficient: the gcd of the
+;; contents times the gcd of the primitive parts. Fibres whose prime
+;; divides the gcd of the leading coefficients are skipped; a fibre whose
+;; gcd has larger degree than another fibre's is unlucky and is discarded.
+;; The answer is accepted when the primes of the least degree seen exceed
+;; twice the Mignotte bound and the lifted gcd divides both inputs exactly,
+;; which proves it.
+(define (multimodular-poly-gcd a b)
+  (let ((a (mm-poly-input a "multimodular-poly-gcd")) (b (mm-poly-input b "multimodular-poly-gcd")))
+    (cond
+      ((and (null? a) (null? b)) '())
+      ((null? a) (let ((s (if (< (mm-lead b) 0) -1 1))) (map (lambda (x) (* s x)) b)))
+      ((null? b) (let ((s (if (< (mm-lead a) 0) -1 1))) (map (lambda (x) (* s x)) a)))
+      (else
+       (let* ((c (gcd (mm-content a) (mm-content b)))
+              (A (mm-primitive a)) (B (mm-primitive b))
+              (d (gcd (mm-lead A) (mm-lead B)))
+              (bound (mignotte-gcd-bound A B)))
+         (if (or (= (length A) 1) (= (length B) 1))
+             (list c)
+             (mm-gcd-fibres A B c d bound 0 #f '() '() 1)))))))
+
+;; One fibre of the gcd: the state is the least degree seen, the primes of
+;; that degree, their images h_p = (d mod p) * monic gcd mod p, and the
+;; product of those primes.
+(define (mm-gcd-fibres A B c d bound i best primes images m)
+  (let ((p (multimodular-prime i)))
+    (if (= (modulo d p) 0)
+        (mm-gcd-fibres A B c d bound (+ i 1) best primes images m)
+        (let* ((Fp (make-zmod p)) (Px (make-polys Fp))
+               (g (r-gcd Px (ring-poly Px A) (ring-poly Px B)))
+               (e (ring-poly-degree g))
+               (h (map (lambda (x) (modulo (* d x) p)) (ring-poly-coefficients g))))
+          (cond
+            ((= e 0) (list c))
+            ((or (not best) (< e best)) (mm-gcd-accept A B c d bound (+ i 1) e (list p) (list h) p))
+            ((> e best) (mm-gcd-fibres A B c d bound (+ i 1) best primes images m))
+            (else (mm-gcd-accept A B c d bound (+ i 1) best (cons p primes) (cons h images) (* m p))))))))
+
+;; Lift when the primes of the current least degree exceed 2B; accept the
+;; lift only when it divides both inputs.
+(define (mm-gcd-accept A B c d bound i best primes images m)
+  (if (> m (* 2 bound))
+      (let* ((k (length (car images)))
+             (lifted (let coeff ((j 0) (acc '()))
+                       (if (= j k) (reverse acc)
+                           (coeff (+ j 1)
+                                  (cons (symmetric-residue
+                                         (chinese-remainder (map (lambda (h) (list-ref h j)) images) primes)
+                                         m)
+                                        acc)))))
+             (G (mm-primitive (mm-trim lifted))))
+        (if (and (pair? G) (mm-divides? G A) (mm-divides? G B))
+            (map (lambda (x) (* c x)) G)
+            (mm-gcd-fibres A B c d bound i best primes images m)))
+      (mm-gcd-fibres A B c d bound i best primes images m)))
