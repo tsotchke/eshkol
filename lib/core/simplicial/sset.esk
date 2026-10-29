@@ -1,0 +1,444 @@
+;;; core.simplicial.sset -- simplicial sets by their nondegenerate simplices,
+;;; simplicial operators, Delta-complexes, simplicial complexes, standard
+;;; simplices, horns, skeleta, products and joins.
+;;;
+;;; Usage: (require core.simplicial.sset)   or   (require core.simplicial)
+;;;
+;;; Sources: J. P. May, "Simplicial Objects in Algebraic Topology" (1967),
+;;; Sections 1-6 (simplicial sets, the Eilenberg-Zilber lemma, products);
+;;; P. G. Goerss, J. F. Jardine, "Simplicial Homotopy Theory" (1999), I.1-I.3;
+;;; A. Hatcher, "Algebraic Topology" (2002), 2.1 (Delta-complexes);
+;;; A. Joyal, "Quasi-categories and Kan complexes", JPAA 175 (2002) (joins);
+;;; F. Sergeraert, J. Rubio, "Constructive algebraic topology" (Kenzo's
+;;; representation of a simplex as a degeneracy operator on a nondegenerate
+;;; simplex).
+;;;
+;;; Representation (public and stable; core.homological builds on it):
+;;;
+;;;   simplex      #(simplex eta x)
+;;;       By the Eilenberg-Zilber lemma every n-simplex is uniquely eta^* x
+;;;       with x nondegenerate of dimension m and eta : [n] -> [m] a
+;;;       surjective monotone map, written as the list (eta(0) ... eta(n)).
+;;;       The simplex is nondegenerate exactly when eta is the identity.
+;;;       x is any value (a list, an integer, a vector); two simplices are
+;;;       the same simplex exactly when they are equal?.
+;;;   simplicial set  #(simplicial-set name nondegenerate face max-dim cache)
+;;;       `nondegenerate` is a procedure n -> the list of nondegenerate
+;;;       n-simplices (values x); its order fixes the basis order of chains.
+;;;       `face` is a procedure (n i x) -> the face d_i x of a nondegenerate
+;;;       n-simplex x, as a simplex of dimension n - 1 (a bare value is read
+;;;       as a nondegenerate simplex). Every other face, every degeneracy and
+;;;       every simplicial operator is computed from these by the simplicial
+;;;       identities. `max-dim` is the largest dimension with nondegenerate
+;;;       simplices, or #f when unbounded (classifying spaces).
+;;;
+;;; A simplicial operator theta : [k] -> [n] (a monotone map, as a list) acts
+;;; on an n-simplex by `simplex-operator`; faces d_i, degeneracies s_j, the
+;;; front and back faces of the Alexander-Whitney map and the faces used by
+;;; the cup-i products are all instances.
+
+(require stdlib)
+
+(provide simplex simplex? simplex-degree simplex-base simplex-base-degree simplex-surjection
+         simplex-nondegenerate? simplex-degenerate? simplex=?
+         make-simplicial-set simplicial-set? simplicial-set-name simplicial-set-max-dim
+         simplicial-set-nondegenerate simplicial-set-count simplicial-set-index
+         simplicial-set-nondegenerate-ref simplicial-set-face simplicial-set-degeneracy
+         simplicial-set-operator simplicial-set-restrict simplicial-set-faces
+         simplicial-set-front-face simplicial-set-back-face simplicial-set-vertices-of
+         simplicial-set-simplices simplicial-set-identity-violations simplicial-set-euler-characteristic
+         simplicial-set-from-all
+         make-delta-complex delta-complex-faces make-simplicial-complex simplicial-complex-simplices
+         delta-complex-from-tetrahedra lens-space real-projective-space
+         standard-simplex simplex-boundary horn simplicial-sphere discrete-simplicial-set point-simplicial-set
+         simplicial-skeleton simplicial-product simplicial-join simplicial-cone simplicial-suspension
+         monotone-surjections monotone-injections ordered-subsets)
+
+;; ---------------------------------------------------------------------------
+;; Private list helpers (prefix ss-)
+;; ---------------------------------------------------------------------------
+(define (ss-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ss-range-from a b) (let loop ((i (- b 1)) (acc '())) (if (< i a) acc (loop (- i 1) (cons i acc)))))
+(define (ss-last l) (if (null? (cdr l)) (car l) (ss-last (cdr l))))
+(define (ss-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (ss-all? pred (cdr xs))) (else #f)))
+(define (ss-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (ss-any? pred (cdr xs)))))
+(define (ss-remove-nth l i)
+  (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+(define (ss-take l k) (let loop ((l l) (k k) (acc '())) (if (= k 0) (reverse acc) (loop (cdr l) (- k 1) (cons (car l) acc)))))
+(define (ss-identity-list m) (ss-range (+ m 1)))
+(define (ss-dedup-sorted xs)                        ;; nondecreasing list -> its distinct values
+  (let loop ((l xs) (acc '()))
+    (cond ((null? l) (reverse acc))
+          ((and (pair? acc) (= (car acc) (car l))) (loop (cdr l) acc))
+          (else (loop (cdr l) (cons (car l) acc))))))
+(define (ss-vector-each f v) (let loop ((i 0)) (if (< i (vector-length v)) (begin (f (vector-ref v i)) (loop (+ i 1))))))
+(define (ss-position x xs) (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((= (car l) x) i) (else (loop (cdr l) (+ i 1))))))
+
+;; ordered (increasing) k-element sublists of items, lexicographic
+(define (ordered-subsets items k)
+  (cond ((= k 0) (list '()))
+        ((null? items) '())
+        (else (append (map (lambda (r) (cons (car items) r)) (ordered-subsets (cdr items) (- k 1)))
+                      (ordered-subsets (cdr items) k)))))
+;; all monotone surjections [n] -> [m] as lists, lexicographic
+(define (monotone-surjections n m)
+  ;; a surjection is determined by the set of positions j in 0..n-1 with
+  ;; eta(j) = eta(j+1); there are n - m of them
+  (map (lambda (J)
+         (let loop ((j 0) (v 0) (acc (list 0)))
+           (if (= j n) (reverse acc)
+               (let ((v2 (if (memv j J) v (+ v 1)))) (loop (+ j 1) v2 (cons v2 acc))))))
+       (ordered-subsets (ss-range n) (- n m))))
+;; all monotone injections [k] -> [n] as increasing lists
+(define (monotone-injections k n) (ordered-subsets (ss-range (+ n 1)) (+ k 1)))
+
+;; ---------------------------------------------------------------------------
+;; Simplices
+;; ---------------------------------------------------------------------------
+(define (simplex x m) (vector 'simplex (ss-identity-list m) x))
+(define (simplex? s) (and (vector? s) (= 3 (vector-length s)) (eq? (vector-ref s 0) 'simplex)))
+(define (simplex-surjection s) (vector-ref s 1))
+(define (simplex-base s) (vector-ref s 2))
+(define (simplex-degree s) (- (length (vector-ref s 1)) 1))
+(define (simplex-base-degree s) (ss-last (vector-ref s 1)))
+(define (simplex-nondegenerate? s) (= (simplex-degree s) (simplex-base-degree s)))
+(define (simplex-degenerate? s) (not (simplex-nondegenerate? s)))
+(define (simplex=? a b) (equal? a b))
+(define (ss-make eta x) (vector 'simplex eta x))
+
+;; ---------------------------------------------------------------------------
+;; Simplicial sets
+;; ---------------------------------------------------------------------------
+;; cache: vector (vector-of-nondegenerate-lists by degree, vector-of-index-tables)
+(define (make-simplicial-set name nondegenerate face . max-dim)
+  (vector 'simplicial-set name nondegenerate face (if (null? max-dim) #f (car max-dim))
+          (vector (make-hash-table) (make-hash-table))))
+(define (simplicial-set? X) (and (vector? X) (= 6 (vector-length X)) (eq? (vector-ref X 0) 'simplicial-set)))
+(define (simplicial-set-name X) (vector-ref X 1))
+(define (simplicial-set-max-dim X) (vector-ref X 4))
+(define (ss-check X who) (if (simplicial-set? X) X (error (string-append who ": expected a simplicial set") X)))
+
+(define (simplicial-set-nondegenerate X n)
+  (let ((tab (vector-ref (vector-ref X 5) 0)))
+    (or (hash-table-ref/default tab n #f)
+        (let* ((md (vector-ref X 4))
+               (xs (if (or (< n 0) (and md (> n md))) '() ((vector-ref X 2) n)))
+               (v (list->vector xs)) (index (make-hash-table)))
+          (let loop ((i 0)) (if (< i (vector-length v)) (begin (hash-table-set! index (vector-ref v i) i) (loop (+ i 1)))))
+          (hash-table-set! tab n v)
+          (hash-table-set! (vector-ref (vector-ref X 5) 1) n index)
+          v))))
+(define (simplicial-set-count X n) (vector-length (simplicial-set-nondegenerate X n)))
+(define (simplicial-set-nondegenerate-ref X n i) (vector-ref (simplicial-set-nondegenerate X n) i))
+;; index of a nondegenerate n-simplex value (or of a nondegenerate simplex) in the basis; #f otherwise
+(define (simplicial-set-index X n x)
+  (simplicial-set-nondegenerate X n)
+  (let ((v (if (simplex? x) (if (simplex-nondegenerate? x) (simplex-base x) #f) x)))
+    (if (and (simplex? x) (not v)) #f
+        (hash-table-ref/default (hash-table-ref/default (vector-ref (vector-ref X 5) 1) n #f) v #f))))
+
+;; d_i of a nondegenerate n-simplex value, normalized to a simplex
+(define (ss-face-nd X n i x)
+  (let ((f ((vector-ref X 3) n i x)))
+    (if (simplex? f)
+        (if (= (simplex-degree f) (- n 1)) f
+            (error "simplicial set: a face has the wrong dimension" (simplicial-set-name X) n i x f))
+        (simplex f (- n 1)))))
+
+;; the restriction of the nondegenerate m-simplex x to the vertices I
+;; (an increasing list, a subset of 0..m): delete the missing vertices from
+;; the largest down, each deletion a face of the current simplex
+(define (ss-restrict-nd X m x I)
+  (if (= (length I) (+ m 1)) (simplex x m)
+      (let* ((missing (let loop ((v m)) (if (memv v I) (loop (- v 1)) v)))
+             (f (ss-face-nd X m missing x))
+             (I2 (map (lambda (v) (if (> v missing) (- v 1) v)) I)))
+        (ss-operator X f I2))))
+
+;; theta^* s for a monotone theta : [k] -> [n] given as a list
+(define (ss-operator X s theta)
+  (let* ((etav (list->vector (simplex-surjection s)))
+         (mu (map (lambda (t) (vector-ref etav t)) theta))
+         (image (ss-dedup-sorted mu))
+         (m (simplex-base-degree s)))
+    (if (= (length image) (+ m 1))
+        (ss-make mu (simplex-base s))
+        (let* ((r (ss-restrict-nd X m (simplex-base s) image))
+               (nu (map (lambda (v) (ss-position v image)) mu))
+               (eta2 (list->vector (simplex-surjection r))))
+          (ss-make (map (lambda (t) (vector-ref eta2 t)) nu) (simplex-base r))))))
+
+(define (ss-as-simplex X n s) (if (simplex? s) s (simplex s n)))
+(define (simplicial-set-operator X s theta) (ss-operator (ss-check X "simplicial-set-operator") s theta))
+;; restriction to a vertex list (increasing): the face spanned by those vertices
+(define (simplicial-set-restrict X s vertices) (ss-operator X s vertices))
+(define (simplicial-set-face X i s)
+  (let ((n (simplex-degree s))) (ss-operator X s (ss-remove-nth (ss-range (+ n 1)) i))))
+(define (simplicial-set-degeneracy X j s)
+  (let ((n (simplex-degree s)))
+    (ss-operator X s (map (lambda (t) (if (<= t j) t (- t 1))) (ss-range (+ n 2))))))
+(define (simplicial-set-faces X s) (map (lambda (i) (simplicial-set-face X i s)) (ss-range (+ (simplex-degree s) 1))))
+;; front p-face [0..p] and back q-face [n-q..n]
+(define (simplicial-set-front-face X s p) (ss-operator X s (ss-range (+ p 1))))
+(define (simplicial-set-back-face X s q)
+  (let ((n (simplex-degree s))) (ss-operator X s (ss-range-from (- n q) (+ n 1)))))
+;; the vertices of a simplex as 0-simplices
+(define (simplicial-set-vertices-of X s)
+  (map (lambda (v) (ss-operator X s (list v))) (ss-range (+ (simplex-degree s) 1))))
+
+;; every n-simplex: theta^* x for x nondegenerate of dimension m <= n and
+;; theta a surjection [n] -> [m]; ordered by m, then x, then theta
+(define (simplicial-set-simplices X n)
+  (let loop ((m 0) (acc '()))
+    (if (> m n) (reverse acc)
+        (loop (+ m 1)
+              (let ((xs (vector->list (simplicial-set-nondegenerate X m))) (ths (monotone-surjections n m)))
+                (let lx ((xs xs) (acc acc))
+                  (if (null? xs) acc
+                      (lx (cdr xs) (let lt ((ts ths) (acc acc)) (if (null? ts) acc (lt (cdr ts) (cons (ss-make (car ts) (car xs)) acc))))))))))))
+
+;; the simplicial identities d_i d_j = d_{j-1} d_i (i < j) on every
+;; nondegenerate simplex of dimension 2..nmax, as explicit violations
+(define (simplicial-set-identity-violations X nmax)
+  (let ((out '()))
+    (let ln ((n 2))
+      (if (<= n nmax)
+          (begin
+            (ss-vector-each
+             (lambda (x)
+               (let ((s (simplex x n)))
+                 (let li ((i 0))
+                   (if (< i n)
+                       (begin
+                         (let lj ((j (+ i 1)))
+                           (if (<= j n)
+                               (begin
+                                 (if (not (equal? (simplicial-set-face X i (simplicial-set-face X j s))
+                                                  (simplicial-set-face X (- j 1) (simplicial-set-face X i s))))
+                                     (set! out (cons (list n i j x) out)))
+                                 (lj (+ j 1)))))
+                         (li (+ i 1)))))))
+             (simplicial-set-nondegenerate X n))
+            (ln (+ n 1)))))
+    (reverse out)))
+
+(define (simplicial-set-euler-characteristic X nmax)
+  (let loop ((n 0) (s 0)) (if (> n nmax) s (loop (+ n 1) (+ s (* (if (even? n) 1 -1) (simplicial-set-count X n)))))))
+
+;; A simplicial set from all of its simplices: all n -> list of n-simplex
+;; values, face (n i v) and degeneracy (n j v) on values. A value v is
+;; degenerate exactly when v = s_j d_j v for some j (if v = s_j w then
+;; d_j v = d_j s_j w = w). The normal form is computed by peeling such
+;; degeneracies.
+(define (ss-degenerate-at face degeneracy n v)
+  (let loop ((j 0))
+    (cond ((>= j n) #f)
+          ((equal? v (degeneracy (- n 1) j (face n j v))) j)
+          (else (loop (+ j 1))))))
+(define (ss-normal-form face degeneracy n v)
+  (let ((j (ss-degenerate-at face degeneracy n v)))
+    (if (not j) (simplex v n)
+        ;; v = s_j r with r the normal form of d_j v: eta o sigma_j
+        (let* ((r (ss-normal-form face degeneracy (- n 1) (face n j v)))
+               (eta (list->vector (simplex-surjection r))))
+          (ss-make (map (lambda (t) (vector-ref eta (if (<= t j) t (- t 1)))) (ss-range (+ n 1)))
+                   (simplex-base r))))))
+(define (simplicial-set-from-all name all face degeneracy . max-dim)
+  (make-simplicial-set name
+                       (lambda (n) (filter (lambda (v) (not (ss-degenerate-at face degeneracy n v))) (all n)))
+                       (lambda (n i x) (ss-normal-form face degeneracy (- n 1) (face n i x)))
+                       (if (null? max-dim) #f (car max-dim))))
+
+;; ---------------------------------------------------------------------------
+;; Delta-complexes and ordered simplicial complexes
+;; ---------------------------------------------------------------------------
+;; (make-delta-complex vertex-count faces-1 faces-2 ...): faces-n is a list or
+;; vector whose entry k is the list (d_0 ... d_n) of indices of the faces of
+;; the k-th n-simplex. Simplices are integers; degeneracies are free.
+(define (make-delta-complex vertex-count . face-tables)
+  (let* ((tables (list->vector (map (lambda (t) (list->vector (map (lambda (f) (list->vector f)) (if (vector? t) (vector->list t) t))))
+                                    face-tables)))
+         (top (vector-length tables)))
+    (make-simplicial-set
+     "Delta-complex"
+     (lambda (n) (cond ((= n 0) (ss-range vertex-count))
+                       ((<= n top) (ss-range (vector-length (vector-ref tables (- n 1)))))
+                       (else '())))
+     (lambda (n i x) (simplex (vector-ref (vector-ref (vector-ref tables (- n 1)) x) i) (- n 1)))
+     top)))
+(define (delta-complex-faces X n x) (map (lambda (i) (simplex-base (simplicial-set-face X i (simplex x n)))) (ss-range (+ n 1))))
+
+;; A 3-dimensional Delta-complex from its tetrahedra, each given as
+;; (v0 v1 v2 v3 e01 e02 e03 e12 e13 e23) with edge indices into edge-ends, a
+;; list of (i . j) (edge from vertex i to vertex j). Triangles are the
+;; distinct ordered edge triples (e_ij e_ik e_jk) of the tetrahedra, in order
+;; of first appearance; d_0 = e_jk, d_1 = e_ik, d_2 = e_ij on a triangle and
+;; d_k of a tetrahedron is the triangle opposite vertex k.
+(define (ss-tet-triangles t)
+  (let ((e (lambda (k) (list-ref t (+ 4 k)))))
+    (list (list (e 3) (e 4) (e 5)) (list (e 1) (e 2) (e 5)) (list (e 0) (e 2) (e 4)) (list (e 0) (e 1) (e 3)))))
+(define (delta-complex-from-tetrahedra vertex-count edge-ends tets)
+  (let* ((ends (if (vector? edge-ends) (vector->list edge-ends) edge-ends))
+         (tris (let loop ((ts tets) (acc '()))
+                 (if (null? ts) (reverse acc)
+                     (loop (cdr ts) (fold-left (lambda (acc f) (if (member f acc) acc (cons f acc))) acc (reverse (ss-tet-triangles (car ts))))))))
+         (index (make-hash-table)))
+    (let loop ((l tris) (i 0)) (if (not (null? l)) (begin (hash-table-set! index (car l) i) (loop (cdr l) (+ i 1)))))
+    (make-delta-complex vertex-count
+                        (map (lambda (ij) (list (cdr ij) (car ij))) ends)
+                        (map (lambda (f) (list (caddr f) (cadr f) (car f))) tris)
+                        (map (lambda (t) (map (lambda (f) (hash-table-ref/default index f -1)) (ss-tet-triangles t))) tets))))
+;; L(p,q): the 3-ball whose upper hemisphere, cut into p triangles around the
+;; north pole, is glued to the lower one after a rotation by q steps, coned
+;; from an interior point (Hatcher, Example 2.43): 3 vertices (interior c,
+;; the poles P, the equator E), 2p + 3 edges, 4p triangles, 2p tetrahedra.
+(define (lens-space p q)
+  (let ((b (lambda (i) (+ 1 (modulo i p)))) (ce (lambda (i) (+ 3 p (modulo i p)))))
+    (delta-complex-from-tetrahedra
+     3
+     (append (list (cons 2 2)) (map (lambda (i) (cons 1 2)) (ss-range p)) (list (cons 0 1) (cons 0 1)) (map (lambda (i) (cons 0 2)) (ss-range p)))
+     (append (map (lambda (i) (list 0 1 2 2 (+ 1 p) (ce i) (ce (+ i 1)) (b i) (b (+ i 1)) 0)) (ss-range p))
+             (map (lambda (i) (list 0 1 2 2 (+ 2 p) (ce i) (ce (+ i 1)) (b (- i q)) (b (+ (- i q) 1)) 0)) (ss-range p))))))
+;; RP^n with one nondegenerate simplex in each dimension: the n-skeleton of
+;; the normalized nerve of Z/2 (the n-simplex (1 ... 1); its inner faces
+;; multiply 1 + 1 = 0 and are degenerate)
+(define (real-projective-space n)
+  (make-simplicial-set "RP^n"
+                       (lambda (d) (if (<= d n) (list (ss-ones d)) '()))
+                       (lambda (d i x)
+                         (if (or (= i 0) (= i d)) (simplex (ss-ones (- d 1)) (- d 1))
+                             ;; d_i (1..1) = s_{i-1} (1..1) of dimension d - 2
+                             (ss-make (map (lambda (t) (if (< t i) t (- t 1))) (ss-range d)) (ss-ones (- d 2)))))
+                       n))
+(define (ss-ones d) (map (lambda (t) 1) (ss-range d)))
+
+;; all faces (as increasing vertex lists) of the given facets, by dimension
+(define (ss-sort-ints xs) (sort xs (lambda (a b) (< a b))))
+(define (ss-lex<? a b)
+  (cond ((null? a) (not (null? b))) ((null? b) #f)
+        ((< (car a) (car b)) #t) ((> (car a) (car b)) #f)
+        (else (ss-lex<? (cdr a) (cdr b)))))
+(define (simplicial-complex-simplices facets n)
+  (let ((seen (make-hash-table)) (out '()))
+    (for-each (lambda (F)
+                (for-each (lambda (s) (if (not (hash-table-ref/default seen s #f))
+                                          (begin (hash-table-set! seen s #t) (set! out (cons s out)))))
+                          (ordered-subsets (ss-sort-ints F) (+ n 1))))
+              facets)
+    (sort out ss-lex<?)))
+;; an ordered simplicial complex from its facets (lists of vertex integers);
+;; n-simplices are increasing vertex lists, d_i deletes the i-th vertex
+(define (make-simplicial-complex facets)
+  (let ((top (if (null? facets) -1 (- (fold-left max 0 (map length facets)) 1))))
+    (make-simplicial-set "simplicial complex"
+                         (lambda (n) (simplicial-complex-simplices facets n))
+                         (lambda (n i x) (simplex (ss-remove-nth x i) (- n 1)))
+                         top)))
+(define (standard-simplex n) (make-simplicial-complex (list (ss-range (+ n 1)))))
+(define (simplex-boundary n) (make-simplicial-complex (map (lambda (i) (ss-remove-nth (ss-range (+ n 1)) i)) (ss-range (+ n 1)))))
+;; the horn Lambda^n_k: every face of Delta^n except the interior and the k-th face
+(define (horn n k)
+  (make-simplicial-complex (map (lambda (i) (ss-remove-nth (ss-range (+ n 1)) i))
+                                (filter (lambda (i) (not (= i k))) (ss-range (+ n 1))))))
+(define (discrete-simplicial-set n)
+  (make-simplicial-set "discrete" (lambda (d) (if (= d 0) (ss-range n) '())) (lambda (d i x) (error "no faces")) 0))
+(define (point-simplicial-set) (discrete-simplicial-set 1))
+;; S^n = Delta^n / boundary: one vertex and one nondegenerate n-simplex (n >= 1)
+(define (simplicial-sphere n)
+  (make-simplicial-set "sphere"
+                       (lambda (d) (cond ((= d 0) (list 'v)) ((= d n) (list 'top)) (else '())))
+                       (lambda (d i x) (ss-make (map (lambda (t) 0) (ss-range d)) 'v))
+                       n))
+
+;; the n-skeleton: nondegenerate simplices of dimension at most n
+(define (simplicial-skeleton X n)
+  (make-simplicial-set (simplicial-set-name X)
+                       (lambda (d) (if (> d n) '() (vector->list (simplicial-set-nondegenerate X d))))
+                       (lambda (d i x) (simplicial-set-face X i (simplex x d)))
+                       (let ((md (simplicial-set-max-dim X))) (if md (min md n) n))))
+
+;; ---------------------------------------------------------------------------
+;; Products (May, Sec. 6; Eilenberg-Zilber)
+;; ---------------------------------------------------------------------------
+;; A nondegenerate n-simplex of X x Y is a pair (a b) of n-simplices with no
+;; common degeneracy direction j (eta_a(j) = eta_a(j+1) and the same for b).
+(define (ss-collapse-positions s)
+  (let loop ((e (simplex-surjection s)) (j 0) (acc '()))
+    (if (null? (cdr e)) (reverse acc)
+        (loop (cdr e) (+ j 1) (if (= (car e) (cadr e)) (cons j acc) acc)))))
+(define (ss-pair-normal X Y a b)
+  (let* ((n (simplex-degree a))
+         (common (filter (lambda (j) (memv j (ss-collapse-positions b))) (ss-collapse-positions a))))
+    (if (null? common) (simplex (list a b) n)
+        (let* ((keep (filter (lambda (t) (not (memv (- t 1) common))) (ss-range (+ n 1))))
+               (eta (let loop ((t 0) (v 0) (acc '()))
+                      (if (> t n) (reverse acc)
+                          (let ((v2 (if (and (> t 0) (memv (- t 1) common)) v (if (= t 0) 0 (+ v 1)))))
+                            (loop (+ t 1) v2 (cons v2 acc))))))
+               (a2 (ss-operator X a keep)) (b2 (ss-operator Y b keep)))
+          (ss-make eta (list a2 b2))))))
+(define (ss-all-of X n p)                     ;; n-simplices eta^* x with x nondegenerate of dimension p
+  (let ((xs (vector->list (simplicial-set-nondegenerate X p))) (etas (monotone-surjections n p)))
+    (fold-left (lambda (acc x) (append acc (map (lambda (e) (ss-make e x)) etas))) '() xs)))
+(define (ss-no-common-collapse? a b)
+  (let ((cb (ss-collapse-positions b))) (ss-all? (lambda (j) (not (memv j cb))) (ss-collapse-positions a))))
+(define (ss-product-nondegenerate X Y n)
+  (let loop-p ((p 0) (acc '()))
+    (if (> p n) (reverse acc)
+        (loop-p (+ p 1)
+                (let loop-q ((q (- n p)) (acc acc))
+                  (if (> q n) acc
+                      (let ((as (ss-all-of X n p)) (bs (ss-all-of Y n q)))
+                        (loop-q (+ q 1)
+                                (fold-left (lambda (acc a)
+                                             (fold-left (lambda (acc b) (if (ss-no-common-collapse? a b) (cons (list a b) acc) acc))
+                                                        acc bs))
+                                           acc as)))))))))
+(define (simplicial-product X Y)
+  (let ((md (and (simplicial-set-max-dim X) (simplicial-set-max-dim Y) (+ (simplicial-set-max-dim X) (simplicial-set-max-dim Y)))))
+    (make-simplicial-set
+     (string-append (simplicial-set-name X) " x " (simplicial-set-name Y))
+     (lambda (n) (ss-product-nondegenerate X Y n))
+     (lambda (n i x) (ss-pair-normal X Y (simplicial-set-face X i (car x)) (simplicial-set-face Y i (cadr x))))
+     md)))
+
+;; ---------------------------------------------------------------------------
+;; Joins (Joyal): (X * Y)_n = X_n + Y_n + sum_{i + j = n - 1} X_i x Y_j
+;; ---------------------------------------------------------------------------
+;; values: (left x) (right y) (pair x i y j) with x, y nondegenerate.
+(define (ss-join-pair-simplex a b)            ;; a in X_i, b in Y_j simplices -> simplex of the join
+  (let* ((i (simplex-degree a)) (ea (simplex-surjection a)) (eb (simplex-surjection b))
+         (ma (simplex-base-degree a)))
+    (ss-make (append ea (map (lambda (v) (+ v ma 1)) eb))
+             (list 'pair (simplex-base a) ma (simplex-base b) (simplex-base-degree b)))))
+(define (simplicial-join X Y)
+  (let ((md (and (simplicial-set-max-dim X) (simplicial-set-max-dim Y) (+ (simplicial-set-max-dim X) (simplicial-set-max-dim Y) 1))))
+    (make-simplicial-set
+     (string-append (simplicial-set-name X) " * " (simplicial-set-name Y))
+     (lambda (n)
+       (append (map (lambda (x) (list 'left x)) (vector->list (simplicial-set-nondegenerate X n)))
+               (map (lambda (y) (list 'right y)) (vector->list (simplicial-set-nondegenerate Y n)))
+               (let loop ((i 0) (acc '()))
+                 (if (> i (- n 1)) (reverse acc)
+                     (loop (+ i 1)
+                           (let ((j (- n 1 i)))
+                             (let lx ((xs (vector->list (simplicial-set-nondegenerate X i))) (acc acc))
+                               (if (null? xs) acc
+                                   (lx (cdr xs)
+                                       (let ly ((ys (vector->list (simplicial-set-nondegenerate Y j))) (acc acc))
+                                         (if (null? ys) acc (ly (cdr ys) (cons (list 'pair (car xs) i (car ys) j) acc)))))))))))))
+     (lambda (n k v)
+       (cond ((eq? (car v) 'left)
+              (let ((f (simplicial-set-face X k (simplex (cadr v) n)))) (ss-make (simplex-surjection f) (list 'left (simplex-base f)))))
+             ((eq? (car v) 'right)
+              (let ((f (simplicial-set-face Y k (simplex (cadr v) n)))) (ss-make (simplex-surjection f) (list 'right (simplex-base f)))))
+             (else
+              (let ((x (list-ref v 1)) (i (list-ref v 2)) (y (list-ref v 3)) (j (list-ref v 4)))
+                (cond ((and (<= k i) (= i 0)) (simplex (list 'right y) j))
+                      ((<= k i) (ss-join-pair-simplex (simplicial-set-face X k (simplex x i)) (simplex y j)))
+                      ((= j 0) (simplex (list 'left x) i))
+                      (else (ss-join-pair-simplex (simplex x i) (simplicial-set-face Y (- k i 1) (simplex y j)))))))))
+     md)))
+;; the cone X * Delta^0 (cone point last) and the unreduced suspension X * S^0
+(define (simplicial-cone X) (simplicial-join X (point-simplicial-set)))
+(define (simplicial-suspension X) (simplicial-join X (discrete-simplicial-set 2)))

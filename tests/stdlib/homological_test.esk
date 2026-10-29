@@ -1,0 +1,339 @@
+;; core.homological: exhaustive small cases with independent cross-checks
+;; (known homology of spheres, real projective spaces, lens spaces and
+;; classifying spaces; cohomology rings of K(Z/p,1); Steenrod squares
+;; against the binomial formula and the Adem relations; universal
+;; coefficients and Kunneth against direct computation; Ext and Tor against
+;; the gcd formulas; spectral sequences page by page and in the limit).
+(require stdlib)
+(require core.ring)
+(require core.simplicial)
+(require core.homological)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? f) (guard (e (else #t)) (f) #f))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (binomial n k) (if (or (< k 0) (> k n)) 0 (let loop ((i 0) (acc 1)) (if (= i k) acc (loop (+ i 1) (quotient (* acc (- n i)) (+ i 1)))))))
+(define F2 (make-zmod 2)) (define F3 (make-zmod 3)) (define F5 (make-zmod 5))
+(define (row k b t) (list k b t))
+(define (betti-list H) (map cadr H))
+
+;; ---------------------------------------------------------------------------
+;; Coefficients and linear algebra
+;; ---------------------------------------------------------------------------
+(check "coefficient kinds: Z, Q, F_p; Z/4 and Q[x] are refused"
+       (and (eq? 'Z (coefficient-kind integers)) (eq? 'Q (coefficient-kind rationals)) (eq? 'field (coefficient-kind F3))
+            (raises? (lambda () (coefficient-kind (make-zmod 4)))) (raises? (lambda () (coefficient-kind (make-polys rationals))))))
+(define A1 (vector (vector 2 4 6) (vector 1 3 5) (vector 3 7 11)))
+(check "rank of [[2 4 6] [1 3 5] [3 7 11]]: 2 over Z, Q, F_3 and F_5, 1 over F_2"
+       (and (= 2 (coefficient-rank integers A1)) (= 2 (coefficient-rank rationals A1)) (= 2 (coefficient-rank F3 A1))
+            (= 2 (coefficient-rank F5 A1)) (= 1 (coefficient-rank F2 A1))))
+(check "field kernels are killed by the matrix and have dimension n - rank"
+       (all? (lambda (R) (let ((K (coefficient-kernel R A1 3)))
+                           (and (= (length K) (- 3 (coefficient-rank R A1)))
+                                (all? (lambda (v) (coefficient-zero-vector? R (coefficient-matrix-vector R A1 v))) K))))
+             (list F2 F3 F5 rationals integers)))
+(check "solve over F_5: B y = v recovered; a vector outside the span is refused"
+       (let* ((B (vector (vector 1 2) (vector 3 4) (vector 0 1))) (y (vector 2 3)) (v (coefficient-matrix-vector F5 B y)))
+         (and (equal? (coefficient-solve F5 B 2 v) y) (not (coefficient-solve F5 B 2 (vector 1 0 3))))))
+
+;; ---------------------------------------------------------------------------
+;; Homology of standard spaces
+;; ---------------------------------------------------------------------------
+(define (sphere-homology n) (map (lambda (k) (row k (if (or (= k 0) (= k n)) 1 0) '())) (range (+ n 1))))
+(check "H_*(S^n; Z) for the minimal model and the boundary of Delta^(n+1), n = 1..4"
+       (all? (lambda (n) (and (equal? (simplicial-homology (simplicial-sphere n) n) (sphere-homology n))
+                              (equal? (simplicial-homology (simplex-boundary (+ n 1)) n) (sphere-homology n))))
+             (list 1 2 3 4)))
+(define (rp-homology n) (map (lambda (k) (row k (cond ((= k 0) 1) ((and (= k n) (odd? n)) 1) (else 0))
+                                               (if (and (odd? k) (< k n)) (list 2) '())))
+                             (range (+ n 1))))
+(check "H_*(RP^n; Z) = Z, Z/2, 0, Z/2, ... with top Z for odd n, n = 1..6"
+       (all? (lambda (n) (equal? (simplicial-homology (real-projective-space n) n) (rp-homology n))) (list 1 2 3 4 5 6)))
+(define (list-head-5 l) (list (list-ref l 0) (list-ref l 1) (list-ref l 2) (list-ref l 3) (list-ref l 4)))
+(check "RP^n is the n-skeleton of BZ/2: same homology through n - 1"
+       (equal? (simplicial-homology (simplicial-skeleton (classifying-space (cyclic-group 2)) 5) 4)
+               (list-head-5 (simplicial-homology (real-projective-space 6) 5))))
+(define lens-params (list (list 2 1) (list 3 1) (list 3 2) (list 4 1) (list 5 2) (list 7 3)))
+(check "H_*(L(p,q); Z) = Z, Z/p, 0, Z for six lens spaces, and chi = 0"
+       (all? (lambda (pq) (let ((L (lens-space (car pq) (cadr pq))))
+                            (and (equal? (simplicial-homology L 3) (list (row 0 1 '()) (row 1 0 (list (car pq))) (row 2 0 '()) (row 3 1 '())))
+                                 (= 0 (simplicial-set-euler-characteristic L 3))
+                                 (null? (simplicial-set-identity-violations L 3)))))
+             lens-params))
+(check "L(2,1) and RP^3 have the same homology; L(p,q) has H^*(Z/p coefficients) of dimension (1 1 1 1)"
+       (and (equal? (simplicial-homology (lens-space 2 1) 3) (simplicial-homology (real-projective-space 3) 3))
+            (equal? (betti-list (simplicial-cohomology (lens-space 5 2) 3 F5)) (list 1 1 1 1))))
+(check "H_*(T^2), H_*(S^2 x S^1), H_*(RP^2 x RP^2) by Eilenberg-Zilber products; Kunneth's Tor term in H_3(RP^2 x RP^2) = Z/2"
+       (and (equal? (simplicial-homology (simplicial-product (simplicial-sphere 1) (simplicial-sphere 1)) 2) (list (row 0 1 '()) (row 1 2 '()) (row 2 1 '())))
+            (equal? (simplicial-homology (simplicial-product (simplicial-sphere 2) (simplicial-sphere 1)) 3) (list (row 0 1 '()) (row 1 1 '()) (row 2 1 '()) (row 3 1 '())))
+            (equal? (simplicial-homology (simplicial-product (real-projective-space 2) (real-projective-space 2)) 4)
+                    (list (row 0 1 '()) (row 1 0 (list 2 2)) (row 2 0 (list 2)) (row 3 0 (list 2)) (row 4 0 '())))))
+(check "suspension shifts reduced homology; the cone is acyclic"
+       (and (equal? (simplicial-homology (simplicial-suspension (real-projective-space 2)) 3) (list (row 0 1 '()) (row 1 0 '()) (row 2 0 (list 2)) (row 3 0 '())))
+            (equal? (simplicial-homology (simplicial-cone (lens-space 3 1)) 4) (list (row 0 1 '()) (row 1 0 '()) (row 2 0 '()) (row 3 0 '()) (row 4 0 '())))))
+(check "McCord: the barycentric subdivision of the boundary of Delta^3 and the order complex of its face poset are 2-spheres"
+       (equal? (simplicial-homology (barycentric-subdivision (simplex-boundary 3) 2) 2) (sphere-homology 2)))
+(check "the order complex of the pseudocircle is a circle and of the 16-point torus model a torus"
+       (let* ((S (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3)))))
+         (and (equal? (simplicial-homology (poset-nerve S) 2) (list (row 0 1 '()) (row 1 1 '()) (row 2 0 '())))
+              (equal? (simplicial-homology (poset-nerve (finite-space-product S S)) 3) (list (row 0 1 '()) (row 1 2 '()) (row 2 1 '()) (row 3 0 '()))))))
+(check "Euler characteristic: alternating sum of ranks = alternating sum of simplex counts"
+       (all? (lambda (X) (let ((H (simplicial-homology X 3)))
+                           (= (simplicial-set-euler-characteristic X 3) (fold-left + 0 (map (lambda (r) (* (if (even? (car r)) 1 -1) (cadr r))) H)))))
+             (list (lens-space 3 1) (simplicial-product (simplicial-sphere 1) (simplicial-sphere 2)) (simplex-boundary 3) (real-projective-space 3))))
+
+;; ---------------------------------------------------------------------------
+;; Group homology and cohomology
+;; ---------------------------------------------------------------------------
+(define S3 (symmetric-group 3)) (define D4 (dihedral-group 4)) (define Q8 (quaternion-group))
+(define Z2Z2 (group-direct-product (cyclic-group 2) (cyclic-group 2)))
+(check "H_*(BS_3; Z) = Z, Z/2, 0, Z/6"
+       (equal? (group-homology S3 3) (list (row 0 1 '()) (row 1 0 (list 2)) (row 2 0 '()) (row 3 0 (list 6)))))
+(check "H_*(BZ/n; Z) = Z, Z/n, 0, Z/n, 0 (the lens-space pattern of K(Z/n,1)) for n = 2..5"
+       (all? (lambda (n) (equal? (group-homology (cyclic-group n) 4) (list (row 0 1 '()) (row 1 0 (list n)) (row 2 0 '()) (row 3 0 (list n)) (row 4 0 '()))))
+             (list 2 3 4 5)))
+(check "H_1 is the abelianization and H_2 the Schur multiplier: D_4 (Z/2)^2, Z/2; Q_8 (Z/2)^2, 0"
+       (let ((HD (group-homology D4 2)) (HQ (group-homology Q8 2)))
+         (and (equal? (caddr (list-ref HD 1)) (list 2 2)) (equal? (caddr (list-ref HD 2)) (list 2))
+              (equal? (caddr (list-ref HQ 1)) (list 2 2)) (equal? (caddr (list-ref HQ 2)) '()))))
+;; the unnormalized complex: every simplex, faces never dropped
+(define (unnormalized-homology X nmax)
+  (let* ((basis (lambda (n) (simplicial-set-simplices X n)))
+         (dmat (lambda (n)
+                 (let* ((src (basis n)) (dst (basis (- n 1))) (index (make-hash-table)) (M (integer-matrix (length dst) (length src))))
+                   (let loop ((l dst) (i 0)) (if (not (null? l)) (begin (hash-table-set! index (car l) i) (loop (cdr l) (+ i 1)))))
+                   (let loop ((l src) (c 0))
+                     (if (not (null? l))
+                         (begin (let faces ((i 0) (sg 1))
+                                  (if (<= i n)
+                                      (let ((r (hash-table-ref/default index (simplicial-set-face X i (car l)) -1)))
+                                        (integer-matrix-set! M r c (+ (integer-matrix-ref M r c) sg)) (faces (+ i 1) (- 0 sg)))))
+                                (loop (cdr l) (+ c 1)))))
+                   M))))
+    (homology (make-chain-complex integers (map (lambda (n) (length (basis n))) (range (+ nmax 1))) (map dmat (cdr (range (+ nmax 2))))))))
+(check "normalization theorem: normalized and unnormalized chains of BZ/2 and BZ/3 have the same H_0..H_3"
+       (and (equal? (unnormalized-homology (classifying-space (cyclic-group 2)) 3) (group-homology (cyclic-group 2) 3))
+            (equal? (unnormalized-homology (classifying-space (cyclic-group 3)) 3) (group-homology (cyclic-group 3) 3))))
+(define sign-module (make-group-module 1 (lambda (g) (vector (vector (if (= g 0) 1 -1))))))
+(check "twisted coefficients: H^n(Z/2; Z^-) = 0, Z/2, 0, Z/2, 0 and H^n(Z/2; Z) = Z, 0, Z/2, 0, Z/2"
+       (and (equal? (group-cohomology (cyclic-group 2) 4 integers sign-module)
+                    (list (row 0 0 '()) (row 1 0 (list 2)) (row 2 0 '()) (row 3 0 (list 2)) (row 4 0 '())))
+            (equal? (group-cohomology (cyclic-group 2) 4 integers)
+                    (list (row 0 1 '()) (row 1 0 '()) (row 2 0 (list 2)) (row 3 0 '()) (row 4 0 (list 2))))))
+(check "twisted coefficients: Z/3 acting on Z^2 by rotation of order 3: H^0 = 0, H^1 = Z/3"
+       (let* ((rot (vector (vector 0 -1) (vector 1 -1)))
+              (M (make-group-module 2 (lambda (g) (cond ((= g 0) (integer-identity-matrix 2)) ((= g 1) rot) (else (integer-matrix-mul rot rot)))))))
+         (let ((H (group-cohomology (cyclic-group 3) 2 integers M)))
+           (and (= 0 (cadr (list-ref H 0))) (equal? (caddr (list-ref H 1)) (list 3))))))
+
+;; ---------------------------------------------------------------------------
+;; Universal coefficients and Kunneth, against direct computation
+;; ---------------------------------------------------------------------------
+(define uct-spaces (list (real-projective-space 4) (lens-space 4 1) (classifying-space S3) (classifying-space Z2Z2)
+                         (simplicial-product (real-projective-space 2) (real-projective-space 2))))
+(check "universal coefficients over Z: H^n = Z^{b_n} (+) T_{n-1}"
+       (all? (lambda (X) (equal? (simplicial-cohomology X 3) (universal-coefficients-cohomology (simplicial-homology X 3)))) uct-spaces))
+(check "universal coefficients over F_2 and F_3: dim H^n(X; F_p) from the integral homology"
+       (all? (lambda (X) (and (equal? (simplicial-cohomology X 3 F2) (universal-coefficients-mod-p (simplicial-homology X 3) 2))
+                              (equal? (simplicial-cohomology X 3 F3) (universal-coefficients-mod-p (simplicial-homology X 3) 3))))
+             uct-spaces))
+(check "Kunneth over F_2: H^*(RP^2 x RP^3; F_2) is the tensor product of (1 1 1) and (1 1 1 1)"
+       (equal? (betti-list (simplicial-cohomology (simplicial-product (real-projective-space 2) (real-projective-space 3)) 5 F2)) (list 1 2 3 3 2 1)))
+(check "the tensor product of chain complexes realizes Kunneth: C(RP^2) (x) C(S^1) has the homology of RP^2 x S^1"
+       (equal? (homology (complex-tensor (simplicial-chain-complex (real-projective-space 2) 2) (simplicial-chain-complex (simplicial-sphere 1) 1)))
+               (simplicial-homology (simplicial-product (real-projective-space 2) (simplicial-sphere 1)) 3)))
+(check "duality: the cochain complex is the transpose and d o d = 0 on both"
+       (let* ((C (simplicial-chain-complex (lens-space 3 1) 3)) (D (complex-dual C)))
+         (and (null? (complex-d-squared-violations C)) (null? (complex-d-squared-violations D))
+              (equal? (homology (complex-dual D)) (homology C)))))
+
+;; ---------------------------------------------------------------------------
+;; Ext and Tor over Z, against the closed forms
+;; ---------------------------------------------------------------------------
+(define (cyc n) (if (= n 0) (abelian-group 1 '()) (abelian-group 0 (if (= n 1) '() (list n)))))
+(define (gcd-group a b) (let ((g (gcd a b))) (if (= g 1) (list 0 '()) (list 0 (list g)))))
+(check "Tor(Z/m, Z/n) = Ext(Z/m, Z/n) = Hom(Z/m, Z/n) = Z/m (x) Z/n = Z/gcd(m, n) for 1 <= m, n <= 6"
+       (all? (lambda (m) (all? (lambda (n) (and (equal? (abelian-tor (cyc m) (cyc n)) (gcd-group m n))
+                                                 (equal? (abelian-ext (cyc m) (cyc n)) (gcd-group m n))
+                                                 (equal? (abelian-hom (cyc m) (cyc n)) (gcd-group m n))
+                                                 (equal? (abelian-tensor (cyc m) (cyc n)) (gcd-group m n))))
+                               (cdr (range 7))))
+             (cdr (range 7))))
+(check "free modules: Tor(Z, B) = Ext(Z, B) = 0, Hom(Z, B) = Z (x) B = B; Ext(Z/n, Z) = Z/n, Hom(Z/n, Z) = 0"
+       (and (equal? (abelian-tor (cyc 0) (cyc 6)) (list 0 '())) (equal? (abelian-ext (cyc 0) (cyc 6)) (list 0 '()))
+            (equal? (abelian-hom (cyc 0) (cyc 6)) (list 0 (list 6))) (equal? (abelian-tensor (cyc 0) (cyc 6)) (list 0 (list 6)))
+            (equal? (abelian-ext (cyc 4) (cyc 0)) (list 0 (list 4))) (equal? (abelian-hom (cyc 4) (cyc 0)) (list 0 '()))))
+(check "a non-diagonal presentation: Z^2 / <(2,4), (6,8)> = Z/2 (+) Z/4 has the invariants of its Smith form, and Tor with Z/2 is (Z/2)^2"
+       (let ((A (make-fp-group 2 (integer-matrix-from-columns (list (vector 2 4) (vector 6 8)) 2))))
+         (and (equal? (fp-group-invariants A) (list 0 (list 2 4)))
+              (equal? (abelian-tor A (cyc 2)) (list 0 (list 2 2)))
+              (equal? (abelian-ext A (cyc 0)) (list 0 (list 2 4))))))
+(check "a homomorphism that does not respect the relations is refused: Z/2 -> Z/3, 1 |-> 1"
+       (and (not (fp-hom-well-defined? (cyc 2) (cyc 3) (vector (vector 1)))) (fp-hom-well-defined? (cyc 2) (cyc 4) (vector (vector 2)))))
+
+;; ---------------------------------------------------------------------------
+;; Chain maps, homotopies, cones, long exact sequences
+;; ---------------------------------------------------------------------------
+;; the restriction H^*(RP^4) -> H^*(RP^2) along the skeleton inclusion
+(define (restriction-map X Y nmax R)            ;; Y a skeleton of X: cochains of X restrict to Y
+  (let ((CX (simplicial-cochain-complex X nmax R)) (CY (simplicial-cochain-complex Y nmax R)))
+    (make-chain-map CX CY (map (lambda (n) (let ((M (integer-matrix (complex-dim CY n) (complex-dim CX n))))
+                                             (let loop ((i 0)) (if (< i (complex-dim CY n))
+                                                                   (begin (integer-matrix-set! M i (simplicial-set-index X n (simplicial-set-nondegenerate-ref Y n i)) 1) (loop (+ i 1)))))
+                                             M))
+                               (range (+ nmax 1))))))
+(define rp4 (real-projective-space 4)) (define rp2 (simplicial-skeleton rp4 2))
+(define res2 (restriction-map rp4 rp2 4 F2))
+(check "the restriction along RP^2 -> RP^4 is a cochain map, its cone gives an exact long sequence over F_2 and over Q"
+       (and (null? (chain-map-violations res2)) (long-exact-sequence-exact? res2 3)
+            (long-exact-sequence-exact? (restriction-map rp4 rp2 4 rationals) 3)))
+(check "the long exact sequence of (RP^4, RP^2) over F_2: the cone computes H^n(RP^4, RP^2) = (0 0 0 1 1)"
+       (equal? (map (lambda (r) (list-ref r 1)) (long-exact-sequence res2 4)) (list 0 0 0 1 1)))
+(check "the mapping cone of the identity is acyclic over Z"
+       (let ((C (simplicial-cochain-complex (lens-space 3 1) 3)))
+         (all? (lambda (r) (and (= 0 (cadr r)) (null? (caddr r)))) (homology (mapping-cone (chain-map-identity C)) 2))))
+(check "induced maps: the restriction H^1(RP^4; F_2) -> H^1(RP^2; F_2) is an isomorphism, H^3 -> 0"
+       (and (equal? (induced-map res2 1) (vector (vector 1))) (= 0 (vector-length (induced-map res2 3)))))
+(check "chain homotopy: the two vertex inclusions of a point into Delta^1 are homotopic through the edge"
+       (let* ((P (simplicial-chain-complex (point-simplicial-set) 1)) (I (simplicial-chain-complex (standard-simplex 1) 1))
+              (f0 (make-chain-map P I (list (vector (vector 1) (vector 0)) (integer-matrix 1 0))))
+              (f1 (make-chain-map P I (list (vector (vector 0) (vector 1)) (integer-matrix 1 0))))
+              (h (list (vector (vector 1)) #f)))
+         (and (null? (chain-map-violations f0)) (null? (chain-homotopy-violations f1 f0 h))
+              (not (null? (chain-homotopy-violations f1 f0 (list (vector (vector -1)) #f)))))))
+(check "negative control -- a matrix family that is not a chain map is caught"
+       (let* ((C (simplicial-cochain-complex rp4 2))
+              (bad (make-chain-map C C (list (vector (vector 1)) (vector (vector 1)) (vector (vector 0))))))
+         (not (null? (chain-map-violations bad)))))
+
+;; ---------------------------------------------------------------------------
+;; Cup products and the cohomology rings of K(Z/p, 1)
+;; ---------------------------------------------------------------------------
+(define BZ2 (classifying-space (cyclic-group 2))) (define BZ3 (classifying-space (cyclic-group 3)))
+(define x (cochain-from-function BZ2 1 (lambda (t) 1)))
+(define (xpow n) (let loop ((k 1) (u x)) (if (= k n) u (loop (+ k 1) (cup-product BZ2 u k x 1 F2)))))
+(define C2 (simplicial-cochain-complex BZ2 6 F2))
+(check "H^*(BZ/2; F_2) = F_2[x]: x^n is a cocycle and not a coboundary for n = 1..6"
+       (all? (lambda (n) (and (homology-cycle? C2 n (xpow n)) (not (homology-boundary? C2 n (xpow n))))) (list 1 2 3 4 5 6)))
+(define y (cochain-from-function BZ3 1 (lambda (t) (car t))))
+(define C3 (simplicial-cochain-complex BZ3 4 F3))
+(define b (bockstein BZ3 y 1 3))
+(check "H^*(BZ/3; F_3) = Lambda[y] (x) F_3[beta y]: y^2 = 0, beta y, y beta y, (beta y)^2 nonzero"
+       (and (homology-boundary? C3 2 (cup-product BZ3 y 1 y 1 F3))
+            (not (homology-boundary? C3 2 b))
+            (not (homology-boundary? C3 3 (cup-product BZ3 y 1 b 2 F3)))
+            (not (homology-boundary? C3 4 (cup-product BZ3 b 2 b 2 F3)))))
+(check "graded commutativity over F_3: y beta y = beta y y up to a coboundary"
+       (homology-boundary? C3 3 (coefficient-vector-add F3 (cup-product BZ3 y 1 b 2 F3) (coefficient-vector-scale F3 -1 (cup-product BZ3 b 2 y 1 F3)))))
+(check "Leibniz over Z: delta(u v) = delta u v + (-1)^p u delta v on random cochains of BS_3"
+       (let* ((B (classifying-space S3))
+              (u (cochain-from-function B 1 (lambda (t) (- (car t) 2))))
+              (v (cochain-from-function B 2 (lambda (t) (- (* (car t) (cadr t)) 3))))
+              (lhs (simplicial-coboundary B (cup-product B u 1 v 2) 3))
+              (rhs (coefficient-vector-add integers (cup-product B (simplicial-coboundary B u 1) 2 v 2)
+                                           (coefficient-vector-scale integers -1 (cup-product B u 1 (simplicial-coboundary B v 2) 3)))))
+         (equal? lhs rhs)))
+(check "associativity at the cochain level on BZ/3 over Z"
+       (let ((u (cochain-from-function BZ3 1 (lambda (t) (car t)))))
+         (equal? (cup-product BZ3 (cup-product BZ3 u 1 u 1) 2 u 1) (cup-product BZ3 u 1 (cup-product BZ3 u 1 u 1) 2))))
+(check "cup-0 is the Alexander-Whitney product"
+       (let ((B (classifying-space Z2Z2)) (u (cochain-from-function (classifying-space Z2Z2) 1 (lambda (t) (quotient (car t) 2)))))
+         (equal? (cup-i-product B u 1 u 1 0) (cup-product B u 1 u 1 F2))))
+
+;; ---------------------------------------------------------------------------
+;; Steenrod squares
+;; ---------------------------------------------------------------------------
+(check "Sq^i x^n = C(n, i) x^(n+i) on RP^infinity for n <= 4, i <= n"
+       (all? (lambda (n) (all? (lambda (i) (equal? (steenrod-square BZ2 (xpow n) n i)
+                                                   (if (odd? (binomial n i)) (xpow (+ n i)) (make-vector 1 0))))
+                               (range (+ n 1))))
+             (list 1 2 3 4)))
+(define BV (classifying-space Z2Z2))
+(define xa (cochain-from-function BV 1 (lambda (t) (quotient (car t) 2))))
+(define ya (cochain-from-function BV 1 (lambda (t) (remainder (car t) 2))))
+(define CV (simplicial-cochain-complex BV 5 F2))
+(define (cup2 u p v q) (cup-product BV u p v q F2))
+(define (same-class? n u v) (homology-boundary? CV n (coefficient-vector-add F2 u v)))
+(define xy (cup2 xa 1 ya 1))
+(check "Sq^1 = Bockstein and Cartan: Sq^1(xy) = x^2 y + x y^2 on B(Z/2)^2"
+       (and (same-class? 3 (steenrod-square BV xy 2 1) (bockstein BV xy 2 2))
+            (same-class? 3 (steenrod-square BV xy 2 1) (coefficient-vector-add F2 (cup2 (cup2 xa 1 xa 1) 2 ya 1) (cup2 xa 1 (cup2 ya 1 ya 1) 2)))))
+(check "Sq^0 is the identity and Sq^n u = u^2 in degree n"
+       (and (same-class? 2 (steenrod-square BV xy 2 0) xy) (same-class? 4 (steenrod-square BV xy 2 2) (cup2 xy 2 xy 2))))
+(define x2y (cup2 (cup2 xa 1 xa 1) 2 ya 1))
+(check "Adem: Sq^1 Sq^1 = 0 and Sq^1 Sq^2 = Sq^3 on x^2 y (degree 3)"
+       (and (same-class? 5 (steenrod-square BV (steenrod-square BV x2y 3 1) 4 1) (make-vector (simplicial-set-count BV 5) 0))
+            (same-class? 5 (steenrod-square BV (steenrod-square BV xy 2 2) 4 1) (steenrod-square BV xy 2 3))
+            (same-class? 4 (steenrod-square BV (steenrod-square BV xa 1 1) 2 1) (make-vector (simplicial-set-count BV 4) 0))))
+(check "Adem: Sq^1 Sq^2 = Sq^3 on x^2 y (degree 3 -> 6) and Sq^2 Sq^2 = Sq^3 Sq^1 on x y (degree 2 -> 6)"
+       (let ((C6 (simplicial-cochain-complex BV 6 F2)))
+         (and (homology-boundary? C6 6 (coefficient-vector-add F2 (steenrod-square BV (steenrod-square BV x2y 3 2) 5 1) (steenrod-square BV x2y 3 3)))
+              (homology-boundary? C6 6 (coefficient-vector-add F2 (steenrod-square BV (steenrod-square BV xy 2 2) 4 2)
+                                                             (steenrod-square BV (steenrod-square BV xy 2 1) 3 3))))))
+(check "Sq^2 on K(Z/2,2): Sq^1 iota is nonzero in H^3, the class that kills dim H^2 of the twisted 2-type"
+       (let* ((K (crossed-module-nerve (abelian-crossed-module 2 1 0 (lambda (n m) m)))) (C (simplicial-cochain-complex K 3 F2))
+              (iota (car (map cdr (homology-generators C 2)))))
+         (and (= 1 (length (homology-generators C 2))) (not (homology-boundary? C 3 (steenrod-square K iota 2 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Q/Z coefficients
+;; ---------------------------------------------------------------------------
+(define CZ (simplicial-cochain-complex BZ2 4))
+(check "on BZ/2: x^3/2 is not a Q/Z coboundary (H^3(Z/2; Q/Z) = Z/2); 2 x^3 / 2 is"
+       (and (not (qz-coboundary? CZ 3 (vector 1) 2)) (qz-coboundary? CZ 3 (vector 2) 2)))
+(check "the exponent of H^3((Z/2)^2; Z) is 2 and x^2 y + x y^2 (the Sq^1 image) is a Q/Z coboundary while x^3 is not"
+       (let* ((C (simplicial-cochain-complex BV 3)) (t (qz-coboundary-test C 3 2)))
+         (and (= 2 (torsion-exponent (complex-in-map C 3)))
+              (t (coefficient-vector-add integers x2y (cup2 xa 1 (cup2 ya 1 ya 1) 2)))
+              (not (t (cup2 (cup2 xa 1 xa 1) 2 xa 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Spectral sequences
+;; ---------------------------------------------------------------------------
+;; the pair (X, star of vertex 0): F^1 = cochains supported on simplices through vertex 0
+(define (star-filtration X nmax R)
+  (let ((C (simplicial-cochain-complex X nmax R)))
+    (make-filtered-complex C (lambda (n) (list->vector (map (lambda (s) (if (memv 0 s) 1 0)) (vector->list (simplicial-set-nondegenerate X n))))))))
+(define FS2 (star-filtration (simplex-boundary 3) 3 F2))
+(check "the star filtration of the boundary of Delta^3 is a filtration (D preserves it)"
+       (null? (filtered-complex-violations FS2)))
+(check "pages E_r for r = 0..3 satisfy E_{r+1} = H(E_r, d_r) over F_2 and F_3"
+       (and (null? (spectral-sequence-page-violations FS2 3 2))
+            (null? (spectral-sequence-page-violations (star-filtration (simplex-boundary 3) 3 F3) 3 2))))
+(check "the spectral sequence converges: E_infinity = gr H over F_2, and over Z with torsion visible"
+       (and (null? (spectral-sequence-convergence-violations FS2 2))
+            (null? (spectral-sequence-convergence-violations (star-filtration (simplex-boundary 3) 3 integers) 2))))
+(define (skeletal-filtration X nmax R)
+  (let ((C (simplicial-cochain-complex X nmax R))) (make-filtered-complex C (lambda (n) (make-vector (complex-dim C n) n)))))
+(check "skeletal filtration of RP^4 over Z: E_1 = cochains, E_2 = E_infinity = H^*(RP^4; Z) with the Z/2's on the diagonal"
+       (let ((X (skeletal-filtration (real-projective-space 5) 5 integers)))
+         (and (equal? (spectral-sequence-page X 2 4) (list (list 0 0 1 '()) (list 2 0 0 (list 2)) (list 4 0 0 (list 2))))
+              (null? (spectral-sequence-convergence-violations X 4)))))
+;; the double complex A^p (x) B^q of two cochain complexes
+(define (tensor-double-complex A B)
+  (make-double-complex (complex-ring A) (complex-top-degree A) (complex-top-degree B)
+                       (lambda (p q) (* (complex-dim A p) (complex-dim B q)))
+                       (lambda (p q) (kron (complex-map A p) (complex-dim A (+ p 1)) (complex-dim A p) (integer-identity-matrix (complex-dim B q)) (complex-dim B q) (complex-dim B q)))
+                       (lambda (p q) (kron (integer-identity-matrix (complex-dim A p)) (complex-dim A p) (complex-dim A p) (complex-map B q) (complex-dim B (+ q 1)) (complex-dim B q)))))
+(define (kron A ra ca B rb cb)
+  (let ((M (integer-matrix (* ra rb) (* ca cb))))
+    (let li ((i 0)) (if (< i ra) (begin (let lj ((j 0)) (if (< j ca) (begin (let lk ((k 0)) (if (< k rb) (begin (let ll ((l 0)) (if (< l cb) (begin (integer-matrix-set! M (+ (* i rb) k) (+ (* j cb) l) (* (integer-matrix-ref A i j) (integer-matrix-ref B k l))) (ll (+ l 1))))) (lk (+ k 1))))) (lj (+ j 1))))) (li (+ i 1)))))
+    M))
+(define DC (tensor-double-complex (complex-dual (make-chain-complex F2 (list 1 1 1) (list (vector (vector 0)) (vector (vector 0)))))
+                                  (simplicial-cochain-complex (real-projective-space 3) 3 F2)))
+(check "a double complex: squares commute and the total complex has d^2 = 0"
+       (and (null? (double-complex-violations DC)) (null? (complex-d-squared-violations (total-complex DC 4)))))
+(define DCF (double-complex-filtered-complex DC 4 'columns))
+(check "column spectral sequence of A (x) C(RP^3): E_1 = A^p (x) H^q, pages exact, converging to the Kunneth answer"
+       (and (null? (spectral-sequence-page-violations DCF 3 4)) (null? (spectral-sequence-convergence-violations DCF 4))
+            (equal? (betti-list (cohomology (filtered-complex-complex DCF) 4)) (list 1 2 3 3 2))))
+(check "row filtration gives the second spectral sequence with the same limit"
+       (null? (spectral-sequence-convergence-violations (double-complex-filtered-complex DC 4 'rows) 4)))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: homological_test") (newline) (display "RESULT: PASS") (newline)
