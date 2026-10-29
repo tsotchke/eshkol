@@ -814,6 +814,16 @@ under the same discipline that made `Qubit` linear.
       tensors are f64-backed, so an exact system over tensor storage must still
       be written out on Scheme vectors. Both items are used step by step in
       [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
+- [ ] Ring carriers, the functor-of-points evaluation model (ADR-0034,
+      Proposed): one ring-carrier protocol, registered once per engine, for
+      the numeric tower, the forward-mode and Taylor AD carriers, modular,
+      symbolic and Z-set arithmetic, with multimodular computation over
+      Spec Z (fibres F_p, CRT, rational reconstruction under a proven bound).
+      In v1.4.0-connection: the record and the evidence program
+      `examples/mathematics_functor_of_points.esk` (29 checks, CTest
+      `rings_functor_of_points` JIT and AOT, no compiler change). Planned for v1.4.1 (library `core.ring`,
+      `core.multimodular`) through v1.5.0 (carriers in the type system), one
+      stage per rung as the record lists
 - [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane, SymPy
       oracle pilot on the exact-AD surface
 - [ ] Performance: benchmarks wave 2 (Ozaki CRT vs. cuBLAS/Accelerate,
@@ -853,6 +863,20 @@ under the same discipline that made `Qubit` linear.
       at the v1.3.5 cut)
 - [ ] PGO: canonical training workload + one-shot `llvm-profdata` merge
 - [ ] Codebase: decompose `bignum.cpp`; shell-hardening epic wave 1
+- [x] Ring carriers as a library (ADR-0034, library rung): `core.ring` gives
+      versioned carrier descriptors with stable family ids for Z, Q, the IEEE
+      binary64 tier, the native tower, Z/m, K[e]/e^n, K[x], Z[G] over
+      `core.dbsp` Z-sets and (through `core.algebraic_domain`) Q(alpha) and its
+      exact AD lifts; generic operations, the coercion lattice with explicit
+      admission and named refusals, ring maps and elimination over a carrier.
+      `core.multimodular` computes exact determinants, solves over Q and gcds
+      in Z[x] in fibres F_p below 2^31 with CRT and rational reconstruction
+      under Hadamard and Mignotte bounds. Gates: the ring-law gate, the IEEE
+      specification check with a pinned bit-pattern digest, and the
+      multimodular cross-checks, each in JIT and AOT; the functor-of-points
+      example runs on the libraries
+- [ ] `core.symbolic` coefficient fields and `core.dbsp` weights taking a
+      `core.ring` carrier (ADR-0034, library rung)
 
 ---
 

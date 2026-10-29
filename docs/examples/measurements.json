@@ -1069,6 +1069,18 @@
       ],
       "output_lines": 20
     },
+    "examples/mathematics_functor_of_points.esk": {
+      "source_sha256": "1b84cae1ad998c6d74e0917c35c74aa2513c15e54774590cb859cd8ac4ebfb4a",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
+    },
     "examples/mathematics_funsearch_cap_set.esk": {
       "source_sha256": "45d91a4f2f3503bb752ee024d6dca7e50eb8e3fb2fe66cd46e598fbfe6b600a6",
       "jit": {

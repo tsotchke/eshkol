@@ -218,8 +218,8 @@ class CatalogueTests(unittest.TestCase):
 
     def test_real_catalogue_completeness_exact_witness_and_scope_boundaries(self):
         data=json.loads((ROOT/'docs/examples/catalogue.json').read_text())
-        self.assertEqual(len(data['entries']),86)
-        self.assertEqual(sum(e['kind']=='mathematics' for e in data['entries']),49)
+        self.assertEqual(len(data['entries']),87)
+        self.assertEqual(sum(e['kind']=='mathematics' for e in data['entries']),50)
         pages=json.loads((ROOT/'site/pages.json').read_text())['pages']
         for name in ('docs/EXAMPLES.md','docs/MATHEMATICS_EXAMPLES.md'):
             self.assertEqual(sum(page['file']==name for page in pages),1)
@@ -233,6 +233,7 @@ class CatalogueTests(unittest.TestCase):
         self.assertIn('dbsp_checkpoint_restart',entries)
         self.assertIn('mathematics_certified_linear_solve',entries)
         self.assertIn('mathematics_derived_operator',entries)
+        self.assertIn('mathematics_functor_of_points',entries)
         self.assertIn('algebraic_batch',entries)
         self.assertIn('globally',entries['mathematics_jacobian_counterexample']['validation'])
         self.assertIn('1e-9',entries['mathematics_jacobian_counterexample']['arithmetic'])
@@ -241,6 +242,7 @@ class CatalogueTests(unittest.TestCase):
         self.assertIn('MATH_WITNESS_K',entries['mathematics_aoki_cycles_fermat_surfaces_sweep']['domain'])
         self.assertIn('no percentile',entries['streaming_stats']['limitations'])
         self.assertIn('finite-difference',entries['h2_vibrational_full']['arithmetic'])
+        self.assertIn('Hadamard',entries['mathematics_functor_of_points']['algorithm'])
 
 
 if __name__=='__main__':unittest.main()

@@ -89,7 +89,8 @@ GATED_SCOPES = {
     "upgrading": ["docs/UPGRADING.md"],
     # Reference pages join one page at a time, like the guides.
     "reference": ["docs/reference/stdlib/sheaf.md", "docs/reference/stdlib/integer_linalg.md",
-                  "docs/reference/stdlib/topos.md"],
+                  "docs/reference/stdlib/topos.md", "docs/reference/stdlib/ring.md",
+                  "docs/reference/stdlib/multimodular.md"],
 }
 
 SKIP_REASONS = (
