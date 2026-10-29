@@ -4347,6 +4347,40 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# core.groebner (ADR-0040): K[x1..xn] carriers of core.ring, Buchberger with the
+# Gebauer-Moeller criteria, the multimodular method over Q, ideal operations,
+# Hilbert polynomials and zero-dimensional solving (groebner_jit/aot), and the
+# SymPy cross-check: 180 reduced bases against the bases SymPy recorded in
+# tests/sympy_oracle/groebner_expected.json, on JIT and AOT (SymPy itself is
+# not needed to run it).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME groebner_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/groebner_test.esk")
+    add_test(NAME groebner_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/groebner_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/groebner_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(groebner_jit groebner_aot PROPERTIES
+        TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: groebner_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME groebner_sympy_crosscheck
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/groebner_sympy_crosscheck.py" compare
+                --eshkol-run $<TARGET_FILE:eshkol-run> --engines jit,aot
+                --work-dir "${CMAKE_CURRENT_BINARY_DIR}/test-work/groebner-crosscheck"
+                --receipt "${CMAKE_CURRENT_BINARY_DIR}/test-work/groebner-crosscheck/receipt.json")
+        set_tests_properties(groebner_sympy_crosscheck PROPERTIES
+            TIMEOUT 1800
+            ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "receipt: PASS")
+    endif()
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #

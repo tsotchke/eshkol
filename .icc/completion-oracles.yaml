@@ -2506,6 +2506,20 @@ oracles:
         label: 'core.ring and core.multimodular (ADR-0034 library rung): versioned ring-carrier descriptors for Z, Q, the IEEE tier, Z/m, jets, polynomials, Z[G] and algebraic fields; the ring laws exhaustive on small carriers and seeded on infinite ones, from-integer a ring map across the int64 boundary, characteristic, nilpotency and named refusals; the IEEE tier against its per-operation specification with a pinned bit-pattern digest; multimodular determinant, solve and Z[x] gcd equal to the exact paths; ring_jit/aot, ring_ieee_jit/aot, multimodular_jit/aot, rings_functor_of_points_jit/aot and the reference-page examples all pass'
         action: ./scripts/run_ring_gate.sh
 
+      # core.groebner (ADR-0040). Producer: scripts/run_groebner_gate.sh runs
+      # groebner_jit, groebner_aot and groebner_sympy_crosscheck (180 reduced
+      # bases against the bases SymPy recorded, JIT and AOT) and every
+      # documentation example on docs/reference/stdlib/groebner.md; PASS only
+      # when all of them ran and passed.
+      - id: v14_groebner
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_groebner"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.groebner (ADR-0040): K[x1..xn] as a core.ring carrier under lex, grlex, grevlex, block, elimination and weight orders; division, Buchberger with the Gebauer-Moeller criteria and sugar selection, reduced bases over Q, F_p and other field carriers; the multimodular method over Q with lucky-prime selection and an exact check over Q; membership, elimination, intersection, quotient, saturation, radical membership, dimension, Hilbert series and polynomials, zero-dimensional triangular form and solutions; groebner_jit/aot, the 180-case SymPy cross-check on JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_groebner_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
