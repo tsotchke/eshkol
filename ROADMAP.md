@@ -770,6 +770,18 @@ under the same discipline that made `Qubit` linear.
       Lawvere-Tierney bijection, the `locally` modality as the j-translation,
       and the internally local structure sheaf of Spec(Z/n). The presheaf-topos
       example runs on it. Language adoption is staged in ADR-0035 (v1.4.1 to v1.5.0)
+- [x] Simplicial and homological algebra as libraries (ADR-0037):
+      `core.simplicial` gives simplicial sets in Eilenberg-Zilber normal
+      form with products, joins, cones and suspensions, nerves of finite
+      categories, posets, groups (BG) and crossed modules, McCord finite
+      models, the Kan and quasi-category conditions over every compatible
+      horn, Kan's homotopy groups and mapping spaces `Map(X, Y)`;
+      `core.homological` gives complexes over `core.ring` carriers (Z with
+      torsion through `core.integer_linalg`, Q, F_p), cones and long exact
+      sequences, Ext and Tor over Z, spectral sequences of filtered and double
+      complexes checked page by page and in the limit, cup and cup-i products,
+      Steenrod squares and group cohomology with twisted coefficients. Five
+      algebraic-topology examples run on them
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
