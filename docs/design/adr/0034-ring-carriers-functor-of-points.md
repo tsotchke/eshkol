@@ -1,7 +1,7 @@
 ---
 kind: explanation
 status: current
-owner-area: numeric
+owner-area: language
 since: v1.4.0
 sources:
   - lib/backend/arithmetic_codegen.cpp
@@ -52,14 +52,15 @@ with different carriers:
 | Z/p^k, Z_p | Newton iteration is Hensel lifting (formal smoothness) | none |
 | Q[x], Q[[x]] | symbolic evaluation | `core.symbolic` `poly`/`series`, `core.polynomial_exact` |
 | Z[G] | DBSP Z-sets: finitely supported G -> Z | `core.dbsp` |
-| Spec Z | run an exact algorithm in every fibre F_p and glue by CRT | none |
+| Spec Z | run an exact algorithm in fibres F_p, combine by CRT over Z/M, reconstruct in Z or Q under a proven bound | none |
 
 The last row is the payoff of the reading. An integer polynomial computation
 commutes with every reduction Z -> F_p, so an exact answer can be computed in
-several small prime fields, where every element fits a machine word, and
-recovered by the Chinese remainder theorem plus rational reconstruction, with
-a prime count fixed in advance by a proven bound (Hadamard's inequality for a
-determinant). This is the multimodular method of computer algebra.
+several small prime fields, where every element fits a machine word. The
+Chinese remainder theorem combines the residues into one residue modulo
+M = p1...pk, and a proven bound (Hadamard's inequality for a determinant)
+turns that residue into the integer or rational answer. Section 7 keeps the
+two steps apart. This is the multimodular method of computer algebra.
 
 ### How each facility is implemented today
 
@@ -174,6 +175,8 @@ A **ring carrier** is a commutative ring with identity, given as data:
 | `zero`, `one` | the identities |
 | `add`, `neg`, `mul` | the ring operations (`sub` is derived) |
 | `from-integer` | the unique ring map Z -> R |
+| `from-rational` | the ring map Q -> R, declared exactly when every nonzero integer is a unit of R (R is a Q-algebra); absent for Z, Z/m and Z[G] (amended 2026-10-29) |
+| `admit-rational` | the explicit partial map Q -> R, `n/d -> n * d^-1`, refusing when d is not a unit of R (amended 2026-10-29) |
 | `equal?` | decidable equality |
 | `unit?`, `inverse` | the unit group; `inverse` is defined exactly on units and raises otherwise |
 
@@ -280,8 +283,9 @@ laws:
   has no reflexive equality;
 - `add`, `mul`, `neg` and division are the IEEE operations rounded to nearest,
   ties to even: for finite operands the result is the exact rational result
-  rounded once, `fl(a op b)` (an infinity when that rounding overflows); division by zero gives an infinity or NaN and
-  does not raise;
+  rounded once, `fl(a op b)` (an infinity when that rounding overflows);
+  `neg` is the sign flip; division is one IEEE division, and division by
+  zero gives an infinity or NaN and does not raise;
 - no implicit reassociation and no implicit contraction into fused
   multiply-add, so a program has one floating result on every engine;
 - series coefficients over the IEEE tier are computed by the same recurrences
@@ -309,16 +313,22 @@ when `b` is a unit:
 
 | Carrier | Units | Non-unit divisor |
 |---|---|---|
-| exact integers | +-1 | promotes to Q along the tower edge, as R7RS requires (`(/ 1 3)` is `1/3`); exact zero raises |
+| exact integers | +-1 | `/` promotes to Q along the tower edge, as R7RS requires (`(/ 1 3)` is `1/3`); exact zero raises. `inverse` (`r-inv`) of a non-unit refuses: only division promotes (amended 2026-10-29) |
 | Q, F_p, Q(alpha) | every nonzero element | zero raises |
 | Z/m, m composite | gcd(a, m) = 1 | raises; no implicit localization |
 | K[e]/e^n | constant term a unit of K | raises; no promotion to Laurent series |
 | K[x] | nonzero constants that are units of K | raises; no promotion to rational functions |
-| Z[G] | +-g | raises |
+| Z[G] | +-g when G is torsion-free (Laurent polynomials); for G with torsion there can be more (in Z[C5], `(-1 + t + t^4)(-1 + t^2 + t^3) = 1`), so a carrier either decides its unit group or declares its unit recognition partial (amended 2026-10-29) | raises |
 | IEEE tier | every value | IEEE result (infinity or NaN), no raise |
 
-A refusal is a catchable condition naming the operation, the carrier and the
-element (`ring-not-a-unit`). It never returns a substitute value. A carrier
+A refusal is a catchable R7RS error object whose message is the condition
+name and whose irritants are the operation, the carrier and the element. It
+never returns a substitute value. Five conditions are named:
+`ring-not-a-unit`, `ring-no-common-carrier` (rule 6 below), and, amended
+2026-10-29, `ring-not-an-element` (a value that belongs to no carrier),
+`ring-missing-capability` (an order, Euclidean, analytic or law-check
+operation on a carrier without that capability) and `ring-no-ring-map` (a
+requested ring map that does not exist). A carrier
 of fractions (Q(x), Laurent series) is a separate registered carrier reached
 by an explicit map, never by a division that happened to fail.
 
@@ -327,15 +337,20 @@ by an explicit map, never by a division that happened to fail.
 1. A = B: the operation of A.
 2. Exact integers enter every carrier through `from-integer`, because Z is
    initial; this is how a program constant means the same thing in every ring.
-3. Exact rationals enter a carrier implicitly only when it is a Q-algebra
-   (characteristic 0 and lawful). Entering Z/m is the partial map
-   `n/d -> n * d^-1` and happens only through an explicit `ring-admit`,
-   which refuses when d is not a unit mod m.
+3. Exact rationals enter a carrier implicitly only when the carrier declares
+   `from-rational`, that is, when every nonzero integer is a unit in it, so
+   that Z -> R extends to Q -> R. Characteristic 0 and lawfulness do not
+   imply this: Z is lawful of characteristic 0 and 1/2 is not in Z. Into a
+   carrier without `from-rational` (Z, Z/m, Z[G], Z[x]) a rational enters
+   only through an explicit `ring-admit`, which uses `admit-rational`,
+   `n/d -> n * d^-1`, and refuses when d is not a unit (amended 2026-10-29).
 4. A K-element enters K[e]/e^n, K[x] or a level of K as a constant (the
    "constant series" of ADR-0027); two series carriers of different epochs
    meet in their tensor product, which the level carrier represents.
-5. The tower edge Q -> IEEE: an exact operand meeting a flonum is rounded,
-   R7RS contagion. A flonum never enters a lawful carrier implicitly.
+5. The tower edge Q -> IEEE: an exact operand meeting a flonum is rounded
+   once to the nearest binary64, ties to even, R7RS contagion (amended
+   2026-10-29: one rounding of the exact value, never a conversion through an
+   intermediate format). A flonum never enters a lawful carrier implicitly.
 6. Otherwise there is no common carrier and the operation raises
    `ring-no-common-carrier` naming both carriers: F_7 with F_11, F_7 with
    Z/7^16 (the map Z/7^16 -> F_7 exists but forgets information, so it is
@@ -381,16 +396,33 @@ protocol:
   below 2^31, so a product of two residues fits a signed 64-bit integer on
   every target including wasm32, skipping primes where a required
   element is not a unit (an "unlucky" prime);
-- CRT gluing to a residue modulo M, the product of the primes;
-- the symmetric lift for an integer result and Wang's rational reconstruction
-  for a rational result, which is unique when M > 2ND for numerator and
-  denominator bounds N and D;
-- the bounds themselves: Hadamard's inequality for determinants and Cramer
-  numerators, so the prime count is fixed before the first fibre runs and the
-  answer is proven, never a probabilistic early termination.
+- CRT combination to a residue modulo M, the product of the primes;
+- reconstruction in Z or Q: the symmetric lift for an integer result and
+  Wang's rational reconstruction for a rational result, which is unique when
+  M > 2ND for numerator and denominator bounds N and D;
+- the bounds themselves: Hadamard's inequality for determinants, Cramer's
+  rule with Hadamard for solution numerators and denominators, and the
+  Mignotte bound for factors and gcds in Z[x], so the prime count is fixed
+  before the first fibre runs and the answer is proven, never a
+  probabilistic early termination.
 
-Correctness is base change: an integer polynomial map commutes with Z -> F_p,
-and Z/M is the product of the F_p.
+Two different facts carry the method, and they are kept apart (amended
+2026-10-29):
+
+- **CRT is descent over Spec(Z/M).** Z/M is the product of the F_p, so
+  Spec(Z/M) is the disjoint union of the closed points Spec(F_p), and the
+  residues determine exactly one element of Z/M. The evaluation commutes with
+  every reduction because an integer polynomial map commutes with base
+  change along Z -> Z/M -> F_p. This is a statement about Z/M only. The
+  closed fibres Spec(F_p) are not open in Spec Z and finitely many of them
+  never cover it, so they are not a Zariski cover of Spec Z and nothing
+  descends to Z from them.
+- **Reconstruction in Z or Q is bounded.** A residue modulo M names an
+  integer only up to multiples of M. The Hadamard, Cramer and Mignotte bounds
+  are what make the answer exact: when |answer| <= H and M > 2H the symmetric
+  representative is the answer, and when the answer is n/d with |n| <= N,
+  0 < d <= D and M > 2ND, Wang's reconstruction returns it. Without a proven
+  bound the method computes the answer modulo M and nothing more.
 
 ### 8. The VM path
 
@@ -407,20 +439,25 @@ table gains one row per registered carrier.
   `ring_carriers.def`, in the manner of `taylor_recurrences.def`. Each family
   has a stable numeric id that is never reused, as ADR numbers are not.
   Parameterised carriers (Z/m, K[e]/e^n, K[x], Q(alpha)) are *instances*: a
-  family id plus canonical parameters, interned once per process into one
-  descriptor.
+  family id plus parameters. Instances whose parameters are canonical data
+  (numbers, symbols, interned carriers) are interned once per process into
+  one descriptor. Instances parameterised by an object identity (an algebraic
+  field or AD context, a group given by procedures, a user carrier) compare
+  by family and parameter identity and are not interned or retained, so
+  carriers built per call do not accumulate (amended 2026-10-29).
 - **Descriptor.** `eshkol_ring_carrier_t` begins with `abi_version` (1 at
   introduction) and `size`, then the family id, capability bits and the
   operation table. Adding a family or appending a capability bit keeps the
   version. Changing the layout of the descriptor, of the operation table or of
   an element's representation increments it.
 - **Elements.** A heap element records its family id and a pointer to its
-  interned instance descriptor (during v1.4.2-v1.4.4 inside the existing heap
+  instance descriptor (during v1.4.2-v1.4.4 inside the existing heap
   subtypes; a general element header through the ADR-0012 object ABI
   migration). Serialised and persisted values (model files, checkpoints, DBSP
   state) record the family id, the canonical parameters and `abi_version`,
   never a process-local pointer, and a reader refuses a version it does not
-  know.
+  know. An identity-keyed instance is serialised only when its family defines
+  a canonical form for its parameters, and is refused otherwise.
 - **Caches and links.** The registry fingerprint (`abi_version` plus a hash
   of `ring_carriers.def`) is part of the JIT object cache key, the stdlib
   object cache key and `ESHKOL_OBJECT_ABI_CACHE_TAG` (ADR-0012), so code
@@ -546,8 +583,8 @@ at seven rationals for Q[x], and characters t -> c for the group ring. The
 same Newton step finds sqrt 2 over R and the 7-adic square root of 2 over
 Z/7^16 in four steps, with the derivative taken by the dual carrier over each
 ring. A 6x6 integer matrix with 13-digit entries has its determinant computed
-in 9 fibres F_p near 2^30 (the Hadamard bound has 79 digits) and glued by
-CRT, equal to the bignum Bareiss determinant of `core.exact_linalg`, and the
+in 9 fibres F_p near 2^30, combined by CRT and lifted under the Hadamard bound
+(79 digits), equal to the bignum Bareiss determinant of `core.exact_linalg`, and the
 first component of the solution of A x = b is recovered by CRT and rational
 reconstruction, equal to `exact-solve`. The program needs no compiler change: its 29 checks
 pass on native JIT and AOT on macOS arm64 with the released 1.3.6 compiler and
@@ -560,6 +597,26 @@ distributivity, identities and additive inverses for Q, F_7, Q[e]/e^6, Q[x]
 and Z[t, 1/t]) and the units of F_7. The homomorphism property of
 `from-integer`, the refusals of section 5 and the IEEE-tier specification of
 section 4 are gate items of v1.4.1.
+
+## Amendments
+
+2026-10-29, after an independent review and the design note of the
+`core.ring` library rung; the decision and status are unchanged:
+
+1. Rational admission (section 1 capabilities, section 5 rule 3): implicit
+   only into carriers that declare `from-rational`; characteristic 0 and
+   lawfulness do not imply it (Z).
+2. CRT descent over Spec(Z/M) is stated separately from bounded
+   reconstruction in Z or Q (section 7); the Mignotte bound is added.
+3. Three more named refusals: `ring-not-an-element`,
+   `ring-missing-capability`, `ring-no-ring-map` (section 5).
+4. Over Z, `inverse` of a non-unit refuses; only division promotes to Q
+   (section 5).
+5. Identity-keyed carrier instances are compared by identity and not
+   interned (section 9).
+6. An exact operand meets a flonum by one rounding to nearest, ties to even
+   (section 5 rule 5).
+7. The unit group of Z[G] is +-g only for torsion-free G (section 5).
 
 ## References
 
