@@ -30,7 +30,7 @@
 (require core.simplicial.nerve)
 (require core.homological.complex)
 
-(provide simplicial-boundary-matrix simplicial-chain-complex simplicial-cochain-complex
+(provide simplicial-boundary-matrix simplicial-chain-complex simplicial-cochain-complex simplicial-moore-complex
          simplicial-homology simplicial-cohomology
          cochain-value cochain-from-function cochain-basis-vector simplicial-coboundary
          cup-product cup-i-product steenrod-square bockstein
@@ -69,6 +69,24 @@
 ;; degrees 0 .. nmax, with D_nmax so that H^nmax is exact
 (define (simplicial-cochain-complex X nmax . R)
   (complex-dual (apply simplicial-chain-complex X nmax R)))
+;; the unnormalized (Moore) chain complex on every simplex, degenerate ones
+;; included, degrees 0 .. nmax with d_{nmax+1}: the normalization theorem
+;; says it has the homology of the normalized complex
+(define (simplicial-moore-complex X nmax . R)
+  (let* ((ring (hs-ring R))
+         (basis (lambda (n) (simplicial-set-simplices X n)))
+         (index-of (lambda (ss) (let ((t (make-hash-table))) (let loop ((l ss) (i 0)) (if (not (null? l)) (begin (hash-table-set! t (car l) i) (loop (cdr l) (+ i 1))))) t)))
+         (dmat (lambda (n)
+                 (let* ((src (basis n)) (dst (basis (- n 1))) (index (index-of dst)) (M (integer-matrix (length dst) (length src))))
+                   (let loop ((l src) (c 0))
+                     (if (not (null? l))
+                         (begin (let faces ((i 0) (sg 1))
+                                  (if (<= i n)
+                                      (let ((r (hash-table-ref/default index (simplicial-set-face X i (car l)) -1)))
+                                        (integer-matrix-set! M r c (+ (integer-matrix-ref M r c) sg)) (faces (+ i 1) (- 0 sg)))))
+                                (loop (cdr l) (+ c 1)))))
+                   (coefficient-reduce-matrix ring M)))))
+    (make-chain-complex ring (map (lambda (n) (length (basis n))) (hs-range (+ nmax 1))) (map dmat (hs-range-from 1 (+ nmax 2))))))
 (define (simplicial-homology X nmax . R) (homology (apply simplicial-chain-complex X nmax R)))
 (define (simplicial-cohomology X nmax . R) (cohomology (apply simplicial-cochain-complex X nmax R)))
 

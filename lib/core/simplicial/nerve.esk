@@ -15,7 +15,7 @@
 ;;; nerves of weak n-categories I", TAC 9 (2002) (the nerve of a 2-group).
 ;;;
 ;;; Values of the simplices (public):
-;;;   category-nerve       (x0 f1 ... fn): the object x0 and n composable
+;;;   finite-category-nerve       (x0 f1 ... fn): the object x0 and n composable
 ;;;                        arrow indices, f_{i+1} after f_i
 ;;;   poset-nerve          (x0 x1 ... xn) with x0 < x1 < ... < xn
 ;;;   classifying-space    (g1 ... gn), elements different from the identity;
@@ -33,7 +33,7 @@
 (require core.simplicial.sset)
 (require core.simplicial.group)
 
-(provide category-nerve poset-nerve order-complex classifying-space
+(provide finite-category-nerve poset-nerve order-complex classifying-space
          face-poset face-poset-points barycentric-subdivision mccord-finite-model
          crossed-module-nerve crossed-module-simplices crossed-module-simplex-face
          crossed-module-simplex-degeneracy nerve-string-normal-form)
@@ -71,7 +71,7 @@
     (if (= n 0)
         (map (lambda (x) (list x)) (nv-range (category-object-count C)))
         (nv-category-extend C nonid n #f '()))))
-(define (category-nerve C)
+(define (finite-category-nerve C)
   (let ((identity? (lambda (a) (= a (category-identity C (arrow-source C a))))))
     (make-simplicial-set
      "category nerve"
@@ -168,8 +168,12 @@
 (define (nv-range-from a b) (let loop ((i (- b 1)) (acc '())) (if (< i a) acc (loop (- i 1) (cons i acc)))))
 (define (nv-position item items) (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
 
-;; tables per vertex count, built once per nerve
+;; tables per vertex count, built once and kept
+(define nv-xm-table-cache (make-hash-table))
 (define (nv-xm-tables nv)
+  (or (hash-table-ref/default nv-xm-table-cache nv #f)
+      (let ((T (nv-xm-tables-build nv))) (hash-table-set! nv-xm-table-cache nv T) T)))
+(define (nv-xm-tables-build nv)
   (let* ((ps (nv-pairs nv)) (ts (nv-triples nv))
          (pidx (make-hash-table)) (tidx (make-hash-table)))
     (let loop ((l ps) (i 0)) (if (not (null? l)) (begin (hash-table-set! pidx (car l) i) (loop (cdr l) (+ i 1)))))
@@ -226,10 +230,10 @@
 
 ;; d_v: delete vertex v and relabel
 (define (crossed-module-simplex-face n v s)
-  (let* ((nv (+ n 1)) (T (nv-xm-tables nv)) (gl (list->vector (car s))) (ml (list->vector (cadr s)))
+  (let* ((nv (+ n 1)) (T (nv-xm-tables nv)) (Tn (nv-xm-tables n)) (gl (list->vector (car s))) (ml (list->vector (cadr s)))
          (old (lambda (t) (if (< t v) t (+ t 1)))))
-    (list (map (lambda (e) (vector-ref gl (nv-eidx T (old (car e)) (old (cadr e))))) (nv-pairs n))
-          (map (lambda (t) (vector-ref ml (nv-tidx T (old (car t)) (old (cadr t)) (old (caddr t))))) (nv-triples n)))))
+    (list (map (lambda (e) (vector-ref gl (nv-eidx T (old (car e)) (old (cadr e))))) (vector-ref Tn 0))
+          (map (lambda (t) (vector-ref ml (nv-tidx T (old (car t)) (old (cadr t)) (old (caddr t))))) (vector-ref Tn 1)))))
 ;; s_j: repeat vertex j; collapsed edges and triangles carry identities
 (define (crossed-module-simplex-degeneracy X n j s)
   (let* ((nv (+ n 1)) (T (nv-xm-tables nv)) (gl (list->vector (car s))) (ml (list->vector (cadr s)))
@@ -237,10 +241,10 @@
          (sg (lambda (t) (if (<= t j) t (- t 1)))))
     (list (map (lambda (e) (let ((a (sg (car e))) (b (sg (cadr e))))
                              (if (= a b) eN (vector-ref gl (nv-eidx T a b)))))
-               (nv-pairs (+ n 2)))
+               (vector-ref (nv-xm-tables (+ n 2)) 0))
           (map (lambda (t) (let ((a (sg (car t))) (b (sg (cadr t))) (c (sg (caddr t))))
                              (if (or (= a b) (= b c)) eM (vector-ref ml (nv-tidx T a b c)))))
-               (nv-triples (+ n 2))))))
+               (vector-ref (nv-xm-tables (+ n 2)) 1)))))
 ;; the nerve as a simplicial set (every simplex value is (edges triangles));
 ;; all simplices of each degree are enumerated, so this is meant for the
 ;; low degrees used by horn and homotopy computations

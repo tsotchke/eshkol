@@ -24,7 +24,7 @@
 
 (provide simplicial-horns horn-filler-table horn-fillers horn-filler-report
          horn-violations kan-complex-through? quasi-category-through?
-         basepoint-simplex kan-spheres kan-homotopic? kan-homotopy-classes kan-pi1-product
+         basepoint-simplex kan-spheres kan-homotopic? kan-homotopy-relation kan-homotopy-classes kan-pi1-product
          simplicial-maps-fold simplicial-maps-count simplicial-map-order)
 
 (define (kn-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
@@ -98,27 +98,25 @@
   (let ((b (basepoint-simplex v (- n 1))))
     (filter (lambda (s) (kn-all? (lambda (f) (equal? f b)) (simplicial-set-faces Y s))) (simplicial-set-simplices Y n))))
 ;; x ~ y when some (n+1)-simplex z has d_n z = x, d_{n+1} z = y and d_i z
-;; the basepoint for i < n
-(define (kan-homotopic? Y v n x y)
-  (let ((b (basepoint-simplex v n)))
-    (kn-any? (lambda (z)
-               (let ((fs (simplicial-set-faces Y z)))
-                 (and (equal? (list-ref fs n) x) (equal? (list-ref fs (+ n 1)) y)
-                      (kn-all? (lambda (i) (equal? (list-ref fs i) b)) (kn-range n)))))
-             (simplicial-set-simplices Y (+ n 1)))))
+;; the basepoint for i < n. `kan-homotopy-relation` reads every
+;; (n+1)-simplex once and returns the relation as a predicate.
+(define (kan-homotopy-relation Y v n)
+  (let ((b (basepoint-simplex v n)) (rel (make-hash-table)))
+    (for-each (lambda (z)
+                (let ((fs (simplicial-set-faces Y z)))
+                  (if (kn-all? (lambda (i) (equal? (list-ref fs i) b)) (kn-range n))
+                      (hash-table-set! rel (list (list-ref fs n) (list-ref fs (+ n 1))) #t))))
+              (simplicial-set-simplices Y (+ n 1)))
+    (lambda (x y) (hash-table-ref/default rel (list x y) #f))))
+(define (kan-homotopic? Y v n x y) ((kan-homotopy-relation Y v n) x y))
 ;; the classes of n-spheres under ~ (Kan: an equivalence relation on a Kan
 ;; complex), in order of first appearance; the basepoint class is first
 (define (kan-homotopy-classes Y v n)
-  (let* ((b (basepoint-simplex v n))
-         (zs (filter (lambda (z) (let ((fs (simplicial-set-faces Y z)))
-                                   (kn-all? (lambda (i) (equal? (list-ref fs i) b)) (kn-range n))))
-                     (simplicial-set-simplices Y (+ n 1))))
-         (rel (make-hash-table)))
-    (for-each (lambda (z) (let ((fs (simplicial-set-faces Y z))) (hash-table-set! rel (list (list-ref fs n) (list-ref fs (+ n 1))) #t))) zs)
+  (let ((rel (kan-homotopy-relation Y v n)))
     (let loop ((rest (kan-spheres Y v n)) (classes '()))
       (if (null? rest) (reverse classes)
           (let* ((x (car rest))
-                 (cls (filter (lambda (y) (or (equal? x y) (hash-table-ref/default rel (list x y) #f))) rest)))
+                 (cls (filter (lambda (y) (or (equal? x y) (rel x y))) rest)))
             (loop (filter (lambda (y) (not (member y cls))) rest) (cons cls classes)))))))
 ;; [x][y] = [d_1 z] for z filling the inner horn (d_0 z = y, d_2 z = x)
 (define (kan-pi1-product Y x y)

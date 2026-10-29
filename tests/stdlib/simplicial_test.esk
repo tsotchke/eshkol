@@ -193,11 +193,11 @@
        (= 64 (length (crossed-module-simplices SPLIT 3))))
 (define walking-arrow (poset-category 2 (lambda (x y) (<= x y))))
 (check "the nerve of a poset as a category is its order complex: walking arrow (2 1 0), pseudocircle (4 4 0)"
-       (and (equal? (counts (category-nerve walking-arrow) 2) (list 2 1 0))
-            (equal? (counts (category-nerve (poset-category 4 (lambda (x y) (finite-space-leq? pseudocircle x y)))) 2)
+       (and (equal? (counts (finite-category-nerve walking-arrow) 2) (list 2 1 0))
+            (equal? (counts (finite-category-nerve (poset-category 4 (lambda (x y) (finite-space-leq? pseudocircle x y)))) 2)
                     (counts (poset-nerve pseudocircle) 2))))
 (check "the category nerve has the simplicial identities"
-       (null? (simplicial-set-identity-violations (category-nerve (poset-category 3 (lambda (x y) (<= x y)))) 3)))
+       (null? (simplicial-set-identity-violations (finite-category-nerve (poset-category 3 (lambda (x y) (<= x y)))) 3)))
 (check "face poset of the boundary of the triangle: 6 points, 6 strict relations; barycentric subdivision has 6 vertices and 6 edges"
        (let* ((P (face-poset (simplex-boundary 2) 1)) (B (barycentric-subdivision (simplex-boundary 2) 1)))
          (and (= 6 (finite-space-size P))
@@ -229,8 +229,8 @@
 (check "Delta^2 is not Kan (Lambda^2_0 = [0 1] [0 2] has no filler) but is a quasi-category"
        (and (not (kan-complex-through? (standard-simplex 2) 2)) (quasi-category-through? (standard-simplex 2) 3)))
 (check "the nerve of a category that is not a groupoid is not Kan; the nerve of a groupoid is (Joyal)"
-       (and (not (kan-complex-through? (category-nerve walking-arrow) 2))
-            (quasi-category-through? (category-nerve walking-arrow) 3)
+       (and (not (kan-complex-through? (finite-category-nerve walking-arrow) 2))
+            (quasi-category-through? (finite-category-nerve walking-arrow) 3)
             (kan-complex-through? (classifying-space Z3) 3)))
 (define (vertex-of X) (simplicial-set-nondegenerate-ref X 0 0))
 (check "Kan's homotopy groups of the 2-group nerves: |pi_1| = |coker d|, |pi_2| = |ker d|"
