@@ -877,6 +877,15 @@ under the same discipline that made `Qubit` linear.
       example runs on the libraries
 - [ ] `core.symbolic` coefficient fields and `core.dbsp` weights taking a
       `core.ring` carrier (ADR-0034, library rung)
+- [x] nLab conformance suite: `tests/nlab/` quotes claims from nLab pages and
+      decides each one exactly on `core.sheaf`, `core.topos`, `core.ring`,
+      `core.multimodular` and `core.integer_linalg` (103 claims on 37 pages,
+      JIT and AOT, `scripts/run_nlab_conformance.sh`);
+      [docs/reports/NLAB_CONFORMANCE.md](docs/reports/NLAB_CONFORMANCE.md) lists
+      the coverage page by page and the 33 claims on 14 further pages with the
+      facility each one needs (core.category, core.simplicial and
+      core.homological for Kan extensions, simplicial sets, group cohomology,
+      cup products and spectral sequences)
 
 ---
 

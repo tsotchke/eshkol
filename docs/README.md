@@ -253,6 +253,7 @@ Adversarial-campaign pillar harnesses (`tests/`):
 Engineering reports (`docs/reports/`) — see the [reports directory index](reports/README.md) for scope; individual reports:
 
 - [SICP-Completeness Report](reports/SICP_COMPLETENESS_REPORT.md) — release gate: 100% of the SICP book, executable (88/88 probes)
+- [nLab Conformance](reports/NLAB_CONFORMANCE.md) — claims quoted from nLab pages decided exactly on the mathematics libraries: 103 claims on 37 pages computed in JIT and AOT, 33 further claims listed with the facility each needs
 - [Reference-Implementation Differential Report](reports/REFERENCE_DIFFERENTIAL_REPORT.md) — external R7RS ground-truth conformance oracle (P7a): 34/34 AGREE against chibi-scheme 0.12.0
 - [Generative Multi-Oracle Differential Report](reports/GENERATIVE_DIFFERENTIAL_REPORT.md) — generated closed R7RS-small program family cross-checked against every installed reference implementation (P7c)
 - [Sanitizer Fuzz Report](reports/SANITIZER_FUZZ_REPORT.md)

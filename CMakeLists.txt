@@ -4390,6 +4390,30 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# nLab conformance: claims quoted from nLab pages, each decided exactly on the
+# libraries (core.sheaf, core.topos, core.ring, core.multimodular,
+# core.integer_linalg). One PASS/FAIL line per claim; the page-by-page coverage
+# is docs/reports/NLAB_CONFORMANCE.md and scripts/run_nlab_conformance.sh
+# counts the claims.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_nlab_suite nlab_topos nlab_space nlab_ring)
+        add_test(NAME ${_nlab_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/nlab/${_nlab_suite}_test.esk")
+        add_test(NAME ${_nlab_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/nlab/${_nlab_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_nlab_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=540"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_nlab_suite}_jit ${_nlab_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_nlab_suite}_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #

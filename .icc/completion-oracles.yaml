@@ -2535,6 +2535,22 @@ oracles:
         label: 'core.ring and core.multimodular (ADR-0034 library rung): versioned ring-carrier descriptors for Z, Q, the IEEE tier, Z/m, jets, polynomials, Z[G] and algebraic fields; the ring laws exhaustive on small carriers and seeded on infinite ones, from-integer a ring map across the int64 boundary, characteristic, nilpotency and named refusals; the IEEE tier against its per-operation specification with a pinned bit-pattern digest; multimodular determinant, solve and Z[x] gcd equal to the exact paths; ring_jit/aot, ring_ieee_jit/aot, multimodular_jit/aot, rings_functor_of_points_jit/aot and the reference-page examples all pass'
         action: ./scripts/run_ring_gate.sh
 
+      # nLab conformance: claims quoted from nLab pages, each decided exactly
+      # on core.sheaf, core.topos, core.ring, core.multimodular and
+      # core.integer_linalg. Producer: scripts/run_nlab_conformance.sh runs the
+      # six CTest entries (three suites, JIT and AOT) and checks every claim
+      # line against tests/nlab/claims.tsv and the coverage line of
+      # docs/reports/NLAB_CONFORMANCE.md; PASS only when every computed claim
+      # passed once in both engines and no claim failed.
+      - id: v14_nlab_conformance
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_nlab_conformance"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'nLab conformance: 103 claims quoted from 37 nLab pages (subobject classifier, sieves, Heyting algebras, Grothendieck and Lawvere-Tierney topologies, Boolean and De Morgan toposes, Kripke-Joyal semantics, Yoneda, exponentials and power objects, sheaves, sheafification, descent, Cech cohomology, finite spaces and the homotopy types of spheres, tori, RP^2 and the Klein bottle, Euler characteristics, nerves, local rings, dual numbers, jets, functor of points, Chinese remainder, quadratic reciprocity, group algebras, Smith normal form, prime spectra) computed exactly and passing in JIT and AOT; 33 further claims on 14 pages are listed with the facility they need'
+        action: ./scripts/run_nlab_conformance.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.

@@ -1,0 +1,455 @@
+;;; nLab conformance: sheaves, descent, Cech cohomology, finite spaces and the
+;;; homotopy types they model.
+;;;
+;;; Each claim below is quoted from the nLab page named in its header
+;;; (https://ncatlab.org/nlab/show/<page>, read 2026-10-29) and decided exactly
+;;; with core.sheaf (finite sites, presheaves, gluing, sheafification, Cech and
+;;; derived cohomology over Z with torsion) and core.integer_linalg. Spaces are
+;;; finite T_0 spaces (McCord): a simplicial complex enters as its face poset,
+;;; whose cohomology with constant coefficients is the singular cohomology of
+;;; the complex. A claim prints "PASS: [page#k] ..." or "FAIL: [page#k] ..."
+;;; with the computed value. Coverage and planned claims: docs/reports/NLAB_CONFORMANCE.md.
+(require stdlib)
+(require core.sheaf)
+(require core.topos)
+(require core.integer_linalg)
+
+(define passed 0)
+(define failed 0)
+(define (claim page k text value ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display "[") (display page) (display "#") (display k) (display "] ")
+  (display text) (display " => ") (write value) (newline))
+(define (all? p xs) (cond ((null? xs) #t) ((p (car xs)) (all? p (cdr xs))) (else #f)))
+(define (any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (any? p (cdr xs)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (objects C) (range (category-object-count C)))
+(define (subset? A B) (all? (lambda (x) (member x B)) A))
+
+(define pseudocircle (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define pc-site (finite-space-site pseudocircle))
+(define pc-C (site-category pc-site))
+(define (pc-open U) (category-object-of-label pc-C U))
+
+;; ---------------------------------------------------------------------------
+;; Simplicial complexes as finite spaces (face posets)
+;; ---------------------------------------------------------------------------
+(define (insert-sorted x l) (cond ((null? l) (list x)) ((< x (car l)) (cons x l)) ((= x (car l)) l) (else (cons (car l) (insert-sorted x (cdr l))))))
+(define (sort-set l) (let loop ((l l) (acc '())) (if (null? l) acc (loop (cdr l) (insert-sorted (car l) acc)))))
+;; all nonempty faces of the given facets, without repetition
+(define (faces-of facets)
+  (let loop ((fs facets) (acc '()))
+    (if (null? fs) (reverse acc)
+        (loop (cdr fs)
+              (let add ((ss (filter pair? (sheaf-subsets (sort-set (car fs))))) (acc acc))
+                (if (null? ss) acc (add (cdr ss) (if (member (car ss) acc) acc (cons (car ss) acc)))))))))
+;; the face poset: points are faces, x <= y when x is a face of y
+(define (face-poset facets)
+  (let* ((fs (faces-of facets)) (v (list->vector fs)) (n (vector-length v))
+         (covers (apply append (map (lambda (i) (map (lambda (j) (cons i j))
+                                                      (filter (lambda (j) (and (= (length (vector-ref v j)) (+ 1 (length (vector-ref v i))))
+                                                                               (subset? (vector-ref v i) (vector-ref v j))))
+                                                              (range n))))
+                                    (range n)))))
+    (make-finite-space n covers)))
+(define (cells-by-dimension facets)
+  (let ((fs (faces-of facets)))
+    (map (lambda (d) (length (filter (lambda (f) (= (length f) (+ d 1))) fs))) (range (apply max (map length fs))))))
+(define (sort-opens os) (let loop ((l (map sort-set os)) (acc '()))
+                          (if (null? l) acc
+                              (loop (cdr l) (let ins ((a acc)) (cond ((null? a) (list (car l))) ((opens<? (car l) (car a)) (cons (car l) a)) (else (cons (car a) (ins (cdr a))))))))))
+(define (opens<? A B) (cond ((null? A) (not (null? B))) ((null? B) #f) ((< (car A) (car B)) #t) ((> (car A) (car B)) #f) (else (opens<? (cdr A) (cdr B)))))
+(define (Z-cohomology X kmax) (poset-module-cohomology (constant-poset-module X) kmax))
+;; homology of the chain complex dual to the cochain complex of the constant
+;; sheaf: reverse the degrees and transpose the differentials
+(define (transpose M)
+  (let* ((r (integer-matrix-rows M)) (c (integer-matrix-cols M)) (T (integer-matrix c r)))
+    (for-each (lambda (i) (for-each (lambda (j) (integer-matrix-set! T j i (integer-matrix-ref M i j))) (range c))) (range r))
+    T))
+(define (Z-homology X d)
+  (let* ((cx (poset-module-cochain-complex (constant-poset-module X) d))
+         (dims (car cx)) (Ds (cadr cx))
+         (rdims (reverse dims))
+         (rDs (append (map (lambda (k) (transpose (list-ref Ds k))) (reverse (range d)))
+                      (list (integer-matrix 0 (car dims)))))
+         (h (cochain-cohomology rdims rDs)))
+    (map (lambda (k) (let ((e (list-ref h (- d k)))) (list k (cadr e) (caddr e)))) (range (+ d 1)))))
+(define (betti h) (map cadr h))
+(define (alternating xs) (let loop ((l xs) (s 1) (acc 0)) (if (null? l) acc (loop (cdr l) (- s) (+ acc (* s (car l)))))))
+
+(define (simplex-boundary n) ;; the facets of the boundary of the n-simplex
+  (map (lambda (i) (filter (lambda (v) (not (= v i))) (range (+ n 1)))) (range (+ n 1))))
+(define rp2-facets '((1 2 3) (1 3 4) (1 4 5) (1 5 6) (1 6 2) (2 3 5) (3 4 6) (4 5 2) (5 6 3) (6 2 4)))
+;; 3 x 3 grids with sides identified: torus, and Klein bottle (one side reversed)
+(define (grid-facets twist)
+  (let ((V (lambda (i j) (if (= i 3) (+ 0 (modulo (if twist (- j) j) 3)) (+ (* 3 i) (modulo j 3))))))
+    (apply append (map (lambda (i) (apply append (map (lambda (j) (list (list (V i j) (V (+ i 1) j) (V (+ i 1) (+ j 1)))
+                                                                         (list (V i j) (V i (+ j 1)) (V (+ i 1) (+ j 1)))))
+                                                      (range 3))))
+                       (range 3)))))
+(define torus-facets (grid-facets #f))
+(define klein-facets (grid-facets #t))
+;; the minimal finite model of S^n: points a_k, b_k (k = 0..n), a_k, b_k < a_{k+1}, b_{k+1}
+(define (minimal-sphere n)
+  (make-finite-space (* 2 (+ n 1))
+                     (apply append (map (lambda (k) (list (cons (* 2 k) (* 2 (+ k 1))) (cons (* 2 k) (+ 1 (* 2 (+ k 1))))
+                                                          (cons (+ 1 (* 2 k)) (* 2 (+ k 1))) (cons (+ 1 (* 2 k)) (+ 1 (* 2 (+ k 1))))))
+                                        (range n)))))
+
+;; ---------------------------------------------------------------------------
+;; sheaf
+;; ---------------------------------------------------------------------------
+(define const2 (constant-set-presheaf pc-C '(p q)))
+(define a-const2 (sheafify pc-site const2))
+;; [sheaf#1] "for every covering family {p_i : U_i → U}_{i ∈ I} in J and for every
+;; compatible family of elements ... there is a unique element s ∈ A(U) such that
+;; A(p_i)(s) = s_i for all i ∈ I."
+(let* ((n 0)
+       (unique-everywhere
+        (lambda (F) (all? (lambda (c) (all? (lambda (S) (all? (lambda (fam) (set! n (+ n 1)) (= 1 (length (family-amalgamations F c S fam))))
+                                                               (matching-families F c S)))
+                                            (site-covering-sieves pc-site c)))
+                          (objects pc-C))))
+       (sheaf-ok (unique-everywhere a-const2))
+       (checked n)
+       (const-ok (unique-everywhere const2)))
+  (claim "sheaf" 1 "every matching family on every cover of the pseudocircle has exactly one amalgamation in a(const {p, q}) and not in const {p, q}; families checked"
+         checked (and sheaf-ok (not const-ok) (presheaf-sheaf? pc-site a-const2) (not (presheaf-sheaf? pc-site const2)))))
+;; [sheaf#2] "If in the above definition there is at most one such s, we say that A
+;; is a separated presheaf with respect to J.": the constant presheaf is not even
+;; separated (two sections on the empty open, which the empty family covers); with
+;; one section on the empty open it is separated but does not glue on {a, b}
+(let* ((empty (pc-open '()))
+       (F1 (make-set-presheaf pc-C (map (lambda (c) (if (= c empty) '(*) '(p q))) (objects pc-C))
+                              (lambda (a x) (if (= (arrow-source pc-C a) empty) '* x))))
+       (v (list (presheaf-separated? pc-site const2) (presheaf-separated? pc-site F1) (presheaf-sheaf? pc-site F1)))
+       (viol (filter (lambda (x) (= (car x) (pc-open '(0 1)))) (presheaf-sheaf-violations pc-site F1))))
+  (claim "sheaf" 2 "(const separated?, const with F(empty) = 1 separated?, sheaf?) and its failing open" (list v (map car viol))
+         (and (equal? v '(#f #t #f)) (pair? viol) (all? (lambda (x) (eq? 'not-glueing (caddr x))) viol))))
+;; [sheaf#3] "A sheaf on (C,J) is a presheaf A ∈ PSh(C) that is a local object with
+;; respect to all i_{U_i}: ... the hom-functor PSh_C(−,A) sends the canonical
+;; morphisms i_{U_i} : S({U_i}) → j(U) to isomorphisms.": |Hom(S, A)| (natural
+;; transformations out of the sieve as a presheaf) = |Hom(j(U), A)| = |A(U)|
+(let* ((T (presheaf-topos pc-C))
+       (sieve-presheaf (lambda (U S) (make-set-presheaf pc-C (map (lambda (d) (filter (lambda (f) (= d (arrow-source pc-C f))) S)) (objects pc-C))
+                                                        (lambda (a f) (category-compose pc-C f a)))))
+       (local? (lambda (A) (let ((tA (topos-object T A)))
+                             (all? (lambda (U) (all? (lambda (S) (= (length (topos-morphisms T (topos-object T (sieve-presheaf U S)) tA))
+                                                                     (length (topos-morphisms T (topos-object T (representable-presheaf pc-C U)) tA))
+                                                                     (length (matching-families A U S))))
+                                                     (site-covering-sieves pc-site U)))
+                                   (objects pc-C)))))
+       (v (list (local? a-const2) (local? const2))))
+  (claim "sheaf" 3 "(a(const) local for every covering sieve?, const local?)" v (equal? v '(#t #f))))
+
+;; ---------------------------------------------------------------------------
+;; sheafification
+;; ---------------------------------------------------------------------------
+(define const3 (constant-set-presheaf pc-C '(0 1 2)))
+(define Fplus (presheaf-plus pc-site const2))
+;; [sheafification#1] "the sheafification functor universally turns presheaves into sheaves."
+(let ((counts (map (lambda (F) (map (lambda (c) (presheaf-element-count (sheafify pc-site F) c)) (objects pc-C))) (list const2 const3))))
+  (claim "sheafification" 1 "sections of a(const {p, q}) and a(const {0, 1, 2}) on the seven opens; both sheaves" counts
+         (and (equal? counts '((1 2 2 4 2 2 2) (1 3 3 9 3 3 3)))
+              (presheaf-sheaf? pc-site (sheafify pc-site const2)) (presheaf-sheaf? pc-site (sheafify pc-site const3)))))
+;; [sheafification#2] "The inclusion of sheaves into presheaves admits a left
+;; adjoint functor": |Hom_PSh(F, G)| = |Hom_Sh(aF, G)| for sheaves G
+(let* ((T (presheaf-topos pc-C))
+       (Gs (list a-const2 (sheafify pc-site const3) (sheafify pc-site (constant-set-presheaf pc-C '(z)))))
+       (rows (map (lambda (F) (map (lambda (G) (list (length (topos-morphisms T (topos-object T F) (topos-object T G)))
+                                                     (length (topos-morphisms T (topos-object T (sheafify pc-site F)) (topos-object T G)))))
+                                   Gs))
+                  (list const2 const3))))
+  (claim "sheafification" 2 "(|Hom(F, G)|, |Hom(aF, G)|) for F = const 2, const 3 and three sheaves G" rows
+         (all? (lambda (r) (all? (lambda (p) (= (car p) (cadr p))) r)) rows)))
+;; [sheafification#3] "the unit of the (L ⊣ i)-adjunction has as components natural
+;; morphisms X → LX in PSh(C)" and Sh(C) is "a reflective subcategory": the unit is
+;; natural, and it is an isomorphism on a sheaf
+(let* ((u (presheaf-unit-map pc-site const2 Fplus))
+       (aplus (presheaf-plus pc-site a-const2)) (ua (presheaf-unit-map pc-site a-const2 aplus))
+       (bij (all? (lambda (c) (equal? (sort (vector->list (vector-ref ua c)) <) (range (presheaf-element-count aplus c)))) (objects pc-C))))
+  (claim "sheafification" 3 "(unit const -> const^+ natural?, unit on a sheaf bijective?)" (list (presheaf-natural? const2 Fplus u) bij)
+         (and (presheaf-natural? const2 Fplus u) (presheaf-natural? a-const2 aplus ua) bij)))
+;; [sheafification#4] "every presheaf is related by a local isomorphism to its
+;; sheafification.": the unit F -> aF is locally surjective and locally injective
+(let* ((F const2) (aF a-const2) (FF Fplus)
+       (u1 (presheaf-unit-map pc-site F FF)) (u2 (presheaf-unit-map pc-site FF aF))
+       (u (lambda (c i) (vector-ref (vector-ref u2 c) (vector-ref (vector-ref u1 c) i))))
+       (image (lambda (c) (map (lambda (i) (u c i)) (range (presheaf-element-count F c)))))
+       (into (lambda (U) (category-arrows-into pc-C U)))
+       (surj (all? (lambda (U) (all? (lambda (s) (site-covering? pc-site U (filter (lambda (f) (memv (presheaf-restrict-index aF f s) (image (arrow-source pc-C f)))) (into U))))
+                                     (range (presheaf-element-count aF U))))
+                   (objects pc-C)))
+       (inj (all? (lambda (U) (all? (lambda (x) (all? (lambda (y) (or (not (= (u U x) (u U y)))
+                                                                      (site-covering? pc-site U (filter (lambda (f) (= (presheaf-restrict-index F f x) (presheaf-restrict-index F f y))) (into U)))))
+                                                      (range (presheaf-element-count F U))))
+                                     (range (presheaf-element-count F U))))
+                  (objects pc-C)))
+       (not-iso (not (all? (lambda (c) (= (presheaf-element-count F c) (presheaf-element-count aF c))) (objects pc-C)))))
+  (claim "sheafification" 4 "(locally surjective?, locally injective?, not an isomorphism?)" (list surj inj not-iso) (and surj inj not-iso)))
+
+;; [Lawvere-Tierney topology#3] "Sh_j(E) is itself a topos and the embedding is a
+;; full and faithful functor which has a left exact left adjoint functor E →
+;; Sh_j(E)": sheafification keeps the terminal object and binary products,
+;; |a(F x G)(U)| = |aF(U)| |aG(U)|, on presheaves that are not sheaves
+(let* ((T (presheaf-topos pc-C)) (empty (pc-open '()))
+       (F1 (make-set-presheaf pc-C (map (lambda (c) (if (= c empty) '(*) '(p q))) (objects pc-C))
+                              (lambda (a x) (if (= (arrow-source pc-C a) empty) '* x))))
+       (pairs (list (list F1 const3) (list const2 F1) (list const2 const3)))
+       (rows (map (lambda (pr) (let* ((F (car pr)) (G (cadr pr))
+                                      (FG (topos-type-presheaf (topos-product T (topos-object T F) (topos-object T G))))
+                                      (a (lambda (H) (map (lambda (c) (presheaf-element-count (sheafify pc-site H) c)) (objects pc-C)))))
+                                 (list (a FG) (map * (a F) (a G)))))
+                  pairs))
+       (one (map (lambda (c) (presheaf-element-count (sheafify pc-site (constant-set-presheaf pc-C '(*))) c)) (objects pc-C))))
+  (claim "Lawvere-Tierney topology" 3 "(|a(F x G)|, |aF| |aG|) per open for three pairs; a(1)" (list rows one)
+         (and (all? (lambda (r) (equal? (car r) (cadr r))) rows) (equal? one '(1 1 1 1 1 1 1)))))
+
+;; ---------------------------------------------------------------------------
+;; descent
+;; ---------------------------------------------------------------------------
+;; [descent#1] "A(X) ≃ lim A(Y•)" — the most commonly stated descent condition:
+;; for the constant sheaf Z and the twisted local system of the pseudocircle,
+;; F(U) -> Match(S, F) is an isomorphism of lattices for every covering sieve
+(let* ((Z (poset-module->module-presheaf pc-site (constant-poset-module pseudocircle)))
+       (tw (poset-module->module-presheaf pc-site (poset-local-system pseudocircle (lambda (x y) (if (and (= x 3) (= y 1)) -1 1)))))
+       (ranks (lambda (F) (map (lambda (c) (module-presheaf-rank F c)) (objects pc-C)))))
+  (claim "descent" 1 "ranks of Gamma(U) for Z and the twisted system; both satisfy descent on every covering sieve" (list (ranks Z) (ranks tw))
+         (and (module-presheaf-sheaf? pc-site Z) (module-presheaf-sheaf? pc-site tw))))
+;; [descent#2] "the pair (f*(u),ξ) is called a descent datum, the existence of a
+;; reconstruction procedure of u from (f*(u),ξ) is also called a descent": local
+;; results that agree on overlaps reconstruct the global one, and a disagreement
+;; names the overlap
+(let* ((domains (list (cons 'piece-1 (list 1 2 3)) (cons 'piece-2 (list 3 4)) (cons 'piece-3 (list 4 5 1))))
+       (good (glue-keyed-sections domains (list (cons 'piece-1 '((1 . a) (2 . b) (3 . c))) (cons 'piece-2 '((3 . c) (4 . d))) (cons 'piece-3 '((4 . d) (5 . e) (1 . a))))))
+       (bad (glue-keyed-sections domains (list (cons 'piece-1 '((1 . a) (2 . b) (3 . c))) (cons 'piece-2 '((3 . c) (4 . d))) (cons 'piece-3 '((4 . x) (5 . e) (1 . a)))))))
+  (claim "descent" 2 "glued value from agreeing pieces, and the obstruction from disagreeing ones" (list (glued-value good) (gluing-obstructions bad))
+         (and (glued? good) (= 5 (length (glued-value good))) (not (glued? bad))
+              (equal? (car (gluing-obstructions bad)) '(disagree piece-2 piece-3 (4) (d) (x))))))
+
+;; ---------------------------------------------------------------------------
+;; Cech cohomology
+;; ---------------------------------------------------------------------------
+;; [Cech cohomology#1] "The Čech cohomology groups of X with coefficients in A_•
+;; relative to the given cover are the chain homology groups of the Čech complex"
+;; and "there are technical conditions on a site and a cover to ensure that the
+;; result of the Čech cohomology algorithm really coincides with ... abelian sheaf
+;; cohomology": on the Leray cover of the pseudocircle Cech = derived for Z and
+;; the twisted system; on the cover of the minimal 2-sphere by its two maximal
+;; opens (whose intersection is a circle) they differ
+(let* ((tw (poset-local-system pseudocircle (lambda (x y) (if (and (= x 3) (= y 1)) -1 1))))
+       (Z (constant-poset-module pseudocircle))
+       (cover (list (finite-space-down-set pseudocircle 2) (finite-space-down-set pseudocircle 3)))
+       (S2 (minimal-sphere 2)) (Z2 (constant-poset-module S2))
+       (cover2 (list (finite-space-down-set S2 4) (finite-space-down-set S2 5)))
+       (cech2 (poset-module-cech-cohomology Z2 cover2 2)) (derived2 (poset-module-cohomology Z2 2)))
+  (claim "Cech cohomology" 1 "(Leray: Cech H^1 of the twisted system; non-Leray on S^2: Cech, derived)"
+         (list (cadr (poset-module-cech-cohomology tw cover 1)) cech2 derived2)
+         (and (equal? (poset-module-cech-cohomology tw cover 1) (poset-module-cohomology tw 1))
+              (equal? (poset-module-cech-cohomology Z cover 1) (poset-module-cohomology Z 1))
+              (not (equal? cech2 derived2)) (equal? derived2 '((0 1 ()) (1 0 ()) (2 1 ()))))))
+;; [Cech cohomology#2] "a Čech cocycle is a collection {g_ij ...} such that
+;; g_ij g_jk = g_ik on U_ijk" (written additively: the cocycle condition d g = 0):
+;; the generator of Cech H^1 of the twisted system satisfies it, has order 2, and
+;; is not a coboundary
+(let* ((tw (poset-local-system pseudocircle (lambda (x y) (if (and (= x 3) (= y 1)) -1 1))))
+       (cover (list (finite-space-down-set pseudocircle 2) (finite-space-down-set pseudocircle 3)))
+       (cx (poset-module-cech-complex tw cover 2))
+       (D0 (list-ref (cadr cx) 0)) (D1 (list-ref (cadr cx) 1))
+       (gens (cohomology-generators cx 1)) (g (cdr (car gens)))
+       (zero? (lambda (v) (all? (lambda (x) (= x 0)) (vector->list v)))))
+  (claim "Cech cohomology" 2 "(order, cocycle) of the Cech H^1 generator" (car gens)
+         (and (= 1 (length gens)) (= 2 (car (car gens)))
+              (zero? (integer-matrix-vector D1 g))
+              (not (integer-in-column-span? D0 g)))))
+
+;; ---------------------------------------------------------------------------
+;; finite topological space, specialization topology, pseudocircle
+;; ---------------------------------------------------------------------------
+;; [finite topological space#1] "finite topological spaces are equivalent to finite
+;; preordered sets, by the specialisation order": on a 3-point set, the topologies
+;; (enumerated as families of subsets) and the preorders are equinumerous and
+;; preorder -> opens is a bijection
+(let* ((pts '(0 1 2)) (subsets (map sort-set (sheaf-subsets pts)))
+       (topologies (filter (lambda (fam) (and (member '() fam) (member pts fam)
+                                              (all? (lambda (A) (all? (lambda (B) (and (member (sort-set (append A B)) fam) (member (filter (lambda (x) (memv x B)) A) fam))) fam)) fam)))
+                           (map (lambda (f) (map sort-set f)) (sheaf-subsets subsets))))
+       (pairs (filter (lambda (p) (not (= (car p) (cdr p)))) (apply append (map (lambda (x) (map (lambda (y) (cons x y)) pts)) pts))))
+       (transitive? (lambda (R) (all? (lambda (p) (all? (lambda (q) (or (not (= (cdr p) (car q))) (= (car p) (cdr q)) (member (cons (car p) (cdr q)) R))) R)) R)))
+       (preorders (filter transitive? (sheaf-subsets pairs)))
+       (opens-of (lambda (R) (sort-opens (finite-space-opens (make-finite-space 3 R)))))
+       (images (map opens-of preorders))
+       (distinct (let loop ((l images) (acc '())) (if (null? l) acc (loop (cdr l) (if (member (car l) acc) acc (cons (car l) acc)))))))
+  (claim "finite topological space" 1 "(topologies on 3 points, preorders on 3 points, distinct opens families)" (list (length topologies) (length preorders) (length distinct))
+         (and (= 29 (length topologies)) (= 29 (length preorders)) (= 29 (length distinct))
+              (all? (lambda (o) (member o (map sort-opens topologies))) distinct))))
+;; [finite topological space#2] "Finite topological spaces have the same weak
+;; homotopy types as finite simplicial complexes / finite CW-complexes." (McCord):
+;; the face posets of the boundaries of the 2- and 3-simplex have the cohomology of
+;; S^1 and S^2, the same as the 4- and 6-point minimal models
+(let* ((s1 (Z-cohomology (face-poset (simplex-boundary 2)) 2)) (s2 (Z-cohomology (face-poset (simplex-boundary 3)) 3))
+       (m1 (Z-cohomology (minimal-sphere 1) 2)) (m2 (Z-cohomology (minimal-sphere 2) 3)))
+  (claim "finite topological space" 2 "H^* of the face posets of the boundary of the 2- and 3-simplex" (list s1 s2)
+         (and (equal? s1 m1) (equal? s2 m2) (equal? (betti s1) '(1 1 0)) (equal? (betti s2) '(1 0 1 0)))))
+;; [specialization topology#1] "arbitrary (as opposed to just finite)
+;; intersections of open subsets are still open" and "Declare a subset A of P to
+;; be an open subset if it is upwards-closed": the opens of a finite space are the
+;; up-sets of the opposite order (core.sheaf orders points so that opens are down-sets)
+(let* ((spaces (list pseudocircle (minimal-sphere 2) (face-poset (simplex-boundary 2)) (make-finite-space 3 (list (cons 0 1) (cons 1 2)))))
+       (ok (all? (lambda (X)
+                   (let* ((n (finite-space-size X)) (opens (sort-opens (finite-space-opens X)))
+                          (up-sets-of-op (filter (lambda (A) (all? (lambda (a) (all? (lambda (b) (or (not (finite-space-leq? X b a)) (memv b A))) (range n))) A))
+                                                 (sheaf-subsets (range n)))))
+                     (and (equal? opens (sort-opens up-sets-of-op))
+                          (all? (lambda (fam) (or (null? fam) (member (sort-set (let loop ((l (cdr fam)) (acc (car fam))) (if (null? l) acc (loop (cdr l) (filter (lambda (x) (memv x (car l))) acc))))) opens)))
+                                (sheaf-subsets opens)))))
+                 spaces)))
+  (claim "specialization topology" 1 "opens = up-sets of the opposite order, closed under arbitrary intersection; opens per space"
+         (map (lambda (X) (length (finite-space-opens X))) spaces) ok))
+;; [specialization topology#2] "A function between preorders is order-preserving if
+;; and only if it is a continuous map with respect to the specialisation topology"
+(let* ((X pseudocircle) (Y (make-finite-space 3 (list (cons 0 1) (cons 1 2))))
+       (maps (let loop ((k 4) (acc (list '()))) (if (= k 0) acc (loop (- k 1) (apply append (map (lambda (m) (map (lambda (v) (cons v m)) '(0 1 2))) acc))))))
+       (monotone? (lambda (m) (all? (lambda (a) (all? (lambda (b) (or (not (finite-space-leq? X a b)) (finite-space-leq? Y (list-ref m a) (list-ref m b)))) (range 4))) (range 4))))
+       (xopens (sort-opens (finite-space-opens X)))
+       (continuous? (lambda (m) (all? (lambda (V) (member (sort-set (filter (lambda (a) (memv (list-ref m a) V)) (range 4))) xopens)) (finite-space-opens Y))))
+       (agree (all? (lambda (m) (eq? (monotone? m) (continuous? m))) maps)))
+  (claim "specialization topology" 2 "pseudocircle -> 3-chain: (maps, monotone maps); monotone iff continuous"
+         (list (length maps) (length (filter monotone? maps))) agree))
+;; [pseudocircle#1] "whose underlying set is a 4-set, say {l,r,t,b}" "whose
+;; topological structure, given as the collection of open subsets, is
+;; {{l,r,t,b}, {l,r,t}, {l,r,b}, {l,r}, {l}, {r}, ∅}" (l, r, t, b = 0, 1, 2, 3)
+(let ((opens (sort-opens (finite-space-opens pseudocircle))))
+  (claim "pseudocircle" 1 "the opens of the 4-point space with l, r < t, b" opens
+         (equal? opens (sort-opens '((0 1 2 3) (0 1 2) (0 1 3) (0 1) (0) (1) ())))))
+;; [pseudocircle#2] "The pseudocircle is a finite topological space which is
+;; weakly homotopy equivalent to the standard circle.": its integral cohomology is
+;; that of the triangulated circle (the face poset of the boundary of a triangle)
+(let ((h (Z-cohomology pseudocircle 2)))
+  (claim "pseudocircle" 2 "H^*(pseudocircle; Z)" h
+         (and (equal? h '((0 1 ()) (1 1 ()) (2 0 ()))) (equal? h (Z-cohomology (face-poset (simplex-boundary 2)) 2)))))
+
+;; ---------------------------------------------------------------------------
+;; sphere, torus, real projective space, Klein bottle, Euler characteristic
+;; ---------------------------------------------------------------------------
+;; [sphere#1] "The n-sphere can be built iteratively starting with S^(-1)=∅,
+;; yielding a CW complex with two k-cells in each dimension k ≤ n.": the finite
+;; model with two points in each dimension has the cohomology of S^n, n = 0..3
+(let ((rows (map (lambda (n) (betti (Z-cohomology (minimal-sphere n) (+ n 1)))) (range 4))))
+  (claim "sphere" 1 "Betti numbers of the (2n+2)-point model, n = 0..3" rows
+         (equal? rows '((2 0) (1 1 0) (1 0 1 0) (1 0 0 1 0)))))
+;; [sphere#2] "The n-sphere is the boundary of the (n+1)-ball.": the boundary of
+;; the (n+1)-simplex has H^n = Z and no other reduced cohomology, n = 1..3
+(let ((rows (map (lambda (n) (Z-cohomology (face-poset (simplex-boundary (+ n 1))) n)) '(1 2 3))))
+  (claim "sphere" 2 "top cohomology of the boundary of the 2-, 3-, 4-simplex" (map (lambda (h) (list-ref h (- (length h) 1))) rows)
+         (all? (lambda (h) (let ((n (- (length h) 1))) (equal? (betti h) (map (lambda (k) (if (or (= k 0) (= k n)) 1 0)) (range (+ n 1)))))) rows)))
+;; [torus#1] "As a homotopy type the torus is the product of two copies of the
+;; circle": the product of two pseudocircles and a triangulated torus have the
+;; same integral cohomology Z, Z^2, Z
+(let* ((prod (Z-cohomology (finite-space-product pseudocircle pseudocircle) 2))
+       (tri (Z-cohomology (face-poset torus-facets) 2)))
+  (claim "torus" 1 "H^* of pseudocircle x pseudocircle and of the 3 x 3 triangulated torus" (list prod tri)
+         (and (equal? prod tri) (equal? prod '((0 1 ()) (1 2 ()) (2 1 ()))))))
+;; [torus#2] "the stable homotopy type of the torus is the wedge sum of 2 circles
+;; and one 2-sphere": reduced Betti numbers of T^2 = 2 x those of S^1 + those of S^2
+(let* ((red (lambda (b) (cons (- (car b) 1) (cdr b))))
+       (t (red (betti (Z-cohomology (face-poset torus-facets) 2))))
+       (s1 (red (betti (Z-cohomology pseudocircle 2)))) (s2 (red (betti (Z-cohomology (minimal-sphere 2) 2)))))
+  (claim "torus" 2 "reduced Betti numbers of T^2, S^1, S^2" (list t s1 s2) (equal? t (map (lambda (a b) (+ (* 2 a) b)) s1 s2))))
+;; [real projective space#1] "H^k(ℝP^n) = {ℤ if k=0 or k=n if odd; ℤ_2 if k even
+;; and 1≤k<n; 0 otherwise}" — for n = 2 the top group is the Z/2 of the
+;; non-orientable surface: H^0 = Z, H^1 = 0, H^2 = Z/2 (6-vertex RP^2)
+(let ((h (Z-cohomology (face-poset rp2-facets) 2)))
+  (claim "real projective space" 1 "H^*(RP^2; Z)" h (equal? h '((0 1 ()) (1 0 ()) (2 0 (2))))))
+;; [real projective space#2] "H_k(ℝP^n) = {ℤ if k=0 or k=n if odd; ℤ_2 if k odd and
+;; 1≤k<n; 0 otherwise}": H_0 = Z, H_1 = Z/2, H_2 = 0
+(let ((h (Z-homology (face-poset rp2-facets) 2)))
+  (claim "real projective space" 2 "H_*(RP^2; Z)" h (equal? h '((0 1 ()) (1 0 (2)) (2 0 ())))))
+;; [real projective space#3] "ℝP^n is orientable iff n is odd": the top integral
+;; cohomology is Z for RP^1 = S^1 and torsion for RP^2
+(let ((top1 (list-ref (Z-cohomology (face-poset (simplex-boundary 2)) 1) 1))
+      (top2 (list-ref (Z-cohomology (face-poset rp2-facets) 2) 2)))
+  (claim "real projective space" 3 "top cohomology of RP^1 and RP^2" (list top1 top2)
+         (and (equal? top1 '(1 1 ())) (equal? top2 '(2 0 (2))))))
+;; [Klein bottle#1] "A closed surface that does not admit an orientation.": a
+;; triangulated Klein bottle has H^2 = Z/2 (no fundamental class) and H^1 = Z
+(let ((h (Z-cohomology (face-poset klein-facets) 2)))
+  (claim "Klein bottle" 1 "H^*(K; Z) of the 3 x 3 triangulated Klein bottle" h (equal? h '((0 1 ()) (1 1 ()) (2 0 (2))))))
+;; [Euler characteristic#1] "χ(S^n) = {2 if n is even; 0 otherwise}"
+(let ((rows (map (lambda (n) (finite-space-euler-characteristic (minimal-sphere n) (+ n 1))) (range 5))))
+  (claim "Euler characteristic" 1 "chi of the minimal models of S^0 .. S^4" rows (equal? rows '(2 0 2 0 2))))
+;; [Euler characteristic#2] "χ(X) = Σ_{k ∈ ℕ} (-1)^k |cell(X)_k|" and "χ(V) ≔
+;; Σ_{n ∈ ℤ} (-1)^n rk_R H_n(V)": the alternating cell count equals the
+;; alternating sum of Betti numbers for RP^2, T^2 and the Klein bottle
+(let ((rows (map (lambda (f) (list (alternating (cells-by-dimension f)) (alternating (betti (Z-cohomology (face-poset f) 2)))))
+                 (list rp2-facets torus-facets klein-facets))))
+  (claim "Euler characteristic" 2 "(cell count chi, Betti chi) for RP^2, T^2, K" rows
+         (and (equal? rows '((1 1) (0 0) (0 0))))))
+;; [Euler characteristic#3] "χ(X) = χ(P_T(X))" (poset of triangulation simplices)
+;; and "χ(X) ≔ |Vertices(X)| - |Edges(X)| + |Faces(X)|"
+(let ((rows (map (lambda (f) (list (alternating (cells-by-dimension f)) (finite-space-euler-characteristic (face-poset f) 3)))
+                 (list rp2-facets torus-facets klein-facets (simplex-boundary 3)))))
+  (claim "Euler characteristic" 3 "(V - E + F, chi of the face poset) for RP^2, T^2, K, S^2" rows
+         (all? (lambda (r) (= (car r) (cadr r))) rows)))
+
+;; [Euler characteristic#4] "If C admits both a weighting and coweighting, then
+;; χ(C) := Σ_{a ∈ ob C} k^a ∈ ℚ": solving zeta k = 1 with zeta(a, b) = |C(a, b)|
+;; gives the Euler characteristic of the face posets of S^2 and RP^2, and 1/3 for
+;; the one-object category of Z/3
+(let* ((weighting-chi (lambda (C) (let* ((n (category-object-count C))
+                                         (Z (integer-matrix n n)))
+                                    (for-each (lambda (a) (for-each (lambda (b) (integer-matrix-set! Z a b (length (category-hom C a b)))) (range n))) (range n))
+                                    (let ((k (rational-solve Z n (make-vector n 1)))) (and k (apply + (vector->list k)))))))
+       (poset-of (lambda (X) (poset-category (finite-space-size X) (lambda (x y) (finite-space-leq? X x y)))))
+       (BZ3 (make-category-from-presentation 1 (list (list 0 0 's)) (lambda (w) (let loop ((k (remainder (length w) 3)) (acc '())) (if (= k 0) acc (loop (- k 1) (cons 0 acc))))) 3))
+       (spaces (list (face-poset (simplex-boundary 3)) (face-poset rp2-facets)))
+       (rows (map (lambda (X) (list (weighting-chi (poset-of X)) (finite-space-euler-characteristic X 3))) spaces)))
+  (claim "Euler characteristic" 4 "(weighting chi, chain chi) for S^2 and RP^2 face posets; weighting chi of BZ/3"
+         (list rows (weighting-chi BZ3))
+         (and (all? (lambda (r) (= (car r) (cadr r))) rows) (= 1/3 (weighting-chi BZ3)))))
+
+;; [Euler characteristic#5] "χ(W) = χ(X) + χ(Y) - χ(Z)" (for homotopy pushouts):
+;; a finite space covered by two open subspaces X, Y with intersection Z is their
+;; homotopy pushout (McCord), and the alternating chain counts add up
+(let* ((chi (lambda (S pts) (let loop ((k 0) (acc 0)) (let ((n (length (finite-space-chains S k pts)))) (if (= n 0) acc (loop (+ k 1) (+ acc (* (if (even? k) 1 -1) n))))))))
+       (cases (list (list pseudocircle (finite-space-down-set pseudocircle 2) (finite-space-down-set pseudocircle 3))
+                    (list (minimal-sphere 2) (finite-space-down-set (minimal-sphere 2) 4) (finite-space-down-set (minimal-sphere 2) 5))
+                    (let ((K (face-poset rp2-facets))) (list K (filter (lambda (x) (any? (lambda (y) (finite-space-leq? K x y)) (range 5))) (range (finite-space-size K)))
+                                                             (filter (lambda (x) (any? (lambda (y) (finite-space-leq? K x y)) (filter (lambda (x) (>= x 3)) (range (finite-space-size K))))) (range (finite-space-size K)))))))
+       (rows (map (lambda (c) (let* ((S (car c)) (X (cadr c)) (Y (caddr c)) (Z (filter (lambda (x) (memv x Y)) X))
+                                     (W (sort-set (append X Y))))
+                                (list (chi S W) (+ (chi S X) (chi S Y) (- (chi S Z))))))
+                  cases)))
+  (claim "Euler characteristic" 5 "(chi(X union Y), chi(X) + chi(Y) - chi(X meet Y)) for open covers of S^1, S^2 and RP^2 models" rows
+         (all? (lambda (r) (= (car r) (cadr r))) rows)))
+
+;; ---------------------------------------------------------------------------
+;; nerve
+;; ---------------------------------------------------------------------------
+;; [nerve#1] "N(𝒞)_n ≔ 𝒞_1^{×_{𝒞_0}^n}" — the set of sequences of n composable
+;; morphisms: for the interval category 0 -> 1, |N_n| = n + 2
+(let* ((C (poset-category 2 (lambda (x y) (<= x y))))
+       (seqs (lambda (n) (if (= n 0) (map list (objects C))
+                             (let loop ((k n) (acc (map list (range (category-arrow-count C)))))
+                               (if (= k 1) acc
+                                   (loop (- k 1) (apply append (map (lambda (s) (map (lambda (g) (cons g s)) (filter (lambda (g) (category-composable? C g (car s))) (range (category-arrow-count C))))) acc))))))))
+       (counts (map (lambda (n) (length (seqs n))) (range 6))))
+  (claim "nerve" 1 "|N([1])_n| for n = 0..5" counts (equal? counts (map (lambda (n) (+ n 2)) (range 6)))))
+;; [nerve#2] "s_k are given by inserting an identity morphism on x_k": the
+;; non-degenerate n-simplices of the nerve of a poset (sequences with no identity)
+;; are its strict chains, counted by finite-space-chains
+(let* ((X (minimal-sphere 2)) (n (finite-space-size X))
+       (C (poset-category n (lambda (x y) (finite-space-leq? X x y))))
+       (ids (map (lambda (x) (category-identity C x)) (objects C)))
+       (nondeg (lambda (k) (let loop ((j k) (acc (map list (filter (lambda (a) (not (memv a ids))) (range (category-arrow-count C))))))
+                             (if (= j 1) acc
+                                 (loop (- j 1) (apply append (map (lambda (s) (map (lambda (g) (cons g s)) (filter (lambda (g) (and (not (memv g ids)) (category-composable? C g (car s)))) (range (category-arrow-count C))))) acc)))))))
+       (rows (map (lambda (k) (list (length (nondeg k)) (length (finite-space-chains X k (range n))))) '(1 2))))
+  (claim "nerve" 2 "(non-degenerate 1- and 2-simplices of N(P), strict chains) for the 6-point S^2 model" rows
+         (all? (lambda (r) (= (car r) (cadr r))) rows)))
+
+(if (= failed 0)
+    (begin (display "PASS: nlab_space_test (") (display passed) (display " claims)") (newline))
+    (begin (display "FAIL: nlab_space_test (") (display failed) (display " of ") (display (+ passed failed)) (display " claims failed)") (newline)))

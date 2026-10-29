@@ -1,0 +1,139 @@
+# nLab conformance manifest: one row per claim quoted in tests/nlab/*.esk or listed as not yet computable.
+# Columns: page, claim number, status (computed | planned), suite (computed) or the facility it needs (planned), reference program.
+# scripts/run_nlab_conformance.sh checks every computed row against the suites' output.
+subobject classifier	1	computed	nlab_topos_test	-
+subobject classifier	2	computed	nlab_topos_test	-
+subobject classifier	3	computed	nlab_topos_test	-
+subobject classifier	4	computed	nlab_topos_test	-
+subobject classifier	5	computed	nlab_topos_test	-
+sieve	1	computed	nlab_topos_test	-
+sieve	2	computed	nlab_topos_test	-
+sieve	3	computed	nlab_topos_test	-
+Heyting algebra	1	computed	nlab_topos_test	-
+Heyting algebra	2	computed	nlab_topos_test	-
+Heyting algebra	3	computed	nlab_topos_test	-
+Heyting algebra	4	computed	nlab_topos_test	-
+Heyting algebra	5	computed	nlab_topos_test	-
+Heyting algebra	6	computed	nlab_topos_test	-
+Heyting algebra	7	computed	nlab_topos_test	-
+Grothendieck topology	1	computed	nlab_topos_test	-
+Grothendieck topology	2	computed	nlab_topos_test	-
+Grothendieck topology	3	computed	nlab_topos_test	-
+Lawvere-Tierney topology	1	computed	nlab_topos_test	-
+Lawvere-Tierney topology	2	computed	nlab_topos_test	-
+dense topology	1	computed	nlab_topos_test	-
+dense topology	2	computed	nlab_topos_test	-
+double negation topology	1	computed	nlab_topos_test	-
+double negation topology	2	computed	nlab_topos_test	-
+Boolean topos	1	computed	nlab_topos_test	-
+Boolean topos	2	computed	nlab_topos_test	-
+Boolean topos	3	computed	nlab_topos_test	-
+Boolean topos	4	computed	nlab_topos_test	-
+De Morgan topos	1	computed	nlab_topos_test	-
+De Morgan topos	2	computed	nlab_topos_test	-
+De Morgan topos	3	computed	nlab_topos_test	-
+De Morgan topos	4	computed	nlab_topos_test	-
+Kripke-Joyal semantics	1	computed	nlab_topos_test	-
+Kripke-Joyal semantics	2	computed	nlab_topos_test	-
+Kripke-Joyal semantics	3	computed	nlab_topos_test	-
+Kripke-Joyal semantics	4	computed	nlab_topos_test	-
+Kripke-Joyal semantics	5	computed	nlab_topos_test	-
+Yoneda lemma	1	computed	nlab_topos_test	-
+Yoneda lemma	2	computed	nlab_topos_test	-
+exponential object	1	computed	nlab_topos_test	-
+exponential object	2	computed	nlab_topos_test	-
+power object	1	computed	nlab_topos_test	-
+power object	2	computed	nlab_topos_test	-
+Sierpinski topos	1	computed	nlab_topos_test	-
+sheaf	1	computed	nlab_space_test	-
+sheaf	2	computed	nlab_space_test	-
+sheaf	3	computed	nlab_space_test	-
+sheafification	1	computed	nlab_space_test	-
+sheafification	2	computed	nlab_space_test	-
+sheafification	3	computed	nlab_space_test	-
+sheafification	4	computed	nlab_space_test	-
+Lawvere-Tierney topology	3	computed	nlab_space_test	-
+descent	1	computed	nlab_space_test	-
+descent	2	computed	nlab_space_test	-
+Cech cohomology	1	computed	nlab_space_test	-
+Cech cohomology	2	computed	nlab_space_test	-
+finite topological space	1	computed	nlab_space_test	-
+finite topological space	2	computed	nlab_space_test	-
+specialization topology	1	computed	nlab_space_test	-
+specialization topology	2	computed	nlab_space_test	-
+pseudocircle	1	computed	nlab_space_test	-
+pseudocircle	2	computed	nlab_space_test	-
+sphere	1	computed	nlab_space_test	-
+sphere	2	computed	nlab_space_test	-
+torus	1	computed	nlab_space_test	-
+torus	2	computed	nlab_space_test	-
+real projective space	1	computed	nlab_space_test	-
+real projective space	2	computed	nlab_space_test	-
+real projective space	3	computed	nlab_space_test	-
+Klein bottle	1	computed	nlab_space_test	-
+Euler characteristic	1	computed	nlab_space_test	-
+Euler characteristic	2	computed	nlab_space_test	-
+Euler characteristic	3	computed	nlab_space_test	-
+Euler characteristic	4	computed	nlab_space_test	-
+Euler characteristic	5	computed	nlab_space_test	-
+nerve	1	computed	nlab_space_test	-
+nerve	2	computed	nlab_space_test	-
+dual number	1	computed	nlab_ring_test	-
+dual number	2	computed	nlab_ring_test	-
+dual number	3	computed	nlab_ring_test	-
+local ring	6	computed	nlab_ring_test	-
+local ring	1	computed	nlab_ring_test	-
+local ring	2	computed	nlab_ring_test	-
+local ring	3	computed	nlab_ring_test	-
+local ring	4	computed	nlab_ring_test	-
+local ring	5	computed	nlab_ring_test	-
+nilpotent element	1	computed	nlab_ring_test	-
+nilpotent element	2	computed	nlab_ring_test	-
+multiplicative group of integers modulo n	1	computed	nlab_ring_test	-
+multiplicative group of integers modulo n	2	computed	nlab_ring_test	-
+multiplicative group of integers modulo n	3	computed	nlab_ring_test	-
+quadratic reciprocity law	1	computed	nlab_ring_test	-
+quadratic reciprocity law	2	computed	nlab_ring_test	-
+quadratic reciprocity law	3	computed	nlab_ring_test	-
+quadratic reciprocity law	4	computed	nlab_ring_test	-
+group algebra	1	computed	nlab_ring_test	-
+group algebra	2	computed	nlab_ring_test	-
+functor of points	1	computed	nlab_ring_test	-
+functor of points	2	computed	nlab_ring_test	-
+jet	1	computed	nlab_ring_test	-
+Smith normal form	1	computed	nlab_ring_test	-
+Smith normal form	2	computed	nlab_ring_test	-
+prime spectrum	1	computed	nlab_ring_test	-
+Kan extension	1	planned	core.category: functors between finite categories, coends, pointwise Kan extensions	examples/mathematics_finite_categories_kan_extensions.esk
+Kan extension	2	planned	core.category: colimits of finite set-valued diagrams	examples/mathematics_finite_categories_kan_extensions.esk
+adjoint functor	1	planned	core.category: functors and natural hom-set bijections	-
+adjoint functor	2	planned	core.category: units, counits and the triangle identities	-
+end	1	planned	core.category: ends and coends of finite set-valued bifunctors	-
+comma category	1	planned	core.category: comma, slice and coslice categories	-
+Sierpinski topos	2	planned	core.category with core.topos: functors between toposes (Pi, Disc, Gamma, coDisc)	-
+simplicial set	1	planned	core.simplicial: simplicial sets with face and degeneracy maps, standard simplices	-
+Kan complex	1	planned	core.simplicial: horns and horn fillers	examples/mathematics_kan_complexes_horns.esk
+nerve	3	planned	core.simplicial: the nerve as a simplicial set, horn filling	examples/mathematics_kan_complexes_horns.esk
+nerve	4	planned	core.simplicial: the Segal condition	-
+bar construction	1	planned	core.homological: the bar construction and the classifying space BG	examples/mathematics_classifying_space_dijkgraaf_witten.esk
+group cohomology	1	planned	core.homological: group cochains with coefficients in a G-module	examples/mathematics_group_cohomology_sweep.esk
+group cohomology	2	planned	core.homological: the inhomogeneous 2-cocycle condition	examples/mathematics_group_cohomology_order_eight.esk
+group cohomology	3	planned	core.homological: cup products and F_p coefficients	examples/mathematics_cohomology_rings_cup_products.esk
+cup product	1	planned	core.homological: the cochain-level cup product	examples/mathematics_cohomology_rings_cup_products.esk
+cup product	2	planned	core.homological: cohomology rings	examples/mathematics_cohomology_rings_cup_products.esk
+Steenrod square	1	planned	cup-i products and Steenrod squares over F_2	-
+Steenrod square	2	planned	F_2 and Z/4 coefficients and the Bockstein	-
+spectral sequence	1	planned	core.homological: the spectral sequence of a filtered complex	-
+spectral sequence	2	planned	core.homological: convergence to the associated graded	-
+crossed module	1	planned	finite groups and actions: crossed modules	examples/mathematics_two_groups_postnikov.esk
+crossed module	2	planned	finite groups: kernels and centres	examples/mathematics_two_groups_postnikov.esk
+Postnikov tower	1	planned	core.simplicial: homotopy groups of Kan complexes and Postnikov sections	examples/mathematics_two_groups_postnikov.esk
+structure sheaf	1	planned	core.ring with core.topos: the Zariski site of a finite ring and its structure sheaf	tests/stdlib/topos_local_ring_test.esk
+local ring	7	planned	core.ring with core.topos: the Zariski site of a finite ring (internal locality)	tests/stdlib/topos_local_ring_test.esk
+prime spectrum	2	planned	core.ring: the localization carrier R[1/f]	-
+functor of points	3	planned	non-affine schemes glued from affine charts	-
+real projective space	4	planned	core.homological: group cohomology of Z/2 (K(Z/2,1) = B Z/2)	-
+Cech cohomology	3	planned	outside finite computation: paracompact spaces	-
+torus	3	planned	topological complexity	-
+sphere	3	planned	topological complexity	-
+Klein bottle	2	planned	topological complexity	-

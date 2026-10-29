@@ -1,0 +1,353 @@
+;;; nLab conformance: commutative algebra and arithmetic over ring carriers.
+;;;
+;;; Each claim below is quoted from the nLab page named in its header
+;;; (https://ncatlab.org/nlab/show/<page>, read 2026-10-29) and decided exactly
+;;; with core.ring (Z/n, dual numbers and jets, polynomials, group rings, ring
+;;; maps), core.multimodular (Chinese remainder, determinants) and
+;;; core.integer_linalg (Smith normal form). A claim prints "PASS: [page#k] ..."
+;;; or "FAIL: [page#k] ..." with the computed value. Coverage and planned claims:
+;;; docs/reports/NLAB_CONFORMANCE.md.
+(require stdlib)
+(require core.ring)
+(require core.multimodular)
+(require core.integer_linalg)
+
+(define passed 0)
+(define failed 0)
+(define (claim page k text value ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display "[") (display page) (display "#") (display k) (display "] ")
+  (display text) (display " => ") (write value) (newline))
+(define (all? p xs) (cond ((null? xs) #t) ((p (car xs)) (all? p (cdr xs))) (else #f)))
+(define (any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (any? p (cdr xs)))))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (from a b) (filter (lambda (x) (>= x a)) (range (+ b 1))))
+(define (count p xs) (length (filter p xs)))
+(define (primes-to n) (filter exact-prime? (from 2 n)))
+;; prime factorisation by trial division, independent of the carriers
+(define (factor n) (let loop ((p 2) (m n) (acc '()))
+                     (cond ((= m 1) (reverse acc))
+                           ((> (* p p) m) (reverse (cons (cons m 1) acc)))
+                           ((= 0 (remainder m p)) (let strip ((m m) (e 0)) (if (= 0 (remainder m p)) (strip (quotient m p) (+ e 1)) (loop (+ p 1) m (cons (cons p e) acc)))))
+                           (else (loop (+ p 1) m acc)))))
+(define (prime-power? n) (and (> n 1) (= 1 (length (factor n)))))
+;; every element of a carrier with finitely many elements
+(define (zmod-elements n) (range n))
+(define (jet-elements J base-elements k)
+  (let loop ((j k) (acc (list '())))
+    (if (= j 0) (map (lambda (cs) (make-jet J cs)) acc)
+        (loop (- j 1) (apply append (map (lambda (cs) (map (lambda (a) (cons a cs)) base-elements)) acc))))))
+(define (local-ring? R elems) (all? (lambda (a) (or (r-unit? R a) (r-unit? R (r- R 1 a)))) elems))
+
+;; ---------------------------------------------------------------------------
+;; dual number
+;; ---------------------------------------------------------------------------
+(define Qe (make-jets rationals 2))
+(define Qx (make-polys rationals))
+;; [dual number#1] "A dual number is given by an expression of the form a + ϵb,
+;; where a and b are real numbers and ϵ² = 0" and "the polynomial ring ℝ[x] modulo
+;; x²": e^2 = 0, and x -> e is a surjective ring map Q[x] -> Q[e]/e^2 whose kernel
+;; is (x^2) on the sample polynomials
+(let* ((e (jet-seed Qe 0))
+       (phi (ring-poly-evaluation Qx Qe e))
+       (polys (map (lambda (cs) (ring-poly Qx cs)) '((1) (0 1) (2 -3) (0 0 1) (5 0 1) (1/2 2 0 7) (0 0 3 1) (-1 4 2 0 1))))
+       (hom (all? (lambda (p) (all? (lambda (q) (and (r= Qe (ring-map-apply phi (r* Qx p q)) (r* Qe (ring-map-apply phi p) (ring-map-apply phi q)))
+                                                     (r= Qe (ring-map-apply phi (r+ Qx p q)) (r+ Qe (ring-map-apply phi p) (ring-map-apply phi q)))))
+                                   polys))
+                  polys))
+       (kernel (all? (lambda (p) (let ((cs (append (ring-poly-coefficients p) '(0 0))))
+                                   (eq? (r-zero? Qe (ring-map-apply phi p)) (and (= 0 (car cs)) (= 0 (cadr cs))))))
+                     polys))
+       (onto (all? (lambda (ab) (equal? (jet-coefficients (ring-map-apply phi (ring-poly Qx ab))) ab)) '((3 4) (0 1) (-2/3 5)))))
+  (claim "dual number" 1 "e * e in Q[e]/e^2, and Q[x] -> Q[e]/e^2 a surjective ring map with kernel (x^2)"
+         (jet-coefficients (r* Qe e e)) (and (r-zero? Qe (r* Qe e e)) hom kernel onto)))
+;; [dual number#2] "the dual numbers are not as nice as the real or complex
+;; numbers, as they do not form a field": e is nonzero and not a unit; over F_5 the
+;; units are exactly the a + e b with a != 0
+(let* ((J (make-jets (make-zmod 5) 2)) (els (jet-elements J (range 5) 2))
+       (units (filter (lambda (x) (r-unit? J x)) els)))
+  (claim "dual number" 2 "(field?, e unit?, units of F_5[e]/e^2 of 25)" (list (ring-ref Qe 'field?) (r-unit? Qe (jet-seed Qe 0)) (length units))
+         (and (not (ring-ref Qe 'field?)) (not (r-unit? Qe (jet-seed Qe 0))) (= 20 (length units))
+              (all? (lambda (x) (not (= 0 (jet-coefficient x 0)))) units))))
+;; [dual number#3] "|a + ϵb| = |a|": the absolute value read through the ring map
+;; e -> 0 is multiplicative
+(let* ((pr (jet-primal Qe))
+       (xs (map (lambda (ab) (make-jet Qe ab)) '((3 4) (-2 1/2) (0 7) (5/3 -1) (-1 0))))
+       (absv (lambda (x) (abs (ring-map-apply pr x)))))
+  (claim "dual number" 3 "|a + e b| for (3 4) (-2 1/2) (0 7) (5/3 -1) (-1 0)" (map absv xs)
+         (and (equal? (map absv xs) '(3 2 0 5/3 1))
+              (all? (lambda (x) (all? (lambda (y) (= (absv (r* Qe x y)) (* (absv x) (absv y)))) xs)) xs))))
+;; [local ring#6] "morphisms from Spec R to a scheme X correspond exactly to pairs
+;; (x,v), where x ∈ X and v is a (Zariski) tangent vector at x" for R = k[ϵ]/ϵ²:
+;; F_p[e]-points of the smooth parabola y = x^2 lie p over each of its p points;
+;; over the cusp y^2 = x^3 the singular origin has a 2-dimensional tangent space
+(let* ((p 5) (J (make-jets (make-zmod p) 2)) (els (jet-elements J (range p) 2))
+       (points (lambda (f) (filter (lambda (xy) (r-zero? J (f (car xy) (cadr xy)))) (apply append (map (lambda (x) (map (lambda (y) (list x y)) els)) els)))))
+       (parabola (points (lambda (x y) (r- J y (r* J x x)))))
+       (cusp (points (lambda (x y) (r- J (r* J y y) (r* J x (r* J x x))))))
+       (over-origin (count (lambda (xy) (and (= 0 (jet-coefficient (car xy) 0)) (= 0 (jet-coefficient (cadr xy) 0)))) cusp)))
+  (claim "local ring" 6 "F_5[e]-points of y = x^2 and of y^2 = x^3, and the cusp's points over the origin"
+         (list (length parabola) (length cusp) over-origin)
+         (and (= (length parabola) (* p p)) (= over-origin (* p p)) (= (length cusp) (+ (* p p) (* (- p 1) p))))))
+
+;; ---------------------------------------------------------------------------
+;; local ring
+;; ---------------------------------------------------------------------------
+;; [local ring#1] "whenever a + b = 1, a or b is invertible.": Z/n is local exactly
+;; when n is a prime power, n = 2..60
+(let* ((ns (from 2 60)) (local (filter (lambda (n) (local-ring? (make-zmod n) (zmod-elements n))) ns)))
+  (claim "local ring" 1 "local Z/n for n = 2..60" local (equal? local (filter prime-power? ns))))
+;; [local ring#2] "The non-invertible elements form an ideal.": equivalent to the
+;; definition, on the same rings
+(let* ((ns (from 2 60))
+       (ideal? (lambda (n) (let* ((R (make-zmod n)) (nu (filter (lambda (a) (not (r-unit? R a))) (zmod-elements n))))
+                             (all? (lambda (a) (all? (lambda (b) (memv (r+ R a b) nu)) nu)) nu))))
+       (rows (filter ideal? ns)))
+  (claim "local ring" 2 "Z/n whose non-units form an ideal, n = 2..60" (length rows)
+         (equal? rows (filter (lambda (n) (local-ring? (make-zmod n) (zmod-elements n))) ns))))
+;; [local ring#3] "For R a local ring, then the power series ring R[[x]] is also a
+;; local ring.": every truncation R[x]/x^k (a jet carrier) of a local R is local;
+;; for the non-local Z/6 it is not
+(let* ((cases (list (list 9 2) (list 4 3) (list 5 3) (list 8 2) (list 6 2)))
+       (rows (map (lambda (c) (let ((J (make-jets (make-zmod (car c)) (cadr c))))
+                                (list (car c) (cadr c) (local-ring? J (jet-elements J (range (car c)) (cadr c))))))
+                  cases)))
+  (claim "local ring" 3 "(n, k, Z/n[x]/x^k local?)" rows (equal? (map caddr rows) '(#t #t #t #t #f))))
+;; [local ring#4] "Every Heyting field is a local ring.": F_p for p <= 47
+(let ((ps (primes-to 47)))
+  (claim "local ring" 4 "F_p is a field and local, p <= 47" (length ps)
+         (all? (lambda (p) (let ((R (make-zmod p))) (and (ring-ref R 'field?) (local-ring? R (zmod-elements p))))) ps)))
+;; [local ring#5] "a commutative ring with a unique maximal ideal": the ideals of
+;; Z/n are the dZ/nZ, d | n; counted by definition, the maximal ones are unique
+;; exactly for the local rings
+(let* ((ideal-of (lambda (n d) (filter (lambda (x) (= 0 (remainder x d))) (zmod-elements n))))
+       (maximal-count (lambda (n) (let* ((ds (filter (lambda (d) (= 0 (remainder n d))) (from 1 n)))
+                                         (proper (filter (lambda (d) (not (= d 1))) ds)))
+                                    (count (lambda (d) (all? (lambda (e) (or (= e d) (not (all? (lambda (x) (memv x (ideal-of n e))) (ideal-of n d)))))
+                                                             proper))
+                                           proper))))
+       (ns (from 2 40)))
+  (claim "local ring" 5 "Z/n with exactly one maximal ideal, n = 2..40" (filter (lambda (n) (= 1 (maximal-count n))) ns)
+         (equal? (filter (lambda (n) (= 1 (maximal-count n))) ns) (filter (lambda (n) (local-ring? (make-zmod n) (zmod-elements n))) ns))))
+
+;; ---------------------------------------------------------------------------
+;; nilpotent element
+;; ---------------------------------------------------------------------------
+;; [nilpotent element#1] "An element x in a ring ... is nilpotent if there exist a
+;; natural number n such that x^n = 0.": the nilpotents of Z/72 are the multiples
+;; of 6 = rad(72); those of F_7[e]/e^3 are the jets with zero constant term
+(let* ((R (make-zmod 72)) (nil72 (filter (lambda (x) (r-zero? R (r-expt R x 7))) (zmod-elements 72)))
+       (J (make-jets (make-zmod 7) 3)) (nilJ (filter (lambda (x) (r-zero? J (r-expt J x 3))) (jet-elements J (range 7) 3))))
+  (claim "nilpotent element" 1 "(nilpotents of Z/72, count of nilpotents in F_7[e]/e^3)" (list nil72 (length nilJ))
+         (and (equal? nil72 (filter (lambda (x) (= 0 (remainder x 6))) (range 72))) (= 49 (length nilJ))
+              (all? (lambda (x) (= 0 (jet-coefficient x 0))) nilJ))))
+;; [nilpotent element#2] "Every nilpotent element in a ring is a quasiregular
+;; element." with "(1 − x)(1 + x + x^2 + … + x^n) = 1"
+(let* ((R (make-zmod 72)) (Z4x (make-polys (make-zmod 4)))
+       (geom (lambda (K x n) (r-sum K (map (lambda (k) (r-expt K x k)) (range n)))))
+       (ok72 (all? (lambda (x) (r-one? R (r* R (r- R 1 x) (geom R x 7)))) (filter (lambda (x) (= 0 (remainder x 6))) (range 72))))
+       (polys (map (lambda (cs) (ring-poly Z4x cs)) '((2) (0 2) (2 2) (0 0 2) (2 0 2 2))))
+       (ok4 (all? (lambda (x) (and (r-zero? Z4x (r* Z4x x x)) (r-one? Z4x (r* Z4x (r- Z4x 1 x) (geom Z4x x 2))) (r-unit? Z4x (r- Z4x 1 x)))) polys))
+       (J (make-jets rationals 4)) (xs (map (lambda (cs) (make-jet J cs)) '((0 1) (0 3 -2) (0 1/2 0 5))))
+       (okJ (all? (lambda (x) (r-one? J (r* J (r- J 1 x) (geom J x 4)))) xs)))
+  (claim "nilpotent element" 2 "(1 - x)(1 + x + ... + x^(n-1)) = 1 for nilpotents of Z/72, Z/4[x], Q[e]/e^4" (list ok72 ok4 okJ) (and ok72 ok4 okJ)))
+
+;; ---------------------------------------------------------------------------
+;; multiplicative group of integers modulo n (Euler totient, Chinese remainder)
+;; ---------------------------------------------------------------------------
+(define (phi n) (count (lambda (a) (r-unit? (make-zmod n) a)) (zmod-elements n)))
+;; [multiplicative group of integers modulo n#1] "consists of all those elements
+;; k ∈ ℤ/n which are represented by coprime integers to n" and "φ(mn) = φ(m)φ(n)
+;; is m and n are coprime"
+(let* ((ns (from 1 60))
+       (coprime-ok (all? (lambda (n) (all? (lambda (a) (eq? (r-unit? (make-zmod n) a) (= 1 (gcd a n)))) (zmod-elements n))) ns))
+       (pairs (filter (lambda (mn) (and (= 1 (gcd (car mn) (cadr mn))) (<= (* (car mn) (cadr mn)) 120))) (apply append (map (lambda (m) (map (lambda (n) (list m n)) (from 2 40))) (from 2 40))))))
+  (claim "multiplicative group of integers modulo n" 1 "units = residues coprime to n (n <= 60); phi(mn) = phi(m) phi(n) on coprime pairs" (length pairs)
+         (and coprime-ok (all? (lambda (mn) (= (phi (* (car mn) (cadr mn))) (* (phi (car mn)) (phi (cadr mn))))) pairs))))
+;; [multiplicative group of integers modulo n#2] "the canonical ring map ℤ/mn → ℤ/m
+;; × ℤ/n is an isomorphism if m, n are coprime" (the Chinese remainder theorem):
+;; bijective and multiplicative through zmod-reduction, inverted by
+;; chinese-remainder; for m = 4, n = 6 it is not injective
+(let* ((iso? (lambda (m n) (let* ((A (make-zmod (* m n))) (rm (zmod-reduction A (make-zmod m))) (rn (zmod-reduction A (make-zmod n)))
+                                  (img (map (lambda (x) (list (ring-map-apply rm x) (ring-map-apply rn x))) (zmod-elements (* m n))))
+                                  (distinct (let loop ((l img) (acc '())) (if (null? l) (length acc) (loop (cdr l) (if (member (car l) acc) acc (cons (car l) acc)))))))
+                             (list (= distinct (* m n))
+                                   (and (= 1 (gcd m n))
+                                        (all? (lambda (x) (= x (chinese-remainder (list (ring-map-apply rm x) (ring-map-apply rn x)) (list m n)))) (zmod-elements (* m n)))
+                                        (all? (lambda (x) (all? (lambda (y) (= (ring-map-apply rm (r* A x y)) (r* (make-zmod m) (ring-map-apply rm x) (ring-map-apply rm y)))) (zmod-elements (* m n)))) (zmod-elements (* m n))))))))
+       (rows (map (lambda (mn) (cons mn (iso? (car mn) (cadr mn)))) '((5 7) (4 9) (8 3) (4 6)))))
+  (claim "multiplicative group of integers modulo n" 2 "((m n) bijective? inverse by chinese-remainder and multiplicative?)" rows
+         (equal? (map cdr rows) '((#t #t) (#t #t) (#t #t) (#f #f)))))
+;; [multiplicative group of integers modulo n#3] "φ(p^r) = p^r − p^(r−1) =
+;; p^(r−1)(p−1)" and "φ(n) = φ(p₁^r₁) … φ(pₖ^rₖ)"
+(let* ((ns (from 2 200))
+       (formula (lambda (n) (apply * (map (lambda (pe) (- (expt (car pe) (cdr pe)) (expt (car pe) (- (cdr pe) 1)))) (factor n))))))
+  (claim "multiplicative group of integers modulo n" 3 "phi(n) from counted units = product formula, n = 2..200; phi(200)" (phi 200)
+         (all? (lambda (n) (= (phi n) (formula n))) ns)))
+
+;; ---------------------------------------------------------------------------
+;; quadratic reciprocity law
+;; ---------------------------------------------------------------------------
+(define (legendre a p) (let ((v (r-expt (make-zmod p) (modulo a p) (quotient (- p 1) 2)))) (cond ((= v 0) 0) ((= v 1) 1) (else -1))))
+(define (square-mod? a p) (any? (lambda (x) (= (modulo (* x x) p) (modulo a p))) (range p)))
+(define odd-primes (filter odd? (primes-to 100)))
+;; [quadratic reciprocity law#1] "(a/p) ≡ a^((p-1)/2) mod p" (Euler's criterion)
+;; agrees with the definition by squares, p < 100
+(claim "quadratic reciprocity law" 1 "Euler's criterion = squares (a/p) for all a mod p, odd p < 100" (length odd-primes)
+       (all? (lambda (p) (all? (lambda (a) (= (legendre a p) (cond ((= 0 (modulo a p)) 0) ((square-mod? a p) 1) (else -1)))) (from 1 (- p 1)))) odd-primes))
+;; [quadratic reciprocity law#2] "For p, q distinct odd primes, (p/q)(q/p) =
+;; (-1)^((p-1)/2 (q-1)/2)."
+(let ((pairs (apply append (map (lambda (p) (map (lambda (q) (list p q)) (filter (lambda (q) (> q p)) odd-primes))) odd-primes))))
+  (claim "quadratic reciprocity law" 2 "reciprocity on all pairs of odd primes below 100" (length pairs)
+         (all? (lambda (pq) (let ((p (car pq)) (q (cadr pq))) (= (* (legendre p q) (legendre q p)) (if (even? (* (quotient (- p 1) 2) (quotient (- q 1) 2))) 1 -1)))) pairs)))
+;; [quadratic reciprocity law#3] "(−1/p) = (−1)^((p-1)/2)" and "(2/p) =
+;; (−1)^((p^2−1)/8), i.e., 2 is a square modulo p if and only if p ≡ ±1 mod 8",
+;; including p = 2^31 - 1
+(let* ((ps (append (filter odd? (primes-to 400)) (list 2147483647)))
+       (ok (all? (lambda (p) (and (= (legendre -1 p) (if (even? (quotient (- p 1) 2)) 1 -1))
+                                  (= (legendre 2 p) (if (even? (quotient (- (* p p) 1) 8)) 1 -1))
+                                  (eq? (= 1 (legendre 2 p)) (or (= 1 (modulo p 8)) (= 7 (modulo p 8))))))
+                 ps)))
+  (claim "quadratic reciprocity law" 3 "supplementary laws for odd p < 400 and p = 2^31 - 1: ((-1/p), (2/p)) at 2^31 - 1"
+         (list (legendre -1 2147483647) (legendre 2 2147483647)) ok))
+;; [quadratic reciprocity law#4] "if p ≡ 1 mod 4, then (p/q) = (q/p); if p,q ≡ 3
+;; mod 4 then (p/q) = −(q/p)"
+(let ((pairs (apply append (map (lambda (p) (map (lambda (q) (list p q)) (filter (lambda (q) (not (= q p))) odd-primes))) odd-primes))))
+  (claim "quadratic reciprocity law" 4 "the mod-4 form on all ordered pairs of odd primes below 100" (length pairs)
+         (all? (lambda (pq) (let ((p (car pq)) (q (cadr pq)))
+                              (cond ((= 1 (modulo p 4)) (= (legendre p q) (legendre q p)))
+                                    ((and (= 3 (modulo p 4)) (= 3 (modulo q 4))) (= (legendre p q) (- (legendre q p))))
+                                    (else #t))))
+               pairs)))
+
+;; ---------------------------------------------------------------------------
+;; group algebra
+;; ---------------------------------------------------------------------------
+(define C5 (zset-group-ring (lambda (g h) (modulo (+ g h) 5)) 0 (lambda (g) (modulo (- g) 5)) "Z[C5]" 'elements '(0 1 2 3 4)))
+(define (klein-op g h) (+ (* 2 (modulo (+ (quotient g 2) (quotient h 2)) 2)) (modulo (+ g h) 2)))
+(define V4 (zset-group-ring klein-op 0 (lambda (g) g) "Z[C2 x C2]" 'elements '(0 1 2 3)))
+(define (weights z n) (let ((v (make-vector n 0))) (for-each (lambda (e) (vector-set! v (cadr e) (car e))) (zset-entries z)) v))
+;; [group algebra#1] "r r̃ = ∑(q∈G) (∑(k∈G) (r_(q·k^-1) r_k)) q" (convolution)
+(let* ((samples5 (map zset-from-weighted '(((1 0) (2 1)) ((-1 0) (1 1) (1 4)) ((3 2) (-2 3)) ((1 1) (1 2) (1 3)))))
+       (samples4 (map zset-from-weighted '(((1 0) (2 1)) ((1 3) (-1 2)) ((2 0) (2 1) (-1 3)))))
+       (conv (lambda (op inv n r s) (let ((rv (weights r n)) (sv (weights s n)))
+                                      (list->vector (map (lambda (q) (apply + (map (lambda (k) (* (vector-ref rv (op q (inv k))) (vector-ref sv k))) (range n)))) (range n))))))
+       (ok5 (all? (lambda (r) (all? (lambda (s) (equal? (weights (r* C5 r s) 5) (conv (lambda (a b) (modulo (+ a b) 5)) (lambda (g) (modulo (- g) 5)) 5 r s))) samples5)) samples5))
+       (ok4 (all? (lambda (r) (all? (lambda (s) (equal? (weights (r* V4 r s) 4) (conv klein-op (lambda (g) g) 4 r s))) samples4)) samples4)))
+  (claim "group algebra" 1 "r* in Z[C5] and Z[C2 x C2] equals the convolution formula on sample pairs" (list ok5 ok4) (and ok5 ok4)))
+;; [group algebra#2] "There is an adjunction (R[-] ⊣ (-)×) between the category of
+;; Algebras and that of Groups": ring maps Z[C_n] -> F_p are the u in F_p^x with
+;; u^n = 1, gcd(n, p - 1) of them, and each character extends to a ring map
+(let* ((cases '((5 11) (5 7) (4 13) (6 7) (3 5)))
+       (rows (map (lambda (np) (let* ((n (car np)) (p (cadr np)) (F (make-zmod p))
+                                      (us (filter (lambda (u) (and (r-unit? F u) (r-one? F (r-expt F u n)))) (zmod-elements p))))
+                                 (list n p (length us) (gcd n (- p 1)))))
+                  cases))
+       (F11 (make-zmod 11)) (chi (group-ring-character C5 F11 (lambda (g) (r-expt F11 3 g))))
+       (samples (map zset-from-weighted '(((1 0) (2 1)) ((-1 0) (1 1) (1 4)) ((3 2) (-2 3)))))
+       (hom (all? (lambda (r) (all? (lambda (s) (and (r= F11 (ring-map-apply chi (r* C5 r s)) (r* F11 (ring-map-apply chi r) (ring-map-apply chi s)))
+                                                     (r= F11 (ring-map-apply chi (r+ C5 r s)) (r+ F11 (ring-map-apply chi r) (ring-map-apply chi s)))))
+                                   samples))
+                  samples)))
+  (claim "group algebra" 2 "(n, p, characters C_n -> F_p^x, gcd(n, p - 1)); the character t -> 3 of Z[C5] -> F_11 is a ring map" rows
+         (and hom (all? (lambda (r) (= (caddr r) (cadddr r))) rows))))
+
+;; ---------------------------------------------------------------------------
+;; functor of points
+;; ---------------------------------------------------------------------------
+;; the circle x^2 + y^2 = 1 and the scheme t^2 + 1 = 0, written once against r+ r*
+(define (circle R x y) (r- R (r+ R (r* R x x) (r* R y y)) 1))
+(define (points-mod n f) (let ((R (make-zmod n))) (filter (lambda (xy) (r-zero? R (f R (car xy) (cadr xy)))) (apply append (map (lambda (x) (map (lambda (y) (list x y)) (range n))) (range n))))))
+;; [functor of points#1] "the set of simultaneous solutions in R^n of a set of
+;; polynomials ... corresponds to the affine scheme X = Spec(ℤ[t₁, …,tₙ]/(f₁,
+;; …,fₖ)). These R-points are then equivalently the hom-space Hom_schemes(Spec(R),
+;; X)": |X(F_p)| = p - (-1/p) for the circle; ring maps Z[t]/(t^2 + 1) -> R are the
+;; roots of t^2 + 1 in R
+(let* ((ps (filter odd? (primes-to 31)))
+       (circle-counts (map (lambda (p) (length (points-mod p circle))) ps))
+       (roots (lambda (n) (filter (lambda (t) (= 0 (modulo (+ (* t t) 1) n))) (range n))))
+       (homs (lambda (n) (let ((R (make-zmod n)) (Zt (make-polys integers)))
+                           ;; a ring map Z[t] -> Z/n is t -> a; it factors through (t^2 + 1) iff t^2 + 1 -> 0
+                           (filter (lambda (a) (r-zero? R (ring-map-apply (ring-poly-evaluation Zt R a) (ring-poly Zt '(1 0 1))))) (range n)))))
+       (rows (map (lambda (n) (list n (length (homs n)))) '(2 3 5 13 25 65))))
+  (claim "functor of points" 1 "(|circle(F_p)| for odd p <= 31; |Hom(Z[t]/(t^2+1), Z/n)| for n = 2, 3, 5, 13, 25, 65)" (list circle-counts rows)
+         (and (equal? circle-counts (map (lambda (p) (- p (if (= 1 (modulo p 4)) 1 -1))) ps))
+              (all? (lambda (r) (= (cadr r) (length (roots (car r))))) rows))))
+;; [functor of points#2] the same functor on a product: Spec(Z/65) is the disjoint
+;; union of Spec F_5 and Spec F_13, so X(Z/65) = X(F_5) x X(F_13) (Chinese remainder)
+(let ((rows (map (lambda (mn) (list (length (points-mod (* (car mn) (cadr mn)) circle)) (* (length (points-mod (car mn) circle)) (length (points-mod (cadr mn) circle)))))
+                 '((5 13) (3 7) (4 5)))))
+  (claim "functor of points" 2 "(|circle(Z/mn)|, |circle(Z/m)| |circle(Z/n)|) for (5 13) (3 7) (4 5)" rows (all? (lambda (r) (= (car r) (cadr r))) rows)))
+
+;; ---------------------------------------------------------------------------
+;; jet
+;; ---------------------------------------------------------------------------
+;; [jet#1] "Jets are a coordinate free version of Taylor-polynomials and Taylor
+;; series.": f(a + e) in Q[e]/e^(k+1) has the coefficients f^(j)(a)/j!, computed
+;; independently by differentiating the coefficient list; for 1/(1 + x) they are
+;; (-1)^j / (1 + a)^(j + 1)
+(let* ((k 5) (J (make-jets rationals (+ k 1)))
+       (deriv (lambda (cs) (if (null? cs) '() (let loop ((l (cdr cs)) (i 1) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ i 1) (cons (* i (car l)) acc)))))))
+       (evalp (lambda (cs a) (let loop ((l (reverse cs)) (acc 0)) (if (null? l) acc (loop (cdr l) (+ (* acc a) (car l)))))))
+       (fact (lambda (n) (apply * (from 1 n))))
+       (taylor-coeffs (lambda (cs a) (let loop ((j 0) (d cs) (acc '())) (if (> j k) (reverse acc) (loop (+ j 1) (deriv d) (cons (/ (evalp d a) (fact j)) acc))))))
+       (polys '((1 -2 0 3) (0 0 0 0 0 1 1) (7) (-1/2 3 1/3)))
+       (via-jets (lambda (cs a) (jet-coefficients (r-sum J (map (lambda (i) (r* J (list-ref cs i) (r-expt J (jet-seed J a) i))) (range (length cs)))))))
+       (ok-poly (all? (lambda (cs) (all? (lambda (a) (equal? (via-jets cs a) (taylor-coeffs cs a))) '(0 2 -1/3))) polys))
+       (rec (jet-coefficients (r-inv J (r+ J 1 (jet-seed J 2)))))
+       (ok-rec (equal? rec (map (lambda (j) (/ (expt -1 j) (expt 3 (+ j 1)))) (range (+ k 1))))))
+  (claim "jet" 1 "5-jet of 1/(1 + x) at 2; polynomial jets = Taylor coefficients" rec (and ok-poly ok-rec)))
+
+;; ---------------------------------------------------------------------------
+;; Smith normal form
+;; ---------------------------------------------------------------------------
+(define (mat rows) (list->vector (map list->vector rows)))
+(define snf-cases
+  (list (mat '((2 4 4) (-6 6 12) (10 -4 -16))) (mat '((2 4) (6 8))) (mat '((1 2 3) (4 5 6) (7 8 9)))
+        (mat '((6 0 0) (0 10 0) (0 0 15))) (mat '((0 3 0 6) (9 0 12 0) (0 0 0 0))) (mat '((12345678901 2) (3 4)))))
+(define (diagonal-of D) (let ((r (integer-matrix-rows D)) (c (integer-matrix-cols D)))
+                          (map (lambda (i) (integer-matrix-ref D i i)) (range (min r c)))))
+(define (diagonal? D) (all? (lambda (i) (all? (lambda (j) (or (= i j) (= 0 (integer-matrix-ref D i j)))) (range (integer-matrix-cols D)))) (range (integer-matrix-rows D))))
+(define (rows-of M) (map (lambda (i) (vector->list (vector-ref M i))) (range (integer-matrix-rows M))))
+;; [Smith normal form#1] "There exist invertible matrices P ∈ Mat_{n × n}(R) and Q
+;; ∈ Mat_{m × m}(R) such that the product matrix PAQ is of the following form" —
+;; diagonal, with P and Q unimodular over Z
+(let ((rows (map (lambda (A) (let* ((s (smith-normal-form A)) (U (cadr s)) (V (caddr s)) (D (integer-matrix-mul (integer-matrix-mul U A) V)))
+                               (list (diagonal-of D) (diagonal? D) (abs (multimodular-det (rows-of U))) (abs (multimodular-det (rows-of V))))))
+                 snf-cases)))
+  (claim "Smith normal form" 1 "(diagonal of P A Q, diagonal?, |det P|, |det Q|) for six integer matrices" rows
+         (all? (lambda (r) (and (cadr r) (= 1 (caddr r)) (= 1 (cadddr r)))) rows)))
+;; [Smith normal form#2] "each a_i divides a_{i+1}", and for a square matrix the
+;; product of the diagonal is +-det A (cross-checked with the multimodular determinant)
+(let ((rows (map (lambda (A) (list (car (smith-normal-form A)) (integer-matrix-rows A)
+                                    (and (= (integer-matrix-rows A) (integer-matrix-cols A)) (multimodular-det (rows-of A)))))
+                 snf-cases)))
+  (claim "Smith normal form" 2 "(nonzero invariant factors, rows, det or #f) for six matrices" rows
+         (all? (lambda (r) (let ((d (car r)) (n (cadr r)) (det (caddr r)))
+                             (and (let loop ((l d)) (or (null? l) (null? (cdr l)) (and (= 0 (remainder (cadr l) (car l))) (loop (cdr l)))))
+                                  (or (not det) (= (abs det) (if (= (length d) n) (apply * d) 0))))))
+               rows)))
+
+;; ---------------------------------------------------------------------------
+;; prime spectrum
+;; ---------------------------------------------------------------------------
+;; [prime spectrum#1] "The prime spectrum of a ring ... is the set of prime
+;; ideals of the ring" and "A ring map h:R→S induces a continuous map Spec h: Spec
+;; S → Spec R": the prime ideals of Z/n (by definition, ab in I => a in I or b in
+;; I) are the pZ/nZ for p | n, and the preimage under Z/n -> Z/d of a prime ideal
+;; of Z/d is prime
+(let* ((ideals (lambda (n) (map (lambda (d) (filter (lambda (x) (= 0 (remainder x d))) (range n))) (filter (lambda (d) (= 0 (remainder n d))) (from 1 n)))))
+       (prime? (lambda (n I) (let ((R (make-zmod n))) (and (< (length I) n) (all? (lambda (a) (all? (lambda (b) (or (not (memv (r* R a b) I)) (memv a I) (memv b I))) (range n))) (range n))))))
+       (spec (lambda (n) (filter (lambda (I) (prime? n I)) (ideals n))))
+       (sizes (map (lambda (n) (length (spec n))) '(12 30 49 60)))
+       (maps-ok (all? (lambda (nd) (let* ((n (car nd)) (d (cadr nd)) (h (zmod-reduction (make-zmod n) (make-zmod d))))
+                                     (all? (lambda (P) (prime? n (filter (lambda (x) (memv (ring-map-apply h x) P)) (range n)))) (spec d))))
+                      '((12 6) (30 15) (60 4) (49 7)))))
+  (claim "prime spectrum" 1 "|Spec Z/n| for n = 12, 30, 49, 60 (primes dividing n); preimages of primes are prime" sizes
+         (and (equal? sizes (map (lambda (n) (length (factor n))) '(12 30 49 60))) maps-ok)))
+
+(if (= failed 0)
+    (begin (display "PASS: nlab_ring_test (") (display passed) (display " claims)") (newline))
+    (begin (display "FAIL: nlab_ring_test (") (display failed) (display " of ") (display (+ passed failed)) (display " claims failed)") (newline)))
