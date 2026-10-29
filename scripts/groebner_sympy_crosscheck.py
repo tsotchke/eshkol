@@ -160,7 +160,7 @@ def write_corpus(path, count):
     corpus = {"schema": "eshkol.groebner_corpus.v1", "seed": SEED,
               "cases": named_cases() + random_cases(count)}
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(corpus, indent=1) + "\n")
+    path.write_text(compact_json(corpus, "cases"))
     print(f"corpus: {len(corpus['cases'])} cases -> {path.relative_to(REPO)}")
 
 
@@ -216,7 +216,7 @@ def sympy_bases(corpus_path, out_path, limit_seconds):
         elapsed = time.time() - start
         if elapsed > limit_seconds:
             print(f"note: {case['id']} took {elapsed:.1f} s in SymPy")
-    out_path.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+    out_path.write_text(compact_json(out, "cases"))
     print(f"expected: {len(out['cases'])} bases from SymPy {sp.__version__} -> {out_path.relative_to(REPO)}")
 
 
@@ -326,6 +326,18 @@ def compare(eshkol_run, engines, work, receipt_path):
     receipt_path.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n")
     print(f"receipt: {receipt['verdict']} -> {receipt_path}")
     return status
+
+
+def compact_json(obj, key):
+    """JSON with one entry of obj[key] per line, so a change is one line."""
+    head = {k: v for k, v in obj.items() if k != key}
+    lines = [json.dumps(head, sort_keys=True)[:-1] + f', "{key}": ' + ("[" if isinstance(obj[key], list) else "{")]
+    items = obj[key] if isinstance(obj[key], list) else sorted(obj[key].items())
+    rows = [json.dumps(v, separators=(",", ":")) if isinstance(obj[key], list)
+            else json.dumps(v[0]) + ": " + json.dumps(v[1], separators=(",", ":")) for v in items]
+    lines.append(",\n".join(rows))
+    lines.append(("]" if isinstance(obj[key], list) else "}") + "}")
+    return "\n".join(lines) + "\n"
 
 
 def sha256(path):
