@@ -124,7 +124,8 @@ prefix, checks the equations with exactly that many variables. A violation is
 
 Every `core.ring` carrier is a model of `commutative-ring-theory`:
 `(ring-carrier->model R [elements])` takes the carrier's own `zero one add neg
-mul` and `equal?`; the model of `Z/m` lists its m elements. `core.ring`'s
+mul` and `equal?`; the model of `Z/m` lists its m elements when m <= 4096
+(a larger one is checked on samples, like an infinite carrier). `core.ring`'s
 `ring-law-violations` checks the ring laws as the equations of
 `commutative-ring-theory` on that model, and adds the carrier protocol's own
 checks (the unit group, `from-integer` as a ring map, the characteristic).

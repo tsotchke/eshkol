@@ -1224,7 +1224,8 @@
 ;; A ring carrier is a model of core.theory's commutative-ring-theory: the
 ;; operations zero, one, add, neg and mul are the descriptor's own, and the
 ;; model's equality is the carrier's equal?. The model of Z/m lists its m
-;; elements; any other carrier is infinite unless its elements are given.
+;; elements when m <= 4096 (beyond that it is checked on samples, like an
+;; infinite carrier); any other carrier lists elements only when given.
 
 (define (ring-carrier->model R . elements)
   (rc-check R "ring-carrier->model")
@@ -1233,7 +1234,7 @@
                                 (cons 'add (vector-ref R 14)) (cons 'neg (vector-ref R 15))
                                 (cons 'mul (vector-ref R 16)))
               'elements (cond ((pair? elements) (car elements))
-                              ((= (vector-ref R 2) 4) (iota (car (vector-ref R 4))))
+                              ((and (= (vector-ref R 2) 4) (<= (car (vector-ref R 4)) 4096)) (iota (car (vector-ref R 4))))
                               (else #f))
               'equal? (vector-ref R 18)
               'member? (vector-ref R 21)
