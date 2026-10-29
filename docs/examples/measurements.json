@@ -602,100 +602,132 @@
       "output_lines": 57
     },
     "examples/mathematics_cohomology_rings_cup_products.esk": {
-      "source_sha256": "76c92a5f354f0d6352bc980b035e2d41070495bdcc5c45b1987eee70131664bb",
+      "source_sha256": "edaf552afc10774936023c6849438b09e7137faea245ee590d2db1e3f55d55e2",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 13.31,
-        "passed": 30,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 12.88
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 5.84,
-        "passed": 30,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 5.6,
-        "compile_exit": 0,
-        "compile_s": 6.76
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "dw_cohomology_rings_cup_products_jit",
-          "status": "Passed",
-          "seconds": 12.55
-        },
-        {
-          "name": "dw_cohomology_rings_cup_products_aot",
-          "status": "Passed",
-          "seconds": 12.84
-        },
-        {
-          "name": "vm_mathematics_cohomology_rings_cup_products",
-          "status": "Passed",
-          "seconds": 10.2
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "76c92a5f354f0d6352bc980b035e2d41070495bdcc5c45b1987eee70131664bb",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 13.31,
+            "passed": 30,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 12.88
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 5.84,
+            "passed": 30,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 5.6,
+            "compile_exit": 0,
+            "compile_s": 6.76
+          },
+          "ctest": [
+            {
+              "name": "dw_cohomology_rings_cup_products_jit",
+              "status": "Passed",
+              "seconds": 12.55
+            },
+            {
+              "name": "dw_cohomology_rings_cup_products_aot",
+              "status": "Passed",
+              "seconds": 12.84
+            },
+            {
+              "name": "vm_mathematics_cohomology_rings_cup_products",
+              "status": "Passed",
+              "seconds": 10.2
+            }
+          ],
+          "key_output": [
+            "  dim H^n(BZ/2; Z/2), n = 0..4 = (1 1 1 1 1)",
+            "PASS: on Z/4, x cup x IS a coboundary: the cup product separates Z/4 from Z/2 although H^1 and H^2 agree",
+            "PASS: y cup x_2 generates H^3 and x_2 cup x_2 generates H^4: H^*(BZ/3; Z/3) = Lambda[y] x Z/3[x_2] through degree 4",
+            "PASS: x^3, x^2 y, x y^2, y^3 are independent in H^3 and dim H^3 = 4: H^*(B(Z/2)^2; Z/2) = Z/2[x, y]",
+            "PASS: none of the 127 nonzero combinations of the seven surviving monomials is a Q/Z coboundary: the twists form (Z/2)^7"
+          ],
+          "output_lines": 38
         }
-      ],
-      "key_output": [
-        "  dim H^n(BZ/2; Z/2), n = 0..4 = (1 1 1 1 1)",
-        "PASS: on Z/4, x cup x IS a coboundary: the cup product separates Z/4 from Z/2 although H^1 and H^2 agree",
-        "PASS: y cup x_2 generates H^3 and x_2 cup x_2 generates H^4: H^*(BZ/3; Z/3) = Lambda[y] x Z/3[x_2] through degree 4",
-        "PASS: x^3, x^2 y, x y^2, y^3 are independent in H^3 and dim H^3 = 4: H^*(B(Z/2)^2; Z/2) = Z/2[x, y]",
-        "PASS: none of the 127 nonzero combinations of the seven surviving monomials is a Q/Z coboundary: the twists form (Z/2)^7"
-      ],
-      "output_lines": 38
+      }
     },
     "examples/mathematics_cohomology_rings_nonabelian.esk": {
-      "source_sha256": "b0be0f12899204d96a6977a5e96c7d30fd6a4e75cbd0c60d495b126c69f1582e",
+      "source_sha256": "113571fb55765f3c96f910e2c87f6f7fe9d7d6cb2c6da008dec7c3ac9e87b7de",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 48.42,
-        "passed": 16,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 48.04
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 38.05,
-        "passed": 16,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 33.59,
-        "compile_exit": 0,
-        "compile_s": 4.96
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "dw_cohomology_rings_nonabelian_jit",
-          "status": "Passed",
-          "seconds": 37.09
-        },
-        {
-          "name": "dw_cohomology_rings_nonabelian_aot",
-          "status": "Passed",
-          "seconds": 40.81
-        },
-        {
-          "name": "vm_mathematics_cohomology_rings_nonabelian",
-          "status": "Passed",
-          "seconds": 121.72
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "b0be0f12899204d96a6977a5e96c7d30fd6a4e75cbd0c60d495b126c69f1582e",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 48.42,
+            "passed": 16,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 48.04
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 38.05,
+            "passed": 16,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 33.59,
+            "compile_exit": 0,
+            "compile_s": 4.96
+          },
+          "ctest": [
+            {
+              "name": "dw_cohomology_rings_nonabelian_jit",
+              "status": "Passed",
+              "seconds": 37.09
+            },
+            {
+              "name": "dw_cohomology_rings_nonabelian_aot",
+              "status": "Passed",
+              "seconds": 40.81
+            },
+            {
+              "name": "vm_mathematics_cohomology_rings_nonabelian",
+              "status": "Passed",
+              "seconds": 121.72
+            }
+          ],
+          "key_output": [
+            "  dim H^n(BD_4; Z/2), n = 0..3 = (1 2 3 4)",
+            "  dim H^n(BQ_8; Z/2), n = 0..3 = (1 2 2 1)",
+            "PASS: D_4: x cup y is a coboundary (the relation xy = 0) while x^2 and y^2 are independent",
+            "PASS: Q_8: x^2 + xy + y^2 is a coboundary (the relation) while x^2 and xy are independent and span H^2 (dim 2); no degree-2 generator",
+            "  D_4: is beta(w) a coboundary? = #f"
+          ],
+          "output_lines": 26
         }
-      ],
-      "key_output": [
-        "  dim H^n(BD_4; Z/2), n = 0..3 = (1 2 3 4)",
-        "  dim H^n(BQ_8; Z/2), n = 0..3 = (1 2 2 1)",
-        "PASS: D_4: x cup y is a coboundary (the relation xy = 0) while x^2 and y^2 are independent",
-        "PASS: Q_8: x^2 + xy + y^2 is a coboundary (the relation) while x^2 and xy are independent and span H^2 (dim 2); no degree-2 generator",
-        "  D_4: is beta(w) a coboundary? = #f"
-      ],
-      "output_lines": 26
+      }
     },
     "examples/mathematics_cp2_symmetric_square_connected_sums.esk": {
       "source_sha256": "cd4208ffe43a2c638469407a77c56db2761be82d9c24f9ba8e489850eb395c1d",
@@ -741,47 +773,63 @@
       "output_lines": 22
     },
     "examples/mathematics_descent_hypercohomology.esk": {
-      "source_sha256": "71c379900d312ff204a80ba9aa65625f7d07e545534528f254cfa5353993abfd",
+      "source_sha256": "23357094a281f812660d347b3ad067fe29e3ed4cd5ceae19784d8ded349d5c6a",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 5.83,
-        "passed": 13,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 5.71
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 0.8,
-        "passed": 13,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 0.6,
-        "compile_exit": 0,
-        "compile_s": 13.89
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "sheaf_descent_hypercohomology_jit",
-          "status": "Passed",
-          "seconds": 15.94
-        },
-        {
-          "name": "sheaf_descent_hypercohomology_aot",
-          "status": "Passed",
-          "seconds": 16.53
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.sheaf, core.ring and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "71c379900d312ff204a80ba9aa65625f7d07e545534528f254cfa5353993abfd",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 5.83,
+            "passed": 13,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 5.71
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 0.8,
+            "passed": 13,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 0.6,
+            "compile_exit": 0,
+            "compile_s": 13.89
+          },
+          "ctest": [
+            {
+              "name": "sheaf_descent_hypercohomology_jit",
+              "status": "Passed",
+              "seconds": 15.94
+            },
+            {
+              "name": "sheaf_descent_hypercohomology_aot",
+              "status": "Passed",
+              "seconds": 16.53
+            }
+          ],
+          "key_output": [
+            "  H^*(U1 cap U2; Z) = ((0 1 ()) (1 3 ()) (2 0 ()))",
+            "  plain Cech H^* of the non-Leray cover, constant Z = ((0 1 ()) (1 0 ()))",
+            "  descent double complex H^* of the non-Leray cover, constant Z = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))",
+            "  descent H^* for the local system with monodromy (-1, +1) = ((0 0 ()) (1 0 (2)) (2 0 (2)) (3 0 ()))",
+            "  hypercohomology of Z --2--> Z on the torus model = ((0 0 ()) (1 0 (2)) (2 0 (2 2)) (3 0 (2)))"
+          ],
+          "output_lines": 29
         }
-      ],
-      "key_output": [
-        "  H^*(U1 cap U2; Z) = ((0 1 ()) (1 3 ()) (2 0 ()))",
-        "  plain Cech H^* of the non-Leray cover, constant Z = ((0 1 ()) (1 0 ()))",
-        "  descent double complex H^* of the non-Leray cover, constant Z = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))",
-        "  descent H^* for the local system with monodromy (-1, +1) = ((0 0 ()) (1 0 (2)) (2 0 (2)) (3 0 ()))",
-        "  hypercohomology of Z --2--> Z on the torus model = ((0 0 ()) (1 0 (2)) (2 0 (2 2)) (3 0 (2)))"
-      ],
-      "output_lines": 29
+      }
     },
     "examples/mathematics_fermat_hodge_classes_sweep.esk": {
       "source_sha256": "25ba69494aaef6f87f64ade1c0f8861aa7cbdd32a01aace3ed34c40c3d2470c4",
@@ -1123,86 +1171,118 @@
       "output_lines": 10
     },
     "examples/mathematics_group_cohomology_order_eight.esk": {
-      "source_sha256": "b9c26ca0cf2578b0b27bd91d78d867e6e5a1cdc844682000716689060263f476",
+      "source_sha256": "f9da1f7b565545a95dd21a39c02e99958aca22a312ffabf28cbbea04152b6600",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 131.6,
-        "passed": 26,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 126.4
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 61.99,
-        "passed": 26,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 60.55,
-        "compile_exit": 0,
-        "compile_s": 9.51
-      },
-      "ctest": [
-        {
-          "name": "dw_group_cohomology_order_eight_jit",
-          "status": "Passed",
-          "seconds": 69.77
-        },
-        {
-          "name": "dw_group_cohomology_order_eight_aot",
-          "status": "Passed",
-          "seconds": 75.96
-        },
-        {
-          "name": "vm_mathematics_group_cohomology_order_eight",
-          "status": "Passed",
-          "seconds": 138.81
-        }
-      ],
-      "key_output": [
-        "  H_*(BZ/2) unnormalized / normalized = (((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (2))))",
-        "  H_*(BS_3; Z), k = 0..3 = ((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (6)))",
-        "  H_*(BZ/8) = ((0 1 ()) (1 0 (8)) (2 0 ()) (3 0 (8)))",
-        "  H_*(B(Z/4 x Z/2)) = ((0 1 ()) (1 0 (2 4)) (2 0 (2)) (3 0 (2 2 4)))",
-        "  H_*(B(Z/2)^3) = ((0 1 ()) (1 0 (2 2 2)) (2 0 (2 2 2)) (3 0 (2 2 2 2 2 2 2)))",
-        "  H_*(BD_4) = ((0 1 ()) (1 0 (2 2)) (2 0 (2)) (3 0 (2 2 4)))",
-        "  H_*(BQ_8) = ((0 1 ()) (1 0 (2 2)) (2 0 ()) (3 0 (8)))",
-        "  |H^3(G; Q/Z)| = number of Dijkgraaf-Witten twists: Z/8, Z/4xZ/2, (Z/2)^3, D_4, Q_8 = (8 16 128 16 8)",
-        "  Z(T^3) for (Z/2)^3: untwisted, type I, type II, type III = (64 64 64 22)",
-        "  Z(T^3) for D_4, Q_8, S_3 untwisted = (22 22 8)",
-        "  Z(RP^3): (Z/2)^3 type III, D_4 untwisted, Q_8 untwisted = (3/4 3/4 1/4)"
-      ],
-      "output_lines": 44
-    },
-    "examples/mathematics_group_cohomology_sweep.esk": {
-      "source_sha256": "c3efb683240920475ceb2d78e144d55a837f7a25822daf3a3374cd15d6593274",
-      "jit": {
-        "status": "RAN-OK",
-        "exit": 0,
-        "wall_s": 2.38,
-        "passed": null,
-        "failed": null,
-        "result_line": null,
-        "cpu_s": 2.33
-      },
-      "aot": {
-        "status": "RAN-OK",
-        "exit": 0,
-        "wall_s": 0.21,
-        "passed": null,
-        "failed": null,
-        "result_line": null,
-        "cpu_s": 0.02,
-        "compile_exit": 0,
-        "compile_s": 3.86
+        "status": "NOT-RUN"
       },
       "ctest": [],
-      "key_output": [
-        "{\"schema\":\"eshkol.math.group_homology.v1\",\"group\":\"cyclic:2\",\"order\":2,\"degree\":3,\"homology\":[{\"degree\":0,\"betti\":1,\"torsion\":[]},{\"degree\":1,\"betti\":0,\"torsion\":[2]},{\"degree\":2,\"betti\":0,\"torsion\":[]},{\"degree\":3,\"betti\":0,\"torsion\":[2]}],\"h1_order\":2,\"dw_twists\":2,\"axioms\":true,\"h0_is_Z\":true,\"verdict\":\"PASS\"}"
-      ],
-      "output_lines": 3
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "b9c26ca0cf2578b0b27bd91d78d867e6e5a1cdc844682000716689060263f476",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 131.6,
+            "passed": 26,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 126.4
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 61.99,
+            "passed": 26,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 60.55,
+            "compile_exit": 0,
+            "compile_s": 9.51
+          },
+          "ctest": [
+            {
+              "name": "dw_group_cohomology_order_eight_jit",
+              "status": "Passed",
+              "seconds": 69.77
+            },
+            {
+              "name": "dw_group_cohomology_order_eight_aot",
+              "status": "Passed",
+              "seconds": 75.96
+            },
+            {
+              "name": "vm_mathematics_group_cohomology_order_eight",
+              "status": "Passed",
+              "seconds": 138.81
+            }
+          ],
+          "key_output": [
+            "  H_*(BZ/2) unnormalized / normalized = (((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (2))))",
+            "  H_*(BS_3; Z), k = 0..3 = ((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (6)))",
+            "  H_*(BZ/8) = ((0 1 ()) (1 0 (8)) (2 0 ()) (3 0 (8)))",
+            "  H_*(B(Z/4 x Z/2)) = ((0 1 ()) (1 0 (2 4)) (2 0 (2)) (3 0 (2 2 4)))",
+            "  H_*(B(Z/2)^3) = ((0 1 ()) (1 0 (2 2 2)) (2 0 (2 2 2)) (3 0 (2 2 2 2 2 2 2)))",
+            "  H_*(BD_4) = ((0 1 ()) (1 0 (2 2)) (2 0 (2)) (3 0 (2 2 4)))",
+            "  H_*(BQ_8) = ((0 1 ()) (1 0 (2 2)) (2 0 ()) (3 0 (8)))",
+            "  |H^3(G; Q/Z)| = number of Dijkgraaf-Witten twists: Z/8, Z/4xZ/2, (Z/2)^3, D_4, Q_8 = (8 16 128 16 8)",
+            "  Z(T^3) for (Z/2)^3: untwisted, type I, type II, type III = (64 64 64 22)",
+            "  Z(T^3) for D_4, Q_8, S_3 untwisted = (22 22 8)",
+            "  Z(RP^3): (Z/2)^3 type III, D_4 untwisted, Q_8 untwisted = (3/4 3/4 1/4)"
+          ],
+          "output_lines": 44
+        }
+      }
+    },
+    "examples/mathematics_group_cohomology_sweep.esk": {
+      "source_sha256": "3f34f704afcd8c2839ec025eb9ed172dea95361cfc435b9aa9381b5483de0c1f",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "c3efb683240920475ceb2d78e144d55a837f7a25822daf3a3374cd15d6593274",
+          "jit": {
+            "status": "RAN-OK",
+            "exit": 0,
+            "wall_s": 2.38,
+            "passed": null,
+            "failed": null,
+            "result_line": null,
+            "cpu_s": 2.33
+          },
+          "aot": {
+            "status": "RAN-OK",
+            "exit": 0,
+            "wall_s": 0.21,
+            "passed": null,
+            "failed": null,
+            "result_line": null,
+            "cpu_s": 0.02,
+            "compile_exit": 0,
+            "compile_s": 3.86
+          },
+          "ctest": [],
+          "key_output": [
+            "{\"schema\":\"eshkol.math.group_homology.v1\",\"group\":\"cyclic:2\",\"order\":2,\"degree\":3,\"homology\":[{\"degree\":0,\"betti\":1,\"torsion\":[]},{\"degree\":1,\"betti\":0,\"torsion\":[2]},{\"degree\":2,\"betti\":0,\"torsion\":[]},{\"degree\":3,\"betti\":0,\"torsion\":[2]}],\"h1_order\":2,\"dw_twists\":2,\"axioms\":true,\"h0_is_Z\":true,\"verdict\":\"PASS\"}"
+          ],
+          "output_lines": 3
+        }
+      }
     },
     "examples/mathematics_hodge_classes_fermat_quartic_fourfold.esk": {
       "source_sha256": "dd10ce37a9c1bb2ad8f4092d08a5bbc7ae085e3beaecc0395d012f8748b8a91b",
@@ -1381,46 +1461,62 @@
       "output_lines": 18
     },
     "examples/mathematics_kan_complexes_horns.esk": {
-      "source_sha256": "d7658e4c2af928b12d8fbdeea990d04a43f3dcee99bc875d335eff512b7b7e05",
+      "source_sha256": "4648c17f6f62506e57063aa399163d50e42db4f1d8a394ea0df163089d97755d",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 8.96,
-        "passed": 9,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 8.25
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 3.44,
-        "passed": 9,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 3.16,
-        "compile_exit": 0,
-        "compile_s": 7.95
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "hocolim_kan_complexes_horns_jit",
-          "status": "Passed",
-          "seconds": 10.38
-        },
-        {
-          "name": "hocolim_kan_complexes_horns_aot",
-          "status": "Passed",
-          "seconds": 13.14
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.simplicial and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "d7658e4c2af928b12d8fbdeea990d04a43f3dcee99bc875d335eff512b7b7e05",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 8.96,
+            "passed": 9,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 8.25
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 3.44,
+            "passed": 9,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 3.16,
+            "compile_exit": 0,
+            "compile_s": 7.95
+          },
+          "ctest": [
+            {
+              "name": "hocolim_kan_complexes_horns_jit",
+              "status": "Passed",
+              "seconds": 10.38
+            },
+            {
+              "name": "hocolim_kan_complexes_horns_aot",
+              "status": "Passed",
+              "seconds": 13.14
+            }
+          ],
+          "key_output": [
+            "  horns of twisted: dimension 3 = ((0 4096 1 1) (1 4096 1 1) (2 4096 1 1) (3 4096 1 1))",
+            "PASS: 2-horns have exactly |M| fillers (the third edge ranges over a coset of the image of d, the 2-cell over its kernel): 2, 1, 2, 4",
+            "  pseudocircle nerve: outer 2-horns (count, min fillers, max fillers, unfillable) = (20 0 1 8)",
+            "  |pi_1| and |pi_2| from Kan's definition: K(Z/2,2), BZ/2, split, twisted = ((1 2) (2 1) (2 2) (2 2))"
+          ],
+          "output_lines": 27
         }
-      ],
-      "key_output": [
-        "  horns of twisted: dimension 3 = ((0 4096 1 1) (1 4096 1 1) (2 4096 1 1) (3 4096 1 1))",
-        "PASS: 2-horns have exactly |M| fillers (the third edge ranges over a coset of the image of d, the 2-cell over its kernel): 2, 1, 2, 4",
-        "  pseudocircle nerve: outer 2-horns (count, min fillers, max fillers, unfillable) = (20 0 1 8)",
-        "  |pi_1| and |pi_2| from Kan's definition: K(Z/2,2), BZ/2, split, twisted = ((1 2) (2 1) (2 2) (2 2))"
-      ],
-      "output_lines": 27
+      }
     },
     "examples/mathematics_lens_spaces_reidemeister_torsion.esk": {
       "source_sha256": "6871db3d6b49084da6cc1c6aae6824663a4e49e239cfdf8bd1d387aa2c3f8198",
@@ -2288,55 +2384,71 @@
       "output_lines": 28
     },
     "examples/mathematics_two_groups_postnikov.esk": {
-      "source_sha256": "506ec63d21f893faf59f35ed1e17a65ecb2faf48d1a601ef00bc150b0a8c0f62",
+      "source_sha256": "c817bb5ef26618f87cfd5ed732d6b6fb31ebba4416933b35a7116f761eb515e5",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 21.0,
-        "passed": 18,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 20.82
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 12.66,
-        "passed": 18,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 12.38,
-        "compile_exit": 0,
-        "compile_s": 6.89
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "hocolim_two_groups_postnikov_jit",
-          "status": "Passed",
-          "seconds": 19.57
-        },
-        {
-          "name": "hocolim_two_groups_postnikov_aot",
-          "status": "Passed",
-          "seconds": 22.27
-        },
-        {
-          "name": "vm_mathematics_two_groups_postnikov",
-          "status": "Passed",
-          "seconds": 74.22
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "506ec63d21f893faf59f35ed1e17a65ecb2faf48d1a601ef00bc150b0a8c0f62",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 21.0,
+            "passed": 18,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 20.82
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 12.66,
+            "passed": 18,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 12.38,
+            "compile_exit": 0,
+            "compile_s": 6.89
+          },
+          "ctest": [
+            {
+              "name": "hocolim_two_groups_postnikov_jit",
+              "status": "Passed",
+              "seconds": 19.57
+            },
+            {
+              "name": "hocolim_two_groups_postnikov_aot",
+              "status": "Passed",
+              "seconds": 22.27
+            },
+            {
+              "name": "vm_mathematics_two_groups_postnikov",
+              "status": "Passed",
+              "seconds": 74.22
+            }
+          ],
+          "key_output": [
+            "  k-invariant values on the eight triples (a,b,c): split, twist with trivial action, twist with the sign action = ((0 0 0 0 0 0 0 0) (0 0 0 0 0 0 0 0) (0 0 0 0 0 0 0 2))",
+            "  dim H^n(-; Z/2), n = 0..3: K(Z/2,2) = (1 0 1 1)",
+            "  dim H^n(-; Z/2), n = 0..3: BZ/2 = (1 1 1 1)",
+            "  dim H^n(-; Z/2), n = 0..3: split 2-type = (1 1 2 3)",
+            "  dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, trivial action = (1 1 2)",
+            "  dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, sign action = (1 1 1)",
+            "PASS: three 2-types with pi_1 = pi_2 = Z/2: two are the product and one is not, and H^2(-; Z/2) tells them apart",
+            "  H_n(-; Z), n = 0..2: split, trivial-action twist, sign-action twist = (((0 1 ()) (1 0 (2)) (2 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 ())))"
+          ],
+          "output_lines": 37
         }
-      ],
-      "key_output": [
-        "  k-invariant values on the eight triples (a,b,c): split, twist with trivial action, twist with the sign action = ((0 0 0 0 0 0 0 0) (0 0 0 0 0 0 0 0) (0 0 0 0 0 0 0 2))",
-        "  dim H^n(-; Z/2), n = 0..3: K(Z/2,2) = (1 0 1 1)",
-        "  dim H^n(-; Z/2), n = 0..3: BZ/2 = (1 1 1 1)",
-        "  dim H^n(-; Z/2), n = 0..3: split 2-type = (1 1 2 3)",
-        "  dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, trivial action = (1 1 2)",
-        "  dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, sign action = (1 1 1)",
-        "PASS: three 2-types with pi_1 = pi_2 = Z/2: two are the product and one is not, and H^2(-; Z/2) tells them apart",
-        "  H_n(-; Z), n = 0..2: split, trivial-action twist, sign-action twist = (((0 1 ()) (1 0 (2)) (2 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 ())))"
-      ],
-      "output_lines": 37
+      }
     },
     "examples/mathematics_yetter_three_torus_finite_model.esk": {
       "source_sha256": "3378acb1aa13827bc82f111bfd7a07049f902cf4115d09cf8f50866a2c702b75",

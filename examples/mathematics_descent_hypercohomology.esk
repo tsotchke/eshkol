@@ -22,8 +22,8 @@
 ;;   1. The 16-point torus model is covered by two opens whose intersection
 ;;      is two contractible opens glued along four points, so H^1 of the
 ;;      intersection is Z^3 (computed): the cover is not Leray. Plain Cech
-;;      cohomology of this cover gives (Z, Z, 0) for the constant sheaf, which
-;;      is wrong; the descent double complex gives (Z, Z^2, Z), which is
+;;      cohomology of this cover gives (Z, 0) for the constant sheaf (both
+;;      sections restrict onto the connected intersection), which is wrong; the descent double complex gives (Z, Z^2, Z), which is
 ;;      right, for the constant sheaf and for a local system with monodromy
 ;;      (-1, +1), for which it gives (0, Z/2, Z/2).
 ;;   2. Hypercohomology of a complex of sheaves F^0 -> F^1 on X is the

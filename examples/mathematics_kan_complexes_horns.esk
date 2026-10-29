@@ -22,7 +22,8 @@
 ;;      every horn of dimension 2 and 3 has a filler, so they are Kan
 ;;      complexes; fillers of 3-horns are unique, which is Duskin's
 ;;      characterization of the nerve of a 2-groupoid; 2-horns have exactly
-;;      |ker d| fillers.
+;;      |M| fillers. Every compatible horn is enumerated, not only the horns
+;;      cut out of existing simplices.
 ;;   2. The nerve of the pseudocircle as a category (weakly increasing chains):
 ;;      every inner horn has a filler (a quasi-category, by transitivity) and
 ;;      some outer horns have none (the outer horn a < c, a < d has no filler
