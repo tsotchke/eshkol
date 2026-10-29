@@ -1,0 +1,41 @@
+;;; core.category -- finite category theory as one library: the shared base
+;;; layer for computations with categories, functors, (co)limits, Kan
+;;; extensions, adjunctions and monads, built on the finite-category
+;;; representation of core.sheaf.site.
+;;;
+;;; Usage: (require core.category)
+;;;
+;;; Loads the whole facility (each part can also be required alone):
+;;;   core.sheaf.site          the representation: finite categories, sieves,
+;;;                            sites (ADR-0033); re-used, never re-encoded
+;;;   core.sheaf.presheaf      presheaves of sets, matching families, plus
+;;;   core.category.finite     standard shapes, presentations, monoids and
+;;;                            groups, products, coproducts, full
+;;;                            subcategories, the nerve and its cohomology
+;;;   core.category.functor    functors, natural transformations, functor
+;;;                            categories, comma and slice categories, the
+;;;                            Grothendieck construction, adjunctions, monads
+;;;   core.category.set        Set-valued functors: limits, colimits, ends,
+;;;                            coends, Yoneda, categories of elements, Kan
+;;;                            extensions with Lan -| F^* -| Ran
+;;;   core.category.linear     limits and colimits of diagrams of free
+;;;                            Z-modules and Q-vector spaces
+;;;   core.category.descent    sheafification as the reflector a -| i, the
+;;;                            sheafification monad, the sheaf condition as a
+;;;                            limit, descent as a Kan extension, the Cech
+;;;                            equalizer
+;;;
+;;; Reference: docs/reference/stdlib/category.md; design: ADR-0036
+;;; (docs/design/adr/0036-core-category-finite-categories.md).
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician" (1998);
+;;; E. Riehl, "Category Theory in Context" (2016); G. M. Kelly, "Basic
+;;; Concepts of Enriched Category Theory" (1982); S. Mac Lane, I. Moerdijk,
+;;; "Sheaves in Geometry and Logic" (1992).
+
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+(require core.category.finite)
+(require core.category.functor)
+(require core.category.set)
+(require core.category.linear)
+(require core.category.descent)

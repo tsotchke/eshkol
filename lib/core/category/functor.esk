@@ -1,0 +1,523 @@
+;;; core.category.functor -- functors and natural transformations between
+;;; finite categories, checked by their laws; functor categories; comma,
+;;; slice and coslice categories; the Grothendieck construction of a
+;;; diagram of categories; adjunctions with unit, counit, triangle
+;;; identities and the hom-set bijection; monads from adjunctions.
+;;;
+;;; Usage: (require core.category.functor)   or   (require core.category)
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician", 2nd ed.
+;;; (1998), I.3-I.4 (functors, natural transformations), II.4 (functor
+;;; categories), II.6 (comma categories), IV.1-IV.2 (adjunctions: unit,
+;;; counit, the triangle identities, Theorem IV.1.2), IV.6 and VI.1-VI.2
+;;; (monads from adjunctions, algebras); E. Riehl, "Category Theory in
+;;; Context" (2016), 1.3-1.7, 4.1-4.3, 4.6 (adjoints from comma categories),
+;;; 5.1-5.2 (monads); A. Grothendieck, SGA 1, VI (the Grothendieck
+;;; construction); nLab: "functor", "natural transformation", "functor
+;;; category", "comma category", "over category", "Grothendieck
+;;; construction", "adjunction", "monad".
+;;;
+;;; Representation:
+;;;   functor            #(functor C D objects arrows): objects a vector
+;;;                      c -> object of D, arrows a vector a -> arrow of D.
+;;;   transformation     a vector, object c of C -> the component, an arrow
+;;;                      F c -> G c of D (the same bare-vector convention as
+;;;                      core.sheaf.presheaf's presheaf-natural?).
+;;;   comma (F | G)      a finite category whose object labels are (a b u),
+;;;                      u : F a -> G b, and whose arrow names are (f g).
+;;;   category diagram   #(category-diagram C categories functors): a strict
+;;;                      functor C -> Cat, object c -> finite category,
+;;;                      arrow a -> functor between those categories.
+;;;   adjunction         #(adjunction L R unit counit), L : C -> D left
+;;;                      adjoint to R : D -> C, unit c -> (c -> R L c),
+;;;                      counit d -> (L R d -> d).
+;;;   monad              #(monad C T unit multiplication).
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.category.finite)
+
+(provide make-functor functor-from-procedures category-functor? functor-source functor-target
+         functor-object functor-arrow functor-objects functor-arrows
+         functor-laws-violations functor-laws? functor-equal?
+         identity-functor functor-compose constant-functor object-functor terminal-functor
+         functor-opposite inclusion-functor product-projections
+         functors-between
+         natural-transformation-violations natural-transformation? natural-transformations
+         identity-transformation transformation-compose whisker-left whisker-right horizontal-compose
+         natural-isomorphism?
+         functor-category functor-category-functors
+         comma-category comma-domain-projection comma-codomain-projection
+         slice-category coslice-category
+         make-category-diagram category-diagram? category-diagram-base category-diagram-category
+         category-diagram-functor category-diagram-violations
+         grothendieck-construction grothendieck-projection
+         make-adjunction adjunction? adjunction-left adjunction-right adjunction-unit adjunction-counit
+         adjunction-violations adjunction-hom-bijection-violations
+         right-adjoint left-adjoint
+         make-monad monad? monad-category monad-functor monad-unit monad-multiplication
+         adjunction-monad monad-laws-violations monad-algebras)
+
+(define (cf-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (cf-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (cf-all? pred (cdr xs))) (else #f)))
+(define (cf-vec x) (if (vector? x) x (list->vector x)))
+(define (cf-objects C) (cf-range (category-object-count C)))
+(define (cf-arrows C) (cf-range (category-arrow-count C)))
+
+;; ---------------------------------------------------------------------------
+;; Functors
+;; ---------------------------------------------------------------------------
+(define (make-functor C D objects arrows) (vector 'functor C D (cf-vec objects) (cf-vec arrows)))
+(define (functor-from-procedures C D obj arr)
+  (make-functor C D (map obj (cf-objects C)) (map arr (cf-arrows C))))
+(define (category-functor? F) (and (vector? F) (= 5 (vector-length F)) (eq? (vector-ref F 0) 'functor)))
+(define (functor-source F) (vector-ref F 1))
+(define (functor-target F) (vector-ref F 2))
+(define (functor-objects F) (vector-ref F 3))
+(define (functor-arrows F) (vector-ref F 4))
+(define (functor-object F c) (vector-ref (vector-ref F 3) c))
+(define (functor-arrow F a) (vector-ref (vector-ref F 4) a))
+;; (source a) (target a) (identity c) (composite g f), each a failed law
+(define (functor-laws-violations F)
+  (let ((C (functor-source F)) (D (functor-target F)) (out '()))
+    (for-each (lambda (a)
+                (if (not (= (functor-object F (arrow-source C a)) (arrow-source D (functor-arrow F a)))) (set! out (cons (list 'source a) out)))
+                (if (not (= (functor-object F (arrow-target C a)) (arrow-target D (functor-arrow F a)))) (set! out (cons (list 'target a) out))))
+              (cf-arrows C))
+    (for-each (lambda (c) (if (not (= (functor-arrow F (category-identity C c)) (category-identity D (functor-object F c))))
+                              (set! out (cons (list 'identity c) out))))
+              (cf-objects C))
+    (if (null? out)
+        (for-each (lambda (g)
+                    (for-each (lambda (f)
+                                (if (and (category-composable? C g f)
+                                         (not (eqv? (functor-arrow F (category-compose C g f))
+                                                    (category-compose D (functor-arrow F g) (functor-arrow F f)))))
+                                    (set! out (cons (list 'composite g f) out))))
+                              (cf-arrows C)))
+                  (cf-arrows C)))
+    (reverse out)))
+(define (functor-laws? F) (null? (functor-laws-violations F)))
+(define (functor-equal? F G) (and (equal? (functor-objects F) (functor-objects G)) (equal? (functor-arrows F) (functor-arrows G))))
+(define (identity-functor C) (make-functor C C (cf-objects C) (cf-arrows C)))
+;; G o F
+(define (functor-compose G F)
+  (make-functor (functor-source F) (functor-target G)
+                (map (lambda (c) (functor-object G (functor-object F c))) (cf-objects (functor-source F)))
+                (map (lambda (a) (functor-arrow G (functor-arrow F a))) (cf-arrows (functor-source F)))))
+(define (constant-functor C D d)
+  (make-functor C D (map (lambda (c) d) (cf-objects C)) (map (lambda (a) (category-identity D d)) (cf-arrows C))))
+;; the functor 1 -> D picking d
+(define (object-functor D d) (constant-functor (terminal-category) D d))
+(define (terminal-functor C) (constant-functor C (terminal-category) 0))
+;; F^op : C^op -> D^op (arrow indices are kept by category-opposite)
+(define (functor-opposite F)
+  (make-functor (category-opposite (functor-source F)) (category-opposite (functor-target F)) (functor-objects F) (functor-arrows F)))
+;; the full subcategory on objs together with its inclusion functor: (S . i)
+(define (inclusion-functor C objs)
+  (let ((S (category-full-subcategory C objs)) (inc (category-full-subcategory-inclusion C objs)))
+    (cons S (make-functor S C (car inc) (cdr inc)))))
+;; the projections C x D -> C and C x D -> D, built against P = (category-product C D)
+(define (product-projections C D P)
+  (let ((nD (category-object-count D)) (mD (category-arrow-count D)))
+    (list (make-functor P C (map (lambda (o) (quotient o nD)) (cf-objects P)) (map (lambda (a) (quotient a mD)) (cf-arrows P)))
+          (make-functor P D (map (lambda (o) (remainder o nD)) (cf-objects P)) (map (lambda (a) (remainder a mD)) (cf-arrows P))))))
+
+;; Every functor C -> D: object images first, then arrow images in index
+;; order, each composite checked as soon as g, f and g o f are assigned.
+(define (cf-functor-search C D ov av a acc)
+  (if (= a (category-arrow-count C))
+      (cons (make-functor C D (vector-copy ov) (vector-copy av)) acc)
+      (let ((src (vector-ref ov (arrow-source C a))) (tgt (vector-ref ov (arrow-target C a))))
+        (let loop ((cands (if (= a (category-identity C (arrow-source C a)))
+                              (list (category-identity D src))
+                              (category-hom D src tgt)))
+                   (acc acc))
+          (if (null? cands) acc
+              (begin
+                (vector-set! av a (car cands))
+                (loop (cdr cands)
+                      (if (cf-composites-ok? C D av a) (cf-functor-search C D ov av (+ a 1) acc) acc))))))))
+(define (cf-composites-ok? C D av a)
+  (cf-all? (lambda (g)
+             (cf-all? (lambda (f)
+                        (let ((h (if (category-composable? C g f) (category-compose C g f) #f)))
+                          (or (not h) (> g a) (> f a) (> h a)
+                              (eqv? (vector-ref av h) (category-compose D (vector-ref av g) (vector-ref av f))))))
+                      (cf-range (+ a 1))))
+           (cf-range (+ a 1))))
+(define (cf-object-maps n k)
+  (if (= n 0) (list '())
+      (let ((rest (cf-object-maps (- n 1) k)))
+        (apply append (map (lambda (x) (map (lambda (r) (cons x r)) rest)) (cf-range k))))))
+(define (functors-between C D)
+  (let ((m (category-arrow-count C)))
+    (let loop ((oms (cf-object-maps (category-object-count C) (category-object-count D))) (acc '()))
+      (if (null? oms) (reverse acc)
+          (loop (cdr oms) (cf-functor-search C D (list->vector (car oms)) (make-vector m #f) 0 acc))))))
+
+;; ---------------------------------------------------------------------------
+;; Natural transformations
+;; ---------------------------------------------------------------------------
+;; (component c) when alpha_c is not an arrow F c -> G c; (naturality a)
+;; when G(a) o alpha_x /= alpha_y o F(a) for a : x -> y
+(define (natural-transformation-violations F G alpha)
+  (let* ((C (functor-source F)) (D (functor-target F)) (al (cf-vec alpha)) (out '()))
+    (for-each (lambda (c) (let ((u (vector-ref al c)))
+                            (if (not (and (= (arrow-source D u) (functor-object F c)) (= (arrow-target D u) (functor-object G c))))
+                                (set! out (cons (list 'component c) out)))))
+              (cf-objects C))
+    (if (null? out)
+        (for-each (lambda (a)
+                    (if (not (eqv? (category-compose D (functor-arrow G a) (vector-ref al (arrow-source C a)))
+                                   (category-compose D (vector-ref al (arrow-target C a)) (functor-arrow F a))))
+                        (set! out (cons (list 'naturality a) out))))
+                  (cf-arrows C)))
+    (reverse out)))
+(define (natural-transformation? F G alpha) (null? (natural-transformation-violations F G alpha)))
+(define (cf-nat-search F G al c acc)
+  (let ((C (functor-source F)) (D (functor-target F)))
+    (if (= c (category-object-count C)) (cons (vector-copy al) acc)
+        (let loop ((cands (category-hom D (functor-object F c) (functor-object G c))) (acc acc))
+          (if (null? cands) acc
+              (begin
+                (vector-set! al c (car cands))
+                (loop (cdr cands)
+                      (if (cf-all? (lambda (a)
+                                     (let ((x (arrow-source C a)) (y (arrow-target C a)))
+                                       (or (> x c) (> y c)
+                                           (eqv? (category-compose D (functor-arrow G a) (vector-ref al x))
+                                                 (category-compose D (vector-ref al y) (functor-arrow F a))))))
+                                   (cf-arrows C))
+                          (cf-nat-search F G al (+ c 1) acc)
+                          acc))))))))
+;; every natural transformation F => G
+(define (natural-transformations F G)
+  (reverse (cf-nat-search F G (make-vector (category-object-count (functor-source F)) #f) 0 '())))
+(define (identity-transformation F)
+  (list->vector (map (lambda (c) (category-identity (functor-target F) (functor-object F c))) (cf-objects (functor-source F)))))
+;; vertical composite beta . alpha : F => H for alpha : F => G, beta : G => H
+(define (transformation-compose D beta alpha)
+  (let ((b (cf-vec beta)) (a (cf-vec alpha)))
+    (list->vector (map (lambda (c) (category-compose D (vector-ref b c) (vector-ref a c))) (cf-range (vector-length a))))))
+;; alpha H : F H => G H for H : B -> C
+(define (whisker-left alpha H)
+  (let ((a (cf-vec alpha))) (list->vector (map (lambda (b) (vector-ref a (functor-object H b))) (cf-objects (functor-source H))))))
+;; K alpha : K F => K G for K : D -> E
+(define (whisker-right K alpha)
+  (let ((a (cf-vec alpha))) (list->vector (map (lambda (c) (functor-arrow K (vector-ref a c))) (cf-range (vector-length a))))))
+;; beta * alpha : K F => L G for alpha : F => G (C -> D), beta : K => L (D -> E)
+(define (horizontal-compose beta alpha F G K L)
+  (let ((E (functor-target K)) (b (cf-vec beta)) (a (cf-vec alpha)))
+    (list->vector (map (lambda (c) (category-compose E (vector-ref b (functor-object G c)) (functor-arrow K (vector-ref a c))))
+                       (cf-objects (functor-source F))))))
+(define (natural-isomorphism? F G alpha)
+  (and (natural-transformation? F G alpha)
+       (cf-all? (lambda (c) (category-isomorphism? (functor-target F) (vector-ref (cf-vec alpha) c))) (cf-objects (functor-source F)))))
+
+;; The functor category [C, D]: objects the functors C -> D (in the order of
+;; functors-between), arrows the natural transformations, named (i j alpha),
+;; vertical composition. The object labels are the functors.
+(define (functor-category C D)
+  (let* ((fs (list->vector (functors-between C D))) (n (vector-length fs))
+         (arrows (apply append
+                        (map (lambda (i)
+                               (apply append
+                                      (map (lambda (j) (map (lambda (al) (vector i j (list i j al)))
+                                                            (natural-transformations (vector-ref fs i) (vector-ref fs j))))
+                                           (cf-range n))))
+                             (cf-range n))))
+         (av (list->vector arrows)) (m (vector-length av))
+         (index (let ((t (make-hash-table)))
+                  (let loop ((k 0)) (if (< k m) (begin (hash-table-set! t (vector-ref (vector-ref av k) 2) k) (loop (+ k 1)))))
+                  t)))
+    (make-finite-category n arrows
+                          (lambda (g f)
+                            (let ((nf (vector-ref (vector-ref av f) 2)) (ng (vector-ref (vector-ref av g) 2)))
+                              (hash-table-ref/default index (list (car nf) (cadr ng) (transformation-compose D (caddr ng) (caddr nf))) #f)))
+                          (map (lambda (i) (hash-table-ref/default index (list i i (identity-transformation (vector-ref fs i))) #f)) (cf-range n))
+                          (vector->list fs))))
+(define (functor-category-functors FC) (map (lambda (i) (category-object-label FC i)) (cf-objects FC)))
+
+;; ---------------------------------------------------------------------------
+;; Comma, slice and coslice categories
+;; ---------------------------------------------------------------------------
+;; (F | G) for F : A -> C and G : B -> C: objects (a b u) with u : F a -> G b;
+;; arrows (f g) : (a b u) -> (a' b' u') with G(g) o u = u' o F(f).
+(define (comma-category F G)
+  (let* ((A (functor-source F)) (B (functor-source G)) (C (functor-target F))
+         (objs (apply append
+                      (map (lambda (a)
+                             (apply append (map (lambda (b) (map (lambda (u) (list a b u)) (category-hom C (functor-object F a) (functor-object G b))))
+                                                (cf-objects B))))
+                           (cf-objects A))))
+         (oindex (let ((t (make-hash-table))) (let loop ((l objs) (i 0)) (if (null? l) t (begin (hash-table-set! t (car l) i) (loop (cdr l) (+ i 1)))))))
+         (arrows (apply append
+                        (map (lambda (o)
+                               (let ((a (car o)) (b (cadr o)) (u (caddr o)) (s (hash-table-ref/default oindex o #f)))
+                                 (apply append
+                                        (map (lambda (f)
+                                               (apply append
+                                                      (map (lambda (g)
+                                                             (let ((lhs (category-compose C (functor-arrow G g) u)))
+                                                               (map (lambda (u2) (vector s (hash-table-ref/default oindex (list (arrow-target A f) (arrow-target B g) u2) #f) (list f g)))
+                                                                    (filter (lambda (u2) (eqv? lhs (category-compose C u2 (functor-arrow F f))))
+                                                                            (category-hom C (functor-object F (arrow-target A f)) (functor-object G (arrow-target B g)))))))
+                                                           (category-arrows-from B b))))
+                                             (category-arrows-from A a)))))
+                             objs)))
+         (av (list->vector arrows))
+         (aindex (let ((t (make-hash-table)))
+                   (let loop ((k 0)) (if (< k (vector-length av))
+                                         (let ((e (vector-ref av k))) (hash-table-set! t (list (vector-ref e 0) (car (vector-ref e 2)) (cadr (vector-ref e 2))) k) (loop (+ k 1)))))
+                   t)))
+    (make-finite-category (length objs) arrows
+                          (lambda (k2 k1)
+                            (let ((n1 (vector-ref (vector-ref av k1) 2)) (n2 (vector-ref (vector-ref av k2) 2)))
+                              (hash-table-ref/default aindex (list (vector-ref (vector-ref av k1) 0)
+                                                                   (category-compose A (car n2) (car n1))
+                                                                   (category-compose B (cadr n2) (cadr n1)))
+                                                      #f)))
+                          (map (lambda (o) (hash-table-ref/default aindex (list (hash-table-ref/default oindex o #f)
+                                                                                (category-identity A (car o)) (category-identity B (cadr o)))
+                                                                   #f))
+                               objs)
+                          objs)))
+(define (comma-domain-projection F K)
+  (make-functor K (functor-source F) (map (lambda (o) (car (category-object-label K o))) (cf-objects K))
+                (map (lambda (k) (car (arrow-name K k))) (cf-arrows K))))
+(define (comma-codomain-projection G K)
+  (make-functor K (functor-source G) (map (lambda (o) (cadr (category-object-label K o))) (cf-objects K))
+                (map (lambda (k) (cadr (arrow-name K k))) (cf-arrows K))))
+;; C / c = (id | c) and c / C = (c | id)
+(define (slice-category C c) (comma-category (identity-functor C) (object-functor C c)))
+(define (coslice-category C c) (comma-category (object-functor C c) (identity-functor C)))
+
+;; ---------------------------------------------------------------------------
+;; The Grothendieck construction of a diagram of categories
+;; ---------------------------------------------------------------------------
+(define (make-category-diagram C categories functors) (vector 'category-diagram C (cf-vec categories) (cf-vec functors)))
+(define (category-diagram? P) (and (vector? P) (= 4 (vector-length P)) (eq? (vector-ref P 0) 'category-diagram)))
+(define (category-diagram-base P) (vector-ref P 1))
+(define (category-diagram-category P c) (vector-ref (vector-ref P 2) c))
+(define (category-diagram-functor P a) (vector-ref (vector-ref P 3) a))
+;; (functor a v) for a law violated by the functor of a, (endpoints a),
+;; (identity c), (composite g f): strict functoriality C -> Cat
+(define (category-diagram-violations P)
+  (let ((C (category-diagram-base P)) (out '()))
+    (for-each (lambda (a)
+                (let ((Fa (category-diagram-functor P a)))
+                  (if (not (and (eq? (functor-source Fa) (category-diagram-category P (arrow-source C a)))
+                                (eq? (functor-target Fa) (category-diagram-category P (arrow-target C a)))))
+                      (set! out (cons (list 'endpoints a) out))
+                      (for-each (lambda (v) (set! out (cons (list 'functor a v) out))) (functor-laws-violations Fa)))))
+              (cf-arrows C))
+    (if (null? out)
+        (begin
+          (for-each (lambda (c) (if (not (functor-equal? (category-diagram-functor P (category-identity C c))
+                                                         (identity-functor (category-diagram-category P c))))
+                                    (set! out (cons (list 'identity c) out))))
+                    (cf-objects C))
+          (for-each (lambda (g) (for-each (lambda (f)
+                                            (if (and (category-composable? C g f)
+                                                     (not (functor-equal? (category-diagram-functor P (category-compose C g f))
+                                                                          (functor-compose (category-diagram-functor P g) (category-diagram-functor P f)))))
+                                                (set! out (cons (list 'composite g f) out))))
+                                          (cf-arrows C)))
+                    (cf-arrows C))))
+    (reverse out)))
+;; Objects (c x), x an object of P(c); arrows (a phi) : (c x) -> (c' x') with
+;; a : c -> c' and phi : P(a)(x) -> x' in P(c'); composition
+;; (a2 phi2) o (a1 phi1) = (a2 o a1, phi2 o P(a2)(phi1)).
+(define (grothendieck-construction P)
+  (let* ((C (category-diagram-base P))
+         (objs (apply append (map (lambda (c) (map (lambda (x) (list c x)) (cf-objects (category-diagram-category P c)))) (cf-objects C))))
+         (oindex (let ((t (make-hash-table))) (let loop ((l objs) (i 0)) (if (null? l) t (begin (hash-table-set! t (car l) i) (loop (cdr l) (+ i 1)))))))
+         (arrows (apply append
+                        (map (lambda (o)
+                               (let ((c (car o)) (x (cadr o)))
+                                 (apply append
+                                        (map (lambda (a)
+                                               (let* ((c2 (arrow-target C a)) (Pc2 (category-diagram-category P c2))
+                                                      (px (functor-object (category-diagram-functor P a) x)))
+                                                 (map (lambda (phi) (vector (hash-table-ref/default oindex o #f)
+                                                                            (hash-table-ref/default oindex (list c2 (arrow-target Pc2 phi)) #f)
+                                                                            (list a phi)))
+                                                      (category-arrows-from Pc2 px))))
+                                             (category-arrows-from C c)))))
+                             objs)))
+         (av (list->vector arrows))
+         (aindex (let ((t (make-hash-table)))
+                   (let loop ((k 0)) (if (< k (vector-length av))
+                                         (let ((e (vector-ref av k))) (hash-table-set! t (cons (vector-ref e 0) (vector-ref e 2)) k) (loop (+ k 1)))))
+                   t)))
+    (make-finite-category (length objs) arrows
+                          (lambda (k2 k1)
+                            (let* ((n1 (vector-ref (vector-ref av k1) 2)) (n2 (vector-ref (vector-ref av k2) 2))
+                                   (a2 (car n2)) (Pc (category-diagram-category P (arrow-target C a2))))
+                              (hash-table-ref/default aindex
+                                                      (list (vector-ref (vector-ref av k1) 0) (category-compose C a2 (car n1))
+                                                            (category-compose Pc (cadr n2) (functor-arrow (category-diagram-functor P a2) (cadr n1))))
+                                                      #f)))
+                          (map (lambda (o) (hash-table-ref/default aindex
+                                                                   (list (hash-table-ref/default oindex o #f) (category-identity C (car o))
+                                                                         (category-identity (category-diagram-category P (car o)) (cadr o)))
+                                                                   #f))
+                               objs)
+                          objs)))
+;; the projection (c x) |-> c, a split opfibration
+(define (grothendieck-projection P G)
+  (make-functor G (category-diagram-base P) (map (lambda (o) (car (category-object-label G o))) (cf-objects G))
+                (map (lambda (k) (car (arrow-name G k))) (cf-arrows G))))
+
+;; ---------------------------------------------------------------------------
+;; Adjunctions
+;; ---------------------------------------------------------------------------
+(define (make-adjunction L R unit counit) (vector 'adjunction L R (cf-vec unit) (cf-vec counit)))
+(define (adjunction? A) (and (vector? A) (= 5 (vector-length A)) (eq? (vector-ref A 0) 'adjunction)))
+(define (adjunction-left A) (vector-ref A 1))
+(define (adjunction-right A) (vector-ref A 2))
+(define (adjunction-unit A) (vector-ref A 3))
+(define (adjunction-counit A) (vector-ref A 4))
+;; (left v) (right v) for functor laws, (unit v) (counit v) for naturality,
+;; (triangle-left c) when eps_{Lc} o L(eta_c) /= id_{Lc},
+;; (triangle-right d) when R(eps_d) o eta_{Rd} /= id_{Rd}
+(define (adjunction-violations A)
+  (let* ((L (adjunction-left A)) (R (adjunction-right A)) (C (functor-source L)) (D (functor-target L))
+         (eta (adjunction-unit A)) (eps (adjunction-counit A)) (out '()))
+    (for-each (lambda (v) (set! out (cons (list 'left v) out))) (functor-laws-violations L))
+    (for-each (lambda (v) (set! out (cons (list 'right v) out))) (functor-laws-violations R))
+    (if (null? out)
+        (let ((RL (functor-compose R L)) (LR (functor-compose L R)))
+          (for-each (lambda (v) (set! out (cons (list 'unit v) out))) (natural-transformation-violations (identity-functor C) RL eta))
+          (for-each (lambda (v) (set! out (cons (list 'counit v) out))) (natural-transformation-violations LR (identity-functor D) eps))
+          (if (null? out)
+              (begin
+                (for-each (lambda (c)
+                            (if (not (eqv? (category-identity D (functor-object L c))
+                                           (category-compose D (vector-ref eps (functor-object L c)) (functor-arrow L (vector-ref eta c)))))
+                                (set! out (cons (list 'triangle-left c) out))))
+                          (cf-objects C))
+                (for-each (lambda (d)
+                            (if (not (eqv? (category-identity C (functor-object R d))
+                                           (category-compose C (functor-arrow R (vector-ref eps d)) (vector-ref eta (functor-object R d)))))
+                                (set! out (cons (list 'triangle-right d) out))))
+                          (cf-objects D))))))
+    (reverse out)))
+;; D(Lc, d) ~ C(c, Rd): phi(g) = R(g) o eta_c and psi(f) = eps_d o L(f) are
+;; mutually inverse; (count c d), (phi-psi c d g), (psi-phi c d f) on failure
+(define (adjunction-hom-bijection-violations A)
+  (let* ((L (adjunction-left A)) (R (adjunction-right A)) (C (functor-source L)) (D (functor-target L))
+         (eta (adjunction-unit A)) (eps (adjunction-counit A)) (out '()))
+    (for-each
+     (lambda (c)
+       (for-each
+        (lambda (d)
+          (let ((left (category-hom D (functor-object L c) d)) (right (category-hom C c (functor-object R d))))
+            (if (not (= (length left) (length right))) (set! out (cons (list 'count c d) out)))
+            (for-each (lambda (g) (if (not (eqv? g (category-compose D (vector-ref eps d) (functor-arrow L (category-compose C (functor-arrow R g) (vector-ref eta c))))))
+                                      (set! out (cons (list 'phi-psi c d g) out))))
+                      left)
+            (for-each (lambda (f) (if (not (eqv? f (category-compose C (functor-arrow R (category-compose D (vector-ref eps d) (functor-arrow L f))) (vector-ref eta c))))
+                                      (set! out (cons (list 'psi-phi c d f) out))))
+                      right)))
+        (cf-objects D)))
+     (cf-objects C))
+    (reverse out)))
+;; the unique arrow s -> t of a category, or #f
+(define (cf-unique-arrow K s t) (let ((h (category-hom K s t))) (if (and (pair? h) (null? (cdr h))) (car h) #f)))
+(define (cf-label-index K label) (category-object-of-label K label))
+;; R d = the C-component of the terminal object of (L | d), eps_d its arrow;
+;; #f when some (L | d) has no terminal object (L has no right adjoint)
+(define (right-adjoint L)
+  (let* ((C (functor-source L)) (D (functor-target L))
+         (commas (list->vector (map (lambda (d) (comma-category L (object-functor D d))) (cf-objects D))))
+         (terms (map (lambda (d) (let ((ts (category-terminal-objects (vector-ref commas d))))
+                                   (if (null? ts) #f (category-object-label (vector-ref commas d) (car ts)))))
+                     (cf-objects D))))
+    (if (not (cf-all? (lambda (t) t) terms)) #f
+        (let* ((tv (list->vector terms))
+               (Robj (map (lambda (d) (car (vector-ref tv d))) (cf-objects D)))
+               (eps (map (lambda (d) (caddr (vector-ref tv d))) (cf-objects D)))
+               (Rarr (map (lambda (g)
+                            (let* ((d (arrow-source D g)) (d2 (arrow-target D g)) (K2 (vector-ref commas d2))
+                                   (s (cf-label-index K2 (list (car (vector-ref tv d)) 0 (category-compose D g (caddr (vector-ref tv d))))))
+                                   (k (cf-unique-arrow K2 s (cf-label-index K2 (vector-ref tv d2)))))
+                              (car (arrow-name K2 k))))
+                          (cf-arrows D)))
+               (R (make-functor D C Robj Rarr))
+               (eta (map (lambda (c)
+                           (let* ((Lc (functor-object L c)) (K (vector-ref commas Lc))
+                                  (k (cf-unique-arrow K (cf-label-index K (list c 0 (category-identity D Lc))) (cf-label-index K (vector-ref tv Lc)))))
+                             (car (arrow-name K k))))
+                         (cf-objects C))))
+          (make-adjunction L R eta eps)))))
+;; L c = the D-component of the initial object of (c | R), eta_c its arrow
+(define (left-adjoint R)
+  (let* ((D (functor-source R)) (C (functor-target R))
+         (commas (list->vector (map (lambda (c) (comma-category (object-functor C c) R)) (cf-objects C))))
+         (inits (map (lambda (c) (let ((is (category-initial-objects (vector-ref commas c))))
+                                   (if (null? is) #f (category-object-label (vector-ref commas c) (car is)))))
+                     (cf-objects C))))
+    (if (not (cf-all? (lambda (t) t) inits)) #f
+        (let* ((iv (list->vector inits))
+               (Lobj (map (lambda (c) (cadr (vector-ref iv c))) (cf-objects C)))
+               (eta (map (lambda (c) (caddr (vector-ref iv c))) (cf-objects C)))
+               (Larr (map (lambda (f)
+                            (let* ((c (arrow-source C f)) (c2 (arrow-target C f)) (K (vector-ref commas c))
+                                   (t (cf-label-index K (list 0 (cadr (vector-ref iv c2)) (category-compose C (caddr (vector-ref iv c2)) f))))
+                                   (k (cf-unique-arrow K (cf-label-index K (vector-ref iv c)) t)))
+                              (cadr (arrow-name K k))))
+                          (cf-arrows C)))
+               (L (make-functor C D Lobj Larr))
+               (eps (map (lambda (d)
+                           (let* ((Rd (functor-object R d)) (K (vector-ref commas Rd))
+                                  (k (cf-unique-arrow K (cf-label-index K (vector-ref iv Rd)) (cf-label-index K (list 0 d (category-identity C Rd))))))
+                             (cadr (arrow-name K k))))
+                         (cf-objects D))))
+          (make-adjunction L R eta eps)))))
+
+;; ---------------------------------------------------------------------------
+;; Monads
+;; ---------------------------------------------------------------------------
+(define (make-monad C T unit mult) (vector 'monad C T (cf-vec unit) (cf-vec mult)))
+(define (monad? M) (and (vector? M) (= 5 (vector-length M)) (eq? (vector-ref M 0) 'monad)))
+(define (monad-category M) (vector-ref M 1))
+(define (monad-functor M) (vector-ref M 2))
+(define (monad-unit M) (vector-ref M 3))
+(define (monad-multiplication M) (vector-ref M 4))
+;; T = R L with unit eta and multiplication mu_c = R(eps_{L c})
+(define (adjunction-monad A)
+  (let ((L (adjunction-left A)) (R (adjunction-right A)))
+    (make-monad (functor-source L) (functor-compose R L) (adjunction-unit A)
+                (map (lambda (c) (functor-arrow R (vector-ref (adjunction-counit A) (functor-object L c)))) (cf-objects (functor-source L))))))
+;; (unit v) (multiplication v) naturality, (left-unit c): mu o T eta /= id,
+;; (right-unit c): mu o eta T /= id, (associativity c): mu o T mu /= mu o mu T
+(define (monad-laws-violations M)
+  (let* ((C (monad-category M)) (T (monad-functor M)) (eta (monad-unit M)) (mu (monad-multiplication M))
+         (TT (functor-compose T T)) (out '()))
+    (for-each (lambda (v) (set! out (cons (list 'unit v) out))) (natural-transformation-violations (identity-functor C) T eta))
+    (for-each (lambda (v) (set! out (cons (list 'multiplication v) out))) (natural-transformation-violations TT T mu))
+    (if (null? out)
+        (for-each (lambda (c)
+                    (let ((Tc (functor-object T c)) (id (category-identity C (functor-object T c))))
+                      (if (not (eqv? id (category-compose C (vector-ref mu c) (functor-arrow T (vector-ref eta c)))))
+                          (set! out (cons (list 'left-unit c) out)))
+                      (if (not (eqv? id (category-compose C (vector-ref mu c) (vector-ref eta Tc))))
+                          (set! out (cons (list 'right-unit c) out)))
+                      (if (not (eqv? (category-compose C (vector-ref mu c) (functor-arrow T (vector-ref mu c)))
+                                     (category-compose C (vector-ref mu c) (vector-ref mu Tc))))
+                          (set! out (cons (list 'associativity c) out)))))
+                  (cf-objects C)))
+    (reverse out)))
+;; Eilenberg-Moore algebras (c . h), h : T c -> c with h o eta_c = id and
+;; h o T h = h o mu_c
+(define (monad-algebras M)
+  (let ((C (monad-category M)) (T (monad-functor M)) (eta (monad-unit M)) (mu (monad-multiplication M)))
+    (apply append
+           (map (lambda (c)
+                  (map (lambda (h) (cons c h))
+                       (filter (lambda (h) (and (eqv? (category-identity C c) (category-compose C h (vector-ref eta c)))
+                                                (eqv? (category-compose C h (functor-arrow T h)) (category-compose C h (vector-ref mu c)))))
+                               (category-hom C (functor-object T c) c))))
+                (cf-objects C)))))

@@ -1,0 +1,104 @@
+;;; core.category.linear -- limits and colimits of finite diagrams of free
+;;; Z-modules and Q-vector spaces, exactly: the limit as a kernel and the
+;;; colimit as a cokernel with its torsion, on core.sheaf.module's linear
+;;; presheaves and core.integer_linalg's Smith normal form.
+;;;
+;;; Usage: (require core.category.linear)   or   (require core.category)
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician", 2nd ed.
+;;; (1998), V.2 (limits from products and equalizers: lim F is the
+;;; equalizer of prod_c F(c) => prod_a F(target a)) and its dual;
+;;; C. Weibel, "An Introduction to Homological Algebra" (1994), 2.6 (lim and
+;;; colim of modules, the derived functors lim^n); nLab: "limit",
+;;; "colimit", "Vect", "Ab".
+;;;
+;;; Representation: a diagram is a core.sheaf.module presheaf F on a finite
+;;; category C (ADR-0033): F(c) = R^rank(c), R = Z or Q, and the matrix of
+;;; F(a) : F(c) -> F(d) for a : d -> c. Its limit and colimit are taken over
+;;; C^op, so a covariant diagram X : J -> Mod_R is the module presheaf on
+;;; J^op with the same matrices. Vectors of the total space are coordinate
+;;; vectors in the block order c = 0, 1, ... .
+;;;
+;;;   (module-presheaf-limit F)    #(module-limit ring rank basis offsets):
+;;;       basis a list of vectors (v_c)_c in (+)_c F(c) with F(a) v_c = v_d,
+;;;       a Z-basis of the saturated kernel lattice (ring Z) or a Q-basis.
+;;;   (module-presheaf-colimit F)  #(module-colimit ring rank torsion):
+;;;       (+)_c F(c) / <iota_d F(a) w - iota_c w>, rank and the invariant
+;;;       factors d > 1 of its torsion (none over Q).
+
+(require stdlib)
+(require core.integer_linalg)
+(require core.sheaf.site)
+(require core.sheaf.module)
+
+(provide module-presheaf-limit module-limit-rank module-limit-basis module-limit-component
+         module-presheaf-colimit module-colimit-rank module-colimit-torsion
+         module-presheaf-limit-relations module-presheaf-colimit-relations)
+
+(define (cl-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (cl-offsets F)
+  (let* ((C (module-presheaf-category F)) (n (category-object-count C)) (o (make-vector (+ n 1) 0)))
+    (let loop ((c 0)) (if (< c n) (begin (vector-set! o (+ c 1) (+ (vector-ref o c) (module-presheaf-rank F c))) (loop (+ c 1)))))
+    o))
+(define (cl-nonidentity C) (filter (lambda (a) (not (= a (category-identity C (arrow-source C a))))) (cl-range (category-arrow-count C))))
+
+;; one row per non-identity arrow a : d -> c and coordinate r of F(d):
+;; (F(a) v_c)_r - (v_d)_r
+(define (module-presheaf-limit-relations F)
+  (let* ((C (module-presheaf-category F)) (o (cl-offsets F)) (N (vector-ref o (category-object-count C))))
+    (list->vector
+     (apply append
+            (map (lambda (a)
+                   (let* ((d (arrow-source C a)) (c (arrow-target C a)) (M (module-presheaf-restriction F a)))
+                     (map (lambda (r)
+                            (let ((row (make-vector N 0)))
+                              (let loop ((j 0)) (if (< j (module-presheaf-rank F c))
+                                                    (begin (vector-set! row (+ (vector-ref o c) j) (+ (vector-ref row (+ (vector-ref o c) j)) (integer-matrix-ref M r j)))
+                                                           (loop (+ j 1)))))
+                              (vector-set! row (+ (vector-ref o d) r) (- (vector-ref row (+ (vector-ref o d) r)) 1))
+                              row))
+                          (cl-range (module-presheaf-rank F d)))))
+                 (cl-nonidentity C))))))
+(define (module-presheaf-limit F)
+  (let* ((C (module-presheaf-category F)) (o (cl-offsets F)) (N (vector-ref o (category-object-count C)))
+         (A (module-presheaf-limit-relations F))
+         (basis (ring-kernel (module-presheaf-ring F) (if (= 0 (vector-length A)) #f A) N)))
+    (vector 'module-limit (module-presheaf-ring F) (length basis) basis o)))
+(define (module-limit-rank L) (vector-ref L 2))
+(define (module-limit-basis L) (vector-ref L 3))
+;; the c-component of a vector of the total space
+(define (module-limit-component L v c)
+  (let* ((o (vector-ref L 4)) (s (vector-ref o c)) (e (vector-ref o (+ c 1))) (w (make-vector (- e s) 0)))
+    (let loop ((j s)) (if (< j e) (begin (vector-set! w (- j s) (vector-ref v j)) (loop (+ j 1)))))
+    w))
+
+;; the relation matrix of the colimit: N rows, one column per non-identity
+;; arrow a : d -> c and basis vector e_j of F(c): iota_d F(a) e_j - iota_c e_j
+(define (module-presheaf-colimit-relations F)
+  (let* ((C (module-presheaf-category F)) (o (cl-offsets F)) (N (vector-ref o (category-object-count C)))
+         (cols (apply append
+                      (map (lambda (a)
+                             (let* ((d (arrow-source C a)) (c (arrow-target C a)) (M (module-presheaf-restriction F a)))
+                               (map (lambda (j)
+                                      (let ((col (make-vector N 0)))
+                                        (let loop ((r 0)) (if (< r (module-presheaf-rank F d))
+                                                              (begin (vector-set! col (+ (vector-ref o d) r) (+ (vector-ref col (+ (vector-ref o d) r)) (integer-matrix-ref M r j)))
+                                                                     (loop (+ r 1)))))
+                                        (vector-set! col (+ (vector-ref o c) j) (- (vector-ref col (+ (vector-ref o c) j)) 1))
+                                        col))
+                                    (cl-range (module-presheaf-rank F c)))))
+                           (cl-nonidentity C)))))
+    (cons N cols)))
+(define (module-presheaf-colimit F)
+  (let* ((rel (module-presheaf-colimit-relations F)) (N (car rel)) (cols (cdr rel)) (ring (module-presheaf-ring F)))
+    (if (or (null? cols) (= N 0))
+        (vector 'module-colimit ring N '())
+        (let* ((R (integer-matrix-from-columns (if (eq? ring 'Z) cols (map (lambda (c) (cl-clear-vector c)) cols)) N))
+               (factors (integer-invariant-factors R)))
+          (vector 'module-colimit ring (- N (length factors))
+                  (if (eq? ring 'Z) (filter (lambda (x) (> x 1)) factors) '()))))))
+;; a rational column scaled to integers (the span over Q is unchanged)
+(define (cl-clear-vector v)
+  (let ((m (matrix-clear-denominators (vector v)))) (vector-ref m 0)))
+(define (module-colimit-rank K) (vector-ref K 2))
+(define (module-colimit-torsion K) (vector-ref K 3))
