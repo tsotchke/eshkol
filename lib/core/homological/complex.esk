@@ -87,10 +87,12 @@
           ((ring-ref R 'field?) 'field)
           (else (error "core.homological: coefficients must be Z, Q or a field" (ring-carrier-name R))))))
 (define (coefficient-field? R) (not (eq? (coefficient-kind R) 'Z)))
-;; the image of an exact integer or rational in R
+;; the image of an exact integer (by the ring map Z -> R) or rational in R
 (define (coefficient-reduce R x)
   (let ((k (coefficient-kind R)))
-    (cond ((eq? k 'Z) x) ((eq? k 'Q) x) (else (ring-admit R x)))))
+    (cond ((eq? k 'Z) x) ((eq? k 'Q) x)
+          ((and (number? x) (exact? x) (integer? x)) ((ring-ref R 'from-integer) x))
+          (else (ring-admit R x)))))
 (define (coefficient-reduce-vector R v)
   (let ((w (make-vector (vector-length v) 0)))
     (let loop ((i 0)) (if (< i (vector-length v)) (begin (vector-set! w i (coefficient-reduce R (vector-ref v i))) (loop (+ i 1)))))
@@ -505,39 +507,53 @@
          (rows (length (homology-generators D k))))
     (if (null? cols) (integer-matrix rows 0) (integer-matrix-from-columns cols rows))))
 
-;; Cone of a cochain map f : A -> B: Cone^n = A^{n+1} (+) B^n,
-;; D(a, b) = (-D a, f a + D b). For a chain map: Cone_n = A_{n-1} (+) B_n,
-;; d(a, b) = (-d a, f a + d b). Degrees 0 .. N.
+;; The mapping cone, in the convention that keeps a complex concentrated in
+;; degrees >= 0:
+;;   cochain map f : A -> B:  Cone^n = A^n (+) B^{n-1},  D(a, b) = (D a, f a - D b)
+;;     (the cocone; for the restriction C(X) -> C(Y) along Y in X it computes
+;;     the relative cohomology H^n(X, Y));
+;;   chain map f : A -> B:    Cone_n = A_{n-1} (+) B_n,  d(a, b) = (-d a, f a + d b).
+;; Degrees 0 .. N with N the smaller top degree.
 (define (mapping-cone f)
   (let* ((A (chain-map-source f)) (B (chain-map-target f)) (R (complex-ring A)) (cochain? (eq? (complex-kind A) 'cochain))
-         (N (min (complex-top-degree A) (complex-top-degree B)))
-         (sh (if cochain? 1 -1))                 ;; the A-summand of degree n is A^{n+sh}
-         (dims (map (lambda (n) (+ (complex-dim A (+ n sh)) (complex-dim B n))) (hc-range (+ N 1))))
-         (step (if cochain? 1 -1))
-         (D-of (lambda (n)
-                 (let* ((t (+ n step)) (an (complex-dim A (+ n sh))) (at (complex-dim A (+ t sh)))
-                        (bn (complex-dim B n)) (bt (complex-dim B t))
-                        (M (integer-matrix (+ at bt) (+ an bn))))
-                   (hc-place! M 0 0 (complex-map A (+ n sh)) -1)
-                   (hc-place! M at 0 (chain-map-component f (+ n sh)) 1)
-                   (hc-place! M at an (complex-map B n) 1)
-                   M))))
+         (N (min (complex-top-degree A) (complex-top-degree B))))
     (if cochain?
-        (make-cochain-complex R dims (map D-of (hc-range N)))
-        (make-chain-complex R dims (map D-of (cdr (hc-range (+ N 1))))))))
-(define (mapping-cone-inclusion f)              ;; B -> Cone(f), b |-> (0, b)
-  (let* ((A (chain-map-source f)) (B (chain-map-target f)) (K (mapping-cone f)) (sh (if (eq? (complex-kind A) 'cochain) 1 -1)))
-    (make-chain-map B K (map (lambda (n) (let ((M (integer-matrix (complex-dim K n) (complex-dim B n))))
-                                           (hc-place! M (complex-dim A (+ n sh)) 0 (hc-identity (complex-dim B n)) 1) M))
-                             (hc-range (+ (complex-top-degree K) 1))))))
-(define (mapping-cone-projection f)             ;; Cone(f) -> A[sh], (a, b) |-> a, as matrices per degree
-  (let* ((A (chain-map-source f)) (K (mapping-cone f)) (sh (if (eq? (complex-kind A) 'cochain) 1 -1)))
-    (map (lambda (n) (let ((M (integer-matrix (complex-dim A (+ n sh)) (complex-dim K n))))
-                       (hc-place! M 0 0 (hc-identity (complex-dim A (+ n sh))) 1) M))
+        (make-cochain-complex
+         R (map (lambda (n) (+ (complex-dim A n) (complex-dim B (- n 1)))) (hc-range (+ N 1)))
+         (map (lambda (n)
+                (let* ((an (complex-dim A n)) (a1 (complex-dim A (+ n 1))) (b0 (complex-dim B (- n 1))) (b1 (complex-dim B n))
+                       (M (integer-matrix (+ a1 b1) (+ an b0))))
+                  (hc-place! M 0 0 (complex-map A n) 1)
+                  (hc-place! M a1 0 (chain-map-component f n) 1)
+                  (hc-place! M a1 an (complex-map B (- n 1)) -1)
+                  M))
+              (hc-range N)))
+        (make-chain-complex
+         R (map (lambda (n) (+ (complex-dim A (- n 1)) (complex-dim B n))) (hc-range (+ N 1)))
+         (map (lambda (n)
+                (let* ((an (complex-dim A (- n 1))) (a1 (complex-dim A (- n 2))) (bn (complex-dim B n)) (b1 (complex-dim B (- n 1)))
+                       (M (integer-matrix (+ a1 b1) (+ an bn))))
+                  (hc-place! M 0 0 (complex-map A (- n 1)) -1)
+                  (hc-place! M a1 0 (chain-map-component f (- n 1)) 1)
+                  (hc-place! M a1 an (complex-map B n) 1)
+                  M))
+              (cdr (hc-range (+ N 1))))))))
+;; for a cochain map: the inclusion B^{n-1} -> Cone^n, b |-> (0, b), and the
+;; projection Cone^n -> A^n, (a, b) |-> a, as matrices per degree n
+(define (mapping-cone-inclusion f)
+  (let* ((A (chain-map-source f)) (B (chain-map-target f)) (K (mapping-cone f)))
+    (map (lambda (n) (let ((M (integer-matrix (complex-dim K n) (complex-dim B (- n 1)))))
+                       (hc-place! M (complex-dim A n) 0 (hc-identity (complex-dim B (- n 1))) 1) M))
          (hc-range (+ (complex-top-degree K) 1)))))
-;; Over a field, for a cochain map f : A -> B with cone K: per degree n the
-;; list (n dim H^n(A) dim H^n(B) dim H^n(K) rank f* rank i* rank p*) of the
-;; sequence H^n(A) -> H^n(B) -> H^n(K) -> H^{n+1}(A) -> ...
+(define (mapping-cone-projection f)
+  (let* ((A (chain-map-source f)) (K (mapping-cone f)))
+    (map (lambda (n) (let ((M (integer-matrix (complex-dim A n) (complex-dim K n))))
+                       (hc-place! M 0 0 (hc-identity (complex-dim A n)) 1) M))
+         (hc-range (+ (complex-top-degree K) 1)))))
+;; Over a field, for a cochain map f : A -> B with cone K, the long exact sequence
+;;   ... -> H^{n-1}(B) --i--> H^n(K) --p--> H^n(A) --f--> H^n(B) --i--> H^{n+1}(K) -> ...
+;; per degree n as (n dim H^n(K) dim H^n(A) dim H^n(B) rank p rank f rank i),
+;; rank i being that of H^n(B) -> H^{n+1}(K); degrees 0 .. nmax.
 (define (hc-rank-of-classes R target k vs)       ;; rank of the span of the classes of vs in H^k(target)
   (if (null? vs) 0
       (let* ((n (complex-dim target k)) (in (complex-in-map target k))
@@ -547,23 +563,24 @@
   (let* ((A (chain-map-source f)) (B (chain-map-target f)) (R (complex-ring A)) (K (mapping-cone f))
          (incl (mapping-cone-inclusion f)) (proj (mapping-cone-projection f)))
     (if (eq? (coefficient-kind R) 'Z) (error "long-exact-sequence: needs field coefficients" (ring-carrier-name R)))
+    (if (not (eq? (complex-kind A) 'cochain)) (error "long-exact-sequence: needs a cochain map"))
     (map (lambda (n)
            (let ((gA (map cdr (homology-generators A n))) (gB (map cdr (homology-generators B n))) (gK (map cdr (homology-generators K n))))
-             (list n (length gA) (length gB) (length gK)
+             (list n (length gK) (length gA) (length gB)
+                   (hc-rank-of-classes R A n (map (lambda (z) (coefficient-matrix-vector R (list-ref proj n) z)) gK))
                    (hc-rank-of-classes R B n (map (lambda (z) (coefficient-matrix-vector R (chain-map-component f n) z)) gA))
-                   (hc-rank-of-classes R K n (map (lambda (z) (coefficient-matrix-vector R (chain-map-component incl n) z)) gB))
-                   (hc-rank-of-classes R A (+ n 1) (map (lambda (z) (coefficient-matrix-vector R (list-ref proj n) z)) gK)))))
+                   (if (< n (complex-top-degree K))
+                       (hc-rank-of-classes R K (+ n 1) (map (lambda (z) (coefficient-matrix-vector R (list-ref incl (+ n 1)) z)) gB))
+                       0))))
          (hc-range (+ nmax 1)))))
-;; exactness at every inner node: dim X = rank(in) + rank(out)
+;; exactness at every node of degree <= nmax: dim = rank(in) + rank(out)
 (define (long-exact-sequence-exact? f nmax)
-  (let ((rows (long-exact-sequence f nmax)))
-    (let loop ((rs rows))
+  (let ((rows (long-exact-sequence f (+ nmax 1))))
+    (let loop ((rs rows) (prev-i 0))
       (if (or (null? rs) (null? (cdr rs))) #t
-          (let* ((r (car rs)) (r2 (cadr rs))
-                 (hA (list-ref r 1)) (hB (list-ref r 2)) (hK (list-ref r 3)) (fs (list-ref r 4)) (is (list-ref r 5)) (ps (list-ref r 6))
-                 (hA2 (list-ref r2 1)) (fs2 (list-ref r2 4)))
-            (and (= hB (+ fs is)) (= hK (+ is ps)) (= hA2 (+ ps fs2))
-                 (loop (cdr rs))))))))
+          (let* ((r (car rs)) (hK (list-ref r 1)) (hA (list-ref r 2)) (hB (list-ref r 3)) (ps (list-ref r 4)) (fs (list-ref r 5)) (is (list-ref r 6)))
+            (and (= hK (+ prev-i ps)) (= hA (+ ps fs)) (= hB (+ fs is))
+                 (loop (cdr rs) is)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Double complexes and total complexes

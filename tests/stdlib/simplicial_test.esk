@@ -1,0 +1,276 @@
+;; core.simplicial: exhaustive small cases with independent cross-checks
+;; (closed-form simplex counts, the simplicial identities on every simplex,
+;; group-theoretic counts against nerve counts, horn fillers against the
+;; Kan / quasi-category classification, mapping-space counts against
+;; homomorphism counts).
+(require stdlib)
+(require core.simplicial)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? f) (guard (e (else #t)) (f) #f))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
+(define (binomial n k) (if (or (< k 0) (> k n)) 0 (let loop ((i 0) (acc 1)) (if (= i k) acc (loop (+ i 1) (quotient (* acc (- n i)) (+ i 1)))))))
+(define (counts X nmax) (map (lambda (n) (simplicial-set-count X n)) (range (+ nmax 1))))
+
+;; ---------------------------------------------------------------------------
+;; Simplices and operators
+;; ---------------------------------------------------------------------------
+(check "monotone surjections [n] -> [m] number C(n, m)"
+       (all? (lambda (n) (all? (lambda (m) (= (binomial n m) (length (monotone-surjections n m)))) (range (+ n 1)))) (range 6)))
+(check "monotone injections [k] -> [n] number C(n+1, k+1)"
+       (all? (lambda (n) (all? (lambda (k) (= (binomial (+ n 1) (+ k 1)) (length (monotone-injections k n)))) (range (+ n 1)))) (range 6)))
+(check "standard simplex Delta^n has C(n+1, k+1) nondegenerate k-simplices"
+       (all? (lambda (n) (equal? (counts (standard-simplex n) (+ n 1)) (map (lambda (k) (binomial (+ n 1) (+ k 1))) (range (+ n 2))))) (range 5)))
+(check "boundary of Delta^n and the horns Lambda^n_k have the expected top counts"
+       (and (equal? (counts (simplex-boundary 3) 3) (list 4 6 4 0))
+            (all? (lambda (k) (equal? (counts (horn 3 k) 3) (list 4 6 3 0))) (range 4))))
+(check "every simplex of Delta^2 in degree 3 is degenerate and there are C(6, 4) = 15 of them (monotone maps [3] -> [2])"
+       (and (= 15 (length (simplicial-set-simplices (standard-simplex 2) 3)))
+            (all? simplex-degenerate? (simplicial-set-simplices (standard-simplex 2) 3))))
+
+;; the five simplicial identities on every simplex of degree <= 3
+(define (identity-failures X nmax)
+  (let ((bad 0))
+    (for-each
+     (lambda (n)
+       (for-each
+        (lambda (s)
+          (for-each
+           (lambda (i)
+             (for-each
+              (lambda (j)
+                (if (and (< i j) (> n 1) (<= j n)
+                         (not (equal? (simplicial-set-face X i (simplicial-set-face X j s))
+                                      (simplicial-set-face X (- j 1) (simplicial-set-face X i s)))))
+                    (set! bad (+ bad 1)))
+                (if (<= j n)
+                    (let ((sj (simplicial-set-degeneracy X j s)))
+                      (if (not (equal? (simplicial-set-face X j sj) s)) (set! bad (+ bad 1)))
+                      (if (not (equal? (simplicial-set-face X (+ j 1) sj) s)) (set! bad (+ bad 1)))
+                      (if (and (< i j) (> n 0)
+                               (not (equal? (simplicial-set-face X i sj) (simplicial-set-degeneracy X (- j 1) (simplicial-set-face X i s)))))
+                          (set! bad (+ bad 1)))
+                      (if (and (> i (+ j 1)) (<= i (+ n 1))
+                               (not (equal? (simplicial-set-face X i sj) (simplicial-set-degeneracy X j (simplicial-set-face X (- i 1) s)))))
+                          (set! bad (+ bad 1)))
+                      (if (and (<= i j)
+                               (not (equal? (simplicial-set-degeneracy X i (simplicial-set-degeneracy X j s))
+                                            (simplicial-set-degeneracy X (+ j 1) (simplicial-set-degeneracy X i s)))))
+                          (set! bad (+ bad 1))))))
+              (range (+ n 2))))
+           (range (+ n 2))))
+        (simplicial-set-simplices X n)))
+     (range (+ nmax 1)))
+    bad))
+(define Z2 (cyclic-group 2)) (define Z3 (cyclic-group 3)) (define S3 (symmetric-group 3))
+(define D4 (dihedral-group 4)) (define Q8 (quaternion-group))
+(define pseudocircle (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define test-sets
+  (list (standard-simplex 3) (simplex-boundary 3) (horn 3 1) (simplicial-sphere 2)
+        (simplicial-product (standard-simplex 1) (standard-simplex 1))
+        (simplicial-product (simplicial-sphere 1) (simplicial-sphere 2))
+        (simplicial-join (standard-simplex 1) (simplicial-sphere 1))
+        (simplicial-suspension (simplex-boundary 2))
+        (classifying-space Z3) (classifying-space S3) (poset-nerve pseudocircle)))
+(check "the simplicial identities hold on every simplex of degree <= 2 of eleven simplicial sets"
+       (all? (lambda (X) (= 0 (identity-failures X 2))) test-sets))
+(check "d_i d_j = d_{j-1} d_i on the nondegenerate simplices of degree <= 3"
+       (all? (lambda (X) (null? (simplicial-set-identity-violations X 3))) test-sets))
+(check "simplicial-set-index refuses degenerate simplices and finds nondegenerate ones"
+       (let ((X (standard-simplex 2)))
+         (and (= 0 (simplicial-set-index X 1 (simplex (list 0 1) 1)))
+              (not (simplicial-set-index X 1 (simplicial-set-degeneracy X 0 (simplex (list 0) 0)))))))
+(check "front and back faces: the Alexander-Whitney faces of [0 1 2 3] are [0 1] and [1 2 3]"
+       (let ((X (standard-simplex 3)) (s (simplex (list 0 1 2 3) 3)))
+         (and (equal? (simplicial-set-front-face X s 1) (simplex (list 0 1) 1))
+              (equal? (simplicial-set-back-face X s 2) (simplex (list 1 2 3) 2)))))
+(check "a simplicial operator with repeated vertices produces the degenerate simplex eta^* x"
+       (equal? (simplicial-set-operator (standard-simplex 2) (simplex (list 0 1 2) 2) (list 0 0 2))
+               (vector 'simplex (list 0 0 1) (list 0 2))))
+
+;; ---------------------------------------------------------------------------
+;; Products, joins, cones, suspensions: counts and Euler characteristics
+;; ---------------------------------------------------------------------------
+(check "Delta^p x Delta^q has C(p+q, p) nondegenerate (p+q)-simplices (the shuffles)"
+       (all? (lambda (pq) (= (binomial (+ (car pq) (cadr pq)) (car pq))
+                             (simplicial-set-count (simplicial-product (standard-simplex (car pq)) (standard-simplex (cadr pq))) (+ (car pq) (cadr pq)))))
+             (list (list 1 1) (list 1 2) (list 2 2) (list 1 3))))
+(check "Delta^1 x Delta^1 counts (4 5 2) and S^1 x S^2 counts (1 1 3 3 0)"
+       (and (equal? (counts (simplicial-product (standard-simplex 1) (standard-simplex 1)) 2) (list 4 5 2))
+            (equal? (counts (simplicial-product (simplicial-sphere 1) (simplicial-sphere 2)) 4) (list 1 1 3 3 0))))
+(check "Euler characteristic is multiplicative on products: chi(S^2 x S^2) = 4, chi(S^1 x S^3) = 0, chi(dD3 x dD2) = 0"
+       (and (= 4 (simplicial-set-euler-characteristic (simplicial-product (simplicial-sphere 2) (simplicial-sphere 2)) 4))
+            (= 0 (simplicial-set-euler-characteristic (simplicial-product (simplicial-sphere 1) (simplicial-sphere 3)) 4))
+            (= 0 (simplicial-set-euler-characteristic (simplicial-product (simplex-boundary 3) (simplex-boundary 2)) 3))))
+(check "the join Delta^a * Delta^b has the counts of Delta^(a+b+1)"
+       (all? (lambda (ab) (equal? (counts (simplicial-join (standard-simplex (car ab)) (standard-simplex (cadr ab))) 4)
+                                  (counts (standard-simplex (+ (car ab) (cadr ab) 1)) 4)))
+             (list (list 0 0) (list 1 0) (list 1 1) (list 2 1))))
+(check "cone and suspension Euler characteristics: chi(C X) = 1 and chi(S X) = 2 - chi(X)"
+       (all? (lambda (X) (and (= 1 (simplicial-set-euler-characteristic (simplicial-cone X) 4))
+                              (= (- 2 (simplicial-set-euler-characteristic X 3)) (simplicial-set-euler-characteristic (simplicial-suspension X) 4))))
+             (list (simplex-boundary 2) (simplex-boundary 3) (standard-simplex 1))))
+(check "skeleta: the 2-skeleton of BZ/3 keeps (1 2 4) and nothing above"
+       (equal? (counts (simplicial-skeleton (classifying-space Z3) 2) 3) (list 1 2 4 0)))
+(check "a Delta-complex with a face of the wrong dimension is refused when used"
+       (raises? (lambda () (simplicial-set-face (make-simplicial-set "bad" (lambda (n) (if (< n 2) (list 0) '())) (lambda (n i x) (simplex 0 1)) 1)
+                                                0 (simplex 0 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Finite groups and crossed modules
+;; ---------------------------------------------------------------------------
+(check "group axioms hold for Z/n, products, D_4, Q_8, S_3, S_4"
+       (all? (lambda (G) (null? (group-axioms-violations G)))
+             (list (cyclic-group 5) (group-direct-product (cyclic-group 4) Z2) D4 Q8 S3 (symmetric-group 4))))
+(check "conjugacy classes: S_3 3, D_4 5, Q_8 5, S_4 5, abelian groups |G|"
+       (and (= 3 (length (group-conjugacy-classes S3))) (= 5 (length (group-conjugacy-classes D4)))
+            (= 5 (length (group-conjugacy-classes Q8))) (= 5 (length (group-conjugacy-classes (symmetric-group 4))))
+            (= 8 (length (group-conjugacy-classes (group-direct-product (cyclic-group 4) Z2))))))
+(check "element orders separate D_4 (five involutions) from Q_8 (one)"
+       (and (= 5 (length (filter (lambda (a) (= 2 (group-element-order D4 a))) (group-elements D4))))
+            (= 1 (length (filter (lambda (a) (= 2 (group-element-order Q8 a))) (group-elements Q8))))))
+(check "class equation: sum over classes of |G| / |C(g)| is |G| for S_4"
+       (let ((G (symmetric-group 4)))
+         (= 24 (fold-left + 0 (map (lambda (cls) (quotient 24 (length (group-centralizer G (car cls))))) (group-conjugacy-classes G))))))
+(check "S_3 / A_3 is Z/2 and the projection is a homomorphism"
+       (let* ((A3 (filter (lambda (g) (= 3 (group-element-order S3 g))) (group-elements S3)))
+              (q (group-quotient S3 (cons (group-identity S3) A3))))
+         (and (= 2 (group-order (car q))) (group-homomorphism? S3 (car q) (caddr q)))))
+(define (sign-action n m) (if (even? n) m (modulo (- 0 m) 4)))
+(define K22 (abelian-crossed-module 2 1 0 (lambda (n m) m)))
+(define BZ2xm (abelian-crossed-module 1 2 0 (lambda (n m) m)))
+(define SPLIT (abelian-crossed-module 2 2 0 (lambda (n m) m)))
+(define TWIST0 (abelian-crossed-module 4 4 2 (lambda (n m) m)))
+(define TWIST (abelian-crossed-module 4 4 2 sign-action))
+(define xmods (list K22 BZ2xm SPLIT TWIST0 TWIST))
+(check "five crossed modules satisfy the axioms"
+       (all? (lambda (X) (null? (crossed-module-violations X))) xmods))
+(check "negative control -- Z/4 -> Z/4 by 1 with the sign action fails equivariance and Peiffer"
+       (let ((v (crossed-module-violations (abelian-crossed-module 4 4 1 sign-action))))
+         (and (not (null? v)) (memq 'equivariance (map car v)) (memq 'peiffer (map car v)) #t)))
+(check "pi_1 = coker d and pi_2 = ker d: (1 2) (2 1) (2 2) (2 2) (2 2)"
+       (equal? (map (lambda (X) (list (crossed-module-pi1-order X) (crossed-module-pi2-order X))) xmods)
+               (list (list 1 2) (list 2 1) (list 2 2) (list 2 2) (list 2 2))))
+(define (k-values X) (let ((k (cadr (crossed-module-k-invariant X))))
+                       (map (lambda (t) (apply k t)) (list (list 0 0 0) (list 0 0 1) (list 0 1 0) (list 0 1 1) (list 1 0 0) (list 1 0 1) (list 1 1 0) (list 1 1 1)))))
+(check "k-invariant: zero for the split and trivial-action modules, the cocycle abc (value 2 in Z/4 at (1,1,1)) for the sign action"
+       (and (all? (lambda (v) (= 0 v)) (k-values SPLIT)) (all? (lambda (v) (= 0 v)) (k-values TWIST0))
+            (equal? (k-values TWIST) (list 0 0 0 0 0 0 0 2))))
+(check "the k-invariant takes values in pi_2 = ker d"
+       (all? (lambda (v) (memv v (crossed-module-pi2 TWIST))) (k-values TWIST)))
+(check "a nonabelian crossed module: Inn(S_3) ... S_3 -> Aut(S_3) by conjugation satisfies the axioms, pi_1 = 1, pi_2 = Z(S_3) = 1"
+       (let* ((X (make-crossed-module S3 S3 (lambda (m) m) (lambda (n m) (group-mul S3 (group-mul S3 n m) (group-inv S3 n))))))
+         (and (null? (crossed-module-violations X)) (= 1 (crossed-module-pi1-order X)) (= 1 (crossed-module-pi2-order X)))))
+(check "D_4 acting on its centre: Z(D_4) -> D_4 inclusion is a crossed module with pi_1 = (Z/2)^2, pi_2 = 1"
+       (let* ((center (filter (lambda (z) (all? (lambda (g) (group-commute? D4 z g)) (group-elements D4))) (group-elements D4)))
+              (Zc (cyclic-group 2))
+              (X (make-crossed-module Zc D4 (lambda (m) (list-ref center m)) (lambda (n m) m))))
+         (and (= 2 (length center)) (null? (crossed-module-violations X))
+              (= 4 (crossed-module-pi1-order X)) (= 1 (crossed-module-pi2-order X)))))
+
+;; ---------------------------------------------------------------------------
+;; Nerves
+;; ---------------------------------------------------------------------------
+(check "BG has (|G|-1)^n nondegenerate n-simplices (the normalized bar construction)"
+       (all? (lambda (G) (equal? (counts (classifying-space G) 3) (map (lambda (n) (ipow (- (group-order G) 1) n)) (range 4))))
+             (list Z2 Z3 S3 Q8)))
+(check "crossed-module nerves: all simplices of K(Z/2,2) are the 2-cocycles (1 1 2 8 64), of BZ/2 (1 2 4 8 16), of the split 2-type (1 2 8 64 1024)"
+       (and (equal? (map (lambda (n) (length (crossed-module-simplices K22 n))) (range 5)) (list 1 1 2 8 64))
+            (equal? (map (lambda (n) (length (crossed-module-simplices BZ2xm n))) (range 5)) (list 1 2 4 8 16))
+            (equal? (map (lambda (n) (length (crossed-module-simplices SPLIT n))) (range 5)) (list 1 2 8 64 1024))))
+(check "the nerve of 1 -> G has the counts of BG in every degree: |G|^n simplices, (|G|-1)^n nondegenerate"
+       (let ((N (crossed-module-nerve (group-crossed-module S3))))
+         (and (equal? (counts N 3) (counts (classifying-space S3) 3))
+              (= 216 (length (crossed-module-simplices (group-crossed-module S3) 3))))))
+(check "the crossed-module nerves satisfy the simplicial identities"
+       (all? (lambda (X) (null? (simplicial-set-identity-violations (crossed-module-nerve X) 3))) (list K22 SPLIT TWIST)))
+(check "negative control -- without the tetrahedron equation the split 2-type would have 128 3-simplices, not 64"
+       (= 64 (length (crossed-module-simplices SPLIT 3))))
+(define walking-arrow (poset-category 2 (lambda (x y) (<= x y))))
+(check "the nerve of a poset as a category is its order complex: walking arrow (2 1 0), pseudocircle (4 4 0)"
+       (and (equal? (counts (category-nerve walking-arrow) 2) (list 2 1 0))
+            (equal? (counts (category-nerve (poset-category 4 (lambda (x y) (finite-space-leq? pseudocircle x y)))) 2)
+                    (counts (poset-nerve pseudocircle) 2))))
+(check "the category nerve has the simplicial identities"
+       (null? (simplicial-set-identity-violations (category-nerve (poset-category 3 (lambda (x y) (<= x y)))) 3)))
+(check "face poset of the boundary of the triangle: 6 points, 6 strict relations; barycentric subdivision has 6 vertices and 6 edges"
+       (let* ((P (face-poset (simplex-boundary 2) 1)) (B (barycentric-subdivision (simplex-boundary 2) 1)))
+         (and (= 6 (finite-space-size P))
+              (= 6 (length (filter (lambda (xy) (finite-space-lt? P (car xy) (cadr xy))) (fold-left append '() (map (lambda (x) (map (lambda (y) (list x y)) (range 6))) (range 6))))))
+              (equal? (counts B 2) (list 6 6 0)))))
+(check "McCord: the face poset of the boundary of the triangle has the order type of the subdivided circle (two levels, degrees 2)"
+       (let ((P (mccord-finite-model (simplex-boundary 2) 1)))
+         (and (= 3 (length (finite-space-maximal-points P))) (= 3 (length (finite-space-minimal-points P))))))
+
+;; ---------------------------------------------------------------------------
+;; Horns, Kan complexes, quasi-categories
+;; ---------------------------------------------------------------------------
+(define nerves (map crossed-module-nerve (list K22 BZ2xm SPLIT TWIST)))
+(check "every 2-horn and 3-horn of the four 2-group nerves has a filler (Kan), counted over all compatible horns"
+       (all? (lambda (N) (kan-complex-through? N 3)) nerves))
+(check "3-horns of 2-group nerves have unique fillers (Duskin), 2-horns have |M| fillers"
+       (and (all? (lambda (N) (all? (lambda (row) (and (= 1 (caddr row)) (= 1 (cadddr row)))) (horn-filler-report N 3))) nerves)
+            (equal? (map (lambda (N) (map caddr (horn-filler-report N 2))) nerves) (list (list 2 2 2) (list 1 1 1) (list 2 2 2) (list 4 4 4)))))
+(check "BG is a Kan complex with unique fillers from dimension 2 on (the nerve of a groupoid)"
+       (let ((B (classifying-space S3)))
+         (and (kan-complex-through? B 3) (all? (lambda (row) (and (= 1 (caddr row)) (= 1 (cadddr row)))) (horn-filler-report B 2)))))
+(define NS (poset-nerve pseudocircle))
+(check "the nerve of the pseudocircle is a quasi-category but not a Kan complex"
+       (and (quasi-category-through? NS 3) (not (kan-complex-through? NS 2))))
+(check "inner 2-horns of the pseudocircle nerve: 12, each with exactly one filler; outer: 20, 8 unfillable at k = 0"
+       (let ((rep (horn-filler-report NS 2)))
+         (and (equal? (list-ref rep 1) (list 1 12 1 1)) (equal? (list-ref rep 0) (list 0 20 0 1))
+              (= 8 (length (horn-violations NS 2 0))))))
+(check "Delta^2 is not Kan (Lambda^2_0 = [0 1] [0 2] has no filler) but is a quasi-category"
+       (and (not (kan-complex-through? (standard-simplex 2) 2)) (quasi-category-through? (standard-simplex 2) 3)))
+(check "the nerve of a category that is not a groupoid is not Kan; the nerve of a groupoid is (Joyal)"
+       (and (not (kan-complex-through? (category-nerve walking-arrow) 2))
+            (quasi-category-through? (category-nerve walking-arrow) 3)
+            (kan-complex-through? (classifying-space Z3) 3)))
+(define (vertex-of X) (simplicial-set-nondegenerate-ref X 0 0))
+(check "Kan's homotopy groups of the 2-group nerves: |pi_1| = |coker d|, |pi_2| = |ker d|"
+       (equal? (map (lambda (N) (list (length (kan-homotopy-classes N (vertex-of N) 1)) (length (kan-homotopy-classes N (vertex-of N) 2)))) nerves)
+               (list (list 1 2) (list 2 1) (list 2 2) (list 2 2))))
+(check "pi_1(BS_3) from horn fillers is S_3: six classes and the product of classes is the group law"
+       (let* ((B (classifying-space S3)) (v (vertex-of B)) (cls (kan-homotopy-classes B v 1)))
+         (and (= 6 (length cls))
+              (all? (lambda (a) (all? (lambda (b)
+                                         (let ((p (kan-pi1-product B (simplex (list a) 1) (simplex (list b) 1)))
+                                               (ab (group-mul S3 a b)))
+                                           (equal? p (if (= ab (group-identity S3)) (basepoint-simplex v 1) (simplex (list ab) 1)))))
+                                       (cdr (group-elements S3))))
+                    (cdr (group-elements S3))))))
+(check "the homotopy relation on the 1-spheres of the twisted 2-group nerve is an equivalence relation"
+       (let* ((N (list-ref nerves 3)) (v (vertex-of N)) (sp (kan-spheres N v 1)))
+         (and (all? (lambda (x) (kan-homotopic? N v 1 x x)) sp)
+              (all? (lambda (x) (all? (lambda (y) (eq? (kan-homotopic? N v 1 x y) (kan-homotopic? N v 1 y x))) sp)) sp))))
+
+;; ---------------------------------------------------------------------------
+;; Mapping spaces
+;; ---------------------------------------------------------------------------
+(define torus (make-delta-complex 1 (list (list 0 0) (list 0 0) (list 0 0)) (list (list 0 2 1) (list 1 2 0))))
+(define (commuting-pairs G) (length (filter (lambda (p) (group-commute? G (car p) (cadr p)))
+                                            (fold-left append '() (map (lambda (a) (map (lambda (b) (list a b)) (group-elements G))) (group-elements G))))))
+(check "|Map(S^1, BG)| = |G| and |Map(T^2, BG)| = number of commuting pairs = |G| x classes"
+       (all? (lambda (G) (and (= (group-order G) (simplicial-maps-count (simplicial-sphere 1) (classifying-space G)))
+                              (= (commuting-pairs G) (simplicial-maps-count torus (classifying-space G)))
+                              (= (* (group-order G) (length (group-conjugacy-classes G))) (commuting-pairs G))))
+             (list Z3 S3 D4 Q8)))
+(check "|Map(Delta^n, BG)| = |G|^n and |Map(boundary of Delta^2, BG)| = |G|^3"
+       (and (= 36 (simplicial-maps-count (standard-simplex 2) (classifying-space S3)))
+            (= 27 (simplicial-maps-count (standard-simplex 3) (classifying-space Z3)))
+            (= 216 (simplicial-maps-count (simplex-boundary 2) (classifying-space S3)))))
+(check "|Map(Delta^1, Delta^1)| = 3 (monotone maps [1] -> [1]) and |Map(Delta^2, Delta^1)| = 4"
+       (and (= 3 (simplicial-maps-count (standard-simplex 1) (standard-simplex 1)))
+            (= 4 (simplicial-maps-count (standard-simplex 2) (standard-simplex 1)))))
+(check "|Map(T^2, nerve of the split 2-type)| = |Hom(Z^2, pi_1)| x |pi_2|^(triangles) = 4 x 2 x 2 = 16"
+       (= 16 (simplicial-maps-count torus (list-ref nerves 2))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: simplicial_test") (newline) (display "RESULT: PASS") (newline)
