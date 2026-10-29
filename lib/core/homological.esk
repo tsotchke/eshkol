@@ -1,0 +1,31 @@
+;;; core.homological -- homological algebra over ring carriers as one library.
+;;;
+;;; Usage: (require core.homological)
+;;;
+;;; Loads the whole facility (each part can also be required alone):
+;;;   core.homological.complex     chain and cochain complexes over Z, Q and
+;;;                                fields; homology with torsion and generators;
+;;;                                chain maps, homotopies, mapping cones, long
+;;;                                exact sequences; double and total complexes;
+;;;                                Q/Z coefficients
+;;;   core.homological.abelian     finitely presented abelian groups,
+;;;                                subquotients, Hom, tensor, Ext and Tor over
+;;;                                Z, universal coefficients
+;;;   core.homological.spectral    spectral sequences of filtered complexes and
+;;;                                of double complexes, pages with their
+;;;                                differentials, convergence to the
+;;;                                associated graded of the filtration
+;;;   core.homological.simplicial  normalized chains and cochains of simplicial
+;;;                                sets, cup and cup-i products, Steenrod
+;;;                                squares, the Bockstein, group cohomology
+;;;
+;;; Reference: docs/reference/stdlib/homological.md; design: ADR-0037
+;;; (docs/design/adr/0037-simplicial-and-homological-algebra.md).
+;;; Sources: C. A. Weibel, "An Introduction to Homological Algebra" (1994);
+;;; A. Hatcher, "Algebraic Topology" (2002); J. McCleary, "A User's Guide to
+;;; Spectral Sequences" (2001).
+
+(require core.homological.complex)
+(require core.homological.abelian)
+(require core.homological.spectral)
+(require core.homological.simplicial)

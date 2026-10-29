@@ -1,0 +1,206 @@
+;;; core.homological.simplicial -- normalized chains and cochains of
+;;; simplicial sets, the Alexander-Whitney cup product, cup-i products and
+;;; Steenrod squares, the Bockstein, and group (co)homology through the bar
+;;; construction with trivial or twisted coefficients.
+;;;
+;;; Usage: (require core.homological.simplicial)   or   (require core.homological)
+;;;
+;;; Sources: A. Hatcher, "Algebraic Topology" (2002), 2.1, 3.2 (the cup
+;;; product on simplicial cochains), 3.E (Bockstein), 4.L (Steenrod squares
+;;; and the Adem relations); N. E. Steenrod, "Products of cocycles and
+;;; extensions of mappings", Ann. of Math. 48 (1947) (cup-i products);
+;;; A. M. Medina-Mardones, "New formulas for cup-i products and fast
+;;; computation of Steenrod squares", Comput. Geom. 109 (2023) (the formula
+;;; used for cup-i below); K. S. Brown, "Cohomology of Groups" (1982), I.5,
+;;; III.1 (the normalized bar resolution); J. P. May, "Simplicial Objects in
+;;; Algebraic Topology" (1967), Sec. 22 (normalized chains).
+;;;
+;;; Chains and cochains are normalized: the basis in degree n is the list of
+;;; nondegenerate n-simplices of the simplicial set (core.simplicial.sset) in
+;;; its own order, and a cochain is a vector indexed by that basis, zero on
+;;; degenerate simplices. Over Z the normalized complex computes the same
+;;; homology as the unnormalized one (the normalization theorem; the tests
+;;; check it on BZ/2 and BZ/3).
+
+(require stdlib)
+(require core.integer_linalg)
+(require core.ring)
+(require core.simplicial.sset)
+(require core.simplicial.group)
+(require core.simplicial.nerve)
+(require core.homological.complex)
+
+(provide simplicial-boundary-matrix simplicial-chain-complex simplicial-cochain-complex
+         simplicial-homology simplicial-cohomology
+         cochain-value cochain-from-function cochain-basis-vector simplicial-coboundary
+         cup-product cup-i-product steenrod-square bockstein
+         group-cochain-complex group-cohomology group-homology group-chain-complex
+         trivial-group-module make-group-module)
+
+(define (hs-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (hs-range-from a b) (let loop ((i (- b 1)) (acc '())) (if (< i a) acc (loop (- i 1) (cons i acc)))))
+
+;; ---------------------------------------------------------------------------
+;; Normalized chains
+;; ---------------------------------------------------------------------------
+;; the integer boundary d_n : N_n -> N_{n-1}: sum (-1)^i [d_i x], degenerate
+;; faces dropped
+(define (simplicial-boundary-matrix X n)
+  (let* ((rows (simplicial-set-count X (- n 1))) (cols (simplicial-set-count X n))
+         (M (integer-matrix rows cols)) (xs (simplicial-set-nondegenerate X n)))
+    (let loop ((c 0))
+      (if (< c cols)
+          (let ((s (simplex (vector-ref xs c) n)))
+            (let faces ((i 0) (sign 1))
+              (if (<= i n)
+                  (let ((f (simplicial-set-face X i s)))
+                    (if (simplex-nondegenerate? f)
+                        (let ((r (simplicial-set-index X (- n 1) (simplex-base f))))
+                          (integer-matrix-set! M r c (+ (integer-matrix-ref M r c) sign))))
+                    (faces (+ i 1) (- 0 sign)))))
+            (loop (+ c 1)))))
+    M))
+(define (hs-ring R) (if (null? R) integers (car R)))
+;; degrees 0 .. nmax, with d_{nmax+1} so that H_nmax is exact
+(define (simplicial-chain-complex X nmax . R)
+  (let ((ring (hs-ring R)))
+    (make-chain-complex ring (map (lambda (n) (simplicial-set-count X n)) (hs-range (+ nmax 1)))
+                        (map (lambda (n) (coefficient-reduce-matrix ring (simplicial-boundary-matrix X n))) (hs-range-from 1 (+ nmax 2))))))
+;; degrees 0 .. nmax, with D_nmax so that H^nmax is exact
+(define (simplicial-cochain-complex X nmax . R)
+  (complex-dual (apply simplicial-chain-complex X nmax R)))
+(define (simplicial-homology X nmax . R) (homology (apply simplicial-chain-complex X nmax R)))
+(define (simplicial-cohomology X nmax . R) (cohomology (apply simplicial-cochain-complex X nmax R)))
+
+;; ---------------------------------------------------------------------------
+;; Cochains
+;; ---------------------------------------------------------------------------
+(define (cochain-value X u n s)
+  (if (simplex-degenerate? s) 0 (vector-ref u (simplicial-set-index X n (simplex-base s)))))
+(define (cochain-from-function X n f)
+  (let* ((xs (simplicial-set-nondegenerate X n)) (u (make-vector (vector-length xs) 0)))
+    (let loop ((i 0)) (if (< i (vector-length xs)) (begin (vector-set! u i (f (vector-ref xs i))) (loop (+ i 1)))))
+    u))
+(define (cochain-basis-vector X n i) (let ((u (make-vector (simplicial-set-count X n) 0))) (vector-set! u i 1) u))
+(define (hs-reduce R x) (coefficient-reduce R x))
+;; (delta u)(x) = sum (-1)^i u(d_i x) on the (n+1)-simplices, in R
+(define (simplicial-coboundary X u n . R)
+  (let* ((ring (hs-ring R)) (xs (simplicial-set-nondegenerate X (+ n 1))) (w (make-vector (vector-length xs) 0)))
+    (let loop ((c 0))
+      (if (< c (vector-length xs))
+          (let ((s (simplex (vector-ref xs c) (+ n 1))))
+            (vector-set! w c (hs-reduce ring (let faces ((i 0) (sign 1) (acc 0))
+                                               (if (> i (+ n 1)) acc
+                                                   (faces (+ i 1) (- 0 sign) (+ acc (* sign (cochain-value X u n (simplicial-set-face X i s)))))))))
+            (loop (+ c 1)))))
+    w))
+;; Alexander-Whitney: (u cup v)(x) = u(front_p x) v(back_q x)
+(define (cup-product X u p v q . R)
+  (let* ((ring (hs-ring R)) (n (+ p q)) (xs (simplicial-set-nondegenerate X n)) (w (make-vector (vector-length xs) 0)))
+    (let loop ((c 0))
+      (if (< c (vector-length xs))
+          (let* ((s (simplex (vector-ref xs c) n))
+                 (a (cochain-value X u p (simplicial-set-front-face X s p))))
+            (vector-set! w c (if (equal? a 0) (hs-reduce ring 0)
+                                 (hs-reduce ring (* a (cochain-value X v q (simplicial-set-back-face X s q))))))
+            (loop (+ c 1)))))
+    w))
+
+;; cup-i over F_2 (Medina-Mardones): for an n-simplex x, n = p + q - i,
+;;   (u cup_i v)(x) = sum over U subset {0..n}, |U| = n - i, of
+;;                    u(d_{U^0} x) v(d_{U^1} x)   mod 2,
+;; U = {u_1 < ... < u_{n-i}}, U^e = {u_j : u_j + j = e mod 2}, and d_S x the
+;; face of x with the vertices in S deleted. For i = 0 this is the
+;; Alexander-Whitney product.
+(define (hs-complement S n) (filter (lambda (v) (not (memv v S))) (hs-range (+ n 1))))
+(define (cup-i-product X u p v q i)
+  (let* ((n (- (+ p q) i)) (xs (simplicial-set-nondegenerate X n)) (w (make-vector (vector-length xs) 0))
+         (Us (ordered-subsets (hs-range (+ n 1)) (- n i)))
+         (splits (map (lambda (U)
+                        (let loop ((l U) (j 1) (u0 '()) (u1 '()))
+                          (if (null? l) (list (hs-complement (reverse u0) n) (hs-complement (reverse u1) n))
+                              (if (even? (+ (car l) j)) (loop (cdr l) (+ j 1) (cons (car l) u0) u1)
+                                  (loop (cdr l) (+ j 1) u0 (cons (car l) u1))))))
+                      Us))
+         ;; only splits whose kept vertex sets have the right sizes contribute
+         (good (filter (lambda (sp) (and (= (length (car sp)) (+ p 1)) (= (length (cadr sp)) (+ q 1)))) splits)))
+    (if (< n 0) (make-vector 0 0)
+        (begin
+          (let loop ((c 0))
+            (if (< c (vector-length xs))
+                (let ((s (simplex (vector-ref xs c) n)))
+                  (vector-set! w c
+                               (modulo (fold-left (lambda (acc sp)
+                                                    (let ((a (cochain-value X u p (simplicial-set-restrict X s (car sp)))))
+                                                      (if (= 0 (modulo a 2)) acc
+                                                          (+ acc (* a (cochain-value X v q (simplicial-set-restrict X s (cadr sp))))))))
+                                                  0 good)
+                                       2))
+                  (loop (+ c 1)))))
+          w))))
+;; Sq^k u = u cup_{n-k} u for a mod-2 n-cochain u; zero when k > n
+(define (steenrod-square X u n k)
+  (if (> k n) (make-vector (simplicial-set-count X (+ n k)) 0)
+      (cup-i-product X u n u n (- n k))))
+;; the Bockstein of a mod-p n-cocycle u (entries 0..p-1): (delta u~)/p mod p
+;; with u~ the integer lift
+(define (bockstein X u n p)
+  (let* ((d (simplicial-coboundary X u n)) (w (make-vector (vector-length d) 0)))
+    (let loop ((i 0))
+      (if (< i (vector-length d))
+          (begin
+            (if (not (= 0 (modulo (vector-ref d i) p))) (error "bockstein: not a cocycle mod p" n p))
+            (vector-set! w i (modulo (quotient (vector-ref d i) p) p))
+            (loop (+ i 1)))))
+    w))
+
+;; ---------------------------------------------------------------------------
+;; Group (co)homology
+;; ---------------------------------------------------------------------------
+;; A G-module that is free of rank r over the coefficients: action g ->
+;; r x r integer matrix of g (a homomorphism G -> GL_r). Trivial by default.
+(define (make-group-module rank action) (vector 'group-module rank action))
+(define (trivial-group-module rank) (make-group-module rank (lambda (g) (integer-identity-matrix rank))))
+(define (hs-module-rank Mod) (vector-ref Mod 1))
+(define (hs-module-action Mod g) ((vector-ref Mod 2) g))
+(define (group-chain-complex G nmax . R) (apply simplicial-chain-complex (classifying-space G) nmax R))
+(define (group-homology G nmax . R) (homology (apply group-chain-complex G nmax R)))
+;; normalized bar cochains C^n(G; M) = functions on tuples (g1..gn) of
+;; non-identity elements with values in M = R^r, and
+;;   (D f)(g1..g_{n+1}) = g1 . f(g2..g_{n+1})
+;;                        + sum_{i=1..n} (-1)^i f(.., g_i g_{i+1}, ..)
+;;                        + (-1)^{n+1} f(g1..gn).
+;; Basis: (tuple index) * r + component.
+(define (group-cochain-complex G nmax R . module)
+  (let* ((Mod (if (null? module) (trivial-group-module 1) (car module)))
+         (r (hs-module-rank Mod)) (B (classifying-space G))
+         (dims (map (lambda (n) (* r (simplicial-set-count B n))) (hs-range (+ nmax 1))))
+         (D-of (lambda (n) (coefficient-reduce-matrix R (hs-bar-coboundary G B Mod r n)))))
+    (make-cochain-complex R dims (map D-of (hs-range (+ nmax 1))))))
+(define (hs-bar-coboundary G B Mod r n)
+  (let* ((rows (* r (simplicial-set-count B (+ n 1)))) (cols (* r (simplicial-set-count B n)))
+         (M (integer-matrix rows cols)) (ts (simplicial-set-nondegenerate B (+ n 1))))
+    (let loop ((c 0))
+      (if (< c (vector-length ts))
+          (let* ((t (vector-ref ts c)) (s (simplex t (+ n 1))))
+            (let faces ((i 0) (sign 1))
+              (if (<= i (+ n 1))
+                  (let ((f (simplicial-set-face B i s)))
+                    (if (simplex-nondegenerate? f)
+                        (let ((col0 (* r (simplicial-set-index B n (simplex-base f)))) (row0 (* r c))
+                              (A (if (= i 0) (hs-module-action Mod (car t)) #f)))
+                          ;; face 0 carries the action of g1 on the value
+                          (let put-a ((a 0))
+                            (if (< a r)
+                                (begin
+                                  (let put-b ((b 0))
+                                    (if (< b r)
+                                        (let ((coef (if A (integer-matrix-ref A a b) (if (= a b) 1 0))))
+                                          (if (not (= coef 0))
+                                              (integer-matrix-set! M (+ row0 a) (+ col0 b) (+ (integer-matrix-ref M (+ row0 a) (+ col0 b)) (* sign coef))))
+                                          (put-b (+ b 1)))))
+                                  (put-a (+ a 1)))))))
+                    (faces (+ i 1) (- 0 sign)))))
+            (loop (+ c 1)))))
+    M))
+(define (group-cohomology G nmax R . module) (cohomology (apply group-cochain-complex G nmax R module)))

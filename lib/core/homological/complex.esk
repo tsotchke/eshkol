@@ -1,0 +1,641 @@
+;;; core.homological.complex -- chain and cochain complexes over ring
+;;; carriers (Z, Q, F_p and other field carriers of core.ring): homology
+;;; with torsion, explicit generators, class tests, chain maps, homotopies,
+;;; mapping cones, induced maps and long exact sequences, double complexes
+;;; and their total complexes, cohomology with Q/Z coefficients.
+;;;
+;;; Usage: (require core.homological.complex)   or   (require core.homological)
+;;;
+;;; Sources: C. A. Weibel, "An Introduction to Homological Algebra" (1994),
+;;; 1.1-1.5 (complexes, homotopies, mapping cones, the long exact sequence),
+;;; 3.6 (universal coefficients), 5.6-5.7 (double complexes);
+;;; A. Hatcher, "Algebraic Topology" (2002), 2.1-2.2, 3.1, 3.A;
+;;; H. Cohen, GTM 138 (1993), 2.4 (Smith normal form, through
+;;; core.integer_linalg).
+;;;
+;;; Coefficients. Every complex carries a ring carrier R of core.ring:
+;;;   integers     ranks and torsion from the Smith normal form of
+;;;                core.integer_linalg (never re-implemented here);
+;;;   rationals    the same engine after clearing denominators;
+;;;   a field      (make-zmod p) for p prime, or any carrier declaring
+;;;                field? (core.algebraic_domain number fields): Gauss-Jordan
+;;;                elimination with the carrier's own operations.
+;;; Other rings (Z/m with m composite, jets, polynomials) are refused by name.
+;;;
+;;; Representation (public): #(complex kind R dims maps)
+;;;   kind  'cochain: maps[k] = D_k : C^k -> C^{k+1}, a (dim C^{k+1}) x (dim C^k)
+;;;         matrix; 'chain: maps[k] = d_k : C_k -> C_{k-1}, (dim C_{k-1}) x (dim C_k).
+;;;   dims  vector of dim C^k (C_k) for k = 0 .. N.
+;;;   maps  vector of length N + 2 indexed by the source degree; #f is the
+;;;         zero map. A cochain complex may carry D_N (into degree N + 1) and
+;;;         a chain complex d_{N+1} (out of degree N + 1): a complex known
+;;;         through degree N with the differential needed to compute its top
+;;;         (co)homology, which is how truncations of infinite complexes
+;;;         (classifying spaces, bar resolutions) are represented exactly.
+;;; Matrices use core.integer_linalg's representation (vector of row
+;;; vectors); vectors are Scheme vectors of carrier elements.
+
+(require stdlib)
+(require core.integer_linalg)
+(require core.ring)
+
+(provide coefficient-kind coefficient-field? coefficient-reduce coefficient-reduce-vector coefficient-reduce-matrix
+         coefficient-rank coefficient-kernel coefficient-solve coefficient-in-span? coefficient-matrix-mul
+         coefficient-matrix-vector coefficient-zero-vector? coefficient-vector-add coefficient-vector-scale
+         make-cochain-complex make-chain-complex complex? complex-kind complex-ring complex-dims complex-dim
+         complex-top-degree complex-map complex-in-map complex-out-map complex-d-squared-violations
+         homology cohomology homology-betti homology-torsion homology-rank-over homology-group-order
+         homology-generators homology-cycle? homology-boundary? homology-classes-independent?
+         homology-coordinates complex-dual complex-change-ring complex-direct-sum complex-shift
+         complex-euler-characteristic complex-tensor
+         make-chain-map chain-map? chain-map-source chain-map-target chain-map-component
+         chain-map-violations chain-map-compose chain-map-identity chain-homotopy-violations
+         induced-map mapping-cone mapping-cone-inclusion mapping-cone-projection
+         long-exact-sequence long-exact-sequence-exact?
+         make-double-complex double-complex? double-complex-dim double-complex-horizontal
+         double-complex-vertical double-complex-violations total-complex total-complex-offsets
+         qz-coboundary? qz-coboundary-test torsion-exponent)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefix hc-)
+;; ---------------------------------------------------------------------------
+(define (hc-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (hc-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (hc-all? pred (cdr xs))) (else #f)))
+(define (hc-sum xs) (fold-left (lambda (a b) (+ a b)) 0 xs))
+(define (hc-offsets sizes) (let loop ((s sizes) (o 0) (acc '())) (if (null? s) (reverse acc) (loop (cdr s) (+ o (car s)) (cons o acc)))))
+(define (hc-rows A) (if A (vector-length A) 0))
+(define (hc-cols A) (if (and A (> (vector-length A) 0)) (vector-length (vector-ref A 0)) 0))
+(define (hc-zero-matrix r c) (integer-matrix r c))
+(define (hc-matrix-copy A) (integer-matrix-copy A))
+(define (hc-transpose A ncols)
+  (let* ((m (hc-rows A)) (T (integer-matrix ncols m)))
+    (let li ((i 0))
+      (if (< i m)
+          (begin (let lj ((j 0)) (if (< j ncols) (begin (integer-matrix-set! T j i (integer-matrix-ref A i j)) (lj (+ j 1)))))
+                 (li (+ i 1)))))
+    T))
+
+;; ---------------------------------------------------------------------------
+;; Coefficients
+;; ---------------------------------------------------------------------------
+;; 'Z, 'Q or 'field; anything else is refused
+(define (coefficient-kind R)
+  (if (not (ring-carrier? R)) (error "core.homological: coefficients must be a ring carrier of core.ring" R))
+  (let ((fam (ring-carrier-family R)))
+    (cond ((eq? fam 'integers) 'Z)
+          ((eq? fam 'rationals) 'Q)
+          ((ring-ref R 'field?) 'field)
+          (else (error "core.homological: coefficients must be Z, Q or a field" (ring-carrier-name R))))))
+(define (coefficient-field? R) (not (eq? (coefficient-kind R) 'Z)))
+;; the image of an exact integer or rational in R
+(define (coefficient-reduce R x)
+  (let ((k (coefficient-kind R)))
+    (cond ((eq? k 'Z) x) ((eq? k 'Q) x) (else (ring-admit R x)))))
+(define (coefficient-reduce-vector R v)
+  (let ((w (make-vector (vector-length v) 0)))
+    (let loop ((i 0)) (if (< i (vector-length v)) (begin (vector-set! w i (coefficient-reduce R (vector-ref v i))) (loop (+ i 1)))))
+    w))
+(define (coefficient-reduce-matrix R A)
+  (if (not A) #f
+      (let ((B (make-vector (vector-length A) 0)))
+        (let loop ((i 0)) (if (< i (vector-length A)) (begin (vector-set! B i (coefficient-reduce-vector R (vector-ref A i))) (loop (+ i 1)))))
+        B)))
+;; field operations as a vector of closures: zero one add neg mul inv equal?
+(define (hc-field-ops R)
+  (vector (ring-ref R 'zero) (ring-ref R 'one) (ring-ref R 'add) (ring-ref R 'neg) (ring-ref R 'mul) (ring-ref R 'inverse) (ring-ref R 'equal?)))
+(define (hc-fzero? F x) ((vector-ref F 6) x (vector-ref F 0)))
+
+;; Gauss-Jordan over a field carrier. Returns (list pivots R) where R is the
+;; reduced row echelon form (a fresh matrix) and pivots the pivot columns.
+(define (hc-field-rref R A ncols)
+  (let* ((F (hc-field-ops R)) (add (vector-ref F 2)) (neg (vector-ref F 3)) (mul (vector-ref F 4)) (inv (vector-ref F 5))
+         (M (coefficient-reduce-matrix R (hc-matrix-copy A))) (m (hc-rows M)))
+    (let loop ((r 0) (c 0) (pivots '()))
+      (if (or (= r m) (= c ncols)) (list (reverse pivots) M)
+          (let ((p (let find ((i r)) (cond ((= i m) #f) ((not (hc-fzero? F (integer-matrix-ref M i c))) i) (else (find (+ i 1)))))))
+            (if (not p) (loop r (+ c 1) pivots)
+                (begin
+                  (if (not (= p r)) (let ((t (vector-ref M r))) (vector-set! M r (vector-ref M p)) (vector-set! M p t)))
+                  (let* ((row (vector-ref M r)) (s (inv (vector-ref row c))))
+                    (let sc ((j c)) (if (< j ncols) (begin (vector-set! row j (mul s (vector-ref row j))) (sc (+ j 1)))))
+                    (let el ((i 0))
+                      (if (< i m)
+                          (begin
+                            (if (not (= i r))
+                                (let* ((ri (vector-ref M i)) (f (vector-ref ri c)))
+                                  (if (not (hc-fzero? F f))
+                                      (let ((nf (neg f)))
+                                        (let sb ((j c)) (if (< j ncols) (begin (vector-set! ri j (add (vector-ref ri j) (mul nf (vector-ref row j)))) (sb (+ j 1)))))))))
+                            (el (+ i 1))))))
+                  (loop (+ r 1) (+ c 1) (cons c pivots)))))))))
+
+(define (hc-empty? A) (or (not A) (= 0 (hc-rows A)) (= 0 (hc-cols A))))
+(define (coefficient-rank R A)
+  (if (hc-empty? A) 0
+      (let ((k (coefficient-kind R)))
+        (cond ((eq? k 'Z) (integer-rank A))
+              ((eq? k 'Q) (rational-rank A))
+              (else (length (car (hc-field-rref R A (hc-cols A)))))))))
+;; a basis of {x : A x = 0} in R^ncols (A = #f or without rows: everything)
+(define (coefficient-kernel R A ncols)
+  (let ((k (coefficient-kind R)))
+    (cond ((eq? k 'Z) (integer-kernel A ncols))
+          ((eq? k 'Q) (rational-kernel A ncols))
+          ((or (not A) (= 0 (hc-rows A)) (= ncols 0))
+           (map (lambda (j) (let ((v (make-vector ncols (ring-ref R 'zero)))) (vector-set! v j (ring-ref R 'one)) v)) (hc-range ncols)))
+          (else
+           (let* ((F (hc-field-ops R)) (rr (hc-field-rref R A ncols)) (pivots (car rr)) (M (cadr rr))
+                  (free (filter (lambda (j) (not (memv j pivots))) (hc-range ncols))))
+             (map (lambda (f)
+                    (let ((v (make-vector ncols (vector-ref F 0))))
+                      (vector-set! v f (vector-ref F 1))
+                      (let loop ((ps pivots) (i 0))
+                        (if (not (null? ps))
+                            (begin (vector-set! v (car ps) ((vector-ref F 3) (integer-matrix-ref M i f))) (loop (cdr ps) (+ i 1)))))
+                      v))
+                  free))))))
+;; a solution y of B y = v (B with ncols columns), or #f when v is not in
+;; the column span (Z: the lattice; Q, fields: the span). Over Z and Q, B
+;; must have full column rank for the answer to be unique.
+(define (coefficient-solve R B ncols v)
+  (let ((k (coefficient-kind R)))
+    (cond ((= ncols 0) (if (coefficient-zero-vector? R v) (make-vector 0 0) #f))
+          ((eq? k 'Z) (integer-solve-in-basis (smith-normal-form B) ncols v))
+          ((eq? k 'Q) (rational-solve B ncols v))
+          (else
+           (let* ((m (vector-length v))
+                  (aug (let ((A (integer-matrix m (+ ncols 1))))
+                         (let li ((i 0))
+                           (if (< i m)
+                               (begin (let lj ((j 0)) (if (< j ncols) (begin (integer-matrix-set! A i j (integer-matrix-ref B i j)) (lj (+ j 1)))))
+                                      (integer-matrix-set! A i ncols (vector-ref v i))
+                                      (li (+ i 1)))))
+                         A))
+                  (rr (hc-field-rref R aug (+ ncols 1))) (pivots (car rr)) (M (cadr rr)))
+             (if (memv ncols pivots) #f
+                 (let ((y (make-vector ncols (ring-ref R 'zero))))
+                   (let loop ((ps pivots) (i 0))
+                     (if (not (null? ps))
+                         (begin (vector-set! y (car ps) (integer-matrix-ref M i ncols)) (loop (cdr ps) (+ i 1)))))
+                   y)))))))
+(define (coefficient-in-span? R B ncols v)
+  (if (eq? (coefficient-kind R) 'Z)
+      (if (= ncols 0) (coefficient-zero-vector? R v) (integer-in-column-span? B v))
+      (if (coefficient-solve R B ncols v) #t #f)))
+(define (coefficient-zero-vector? R v)
+  (let ((z (ring-ref R 'zero)) (same (ring-ref R 'equal?)))
+    (let loop ((i 0)) (cond ((= i (vector-length v)) #t) ((same (coefficient-reduce R (vector-ref v i)) z) (loop (+ i 1))) (else #f)))))
+(define (coefficient-matrix-vector R A v)
+  (let* ((add (ring-ref R 'add)) (mul (ring-ref R 'mul)) (z (ring-ref R 'zero)) (m (hc-rows A)) (w (make-vector m z)))
+    (let li ((i 0))
+      (if (< i m)
+          (let ((row (vector-ref A i)))
+            (vector-set! w i (let lj ((j 0) (s z))
+                               (if (= j (vector-length row)) s
+                                   (lj (+ j 1) (add s (mul (coefficient-reduce R (vector-ref row j)) (coefficient-reduce R (vector-ref v j))))))))
+            (li (+ i 1)))))
+    w))
+(define (coefficient-matrix-mul R A B ncolsB)
+  (let* ((add (ring-ref R 'add)) (mul (ring-ref R 'mul)) (z (ring-ref R 'zero))
+         (m (hc-rows A)) (k (hc-cols A)) (C (make-vector m 0)))
+    (let li ((i 0))
+      (if (< i m)
+          (let ((row (make-vector ncolsB z)) (ai (vector-ref A i)))
+            (let lj ((j 0))
+              (if (< j ncolsB)
+                  (begin
+                    (vector-set! row j (let ll ((l 0) (s z))
+                                         (if (= l k) s
+                                             (let ((a (vector-ref ai l)))
+                                               (ll (+ l 1) (if (equal? a 0) s (add s (mul (coefficient-reduce R a) (coefficient-reduce R (integer-matrix-ref B l j))))))))))
+                    (lj (+ j 1)))))
+            (vector-set! C i row)
+            (li (+ i 1)))))
+    C))
+(define (coefficient-vector-add R u v)
+  (let ((add (ring-ref R 'add)) (w (make-vector (vector-length u) 0)))
+    (let loop ((i 0)) (if (< i (vector-length u)) (begin (vector-set! w i (add (coefficient-reduce R (vector-ref u i)) (coefficient-reduce R (vector-ref v i)))) (loop (+ i 1)))))
+    w))
+(define (coefficient-vector-scale R c u)
+  (let ((mul (ring-ref R 'mul)) (w (make-vector (vector-length u) 0)) (cc (coefficient-reduce R c)))
+    (let loop ((i 0)) (if (< i (vector-length u)) (begin (vector-set! w i (mul cc (coefficient-reduce R (vector-ref u i)))) (loop (+ i 1)))))
+    w))
+
+;; ---------------------------------------------------------------------------
+;; Complexes
+;; ---------------------------------------------------------------------------
+(define (hc-check-shape who A rows cols)
+  (if (and A (> (hc-rows A) 0) (not (and (= (hc-rows A) rows) (or (not cols) (= (hc-cols A) cols)))))
+      (error (string-append who ": a differential has the wrong shape (rows, columns, expected rows, expected columns)")
+             (hc-rows A) (hc-cols A) rows cols)))
+(define (make-cochain-complex R dims Ds)
+  (coefficient-kind R)
+  (let* ((dv (list->vector dims)) (N (- (vector-length dv) 1)) (maps (make-vector (+ N 2) #f)))
+    (if (> (length Ds) (+ N 1)) (error "make-cochain-complex: more differentials than degrees" (length Ds) (+ N 1)))
+    (let loop ((k 0) (ds Ds))
+      (if (not (null? ds))
+          (begin
+            (if (< k N) (hc-check-shape "make-cochain-complex" (car ds) (vector-ref dv (+ k 1)) (vector-ref dv k)))
+            (vector-set! maps k (car ds))
+            (loop (+ k 1) (cdr ds)))))
+    (vector 'complex 'cochain R dv maps)))
+;; ds = (d_1 ... d_N) or (d_1 ... d_{N+1})
+(define (make-chain-complex R dims ds)
+  (coefficient-kind R)
+  (let* ((dv (list->vector dims)) (N (- (vector-length dv) 1)) (maps (make-vector (+ N 2) #f)))
+    (if (> (length ds) (+ N 1)) (error "make-chain-complex: more differentials than degrees" (length ds) (+ N 1)))
+    (let loop ((k 1) (ds ds))
+      (if (not (null? ds))
+          (begin
+            (hc-check-shape "make-chain-complex" (car ds) (vector-ref dv (- k 1)) (if (<= k N) (vector-ref dv k) #f))
+            (vector-set! maps k (car ds))
+            (loop (+ k 1) (cdr ds)))))
+    (vector 'complex 'chain R dv maps)))
+(define (complex? C) (and (vector? C) (= 5 (vector-length C)) (eq? (vector-ref C 0) 'complex)))
+(define (complex-kind C) (vector-ref C 1))
+(define (complex-ring C) (vector-ref C 2))
+(define (complex-dims C) (vector->list (vector-ref C 3)))
+(define (complex-top-degree C) (- (vector-length (vector-ref C 3)) 1))
+(define (complex-dim C k) (if (and (>= k 0) (<= k (complex-top-degree C))) (vector-ref (vector-ref C 3) k) 0))
+(define (complex-map C k) (if (and (>= k 0) (< k (vector-length (vector-ref C 4)))) (vector-ref (vector-ref C 4) k) #f))
+;; the differential leaving degree k and the one arriving in degree k
+(define (complex-out-map C k) (if (eq? (complex-kind C) 'cochain) (complex-map C k) (complex-map C k)))
+(define (complex-in-map C k) (if (eq? (complex-kind C) 'cochain) (complex-map C (- k 1)) (complex-map C (+ k 1))))
+;; degrees k at which d o d is not zero
+(define (complex-d-squared-violations C)
+  (let ((R (complex-ring C)))
+    (filter (lambda (k)
+              (let ((a (complex-in-map C k)) (b (complex-out-map C k)))
+                (and a b (> (hc-rows a) 0) (> (hc-rows b) 0) (> (complex-dim C k) 0)
+                     (not (hc-all? (lambda (row) (coefficient-zero-vector? R row))
+                                   (vector->list (coefficient-matrix-mul R b a (hc-cols a))))))))
+            (hc-range (+ (complex-top-degree C) 1)))))
+
+;; ((k betti torsion) ...) for k = 0 .. kmax (default: the top degree).
+;; Over a field betti is the dimension and torsion is empty.
+(define (homology C . kmax)
+  (let* ((R (complex-ring C)) (top (if (null? kmax) (complex-top-degree C) (min (car kmax) (complex-top-degree C))))
+         (Z? (eq? (coefficient-kind R) 'Z))
+         (ranks (make-vector (+ (vector-length (vector-ref C 4)) 1) #f))
+         (rank-of (lambda (k) (let ((A (complex-map C k)))
+                                (if (or (< k 0) (>= k (vector-length (vector-ref C 4)))) 0
+                                    (or (vector-ref ranks k)
+                                        (let ((r (coefficient-rank R A))) (vector-set! ranks k r) r)))))))
+    (map (lambda (k)
+           (let* ((out-k (if (eq? (complex-kind C) 'cochain) k k))
+                  (in-k (if (eq? (complex-kind C) 'cochain) (- k 1) (+ k 1)))
+                  (betti (- (complex-dim C k) (rank-of out-k) (rank-of in-k)))
+                  (A (complex-map C in-k)))
+             (list k betti (if (and Z? (not (hc-empty? A))) (filter (lambda (d) (> d 1)) (integer-invariant-factors A)) '()))))
+         (hc-range (+ top 1)))))
+(define (cohomology C . kmax) (apply homology C kmax))
+(define (homology-betti H k) (cadr (list-ref H k)))
+(define (homology-torsion H k) (caddr (list-ref H k)))
+(define (homology-group-order H k) (if (> (homology-betti H k) 0) 0 (fold-left (lambda (a b) (* a b)) 1 (homology-torsion H k))))
+;; dimension over F_p predicted for a group with betti b and torsion t
+(define (homology-rank-over H k p)
+  (+ (homology-betti H k) (length (filter (lambda (d) (= 0 (remainder d p))) (homology-torsion H k)))))
+
+;; generators of H_k: a list of (order . cycle), order 0 for a free summand
+(define (homology-generators C k)
+  (let* ((R (complex-ring C)) (n (complex-dim C k)) (out (complex-out-map C k)) (in (complex-in-map C k)))
+    (if (eq? (coefficient-kind R) 'Z)
+        (cochain-cohomology-generators n (if (hc-empty? in) #f in) (if (hc-empty? out) #f out))
+        (let* ((K (coefficient-kernel R (if (hc-empty? out) #f out) n))
+               (image (if (hc-empty? in) '() (map (lambda (j) (integer-matrix-column in j)) (hc-range (hc-cols in))))))
+          (let loop ((ks K) (basis (map (lambda (v) (coefficient-reduce-vector R v)) image)) (rank (coefficient-rank R (hc-cols-matrix image n))) (acc '()))
+            (if (null? ks) (reverse acc)
+                (let* ((cand (append basis (list (car ks)))) (r2 (coefficient-rank R (hc-cols-matrix cand n))))
+                  (if (> r2 rank) (loop (cdr ks) cand r2 (cons (cons 0 (car ks)) acc)) (loop (cdr ks) basis rank acc)))))))))
+(define (hc-cols-matrix vs n) (if (null? vs) #f (integer-matrix-from-columns vs n)))
+(define (homology-cycle? C k v)
+  (let ((out (complex-out-map C k)))
+    (or (hc-empty? out) (coefficient-zero-vector? (complex-ring C) (coefficient-matrix-vector (complex-ring C) out v)))))
+(define (homology-boundary? C k v)
+  (let ((in (complex-in-map C k)) (R (complex-ring C)))
+    (if (hc-empty? in) (coefficient-zero-vector? R v)
+        (coefficient-in-span? R in (hc-cols in) (coefficient-reduce-vector R v)))))
+;; over a field: are the classes of the cycles vs linearly independent in H_k?
+(define (homology-classes-independent? C k vs)
+  (let* ((R (complex-ring C)) (n (complex-dim C k)) (in (complex-in-map C k))
+         (image (if (hc-empty? in) '() (map (lambda (j) (integer-matrix-column in j)) (hc-range (hc-cols in))))))
+    (if (eq? (coefficient-kind R) 'Z) (error "homology-classes-independent?: needs field coefficients" (ring-carrier-name R)))
+    (= (length vs) (- (coefficient-rank R (hc-cols-matrix (append image vs) n)) (coefficient-rank R (hc-cols-matrix image n))))))
+;; over a field: the coordinates of the class of the cycle v in the basis of
+;; (homology-generators C k)
+(define (homology-coordinates C k v)
+  (let* ((R (complex-ring C)) (n (complex-dim C k)) (in (complex-in-map C k))
+         (image (if (hc-empty? in) '() (map (lambda (j) (integer-matrix-column in j)) (hc-range (hc-cols in)))))
+         (gens (map cdr (homology-generators C k)))
+         (ib (hc-independent-subset R image n))
+         (B (hc-cols-matrix (append ib gens) n)))
+    (if (eq? (coefficient-kind R) 'Z) (error "homology-coordinates: needs field coefficients" (ring-carrier-name R)))
+    (if (null? (append ib gens)) (make-vector 0 0)
+        (let ((y (coefficient-solve R B (+ (length ib) (length gens)) (coefficient-reduce-vector R v))))
+          (if (not y) (error "homology-coordinates: not a cycle" v))
+          (list->vector (list-tail (vector->list y) (length ib)))))))
+(define (hc-independent-subset R vs n)
+  (let loop ((vs vs) (basis '()) (rank 0))
+    (if (null? vs) (reverse basis)
+        (let ((r2 (coefficient-rank R (hc-cols-matrix (cons (car vs) basis) n))))
+          (if (> r2 rank) (loop (cdr vs) (cons (car vs) basis) r2) (loop (cdr vs) basis rank))))))
+
+;; Hom(C, R): a chain complex becomes a cochain complex with D_k = d_{k+1}^T
+;; and a cochain complex a chain complex with d_k = D_{k-1}^T; the top map
+;; (d_{N+1} or D_N), when present, is transposed too
+(define (hc-transpose-or-false A rows-if-empty)
+  (cond ((not A) #f)
+        ((= 0 (hc-rows A)) (integer-matrix rows-if-empty 0))
+        (else (hc-transpose A (hc-cols A)))))
+(define (complex-dual C)
+  (let* ((dims (complex-dims C)) (N (complex-top-degree C)))
+    (if (eq? (complex-kind C) 'chain)
+        (make-cochain-complex (complex-ring C) dims
+                              (map (lambda (k) (hc-transpose-or-false (complex-map C (+ k 1)) (complex-dim C (+ k 1))))
+                                   (hc-range (if (complex-map C (+ N 1)) (+ N 1) N))))
+        (make-chain-complex (complex-ring C) dims
+                            (map (lambda (k) (hc-transpose-or-false (complex-map C (- k 1)) (complex-dim C k)))
+                                 (cdr (hc-range (if (complex-map C N) (+ N 2) (+ N 1)))))))))
+;; base change along Z -> R' (entries must be integers, or rationals for R' = Q)
+(define (complex-change-ring C R2)
+  (let ((v (vector 'complex (complex-kind C) R2 (vector-ref C 3) (make-vector (vector-length (vector-ref C 4)) #f))))
+    (let loop ((k 0))
+      (if (< k (vector-length (vector-ref C 4)))
+          (begin (vector-set! (vector-ref v 4) k (coefficient-reduce-matrix R2 (complex-map C k))) (loop (+ k 1)))))
+    v))
+(define (hc-block-diagonal A ra ca B rb cb)
+  (let ((M (integer-matrix (+ ra rb) (+ ca cb))))
+    (hc-place! M 0 0 A 1) (hc-place! M ra ca B 1)
+    M))
+(define (hc-place! M r0 c0 B sign)
+  (if B
+      (let li ((i 0))
+        (if (< i (hc-rows B))
+            (begin
+              (let lj ((j 0))
+                (if (< j (hc-cols B))
+                    (begin (integer-matrix-set! M (+ r0 i) (+ c0 j) (+ (integer-matrix-ref M (+ r0 i) (+ c0 j)) (* sign (integer-matrix-ref B i j))))
+                           (lj (+ j 1)))))
+              (li (+ i 1)))))))
+;; C (+) D for complexes of the same kind, ring and top degree
+(define (complex-direct-sum C D)
+  (let* ((N (complex-top-degree C)) (dims (map (lambda (k) (+ (complex-dim C k) (complex-dim D k))) (hc-range (+ N 1))))
+         (maps (map (lambda (k)
+                      (let* ((tgt (if (eq? (complex-kind C) 'cochain) (+ k 1) (- k 1))))
+                        (hc-block-diagonal (complex-map C k) (complex-dim C tgt) (complex-dim C k)
+                                           (complex-map D k) (complex-dim D tgt) (complex-dim D k))))
+                    (if (eq? (complex-kind C) 'cochain) (hc-range N) (cdr (hc-range (+ N 1)))))))
+    (if (eq? (complex-kind C) 'cochain) (make-cochain-complex (complex-ring C) dims maps) (make-chain-complex (complex-ring C) dims maps))))
+;; C[s] for s >= 0: degree k of the result is degree k + s of C, with the
+;; differential multiplied by (-1)^s; the top map is carried along
+(define (complex-shift C s)
+  (let* ((N (complex-top-degree C)) (sign (if (even? s) 1 -1))
+         (dims (map (lambda (k) (complex-dim C (+ k s))) (hc-range (+ (- N s) 1))))
+         (neg (lambda (A) (if A (let ((B (integer-matrix-copy A))) (hc-scale! B sign) B) #f))))
+    (if (eq? (complex-kind C) 'cochain)
+        (make-cochain-complex (complex-ring C) dims (map (lambda (k) (neg (complex-map C (+ k s)))) (hc-range (+ (- N s) 1))))
+        (make-chain-complex (complex-ring C) dims (map (lambda (k) (neg (complex-map C (+ k s)))) (cdr (hc-range (+ (- N s) 2))))))))
+(define (hc-scale! A c)
+  (let li ((i 0)) (if (< i (hc-rows A)) (begin (let ((r (vector-ref A i))) (let lj ((j 0)) (if (< j (vector-length r)) (begin (vector-set! r j (* c (vector-ref r j))) (lj (+ j 1)))))) (li (+ i 1))))))
+(define (complex-euler-characteristic C)
+  (let loop ((k 0) (s 0)) (if (> k (complex-top-degree C)) s (loop (+ k 1) (+ s (* (if (even? k) 1 -1) (complex-dim C k)))))))
+
+;; the tensor product of two chain (or two cochain) complexes over the same
+;; ring: (C (x) D)_n = (+)_{p+q=n} C_p (x) D_q, d(x (x) y) = dx (x) y +
+;; (-1)^p x (x) dy; basis pairs (i, j) ordered by p, then i, then j
+(define (hc-kron A ra ca B rb cb)                ;; A (x) B
+  (let ((M (integer-matrix (* ra rb) (* ca cb))))
+    (let li ((i 0))
+      (if (< i ra)
+          (begin
+            (let lj ((j 0))
+              (if (< j ca)
+                  (let ((a (if A (integer-matrix-ref A i j) 0)))
+                    (if (not (= a 0))
+                        (let lk ((k 0))
+                          (if (< k rb)
+                              (begin
+                                (let ll ((l 0))
+                                  (if (< l cb)
+                                      (begin (integer-matrix-set! M (+ (* i rb) k) (+ (* j cb) l) (* a (integer-matrix-ref B k l))) (ll (+ l 1)))))
+                                (lk (+ k 1))))))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    M))
+(define (hc-identity n) (integer-identity-matrix n))
+(define (complex-tensor C D)
+  (let* ((NC (complex-top-degree C)) (ND (complex-top-degree D)) (N (+ NC ND)) (cochain? (eq? (complex-kind C) 'cochain))
+         (pairs (lambda (n) (filter (lambda (pq) (and (<= (car pq) NC) (<= (cadr pq) ND))) (map (lambda (p) (list p (- n p))) (hc-range (+ n 1))))))
+         (dim-of (lambda (n) (hc-sum (map (lambda (pq) (* (complex-dim C (car pq)) (complex-dim D (cadr pq)))) (pairs n)))))
+         (dims (map dim-of (hc-range (+ N 1))))
+         (step (if cochain? 1 -1))
+         (D-of (lambda (n)
+                 (let* ((src (pairs n)) (dst (pairs (+ n step)))
+                        (so (hc-offsets (map (lambda (pq) (* (complex-dim C (car pq)) (complex-dim D (cadr pq)))) src)))
+                        (dof (hc-offsets (map (lambda (pq) (* (complex-dim C (car pq)) (complex-dim D (cadr pq)))) dst)))
+                        (M (integer-matrix (dim-of (+ n step)) (dim-of n))))
+                   (let loop ((ss src) (os so))
+                     (if (not (null? ss))
+                         (let* ((p (car (car ss))) (q (cadr (car ss))) (cp (complex-dim C p)) (dq (complex-dim D q)))
+                           ;; d x (x) y
+                           (let ((t (hc-pos (list (+ p step) q) dst)))
+                             (if (and t (complex-map C p))
+                                 (hc-place! M (list-ref dof t) (car os) (hc-kron (complex-map C p) (complex-dim C (+ p step)) cp (hc-identity dq) dq dq) 1)))
+                           ;; (-1)^p x (x) dy
+                           (let ((t (hc-pos (list p (+ q step)) dst)))
+                             (if (and t (complex-map D q))
+                                 (hc-place! M (list-ref dof t) (car os) (hc-kron (hc-identity cp) cp cp (complex-map D q) (complex-dim D (+ q step)) dq) (if (even? p) 1 -1))))
+                           (loop (cdr ss) (cdr os)))))
+                   M))))
+    (if cochain?
+        (make-cochain-complex (complex-ring C) dims (map D-of (hc-range N)))
+        (make-chain-complex (complex-ring C) dims (map D-of (cdr (hc-range (+ N 1))))))))
+(define (hc-pos x xs) (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((equal? (car l) x) i) (else (loop (cdr l) (+ i 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Chain maps, homotopies, cones, long exact sequences
+;; ---------------------------------------------------------------------------
+;; fs: list of matrices f_k : C_k -> D_k for k = 0 .. N
+(define (make-chain-map C D fs) (vector 'chain-map C D (list->vector fs)))
+(define (chain-map? f) (and (vector? f) (= 4 (vector-length f)) (eq? (vector-ref f 0) 'chain-map)))
+(define (chain-map-source f) (vector-ref f 1))
+(define (chain-map-target f) (vector-ref f 2))
+(define (chain-map-component f k) (if (and (>= k 0) (< k (vector-length (vector-ref f 3)))) (vector-ref (vector-ref f 3) k) #f))
+(define (hc-mul-or-zero R A B rows cols)          ;; A B or the zero matrix (rows x cols) when a factor is absent
+  (if (or (not A) (not B) (= 0 (hc-rows A)) (= 0 (hc-rows B))) (integer-matrix rows cols) (coefficient-matrix-mul R A B cols)))
+(define (hc-matrix-equal? R A B)
+  (and (= (hc-rows A) (hc-rows B))
+       (hc-all? (lambda (i) (coefficient-zero-vector? R (coefficient-vector-add R (vector-ref A i) (coefficient-vector-scale R -1 (vector-ref B i)))))
+                (hc-range (hc-rows A)))))
+;; degrees k where d f /= f d
+(define (chain-map-violations f)
+  (let* ((C (chain-map-source f)) (D (chain-map-target f)) (R (complex-ring C)) (step (if (eq? (complex-kind C) 'cochain) 1 -1))
+         (N (min (complex-top-degree C) (complex-top-degree D))))
+    (filter (lambda (k)
+              (let ((t (+ k step)))
+                (and (>= t 0) (<= t N)
+                     (not (hc-matrix-equal? R (hc-mul-or-zero R (complex-map D k) (chain-map-component f k) (complex-dim D t) (complex-dim C k))
+                                            (hc-mul-or-zero R (chain-map-component f t) (complex-map C k) (complex-dim D t) (complex-dim C k)))))))
+            (hc-range (+ N 1)))))
+(define (chain-map-compose g f)
+  (let* ((C (chain-map-source f)) (E (chain-map-target g)) (R (complex-ring C)))
+    (make-chain-map C E (map (lambda (k) (hc-mul-or-zero R (chain-map-component g k) (chain-map-component f k) (complex-dim E k) (complex-dim C k)))
+                             (hc-range (+ (complex-top-degree C) 1))))))
+(define (chain-map-identity C) (make-chain-map C C (map (lambda (k) (hc-identity (complex-dim C k))) (hc-range (+ (complex-top-degree C) 1)))))
+;; h_k : C^k -> D^{k-1} (cochain) or C_k -> D_{k+1} (chain); degrees k where
+;; f_k - g_k /= d h_k + h_{k+step} d
+(define (chain-homotopy-violations f g hs)
+  (let* ((C (chain-map-source f)) (D (chain-map-target f)) (R (complex-ring C)) (step (if (eq? (complex-kind C) 'cochain) 1 -1))
+         (hv (list->vector hs)) (h (lambda (k) (if (and (>= k 0) (< k (vector-length hv))) (vector-ref hv k) #f))))
+    (filter (lambda (k)
+              (let* ((rows (complex-dim D k)) (cols (complex-dim C k))
+                     (lhs (let ((F (chain-map-component f k)) (G (chain-map-component g k)) (M (integer-matrix rows cols)))
+                            (hc-place! M 0 0 F 1) (hc-place! M 0 0 G -1) M))
+                     (dh (hc-mul-or-zero R (complex-map D (- k step)) (h k) rows cols))
+                     (hd (hc-mul-or-zero R (h (+ k step)) (complex-map C k) rows cols))
+                     (rhs (let ((M (integer-matrix rows cols))) (hc-place! M 0 0 dh 1) (hc-place! M 0 0 hd 1) M)))
+                (not (hc-matrix-equal? R lhs rhs))))
+            (hc-range (+ (complex-top-degree C) 1)))))
+
+;; over a field: the matrix of H(f) in degree k, in the generator bases
+(define (induced-map f k)
+  (let* ((C (chain-map-source f)) (D (chain-map-target f)) (R (complex-ring C))
+         (gens (map cdr (homology-generators C k)))
+         (cols (map (lambda (z) (homology-coordinates D k (coefficient-matrix-vector R (chain-map-component f k) z))) gens))
+         (rows (length (homology-generators D k))))
+    (if (null? cols) (integer-matrix rows 0) (integer-matrix-from-columns cols rows))))
+
+;; Cone of a cochain map f : A -> B: Cone^n = A^{n+1} (+) B^n,
+;; D(a, b) = (-D a, f a + D b). For a chain map: Cone_n = A_{n-1} (+) B_n,
+;; d(a, b) = (-d a, f a + d b). Degrees 0 .. N.
+(define (mapping-cone f)
+  (let* ((A (chain-map-source f)) (B (chain-map-target f)) (R (complex-ring A)) (cochain? (eq? (complex-kind A) 'cochain))
+         (N (min (complex-top-degree A) (complex-top-degree B)))
+         (sh (if cochain? 1 -1))                 ;; the A-summand of degree n is A^{n+sh}
+         (dims (map (lambda (n) (+ (complex-dim A (+ n sh)) (complex-dim B n))) (hc-range (+ N 1))))
+         (step (if cochain? 1 -1))
+         (D-of (lambda (n)
+                 (let* ((t (+ n step)) (an (complex-dim A (+ n sh))) (at (complex-dim A (+ t sh)))
+                        (bn (complex-dim B n)) (bt (complex-dim B t))
+                        (M (integer-matrix (+ at bt) (+ an bn))))
+                   (hc-place! M 0 0 (complex-map A (+ n sh)) -1)
+                   (hc-place! M at 0 (chain-map-component f (+ n sh)) 1)
+                   (hc-place! M at an (complex-map B n) 1)
+                   M))))
+    (if cochain?
+        (make-cochain-complex R dims (map D-of (hc-range N)))
+        (make-chain-complex R dims (map D-of (cdr (hc-range (+ N 1))))))))
+(define (mapping-cone-inclusion f)              ;; B -> Cone(f), b |-> (0, b)
+  (let* ((A (chain-map-source f)) (B (chain-map-target f)) (K (mapping-cone f)) (sh (if (eq? (complex-kind A) 'cochain) 1 -1)))
+    (make-chain-map B K (map (lambda (n) (let ((M (integer-matrix (complex-dim K n) (complex-dim B n))))
+                                           (hc-place! M (complex-dim A (+ n sh)) 0 (hc-identity (complex-dim B n)) 1) M))
+                             (hc-range (+ (complex-top-degree K) 1))))))
+(define (mapping-cone-projection f)             ;; Cone(f) -> A[sh], (a, b) |-> a, as matrices per degree
+  (let* ((A (chain-map-source f)) (K (mapping-cone f)) (sh (if (eq? (complex-kind A) 'cochain) 1 -1)))
+    (map (lambda (n) (let ((M (integer-matrix (complex-dim A (+ n sh)) (complex-dim K n))))
+                       (hc-place! M 0 0 (hc-identity (complex-dim A (+ n sh))) 1) M))
+         (hc-range (+ (complex-top-degree K) 1)))))
+;; Over a field, for a cochain map f : A -> B with cone K: per degree n the
+;; list (n dim H^n(A) dim H^n(B) dim H^n(K) rank f* rank i* rank p*) of the
+;; sequence H^n(A) -> H^n(B) -> H^n(K) -> H^{n+1}(A) -> ...
+(define (hc-rank-of-classes R target k vs)       ;; rank of the span of the classes of vs in H^k(target)
+  (if (null? vs) 0
+      (let* ((n (complex-dim target k)) (in (complex-in-map target k))
+             (image (if (hc-empty? in) '() (map (lambda (j) (integer-matrix-column in j)) (hc-range (hc-cols in))))))
+        (- (coefficient-rank R (hc-cols-matrix (append image vs) n)) (coefficient-rank R (hc-cols-matrix image n))))))
+(define (long-exact-sequence f nmax)
+  (let* ((A (chain-map-source f)) (B (chain-map-target f)) (R (complex-ring A)) (K (mapping-cone f))
+         (incl (mapping-cone-inclusion f)) (proj (mapping-cone-projection f)))
+    (if (eq? (coefficient-kind R) 'Z) (error "long-exact-sequence: needs field coefficients" (ring-carrier-name R)))
+    (map (lambda (n)
+           (let ((gA (map cdr (homology-generators A n))) (gB (map cdr (homology-generators B n))) (gK (map cdr (homology-generators K n))))
+             (list n (length gA) (length gB) (length gK)
+                   (hc-rank-of-classes R B n (map (lambda (z) (coefficient-matrix-vector R (chain-map-component f n) z)) gA))
+                   (hc-rank-of-classes R K n (map (lambda (z) (coefficient-matrix-vector R (chain-map-component incl n) z)) gB))
+                   (hc-rank-of-classes R A (+ n 1) (map (lambda (z) (coefficient-matrix-vector R (list-ref proj n) z)) gK)))))
+         (hc-range (+ nmax 1)))))
+;; exactness at every inner node: dim X = rank(in) + rank(out)
+(define (long-exact-sequence-exact? f nmax)
+  (let ((rows (long-exact-sequence f nmax)))
+    (let loop ((rs rows))
+      (if (or (null? rs) (null? (cdr rs))) #t
+          (let* ((r (car rs)) (r2 (cadr rs))
+                 (hA (list-ref r 1)) (hB (list-ref r 2)) (hK (list-ref r 3)) (fs (list-ref r 4)) (is (list-ref r 5)) (ps (list-ref r 6))
+                 (hA2 (list-ref r2 1)) (fs2 (list-ref r2 4)))
+            (and (= hB (+ fs is)) (= hK (+ is ps)) (= hA2 (+ ps fs2))
+                 (loop (cdr rs))))))))
+
+;; ---------------------------------------------------------------------------
+;; Double complexes and total complexes
+;; ---------------------------------------------------------------------------
+;; dim (p q) -> dim C^{p,q} for 0 <= p <= P, 0 <= q <= Q; h (p q) -> the
+;; matrix C^{p,q} -> C^{p+1,q} or #f; v (p q) -> C^{p,q} -> C^{p,q+1} or #f.
+;; The squares commute: h v = v h.
+(define (make-double-complex R P Q dim h v) (vector 'double-complex R P Q dim h v))
+(define (double-complex? X) (and (vector? X) (= 7 (vector-length X)) (eq? (vector-ref X 0) 'double-complex)))
+(define (double-complex-dim X p q) (if (and (>= p 0) (<= p (vector-ref X 2)) (>= q 0) (<= q (vector-ref X 3))) ((vector-ref X 4) p q) 0))
+(define (double-complex-horizontal X p q) (if (and (< p (vector-ref X 2)) (<= q (vector-ref X 3))) ((vector-ref X 5) p q) #f))
+(define (double-complex-vertical X p q) (if (and (<= p (vector-ref X 2)) (< q (vector-ref X 3))) ((vector-ref X 6) p q) #f))
+;; (p q) where h h, v v or h v - v h fails
+(define (double-complex-violations X)
+  (let ((R (vector-ref X 1)) (out '()))
+    (for-each
+     (lambda (p)
+       (for-each
+        (lambda (q)
+          (let* ((n00 (double-complex-dim X p q)) (n11 (double-complex-dim X (+ p 1) (+ q 1)))
+                 (hv (hc-mul-or-zero R (double-complex-horizontal X p (+ q 1)) (double-complex-vertical X p q) n11 n00))
+                 (vh (hc-mul-or-zero R (double-complex-vertical X (+ p 1) q) (double-complex-horizontal X p q) n11 n00))
+                 (hh (hc-mul-or-zero R (double-complex-horizontal X (+ p 1) q) (double-complex-horizontal X p q) (double-complex-dim X (+ p 2) q) n00))
+                 (vv (hc-mul-or-zero R (double-complex-vertical X p (+ q 1)) (double-complex-vertical X p q) (double-complex-dim X p (+ q 2)) n00)))
+            (if (not (hc-matrix-equal? R hv vh)) (set! out (cons (list 'square p q) out)))
+            (if (not (hc-matrix-equal? R hh (integer-matrix (hc-rows hh) n00))) (set! out (cons (list 'horizontal p q) out)))
+            (if (not (hc-matrix-equal? R vv (integer-matrix (hc-rows vv) n00))) (set! out (cons (list 'vertical p q) out)))))
+        (hc-range (+ (vector-ref X 3) 1))))
+     (hc-range (+ (vector-ref X 2) 1)))
+    (reverse out)))
+;; the blocks (p q) of total degree n, p ascending
+(define (hc-total-blocks X n)
+  (filter (lambda (pq) (and (<= (car pq) (vector-ref X 2)) (<= (cadr pq) (vector-ref X 3)) (>= (cadr pq) 0)))
+          (map (lambda (p) (list p (- n p))) (hc-range (+ n 1)))))
+(define (total-complex-offsets X n)
+  (map (lambda (pq off) (list (car pq) (cadr pq) off))
+       (hc-total-blocks X n) (hc-offsets (map (lambda (pq) (double-complex-dim X (car pq) (cadr pq))) (hc-total-blocks X n)))))
+;; Tot^n = (+)_{p+q=n} C^{p,q}, D = h + (-1)^p v; degrees 0 .. nmax (the
+;; differential out of nmax is included)
+(define (total-complex X nmax)
+  (let* ((dim-of (lambda (n) (hc-sum (map (lambda (pq) (double-complex-dim X (car pq) (cadr pq))) (hc-total-blocks X n)))))
+         (D-of (lambda (n)
+                 (let* ((src (total-complex-offsets X n)) (dst (total-complex-offsets X (+ n 1)))
+                        (M (integer-matrix (dim-of (+ n 1)) (dim-of n)))
+                        (find (lambda (p q) (let loop ((l dst)) (cond ((null? l) #f) ((and (= p (car (car l))) (= q (cadr (car l)))) (caddr (car l))) (else (loop (cdr l))))))))
+                   (for-each (lambda (b)
+                               (let ((p (car b)) (q (cadr b)) (off (caddr b)))
+                                 (let ((t (find (+ p 1) q))) (if t (hc-place! M t off (double-complex-horizontal X p q) 1)))
+                                 (let ((t (find p (+ q 1)))) (if t (hc-place! M t off (double-complex-vertical X p q) (if (even? p) 1 -1))))))
+                             src)
+                   M))))
+    (make-cochain-complex (vector-ref X 1) (map dim-of (hc-range (+ nmax 1))) (map D-of (hc-range (+ nmax 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Q/Z coefficients
+;; ---------------------------------------------------------------------------
+;; the exponent of the torsion of coker(A): the largest invariant factor
+(define (torsion-exponent A) (if (hc-empty? A) 1 (fold-left max 1 (integer-invariant-factors A))))
+;; For an integer cochain complex C and integer vectors U in C^n, decide
+;; whether the cochain U/N with values in Q/Z is a coboundary of a Q/Z-valued
+;; cochain. With T = coker(D_{n-1}) and e the exponent of its torsion, U/N =
+;; D w over Q/Z exactly when e U lies in im D_{n-1} + N e Z^m: a w with
+;; denominators dividing N e then exists, and conversely the class of U in T
+;; then lies in N T + Tors(T). `qz-coboundary-test` does the Smith normal form
+;; once and returns the test as a procedure U -> boolean.
+(define (qz-coboundary-test C n N)
+  (let* ((D (complex-in-map C n)) (m (complex-dim C n)) (e (torsion-exponent D))
+         (cols (append (if (hc-empty? D) '() (map (lambda (j) (integer-matrix-column D j)) (hc-range (hc-cols D))))
+                       (map (lambda (i) (let ((v (make-vector m 0))) (vector-set! v i (* N e)) v)) (hc-range m))))
+         (B (integer-matrix-from-columns cols m))
+         (snf (smith-normal-form B)) (nc (length cols)))
+    (lambda (U)
+      (if (integer-solve-in-basis snf nc (let ((w (make-vector m 0))) (let loop ((i 0)) (if (< i m) (begin (vector-set! w i (* e (vector-ref U i))) (loop (+ i 1))))) w))
+          #t #f))))
+(define (qz-coboundary? C n U N) ((qz-coboundary-test C n N) U))
