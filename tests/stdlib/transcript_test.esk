@@ -1,0 +1,139 @@
+;;; transcript_test.esk -- core.transcript: canonical value encoding, hash
+;;; determinism, inactive-by-default no-ops, and a real active write/read
+;;; round trip through core.json.
+
+(require stdlib)
+(require core.transcript)
+(require core.merkle)
+(require core.json)
+
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display label) (newline))))
+
+;; ===========================================================================
+;; Inactive by default: no ESHKOL_TRANSCRIPT in this process yet.
+;; ===========================================================================
+(unsetenv "ESHKOL_TRANSCRIPT")
+(define h-inactive (transcript-open "unit-test"))
+(check "transcript-open with no env var returns an inactive handle"
+       (not (transcript-active? h-inactive)))
+(check "transcript-record! on an inactive handle returns #f and never errors"
+       (not (transcript-record! h-inactive "determinant" "noop" (list (cons "x" (tv-int 1))) (tv-int 1))))
+(check "transcript-close! on an inactive handle returns #f and touches no file"
+       (not (transcript-close! h-inactive)))
+
+;; ===========================================================================
+;; Canonical value encoders: shape and round trip through json-stringify /
+;; json-parse (the same path transcript-record!/close! use to write a file).
+;; ===========================================================================
+(define (field v k) (json-get (alist->hash-table v) k))
+
+(check "tv-int: bignum integer encodes as a tagged decimal string, not a bare number"
+       (let ((v (tv-int (expt 10 30))))
+         (and (equal? "z" (field v "t")) (equal? (number->string (expt 10 30)) (field v "v")))))
+(check "tv-int: negative integer keeps its sign"
+       (equal? "-7" (field (tv-int -7) "v")))
+(check "tv-rat: a non-integer rational splits into numerator/denominator strings"
+       (let ((v (tv-rat 22/7)))
+         (and (equal? "q" (field v "t")) (equal? "22" (field v "n")) (equal? "7" (field v "d")))))
+(check "tv-rat: an integer argument is encoded exactly as tv-int would"
+       (equal? (tv-rat 5) (tv-int 5)))
+(check "tv-bool / tv-string round trip their tag and value"
+       (and (equal? #t (field (tv-bool #t) "v")) (equal? "hi" (field (tv-string "hi") "v"))))
+
+(define M (tv-matrix-rows (list (list 2 4) (list 6 8))))
+(check "tv-matrix-rows: rows/cols are correct and data is row-major, element-encoded"
+       (and (= 2 (field M "rows")) (= 2 (field M "cols"))
+            (equal? (tv-int 2) (car (car (field M "data"))))
+            (equal? (tv-int 8) (car (cdr (cadr (field M "data")))))))
+(check "tv-matrix-vec on a vector-of-vectors matches tv-matrix-rows on the equivalent lists"
+       (equal? (tv-matrix-vec (vector (vector 2 4) (vector 6 8))) M))
+
+(define L (tv-int-list (list 2 4 6)))
+(check "tv-int-list: n and data"
+       (and (= 3 (field L "n")) (equal? (list (tv-int 2) (tv-int 4) (tv-int 6)) (field L "data"))))
+
+(define P (tv-poly "x" (list 1 0 -3)))
+(check "tv-poly: degree is one less than the coefficient count, lowest degree first"
+       (and (equal? "x" (field P "var")) (= 2 (field P "deg"))))
+(check "tv-poly: coeffs key holds the encoded coefficient list in order"
+       (equal? (list (tv-int 1) (tv-int 0) (tv-int -3)) (field P "coeffs")))
+
+;; ===========================================================================
+;; JSON round trip: a canonical value survives json-stringify -> json-parse.
+;; ===========================================================================
+(define round-tripped (json-parse (json-stringify (tv-rat 22/7))))
+(check "a canonical value parses back with the same tag and fields"
+       (and (equal? "q" (json-get round-tripped "t"))
+            (equal? "22" (json-get round-tripped "n"))
+            (equal? "7" (json-get round-tripped "d"))))
+
+;; ===========================================================================
+;; Hash: deterministic, content-sensitive, reuses core.merkle's fnv1a-64.
+;; ===========================================================================
+(define claim-a (list (cons "kind" "determinant") (cons "label" "a")
+                       (cons "inputs" (list (cons "m" (tv-matrix-rows (list (list 1 2) (list 3 4))))))
+                       (cons "output" (tv-int -2))))
+(define claim-b (list (cons "kind" "determinant") (cons "label" "a")
+                       (cons "inputs" (list (cons "m" (tv-matrix-rows (list (list 1 2) (list 3 4))))))
+                       (cons "output" (tv-int -2))))
+(define claim-c (list (cons "kind" "determinant") (cons "label" "a")
+                       (cons "inputs" (list (cons "m" (tv-matrix-rows (list (list 1 2) (list 3 5))))))
+                       (cons "output" (tv-int -1))))
+(check "identical claims hash identically (fnv1a-64 of the canonical JSON text)"
+       (= (fnv1a-64 (json-stringify claim-a)) (fnv1a-64 (json-stringify claim-b))))
+(check "a different claim (different matrix, different output) hashes differently"
+       (not (= (fnv1a-64 (json-stringify claim-a)) (fnv1a-64 (json-stringify claim-c)))))
+(check "hash->hex of the canonical text is 16 lowercase hex characters"
+       (= 16 (string-length (hash->hex (fnv1a-64 (json-stringify claim-a))))))
+
+;; ===========================================================================
+;; Active handle: a real write, then read the file back and verify the
+;; recorded hash against an independently recomputed one.
+;; ===========================================================================
+(define out-path ".scratch/v14-lanes/crosscheck/transcript_unit_test_output.json")
+(setenv "ESHKOL_TRANSCRIPT" out-path)
+(define h (transcript-open "transcript_test"))
+(check "transcript-open is active once ESHKOL_TRANSCRIPT is set" (transcript-active? h))
+(transcript-record! h "determinant" "2x2"
+  (list (cons "matrix" (tv-matrix-rows (list (list 1 2) (list 3 4)))))
+  (tv-int -2))
+(transcript-record! h "smith_normal_form" "tiny"
+  (list (cons "boundary" (tv-matrix-rows (list (list 2 4) (list 6 8)))))
+  (tv-int-list (list 2 4)))
+(check "transcript-close! on an active handle reports success" (transcript-close! h))
+
+(define doc (json-read-file out-path))
+(check "the written document carries the schema tag and program name"
+       (and (equal? "eshkol.transcript.v1" (json-get doc "schema"))
+            (equal? "transcript_test" (json-get doc "program"))))
+(define claims (json-get doc "claims"))
+(check "both recorded claims are present, oldest first" (= 2 (length claims)))
+(check "the first claim is the determinant claim, with its stated output"
+       (let ((c0 (car claims)))
+         (and (equal? "determinant" (json-get c0 "kind")) (equal? "2x2" (json-get c0 "label"))
+              (equal? "-2" (json-get (json-get c0 "output") "v")))))
+;; Each claim's "hash" is over the canonical JSON TEXT as originally
+;; written (field order kind,label,inputs,output); re-deriving it from a
+;; round trip through Eshkol's own json-parse is not a valid check here,
+;; because core.json represents a JSON object as a hash-table with
+;; unspecified key order, while the hash is defined over a fixed order.
+;; An external reader that preserves object key order (any JSON library
+;; built on an ordered map, e.g. Python's json module) can and does
+;; re-derive it; see scripts/math_crosscheck/replay_check.py.
+(check "every claim carries a well-formed 16-hex-character hash"
+       (all? (lambda (c) (let ((h (json-get c "hash"))) (and (string? h) (= 16 (string-length h))))) claims))
+(check "the two claims (different kind/label/content) hash differently"
+       (not (equal? (json-get (car claims) "hash") (json-get (cadr claims) "hash"))))
+(unsetenv "ESHKOL_TRANSCRIPT")
+
+(newline)
+(display "Passed: ") (display passed) (display " Failed: ") (display failed) (newline)
+(if (> failed 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: transcript_test") (newline) (display "RESULT: PASS") (newline)

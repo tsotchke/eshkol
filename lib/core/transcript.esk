@@ -1,0 +1,184 @@
+;; transcript.esk — exact, content-addressed transcripts of certified
+;; mathematical quantities.
+;;
+;; (require core.transcript)
+;;
+;; A transcript is a JSON document recording, for one program run, every
+;; certified quantity (a rank, a Smith-normal-form invariant-factor list, a
+;; Gram matrix, a character count, a determinant, a polynomial gcd, ...)
+;; together with the exact inputs that produced it, so an independent
+;; program — the pure-Python replay checker in scripts/math_crosscheck/, or
+;; PARI/GP and SymPy on a second host — can recompute each claim from its
+;; own copy of the inputs and compare against the recorded output.  Each
+;; claim also carries a content hash over its own canonical encoding, so a
+;; transcript file is tamper-evident the same way core.merkle's
+;; content-addressable store is: the hash function is literally the same
+;; one (fnv1a-64), reused here rather than defining a second hash.
+;;
+;; Recording is OFF by default and never changes a program's printed
+;; output: (transcript-open name) with no ESHKOL_TRANSCRIPT environment
+;; variable set returns an INACTIVE handle, and every transcript-record!
+;; / transcript-close! call on an inactive handle is a silent no-op (no
+;; file is touched, nothing is computed beyond the handle itself). Set
+;; ESHKOL_TRANSCRIPT to a file path to turn recording on for that process;
+;; transcript-close! then writes every claim collected so far, oldest
+;; first, to that path as one JSON document.
+;;
+;; ---------------------------------------------------------------------
+;; Canonical value encoding
+;; ---------------------------------------------------------------------
+;; Every encoded value is a JSON object tagged by "t":
+;;
+;;   exact integer    {"t":"z","v":"<decimal string, sign included>"}
+;;   exact rational   {"t":"q","n":"<num string>","d":"<den string>"}   (d > 0, lowest terms)
+;;   matrix           {"t":"mat","rows":R,"cols":C,"data":[[<value>...]...]}
+;;   vector           {"t":"vec","n":N,"data":[<value>...]}
+;;   polynomial       {"t":"poly","var":"<name>","deg":D,"coeffs":[<value>...]}  (lowest degree first)
+;;   list             {"t":"list","n":N,"data":[<value>...]}
+;;   string           {"t":"str","v":"<string>"}
+;;   boolean          {"t":"bool","v":true|false}
+;;   opaque fallback  {"t":"opaque","label":"<carrier/kind>","repr":"<string>"}
+;;
+;; Integers and rational numerators/denominators are ALWAYS encoded as
+;; decimal STRINGS, never bare JSON numbers: Eshkol's exact integers are
+;; bignums with no size bound, and a JSON number is not guaranteed beyond
+;; float64 precision by every reader, so a bare big integer would silently
+;; lose precision in some consumer. Small structural counts (rows, cols,
+;; vector/list length, polynomial degree) are plain JSON numbers — they are
+;; always small int64s by construction.
+;;
+;; A claim document is:
+;;   {"kind":"<claim kind, e.g. smith_normal_form>",
+;;    "label":"<human label identifying the instance>",
+;;    "inputs":{"<name>":<value>, ...},
+;;    "output":<value>,
+;;    "hash":"<16-hex fnv1a-64 of the canonical JSON text of
+;;             {"kind":...,"label":...,"inputs":...,"output":...} in that
+;;             field order, with the hash field itself excluded>"}
+;;
+;; A transcript document is:
+;;   {"schema":"eshkol.transcript.v1","program":"<name>","claims":[<claim>...]}
+;;
+;; The JSON Schema for both is scripts/math_crosscheck/transcript_schema.json;
+;; the reference page is docs/reference/stdlib/transcript.md.
+
+(require stdlib)
+(require core.merkle)
+(require core.json)
+
+(provide
+  ;; handle lifecycle
+  transcript-open transcript-active? transcript-record! transcript-close!
+  ;; canonical value encoders
+  tv-int tv-rat tv-bool tv-string tv-opaque
+  tv-list tv-int-list tv-rat-list
+  tv-vector tv-matrix-rows tv-matrix-vec tv-matrix
+  tv-poly)
+
+;; ---------------------------------------------------------------------
+;; Canonical value encoders — each returns an ordered alist ("t" first)
+;; ready for core.json's json-stringify.
+;; ---------------------------------------------------------------------
+
+(define (tv-int z)
+  "Encode an exact integer (bignum-safe: always a decimal string)."
+  (list (cons "t" "z") (cons "v" (number->string z))))
+
+(define (tv-rat q)
+  "Encode an exact rational (or integer, which is encoded as tv-int)."
+  (if (integer? q)
+      (tv-int q)
+      (list (cons "t" "q")
+            (cons "n" (number->string (numerator q)))
+            (cons "d" (number->string (denominator q))))))
+
+(define (tv-bool b) (list (cons "t" "bool") (cons "v" (if b #t #f))))
+(define (tv-string s) (list (cons "t" "str") (cons "v" s)))
+
+(define (tv-opaque label repr-string)
+  "Fallback for a value with no numeric encoding (e.g. a non-numeric ring
+   carrier element): records a label and a caller-supplied string
+   representation. Not independently recomputable by the replay checker;
+   use a numeric encoder whenever one applies."
+  (list (cons "t" "opaque") (cons "label" label) (cons "repr" repr-string)))
+
+(define (tv-list encoded-xs)
+  "encoded-xs: a list already produced by one of the other tv-* encoders."
+  (list (cons "t" "list") (cons "n" (length encoded-xs)) (cons "data" encoded-xs)))
+
+(define (tv-int-list xs) (tv-list (map tv-int xs)))
+(define (tv-rat-list xs) (tv-list (map tv-rat xs)))
+
+(define (tv-vector xs)
+  "xs: a plain Eshkol list of exact numbers (the vector's elements)."
+  (list (cons "t" "vec") (cons "n" (length xs)) (cons "data" (map tv-rat xs))))
+
+(define (tv-matrix-rows rows)
+  "rows: a list of lists of exact numbers, row-major."
+  (list (cons "t" "mat")
+        (cons "rows" (length rows))
+        (cons "cols" (if (null? rows) 0 (length (car rows))))
+        (cons "data" (map (lambda (r) (map tv-rat r)) rows))))
+
+(define (tv-matrix-vec V)
+  "V: a vector of vectors of exact numbers (the make-matrix / integer_linalg
+   convention used by the mathematics examples)."
+  (tv-matrix-rows (map vector->list (vector->list V))))
+
+(define (tv-matrix V) (tv-matrix-vec V))
+
+(define (tv-poly var coeffs)
+  "coeffs: a list of exact numbers, LOWEST degree first."
+  (list (cons "t" "poly") (cons "var" var)
+        (cons "deg" (if (null? coeffs) 0 (- (length coeffs) 1)))
+        (cons "coeffs" (map tv-rat coeffs))))
+
+;; ---------------------------------------------------------------------
+;; Handle
+;; ---------------------------------------------------------------------
+;; A handle is (vector 'eshkol-transcript active? program-name path box)
+;; where box is a one-element vector holding the claims collected so far
+;; (newest first); mutating box is how transcript-record! "mutates" a
+;; handle built from immutable fields.
+
+(define (transcript-open program-name)
+  "Returns a transcript handle for program-name.  Active (recording
+   claims and, on transcript-close!, writing a file) iff the
+   ESHKOL_TRANSCRIPT environment variable is set to a non-empty path;
+   otherwise every subsequent call on this handle is a no-op."
+  (let ((path (get-environment-variable "ESHKOL_TRANSCRIPT")))
+    (if (and path (string? path) (not (string=? path "")))
+        (vector 'eshkol-transcript #t program-name path (vector '()))
+        (vector 'eshkol-transcript #f program-name #f (vector '())))))
+
+(define (transcript-active? h) (vector-ref h 1))
+
+(define (transcript-claim-alist kind label inputs output)
+  (list (cons "kind" kind) (cons "label" label) (cons "inputs" inputs) (cons "output" output)))
+
+(define (transcript-record! h kind label inputs output)
+  "Record one claim.  kind/label: strings.  inputs: an alist of
+   (name-string . encoded-value).  output: an encoded-value.  No-op (and
+   computes nothing beyond the handle check) when h is inactive; never
+   prints anything, so it never changes a program's visible output."
+  (if (transcript-active? h)
+      (let* ((claim (transcript-claim-alist kind label inputs output))
+             (digest (hash->hex (fnv1a-64 (json-stringify claim))))
+             (full (append claim (list (cons "hash" digest))))
+             (box (vector-ref h 4)))
+        (vector-set! box 0 (cons full (vector-ref box 0)))
+        #t)
+      #f))
+
+(define (transcript-close! h)
+  "Write every claim collected so far (oldest first) as one JSON document
+   to the handle's path.  No-op, and no file is touched, when h is
+   inactive."
+  (if (transcript-active? h)
+      (let* ((claims (reverse (vector-ref (vector-ref h 4) 0)))
+             (doc (list (cons "schema" "eshkol.transcript.v1")
+                        (cons "program" (vector-ref h 2))
+                        (cons "claims" claims))))
+        (json-write-file (vector-ref h 3) doc)
+        #t)
+      #f))
