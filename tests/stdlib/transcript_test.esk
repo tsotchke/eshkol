@@ -47,23 +47,41 @@
 (check "tv-bool / tv-string round trip their tag and value"
        (and (equal? #t (field (tv-bool #t) "v")) (equal? "hi" (field (tv-string "hi") "v"))))
 
+;; "data"/"coeffs" are vectors, not lists (see tv-list's docstring and
+;; the empty-array tests below): the empty case is why.
 (define M (tv-matrix-rows (list (list 2 4) (list 6 8))))
 (check "tv-matrix-rows: rows/cols are correct and data is row-major, element-encoded"
        (and (= 2 (field M "rows")) (= 2 (field M "cols"))
-            (equal? (tv-int 2) (car (car (field M "data"))))
-            (equal? (tv-int 8) (car (cdr (cadr (field M "data")))))))
+            (equal? (tv-int 2) (vector-ref (vector-ref (field M "data") 0) 0))
+            (equal? (tv-int 8) (vector-ref (vector-ref (field M "data") 1) 1))))
 (check "tv-matrix-vec on a vector-of-vectors matches tv-matrix-rows on the equivalent lists"
        (equal? (tv-matrix-vec (vector (vector 2 4) (vector 6 8))) M))
 
 (define L (tv-int-list (list 2 4 6)))
 (check "tv-int-list: n and data"
-       (and (= 3 (field L "n")) (equal? (list (tv-int 2) (tv-int 4) (tv-int 6)) (field L "data"))))
+       (and (= 3 (field L "n")) (equal? (vector (tv-int 2) (tv-int 4) (tv-int 6)) (field L "data"))))
 
 (define P (tv-poly "x" (list 1 0 -3)))
 (check "tv-poly: degree is one less than the coefficient count, lowest degree first"
        (and (equal? "x" (field P "var")) (= 2 (field P "deg"))))
-(check "tv-poly: coeffs key holds the encoded coefficient list in order"
-       (equal? (list (tv-int 1) (tv-int 0) (tv-int -3)) (field P "coeffs")))
+(check "tv-poly: coeffs key holds the encoded coefficient vector in order"
+       (equal? (vector (tv-int 1) (tv-int 0) (tv-int -3)) (field P "coeffs")))
+
+;; ===========================================================================
+;; The empty case: core.json's json-stringify cannot tell an empty LIST
+;; apart from JSON null (it is JSON null's own image under json-parse),
+;; so an empty "data"/"coeffs" MUST be a vector, or it silently
+;; serializes as null instead of [].  Real case: a Smith normal form
+;; with no nonzero invariant factor (a boundary map that is the zero
+;; map) -- caught by this exact scenario in
+;; examples/mathematics_group_cohomology_order_eight.esk.
+;; ===========================================================================
+(check "tv-int-list of '() stringifies its data field as [], not null"
+       (equal? "[]" (json-stringify (field (tv-int-list '()) "data"))))
+(check "tv-matrix-rows of a 0-row matrix stringifies its data field as []"
+       (equal? "[]" (json-stringify (field (tv-matrix-rows '()) "data"))))
+(check "a plain Eshkol '() still stringifies as null (the ambiguity tv-list routes around)"
+       (equal? "null" (json-stringify '())))
 
 ;; ===========================================================================
 ;; JSON round trip: a canonical value survives json-stringify -> json-parse.

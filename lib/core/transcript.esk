@@ -103,22 +103,29 @@
   (list (cons "t" "opaque") (cons "label" label) (cons "repr" repr-string)))
 
 (define (tv-list encoded-xs)
-  "encoded-xs: a list already produced by one of the other tv-* encoders."
-  (list (cons "t" "list") (cons "n" (length encoded-xs)) (cons "data" encoded-xs)))
+  "encoded-xs: a list already produced by one of the other tv-* encoders.
+   \"data\" is stored as a vector, not a list: core.json's json-stringify
+   cannot tell an empty LIST apart from JSON null (see core.json's
+   module comment), so the empty case -- e.g. a Smith normal form with
+   no nonzero invariant factor -- would otherwise silently serialize as
+   null instead of []."
+  (list (cons "t" "list") (cons "n" (length encoded-xs)) (cons "data" (list->vector encoded-xs))))
 
 (define (tv-int-list xs) (tv-list (map tv-int xs)))
 (define (tv-rat-list xs) (tv-list (map tv-rat xs)))
 
 (define (tv-vector xs)
   "xs: a plain Eshkol list of exact numbers (the vector's elements)."
-  (list (cons "t" "vec") (cons "n" (length xs)) (cons "data" (map tv-rat xs))))
+  (list (cons "t" "vec") (cons "n" (length xs)) (cons "data" (list->vector (map tv-rat xs)))))
 
 (define (tv-matrix-rows rows)
-  "rows: a list of lists of exact numbers, row-major."
+  "rows: a list of lists of exact numbers, row-major.  Both the outer
+   data and every row are stored as vectors (see tv-list) so a 0-row or
+   0-column matrix still serializes as [] rather than null."
   (list (cons "t" "mat")
         (cons "rows" (length rows))
         (cons "cols" (if (null? rows) 0 (length (car rows))))
-        (cons "data" (map (lambda (r) (map tv-rat r)) rows))))
+        (cons "data" (list->vector (map (lambda (r) (list->vector (map tv-rat r))) rows)))))
 
 (define (tv-matrix-vec V)
   "V: a vector of vectors of exact numbers (the make-matrix / integer_linalg
@@ -131,7 +138,7 @@
   "coeffs: a list of exact numbers, LOWEST degree first."
   (list (cons "t" "poly") (cons "var" var)
         (cons "deg" (if (null? coeffs) 0 (- (length coeffs) 1)))
-        (cons "coeffs" (map tv-rat coeffs))))
+        (cons "coeffs" (list->vector (map tv-rat coeffs)))))
 
 ;; ---------------------------------------------------------------------
 ;; Handle
