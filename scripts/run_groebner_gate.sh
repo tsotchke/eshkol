@@ -19,6 +19,10 @@
 #   BUILD_DIR  (env, default "build")   the CMake build directory
 #   TRACE_DIR  (env, default scripts/icc_traces)
 #   JOBS       (env, default 2)          parallel CTest jobs
+#   DOC_TIMEOUT (env, default 600)       seconds per documentation example and
+#                                        engine; an AOT example compiles
+#                                        core.ring, core.multimodular,
+#                                        core.symbolic and core.groebner
 
 set -u
 set -o pipefail
@@ -80,6 +84,7 @@ doc_log="$WORK/doc-examples.log"
 python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --eshkol-run "$BUILD_DIR_PATH/eshkol-run" \
     --engines jit,aot \
+    --timeout "${DOC_TIMEOUT:-600}" \
     --only "$PAGES" \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
