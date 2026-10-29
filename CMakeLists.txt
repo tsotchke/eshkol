@@ -4523,7 +4523,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # so each gets the budget of a library suite.
     set(ESHKOL_SIMPLICIAL_EXAMPLES hocolim_kan_complexes_horns hocolim_two_groups_postnikov
         dw_cohomology_rings_cup_products dw_cohomology_rings_nonabelian dw_group_cohomology_order_eight
-        sheaf_descent_hypercohomology)
+        postnikov_four_manifolds_second_k sheaf_descent_hypercohomology)
     foreach(_sx ${ESHKOL_SIMPLICIAL_EXAMPLES})
         if(TEST ${_sx}_jit)
             set_property(TEST ${_sx}_jit APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")

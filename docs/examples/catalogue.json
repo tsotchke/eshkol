@@ -2331,16 +2331,16 @@
     },
     {
       "path": "examples/mathematics_four_manifolds_second_k_invariant.esk",
-      "source_sha256": "f895a42c6c178071c3fdc8cd578d71edb713f78ce40e1e11f261071be010f69d",
+      "source_sha256": "337e27833024e31d4ff847459dca2d8fa4c752c57a9c21d272c893ac529ea8ac",
       "title": "Cup-square obstruction in four-manifold models",
       "kind": "mathematics",
       "purpose": "Detect a second Postnikov k-invariant through mapping-space counts.",
-      "algorithm": "Build four-dimensional face tables and F₂ cup products; count solutions δy=x∪x and compare cochain-state-sum normalization with a fibration formula.",
+      "algorithm": "S^4, RP^4 and S^2 x S^2 as simplicial sets of core.simplicial (boundary, cross-polytope quotient, Eilenberg-Zilber product); mod-2 cochain complexes, cup squares and class tests of core.homological; twisted-cochain state sum and fibration formula counts.",
       "domain": "Supplied S⁴, RP⁴ and S²×S² Delta-complexes; π₂=π₃=Z/2, trivial π₁; k=0 versus cup square.",
       "arithmetic": "Exact modular linear algebra and rational cardinalities.",
       "validation": "Face closure, δ²=0, Betti numbers, cup-square obstructions and equality of two cardinality routes are checked.",
       "limitations": "The computation is bounded by the target 3-type and supplied finite complexes; the manifold/model identifications use the cited results.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2358,23 +2358,27 @@
           "text": ";; Four-dimensional Delta-complexes and the second k-invariant: mapping"
         },
         {
-          "line": 65,
+          "line": 57,
+          "text": "(require core.ring)"
+        },
+        {
+          "line": 68,
           "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
         },
         {
-          "line": 66,
+          "line": 69,
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 267,
+          "line": 163,
           "text": "(check \"k = 0: the state sum equals the fibration formula and the product of the two Eilenberg-MacLane cardinalities on all three manifolds\""
         },
         {
-          "line": 269,
+          "line": 165,
           "text": "(check \"k = iota u iota: the state sum equals the fibration formula on all three manifolds, exactly\""
         },
         {
-          "line": 271,
+          "line": 167,
           "text": "(check \"the second k-invariant is seen by RP^4 and only there: its value halves (x^2 fails to lift, since x^4 is not zero), S^4 and S^2 x S^2 keep their k = 0 values\""
         }
       ],

@@ -257,6 +257,9 @@ nondegenerate n-simplices, a cochain a vector on it.
   `scripts/run_math_sweep.sh`).
 - [`examples/mathematics_two_groups_postnikov.esk`](../../../examples/mathematics_two_groups_postnikov.esk):
   cohomology of 2-group nerves over `Z/2` and `Z`.
+- [`examples/mathematics_four_manifolds_second_k_invariant.esk`](../../../examples/mathematics_four_manifolds_second_k_invariant.esk):
+  cup squares and intersection forms mod 2 of `S^4`, `RP^4` and `S^2 x S^2`
+  and mapping spaces into a 3-type.
 - [`examples/mathematics_descent_hypercohomology.esk`](../../../examples/mathematics_descent_hypercohomology.esk):
   the descent double complex of a non-Leray cover and the hypercohomology
   of a two-term complex of sheaves as total complexes.

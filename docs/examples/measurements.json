@@ -1075,47 +1075,63 @@
       }
     },
     "examples/mathematics_four_manifolds_second_k_invariant.esk": {
-      "source_sha256": "f895a42c6c178071c3fdc8cd578d71edb713f78ce40e1e11f261071be010f69d",
+      "source_sha256": "337e27833024e31d4ff847459dca2d8fa4c752c57a9c21d272c893ac529ea8ac",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 35.99,
-        "passed": 8,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 34.89
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 15.58,
-        "passed": 8,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 15.2,
-        "compile_exit": 0,
-        "compile_s": 5.57
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "postnikov_four_manifolds_second_k_jit",
-          "status": "Passed",
-          "seconds": 20.54
-        },
-        {
-          "name": "postnikov_four_manifolds_second_k_aot",
-          "status": "Passed",
-          "seconds": 20.96
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "f895a42c6c178071c3fdc8cd578d71edb713f78ce40e1e11f261071be010f69d",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 35.99,
+            "passed": 8,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 34.89
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 15.58,
+            "passed": 8,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 15.2,
+            "compile_exit": 0,
+            "compile_s": 5.57
+          },
+          "ctest": [
+            {
+              "name": "postnikov_four_manifolds_second_k_jit",
+              "status": "Passed",
+              "seconds": 20.54
+            },
+            {
+              "name": "postnikov_four_manifolds_second_k_aot",
+              "status": "Passed",
+              "seconds": 20.96
+            }
+          ],
+          "key_output": [
+            "  cells (V, E, F, T, P) = ((6 15 20 15 6) (5 20 40 40 16) (16 84 216 240 96))",
+            "  mod 2 Betti numbers = ((1 0 0 0 1) (1 1 1 1 1) (1 0 2 0 1))",
+            "  classes of x u x in H^4 = Z/2 over all x in H^2: S^4, RP^4, S^2xS^2 = ((0) (0 1) (0 0 0 0))",
+            "  k = 0: state sum, fibration formula, |Map(X, K(Z/2,2))| |Map(X, K(Z/2,3))| = ((1 2 1) (1 2 1) (1 2 1))",
+            "  k = iota u iota: state sum, fibration formula = ((1 1 1) (1 1 1))"
+          ],
+          "output_lines": 20
         }
-      ],
-      "key_output": [
-        "  cells (V, E, F, T, P) = ((6 15 20 15 6) (5 20 40 40 16) (16 84 216 240 96))",
-        "  mod 2 Betti numbers = ((1 0 0 0 1) (1 1 1 1 1) (1 0 2 0 1))",
-        "  classes of x u x in H^4 = Z/2 over all x in H^2: S^4, RP^4, S^2xS^2 = ((0) (0 1) (0 0 0 0))",
-        "  k = 0: state sum, fibration formula, |Map(X, K(Z/2,2))| |Map(X, K(Z/2,3))| = ((1 2 1) (1 2 1) (1 2 1))",
-        "  k = iota u iota: state sum, fibration formula = ((1 1 1) (1 1 1))"
-      ],
-      "output_lines": 20
+      }
     },
     "examples/mathematics_functor_of_points.esk": {
       "source_sha256": "1b84cae1ad998c6d74e0917c35c74aa2513c15e54774590cb859cd8ac4ebfb4a",
