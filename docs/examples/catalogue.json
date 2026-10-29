@@ -2187,16 +2187,16 @@
     },
     {
       "path": "examples/mathematics_finite_site_sheafification.esk",
-      "source_sha256": "7bfec621ecbd1420e4c8ff0150d6ffee911c568ff831a6bb312f6cd577309cf2",
+      "source_sha256": "70b533022160c3507301494b5507e7bd3130af05bcd1e7068a7c49c64f6fb102",
       "title": "Integral plus construction on a finite site",
       "kind": "mathematics",
       "purpose": "Check the sheaf condition throughout the finite open-set site.",
-      "algorithm": "Build integer restriction matrices, enumerate every cover, compute matching-family kernels and the finest-cover plus construction.",
+      "algorithm": "Build integer restriction matrices as core.sheaf module presheaves on the site of opens, enumerate every cover, decide the sheaf condition on the generated sieves and compute the plus construction at the smallest covering sieve.",
       "domain": "Supplied pseudocircle open-set lattice; constant, separated and nonseparated free-abelian presheaves.",
       "arithmetic": "Exact integer linear algebra with torsion-aware kernels.",
       "validation": "Functoriality, every-cover sheaf/separated conditions, unit-map ranks, idempotence and restoration of circle H¹ are checked.",
       "limitations": "The exhaustive quantifiers apply to this finite site. They are not a proof for arbitrary infinite sites.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2214,23 +2214,23 @@
           "text": ";; The sheaf condition and the plus construction on a finite site, verified"
         },
         {
-          "line": 48,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+          "line": 42,
+          "text": "(require core.sheaf)"
         },
         {
-          "line": 49,
-          "text": "(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))"
+          "line": 104,
+          "text": "(define (sheaf-on? F U cover) (module-sheaf-on-family? F (obj U) (cover-arrows U cover)))"
         },
         {
-          "line": 339,
+          "line": 146,
           "text": "(check \"negative control -- for the non-separated presheaf the map F(X) -> F^+(X) is zero: the section that restricted to zero is killed, while F^+(X) = Z survives\""
         },
         {
-          "line": 354,
+          "line": 158,
           "text": "(check \"for the constant presheaf the cover computes (Z, 0): the presheaf cannot see the circle\""
         },
         {
-          "line": 356,
+          "line": 160,
           "text": "(check \"for the constant sheaf and for F^+ the cover computes (Z, Z): the sheafification restores H^1 of the circle\""
         }
       ],
@@ -2258,16 +2258,16 @@
     },
     {
       "path": "examples/mathematics_finite_spaces_sheaf_cohomology.esk",
-      "source_sha256": "53c55836b821e593f8749f058b67ab43f93b6f25fde7b64e0f92569ff60bfcc1",
+      "source_sha256": "a2f12e11edcb35737f904296c0066df3e781ebb2fbe52da8df6e3775182e45f5",
       "title": "Sheaf cohomology of finite spaces",
       "kind": "mathematics",
       "purpose": "Compute derived limits and compare Leray-cover Cech descent while retaining torsion.",
-      "algorithm": "Form cosimplicial-replacement cochain matrices with local restriction maps and compute Smith forms and cover complexes.",
+      "algorithm": "Form the cosimplicial-replacement cochain matrices of core.sheaf poset modules and compute Smith forms; Cech complexes of covers come from the same library's sections over down-sets.",
       "domain": "4-point pseudocircle, 6-point pseudo-2-sphere, a cone and 16-point torus; constant and sign-monodromy integer local systems.",
       "arithmetic": "Exact integer matrices/Smith normal forms.",
       "validation": "Functor laws, differential squares, constant/twisted groups and Leray Cech agreement are asserted; a partial cover gives the wrong H¹ as a negative control.",
       "limitations": "The comparisons apply to the listed finite models and coefficient systems; non-Leray covers require the separate descent construction.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2285,23 +2285,23 @@
           "text": ";; Sheaf cohomology on finite spaces: derived limits over a poset, local"
         },
         {
-          "line": 56,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 50,
+          "text": "(require core.sheaf)"
         },
         {
-          "line": 57,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+          "line": 68,
+          "text": "(define (sheaf-cohomology P m kmax) (poset-module-cohomology (poset-local-system P m) kmax))"
         },
         {
-          "line": 383,
+          "line": 170,
           "text": "(check \"Cech cohomology of the Leray cover equals the derived limit on the torus model: (Z, Z^2, Z, 0)\""
         },
         {
-          "line": 385,
+          "line": 172,
           "text": "(check \"and for the local system (-1, +1): (0, Z/2, Z/2, 0)\""
         },
         {
-          "line": 387,
+          "line": 174,
           "text": "(check \"negative control -- two of the four opens cover only 12 of the 16 points, and the Cech H^1 of that partial cover has rank 1 (an annulus), not 2\""
         }
       ],

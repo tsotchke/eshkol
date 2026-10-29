@@ -54,7 +54,9 @@ documentation hub lists the same records in
 | [0026](0026-syntax-rules-one-engine-one-renaming-rule.md) | One `syntax-rules` engine and one renaming rule | Accepted — implemented (SW-192) | 2026-09-22 | v1.3.5 |
 | [0027](0027-recursive-taylor-level-carrier.md) | Nested differentiation uses one recursive Taylor level carrier | Accepted — implemented on native JIT and AOT | 2026-09-22 | v1.3.5 |
 | [0028](0028-one-number-syntax-recognizer.md) | One number-syntax recognizer for every reader | Accepted — implemented on native JIT, AOT and the bytecode VM | 2026-09-22 | v1.3.5 |
+| [0033](0033-core-sheaf-finite-sites.md) | `core.sheaf`: one sheaf-theory facility on finite sites | Proposed — implemented in `core.sheaf` | 2026-10-24 | `lib/core/sheaf.esk`, `lib/core/sheaf/`, `lib/core/integer_linalg.esk`; suite `tests/stdlib/sheaf_test.esk`; reference [`sheaf.md`](../../reference/stdlib/sheaf.md) |
 | [0034](0034-ring-carriers-functor-of-points.md) | Ring carriers: the functor-of-points evaluation model | Proposed | 2026-10-24 | — (evidence program [`mathematics_functor_of_points.esk`](../../../examples/mathematics_functor_of_points.esk); first stage targets v1.4.1) |
+| [0035](0035-kripke-joyal-semantics.md) | Kripke-Joyal semantics for local truth | Proposed — library implemented in `core.topos` | 2026-10-24 | `lib/core/topos.esk`; suites `tests/stdlib/topos_test.esk`, `topos_corpus_test.esk`, `topos_corpus_sheaf_test.esk`, `topos_reductions_test.esk`, `topos_jtranslation_test.esk`, `topos_local_ring_test.esk`; reference [`topos.md`](../../reference/stdlib/topos.md) |
 
 ## Numbering
 

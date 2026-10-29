@@ -909,90 +909,122 @@
       "output_lines": 28
     },
     "examples/mathematics_finite_site_sheafification.esk": {
-      "source_sha256": "7bfec621ecbd1420e4c8ff0150d6ffee911c568ff831a6bb312f6cd577309cf2",
+      "source_sha256": "70b533022160c3507301494b5507e7bd3130af05bcd1e7068a7c49c64f6fb102",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 4.56,
-        "passed": 17,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 4.5
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 0.48,
-        "passed": 17,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 0.28,
-        "compile_exit": 0,
-        "compile_s": 10.11
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "sheaf_finite_site_sheafification_jit",
-          "status": "Passed",
-          "seconds": 11.77
-        },
-        {
-          "name": "sheaf_finite_site_sheafification_aot",
-          "status": "Passed",
-          "seconds": 11.25
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.sheaf and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "7bfec621ecbd1420e4c8ff0150d6ffee911c568ff831a6bb312f6cd577309cf2",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 4.56,
+            "passed": 17,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 4.5
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 0.48,
+            "passed": 17,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 0.28,
+            "compile_exit": 0,
+            "compile_s": 10.11
+          },
+          "ctest": [
+            {
+              "name": "sheaf_finite_site_sheafification_jit",
+              "status": "Passed",
+              "seconds": 11.77
+            },
+            {
+              "name": "sheaf_finite_site_sheafification_aot",
+              "status": "Passed",
+              "seconds": 11.25
+            }
+          ],
+          "key_output": [
+            "  number of covers of X, of U_c, of {a, b} = (40 8 5)",
+            "  first cover on which the constant presheaf fails to glue (open, cover) = ((0 1) ((1) (0)))",
+            "  ranks of F^+ on the opens (empty, {a}, {b}, {a,b}, U_c, U_d, X) = (0 1 1 2 1 1 1)",
+            "  Cech (H^0, H^1) of (U_c, U_d): constant presheaf, constant sheaf, F^+ = ((1 (0 ())) (1 (1 ())) (1 (1 ())))"
+          ],
+          "output_lines": 29
         }
-      ],
-      "key_output": [
-        "  number of covers of X, of U_c, of {a, b} = (40 8 5)",
-        "  first cover on which the constant presheaf fails to glue (open, cover) = ((0 1) ((1) (0)))",
-        "  ranks of F^+ on the opens (empty, {a}, {b}, {a,b}, U_c, U_d, X) = (0 1 1 2 1 1 1)",
-        "  Cech (H^0, H^1) of (U_c, U_d): constant presheaf, constant sheaf, F^+ = ((1 (0 ())) (1 (1 ())) (1 (1 ())))"
-      ],
-      "output_lines": 29
+      }
     },
     "examples/mathematics_finite_spaces_sheaf_cohomology.esk": {
-      "source_sha256": "53c55836b821e593f8749f058b67ab43f93b6f25fde7b64e0f92569ff60bfcc1",
+      "source_sha256": "a2f12e11edcb35737f904296c0066df3e781ebb2fbe52da8df6e3775182e45f5",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 3.77,
-        "passed": 23,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 3.65
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 0.3,
-        "passed": 23,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 0.1,
-        "compile_exit": 0,
-        "compile_s": 8.36
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "sheaf_finite_spaces_cech_descent_jit",
-          "status": "Passed",
-          "seconds": 9.46
-        },
-        {
-          "name": "sheaf_finite_spaces_cech_descent_aot",
-          "status": "Passed",
-          "seconds": 8.69
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.sheaf and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "53c55836b821e593f8749f058b67ab43f93b6f25fde7b64e0f92569ff60bfcc1",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 3.77,
+            "passed": 23,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 3.65
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 0.3,
+            "passed": 23,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 0.1,
+            "compile_exit": 0,
+            "compile_s": 8.36
+          },
+          "ctest": [
+            {
+              "name": "sheaf_finite_spaces_cech_descent_jit",
+              "status": "Passed",
+              "seconds": 9.46
+            },
+            {
+              "name": "sheaf_finite_spaces_cech_descent_aot",
+              "status": "Passed",
+              "seconds": 8.69
+            }
+          ],
+          "key_output": [
+            "  H^*(pseudocircle; Z) = ((0 1 ()) (1 1 ()) (2 0 ()))",
+            "  H^*(pseudo-2-sphere; Z) = ((0 1 ()) (1 0 ()) (2 1 ()) (3 0 ()))",
+            "  H^*(torus model; Z) = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))",
+            "  H^*(pseudocircle; Z twisted by -1) = ((0 0 ()) (1 0 (2)) (2 0 ()))",
+            "  H^*(torus model; Z twisted by (-1, +1)) = ((0 0 ()) (1 0 (2)) (2 0 (2)) (3 0 ()))",
+            "  Cech H^*(torus model; Z) for the four maximal opens = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))"
+          ],
+          "output_lines": 41
         }
-      ],
-      "key_output": [
-        "  H^*(pseudocircle; Z) = ((0 1 ()) (1 1 ()) (2 0 ()))",
-        "  H^*(pseudo-2-sphere; Z) = ((0 1 ()) (1 0 ()) (2 1 ()) (3 0 ()))",
-        "  H^*(torus model; Z) = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))",
-        "  H^*(pseudocircle; Z twisted by -1) = ((0 0 ()) (1 0 (2)) (2 0 ()))",
-        "  H^*(torus model; Z twisted by (-1, +1)) = ((0 0 ()) (1 0 (2)) (2 0 (2)) (3 0 ()))",
-        "  Cech H^*(torus model; Z) for the four maximal opens = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))"
-      ],
-      "output_lines": 41
+      }
     },
     "examples/mathematics_four_manifolds_second_k_invariant.esk": {
       "source_sha256": "f895a42c6c178071c3fdc8cd578d71edb713f78ce40e1e11f261071be010f69d",

@@ -4324,6 +4324,49 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# core.sheaf: finite sites, sieves, presheaves, gluing, sheafification and
+# cohomology (ADR-0033), with core.integer_linalg. The suite cross-checks
+# against core.exact_linalg and between independent cohomology paths; the
+# finite-site and finite-space sheaf examples below consume the library.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME sheaf_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/sheaf_test.esk")
+    add_test(NAME sheaf_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/sheaf_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/sheaf_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(sheaf_jit sheaf_aot PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: sheaf_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+endif()
+
+# core.topos: the internal language of the topos of a finite site, with
+# Kripke-Joyal forcing cross-checked against the Omega-valued interpretation,
+# the Kripke and Beth reductions, soundness of intuitionistic higher-order
+# logic, and the internally local structure sheaf of Spec(Z/n) (ADR-0035).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_topos_suite topos_test topos_corpus_test topos_corpus_sheaf_test topos_reductions_test topos_jtranslation_test topos_local_ring_test)
+        add_test(NAME ${_topos_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_topos_suite}.esk")
+        add_test(NAME ${_topos_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_topos_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_topos_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=540"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_topos_suite}_jit ${_topos_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_topos_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # core.ring and core.multimodular (ADR-0034, library rung): the ring-law gate
 # (exhaustive on small lawful carriers, seeded on infinite ones, refusals,
 # coercion lattice, ring maps), the IEEE tier against its per-operation
@@ -4413,6 +4456,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
     # These consumers now require the shared field module from this checkout.
     set_property(TEST torsion_lens_spaces_reidemeister_jit tv_turaev_viro_cyclotomic_jit
+                      sheaf_finite_spaces_cech_descent_jit sheaf_finite_site_sheafification_jit
+                      cat_presheaf_topos_internal_logic_jit
         APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # The functor-of-points example runs on core.ring and core.multimodular.
     set_property(TEST rings_functor_of_points_jit

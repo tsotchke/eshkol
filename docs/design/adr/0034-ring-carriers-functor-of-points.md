@@ -1,7 +1,7 @@
 ---
 kind: explanation
 status: current
-owner-area: numeric
+owner-area: stdlib
 since: v1.4.0
 sources:
   - lib/backend/arithmetic_codegen.cpp
