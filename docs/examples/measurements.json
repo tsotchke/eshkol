@@ -823,47 +823,63 @@
       "output_lines": 4
     },
     "examples/mathematics_finite_categories_kan_extensions.esk": {
-      "source_sha256": "d04c60d9390806909c63b23ddbb572074f467f00f796246942972bf33c88e117",
+      "source_sha256": "ab420b6534cea349818eaede88085606ec74d54de68432c6ec43b20ccad9c77a",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 5.56,
-        "passed": 19,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 5.43
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 0.25,
-        "passed": 19,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 0.05,
-        "compile_exit": 0,
-        "compile_s": 15.89
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "cat_finite_categories_kan_jit",
-          "status": "Passed",
-          "seconds": 18.92
-        },
-        {
-          "name": "cat_finite_categories_kan_aot",
-          "status": "Passed",
-          "seconds": 17.46
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "d04c60d9390806909c63b23ddbb572074f467f00f796246942972bf33c88e117",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 5.56,
+            "passed": 19,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 5.43
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 0.25,
+            "passed": 19,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 0.05,
+            "compile_exit": 0,
+            "compile_s": 15.89
+          },
+          "ctest": [
+            {
+              "name": "cat_finite_categories_kan_jit",
+              "status": "Passed",
+              "seconds": 18.92
+            },
+            {
+              "name": "cat_finite_categories_kan_aot",
+              "status": "Passed",
+              "seconds": 17.46
+            }
+          ],
+          "key_output": [
+            "  arrow counts: walking arrow, parallel pair, span, cospan, square, S, cone(S), S^2, BZ/2, point = (3 4 5 5 9 8 13 18 2 1)",
+            "  Lan and Ran along BZ/2 -> point: (orbits, fixed points) of the regular and the trivial 2-element Z/2-sets = ((1 0) (2 2))",
+            "  Lan and Ran along S -> cone(S): sizes at a, b, c, d, top = ((2 2 3 3 2) (2 2 3 3 1))",
+            "PASS: triangle identity eps_{Lan G} o Lan(eta_G) = id holds for Lan along the collapse (regular and trivial Z/2-sets) and along the inclusion S -> cone(S)",
+            "  lim^n of the constant presheaf over the pseudocircle and the pseudo-2-sphere (as F_p-dimensions) = ((1 1 0) (1 0 1 0))"
+          ],
+          "output_lines": 30
         }
-      ],
-      "key_output": [
-        "  arrow counts: walking arrow, parallel pair, span, cospan, square, S, cone(S), S^2, BZ/2, point = (3 4 5 5 9 8 13 18 2 1)",
-        "  Lan and Ran along BZ/2 -> point: (orbits, fixed points) of the regular and the trivial 2-element Z/2-sets = ((1 0) (2 2))",
-        "  Lan and Ran along S -> cone(S): sizes at a, b, c, d, top = ((2 2 3 3 2) (2 2 3 3 1))",
-        "PASS: triangle identity eps_{Lan G} o Lan(eta_G) = id holds for Lan along the collapse (regular and trivial Z/2-sets) and along the inclusion S -> cone(S)",
-        "  lim^n of the constant presheaf over the pseudocircle and the pseudo-2-sphere (as F_p-dimensions) = ((1 1 0) (1 0 1 0))"
-      ],
-      "output_lines": 30
+      }
     },
     "examples/mathematics_finite_model_three_torus_gauge_theory.esk": {
       "source_sha256": "1f0b3667858417a74aceb4aace7d4ab55c4f67a23eb6d4ebfb96f130ef0cfeb1",
@@ -1235,49 +1251,65 @@
       "output_lines": 21
     },
     "examples/mathematics_homotopy_colimits_grothendieck.esk": {
-      "source_sha256": "514dd29538277472de7112382f796daf43e8ffc84b7ca0b27d4094d720d2997c",
+      "source_sha256": "b5dfc4f22bfbe205c70c3e0c020e219a7ee000a6e8e8dcdc5db84579b13b11d6",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 3.53,
-        "passed": 12,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 3.45
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 0.23,
-        "passed": 12,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 0.04,
-        "compile_exit": 0,
-        "compile_s": 8.2
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "hocolim_grothendieck_borel_jit",
-          "status": "Passed",
-          "seconds": 9.24
-        },
-        {
-          "name": "hocolim_grothendieck_borel_aot",
-          "status": "Passed",
-          "seconds": 9.42
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "514dd29538277472de7112382f796daf43e8ffc84b7ca0b27d4094d720d2997c",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 3.53,
+            "passed": 12,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 3.45
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 0.23,
+            "passed": 12,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 0.04,
+            "compile_exit": 0,
+            "compile_s": 8.2
+          },
+          "ctest": [
+            {
+              "name": "hocolim_grothendieck_borel_jit",
+              "status": "Passed",
+              "seconds": 9.24
+            },
+            {
+              "name": "hocolim_grothendieck_borel_aot",
+              "status": "Passed",
+              "seconds": 9.42
+            }
+          ],
+          "key_output": [
+            "  H^*(hocolim of pt <- S^0 -> pt) = ((0 1 ()) (1 1 ()) (2 0 ()))",
+            "  H^*(hocolim of pt <- pseudocircle -> pt) = ((0 1 ()) (1 0 ()) (2 1 ()) (3 0 ()))",
+            "  H^*(BZ/2; Z) from the action category of a point = ((0 1 ()) (1 0 ()) (2 0 (2)) (3 0 ()) (4 0 (2)))",
+            "  H^*(S^1_{hZ/2}) for the trivial action = ((0 1 ()) (1 1 ()) (2 0 (2)) (3 0 (2)))",
+            "  H^*(S^1_{hZ/2}) for the antipodal (free) action = ((0 1 ()) (1 1 ()) (2 0 ()) (3 0 ()))",
+            "  H^*(S^1_{hZ/2}) for the reflection = ((0 1 ()) (1 0 ()) (2 0 (2 2)) (3 0 ()))",
+            "PASS: the strict quotient poset of the free action is contractible, (Z, 0): the strict colimit forgets the circle the homotopy quotient keeps"
+          ],
+          "output_lines": 25
         }
-      ],
-      "key_output": [
-        "  H^*(hocolim of pt <- S^0 -> pt) = ((0 1 ()) (1 1 ()) (2 0 ()))",
-        "  H^*(hocolim of pt <- pseudocircle -> pt) = ((0 1 ()) (1 0 ()) (2 1 ()) (3 0 ()))",
-        "  H^*(BZ/2; Z) from the action category of a point = ((0 1 ()) (1 0 ()) (2 0 (2)) (3 0 ()) (4 0 (2)))",
-        "  H^*(S^1_{hZ/2}) for the trivial action = ((0 1 ()) (1 1 ()) (2 0 (2)) (3 0 (2)))",
-        "  H^*(S^1_{hZ/2}) for the antipodal (free) action = ((0 1 ()) (1 1 ()) (2 0 ()) (3 0 ()))",
-        "  H^*(S^1_{hZ/2}) for the reflection = ((0 1 ()) (1 0 ()) (2 0 (2 2)) (3 0 ()))",
-        "PASS: the strict quotient poset of the free action is contractible, (Z, 0): the strict colimit forgets the circle the homotopy quotient keeps"
-      ],
-      "output_lines": 25
+      }
     },
     "examples/mathematics_ipm_velocity_expansion.esk": {
       "source_sha256": "49c4d411d8b98fd577aedf8b2cb2e79c9fefe81ecb0e79359d19eadd603126da",
@@ -2093,45 +2125,61 @@
       "output_lines": 21
     },
     "examples/mathematics_sheafification_descent_kan.esk": {
-      "source_sha256": "72aae0f72e6bb160b435055a394c7cd2f9651f72b7d8a9ba588786d291684a49",
+      "source_sha256": "0992914a7af06d34f6db88f1b248be7ccba50a935fe1ee242c868cc127a49c0a",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 8.15,
-        "passed": 10,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 7.87
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 1.1,
-        "passed": 10,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 0.91,
-        "compile_exit": 0,
-        "compile_s": 19.43
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "cat_sheafification_descent_kan_jit",
-          "status": "Passed",
-          "seconds": 21.48
-        },
-        {
-          "name": "cat_sheafification_descent_kan_aot",
-          "status": "Passed",
-          "seconds": 26.27
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "72aae0f72e6bb160b435055a394c7cd2f9651f72b7d8a9ba588786d291684a49",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 8.15,
+            "passed": 10,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 7.87
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 1.1,
+            "passed": 10,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 0.91,
+            "compile_exit": 0,
+            "compile_s": 19.43
+          },
+          "ctest": [
+            {
+              "name": "cat_sheafification_descent_kan_jit",
+              "status": "Passed",
+              "seconds": 21.48
+            },
+            {
+              "name": "cat_sheafification_descent_kan_aot",
+              "status": "Passed",
+              "seconds": 26.27
+            }
+          ],
+          "key_output": [
+            "  pseudocircle: matching families of the constant 2-set on the top cover and on the cover of {a,b} by {a} and {b}; Cech families on the generating covers = (2 4 2 4)",
+            "  pseudocircle: sizes of const, const^+, const^{++} on the 6 opens; pi_0 of each open = ((2 2 2 2 2 2) (2 2 2 2 2 4) (2 2 2 2 2 4) (1 1 1 1 1 2))",
+            "  universal property counts (Hom(F, G), Hom(aF, G)) for G locally constant: constant F, non-separated F = ((4 4) (2 2))"
+          ],
+          "output_lines": 22
         }
-      ],
-      "key_output": [
-        "  pseudocircle: matching families of the constant 2-set on the top cover and on the cover of {a,b} by {a} and {b}; Cech families on the generating covers = (2 4 2 4)",
-        "  pseudocircle: sizes of const, const^+, const^{++} on the 6 opens; pi_0 of each open = ((2 2 2 2 2 2) (2 2 2 2 2 4) (2 2 2 2 2 4) (1 1 1 1 1 2))",
-        "  universal property counts (Hom(F, G), Hom(aF, G)) for G locally constant: constant F, non-separated F = ((4 4) (2 2))"
-      ],
-      "output_lines": 22
+      }
     },
     "examples/mathematics_stacks_nonabelian_descent.esk": {
       "source_sha256": "ec081828506dfeb2f49624d1dc0d6433da10330f60ae1e7d9a0690b00833d097",

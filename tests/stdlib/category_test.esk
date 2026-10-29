@@ -1,0 +1,318 @@
+;; core.category: exhaustive small cases with independent cross-checks
+;; (brute-force enumerations, closed forms, two library routes for the same
+;; object, and core.sheaf's own computations where they overlap).
+(require stdlib)
+(require core.category)
+(require core.sheaf.cohomology)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (count-if pred xs) (length (filter pred xs)))
+(define (range n) (iota n))
+(define (tuples k xs) (if (= k 0) (list '()) (let ((rest (tuples (- k 1) xs))) (apply append (map (lambda (x) (map (lambda (t) (cons x t)) rest)) xs)))))
+(define (dedup xs) (let loop ((l xs) (acc '())) (cond ((null? l) (reverse acc)) ((member (car l) acc) (loop (cdr l) acc)) (else (loop (cdr l) (cons (car l) acc))))))
+(define (poset n leq?) (poset-category n leq?))
+(define (from-covers n covers) (let ((X (make-finite-space n covers))) (poset n (lambda (x y) (finite-space-leq? X x y)))))
+
+;; ---------------------------------------------------------------------------
+;; Finite categories
+;; ---------------------------------------------------------------------------
+(define W (walking-arrow-category))
+(define PP (parallel-pair-category))
+(define Sq (commutative-square-category))
+(define BZ2 (cyclic-group-category 2)) (define BZ3 (cyclic-group-category 3)) (define BZ4 (cyclic-group-category 4))
+(define S (from-covers 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define Chain3 (poset 3 (lambda (x y) (<= x y))))
+(define Bool2 (poset 4 (lambda (x y) (= x (bitwise-and x y)))))        ;; subsets of {0,1} under inclusion
+(define one (terminal-category))
+(define cats (list W PP (span-category) (cospan-category) Sq BZ2 BZ3 BZ4 S Chain3 Bool2 one (discrete-category 3)))
+(check "shapes: arrow counts and the category laws"
+       (and (equal? (map category-arrow-count cats) (list 3 4 5 5 9 2 3 4 8 6 9 1 3)) (all? category-laws? cats)))
+(check "products: |ob| and |ar| multiply, laws hold, projections are functors"
+       (all? (lambda (CD) (let* ((C (car CD)) (D (cdr CD)) (P (category-product C D)))
+                            (and (= (category-object-count P) (* (category-object-count C) (category-object-count D)))
+                                 (= (category-arrow-count P) (* (category-arrow-count C) (category-arrow-count D)))
+                                 (category-laws? P) (all? functor-laws? (product-projections C D P)))))
+             (list (cons W W) (cons BZ2 W) (cons Sq BZ3) (cons S BZ2))))
+(check "coproducts: counts add, laws hold, no arrows between the summands"
+       (let ((P (category-coproduct W BZ3)))
+         (and (= 3 (category-object-count P)) (= 6 (category-arrow-count P)) (category-laws? P)
+              (null? (category-hom P 0 2)) (null? (category-hom P 2 1)))))
+(check "full subcategories: of the square on {0, 3} has one non-identity arrow, of S on the maxima is discrete"
+       (let ((A (category-full-subcategory Sq (list 0 3))) (B (category-full-subcategory S (list 2 3))))
+         (and (= 3 (category-arrow-count A)) (category-laws? A) (= 2 (category-arrow-count B)))))
+(check "groupoids, isomorphisms, initial and terminal objects"
+       (and (category-groupoid? BZ3) (category-groupoid? (discrete-category 2)) (not (category-groupoid? W))
+            (equal? (category-initial-objects W) (list 0)) (equal? (category-terminal-objects W) (list 1))
+            (equal? (category-initial-objects Sq) (list 0)) (equal? (category-terminal-objects Sq) (list 3))
+            (null? (category-terminal-objects BZ2)) (null? (category-terminal-objects S))
+            (= 1 (category-inverse BZ2 1)) (= 1 (category-inverse BZ3 2))))
+;; nerve: the number of k-chains of non-identity arrows by brute force over arrow tuples
+(define (brute-nerve C k)
+  (let ((nonid (filter (lambda (a) (not (category-identity? C a))) (category-arrow-list C))))
+    (count-if (lambda (t) (let loop ((l t)) (or (null? l) (null? (cdr l)) (and (= (arrow-target C (car l)) (arrow-source C (cadr l))) (loop (cdr l))))))
+              (tuples k nonid))))
+(check "nerve: simplex counts equal brute-force chain counts (k = 1..3) on six categories"
+       (all? (lambda (C) (all? (lambda (k) (= (length (category-nerve C k)) (brute-nerve C k))) (list 1 2 3))) (list W Sq BZ2 BZ3 S Bool2)))
+(check "nerve cohomology: B(Z/2) = (Z, 0, Z/2, 0, Z/2), B(Z/3) = (Z, 0, Z/3, 0), the pseudocircle (Z, Z), contractible shapes"
+       (and (equal? (category-nerve-cohomology BZ2 4) (list (list 0 1 '()) (list 1 0 '()) (list 2 0 (list 2)) (list 3 0 '()) (list 4 0 (list 2))))
+            (equal? (category-nerve-cohomology BZ3 3) (list (list 0 1 '()) (list 1 0 '()) (list 2 0 (list 3)) (list 3 0 '())))
+            (equal? (category-nerve-cohomology S 2) (list (list 0 1 '()) (list 1 1 '()) (list 2 0 '())))
+            (all? (lambda (C) (equal? (map cadr (category-nerve-cohomology C 2)) (list 1 0 0))) (list W Sq Chain3 Bool2))
+            (equal? (map cadr (category-nerve-cohomology (discrete-category 3) 1)) (list 3 0))))
+
+;; ---------------------------------------------------------------------------
+;; Functors and natural transformations
+;; ---------------------------------------------------------------------------
+(check "functors from 1, from 1 + 1 and from the walking arrow into C number |ob C|, |ob C|^2 and |ar C|"
+       (all? (lambda (C) (and (= (length (functors-between one C)) (category-object-count C))
+                              (= (length (functors-between (discrete-category 2) C)) (expt (category-object-count C) 2))
+                              (= (length (functors-between W C)) (category-arrow-count C))))
+             (list W Sq BZ3 S Chain3)))
+(check "functors between groups are homomorphisms: Z/2 -> Z/2 two, Z/2 -> Z/3 one, Z/4 -> Z/2 two, Z/3 -> Z/3 three"
+       (equal? (map (lambda (p) (length (functors-between (car p) (cdr p)))) (list (cons BZ2 BZ2) (cons BZ2 BZ3) (cons BZ4 BZ2) (cons BZ3 BZ3))) (list 2 1 2 3)))
+(check "every enumerated functor passes the laws; a non-functor is caught"
+       (and (all? functor-laws? (functors-between Sq Chain3))
+            (not (functor-laws? (make-functor BZ2 BZ3 (list 0) (list 0 1))))))
+(define FC (functor-category W Sq))
+(check "[2, C] is the arrow category: objects the arrows of C, the category laws hold"
+       (and (= (category-object-count FC) (category-arrow-count Sq)) (category-laws? FC)
+            (= (category-object-count (functor-category W Chain3)) 6) (category-laws? (functor-category Chain3 W))))
+;; natural transformations between functors into a poset exist exactly when F <= G pointwise
+(check "natural transformations: into a poset exactly when F <= G pointwise; identity and composition laws"
+       (let ((fs (functors-between W Chain3)))
+         (all? (lambda (F) (all? (lambda (G) (let ((n (length (natural-transformations F G)))
+                                                   (le (all? (lambda (c) (<= (functor-object F c) (functor-object G c))) (list 0 1))))
+                                               (= n (if le 1 0))))
+                                 fs))
+               fs)))
+(check "horizontal composition obeys the interchange law on BZ/3 -> BZ/3 -> BZ/3"
+       (let* ((fs (functors-between BZ3 BZ3)) (F (car fs)) (G (cadr fs))
+              (as (natural-transformations F F)) (bs (natural-transformations G G)))
+         (all? (lambda (a1) (all? (lambda (a2) (all? (lambda (b1) (all? (lambda (b2)
+                  (equal? (horizontal-compose (transformation-compose BZ3 b2 b1) (transformation-compose BZ3 a2 a1) F F G G)
+                          (transformation-compose BZ3 (horizontal-compose b2 a2 F F G G) (horizontal-compose b1 a1 F F G G))))
+                  bs)) bs)) as)) as)))
+(check "comma categories: C / c has the arrows into c as objects and id_c terminal; c / C has id_c initial"
+       (all? (lambda (C) (all? (lambda (c) (let ((sl (slice-category C c)) (co (coslice-category C c)))
+                                             (and (= (category-object-count sl) (length (category-arrows-into C c))) (category-laws? sl)
+                                                  (memv (category-object-of-label sl (list c 0 (category-identity C c))) (category-terminal-objects sl))
+                                                  (memv (category-object-of-label co (list 0 c (category-identity C c))) (category-initial-objects co))
+                                                  ;; in a group every object of the slice is terminal; in a poset only id_c
+                                                  (= (length (category-terminal-objects sl)) (if (category-groupoid? C) (category-object-count sl) 1)))))
+                               (category-object-list C)))
+             (list Sq BZ3 S)))
+(define two-points (discrete-category 2))
+(define point-diagram (make-category-diagram S (map (lambda (c) (if (< c 2) one two-points)) (range 4))
+                                             (map (lambda (a) (let ((x (arrow-source S a)) (y (arrow-target S a)))
+                                                                (cond ((= x y) (identity-functor (if (< x 2) one two-points)))
+                                                                      (else (make-functor one two-points (list x) (list x))))))
+                                                  (category-arrow-list S))))
+(check "Grothendieck construction of a diagram of discrete categories is the category of elements"
+       (let* ((G (grothendieck-construction point-diagram))
+              (X (make-set-functor-from-indices S (map (lambda (c) (if (< c 2) (list 0) (list 0 1))) (range 4))
+                                                (map (lambda (a) (if (= (arrow-source S a) (arrow-target S a)) (if (< (arrow-source S a) 2) (vector 0) (vector 0 1)) (vector (arrow-source S a))))
+                                                     (category-arrow-list S))))
+              (E (elements-category X)))
+         (and (null? (category-diagram-violations point-diagram)) (category-laws? G)
+              (= (category-object-count G) (category-object-count E)) (= (category-arrow-count G) (category-arrow-count E))
+              (discrete-opfibration? (grothendieck-projection point-diagram G)))))
+
+;; ---------------------------------------------------------------------------
+;; Adjunctions and monads
+;; ---------------------------------------------------------------------------
+;; for posets L -| R iff L c <= d <=> c <= R d; every monotone pair is tested
+(define (poset-adjoint? L R)
+  (let ((C (functor-source L)) (D (functor-target L)))
+    (all? (lambda (c) (all? (lambda (d) (eq? (pair? (category-hom D (functor-object L c) d)) (pair? (category-hom C c (functor-object R d)))))
+                            (category-object-list D)))
+          (category-object-list C))))
+(check "right adjoints found through comma categories are exactly the Galois partners (exhaustive over monotone maps 3 -> 3 and 2x2 -> 3)"
+       (all? (lambda (pair)
+               (let ((C (car pair)) (D (cdr pair)))
+                 (all? (lambda (L)
+                         (let ((A (right-adjoint L)) (partners (filter (lambda (R) (poset-adjoint? L R)) (functors-between D C))))
+                           (if A (and (null? (adjunction-violations A)) (null? (adjunction-hom-bijection-violations A))
+                                      (= 1 (length partners)) (functor-equal? (car partners) (adjunction-right A)))
+                               (null? partners))))
+                       (functors-between C D))))
+             (list (cons Chain3 Chain3) (cons Bool2 Chain3) (cons W Bool2))))
+(check "left adjoints dually; the diagonal 2x2 -> 2x2 x 2x2 has meet as right adjoint and join as left adjoint"
+       (let* ((P (category-product Bool2 Bool2))
+              (diag (functor-from-procedures Bool2 P (lambda (x) (category-product-object Bool2 Bool2 x x)) (lambda (a) (category-product-arrow Bool2 Bool2 a a))))
+              (R (right-adjoint diag)) (L (left-adjoint diag)))
+         (and R L (null? (adjunction-violations R)) (null? (adjunction-violations L))
+              (equal? (vector->list (functor-objects (adjunction-right R))) (map (lambda (o) (bitwise-and (quotient o 4) (remainder o 4))) (range 16)))
+              (equal? (vector->list (functor-objects (adjunction-left L))) (map (lambda (o) (bitwise-or (quotient o 4) (remainder o 4))) (range 16))))))
+(check "a group with no terminal object: the collapse BZ/2 -> 1 has no right adjoint and no left adjoint"
+       (and (not (right-adjoint (terminal-functor BZ2))) (not (left-adjoint (terminal-functor BZ2)))))
+(check "a broken triangle identity is reported: on BZ/3 with unit 1 and counit 0 both triangles fail"
+       (equal? (adjunction-violations (make-adjunction (identity-functor BZ3) (identity-functor BZ3) (vector 1) (vector 0)))
+               (list (list 'triangle-left 0) (list 'triangle-right 0))))
+(check "monads from adjunctions: the laws hold, and the algebras of a closure operator are its fixed points"
+       (all? (lambda (L) (let ((A (right-adjoint L)))
+                           (or (not A)
+                               (let* ((M (adjunction-monad A)) (T (monad-functor M)))
+                                 (and (null? (monad-laws-violations M))
+                                      (= (length (monad-algebras M)) (count-if (lambda (c) (= c (functor-object T c))) (category-object-list (monad-category M)))))))))
+             (functors-between Bool2 Chain3)))
+
+;; ---------------------------------------------------------------------------
+;; Set-valued functors: limits, colimits, ends, coends, Yoneda, Kan extensions
+;; ---------------------------------------------------------------------------
+(define A3 (list 'a0 'a1 'a2)) (define B2 (list 'b0 'b1))
+(define (brute-coequalizer f g nb)                  ;; classes of b under b ~ b' generated by f a ~ g a
+  (let loop ((cls (map list (range nb))))
+    (let ((merged (let find ((ps (map cons (vector->list f) (vector->list g))))
+                    (if (null? ps) #f
+                        (let* ((x (car (car ps))) (y (cdr (car ps)))
+                               (cx (car (filter (lambda (c) (memv x c)) cls))) (cy (car (filter (lambda (c) (memv y c)) cls))))
+                          (if (eq? cx cy) (find (cdr ps)) (cons cx cy)))))))
+      (if merged (loop (cons (append (car merged) (cdr merged)) (filter (lambda (c) (not (or (eq? c (car merged)) (eq? c (cdr merged))))) cls))) (length cls)))))
+(check "equalizers and coequalizers of every pair f, g : 3 -> 2 against direct counts"
+       (all? (lambda (f) (all? (lambda (g)
+                                 (let ((X (make-set-functor-from-names PP (list A3 B2) (list (cons (list 0) (list->vector f)) (cons (list 1) (list->vector g))))))
+                                   (and (= (set-limit-size X) (count-if (lambda (i) (= (list-ref f i) (list-ref g i))) (range 3)))
+                                        (= (set-colimit-size (set-colimit X)) (brute-coequalizer (list->vector f) (list->vector g) 2)))))
+                               (tuples 3 (range 2))))
+             (tuples 3 (range 2))))
+(check "pullbacks of every pair 3 -> 2 <- 2 against direct counts; cones from k-element sets number |lim|^k"
+       (all? (lambda (l) (all? (lambda (r)
+                                 (let ((X (make-set-functor-from-names (cospan-category) (list B2 A3 B2) (list (cons (list 0) (list->vector l)) (cons (list 1) (list->vector r))))))
+                                   (and (= (set-limit-size X) (apply + (map (lambda (a) (count-if (lambda (b) (= (list-ref l a) (list-ref r b))) (range 2))) (range 3))))
+                                        (all? (lambda (k) (= (set-cone-count X k) (expt (set-limit-size X) k))) (list 0 1 2)))))
+                               (tuples 2 (range 2))))
+             (tuples 3 (range 2))))
+;; Z/2-sets on {0, 1, 2}: the involutions
+(define involutions (filter (lambda (p) (all? (lambda (i) (= i (list-ref p (list-ref p i)))) (range 3))) (tuples 3 (range 3))))
+(define (z2-set p) (make-set-functor-from-names BZ2 (list (list 'x 'y 'z)) (list (cons 1 (list->vector p)))))
+(define collapse (terminal-functor BZ2))
+(check "along BZ/2 -> 1: Lan = orbits and Ran = fixed points for all four involutions of a 3-set, by both formulas"
+       (all? (lambda (p) (let* ((X (z2-set p)) (fixed (count-if (lambda (i) (= i (list-ref p i))) (range 3))) (orbits (/ (+ 3 fixed) 2)))
+                           (and (equal? (set-functor-sizes (set-lan collapse X)) (list orbits)) (equal? (set-functor-sizes (set-lan-coend collapse X)) (list orbits))
+                                (equal? (set-functor-sizes (set-ran collapse X)) (list fixed)) (equal? (set-functor-sizes (set-ran-end collapse X)) (list fixed))
+                                (= orbits (set-colimit-size (set-colimit X))) (= fixed (set-limit-size X)))))
+             involutions))
+(define ConeS (from-covers 5 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4))))
+(define incl (functor-from-procedures S ConeS (lambda (x) x) (lambda (a) (category-thin-arrow ConeS (arrow-source S a) (arrow-target S a)))))
+(define G-S (make-set-functor-from-indices S (list (list 'a0 'a1) (list 'b0 'b1) (list 'c0 'c1 'c2) (list 'd0 'd1 'd2))
+                                           (map (lambda (a) (let ((x (arrow-source S a)) (y (arrow-target S a)))
+                                                              (cond ((= x y) (list->vector (range (if (< x 2) 2 3)))) ((and (= x 0) (= y 2)) (vector 0 1))
+                                                                    ((and (= x 1) (= y 2)) (vector 1 2)) ((and (= x 0) (= y 3)) (vector 0 2)) (else (vector 1 2)))))
+                                                (category-arrow-list S))))
+(define into-square (functor-from-procedures W Sq (lambda (x) x) (lambda (a) (if (category-identity? W a) (category-identity Sq (arrow-source W a)) (category-arrow-named Sq (list 0))))))
+(define G-arrow (make-set-functor-from-names W (list (list 'x0 'x1 'x2) (list 'y0 'y1)) (list (cons (list 0) (vector 0 1 1)))))
+(define kan-cases (list (cons collapse (z2-set (list 1 0 2))) (cons incl G-S) (cons into-square G-arrow)))
+(check "the pointwise and (co)end formulas agree: the comparison maps are natural isomorphisms"
+       (all? (lambda (fg) (let ((F (car fg)) (G (cdr fg)))
+                            (and (set-natural-isomorphism? (set-lan F G) (set-lan-coend F G) (set-lan-comparison F G))
+                                 (set-natural-isomorphism? (set-ran F G) (set-ran-end F G) (set-ran-comparison F G)))))
+             kan-cases))
+(check "Lan -| F^* -| Ran: units and counits natural and all four triangle identities, on three functors"
+       (all? (lambda (fg) (let ((F (car fg)) (G (cdr fg)))
+                            (and (null? (set-lan-adjunction-violations F G (set-lan F G))) (null? (set-ran-adjunction-violations F (set-ran F G) G))
+                                 (set-functor-functorial? (set-lan F G)) (set-functor-functorial? (set-ran F G)))))
+             kan-cases))
+(check "along a fully faithful functor the unit of Lan and the counit of Ran are isomorphisms; along the identity both extensions are G"
+       (and (set-natural-isomorphism? G-S (set-functor-restrict (set-lan incl G-S) incl) (set-lan-unit incl G-S))
+            (set-natural-isomorphism? (set-functor-restrict (set-ran incl G-S) incl) G-S (set-ran-counit incl G-S))
+            (equal? (set-functor-sizes (set-lan (identity-functor S) G-S)) (set-functor-sizes G-S))
+            (equal? (set-functor-sizes (set-ran (identity-functor S) G-S)) (set-functor-sizes G-S))))
+;; natural transformations three ways: the propagating search, the end formula and brute force
+(define (brute-nat X Y)
+  (let ((C (set-functor-category X)))
+    (count-if (lambda (comps) (set-natural? X Y (list->vector (map list->vector comps))))
+              (let loop ((cs (reverse (category-object-list C))) (acc (list '())))
+                (if (null? cs) acc
+                    (loop (cdr cs) (apply append (map (lambda (f) (map (lambda (r) (cons f r)) acc))
+                                                      (tuples (set-functor-element-count X (car cs)) (range (set-functor-element-count Y (car cs))))))))))))
+(define small-functors (list G-arrow (corepresentable-set-functor W 0) (corepresentable-set-functor W 1) (constant-set-functor W (list 'p 'q))))
+(check "natural transformations: search = end formula = brute force on all ordered pairs of four functors on the walking arrow"
+       (all? (lambda (X) (all? (lambda (Y) (let ((n (set-natural-transformation-count X Y)))
+                                             (and (= n (length (set-natural-transformations X Y))) (= n (length (set-natural-transformations-end X Y))) (= n (brute-nat X Y))
+                                                  (all? (lambda (eta) (set-natural? X Y eta)) (set-natural-transformations X Y)))))
+                               small-functors))
+             small-functors))
+(check "Yoneda, counted and explicit, for every functor above and every object, and for Z/3-sets"
+       (and (all? (lambda (X) (all? (lambda (c) (null? (yoneda-violations X c))) (range 2))) small-functors)
+            (null? (yoneda-violations (make-set-functor-from-names BZ3 (list (list 0 1 2 3)) (list (cons 1 (vector 1 2 0 3)) (cons 2 (vector 2 0 1 3)))) 0))))
+(check "the Yoneda embedding is fully faithful: |Nat(y c, y d)| = |C(c, d)| on the square and on BZ/3"
+       (all? (lambda (C) (all? (lambda (c) (all? (lambda (d) (= (length (category-hom C c d))
+                                                                 (set-natural-transformation-count (corepresentable-set-functor (category-opposite C) c) (corepresentable-set-functor (category-opposite C) d))))
+                                                 (category-object-list C)))
+                               (category-object-list C)))
+             (list Sq BZ3)))
+(check "presheaf Yoneda on the site of the pseudocircle: Nat(y U, F) ~ F(U) for the constant presheaf and a representable"
+       (let* ((site (finite-space-site (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))) (C (site-category site))
+              (F (constant-set-presheaf C (list 'p 'q))) (Y (representable-presheaf C 3)))
+         (all? (lambda (c) (and (null? (presheaf-yoneda-violations F c)) (null? (presheaf-yoneda-violations Y c)))) (category-object-list C))))
+(check "co-Yoneda: int^c C(c, -) x X(c) recovers X, for X on the walking arrow, the square and the pseudocircle"
+       (all? (lambda (X) (let ((C (set-functor-category X)))
+                           (and (equal? (set-functor-sizes (set-lan-coend (identity-functor C) X)) (set-functor-sizes X))
+                                (set-natural-isomorphism? (set-lan (identity-functor C) X) (set-lan-coend (identity-functor C) X) (set-lan-comparison (identity-functor C) X)))))
+             (list G-arrow G-S (set-lan into-square G-arrow))))
+(check "categories of elements: object and arrow counts, discrete opfibration and fibration"
+       (let* ((E (elements-category G-S)) (F (constant-set-presheaf S (list 0 1))) (EF (presheaf-elements-category F)))
+         (and (= 10 (category-object-count E)) (= 18 (category-arrow-count E)) (category-laws? E) (discrete-opfibration? (elements-projection G-S E))
+              (= 8 (category-object-count EF)) (category-laws? EF) (discrete-fibration? (presheaf-elements-projection F EF))
+              (not (discrete-fibration? (elements-projection G-S E))))))
+
+;; ---------------------------------------------------------------------------
+;; Linear diagrams
+;; ---------------------------------------------------------------------------
+(define (rank1 C ring m) (make-module-presheaf C ring (lambda (c) 1) (lambda (a) (if (category-identity? C a) #f (vector (vector (m a)))))))
+(define sign (rank1 BZ2 'Z (lambda (a) -1)))
+(define triv2 (rank1 BZ2 'Z (lambda (a) 1)))
+(check "limits and colimits: constant Z over connected categories (1, 1), over three points (3, 3); sign invariants 0, coinvariants Z/2 over Z and 0 over Q"
+       (and (all? (lambda (C) (let ((F (constant-module-presheaf C 'Z 1))) (and (= 1 (module-limit-rank (module-presheaf-limit F))) (= 1 (module-colimit-rank (module-presheaf-colimit F))))))
+                  (list W Sq S BZ3))
+            (= 3 (module-limit-rank (module-presheaf-limit (constant-module-presheaf (discrete-category 3) 'Z 1))))
+            (= 3 (module-colimit-rank (module-presheaf-colimit (constant-module-presheaf (discrete-category 3) 'Z 1))))
+            (= 0 (module-limit-rank (module-presheaf-limit sign)))
+            (equal? (list 0 (list 2)) (let ((K (module-presheaf-colimit sign))) (list (module-colimit-rank K) (module-colimit-torsion K))))
+            (= 0 (module-colimit-rank (module-presheaf-colimit (rank1 BZ2 'Q (lambda (a) -1)))))))
+(check "the limit of the regular representation Z[Z/3] is the invariants Z, its colimit the coinvariants Z"
+       (let ((R (make-module-presheaf BZ3 'Z (lambda (c) 3) (lambda (a) (if (= a 0) #f (if (= a 1) (vector (vector 0 0 1) (vector 1 0 0) (vector 0 1 0)) (vector (vector 0 1 0) (vector 0 0 1) (vector 1 0 0))))))))
+         (and (module-presheaf-functorial? R) (= 1 (module-limit-rank (module-presheaf-limit R))) (= 1 (module-colimit-rank (module-presheaf-colimit R)))
+              (null? (module-colimit-torsion (module-presheaf-colimit R))))))
+(check "derived limits over BG are group cohomology: H^*(Z/2; Z) = (Z, 0, Z/2, 0, Z/2), with the sign module (0, Z/2, 0, Z/2, 0), over Q (1, 0, 0)"
+       (and (equal? (module-presheaf-derived-limits triv2 4) (category-nerve-cohomology BZ2 4))
+            (equal? (module-presheaf-derived-limits sign 4) (list (list 0 0 '()) (list 1 0 (list 2)) (list 2 0 '()) (list 3 0 (list 2)) (list 4 0 '())))
+            (equal? (map cadr (module-presheaf-derived-limits (rank1 BZ2 'Q (lambda (a) 1)) 2)) (list 1 0 0))
+            (equal? (module-presheaf-derived-limits (rank1 BZ3 'Z (lambda (a) 1)) 3) (category-nerve-cohomology BZ3 3))))
+(check "derived limits over a poset agree with core.sheaf's derived limits, for the constant and the twisted pseudocircle"
+       (let* ((X (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+              (tw (lambda (x y) (if (and (= x 3) (= y 1)) -1 1))))
+         (all? (lambda (m) (equal? (module-presheaf-derived-limits (poset-module->point-presheaf (poset-local-system X m)) 2)
+                                   (poset-module-cohomology (poset-local-system X m) 2)))
+               (list (lambda (x y) 1) tw))))
+(check "lim^0 is the limit; hypercohomology of the identity is 0 and of the zero map is H (+) H[-1]"
+       (let* ((F (poset-module->point-presheaf (constant-poset-module (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))))
+              (Hs (module-presheaf-derived-limits F 2)))
+         (and (= (cadr (car Hs)) (module-limit-rank (module-presheaf-limit F)))
+              (equal? (map cadr (module-presheaf-map-hypercohomology F F (make-vector 4 (vector (vector 1))) 2)) (list 0 0 0))
+              (equal? (map cadr (module-presheaf-map-hypercohomology F F (make-vector 4 (vector (vector 0))) 2)) (list 1 2 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Descent on a non-thin site
+;; ---------------------------------------------------------------------------
+(check "on BZ/2 with the maximal-sieve topology: Match(S, X) = lim over the sieve category = X(*), the Cech equalizer of {e} is X(*)"
+       (let* ((F (set-functor->presheaf (z2-set (list 1 0 2)) (category-opposite BZ2)))
+              (Cs (presheaf-category F)) (S (sieve-maximal Cs 0)))
+         (and (null? (sieve-descent-violations F 0 S)) (= 3 (length (sieve-matching-limit F 0 S)))
+              (null? (cech-descent-violations F 0 (list (category-identity Cs 0)))) (= 3 (length (cech-equalizer F 0 (list 1)))))))
+(check "dense topology on the walking arrow: the sheaf condition by limits agrees with core.sheaf for every presheaf with sets of size <= 2"
+       (let* ((site (dense-site W)))
+         (all? (lambda (sizes) (all? (lambda (m)
+                                       (let ((F (make-set-presheaf-from-indices W (map (lambda (k) (range k)) sizes) (list (list->vector (range (car sizes))) (list->vector (range (cadr sizes))) (list->vector m)))))
+                                         (equal? (presheaf-sheaf-violations site F) (presheaf-sheaf-violations-by-limit site F))))
+                                     (tuples (cadr sizes) (range (car sizes)))))
+               (list (list 1 1) (list 1 2) (list 2 1) (list 2 2)))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: category_test") (newline) (display "RESULT: PASS") (newline)

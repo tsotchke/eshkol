@@ -16,7 +16,7 @@ sources:
 
 **49 programs**, each reproducing a published or classical result by computation. Exact finite constructions, bilinear/polynomial identity certificates, finite formal expansions and numerical comparisons have different scopes, stated per entry under **Arithmetic** and **Limits**.
 
-Measurement snapshot for these 49 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **42** completed in both modes; **41** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 1 prints diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Not run:** [Exact a-posteriori linear solve admission](#mathematics-certified-linear-solve), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator), [Integral plus construction on a finite site](#mathematics-finite-site-sheafification), [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
+Measurement snapshot for these 49 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **39** completed in both modes; **38** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 1 prints diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Not run:** [Exact a-posteriori linear solve admission](#mathematics-certified-linear-solve), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator), [Finite categories and Kan extensions](#mathematics-finite-categories-kan-extensions), [Integral plus construction on a finite site](#mathematics-finite-site-sheafification), [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology), [Grothendieck constructions and homotopy colimits](#mathematics-homotopy-colimits-grothendieck), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
 
 Each entry gives: the published result being reproduced and its references; what the program computes and by which algorithm; the domain and parameters; the arithmetic and its scope; the checks the source asserts; the honest limits; and the measured outcome at the release SHA with the computed values that matter, quoted verbatim from the program's output. A reference marked *as cited in the program's source comments* is taken from the program header; *(citation unverified)* marks one whose bibliographic details could not be confirmed.
 
@@ -48,7 +48,7 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator) | NOT-RUN / NOT-RUN | general runner only |
 | [Descent double complexes and hypercohomology](#mathematics-descent-hypercohomology) | PASS / PASS | `sheaf_descent_hypercohomology` |
 | [Fermat Hodge and linear-cycle sweep](#mathematics-fermat-hodge-classes-sweep) | PASS / PASS | `hodge_fermat_sweep_default` |
-| [Finite categories and Kan extensions](#mathematics-finite-categories-kan-extensions) | PASS / PASS | `cat_finite_categories_kan` |
+| [Finite categories and Kan extensions](#mathematics-finite-categories-kan-extensions) | NOT-RUN / NOT-RUN | `cat_finite_categories_kan` |
 | [Dijkgraaf–Witten on a finite three-torus](#mathematics-finite-model-three-torus-gauge-theory) | PASS / PASS | `dw_finite_model_three_torus` |
 | [Integral plus construction on a finite site](#mathematics-finite-site-sheafification) | NOT-RUN / NOT-RUN | `sheaf_finite_site_sheafification` |
 | [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology) | NOT-RUN / NOT-RUN | `sheaf_finite_spaces_cech_descent` |
@@ -57,7 +57,7 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Integral homology and twists of order-eight groups](#mathematics-group-cohomology-order-eight) | PASS / PASS | `dw_group_cohomology_order_eight` |
 | [Parametric finite-group homology receipts](#mathematics-group-cohomology-sweep) | RAN-OK / RAN-OK | general runner only |
 | [Exhibited cycles on the Fermat quartic fourfold](#mathematics-hodge-classes-fermat-quartic-fourfold) | PASS / PASS | `hodge_fermat_quartic_fourfold` |
-| [Grothendieck constructions and homotopy colimits](#mathematics-homotopy-colimits-grothendieck) | PASS / PASS | `hocolim_grothendieck_borel` |
+| [Grothendieck constructions and homotopy colimits](#mathematics-homotopy-colimits-grothendieck) | NOT-RUN / NOT-RUN | `hocolim_grothendieck_borel` |
 | [Local oscillatory IPM velocity expansion](#mathematics-ipm-velocity-expansion) | PASS / PASS | `ipm_velocity_expansion_closes` |
 | [Polynomial Jacobian map and fibers](#mathematics-jacobian-counterexample) | PASS / PASS | `jacobian_counterexample_fibers` |
 | [Horn fillers and low homotopy groups](#mathematics-kan-complexes-horns) | PASS / PASS | `hocolim_kan_complexes_horns` |
@@ -76,7 +76,7 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Admissible stress cone and profile tests](#mathematics-navier-stokes-stress-cone) | PASS / PASS | `ns_cone_condition_equivalence` |
 | [Viscosity rescaling of an AD residual](#mathematics-navier-stokes-viscosity-scaling) | PASS / PASS | `ns_viscosity_scaling_exact` |
 | [Internal logic of finite presheaf categories](#mathematics-presheaf-topos-internal-logic) | PASS / PASS | `cat_presheaf_topos_internal_logic` |
-| [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan) | PASS / PASS | `cat_sheafification_descent_kan` |
+| [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan) | NOT-RUN / NOT-RUN | `cat_sheafification_descent_kan` |
 | [Torsors and nonabelian descent on finite spaces](#mathematics-stacks-nonabelian-descent) | PASS / PASS | `stacks_nonabelian_descent` |
 | [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) | NOT-RUN / NOT-RUN | `tv_turaev_viro_cyclotomic` |
 | [Cech nerves and 2-descent](#mathematics-two-descent-cech-nerves) | PASS / PASS | `descent_two_descent_cech_nerves` |
@@ -739,7 +739,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Finite categories and Kan extensions
 
-Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathematics_finite_categories_kan_extensions.esk#L1). SHA-256: `d04c60d9390806909c63b23ddbb572074f467f00f796246942972bf33c88e117`.
+Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathematics_finite_categories_kan_extensions.esk#L1). SHA-256: `ab420b6534cea349818eaede88085606ec74d54de68432c6ec43b20ccad9c77a`.
 
 **Published result:** The pointwise formulas for Kan extensions, Lan_F G(d) = colim over (c, Fc → d) of Gc and Ran_F G(d) = lim over (c, d → Fc) of Gc (Mac Lane X.3; Riehl §6.2), the unit/counit triangle identities of the adjunction Lan ⊣ F*, the Grothendieck construction of a presheaf of sets as a discrete fibration, and lim^n over a poset as the right derived functors of lim (Weibel §2.6). The program builds small categories from presentations and checks each statement on them.
 
@@ -754,7 +754,7 @@ Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathemati
 
 **Purpose:** Make finite categorical constructions explicit and test their universal-property comparisons.
 
-**Implemented algorithm:** Enumerate presented arrows/composites, functors, natural transformations, limits/colimits, comma-category Kan extensions and categories of elements.
+**Implemented algorithm:** Build presented categories, functors, comma categories, limits, colimits, pointwise Kan extensions with their units and counits, categories of elements and nerves with core.category, and compare derived limits with core.sheaf.
 
 **Domain and parameters:** Walking arrow, commutative square, pseudocircle/cone diagrams and Z/2 sets; finite derived-limit examples.
 
@@ -764,21 +764,11 @@ Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathemati
 
 **Limits:** The source explicitly obtains a discrete opfibration for its covariant element construction; do not automatically relabel it a contravariant fibration. Presentation rewriting and universal-property claims are restricted to the supplied categories.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 19, Failed: 0; 5.56 s); native AOT **PASS** (Passed: 19, Failed: 0; compile 15.9 s, run 0.25 s). CTest: `cat_finite_categories_kan_jit` Passed (18.9 s), `cat_finite_categories_kan_aot` Passed (17.5 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  arrow counts: walking arrow, parallel pair, span, cospan, square, S, cone(S), S^2, BZ/2, point = (3 4 5 5 9 8 13 18 2 1)
-  Lan and Ran along BZ/2 -> point: (orbits, fixed points) of the regular and the trivial 2-element Z/2-sets = ((1 0) (2 2))
-  Lan and Ran along S -> cone(S): sizes at a, b, c, d, top = ((2 2 3 3 2) (2 2 3 3 1))
-PASS: triangle identity eps_{Lan G} o Lan(eta_G) = id holds for Lan along the collapse (regular and trivial Z/2-sets) and along the inclusion S -> cone(S)
-  lim^n of the constant presheaf over the pseudocircle and the pseudo-2-sphere (as F_p-dimensions) = ((1 1 0) (1 0 1 0))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_finite_categories_kan_extensions.esk#L1), [line 78](../examples/mathematics_finite_categories_kan_extensions.esk#L78), [line 79](../examples/mathematics_finite_categories_kan_extensions.esk#L79), [line 447](../examples/mathematics_finite_categories_kan_extensions.esk#L447), [line 493](../examples/mathematics_finite_categories_kan_extensions.esk#L493), [line 495](../examples/mathematics_finite_categories_kan_extensions.esk#L495).
+Implementation/check anchors: [line 1](../examples/mathematics_finite_categories_kan_extensions.esk#L1), [line 61](../examples/mathematics_finite_categories_kan_extensions.esk#L61), [line 176](../examples/mathematics_finite_categories_kan_extensions.esk#L176), [line 189](../examples/mathematics_finite_categories_kan_extensions.esk#L189), [line 194](../examples/mathematics_finite_categories_kan_extensions.esk#L194).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -1166,7 +1156,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Grothendieck constructions and homotopy colimits
 
-Source: [mathematics_homotopy_colimits_grothendieck.esk](../examples/mathematics_homotopy_colimits_grothendieck.esk#L1). SHA-256: `514dd29538277472de7112382f796daf43e8ffc84b7ca0b27d4094d720d2997c`.
+Source: [mathematics_homotopy_colimits_grothendieck.esk](../examples/mathematics_homotopy_colimits_grothendieck.esk#L1). SHA-256: `b5dfc4f22bfbe205c70c3e0c020e219a7ee000a6e8e8dcdc5db84579b13b11d6`.
 
 **Published result:** Thomason (1979): the nerve of the Grothendieck construction of a diagram of small categories is weakly equivalent to the homotopy colimit of their nerves. For a group acting on a space, the homotopy colimit over the one-object category is the Borel construction X_hG (Brown VII.7). The program computes suspensions and homotopy quotients of the pseudocircle this way and contrasts them with the strict colimits, which lose the topology.
 
@@ -1179,7 +1169,7 @@ Source: [mathematics_homotopy_colimits_grothendieck.esk](../examples/mathematics
 
 **Purpose:** Contrast homotopy constructions with strict colimits.
 
-**Implemented algorithm:** Enumerate diagram element/action categories, normalized nerves and integral cochain Smith forms.
+**Implemented algorithm:** Build diagrams of posets and Z/2 actions as core.category category diagrams, take their Grothendieck constructions, and compute the integral cohomology of the nerves by Smith normal form.
 
 **Domain and parameters:** Span diagrams suspending two points/pseudocircle; Z/2 actions on a point and pseudocircle, including free and reflection actions.
 
@@ -1189,23 +1179,11 @@ Source: [mathematics_homotopy_colimits_grothendieck.esk](../examples/mathematics
 
 **Limits:** Finite degrees and supplied diagrams are computed; the general Thomason equivalence is a cited theorem rather than a new universal proof.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 12, Failed: 0; 3.53 s); native AOT **PASS** (Passed: 12, Failed: 0; compile 8.20 s, run 0.23 s). CTest: `hocolim_grothendieck_borel_jit` Passed (9.24 s), `hocolim_grothendieck_borel_aot` Passed (9.42 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  H^*(hocolim of pt <- S^0 -> pt) = ((0 1 ()) (1 1 ()) (2 0 ()))
-  H^*(hocolim of pt <- pseudocircle -> pt) = ((0 1 ()) (1 0 ()) (2 1 ()) (3 0 ()))
-  H^*(BZ/2; Z) from the action category of a point = ((0 1 ()) (1 0 ()) (2 0 (2)) (3 0 ()) (4 0 (2)))
-  H^*(S^1_{hZ/2}) for the trivial action = ((0 1 ()) (1 1 ()) (2 0 (2)) (3 0 (2)))
-  H^*(S^1_{hZ/2}) for the antipodal (free) action = ((0 1 ()) (1 1 ()) (2 0 ()) (3 0 ()))
-  H^*(S^1_{hZ/2}) for the reflection = ((0 1 ()) (1 0 ()) (2 0 (2 2)) (3 0 ()))
-PASS: the strict quotient poset of the free action is contractible, (Z, 0): the strict colimit forgets the circle the homotopy quotient keeps
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_homotopy_colimits_grothendieck.esk#L1), [line 49](../examples/mathematics_homotopy_colimits_grothendieck.esk#L49), [line 50](../examples/mathematics_homotopy_colimits_grothendieck.esk#L50), [line 352](../examples/mathematics_homotopy_colimits_grothendieck.esk#L352), [line 356](../examples/mathematics_homotopy_colimits_grothendieck.esk#L356), [line 359](../examples/mathematics_homotopy_colimits_grothendieck.esk#L359).
+Implementation/check anchors: [line 1](../examples/mathematics_homotopy_colimits_grothendieck.esk#L1), [line 47](../examples/mathematics_homotopy_colimits_grothendieck.esk#L47), [line 143](../examples/mathematics_homotopy_colimits_grothendieck.esk#L143), [line 147](../examples/mathematics_homotopy_colimits_grothendieck.esk#L147), [line 150](../examples/mathematics_homotopy_colimits_grothendieck.esk#L150).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -2076,7 +2054,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Sheafification, reflector and Kan descent
 
-Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_sheafification_descent_kan.esk#L1). SHA-256: `72aae0f72e6bb160b435055a394c7cd2f9651f72b7d8a9ba588786d291684a49`.
+Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_sheafification_descent_kan.esk#L1). SHA-256: `0992914a7af06d34f6db88f1b248be7ccba50a935fe1ee242c868cc127a49c0a`.
 
 **Published result:** Sheafification a = (−)⁺⁺ is left adjoint to the inclusion of sheaves (Mac Lane–Moerdijk Theorem III.5.1), and the sheaf condition for a covering sieve says that F(U) is the limit of F over the sieve — equivalently, the right Kan extension of F restricted to the sieve (Johnstone C2.2; Lurie 6.2.2). The program verifies the Grothendieck axioms for the canonical topology on two finite sites, counts matching families, computes the plus construction twice, and checks the reflector's universal property and the Kan-extension form of descent by counting.
 
@@ -2090,7 +2068,7 @@ Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_she
 
 **Purpose:** Compare finite-site plus construction with matching-family Kan limits.
 
-**Implemented algorithm:** Enumerate covering sieves and finite matching families, apply plus twice, build comma-category limits and count natural maps into sheaves.
+**Implemented algorithm:** Build the sites of opens with core.sheaf, apply the plus construction twice, compute Match on the minimal covering sieves as Ran along the sieve inclusion and as the limit over the sieve category with core.category, and count natural transformations into sheaves three ways with the triangle identities of a -| i.
 
 **Domain and parameters:** Pseudocircle site with 6 opens and pseudo-2-sphere site with 9 opens; constant, locally constant and nonseparated set presheaves.
 
@@ -2100,19 +2078,11 @@ Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_she
 
 **Limits:** The exhaustive site is finite; selected adjunction counts must not be promoted to a proof for arbitrary infinite sites or all presheaves.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 10, Failed: 0; 8.15 s); native AOT **PASS** (Passed: 10, Failed: 0; compile 19.4 s, run 1.10 s). CTest: `cat_sheafification_descent_kan_jit` Passed (21.5 s), `cat_sheafification_descent_kan_aot` Passed (26.3 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  pseudocircle: matching families of the constant 2-set on the top cover and on the cover of {a,b} by {a} and {b}; Cech families on the generating covers = (2 4 2 4)
-  pseudocircle: sizes of const, const^+, const^{++} on the 6 opens; pi_0 of each open = ((2 2 2 2 2 2) (2 2 2 2 2 4) (2 2 2 2 2 4) (1 1 1 1 1 2))
-  universal property counts (Hom(F, G), Hom(aF, G)) for G locally constant: constant F, non-separated F = ((4 4) (2 2))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_sheafification_descent_kan.esk#L1), [line 61](../examples/mathematics_sheafification_descent_kan.esk#L61), [line 62](../examples/mathematics_sheafification_descent_kan.esk#L62), [line 527](../examples/mathematics_sheafification_descent_kan.esk#L527), [line 551](../examples/mathematics_sheafification_descent_kan.esk#L551), [line 554](../examples/mathematics_sheafification_descent_kan.esk#L554).
+Implementation/check anchors: [line 1](../examples/mathematics_sheafification_descent_kan.esk#L1), [line 57](../examples/mathematics_sheafification_descent_kan.esk#L57), [line 180](../examples/mathematics_sheafification_descent_kan.esk#L180), [line 195](../examples/mathematics_sheafification_descent_kan.esk#L195), [line 200](../examples/mathematics_sheafification_descent_kan.esk#L200).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 

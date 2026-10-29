@@ -28,6 +28,18 @@
 ;;; same limit is the right Kan extension of F, restricted to the objects of
 ;;; the sieve, along their inclusion, evaluated at c.
 ;;;
+;;; Abelian descent (Mac Lane-Moerdijk III.4; R. W. Thomason, Math. Proc.
+;;; Camb. Phil. Soc. 85 (1979); A. K. Bousfield, D. M. Kan, LNM 304, XI-XII):
+;;; for a cover {U_i} of an object of a thin site with meets, the nerve
+;;; category of the cover has the nonempty index sets J with an arrow K -> J
+;;; when J is contained in K; Cech cohomology is lim^n over it of
+;;; J |-> F(U_J). For a finite space, the Grothendieck construction of
+;;; J |-> (the points of U_J) has a nerve equivalent to the space
+;;; (hocolim over the cover), so lim^n over it of the stalks is the sheaf
+;;; cohomology for every cover, Leray or not: cohomological descent as a
+;;; derived limit. The Grothendieck construction of J |-> pi_0(U_J) is the
+;;; face category of the Cech nerve C(U) (cells (J, component)).
+;;;
 ;;; Transformations are vectors c -> vector of indices, as in core.sheaf's
 ;;; presheaf-natural? and core.category.set.
 
@@ -38,8 +50,15 @@
 (require core.category.finite)
 (require core.category.functor)
 (require core.category.set)
+(require core.integer_linalg)
+(require core.sheaf.module)
+(require core.category.linear)
 
-(provide sieve-category sieve-matching-limit sieve-descent-violations
+(provide category-components cover-nerve-category cech-derived-limits
+         finite-space-cover-descent-category finite-space-cech-nerve-category cech-nerve-cell-counts
+         module-sieve-limit module-sheaf-at-by-limit module-sieve-unit-shape
+         finite-space-cover-sections-presheaf finite-space-sections
+ sieve-category sieve-matching-limit sieve-descent-violations
          presheaf-ran-along-inclusion
          cech-equalizer cech-descent-violations
          presheaf-sheaf-violations-by-limit
@@ -229,3 +248,173 @@
     (if (not (cd-identity? (set-transformation-compose mu etaT))) (set! out (cons (list 'right-unit) out)))
     (if (not (equal? (set-transformation-compose mu Tmu) (set-transformation-compose mu muT))) (set! out (cons (list 'associativity) out)))
     (reverse out)))
+
+;; ---------------------------------------------------------------------------
+;; Components, the nerve category of a cover, Cech cohomology as lim^n
+;; ---------------------------------------------------------------------------
+;; pi_0 of a finite category: the colimit of the constant one-point functor
+(define (category-components C) (set-colimit-size (set-colimit (constant-set-functor C (list 0)))))
+;; (P . G): P the poset of nonempty index sets J (by size, then
+;; lexicographically) whose meet exists, with K -> J when J is contained in K,
+;; labelled by J; G : P -> C sends J to U_J = the meet of the objs indexed by J
+(define (cover-nerve-category C objs)
+  (let* ((n (length objs)) (ov (list->vector objs))
+         (meet (lambda (J) (let loop ((l (cdr J)) (m (vector-ref ov (car J)))) (cond ((not m) #f) ((null? l) m) (else (loop (cdr l) (category-meet C m (vector-ref ov (car l)))))))))
+         (Js (filter meet (apply append (map (lambda (k) (sheaf-subsets-of-size (cd-range n) k)) (cdr (cd-range (+ n 1)))))))
+         (Jv (list->vector Js))
+         (P (poset-category (length Js) (lambda (a b) (cd-all? (lambda (i) (memv i (vector-ref Jv a))) (vector-ref Jv b))) Js)))
+    (cons P (functor-from-procedures P C (lambda (j) (meet (vector-ref Jv j)))
+                                     (lambda (a) (category-thin-arrow C (meet (vector-ref Jv (arrow-source P a))) (meet (vector-ref Jv (arrow-target P a)))))))))
+;; Cech cohomology of the module presheaf F on a thin category with meets,
+;; for the cover objs: lim^n over the nerve category of J |-> F(U_J)
+(define (cech-derived-limits F objs kmax)
+  (let ((PG (cover-nerve-category (module-presheaf-category F) objs)))
+    (module-presheaf-derived-limits (module-presheaf-restrict F (cdr PG)) kmax)))
+;; index sets of a cover of a finite space by point lists, with nonempty
+;; intersection, and their poset (K -> J when J is contained in K)
+(define (cd-cover-index-poset cover)
+  (let* ((n (length cover)) (cv (list->vector cover))
+         (inter (lambda (J) (sheaf-intersect-all (map (lambda (i) (vector-ref cv i)) J))))
+         (Js (filter (lambda (J) (pair? (inter J))) (apply append (map (lambda (k) (sheaf-subsets-of-size (cd-range n) k)) (cdr (cd-range (+ n 1)))))))
+         (Jv (list->vector Js)))
+    (list (poset-category (length Js) (lambda (a b) (cd-all? (lambda (i) (memv i (vector-ref Jv a))) (vector-ref Jv b))) Js)
+          Jv inter)))
+;; (E . p): E the Grothendieck construction of J |-> the poset of points of
+;; U_J (inclusions along K -> J), p : E -> the category of points (one
+;; arrow y -> x for y <= x, as built by poset-module->point-presheaf)
+(define (finite-space-cover-descent-category X cover)
+  (let* ((ip (cd-cover-index-poset cover)) (P (car ip)) (Jv (cadr ip)) (inter (caddr ip))
+         (n (finite-space-size X)) (pts (poset-category n (lambda (y x) (finite-space-leq? X y x))))
+         (subs (list->vector (map (lambda (j) (inclusion-functor pts (inter (vector-ref Jv j)))) (cd-range (category-object-count P)))))
+         (D (make-category-diagram
+             P (map (lambda (j) (car (vector-ref subs j))) (cd-range (category-object-count P)))
+             (map (lambda (a)
+                    (let* ((K (car (vector-ref subs (arrow-source P a)))) (J (car (vector-ref subs (arrow-target P a))))
+                           (ptsK (functor-objects (cdr (vector-ref subs (arrow-source P a))))) (ptsJ (vector->list (functor-objects (cdr (vector-ref subs (arrow-target P a))))))
+                           (pos (lambda (x) (let loop ((l ptsJ) (i 0)) (if (= (car l) x) i (loop (cdr l) (+ i 1)))))))
+                      (functor-from-procedures K J (lambda (k) (pos (vector-ref ptsK k)))
+                                               (lambda (b) (category-thin-arrow J (pos (vector-ref ptsK (arrow-source K b))) (pos (vector-ref ptsK (arrow-target K b))))))))
+                  (cd-range (category-arrow-count P)))))
+         (E (grothendieck-construction D))
+         (point-of (lambda (o) (let ((lab (category-object-label E o))) (vector-ref (functor-objects (cdr (vector-ref subs (car lab)))) (cadr lab))))))
+    (cons E (functor-from-procedures E pts point-of
+                                     (lambda (k) (category-thin-arrow pts (point-of (arrow-source E k)) (point-of (arrow-target E k))))))))
+;; the face category of the Cech nerve C(U): objects (J c), c a component of
+;; U_J (finite-space-components order), from the Grothendieck construction of
+;; J |-> the discrete category pi_0(U_J)
+(define (finite-space-cech-nerve-category X cover)
+  (let* ((ip (cd-cover-index-poset cover)) (P (car ip)) (Jv (cadr ip)) (inter (caddr ip))
+         (comps (list->vector (map (lambda (j) (finite-space-components X (inter (vector-ref Jv j)))) (cd-range (category-object-count P)))))
+         (cats (list->vector (map (lambda (j) (discrete-category (length (vector-ref comps j)))) (cd-range (category-object-count P)))))
+         ;; the component of U_J containing component c of U_K
+         (host (lambda (K J c)
+                 (let ((p (car (list-ref (vector-ref comps K) c))))
+                   (let loop ((l (vector-ref comps J)) (i 0)) (if (memv p (car l)) i (loop (cdr l) (+ i 1)))))))
+         (D (make-category-diagram
+             P cats
+             (map (lambda (a)
+                    (let ((K (arrow-source P a)) (J (arrow-target P a)))
+                      (functor-from-procedures (vector-ref cats K) (vector-ref cats J)
+                                               (lambda (c) (host K J c)) (lambda (b) (host K J b)))))
+                  (cd-range (category-arrow-count P))))))
+    (grothendieck-construction D)))
+;; cells of C(U) by dimension 0..kmax: objects (J c) with |J| = k + 1
+(define (cech-nerve-cell-counts N cover kmax)
+  (let ((P-sizes (map (lambda (o) (car (category-object-label N o))) (cd-range (category-object-count N)))))
+    (let ((ip (cd-cover-index-poset cover)))
+      (map (lambda (k) (length (filter (lambda (j) (= (+ k 1) (length (vector-ref (cadr ip) j)))) P-sizes))) (cd-range (+ kmax 1))))))
+
+;; ---------------------------------------------------------------------------
+;; The plus construction and the sheaf condition for module presheaves, by limits
+;; ---------------------------------------------------------------------------
+;; Match(S, F) = lim over (int S)^op of F pi^op, as a module-limit
+(define (module-sieve-limit F c S)
+  (let ((sc (sieve-category (module-presheaf-category F) c S)))
+    (module-presheaf-limit (module-presheaf-restrict F (cdr sc)))))
+;; (rank of Match(S, F), rank of F(c), rank of the map F(c) -> Match(S, F)):
+;; the shape of the unit F -> F^+ at c when S is the smallest covering sieve
+(define (module-sieve-unit-shape F c S)
+  (let* ((sc (sieve-category (module-presheaf-category F) c S)) (K (car sc)) (pi (cdr sc))
+         (L (module-presheaf-limit (module-presheaf-restrict F pi))) (rc (module-presheaf-rank F c))
+         (cols (cd-restricted-columns F K pi rc)) (N (car cols)))
+    (list (module-limit-rank L) rc (if (or (= rc 0) (= N 0)) 0 (ring-rank (module-presheaf-ring F) (integer-matrix-from-columns (cdr cols) N))))))
+;; (N . columns): the restrictions of the basis vectors of F(c) to the
+;; objects of the sieve category, as vectors of the total space
+(define (cd-restricted-columns F K pi rc)
+  (let ((N (apply + (map (lambda (k) (module-presheaf-rank F (functor-object pi k))) (cd-range (category-object-count K))))))
+    (cons N
+          (map (lambda (j)
+                 (let ((v (make-vector N 0)))
+                   (let loop ((k 0) (o 0))
+                     (if (< k (category-object-count K))
+                         (let* ((d (functor-object pi k)) (A (module-presheaf-restriction F (caddr (category-object-label K k)))) (rd (module-presheaf-rank F d)))
+                           (let fill ((p 0)) (if (< p rd) (begin (vector-set! v (+ o p) (integer-matrix-ref A p j)) (fill (+ p 1)))))
+                           (loop (+ k 1) (+ o rd)))))
+                   v))
+               (cd-range rc)))))
+;; (iso r) when F(c) -> Match(S, F) is an isomorphism of rank r,
+;; (not-separated rank-of-map) or (not-glueing index) otherwise; over Z the
+;; map is onto when the coordinates of the restricted basis form a unimodular
+;; matrix, over Q when the ranks agree
+(define (module-sheaf-at-by-limit F c S)
+  (let* ((sc (sieve-category (module-presheaf-category F) c S)) (K (car sc)) (pi (cdr sc))
+         (L (module-presheaf-limit (module-presheaf-restrict F pi))) (ring (module-presheaf-ring F))
+         (B (module-limit-basis L)) (r (module-limit-rank L)) (rc (module-presheaf-rank F c))
+         (N (apply + (map (lambda (k) (module-presheaf-rank F (functor-object pi k))) (cd-range (category-object-count K)))))
+         ;; the restriction of the j-th basis vector of F(c) as a total vector
+         (restricted (map (lambda (j)
+                            (let ((v (make-vector N 0)))
+                              (let loop ((k 0) (o 0))
+                                (if (< k (category-object-count K))
+                                    (let* ((d (functor-object pi k)) (A (module-presheaf-restriction F (caddr (category-object-label K k)))) (rd (module-presheaf-rank F d)))
+                                      (let fill ((p 0)) (if (< p rd) (begin (vector-set! v (+ o p) (integer-matrix-ref A p j)) (fill (+ p 1)))))
+                                      (loop (+ k 1) (+ o rd)))))
+                              v))
+                          (cd-range rc)))
+         (map-rank (if (or (= rc 0) (= N 0)) 0 (ring-rank ring (integer-matrix-from-columns restricted N)))))
+    (cond ((< map-rank rc) (list 'not-separated map-rank))
+          ((< rc r) (list 'not-glueing (- r rc)))
+          ((eq? ring 'Q) (list 'iso r))
+          ((= r 0) (list 'iso 0))
+          (else
+           (let* ((BM (integer-matrix-from-columns B N))
+                  (coords (map (lambda (v) (ring-solve ring BM r v)) restricted))
+                  (index (apply * (integer-invariant-factors (integer-matrix-from-columns coords r)))))
+             (if (= 1 index) (list 'iso r) (list 'not-glueing index)))))))
+
+;; ---------------------------------------------------------------------------
+;; Sections over the opens of a cover of a finite space, as limits
+;; ---------------------------------------------------------------------------
+;; Gamma(U; M) = lim of the point presheaf M over the points of U: a
+;; module-limit whose total space has the blocks of the points of U in order
+(define (finite-space-sections M U)
+  (let ((inc (inclusion-functor (module-presheaf-category M) U)))
+    (module-presheaf-limit (module-presheaf-restrict M (cdr inc)))))
+;; (P . G): P the nerve category of the cover (index sets J with nonempty
+;; U_J), G the module presheaf J |-> Gamma(U_J; M) with the restrictions
+;; solved in the limit bases; M a point presheaf (poset-module->point-presheaf)
+(define (finite-space-cover-sections-presheaf M cover)
+  (let* ((ip (cd-cover-index-poset cover)) (P (car ip)) (Jv (cadr ip)) (inter (caddr ip)) (ring (module-presheaf-ring M))
+         (n (category-object-count P))
+         (Us (list->vector (map (lambda (j) (inter (vector-ref Jv j))) (cd-range n))))
+         (Ls (list->vector (map (lambda (j) (finite-space-sections M (vector-ref Us j))) (cd-range n))))
+         (block (lambda (U x) (let loop ((l U) (o 0)) (if (= (car l) x) o (loop (cdr l) (+ o (module-presheaf-rank M (car l)))))))))
+    (cons P
+          (make-module-presheaf
+           P ring (lambda (j) (module-limit-rank (vector-ref Ls j)))
+           (lambda (a)
+             (let* ((K (arrow-source P a)) (J (arrow-target P a)) (UK (vector-ref Us K)) (UJ (vector-ref Us J))
+                    (LK (vector-ref Ls K)) (rK (module-limit-rank LK)) (rJ (module-limit-rank (vector-ref Ls J)))
+                    (NK (apply + (map (lambda (x) (module-presheaf-rank M x)) UK)))
+                    (BK (if (> rK 0) (integer-matrix-from-columns (module-limit-basis LK) NK) #f))
+                    (cols (map (lambda (v)
+                                 (let ((w (make-vector NK 0)))
+                                   (for-each (lambda (x) (let ((oJ (block UJ x)) (oK (block UK x)))
+                                                           (let fill ((p 0)) (if (< p (module-presheaf-rank M x)) (begin (vector-set! w (+ oK p) (vector-ref v (+ oJ p))) (fill (+ p 1)))))))
+                                             UK)
+                                   (if (= rK 0) (make-vector 0 0)
+                                       (let ((c (ring-solve ring BK rK w)))
+                                         (if (not c) (error "finite-space-cover-sections-presheaf: a restricted section is not a section" (list J K)))
+                                         c))))
+                               (module-limit-basis (vector-ref Ls J)))))
+               (if (= rJ 0) (integer-matrix rK 0) (integer-matrix-from-columns cols rK))))))))
