@@ -243,6 +243,9 @@ struct ConDecl {
     std::vector<bool> recursive;                       ///< arg type is the data type itself
     std::vector<std::string> dims;
     std::vector<std::pair<IExprP, TermP>> boundary;    ///< faces over dims; terms over params, args, dims
+    /// Every boundary term is a constructor expression over the constructor's
+    /// own arguments, so transport commutes with the constructor (CHM 2018).
+    bool structuralBoundary = true;
 };
 
 struct DataDecl {

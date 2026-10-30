@@ -126,3 +126,20 @@
                        (t : (Pi ((x : A)) (Path A (g (f x)) x))))
       : (Path (U l) A B)
     (ua l A B (iso-to-equiv l A B f g s t))))
+
+(hott
+  ;; ---- homotopy levels ----
+  (define (isGroupoid (l : Level) (A : (U l))) : (U l)
+    (Pi ((x y : A)) (isSet l (Path A x y))))
+
+  ;; propositions are sets (Cubical.Foundations.Prelude isProp->isSet)
+  (define (isProp->isSet (l : Level) (A : (U l)) (h : (isProp l A))) : (isSet l A)
+    (lambda (a b p q) (lambda (j) (lambda (i)
+      (hcomp A (k) (((= i 0) ((h a a) k))
+                    ((= i 1) ((h a b) k))
+                    ((= j 0) ((h a (p i)) k))
+                    ((= j 1) ((h a (q i)) k)))
+             a)))))
+
+  (define (isContr->isProp (l : Level) (A : (U l)) (c : (isContr l A))) : (isProp l A)
+    (lambda (x y) (trans l A x (fst c) y (sym l A (fst c) x ((snd c) x)) ((snd c) y)))))

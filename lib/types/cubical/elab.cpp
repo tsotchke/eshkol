@@ -232,6 +232,12 @@ TermP readback(const V& v) {
             return t;
         }
         case Val::K::Var: {
+            if (!v->name.empty() && v->name[0] == '@') {
+                auto t = mk(Term::K::Global);
+                t->name = v->name.substr(1);
+                for (auto& l : v->levels) t->levels.push_back(levelTerm(l));
+                return t;
+            }
             auto t = mk(Term::K::Var);
             t->name = varInternal(v->id);
             return t;

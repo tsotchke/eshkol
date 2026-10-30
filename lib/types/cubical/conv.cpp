@@ -110,17 +110,23 @@ static bool sameSplit(const V& s1, const V& s2) {
     if (s1 == s2) return true;
     if (s1->split != s2->split) return false;
     // Same split term: compare the captured environments as normal forms.
-    const Env* e1 = s1->clo.env.get();
-    const Env* e2 = s2->clo.env.get();
+    // Level bindings are skipped: elaboration leaves levels rigid (no
+    // binding) while an instantiated global binds them; the comparison is
+    // typed by the caller, which already fixes the levels.
+    auto skipLevels = [](const Env* e) {
+        while (e && e->kind == Env::Kind::Level) e = e->next.get();
+        return e;
+    };
+    const Env* e1 = skipLevels(s1->clo.env.get());
+    const Env* e2 = skipLevels(s2->clo.env.get());
     while (e1 && e2) {
         if (e1->kind != e2->kind || e1->name != e2->name) return false;
         if (e1->kind == Env::Kind::Value && e1->v != e2->v &&
             printSx(quote(e1->v)) != printSx(quote(e2->v)))
             return false;
         if (e1->kind == Env::Kind::Dim && e1->f != e2->f) return false;
-        if (e1->kind == Env::Kind::Level && !(e1->l == e2->l)) return false;
-        e1 = e1->next.get();
-        e2 = e2->next.get();
+        e1 = skipLevels(e1->next.get());
+        e2 = skipLevels(e2->next.get());
     }
     return !e1 && !e2;
 }
@@ -407,7 +413,7 @@ struct Quoter {
                 Sx b = lineBinder(v->a, body);
                 return Sx::list({Sx::symbol("transp"), Sx::list({b}), body, formula(v->f), q(v->b)});
             }
-            case Val::K::Var: return Sx::symbol(v->name);
+            case Val::K::Var: return Sx::symbol(!v->name.empty() && v->name[0] == '@' ? v->name.substr(1) : v->name);
             case Val::K::App: {
                 Sx f = q(v->a);
                 if (f.isList() && v->a->k == Val::K::App) {

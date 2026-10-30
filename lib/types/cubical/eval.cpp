@@ -652,7 +652,7 @@ static V transpData(const V& line, const Formula& phi, const V& u0, Dim i, const
         if (occurs(p, i)) { constant = false; break; }
     if (constant) return u0;  // a data type along a constant line: transport is the identity
     const DataDecl* d = generic->data;
-    if (u0->k == Val::K::Con) {
+    if (u0->k == Val::K::Con && d->cons[u0->con].structuralBoundary) {
         // Transport the arguments through the constructor's telescope: argument k
         // lives over the parameters and the fillers of the earlier arguments.
         std::vector<V> fills;  // lines

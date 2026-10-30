@@ -49,11 +49,17 @@ bool strictlyPositive(const TermP& t, const DataDecl* d) {
     if (!termMentions(t, d)) return true;
     if (t->k == Term::K::Data && t->data == d) return true;
     if (t->k == Term::K::Pi) return !termMentions(t->a, d) && strictlyPositive(t->b, d);
+    // a path type in D is a function out of the interval: positive when its
+    // line is; the endpoints are elements, not occurrences of the type
+    if (t->k == Term::K::PathP) return t->a->k == Term::K::PLam && strictlyPositive(t->a->a, d);
     return false;
 }
 
-// Boundary terms: constructors of the type being declared, applied to the
-// constructor's own arguments (or to such terms) and dimensions.
+// Structural boundary terms: constructors of the type being declared, applied
+// to the constructor's own arguments (or to such terms) and dimensions. Other
+// boundaries (paths among the arguments, as in set truncation) are accepted;
+// transport of such a constructor along a line of varying parameters then
+// stays a stuck term rather than computing (see transpData).
 bool constructorExpression(const TermP& t, const DataDecl* d, const std::set<std::string>& args) {
     if (t->k == Term::K::Var) return args.count(t->name) > 0;
     if (t->k == Term::K::Con && t->data == d) {
@@ -274,14 +280,13 @@ void Elab::declData(const Sx& sx) {
                         };
                         if (!onlyDims(fe)) fail(cl.items[0], "a boundary face mentions only the constructor's dimensions");
                         auto fs = facesOf(evalI(env(), fe));
-                        if (fs.empty()) fail(cl.items[0], "this face never holds");
+                        if (fs.empty()) continue;
                         TermP bt;
                         for (auto& f : fs) {
                             underFace(f, [&] {
                                 TermP t = check(cl.items[1], D);
                                 if (!constructorExpression(t, dd.get(), argNames))
-                                    fail(cl.items[1], "a boundary is a constructor of " + name +
-                                                          " applied to the constructor's own arguments");
+                                    cd.structuralBoundary = false;
                                 if (!bt) bt = t;
                                 done.push_back({f, t});
                             });
@@ -387,7 +392,13 @@ void Elab::declDefine(const Sx& sx, bool example) {
             g->name = name;
             g->levelParams = levelParams;
             g->type = full;
-            g->opaque = mkVar(name, eval(EnvP{}, full));
+            // the definition stands for itself while its body is checked; it
+            // reads back to the global, so terms mentioning it stay closed
+            {
+                auto op = std::make_shared<Val>(*mkVar("@" + name, eval(EnvP{}, full)));
+                for (auto& lp : levelParams) op->levels.push_back(Level::var(lp));
+                g->opaque = op;
+            }
             S.globals[name] = g;
             selfName = name;
         }
