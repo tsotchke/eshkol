@@ -1,0 +1,45 @@
+schema_version = 1
+license = "MIT"
+base_commit = "fb8a9415b3dd05bb82ebf42db2fe894240f8b4f0"
+prepared_tree_oid = "8971eb3be5773c02e428d886a15026083661162b"
+review_status = "review-ready"
+
+[[source_prerequisite]]
+name = "observable"
+revision = "selected MIT observable-closure contribution"
+
+[[source_prerequisite.file]]
+path = "lib/core/observable_closure.esk"
+sha256 = "dc068e5529ba4b4163841911a34357123b78aa9b1e244e33d404232d31a4d32e"
+
+[[source_prerequisite.file]]
+path = "scripts/run_observable_closure_gate.py"
+sha256 = "c90a972a4c47e3f1f41447927340a103c4830c100badae50b9fdd7e0a74c7c66"
+
+[[source_prerequisite]]
+name = "mix"
+revision = "72a3908fae62d6f384c08aadfe9910b61ef35e7f"
+
+[[source_prerequisite.file]]
+path = "lib/core/compiler/mix.esk"
+sha256 = "662f63c06d663fea7d3f52c8bbf996119feb71f2dc43b1c2e2de22fd7cbe3e13"
+
+[[source_prerequisite.file]]
+path = "lib/core/compiler/mix/runtime.esk"
+sha256 = "7637137d5792701c684ec01b742c4e4c3a9816316998a768739fb3236189495c"
+
+[[source_prerequisite.file]]
+path = "lib/core/compiler/mix/source.esk"
+sha256 = "868e342cba99a2fa64bba198a88b4625eebbab5553dde88a832914ab95ff56f9"
+
+[[source_prerequisite.file]]
+path = "lib/core/compiler/mix/verify.esk"
+sha256 = "4a78f6d39c04a91dfb70c46cf725a1538909e061b73d8964286e9d8a9a412dd6"
+
+[[source_prerequisite.file]]
+path = "lib/core/compiler/mix/emit.esk"
+sha256 = "dbfcd8e3b58b4e7ac6ff68a34990dfbe31de9c92fff4cdc686468e4fe01b0e00"
+
+[[prerequisite_pr]]
+number = 1
+patch_sha256 = "16cc399d89bb7eb874832ab28f7feeaf212e46256247b4de2618b412e676eac9"
