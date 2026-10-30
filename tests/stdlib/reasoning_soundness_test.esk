@@ -1,0 +1,141 @@
+;;; Soundness across the reasoning engines: every answer is checked by an
+;;; independent route on randomly generated inputs.
+;;;   * every Prolog answer, instantiated, is re-proved as a ground goal and
+;;;     holds in the independently computed closure;
+;;;   * tabled SLD, stratified Datalog on DBSP and Warshall closure agree;
+;;;   * a negated query agrees between Prolog (negation as failure over
+;;;     complete tables) and Datalog (stratified negation);
+;;;   * CDCL verdicts agree with exhaustive search; SAT models satisfy the
+;;;     formula; UNSAT proofs pass the DRAT checker; a mutated proof fails;
+;;;   * FD search, the FD-to-CNF encoding solved by CDCL, and enumeration
+;;;     agree; triple-store queries agree with the same query as Prolog
+;;;     rules over the triples.
+(require stdlib)
+(require core.reasoning)
+
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define seed 4242)
+(define (rand! k) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) k))
+(define (same-set? a b) (and (= (length a) (length b)) (let all ((xs a)) (or (null? xs) (and (member (car xs) b) (all (cdr xs)))))))
+;; SLD returns one answer per proof; compare answer sets.
+(define (dedup xs) (let loop ((xs xs) (out '())) (cond ((null? xs) (reverse out)) ((member (car xs) out) (loop (cdr xs) out)) (else (loop (cdr xs) (cons (car xs) out))))))
+(define (range n) (let mk ((i (- n 1)) (out '())) (if (< i 0) out (mk (- i 1) (cons i out)))))
+
+(define (warshall nodes edges)
+  (let ((r edges))
+    (for-each (lambda (k) (for-each (lambda (i)
+      (if (member (list i k) r)
+          (for-each (lambda (j) (if (and (member (list k j) r) (not (member (list i j) r))) (set! r (cons (list i j) r)))) nodes)))
+      nodes)) nodes)
+    r))
+
+;; ---- graphs: tabled SLD, Datalog, Warshall; answer re-proof; negation
+(define graphs-ok #t)
+(define reprove-ok #t)
+(define negation-ok #t)
+(let trial ((t 0))
+  (if (< t 8)
+      (let* ((n 6) (nodes (range n))
+             (edges (let mk ((k 0) (out '())) (if (= k 9) out (let ((e (list (rand! n) (rand! n)))) (mk (+ k 1) (if (member e out) out (cons e out)))))))
+             (closure (warshall nodes edges))
+             (pl (make-prolog))
+             (dl (make-datalog '((<- (path ?x ?y) (edge ?x ?y))
+                                 (<- (path ?x ?y) (path ?x ?z) (edge ?z ?y))
+                                 (<- (node ?x) (edge ?x ?_)) (<- (node ?y) (edge ?_ ?y))
+                                 (<- (cut ?x ?y) (node ?x) (node ?y) (not (path ?x ?y)))))))
+        (for-each (lambda (e) (prolog-add! pl (cons 'edge e))) edges)
+        (prolog-table! pl 'path 2)
+        (prolog-consult! pl '((<- (path ?x ?y) (path ?x ?z) (edge ?z ?y)) (<- (path ?x ?y) (edge ?x ?y))
+                              (<- (node ?x) (edge ?x ?_)) (<- (node ?y) (edge ?_ ?y))
+                              (<- (cut ?x ?y) (node ?x) (node ?y) (not (path ?x ?y)))))
+        (datalog-assert! dl (map (lambda (e) (cons 'edge e)) edges))
+        (let ((pl-pairs (map cdr (prolog-query-terms pl '(path ?a ?b))))
+              (dl-pairs (map cdr (datalog-relation dl 'path))))
+          (if (not (and (same-set? pl-pairs closure) (same-set? dl-pairs closure))) (set! graphs-ok #f))
+          (for-each (lambda (pr) (if (not (prolog-prove? pl (cons 'path pr))) (set! reprove-ok #f))) pl-pairs)
+          (let ((pl-cut (dedup (map cdr (prolog-query-terms pl '(cut ?a ?b)))))
+                (dl-cut (map cdr (datalog-relation dl 'cut))))
+            (if (not (same-set? pl-cut dl-cut)) (set! negation-ok #f))))
+        (trial (+ t 1)))))
+(check "tabled SLD = stratified Datalog on DBSP = Warshall (8 random graphs)" graphs-ok)
+(check "every SLD answer re-proves as a ground goal" reprove-ok)
+(check "negation as failure over complete tables = stratified negation" negation-ok)
+
+;; ---- untabled SLD answers are sound: each is in the model of the program
+(define fam (make-prolog))
+(define facts (let mk ((k 0) (out '())) (if (= k 12) out (mk (+ k 1) (cons (list 'parent (rand! 9) (+ 1 (rand! 9))) out)))))
+(define acyclic (filter (lambda (f) (< (cadr f) (caddr f))) facts))
+(prolog-consult! fam acyclic)
+(prolog-consult! fam '((<- (anc ?x ?y) (parent ?x ?y)) (<- (anc ?x ?y) (parent ?x ?z) (anc ?z ?y))))
+(check "SLD ancestor answers equal the closure of the acyclic parent relation"
+       (same-set? (dedup (map cdr (prolog-query-terms fam '(anc ?a ?b))))
+                  (warshall (range 10) (dedup (map cdr acyclic)))))
+
+;; ---- SAT: verdicts, models, proofs, and a mutated proof
+(define sat-ok #t)
+(define proof-ok #t)
+(define mutation-caught #t)
+(let trial ((t 0))
+  (if (< t 30)
+      (let* ((nv (+ 6 (rand! 6))) (cnf (cnf-random-ksat nv (+ (* 4 nv) (rand! 6)) 3 (+ 1000 t)))
+             (r (sat-solve cnf)) (truth (sat-brute-force cnf)))
+        (cond ((eq? (sat-status r) 'sat)
+               (if (not (and truth (sat-satisfies? cnf (sat-model r)))) (set! sat-ok #f)))
+              (else
+               (if truth (set! sat-ok #f))
+               (if (not (drat-check cnf (sat-proof r))) (set! proof-ok #f))
+               ;; drop every learned lemma: only the empty clause remains, which
+               ;; unit propagation alone cannot justify unless the formula is
+               ;; refuted by propagation
+               (let ((bare (list (list 'add))))
+                 (if (and (drat-check cnf bare) (pair? (filter (lambda (s) (and (eq? (car s) 'add) (pair? (cdr s)))) (sat-proof r))))
+                     (set! mutation-caught #f)))))
+        (trial (+ t 1)))))
+(check "30 random formulas: CDCL verdict = exhaustive search, models satisfy" sat-ok)
+(check "every UNSAT proof passes the DRAT checker" proof-ok)
+(check "removing the learned lemmas makes nontrivial proofs fail" mutation-caught)
+
+;; ---- FD: search = enumeration, and the CNF encoding solved by CDCL
+(define fd-ok #t)
+(let trial ((t 0))
+  (if (< t 10)
+      (let* ((m (make-fd-model))
+             (xs (map (lambda (i) (fd-var m i (range (+ 2 (rand! 3))))) (range 3)))
+             (k (rand! 4)) (off (- (rand! 3) 1))
+             (ok? (lambda (a b c) (and (<= (+ a (* 2 b) (- c)) k) (not (= a (+ c off)))))))
+        (fd-linear! m (list (cons 1 (car xs)) (cons 2 (cadr xs)) (cons -1 (caddr xs))) '<= k)
+        (fd-ne! m (car xs) (caddr xs) off)
+        (let* ((enum (apply append
+                            (map (lambda (a)
+                                   (apply append
+                                          (map (lambda (b)
+                                                 (map (lambda (c) (list (cons 0 a) (cons 1 b) (cons 2 c)))
+                                                      (filter (lambda (c) (ok? a b c)) (fd-domain (caddr xs)))))
+                                               (fd-domain (cadr xs)))))
+                                 (fd-domain (car xs)))))
+               (sols (fd-solutions m))
+               (sat (fd-solve-sat m)))
+          (if (not (and (same-set? sols enum) (if (null? sols) (not sat) (and sat (member sat sols)))))
+              (set! fd-ok #f)))
+        (trial (+ t 1)))))
+(check "FD search = enumeration = CNF encoding on 10 random models" fd-ok)
+
+;; ---- KG query = the same join as Prolog rules over the triples
+(define g (make-triple-store))
+(define ents '(a b c d e f))
+(define rels '(p q))
+(let fill ((k 0)) (if (< k 30) (begin (kg-add! g (list-ref ents (rand! 6)) (list-ref rels (rand! 2)) (list-ref ents (rand! 6))) (fill (+ k 1)))))
+(define kp (make-prolog))
+(for-each (lambda (t) (prolog-add! kp (cons 'triple t))) (kg-triples g))
+(check "BGP over the store = Prolog conjunction over the same triples"
+       (same-set? (map (lambda (s) (list (walk '?x s) (walk '?z s))) (kg-query g '((?x p ?y) (?y q ?z))))
+                  (map (lambda (s) (list (walk '?x s) (walk '?z s))) (prolog-query kp '(and (triple ?x p ?y) (triple ?y q ?z))))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: reasoning_soundness_test") (newline)
+(display "RESULT: PASS") (newline)
