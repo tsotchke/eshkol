@@ -126,7 +126,7 @@
 (define (make-signature ops)
   (for-each (lambda (o)
               (if (not (and (pair? o) (pair? (cdr o)) (null? (cddr o))
-                            (exact-integer? (cadr o)) (>= (cadr o) 0)))
+                            (integer? (cadr o)) (exact? (cadr o)) (>= (cadr o) 0)))
                   (error "make-signature: expected (operation arity) with arity >= 0" o)))
             ops)
   (vector 'signature-v1 ops))
