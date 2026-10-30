@@ -1,0 +1,255 @@
+;; core.quantum.qaoa: MaxCut problems and brute force on known graphs, the
+;; Pauli-term form of the cost against the cut value on every basis state,
+;; the p = 1 closed forms (unweighted and weighted) against the state vector,
+;; exact AD gradients against central finite differences (an independent
+;; oracle used only here), Adam optimisation with approximation ratios, and
+;; the circuit semantics against an explicit CNOT-RZ-CNOT gate list and a
+;; directly built phase-separated state.
+(require stdlib)
+(require core.quantum.circuit)
+(require core.quantum.qaoa)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (range n) (iota n))
+(define seed 1411)
+(define (rand n) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) n))
+(define (rand-unit) (/ (exact->inexact (rand 32768)) 32768.0))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define (vmax-abs-diff a b)
+  (let loop ((i 0) (m 0.0)) (if (= i (vector-length a)) m (loop (+ i 1) (max m (abs (- (vector-ref a i) (vector-ref b i))))))))
+(define (fmt4 x)
+  (let* ((neg (< x 0)) (k (inexact->exact (round (* 10000 (abs x))))) (ip (quotient k 10000)) (fp (remainder k 10000))
+         (fs (number->string fp)))
+    (string-append (if neg "-" "") (number->string ip) "."
+                   (make-string (- 4 (string-length fs)) #\0) fs)))
+(define (sci x) (number->string x))
+(define t-start (current-time-us))
+
+;; ---------------------------------------------------------------------------
+;; Graphs
+;; ---------------------------------------------------------------------------
+(define triangle (maxcut-problem 3 '((0 1) (1 2) (0 2))))
+(define ring4 (maxcut-problem 4 '((0 1) (1 2) (2 3) (3 0))))
+(define k4 (maxcut-problem 4 '((0 1) (0 2) (0 3) (1 2) (1 3) (2 3))))
+;; the triangular prism: two triangles joined by a perfect matching (3-regular, 6 vertices)
+(define prism (maxcut-problem 6 '((0 1) (1 2) (2 0) (3 4) (4 5) (5 3) (0 3) (1 4) (2 5))))
+(define star5 (maxcut-problem 5 '((0 1) (0 2) (0 3) (0 4))))
+;; hand-computed: {0,3} | {1,2} cuts 3 + 4 + 5 = 12, every other partition less
+(define weighted4 (maxcut-problem 4 '((0 1 3) (1 2 2) (2 3 4) (3 0 1) (0 2 5))))
+(define (random-graph n prob weighted?)
+  (let ((es (filter (lambda (e) e)
+                    (apply append
+                           (map (lambda (u)
+                                  (map (lambda (v)
+                                         (and (< (rand 1000) (* 1000 prob))
+                                              (if weighted?
+                                                  (list u v (- (* 3.0 (rand-unit)) 0.75))
+                                                  (list u v))))
+                                       (filter (lambda (v) (> v u)) (range n))))
+                                (range n))))))
+    (maxcut-problem n (if (null? es) (list (list 0 1)) es))))
+(define rand5 (random-graph 5 0.6 #f))
+(define rand6 (random-graph 6 0.5 #f))
+(define rand7 (random-graph 7 0.45 #f))
+(define wrand5 (random-graph 5 0.7 #t))
+(define wrand6 (random-graph 6 0.5 #t))
+(define unweighted-graphs (list triangle ring4 k4 prism star5 rand5 rand6 rand7))
+(define weighted-graphs (list weighted4 wrand5 wrand6))
+(define all-graphs (append unweighted-graphs weighted-graphs))
+
+;; ---------------------------------------------------------------------------
+;; (i) problems and brute force
+;; ---------------------------------------------------------------------------
+(check "edges normalise to (u v w); the weighted flag follows the weights"
+       (and (equal? (maxcut-edges triangle) '((0 1 1) (1 2 1) (0 2 1))) (= 3 (maxcut-size triangle))
+            (not (maxcut-weighted? triangle)) (maxcut-weighted? weighted4)
+            (not (maxcut-weighted? (maxcut-problem 2 '((0 1 1))))) (maxcut-weighted? (maxcut-problem 2 '((0 1 1/2))))))
+(check "maxcut-problem refuses a self-loop, an out-of-range vertex, a repeated pair and a non-real weight"
+       (and (raises? (lambda () (maxcut-problem 3 '((1 1)))))
+            (raises? (lambda () (maxcut-problem 3 '((0 3)))))
+            (raises? (lambda () (maxcut-problem 3 '((0 1) (1 0)))))
+            (raises? (lambda () (maxcut-problem 3 '((0 1 x)))))))
+(check "maxcut-value on lists and vectors; wire 0 is the most significant bit of an index"
+       (and (= 2 (maxcut-value triangle '(1 0 0))) (= 4 (maxcut-value ring4 (vector 0 1 0 1)))
+            (= 12 (maxcut-value weighted4 '(0 1 1 0)))
+            (= 4 (maxcut-value-of-index ring4 4 5)) (= 2 (maxcut-value-of-index ring4 4 8))
+            (= 9 (maxcut-value-of-index weighted4 4 8))))
+(check "brute force: triangle 2, square cycle 4, K4 4, prism 7, star 4"
+       (and (= 2 (car (maxcut-brute-force triangle))) (= 6 (length (cdr (maxcut-brute-force triangle))))
+            (equal? (maxcut-brute-force ring4) '(4 (0 1 0 1) (1 0 1 0)))
+            (= 4 (car (maxcut-brute-force k4))) (= 6 (length (cdr (maxcut-brute-force k4))))
+            (= 7 (car (maxcut-brute-force prism)))
+            (equal? (maxcut-brute-force star5) '(4 (0 1 1 1 1) (1 0 0 0 0)))))
+(check "brute force on the weighted 4-vertex graph: 12 at {0,3} | {1,2}"
+       (equal? (maxcut-brute-force weighted4) '(12 (0 1 1 0) (1 0 0 1))))
+(check "every optimal bitstring of every graph attains the brute-force value"
+       (all? (lambda (g) (let ((bf (maxcut-brute-force g)))
+                           (all? (lambda (b) (= (car bf) (maxcut-value g b))) (cdr bf))))
+             all-graphs))
+
+;; ---------------------------------------------------------------------------
+;; (ii) the Pauli-term form of C
+;; ---------------------------------------------------------------------------
+(define (pauli-value g terms x)
+  (let ((n (maxcut-size g)) (st (qstate-basis (maxcut-size g) x)))
+    (apply + (map (lambda (t) (* (car t) (qstate-pauli-expectation n st (cdr t)))) terms))))
+(check "Pauli terms: constant first (sum w/2, all I), then -w/2 Z_u Z_v per edge"
+       (let ((t (maxcut-pauli-terms weighted4)))
+         (and (= 6 (length t)) (= 7.5 (car (car t))) (equal? '(I I I I) (cdr (car t)))
+              (= -1.5 (car (cadr t))) (equal? '(Z Z I I) (cdr (cadr t)))
+              (= -2.5 (car (list-ref t 5))) (equal? '(Z I Z I) (cdr (list-ref t 5))))))
+(define pauli-err
+  (apply max (map (lambda (g)
+                    (let ((terms (maxcut-pauli-terms g)) (n (maxcut-size g)) (cv (maxcut-cost-vector g)))
+                      (apply max (map (lambda (x)
+                                        (max (abs (- (pauli-value g terms x) (maxcut-value-of-index g n x)))
+                                             (abs (- (vector-ref cv x) (maxcut-value g (map (lambda (q) (qstate-bit n x q)) (range n)))))))
+                                      (range (expt 2 n))))))
+                  (list triangle ring4 k4 prism weighted4 wrand5 wrand6))))
+(display "qaoa: Pauli form vs cut value, max error over every basis state: ") (display (sci pauli-err)) (newline)
+(check "sum coef <P> equals the cut value on every basis state of seven graphs" (< pauli-err 1e-12))
+
+;; ---------------------------------------------------------------------------
+;; (iii) p = 1 closed forms against the state vector
+;; ---------------------------------------------------------------------------
+(define grid-g (map (lambda (i) (+ -1.3 (* 0.55 i))) (range 7)))
+(define grid-b (map (lambda (i) (+ -0.9 (* 0.35 i))) (range 7)))
+(define (closed-form-error g form)
+  (apply max (apply append
+                    (map (lambda (ga) (map (lambda (be) (abs (- (qaoa-expectation g (list ga) (list be)) (form g ga be)))) grid-b))
+                         grid-g))))
+(define err-unweighted (apply max (map (lambda (g) (closed-form-error g qaoa-p1-unweighted-expectation)) unweighted-graphs)))
+(define err-ising-u (apply max (map (lambda (g) (closed-form-error g qaoa-p1-ising-expectation)) unweighted-graphs)))
+(define err-ising-w (apply max (map (lambda (g) (closed-form-error g qaoa-p1-expectation)) weighted-graphs)))
+(display "qaoa: p=1 closed form vs state vector over a 7x7 (gamma, beta) grid, max error: unweighted ")
+(display (sci err-unweighted)) (display ", Ising form on unweighted ") (display (sci err-ising-u))
+(display ", weighted ") (display (sci err-ising-w)) (newline)
+(check "Wang et al. p=1 form equals the state vector on 8 unweighted graphs (triangle, ring, K4, prism, star, random)" (< err-unweighted 1e-10))
+(check "the Ising p=1 form equals the state vector on the same 8 graphs" (< err-ising-u 1e-10))
+(check "the Ising p=1 form equals the state vector on 3 weighted graphs (negative weights included)" (< err-ising-w 1e-10))
+(check "the unweighted form refuses a weighted problem; qaoa-p1-expectation dispatches"
+       (and (raises? (lambda () (qaoa-p1-unweighted-expectation weighted4 0.1 0.2)))
+            (= (qaoa-p1-expectation prism 0.4 0.3) (qaoa-p1-unweighted-expectation prism 0.4 0.3))))
+
+;; ---------------------------------------------------------------------------
+;; (iv) exact AD gradients against central finite differences (oracle only)
+;; ---------------------------------------------------------------------------
+(define (fd-gradient f theta h)
+  (let* ((k (vector-length theta)) (out (make-vector k 0.0)))
+    (do ((i 0 (+ i 1))) ((= i k) out)
+      (let ((tp (vector-map (lambda (x) x) theta)) (tm (vector-map (lambda (x) x) theta)))
+        (vector-set! tp i (+ (vector-ref theta i) h))
+        (vector-set! tm i (- (vector-ref theta i) h))
+        (vector-set! out i (/ (- (f tp) (f tm)) (* 2 h)))))))
+(define (random-theta p) (list->vector (map (lambda (i) (- (* 2.0 (rand-unit)) 1.0)) (range (* 2 p)))))
+(define ad-cases
+  (apply append (map (lambda (p) (map (lambda (g) (cons g p)) (list ring4 prism weighted4 wrand5 rand6))) '(1 2 3))))
+(define ad-err
+  (apply max (map (lambda (c)
+                    (let* ((g (car c)) (p (cdr c)) (f (qaoa-objective g p)) (th (random-theta p))
+                           (ad (qaoa-gradient g th)) (fd (fd-gradient f th 1e-5)))
+                      (vmax-abs-diff ad fd)))
+                  ad-cases)))
+(display "qaoa: AD gradient vs central differences (h=1e-5), p=1,2,3 on 5 graphs, max error: ") (display (sci ad-err)) (newline)
+(check "exact AD gradient agrees with central differences to 1e-6 (15 cases, weighted and unweighted)" (< ad-err 1e-6))
+(check "the AD gradient at p=1 is the derivative of the closed form (central differences of the closed form)"
+       (let* ((ga 0.37) (be -0.21) (h 1e-5) (g (qaoa-gradient prism (vector ga be))))
+         (and (< (abs (- (vector-ref g 0) (/ (- (qaoa-p1-expectation prism (+ ga h) be) (qaoa-p1-expectation prism (- ga h) be)) (* 2 h)))) 1e-6)
+              (< (abs (- (vector-ref g 1) (/ (- (qaoa-p1-expectation prism ga (+ be h)) (qaoa-p1-expectation prism ga (- be h))) (* 2 h)))) 1e-6))))
+(check "the objective agrees with qaoa-expectation"
+       (< (abs (- ((qaoa-objective weighted4 2) (vector 0.1 0.2 0.3 0.4)) (qaoa-expectation weighted4 '(0.1 0.2) '(0.3 0.4)))) 1e-14))
+
+;; ---------------------------------------------------------------------------
+;; (v) optimisation
+;; ---------------------------------------------------------------------------
+(define (res r k) (cdr (assq k r)))
+(define (report name r)
+  (display "qaoa: ") (display name) (display " p=") (display (res r 'p))
+  (display " E=") (display (fmt4 (res r 'expectation)))
+  (display " ratio=") (display (fmt4 (res r 'approximation-ratio)))
+  (display " P(opt)=") (display (fmt4 (res r 'optimal-probability)))
+  (display " top=") (display (res r 'most-probable)) (display " cut=") (display (res r 'most-probable-cut))
+  (newline))
+(define (consistent? g r)
+  (let* ((probs (qaoa-sample-probabilities g (res r 'gammas) (res r 'betas)))
+         (total (let loop ((i 0) (s 0.0)) (if (= i (vector-length probs)) s (loop (+ i 1) (+ s (vector-ref probs i)))))))
+    (and (< (abs (- total 1.0)) 1e-12)
+         (< (abs (- (res r 'expectation) (qaoa-expectation g (res r 'gammas) (res r 'betas)))) 1e-12)
+         (= (res r 'most-probable-cut) (maxcut-value g (res r 'most-probable)))
+         (<= 0.0 (res r 'optimal-probability) 1.000000001)
+         (= (res r 'max-cut) (car (maxcut-brute-force g))))))
+(define ring4-1 (qaoa-optimize ring4 1)) (report "ring4" ring4-1)
+(define tri-1 (qaoa-optimize triangle 1)) (report "triangle" tri-1)
+(define prism-1 (qaoa-optimize prism 1)) (report "prism" prism-1)
+(define w4-1 (qaoa-optimize weighted4 1)) (report "weighted4" w4-1)
+(define ring4-2 (qaoa-optimize ring4 2 '((iterations . 300)))) (report "ring4" ring4-2)
+(define prism-2 (qaoa-optimize prism 2)) (report "prism" prism-2)
+(define w4-2 (qaoa-optimize weighted4 2 '(restarts . 3) '(seed . 7))) (report "weighted4" w4-2)
+(check "ring of 4 at p=1: the optimum expectation is 3 (ratio 3/4)"
+       (and (< (abs (- 3.0 (res ring4-1 'expectation))) 1e-6) (< (abs (- 0.75 (res ring4-1 'approximation-ratio))) 1e-6)))
+(check "triangle at p=1 reaches the maximum cut 2 in expectation" (< (abs (- 2.0 (res tri-1 'expectation))) 1e-6))
+(check "prism at p=1: the optimum 5.93922 (ratio 0.8485) exceeds the 3-regular bound 0.6924 (Farhi et al.)"
+       (and (> (res prism-1 'expectation) 5.9392) (> (res prism-1 'approximation-ratio) 0.6924)))
+(check "the p=1 optimum is a stationary point of the closed form"
+       (let* ((ga (car (res prism-1 'gammas))) (be (car (res prism-1 'betas))) (g (qaoa-gradient prism (vector ga be))))
+         (and (< (abs (vector-ref g 0)) 1e-4) (< (abs (vector-ref g 1)) 1e-4)
+              (< (abs (- (res prism-1 'expectation) (qaoa-p1-expectation prism ga be))) 1e-10))))
+(check "p=2 reaches at least the p=1 value on ring4, prism and the weighted graph"
+       (and (>= (res ring4-2 'expectation) (- (res ring4-1 'expectation) 1e-6))
+            (>= (res prism-2 'expectation) (- (res prism-1 'expectation) 1e-6))
+            (>= (res w4-2 'expectation) (- (res w4-1 'expectation) 1e-6))))
+(check "ring of 4 at p=2 exceeds the p=1 value" (> (res ring4-2 'expectation) 3.1))
+(check "the most probable bitstring after optimisation is an optimal cut on ring4, prism and the weighted graph"
+       (and (= 4 (res ring4-1 'most-probable-cut)) (= 7 (res prism-2 'most-probable-cut)) (= 12 (res w4-2 'most-probable-cut))))
+(check "result records are consistent with the state vector and the brute force"
+       (all? (lambda (c) (consistent? (car c) (cdr c)))
+             (list (cons ring4 ring4-1) (cons triangle tri-1) (cons prism prism-1) (cons weighted4 w4-1)
+                   (cons ring4 ring4-2) (cons prism prism-2) (cons weighted4 w4-2))))
+
+;; ---------------------------------------------------------------------------
+;; (vi) circuit semantics
+;; ---------------------------------------------------------------------------
+;; every RZZ(th) written as CNOT; RZ(th) on the target; CNOT
+(define (explicit-p1 g ga be)
+  (let ((n (maxcut-size g)))
+    (make-qcircuit n (append (map (lambda (q) (list 'H q)) (range n))
+                             (apply append (map (lambda (e) (let ((th (* -1 ga (caddr e))))
+                                                              (list (list 'CNOT (car e) (cadr e)) (list 'RZ (cadr e) th) (list 'CNOT (car e) (cadr e)))))
+                                                (maxcut-edges g)))
+                             (map (lambda (q) (list 'RX q (* 2 be))) (range n))))))
+(check "qaoa-circuit at p=1 equals the explicit H; CNOT-RZ-CNOT; RX(2 beta) circuit (binary64 unitary, up to phase)"
+       (and (qcircuit-equivalent-float? (qaoa-circuit triangle '(0.7) '(0.3)) (explicit-p1 triangle 0.7 0.3))
+            (qcircuit-equivalent-float? (qaoa-circuit ring4 '(-0.4) '(1.1)) (explicit-p1 ring4 -0.4 1.1))
+            (qcircuit-equivalent-float? (qaoa-circuit weighted4 '(0.25) '(-0.6)) (explicit-p1 weighted4 0.25 -0.6))))
+(check "the parametric circuit has 2p parameters ordered gamma_1..gamma_p beta_1..beta_p"
+       (let* ((c (qaoa-parametric-circuit prism 3)) (gs (qcircuit-gates c)))
+         (and (= 6 (qcircuit-parameter-count c)) (= (+ 6 (* 3 (+ 9 6))) (length gs))
+              (equal? (list-ref gs 6) (list 'RZZ 0 1 (qparam 0 -1)))
+              (equal? (list-ref gs 15) (list 'RX 0 (qparam 3 2)))
+              (equal? (list-ref gs (+ 6 15 15 9)) (list 'RX 0 (qparam 5 2))))))
+;; e^{-i beta B} e^{-i gamma C} |+>, built directly from the diagonal of C: the
+;; circuit equals it times the global phase e^{+i gamma sum w / 2}
+(define (direct-state g gammas betas)
+  (let* ((n (maxcut-size g)) (N (expt 2 n)) (cv (maxcut-cost-vector g)) (a (/ 1.0 (sqrt N))))
+    (let loop ((gs gammas) (bs betas) (st (make-vector N (make-rectangular a 0.0))))
+      (if (null? gs) st
+          (let* ((ph (list->vector (map (lambda (x) (* (vector-ref st x) (exp (make-rectangular 0.0 (* -1 (car gs) (vector-ref cv x)))))) (range N))))
+                 (mixed (qstate-run n (map (lambda (q) (list 'RX q (* 2 (car bs)))) (range n)) ph)))
+            (loop (cdr gs) (cdr bs) mixed))))))
+(define (phase-error g gammas betas)
+  (let* ((w (apply + (map caddr (maxcut-edges g))))
+         (ph (exp (make-rectangular 0.0 (* 0.5 w (apply + gammas)))))
+         (u (qaoa-state g gammas betas)) (v (direct-state g gammas betas)))
+    (let loop ((i 0) (m 0.0)) (if (= i (vector-length u)) m (loop (+ i 1) (max m (magnitude (- (vector-ref u i) (* ph (vector-ref v i))))))))))
+(define sem-err (max (phase-error weighted4 '(0.3 -0.8) '(0.5 0.2)) (phase-error prism '(0.6 0.1 -0.4) '(-0.3 0.7 0.2))))
+(display "qaoa: circuit vs e^{-i beta B} e^{-i gamma C}|+> amplitude error (with the documented global phase): ") (display (sci sem-err)) (newline)
+(check "the circuit realises prod e^{-i beta_l B} e^{-i gamma_l C} |+> exactly up to e^{-i sum gamma_l sum w/2}" (< sem-err 1e-12))
+
+(display "qaoa: runtime ") (display (fmt4 (/ (- (current-time-us) t-start) 1e6))) (display " s") (newline)
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: qaoa_test") (newline) (display "RESULT: PASS") (newline)
