@@ -14,6 +14,18 @@
   },
   "gates": {},
   "records": {
+    "examples/algebraic_ad.esk": {
+      "source_sha256": "75623281baa24793f65abd9fc9d0d3092916cc40299e699af5e48b158f1366df",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
+    },
     "examples/autodiff.esk": {
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
       "jit": {
@@ -2702,6 +2714,18 @@
         "AD_MODEL_PASS"
       ],
       "output_lines": 27
+    },
+    "examples/nested_algebraic_fields.esk": {
+      "source_sha256": "df073d7c01bfb3c3baf9239c0a06be2c1e87a665c9d399ceb35e6a226baafb97",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
     }
   }
 }
