@@ -782,6 +782,19 @@ under the same discipline that made `Qubit` linear.
       complexes checked page by page and in the limit, cup and cup-i products,
       Steenrod squares and group cohomology with twisted coefficients. Eight
       algebraic-topology examples run on them
+- [x] Finite category theory as a library (ADR-0036): `core.category` gives
+      functors and natural transformations checked by their laws, functor,
+      comma and slice categories, limits, colimits, ends and coends, the
+      Yoneda lemma, categories of elements and Grothendieck constructions,
+      Kan extensions by the pointwise and the (co)end formulas with
+      Lan -| F^* -| Ran, adjunctions with both triangle identities and
+      adjoints found through comma categories, monads, nerves, derived
+      limits, and descent and sheafification as category theory (a -| i, the
+      sheafification monad, Cech descent, cohomological descent through
+      Grothendieck constructions), all on core.sheaf's finite categories.
+      The finite-categories, sheafification and homotopy-colimit examples run
+      on it, and the S6.2 suite reproduces the numbers of the sheaf and
+      descent examples categorically
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve

@@ -2027,16 +2027,16 @@
     },
     {
       "path": "examples/mathematics_finite_categories_kan_extensions.esk",
-      "source_sha256": "d04c60d9390806909c63b23ddbb572074f467f00f796246942972bf33c88e117",
+      "source_sha256": "1927c08b17a438122261889cd8f11d2f63b0ca868a4f2112602bf88851e205d0",
       "title": "Finite categories and Kan extensions",
       "kind": "mathematics",
       "purpose": "Make finite categorical constructions explicit and test their universal-property comparisons.",
-      "algorithm": "Enumerate presented arrows/composites, functors, natural transformations, limits/colimits, comma-category Kan extensions and categories of elements.",
+      "algorithm": "Build presented categories, functors, comma categories, limits, colimits, pointwise Kan extensions with their units and counits, categories of elements and nerves with core.category, and compare derived limits with core.sheaf.",
       "domain": "Walking arrow, commutative square, pseudocircle/cone diagrams and Z/2 sets; finite derived-limit examples.",
       "arithmetic": "Exact finite sets, arrow tables and rational/integer cochain linear algebra.",
       "validation": "Identity/composition/naturality laws, selected adjunction triangles, extension sizes, element-category lifting and derived-limit dimensions are checked.",
       "limitations": "The source explicitly obtains a discrete opfibration for its covariant element construction; do not automatically relabel it a contravariant fibration. Presentation rewriting and universal-property claims are restricted to the supplied categories.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2054,23 +2054,19 @@
           "text": ";; Finite categories as computations: categories from generators and"
         },
         {
-          "line": 78,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+          "line": 61,
+          "text": "(require core.category.kan)"
         },
         {
-          "line": 79,
-          "text": "(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))"
-        },
-        {
-          "line": 447,
+          "line": 176,
           "text": "(check \"the category of elements of G on the pseudocircle has 10 objects and 18 arrows (10 identities and 8 lifts), and the projection is a discrete opfibration (each arrow out of an object's image has exactly one lift)\""
         },
         {
-          "line": 493,
+          "line": 189,
           "text": "(check \"derived limits recover sheaf cohomology: (1, 1, 0) for the pseudocircle and (1, 0, 1, 0) for the pseudo-2-sphere, the values of the finite-spaces example\""
         },
         {
-          "line": 495,
+          "line": 194,
           "text": "(check \"lim^0 agrees with the limit of the constant functor computed categorically: one compatible family on each connected poset\""
         }
       ],
@@ -2764,16 +2760,16 @@
     },
     {
       "path": "examples/mathematics_homotopy_colimits_grothendieck.esk",
-      "source_sha256": "514dd29538277472de7112382f796daf43e8ffc84b7ca0b27d4094d720d2997c",
+      "source_sha256": "b5dfc4f22bfbe205c70c3e0c020e219a7ee000a6e8e8dcdc5db84579b13b11d6",
       "title": "Grothendieck constructions and homotopy colimits",
       "kind": "mathematics",
       "purpose": "Contrast homotopy constructions with strict colimits.",
-      "algorithm": "Enumerate diagram element/action categories, normalized nerves and integral cochain Smith forms.",
+      "algorithm": "Build diagrams of posets and Z/2 actions as core.category category diagrams, take their Grothendieck constructions, and compute the integral cohomology of the nerves by Smith normal form.",
       "domain": "Span diagrams suspending two points/pseudocircle; Z/2 actions on a point and pseudocircle, including free and reflection actions.",
       "arithmetic": "Exact finite categorical data and integer torsion calculations.",
       "validation": "Suspension/Borel cohomology and action laws are checked; the strict free-action quotient is contractible while the homotopy quotient retains a circle.",
       "limitations": "Finite degrees and supplied diagrams are computed; the general Thomason equivalence is a cited theorem rather than a new universal proof.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2791,23 +2787,19 @@
           "text": ";; Homotopy colimits as nerves of Grothendieck constructions: suspensions,"
         },
         {
-          "line": 49,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 47,
+          "text": "(require core.category.functor)"
         },
         {
-          "line": 50,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
-        },
-        {
-          "line": 352,
+          "line": 143,
           "text": "(check \"reflection with two fixed points: BZ/2 v BZ/2, (Z, 0, (Z/2)^2, 0)\""
         },
         {
-          "line": 356,
+          "line": 147,
           "text": "(check \"the strict quotient poset of the free action is contractible, (Z, 0): the strict colimit forgets the circle the homotopy quotient keeps\""
         },
         {
-          "line": 359,
+          "line": 150,
           "text": "(check \"negative control -- swapping the roles of the two actions fails: the free action's answer is not the trivial action's\""
         }
       ],
@@ -4110,16 +4102,16 @@
     },
     {
       "path": "examples/mathematics_sheafification_descent_kan.esk",
-      "source_sha256": "72aae0f72e6bb160b435055a394c7cd2f9651f72b7d8a9ba588786d291684a49",
+      "source_sha256": "e2ed4c0dc14726cb3961bfef73a9b642c86ce4f97bb428dd1f9d265fdc15746b",
       "title": "Sheafification, reflector and Kan descent",
       "kind": "mathematics",
       "purpose": "Compare finite-site plus construction with matching-family Kan limits.",
-      "algorithm": "Enumerate covering sieves and finite matching families, apply plus twice, build comma-category limits and count natural maps into sheaves.",
+      "algorithm": "Build the sites of opens with core.sheaf, apply the plus construction twice, compute Match on the minimal covering sieves as Ran along the sieve inclusion and as the limit over the sieve category with core.category, and count natural transformations into sheaves three ways with the triangle identities of a -| i.",
       "domain": "Pseudocircle site with 6 opens and pseudo-2-sphere site with 9 opens; constant, locally constant and nonseparated set presheaves.",
       "arithmetic": "Exact finite sets and enumeration/pruned-count cross-checks.",
       "validation": "Grothendieck axioms, separated/sheaf conditions, section counts, Kan/matching equality and selected reflector-adjunction counts are asserted.",
       "limitations": "The exhaustive site is finite; selected adjunction counts must not be promoted to a proof for arbitrary infinite sites or all presheaves.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -4137,23 +4129,19 @@
           "text": ";; Sheafification as a reflector and descent as a Kan extension, computed on"
         },
         {
-          "line": 61,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 57,
+          "text": "(require core.category.kan)"
         },
         {
-          "line": 62,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
-        },
-        {
-          "line": 527,
+          "line": 181,
           "text": "(check \"on the pseudo-2-sphere the constant presheaf sheafifies to |A|^{pi_0(U)} on all 9 opens and the result is a sheaf\""
         },
         {
-          "line": 551,
-          "text": "(check \"the pruned count agrees with the brute-force enumeration on the small case Hom(const, A^pi_0)\" (= (car uc1) (length (all-naturals (opposite CS*) const-S locally-constant-S))))"
+          "line": 196,
+          "text": "(check \"the pruned count agrees with the brute-force enumeration on the small case Hom(const, A^pi_0)\""
         },
         {
-          "line": 554,
+          "line": 201,
           "text": "(check \"a -| i: Hom(F, G) = Hom(aF, G) for the sheaf G = A^{pi_0}, for the constant presheaf and for the non-separated one\""
         }
       ],

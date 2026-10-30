@@ -1,0 +1,307 @@
+;; S6.2 acceptance: descent as a Kan extension and sheafification as a
+;; reflector, computed through core.category's operators.
+;;
+;; Statement (written before the code; Selene S6 definition of done, stage
+;; S6.2). For a Grothendieck topology J on a finite category C, the sheaf
+;; condition for a presheaf F is the isomorphism F(c) -> lim over the
+;; category of a covering sieve of F; sheafification a is the plus
+;; construction twice; a -| i with i the inclusion of sheaves, with both
+;; triangle identities; Cech descent for a cover is the equalizer form of
+;; that limit. The categorical route (limits over sieve categories, right
+;; Kan extensions, derived limits over nerve categories of covers and over
+;; Grothendieck constructions, nerves of categories) reproduces the numbers
+;; of the finite-site sheafification program (7), the finite-space sheaf
+;; cohomology program (6), the descent and hypercohomology program (10) and
+;; the 2-descent program (19), each number checked against the value that
+;; program prints.
+;;
+;; Program 19's mapping-space cardinalities are reproduced for the
+;; untwisted 2-types (pi_1 and pi_2 constant coefficients, zero k-invariant:
+;; K(Z/p,2), BZ/p and their product), where |Map(K, B G)| is determined by
+;; H^*(K; Z/p): |H^1|/|H^0| for BZ/p, |H^2||H^0|/|H^1| for K(Z/p,2).
+
+(require stdlib)
+(require core.category)
+(require core.sheaf.cohomology)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (length (filter pred xs)))
+(define (range n) (iota n))
+(define (H . groups) (map (lambda (k g) (list k (car g) (cadr g))) (range (length groups)) groups))   ;; (H (b t) ...)
+
+;; ---------------------------------------------------------------------------
+;; The models (as in programs 6, 7, 10, 19)
+;; ---------------------------------------------------------------------------
+(define S (make-finite-space 4 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3))))
+(define S2 (make-finite-space 6 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4) (cons 2 5) (cons 3 5))))
+(define Cone (make-finite-space 5 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4))))
+(define T (finite-space-product S S))
+;; the category of points: one arrow y -> x for y <= x
+(define (points X) (poset-category (finite-space-size X) (lambda (y x) (finite-space-leq? X y x))))
+(define (local-system X m) (poset-module->point-presheaf (poset-local-system X m)))
+(define (constant-sheaf x y) 1)
+(define (twist-S x y) (if (and (= x 3) (= y 1)) -1 1))
+(define (product-twist m1 m2) (lambda (p q) (* (m1 (quotient p 4) (quotient q 4)) (m2 (remainder p 4) (remainder q 4)))))
+(define (Hderived X m kmax) (with-region (module-presheaf-derived-limits (local-system X m) kmax)))
+(define (Hnerve X kmax) (with-region (category-nerve-cohomology (points X) kmax)))
+(define (euler X kmax) (let ((P (points X))) (apply + (map (lambda (k) (* (if (even? k) 1 -1) (length (category-nerve P k)))) (range (+ kmax 1))))))
+(define (cech X m cover kmax) (with-region (module-presheaf-derived-limits (cdr (finite-space-cover-sections-presheaf (local-system X m) cover)) kmax)))
+(define (descent X m cover kmax)
+  (with-region (let ((Ep (finite-space-cover-descent-category X cover)))
+                 (module-presheaf-derived-limits (module-presheaf-restrict (local-system X m) (cdr Ep)) kmax))))
+(define (on-open X m U kmax) (with-region (module-presheaf-derived-limits (module-presheaf-restrict (local-system X m) (cdr (inclusion-functor (points X) U))) kmax)))
+
+;; ---------------------------------------------------------------------------
+;; Program 7: the plus construction on the site of opens of the pseudocircle
+;; ---------------------------------------------------------------------------
+(define site (finite-space-site S))
+(define C (site-category site))
+(define (obj U) (category-object-of-label C U))
+(define opens (map (lambda (c) (category-object-label C c)) (range (category-object-count C))))
+;; opens as the down-closed sets of points: sets closed under the arrows into them
+(define P4 (points S))
+(define down-closed (filter (lambda (U) (all? (lambda (x) (all? (lambda (a) (memv (arrow-source P4 a) U)) (category-arrows-into P4 x))) U)) (sheaf-subsets (range 4))))
+(show "program 7: opens" opens)
+(check "program 7: 7 opens, the down-closed sets of the category of points, in the program's order" (and (= 7 (length opens)) (equal? opens down-closed)))
+;; a cover of U: a family of nonempty opens inside U whose generated sieve covers U
+(define (covers-of U)
+  (let ((subs (filter (lambda (V) (and (pair? V) (pair? (category-hom C (obj V) (obj U))))) opens)))
+    (filter (lambda (fam) (and (pair? fam) (site-covering? site (obj U) (sieve-generated C (obj U) (map (lambda (V) (category-thin-arrow C (obj V) (obj U))) fam)))))
+            (sheaf-subsets subs))))
+(define cover-counts (map (lambda (U) (length (covers-of U))) (list (list 0 1 2 3) (list 0 1 2) (list 0 1))))
+(show "program 7: covers of X, U_c, {a,b}" cover-counts)
+(check "program 7: (40 8 5) covers" (equal? cover-counts (list 40 8 5)))
+(define (pi0 X U) (category-components (car (inclusion-functor (points X) U))))
+(check "program 7: components 1, 1, 2 (pi_0 as the colimit of the point functor)" (equal? (map (lambda (U) (pi0 S U)) (list (list 0 1 2 3) (list 0 1 2) (list 0 1))) (list 1 1 2)))
+(define (open-presheaf rank res)
+  (make-module-presheaf C 'Z (lambda (c) (rank (category-object-label C c)))
+                        (lambda (a) (res (category-object-label C (arrow-target C a)) (category-object-label C (arrow-source C a))))))
+(define constant-presheaf (open-presheaf (lambda (U) (if (null? U) 0 1)) (lambda (U V) (if (null? V) (integer-matrix 0 (if (null? U) 0 1)) (integer-identity-matrix 1)))))
+(define (components U) (finite-space-components S U))
+(define constant-sheaf-7
+  (open-presheaf (lambda (U) (length (components U)))
+                 (lambda (U V) (let* ((cu (components U)) (cv (components V)) (M (integer-matrix (length cv) (length cu))))
+                                 (let loop ((cvs cv) (r 0))
+                                   (if (not (null? cvs))
+                                       (begin (integer-matrix-set! M r (let find ((cus cu) (c 0)) (if (memv (car (car cvs)) (car cus)) c (find (cdr cus) (+ c 1)))) 1)
+                                              (loop (cdr cvs) (+ r 1)))))
+                                 M))))
+(define not-separated (open-presheaf (lambda (U) (if (null? U) 0 1))
+                                     (lambda (U V) (cond ((null? V) (integer-matrix 0 1)) ((and (= 4 (length U)) (< (length V) 4)) (integer-matrix 1 1)) (else (integer-identity-matrix 1))))))
+(define (cover-sieve U fam) (sieve-generated C (obj U) (map (lambda (V) (category-thin-arrow C (obj V) (obj U))) fam)))
+(define (by-limit F U fam) (car (module-sheaf-at-by-limit F (obj U) (cover-sieve U fam))))
+(define nonempty (filter pair? opens))
+(define (first-failing F bad)
+  (let loop ((Us nonempty))
+    (if (null? Us) #f
+        (let ((c (let inner ((cs (covers-of (car Us)))) (cond ((null? cs) #f) ((memq (by-limit F (car Us) (car cs)) bad) (car cs)) (else (inner (cdr cs)))))))
+          (if c (list (car Us) c) (loop (cdr Us)))))))
+(define failing (first-failing constant-presheaf (list 'not-glueing 'not-separated)))
+(show "program 7: first failing cover of the constant presheaf" failing)
+(check "program 7: the constant presheaf is separated on every cover, fails to glue first on ({a} {b}) of {a,b}"
+       (and (not (first-failing constant-presheaf (list 'not-separated))) (equal? failing (list (list 0 1) (list (list 1) (list 0))))))
+(check "program 7: the constant sheaf is a sheaf on every cover; the non-separated presheaf fails separatedness first on X; the constant presheaf is a sheaf on (U_c, U_d)"
+       (and (not (first-failing constant-sheaf-7 (list 'not-glueing 'not-separated)))
+            (equal? (car (first-failing not-separated (list 'not-separated))) (list 0 1 2 3))
+            (eq? 'iso (by-limit constant-presheaf (list 0 1 2 3) (list (list 0 1 2) (list 0 1 3))))))
+(check "program 7: the limit route agrees with core.sheaf's sheaf condition on every cover of every open, for the three presheaves"
+       (all? (lambda (F) (all? (lambda (U) (all? (lambda (fam) (eq? (eq? 'iso (by-limit F U fam))
+                                                                   (module-sheaf-on-family? F (obj U) (map (lambda (V) (category-thin-arrow C (obj V) (obj U))) fam))))
+                                                 (covers-of U)))
+                               nonempty))
+             (list constant-presheaf constant-sheaf-7 not-separated)))
+(define (plus-rank F U) (module-limit-rank (module-sieve-limit F (obj U) (site-minimal-covering-sieve site (obj U)))))
+(define plus-ranks (map (lambda (U) (plus-rank constant-presheaf U)) opens))
+(show "program 7: ranks of F^+ as limits over the smallest covering sieves" plus-ranks)
+(check "program 7: F^+ ranks (0 1 1 2 1 1 1), equal to the constant sheaf's and to core.sheaf's plus construction; F^+ of the sheaf keeps its ranks"
+       (let ((plus (module-presheaf-plus site constant-presheaf)))
+         (and (equal? plus-ranks (list 0 1 1 2 1 1 1))
+              (equal? plus-ranks (map (lambda (U) (module-presheaf-rank constant-sheaf-7 (obj U))) opens))
+              (equal? plus-ranks (map (lambda (U) (module-presheaf-rank plus (obj U))) opens))
+              (equal? (map (lambda (U) (plus-rank constant-sheaf-7 U)) opens) plus-ranks)
+              (not (first-failing plus (list 'not-glueing 'not-separated))))))
+(define (unit-shape F U) (module-sieve-unit-shape F (obj U) (site-minimal-covering-sieve site (obj U))))
+(define shapes (list (unit-shape constant-presheaf (list 0 1 2 3)) (unit-shape constant-presheaf (list 0 1)) (unit-shape not-separated (list 0 1 2 3))))
+(show "program 7: the unit F -> F^+ (rows, cols, rank)" shapes)
+(check "program 7: unit shapes ((1 1 1) (2 1 1) (1 1 0))" (equal? shapes (list (list 1 1 1) (list 2 1 1) (list 1 1 0))))
+(define (cech7 F) (let ((h (cech-derived-limits F (list (obj (list 0 1 2)) (obj (list 0 1 3))) 1))) (list (cadr (car h)) (cdr (cadr h)))))
+(define cech-values (list (cech7 constant-presheaf) (cech7 constant-sheaf-7) (cech7 (module-presheaf-plus site constant-presheaf))))
+(show "program 7: Cech (H^0, H^1) of (U_c, U_d) as lim^n over the nerve category of the cover" cech-values)
+(check "program 7: Cech (Z, 0) for the presheaf and (Z, Z) for the sheaf and for F^+"
+       (equal? cech-values (list (list 1 (list 0 '())) (list 1 (list 1 '())) (list 1 (list 1 '())))))
+
+;; ---------------------------------------------------------------------------
+;; S6.2 core: a -| i with both triangle identities, the monad, descent as a limit and a Kan extension
+;; ---------------------------------------------------------------------------
+(define K2 (constant-set-presheaf C (list 'p 'q)))
+(define lc (sheafify site K2))
+(define nonsep (make-set-presheaf C (map (lambda (U) (if (= 4 (length U)) (list 'u 'v) (if (null? U) (list 'e) (list 'w)))) opens)
+                                  (lambda (a x) (if (null? (category-object-label C (arrow-source C a))) 'e 'w))))
+(check "a = plus twice: core.sheaf's sheafify is presheaf-plus applied twice, and a F is a sheaf"
+       (all? (lambda (F) (presheaf-sheaf? site (sheafify site F))) (list K2 nonsep)))
+(check "a -| i: units and counits natural, both triangle identities, Hom(F, iG) = Hom(aF, G) by counting and by the explicit bijection psi |-> psi eta"
+       (and (null? (sheafification-adjunction-violations site K2 lc))
+            (null? (sheafification-adjunction-violations site nonsep lc))
+            (null? (sheafification-adjunction-violations site lc lc))))
+(check "the sheafification monad i a: unit, right unit and associativity laws on two presheaves"
+       (and (null? (sheafification-monad-violations site K2)) (null? (sheafification-monad-violations site nonsep))))
+(check "the sheaf condition as F(c) -> lim over the sieve category: the same violations as core.sheaf on every covering sieve"
+       (all? (lambda (F) (equal? (presheaf-sheaf-violations site F) (presheaf-sheaf-violations-by-limit site F))) (list K2 lc nonsep)))
+(check "descent as a Kan extension: Ran along the inclusion of the smallest covering sieve's objects has |Match| elements at every open"
+       (all? (lambda (F) (all? (lambda (c) (let ((R (site-minimal-covering-sieve site c)))
+                                             (= (set-functor-element-count (presheaf-ran-along-inclusion F (map (lambda (f) (arrow-source C f)) R)) c)
+                                                (length (matching-families F c R)))))
+                               (range 7)))
+             (list K2 lc nonsep)))
+(check "Cech descent is the equalizer form: Match(S, F) -> Eq(prod F(U_i) => prod F(V)) is a bijection for every cover of every open"
+       (all? (lambda (F) (all? (lambda (U) (all? (lambda (fam) (null? (cech-descent-violations F (obj U) (map (lambda (V) (category-thin-arrow C (obj V) (obj U))) fam))))
+                                                 (covers-of U)))
+                               nonempty))
+             (list K2 nonsep)))
+
+;; ---------------------------------------------------------------------------
+;; Program 6: sheaf cohomology of finite spaces as derived limits
+;; ---------------------------------------------------------------------------
+(define chainsT (map (lambda (k) (length (category-nerve (points T) k))) (list 0 1 2 3)))
+(show "program 6: nondegenerate simplices of the nerve of the torus model's points" chainsT)
+(check "program 6: chain counts (4 4 0) on the pseudocircle and (16 48 32 0) on the torus model; Euler characteristics 0, 2, 1, 0"
+       (and (equal? (map (lambda (k) (length (category-nerve (points S) k))) (list 0 1 2)) (list 4 4 0)) (equal? chainsT (list 16 48 32 0))
+            (equal? (list (euler S 3) (euler S2 3) (euler Cone 3) (euler T 3)) (list 0 2 1 0))))
+(define H6 (list (Hderived S constant-sheaf 2) (Hderived S2 constant-sheaf 3) (Hderived Cone constant-sheaf 3) (Hderived T constant-sheaf 3)))
+(show "program 6: H^* of the pseudocircle, pseudo-2-sphere, cone, torus as lim^n over the points" H6)
+(check "program 6: (Z, Z), (Z, 0, Z), acyclic, (Z, Z^2, Z); the nerve of the category of points and core.sheaf's derived limits agree"
+       (and (equal? H6 (list (H '(1 ()) '(1 ()) '(0 ())) (H '(1 ()) '(0 ()) '(1 ()) '(0 ())) (H '(1 ()) '(0 ()) '(0 ()) '(0 ())) (H '(1 ()) '(2 ()) '(1 ()) '(0 ()))))
+            (equal? H6 (list (Hnerve S 2) (Hnerve S2 3) (Hnerve Cone 3) (Hnerve T 3)))
+            (equal? (car H6) (poset-module-cohomology (poset-local-system S constant-sheaf) 2))
+            (equal? (list-ref H6 3) (poset-module-cohomology (poset-local-system T constant-sheaf) 3))))
+(define H6t (list (Hderived S twist-S 2) (Hderived T (product-twist twist-S constant-sheaf) 3) (Hderived T (product-twist twist-S twist-S) 3)))
+(show "program 6: twisted coefficients" H6t)
+(check "program 6: monodromy -1 gives (0, Z/2); the torus twists (-1,+1) and (-1,-1) give (0, Z/2, Z/2)"
+       (equal? H6t (list (H '(0 ()) '(0 (2)) '(0 ())) (H '(0 ()) '(0 (2)) '(0 (2)) '(0 ())) (H '(0 ()) '(0 (2)) '(0 (2)) '(0 ())))))
+(check "program 6: the non-functorial assignment on the cone is rejected"
+       (not (module-presheaf-functorial? (local-system Cone (lambda (x y) (if (and (= x 4) (= y 0)) -1 1))))))
+(define cover-S (list (finite-space-down-set S 2) (finite-space-down-set S 3)))
+(define (sections X m U) (module-limit-rank (finite-space-sections (local-system X m) U)))
+(check "program 6: Gamma(U_c) = Z, Gamma({a,b}) = Z^2, twisted Gamma(U_d) = Z, global sections Z and 0, as limits"
+       (equal? (list (sections S constant-sheaf (list 0 1 2)) (sections S constant-sheaf (list 0 1)) (sections S twist-S (list 0 1 3))
+                     (sections S constant-sheaf (range 4)) (sections S twist-S (range 4)))
+               (list 1 2 1 1 0)))
+(define C6 (list (cech S constant-sheaf cover-S 1) (cech S twist-S cover-S 1)))
+(show "program 6: Cech of {U_c, U_d}, constant and twisted" C6)
+(check "program 6: Cech (Z, Z) and (0, Z/2), and H^0 is the equalizer of the cover (descent)"
+       (and (equal? C6 (list (H '(1 ()) '(1 ())) (H '(0 ()) '(0 (2)))))
+            (= (cadr (car (car C6))) (sections S constant-sheaf (range 4))) (= (cadr (car (cadr C6))) (sections S twist-S (range 4)))))
+(define cover-T (map (lambda (x) (finite-space-down-set T x)) (finite-space-maximal-points T)))
+(check "program 6: four maximal opens of nine points; pairwise intersections of six or four points; every intersection acyclic (Leray)"
+       (and (= 4 (length cover-T)) (all? (lambda (U) (= 9 (length U))) cover-T)
+            (let ((sizes (map (lambda (I) (length (sheaf-intersect-all (map (lambda (i) (list-ref cover-T i)) I)))) (sheaf-subsets-of-size (range 4) 2))))
+              (and (= 4 (count-if (lambda (n) (= n 6)) sizes)) (= 2 (count-if (lambda (n) (= n 4)) sizes))))
+            (all? (lambda (I) (let ((h (on-open T constant-sheaf (sheaf-intersect-all (map (lambda (i) (list-ref cover-T i)) I)) 2)))
+                                (and (= 0 (cadr (cadr h))) (null? (caddr (cadr h))) (= 0 (cadr (caddr h))))))
+                  (append (sheaf-subsets-of-size (range 4) 2) (sheaf-subsets-of-size (range 4) 3) (sheaf-subsets-of-size (range 4) 4)))))
+(define C6T (list (cech T constant-sheaf cover-T 3) (cech T (product-twist twist-S constant-sheaf) cover-T 3)))
+(show "program 6: Cech of the torus model's four maximal opens, constant and twisted" C6T)
+(check "program 6: Cech (Z, Z^2, Z, 0) and (0, Z/2, Z/2, 0); the partial cover by two opens has H^1 of rank 1"
+       (and (equal? C6T (list (H '(1 ()) '(2 ()) '(1 ()) '(0 ())) (H '(0 ()) '(0 (2)) '(0 (2)) '(0 ()))))
+            (= 1 (cadr (cadr (cech T constant-sheaf (list (car cover-T) (cadr cover-T)) 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Program 10: cohomological descent as a derived limit over a Grothendieck construction; hypercohomology
+;; ---------------------------------------------------------------------------
+(define (pt x y) (+ (* 4 x) y))
+(define (down-union X xs) (filter (lambda (p) (let loop ((l xs)) (and (pair? l) (or (finite-space-leq? T p (car l)) (loop (cdr l)))))) (range (finite-space-size X))))
+(define U1 (down-union T (list (pt 2 2) (pt 2 3) (pt 3 2))))
+(define U2 (down-union T (list (pt 2 3) (pt 3 2) (pt 3 3))))
+(define U12 (sheaf-intersect-all (list U1 U2)))
+(check "program 10: |U1|, |U2|, |U1 cap U2| = 15, 15, 14 and H^*(U1 cap U2) = (Z, Z^3, 0)"
+       (and (equal? (map length (list U1 U2 U12)) (list 15 15 14)) (equal? (on-open T constant-sheaf U12 2) (H '(1 ()) '(3 ()) '(0 ())))))
+(define plain (cech T constant-sheaf (list U1 U2) 1))
+(define desc (descent T constant-sheaf (list U1 U2) 3))
+(define desc-tw (descent T (product-twist twist-S constant-sheaf) (list U1 U2) 3))
+(show "program 10: plain Cech, descent over the Grothendieck construction, twisted descent" (list plain desc desc-tw))
+(check "program 10: plain Cech of the non-Leray cover is (Z, 0); lim^n over the Grothendieck construction of J |-> U_J gives (Z, Z^2, Z, 0) and twisted (0, Z/2, Z/2, 0)"
+       (and (equal? plain (H '(1 ()) '(0 ()))) (equal? desc (H '(1 ()) '(2 ()) '(1 ()) '(0 ()))) (equal? desc-tw (H '(0 ()) '(0 (2)) '(0 (2)) '(0 ())))))
+(check "program 10: on the Leray cover by the four maximal opens plain Cech already gives the descent value and the derived limit"
+       (let ((c (cech T constant-sheaf cover-T 3))) (and (equal? c desc) (equal? c (Hderived T constant-sheaf 3)))))
+(define ZT (local-system T constant-sheaf))
+(define (hyper m) (with-region (module-presheaf-map-hypercohomology ZT ZT (make-vector 16 (vector (vector m))) 3)))
+(define hypers (map hyper (list 2 1 0)))
+(define dims2 (module-cohomology-mod-p-dimensions (Hderived T constant-sheaf 3) 2))
+(show "program 10: hypercohomology of Z --m--> Z for m = 2, 1, 0; mod-2 dimensions" (list hypers dims2))
+(check "program 10: (0, Z/2, (Z/2)^2, Z/2), exact 0, the zero map (Z, Z^3, Z^3, Z), mod-2 dimensions (1 2 1), and m = 3 gives the mod-3 answer"
+       (and (equal? hypers (list (H '(0 ()) '(0 (2)) '(0 (2 2)) '(0 (2))) (H '(0 ()) '(0 ()) '(0 ()) '(0 ())) (H '(1 ()) '(3 ()) '(3 ()) '(1 ()))))
+            (equal? dims2 (list 1 2 1))
+            (equal? (hyper 3) (H '(0 ()) '(0 (3)) '(0 (3 3)) '(0 (3))))))
+
+;; ---------------------------------------------------------------------------
+;; Program 19: Cech nerves as Grothendieck constructions, and 2-descent for the untwisted 2-types
+;; ---------------------------------------------------------------------------
+(define (maximal-cover X) (map (lambda (x) (finite-space-down-set X x)) (finite-space-maximal-points X)))
+(define (twisted-product twist)
+  (let ((rels '()))
+    (for-each (lambda (t) (for-each (lambda (s) (if (finite-space-leq? S t s)
+                                                    (for-each (lambda (x) (for-each (lambda (y) (let ((yy (if (and (= t 1) (= s 3)) (twist y) y)))
+                                                                                                  (if (and (finite-space-leq? S x yy) (not (and (= t s) (= x y))))
+                                                                                                      (set! rels (cons (cons (+ (* 4 t) x) (+ (* 4 s) y)) rels)))))
+                                                                                    (range 4)))
+                                                              (range 4))))
+                                        (range 4)))
+              (range 4))
+    (make-finite-space 16 rels)))
+(define KB (twisted-product (lambda (y) (cond ((= y 2) 3) ((= y 3) 2) (else y)))))
+;; cells of C(U) by dimension through the face category (Grothendieck construction of J |-> pi_0(U_J))
+(define (nerve-cells X cover) (cech-nerve-cell-counts (finite-space-cech-nerve-category X cover) cover 3))
+(define (order-cells X) (map (lambda (k) (length (category-nerve (points X) k))) (list 0 1 2 3)))
+;; Leray: every component of every intersection of up to four opens has a terminal object (a cone)
+(define (leray? X cover)
+  (all? (lambda (I) (let ((U (sheaf-intersect-all (map (lambda (i) (list-ref cover i)) I))))
+                      (all? (lambda (comp) (pair? (category-terminal-objects (car (inclusion-functor (points X) comp))))) (finite-space-components X U))))
+        (apply append (map (lambda (k) (sheaf-subsets-of-size (range (length cover)) k)) (filter (lambda (k) (<= k (length cover))) (list 1 2 3 4))))))
+;; H^*(C(U); Z): lim^n over the nerve category of J |-> Gamma(U_J; Z) = Z^{pi_0(U_J)}, cross-checked by the nerve of
+;; the face category; H^*(X; Z) from the nerve of the category of points
+(define (nerve-H X cover) (cech X constant-sheaf cover 3))
+(define (face-H X cover) (with-region (category-nerve-cohomology (finite-space-cech-nerve-category X cover) 3)))
+(define (expt-q p e) (if (< e 0) (/ 1 (expt p (- e))) (expt p e)))
+;; |Map(K, B G)| for BZ/p, K(Z/p, 2) and their product, from H^*(K; Z) by universal coefficients
+(define (two-type-values Hz p)
+  (let* ((d (module-cohomology-mod-p-dimensions Hz p)) (d0 (car d)) (d1 (cadr d)) (d2 (caddr d))
+         (b (expt-q p (- d1 d0))) (k (expt-q p (+ d2 (- d0 d1)))))
+    (list k b (* k b))))
+(define (values-both X cover p) (list (two-type-values (nerve-H X cover) p) (two-type-values (Hnerve X 3) p)))
+(define cS (maximal-cover S)) (define cT (maximal-cover T)) (define cK (maximal-cover KB)) (define cS2 (maximal-cover S2))
+(define cells19 (map (lambda (X c) (list (nerve-cells X c) (order-cells X))) (list S T KB S2) (list cS cT cK cS2)))
+(show "program 19: Cech nerve cells and order complex cells (pseudocircle, torus, Klein bottle, pseudo-2-sphere)" cells19)
+(check "program 19: cells ((2 2 0 0) (4 4 0 0)), ((4 16 16 4) (16 48 32 0)) twice, ((2 1 0 0) (6 12 8 0)); Leray except the pseudo-2-sphere"
+       (and (equal? cells19 (list (list (list 2 2 0 0) (list 4 4 0 0)) (list (list 4 16 16 4) (list 16 48 32 0)) (list (list 4 16 16 4) (list 16 48 32 0)) (list (list 2 1 0 0) (list 6 12 8 0))))
+            (leray? S cS) (leray? T cT) (leray? KB cK) (not (leray? S2 cS2))))
+(check "program 19: the two routes to H^*(C(U)) agree (lim^n over the cover's nerve category, the nerve of the face category)"
+       (all? (lambda (Xc) (equal? (nerve-H (car Xc) (cdr Xc)) (face-H (car Xc) (cdr Xc)))) (list (cons S cS) (cons T cT) (cons KB cK) (cons S2 cS2))))
+(define v19 (map (lambda (X c) (values-both X c 2)) (list S T KB) (list cS cT cK)))
+(show "program 19: (K(Z/2,2), BZ/2, split) on the nerve and on the space: pseudocircle, torus, Klein bottle" v19)
+(check "program 19: 2-descent holds on the three Leray covers with the program's values (1 1 1), (1 2 2), (1 2 2)"
+       (equal? v19 (list (list (list 1 1 1) (list 1 1 1)) (list (list 1 2 2) (list 1 2 2)) (list (list 1 2 2) (list 1 2 2)))))
+(check "program 19: BZ/3 separates the torus model (3) from the Klein bottle model (1) on nerves and on spaces"
+       (equal? (map (lambda (X c) (map cadr (values-both X c 3))) (list T KB) (list cT cK)) (list (list 3 3) (list 1 1))))
+(define v19s2 (values-both S2 cS2 2))
+(show "program 19: pseudo-2-sphere (BZ/2, K(Z/2,2), split) on the nerve and on the space" (map (lambda (v) (list (cadr v) (car v) (caddr v))) v19s2))
+(check "program 19: descent fails on the pseudo-2-sphere: nerve (1/2 2 1) against space (1/2 4 2); H^*(order complex) = (Z, 0, Z)"
+       (and (equal? (map (lambda (v) (list (cadr v) (car v) (caddr v))) v19s2) (list (list 1/2 2 1) (list 1/2 4 2)))
+            (equal? (Hnerve S2 3) (H '(1 ()) '(0 ()) '(1 ()) '(0 ())))))
+;; the 64-point model of T^3: the 3-skeleton of the Cech nerve of the eight maximal opens, by pi_0 of the intersections
+(define T3P (finite-space-product T S))
+(define cT3 (maximal-cover T3P))
+(define cells-T3 (map (lambda (k) (apply + (map (lambda (I) (let ((U (sheaf-intersect-all (map (lambda (i) (list-ref cT3 i)) I)))) (if (null? U) 0 (pi0 T3P U))))
+                                                (sheaf-subsets-of-size (range 8) (+ k 1)))))
+                      (list 0 1 2 3)))
+(show "program 19: T^3 model, Cech nerve 3-skeleton cells" cells-T3)
+(check "program 19: the eight maximal opens of the T^3 model give (8 104 352 536) cells and a Leray cover"
+       (and (= 8 (length cT3)) (equal? cells-T3 (list 8 104 352 536)) (with-region (leray? T3P cT3))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: category_s62_test") (newline) (display "RESULT: PASS") (newline)

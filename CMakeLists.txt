@@ -4416,6 +4416,30 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# core.category: finite category theory on core.sheaf.site's representation
+# (ADR-0036): functors, natural transformations, (co)limits, ends, coends,
+# Yoneda, Kan extensions, adjunctions, monads, derived limits, and descent and
+# sheafification as category theory. category_s62_test is the S6.2 acceptance
+# suite (descent as a Kan extension, sheafification as a reflector).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_category_suite category_test category_s62_test)
+        add_test(NAME ${_category_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_category_suite}.esk")
+        add_test(NAME ${_category_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_category_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_category_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=1500"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_category_suite}_jit ${_category_suite}_aot PROPERTIES
+            TIMEOUT 1800
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_category_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
@@ -4483,11 +4507,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # These consumers now require the shared field module from this checkout.
     set_property(TEST torsion_lens_spaces_reidemeister_jit tv_turaev_viro_cyclotomic_jit
                       sheaf_finite_spaces_cech_descent_jit sheaf_finite_site_sheafification_jit
-                      cat_presheaf_topos_internal_logic_jit
+                      cat_presheaf_topos_internal_logic_jit cat_finite_categories_kan_jit
+                      cat_sheafification_descent_kan_jit hocolim_grothendieck_borel_jit
         APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # The functor-of-points example runs on core.ring and core.multimodular.
     set_property(TEST rings_functor_of_points_jit
         APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+    # The finite-categories, sheafification and homotopy-colimit programs load
+    # core.category; compiling the library is most of their time.
+    foreach(_category_example cat_finite_categories_kan cat_sheafification_descent_kan hocolim_grothendieck_borel)
+        if(TEST ${_category_example}_jit)
+            set_tests_properties(${_category_example}_jit ${_category_example}_aot PROPERTIES TIMEOUT 600)
+        endif()
+    endforeach()
     # The order-eight program eliminates five 343 x 2401 integer matrices;
     # about 90 s on an arm64 laptop, so it gets its own budget.
     if(TEST dw_group_cohomology_order_eight_jit)
