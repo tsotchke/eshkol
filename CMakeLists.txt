@@ -15172,3 +15172,18 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
         set_tests_properties(vm_binding_read_runtime PROPERTIES TIMEOUT 180)
     endif()
 endif()
+
+# Exact observable-space compiler and independent source replay.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME observable_closure_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_observable_closure_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(observable_closure_gate PROPERTIES TIMEOUT 1000)
+    endif()
+    add_test(NAME observable_closure_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/observable_closure_gate_self_test.py")
+    set_tests_properties(observable_closure_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
