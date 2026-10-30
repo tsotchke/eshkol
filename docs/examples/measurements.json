@@ -14,6 +14,18 @@
   },
   "gates": {},
   "records": {
+    "examples/algebraic_ad.esk": {
+      "source_sha256": "75623281baa24793f65abd9fc9d0d3092916cc40299e699af5e48b158f1366df",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "New example pending configured release qualification; local focused evidence is separate."
+    },
     "examples/autodiff.esk": {
       "source_sha256": "37bf8a530c57f041f1badb49cc8aeadf1decf23f0c72a2323034709540222e1f",
       "jit": {
