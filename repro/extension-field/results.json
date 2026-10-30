@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "jit_executable_cache": "disabled",
+  "checks_per_engine": 1162,
+  "pair_oracles": 978,
+  "minimal_polynomial_oracles": 54,
+  "engines": [
+    "jit",
+    "aot-O2"
+  ],
+  "stdout_sha256": "cb02a93e6094459e8a4e1eab386d8d2a3eb32987e46ab73442b800e439030905",
+  "compiler_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "source_sha256": {
+    "lib/core/extension_field.esk": "aedc03a2fdf34e1b2dcedc49171b19f563748033cf1fa752d83800b3e11cd2fb",
+    "lib/core/ring.esk": "938d4a10d3c6881602d17a2a576359d896ace54be904268469a83f87e9f6e444",
+    "tests/stdlib/extension_field_test.esk": "985e29d6fb61af1c867fc2c5e83a885a0667347688d3c22d961f2bf95cb7a9e7",
+    "scripts/run_extension_field_gate.py": "613116017daeea47aa76476d592f2f4e3ac68efaa5c6894c262b7cad8969bd5c"
+  }
+}
