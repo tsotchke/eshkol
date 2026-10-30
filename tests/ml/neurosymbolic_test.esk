@@ -13,6 +13,12 @@
 
 (define tbl (make-embedding-table 8))
 
+;; emb-known? reports without creating
+(check "emb-known? false before first use" (not (emb-known? tbl 'cat)))
+(check "emb-known? does not create" (not (emb-known? tbl 'cat)))
+(embed! tbl 'cat)
+(check "emb-known? true after embed!" (emb-known? tbl 'cat))
+
 ;; soft-unify is a confidence in [0,1]
 (define s0 (soft-unify tbl 'cat 'feline))
 (check "soft-unify in [0,1]" (and (>= s0 0.0) (<= s0 1.0)))

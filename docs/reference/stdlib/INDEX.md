@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 108** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1165** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 108** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1166** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -110,7 +110,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.ml.bpe`](../../../lib/core/ml/bpe.esk) | no | [ml_bpe.md](ml_bpe.md) | `bpe-train` `bpe-encode` `bpe-encode-ids` `bpe-decode` `bpe-merges` `bpe-vocab` `bpe-token-id` `make-bpe-model` `bpe-end-of-word` |
 | [`core.ml.gradient_estimators`](../../../lib/core/ml/gradient_estimators.esk) | no | [ml_gradient_estimators.md](ml_gradient_estimators.md) | `gumbel-softmax` `gumbel-softmax-det` `straight-through` `straight-through-round` `straight-through-onehot` `categorical-pick` `argmax-onehot` `softmax` `sample-gumbel-noise` `st-value` `st-round` `st-softmax` `gumbel-softmax-relaxed` `gumbel-softmax-st` `st-bernoulli` `gumbel-max-sample` `categorical-log-prob` `score-function-gradient` `categorical-expectation-gradient` |
 | [`core.ml.hnsw`](../../../lib/core/ml/hnsw.esk) | no | [ml_hnsw.md](ml_hnsw.md) | `make-hnsw` `hnsw-insert!` `hnsw-search` `hnsw-count` `hnsw-dim` `hnsw-payload` `hnsw-vector` `hnsw-brute-force` `hnsw-distance` `hnsw-index-kb!` `kb-query-nearest` |
-| [`core.ml.neurosymbolic`](../../../lib/core/ml/neurosymbolic.esk) | no | [ml_neurosymbolic.md](ml_neurosymbolic.md) | `make-embedding-table` `emb-dim` `embed!` `vdot` `soft-unify` `soft-unify-loss` `soft-unify-train!` `kb-attention` `kb-retrieve` |
+| [`core.ml.neurosymbolic`](../../../lib/core/ml/neurosymbolic.esk) | no | [ml_neurosymbolic.md](ml_neurosymbolic.md) | `make-embedding-table` `emb-dim` `embed!` `emb-known?` `vdot` `soft-unify` `soft-unify-loss` `soft-unify-train!` `kb-attention` `kb-retrieve` |
 | [`core.ml.recurrent`](../../../lib/core/ml/recurrent.esk) | no | [ml_recurrent.md](ml_recurrent.md) | `lstm-param-count` `gru-param-count` `readout-param-count` `lstm-init-params!` `gru-init-params!` `readout-init-params!` `make-params` `lstm-cell` `gru-cell` `lstm-run` `gru-run` `readout` `rnn-sigmoid` |
 | [`core.ml.sparse`](../../../lib/core/ml/sparse.esk) | no | [ml_sparse.md](ml_sparse.md) | `sparse-from-triplets` `sparse-from-dense` `sparse->dense` `sparse->triplets` `sparse?` `sparse-rows` `sparse-cols` `sparse-nnz` `sparse-ref` `sparse-values` `sparse-with-values` `sparse-matvec` `sparse-transpose` `sparse-matmul` `sparse-add` `sparse-scale` `sparse-map-values` `sparse-identity` |
 | [`core.msgpack`](../../../lib/core/msgpack.esk) | no | [msgpack.md](msgpack.md) | `msgpack-null` `msgpack-null?` `msgpack-map` `msgpack-map?` `msgpack-map-entries` `msgpack-encode` `msgpack-decode` `msgpack-decode-prefix` `msgpack-bytes->bytevector` `msgpack-bytevector->bytes` |
