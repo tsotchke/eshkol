@@ -409,6 +409,7 @@ struct StructuralChecker::Impl {
         TyRef type;
         int fn_depth;
         int binder;  // index into binders, or -1
+        bool annotated = false;
     };
     std::vector<Local> locals;
     std::vector<const eshkol_ast_t*> fn_stack;
@@ -918,15 +919,42 @@ struct StructuralChecker::Impl {
                 structural.insert(f->operation.define_op.name);
             }
         }
+        // Close over the call graph in both directions: a definition that
+        // mentions structural code is structural, and so is a definition that
+        // structural code mentions (its callers need its type).
+        std::map<std::string, const eshkol_ast_t*> by_name;
+        for (const eshkol_ast_t* f : defines) by_name[f->operation.define_op.name] = f;
+        auto pull = [&](const eshkol_ast_t* body) {
+            bool grew = false;
+            std::set<std::string> m;
+            collectMentions(body, m);
+            for (const auto& n : m) {
+                auto it = by_name.find(n);
+                if (it != by_name.end() && !chosen.count(it->second)) {
+                    chosen.insert(it->second);
+                    structural.insert(n);
+                    grew = true;
+                }
+            }
+            return grew;
+        };
         bool grew = true;
         while (grew) {
             grew = false;
             for (const eshkol_ast_t* f : defines) {
-                if (chosen.count(f)) continue;
-                if (mentionsStructural(f->operation.define_op.value)) {
+                if (!chosen.count(f) && mentionsStructural(f->operation.define_op.value)) {
                     chosen.insert(f);
                     structural.insert(f->operation.define_op.name);
                     grew = true;
+                }
+                if (chosen.count(f)) grew = pull(f->operation.define_op.value) || grew;
+            }
+            for (size_t i = 0; i < n; ++i) {
+                const eshkol_ast_t* f = &asts[i];
+                if (f->type == ESHKOL_OP && f->operation.op != ESHKOL_DEFINE_OP &&
+                    f->operation.op != ESHKOL_REQUIRE_OP && f->operation.op != ESHKOL_DEFINE_TYPE_OP &&
+                    (mentionsStructural(f) || formHasStructuralAnnotation(f))) {
+                    grew = pull(f) || grew;
                 }
             }
         }
@@ -1222,8 +1250,35 @@ struct StructuralChecker::Impl {
         return expected ? expected : s.meta(Kind::Type, level);
     }
 
-    /** Check a branch against the join type (expected or a shared meta). */
-    void branch(eshkol_ast_t* e, TyRef join) { checkRho(e, join); }
+    /**
+     * Gradual join of two branch types (ADR-0013): their unifier when one
+     * exists, otherwise `any`. The failed trial is undone completely. A
+     * linear type never disappears into `any` (the obligation rejects it).
+     */
+    TyRef join(TyRef a, TyRef b, const eshkol_ast_t* node) {
+        const size_t m = solver.mark();
+        solver.clearError();
+        if (solver.unify(a, b)) {
+            solver.commit(m);
+            drain(node);
+            return a;
+        }
+        solver.rollback(m);
+        dyn_buffer.clear();
+        obligations.push_back({a, node});
+        obligations.push_back({b, node});
+        return s.dyn();
+    }
+
+    /** One branch: checked against @p expected, or joined into @p acc. */
+    TyRef branch(eshkol_ast_t* e, TyRef acc, TyRef expected) {
+        if (expected) {
+            checkRho(e, expected);
+            return expected;
+        }
+        TyRef t = inferRho(e);
+        return acc ? join(acc, t, e) : t;
+    }
 
     TyRef ifForm(eshkol_ast_t* e, TyRef expected) {
         auto& c = e->operation.call_op;
@@ -1232,10 +1287,8 @@ struct StructuralChecker::Impl {
             effect(&c.variables[1]);
             return s.dyn();
         }
-        TyRef join = resultOrFresh(expected);
-        branch(&c.variables[1], join);
-        branch(&c.variables[2], join);
-        return join;
+        TyRef acc = branch(&c.variables[1], nullptr, expected);
+        return branch(&c.variables[2], acc, expected);
     }
 
     TyRef sequence(eshkol_ast_t* items, uint64_t n, TyRef expected) {
@@ -1250,7 +1303,7 @@ struct StructuralChecker::Impl {
 
     TyRef condForm(eshkol_ast_t* e, TyRef expected) {
         auto& c = e->operation.call_op;
-        TyRef join = resultOrFresh(expected);
+        TyRef acc = nullptr;
         bool has_else = false;
         for (uint64_t i = 0; i < c.num_vars; ++i) {
             eshkol_ast_t* clause = &c.variables[i];
@@ -1266,19 +1319,19 @@ struct StructuralChecker::Impl {
             }
             if (cl.num_vars == 0) continue;
             for (uint64_t j = 0; j + 1 < cl.num_vars; ++j) effect(&cl.variables[j]);
-            branch(&cl.variables[cl.num_vars - 1], join);
+            acc = branch(&cl.variables[cl.num_vars - 1], acc, expected);
             if (is_else) {
                 has_else = true;
                 break;
             }
         }
-        return has_else ? join : s.dyn();
+        return (has_else && acc) ? acc : s.dyn();
     }
 
     TyRef caseForm(eshkol_ast_t* e, TyRef expected) {
         auto& c = e->operation.call_op;
         inferRho(c.func);
-        TyRef join = resultOrFresh(expected);
+        TyRef acc = nullptr;
         bool has_else = false;
         for (uint64_t i = 0; i < c.num_vars; ++i) {
             eshkol_ast_t* clause = &c.variables[i];
@@ -1290,16 +1343,16 @@ struct StructuralChecker::Impl {
                 auto& bc = body->operation.call_op;
                 if (bc.num_vars == 0) continue;
                 for (uint64_t j = 0; j + 1 < bc.num_vars; ++j) effect(&bc.variables[j]);
-                branch(&bc.variables[bc.num_vars - 1], join);
+                acc = branch(&bc.variables[bc.num_vars - 1], acc, expected);
             } else if (body) {
-                branch(body, join);
+                acc = branch(body, acc, expected);
             }
             if (is_else) {
                 has_else = true;
                 break;
             }
         }
-        return has_else ? join : s.dyn();
+        return (has_else && acc) ? acc : s.dyn();
     }
 
     void setForm(eshkol_ast_t* e) {
@@ -1310,7 +1363,14 @@ struct StructuralChecker::Impl {
             for (int d = static_cast<int>(fn_stack.size()) - 1; d >= l->fn_depth; --d) {
                 if (l->binder >= 0) captures.push_back({fn_stack[d], l->binder});
             }
-            checkRho(so.value, s.instantiate(t, level));
+            if (l->annotated) {
+                checkRho(so.value, s.instantiate(t, level));
+            } else {
+                // An unannotated variable may be re-assigned a value of a
+                // different type (Scheme); the binding's type then joins to
+                // `any` for this assignment, gradually.
+                join(s.instantiate(t, level), inferRho(so.value), so.value);
+            }
             return;
         }
         inferRho(so.value);
@@ -1354,6 +1414,7 @@ struct StructuralChecker::Impl {
                 TyRef t = annotated(i);
                 types[i] = t ? t : s.meta(Kind::Type, level);
                 bindLocal(varName(let.bindings[i].cons_cell.car), types[i], letRegion(e, i), e);
+                locals.back().annotated = let.binding_types && let.binding_types[i];
             }
             for (uint64_t i = 0; i < let.num_bindings; ++i) {
                 eshkol_ast_t* value = let.bindings[i].cons_cell.cdr;
@@ -1377,11 +1438,13 @@ struct StructuralChecker::Impl {
                 types[i] = t;
                 if (opk == ESHKOL_LET_STAR_OP) {
                     bindLocal(varName(let.bindings[i].cons_cell.car), t, letRegion(e, i), e);
+                    locals.back().annotated = let.binding_types && let.binding_types[i];
                 }
             }
             if (opk != ESHKOL_LET_STAR_OP) {
                 for (uint64_t i = 0; i < let.num_bindings; ++i) {
                     bindLocal(varName(let.bindings[i].cons_cell.car), types[i], letRegion(e, i), e);
+                    locals.back().annotated = let.binding_types && let.binding_types[i];
                 }
             }
         }
@@ -1524,7 +1587,10 @@ struct StructuralChecker::Impl {
         TyRef rest = f.rest ? s.meta(Kind::Type, level) : nullptr;
         TyRef ret = f.return_type ? annotation(f.return_type, FreeVars::Fresh, f.node) : nullptr;
         fn_stack.push_back(f.node);
-        for (uint64_t i = 0; i < f.num_params; ++i) bindLocal(paramName(f, i), params[i], {f.body}, f.node);
+        for (uint64_t i = 0; i < f.num_params; ++i) {
+            bindLocal(paramName(f, i), params[i], {f.body}, f.node);
+            locals.back().annotated = f.param_types && f.param_types[i];
+        }
         if (rest) bindLocal(f.rest, s.con("list", {rest}), {f.body}, f.node);
         TyRef result;
         if (ret) {
@@ -1564,7 +1630,10 @@ struct StructuralChecker::Impl {
             params.push_back(p);
         }
         fn_stack.push_back(f.node);
-        for (uint64_t i = 0; i < f.num_params; ++i) bindLocal(paramName(f, i), params[i], {f.body}, f.node);
+        for (uint64_t i = 0; i < f.num_params; ++i) {
+            bindLocal(paramName(f, i), params[i], {f.body}, f.node);
+            locals.back().annotated = true;   // typed by its signature or context
+        }
         if (f.rest) bindLocal(f.rest, s.con("list", {rho->b}), {f.body}, f.node);
         if (f.return_type) {
             TyRef ret = annotation(f.return_type, FreeVars::Fresh, f.node);

@@ -157,7 +157,7 @@ public:
     TyRef null() { return null_; }
 
     // ---- structure ----------------------------------------------------
-    /** Follow solved metavariables (with path compression). */
+    /** Follow solved metavariables. */
     static TyRef prune(TyRef t);
     /** Fully substitute solved metavariables (fresh nodes where changed). */
     TyRef zonk(TyRef t);
@@ -237,6 +237,14 @@ public:
     /** Bind an unsolved metavariable, with every side condition checked. */
     bool bindMeta(TyRef meta, TyRef t);
 
+    /**
+     * Speculation: mark() opens a trial, rollback() undoes every solution and
+     * constraint written since the mark, commit() keeps them. Trials nest.
+     */
+    size_t mark();
+    void rollback(size_t mark);
+    void commit(size_t mark);
+
     /** Human-readable reason for the last failure. */
     const std::string& error() const { return error_; }
     void clearError() { error_.clear(); }
@@ -248,6 +256,14 @@ public:
     std::vector<TyRef>* dyn_meets = nullptr;
 
 private:
+    struct Saved {
+        TyRef node;
+        TyRef solution;
+        int level;
+        std::set<std::string> lacks;
+        bool unrestricted;
+    };
+    void touch(TyRef n);
     bool fail(const std::string& msg);
     bool unifyRows(TyRef a, TyRef b);
     bool unifyDual(TyRef dual_node, TyRef other);
@@ -257,6 +273,8 @@ private:
     std::string error_;
     std::set<std::pair<TyRef, TyRef>> assumed_;   // coinductive protocol pairs
     int depth_ = 0;
+    std::vector<Saved> trail_;
+    int trail_depth_ = 0;
 };
 
 }  // namespace eshkol::hott::st

@@ -190,16 +190,11 @@ TyRef TypeStore::values(std::vector<TyRef> elems) {
 }
 
 TyRef TypeStore::prune(TyRef t) {
-    if (!t) return t;
-    TyRef root = t;
-    while (root->tag == Tag::Meta && root->solution) root = root->solution;
-    // Path compression.
-    while (t->tag == Tag::Meta && t->solution && t->solution != root) {
-        TyRef next = t->solution;
-        t->solution = root;
-        t = next;
-    }
-    return root;
+    // No path compression: a speculative unification (Solver::mark /
+    // rollback) must be able to undo every write, and compression would
+    // write through chains it did not create.
+    while (t && t->tag == Tag::Meta && t->solution) t = t->solution;
+    return t;
 }
 
 namespace {
@@ -651,6 +646,35 @@ std::string TypeStore::show(TyRef t) {
 // Solver
 // ============================================================================
 
+void Solver::touch(TyRef n) {
+    if (trail_depth_ > 0 && n) {
+        trail_.push_back({n, n->solution, n->level, n->lacks, n->unrestricted});
+    }
+}
+
+size_t Solver::mark() {
+    ++trail_depth_;
+    return trail_.size();
+}
+
+void Solver::rollback(size_t m) {
+    while (trail_.size() > m) {
+        Saved& sv = trail_.back();
+        sv.node->solution = sv.solution;
+        sv.node->level = sv.level;
+        sv.node->lacks = sv.lacks;
+        sv.node->unrestricted = sv.unrestricted;
+        trail_.pop_back();
+    }
+    if (trail_depth_ > 0) --trail_depth_;
+    error_.clear();
+}
+
+void Solver::commit(size_t m) {
+    if (trail_depth_ > 0) --trail_depth_;
+    if (trail_depth_ == 0) trail_.resize(m);
+}
+
 bool Solver::fail(const std::string& msg) {
     if (error_.empty()) error_ = msg;
     return false;
@@ -847,6 +871,7 @@ bool Solver::rewriteRow(TyRef row, const std::string& label, TyRef& field, TyRef
             r->lacks = row->lacks;
             r->lacks.insert(label);
             r->unrestricted = row->unrestricted;
+            touch(row);
             row->solution = s_.rowExtend(label, f, r);
             field = f;
             rest = r;
@@ -899,6 +924,7 @@ bool Solver::occursAndAdjust(TyRef m, TyRef t) {
     }
     switch (t->tag) {
         case Tag::Meta:
+            touch(t);
             t->level = std::min(t->level, m->level);
             if (m->unrestricted && t->kind == Kind::Type) t->unrestricted = true;
             return true;
@@ -959,6 +985,8 @@ bool Solver::bindMeta(TyRef m, TyRef t) {
         if (m->kind == Kind::Row && t->field_kind != m->field_kind) {
             return fail("rows of different field kinds cannot be matched");
         }
+        touch(t);
+        touch(m);
         t->level = std::min(t->level, m->level);
         t->lacks.insert(m->lacks.begin(), m->lacks.end());
         t->unrestricted = t->unrestricted || m->unrestricted;
@@ -997,6 +1025,7 @@ bool Solver::bindMeta(TyRef m, TyRef t) {
         }
         TyRef tail = TypeStore::rowTail(t);
         if (tail && tail->tag == Tag::Meta) {
+            touch(tail);
             tail->lacks.insert(m->lacks.begin(), m->lacks.end());
             if (m->unrestricted) tail->unrestricted = true;
         } else if (tail && tail->tag == Tag::Skolem) {
@@ -1015,6 +1044,7 @@ bool Solver::bindMeta(TyRef m, TyRef t) {
                     "dropped");
     }
 
+    touch(m);
     m->solution = t;
     return true;
 }
