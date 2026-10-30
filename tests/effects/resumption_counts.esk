@@ -1,0 +1,65 @@
+;;; How many times a resumption runs, and where it runs.
+
+(define-effect Choose (choose))
+(define-effect Tick (tick))
+
+(define (show label v) (display label) (display ": ") (display v) (newline))
+(define runs 0)
+(define (body) (let ((c (choose))) (set! runs (+ runs 1)) (if c 'heads 'tails)))
+
+;; zero, one, two, three resumptions
+(define (count-with n)
+  (set! runs 0)
+  (let ((r (handle (body)
+             ((choose) k
+              (let loop ((i 0) (acc '()))
+                (if (= i n) (reverse acc) (loop (+ i 1) (cons (k (even? i)) acc))))))))
+    (list r runs)))
+(show "0" (count-with 0))
+(show "1" (count-with 1))
+(show "2" (count-with 2))
+(show "3" (count-with 3))
+
+;; nested multi-shot: every combination
+(show "combinations"
+      (handle (list (if (choose) 1 2) (if (choose) 'a 'b))
+        (return (x) (list x))
+        ((choose) k (append (k #t) (k #f)))))
+
+;; a resumption kept and invoked after the handle has returned
+(define saved #f)
+(define first-result (handle (list 'got (tick)) ((tick) k (set! saved k) 'suspended)))
+(show "first" first-result)
+(show "resumed-later-1" (saved 1))
+(show "resumed-later-2" (saved 2))
+
+;; a pull generator drives a computation step by step from outside
+(define-effect Gen (gen-yield v))
+(define (make-pull thunk)
+  (let ((resume #f) (done #f))
+    (lambda ()
+      (cond (done 'done)
+            (resume (let ((k resume)) (set! resume #f) (k #f)))
+            (else (handle (thunk)
+                    (return (x) (set! done #t) 'done)
+                    ((gen-yield v) k (set! resume k) v)))))))
+(define g (make-pull (lambda () (let loop ((i 0)) (if (< i 4) (begin (gen-yield (* i i)) (loop (+ i 1))))))))
+(let* ((a (g)) (b (g)) (c (g)) (d (g)) (e (g)) (f (g)))
+  (show "pull" (list a b c d e f)))
+
+;; shallow: one operation per handler; the rest goes to the next handler out
+(show "shallow"
+      (handle (handle-shallow (list (tick) (tick))
+                (return (x) (list 'shallow-return x))
+                ((tick) k (list 'shallow (k 1))))
+        (return (x) (list 'deep-return x))
+        ((tick) k (k 2))))
+
+;; shallow handlers re-installed by recursion (the classic shallow pattern)
+(define (count-ticks thunk n)
+  (handle-shallow (thunk)
+    (return (x) (list x n))
+    ((tick) k (count-ticks (lambda () (k n)) (+ n 1)))))
+(show "shallow-loop" (count-ticks (lambda () (+ (tick) (tick) (tick))) 10))
+
+(show "depth-after" (effect-handler-depth))

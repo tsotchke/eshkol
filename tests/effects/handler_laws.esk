@@ -1,0 +1,61 @@
+;;; Handler laws (Plotkin-Pretnar), checked by observation on every engine.
+
+(define-effect Ask (ask))
+(define-effect Emit (emit x))
+
+(define (show label v) (display label) (display ": ") (display v) (newline))
+
+;; 1. return law: handling a value applies the return clause
+(show "return" (handle 41 (return (x) (+ x 1)) ((ask) k (k 0))))
+
+;; 2. no return clause = identity
+(show "identity-return" (handle 7 ((ask) k (k 0))))
+
+;; 3. operation law: (handle (op v) h) runs the clause with k = the rest
+(show "op" (handle (+ 1 (ask)) (return (x) (* x 10)) ((ask) k (k 4))))
+
+;; 4. fun is the clause that resumes with its value
+(show "fun=tail-k"
+      (list (handle (+ 1 (ask)) (fun (ask) 4))
+            (handle (+ 1 (ask)) ((ask) k (k 4)))))
+
+;; 5. deep: the handler stays installed around the continuation
+(show "deep" (handle (list (ask) (ask) (ask))
+               ((ask) k (k 'a))))
+
+;; 6. forwarding: an inner handler that does not handle Ask passes it out
+(show "forward" (handle (handle (list (ask) (begin (emit 1) 'e))
+                          ((emit x) k (k x)))
+                  ((ask) k (k 'outer))))
+
+;; 7. a clause runs outside its own handler: ask inside the clause goes out
+(show "clause-scope" (handle (handle (ask) ((ask) k (k (list 'inner (ask)))))
+                       ((ask) k (k 'outer))))
+
+;; 8. abort: a clause that does not resume discards the rest
+(show "abort" (handle (begin (emit 1) (display "unreachable") 'no)
+                (return (x) (list 'returned x))
+                ((emit x) k (list 'aborted x))))
+
+;; 9. the return clause does not apply to an aborted result, only to normal results
+(show "abort-skips-return" (handle (emit 2) (return (x) 'ret) ((emit x) k x)))
+
+;; 10. independent effects commute under nesting
+(define (prog) (list (ask) (begin (emit 'x) 'y)))
+(show "commute-1" (handle (handle (prog) ((emit x) k (k x))) ((ask) k (k 1))))
+(show "commute-2" (handle (handle (prog) ((ask) k (k 1))) ((emit x) k (k x))))
+
+;; 11. resumption result: k returns the result of the rest of the handled computation
+(show "k-returns" (handle (+ 100 (ask)) (return (x) (list 'r x)) ((ask) k (list 'clause (k 1)))))
+
+;; 12. a variadic operation
+(define-effect Log (log-all . items))
+(show "variadic" (handle (begin (log-all 1 2 3) 'done) ((log-all . items) k (list 'got items))))
+
+;; 13. operations are first-class procedures
+(show "first-class" (handle (map (lambda (f) (f)) (list ask ask)) (fun (ask) 9)))
+
+;; 14. effect metadata
+(show "meta" (list (effect-name Ask) (effect-operation-names Log)
+                   (effect-operation? ask) (effect-operation? car)
+                   (effect-operation-arity emit) (effect-operation-arity log-all)))

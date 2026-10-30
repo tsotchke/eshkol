@@ -335,8 +335,9 @@ public:
             const eshkol_ast_t* rowe = &op.call_op.variables[1];
             std::vector<std::string> labels = quotedList(rowe, &tail);
             if (labels.empty() && tail.empty()) {
+                // a bare symbol: Pure, or a row variable (open, no fixed labels)
                 std::string sym = quotedSymbol(rowe);
-                if (!sym.empty() && sym != "Pure") labels.push_back(sym);
+                if (!sym.empty() && sym != "Pure") tail = sym;
             }
             if (!tail.empty() && tail != "Pure") d.open = true;
             d.labels.insert(labels.begin(), labels.end());
@@ -685,10 +686,10 @@ private:
                 return walkLet(e);
             case ESHKOL_SET_OP: {
                 r = walk(op.set_op.value);
-                size_t depth = 0;
+                // Mutating a variable of the enclosing top-level procedure's own
+                // activation is invisible to its callers; anything else is State.
                 const std::string name = sourceName(op.set_op.name);
-                const Binding* b = lookup(name, &depth);
-                if (!b || depth < lambda_floor_) r.addLabel("State", at(e, "set! " + name));
+                if (!lookup(name)) r.addLabel("State", at(e, "set! " + name));
                 return r;
             }
             case ESHKOL_GUARD_OP: {
