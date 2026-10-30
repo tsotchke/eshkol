@@ -1,0 +1,266 @@
+;;; core.effective.perturbation -- the basic perturbation lemma, reductions
+;;; from admissible discrete vector fields, and tensor products and bar
+;;; constructions of reductions.
+;;;
+;;; Usage: (require core.effective.perturbation)   or   (require core.effective)
+;;;
+;;; Sources: W. Shih, "Homologie des espaces fibres", Publ. IHES 13 (1962);
+;;; R. Brown, "The twisted Eilenberg-Zilber theorem" (1967) (the basic
+;;; perturbation lemma); J. Rubio, F. Sergeraert, "Constructive algebraic
+;;; topology", Bull. Sci. Math. 126 (2002), and the Genova lecture notes,
+;;; Theorem 50 (the formulas used here); R. Forman, "Morse theory for cell
+;;; complexes", Adv. Math. 134 (1998); A. Romero, F. Sergeraert, "Discrete
+;;; vector fields and fundamental algebraic topology", arXiv:1005.5685,
+;;; Theorem 19 and formulas (18) and (20) (the vector-field reduction).
+;;;
+;;; Basic perturbation lemma. Given a reduction (f, g, h) : (C, d) => (D, d)
+;;; and a perturbation delta of the big differential such that delta h is
+;;; locally nilpotent, with Sigma = sum_i (-1)^i (delta h)^i delta:
+;;;   d'_D = d_D + f Sigma g,  f' = f - f Sigma h,  g' = g - h Sigma g,
+;;;   h' = h - h Sigma h
+;;; is a reduction (C, d + delta) => (D, d'_D). Each series is summed until
+;;; its terms vanish; a series that has not vanished after the bound is
+;;; refused by name (the perturbation is not locally nilpotent on that cell).
+;;;
+;;; Vector-field reduction. A discrete vector field on a complex with a
+;;; distinguished basis is given by a status procedure (n cell) ->
+;;;   'critical | (cons 'source target) | (cons 'target source)
+;;; pairing a source cell of degree n with a target cell of degree n+1 of
+;;; which it is a regular face (incidence +1 or -1, checked on every use).
+;;; For an admissible field the reduction onto the critical cells is
+;;;   h(s) = e (V(s) - sum_{s' /= s source} [d V(s) : s'] h(s'))   (20)
+;;;   f = 1 on critical cells, 0 on targets, -pi_c d h on sources,
+;;;   g(c) = c - h(pi_s d c),  d'(c) = pi_c d g(c)                   (18)
+;;; (e the incidence of s in d V(s)). A V-path that returns to a cell is
+;;; refused by name.
+;;;
+;;; Words. Tensor products and bar constructions are complexes whose cells
+;;; are words #(word ((deg . cell) ...)): letter i is a cell of degree deg of
+;;; the i-th factor, shifted by s_i (0 in a tensor product, 1 in a bar
+;;; construction); the degree of a word is sum (deg + s_i), and
+;;;   d [l_1 ... l_k] = sum_i (-1)^(e_i + s_i) [l_1 ... d l_i ... l_k],
+;;;   e_i = sum_{j<i} (deg_j + s_j)  (Koszul signs).
+;;; The tensor product of reductions has f = (x) f_i, g = (x) g_i and
+;;;   h [l_1 ... l_k] = sum_i (-1)^(e_i + s_i) [gf l_1 ... gf l_(i-1), h l_i, l_(i+1) ... l_k].
+
+(require stdlib)
+(require core.effective.chain)
+
+(provide perturb-reduction perturb-small perturbation-series
+         vector-field-reduction vector-field-critical?
+         make-word word? word-letters word-length word-degree word-letter-degree word-letter-cell
+         tensor-complex tensor-reduction bar-complex bar-reduction word-tensor-d)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefix pt-)
+;; ---------------------------------------------------------------------------
+(define (pt-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (pt-memoize proc)
+  (let ((table (make-hash-table)))
+    (lambda (n cell)
+      (let* ((key (cons n cell)) (hit (hash-table-ref/default table key #f)))
+        (or hit (let ((v (proc n cell))) (hash-table-set! table key v) v))))))
+(define pt-series-bound 100000)
+
+;; ---------------------------------------------------------------------------
+;; The basic perturbation lemma
+;; ---------------------------------------------------------------------------
+;; Sigma(c) = sum_i (-1)^i (delta h)^i delta (c) for a cell of degree n of the
+;; big complex, summed until the terms vanish
+(define (perturbation-series r delta n c)
+  (let loop ((x (delta n c)) (acc '()) (i 0))
+    (cond ((lc-zero? x) (lc-sum (reverse acc)))
+          ((> i pt-series-bound)
+           (error "perturb-reduction: the perturbation is not locally nilpotent on this cell" n c))
+          (else (loop (lc-negate (lc-apply (lambda (y) (delta n y)) (reduction-h r (- n 1) x)))
+                      (cons x acc) (+ i 1))))))
+(define (perturb-reduction r delta-proc)
+  (let* ((delta (pt-memoize delta-proc))
+         (B (reduction-big r)) (S (reduction-small r))
+         (sigma (pt-memoize (lambda (n c) (perturbation-series r delta n c))))
+         (sigma-lc (lambda (n lc) (lc-apply (lambda (c) (sigma n c)) lc)))
+         (B2 (make-effective-complex (effective-complex-name B)
+                                     (lambda (n) (if (effective-complex-enumerated? B n) (effective-complex-basis B n) #f))
+                                     (lambda (n c) (lc-add (effective-complex-d-cell B n c) (delta n c)))))
+         (S2 (make-effective-complex (effective-complex-name S)
+                                     (lambda (n) (if (effective-complex-enumerated? S n) (effective-complex-basis S n) #f))
+                                     (lambda (n e) (lc-add (effective-complex-d-cell S n e)
+                                                           (reduction-f r (- n 1) (sigma-lc n (reduction-g-cell r n e))))))))
+    (make-reduction B2 S2
+                    (lambda (n c) (lc-sub (reduction-f-cell r n c)
+                                          (reduction-f r n (sigma-lc (+ n 1) (reduction-h-cell r n c)))))
+                    (lambda (n e) (lc-sub (reduction-g-cell r n e)
+                                          (reduction-h r (- n 1) (sigma-lc n (reduction-g-cell r n e)))))
+                    (lambda (n c) (lc-sub (reduction-h-cell r n c)
+                                          (reduction-h r n (sigma-lc (+ n 1) (reduction-h-cell r n c))))))))
+;; The easy perturbation lemma: a perturbation delta of the small
+;; differential gives (C, d + g delta f) => (D, d + delta) with f, g, h
+;; unchanged (f h = 0 and h g = 0 make it a reduction).
+(define (perturb-small r delta-proc)
+  (let* ((delta (pt-memoize delta-proc)) (B (reduction-big r)) (S (reduction-small r))
+         (B2 (make-effective-complex (effective-complex-name B)
+                                     (lambda (n) (if (effective-complex-enumerated? B n) (effective-complex-basis B n) #f))
+                                     (lambda (n c) (lc-add (effective-complex-d-cell B n c)
+                                                           (reduction-g r (- n 1) (lc-apply (lambda (e) (delta n e)) (reduction-f-cell r n c)))))))
+         (S2 (make-effective-complex (effective-complex-name S)
+                                     (lambda (n) (if (effective-complex-enumerated? S n) (effective-complex-basis S n) #f))
+                                     (lambda (n e) (lc-add (effective-complex-d-cell S n e) (delta n e))))))
+    (make-reduction B2 S2 (lambda (n c) (reduction-f-cell r n c)) (lambda (n e) (reduction-g-cell r n e))
+                    (lambda (n c) (reduction-h-cell r n c)))))
+
+;; ---------------------------------------------------------------------------
+;; Reductions from discrete vector fields
+;; ---------------------------------------------------------------------------
+(define (vector-field-critical? status n c) (eq? 'critical (status n c)))
+;; C: the complex; status as above; critical-basis: n -> the cells of the
+;; critical complex in degree n (labelled), or #f to filter C's basis;
+;; label / unlabel: critical cell <-> cell of the critical complex (#f for
+;; the identity).
+(define (vector-field-reduction C status name critical-basis label unlabel)
+  (let* ((lab (or label (lambda (c) c))) (unlab (or unlabel (lambda (e) e)))
+         (status* (pt-memoize status))
+         (kind (lambda (n c) (let ((s (status* n c))) (if (pair? s) (car s) s))))
+         (in-progress (make-hash-table))
+         (hsrc-table (make-hash-table)))
+    (define (pi-kind k n lc) (lc-filter (lambda (c) (eq? k (kind n c))) lc))
+    ;; d21^{-1} on a source cell of degree n: a combination of targets of degree n+1
+    (define (hsrc n s)
+      (let* ((key (cons n s)) (hit (hash-table-ref/default hsrc-table key #f)))
+        (or hit
+            (begin
+              (if (hash-table-ref/default in-progress key #f)
+                  (error "vector-field-reduction: a V-path returns to a cell; the field is not admissible" name n s))
+              (hash-table-set! in-progress key #t)
+              (let* ((tgt (cdr (status* n s)))
+                     (dt (effective-complex-d-cell C (+ n 1) tgt))
+                     (e (lc-coefficient dt s)))
+                (if (not (or (= e 1) (= e -1)))
+                    (error "vector-field-reduction: a source is not a regular face of its target" name n s tgt e))
+                (let ((v (lc-scale (lc-sub (lc-term tgt 1)
+                                           (lc-apply (lambda (s2) (if (equal? s2 s) '() (hsrc n s2)))
+                                                     (pi-kind 'source n dt)))
+                                   e)))
+                  (hash-table-set! in-progress key #f)
+                  (hash-table-set! hsrc-table key v)
+                  v))))))
+    (define (hsrc-lc n lc) (lc-apply (lambda (s) (hsrc n s)) lc))
+    (define (g-crit n c) (lc-sub (lc-term c 1) (hsrc-lc (- n 1) (pi-kind 'source (- n 1) (effective-complex-d-cell C n c)))))
+    (let ((small (make-effective-complex
+                  name
+                  (lambda (n)
+                    (if critical-basis (critical-basis n)
+                        (if (effective-complex-enumerated? C n)
+                            (map lab (filter (lambda (c) (eq? 'critical (kind n c))) (effective-complex-basis C n)))
+                            #f)))
+                  (lambda (n e) (lc-relabel lab (pi-kind 'critical (- n 1) (effective-complex-d C n (g-crit n (unlab e)))))))))
+      (make-reduction C small
+                      (lambda (n c)
+                        (let ((k (kind n c)))
+                          (cond ((eq? k 'critical) (lc-term (lab c) 1))
+                                ((eq? k 'target) '())
+                                (else (lc-negate (lc-relabel lab (pi-kind 'critical n (effective-complex-d C (+ n 1) (hsrc n c)))))))))
+                      (lambda (n e) (g-crit n (unlab e)))
+                      (lambda (n c) (if (eq? 'source (kind n c)) (hsrc n c) '()))))))
+
+;; ---------------------------------------------------------------------------
+;; Words: tensor products and bar constructions
+;; ---------------------------------------------------------------------------
+(define (make-word letters) (vector 'word letters))
+(define (word? w) (and (vector? w) (= 2 (vector-length w)) (eq? (vector-ref w 0) 'word)))
+(define (word-letters w) (vector-ref w 1))
+(define (word-length w) (length (vector-ref w 1)))
+(define (word-letter-degree l) (car l))
+(define (word-letter-cell l) (cdr l))
+(define (word-degree w shift) (fold-left (lambda (s l) (+ s (car l) shift)) 0 (word-letters w)))
+(define (pt-replace-nth l i x) (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (cons (if (= k i) x (car l)) acc)))))
+;; all words from per-letter combinations (lists of (letter-lc . degree)):
+;; the multilinear expansion, coefficients multiplied
+(define (pt-expand per-letter)
+  (let loop ((ls (reverse per-letter)) (acc (list (cons '() 1))))
+    (if (null? ls) (lc-combination (map (lambda (p) (cons (cdr p) (lc-term (make-word (car p)) 1))) acc))
+        (let ((deg (cdr (car ls))) (lc (car (car ls))))
+          (loop (cdr ls)
+                (apply append (map (lambda (term) (map (lambda (p) (cons (cons (cons deg (car term)) (car p)) (* (cdr term) (cdr p)))) acc)) lc)))))))
+;; Koszul-signed sum over the letters: (op i letter) -> (lc . degree) for the
+;; replaced letter, others given by (other j letter) -> (lc . degree) for j < i
+;; and kept as they are for j > i
+(define (pt-letterwise w shifts op before)
+  (let ((ls (word-letters w)))
+    (let loop ((i 0) (rest ls) (sh shifts) (eps 0) (acc '()))
+      (if (null? rest) (lc-sum (reverse acc))
+          (let* ((l (car rest)) (s (car sh)) (r (op i l)))
+            (loop (+ i 1) (cdr rest) (cdr sh) (+ eps (car l) s)
+                  (if (or (not r) (lc-zero? (car r))) acc
+                      (cons (lc-scale (pt-expand (append (map (lambda (j m) (before j m)) (pt-range i) (pt-take ls i))
+                                                         (list r)
+                                                         (map (lambda (m) (cons (lc-term (cdr m) 1) (car m))) (cdr rest))))
+                                      (if (even? (+ eps s)) 1 -1))
+                            acc))))))))
+(define (pt-take l k) (let loop ((l l) (k k) (acc '())) (if (= k 0) (reverse acc) (loop (cdr l) (- k 1) (cons (car l) acc)))))
+;; the tensor differential of a word, given the complex and shift of each
+;; letter position; reduced? drops letters of degree 0 (bar constructions on
+;; the augmentation ideal)
+(define (word-tensor-d w complexes shifts reduced?)
+  (pt-letterwise w shifts
+                 (lambda (i l)
+                   (let ((deg (car l)))
+                     (if (and reduced? (<= deg 1)) #f
+                         (if (= deg 0) #f
+                             (cons (effective-complex-d-cell (list-ref complexes i) deg (cdr l)) (- deg 1))))))
+                 (lambda (j m) (cons (lc-term (cdr m) 1) (car m)))))
+
+;; A (x) B: words of two letters
+(define (pt-tensor-basis A B n)
+  (let loop ((p 0) (acc '()))
+    (if (> p n) (reverse acc)
+        (if (and (effective-complex-enumerated? A p) (effective-complex-enumerated? B (- n p)))
+            (loop (+ p 1)
+                  (append (reverse (apply append (map (lambda (a) (map (lambda (b) (make-word (list (cons p a) (cons (- n p) b))))
+                                                                        (effective-complex-basis B (- n p))))
+                                                      (effective-complex-basis A p))))
+                          acc))
+            #f))))
+(define (tensor-complex A B)
+  (make-effective-complex (string-append (effective-complex-name A) " (x) " (effective-complex-name B))
+                          (lambda (n) (pt-tensor-basis A B n))
+                          (lambda (n w) (word-tensor-d w (list A B) (list 0 0) #f))))
+(define (pt-word-reduction big small r-of shifts-of)
+  (make-reduction
+   big small
+   (lambda (n w) (pt-expand (map (lambda (l i) (cons (reduction-f-cell (r-of i) (car l) (cdr l)) (car l)))
+                                 (word-letters w) (pt-range (word-length w)))))
+   (lambda (n w) (pt-expand (map (lambda (l i) (cons (reduction-g-cell (r-of i) (car l) (cdr l)) (car l)))
+                                 (word-letters w) (pt-range (word-length w)))))
+   (lambda (n w)
+     (pt-letterwise w (shifts-of w)
+                    (lambda (i l) (cons (reduction-h-cell (r-of i) (car l) (cdr l)) (+ (car l) 1)))
+                    (lambda (j m) (cons (reduction-g (r-of j) (car m) (reduction-f-cell (r-of j) (car m) (cdr m))) (car m)))))))
+(define (tensor-reduction rA rB)
+  (pt-word-reduction (tensor-complex (reduction-big rA) (reduction-big rB))
+                     (tensor-complex (reduction-small rA) (reduction-small rB))
+                     (lambda (i) (if (= i 0) rA rB)) (lambda (w) (list 0 0))))
+
+;; Bar(L): words of letters of positive degree, each shifted by one; the
+;; differential here is the tensor part only (the product part of a bar
+;; construction is a perturbation that lowers the length)
+(define (pt-bar-basis L n)
+  (cond ((= n 0) (list (make-word '())))
+        ((< n 0) '())
+        (else
+         (let loop ((d 1) (acc '()))
+           (if (> (+ d 1) n) (reverse acc)
+               (if (not (effective-complex-enumerated? L d)) #f
+                   (let ((rest (pt-bar-basis L (- n d 1))))
+                     (if (not rest) #f
+                         (loop (+ d 1)
+                               (append (reverse (apply append (map (lambda (c) (map (lambda (w) (make-word (cons (cons d c) (word-letters w)))) rest))
+                                                                   (effective-complex-basis L d))))
+                                       acc))))))))))
+(define (pt-ones k x) (map (lambda (i) x) (pt-range k)))
+(define (bar-complex L)
+  (make-effective-complex (string-append "Bar(" (effective-complex-name L) ")")
+                          (lambda (n) (pt-bar-basis L n))
+                          (lambda (n w) (word-tensor-d w (pt-ones (word-length w) L) (pt-ones (word-length w) 1) #t))))
+(define (bar-reduction rL)
+  (pt-word-reduction (bar-complex (reduction-big rL)) (bar-complex (reduction-small rL))
+                     (lambda (i) rL) (lambda (w) (pt-ones (word-length w) 1))))

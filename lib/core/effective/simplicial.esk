@@ -1,0 +1,540 @@
+;;; core.effective.simplicial -- objects with effective homology:
+;;; normalized chains of simplicial sets, the Eilenberg-Zilber reduction
+;;; (by its discrete vector field and by the explicit AW / EML / SHI
+;;; formulas), simplicial groups, twisted cartesian products and the twisted
+;;; Eilenberg-Zilber reduction, classifying spaces W-bar G with the
+;;; reduction onto the bar construction, and Eilenberg-MacLane spaces
+;;; K(Z, n) and K(Z/m, n) with effective homology.
+;;;
+;;; Usage: (require core.effective.simplicial)   or   (require core.effective)
+;;;
+;;; Sources: J. P. May, "Simplicial Objects in Algebraic Topology" (1967),
+;;; 18 (twisted cartesian products), 21 (W G and W-bar G), 23 (K(pi, n));
+;;; S. Eilenberg, S. Mac Lane, "On the groups H(pi, n), I", Ann. of Math. 58
+;;; (1953) (the bar construction, the shuffle map); W. Shih (1962) and
+;;; P. Real, HHA 2 (2000) (the SHI homotopy); A. Romero, F. Sergeraert,
+;;; "Discrete vector fields and fundamental algebraic topology",
+;;; arXiv:1005.5685, Proposition 26 (K(Z,1)), Definitions 41-43 and
+;;; Theorems 44, 51 (the Eilenberg-Zilber vector field, untwisted and
+;;; twisted), formulas (83)-(85) (AW, EML, SHI); J. A. Delgado, A. Romero,
+;;; J. Rubio, F. Sergeraert, "On the role of discrete vector fields on
+;;; classifying spaces" (the vector field on W-bar G whose critical complex
+;;; is the bar construction); F. Sergeraert, J. Rubio, "Constructive
+;;; algebraic topology", Bull. Sci. Math. 126 (2002) (effective homology of
+;;; twisted products and classifying spaces through the perturbation lemma).
+;;;
+;;; Representation (public; core.effective.homotopy builds on it):
+;;;   effective space  #(effective-space name X chains reduction group)
+;;;       X a simplicial set of core.simplicial (possibly of infinite type:
+;;;       its nondegenerate simplices are never listed then), chains its
+;;;       normalized chain complex (cells = nondegenerate simplex values),
+;;;       reduction : chains => E with E effective, group a simplicial group
+;;;       structure on X or #f.
+;;;   simplicial group #(simplicial-group X mul inv identity abelian?)
+;;;       mul / inv act on simplices (core.simplicial #(simplex eta x)) of
+;;;       the same dimension; identity n is the neutral n-simplex.
+;;;   K(pi, 1)         values are words (a_1 ... a_n) of nonzero elements of
+;;;       Z or Z/m (residues 1 .. m-1); d_0 drops a_1, d_n drops a_n, d_i
+;;;       adds a_i and a_(i+1); a zero entry is a degeneracy.
+;;;   W-bar G          values are lists (x_1 ... x_n) of simplices of G with
+;;;       x_j of dimension n - j (May 21.7, components listed from the top):
+;;;       d_0 b = (x_2 ... x_n), d_n b = (d_(n-1) x_1, ..., d_1 x_(n-1)),
+;;;       d_i b = (d_(i-1) x_1, ..., d_1 x_(i-1), (d_0 x_i) x_(i+1), x_(i+2), ...),
+;;;       s_0 b = (e, x_1, ..., x_n), s_j b = (s_(j-1) x_1, ..., s_0 x_j, e, x_(j+1), ...).
+;;;   B x_tau F        values are pairs (b f) of n-simplices of the base B
+;;;       and of the fibre group F; d_i (b, f) = (d_i b, d_i f) for i > 0 and
+;;;       d_0 (b, f) = (d_0 b, (d_0 f) tau(b)), tau : B_n -> F_(n-1) a twisting
+;;;       function (tau(d_i b) = d_(i-1) tau(b) for i >= 2, tau(d_1 b) =
+;;;       (d_0 tau b) tau(d_0 b), tau(s_0 b) = e, tau(s_j b) = s_(j-1) tau(b)).
+;;;       For B = W-bar F and tau(b) = x_1 it is W F, and W-bar G_(n+1) is
+;;;       (W-bar G x_tau G)_n through b <-> (d_0 b, x_1).
+;;;   critical cells   the Eilenberg-Zilber critical simplex of bidimension
+;;;       (p, q) is (s_(n-1)..s_p x, s_(p-1)..s_0 y), labelled by the word
+;;;       ((p . x) (q . y)); the critical simplices of W-bar G are labelled
+;;;       by bar words ((q_1 . y_1) ... (q_k . y_k)) of nondegenerate simplices
+;;;       of G of positive dimension.
+
+(require stdlib)
+(require core.simplicial.sset)
+(require core.effective.chain)
+(require core.effective.perturbation)
+
+(provide simplicial-effective-chains make-effective-space effective-space? effective-space-name
+         effective-space-simplicial-set effective-space-chains effective-space-reduction effective-space-group
+         effective-space-small effective-space-homology finite-effective-space
+         make-simplicial-group simplicial-group? simplicial-group-set simplicial-group-mul simplicial-group-inv
+         simplicial-group-identity simplicial-group-abelian? simplicial-group-violations
+         simplex-collapses simplex-from-surjection simplex-expand-with
+         eilenberg-zilber-status eilenberg-zilber-critical-simplex
+         eilenberg-zilber-reduction eilenberg-zilber-formula-reduction
+         alexander-whitney eilenberg-maclane-shuffle shih-homotopy shuffles
+         make-twisted-product twisted-product-twisting twisting-function-violations
+         twisted-eilenberg-zilber-reduction twisted-product-space
+         k-pi-1-group k-pi-1-reduction k-pi-1-simplex classifying-normal-form classifying-group classifying-status classifying-bar-reduction
+         classifying-space-of eilenberg-maclane-space eilenberg-maclane-group-modulus)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefix es-)
+;; ---------------------------------------------------------------------------
+(define (es-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (es-range-from a b) (let loop ((i (- b 1)) (acc '())) (if (< i a) acc (loop (- i 1) (cons i acc)))))
+(define (es-repeat k x) (map (lambda (i) x) (es-range k)))
+(define (es-memo1 proc)
+  (let ((t (make-hash-table)))
+    (lambda (x) (let ((hit (hash-table-ref/default t x #f))) (or hit (let ((v (proc x))) (hash-table-set! t x v) v))))))
+(define (es-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (es-all? pred (cdr xs))) (else #f)))
+(define (es-sign k) (if (even? k) 1 -1))
+
+;; ---------------------------------------------------------------------------
+;; Simplices: collapse positions, construction from a surjection, expansion
+;; ---------------------------------------------------------------------------
+;; the positions j (0 <= j < n) with eta(j) = eta(j+1): s is s_j-degenerate there
+(define (simplex-collapses s)
+  (let loop ((e (simplex-surjection s)) (j 0) (acc '()))
+    (if (null? (cdr e)) (reverse acc) (loop (cdr e) (+ j 1) (if (= (car e) (cadr e)) (cons j acc) acc)))))
+;; eta^* x for a surjection eta given as a list (the public representation)
+(define (simplex-from-surjection eta x) (vector 'simplex eta x))
+;; the surjection [n] -> [m] with the first m+1 values the identity and the
+;; rest repeating m (s_(n-1)..s_m) and the one that starts with k+1 zeros
+(define (es-tail-eta m n) (append (es-range (+ m 1)) (es-repeat (- n m) m)))
+(define (es-head-eta k q) (append (es-repeat (+ k 1) 0) (es-range-from 1 (+ q 1))))
+;; the value of eta^* x given the degeneracy on values: s_j applied in
+;; ascending order of the collapse positions (each insertion leaves the
+;; smaller positions in place)
+(define (simplex-expand-with degeneracy s)
+  (let loop ((js (simplex-collapses s)) (v (simplex-base s)) (d (simplex-base-degree s)))
+    (if (null? js) v (loop (cdr js) (degeneracy d (car js) v) (+ d 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Normalized chains and effective spaces
+;; ---------------------------------------------------------------------------
+;; enumerated?: #t, #f or a procedure n -> boolean
+(define (simplicial-effective-chains X enumerated?)
+  (let ((enum? (if (procedure? enumerated?) enumerated? (lambda (n) enumerated?))))
+    (make-effective-complex
+     (simplicial-set-name X)
+     (lambda (n) (if (enum? n) (vector->list (simplicial-set-nondegenerate X n)) #f))
+     (lambda (n x)
+       (let ((s (simplex x n)))
+         (let loop ((i 0) (acc '()))
+           (if (> i n) (lc-combination (reverse acc))
+               (let ((f (simplicial-set-face X i s)))
+                 (loop (+ i 1) (if (simplex-nondegenerate? f) (cons (cons (es-sign i) (lc-term (simplex-base f) 1)) acc) acc))))))))))
+(define (make-effective-space name X chains reduction group) (vector 'effective-space name X chains reduction group))
+(define (effective-space? S) (and (vector? S) (= 6 (vector-length S)) (eq? (vector-ref S 0) 'effective-space)))
+(define (effective-space-name S) (vector-ref S 1))
+(define (effective-space-simplicial-set S) (vector-ref S 2))
+(define (effective-space-chains S) (vector-ref S 3))
+(define (effective-space-reduction S) (vector-ref S 4))
+(define (effective-space-group S) (vector-ref S 5))
+(define (effective-space-small S) (reduction-small (effective-space-reduction S)))
+(define (effective-space-homology S nmax) (effective-complex-homology (effective-space-small S) nmax))
+;; a simplicial set of finite type is its own effective homology
+(define (finite-effective-space X)
+  (let ((C (simplicial-effective-chains X #t)))
+    (make-effective-space (simplicial-set-name X) X C (identity-reduction C) #f)))
+
+;; ---------------------------------------------------------------------------
+;; Simplicial groups
+;; ---------------------------------------------------------------------------
+(define (make-simplicial-group X mul inv identity abelian?) (vector 'simplicial-group X mul inv identity abelian?))
+(define (simplicial-group? G) (and (vector? G) (= 6 (vector-length G)) (eq? (vector-ref G 0) 'simplicial-group)))
+(define (simplicial-group-set G) (vector-ref G 1))
+(define (simplicial-group-mul G s t) ((vector-ref G 2) s t))
+(define (simplicial-group-inv G s) ((vector-ref G 3) s))
+(define (simplicial-group-identity G n) ((vector-ref G 4) n))
+(define (simplicial-group-abelian? G) (vector-ref G 5))
+;; on the given simplices of each dimension: faces and degeneracies are
+;; homomorphisms, e is neutral, inverses, associativity, commutativity
+(define (simplicial-group-violations G samples-by-dim)
+  (let ((X (simplicial-group-set G)) (out '()))
+    (for-each
+     (lambda (entry)
+       (let ((n (car entry)) (ss (cdr entry)))
+         (for-each
+          (lambda (s)
+            (if (not (equal? (simplicial-group-mul G s (simplicial-group-identity G n)) s)) (set! out (cons (list "s e = s" n s) out)))
+            (if (not (equal? (simplicial-group-mul G s (simplicial-group-inv G s)) (simplicial-group-identity G n))) (set! out (cons (list "s s^-1 = e" n s) out)))
+            (for-each
+             (lambda (t)
+               (let ((st (simplicial-group-mul G s t)))
+                 (if (and (simplicial-group-abelian? G) (not (equal? st (simplicial-group-mul G t s)))) (set! out (cons (list "s t = t s" n s t) out)))
+                 (for-each (lambda (i)
+                             (if (not (equal? (simplicial-set-face X i st) (simplicial-group-mul G (simplicial-set-face X i s) (simplicial-set-face X i t))))
+                                 (set! out (cons (list "d_i (s t) = d_i s d_i t" n i s t) out))))
+                           (if (> n 0) (es-range (+ n 1)) '()))
+                 (for-each (lambda (j)
+                             (if (not (equal? (simplicial-set-degeneracy X j st) (simplicial-group-mul G (simplicial-set-degeneracy X j s) (simplicial-set-degeneracy X j t))))
+                                 (set! out (cons (list "s_j (s t) = s_j s s_j t" n j s t) out))))
+                           (es-range (+ n 1)))
+                 (for-each (lambda (u)
+                             (if (not (equal? (simplicial-group-mul G st u) (simplicial-group-mul G s (simplicial-group-mul G t u))))
+                                 (set! out (cons (list "associativity" n s t u) out))))
+                           ss)))
+             ss))
+          ss)))
+     samples-by-dim)
+    (reverse out)))
+
+;; ---------------------------------------------------------------------------
+;; K(pi, 1): Z (m = 0) and Z/m
+;; ---------------------------------------------------------------------------
+(define (es-mod m a) (if (= m 0) a (modulo a m)))
+(define (km-face w n i)
+  (cond ((= i 0) (cdr w))
+        ((= i n) (let loop ((l w) (acc '())) (if (null? (cdr l)) (reverse acc) (loop (cdr l) (cons (car l) acc)))))
+        (else (let loop ((l w) (k 1) (acc '()))
+                (if (= k i) (append (reverse acc) (cons (+ (car l) (cadr l)) (cddr l)))
+                    (loop (cdr l) (+ k 1) (cons (car l) acc)))))))
+(define (km-normal m w)                          ;; a word with zeros -> #(simplex eta nonzero-word)
+  (let loop ((l w) (v 0) (eta (list 0)) (base '()))
+    (if (null? l) (simplex-from-surjection (reverse eta) (reverse base))
+        (let ((a (es-mod m (car l))))
+          (if (= a 0) (loop (cdr l) v (cons v eta) base)
+              (loop (cdr l) (+ v 1) (cons (+ v 1) eta) (cons a base)))))))
+;; the simplex of K(Z/m,1) (m = 0: K(Z,1)) given by a word that may contain zeros
+(define (k-pi-1-simplex m w) (km-normal m w))
+(define (km-degeneracy n j w) (append (es-take w j) (cons 0 (es-drop w j))))
+(define (es-take l k) (let loop ((l l) (k k) (acc '())) (if (= k 0) (reverse acc) (loop (cdr l) (- k 1) (cons (car l) acc)))))
+(define (es-drop l k) (if (= k 0) l (es-drop (cdr l) (- k 1))))
+(define (km-expand s) (simplex-expand-with km-degeneracy s))
+(define (km-words m n)                           ;; all nondegenerate words of length n over Z/m
+  (if (= n 0) (list '())
+      (apply append (map (lambda (w) (map (lambda (a) (cons a w)) (es-range-from 1 m))) (km-words m (- n 1))))))
+;; K(Z,1) for m = 0, K(Z/m,1) for m >= 2, as a simplicial abelian group
+(define (k-pi-1-group m)
+  (let* ((name (if (= m 0) "K(Z,1)" (string-append "K(Z/" (number->string m) ",1)")))
+         (X (make-simplicial-set name
+                                 (lambda (n) (if (= m 0) (error "K(Z,1) is of infinite type: its simplices are not listed" n) (km-words m n)))
+                                 (lambda (n i x) (km-normal m (km-face x n i))))))
+    (make-simplicial-group X
+                           (lambda (s t) (km-normal m (map (lambda (a b) (+ a b)) (km-expand s) (km-expand t))))
+                           (lambda (s) (km-normal m (map (lambda (a) (- 0 a)) (km-expand s))))
+                           (lambda (n) (simplex-from-surjection (es-repeat (+ n 1) 0) '()))
+                           #t)))
+(define (eilenberg-maclane-group-modulus G) (vector-ref G 1))
+;; Proposition 26 of Romero-Sergeraert: critical [] and [1]; a source
+;; [a | ...] with a /= 1 is paired with [1 | a-1 | ...] (a > 1, face d_1)
+;; or [1 | a | ...] (a < 0, face d_0); |a| decreases along every V-path.
+(define (km-z-status n w)
+  (cond ((= n 0) 'critical)
+        ((and (= n 1) (= (car w) 1)) 'critical)
+        ((not (= (car w) 1))
+         (cons 'source (if (> (car w) 1) (cons 1 (cons (- (car w) 1) (cdr w))) (cons 1 w))))
+        (else (let ((b (cadr w)))                ;; [1 | b | ...] with n >= 2
+                (cons 'target (if (> b 0) (cons (+ b 1) (cddr w)) (cdr w)))))))
+;; the reduction of C(K(Z,1)) onto Z [] (+) Z [1] with zero differential, and
+;; for Z/m the identity (K(Z/m,1) is of finite type)
+(define (k-pi-1-reduction G m)
+  (let* ((X (simplicial-group-set G)))
+    (if (= m 0)
+        (let ((C (simplicial-effective-chains X #f)))
+          (vector-field-reduction C km-z-status "C(S^1)"
+                                  (lambda (n) (cond ((= n 0) (list '())) ((= n 1) (list (list 1))) (else '())))
+                                  #f #f))
+        (identity-reduction (simplicial-effective-chains X #t)))))
+
+;; ---------------------------------------------------------------------------
+;; The Eilenberg-Zilber vector field and reduction
+;; ---------------------------------------------------------------------------
+;; Status of a nondegenerate pair (a, b) of n-simplices (Romero-Sergeraert,
+;; Definitions 41-43): step j is vertical (a collapses at j), horizontal
+;; (b collapses at j) or diagonal. Reading the steps backwards from the last
+;; one, the first event decides: a diagonal step at t makes a source, whose
+;; target is (s_t a, s_(t+1) b); a vertical step at t followed by a
+;; horizontal one at t+1 makes a target, whose source is the face d_(t+1).
+;; With no event the simplex is critical: (s_(n-1)..s_p x, s_(p-1)..s_0 y).
+;; Returns 'critical, (source t) or (target t).
+(define (eilenberg-zilber-status a b)
+  (let* ((n (simplex-degree a)) (ca (simplex-collapses a)) (cb (simplex-collapses b))
+         (step (lambda (j) (cond ((memv j ca) 'v) ((memv j cb) 'h) (else 'd)))))
+    (let loop ((j (- n 1)))
+      (if (< j 0) 'critical
+          (let ((k (step j)))
+            (cond ((eq? k 'd) (list 'source j))
+                  ((and (eq? k 'h) (>= j 1) (eq? 'v (step (- j 1)))) (list 'target (- j 1)))
+                  (else (loop (- j 1)))))))))
+;; the critical simplex of bidimension (p, q) over x (dim p) and y (dim q)
+(define (eilenberg-zilber-critical-simplex x p y q)
+  (list (simplex-from-surjection (es-tail-eta p (+ p q)) x) (simplex-from-surjection (es-head-eta p q) y)))
+(define (es-pair-status P X Y n v)
+  (let ((st (eilenberg-zilber-status (car v) (cadr v))))
+    (cond ((eq? st 'critical) 'critical)
+          ((eq? (car st) 'source)
+           (let ((t (cadr st)))
+             (cons 'source (simplex-base (simplicial-product-simplex X Y (simplicial-set-degeneracy X t (car v))
+                                                                    (simplicial-set-degeneracy Y (+ t 1) (cadr v)))))))
+          (else (cons 'target (simplex-base (simplicial-set-face P (+ (cadr st) 1) (simplex v n))))))))
+(define (es-pair-label v)
+  (let ((a (car v)) (b (cadr v)))
+    (make-word (list (cons (simplex-base-degree a) (simplex-base a)) (cons (simplex-base-degree b) (simplex-base b))))))
+(define (es-pair-unlabel w)
+  (let ((l (word-letters w))) (eilenberg-zilber-critical-simplex (cdr (car l)) (car (car l)) (cdr (cadr l)) (car (cadr l)))))
+;; C(P) => C(X) (x) C(Y) for P the product (or a twisted product) of X and
+;; Y, as the vector-field reduction (critical cells labelled as words)
+(define (es-ez-vf-reduction P X Y CP CX CY)
+  (vector-field-reduction CP (lambda (n v) (es-pair-status P X Y n v))
+                          (string-append (effective-complex-name CX) " (x) " (effective-complex-name CY))
+                          (lambda (n) (effective-complex-basis-or-false (tensor-complex CX CY) n))
+                          es-pair-label es-pair-unlabel))
+(define (effective-complex-basis-or-false C n) (if (effective-complex-enumerated? C n) (effective-complex-basis C n) #f))
+(define (eilenberg-zilber-reduction X Y enumerated?)
+  (let* ((P (simplicial-product X Y)))
+    (es-ez-vf-reduction P X Y (simplicial-effective-chains P enumerated?)
+                        (simplicial-effective-chains X enumerated?) (simplicial-effective-chains Y enumerated?))))
+
+;; --- the explicit formulas (83)-(85) -----------------------------------------
+;; (p, q)-shuffles as pairs (alpha beta) of increasing lists partitioning
+;; 0 .. p+q-1, with the sign of the permutation (alpha, beta)
+(define (shuffles p q)
+  (cond ((= p 0) (list (list '() (es-range q) 1)))
+        ((= q 0) (list (list (es-range p) '() 1)))
+        (else
+         (let ((n (+ p q)))
+           ;; the last position n-1 goes to alpha or to beta
+           ;; n-1 in alpha passes all q elements of beta: q inversions
+           (append (map (lambda (s) (list (append (car s) (list (- n 1))) (cadr s) (* (caddr s) (es-sign q)))) (shuffles (- p 1) q))
+                   (map (lambda (s) (list (car s) (append (cadr s) (list (- n 1))) (caddr s))) (shuffles p (- q 1))))))))
+(define (es-degenerate-by X s js) (fold-left (lambda (s j) (simplicial-set-degeneracy X j s)) s js))
+;; AW(a, b) = sum_i front_i a (x) back_(n-i) b
+(define (alexander-whitney X Y v)
+  (let* ((a (car v)) (b (cadr v)) (n (simplex-degree a)))
+    (lc-combination
+     (let loop ((i 0) (acc '()))
+       (if (> i n) acc
+           (let ((fa (simplicial-set-front-face X a i)) (bb (simplicial-set-back-face Y b (- n i))))
+             (loop (+ i 1)
+                   (if (and (simplex-nondegenerate? fa) (simplex-nondegenerate? bb))
+                       (cons (cons 1 (lc-term (make-word (list (cons i (simplex-base fa)) (cons (- n i) (simplex-base bb)))) 1)) acc)
+                       acc))))))))
+;; EML(x (x) y) = sum over (p,q)-shuffles (alpha, beta) of sign (s_beta x, s_alpha y)
+(define (eilenberg-maclane-shuffle X Y w)
+  (let* ((l (word-letters w)) (p (car (car l))) (x (cdr (car l))) (q (car (cadr l))) (y (cdr (cadr l))))
+    (lc-combination
+     (let loop ((ss (shuffles p q)) (acc '()))
+       (if (null? ss) acc
+           (let* ((s (car ss))
+                  (pr (simplicial-product-simplex X Y (es-degenerate-by X (simplex x p) (cadr s)) (es-degenerate-by Y (simplex y q) (car s)))))
+             (loop (cdr ss) (if (simplex-nondegenerate? pr) (cons (cons (caddr s) (lc-term (simplex-base pr) 1)) acc) acc))))))))
+;; SHI (85): sum over 0 <= r <= n-1, 0 <= s <= n-r-1 and (s+1, r)-shuffles
+;; (e1, e2) of (-1)^(n-r-s+sign) (up^m(e2) s_(m-1) d_(n-r+1)..d_n a,
+;; up^m(e1) d_m..d_(n-r-1) b) with m = n-r-s
+(define (shih-homotopy X Y v)
+  (let* ((a (car v)) (b (cadr v)) (n (simplex-degree a)))
+    (lc-combination
+     (let loop-r ((r 0) (acc '()))
+       (if (> r (- n 1)) acc
+           (loop-r (+ r 1)
+                   (let loop-s ((s 0) (acc acc))
+                     (if (> s (- n r 1)) acc
+                         (let* ((m (- n r s))
+                                (a1 (simplicial-set-degeneracy X (- m 1) (simplicial-set-front-face X a (- n r))))
+                                (b1 (simplicial-set-restrict Y b (append (es-range m) (es-range-from (- n r) (+ n 1))))))
+                           (loop-s (+ s 1)
+                                   (let loop-sh ((shs (shuffles (+ s 1) r)) (acc acc))
+                                     (if (null? shs) acc
+                                         (let* ((sh (car shs))
+                                                (pa (es-degenerate-by X a1 (map (lambda (j) (+ j m)) (cadr sh))))
+                                                (pb (es-degenerate-by Y b1 (map (lambda (j) (+ j m)) (car sh))))
+                                                (pr (simplicial-product-simplex X Y pa pb)))
+                                           (loop-sh (cdr shs)
+                                                    (if (simplex-nondegenerate? pr)
+                                                        (cons (cons (* (es-sign (- n r s)) (caddr sh)) (lc-term (simplex-base pr) 1)) acc)
+                                                        acc)))))))))))))))
+(define (eilenberg-zilber-formula-reduction X Y enumerated?)
+  (let* ((P (simplicial-product X Y)) (CX (simplicial-effective-chains X enumerated?)) (CY (simplicial-effective-chains Y enumerated?)))
+    (make-reduction (simplicial-effective-chains P enumerated?) (tensor-complex CX CY)
+                    (lambda (n v) (alexander-whitney X Y v))
+                    (lambda (n w) (eilenberg-maclane-shuffle X Y w))
+                    (lambda (n v) (shih-homotopy X Y v)))))
+
+;; ---------------------------------------------------------------------------
+;; Twisted cartesian products B x_tau F
+;; ---------------------------------------------------------------------------
+;; tau-nd : a nondegenerate simplex value of B of dimension n >= 1 -> an
+;; (n-1)-simplex of F; extended to degenerate simplices by tau(s_0 b) = e and
+;; tau(s_j b) = s_(j-1) tau(b)
+(define (es-twist F tau-nd)
+  (let ((X (simplicial-group-set F)))
+    (lambda (b)
+      (let ((js (simplex-collapses b)))
+        (if (memv 0 js) (simplicial-group-identity F (- (simplex-degree b) 1))
+            (fold-left (lambda (s j) (simplicial-set-degeneracy X (- j 1) s))
+                       (tau-nd (simplex-base b) (simplex-base-degree b)) js))))))
+(define (make-twisted-product name B F tau-nd)
+  (let* ((X (simplicial-group-set F)) (tau (es-twist F tau-nd)))
+    (make-simplicial-set
+     name
+     (lambda (n) (vector->list (simplicial-set-nondegenerate (simplicial-product B X) n)))
+     (lambda (n i v)
+       (let ((b (car v)) (f (cadr v)))
+         (if (= i 0)
+             (simplicial-product-simplex B X (simplicial-set-face B 0 b) (simplicial-group-mul F (simplicial-set-face X 0 f) (tau b)))
+             (simplicial-product-simplex B X (simplicial-set-face B i b) (simplicial-set-face X i f))))))))
+(define (twisted-product-twisting F tau-nd) (es-twist F tau-nd))
+;; the twisting-function identities on the given simplices of B (any
+;; dimension >= 2 for the face identities)
+(define (twisting-function-violations B F tau-nd simplices)
+  (let ((tau (es-twist F tau-nd)) (X (simplicial-group-set F)) (out '()))
+    (for-each
+     (lambda (b)
+       (let ((n (simplex-degree b)))
+         (if (>= n 2)
+             (begin
+               (if (not (equal? (tau (simplicial-set-face B 1 b))
+                                (simplicial-group-mul F (simplicial-set-face X 0 (tau b)) (tau (simplicial-set-face B 0 b)))))
+                   (set! out (cons (list "tau d_1 = (d_0 tau) tau d_0" b) out)))
+               (for-each (lambda (i) (if (not (equal? (tau (simplicial-set-face B i b)) (simplicial-set-face X (- i 1) (tau b))))
+                                         (set! out (cons (list "tau d_i = d_(i-1) tau" i b) out))))
+                         (es-range-from 2 (+ n 1)))))
+         (if (not (equal? (tau (simplicial-set-degeneracy B 0 b)) (simplicial-group-identity F n)))
+             (set! out (cons (list "tau s_0 = e" b) out)))
+         (for-each (lambda (j) (if (not (equal? (tau (simplicial-set-degeneracy B j b)) (simplicial-set-degeneracy X (- j 1) (tau b))))
+                                   (set! out (cons (list "tau s_j = s_(j-1) tau" j b) out))))
+                   (if (>= n 1) (es-range-from 1 (+ n 1)) '()))))
+     simplices)
+    (reverse out)))
+;; C(B x_tau F) => C(B) (x)_t C(F): the Eilenberg-Zilber vector field on the
+;; twisted product (it never uses the 0-face, Theorem 51)
+(define (twisted-eilenberg-zilber-reduction T B F-set CT CB CF)
+  (es-ez-vf-reduction T B F-set CT CB CF))
+;; the effective homology of B x_tau F from those of B and F: the twisted
+;; Eilenberg-Zilber reduction followed by the tensor product of the two
+;; reductions, perturbed by the twisted part of the differential (it lowers
+;; the base degree; the perturbation lemma refuses it by name otherwise)
+(define (twisted-product-space name Bspace Fspace tau-nd)
+  (let* ((B (effective-space-simplicial-set Bspace)) (F (effective-space-group Fspace)) (Fset (simplicial-group-set F))
+         (T (make-twisted-product name B F tau-nd))
+         (CB (effective-space-chains Bspace)) (CF (effective-space-chains Fspace))
+         (enum? (lambda (n) (and (effective-complex-enumerated? CB n) (es-all? (lambda (k) (effective-complex-enumerated? CF k)) (es-range (+ n 1))))))
+         (CT (simplicial-effective-chains T enum?))
+         (r1 (twisted-eilenberg-zilber-reduction T B Fset CT CB CF))
+         (r0 (tensor-reduction (effective-space-reduction Bspace) (effective-space-reduction Fspace)))
+         (Td (reduction-big r0)) (crit (reduction-small r1))
+         (r2 (perturb-reduction r0 (lambda (n w) (lc-sub (effective-complex-d-cell crit n w) (effective-complex-d-cell Td n w))))))
+    (make-effective-space name T CT (compose-reductions r1 r2) #f)))
+
+;; ---------------------------------------------------------------------------
+;; Classifying spaces W-bar G of simplicial abelian groups
+;; ---------------------------------------------------------------------------
+(define (es-identity? s) (= 0 (simplex-base-degree s)))
+(define (wb-face G n i b)
+  (let ((X (simplicial-group-set G)))
+    (cond ((= i 0) (cdr b))
+          ((= i n) (let loop ((l b) (j 1) (acc '()))
+                     (if (null? (cdr l)) (reverse acc) (loop (cdr l) (+ j 1) (cons (simplicial-set-face X (- n j) (car l)) acc)))))
+          (else (let loop ((l b) (j 1) (acc '()))
+                  (if (= j i)
+                      (append (reverse acc) (cons (simplicial-group-mul G (simplicial-set-face X 0 (car l)) (cadr l)) (cddr l)))
+                      (loop (cdr l) (+ j 1) (cons (simplicial-set-face X (- i j) (car l)) acc))))))))
+(define (wb-degeneracy G n j b)
+  (let ((X (simplicial-group-set G)))
+    (if (= j 0) (cons (simplicial-group-identity G n) b)
+        (let loop ((l b) (k 1) (acc '()))
+          (if (> k j) (append (reverse acc) (cons (simplicial-group-identity G (- n j)) l))
+              (loop (cdr l) (+ k 1) (cons (simplicial-set-degeneracy X (- j k) (car l)) acc)))))))
+;; b = s_k c exactly when x_i collapses at k - i for i = 1..k and x_(k+1) = e
+(define (wb-degenerate-at b n)
+  (let loop ((k 0))
+    (if (>= k n) #f
+        (if (and (es-identity? (list-ref b k))
+                 (let check ((i 1) (l b)) (if (> i k) #t (and (memv (- k i) (simplex-collapses (car l))) (check (+ i 1) (cdr l))))))
+            k (loop (+ k 1))))))
+(define (wb-normal G n b)
+  (let ((k (wb-degenerate-at b n)) (X (simplicial-group-set G)))
+    (if (not k) (simplex b n)
+        (let* ((c (let loop ((i 1) (l b) (acc '()))
+                    (if (> i k) (append (reverse acc) (cdr l)) (loop (+ i 1) (cdr l) (cons (simplicial-set-face X (- k i) (car l)) acc)))))
+               (r (wb-normal G (- n 1) c))
+               (eta (list->vector (simplex-surjection r))))
+          (simplex-from-surjection (map (lambda (t) (vector-ref eta (if (<= t k) t (- t 1)))) (es-range (+ n 1))) (simplex-base r))))))
+;; the simplex of W-bar G given by a value (x_1 ... x_n) that may be degenerate
+(define (classifying-normal-form G n b) (wb-normal G n b))
+(define (wb-expand G s) (simplex-expand-with (lambda (d j v) (wb-degeneracy G d j v)) s))
+(define (es-tuples lists)                        ;; cartesian product of a list of lists
+  (if (null? lists) (list '())
+      (apply append (map (lambda (x) (map (lambda (t) (cons x t)) (es-tuples (cdr lists)))) (car lists)))))
+;; W-bar G as a simplicial abelian group (componentwise product)
+(define (classifying-group G enumerated?)
+  (let* ((X (simplicial-group-set G))
+         (name (string-append "W-bar " (simplicial-set-name X)))
+         (W (make-simplicial-set
+             name
+             (lambda (n)
+               (if (not enumerated?) (error "W-bar G of a group of infinite type: simplices are not listed" n)
+                   (filter (lambda (b) (not (wb-degenerate-at b n)))
+                           (es-tuples (map (lambda (j) (simplicial-set-simplices X (- n j))) (es-range-from 1 (+ n 1)))))))
+             (lambda (n i b) (wb-normal G (- n 1) (wb-face G n i b))))))
+    (make-simplicial-group W
+                           (lambda (s t) (let ((n (simplex-degree s)))
+                                           (wb-normal G n (map (lambda (x y) (simplicial-group-mul G x y)) (wb-expand G s) (wb-expand G t)))))
+                           (lambda (s) (let ((n (simplex-degree s))) (wb-normal G n (map (lambda (x) (simplicial-group-inv G x)) (wb-expand G s)))))
+                           (lambda (n) (simplex-from-surjection (es-repeat (+ n 1) 0) '()))
+                           (simplicial-group-abelian? G))))
+;; The vector field on W-bar G: b <-> (d_0 b, x_1) in W-bar G x_tau G; the
+;; Eilenberg-Zilber status of that pair decides first; when it is critical,
+;; (d_0 b, x_1) = (s..s r, s..s y) and the status of r in W-bar G decides,
+;; lifted with y degenerated once more (Kenzo's classifying-space vector
+;; field; it never uses the faces d_0 and d_1 of b).
+(define (classifying-status G WG)
+  (letrec ((status
+            (lambda (n b)
+              (if (= n 0) 'critical
+                  (let* ((first (car b)) (rest (wb-normal G (- n 1) (cdr b)))
+                         (st (eilenberg-zilber-status rest first)))
+                    (cond
+                     ((eq? st 'critical)
+                      (let* ((p (simplex-base-degree rest)) (r (simplex-base rest)) (y (simplex-base first)) (q (simplex-base-degree first))
+                             (sr (status p r)))
+                        (cond ((eq? sr 'critical) 'critical)
+                              ((eq? (car sr) 'source)
+                               (cons 'source (cons (simplex-from-surjection (es-head-eta (+ p 1) q) y)
+                                                   (wb-expand G (simplex-from-surjection (es-tail-eta (+ p 1) n) (cdr sr))))))
+                              (else
+                               (cons 'target (cons (simplex-from-surjection (es-head-eta (- p 1) q) y)
+                                                   (wb-expand G (simplex-from-surjection (es-tail-eta (- p 1) (- n 2)) (cdr sr)))))))))
+                     ((eq? (car st) 'source)
+                      (let ((t (cadr st)) (X (simplicial-group-set G)))
+                        (cons 'source (cons (simplicial-set-degeneracy X (+ t 1) first)
+                                            (wb-expand G (simplicial-set-degeneracy WG t rest))))))
+                     (else (cons 'target (simplex-base (simplicial-set-face WG (+ (cadr st) 2) (simplex b n)))))))))))
+    status))
+;; critical simplices of W-bar G <-> bar words of nondegenerate simplices of G
+(define (classifying-label G)
+  (letrec ((label (lambda (b)
+                    (if (null? b) '()
+                        (let* ((n (length b)) (first (car b)) (rest (wb-normal G (- n 1) (cdr b))))
+                          (cons (cons (simplex-base-degree first) (simplex-base first)) (label (simplex-base rest))))))))
+    (lambda (b) (make-word (label b)))))
+(define (classifying-unlabel G)
+  (letrec ((unlabel (lambda (letters)
+                      (if (null? letters) '()
+                          (let* ((q (car (car letters))) (y (cdr (car letters))) (r (unlabel (cdr letters)))
+                                 (p (length r)) (n (+ p q 1)))
+                            (cons (simplex-from-surjection (es-head-eta p q) y)
+                                  (wb-expand G (simplex-from-surjection (es-tail-eta p (- n 1)) r))))))))
+    (lambda (w) (unlabel (word-letters w)))))
+;; C(W-bar G) => Bar(C(G)) (the critical complex, with its computed differential)
+(define (classifying-bar-reduction G WG CW CG)
+  (vector-field-reduction CW (classifying-status G (simplicial-group-set WG))
+                          (string-append "Bar(" (effective-complex-name CG) ")")
+                          (lambda (n) (effective-complex-basis-or-false (bar-complex CG) n))
+                          (classifying-label G) (classifying-unlabel G)))
+;; the effective space W-bar G from an effective space with group G:
+;; C(W-bar G) => Bar(C G) => Bar(E_G), the second by the bar construction of
+;; G's reduction perturbed by the product part of the computed differential
+(define (classifying-space-of Gspace enumerated?)
+  (let* ((G (effective-space-group Gspace)) (WG (classifying-group G enumerated?))
+         (W (simplicial-group-set WG))
+         (CW (simplicial-effective-chains W enumerated?)) (CG (effective-space-chains Gspace))
+         (r1 (classifying-bar-reduction G WG CW CG))
+         (r0 (bar-reduction (effective-space-reduction Gspace)))
+         (crit (reduction-small r1)) (Bd (reduction-big r0))
+         (r2 (perturb-reduction r0 (lambda (n w) (lc-sub (effective-complex-d-cell crit n w) (effective-complex-d-cell Bd n w))))))
+    (make-effective-space (simplicial-set-name W) W CW (compose-reductions r1 r2) WG)))
+;; K(Z, n) (m = 0) and K(Z/m, n) as iterated classifying spaces of K(pi, 1)
+(define (eilenberg-maclane-space m n)
+  (if (= n 1)
+      (let* ((G (k-pi-1-group m)) (r (k-pi-1-reduction G m)))
+        (make-effective-space (simplicial-set-name (simplicial-group-set G)) (simplicial-group-set G) (reduction-big r) r G))
+      (classifying-space-of (eilenberg-maclane-space m (- n 1)) (not (= m 0)))))
