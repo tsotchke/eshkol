@@ -1,0 +1,8 @@
+schema_version = 1
+license = "MIT"
+upstream_repository = "https://github.com/tsotchke/eshkol"
+upstream_base = "022890ca5426e01b3133a600030dd1a10b32e735"
+upstream_branch = "feat/v20-quantum-types"
+prerequisite_prs = [896]
+source_owners = ["stabilizer-synthesis", "qec-lean-witness"]
+scope = "Signed symplectic Clifford preparation into the existing qcircuit IR, finite weight-one decoder certificates, independent matrix-derived Pauli replay, and core Lean theorem emission."
