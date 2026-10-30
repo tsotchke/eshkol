@@ -3158,6 +3158,7 @@ add_library(eshkol-workspace STATIC
   lib/frontend/workspace.cpp
   lib/types/hott_types.cpp
   lib/types/type_relation.cpp
+  lib/types/type_term.cpp
   lib/core/ast.cpp
 )
 target_include_directories(eshkol-workspace PUBLIC
@@ -3935,6 +3936,33 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/nod
     add_test(NAME node_identity_test COMMAND node_identity_test)
     set_tests_properties(node_identity_test PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: node identity substrate")
+endif()
+
+# ADR-0042: the core term language of dependent types.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/type_term_test.cpp")
+    add_executable(type_term_test tests/types/type_term_test.cpp)
+    target_compile_features(type_term_test PRIVATE cxx_std_20)
+    target_include_directories(type_term_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(type_term_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(type_term_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(type_term_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME type_term_test COMMAND type_term_test)
+    set_tests_properties(type_term_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: dependent type terms")
+endif()
+
+# ADR-0042: the dependent-type and bidirectional-checking corpus of the type
+# system suite -- every positive fixture compiles and every negative fixture
+# is refused with its diagnostic.
+if(ESHKOL_BUILD_TESTS)
+    add_test(NAME typesystem_dependent_corpus
+             COMMAND ${CMAKE_COMMAND} -E env BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
+                     ESHKOL_TYPESYSTEM_GLOB=tests/typesystem/dep_*.esk:tests/typesystem/bidir_*.esk
+                     bash ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_typesystem_tests.sh
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(typesystem_dependent_corpus PROPERTIES TIMEOUT 900)
 endif()
 
 # ADR-0021: the one owner of AST string payloads.
@@ -8139,6 +8167,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
     set_tests_properties(qubit_linearity_engine_parity_gate PROPERTIES
         TIMEOUT 300
         PASS_REGULAR_EXPRESSION "PASS: qubit linearity engine parity"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/dependent_engine_parity_gate.sh")
+    # ADR-0042: the VM refuses and runs the same dependent-typed programs as
+    # the native engine. Same VM gating as the linearity parity gate above.
+    add_test(NAME dependent_type_engine_parity_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/dependent_engine_parity_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_LINEAR_PARITY_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/dependent-type-engine-parity")
+    set_tests_properties(dependent_type_engine_parity_gate PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: dependent type engine parity"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 

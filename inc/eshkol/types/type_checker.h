@@ -136,6 +136,25 @@ public:
     hott_type_expr_t* instantiateTypeAlias(const std::string& name,
                                            const std::vector<hott_type_expr_t*>& type_args) const;
 
+    // Index terms of stable variables (ADR-0042). A variable that is never
+    // assigned can occur in a type -- (vector real n) -- and is represented
+    // there by its Free term. bind() of the same name in a scope hides an
+    // outer term binding; popScope() drops the scope's terms.
+    /** Bind @p name to the index term @p term in the innermost scope. */
+    void bindTerm(const std::string& name, TermRef term);
+    /** The index term of the binding @p name resolves to, if it has one. */
+    std::optional<TermRef> lookupTerm(const std::string& name) const;
+    /** Remove @p name's index term from the innermost scope. */
+    void dropTerm(const std::string& name);
+    /** The index terms bound in the innermost scope. */
+    std::vector<TermRef> innermostTerms() const {
+        std::vector<TermRef> out;
+        if (!term_scopes_.empty()) {
+            for (const auto& entry : term_scopes_.back()) out.push_back(entry.second);
+        }
+        return out;
+    }
+
     // Linear type binding (Phase 6)
     //
     // Enforcement scope — what "use exactly once" actually covers today (#320).
@@ -188,9 +207,18 @@ public:
         }
     }
 
+    /** Formal parameter sorts of a define-type family (NULL entry = undeclared). */
+    void defineTypeAliasKinds(const std::string& name, std::vector<hott_type_expr_t*> kinds);
+    /** The declared sorts of the family @p name, empty when none were declared. */
+    const std::vector<hott_type_expr_t*>& getTypeAliasKinds(const std::string& name) const;
+
 private:
     // Stack of scopes, each scope is a map from name to type
     std::vector<std::map<std::string, TypeId>> scopes_;
+    // Index terms of stable variables, parallel to scopes_.
+    std::vector<std::map<std::string, TermRef>> term_scopes_;
+    std::map<std::string, std::vector<hott_type_expr_t*>> type_alias_kinds_;
+    static inline const std::vector<hott_type_expr_t*> empty_kinds_ = {};
 
     // Type aliases defined by define-type
     std::map<std::string, hott_type_expr_t*> type_aliases_;
@@ -607,6 +635,21 @@ public:
      */
     void reportLinearViolation(const std::string& msg, const eshkol_ast_t* node = nullptr);
 
+    /**
+     * Dependent-type enforcement point (ADR-0042): an obligation of the
+     * dependent fragment that is provably not met -- an index that is not
+     * definitionally equal to the one required, a universe inconsistency, an
+     * ill-formed Pi/Sigma/family type, a dependent application with the
+     * an arity mismatch, an assigned index variable. Only programs that write dependent
+     * types can incur one, so it is fatal in every mode except `--unsafe`,
+     * like a linearity violation.
+     */
+    void reportObligation(const std::string& msg, const eshkol_ast_t* node = nullptr);
+    /** True if any dependent-type obligation failed. */
+    bool hasObligationViolations() const { return obligation_violations_ > 0; }
+    /** Number of failed dependent-type obligations. */
+    size_t obligationViolations() const { return obligation_violations_; }
+
     /** True if any linearity violation was reported (fatal regardless of --strict-types). */
     bool hasLinearityViolations() const { return linearity_violations_ > 0; }
     /** Number of linearity violations reported. */
@@ -681,6 +724,159 @@ private:
     bool strict_types_ = false;
     bool unsafe_mode_ = false;
     size_t linearity_violations_ = 0;
+    size_t obligation_violations_ = 0;
+
+    // ---- Bidirectional checking and dependent types (ADR-0042) ----------
+
+    /**
+     * Where an expected type comes from. The label prefixes the diagnostic
+     * ("argument 1 of 'area'", "return value of 'f'"); `numeric` lets a value
+     * of the numeric tower flow to any numeric slot (argument positions);
+     * `cast` judges leaves by castability (the `the` ascription).
+     */
+    struct CheckSite {
+        std::string label;
+        bool numeric = false;
+        bool cast = false;
+    };
+
+    /**
+     * The precise type each node was synthesized at. The AST keeps the erased
+     * codegen representation (codegenReprOf); checking judges the precise one.
+     */
+    std::map<const eshkol_ast_t*, TypeId> precise_types_;
+    /** While > 0, synthesis records precise types but leaves the AST untouched. */
+    size_t ast_write_suppressed_ = 0;
+    /**
+     * Stability of index variables. A binding's Free term stands for its
+     * value only while the binding is not assigned. `set!` of a variable
+     * marks its stamp assigned: it no longer denotes an index, and if a
+     * written annotation already used it, the assignment is an obligation
+     * failure (ADR-0004 invariant 3: only stable terms occur in types).
+     */
+    std::set<uint64_t> assigned_stamps_;
+    std::set<uint64_t> annotated_stamps_;
+    /** @p t with any index variable of the innermost scope erased (it is leaving scope). */
+    TypeId closeOverScope(TypeId t);
+    /** Note `set!` of @p name at @p site against its index term, if any. */
+    void noteAssignment(const std::string& name, const eshkol_ast_t* site);
+    /** Types declared by `(: name type)` and not yet consumed by a define. */
+    std::map<std::string, TypeId> declared_types_;
+    /** Every diagnostic line emitted so far (checking passes add only new ones). */
+    std::set<std::string> emitted_diagnostics_;
+    /** Depth of check passes whose new diagnostics are deduplicated against emitted ones. */
+    size_t dedupe_depth_ = 0;
+
+    /** Record @p result as the type of @p expr (side table, and the AST unless suppressed). */
+    TypeCheckResult record(eshkol_ast_t* expr, TypeCheckResult result);
+    /** The precise type @p expr was last synthesized at (Value if never). */
+    TypeId preciseTypeOf(const eshkol_ast_t* expr) const;
+
+    /** True if @p t is or contains a dependent (term-backed) type. */
+    bool involvesDependentType(TypeId t) const;
+    /** Report that a value of @p actual reached a slot of @p expected, at the right severity. */
+    void reportFlowFailure(const eshkol_ast_t* node, const std::string& label,
+                           TypeId expected, TypeId actual, const CheckSite& site);
+    /** True if the flow fails only in its dependent part (indices, universes). */
+    bool isDependentFailure(TypeId actual, TypeId expected, const CheckSite& site) const;
+    /** Whether a value of @p actual may flow where @p site expects @p expected. */
+    bool flowAccepted(TypeId actual, TypeId expected, const CheckSite& site) const;
+
+    /**
+     * The checking judgment's tail rule: every expression whose value becomes
+     * the value of @p expr (the branches of if/cond/case/when/unless, the last
+     * expression of a body) is judged against @p expected, using the precise
+     * types synthesis recorded. Reports at the leaf that does not fit.
+     * Returns the number of leaves reported.
+     */
+    size_t judgeTails(const eshkol_ast_t* expr, TypeId expected, const CheckSite& site);
+    /** judgeTails() for one leaf, including element-wise checks of constructors. */
+    size_t judgeLeaf(const eshkol_ast_t* leaf, TypeId expected, const CheckSite& site);
+
+    /**
+     * Check a lambda against an expected function type: its parameters take
+     * the expected domains and its body is checked against the codomain. Run
+     * after the lambda was synthesized; the pass leaves the AST untouched and
+     * adds only diagnostics the synthesis did not already make.
+     */
+    ContinuationTask<TypeCheckResult> checkLambdaAgainst(eshkol_ast_t* expr, TypeId expected,
+                                                         const CheckSite& site);
+    /** checkLambdaAgainst() for a function define checked against its declaration. */
+    ContinuationTask<TypeCheckResult> checkDefineAgainst(eshkol_ast_t* expr, TypeId expected,
+                                                         const CheckSite& site);
+    /** The shared check pass of an abstraction (parameters, annotations, body). */
+    ContinuationTask<TypeCheckResult> checkAbstractionAgainst(
+        const eshkol_ast_t* parameters, uint64_t num_params, hott_type_expr_t* const* annotations,
+        eshkol_ast_t* body, TypeId expected, const CheckSite& site, std::string what);
+
+    /** The index term @p expr denotes, when it is a stable, pure index expression. */
+    std::optional<TermRef> indexTermOf(const eshkol_ast_t* expr);
+    /** Bind @p name's index term when it is stable; @p scope_body is where it could be assigned. */
+    void bindStableTerm(const std::string& name, const eshkol_ast_t* scope_body,
+                        std::optional<TermRef> definition);
+
+    /** Where a phrase of a type expression sits: a type, an index, or either. */
+    enum class TermPosition { Type, Index, Either };
+    /** Resolution state: Pi/Sigma binders in scope, family arguments, implicit index variables. */
+    struct ResolveEnv {
+        std::vector<std::string> binders;                      // innermost last
+        std::map<std::string, std::pair<TermRef, size_t>> args; // family parameter -> (term, depth)
+        bool allow_implicit = false;
+        std::vector<std::pair<std::string, uint64_t>>* implicits = nullptr;
+        size_t alias_depth = 0;
+        const eshkol_ast_t* site = nullptr;                    // for diagnostics
+    };
+    /** Resolve a type expression to a core term (ADR-0042). kNoTerm when ill-formed (reported). */
+    TermRef resolveTerm(const hott_type_expr_t* type_expr, ResolveEnv& env, TermPosition pos);
+    /** True if @p e, in an argument position of undeclared sort, denotes an index. */
+    bool phraseIsIndex(const hott_type_expr_t* e, ResolveEnv& env);
+    /** The node a type expression being resolved belongs to (for diagnostics). */
+    const eshkol_ast_t* resolve_site_ = nullptr;
+    /** Sets resolve_site_ for the lifetime of the guard. */
+    struct ResolveSiteGuard {
+        ResolveSiteGuard(TypeChecker& c, const eshkol_ast_t* site) : c_(c), saved_(c.resolve_site_) {
+            c_.resolve_site_ = site;
+        }
+        ~ResolveSiteGuard() { c_.resolve_site_ = saved_; }
+        TypeChecker& c_;
+        const eshkol_ast_t* saved_;
+    };
+    /** True if the type expression uses the dependent type language. */
+    bool usesDependentSyntax(const hott_type_expr_t* type_expr) const;
+    /** The pre-ADR-0042 resolution of a type expression (no dependent syntax). */
+    TypeId resolveNominalType(const hott_type_expr_t* type_expr);
+
+    /**
+     * A function signature resolved as a dependent telescope: parameter types
+     * as seen in the body (mentioning the parameters' own terms), the
+     * function's closed type, and the implicit index variables it quantifies.
+     */
+    struct Signature {
+        std::vector<TypeId> param_types;
+        std::vector<std::optional<TermRef>> param_terms;
+        std::vector<uint64_t> stamps;                            // per parameter
+        std::vector<std::pair<std::string, uint64_t>> implicits;
+        std::optional<TermRef> return_term;                      // inner return type, if declared
+        bool dependent = false;
+    };
+    /**
+     * Resolve a signature. Parameter annotations are resolved left to right
+     * in a scope where earlier parameters are bound; an index variable no
+     * parameter binds becomes an implicit binder.
+     */
+    Signature resolveSignature(const eshkol_ast_t* params, uint64_t num_params,
+                               hott_type_expr_t* const* param_types,
+                               const hott_type_expr_t* return_type, const eshkol_ast_t* site);
+    /** The closed type of a dependent signature with result @p result_inner. */
+    TypeId closeSignature(const Signature& sig, TypeId result_inner, bool variadic);
+    /** Bind a signature's parameters (and implicit index variables) in the current scope. */
+    void bindSignature(const Signature& sig, const eshkol_ast_t* params, uint64_t num_params,
+                       const eshkol_ast_t* body, std::vector<std::string>& linear_params);
+
+    /** Application of a callee whose type is a dependent Pi. */
+    TypeId applyDependent(TypeId callee, const eshkol_ast_t* expr,
+                          const std::vector<TypeCheckResult>& arg_types,
+                          const std::string& callee_name);
     TypeEnvironment& env_;
     Context ctx_;
     BorrowChecker borrow_;
@@ -716,6 +912,7 @@ private:
         size_t deferred;
         size_t linearity;
         std::map<std::string, int> linear_usage;
+        size_t obligations = 0;
     };
     SpeculationMark markSpeculation() const;
     /** Undo what the pass since @p mark recorded. */
@@ -796,8 +993,6 @@ private:
     TypeId applicationResultOf(TypeId callee) const;
 
     // === Checking Helpers ===
-
-    ContinuationTask<TypeCheckResult> checkLambdaTask(eshkol_ast_t* expr, TypeId expected);
 
     // === Type Operations ===
 

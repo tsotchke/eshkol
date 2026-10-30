@@ -111,6 +111,18 @@ void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn);
  * analysed at all. Only available where the front end is linked. */
 int eshkol_linear_check_source(const char* source, const char* source_name);
 
+/* The dependent-type counterpart (ADR-0042). A program that writes a type in
+ * the dependent language -- a Pi or Sigma, a universe, a length-indexed
+ * vector, a define-type family with declared parameter sorts -- can fail an
+ * obligation the native engine refuses to compile. The VM asks the same
+ * front end, through this hook, and refuses the same programs. The
+ * implementation, eshkol_dependent_check_source() in
+ * lib/types/linear_check_bridge.cpp, returns the number of failed
+ * obligations, or -1 when the source could not be analysed. A build that
+ * installs nothing refuses dependent-typed programs. */
+void eshkol_vm_install_dependent_check(EshkolLinearCheckFn fn);
+int eshkol_dependent_check_source(const char* source, const char* source_name);
+
 /* Decode an ESKB chunk from an in-memory buffer and create a runnable VM.
  * Returns NULL on bad magic, version mismatch, CRC mismatch, allocation
  * failure, profile-limit violation, or NULL/zero-size input. */

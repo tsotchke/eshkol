@@ -389,6 +389,67 @@ hott_type_expr_t* hott_make_forall_type(char** type_vars,
     return type;
 }
 
+// Dependent telescope: (Pi ((x : A) ...) B) or (Sigma ((x : A) ...) B)
+/** @brief Create a HOTT_TYPE_DEPENDENT (Pi) or HOTT_TYPE_SIGMA telescope type.
+ *
+ * Copies each binder name and deep-copies each binder type and @p body.
+ * @param kind HOTT_TYPE_DEPENDENT or HOTT_TYPE_SIGMA.
+ * @param names Array of @p num_binders binder names.
+ * @param types Array of @p num_binders binder types.
+ * @param num_binders Number of binders.
+ * @param body Codomain (Pi) or second component (Sigma). */
+hott_type_expr_t* hott_make_dependent_type(hott_type_kind_t kind, char** names,
+                                           hott_type_expr_t** types, uint64_t num_binders,
+                                           hott_type_expr_t* body) {
+    hott_type_expr_t* type = hott_alloc_type_expr(kind);
+    if (num_binders > 0) {
+        type->dependent.binder_names =
+            (char**)arena_allocate(get_global_arena(), num_binders * sizeof(char*));
+        type->dependent.binder_types = (hott_type_expr_t**)arena_allocate(
+            get_global_arena(), num_binders * sizeof(hott_type_expr_t*));
+        for (uint64_t i = 0; i < num_binders; i++) {
+            type->dependent.binder_names[i] =
+                (names && names[i]) ? eshkol_ast_strdup(names[i]) : nullptr;
+            type->dependent.binder_types[i] = types ? hott_copy_type_expr(types[i]) : nullptr;
+        }
+    }
+    type->dependent.num_binders = num_binders;
+    type->dependent.body = hott_copy_type_expr(body);
+    return type;
+}
+
+// Family application (F a ...) or index operator (op a ...)
+/** @brief Create a HOTT_TYPE_APP or HOTT_TYPE_INDEX_OP node, copying @p head
+ *  and deep-copying each argument. */
+hott_type_expr_t* hott_make_app_type(hott_type_kind_t kind, const char* head,
+                                     hott_type_expr_t** args, uint64_t num_args) {
+    hott_type_expr_t* type = hott_alloc_type_expr(kind);
+    type->app.head = head ? eshkol_ast_strdup(head) : nullptr;
+    if (num_args > 0) {
+        type->app.args = (hott_type_expr_t**)arena_allocate(
+            get_global_arena(), num_args * sizeof(hott_type_expr_t*));
+        for (uint64_t i = 0; i < num_args; i++) {
+            type->app.args[i] = args ? hott_copy_type_expr(args[i]) : nullptr;
+        }
+    }
+    type->app.num_args = num_args;
+    return type;
+}
+
+/** @brief Create a HOTT_TYPE_INDEX_LIT holding @p value. */
+hott_type_expr_t* hott_make_index_literal(int64_t value) {
+    hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_INDEX_LIT);
+    type->index_value = value;
+    return type;
+}
+
+/** @brief Create a HOTT_TYPE_UNIVERSE `(universe level)`. */
+hott_type_expr_t* hott_make_universe_type(uint32_t level) {
+    hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_UNIVERSE);
+    type->universe.level = level;
+    return type;
+}
+
 // Deep copy a type expression
 /** @brief Deep-copy a HoTT type expression, recursively copying nested
  *  type structure (arrow params/return, forall vars/body, container
@@ -448,6 +509,24 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
 
         case HOTT_TYPE_UNIVERSE:
             copy->universe.level = type->universe.level;
+            break;
+
+        case HOTT_TYPE_DEPENDENT:
+        case HOTT_TYPE_SIGMA:
+            hott_free_type_expr(copy);
+            return hott_make_dependent_type(type->kind, type->dependent.binder_names,
+                                            type->dependent.binder_types,
+                                            type->dependent.num_binders,
+                                            type->dependent.body);
+
+        case HOTT_TYPE_APP:
+        case HOTT_TYPE_INDEX_OP:
+            hott_free_type_expr(copy);
+            return hott_make_app_type(type->kind, type->app.head, type->app.args,
+                                      type->app.num_args);
+
+        case HOTT_TYPE_INDEX_LIT:
+            copy->index_value = type->index_value;
             break;
 
         default:
@@ -600,11 +679,37 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
         }
 
         case HOTT_TYPE_UNIVERSE:
-            snprintf(buffer, sizeof(buffer), "Type%u", type->universe.level);
+            snprintf(buffer, sizeof(buffer), "(universe %u)", type->universe.level);
             return arena_strdup(buffer);
 
         case HOTT_TYPE_DEPENDENT:
-            return arena_strdup("(Pi ...)");
+        case HOTT_TYPE_SIGMA: {
+            BUF_APPEND(type->kind == HOTT_TYPE_SIGMA ? "(Sigma (" : "(Pi (");
+            for (uint64_t i = 0; i < type->dependent.num_binders; i++) {
+                char* binder_str = hott_type_to_string(type->dependent.binder_types[i]);
+                BUF_APPEND("%s(%s : %s)", i > 0 ? " " : "",
+                           type->dependent.binder_names[i] ? type->dependent.binder_names[i] : "_",
+                           binder_str);
+            }
+            char* body_str = hott_type_to_string(type->dependent.body);
+            BUF_APPEND(") %s)", body_str);
+            return arena_strdup(buffer);
+        }
+
+        case HOTT_TYPE_APP:
+        case HOTT_TYPE_INDEX_OP: {
+            BUF_APPEND("(%s", type->app.head ? type->app.head : "?");
+            for (uint64_t i = 0; i < type->app.num_args; i++) {
+                char* arg_str = hott_type_to_string(type->app.args[i]);
+                BUF_APPEND(" %s", arg_str);
+            }
+            BUF_APPEND(")");
+            return arena_strdup(buffer);
+        }
+
+        case HOTT_TYPE_INDEX_LIT:
+            snprintf(buffer, sizeof(buffer), "%lld", (long long)type->index_value);
+            return arena_strdup(buffer);
 
         case HOTT_TYPE_PATH:
             return arena_strdup("(Path ...)");

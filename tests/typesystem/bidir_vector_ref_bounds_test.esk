@@ -1,0 +1,9 @@
+;; Index bounds (ADR-0042): a vector of length 3 has no element 3. An index
+;; known statically to be out of range is a type error of the program's own
+;; values: a warning in gradual mode, fatal under --types=strict.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: vector-ref: index 3 is outside (vector Float64 3)
+
+(define (third (v : (vector real 3))) (vector-ref v 3))
+(display (third (vector 1.0 2.0 3.0)))

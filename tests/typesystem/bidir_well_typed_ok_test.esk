@@ -1,0 +1,22 @@
+;; Bidirectional checking (ADR-0042): a well-typed program -- branches that
+;; each fit, a lambda that fits its expected signature, a checked let
+;; binding, a declaration, an ascription -- compiles under --types=strict
+;; with no diagnostic and runs.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(define (sign (n : integer)) : integer
+  (cond ((> n 0) 1)
+        ((< n 0) -1)
+        (else 0)))
+(define (twice (g : (-> integer integer)) (x : integer)) : integer (g (g x)))
+(: area (-> number number))
+(define (area r) (* r r))
+(define (f) (let ((x : integer 7)) (+ x 1)))
+(display (sign -4)) (newline)
+(display (twice (lambda (y) (* y 3)) 2)) (newline)
+(display (area 1.5)) (newline)
+(display (f)) (newline)
+(display (the integer (if (> (f) 0) 1 2))) (newline)

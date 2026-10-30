@@ -1,0 +1,12 @@
+;; Definitional equality (ADR-0042): (+ m n) at m = 2, n = 3 normalizes to 5,
+;; which is not 6.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: definition of 'v': expected (vector Float64 6), got (vector Float64 5)
+
+(define (concat (a : (vector real m)) (b : (vector real n))) : (vector real (+ m n))
+  (vector-append a b))
+
+(: v (vector real 6))
+(define v (concat (vector 1.0 2.0) (vector 3.0 4.0 5.0)))
+(display v)

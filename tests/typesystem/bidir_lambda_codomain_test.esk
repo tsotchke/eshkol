@@ -1,0 +1,9 @@
+;; Bidirectional checking (ADR-0042): a lambda passed where (-> integer
+;; integer) is expected is checked against that type: its parameter takes
+;; the domain and its body the codomain.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: result of the lambda in argument 1 of 'twice': expected Int64, got String
+
+(define (twice (g : (-> integer integer)) (x : integer)) : integer (g (g x)))
+(display (twice (lambda (y) (if (> y 0) y "negative")) 3))
