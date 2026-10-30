@@ -1,0 +1,2 @@
+;; expect-error: already defined
+(hott (import numbers) (data Nat z))

@@ -1460,6 +1460,7 @@ static int compile_and_run(const char* source) {
     vm_clear_compile_failure();
     vm_reset_compilation_unit_modules();
     vm_clear_import_bindings();
+    vm_hott_begin_unit();
     if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
@@ -2084,6 +2085,7 @@ static int emit_eskb_with_options(const char* source,
      * native engine refuses to write. Decided before compilation so nothing
      * downstream can trust the file's existence. */
     vm_clear_compile_failure();
+    vm_hott_begin_unit();
     const char* saved_source_path = g_compiler_ctx.source_path;
     g_compiler_ctx.source_path = source_path;
     if (vm_reject_linear_violations(source, source_path ? source_path : output_path)) {
@@ -2867,6 +2869,8 @@ int main(int argc, char** argv) {
      * read, so no compilation path can run ahead of it. Without this the VM
      * enforced nothing at all and ran a qubit clone to completion, exit 0. */
     eshkol_vm_install_linear_check(eshkol_linear_check_source);
+    /* The same cubical kernel the native engine runs (ADR-0043). */
+    eshkol_vm_install_hott_form(eshkol_hott_form_source);
 
     /* SW-10: resolve the documented resource-limit environment variables before
      * anything runs. The VM sources themselves are freestanding-safe and never

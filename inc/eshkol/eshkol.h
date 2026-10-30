@@ -2945,6 +2945,11 @@ typedef enum {
     // Expression-level type ascription (checked cast). Appended at the end to
     // preserve the numeric value of every existing operator.
     ESHKOL_THE_OP,                  // (the type expr) - ascribe expr's type to the checker; runtime no-op (evaluates expr verbatim)
+    // HoTT kernel forms (ADR-0043): (hott decl...) declares in the cubical
+    // kernel; (hott-eval term) is replaced by the normal form of term, as a
+    // quoted datum, before code generation. The reader datum is kept in the
+    // syntax side table under the node's id (inc/eshkol/frontend/syntax_datum.h).
+    ESHKOL_HOTT_OP,
 } eshkol_op_t;
 
 struct eshkol_ast;

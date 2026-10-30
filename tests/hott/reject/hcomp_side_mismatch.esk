@@ -1,0 +1,3 @@
+;; expect-error: does not meet the base
+(hott (import numbers)
+  (define bad : Int (hcomp Int (j) (((= i1 1) (pos 1))) (pos 0))))

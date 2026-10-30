@@ -111,6 +111,17 @@ void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn);
  * analysed at all. Only available where the front end is linked. */
 int eshkol_linear_check_source(const char* source, const char* source_name);
 
+/* HoTT forms (ADR-0043). `(hott decl...)` and `(hott-eval term)` are handled
+ * by the cubical kernel, which lives in the C++ front end; like the linear
+ * check, the VM reaches it through a hook the driver installs. The hook gets
+ * one form as text (NULL starts a new compilation unit) and returns a
+ * malloc'd string: the normal form for hott-eval, "" for hott, or the
+ * diagnostic with *ok = 0. A build that installs nothing refuses HoTT forms. */
+typedef char* (*EshkolHottFormFn)(const char* form_text, int* ok);
+void eshkol_vm_install_hott_form(EshkolHottFormFn fn);
+/* The implementation, in lib/types/hott_forms.cpp. */
+char* eshkol_hott_form_source(const char* form_text, int* ok);
+
 /* Decode an ESKB chunk from an in-memory buffer and create a runnable VM.
  * Returns NULL on bad magic, version mismatch, CRC mismatch, allocation
  * failure, profile-limit violation, or NULL/zero-size input. */

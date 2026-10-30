@@ -1,0 +1,15 @@
+;;; Higher inductive types: truncations and suspensions (ADR-0043).
+(hott
+  (import truncation)
+  (import suspension)
+  (define (isProp-Nat->Trunc (n : Nat)) : (isProp 0 (Trunc 0 Nat)) (isProp-Trunc 0 Nat))
+  ;; the circle as the suspension of the booleans: a loop survives the round trip
+  (example (Path Int (winding (ap 0 0 S1 S1 (lambda (x) (SuspBool->S1 (S1->SuspBool x)))
+                                  base base loop))
+                 (pos 1))
+           (refl 0 Int (pos 1))))
+
+(define (show x) (display x) (newline))
+(show (hott-eval (winding (ap 0 0 S1 S1 (lambda (x) (SuspBool->S1 (S1->SuspBool x))) base base loop))))
+(show (hott-eval (S1->SuspBool base)))
+(show (hott-eval (SuspBool->S1 south)))

@@ -244,6 +244,8 @@ option(ESHKOL_QLLM_ENABLED
 set(ESHKOL_QLLM_ROOT "" CACHE PATH
     "Root of an installed libsemiclassical_qllm; expects include/semiclassical_qllm and build/lib or lib")
 include(cmake/QllmBridge.cmake)
+include(cmake/EmbedHottLibrary.cmake)
+eshkol_embed_hott_library("${CMAKE_CURRENT_BINARY_DIR}/generated/hott")
 
 # lib/backend/vm_geometric.c used to carry a SECOND dispatch body for the same
 # 62 VM builtins (ids 804-861), selected by a legacy qLLM build branch and
@@ -3157,6 +3159,12 @@ add_library(eshkol-workspace STATIC
   lib/frontend/library_registry.cpp
   lib/frontend/workspace.cpp
   lib/types/hott_types.cpp
+  lib/types/hott_forms.cpp
+  lib/types/cubical/interval.cpp
+  lib/types/cubical/eval.cpp
+  lib/types/cubical/conv.cpp
+  lib/types/cubical/elab.cpp
+  lib/types/cubical/decl.cpp
   lib/types/type_relation.cpp
   lib/core/ast.cpp
 )
