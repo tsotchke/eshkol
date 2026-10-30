@@ -6842,8 +6842,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
-    /* -- define-type (type alias: compile-time only, no runtime effect) -- */
-    if (is_sym(head, "define-type")) { return; }
+    /* -- define-type (type alias: compile-time only, no runtime effect). Like
+     * every form it leaves one value, so the enclosing sequence's pop stays
+     * balanced. -- */
+    if (is_sym(head, "define-type")) { chunk_emit(c, OP_NIL, 0); return; }
 
     /* -- (the type expr): an ascription, checked before compilation (the
      * gradual checker, and refinements through the front-end bridge,
