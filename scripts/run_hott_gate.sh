@@ -78,5 +78,18 @@ while read -r base doc; do
 done < "$W/doc-examples.list"
 
 echo "hott gate: $pass passed, $fail failed"
+# ICC evidence (criterion v19_hott_identity, .icc/completion-oracles.yaml).
+TRACE_DIR="${TRACE_DIR:-$S/scripts/icc_traces}"
+mkdir -p "$TRACE_DIR"
+value=PASS; [ "$fail" -eq 0 ] || value=FAIL
+python3 - "$TRACE_DIR/v19_hott_identity.jsonl" "$value" "hott gate: $pass passed, $fail failed (kernel, JIT, AOT, VM; programs, rejections, doc examples)" <<'PY'
+import json, os, sys
+path, value, snippet = sys.argv[1], sys.argv[2], sys.argv[3]
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"kind": "v1_9_types", "name": "v19_hott_identity", "value": value,
+                        "snippet": snippet[:2000], "confidence": 0.95}) + "\n")
+os.replace(tmp, path)
+PY
 [ "$fail" -eq 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 [ "$fail" -eq 0 ]
