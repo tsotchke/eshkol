@@ -61,7 +61,9 @@ error: synthesis hole ?? in 'f': no well-typed completion of type Char up to siz
 
 - `??` is a hole only when it is unbound: a program that defines `??` uses it
   as an ordinary variable.
+- `??` is read as an identifier; it is not logic-variable syntax (`?x`).
 - Holes are completed by the native compiler, under `eshkol-run -r` (JIT) and
-  when building a binary (AOT). Planned for a later rung: completion before the
-  bytecode VM compiler and in the REPL, and holes directed by examples using
-  [core.synthesis](../stdlib/synthesis.md).
+  when building a binary (AOT). The bytecode compiler (`--profile hosted-vm`)
+  reports an unbound `??` as a hole it does not complete. Planned for a later
+  rung: completion before the bytecode compiler and in the REPL, and holes
+  directed by examples using [core.synthesis](../stdlib/synthesis.md).

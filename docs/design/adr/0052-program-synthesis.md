@@ -130,9 +130,11 @@ Noesis file has been copied or edited):
 
 - Synthesis from examples, graph neural networks and `??` completion ship as
   Eshkol facilities with JIT and AOT tests.
-- `??` is completed by the native front end (JIT and AOT). The bytecode VM
-  route and the REPL do not complete holes; programs with holes are compiled
-  natively. Planned for a later rung: the same elaboration before the VM
+- `??` is read as an identifier (before this ADR the reader took it as a
+  logic variable named `?`). It is completed by the native front end (JIT and
+  AOT). The bytecode compiler reports an unbound `??` as a hole it does not
+  complete, and the REPL does not complete holes; programs with holes are
+  compiled natively. Planned for a later rung: the same elaboration before the VM
   compiler, and example-directed hole filling that evaluates candidates on
   user-supplied examples with `core.synthesis`.
 - Type-directed completion ranks by relevance and size; when several
