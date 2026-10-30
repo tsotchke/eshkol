@@ -25,7 +25,8 @@
 (provide make-finite-group finite-group? group-order group-mul group-inv group-identity group-elements
          group-label group-axioms-violations group-abelian? group-element-order group-power
          group-conjugacy-classes group-centralizer group-commute?
-         cyclic-group group-direct-product dihedral-group quaternion-group symmetric-group
+         cyclic-group group-direct-product dihedral-group quaternion-group symmetric-group alternating-group
+         permutation-sign
          group-homomorphism? group-quotient
          make-crossed-module crossed-module? crossed-module-source crossed-module-target
          crossed-module-boundary crossed-module-act crossed-module-violations
@@ -141,9 +142,30 @@
                            (hash-table-ref/default index (map (lambda (i) (list-ref p (list-ref q i))) (fg-range n)) -1)))
                        (vector->list perms))))
 
+;; the sign of a permutation of 0..n-1 (a list), by counting inversions
+(define (permutation-sign p)
+  (let loop ((l p) (inv 0))
+    (if (null? l) (if (even? inv) 1 -1)
+        (loop (cdr l) (+ inv (fg-count (lambda (y) (> (car l) y)) (cdr l)))))))
+;; A_n: the even permutations, in lexicographic order (identity first)
+(define (alternating-group n)
+  (let* ((perms (list->vector (filter (lambda (p) (= 1 (permutation-sign p))) (fg-permutations (fg-range n)))))
+         (index (make-hash-table)))
+    (let loop ((i 0)) (if (< i (vector-length perms)) (begin (hash-table-set! index (vector-ref perms i) i) (loop (+ i 1)))))
+    (make-finite-group (vector-length perms)
+                       (lambda (a b)
+                         (let ((p (vector-ref perms a)) (q (vector-ref perms b)))
+                           (hash-table-ref/default index (map (lambda (i) (list-ref p (list-ref q i))) (fg-range n)) -1)))
+                       (vector->list perms))))
+
 (define (group-homomorphism? G H f)
   (fg-all? (lambda (a) (fg-all? (lambda (b) (= (f (group-mul G a b)) (group-mul H (f a) (f b)))) (group-elements G))) (group-elements G)))
 
+(define (fg-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (fg-any? pred (cdr xs)))))
+(define (fg-any-coset? G K reps g)
+  (cond ((null? reps) #f)
+        ((memv (group-mul G (group-inv G (car reps)) g) K) #t)
+        (else (fg-any-coset? G K (cdr reps) g))))
 ;; G / K for a normal subgroup K (a list of elements): returns
 ;; (list Q section projection) with Q the quotient group whose element i is
 ;; the coset of the i-th smallest coset representative, section i -> that
@@ -162,11 +184,6 @@
     (list (make-finite-group (length reps) (lambda (i j) (vector-ref proj (group-mul G (vector-ref rv i) (vector-ref rv j)))))
           (lambda (i) (vector-ref rv i))
           (lambda (g) (vector-ref proj g)))))
-(define (fg-any-coset? G K reps g)
-  (cond ((null? reps) #f)
-        ((memv (group-mul G (group-inv G (car reps)) g) K) #t)
-        (else (fg-any-coset? G K (cdr reps) g))))
-(define (fg-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (fg-any? pred (cdr xs)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Crossed modules
