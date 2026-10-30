@@ -260,6 +260,13 @@
 (define (rc-extra R key) (let ((p (assq key (vector-ref R 30)))) (if p (cdr p) #f)))
 ;; A family's own data, by key (#f when absent).
 (define (ring-carrier-extra R key) (rc-extra (rc-check R "ring-carrier-extra") key))
+;; An integral domain: a field, or a carrier that declares 'integral-domain.
+(define (rc-integral-domain? K) (or (vector-ref K 7) (rc-extra K 'integral-domain)))
+;; a / b for b dividing a: declared by the carrier, or a * b^-1 over a field.
+(define (rc-exact-quotient K)
+  (or (rc-extra K 'exact-quotient)
+      (and (vector-ref K 7)
+           (let ((mul (vector-ref K 16)) (inv (vector-ref K 20))) (lambda (a b) (mul a (inv b)))))))
 
 ;; ===========================================================================
 ;; Exact -> binary64, rounded once to nearest, ties to even
@@ -332,7 +339,13 @@
                                        (lambda (a b) (if (= b 0) (rc-refuse 'ring-not-a-unit 'r-remainder "Z" b) (remainder a b)))
                                        (lambda (a) (abs a))))
               (cons 'nilpotent? (lambda (a) (= a 0)))
-              (cons 'self-locating? #t))))))
+              (cons 'self-locating? #t)
+              (cons 'extra (list (cons 'integral-domain #t)
+                                 (cons 'exact-quotient
+                                       (lambda (a b)
+                                         (if (and (not (= b 0)) (= (remainder a b) 0))
+                                             (quotient a b)
+                                             (error "exact quotient in Z: the divisor does not divide" a b)))))))))))
 
 (define rc-Q
   (rc-intern 2 '()
@@ -899,6 +912,32 @@
                     (if (null? cs) a
                         (let ((inv (kinv (list-ref cs (- (length cs) 1)))))
                           (wrap (map (lambda (c) (kmul inv c)) cs)))))))
+         (kquot (rc-exact-quotient K))
+         ;; a / b when b divides a, over a coefficient domain with exact
+         ;; quotients: long division by the leading coefficient of b.
+         (exact-quotient
+          (and kquot (rc-integral-domain? K)
+               (lambda (a b)
+                 (let ((cb (cs-of b)))
+                   (if (null? cb) (error "exact quotient in K[x]: division by zero" name))
+                   (let* ((db (- (length cb) 1)) (lb (list-ref cb db)) (vb (list->vector cb)))
+                     (let loop ((r (list->vector (cs-of a))) (q '()))
+                       (let ((dr (let find ((k (- (vector-length r) 1)))
+                                   (cond ((< k 0) -1) ((kzero? (vector-ref r k)) (find (- k 1))) (else k)))))
+                         (cond
+                           ((< dr 0) (wrap q))
+                           ((< dr db) (error "exact quotient in K[x]: the divisor does not divide" name))
+                           (else
+                            (let* ((c (kquot (vector-ref r dr) lb)) (shift (- dr db)) (r2 (vector-copy r)))
+                              (vector-set! r2 dr kzero)
+                              (let sub ((j 0))
+                                (if (< j db)
+                                    (begin
+                                      (vector-set! r2 (+ j shift)
+                                        (kadd (vector-ref r2 (+ j shift)) (kneg (kmul c (vector-ref vb j)))))
+                                      (sub (+ j 1)))))
+                              (loop r2 (add-lists q (append (let z ((k shift) (acc '())) (if (= k 0) acc (z (- k 1) (cons kzero acc))))
+                                                            (list c))))))))))))))
          (P (rc-descriptor 6 'polys (list K var) name
               (list (cons 'characteristic (vector-ref K 6)) (cons 'field? #f)
                     (cons 'lawful? (vector-ref K 8)) (cons 'exact? (vector-ref K 9))
@@ -921,7 +960,9 @@
                                                  monic)
                                          #f))
                     (cons 'self-locating? #t)
-                    (cons 'extra (list (cons 'variable var)))))))
+                    (cons 'extra (list (cons 'variable var)
+                                       (cons 'integral-domain (if (rc-integral-domain? K) #t #f))
+                                       (cons 'exact-quotient exact-quotient)))))))
     (vector-set! box 0 P)
     (vector-set! P 12 (wrap '()))
     (vector-set! P 13 (constant kone))
@@ -1140,13 +1181,52 @@
                                      (else (error (string-append who ": expected a matrix row") row))))))
           rows))))
 
-;; The determinant over K by Gaussian elimination. A pivot must be a unit of
-;; K (every nonzero element over a field); a column whose remaining entries
-;; are zero gives determinant zero, and a column with nonzero entries but no
-;; unit is refused (ring-not-a-unit) rather than guessed.
+;; The determinant over K. Over a field, Gaussian elimination with unit
+;; pivots. Over an integral domain with exact quotients (Z, K[x] over a
+;; domain, ...), fraction-free Bareiss elimination: any nonzero pivot, each
+;; step divided exactly by the previous pivot, so no unit is ever needed.
+;; Over any other carrier pivots must be units; a column whose remaining
+;; entries are zero gives determinant zero, and a column with nonzero
+;; entries but no unit is refused (ring-not-a-unit) rather than guessed.
 (define (ring-det K m0)
   (rc-check K "ring-det")
-  (let* ((m (rc-matrix K m0 'ring-det)) (n (vector-length m))
+  (if (and (not (vector-ref K 7)) (rc-integral-domain? K) (rc-exact-quotient K))
+      (rc-det-fraction-free K (rc-matrix K m0 'ring-det))
+      (rc-det-unit-pivots K (rc-matrix K m0 'ring-det))))
+
+(define (rc-det-fraction-free K m)
+  (let* ((n (vector-length m)) (zero (vector-ref K 12)) (one (vector-ref K 13))
+         (add (vector-ref K 14)) (neg (vector-ref K 15)) (mul (vector-ref K 16))
+         (same (vector-ref K 18)) (quot (rc-exact-quotient K))
+         (zero? (lambda (x) (same x zero))))
+    (if (= n 0)
+        one
+        (let col ((k 0) (sign #f) (prev one))
+          (if (= k (- n 1))
+              (let ((d (vector-ref (vector-ref m k) k))) (if sign (neg d) d))
+              (let find ((p k))
+                (cond
+                  ((= p n) zero)
+                  ((zero? (vector-ref (vector-ref m p) k)) (find (+ p 1)))
+                  (else
+                   (if (not (= p k))
+                       (let ((tmp (vector-ref m p))) (vector-set! m p (vector-ref m k)) (vector-set! m k tmp)))
+                   (let* ((rowk (vector-ref m k)) (pivot (vector-ref rowk k)))
+                     (let rows ((i (+ k 1)))
+                       (if (< i n)
+                           (let* ((rowi (vector-ref m i)) (lead (vector-ref rowi k)))
+                             (let cols ((j (+ k 1)))
+                               (if (< j n)
+                                   (begin
+                                     (vector-set! rowi j
+                                       (quot (add (mul (vector-ref rowi j) pivot) (neg (mul lead (vector-ref rowk j)))) prev))
+                                     (cols (+ j 1)))))
+                             (vector-set! rowi k zero)
+                             (rows (+ i 1)))))
+                     (col (+ k 1) (if (= p k) sign (not sign)) pivot))))))))))
+
+(define (rc-det-unit-pivots K m)
+  (let* ((n (vector-length m))
          (zero (vector-ref K 12)) (add (vector-ref K 14)) (neg (vector-ref K 15)) (mul (vector-ref K 16))
          (same (vector-ref K 18)) (unit? (vector-ref K 19)) (inv (vector-ref K 20))
          (zero? (lambda (x) (same x zero))))
