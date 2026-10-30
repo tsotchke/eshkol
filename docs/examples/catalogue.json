@@ -1554,16 +1554,16 @@
     },
     {
       "path": "examples/mathematics_cohomology_rings_cup_products.esk",
-      "source_sha256": "76c92a5f354f0d6352bc980b035e2d41070495bdcc5c45b1987eee70131664bb",
+      "source_sha256": "edaf552afc10774936023c6849438b09e7137faea245ee590d2db1e3f55d55e2",
       "title": "Cup products and Bockstein on finite-group nerves",
       "kind": "mathematics",
       "purpose": "Compute ring information beyond cohomology dimensions and identify selected Dijkgraaf–Witten twists.",
-      "algorithm": "Normalized bar cochains, modular coboundary ranks, Alexander–Whitney cup products and Bockstein from integer lifts; Q/Z coboundary systems for cubic classes.",
+      "algorithm": "Normalized cochains of BG, coboundaries, Alexander–Whitney cup products and the Bockstein from core.homological; class tests over F_2/F_3 and the Q/Z coboundary test for cubic classes.",
       "domain": "Z/2, Z/4, Z/3, (Z/2)² and (Z/2)³; selected products through degrees 3/4; all 127 nonzero combinations of seven surviving cubic twists.",
       "arithmetic": "Exact arithmetic over F₂, F₃ and integers.",
       "validation": "Relations, independence, graded commutativity, Cartan/Bockstein comparisons and Q/Z twist nontriviality are asserted.",
       "limitations": "The finite degree computations support these stated relations; they are not an unlimited symbolic presentation proof for every degree or group.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -1581,23 +1581,23 @@
           "text": ";; Cohomology rings of classifying spaces by cup products on the normalized"
         },
         {
-          "line": 58,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 46,
+          "text": "(require core.ring)"
         },
         {
-          "line": 59,
+          "line": 57,
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 392,
+          "line": 214,
           "text": "(check \"none of the 127 nonzero combinations of the seven surviving monomials is a Q/Z coboundary: the twists form (Z/2)^7\""
         },
         {
-          "line": 397,
+          "line": 219,
           "text": "(check \"the seven survivors span the twists together with the three Sq^1 images: 7 + 3 = 10 = dim H^3(G; Z/2)\""
         },
         {
-          "line": 399,
+          "line": 221,
           "text": "(check \"negative control -- the zero cochain and the coboundary of a 2-cochain are Q/Z coboundaries\""
         }
       ],
@@ -1626,16 +1626,16 @@
     },
     {
       "path": "examples/mathematics_cohomology_rings_nonabelian.esk",
-      "source_sha256": "b0be0f12899204d96a6977a5e96c7d30fd6a4e75cbd0c60d495b126c69f1582e",
+      "source_sha256": "113571fb55765f3c96f910e2c87f6f7fe9d7d6cb2c6da008dec7c3ac9e87b7de",
       "title": "Nonabelian order-eight cohomology rings",
       "kind": "mathematics",
       "purpose": "Separate the dihedral and quaternion groups using cup products.",
-      "algorithm": "Find cocycle bases from normalized bar-complex kernels; test product classes modulo images and compute Bockstein lifts.",
+      "algorithm": "Cocycle bases from kernels of the normalized bar coboundary, cup products, Bocksteins and class tests over F_2 from core.homological.",
       "domain": "D₄ (order eight, also called D₈) and Q₈, F₂ coefficients, degrees 0–3 and selected Bockstein operations.",
       "arithmetic": "Exact modular linear algebra and integer lifts.",
       "validation": "Dimensions (1,2,3,4)/(1,2,2,1), distinct quadratic/cubic relations, generators and cross-group negative controls are asserted.",
       "limitations": "Degree-limited computations do not independently establish every relation in the full infinite cohomology rings.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -1653,23 +1653,23 @@
           "text": ";; Cohomology rings of the two non-abelian groups of order eight over Z/2:"
         },
         {
-          "line": 45,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 36,
+          "text": "(require core.ring)"
         },
         {
-          "line": 46,
+          "line": 47,
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 310,
+          "line": 156,
           "text": "(check \"D_4: Sq^1 w = beta(w) is a cocycle of degree 3 (recorded; its class is a computed fact, printed below)\""
         },
         {
-          "line": 316,
+          "line": 162,
           "text": "(check \"D_4: Sq^1 w is not a coboundary, lies in the span of (x + y) w, x^3, y^3, and not in the span of x^3, y^3\""
         },
         {
-          "line": 324,
+          "line": 170,
           "text": "(check \"negative control -- a 2-cochain with a single nonzero entry on D_4 is not a cocycle\""
         }
       ],
@@ -1859,16 +1859,16 @@
     },
     {
       "path": "examples/mathematics_descent_hypercohomology.esk",
-      "source_sha256": "71c379900d312ff204a80ba9aa65625f7d07e545534528f254cfa5353993abfd",
+      "source_sha256": "b4937e4ec4e24c1b85bf1e4d618bbaf372a3551be48518d54a786dbf29ab06f1",
       "title": "Descent double complexes and hypercohomology",
       "kind": "mathematics",
       "purpose": "Show why a non-Leray cover needs derived sections rather than plain Cech sections.",
-      "algorithm": "Build the Cech/sheaf double complex with signed total differential and mapping-cone complexes; compute integral cohomology and modular cross-checks.",
+      "algorithm": "Sheaf and plain Cech cohomology from core.sheaf; the Cech/sheaf descent double complex and the cone of a map of sheaves as double complexes with signed total differential from core.homological; integral cohomology and a mod-2 cross-check.",
       "domain": "16-point torus model, a two-open non-Leray cover, constant and (-1,+1) local systems; multiplication-by-0/1/2/3 sheaf complexes.",
       "arithmetic": "Exact integer matrices, Smith-form torsion and F₂/F₃ comparisons.",
       "validation": "D²=0, torus/descent results, twisted torsion and cone answers are asserted; dropping the total-complex sign is a negative control.",
-      "limitations": "The program's header summary gives plain Čech cohomology of this cover as (Z, Z, 0); the body computes, and the measured run prints, (Z, 0): H¹ vanishes because both sections restrict onto the connected intersection. The checks use the body's calculation, and the doc follows the measured output. The listed derived-section and torus-model checks apply to the finite models computed.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "limitations": "The listed derived-section and torus-model checks apply to the finite models computed.",
+      "prerequisites": "Built eshkol-run and stdlib; core.sheaf, core.ring and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -1886,43 +1886,39 @@
           "text": ";; Cohomological descent and hypercohomology on a finite space: a non-Leray"
         },
         {
-          "line": 53,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 48,
+          "text": "(require core.ring)"
         },
         {
-          "line": 54,
+          "line": 59,
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 468,
+          "line": 178,
           "text": "(check \"the exact complex Z --1--> Z has vanishing hypercohomology\""
         },
         {
-          "line": 470,
+          "line": 180,
           "text": "(check \"the zero map gives H^n (+) H^{n-1}: (Z, Z^3, Z^3, Z)\""
         },
         {
-          "line": 472,
+          "line": 182,
           "text": "(check \"negative control -- multiplication by 3 gives the mod-3 answer (0, Z/3, (Z/3)^2, Z/3), not the mod-2 one\""
         },
         {
-          "line": 26,
-          "text": ";;      is wrong; the descent double complex gives (Z, Z^2, Z), which is"
-        },
-        {
-          "line": 397,
+          "line": 130,
           "text": "(check \"plain Cech cohomology of the non-Leray cover is wrong: its H^1 vanishes (the two sections restrict onto the connected intersection) while H^1 of the torus model has rank 2\""
         },
         {
-          "line": 398,
+          "line": 131,
           "text": "       (and (= 1 (cadr (car plain))) (= 0 (cadr (cadr plain))) (not (= 2 (cadr (cadr plain))))))"
         },
         {
-          "line": 404,
+          "line": 136,
           "text": "(check \"cohomological descent: the double complex over the Cech nerve computes (Z, Z^2, Z, 0) for the non-Leray cover\""
         },
         {
-          "line": 405,
+          "line": 137,
           "text": "       (equal? descent (list (list 0 1 '()) (list 1 2 '()) (list 2 1 '()) (list 3 0 '()))))"
         }
       ],
@@ -2031,16 +2027,16 @@
     },
     {
       "path": "examples/mathematics_finite_categories_kan_extensions.esk",
-      "source_sha256": "d04c60d9390806909c63b23ddbb572074f467f00f796246942972bf33c88e117",
+      "source_sha256": "1927c08b17a438122261889cd8f11d2f63b0ca868a4f2112602bf88851e205d0",
       "title": "Finite categories and Kan extensions",
       "kind": "mathematics",
       "purpose": "Make finite categorical constructions explicit and test their universal-property comparisons.",
-      "algorithm": "Enumerate presented arrows/composites, functors, natural transformations, limits/colimits, comma-category Kan extensions and categories of elements.",
+      "algorithm": "Build presented categories, functors, comma categories, limits, colimits, pointwise Kan extensions with their units and counits, categories of elements and nerves with core.category, and compare derived limits with core.sheaf.",
       "domain": "Walking arrow, commutative square, pseudocircle/cone diagrams and Z/2 sets; finite derived-limit examples.",
       "arithmetic": "Exact finite sets, arrow tables and rational/integer cochain linear algebra.",
       "validation": "Identity/composition/naturality laws, selected adjunction triangles, extension sizes, element-category lifting and derived-limit dimensions are checked.",
       "limitations": "The source explicitly obtains a discrete opfibration for its covariant element construction; do not automatically relabel it a contravariant fibration. Presentation rewriting and universal-property claims are restricted to the supplied categories.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2058,23 +2054,19 @@
           "text": ";; Finite categories as computations: categories from generators and"
         },
         {
-          "line": 78,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+          "line": 61,
+          "text": "(require core.category.kan)"
         },
         {
-          "line": 79,
-          "text": "(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))"
-        },
-        {
-          "line": 447,
+          "line": 176,
           "text": "(check \"the category of elements of G on the pseudocircle has 10 objects and 18 arrows (10 identities and 8 lifts), and the projection is a discrete opfibration (each arrow out of an object's image has exactly one lift)\""
         },
         {
-          "line": 493,
+          "line": 189,
           "text": "(check \"derived limits recover sheaf cohomology: (1, 1, 0) for the pseudocircle and (1, 0, 1, 0) for the pseudo-2-sphere, the values of the finite-spaces example\""
         },
         {
-          "line": 495,
+          "line": 194,
           "text": "(check \"lim^0 agrees with the limit of the constant functor computed categorically: one compatible family on each connected poset\""
         }
       ],
@@ -2335,16 +2327,16 @@
     },
     {
       "path": "examples/mathematics_four_manifolds_second_k_invariant.esk",
-      "source_sha256": "f895a42c6c178071c3fdc8cd578d71edb713f78ce40e1e11f261071be010f69d",
+      "source_sha256": "337e27833024e31d4ff847459dca2d8fa4c752c57a9c21d272c893ac529ea8ac",
       "title": "Cup-square obstruction in four-manifold models",
       "kind": "mathematics",
       "purpose": "Detect a second Postnikov k-invariant through mapping-space counts.",
-      "algorithm": "Build four-dimensional face tables and F₂ cup products; count solutions δy=x∪x and compare cochain-state-sum normalization with a fibration formula.",
+      "algorithm": "S^4, RP^4 and S^2 x S^2 as simplicial sets of core.simplicial (boundary, cross-polytope quotient, Eilenberg-Zilber product); mod-2 cochain complexes, cup squares and class tests of core.homological; twisted-cochain state sum and fibration formula counts.",
       "domain": "Supplied S⁴, RP⁴ and S²×S² Delta-complexes; π₂=π₃=Z/2, trivial π₁; k=0 versus cup square.",
       "arithmetic": "Exact modular linear algebra and rational cardinalities.",
       "validation": "Face closure, δ²=0, Betti numbers, cup-square obstructions and equality of two cardinality routes are checked.",
       "limitations": "The computation is bounded by the target 3-type and supplied finite complexes; the manifold/model identifications use the cited results.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2362,23 +2354,27 @@
           "text": ";; Four-dimensional Delta-complexes and the second k-invariant: mapping"
         },
         {
-          "line": 65,
+          "line": 57,
+          "text": "(require core.ring)"
+        },
+        {
+          "line": 68,
           "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
         },
         {
-          "line": 66,
+          "line": 69,
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 267,
+          "line": 163,
           "text": "(check \"k = 0: the state sum equals the fibration formula and the product of the two Eilenberg-MacLane cardinalities on all three manifolds\""
         },
         {
-          "line": 269,
+          "line": 165,
           "text": "(check \"k = iota u iota: the state sum equals the fibration formula on all three manifolds, exactly\""
         },
         {
-          "line": 271,
+          "line": 167,
           "text": "(check \"the second k-invariant is seen by RP^4 and only there: its value halves (x^2 fails to lift, since x^4 is not zero), S^4 and S^2 x S^2 keep their k = 0 values\""
         }
       ],
@@ -2562,16 +2558,16 @@
     },
     {
       "path": "examples/mathematics_group_cohomology_order_eight.esk",
-      "source_sha256": "b9c26ca0cf2578b0b27bd91d78d867e6e5a1cdc844682000716689060263f476",
+      "source_sha256": "252bc911d0c07754d6452e3720959803966217c411dd7e7523f94254db2a9dc0",
       "title": "Integral homology and twists of order-eight groups",
       "kind": "mathematics",
       "purpose": "Compare torsion homology and twisted-double invariants across small groups.",
-      "algorithm": "Normalized bar-boundary Smith forms, cocycle evaluations and finite state sums/commuting-triple and centralizer-class counts.",
+      "algorithm": "Groups and BG from core.simplicial, normalized and Moore bar complexes with Smith-form homology from core.homological, cocycle coboundaries, and state sums as folds over the simplicial maps from Delta-complexes to BG; commuting-triple and centralizer-class counts.",
       "domain": "All five order-eight groups (Z/8, Z/4×Z/2, (Z/2)³, D₄, Q₈), plus S₃ and normalization controls Z/2/Z/3; degrees through H₃.",
       "arithmetic": "Exact bignum integer/rational arithmetic.",
       "validation": "Homology/twist counts, the type-III torus value 22 versus untwisted 64, manifold state sums and orientation/edge negative controls are asserted.",
       "limitations": "The equal count 22 does not by itself prove equivalence of entire braided categories; expensive dense Smith forms have explicit source-versioned CTest budgets.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2589,23 +2585,27 @@
           "text": ";; Group cohomology of the groups of order eight, the classification of their"
         },
         {
-          "line": 54,
+          "line": 45,
+          "text": "(require core.integer_linalg)"
+        },
+        {
+          "line": 59,
           "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
         },
         {
-          "line": 55,
+          "line": 60,
           "text": "(define (mod2 x) (modulo x 2))                 ;; phases as integers over the denominator 2"
         },
         {
-          "line": 580,
+          "line": 348,
           "text": "(check \"Z(RP^3) for the type III theory is 3/4: only the all-ones element picks up the sign\""
         },
         {
-          "line": 582,
+          "line": 350,
           "text": "(check \"Z(RP^3) untwisted counts homomorphisms Z/2 -> G over |G|: 6/8 for D_4, 2/8 for Q_8\""
         },
         {
-          "line": 590,
+          "line": 358,
           "text": "(check \"negative control -- swapping two edges of one tetrahedron of S^3 breaks Z(S^3) = 1/8 for D_4 and for the type III theory\""
         }
       ],
@@ -2634,16 +2634,16 @@
     },
     {
       "path": "examples/mathematics_group_cohomology_sweep.esk",
-      "source_sha256": "c3efb683240920475ceb2d78e144d55a837f7a25822daf3a3374cd15d6593274",
+      "source_sha256": "3f34f704afcd8c2839ec025eb9ed172dea95361cfc435b9aa9381b5483de0c1f",
       "title": "Parametric finite-group homology receipts",
       "kind": "mathematics",
       "purpose": "Produce integral bar-complex homology receipts for a chosen finite group.",
-      "algorithm": "Parse a group specification, build its normalized bar complex and compute torsion/Betti data by dense bignum Smith elimination.",
+      "algorithm": "Parse a group specification, build the group with core.simplicial and compute the integral homology of BG with core.homological (Smith normal form of core.integer_linalg).",
       "domain": "MATH_GROUP defaults cyclic:2; cyclic:N, product:N,M[,K], dihedral:N (order 2N), quaternion, symmetric:3, alternating:4; MATH_DEGREE defaults 3.",
       "arithmetic": "Exact integer matrices and JSON integer/torsion fields.",
       "validation": "Self-check verdict and H₀…H_degree data are emitted; |H₃| is reported when that degree is computed. How the verdict is read: the single output line is a JSON receipt whose `verdict` field is `PASS` or `FAIL`, and the exit status is 0 or 1 accordingly (2 for an unknown group spec); there is no `RESULT:` line, which is why the measured status is `RAN-OK` with the JSON quoted verbatim.",
       "limitations": "Cost grows as (|G|−1)^k for the degree-k boundary; the header gives degree 3 as practical to order 9 and degree 2 to order 16 with the dense elimination. The measured run below is for the default parameters (cyclic:2, degree 3); a receipt for any other group is a separate run.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [],
       "source_anchors": [
@@ -2653,22 +2653,14 @@
         },
         {
           "line": 23,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "text": "(require core.simplicial.nerve)"
         },
         {
-          "line": 24,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
-        },
-        {
-          "line": 198,
-          "text": "(display (string-append \"{\\\"schema\\\":\\\"eshkol.math.group_homology.v1\\\",\\\"group\\\":\\\"\" spec \"\\\",\\\"order\\\":\" (number->string (g-order G))"
-        },
-        {
-          "line": 199,
+          "line": 70,
           "text": "                        \",\\\"degree\\\":\" (number->string degree) \",\\\"homology\\\":\" (json-homology table)"
         },
         {
-          "line": 204,
+          "line": 75,
           "text": "(exit (if ok 0 1))"
         }
       ],
@@ -2768,16 +2760,16 @@
     },
     {
       "path": "examples/mathematics_homotopy_colimits_grothendieck.esk",
-      "source_sha256": "514dd29538277472de7112382f796daf43e8ffc84b7ca0b27d4094d720d2997c",
+      "source_sha256": "b5dfc4f22bfbe205c70c3e0c020e219a7ee000a6e8e8dcdc5db84579b13b11d6",
       "title": "Grothendieck constructions and homotopy colimits",
       "kind": "mathematics",
       "purpose": "Contrast homotopy constructions with strict colimits.",
-      "algorithm": "Enumerate diagram element/action categories, normalized nerves and integral cochain Smith forms.",
+      "algorithm": "Build diagrams of posets and Z/2 actions as core.category category diagrams, take their Grothendieck constructions, and compute the integral cohomology of the nerves by Smith normal form.",
       "domain": "Span diagrams suspending two points/pseudocircle; Z/2 actions on a point and pseudocircle, including free and reflection actions.",
       "arithmetic": "Exact finite categorical data and integer torsion calculations.",
       "validation": "Suspension/Borel cohomology and action laws are checked; the strict free-action quotient is contractible while the homotopy quotient retains a circle.",
       "limitations": "Finite degrees and supplied diagrams are computed; the general Thomason equivalence is a cited theorem rather than a new universal proof.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -2795,23 +2787,19 @@
           "text": ";; Homotopy colimits as nerves of Grothendieck constructions: suspensions,"
         },
         {
-          "line": 49,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 47,
+          "text": "(require core.category.functor)"
         },
         {
-          "line": 50,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
-        },
-        {
-          "line": 352,
+          "line": 143,
           "text": "(check \"reflection with two fixed points: BZ/2 v BZ/2, (Z, 0, (Z/2)^2, 0)\""
         },
         {
-          "line": 356,
+          "line": 147,
           "text": "(check \"the strict quotient poset of the free action is contractible, (Z, 0): the strict colimit forgets the circle the homotopy quotient keeps\""
         },
         {
-          "line": 359,
+          "line": 150,
           "text": "(check \"negative control -- swapping the roles of the two actions fails: the free action's answer is not the trivial action's\""
         }
       ],
@@ -2981,16 +2969,16 @@
     },
     {
       "path": "examples/mathematics_kan_complexes_horns.esk",
-      "source_sha256": "d7658e4c2af928b12d8fbdeea990d04a43f3dcee99bc875d335eff512b7b7e05",
+      "source_sha256": "4648c17f6f62506e57063aa399163d50e42db4f1d8a394ea0df163089d97755d",
       "title": "Horn fillers and low homotopy groups",
       "kind": "mathematics",
       "purpose": "Compare 2-group nerves with a poset nerve using explicit horns.",
-      "algorithm": "Enumerate finite simplices/horns/fillers and sphere homotopy relations; build π₁ multiplication from fillers.",
+      "algorithm": "Build crossed-module nerves and the pseudocircle nerve with core.simplicial, enumerate every compatible horn and count its fillers, compute Kan's homotopy relation and the pi_1 product from fillers.",
       "domain": "Four supplied finite crossed-module nerves and the pseudocircle category; horns in dimensions 2/3 and π₁/π₂.",
       "arithmetic": "Exact finite enumeration and modular group labels.",
       "validation": "Compatible horn counts, inner versus outer horn distinction, equivalence relations, kernel/cokernel homotopy sizes and Latin-square products are asserted.",
-      "limitations": "The body’s 2-horn multiplicities are |M| (2,1,2,4), rather than the header’s |ker d|. horn-table forms horns from faces of an existing simplex; positive counts do not exhaust every compatible unfilled horn. Poset and low-homotopy checks are finite; broader Kan interpretations use the cited nerve theory.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "limitations": "Poset and low-homotopy checks are finite; broader Kan interpretations use the cited nerve theory. Horns are enumerated in dimensions 2 and 3 only.",
+      "prerequisites": "Built eshkol-run and stdlib; core.simplicial on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -3008,43 +2996,31 @@
           "text": ";; Kan complexes as computations: horn fillers, quasi-categories against"
         },
         {
-          "line": 55,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 51,
+          "text": "(require core.simplicial.nerve)"
         },
         {
-          "line": 56,
+          "line": 61,
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 290,
+          "line": 119,
           "text": "(check \"the homotopy relation is an equivalence relation on the 1-spheres and on the 2-spheres of every nerve\""
         },
         {
-          "line": 292,
+          "line": 121,
           "text": "(check \"Kan's pi_1 has |coker d| elements and pi_2 has |ker d| elements: (1,2), (2,1), (2,2), (2,2)\""
         },
         {
-          "line": 302,
+          "line": 129,
           "text": "(check \"pi_1 tables are Latin squares with an identity: the horn-filler product is the group Z/2\""
         },
         {
-          "line": 190,
-          "text": "  (let loop ((fs faces) (i 0) (acc \"\"))"
-        },
-        {
-          "line": 192,
-          "text": "(define (horn-table es k)                          ;; hash: horn string -> number of fillers"
-        },
-        {
-          "line": 203,
-          "text": "(define (all-equal-to? xs v) (all? (lambda (x) (= x v)) xs))"
-        },
-        {
-          "line": 223,
+          "line": 84,
           "text": "(check \"every 2-horn and every 3-horn of the four 2-group nerves has a filler: they are Kan complexes (every horn listed here comes from a simplex, and the count says how many simplices fill it)\""
         },
         {
-          "line": 227,
+          "line": 88,
           "text": "(check \"2-horns have exactly |M| fillers (the third edge ranges over a coset of the image of d, the 2-cell over its kernel): 2, 1, 2, 4\""
         }
       ],
@@ -4126,16 +4102,16 @@
     },
     {
       "path": "examples/mathematics_sheafification_descent_kan.esk",
-      "source_sha256": "72aae0f72e6bb160b435055a394c7cd2f9651f72b7d8a9ba588786d291684a49",
+      "source_sha256": "e2ed4c0dc14726cb3961bfef73a9b642c86ce4f97bb428dd1f9d265fdc15746b",
       "title": "Sheafification, reflector and Kan descent",
       "kind": "mathematics",
       "purpose": "Compare finite-site plus construction with matching-family Kan limits.",
-      "algorithm": "Enumerate covering sieves and finite matching families, apply plus twice, build comma-category limits and count natural maps into sheaves.",
+      "algorithm": "Build the sites of opens with core.sheaf, apply the plus construction twice, compute Match on the minimal covering sieves as Ran along the sieve inclusion and as the limit over the sieve category with core.category, and count natural transformations into sheaves three ways with the triangle identities of a -| i.",
       "domain": "Pseudocircle site with 6 opens and pseudo-2-sphere site with 9 opens; constant, locally constant and nonseparated set presheaves.",
       "arithmetic": "Exact finite sets and enumeration/pruned-count cross-checks.",
       "validation": "Grothendieck axioms, separated/sheaf conditions, section counts, Kan/matching equality and selected reflector-adjunction counts are asserted.",
       "limitations": "The exhaustive site is finite; selected adjunction counts must not be promoted to a proof for arbitrary infinite sites or all presheaves.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -4153,23 +4129,19 @@
           "text": ";; Sheafification as a reflector and descent as a Kan extension, computed on"
         },
         {
-          "line": 61,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 57,
+          "text": "(require core.category.kan)"
         },
         {
-          "line": 62,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
-        },
-        {
-          "line": 527,
+          "line": 181,
           "text": "(check \"on the pseudo-2-sphere the constant presheaf sheafifies to |A|^{pi_0(U)} on all 9 opens and the result is a sheaf\""
         },
         {
-          "line": 551,
-          "text": "(check \"the pruned count agrees with the brute-force enumeration on the small case Hom(const, A^pi_0)\" (= (car uc1) (length (all-naturals (opposite CS*) const-S locally-constant-S))))"
+          "line": 196,
+          "text": "(check \"the pruned count agrees with the brute-force enumeration on the small case Hom(const, A^pi_0)\""
         },
         {
-          "line": 554,
+          "line": 201,
           "text": "(check \"a -| i: Hom(F, G) = Hom(aF, G) for the sheaf G = A^{pi_0}, for the constant presheaf and for the non-separated one\""
         }
       ],
@@ -4453,16 +4425,16 @@
     },
     {
       "path": "examples/mathematics_two_groups_postnikov.esk",
-      "source_sha256": "506ec63d21f893faf59f35ed1e17a65ecb2faf48d1a601ef00bc150b0a8c0f62",
+      "source_sha256": "9505c71277d108885e9f1bf58b44b2fce60904851a07d4708bf16c61a13c2c11",
       "title": "Crossed-module nerves and Postnikov data",
       "kind": "mathematics",
       "purpose": "Distinguish 2-types with identical π₁ and π₂ using k-sensitive cohomology.",
-      "algorithm": "Check crossed-module/Peiffer laws, enumerate edge/triangle-labeled nerve simplices, check face identities and compute integral/mod-2 complexes.",
+      "algorithm": "Check crossed-module laws, build crossed-module nerves with core.simplicial and compute normalized mod-2 and integral (co)homology with core.homological; the k-invariant by the Baez-Lauda recipe.",
       "domain": "Finite abelian crossed modules including Z/2→1,1→Z/2,Z/2→Z/2 and Z/4→Z/4 with trivial/sign action; source-defined low degrees.",
       "arithmetic": "Exact integer and finite-field linear algebra.",
       "validation": "Kernel/cokernel homotopy sizes, cohomology dimensions, nontrivial-twist distinction and dropped-tetrahedron-equation negative controls are asserted.",
       "limitations": "Finite-degree computations distinguish these presentations; equivalence of entire 2-types invokes the cited crossed-module/Postnikov theory.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -4480,23 +4452,23 @@
           "text": ";; Strict 2-groups as crossed modules, their nerves, and the Postnikov"
         },
         {
-          "line": 67,
-          "text": "(define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))"
+          "line": 58,
+          "text": "(require core.ring)"
         },
         {
-          "line": 68,
+          "line": 69,
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 364,
+          "line": 147,
           "text": "(check \"integral H_2: Z/2 for the two products and 0 for the sign-action twist, as the sequence H_3(BZ/2) -> pi_2 -> H_2(X) -> H_2(BZ/2) = 0 predicts when the first map (the k-invariant) is an isomorphism; H_1 = Z/2 for all three\""
         },
         {
-          "line": 380,
+          "line": 165,
           "text": "(check \"negative control -- dropping the tetrahedron equation admits more 3-simplices for the split 2-type (128 against 64)\""
         },
         {
-          "line": 382,
+          "line": 167,
           "text": "(check \"negative control -- degree 1 cannot separate the 2-types: dim H^1 = 1 for all of them\""
         }
       ],

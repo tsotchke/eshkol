@@ -4344,6 +4344,32 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# core.simplicial and core.homological (ADR-0037): simplicial sets, nerves,
+# Kan complexes, mapping spaces; complexes over ring carriers, homology with
+# torsion, cones, Ext/Tor, spectral sequences, cup and cup-i products,
+# Steenrod squares, group cohomology. Each suite cross-checks against closed
+# forms and independent computations.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_sh_suite simplicial_test homological_test)
+        string(REPLACE "_test" "" _sh_name ${_sh_suite})
+        add_test(NAME ${_sh_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sh_suite}.esk")
+        add_test(NAME ${_sh_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sh_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_sh_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_COMPILE_TIMEOUT=1500"
+            "-DESHKOL_RUN_TIMEOUT=900"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_sh_name}_jit ${_sh_name}_aot PROPERTIES
+            TIMEOUT 2400
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_sh_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # core.topos: the internal language of the topos of a finite site, with
 # Kripke-Joyal forcing cross-checked against the Omega-valued interpretation,
 # the Kripke and Beth reductions, soundness of intuitionistic higher-order
@@ -4386,6 +4412,55 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 900
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
             PASS_REGULAR_EXPRESSION "PASS: ${_ring_suite}_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# nLab conformance: claims quoted from nLab pages, each decided exactly on the
+# libraries (core.sheaf, core.topos, core.ring, core.multimodular, core.category,
+# core.simplicial, core.homological, core.integer_linalg). One PASS/FAIL line
+# per claim; the page-by-page coverage is
+# docs/reports/NLAB_CONFORMANCE.md and scripts/run_nlab_conformance.sh
+# counts the claims.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_nlab_suite nlab_topos nlab_space nlab_ring nlab_category nlab_simplicial)
+        add_test(NAME ${_nlab_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/nlab/${_nlab_suite}_test.esk")
+        add_test(NAME ${_nlab_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/nlab/${_nlab_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_nlab_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=540"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_nlab_suite}_jit ${_nlab_suite}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_nlab_suite}_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# core.category: finite category theory on core.sheaf.site's representation
+# (ADR-0036): functors, natural transformations, (co)limits, ends, coends,
+# Yoneda, Kan extensions, adjunctions, monads, derived limits, and descent and
+# sheafification as category theory. category_s62_test is the S6.2 acceptance
+# suite (descent as a Kan extension, sheafification as a reflector).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_category_suite category_test category_s62_test)
+        add_test(NAME ${_category_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_category_suite}.esk")
+        add_test(NAME ${_category_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_category_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_category_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=1500"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_category_suite}_jit ${_category_suite}_aot PROPERTIES
+            TIMEOUT 1800
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_category_suite}"
             FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
     endforeach()
 endif()
@@ -4457,11 +4532,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     # These consumers now require the shared field module from this checkout.
     set_property(TEST torsion_lens_spaces_reidemeister_jit tv_turaev_viro_cyclotomic_jit
                       sheaf_finite_spaces_cech_descent_jit sheaf_finite_site_sheafification_jit
-                      cat_presheaf_topos_internal_logic_jit
+                      cat_presheaf_topos_internal_logic_jit cat_finite_categories_kan_jit
+                      cat_sheafification_descent_kan_jit hocolim_grothendieck_borel_jit
         APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
     # The functor-of-points example runs on core.ring and core.multimodular.
     set_property(TEST rings_functor_of_points_jit
         APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+    # The finite-categories, sheafification and homotopy-colimit programs load
+    # core.category; compiling the library is most of their time.
+    foreach(_category_example cat_finite_categories_kan cat_sheafification_descent_kan hocolim_grothendieck_borel)
+        if(TEST ${_category_example}_jit)
+            set_tests_properties(${_category_example}_jit ${_category_example}_aot PROPERTIES TIMEOUT 600)
+        endif()
+    endforeach()
     # The order-eight program eliminates five 343 x 2401 integer matrices;
     # about 90 s on an arm64 laptop, so it gets its own budget.
     if(TEST dw_group_cohomology_order_eight_jit)
@@ -4492,6 +4575,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         set_tests_properties(yetter_three_torus_finite_model_jit PROPERTIES TIMEOUT 900)
         set_tests_properties(yetter_three_torus_finite_model_aot PROPERTIES TIMEOUT 900)
     endif()
+    # The algebraic-topology examples written on core.simplicial and
+    # core.homological (ADR-0037) compile those libraries with the program,
+    # so each gets the budget of a library suite.
+    set(ESHKOL_SIMPLICIAL_EXAMPLES hocolim_kan_complexes_horns hocolim_two_groups_postnikov
+        dw_cohomology_rings_cup_products dw_cohomology_rings_nonabelian dw_group_cohomology_order_eight
+        postnikov_four_manifolds_second_k sheaf_descent_hypercohomology)
+    foreach(_sx ${ESHKOL_SIMPLICIAL_EXAMPLES})
+        if(TEST ${_sx}_jit)
+            set_property(TEST ${_sx}_jit APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+            set_tests_properties(${_sx}_jit ${_sx}_aot PROPERTIES TIMEOUT 1200)
+        endif()
+    endforeach()
 endif()
 
 # Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.

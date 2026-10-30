@@ -770,6 +770,31 @@ under the same discipline that made `Qubit` linear.
       Lawvere-Tierney bijection, the `locally` modality as the j-translation,
       and the internally local structure sheaf of Spec(Z/n). The presheaf-topos
       example runs on it. Language adoption is staged in ADR-0035 (v1.4.1 to v1.5.0)
+- [x] Finite category theory as a library (ADR-0036): `core.category` gives
+      functors and natural transformations checked by their laws, functor,
+      comma and slice categories, limits, colimits, ends and coends, the
+      Yoneda lemma, categories of elements and Grothendieck constructions,
+      Kan extensions by the pointwise and the (co)end formulas with
+      Lan -| F^* -| Ran, adjunctions with both triangle identities and
+      adjoints found through comma categories, monads, nerves, derived
+      limits, and descent and sheafification as category theory (a -| i, the
+      sheafification monad, Cech descent, cohomological descent through
+      Grothendieck constructions), all on core.sheaf's finite categories.
+      The finite-categories, sheafification and homotopy-colimit examples run
+      on it, and the S6.2 suite reproduces the numbers of the sheaf and
+      descent examples categorically
+- [x] Simplicial and homological algebra as libraries (ADR-0037):
+      `core.simplicial` gives simplicial sets in Eilenberg-Zilber normal
+      form with products, joins, cones and suspensions, nerves of finite
+      categories, posets, groups (BG) and crossed modules, McCord finite
+      models, the Kan and quasi-category conditions over every compatible
+      horn, Kan's homotopy groups and mapping spaces `Map(X, Y)`;
+      `core.homological` gives complexes over `core.ring` carriers (Z with
+      torsion through `core.integer_linalg`, Q, F_p), cones and long exact
+      sequences, Ext and Tor over Z, spectral sequences of filtered and double
+      complexes checked page by page and in the limit, cup and cup-i products,
+      Steenrod squares and group cohomology with twisted coefficients. Eight
+      algebraic-topology examples run on them
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
@@ -877,6 +902,15 @@ under the same discipline that made `Qubit` linear.
       example runs on the libraries
 - [ ] `core.symbolic` coefficient fields and `core.dbsp` weights taking a
       `core.ring` carrier (ADR-0034, library rung)
+- [x] nLab conformance suite: `tests/nlab/` quotes claims from nLab pages and
+      decides each one exactly on `core.sheaf`, `core.topos`, `core.ring`,
+      `core.multimodular`, `core.integer_linalg`, `core.category`,
+      `core.simplicial` and `core.homological` (132 claims on 50 pages, JIT and
+      AOT, `scripts/run_nlab_conformance.sh`);
+      [docs/reports/NLAB_CONFORMANCE.md](docs/reports/NLAB_CONFORMANCE.md) lists
+      the coverage page by page and 9 further claims with what each one needs
+      (the Zariski site and localization carrier for v1.4.1, schemes glued from
+      affine charts for v1.4.2)
 
 ---
 

@@ -1,0 +1,271 @@
+;;; core.simplicial.group -- finite groups by multiplication tables, and
+;;; crossed modules (strict 2-groups) with their homotopy groups and
+;;; Postnikov k-invariant.
+;;;
+;;; Usage: (require core.simplicial.group)   or   (require core.simplicial)
+;;;
+;;; Sources: K. S. Brown, "Cohomology of Groups" (1982); J. H. C. Whitehead,
+;;; "Combinatorial homotopy II", Bull. AMS 55 (1949) (crossed modules);
+;;; R. Brown, P. J. Higgins, R. Sivera, "Nonabelian Algebraic Topology"
+;;; (2011), 2.5; J. Baez, A. Lauda, "Higher-dimensional algebra V: 2-groups",
+;;; TAC 12 (2004), Sec. 8 (the k-invariant of a crossed module).
+;;;
+;;; Representation (public and stable):
+;;;   finite group     #(finite-group n table inverse identity labels)
+;;;       elements are the integers 0 .. n-1; table[a][b] = a b.
+;;;   crossed module   #(crossed-module M N boundary action)
+;;;       M, N finite groups, boundary : M -> N a procedure on elements,
+;;;       action : (n m) -> n . m, an action of N on M by automorphisms.
+;;;       The axioms (homomorphism, equivariance boundary(n . m) =
+;;;       n boundary(m) n^-1, Peiffer boundary(m) . m' = m m' m^-1) are
+;;;       checked by `crossed-module-violations`, never assumed.
+
+(require stdlib)
+
+(provide make-finite-group finite-group? group-order group-mul group-inv group-identity group-elements
+         group-label group-axioms-violations group-abelian? group-element-order group-power
+         group-conjugacy-classes group-centralizer group-commute?
+         cyclic-group group-direct-product dihedral-group quaternion-group symmetric-group alternating-group
+         permutation-sign
+         group-homomorphism? group-quotient
+         make-crossed-module crossed-module? crossed-module-source crossed-module-target
+         crossed-module-boundary crossed-module-act crossed-module-violations
+         crossed-module-pi1 crossed-module-pi2 crossed-module-pi1-order crossed-module-pi2-order
+         crossed-module-k-invariant group-crossed-module abelian-crossed-module)
+
+(define (fg-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (fg-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (fg-all? pred (cdr xs))) (else #f)))
+(define (fg-count pred xs) (let loop ((l xs) (c 0)) (cond ((null? l) c) ((pred (car l)) (loop (cdr l) (+ c 1))) (else (loop (cdr l) c)))))
+
+;; ---------------------------------------------------------------------------
+;; Finite groups
+;; ---------------------------------------------------------------------------
+;; (make-finite-group n mul [labels]): mul a procedure on 0..n-1. The table
+;; is filled once; the identity and the inverses are found from it.
+(define (make-finite-group n mul . labels)
+  (let ((table (make-vector n 0)))
+    (let loop ((a 0))
+      (if (< a n)
+          (let ((row (make-vector n 0)))
+            (let inner ((b 0)) (if (< b n) (begin (vector-set! row b (mul a b)) (inner (+ b 1)))))
+            (vector-set! table a row)
+            (loop (+ a 1)))))
+    (let* ((e (let find ((x 0))
+                (cond ((= x n) (error "make-finite-group: no identity element" n))
+                      ((fg-all? (lambda (a) (and (= a (vector-ref (vector-ref table x) a)) (= a (vector-ref (vector-ref table a) x)))) (fg-range n)) x)
+                      (else (find (+ x 1))))))
+           (inv (make-vector n -1)))
+      (let loop ((a 0))
+        (if (< a n)
+            (begin
+              (let inner ((b 0))
+                (if (< b n)
+                    (begin (if (= e (vector-ref (vector-ref table a) b)) (vector-set! inv a b)) (inner (+ b 1)))))
+              (loop (+ a 1)))))
+      (vector 'finite-group n table inv e (if (null? labels) #f (list->vector (car labels)))))))
+(define (finite-group? G) (and (vector? G) (= 6 (vector-length G)) (eq? (vector-ref G 0) 'finite-group)))
+(define (group-order G) (vector-ref G 1))
+(define (group-mul G a b) (vector-ref (vector-ref (vector-ref G 2) a) b))
+(define (group-inv G a) (vector-ref (vector-ref G 3) a))
+(define (group-identity G) (vector-ref G 4))
+(define (group-elements G) (fg-range (vector-ref G 1)))
+(define (group-label G a) (if (vector-ref G 5) (vector-ref (vector-ref G 5) a) a))
+(define (group-power G a k)
+  (let loop ((k k) (acc (group-identity G))) (if (= k 0) acc (loop (- k 1) (group-mul G acc a)))))
+(define (group-commute? G a b) (= (group-mul G a b) (group-mul G b a)))
+
+;; identity, inverses and associativity, as explicit violations
+(define (group-axioms-violations G)
+  (let ((els (group-elements G)) (out '()))
+    (for-each (lambda (a)
+                (if (< (group-inv G a) 0) (set! out (cons (list 'no-inverse a) out)))
+                (for-each (lambda (b)
+                            (for-each (lambda (c)
+                                        (if (not (= (group-mul G (group-mul G a b) c) (group-mul G a (group-mul G b c))))
+                                            (set! out (cons (list 'associativity a b c) out))))
+                                      els))
+                          els))
+              els)
+    (reverse out)))
+(define (group-abelian? G)
+  (fg-all? (lambda (a) (fg-all? (lambda (b) (group-commute? G a b)) (group-elements G))) (group-elements G)))
+(define (group-element-order G a)
+  (let loop ((x a) (k 1)) (if (= x (group-identity G)) k (loop (group-mul G x a) (+ k 1)))))
+(define (group-centralizer G g) (filter (lambda (x) (group-commute? G x g)) (group-elements G)))
+;; conjugacy classes of G (lists of elements, each in increasing order of first appearance)
+(define (group-conjugacy-classes G)
+  (let loop ((rest (group-elements G)) (classes '()))
+    (if (null? rest) (reverse classes)
+        (let* ((g (car rest))
+               (orbit (map (lambda (h) (group-mul G (group-mul G h g) (group-inv G h))) (group-elements G)))
+               (cls (filter (lambda (x) (memv x orbit)) rest)))
+          (loop (filter (lambda (x) (not (memv x orbit))) rest) (cons cls classes))))))
+
+;; Z/n with a + b mod n
+(define (cyclic-group n) (make-finite-group n (lambda (a b) (modulo (+ a b) n))))
+;; G x H with (g, h) encoded g |H| + h
+(define (group-direct-product G H)
+  (let ((m (group-order H)))
+    (make-finite-group (* (group-order G) m)
+                       (lambda (x y) (+ (* m (group-mul G (quotient x m) (quotient y m)))
+                                        (group-mul H (remainder x m) (remainder y m)))))))
+;; D_n = <r, s | r^n = s^2 = e, s r s = r^-1>, order 2n; r^i s^j encoded 2 i + j
+(define (dihedral-group n)
+  (make-finite-group (* 2 n)
+                     (lambda (x y)
+                       (let ((i (quotient x 2)) (j (remainder x 2)) (k (quotient y 2)) (l (remainder y 2)))
+                         (+ (* 2 (modulo (+ i (if (= j 0) k (- 0 k))) n)) (modulo (+ j l) 2))))))
+;; Q_8 = {+-1, +-i, +-j, +-k}; unit u in 0..3 (1, i, j, k) and a sign bit, encoded 2 u + sign
+(define fg-q8-units
+  (vector (vector (cons 0 0) (cons 1 0) (cons 2 0) (cons 3 0))
+          (vector (cons 1 0) (cons 0 1) (cons 3 0) (cons 2 1))
+          (vector (cons 2 0) (cons 3 1) (cons 0 1) (cons 1 0))
+          (vector (cons 3 0) (cons 2 0) (cons 1 1) (cons 0 1))))
+(define (quaternion-group)
+  (make-finite-group 8 (lambda (x y)
+                         (let ((p (vector-ref (vector-ref fg-q8-units (quotient x 2)) (quotient y 2))))
+                           (+ (* 2 (car p)) (modulo (+ (remainder x 2) (remainder y 2) (cdr p)) 2))))))
+;; S_n: permutations of 0..n-1 in lexicographic order (identity first);
+;; (p q)(i) = p(q(i))
+(define (fg-permutations items)
+  (if (null? items) (list '())
+      (fold-left append '()
+                 (map (lambda (x) (map (lambda (p) (cons x p)) (fg-permutations (filter (lambda (y) (not (= y x))) items))))
+                      items))))
+(define (symmetric-group n)
+  (let* ((perms (list->vector (fg-permutations (fg-range n))))
+         (index (make-hash-table)))
+    (let loop ((i 0)) (if (< i (vector-length perms)) (begin (hash-table-set! index (vector-ref perms i) i) (loop (+ i 1)))))
+    (make-finite-group (vector-length perms)
+                       (lambda (a b)
+                         (let ((p (vector-ref perms a)) (q (vector-ref perms b)))
+                           (hash-table-ref/default index (map (lambda (i) (list-ref p (list-ref q i))) (fg-range n)) -1)))
+                       (vector->list perms))))
+
+;; the sign of a permutation of 0..n-1 (a list), by counting inversions
+(define (permutation-sign p)
+  (let loop ((l p) (inv 0))
+    (if (null? l) (if (even? inv) 1 -1)
+        (loop (cdr l) (+ inv (fg-count (lambda (y) (> (car l) y)) (cdr l)))))))
+;; A_n: the even permutations, in lexicographic order (identity first)
+(define (alternating-group n)
+  (let* ((perms (list->vector (filter (lambda (p) (= 1 (permutation-sign p))) (fg-permutations (fg-range n)))))
+         (index (make-hash-table)))
+    (let loop ((i 0)) (if (< i (vector-length perms)) (begin (hash-table-set! index (vector-ref perms i) i) (loop (+ i 1)))))
+    (make-finite-group (vector-length perms)
+                       (lambda (a b)
+                         (let ((p (vector-ref perms a)) (q (vector-ref perms b)))
+                           (hash-table-ref/default index (map (lambda (i) (list-ref p (list-ref q i))) (fg-range n)) -1)))
+                       (vector->list perms))))
+
+(define (group-homomorphism? G H f)
+  (fg-all? (lambda (a) (fg-all? (lambda (b) (= (f (group-mul G a b)) (group-mul H (f a) (f b)))) (group-elements G))) (group-elements G)))
+
+(define (fg-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (fg-any? pred (cdr xs)))))
+(define (fg-any-coset? G K reps g)
+  (cond ((null? reps) #f)
+        ((memv (group-mul G (group-inv G (car reps)) g) K) #t)
+        (else (fg-any-coset? G K (cdr reps) g))))
+;; G / K for a normal subgroup K (a list of elements): returns
+;; (list Q section projection) with Q the quotient group whose element i is
+;; the coset of the i-th smallest coset representative, section i -> that
+;; representative, projection g -> its coset index.
+(define (group-quotient G K)
+  (let* ((reps (let loop ((xs (group-elements G)) (reps '()))
+                 (cond ((null? xs) (reverse reps))
+                       ((fg-any-coset? G K reps (car xs)) (loop (cdr xs) reps))
+                       (else (loop (cdr xs) (cons (car xs) reps))))))
+         (rv (list->vector reps))
+         (proj (make-vector (group-order G) 0)))
+    (for-each (lambda (g)
+                (let find ((i 0))
+                  (if (memv (group-mul G (group-inv G (vector-ref rv i)) g) K) (vector-set! proj g i) (find (+ i 1)))))
+              (group-elements G))
+    (list (make-finite-group (length reps) (lambda (i j) (vector-ref proj (group-mul G (vector-ref rv i) (vector-ref rv j)))))
+          (lambda (i) (vector-ref rv i))
+          (lambda (g) (vector-ref proj g)))))
+
+;; ---------------------------------------------------------------------------
+;; Crossed modules
+;; ---------------------------------------------------------------------------
+(define (make-crossed-module M N boundary action) (vector 'crossed-module M N boundary action))
+(define (crossed-module? X) (and (vector? X) (= 5 (vector-length X)) (eq? (vector-ref X 0) 'crossed-module)))
+(define (crossed-module-source X) (vector-ref X 1))
+(define (crossed-module-target X) (vector-ref X 2))
+(define (crossed-module-boundary X m) ((vector-ref X 3) m))
+(define (crossed-module-act X n m) ((vector-ref X 4) n m))
+;; the crossed module of cyclic groups Z/a -> Z/b, m |-> c m mod b, with an
+;; action (n m) -> n . m given as a procedure on residues
+(define (abelian-crossed-module a b c action)
+  (make-crossed-module (cyclic-group a) (cyclic-group b) (lambda (m) (modulo (* c m) b)) action))
+;; the crossed module 1 -> G (its nerve is BG)
+(define (group-crossed-module G)
+  (make-crossed-module (cyclic-group 1) G (lambda (m) (group-identity G)) (lambda (n m) m)))
+(define (crossed-module-violations X)
+  (let* ((M (crossed-module-source X)) (N (crossed-module-target X))
+         (d (lambda (m) (crossed-module-boundary X m))) (act (lambda (n m) (crossed-module-act X n m)))
+         (ms (group-elements M)) (ns (group-elements N)) (out '()))
+    (for-each (lambda (m1)
+                (for-each (lambda (m2)
+                            (if (not (= (d (group-mul M m1 m2)) (group-mul N (d m1) (d m2))))
+                                (set! out (cons (list 'boundary-not-a-homomorphism m1 m2) out)))
+                            ;; Peiffer: d(m1) . m2 = m1 m2 m1^-1
+                            (if (not (= (act (d m1) m2) (group-mul M (group-mul M m1 m2) (group-inv M m1))))
+                                (set! out (cons (list 'peiffer m1 m2) out))))
+                          ms))
+              ms)
+    (for-each (lambda (n)
+                (for-each (lambda (m)
+                            (if (not (= (d (act n m)) (group-mul N (group-mul N n (d m)) (group-inv N n))))
+                                (set! out (cons (list 'equivariance n m) out)))
+                            (for-each (lambda (m2)
+                                        (if (not (= (act n (group-mul M m m2)) (group-mul M (act n m) (act n m2))))
+                                            (set! out (cons (list 'not-an-automorphism n m m2) out))))
+                                      ms))
+                          ms)
+                (for-each (lambda (n2)
+                            (for-each (lambda (m)
+                                        (if (not (= (act (group-mul N n n2) m) (act n (act n2 m))))
+                                            (set! out (cons (list 'not-an-action n n2 m) out))))
+                                      ms))
+                          ns))
+              ns)
+    (reverse out)))
+(define (fg-image-of-boundary X)
+  (let ((N (crossed-module-target X)))
+    (filter (lambda (n) (fg-any? (lambda (m) (= n (crossed-module-boundary X m))) (group-elements (crossed-module-source X))))
+            (group-elements N))))
+;; pi_1 = coker d = N / d(M), as (list Q section projection) from group-quotient
+(define (crossed-module-pi1 X) (group-quotient (crossed-module-target X) (fg-image-of-boundary X)))
+;; pi_2 = ker d, as a list of elements of M (central in M by the Peiffer identity)
+(define (crossed-module-pi2 X)
+  (let ((e (group-identity (crossed-module-target X))))
+    (filter (lambda (m) (= e (crossed-module-boundary X m))) (group-elements (crossed-module-source X)))))
+(define (crossed-module-pi1-order X) (quotient (group-order (crossed-module-target X)) (length (fg-image-of-boundary X))))
+(define (crossed-module-pi2-order X) (length (crossed-module-pi2 X)))
+
+;; The k-invariant (Baez-Lauda, Sec. 8): with s the section of N -> pi_1 by
+;; the smallest coset representative and f(a, b) the smallest m with
+;; d(m) = s(a) s(b) s(ab)^-1,
+;;   k(a, b, c) = (s(a) . f(b, c)) f(a, bc) f(ab, c)^-1 f(a, b)^-1,
+;; a 3-cocycle on pi_1 with values in ker d = pi_2 (elements of M).
+;; Returns (list pi1-group k) with k a procedure on three pi_1 indices.
+(define (crossed-module-k-invariant X)
+  (let* ((M (crossed-module-source X)) (N (crossed-module-target X))
+         (q (crossed-module-pi1 X)) (Q (car q)) (s (cadr q))
+         (preimage (make-hash-table)))
+    (for-each (lambda (m)
+                (let ((dm (crossed-module-boundary X m)))
+                  (if (not (hash-table-ref/default preimage dm #f)) (hash-table-set! preimage dm (list m)))))
+              (group-elements M))
+    (let ((f (lambda (a b)
+               (car (hash-table-ref/default
+                     preimage
+                     (group-mul N (group-mul N (s a) (s b)) (group-inv N (s (group-mul Q a b))))
+                     (list -1))))))
+      (list Q
+            (lambda (a b c)
+              (group-mul M
+                         (group-mul M (group-mul M (crossed-module-act X (s a) (f b c)) (f a (group-mul Q b c)))
+                                    (group-inv M (f (group-mul Q a b) c)))
+                         (group-inv M (f a b))))))))

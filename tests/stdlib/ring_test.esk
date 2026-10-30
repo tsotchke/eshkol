@@ -18,6 +18,7 @@
 (require core.dbsp)
 (require core.algebraic_domain)
 (require core.exact_linalg)
+(require core.multimodular)
 
 (define passed 0)
 (define failed 0)
@@ -386,6 +387,69 @@
 (check "ring maps: composition Z -> Z/7^16 -> F_7 is the reduction Z -> F_7"
        (let ((g (ring-map-compose (zmod-reduction Z7^16 F7) (ring-base-change integers Z7^16))))
          (all? (lambda (n) (= (ring-map-apply g n) (modulo n 7))) (list 0 -1 123456789 (expt 10 40)))))
+
+;; ===========================================================================
+;; 5b. Determinants over integral domains: fraction-free, no unit pivots
+;; ===========================================================================
+
+;; A unimodular matrix built from elementary row operations (determinant +-1),
+;; whose first column holds no unit, so unit-pivot elimination has no pivot.
+(define (row-op! m i j k)                       ; row_i += k row_j
+  (let ((ri (vector-ref m i)) (rj (vector-ref m j)))
+    (let loop ((c 0))
+      (if (< c (vector-length ri))
+          (begin (vector-set! ri c (+ (vector-ref ri c) (* k (vector-ref rj c)))) (loop (+ c 1)))))))
+(define (unimodular n steps)
+  (let ((m (list->vector (map (lambda (i) (list->vector (map (lambda (j) (if (= i j) 1 0)) (iota n)))) (iota n)))))
+    (let loop ((s 0))
+      (if (< s steps)
+          (let ((i (rand-int 0 (- n 1))) (j (rand-int 0 (- n 1))))
+            (if (not (= i j)) (row-op! m i j (rand-int -3 3)))
+            (loop (+ s 1)))
+          m))))
+(define (no-unit-in-first-column? m)
+  (all? (lambda (row) (not (= (abs (vector-ref row 0)) 1))) (vector->list m)))
+(check "Z: [[2 3] [3 5]] has determinant 1 though no entry of its first column is a unit"
+       (and (= (ring-det integers '((2 3) (3 5))) 1)
+            (= (ring-det integers '((6 10 15) (5 9 14) (4 7 11))) (exact-det (vector (vector 6 10 15) (vector 5 9 14) (vector 4 7 11))))))
+(check "Z: 40 unimodular matrices (sizes 2 to 7) have determinant +-1, equal to exact-det"
+       (let loop ((k 0) (ok #t) (hard 0))
+         (if (= k 40)
+             (and ok (> hard 0))
+             (let* ((m (unimodular (+ 2 (modulo k 6)) 30)) (d (ring-det integers m)))
+               (loop (+ k 1) (and ok (= (abs d) 1) (= d (exact-det m)))
+                     (if (no-unit-in-first-column? m) (+ hard 1) hard))))))
+(check "Z: 30 random integer matrices (sizes 1 to 8, entries up to 10^12) agree with exact-det and multimodular-det"
+       (all? (lambda (k)
+               (let* ((n (+ 1 (modulo k 8)))
+                      (m (list->vector (map (lambda (i) (list->vector (map (lambda (j) (rand-int (- (expt 10 12)) (expt 10 12))) (iota n)))) (iota n))))
+                      (d (ring-det integers m)))
+                 (and (= d (exact-det m)) (= d (multimodular-det m)))))
+             (iota 30)))
+(check "Z: zero, singular and empty matrices"
+       (and (= (ring-det integers '((0))) 0) (= (ring-det integers '((0 0) (0 0))) 0)
+            (= (ring-det integers '((2 4 6) (1 2 3) (5 7 9))) 0) (= (ring-det integers '((0 2) (3 0))) -6)
+            (= (ring-det integers '()) 1)))
+(define Zx (make-polys integers))
+(define (zp cs) (ring-poly Zx cs))
+(check "Z[x]: a 3x3 polynomial matrix, fraction-free, equals the cofactor expansion"
+       (let* ((a (zp '(1 2))) (b (zp '(0 0 3))) (c (zp '(-1))) (d (zp '(2 0 1))) (e (zp '(0 1)))
+              (f (zp '(4))) (g (zp '(1 1 1))) (h (zp '(0 -2))) (i (zp '(5 0 0 1)))
+              (cof (r+ Zx (r- Zx (r* Zx a (r- Zx (r* Zx e i) (r* Zx f h)))
+                               (r* Zx b (r- Zx (r* Zx d i) (r* Zx f g))))
+                       (r* Zx c (r- Zx (r* Zx d h) (r* Zx e g))))))
+         (r= Zx (ring-det Zx (list (list a b c) (list d e f) (list g h i))) cof)))
+(check "Q[x]: det of [[x 1] [1 x]] is x^2 - 1; a singular polynomial matrix gives 0"
+       (and (equal? (ring-poly-coefficients
+                     (ring-det Qx (list (list (ring-poly-variable Qx) 1) (list 1 (ring-poly-variable Qx))))) '(-1 0 1))
+            (r-zero? Zx (ring-det Zx (list (list (zp '(1 1)) (zp '(2 2))) (list (zp '(0 1)) (zp '(0 2))))))))
+(check "Z/6 is not an integral domain: a column without a unit pivot is still refused"
+       (refuses? 'ring-not-a-unit 'any (lambda () (ring-det Z6 '((2 3) (3 2))))))
+(check "ring-solve still needs an inverse: [[2 0] [0 1]] over Z is refused"
+       (refuses? 'ring-not-a-unit 'any (lambda () (ring-solve integers '((2 0) (0 1)) '(1 1)))))
+(check "capabilities: Z and Z[x] declare integral-domain; Z/6 does not"
+       (and (ring-ref integers 'integral-domain) (ring-ref Zx 'integral-domain)
+            (not (ring-carrier-extra Z6 'integral-domain))))
 
 ;; ===========================================================================
 ;; 6. Interoperation

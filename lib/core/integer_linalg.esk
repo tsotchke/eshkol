@@ -146,33 +146,34 @@
 ;; ---------------------------------------------------------------------------
 ;; Smith normal form with both transforms
 ;; ---------------------------------------------------------------------------
-(define (zl-swap-rows! A i j) (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t)))
+(define (zl-swap-rows! A i j)
+  (if A (let ((t (vector-ref A i))) (vector-set! A i (vector-ref A j)) (vector-set! A j t))))
 (define (zl-swap-cols! A i j)
-  (let loop ((r 0))
+  (if A (let loop ((r 0))
     (if (< r (integer-matrix-rows A))
         (let ((t (integer-matrix-ref A r i)))
           (integer-matrix-set! A r i (integer-matrix-ref A r j))
           (integer-matrix-set! A r j t)
-          (loop (+ r 1))))))
+          (loop (+ r 1)))))))
 (define (zl-add-row! A dst src q)
-  (let ((rd (vector-ref A dst)) (rs (vector-ref A src)))
+  (if A (let ((rd (vector-ref A dst)) (rs (vector-ref A src)))
     (let loop ((j 0))
       (if (< j (vector-length rd))
           (begin
             (if (not (= 0 (vector-ref rs j)))
                 (vector-set! rd j (+ (vector-ref rd j) (* q (vector-ref rs j)))))
-            (loop (+ j 1)))))))
+            (loop (+ j 1))))))))
 (define (zl-add-col! A dst src q)
-  (let loop ((r 0))
+  (if A (let loop ((r 0))
     (if (< r (integer-matrix-rows A))
         (begin
           (if (not (= 0 (integer-matrix-ref A r src)))
               (integer-matrix-set! A r dst (+ (integer-matrix-ref A r dst) (* q (integer-matrix-ref A r src)))))
-          (loop (+ r 1))))))
+          (loop (+ r 1)))))))
 (define (zl-negate-row! A i)
-  (let ((r (vector-ref A i)))
+  (if A (let ((r (vector-ref A i)))
     (let loop ((j 0))
-      (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1)))))))
+      (if (< j (vector-length r)) (begin (vector-set! r j (- 0 (vector-ref r j))) (loop (+ j 1))))))))
 ;; Pivot of least nonzero absolute value in the lower-right block from t; a
 ;; unit is taken at once.
 (define (zl-find-pivot A t)
@@ -232,19 +233,23 @@
                   (if (< (integer-matrix-ref A t t) 0) (begin (zl-negate-row! A t) (zl-negate-row! U t)))
                   (outer (+ t 1) (cons (integer-matrix-ref A t t) diag)))))))))
 ;; (list diag U V) with U A V = D, d_1 | d_2 | ..., A left intact. diag holds
-;; the nonzero invariant factors, so its length is the rank.
+;; the nonzero invariant factors, so its length is the rank. The transforms
+;; are passed as #f to zl-snf! when only the diagonal is wanted: every row
+;; and column operation on a transform is then skipped, so a rank or the
+;; invariant factors of an m x n matrix cost no m x m or n x n storage.
 (define (smith-normal-form A)
   (let* ((B (integer-matrix-copy A))
          (U (integer-identity-matrix (integer-matrix-rows A)))
          (V (integer-identity-matrix (integer-matrix-cols A)))
          (d (zl-snf! B U V)))
     (list d U V)))
+(define (zl-invariant-factors A) (zl-snf! (integer-matrix-copy A) #f #f))
 (define (smith-diagonal s) (car s))
 (define (smith-left s) (cadr s))
 (define (smith-right s) (caddr s))
 (define (zl-empty? A) (or (not A) (= 0 (integer-matrix-rows A)) (= 0 (integer-matrix-cols A))))
-(define (integer-rank A) (if (zl-empty? A) 0 (length (car (smith-normal-form A)))))
-(define (integer-invariant-factors A) (if (zl-empty? A) '() (car (smith-normal-form A))))
+(define (integer-rank A) (if (zl-empty? A) 0 (length (zl-invariant-factors A))))
+(define (integer-invariant-factors A) (if (zl-empty? A) '() (zl-invariant-factors A)))
 
 ;; Basis of the lattice {x in Z^ncols : A x = 0}: the last ncols - rank
 ;; columns of V. A = #f (or a matrix without rows) means no constraints.
@@ -358,7 +363,7 @@
                (rank-k (integer-rank D))
                (betti (- dim-k rank-prev rank-k))
                (tors (if (and prev (> (integer-matrix-rows prev) 0) (> (integer-matrix-cols prev) 0))
-                         (filter (lambda (x) (> x 1)) (car (smith-normal-form prev)))
+                         (filter (lambda (x) (> x 1)) (zl-invariant-factors prev))
                          '())))
           (loop (+ k 1) (cdr ds) (cdr dims) rank-k D (cons (list k betti tors) acc))))))
 

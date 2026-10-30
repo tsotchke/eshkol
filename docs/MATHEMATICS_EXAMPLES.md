@@ -16,7 +16,7 @@ sources:
 
 **50 programs**, each reproducing a published or classical result by computation. Exact finite constructions, bilinear/polynomial identity certificates, finite formal expansions and numerical comparisons have different scopes, stated per entry under **Arithmetic** and **Limits**.
 
-Measurement snapshot for these 50 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **41** completed in both modes; **40** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 1 prints diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Not run:** [Exact a-posteriori linear solve admission](#mathematics-certified-linear-solve), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator), [Integral plus construction on a finite site](#mathematics-finite-site-sheafification), [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology), [The functor of points: one program over many rings](#mathematics-functor-of-points), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Internal logic of finite presheaf categories](#mathematics-presheaf-topos-internal-logic), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
+Measurement snapshot for these 50 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **30** completed in both modes; **30** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes. **Not run:** [Exact a-posteriori linear solve admission](#mathematics-certified-linear-solve), [Cup products and Bockstein on finite-group nerves](#mathematics-cohomology-rings-cup-products), [Nonabelian order-eight cohomology rings](#mathematics-cohomology-rings-nonabelian), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator), [Descent double complexes and hypercohomology](#mathematics-descent-hypercohomology), [Finite categories and Kan extensions](#mathematics-finite-categories-kan-extensions), [Integral plus construction on a finite site](#mathematics-finite-site-sheafification), [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology), [Cup-square obstruction in four-manifold models](#mathematics-four-manifolds-second-k-invariant), [The functor of points: one program over many rings](#mathematics-functor-of-points), [Integral homology and twists of order-eight groups](#mathematics-group-cohomology-order-eight), [Parametric finite-group homology receipts](#mathematics-group-cohomology-sweep), [Grothendieck constructions and homotopy colimits](#mathematics-homotopy-colimits-grothendieck), [Horn fillers and low homotopy groups](#mathematics-kan-complexes-horns), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Internal logic of finite presheaf categories](#mathematics-presheaf-topos-internal-logic), [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic), [Crossed-module nerves and Postnikov data](#mathematics-two-groups-postnikov) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
 
 Each entry gives: the published result being reproduced and its references; what the program computes and by which algorithm; the domain and parameters; the arithmetic and its scope; the checks the source asserts; the honest limits; and the measured outcome at the release SHA with the computed values that matter, quoted verbatim from the program's output. A reference marked *as cited in the program's source comments* is taken from the program header; *(citation unverified)* marks one whose bibliographic details could not be confirmed.
 
@@ -41,27 +41,27 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Aoki cycle supports by surface degree](#mathematics-aoki-cycles-fermat-surfaces-sweep) | PASS / PASS | `hodge_aoki_surface_sweep_default` |
 | [Exact a-posteriori linear solve admission](#mathematics-certified-linear-solve) | NOT-RUN / NOT-RUN | general runner only |
 | [Finite-group classifying spaces and state sums](#mathematics-classifying-space-dijkgraaf-witten) | PASS / PASS | `dw_classifying_space_state_sums` |
-| [Cup products and Bockstein on finite-group nerves](#mathematics-cohomology-rings-cup-products) | PASS / PASS | `dw_cohomology_rings_cup_products` |
-| [Nonabelian order-eight cohomology rings](#mathematics-cohomology-rings-nonabelian) | PASS / PASS | `dw_cohomology_rings_nonabelian` |
+| [Cup products and Bockstein on finite-group nerves](#mathematics-cohomology-rings-cup-products) | NOT-RUN / NOT-RUN | `dw_cohomology_rings_cup_products` |
+| [Nonabelian order-eight cohomology rings](#mathematics-cohomology-rings-nonabelian) | NOT-RUN / NOT-RUN | `dw_cohomology_rings_nonabelian` |
 | [Symmetric square, connected sums and second k-invariant](#mathematics-cp2-symmetric-square-connected-sums) | PASS / PASS | `postnikov_cp2_connected_sums` |
 | [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit) | NOT-RUN / NOT-RUN | `dbsp_tensor_circuit_example` |
 | [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator) | NOT-RUN / NOT-RUN | general runner only |
-| [Descent double complexes and hypercohomology](#mathematics-descent-hypercohomology) | PASS / PASS | `sheaf_descent_hypercohomology` |
+| [Descent double complexes and hypercohomology](#mathematics-descent-hypercohomology) | NOT-RUN / NOT-RUN | `sheaf_descent_hypercohomology` |
 | [Fermat Hodge and linear-cycle sweep](#mathematics-fermat-hodge-classes-sweep) | PASS / PASS | `hodge_fermat_sweep_default` |
-| [Finite categories and Kan extensions](#mathematics-finite-categories-kan-extensions) | PASS / PASS | `cat_finite_categories_kan` |
+| [Finite categories and Kan extensions](#mathematics-finite-categories-kan-extensions) | NOT-RUN / NOT-RUN | `cat_finite_categories_kan` |
 | [Dijkgraaf–Witten on a finite three-torus](#mathematics-finite-model-three-torus-gauge-theory) | PASS / PASS | `dw_finite_model_three_torus` |
 | [Integral plus construction on a finite site](#mathematics-finite-site-sheafification) | NOT-RUN / NOT-RUN | `sheaf_finite_site_sheafification` |
 | [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology) | NOT-RUN / NOT-RUN | `sheaf_finite_spaces_cech_descent` |
-| [Cup-square obstruction in four-manifold models](#mathematics-four-manifolds-second-k-invariant) | PASS / PASS | `postnikov_four_manifolds_second_k` |
+| [Cup-square obstruction in four-manifold models](#mathematics-four-manifolds-second-k-invariant) | NOT-RUN / NOT-RUN | `postnikov_four_manifolds_second_k` |
 | [The functor of points: one program over many rings](#mathematics-functor-of-points) | NOT-RUN / NOT-RUN | `rings_functor_of_points` |
 | [Explicit 512-cap in AG(8,3)](#mathematics-funsearch-cap-set) | PASS / PASS | `funsearch_cap_set_512` |
-| [Integral homology and twists of order-eight groups](#mathematics-group-cohomology-order-eight) | PASS / PASS | `dw_group_cohomology_order_eight` |
-| [Parametric finite-group homology receipts](#mathematics-group-cohomology-sweep) | RAN-OK / RAN-OK | general runner only |
+| [Integral homology and twists of order-eight groups](#mathematics-group-cohomology-order-eight) | NOT-RUN / NOT-RUN | `dw_group_cohomology_order_eight` |
+| [Parametric finite-group homology receipts](#mathematics-group-cohomology-sweep) | NOT-RUN / NOT-RUN | general runner only |
 | [Exhibited cycles on the Fermat quartic fourfold](#mathematics-hodge-classes-fermat-quartic-fourfold) | PASS / PASS | `hodge_fermat_quartic_fourfold` |
-| [Grothendieck constructions and homotopy colimits](#mathematics-homotopy-colimits-grothendieck) | PASS / PASS | `hocolim_grothendieck_borel` |
+| [Grothendieck constructions and homotopy colimits](#mathematics-homotopy-colimits-grothendieck) | NOT-RUN / NOT-RUN | `hocolim_grothendieck_borel` |
 | [Local oscillatory IPM velocity expansion](#mathematics-ipm-velocity-expansion) | PASS / PASS | `ipm_velocity_expansion_closes` |
 | [Polynomial Jacobian map and fibers](#mathematics-jacobian-counterexample) | PASS / PASS | `jacobian_counterexample_fibers` |
-| [Horn fillers and low homotopy groups](#mathematics-kan-complexes-horns) | PASS / PASS | `hocolim_kan_complexes_horns` |
+| [Horn fillers and low homotopy groups](#mathematics-kan-complexes-horns) | NOT-RUN / NOT-RUN | `hocolim_kan_complexes_horns` |
 | [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion) | NOT-RUN / NOT-RUN | `torsion_lens_spaces_reidemeister` |
 | [Lens-space linking data and 2-group invariants](#mathematics-lens-spaces-yetter) | PASS / PASS | `yetter_lens_spaces` |
 | [Derived similarity exponents and leading profiles](#mathematics-navier-stokes-first-principles) | PASS / PASS | `ns_leading_profile_balance` |
@@ -77,11 +77,11 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Admissible stress cone and profile tests](#mathematics-navier-stokes-stress-cone) | PASS / PASS | `ns_cone_condition_equivalence` |
 | [Viscosity rescaling of an AD residual](#mathematics-navier-stokes-viscosity-scaling) | PASS / PASS | `ns_viscosity_scaling_exact` |
 | [Internal logic of finite presheaf categories](#mathematics-presheaf-topos-internal-logic) | NOT-RUN / NOT-RUN | `cat_presheaf_topos_internal_logic` |
-| [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan) | PASS / PASS | `cat_sheafification_descent_kan` |
+| [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan) | NOT-RUN / NOT-RUN | `cat_sheafification_descent_kan` |
 | [Torsors and nonabelian descent on finite spaces](#mathematics-stacks-nonabelian-descent) | PASS / PASS | `stacks_nonabelian_descent` |
 | [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) | NOT-RUN / NOT-RUN | `tv_turaev_viro_cyclotomic` |
 | [Cech nerves and 2-descent](#mathematics-two-descent-cech-nerves) | PASS / PASS | `descent_two_descent_cech_nerves` |
-| [Crossed-module nerves and Postnikov data](#mathematics-two-groups-postnikov) | PASS / PASS | `hocolim_two_groups_postnikov` |
+| [Crossed-module nerves and Postnikov data](#mathematics-two-groups-postnikov) | NOT-RUN / NOT-RUN | `hocolim_two_groups_postnikov` |
 | [Yetter invariants on the 64-point torus](#mathematics-yetter-three-torus-finite-model) | PASS / PASS | `yetter_three_torus_finite_model` |
 | [Yetter state sums and Postnikov fibration](#mathematics-yetter-two-group-invariants) | PASS / PASS | `yetter_two_group_invariants` |
 
@@ -422,7 +422,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Cup products and Bockstein on finite-group nerves
 
-Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_cohomology_rings_cup_products.esk#L1). SHA-256: `76c92a5f354f0d6352bc980b035e2d41070495bdcc5c45b1987eee70131664bb`.
+Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_cohomology_rings_cup_products.esk#L1). SHA-256: `edaf552afc10774936023c6849438b09e7137faea245ee590d2db1e3f55d55e2`.
 
 **Published result:** The classical ring structures H*(BZ/2; F₂) = F₂[x] and H*(BZ/p; F_p) = Λ[y] ⊗ F_p[x₂] for odd p, with x₂ = β(y) (Hatcher, Example 3.41 and §3.E), the Bockstein identity Sq¹ = β, and de Wild Propitius's identification (1995) of the type I, II, III Dijkgraaf–Witten cocycles on (Z/2)³ with cubic monomials, whose 7 independent classes give H³((Z/2)³; Q/Z) ≅ (Z/2)⁷.
 
@@ -434,7 +434,7 @@ Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_
 
 **Purpose:** Compute ring information beyond cohomology dimensions and identify selected Dijkgraaf–Witten twists.
 
-**Implemented algorithm:** Normalized bar cochains, modular coboundary ranks, Alexander–Whitney cup products and Bockstein from integer lifts; Q/Z coboundary systems for cubic classes.
+**Implemented algorithm:** Normalized cochains of BG, coboundaries, Alexander–Whitney cup products and the Bockstein from core.homological; class tests over F_2/F_3 and the Q/Z coboundary test for cubic classes.
 
 **Domain and parameters:** Z/2, Z/4, Z/3, (Z/2)² and (Z/2)³; selected products through degrees 3/4; all 127 nonzero combinations of seven surviving cubic twists.
 
@@ -444,21 +444,11 @@ Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_
 
 **Limits:** The finite degree computations support these stated relations; they are not an unlimited symbolic presentation proof for every degree or group.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 30, Failed: 0; 13.3 s); native AOT **PASS** (Passed: 30, Failed: 0; compile 6.76 s, run 5.84 s). CTest: `dw_cohomology_rings_cup_products_jit` Passed (12.6 s), `dw_cohomology_rings_cup_products_aot` Passed (12.8 s), `vm_mathematics_cohomology_rings_cup_products` Passed (10.2 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  dim H^n(BZ/2; Z/2), n = 0..4 = (1 1 1 1 1)
-PASS: on Z/4, x cup x IS a coboundary: the cup product separates Z/4 from Z/2 although H^1 and H^2 agree
-PASS: y cup x_2 generates H^3 and x_2 cup x_2 generates H^4: H^*(BZ/3; Z/3) = Lambda[y] x Z/3[x_2] through degree 4
-PASS: x^3, x^2 y, x y^2, y^3 are independent in H^3 and dim H^3 = 4: H^*(B(Z/2)^2; Z/2) = Z/2[x, y]
-PASS: none of the 127 nonzero combinations of the seven surviving monomials is a Q/Z coboundary: the twists form (Z/2)^7
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_cohomology_rings_cup_products.esk#L1), [line 58](../examples/mathematics_cohomology_rings_cup_products.esk#L58), [line 59](../examples/mathematics_cohomology_rings_cup_products.esk#L59), [line 392](../examples/mathematics_cohomology_rings_cup_products.esk#L392), [line 397](../examples/mathematics_cohomology_rings_cup_products.esk#L397), [line 399](../examples/mathematics_cohomology_rings_cup_products.esk#L399).
+Implementation/check anchors: [line 1](../examples/mathematics_cohomology_rings_cup_products.esk#L1), [line 46](../examples/mathematics_cohomology_rings_cup_products.esk#L46), [line 57](../examples/mathematics_cohomology_rings_cup_products.esk#L57), [line 214](../examples/mathematics_cohomology_rings_cup_products.esk#L214), [line 219](../examples/mathematics_cohomology_rings_cup_products.esk#L219), [line 221](../examples/mathematics_cohomology_rings_cup_products.esk#L221).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -471,7 +461,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Nonabelian order-eight cohomology rings
 
-Source: [mathematics_cohomology_rings_nonabelian.esk](../examples/mathematics_cohomology_rings_nonabelian.esk#L1). SHA-256: `b0be0f12899204d96a6977a5e96c7d30fd6a4e75cbd0c60d495b126c69f1582e`.
+Source: [mathematics_cohomology_rings_nonabelian.esk](../examples/mathematics_cohomology_rings_nonabelian.esk#L1). SHA-256: `113571fb55765f3c96f910e2c87f6f7fe9d7d6cb2c6da008dec7c3ac9e87b7de`.
 
 **Published result:** Adem and Milgram compute H*(D₈; F₂) = F₂[x, y, w]/(xy) with |x| = |y| = 1, |w| = 2, and H*(Q₈; F₂) = F₂[x, y, e]/(x² + xy + y², x²y + xy²) with |e| = 4. The two groups have the same abelianization and the same H¹, so the ring structure is what separates them; the program recovers the dimensions (1, 2, 3, 4) and (1, 2, 2, 1) through degree 3 and the two defining relations by cup products on the normalized bar complex.
 
@@ -482,7 +472,7 @@ Source: [mathematics_cohomology_rings_nonabelian.esk](../examples/mathematics_co
 
 **Purpose:** Separate the dihedral and quaternion groups using cup products.
 
-**Implemented algorithm:** Find cocycle bases from normalized bar-complex kernels; test product classes modulo images and compute Bockstein lifts.
+**Implemented algorithm:** Cocycle bases from kernels of the normalized bar coboundary, cup products, Bocksteins and class tests over F_2 from core.homological.
 
 **Domain and parameters:** D₄ (order eight, also called D₈) and Q₈, F₂ coefficients, degrees 0–3 and selected Bockstein operations.
 
@@ -492,21 +482,11 @@ Source: [mathematics_cohomology_rings_nonabelian.esk](../examples/mathematics_co
 
 **Limits:** Degree-limited computations do not independently establish every relation in the full infinite cohomology rings.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 16, Failed: 0; 48.4 s); native AOT **PASS** (Passed: 16, Failed: 0; compile 4.96 s, run 38.0 s). CTest: `dw_cohomology_rings_nonabelian_jit` Passed (37.1 s), `dw_cohomology_rings_nonabelian_aot` Passed (40.8 s), `vm_mathematics_cohomology_rings_nonabelian` Passed (121.7 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  dim H^n(BD_4; Z/2), n = 0..3 = (1 2 3 4)
-  dim H^n(BQ_8; Z/2), n = 0..3 = (1 2 2 1)
-PASS: D_4: x cup y is a coboundary (the relation xy = 0) while x^2 and y^2 are independent
-PASS: Q_8: x^2 + xy + y^2 is a coboundary (the relation) while x^2 and xy are independent and span H^2 (dim 2); no degree-2 generator
-  D_4: is beta(w) a coboundary? = #f
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_cohomology_rings_nonabelian.esk#L1), [line 45](../examples/mathematics_cohomology_rings_nonabelian.esk#L45), [line 46](../examples/mathematics_cohomology_rings_nonabelian.esk#L46), [line 310](../examples/mathematics_cohomology_rings_nonabelian.esk#L310), [line 316](../examples/mathematics_cohomology_rings_nonabelian.esk#L316), [line 324](../examples/mathematics_cohomology_rings_nonabelian.esk#L324).
+Implementation/check anchors: [line 1](../examples/mathematics_cohomology_rings_nonabelian.esk#L1), [line 36](../examples/mathematics_cohomology_rings_nonabelian.esk#L36), [line 47](../examples/mathematics_cohomology_rings_nonabelian.esk#L47), [line 156](../examples/mathematics_cohomology_rings_nonabelian.esk#L156), [line 162](../examples/mathematics_cohomology_rings_nonabelian.esk#L162), [line 170](../examples/mathematics_cohomology_rings_nonabelian.esk#L170).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -643,7 +623,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Descent double complexes and hypercohomology
 
-Source: [mathematics_descent_hypercohomology.esk](../examples/mathematics_descent_hypercohomology.esk#L1). SHA-256: `71c379900d312ff204a80ba9aa65625f7d07e545534528f254cfa5353993abfd`.
+Source: [mathematics_descent_hypercohomology.esk](../examples/mathematics_descent_hypercohomology.esk#L1). SHA-256: `b4937e4ec4e24c1b85bf1e4d618bbaf372a3551be48518d54a786dbf29ab06f1`.
 
 **Published result:** Cohomological descent (Deligne, Théorie de Hodge III, §5.3): for any cover, the total complex of the Čech–sheaf double complex computes sheaf cohomology, whereas plain Čech cohomology does so only for a Leray cover. Hypercohomology of a complex of sheaves is invariant under quasi-isomorphism (Weibel §5.7). The program exhibits a non-Leray cover of the 16-point torus model on which plain Čech cohomology is wrong and descent is right, and computes hypercohomology of three two-term complexes.
 
@@ -657,7 +637,7 @@ Source: [mathematics_descent_hypercohomology.esk](../examples/mathematics_descen
 
 **Purpose:** Show why a non-Leray cover needs derived sections rather than plain Cech sections.
 
-**Implemented algorithm:** Build the Cech/sheaf double complex with signed total differential and mapping-cone complexes; compute integral cohomology and modular cross-checks.
+**Implemented algorithm:** Sheaf and plain Cech cohomology from core.sheaf; the Cech/sheaf descent double complex and the cone of a map of sheaves as double complexes with signed total differential from core.homological; integral cohomology and a mod-2 cross-check.
 
 **Domain and parameters:** 16-point torus model, a two-open non-Leray cover, constant and (-1,+1) local systems; multiplication-by-0/1/2/3 sheaf complexes.
 
@@ -665,23 +645,13 @@ Source: [mathematics_descent_hypercohomology.esk](../examples/mathematics_descen
 
 **Checks in the source:** D²=0, torus/descent results, twisted torsion and cone answers are asserted; dropping the total-complex sign is a negative control.
 
-**Limits:** The program's header summary gives plain Čech cohomology of this cover as (Z, Z, 0); the body computes, and the measured run prints, (Z, 0): H¹ vanishes because both sections restrict onto the connected intersection. The checks use the body's calculation, and the doc follows the measured output. The listed derived-section and torus-model checks apply to the finite models computed.
+**Limits:** The listed derived-section and torus-model checks apply to the finite models computed.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.sheaf, core.ring and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 13, Failed: 0; 5.83 s); native AOT **PASS** (Passed: 13, Failed: 0; compile 13.9 s, run 0.80 s). CTest: `sheaf_descent_hypercohomology_jit` Passed (15.9 s), `sheaf_descent_hypercohomology_aot` Passed (16.5 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.sheaf, core.ring and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  H^*(U1 cap U2; Z) = ((0 1 ()) (1 3 ()) (2 0 ()))
-  plain Cech H^* of the non-Leray cover, constant Z = ((0 1 ()) (1 0 ()))
-  descent double complex H^* of the non-Leray cover, constant Z = ((0 1 ()) (1 2 ()) (2 1 ()) (3 0 ()))
-  descent H^* for the local system with monodromy (-1, +1) = ((0 0 ()) (1 0 (2)) (2 0 (2)) (3 0 ()))
-  hypercohomology of Z --2--> Z on the torus model = ((0 0 ()) (1 0 (2)) (2 0 (2 2)) (3 0 (2)))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_descent_hypercohomology.esk#L1), [line 53](../examples/mathematics_descent_hypercohomology.esk#L53), [line 54](../examples/mathematics_descent_hypercohomology.esk#L54), [line 468](../examples/mathematics_descent_hypercohomology.esk#L468), [line 470](../examples/mathematics_descent_hypercohomology.esk#L470), [line 472](../examples/mathematics_descent_hypercohomology.esk#L472), [line 26](../examples/mathematics_descent_hypercohomology.esk#L26), [line 397](../examples/mathematics_descent_hypercohomology.esk#L397), [line 398](../examples/mathematics_descent_hypercohomology.esk#L398), [line 404](../examples/mathematics_descent_hypercohomology.esk#L404), [line 405](../examples/mathematics_descent_hypercohomology.esk#L405).
+Implementation/check anchors: [line 1](../examples/mathematics_descent_hypercohomology.esk#L1), [line 48](../examples/mathematics_descent_hypercohomology.esk#L48), [line 59](../examples/mathematics_descent_hypercohomology.esk#L59), [line 178](../examples/mathematics_descent_hypercohomology.esk#L178), [line 180](../examples/mathematics_descent_hypercohomology.esk#L180), [line 182](../examples/mathematics_descent_hypercohomology.esk#L182), [line 130](../examples/mathematics_descent_hypercohomology.esk#L130), [line 131](../examples/mathematics_descent_hypercohomology.esk#L131), [line 136](../examples/mathematics_descent_hypercohomology.esk#L136), [line 137](../examples/mathematics_descent_hypercohomology.esk#L137).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -740,7 +710,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Finite categories and Kan extensions
 
-Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathematics_finite_categories_kan_extensions.esk#L1). SHA-256: `d04c60d9390806909c63b23ddbb572074f467f00f796246942972bf33c88e117`.
+Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathematics_finite_categories_kan_extensions.esk#L1). SHA-256: `1927c08b17a438122261889cd8f11d2f63b0ca868a4f2112602bf88851e205d0`.
 
 **Published result:** The pointwise formulas for Kan extensions, Lan_F G(d) = colim over (c, Fc → d) of Gc and Ran_F G(d) = lim over (c, d → Fc) of Gc (Mac Lane X.3; Riehl §6.2), the unit/counit triangle identities of the adjunction Lan ⊣ F*, the Grothendieck construction of a presheaf of sets as a discrete fibration, and lim^n over a poset as the right derived functors of lim (Weibel §2.6). The program builds small categories from presentations and checks each statement on them.
 
@@ -755,7 +725,7 @@ Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathemati
 
 **Purpose:** Make finite categorical constructions explicit and test their universal-property comparisons.
 
-**Implemented algorithm:** Enumerate presented arrows/composites, functors, natural transformations, limits/colimits, comma-category Kan extensions and categories of elements.
+**Implemented algorithm:** Build presented categories, functors, comma categories, limits, colimits, pointwise Kan extensions with their units and counits, categories of elements and nerves with core.category, and compare derived limits with core.sheaf.
 
 **Domain and parameters:** Walking arrow, commutative square, pseudocircle/cone diagrams and Z/2 sets; finite derived-limit examples.
 
@@ -765,21 +735,11 @@ Source: [mathematics_finite_categories_kan_extensions.esk](../examples/mathemati
 
 **Limits:** The source explicitly obtains a discrete opfibration for its covariant element construction; do not automatically relabel it a contravariant fibration. Presentation rewriting and universal-property claims are restricted to the supplied categories.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 19, Failed: 0; 5.56 s); native AOT **PASS** (Passed: 19, Failed: 0; compile 15.9 s, run 0.25 s). CTest: `cat_finite_categories_kan_jit` Passed (18.9 s), `cat_finite_categories_kan_aot` Passed (17.5 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  arrow counts: walking arrow, parallel pair, span, cospan, square, S, cone(S), S^2, BZ/2, point = (3 4 5 5 9 8 13 18 2 1)
-  Lan and Ran along BZ/2 -> point: (orbits, fixed points) of the regular and the trivial 2-element Z/2-sets = ((1 0) (2 2))
-  Lan and Ran along S -> cone(S): sizes at a, b, c, d, top = ((2 2 3 3 2) (2 2 3 3 1))
-PASS: triangle identity eps_{Lan G} o Lan(eta_G) = id holds for Lan along the collapse (regular and trivial Z/2-sets) and along the inclusion S -> cone(S)
-  lim^n of the constant presheaf over the pseudocircle and the pseudo-2-sphere (as F_p-dimensions) = ((1 1 0) (1 0 1 0))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_finite_categories_kan_extensions.esk#L1), [line 78](../examples/mathematics_finite_categories_kan_extensions.esk#L78), [line 79](../examples/mathematics_finite_categories_kan_extensions.esk#L79), [line 447](../examples/mathematics_finite_categories_kan_extensions.esk#L447), [line 493](../examples/mathematics_finite_categories_kan_extensions.esk#L493), [line 495](../examples/mathematics_finite_categories_kan_extensions.esk#L495).
+Implementation/check anchors: [line 1](../examples/mathematics_finite_categories_kan_extensions.esk#L1), [line 61](../examples/mathematics_finite_categories_kan_extensions.esk#L61), [line 176](../examples/mathematics_finite_categories_kan_extensions.esk#L176), [line 189](../examples/mathematics_finite_categories_kan_extensions.esk#L189), [line 194](../examples/mathematics_finite_categories_kan_extensions.esk#L194).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -920,7 +880,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Cup-square obstruction in four-manifold models
 
-Source: [mathematics_four_manifolds_second_k_invariant.esk](../examples/mathematics_four_manifolds_second_k_invariant.esk#L1). SHA-256: `f895a42c6c178071c3fdc8cd578d71edb713f78ce40e1e11f261071be010f69d`.
+Source: [mathematics_four_manifolds_second_k_invariant.esk](../examples/mathematics_four_manifolds_second_k_invariant.esk#L1). SHA-256: `337e27833024e31d4ff847459dca2d8fa4c752c57a9c21d272c893ac529ea8ac`.
 
 **Published result:** Serre (1953): H*(K(Z/2, n); Z/2) is polynomial on admissible Steenrod squares; in particular Sq²ι₂ = ι₂ ∪ ι₂ spans H⁴(K(Z/2, 2); Z/2), so the 3-type with π₂ = π₃ = Z/2 and k-invariant ι∪ι exists. A map X → P lifts a class x ∈ H²(X; Z/2) exactly when x∪x = 0 (Hatcher §4.3), so on a 4-manifold the second k-invariant sees the intersection form mod 2. The program computes the mapping-space cardinality by a cochain state sum and by the Postnikov fibration formula on S⁴, RP⁴ and S²×S².
 
@@ -935,7 +895,7 @@ Source: [mathematics_four_manifolds_second_k_invariant.esk](../examples/mathemat
 
 **Purpose:** Detect a second Postnikov k-invariant through mapping-space counts.
 
-**Implemented algorithm:** Build four-dimensional face tables and F₂ cup products; count solutions δy=x∪x and compare cochain-state-sum normalization with a fibration formula.
+**Implemented algorithm:** S^4, RP^4 and S^2 x S^2 as simplicial sets of core.simplicial (boundary, cross-polytope quotient, Eilenberg-Zilber product); mod-2 cochain complexes, cup squares and class tests of core.homological; twisted-cochain state sum and fibration formula counts.
 
 **Domain and parameters:** Supplied S⁴, RP⁴ and S²×S² Delta-complexes; π₂=π₃=Z/2, trivial π₁; k=0 versus cup square.
 
@@ -945,21 +905,11 @@ Source: [mathematics_four_manifolds_second_k_invariant.esk](../examples/mathemat
 
 **Limits:** The computation is bounded by the target 3-type and supplied finite complexes; the manifold/model identifications use the cited results.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 8, Failed: 0; 36.0 s); native AOT **PASS** (Passed: 8, Failed: 0; compile 5.57 s, run 15.6 s). CTest: `postnikov_four_manifolds_second_k_jit` Passed (20.5 s), `postnikov_four_manifolds_second_k_aot` Passed (21.0 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  cells (V, E, F, T, P) = ((6 15 20 15 6) (5 20 40 40 16) (16 84 216 240 96))
-  mod 2 Betti numbers = ((1 0 0 0 1) (1 1 1 1 1) (1 0 2 0 1))
-  classes of x u x in H^4 = Z/2 over all x in H^2: S^4, RP^4, S^2xS^2 = ((0) (0 1) (0 0 0 0))
-  k = 0: state sum, fibration formula, |Map(X, K(Z/2,2))| |Map(X, K(Z/2,3))| = ((1 2 1) (1 2 1) (1 2 1))
-  k = iota u iota: state sum, fibration formula = ((1 1 1) (1 1 1))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_four_manifolds_second_k_invariant.esk#L1), [line 65](../examples/mathematics_four_manifolds_second_k_invariant.esk#L65), [line 66](../examples/mathematics_four_manifolds_second_k_invariant.esk#L66), [line 267](../examples/mathematics_four_manifolds_second_k_invariant.esk#L267), [line 269](../examples/mathematics_four_manifolds_second_k_invariant.esk#L269), [line 271](../examples/mathematics_four_manifolds_second_k_invariant.esk#L271).
+Implementation/check anchors: [line 1](../examples/mathematics_four_manifolds_second_k_invariant.esk#L1), [line 57](../examples/mathematics_four_manifolds_second_k_invariant.esk#L57), [line 68](../examples/mathematics_four_manifolds_second_k_invariant.esk#L68), [line 69](../examples/mathematics_four_manifolds_second_k_invariant.esk#L69), [line 163](../examples/mathematics_four_manifolds_second_k_invariant.esk#L163), [line 165](../examples/mathematics_four_manifolds_second_k_invariant.esk#L165), [line 167](../examples/mathematics_four_manifolds_second_k_invariant.esk#L167).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -1059,7 +1009,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Integral homology and twists of order-eight groups
 
-Source: [mathematics_group_cohomology_order_eight.esk](../examples/mathematics_group_cohomology_order_eight.esk#L1). SHA-256: `b9c26ca0cf2578b0b27bd91d78d867e6e5a1cdc844682000716689060263f476`.
+Source: [mathematics_group_cohomology_order_eight.esk](../examples/mathematics_group_cohomology_order_eight.esk#L1). SHA-256: `252bc911d0c07754d6452e3720959803966217c411dd7e7523f94254db2a9dc0`.
 
 **Published result:** The integral homology of the five groups of order eight through degree 3 (Brown, Cohomology of Groups: Künneth, Schur multipliers, and the periodicity of Q₈), the resulting counts |H³(G; Q/Z)| = |H₃(G; Z)| of Dijkgraaf–Witten twists, and de Wild Propitius's observation that the type-III twist of (Z/2)³ produces a non-abelian twisted quantum double D^ω((Z/2)³) with 22 simple objects, the number for the untwisted doubles of D₄ and Q₈ (Dijkgraaf–Pasquier–Roche).
 
@@ -1071,7 +1021,7 @@ Source: [mathematics_group_cohomology_order_eight.esk](../examples/mathematics_g
 
 **Purpose:** Compare torsion homology and twisted-double invariants across small groups.
 
-**Implemented algorithm:** Normalized bar-boundary Smith forms, cocycle evaluations and finite state sums/commuting-triple and centralizer-class counts.
+**Implemented algorithm:** Groups and BG from core.simplicial, normalized and Moore bar complexes with Smith-form homology from core.homological, cocycle coboundaries, and state sums as folds over the simplicial maps from Delta-complexes to BG; commuting-triple and centralizer-class counts.
 
 **Domain and parameters:** All five order-eight groups (Z/8, Z/4×Z/2, (Z/2)³, D₄, Q₈), plus S₃ and normalization controls Z/2/Z/3; degrees through H₃.
 
@@ -1081,27 +1031,11 @@ Source: [mathematics_group_cohomology_order_eight.esk](../examples/mathematics_g
 
 **Limits:** The equal count 22 does not by itself prove equivalence of entire braided categories; expensive dense Smith forms have explicit source-versioned CTest budgets.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 26, Failed: 0; 131.6 s); native AOT **PASS** (Passed: 26, Failed: 0; compile 9.51 s, run 62.0 s). CTest: `dw_group_cohomology_order_eight_jit` Passed (69.8 s), `dw_group_cohomology_order_eight_aot` Passed (76.0 s), `vm_mathematics_group_cohomology_order_eight` Passed (138.8 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  H_*(BZ/2) unnormalized / normalized = (((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (2))))
-  H_*(BS_3; Z), k = 0..3 = ((0 1 ()) (1 0 (2)) (2 0 ()) (3 0 (6)))
-  H_*(BZ/8) = ((0 1 ()) (1 0 (8)) (2 0 ()) (3 0 (8)))
-  H_*(B(Z/4 x Z/2)) = ((0 1 ()) (1 0 (2 4)) (2 0 (2)) (3 0 (2 2 4)))
-  H_*(B(Z/2)^3) = ((0 1 ()) (1 0 (2 2 2)) (2 0 (2 2 2)) (3 0 (2 2 2 2 2 2 2)))
-  H_*(BD_4) = ((0 1 ()) (1 0 (2 2)) (2 0 (2)) (3 0 (2 2 4)))
-  H_*(BQ_8) = ((0 1 ()) (1 0 (2 2)) (2 0 ()) (3 0 (8)))
-  |H^3(G; Q/Z)| = number of Dijkgraaf-Witten twists: Z/8, Z/4xZ/2, (Z/2)^3, D_4, Q_8 = (8 16 128 16 8)
-  Z(T^3) for (Z/2)^3: untwisted, type I, type II, type III = (64 64 64 22)
-  Z(T^3) for D_4, Q_8, S_3 untwisted = (22 22 8)
-  Z(RP^3): (Z/2)^3 type III, D_4 untwisted, Q_8 untwisted = (3/4 3/4 1/4)
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_group_cohomology_order_eight.esk#L1), [line 54](../examples/mathematics_group_cohomology_order_eight.esk#L54), [line 55](../examples/mathematics_group_cohomology_order_eight.esk#L55), [line 580](../examples/mathematics_group_cohomology_order_eight.esk#L580), [line 582](../examples/mathematics_group_cohomology_order_eight.esk#L582), [line 590](../examples/mathematics_group_cohomology_order_eight.esk#L590).
+Implementation/check anchors: [line 1](../examples/mathematics_group_cohomology_order_eight.esk#L1), [line 45](../examples/mathematics_group_cohomology_order_eight.esk#L45), [line 59](../examples/mathematics_group_cohomology_order_eight.esk#L59), [line 60](../examples/mathematics_group_cohomology_order_eight.esk#L60), [line 348](../examples/mathematics_group_cohomology_order_eight.esk#L348), [line 350](../examples/mathematics_group_cohomology_order_eight.esk#L350), [line 358](../examples/mathematics_group_cohomology_order_eight.esk#L358).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -1114,7 +1048,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Parametric finite-group homology receipts
 
-Source: [mathematics_group_cohomology_sweep.esk](../examples/mathematics_group_cohomology_sweep.esk#L1). SHA-256: `c3efb683240920475ceb2d78e144d55a837f7a25822daf3a3374cd15d6593274`.
+Source: [mathematics_group_cohomology_sweep.esk](../examples/mathematics_group_cohomology_sweep.esk#L1). SHA-256: `3f34f704afcd8c2839ec025eb9ed172dea95361cfc435b9aa9381b5483de0c1f`.
 
 **Published result:** Integral homology of the classifying space BG of a finite group, H_n(BG; Z) = H_n(G; Z), computed from the normalized bar resolution (Brown, Cohomology of Groups, I.5); |H₃(G; Z)| = |H³(G; Q/Z)| counts the Dijkgraaf–Witten twists of G. The program has no source-comment bibliography of its own; it is the parametric companion of the order-eight program, whose results it is compared against.
 
@@ -1125,7 +1059,7 @@ Source: [mathematics_group_cohomology_sweep.esk](../examples/mathematics_group_c
 
 **Purpose:** Produce integral bar-complex homology receipts for a chosen finite group.
 
-**Implemented algorithm:** Parse a group specification, build its normalized bar complex and compute torsion/Betti data by dense bignum Smith elimination.
+**Implemented algorithm:** Parse a group specification, build the group with core.simplicial and compute the integral homology of BG with core.homological (Smith normal form of core.integer_linalg).
 
 **Domain and parameters:** MATH_GROUP defaults cyclic:2; cyclic:N, product:N,M[,K], dihedral:N (order 2N), quaternion, symmetric:3, alternating:4; MATH_DEGREE defaults 3.
 
@@ -1135,17 +1069,11 @@ Source: [mathematics_group_cohomology_sweep.esk](../examples/mathematics_group_c
 
 **Limits:** Cost grows as (|G|−1)^k for the degree-k boundary; the header gives degree 3 as practical to order 9 and degree 2 to order 16 with the dense elimination. The measured run below is for the default parameters (cyclic:2, degree 3); a receipt for any other group is a separate run.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **RAN-OK** (exit 0; 2.38 s); native AOT **RAN-OK** (exit 0; compile 3.86 s, run 0.21 s).
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-{"schema":"eshkol.math.group_homology.v1","group":"cyclic:2","order":2,"degree":3,"homology":[{"degree":0,"betti":1,"torsion":[]},{"degree":1,"betti":0,"torsion":[2]},{"degree":2,"betti":0,"torsion":[]},{"degree":3,"betti":0,"torsion":[2]}],"h1_order":2,"dw_twists":2,"axioms":true,"h0_is_Z":true,"verdict":"PASS"}
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_group_cohomology_sweep.esk#L1), [line 23](../examples/mathematics_group_cohomology_sweep.esk#L23), [line 24](../examples/mathematics_group_cohomology_sweep.esk#L24), [line 198](../examples/mathematics_group_cohomology_sweep.esk#L198), [line 199](../examples/mathematics_group_cohomology_sweep.esk#L199), [line 204](../examples/mathematics_group_cohomology_sweep.esk#L204).
+Implementation/check anchors: [line 1](../examples/mathematics_group_cohomology_sweep.esk#L1), [line 23](../examples/mathematics_group_cohomology_sweep.esk#L23), [line 70](../examples/mathematics_group_cohomology_sweep.esk#L70), [line 75](../examples/mathematics_group_cohomology_sweep.esk#L75).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -1208,7 +1136,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Grothendieck constructions and homotopy colimits
 
-Source: [mathematics_homotopy_colimits_grothendieck.esk](../examples/mathematics_homotopy_colimits_grothendieck.esk#L1). SHA-256: `514dd29538277472de7112382f796daf43e8ffc84b7ca0b27d4094d720d2997c`.
+Source: [mathematics_homotopy_colimits_grothendieck.esk](../examples/mathematics_homotopy_colimits_grothendieck.esk#L1). SHA-256: `b5dfc4f22bfbe205c70c3e0c020e219a7ee000a6e8e8dcdc5db84579b13b11d6`.
 
 **Published result:** Thomason (1979): the nerve of the Grothendieck construction of a diagram of small categories is weakly equivalent to the homotopy colimit of their nerves. For a group acting on a space, the homotopy colimit over the one-object category is the Borel construction X_hG (Brown VII.7). The program computes suspensions and homotopy quotients of the pseudocircle this way and contrasts them with the strict colimits, which lose the topology.
 
@@ -1221,7 +1149,7 @@ Source: [mathematics_homotopy_colimits_grothendieck.esk](../examples/mathematics
 
 **Purpose:** Contrast homotopy constructions with strict colimits.
 
-**Implemented algorithm:** Enumerate diagram element/action categories, normalized nerves and integral cochain Smith forms.
+**Implemented algorithm:** Build diagrams of posets and Z/2 actions as core.category category diagrams, take their Grothendieck constructions, and compute the integral cohomology of the nerves by Smith normal form.
 
 **Domain and parameters:** Span diagrams suspending two points/pseudocircle; Z/2 actions on a point and pseudocircle, including free and reflection actions.
 
@@ -1231,23 +1159,11 @@ Source: [mathematics_homotopy_colimits_grothendieck.esk](../examples/mathematics
 
 **Limits:** Finite degrees and supplied diagrams are computed; the general Thomason equivalence is a cited theorem rather than a new universal proof.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 12, Failed: 0; 3.53 s); native AOT **PASS** (Passed: 12, Failed: 0; compile 8.20 s, run 0.23 s). CTest: `hocolim_grothendieck_borel_jit` Passed (9.24 s), `hocolim_grothendieck_borel_aot` Passed (9.42 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  H^*(hocolim of pt <- S^0 -> pt) = ((0 1 ()) (1 1 ()) (2 0 ()))
-  H^*(hocolim of pt <- pseudocircle -> pt) = ((0 1 ()) (1 0 ()) (2 1 ()) (3 0 ()))
-  H^*(BZ/2; Z) from the action category of a point = ((0 1 ()) (1 0 ()) (2 0 (2)) (3 0 ()) (4 0 (2)))
-  H^*(S^1_{hZ/2}) for the trivial action = ((0 1 ()) (1 1 ()) (2 0 (2)) (3 0 (2)))
-  H^*(S^1_{hZ/2}) for the antipodal (free) action = ((0 1 ()) (1 1 ()) (2 0 ()) (3 0 ()))
-  H^*(S^1_{hZ/2}) for the reflection = ((0 1 ()) (1 0 ()) (2 0 (2 2)) (3 0 ()))
-PASS: the strict quotient poset of the free action is contractible, (Z, 0): the strict colimit forgets the circle the homotopy quotient keeps
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_homotopy_colimits_grothendieck.esk#L1), [line 49](../examples/mathematics_homotopy_colimits_grothendieck.esk#L49), [line 50](../examples/mathematics_homotopy_colimits_grothendieck.esk#L50), [line 352](../examples/mathematics_homotopy_colimits_grothendieck.esk#L352), [line 356](../examples/mathematics_homotopy_colimits_grothendieck.esk#L356), [line 359](../examples/mathematics_homotopy_colimits_grothendieck.esk#L359).
+Implementation/check anchors: [line 1](../examples/mathematics_homotopy_colimits_grothendieck.esk#L1), [line 47](../examples/mathematics_homotopy_colimits_grothendieck.esk#L47), [line 143](../examples/mathematics_homotopy_colimits_grothendieck.esk#L143), [line 147](../examples/mathematics_homotopy_colimits_grothendieck.esk#L147), [line 150](../examples/mathematics_homotopy_colimits_grothendieck.esk#L150).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -1359,7 +1275,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Horn fillers and low homotopy groups
 
-Source: [mathematics_kan_complexes_horns.esk](../examples/mathematics_kan_complexes_horns.esk#L1). SHA-256: `d7658e4c2af928b12d8fbdeea990d04a43f3dcee99bc875d335eff512b7b7e05`.
+Source: [mathematics_kan_complexes_horns.esk](../examples/mathematics_kan_complexes_horns.esk#L1). SHA-256: `4648c17f6f62506e57063aa399163d50e42db4f1d8a394ea0df163089d97755d`.
 
 **Published result:** A simplicial set is a Kan complex when every horn has a filler (Kan 1958); it is a quasi-category when every inner horn does, and a quasi-category is Kan exactly when it is a groupoid (Joyal 2002). The nerve of a 2-groupoid has unique fillers for horns of dimension ≥ 3 (Duskin 2002), and Kan's combinatorial homotopy groups of the nerve of a crossed module M → N are π₁ = coker and π₂ = ker. The program counts horns and fillers on four 2-group nerves and on the nerve of the pseudocircle poset.
 
@@ -1373,7 +1289,7 @@ Source: [mathematics_kan_complexes_horns.esk](../examples/mathematics_kan_comple
 
 **Purpose:** Compare 2-group nerves with a poset nerve using explicit horns.
 
-**Implemented algorithm:** Enumerate finite simplices/horns/fillers and sphere homotopy relations; build π₁ multiplication from fillers.
+**Implemented algorithm:** Build crossed-module nerves and the pseudocircle nerve with core.simplicial, enumerate every compatible horn and count its fillers, compute Kan's homotopy relation and the pi_1 product from fillers.
 
 **Domain and parameters:** Four supplied finite crossed-module nerves and the pseudocircle category; horns in dimensions 2/3 and π₁/π₂.
 
@@ -1381,22 +1297,13 @@ Source: [mathematics_kan_complexes_horns.esk](../examples/mathematics_kan_comple
 
 **Checks in the source:** Compatible horn counts, inner versus outer horn distinction, equivalence relations, kernel/cokernel homotopy sizes and Latin-square products are asserted.
 
-**Limits:** The body’s 2-horn multiplicities are |M| (2,1,2,4), rather than the header’s |ker d|. horn-table forms horns from faces of an existing simplex; positive counts do not exhaust every compatible unfilled horn. Poset and low-homotopy checks are finite; broader Kan interpretations use the cited nerve theory.
+**Limits:** Poset and low-homotopy checks are finite; broader Kan interpretations use the cited nerve theory. Horns are enumerated in dimensions 2 and 3 only.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.simplicial on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 9, Failed: 0; 8.96 s); native AOT **PASS** (Passed: 9, Failed: 0; compile 7.95 s, run 3.44 s). CTest: `hocolim_kan_complexes_horns_jit` Passed (10.4 s), `hocolim_kan_complexes_horns_aot` Passed (13.1 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  horns of twisted: dimension 3 = ((0 4096 1 1) (1 4096 1 1) (2 4096 1 1) (3 4096 1 1))
-PASS: 2-horns have exactly |M| fillers (the third edge ranges over a coset of the image of d, the 2-cell over its kernel): 2, 1, 2, 4
-  pseudocircle nerve: outer 2-horns (count, min fillers, max fillers, unfillable) = (20 0 1 8)
-  |pi_1| and |pi_2| from Kan's definition: K(Z/2,2), BZ/2, split, twisted = ((1 2) (2 1) (2 2) (2 2))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_kan_complexes_horns.esk#L1), [line 55](../examples/mathematics_kan_complexes_horns.esk#L55), [line 56](../examples/mathematics_kan_complexes_horns.esk#L56), [line 290](../examples/mathematics_kan_complexes_horns.esk#L290), [line 292](../examples/mathematics_kan_complexes_horns.esk#L292), [line 302](../examples/mathematics_kan_complexes_horns.esk#L302), [line 190](../examples/mathematics_kan_complexes_horns.esk#L190), [line 192](../examples/mathematics_kan_complexes_horns.esk#L192), [line 203](../examples/mathematics_kan_complexes_horns.esk#L203), [line 223](../examples/mathematics_kan_complexes_horns.esk#L223), [line 227](../examples/mathematics_kan_complexes_horns.esk#L227).
+Implementation/check anchors: [line 1](../examples/mathematics_kan_complexes_horns.esk#L1), [line 51](../examples/mathematics_kan_complexes_horns.esk#L51), [line 61](../examples/mathematics_kan_complexes_horns.esk#L61), [line 119](../examples/mathematics_kan_complexes_horns.esk#L119), [line 121](../examples/mathematics_kan_complexes_horns.esk#L121), [line 129](../examples/mathematics_kan_complexes_horns.esk#L129), [line 84](../examples/mathematics_kan_complexes_horns.esk#L84), [line 88](../examples/mathematics_kan_complexes_horns.esk#L88).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -2109,7 +2016,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Sheafification, reflector and Kan descent
 
-Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_sheafification_descent_kan.esk#L1). SHA-256: `72aae0f72e6bb160b435055a394c7cd2f9651f72b7d8a9ba588786d291684a49`.
+Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_sheafification_descent_kan.esk#L1). SHA-256: `e2ed4c0dc14726cb3961bfef73a9b642c86ce4f97bb428dd1f9d265fdc15746b`.
 
 **Published result:** Sheafification a = (−)⁺⁺ is left adjoint to the inclusion of sheaves (Mac Lane–Moerdijk Theorem III.5.1), and the sheaf condition for a covering sieve says that F(U) is the limit of F over the sieve — equivalently, the right Kan extension of F restricted to the sieve (Johnstone C2.2; Lurie 6.2.2). The program verifies the Grothendieck axioms for the canonical topology on two finite sites, counts matching families, computes the plus construction twice, and checks the reflector's universal property and the Kan-extension form of descent by counting.
 
@@ -2123,7 +2030,7 @@ Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_she
 
 **Purpose:** Compare finite-site plus construction with matching-family Kan limits.
 
-**Implemented algorithm:** Enumerate covering sieves and finite matching families, apply plus twice, build comma-category limits and count natural maps into sheaves.
+**Implemented algorithm:** Build the sites of opens with core.sheaf, apply the plus construction twice, compute Match on the minimal covering sieves as Ran along the sieve inclusion and as the limit over the sieve category with core.category, and count natural transformations into sheaves three ways with the triangle identities of a -| i.
 
 **Domain and parameters:** Pseudocircle site with 6 opens and pseudo-2-sphere site with 9 opens; constant, locally constant and nonseparated set presheaves.
 
@@ -2133,19 +2040,11 @@ Source: [mathematics_sheafification_descent_kan.esk](../examples/mathematics_she
 
 **Limits:** The exhaustive site is finite; selected adjunction counts must not be promoted to a proof for arbitrary infinite sites or all presheaves.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.category and core.sheaf on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 10, Failed: 0; 8.15 s); native AOT **PASS** (Passed: 10, Failed: 0; compile 19.4 s, run 1.10 s). CTest: `cat_sheafification_descent_kan_jit` Passed (21.5 s), `cat_sheafification_descent_kan_aot` Passed (26.3 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.category and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  pseudocircle: matching families of the constant 2-set on the top cover and on the cover of {a,b} by {a} and {b}; Cech families on the generating covers = (2 4 2 4)
-  pseudocircle: sizes of const, const^+, const^{++} on the 6 opens; pi_0 of each open = ((2 2 2 2 2 2) (2 2 2 2 2 4) (2 2 2 2 2 4) (1 1 1 1 1 2))
-  universal property counts (Hom(F, G), Hom(aF, G)) for G locally constant: constant F, non-separated F = ((4 4) (2 2))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_sheafification_descent_kan.esk#L1), [line 61](../examples/mathematics_sheafification_descent_kan.esk#L61), [line 62](../examples/mathematics_sheafification_descent_kan.esk#L62), [line 527](../examples/mathematics_sheafification_descent_kan.esk#L527), [line 551](../examples/mathematics_sheafification_descent_kan.esk#L551), [line 554](../examples/mathematics_sheafification_descent_kan.esk#L554).
+Implementation/check anchors: [line 1](../examples/mathematics_sheafification_descent_kan.esk#L1), [line 57](../examples/mathematics_sheafification_descent_kan.esk#L57), [line 181](../examples/mathematics_sheafification_descent_kan.esk#L181), [line 196](../examples/mathematics_sheafification_descent_kan.esk#L196), [line 201](../examples/mathematics_sheafification_descent_kan.esk#L201).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -2302,7 +2201,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Crossed-module nerves and Postnikov data
 
-Source: [mathematics_two_groups_postnikov.esk](../examples/mathematics_two_groups_postnikov.esk#L1). SHA-256: `506ec63d21f893faf59f35ed1e17a65ecb2faf48d1a601ef00bc150b0a8c0f62`.
+Source: [mathematics_two_groups_postnikov.esk](../examples/mathematics_two_groups_postnikov.esk#L1). SHA-256: `9505c71277d108885e9f1bf58b44b2fce60904851a07d4708bf16c61a13c2c11`.
 
 **Published result:** Strict 2-groups are crossed modules (Whitehead 1949); the classifying space of a crossed module d: M → N is a 2-type with π₁ = coker d and π₂ = ker d (Brown–Higgins–Sivera §2.5), classified by π₁, π₂ and a k-invariant in H³(π₁; π₂) (Baez–Lauda §8), with Z/4 → Z/4 (sign action) realizing the nontrivial class for π₁ = π₂ = Z/2. The program enumerates the nerves (Duskin's description) and shows that cohomology in degree 2 separates 2-types with equal homotopy groups.
 
@@ -2316,7 +2215,7 @@ Source: [mathematics_two_groups_postnikov.esk](../examples/mathematics_two_group
 
 **Purpose:** Distinguish 2-types with identical π₁ and π₂ using k-sensitive cohomology.
 
-**Implemented algorithm:** Check crossed-module/Peiffer laws, enumerate edge/triangle-labeled nerve simplices, check face identities and compute integral/mod-2 complexes.
+**Implemented algorithm:** Check crossed-module laws, build crossed-module nerves with core.simplicial and compute normalized mod-2 and integral (co)homology with core.homological; the k-invariant by the Baez-Lauda recipe.
 
 **Domain and parameters:** Finite abelian crossed modules including Z/2→1,1→Z/2,Z/2→Z/2 and Z/4→Z/4 with trivial/sign action; source-defined low degrees.
 
@@ -2326,24 +2225,11 @@ Source: [mathematics_two_groups_postnikov.esk](../examples/mathematics_two_group
 
 **Limits:** Finite-degree computations distinguish these presentations; equivalence of entire 2-types invokes the cited crossed-module/Postnikov theory.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib; core.simplicial and core.homological on the module path (ESHKOL_PATH=lib); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 18, Failed: 0; 21.0 s); native AOT **PASS** (Passed: 18, Failed: 0; compile 6.89 s, run 12.7 s). CTest: `hocolim_two_groups_postnikov_jit` Passed (19.6 s), `hocolim_two_groups_postnikov_aot` Passed (22.3 s), `vm_mathematics_two_groups_postnikov` Passed (74.2 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  k-invariant values on the eight triples (a,b,c): split, twist with trivial action, twist with the sign action = ((0 0 0 0 0 0 0 0) (0 0 0 0 0 0 0 0) (0 0 0 0 0 0 0 2))
-  dim H^n(-; Z/2), n = 0..3: K(Z/2,2) = (1 0 1 1)
-  dim H^n(-; Z/2), n = 0..3: BZ/2 = (1 1 1 1)
-  dim H^n(-; Z/2), n = 0..3: split 2-type = (1 1 2 3)
-  dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, trivial action = (1 1 2)
-  dim H^n(-; Z/2), n = 0..2: Z/4 -> Z/4, sign action = (1 1 1)
-PASS: three 2-types with pi_1 = pi_2 = Z/2: two are the product and one is not, and H^2(-; Z/2) tells them apart
-  H_n(-; Z), n = 0..2: split, trivial-action twist, sign-action twist = (((0 1 ()) (1 0 (2)) (2 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 (2))) ((0 1 ()) (1 0 (2)) (2 0 ())))
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_two_groups_postnikov.esk#L1), [line 67](../examples/mathematics_two_groups_postnikov.esk#L67), [line 68](../examples/mathematics_two_groups_postnikov.esk#L68), [line 364](../examples/mathematics_two_groups_postnikov.esk#L364), [line 380](../examples/mathematics_two_groups_postnikov.esk#L380), [line 382](../examples/mathematics_two_groups_postnikov.esk#L382).
+Implementation/check anchors: [line 1](../examples/mathematics_two_groups_postnikov.esk#L1), [line 58](../examples/mathematics_two_groups_postnikov.esk#L58), [line 69](../examples/mathematics_two_groups_postnikov.esk#L69), [line 147](../examples/mathematics_two_groups_postnikov.esk#L147), [line 165](../examples/mathematics_two_groups_postnikov.esk#L165), [line 167](../examples/mathematics_two_groups_postnikov.esk#L167).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
