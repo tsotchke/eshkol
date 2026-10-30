@@ -1,0 +1,21 @@
+schema_version = 1
+license = "MIT"
+base_commit = "fb8a9415b3dd05bb82ebf42db2fe894240f8b4f0"
+prepared_tree_oid = "2d74c92d8128b7da396ebbcfb16c89200fb85d98"
+review_status = "draft-jit-blocked"
+
+[[source_prerequisite]]
+name = "observable"
+revision = "selected MIT observable-closure contribution"
+
+[[source_prerequisite.file]]
+path = "lib/core/observable_closure.esk"
+sha256 = "dc068e5529ba4b4163841911a34357123b78aa9b1e244e33d404232d31a4d32e"
+
+[[source_prerequisite.file]]
+path = "scripts/run_observable_closure_gate.py"
+sha256 = "c90a972a4c47e3f1f41447927340a103c4830c100badae50b9fdd7e0a74c7c66"
+
+[[prerequisite_pr]]
+number = 1
+patch_sha256 = "16cc399d89bb7eb874832ab28f7feeaf212e46256247b4de2618b412e676eac9"

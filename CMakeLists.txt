@@ -4452,6 +4452,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endif()
 endif()
 
+# Scoped hawkes-live consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-live/CTest.cmake")
+
 # Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set(ESHKOL_DBSP_EXAMPLES
