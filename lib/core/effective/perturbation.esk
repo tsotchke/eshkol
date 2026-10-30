@@ -74,8 +74,20 @@
            (error "perturb-reduction: the perturbation is not locally nilpotent on this cell" n c))
           (else (loop (lc-negate (lc-apply (lambda (y) (delta n y)) (reduction-h r (- n 1) x)))
                       (cons x acc) (+ i 1))))))
-(define (perturb-reduction r delta-proc)
-  (let* ((delta (pt-memoize delta-proc))
+;; filtration (optional): (key . drop) with key : cell -> integer; every term
+;; of delta(c) must have key at most key(c) - drop. The tensor homotopies of
+;; this library raise the key by at most drop - 1 (bar words: length, drop 1;
+;; twisted tensor products: base degree, drop 2 over a 1-reduced base), so
+;; the check is the nilpotency hypothesis itself, made on every cell used.
+(define (perturb-reduction r delta-proc . filtration)
+  (let* ((delta (pt-memoize (if (null? filtration) delta-proc
+                                (let ((key (car (car filtration))) (drop (cdr (car filtration))))
+                                  (lambda (n c)
+                                    (let ((v (delta-proc n c)) (k (key c)))
+                                      (for-each (lambda (p) (if (> (key (car p)) (- k drop))
+                                                                (error "perturb-reduction: the perturbation does not lower the filtration" n c (car p))))
+                                                v)
+                                      v))))))
          (B (reduction-big r)) (S (reduction-small r))
          (sigma (pt-memoize (lambda (n c) (perturbation-series r delta n c))))
          (sigma-lc (lambda (n lc) (lc-apply (lambda (c) (sigma n c)) lc)))
@@ -240,9 +252,13 @@
                      (tensor-complex (reduction-small rA) (reduction-small rB))
                      (lambda (i) (if (= i 0) rA rB)) (lambda (w) (list 0 0))))
 
-;; Bar(L): words of letters of positive degree, each shifted by one; the
-;; differential here is the tensor part only (the product part of a bar
-;; construction is a perturbation that lowers the length)
+;; Bar(L): words of letters of positive degree, of degree sum (deg + 1). The
+;; differential here is the tensor part only, in the sign convention of the
+;; critical complex of W-bar G (whose words list the innermost component
+;; first): d [l_1 ... l_k] = (-1)^k sum_i (-1)^(deg l_1 + ... + deg l_(i-1))
+;; [l_1 ... d l_i ... l_k], and the homotopy carries the same factor (-1)^k.
+;; The product part of a bar construction is a perturbation that lowers the
+;; length.
 (define (pt-bar-basis L n)
   (cond ((= n 0) (list (make-word '())))
         ((< n 0) '())
@@ -257,10 +273,16 @@
                                                                    (effective-complex-basis L d))))
                                        acc))))))))))
 (define (pt-ones k x) (map (lambda (i) x) (pt-range k)))
+(define (pt-length-sign w) (if (even? (word-length w)) 1 -1))
 (define (bar-complex L)
   (make-effective-complex (string-append "Bar(" (effective-complex-name L) ")")
                           (lambda (n) (pt-bar-basis L n))
-                          (lambda (n w) (word-tensor-d w (pt-ones (word-length w) L) (pt-ones (word-length w) 1) #t))))
+                          (lambda (n w) (lc-scale (word-tensor-d w (pt-ones (word-length w) L) (pt-ones (word-length w) 0) #t)
+                                                  (pt-length-sign w)))))
 (define (bar-reduction rL)
-  (pt-word-reduction (bar-complex (reduction-big rL)) (bar-complex (reduction-small rL))
-                     (lambda (i) rL) (lambda (w) (pt-ones (word-length w) 1))))
+  (let ((r (pt-word-reduction (bar-complex (reduction-big rL)) (bar-complex (reduction-small rL))
+                              (lambda (i) rL) (lambda (w) (pt-ones (word-length w) 0)))))
+    (make-reduction (reduction-big r) (reduction-small r)
+                    (lambda (n w) (reduction-f-cell r n w))
+                    (lambda (n w) (reduction-g-cell r n w))
+                    (lambda (n w) (lc-scale (reduction-h-cell r n w) (pt-length-sign w))))))
