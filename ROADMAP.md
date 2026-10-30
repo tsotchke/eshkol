@@ -899,18 +899,16 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 **Flagship:** `core.dbsp` GA (W1) + native-product PGO in the release
 workflow (ADR-0007 Phase 1).
 
-- [x] Symbol embeddings (learnable vector representations of KB symbols) —
-      `core.ml.neurosymbolic`: tables attached to the KB, parameter view
-      differentiated by `gradient` (ADR-0049)
-- [x] Soft unification (differentiable similarity — gradients flow through matching) —
-      `soft-unify-terms` extends the engine's `unify` (ADR-0049)
+- [ ] Symbol embeddings (learnable vector representations of KB symbols) —
+      delivered by Noesis (term embeddings); upstreaming per ADR-0049
+- [ ] Soft unification (differentiable similarity — gradients flow through matching) —
+      delivered by Noesis (soft unification with gradients); upstreaming per ADR-0049
 - [x] LSTM and GRU cells (standard recurrent neural architectures) —
       `core.ml.recurrent`, BPTT by the built-in reverse mode (ADR-0049)
-- [x] Differentiable logic programs (gradients flow through rule application) —
-      `core.ml.diff_logic`: soft forward chaining, learnable rule templates,
-      learned clauses read back and asserted into the KB (ADR-0049)
-- [x] Attention over knowledge base (neural query mechanism over symbolic facts) —
-      `neural-query` over soft-unification proof scores (ADR-0049)
+- [ ] Differentiable logic programs (gradients flow through rule application) —
+      delivered by Noesis (differentiable belief propagation); upstreaming per ADR-0049
+- [ ] Attention over knowledge base (neural query mechanism over symbolic facts) —
+      delivered by Noesis (attention unification); upstreaming per ADR-0049
 - [x] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through) —
       `stop-gradient` builtin; Gumbel-Softmax, straight-through, score-function
       estimators with their bias/variance properties tested (ADR-0049)

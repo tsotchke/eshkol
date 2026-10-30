@@ -6441,16 +6441,12 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
-    # v1.5.0 neuro-symbolic bridge (ADR-0049): symbol embeddings and soft
-    # unification through the engine's walk/unify, attention over the KB,
-    # differentiable logic programs, LSTM/GRU cells, stop-gradient and the
-    # gradient estimators, plus reverse mode through loops that keep AD nodes
-    # only inside a list. Each program checks reverse mode against forward
+    # v1.5.0 (ADR-0049): LSTM/GRU cells, stop-gradient and the gradient
+    # estimators, plus reverse mode through loops that keep AD nodes only
+    # inside a list. Each program checks reverse mode against forward
     # mode or a closed form, trains a small model, and asserts that no finite
     # differences ran. JIT and AOT.
     foreach(_ns_case
-            "neurosymbolic_bridge|tests/ml/neurosymbolic_bridge_test.esk"
-            "diff_logic|tests/ml/diff_logic_test.esk"
             "recurrent_cells|tests/ml/recurrent_test.esk"
             "gradient_estimators_native|tests/ml/gradient_estimators_native_test.esk"
             "loop_list_reverse_mode|tests/autodiff/loop_list_reverse_mode_test.esk")

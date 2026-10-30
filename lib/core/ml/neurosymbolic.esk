@@ -1,56 +1,30 @@
 ;;
-;; core.ml.neurosymbolic — symbol embeddings, soft unification and attention
-;; over the knowledge base (v1.5.0-intelligence, ADR-0049).
+;; core.ml.neurosymbolic — differentiable symbol embeddings + soft unification
 ;;
-;; The consciousness engine's `unify` is exact: two ground symbols match only
-;; when they are the same symbol. This module gives every KB symbol a learnable
-;; embedding vector and replaces the hard symbol test with a differentiable
-;; similarity, so a program can LEARN which symbols should unify (father ~ parent,
-;; cat ~ feline) while keeping the engine's own variables, substitutions and
-;; occurs check for everything structural.
+;; v1.5-intelligence: the neuro-symbolic bridge. The consciousness engine's
+;; `unify` is exact (boolean). Soft unification replaces that hard match with a
+;; DIFFERENTIABLE similarity in [0,1], computed over learnable per-symbol
+;; embedding vectors — gradients flow back through the match into the embeddings,
+;; so a system can LEARN which symbols should unify (cat≈feline, cat≉rock) rather
+;; than only test syntactic identity.
 ;;
-;; Two views of one embedding table:
+;; Built on core.ad.tape: the embeddings are parameters, each soft-unify is a tape
+;; forward (dot → sigmoid), and tape-gradient + SGD update the embeddings.
 ;;
-;;   * the TABLE view   — `embed!` returns the live vector of a symbol; the
-;;     symbol-pair helpers (`soft-unify`, `soft-unify-train!`, `kb-attention`)
-;;     read it directly.
-;;   * the PARAMETER view — `embedding-params` packs every embedding into one
-;;     flat vector theta (symbol i occupies theta[i*dim .. i*dim+dim-1]). Every
-;;     theta-taking function below is written over generic arithmetic, so it runs
-;;     on plain doubles AND on the carriers of the built-in AD operators: a loss
-;;     `(lambda (theta) ...)` built from these functions is differentiated
-;;     exactly by `(gradient loss theta)` (reverse mode) or along any direction
-;;     by `derivative` (forward mode). `embedding-load!` writes trained values
-;;     back into the table.
-;;
-;; Soft unification (Rocktaschel & Riedel, "End-to-end Differentiable Proving",
-;; 2017): walk both terms through the substitution with the engine's `walk`;
-;; a logic variable is bound with the engine's `unify` (score 1); two pairs
-;; unify componentwise with the product t-norm; two distinct ground atoms
-;; unify with score sim(emb a, emb b); a structural mismatch fails (#f). When
-;; the engine's `unify` succeeds, soft unification returns the same bindings
-;; and score exactly 1, so it EXTENDS hard unification rather than replacing it.
-;;
-;; Attention over the KB: scaled dot-product attention with term embeddings as
-;; keys and values (`attend`, `attend-facts`); `neural-query` answers a pattern
-;; with one variable by attending over the facts of the attached KB and
-;; returning a distribution over the answers.
+;;   (define tbl (make-embedding-table 8))
+;;   (soft-unify-train! tbl 'cat 'feline 1.0 0.5)   ; learn: cat unifies with feline
+;;   (soft-unify tbl 'cat 'feline)                  ; => rising toward 1.0
 ;;
 
 (require core.ad.tape)
 
-(provide make-embedding-table emb-dim embed! embedding-count embedding-symbols
-         embedding-index embedding-params embedding-load! embedding-mask param-embedding
-         embedding-attach-kb! embedding-kb embedding-schema kb-facts table-facts
-         vdot circular-convolution embed-term
-         cosine-similarity rbf-similarity sigmoid-similarity
-         make-rbf-similarity make-cosine-similarity
-         soft-unify soft-unify-loss soft-unify-train!
-         soft-unify-terms soft-kb-query soft-prove soft-prove-score
-         kb-attention kb-retrieve attend attend-rbf attend-facts
-         neural-query neural-query-answer neural-query-probability)
+(provide make-embedding-table emb-dim embed!
+         vdot soft-unify soft-unify-loss soft-unify-train!
+         kb-attention kb-retrieve)
 
-;; ── self-contained helpers (core module: no stdlib map/for-each) ──
+;; ── small self-contained vector helpers (core module: no stdlib map/for-each) ──
+(define (ns-make-vec n init) (make-vector n init))
+
 (define (vdot a b)
   (let ((n (vector-length a)))
     (let loop ((i 0) (s 0.0))
@@ -60,17 +34,9 @@
   (let loop ((l lst) (acc '()))
     (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
 
-(define (ns-length lst)
-  (let loop ((l lst) (n 0)) (if (pair? l) (loop (cdr l) (+ n 1)) n)))
-
 (define (ns-scale s v)
   (let* ((n (vector-length v)) (r (make-vector n 0.0)))
     (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (* s (vector-ref v i))) (loop (+ i 1)))))
-    r))
-
-(define (ns-add a b)
-  (let* ((n (vector-length a)) (r (make-vector n 0.0)))
-    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (+ (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
     r))
 
 ;; in-place: a[i] -= b[i]
@@ -80,36 +46,19 @@
       (if (< i n) (begin (vector-set! a i (- (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
     a))
 
-(define (ns-sq-dist a b)
-  (let ((n (vector-length a)))
-    (let loop ((i 0) (s 0.0))
-      (if (< i n)
-          (let ((d (- (vector-ref a i) (vector-ref b i)))) (loop (+ i 1) (+ s (* d d))))
-          s))))
-
-(define (ns-sigmoid z) (/ 1.0 (+ 1.0 (exp (- z)))))
-
 ;; ── embedding table ──
-;; #(dim entries count kb schema roles)
-;;   entries : list of #(sym index vector), newest first
-;;   count   : number of symbols (the next index)
-;;   kb      : the attached knowledge base, or #f
-;;   schema  : list of (predicate . arity) the KB is read through
-;;   roles   : list of (position . role-vector) used by embed-term
-;; Embeddings start at small symbol-deterministic values (a hash of the printed
-;; symbol seeds an LCG), so distinct symbols start distinct with no RNG state.
-(define (make-embedding-table dim) (vector dim '() 0 #f '() '()))
+;; A table is #(dim entries) where entries is a mutable alist (sym . vector),
+;; held in slot 1 and grown by prepending. Embeddings init to small, symbol-
+;; deterministic values (no RNG dependency) so distinct symbols start distinct.
+(define (make-embedding-table dim) (vector dim '()))
 (define (emb-dim tbl) (vector-ref tbl 0))
-(define (embedding-count tbl) (vector-ref tbl 2))
-(define (embedding-kb tbl) (vector-ref tbl 3))
-(define (embedding-schema tbl) (vector-ref tbl 4))
 
-(define (ns-entry sym entries)
-  (if (pair? entries)
-      (if (eq? (vector-ref (car entries) 0) sym) (car entries) (ns-entry sym (cdr entries)))
+(define (ns-assq sym alist)
+  (if (pair? alist)
+      (if (eq? (car (car alist)) sym) (car alist) (ns-assq sym (cdr alist)))
       #f))
 
-;; deterministic init in [-1, 1) from an integer seed
+;; deterministic small init from a symbol-derived seed
 (define (ns-init dim seed)
   (let ((v (make-vector dim 0.0)))
     (let loop ((i 0) (s seed))
@@ -119,211 +68,38 @@
             (loop (+ i 1) s2))))
     v))
 
-(define (ns-symbol-seed sym)
-  (let ((s (symbol->string sym)))
-    (let loop ((i 0) (h 5381))
-      (if (< i (string-length s))
-          (loop (+ i 1) (+ (* h 33) (char->integer (string-ref s i))))
-          (modulo h 2147483648)))))
-
-(define (ns-register! tbl sym)
-  (let ((hit (ns-entry sym (vector-ref tbl 1))))
+;; ensure `sym` has an embedding; return its (mutable) vector
+(define (embed! tbl sym)
+  (let ((hit (ns-assq sym (vector-ref tbl 1))))
     (if hit
-        hit
-        (let ((e (vector sym (vector-ref tbl 2) (ns-init (emb-dim tbl) (ns-symbol-seed sym)))))
-          (vector-set! tbl 1 (cons e (vector-ref tbl 1)))
-          (vector-set! tbl 2 (+ (vector-ref tbl 2) 1))
-          e))))
+        (cdr hit)
+        (let* ((dim (emb-dim tbl))
+               ;; seed from a cheap hash of the symbol's printed form
+               (seed (let ((s (symbol->string sym)))
+                       (let loop ((i 0) (h 5381))
+                         (if (< i (string-length s))
+                             (loop (+ i 1) (+ (* h 33) (char->integer (string-ref s i))))
+                             (modulo h 2147483648)))))
+               (v (ns-init dim seed)))
+          (vector-set! tbl 1 (cons (cons sym v) (vector-ref tbl 1)))
+          v))))
 
-;; ensure `sym` has an embedding; return its live (mutable) vector
-(define (embed! tbl sym) (vector-ref (ns-register! tbl sym) 2))
-
-;; index of `sym` in the parameter view (registers it when new)
-(define (embedding-index tbl sym) (vector-ref (ns-register! tbl sym) 1))
-
-;; symbols in index order
-(define (embedding-symbols tbl)
-  (let loop ((es (vector-ref tbl 1)) (acc '()))
-    (if (pair? es) (loop (cdr es) (cons (vector-ref (car es) 0) acc)) acc)))
-
-;; flat parameter vector: symbol i at [i*dim, (i+1)*dim)
-(define (embedding-params tbl)
-  (let* ((dim (emb-dim tbl)) (theta (make-vector (* dim (embedding-count tbl)) 0.0)))
-    (let loop ((es (vector-ref tbl 1)))
-      (if (pair? es)
-          (let ((base (* dim (vector-ref (car es) 1))) (v (vector-ref (car es) 2)))
-            (let fill ((k 0))
-              (if (< k dim) (begin (vector-set! theta (+ base k) (vector-ref v k)) (fill (+ k 1)))))
-            (loop (cdr es)))))
-    theta))
-
-;; copy a parameter vector back into the live table vectors
-(define (embedding-load! tbl theta)
-  (let ((dim (emb-dim tbl)))
-    (if (not (= (vector-length theta) (* dim (embedding-count tbl))))
-        (error "embedding-load!: parameter vector length does not match the table"
-               (vector-length theta) (* dim (embedding-count tbl))))
-    (let loop ((es (vector-ref tbl 1)))
-      (if (pair? es)
-          (let ((base (* dim (vector-ref (car es) 1))) (v (vector-ref (car es) 2)))
-            (let fill ((k 0))
-              (if (< k dim) (begin (vector-set! v k (vector-ref theta (+ base k))) (fill (+ k 1)))))
-            (loop (cdr es)))))
-    tbl))
-
-;; 0/1 vector over the parameter view marking the blocks of `syms`: multiply a
-;; gradient by it to train those embeddings and hold every other one fixed
-(define (embedding-mask tbl syms)
-  (let* ((dim (emb-dim tbl)) (m (make-vector (* dim (embedding-count tbl)) 0.0)))
-    (let loop ((ss syms))
-      (if (pair? ss)
-          (let ((base (* dim (embedding-index tbl (car ss)))))
-            (let fill ((k 0)) (if (< k dim) (begin (vector-set! m (+ base k) 1.0) (fill (+ k 1)))))
-            (loop (cdr ss)))))
-    m))
-
-;; the embedding of `sym` read out of theta (works on AD carriers). The symbol
-;; must already be registered: a parameter vector has a fixed layout.
-(define (param-embedding theta tbl sym)
-  (let ((hit (ns-entry sym (vector-ref tbl 1))))
-    (if (not hit)
-        (error "param-embedding: symbol has no embedding in this table" sym))
-    (let* ((dim (emb-dim tbl)) (base (* dim (vector-ref hit 1))) (r (make-vector dim 0.0)))
-      (let loop ((k 0))
-        (if (< k dim) (begin (vector-set! r k (vector-ref theta (+ base k))) (loop (+ k 1)))))
-      r)))
-
-;; ── the knowledge-base bridge ──
-;; Facts of predicate `pred` with `arity` arguments, read with the engine's
-;; kb-query through fresh logic variables and returned as ground lists
-;; (pred a1 ... ak), in KB insertion order.
-(define (ns-fresh-var i)
-  (string->symbol (string-append "?ns-arg-" (number->string i))))
-
-(define (ns-fresh-vars k)
-  (let loop ((i (- k 1)) (acc '()))
-    (if (< i 0) acc (loop (- i 1) (cons (ns-fresh-var i) acc)))))
-
-(define (kb-facts kb pred arity)
-  (let* ((vars (ns-fresh-vars arity))
-         (subs (kb-query kb (cons pred vars))))
-    (let loop ((ss subs) (acc '()))
-      (if (pair? ss)
-          (loop (cdr ss)
-                (cons (cons pred (let walk-all ((vs vars) (out '()))
-                                   (if (pair? vs)
-                                       (walk-all (cdr vs) (cons (walk (car vs) (car ss)) out))
-                                       (ns-reverse out))))
-                      acc))
-          (ns-reverse acc)))))
-
-;; register a term's symbols (predicates, constants, nested functors)
-(define (ns-register-term! tbl term)
-  (cond ((pair? term) (ns-register-term! tbl (car term)) (ns-register-term! tbl (cdr term)))
-        ((logic-var? term) #t)
-        ((symbol? term) (ns-register! tbl term) #t)
-        (else #t)))
-
-;; Attach a KB: every predicate in `schema` (a list of (pred . arity)) and every
-;; symbol occurring in those facts gets an embedding. Returns the symbol count.
-(define (embedding-attach-kb! tbl kb schema)
-  (vector-set! tbl 3 kb)
-  (vector-set! tbl 4 schema)
-  (let loop ((sc schema))
-    (if (pair? sc)
-        (begin
-          (ns-register! tbl (car (car sc)))
-          (let facts ((fs (kb-facts kb (car (car sc)) (cdr (car sc)))))
-            (if (pair? fs) (begin (ns-register-term! tbl (car fs)) (facts (cdr fs)))))
-          (loop (cdr sc)))))
-  (embedding-count tbl))
-
-;; every fact of the attached KB, schema order then insertion order
-(define (table-facts tbl)
-  (let ((kb (embedding-kb tbl)))
-    (if (not kb) (error "table-facts: no knowledge base attached (embedding-attach-kb!)"))
-    (let loop ((sc (embedding-schema tbl)) (acc '()))
-      (if (pair? sc)
-          (loop (cdr sc)
-                (let add ((fs (kb-facts kb (car (car sc)) (cdr (car sc)))) (a acc))
-                  (if (pair? fs) (add (cdr fs) (cons (car fs) a)) a)))
-          (ns-reverse acc)))))
-
-;; ── term embeddings (holographic reduced representations, Plate 1995) ──
-;; circular convolution: c[k] = sum_j a[j] * b[(k - j) mod n]
-(define (circular-convolution a b)
-  (let* ((n (vector-length a)) (c (make-vector n 0.0)))
-    (let outer ((k 0))
-      (if (< k n)
-          (begin
-            (vector-set! c k
-              (let inner ((j 0) (s 0.0))
-                (if (< j n)
-                    (inner (+ j 1) (+ s (* (vector-ref a j) (vector-ref b (modulo (- k j) n)))))
-                    s)))
-            (outer (+ k 1)))))
-    c))
-
-;; fixed (not learned) unit-norm role vector for argument position i, cached
-;; in the table; a unit role keeps role (*) filler at the filler's scale
-(define (ns-role tbl i)
-  (let ((hit (let find ((rs (vector-ref tbl 5)))
-               (if (pair? rs) (if (= (car (car rs)) i) (cdr (car rs)) (find (cdr rs))) #f))))
-    (if hit
-        hit
-        (let* ((r0 (ns-init (emb-dim tbl) (+ 7919 (* 104729 (+ i 1)))))
-               (r (ns-scale (/ 1.0 (sqrt (vdot r0 r0))) r0)))
-          (vector-set! tbl 5 (cons (cons i r) (vector-ref tbl 5)))
-          r))))
-
-;; Embedding of a term:
-;;   symbol          -> its embedding
-;;   logic variable  -> the zero vector (nothing is known about it)
-;;   number x        -> x in component 0, zero elsewhere
-;;   (f a1 ... ak)   -> emb(f) + sum_i role_i (*) embed-term(a_i)
-(define (embed-term theta tbl term)
-  (let ((dim (emb-dim tbl)))
-    (cond ((logic-var? term) (make-vector dim 0.0))
-          ((symbol? term) (param-embedding theta tbl term))
-          ((number? term) (let ((v (make-vector dim 0.0))) (vector-set! v 0 term) v))
-          ((null? term) (make-vector dim 0.0))
-          ((pair? term)
-           (let loop ((args (cdr term)) (i 0) (acc (embed-term theta tbl (car term))))
-             (if (pair? args)
-                 (loop (cdr args) (+ i 1)
-                       (ns-add acc (circular-convolution (ns-role tbl i)
-                                                         (embed-term theta tbl (car args)))))
-                 acc)))
-          (else (error "embed-term: unsupported term" term)))))
-
-;; ── similarities: (a b) -> [0, 1] over embedding vectors ──
-;; cosine similarity mapped to [0,1]; 1e-12 keeps the norm differentiable at 0
-(define (cosine-similarity a b)
-  (* 0.5 (+ 1.0 (/ (vdot a b) (sqrt (+ (* (vdot a a) (vdot b b)) 1.0e-12))))))
-
-;; Gaussian kernel exp(-|a-b|^2 / (2 mu^2)); equals 1 exactly when a = b
-(define (rbf-similarity a b mu)
-  (exp (- (/ (ns-sq-dist a b) (* 2.0 mu mu)))))
-
-;; sigmoid(<a,b> / sqrt(dim))
-(define (sigmoid-similarity a b)
-  (ns-sigmoid (/ (vdot a b) (sqrt (exact->inexact (vector-length a))))))
-
-(define (make-rbf-similarity mu) (lambda (a b) (rbf-similarity a b mu)))
-(define (make-cosine-similarity) (lambda (a b) (cosine-similarity a b)))
-
-;; ── symbol-pair soft unification on the table view ──
-;; confidence = sigmoid(<emb a, emb b> / sqrt(dim)) in [0,1]
+;; ── soft unification ──
+;; soft-unify confidence = sigmoid(<emb a, emb b> / sqrt(dim)) in [0,1].
 (define (soft-unify tbl a b)
-  (sigmoid-similarity (embed! tbl a) (embed! tbl b)))
+  (let* ((va (embed! tbl a)) (vb (embed! tbl b))
+         (scale (/ 1.0 (sqrt (exact->inexact (emb-dim tbl)))))
+         (z (* scale (vdot va vb))))
+    (/ 1.0 (+ 1.0 (exp (- z))))))
 
-;; squared error between soft-unify(a,b) and a target confidence
+;; squared-error loss between soft-unify(a,b) and a target confidence
 (define (soft-unify-loss tbl a b target)
   (let ((c (soft-unify tbl a b)))
     (* (- c target) (- c target))))
 
-;; One SGD step pushing soft-unify(a,b) toward `target`, on both embeddings, via
-;; the stateful tape. Returns the loss before the update.
+;; ── one differentiable training step (gradients flow through the match) ──
+;; Pushes soft-unify(a,b) toward `target` by SGD on both embeddings, via the tape.
+;; Returns the loss before the update.
 (define (soft-unify-train! tbl a b target lr)
   (let* ((va (embed! tbl a)) (vb (embed! tbl b))
          (dim (emb-dim tbl))
@@ -331,76 +107,27 @@
     (with-tape "soft-unify"
       (lambda ()
         (let* ((t (current-tape))
-               (na (tape-input t va))
+               (na (tape-input t va))    ; tensor (vector) nodes — learnable
                (nb (tape-input t vb))
-               ;; scaled dot product; d/da = scale*g*b, d/db = scale*g*a
+               ;; custom op: scaled dot product. backward: d/da = scale*g*b, d/db = scale*g*a
                (dot (record-op! t (list na nb) (* scale (vdot va vb))
                       (lambda (g) (list (ns-scale (* scale g) vb)
                                         (ns-scale (* scale g) va)))))
-               (conf (tape-sigmoid t dot))
+               (conf (tape-sigmoid t dot))                 ; in [0,1]
                (err  (tape-sub t conf (tape-const t target)))
                (loss (tape-square t err))
                (grads (tape-gradient t loss (list na nb))))
+          ;; SGD: emb -= lr * grad   (grads are vectors)
           (ns-sub! va (ns-scale lr (car grads)))
           (ns-sub! vb (ns-scale lr (cadr grads)))
           (node-value loss))))))
 
-;; ── soft unification of terms through the engine's substitutions ──
-;; Returns (substitution . score) or #f. `sim` maps two embedding vectors to
-;; [0,1]. Variables are bound by the engine's `unify` (occurs check included).
-(define (soft-unify-terms theta tbl t1 t2 sigma sim)
-  (let ((a (walk t1 sigma)) (b (walk t2 sigma)))
-    (cond ((or (logic-var? a) (logic-var? b))
-           (let ((s2 (unify a b sigma))) (if s2 (cons s2 1.0) #f)))
-          ((and (pair? a) (pair? b))
-           (let ((r1 (soft-unify-terms theta tbl (car a) (car b) sigma sim)))
-             (if r1
-                 (let ((r2 (soft-unify-terms theta tbl (cdr a) (cdr b) (car r1) sim)))
-                   (if r2 (cons (car r2) (* (cdr r1) (cdr r2))) #f))
-                 #f)))
-          ((or (pair? a) (pair? b)) #f)
-          ((and (null? a) (null? b)) (cons sigma 1.0))
-          ((or (null? a) (null? b)) #f)
-          ((eqv? a b) (cons sigma 1.0))
-          ((and (symbol? a) (symbol? b))
-           (cons sigma (sim (param-embedding theta tbl a) (param-embedding theta tbl b))))
-          ((and (number? a) (number? b))
-           (cons sigma (sim (embed-term theta tbl a) (embed-term theta tbl b))))
-          ((or (symbol? a) (symbol? b))
-           (cons sigma (sim (embed-term theta tbl a) (embed-term theta tbl b))))
-          (else #f))))
-
-;; Soft query: unify `pattern` against every fact of the attached KB (every
-;; predicate in the schema, so the predicate symbol itself matches softly).
-;; Returns a list of (fact substitution score), facts that fail structurally
-;; are omitted.
-(define (soft-kb-query theta tbl pattern sim)
-  (let loop ((fs (table-facts tbl)) (acc '()))
-    (if (pair? fs)
-        (let ((r (soft-unify-terms theta tbl pattern (car fs) (make-substitution) sim)))
-          (loop (cdr fs) (if r (cons (list (car fs) (car r) (cdr r)) acc) acc)))
-        (ns-reverse acc))))
-
-;; Best proof of `goal` from the facts: (score fact substitution), or #f when
-;; no fact unifies structurally. The max is taken on the score's primal, so the
-;; gradient flows through the selected proof (NTP max-proof semantics).
-(define (soft-prove theta tbl goal sim)
-  (let loop ((rs (soft-kb-query theta tbl goal sim)) (best #f))
-    (if (pair? rs)
-        (let ((r (car rs)))
-          (loop (cdr rs)
-                (if (or (not best) (> (car (cddr r)) (car best)))
-                    (list (car (cddr r)) (car r) (cadr r))
-                    best)))
-        best)))
-
-;; the score of the best proof (0 when nothing unifies)
-(define (soft-prove-score theta tbl goal sim)
-  (let ((b (soft-prove theta tbl goal sim))) (if b (car b) 0.0)))
-
-;; ── attention over the KB ──
-;; Symbol-key attention on the table view: the query symbol attends over the
-;; key symbols by scaled dot product; returns an alist (key . weight).
+;; ── attention over a knowledge base (neural query over symbolic facts) ──
+;; A differentiable retrieval: the query attends over the fact KEYS by embedding
+;; similarity (softmax over scaled dot products). As the embeddings are trained
+;; (soft-unify-train!), the query routes to related keys — a neural query
+;; mechanism over a symbolic store. `keys` is a list of symbols, `query` a symbol;
+;; returns an alist (key . attention-weight) summing to 1.
 (define (kb-attention tbl keys query)
   (let* ((q (embed! tbl query))
          (scale (/ 1.0 (sqrt (exact->inexact (emb-dim tbl)))))
@@ -408,126 +135,21 @@
                 (if (pair? ks)
                     (loop (cdr ks) (cons (* scale (vdot q (embed! tbl (car ks)))) acc))
                     (ns-reverse acc))))
-         (ws (ns-softmax-list raw)))
-    (let loop ((ks keys) (w ws) (acc '()))
-      (if (and (pair? ks) (pair? w))
-          (loop (cdr ks) (cdr w) (cons (cons (car ks) (car w)) acc))
+         (mx (let loop ((xs raw) (m -1.0e30))
+               (if (pair? xs) (loop (cdr xs) (if (> (car xs) m) (car xs) m)) m)))
+         (exps (let loop ((xs raw) (acc '()))
+                 (if (pair? xs) (loop (cdr xs) (cons (exp (- (car xs) mx)) acc)) (ns-reverse acc))))
+         (sum (let loop ((xs exps) (s 0.0)) (if (pair? xs) (loop (cdr xs) (+ s (car xs))) s))))
+    (let loop ((ks keys) (es exps) (acc '()))
+      (if (and (pair? ks) (pair? es))
+          (loop (cdr ks) (cdr es) (cons (cons (car ks) (/ (car es) sum)) acc))
           (ns-reverse acc)))))
 
-;; the key the query attends to most
+;; argmax retrieval: the key the query attends to most
 (define (kb-retrieve tbl keys query)
   (let loop ((aw (kb-attention tbl keys query)) (best #f) (bw -1.0))
     (if (pair? aw)
         (if (> (cdr (car aw)) bw)
             (loop (cdr aw) (car (car aw)) (cdr (car aw)))
             (loop (cdr aw) best bw))
-        best)))
-
-;; numerically stable softmax of a list (carrier-generic)
-(define (ns-softmax-list xs)
-  (let* ((mx (let loop ((l xs) (m #f))
-               (if (pair? l) (loop (cdr l) (if (or (not m) (> (car l) m)) (car l) m)) m)))
-         (exps (let loop ((l xs) (acc '()))
-                 (if (pair? l) (loop (cdr l) (cons (exp (- (car l) mx)) acc)) (ns-reverse acc))))
-         (sum (let loop ((l exps) (s 0.0)) (if (pair? l) (loop (cdr l) (+ s (car l))) s))))
-    (let loop ((l exps) (acc '()))
-      (if (pair? l) (loop (cdr l) (cons (/ (car l) sum) acc)) (ns-reverse acc)))))
-
-;; Scaled dot-product attention. `q` a vector, `keys`/`values` lists of vectors,
-;; `temperature` divides the logits <q,k>/sqrt(dim). Returns (weights . context)
-;; with weights a list summing to 1 and context = sum_i w_i v_i.
-(define (attend q keys values temperature)
-  (let* ((dim (vector-length q))
-         (scale (/ 1.0 (* temperature (sqrt (exact->inexact dim)))))
-         (logits (let loop ((ks keys) (acc '()))
-                   (if (pair? ks) (loop (cdr ks) (cons (* scale (vdot q (car ks))) acc)) (ns-reverse acc))))
-         (ws (ns-softmax-list logits))
-         (ctx (let loop ((w ws) (vs values) (acc (make-vector dim 0.0)))
-                (if (and (pair? w) (pair? vs))
-                    (loop (cdr w) (cdr vs) (ns-add acc (ns-scale (car w) (car vs))))
-                    acc))))
-    (cons ws ctx)))
-
-;; Kernel attention: logits are -|q-k|^2 / (2 mu^2), so the weights are the
-;; normalised RBF similarities of the query to each key. Arguments shared by
-;; the query and a key cancel in q - k, which is what lets a learned predicate
-;; similarity carry over to entities never seen in training.
-(define (attend-rbf q keys values mu)
-  (let* ((dim (vector-length q))
-         (logits (let loop ((ks keys) (acc '()))
-                   (if (pair? ks)
-                       (loop (cdr ks) (cons (- (/ (ns-sq-dist q (car ks)) (* 2.0 mu mu))) acc))
-                       (ns-reverse acc))))
-         (ws (ns-softmax-list logits))
-         (ctx (let loop ((w ws) (vs values) (acc (make-vector dim 0.0)))
-                (if (and (pair? w) (pair? vs))
-                    (loop (cdr w) (cdr vs) (ns-add acc (ns-scale (car w) (car vs))))
-                    acc))))
-    (cons ws ctx)))
-
-;; attend from a query term over fact terms (keys = values = term embeddings)
-(define (attend-facts theta tbl query facts temperature)
-  (let ((embs (let loop ((fs facts) (acc '()))
-                (if (pair? fs) (loop (cdr fs) (cons (embed-term theta tbl (car fs)) acc)) (ns-reverse acc)))))
-    (attend (embed-term theta tbl query) embs embs temperature)))
-
-;; position of the single logic variable among the pattern's arguments
-(define (ns-var-position pattern)
-  (let loop ((args (cdr pattern)) (i 0) (found #f))
-    (if (pair? args)
-        (if (logic-var? (car args))
-            (if found
-                (error "neural-query: the pattern must contain exactly one variable" pattern)
-                (loop (cdr args) (+ i 1) i))
-            (loop (cdr args) (+ i 1) found))
-        (if found found (error "neural-query: the pattern has no variable" pattern)))))
-
-(define (ns-list-ref l i) (if (= i 0) (car l) (ns-list-ref (cdr l) (- i 1))))
-
-;; Neural query over the attached KB: attention whose logits are soft-unification
-;; proof scores. `pattern` = (pred a1 ... ak) with exactly one logic variable.
-;; Each fact of the attached KB that unifies structurally with the pattern is a
-;; key with logit log(score)/temperature, where score is `soft-unify-terms` of
-;; the pattern against the fact under `sim`; the answer of a fact is the value
-;; the variable is bound to. Arguments equal in pattern and fact contribute
-;; exactly 1 to the score, so a learned predicate similarity carries over to
-;; entities never seen in training. With `rbf-similarity` the logit is
-;; -sum |e_i - e'_i|^2 / (2 mu^2 temperature): Gaussian-kernel attention over
-;; the predicate and argument embeddings. Returns an alist
-;; (answer . probability), answers in first-occurrence order.
-(define ns-log-floor 1.0e-300)
-
-(define (neural-query theta tbl pattern sim temperature)
-  (let* ((pos (ns-var-position pattern))
-         (var (ns-list-ref (cdr pattern) pos))
-         (proofs (soft-kb-query theta tbl pattern sim))
-         (logits (let loop ((ps proofs) (acc '()))
-                   (if (pair? ps)
-                       (loop (cdr ps) (cons (/ (log (max (car (cddr (car ps))) ns-log-floor)) temperature) acc))
-                       (ns-reverse acc))))
-         (ws (ns-softmax-list logits)))
-    ;; aggregate weights by answer
-    (let loop ((ps proofs) (w ws) (acc '()))
-      (if (pair? ps)
-          (let* ((ans (walk var (cadr (car ps))))
-                 (hit (let find ((a acc)) (if (pair? a) (if (equal? (car (car a)) ans) (car a) (find (cdr a))) #f))))
-            (loop (cdr ps) (cdr w)
-                  (if hit
-                      (let upd ((a acc) (out '()))
-                        (if (pair? a)
-                            (upd (cdr a) (cons (if (eq? (car a) hit) (cons ans (+ (cdr hit) (car w))) (car a)) out))
-                            (ns-reverse out)))
-                      (ns-reverse (cons (cons ans (car w)) (ns-reverse acc))))))
-          acc))))
-
-;; probability neural-query assigns to `answer` (0 when absent)
-(define (neural-query-probability theta tbl pattern answer sim temperature)
-  (let loop ((d (neural-query theta tbl pattern sim temperature)))
-    (if (pair? d) (if (equal? (car (car d)) answer) (cdr (car d)) (loop (cdr d))) 0.0)))
-
-;; the most probable answer
-(define (neural-query-answer theta tbl pattern sim temperature)
-  (let loop ((d (neural-query theta tbl pattern sim temperature)) (best #f) (bw -1.0))
-    (if (pair? d)
-        (if (> (cdr (car d)) bw) (loop (cdr d) (car (car d)) (cdr (car d))) (loop (cdr d) best bw))
         best)))
