@@ -51,7 +51,7 @@
          qcircuit-zx-identity? qcircuit-equivalent? qcircuit-permutation-gates
          qcircuit-equivalent-up-to-permutation?
          qparam qparam? qparam-index qparam-coefficient qcircuit-parametric? qcircuit-parameter-count
-         qcircuit-bind qcircuit-decompose-multiqubit)
+         qcircuit-bind qcircuit-decompose-multiqubit qcircuit-lower qgate-lower)
 
 ;; ---------------------------------------------------------------------------
 ;; Gates
@@ -429,6 +429,26 @@
                                  ((CCX) (let ((t (cadddr g))) (append (list (list 'H t)) (qc-ccz (cadr g) (caddr g) t) (list (list 'H t)))))
                                  (else (list g))))
                              (qcircuit-gates c)))))
+
+;; Lowering to the gate set of Moonlab's state-vector and differentiable
+;; circuits {H X Y Z CNOT RX RY RZ}, exactly up to a global phase:
+;; P(p) = e^{i p pi/2} RZ(p pi), so S, Sdg, T, Tdg, Z-phases become RZ; XP is
+;; H RZ H; CZ is H CNOT H on the target; SWAP is three CNOTs; RZZ is
+;; CNOT RZ CNOT; CCX/CCZ go through their Clifford+T decomposition first.
+(define (qgate-lower g)
+  (let ((rz (lambda (q turns) (list 'RZ q (if (qparam? turns) (qparam (qparam-index turns) (* qc-pi (qparam-coefficient turns))) (* qc-pi turns))))))
+    (case (car g)
+      ((H X Y Z CNOT RX RY RZ) (list g))
+      ((S Sdg T Tdg) (list (rz (cadr g) (qgate-phase-turns g))))
+      ((P) (list (rz (cadr g) (caddr g))))
+      ((XP) (list (list 'H (cadr g)) (rz (cadr g) (caddr g)) (list 'H (cadr g))))
+      ((CZ) (list (list 'H (caddr g)) (list 'CNOT (cadr g) (caddr g)) (list 'H (caddr g))))
+      ((SWAP) (let ((a (cadr g)) (b (caddr g))) (list (list 'CNOT a b) (list 'CNOT b a) (list 'CNOT a b))))
+      ((RZZ) (let ((a (cadr g)) (b (caddr g))) (list (list 'CNOT a b) (list 'RZ b (cadddr g)) (list 'CNOT a b))))
+      ((CCX CCZ) (apply append (map qgate-lower (qcircuit-gates (qcircuit-decompose-multiqubit (make-qcircuit (+ 1 (apply max (qgate-wires g))) (list g)))))))
+      (else (error "core.quantum.circuit: no lowering for gate" g)))))
+(define (qcircuit-lower c)
+  (make-qcircuit (qcircuit-width c) (apply append (map qgate-lower (qcircuit-gates c)))))
 
 ;; SWAP gates realising the wire permutation perm (a vector: the state on
 ;; wire i moves to wire perm[i]), by selection sort

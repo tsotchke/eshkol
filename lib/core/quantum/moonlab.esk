@@ -1,0 +1,123 @@
+;;; core.quantum.moonlab -- core.quantum circuits on Moonlab's state-vector
+;;; simulator: a region backend, and circuit expectations evaluated by Moonlab
+;;; and differentiated by Eshkol AD through Moonlab's exact adjoint (ADR-0048).
+;;;
+;;; Usage: (require core.quantum.moonlab)   -- needs a build configured with
+;;;        -DESHKOL_QUANTUM_ENABLED=ON (agent.quantum links Moonlab).
+;;;
+;;;   (set-quantum-region-options! (list (cons 'backend moonlab-backend)))
+;;;     regions run their compiled circuits on Moonlab; measurement uses
+;;;     Moonlab's hardware-seeded entropy.
+;;;   (moonlab-program c terms)  a program from a parametric qcircuit c and a
+;;;     Pauli sum terms = ((coef . (I Z Z ...)) ...); gates are lowered to
+;;;     Moonlab's set {H X Y Z CNOT RX RY RZ} (qcircuit-lower), a qparam angle
+;;;     c*theta_k becomes a Moonlab rotation bound to parameter k.
+;;;   (moonlab-expectation program thetas)  <psi(theta)| sum c P |psi(theta)>.
+;;;     Inside (gradient ...) it records one custom-VJP node whose backward
+;;;     pass is Moonlab's adjoint gradient (moonlab_diff_backward_pauli_sum),
+;;;     chained through the qparam coefficients: exact, no finite differences.
+;;;   (qaoa-moonlab-program problem p)  the QAOA program of core.quantum.qaoa.
+;;;
+;;; A Moonlab state has a fixed number of qubits: the backend creates it at a
+;;; region's first measurement with every qubit allocated so far, and refuses
+;;; a later qalloc (a growing Moonlab state is Planned for v1.4.1).
+
+(require stdlib)
+(require agent.quantum)
+(require core.quantum.circuit)
+(require core.quantum.register)
+(require core.quantum.qaoa)
+
+(provide moonlab-backend moonlab-program moonlab-program-destroy moonlab-expectation
+         qaoa-moonlab-program with-moonlab-program)
+
+;; ---------------------------------------------------------------------------
+;; Programs
+;; ---------------------------------------------------------------------------
+
+(define (ml-kind name)
+  (case name ((H) 0) ((X) 1) ((Y) 2) ((Z) 3) ((CNOT) 4) ((CZ) 5) ((RX) 6) ((RY) 7) ((RZ) 8)
+    (else (error "core.quantum.moonlab: gate outside Moonlab's set" name))))
+
+(define (ml-paulis->string paulis)
+  (list->string (map (lambda (p) (case p ((I) #\I) ((X) #\X) ((Y) #\Y) ((Z) #\Z)
+                                   (else (error "core.quantum.moonlab: Pauli letter is I, X, Y or Z" p))))
+                     paulis)))
+
+(define (moonlab-program c terms)
+  (let* ((low (qcircuit-lower c))
+         (prog (make-moonlab-program (qcircuit-width c))))
+    (for-each
+     (lambda (g)
+       (let ((kind (ml-kind (car g))) (ws (qgate-wires g)))
+         (if (qgate-parametric? g)
+             (let ((a (qgate-angle g)))
+               (if (qparam? a)
+                   (moonlab-program-add-gate! prog kind (car ws) 0 (qparam-index a)
+                                              (exact->inexact (qparam-coefficient a)))
+                   (moonlab-program-add-gate! prog kind (car ws) 0 -1 (exact->inexact a))))
+             (moonlab-program-add-gate! prog kind (car ws) (if (pair? (cdr ws)) (cadr ws) 0) -1 0.0))))
+     (qcircuit-gates low))
+    (for-each (lambda (t)
+                (if (not (= (length (cdr t)) (qcircuit-width c)))
+                    (error "core.quantum.moonlab: a Pauli term names every qubit" t))
+                (moonlab-program-add-term! prog (exact->inexact (car t)) (ml-paulis->string (cdr t))))
+              terms)
+    (if (not (= (moonlab-program-parameter-count prog) (qcircuit-parameter-count c)))
+        ;; a parameter that only appears in gates lowered away cannot occur;
+        ;; a parameter that appears nowhere is reported instead of ignored
+        (error "core.quantum.moonlab: the circuit's parameters are not numbered 0 .. k-1"
+               (qcircuit-parameter-count c)))
+    prog))
+(define (moonlab-program-destroy program) (moonlab-program-destroy! program))
+(define (with-moonlab-program c terms f)
+  (let ((prog (moonlab-program c terms)))
+    (dynamic-wind (lambda () #f) (lambda () (f prog)) (lambda () (moonlab-program-destroy! prog)))))
+
+;; The Moonlab expectation. The name is known to the AD planner, so
+;; (gradient (lambda (th) (moonlab-expectation prog th)) th0) takes the
+;; reverse path whose tape node carries Moonlab's adjoint.
+(define (moonlab-expectation program thetas)
+  (vqe-energy-primitive program thetas))
+
+(define (qaoa-moonlab-program problem p)
+  (moonlab-program (qaoa-parametric-circuit problem p) (maxcut-pauli-terms problem)))
+
+;; ---------------------------------------------------------------------------
+;; Region backend
+;; ---------------------------------------------------------------------------
+;; state: #(handle width)
+
+(define (ml-init) (vector #f 0))
+(define (ml-extend st old k)
+  (if (vector-ref st 0)
+      (error "core.quantum.moonlab: the Moonlab state is created at the region's first measurement; allocate every register before measuring"))
+  (vector-set! st 1 (+ old k))
+  st)
+(define (ml-ensure st width)
+  (if (not (vector-ref st 0)) (vector-set! st 0 (make-quantum-state width)))
+  (vector-ref st 0))
+(define (ml-apply st width gates)
+  (let ((h (ml-ensure st width)))
+    (for-each
+     (lambda (g)
+       (let ((ws (qgate-wires g)))
+         (case (car g)
+           ((H) (apply-hadamard h (car ws)))
+           ((X) (apply-pauli-x h (car ws)))
+           ((Y) (apply-pauli-y h (car ws)))
+           ((Z) (apply-pauli-z h (car ws)))
+           ((CNOT) (apply-cnot h (car ws) (cadr ws)))
+           ((RX) (apply-rx h (car ws) (exact->inexact (qgate-angle g))))
+           ((RY) (apply-ry h (car ws) (exact->inexact (qgate-angle g))))
+           ((RZ) (apply-rz h (car ws) (exact->inexact (qgate-angle g))))
+           (else (error "core.quantum.moonlab: gate outside Moonlab's set" g)))))
+     (qcircuit-gates (qcircuit-lower (make-qcircuit width gates))))
+    st))
+(define (ml-measure st width wires u-fn)
+  (let ((h (ml-ensure st width)))
+    (map (lambda (w) (measure h w)) wires)))
+(define (ml-close st)
+  (if (vector-ref st 0) (begin (quantum-state-destroy! (vector-ref st 0)) (vector-set! st 0 #f))))
+
+(define moonlab-backend (qbackend 'moonlab ml-init ml-extend ml-apply ml-measure ml-close))

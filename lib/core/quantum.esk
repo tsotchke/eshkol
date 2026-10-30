@@ -1,0 +1,22 @@
+;;; core.quantum -- quantum registers with compile-time dimensions, quantum
+;;; regions, the circuit IR with its optimiser and router, and QAOA
+;;; (ADR-0048). Not part of (require stdlib).
+;;;
+;;; Usage: (require core.quantum)
+;;;
+;;;   core.quantum.circuit   circuit IR, binary64 state vectors, exact / ZX /
+;;;                          binary64 unitary equivalence
+;;;   core.quantum.optimize  gate fusion, commutation cancellation, phase
+;;;                          folding, ZX-calculus resynthesis
+;;;   core.quantum.route     coupling graphs and SABRE routing
+;;;   core.quantum.register  regions and registers (qalloc, gates, qmeasure)
+;;;   core.quantum.qaoa      MaxCut and weighted MaxCut QAOA with exact AD
+;;;
+;;; The Moonlab backend and Moonlab-evaluated expectations with Moonlab's
+;;; exact adjoint gradient live in core.quantum.moonlab, which needs a build
+;;; configured with -DESHKOL_QUANTUM_ENABLED=ON.
+(require core.quantum.circuit)
+(require core.quantum.optimize)
+(require core.quantum.route)
+(require core.quantum.register)
+(require core.quantum.qaoa)
