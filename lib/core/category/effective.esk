@@ -75,6 +75,7 @@
 ;;;   limit-does-not-exist        (operation category diagram witness)
 ;;;   limit-not-computable        (operation category reason)
 ;;;   comma-category-not-finite   (operation functor object)
+;;;   hom-not-enumerated          (operation category reason)
 ;;; A refusal never returns a substitute value.
 
 (require stdlib)
@@ -134,7 +135,7 @@
 (define ce-refusal-kinds
   (list "enumeration-infinite" "category-not-finite" "objects-not-enumerated" "not-composable"
         "composite-outside-hom" "nerve-not-enumerable" "presentation-undecided-within-budget"
-        "limit-does-not-exist" "limit-not-computable" "comma-category-not-finite"))
+        "limit-does-not-exist" "limit-not-computable" "comma-category-not-finite" "hom-not-enumerated"))
 (define (category-refuse kind . irritants) (apply error (symbol->string kind) irritants))
 (define (category-refusal? e)
   (and (error-object? e) (string? (error-object-message e))
@@ -430,7 +431,7 @@
                                 (note (list 'generator-endpoints g)))))
               gens)
     (for-each (lambda (r)
-                (let* ((x (effective-category-source C (car (if (null? (car r)) (cdr r) (car r)))))
+                (let* ((x (effective-category-source C (car (reverse (if (null? (car r)) (cdr r) (car r))))))
                        (l (image (car r) x)) (rr (image (cdr r) x)))
                   (if (not (effective-category-arrow=? D l rr)) (note (list 'relation r)))))
               rels)
