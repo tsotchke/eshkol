@@ -52,14 +52,22 @@ struct Component {
 
 bool sameType(TypeId a, TypeId b) { return a.id == b.id; }
 
+// Value is the gradual (dynamic) type: it fits everything consistently,
+// so it says nothing about which term belongs in a hole.
+bool dynamicType(TypeId t) { return t.id == BuiltinTypes::Value.id; }
+
 bool fits(TypeRelation& rel, TypeId arg, TypeId param) {
     if (sameType(arg, param)) return true;
-    if (rel.isDynamic(arg) || rel.isDynamic(param)) return false;
+    if (dynamicType(arg) || dynamicType(param)) return false;
     return rel.isSubtype(arg, param);
 }
 
-bool concrete(TypeRelation& rel, TypeId t) {
-    return t.id != BuiltinTypes::Invalid.id && !rel.isDynamic(t) && t.id != BuiltinTypes::Never.id;
+bool concrete(TypeRelation&, TypeId t) {
+    return t.id != BuiltinTypes::Invalid.id && !dynamicType(t) && t.id != BuiltinTypes::Never.id;
+}
+
+bool numericType(TypeRelation& rel, TypeId t) {
+    return sameType(t, BuiltinTypes::Number) || rel.isSubtype(t, BuiltinTypes::Number);
 }
 
 // Compositions of `total` into `k` positive parts.
@@ -114,7 +122,7 @@ void HoleSynthesizer::onHole(TypeChecker& checker, eshkol_ast_t* hole, TypeId ex
     // ---- numeric types present: instantiate the operator table ---------
     std::vector<TypeId> numeric;
     auto note_numeric = [&](TypeId t) {
-        if (!concrete(rel, t) || !rel.isNumeric(t)) return;
+        if (!concrete(rel, t) || !numericType(rel, t)) return;
         for (TypeId n : numeric) if (sameType(n, t)) return;
         numeric.push_back(t);
     };
