@@ -1,0 +1,109 @@
+;;; core.synthesis.benchmarks -- the example-based synthesis benchmark set.
+;;;
+;;; Each task gives training examples (what the synthesiser sees) and held-out
+;;; examples (what it does not). A task counts as SOLVED only when the
+;;; synthesised program reproduces every training example AND every held-out
+;;; example, so a program that merely memorises the training outputs fails.
+;;;
+;;; The set has 42 tasks in four groups: integer arithmetic and conditionals,
+;;; list functions in the style of DeepCoder (Balog et al., ICLR 2017), list
+;;; transformations that need map/filter deduction, and string transformations
+;;; in the style of FlashFill (Gulwani, POPL 2011).
+
+(require stdlib)
+(require core.synthesis.dsl)
+(require core.synthesis.enumerate)
+(require core.synthesis.deduce)
+
+(provide syn-benchmarks syn-benchmark-name syn-benchmark-group syn-benchmark-spec syn-benchmark-held-out
+         syn-run-benchmark syn-run-benchmarks syn-report-solved syn-report-total syn-report-rows)
+
+(define (syn-bench name group vars types goal train held)
+  (vector 'syn-bench name group (syn-spec vars types train goal) held))
+(define (syn-benchmark-name b) (vector-ref b 1))
+(define (syn-benchmark-group b) (vector-ref b 2))
+(define (syn-benchmark-spec b) (vector-ref b 3))
+(define (syn-benchmark-held-out b) (vector-ref b 4))
+
+(define syn-benchmarks
+  (list
+   ;; --- integers ---------------------------------------------------------
+   (syn-bench "add" 'int '(x y) '(int int) 'int '(((1 2) . 3) ((5 7) . 12) ((-3 3) . 0)) '(((10 20) . 30) ((-4 -4) . -8)))
+   (syn-bench "max2" 'int '(x y) '(int int) 'int '(((1 2) . 2) ((7 5) . 7) ((-3 -9) . -3)) '(((10 20) . 20) ((4 -4) . 4)))
+   (syn-bench "abs" 'int '(x) '(int) 'int '(((1) . 1) ((-5) . 5) ((0) . 0) ((-2) . 2)) '(((17) . 17) ((-40) . 40)))
+   (syn-bench "square-plus-one" 'int '(x) '(int) 'int '(((1) . 2) ((3) . 10) ((0) . 1) ((-2) . 5)) '(((5) . 26) ((-7) . 50)))
+   (syn-bench "sum-of-three" 'int '(x y z) '(int int int) 'int '(((1 2 3) . 6) ((0 0 5) . 5) ((-1 4 2) . 5)) '(((10 20 30) . 60)))
+   (syn-bench "clamp-at-zero" 'int '(x) '(int) 'int '(((3) . 3) ((-4) . 0) ((0) . 0) ((9) . 9)) '(((-100) . 0) ((42) . 42)))
+   (syn-bench "is-less" 'int '(x y) '(int int) 'bool '(((1 2) . #t) ((5 3) . #f) ((4 4) . #f) ((7 9) . #t)) '(((-3 0) . #t) ((9 -9) . #f)))
+   (syn-bench "is-even" 'int '(x) '(int) 'bool '(((2) . #t) ((7) . #f) ((0) . #t)) '(((13) . #f) ((-8) . #t)))
+   ;; --- lists: DeepCoder style -------------------------------------------
+   (syn-bench "sum" 'list '(xs) '(list) 'int '((((1 2 3)) . 6) (((5 -1)) . 4) ((()) . 0)) '((((10 20 30 40)) . 100)))
+   (syn-bench "maximum" 'list '(xs) '(list) 'int '((((1 5 3)) . 5) (((-5 -1 -9)) . -1)) '((((4 4 2 8 1)) . 8)))
+   (syn-bench "length" 'list '(xs) '(list) 'int '((((1 5 3)) . 3) ((()) . 0) (((7)) . 1)) '((((1 2 3 4 5 6)) . 6)))
+   (syn-bench "last" 'list '(xs) '(list) 'int '((((1 5 3)) . 3) (((9)) . 9) (((4 -2)) . -2)) '((((7 8 9 10)) . 10)))
+   (syn-bench "reverse" 'list '(xs) '(list) 'list '((((1 2 3)) . (3 2 1)) (((5 9)) . (9 5))) '((((4 0 -4 8)) . (8 -4 0 4))))
+   (syn-bench "sort" 'list '(xs) '(list) 'list '((((3 1 2)) . (1 2 3)) (((5 -2 8 0)) . (-2 0 5 8))) '((((9 7 8)) . (7 8 9))))
+   (syn-bench "sort-descending" 'list '(xs) '(list) 'list '((((3 1 2)) . (3 2 1)) (((5 -2 8)) . (8 5 -2))) '((((0 10 -10 5)) . (10 5 0 -10))))
+   (syn-bench "drop-first" 'list '(xs) '(list) 'list '((((1 2 3)) . (2 3)) (((5 9)) . (9)) (((4)) . ())) '((((7 6 5 4)) . (6 5 4))))
+   (syn-bench "take-k" 'list '(k xs) '(int list) 'list '(((2 (1 2 3)) . (1 2)) ((1 (5 9 7)) . (5)) ((3 (4 3 2 1)) . (4 3 2))) '(((2 (9 8 7)) . (9 8))))
+   (syn-bench "count-negatives" 'list '(xs) '(list) 'int '((((1 -2 3 -4)) . 2) (((5 9)) . 0) (((-1)) . 1)) '((((-7 -6 5 -4)) . 3)))
+   (syn-bench "sum-of-evens" 'list '(xs) '(list) 'int '((((1 2 3 4)) . 6) (((5 -2 8)) . 6) (((7)) . 0)) '((((10 11 12)) . 22)))
+   (syn-bench "sum-of-squares" 'list '(xs) '(list) 'int '((((1 2 3)) . 14) (((5 -1)) . 26) ((()) . 0)) '((((2 2 2 2)) . 16)))
+   (syn-bench "max-after-doubling" 'list '(xs) '(list) 'int '((((1 5 3)) . 10) (((-5 -1)) . -2)) '((((4 9 2)) . 18)))
+   (syn-bench "pairwise-sum" 'list '(xs ys) '(list list) 'list '((((1 2 3) (10 20 30)) . (11 22 33)) (((5) (-5)) . (0))) '((((1 1) (2 2)) . (3 3))))
+   (syn-bench "prefix-sums" 'list '(xs) '(list) 'list '((((1 2 3 4)) . (1 3 6 10)) (((5 -5 2)) . (5 0 2))) '((((2 2 2)) . (2 4 6))))
+   (syn-bench "prepend-sum" 'list '(xs) '(list) 'list '((((1 2 3)) . (6 1 2 3)) (((4)) . (4 4))) '((((2 5)) . (7 2 5))))
+   ;; --- lists: map / filter deduction -------------------------------------
+   (syn-bench "double-each" 'deduce '(xs) '(list) 'list '((((1 2 3)) . (2 4 6)) (((5 -1)) . (10 -2))) '((((7 0)) . (14 0))))
+   (syn-bench "affine-each" 'deduce '(xs) '(list) 'list '((((1 2 3)) . (5 8 11)) (((0 -1)) . (2 -1))) '((((10)) . (32))))
+   (syn-bench "square-minus-one" 'deduce '(xs) '(list) 'list '((((1 2 3)) . (0 3 8)) (((-3 4)) . (8 15))) '((((5 0)) . (24 -1))))
+   (syn-bench "add-k-to-each" 'deduce '(k xs) '(int list) 'list '(((10 (1 2 3)) . (11 12 13)) ((-1 (5 0)) . (4 -1))) '(((3 (7 7)) . (10 10))))
+   (syn-bench "keep-greater-than-k" 'deduce '(k xs) '(int list) 'list '(((2 (1 5 2 8 0)) . (5 8)) ((0 (-1 3 0 1)) . (3 1)) ((4 (6 4 5 3)) . (6 5))) '(((5 (9 1 6 5)) . (9 6))))
+   (syn-bench "keep-odd" 'deduce '(xs) '(list) 'list '((((1 2 3 4 5)) . (1 3 5)) (((8 7 6)) . (7))) '((((11 12 13)) . (11 13))))
+   (syn-bench "positives-tripled-plus-one" 'deduce '(xs) '(list) 'list '((((1 -2 3)) . (4 10)) (((-5 2 0)) . (7))) '((((4 -4 5)) . (13 16))))
+   (syn-bench "clamp-each" 'deduce '(xs) '(list) 'list '((((1 -2 3)) . (1 0 3)) (((-5 2 0)) . (0 2 0))) '((((-9 9)) . (0 9))))
+   ;; --- strings: FlashFill style ------------------------------------------
+   (syn-bench "first-name" 'string '(s) '(str) 'str '((("Ada Lovelace") . "Ada") (("Alan Turing") . "Alan"))
+              '((("Grace Hopper") . "Grace") (("Edsger Dijkstra") . "Edsger")))
+   (syn-bench "last-name" 'string '(s) '(str) 'str '((("Ada Lovelace") . "Lovelace") (("Alan Turing") . "Turing"))
+              '((("Grace Brewster Hopper") . "Hopper")))
+   (syn-bench "initials" 'string '(s) '(str) 'str '((("Ada Lovelace") . "A.L.") (("Alan Turing") . "A.T."))
+              '((("Grace Hopper") . "G.H.") (("Edsger Dijkstra") . "E.D.")))
+   (syn-bench "email-domain" 'string '(s) '(str) 'str '((("ada@example.com") . "example.com") (("alan.turing@cs.example.org") . "cs.example.org"))
+              '((("grace@navy.example.mil") . "navy.example.mil")))
+   (syn-bench "email-user" 'string '(s) '(str) 'str '((("ada@example.com") . "ada") (("alan@cs.example.org") . "alan"))
+              '((("grace@navy.example.mil") . "grace")))
+   (syn-bench "area-code" 'string '(s) '(str) 'str '((("(425) 555-0199") . "425") (("(206) 555-0123") . "206"))
+              '((("(360) 555-0175") . "360")))
+   (syn-bench "swap-name" 'string '(s) '(str) 'str '((("Lovelace, Ada") . "Ada Lovelace") (("Turing, Alan") . "Alan Turing"))
+              '((("Hopper, Grace") . "Grace Hopper")))
+   (syn-bench "date-reformat" 'string '(s) '(str) 'str '((("2026-10-30") . "30/10/2026") (("1999-01-05") . "05/01/1999"))
+              '((("2001-12-24") . "24/12/2001")))
+   (syn-bench "file-extension" 'string '(s) '(str) 'str '((("report.pdf") . "pdf") (("archive.tar.gz") . "gz"))
+              '((("notes.txt") . "txt") (("photo.jpeg") . "jpeg")))
+   (syn-bench "greeting" 'string '(s) '(str) 'str '((("Ada") . "Hello, Ada!") (("Alan") . "Hello, Alan!"))
+              '((("Grace") . "Hello, Grace!")))))
+
+;; Run one task: #(name group solved? consistent? program evaluated ms method)
+(define (syn-run-benchmark b . options)
+  (let* ((spec (syn-benchmark-spec b))
+         (t0 (current-time-ms))
+         (r (if (null? options) (syn-synthesize spec) (syn-synthesize spec (car options))))
+         (ms (- (current-time-ms) t0))
+         (prog (syn-result-program r))
+         (generalises
+          (and (syn-result-found? r)
+               (let loop ((hs (syn-benchmark-held-out b)))
+                 (or (null? hs)
+                     (and (equal? (syn-eval prog (map cons (syn-spec-vars spec) (car (car hs)))) (cdr (car hs)))
+                          (loop (cdr hs))))))))
+    (vector (syn-benchmark-name b) (syn-benchmark-group b) (if generalises #t #f) (syn-result-found? r)
+            prog (syn-result-evaluated r) ms (syn-result-method r))))
+
+;; Run a list of tasks; returns #(solved total rows).
+(define (syn-run-benchmarks bs . options)
+  (let ((rows (map (lambda (b) (apply syn-run-benchmark b options)) bs)))
+    (vector (length (filter (lambda (row) (vector-ref row 2)) rows)) (length rows) rows)))
+(define (syn-report-solved r) (vector-ref r 0))
+(define (syn-report-total r) (vector-ref r 1))
+(define (syn-report-rows r) (vector-ref r 2))

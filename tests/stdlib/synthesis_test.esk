@@ -1,0 +1,102 @@
+;; core.synthesis: the primitives are total, enumeration is cheapest-first and
+;; well typed, observational equivalence and deduction each pay for
+;; themselves, the cost hook reorders search, and the 42-task benchmark set is
+;; solved with every program checked on held-out examples.
+(require stdlib)
+(require core.synthesis)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; Primitives
+;; ---------------------------------------------------------------------------
+(check "head of empty list is bottom" (syn-bottom? (syn-head '())))
+(check "access past the end is bottom" (syn-bottom? (syn-access 5 '(1 2))))
+(check "take/drop" (and (equal? (syn-take 2 '(1 2 3)) '(1 2)) (equal? (syn-drop 2 '(1 2 3)) '(3)) (equal? (syn-take 9 '(1)) '(1))))
+(check "merge sort is stable and ascending" (equal? (syn-sort '(5 -1 3 3 0 9 -7)) '(-7 -1 0 3 3 5 9)))
+(check "scanl1 and zipwith" (and (equal? (syn-scanl1 + '(1 2 3)) '(1 3 6)) (equal? (syn-zipwith * '(1 2 3) '(4 5)) '(4 10))))
+(check "integer bound gives bottom" (syn-bottom? (syn-eval '(* x x) '((x . 2000000)))))
+(check "tokens" (equal? (syn-tokens "Ada  Lovelace-99" 'alpha) '((0 . 3) (5 . 13))))
+(check "positions" (and (= (syn-pos "a@b.com" '(tok (char #\@) 1 end)) 2) (= (syn-pos "a@b.com" '(end 3)) 4)
+                        (= (syn-pos "x y z" '(tok alpha -1 start)) 4) (syn-bottom? (syn-pos "x" '(tok digit 1 start)))))
+(check "substring by token positions" (string=? (syn-substr "user@host.org" '(tok (char #\@) 1 end) '(end 0)) "host.org"))
+(check "compositions" (equal? (syn-compositions 4 2) '((1 3) (2 2) (3 1))))
+(check "no compositions below the arity" (null? (syn-compositions 1 2)))
+(check "program to procedure" (= ((syn-program->procedure '(syn-sum (syn-map (lambda (e) (* e k)) xs)) '(k xs)) 3 '(1 2)) 9))
+(check "program size and components"
+  (and (= (syn-program-size '(syn-sum (syn-map (lambda (e) (* e e)) xs))) 6)
+       (equal? (syn-program-components '(syn-sum (syn-map (lambda (e) (* e e)) xs))) '(syn-sum syn-map (lambda (e) (* e e))))))
+
+;; ---------------------------------------------------------------------------
+;; Enumeration
+;; ---------------------------------------------------------------------------
+(define lib (syn-default-library))
+(define sq-spec (syn-spec '(xs) '(list) '((((1 2 3)) . 14) (((5 -1)) . 26) ((()) . 0)) 'int))
+(define r-sq (syn-enumerate sq-spec lib))
+(check "enumeration finds sum of squares" (and (syn-result-found? r-sq) (syn-consistent? (syn-result-program r-sq) sq-spec)))
+(check "the program found is a cheapest one"
+  (and (= (syn-result-cost r-sq) 4) (not (syn-result-found? (syn-enumerate sq-spec lib '((max-cost . 3)))))))
+(define r-sq-plain (syn-enumerate sq-spec lib '((observational-equivalence . #f) (max-evaluated . 200000))))
+(display "  sum-of-squares: ") (display (syn-result-evaluated r-sq)) (display " candidates with observational equivalence, ")
+(display (syn-result-evaluated r-sq-plain)) (display " without") (newline)
+(check "observational equivalence prunes" (< (* 2 (syn-result-evaluated r-sq)) (syn-result-evaluated r-sq-plain)))
+(check "same program cost with and without pruning"
+  (or (not (syn-result-found? r-sq-plain)) (= (syn-result-cost r-sq-plain) (syn-result-cost r-sq))))
+(define bad-spec (syn-spec '(x) '(int) '(((1) . "one")) 'str))
+(check "no string program from an integer within budget" (not (syn-result-found? (syn-enumerate bad-spec lib '((max-cost . 4))))))
+(check "spec arity is validated" (guard (e (#t #t)) (syn-spec '(x) '(int) '(((1 2) . 3)) 'int) #f))
+
+;; The cost hook: re-costing the components a scorer believes in moves them
+;; earlier. Here the costs favour the three components of the answer.
+(define guided-lib (syn-library-costs (map (lambda (c) (syn-with-cost c 2)) lib)
+                                      '((syn-sum . 1) (syn-map . 1) ((lambda (e) (* e e)) . 1))))
+(define r-guided (syn-enumerate sq-spec guided-lib))
+(display "  cost hook: ") (display (syn-result-evaluated r-guided)) (display " candidates with favoured components, ")
+(display (syn-result-evaluated r-sq)) (display " uniform") (newline)
+(check "favoured costs find the same program" (equal? (syn-result-program r-guided) (syn-result-program r-sq)))
+(check "favoured costs evaluate fewer candidates" (< (syn-result-evaluated r-guided) (syn-result-evaluated r-sq)))
+
+;; ---------------------------------------------------------------------------
+;; Deduction
+;; ---------------------------------------------------------------------------
+(define r-ff (syn-flashfill (syn-spec '(s) '(str) '((("ada@example.com") . "example.com") (("bo@cs.example.org") . "cs.example.org")) 'str)))
+(check "flashfill email domain" (and (syn-result-found? r-ff) (string=? (syn-eval (syn-result-program r-ff) '((s . "cy@ab.cd"))) "ab.cd")))
+(define r-map (syn-deduce-map (syn-spec '(xs) '(list) '((((1 2 3)) . (5 8 11)) (((0 -1)) . (2 -1))) 'list) lib))
+(check "map deduction" (and (syn-result-found? r-map) (eq? (car (syn-result-program r-map)) 'syn-map)))
+(define r-filt (syn-deduce-filter (syn-spec '(xs) '(list) '((((1 -2 3)) . (1 3)) (((-5 2 0)) . (2))) 'list) lib))
+(check "filter deduction" (and (syn-result-found? r-filt) (equal? (syn-eval (syn-result-program r-filt) '((xs . (4 -4 0 7)))) '(4 7))))
+(check "map deduction refuses a non-function"
+  (not (syn-result-found? (syn-deduce-map (syn-spec '(xs) '(list) '((((1 1)) . (2 3))) 'list) lib))))
+
+;; ---------------------------------------------------------------------------
+;; Benchmarks
+;; ---------------------------------------------------------------------------
+(define report (syn-run-benchmarks syn-benchmarks))
+(define (group-count rows group)
+  (let loop ((rs rows) (solved 0) (total 0))
+    (if (null? rs) (cons solved total)
+        (loop (cdr rs) (if (and (eq? (vector-ref (car rs) 1) group) (vector-ref (car rs) 2)) (+ solved 1) solved)
+              (if (eq? (vector-ref (car rs) 1) group) (+ total 1) total)))))
+(for-each (lambda (row)
+            (if (not (vector-ref row 2))
+                (begin (display "  unsolved: ") (display (vector-ref row 0)) (display " ") (display (syn-show (vector-ref row 4))) (newline))))
+          (syn-report-rows report))
+(for-each (lambda (g)
+            (let ((c (group-count (syn-report-rows report) g)))
+              (display "  ") (display g) (display ": ") (display (car c)) (display "/") (display (cdr c)) (newline)))
+          '(int list deduce string))
+(display "  benchmark: ") (display (syn-report-solved report)) (display "/") (display (syn-report-total report))
+(display " solved and verified on held-out examples") (newline)
+(check "42 benchmark tasks" (= (syn-report-total report) 42))
+(check "every benchmark task solved and generalises" (= (syn-report-solved report) 42))
+(check "every program reproduces its training examples" (let loop ((rs (syn-report-rows report))) (or (null? rs) (and (vector-ref (car rs) 3) (loop (cdr rs))))))
+
+(define enum-only (syn-run-benchmarks syn-benchmarks '((deduction . #f))))
+(display "  enumeration alone: ") (display (syn-report-solved enum-only)) (display "/") (display (syn-report-total enum-only)) (newline)
+(check "deduction solves tasks enumeration alone does not" (< (syn-report-solved enum-only) (syn-report-solved report)))
+
+(display "synthesis_test: ") (display passes) (display " passed, ") (display failures) (display " failed") (newline)
+(if (= failures 0) (begin (display "PASS: synthesis_test") (newline)) (begin (display "RESULT: FAIL") (newline)))

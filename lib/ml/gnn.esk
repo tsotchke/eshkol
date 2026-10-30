@@ -1,0 +1,325 @@
+;;; ml.gnn -- graph neural networks with exact reverse-mode gradients.
+;;;
+;;; Usage: (require ml.gnn)
+;;;
+;;; Graphs are undirected with nodes 0..n-1. Every layer below is a recorded
+;;; operation on the core.ad.tape reverse-mode tape (through ml.autograd) with
+;;; a hand-derived backward rule, so training differentiates the whole network
+;;; in one reverse sweep; the suite checks each rule against central differences.
+;;;
+;;;   message passing     gnn-propagate (host, any message/aggregate/update),
+;;;                       gnn-aggregate (sum, mean, max over neighbours, on tape)
+;;;   layers              gnn-gcn-layer      act(D^-1/2 (A+I) D^-1/2 H W + b)
+;;;                       gnn-sage-layer     act(H Ws + AGG(H) Wn + b)
+;;;                       gnn-gat-layer      graph attention (Velickovic et al. 2018)
+;;;   models              gnn-make-model, gnn-forward, gnn-fit!, gnn-predict,
+;;;                       gnn-accuracy, gnn-readout (graph-level mean pooling)
+;;;
+;;; Design: ADR-0052 (docs/design/adr/0052-program-synthesis.md);
+;;; reference: docs/reference/stdlib/gnn.md.
+
+(require stdlib)
+(require core.ad.tape)
+(require ml.autograd)
+
+(provide make-graph graph? graph-size graph-edges graph-neighbors graph-degree
+         graph-with-self-loops gnn-gcn-entries gnn-propagate
+         gnn-aggregate gnn-gcn-layer gnn-sage-layer gnn-gat-scores gnn-gat-layer
+         gnn-gat-attention gnn-readout
+         gnn-make-model gnn-model-params gnn-forward gnn-fit! gnn-predict gnn-accuracy
+         gnn-one-hot-features)
+
+;; ---------------------------------------------------------------------------
+;; Graphs
+;; ---------------------------------------------------------------------------
+;; #(gnn-graph n edges adjacency-vector), edges as (i . j) pairs, i != j,
+;; each undirected edge listed once.
+;; Ascending insertion sort of a short list of node indices (neighbour lists).
+(define (gnn-sort-ints xs)
+  (let ins-all ((xs xs) (acc '()))
+    (if (null? xs) acc
+        (ins-all (cdr xs)
+                 (let ins ((x (car xs)) (l acc))
+                   (cond ((null? l) (list x)) ((<= x (car l)) (cons x l)) (else (cons (car l) (ins x (cdr l))))))))))
+
+(define (make-graph n edges)
+  (let ((adj (make-vector n '())))
+    (for-each (lambda (e)
+                (let ((i (car e)) (j (cdr e)))
+                  (if (or (< i 0) (< j 0) (>= i n) (>= j n)) (error "make-graph: node out of range"))
+                  (if (not (= i j))
+                      (begin
+                        (if (not (memv j (vector-ref adj i))) (vector-set! adj i (cons j (vector-ref adj i))))
+                        (if (not (memv i (vector-ref adj j))) (vector-set! adj j (cons i (vector-ref adj j))))))))
+              edges)
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! adj i (gnn-sort-ints (vector-ref adj i))) (loop (+ i 1)))))
+    (vector 'gnn-graph n edges adj)))
+(define (graph? g) (and (vector? g) (= (vector-length g) 4) (eq? (vector-ref g 0) 'gnn-graph)))
+(define (graph-size g) (vector-ref g 1))
+(define (graph-edges g) (vector-ref g 2))
+(define (graph-neighbors g i) (vector-ref (vector-ref g 3) i))
+(define (graph-degree g i) (length (graph-neighbors g i)))
+;; Neighbour lists with each node added to its own neighbourhood.
+(define (graph-with-self-loops g)
+  (let* ((n (graph-size g)) (adj (make-vector n '())))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! adj i (gnn-sort-ints (cons i (graph-neighbors g i)))) (loop (+ i 1)))))
+    (vector 'gnn-graph n (graph-edges g) adj)))
+
+;; Entries (i j w) of the symmetric normalised propagation matrix
+;; D^-1/2 (A + I) D^-1/2 of Kipf and Welling (2017).
+(define (gnn-gcn-entries g)
+  (let* ((n (graph-size g))
+         (deg (let ((d (make-vector n 0.0)))
+                (let loop ((i 0)) (if (< i n) (begin (vector-set! d i (+ 1.0 (graph-degree g i))) (loop (+ i 1)))))
+                d)))
+    (let il ((i (- n 1)) (acc '()))
+      (if (< i 0) acc
+          (il (- i 1)
+              (let jl ((js (cons i (graph-neighbors g i))) (acc acc))
+                (if (null? js) acc
+                    (jl (cdr js) (cons (list i (car js) (/ 1.0 (sqrt (* (vector-ref deg i) (vector-ref deg (car js)))))) acc)))))))))
+
+(define (gnn-one-hot-features n)
+  (let ((m (ag-zeros n n)))
+    (let loop ((i 0)) (if (< i n) (begin (ag-set! m i i 1.0) (loop (+ i 1)))))
+    m))
+
+;; ---------------------------------------------------------------------------
+;; Host message passing (any message, aggregate and update functions)
+;; ---------------------------------------------------------------------------
+;; h : vector of per-node states. message : (h-src h-dst) -> message,
+;; aggregate : list-of-messages -> value, update : (h-node aggregated) -> h'.
+;; One synchronous round: every node receives one message per neighbour.
+(define (gnn-propagate g h message aggregate update)
+  (let* ((n (graph-size g)) (out (make-vector n #f)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! out i
+              (update (vector-ref h i)
+                      (aggregate (map (lambda (j) (message (vector-ref h j) (vector-ref h i)))
+                                      (graph-neighbors g i)))))
+            (loop (+ i 1)))))
+    out))
+
+;; ---------------------------------------------------------------------------
+;; Differentiable neighbourhood aggregation
+;; ---------------------------------------------------------------------------
+;; Row i of the result aggregates the rows of H at the neighbours of i:
+;;   sum  : sum_j h_j               d h_j += g_i
+;;   mean : (1/deg i) sum_j h_j     d h_j += g_i / deg i
+;;   max  : max_j h_j (per column)  the gradient goes to the arg-max row
+;; A node with no neighbours aggregates to zero.
+(define (gnn-aggregate t g H kind)
+  (let* ((n (graph-size g)) (d (ag-tcols H)) (h (ag-tdata (ag-tm-check H n)))
+         (out (make-vector (* n d) 0.0))
+         (arg (make-vector (* n d) -1)))
+    (let il ((i 0))
+      (if (< i n)
+          (let* ((nb (graph-neighbors g i)) (k (length nb)))
+            (if (> k 0)
+                (let cl ((c 0))
+                  (if (< c d)
+                      (begin
+                        (cond ((eq? kind 'max)
+                               (let jl ((js nb) (best -1) (bv 0.0))
+                                 (if (null? js)
+                                     (begin (vector-set! out (+ (* i d) c) bv) (vector-set! arg (+ (* i d) c) best))
+                                     (let ((v (vector-ref h (+ (* (car js) d) c))))
+                                       (if (or (< best 0) (> v bv)) (jl (cdr js) (car js) v) (jl (cdr js) best bv))))))
+                              (else
+                               (let ((s (let jl ((js nb) (s 0.0)) (if (null? js) s (jl (cdr js) (+ s (vector-ref h (+ (* (car js) d) c))))))))
+                                 (vector-set! out (+ (* i d) c) (if (eq? kind 'mean) (/ s k) s)))))
+                        (cl (+ c 1))))))
+            (il (+ i 1)))))
+    (if (not (memq kind '(sum mean max))) (error "gnn-aggregate: kind must be sum, mean or max"))
+    (ag-record-gnn t (list H) out n d
+      (lambda (gr)
+        (let ((gh (make-vector (* n d) 0.0)))
+          (let il ((i 0))
+            (if (< i n)
+                (let* ((nb (graph-neighbors g i)) (k (length nb)))
+                  (if (> k 0)
+                      (let cl ((c 0))
+                        (if (< c d)
+                            (let ((gi (vector-ref gr (+ (* i d) c))))
+                              (if (eq? kind 'max)
+                                  (let ((j (vector-ref arg (+ (* i d) c))))
+                                    (vector-set! gh (+ (* j d) c) (+ (vector-ref gh (+ (* j d) c)) gi)))
+                                  (let ((w (if (eq? kind 'mean) (/ gi k) gi)))
+                                    (for-each (lambda (j) (vector-set! gh (+ (* j d) c) (+ (vector-ref gh (+ (* j d) c)) w))) nb)))
+                              (cl (+ c 1))))))
+                  (il (+ i 1)))))
+          (list gh))))))
+
+(define (ag-tm-check H n)
+  (if (not (= (ag-trows H) n)) (error "gnn: feature matrix rows must equal the node count"))
+  H)
+
+;; Record a GNN op on the tape and wrap the result as an n x d tape matrix.
+(define (ag-record-gnn t ins out rows cols backward)
+  (vector 'agt (record-op! t (map ag-node ins) out backward) rows cols))
+
+(define (gnn-activate t act X)
+  (cond ((eq? act 'relu) (ag-relu t X))
+        ((eq? act 'tanh) (ag-tanh t X))
+        ((eq? act 'none) X)
+        ((eq? act 'leaky-relu) (ag-leaky-relu t X 0.2))
+        (else (error "gnn: unknown activation"))))
+
+;; GCN: act(P H W + b), P the normalised propagation entries.
+(define (gnn-gcn-layer t entries n H W b act)
+  (gnn-activate t act (ag-add-bias t (ag-spmm t n entries (ag-matmul t H W)) b)))
+
+;; GraphSAGE-style message passing: act(H Ws + AGG(H) Wn + b).
+(define (gnn-sage-layer t g H Ws Wn b kind act)
+  (gnn-activate t act
+    (ag-add-bias t (ag-add t (ag-matmul t H Ws) (ag-matmul t (gnn-aggregate t g H kind) Wn)) b)))
+
+;; Graph attention. With Z = H W, s_dst = Z a_dst, s_src = Z a_src, every node
+;; i attends over j in N(i) + {i} with
+;;   e_ij = LeakyReLU(s_dst_i + s_src_j),  alpha_ij = softmax_j(e_ij),
+;;   out_i = sum_j alpha_ij z_j.
+;; Backward (G = d out): dz_j += sum_i alpha_ij G_i; dalpha_ij = G_i . z_j;
+;; de_ij = alpha_ij (dalpha_ij - sum_k alpha_ik dalpha_ik); du_ij = de_ij *
+;; LeakyReLU'(u_ij); d s_dst_i += sum_j du_ij; d s_src_j += du_ij.
+(define (gnn-gat-scores g Z s-dst s-src slope)
+  ;; host: list per node of (j . alpha_ij) pairs and the pre-activations
+  (let* ((n (graph-size g)) (sd (ag-tdata s-dst)) (ss (ag-tdata s-src)) (gs (graph-with-self-loops g)))
+    (let il ((i (- n 1)) (acc '()))
+      (if (< i 0) (list->vector acc)
+          (let* ((nb (graph-neighbors gs i))
+                 (us (map (lambda (j) (+ (vector-ref sd i) (vector-ref ss j))) nb))
+                 (es (map (lambda (u) (if (> u 0.0) u (* slope u))) us))
+                 (mx (fold-left max -1.0e300 es))
+                 (ws (map (lambda (e) (exp (- e mx))) es))
+                 (z (fold-left + 0.0 ws)))
+            (il (- i 1) (cons (map (lambda (j w u) (list j (/ w z) u)) nb ws us) acc)))))))
+
+(define (gnn-gat-layer t g H W a-dst a-src act)
+  (let* ((n (graph-size g)) (slope 0.2)
+         (Z (ag-matmul t (ag-tm-check H n) W))
+         (d (ag-tcols Z))
+         (s-dst (ag-matmul t Z a-dst))
+         (s-src (ag-matmul t Z a-src))
+         (att (gnn-gat-scores g Z s-dst s-src slope))
+         (z (ag-tdata Z))
+         (out (make-vector (* n d) 0.0)))
+    (let il ((i 0))
+      (if (< i n)
+          (begin
+            (for-each (lambda (ja)
+                        (let ((j (car ja)) (a (cadr ja)))
+                          (let cl ((c 0))
+                            (if (< c d)
+                                (begin (vector-set! out (+ (* i d) c) (+ (vector-ref out (+ (* i d) c)) (* a (vector-ref z (+ (* j d) c)))))
+                                       (cl (+ c 1)))))))
+                      (vector-ref att i))
+            (il (+ i 1)))))
+    (gnn-activate t act
+      (ag-record-gnn t (list Z s-dst s-src) out n d
+        (lambda (gr)
+          (let ((gz (make-vector (* n d) 0.0)) (gsd (make-vector n 0.0)) (gss (make-vector n 0.0)))
+            (let il ((i 0))
+              (if (< i n)
+                  (let* ((row (vector-ref att i))
+                         (dalpha (map (lambda (ja)
+                                        (let ((j (car ja)) (a (cadr ja)))
+                                          (let cl ((c 0) (s 0.0))
+                                            (if (< c d)
+                                                (let ((gic (vector-ref gr (+ (* i d) c))))
+                                                  (vector-set! gz (+ (* j d) c) (+ (vector-ref gz (+ (* j d) c)) (* a gic)))
+                                                  (cl (+ c 1) (+ s (* gic (vector-ref z (+ (* j d) c))))))
+                                                s))))
+                                      row))
+                         (mean (fold-left + 0.0 (map (lambda (ja da) (* (cadr ja) da)) row dalpha))))
+                    (for-each (lambda (ja da)
+                                (let* ((j (car ja)) (a (cadr ja)) (u (caddr ja))
+                                       (de (* a (- da mean)))
+                                       (du (* de (if (> u 0.0) 1.0 slope))))
+                                  (vector-set! gsd i (+ (vector-ref gsd i) du))
+                                  (vector-set! gss j (+ (vector-ref gss j) du))))
+                              row dalpha)
+                    (il (+ i 1)))))
+            (list gz gsd gss)))))))
+
+;; Attention coefficients of a GAT layer as host data: a vector, per node, of
+;; (j . alpha_ij) pairs. Each row sums to one.
+(define (gnn-gat-attention g H W a-dst a-src)
+  (with-tape "gnn-gat-attention"
+    (lambda ()
+      (let* ((t (current-tape))
+             (Z (ag-matmul t (ag-const t H) (ag-const t W)))
+             (att (gnn-gat-scores g Z (ag-matmul t Z (ag-const t a-dst)) (ag-matmul t Z (ag-const t a-src)) 0.2)))
+        (let loop ((i (- (vector-length att) 1)) (acc '()))
+          (if (< i 0) (list->vector acc)
+              (loop (- i 1) (cons (map (lambda (ja) (cons (car ja) (cadr ja))) (vector-ref att i)) acc))))))))
+
+;; Graph-level readout: mean of the node rows.
+(define (gnn-readout t H) (ag-mean-rows t H))
+
+;; ---------------------------------------------------------------------------
+;; Two-layer node classifiers
+;; ---------------------------------------------------------------------------
+;; kind: 'gcn, 'sage (mean aggregation) or 'gat. A model is
+;; #(gnn-model kind graph entries params).
+(define (gnn-make-model kind g in-dim hidden classes seed)
+  (let* ((s1 (/ 1.0 (sqrt (exact->inexact in-dim)))) (s2 (/ 1.0 (sqrt (exact->inexact hidden))))
+         (params
+          (cond ((eq? kind 'gcn)
+                 (list (ag-random in-dim hidden s1 seed) (ag-zeros 1 hidden)
+                       (ag-random hidden classes s2 (+ seed 1)) (ag-zeros 1 classes)))
+                ((eq? kind 'sage)
+                 (list (ag-random in-dim hidden s1 seed) (ag-random in-dim hidden s1 (+ seed 1)) (ag-zeros 1 hidden)
+                       (ag-random hidden classes s2 (+ seed 2)) (ag-random hidden classes s2 (+ seed 3)) (ag-zeros 1 classes)))
+                ((eq? kind 'gat)
+                 (list (ag-random in-dim hidden s1 seed) (ag-random hidden 1 s2 (+ seed 1)) (ag-random hidden 1 s2 (+ seed 2))
+                       (ag-random hidden classes s2 (+ seed 3)) (ag-random classes 1 0.5 (+ seed 4)) (ag-random classes 1 0.5 (+ seed 5))))
+                (else (error "gnn-make-model: kind must be gcn, sage or gat")))))
+    (vector 'gnn-model kind g (gnn-gcn-entries g) params)))
+(define (gnn-model-params m) (vector-ref m 4))
+
+;; Logits (n x classes) as a tape matrix, given parameter nodes ps.
+(define (gnn-forward t m X ps)
+  (let ((kind (vector-ref m 1)) (g (vector-ref m 2)) (P (vector-ref m 3)) (n (graph-size (vector-ref m 2))))
+    (cond ((eq? kind 'gcn)
+           (let ((h (gnn-gcn-layer t P n X (list-ref ps 0) (list-ref ps 1) 'relu)))
+             (gnn-gcn-layer t P n h (list-ref ps 2) (list-ref ps 3) 'none)))
+          ((eq? kind 'sage)
+           (let ((h (gnn-sage-layer t g X (list-ref ps 0) (list-ref ps 1) (list-ref ps 2) 'mean 'relu)))
+             (gnn-sage-layer t g h (list-ref ps 3) (list-ref ps 4) (list-ref ps 5) 'mean 'none)))
+          (else
+           (let ((h (gnn-gat-layer t g X (list-ref ps 0) (list-ref ps 1) (list-ref ps 2) 'relu)))
+             (gnn-gat-layer t g h (list-ref ps 3) (list-ref ps 4) (list-ref ps 5) 'none))))))
+
+;; Train on the labelled nodes (labels: list with a class index or #f per
+;; node) with Adam and L2 weight decay; returns the list of per-epoch losses.
+(define (gnn-fit! m X labels epochs lr decay)
+  (let ((opt (ag-adam (gnn-model-params m) lr)))
+    (let loop ((e 0) (acc '()))
+      (if (>= e epochs) (reverse acc)
+          (loop (+ e 1)
+                (cons (ag-train-step! (gnn-model-params m) opt
+                        (lambda (t ps)
+                          (let ((data (ag-softmax-xent t (gnn-forward t m (ag-const t X) ps) labels)))
+                            (if (> decay 0.0)
+                                (ag-scalar-add t data (ag-scalar-scale t (ag-l2 t (car ps)) decay))
+                                data))))
+                      acc))))))
+
+(define (gnn-predict m X)
+  (with-tape "gnn-predict"
+    (lambda ()
+      (let* ((t (current-tape))
+             (ps (map (lambda (p) (ag-const t p)) (gnn-model-params m))))
+        (ag-argmax-rows (ag-value (gnn-forward t m (ag-const t X) ps)))))))
+
+;; Fraction of nodes whose prediction equals the label, over the nodes whose
+;; entry in `mask` is true.
+(define (gnn-accuracy predictions truth mask)
+  (let loop ((p predictions) (y truth) (k mask) (hit 0) (tot 0))
+    (if (null? p) (if (= tot 0) 0.0 (/ (exact->inexact hit) tot))
+        (if (car k)
+            (loop (cdr p) (cdr y) (cdr k) (if (= (car p) (car y)) (+ hit 1) hit) (+ tot 1))
+            (loop (cdr p) (cdr y) (cdr k) hit tot)))))
