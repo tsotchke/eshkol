@@ -49,7 +49,13 @@ extern "C" {
  *         the source could not be analysed at all — a parse failure, which the
  *         caller must treat as "unknown", never as "clean".
  */
-int eshkol_linear_check_source(const char* source, const char* source_name) {
+namespace {
+
+/** Front end over @p source: the linearity and dependent-obligation verdicts. */
+int checkSource(const char* source, const char* source_name, size_t* linear,
+                size_t* obligations) {
+    *linear = 0;
+    *obligations = 0;
     if (!source) return -1;
 
     eshkol_reset_parse_errors();
@@ -93,9 +99,10 @@ int eshkol_linear_check_source(const char* source, const char* source_name) {
     }
 
     eshkol::hott::TypeEnvironment env;
-    // strict_types stays FALSE: this bridge draws the linear verdict only, and
-    // strictness governs whether ordinary type errors are fatal — a decision
-    // for the engine emitting code, not for a linearity probe. unsafe_mode is
+    // strict_types stays FALSE: this bridge draws the verdicts that are fatal
+    // in every mode -- linearity and failed dependent-type obligations
+    // (ADR-0042) -- and strictness governs whether ordinary type errors are
+    // fatal, a decision for the engine emitting code, not for this probe. unsafe_mode is
     // honoured because `--unsafe` documents that linear types may be duplicated
     // (no-cloning bypassed), and that hatch must mean the same thing on both
     // engines.
@@ -118,9 +125,25 @@ int eshkol_linear_check_source(const char* source, const char* source_name) {
     }
 
     // Structural violations (ADR-0046: rows, higher rank, session protocols)
-    // are proofs of ill-typing like a clone, so the VM refuses them as well.
-    return static_cast<int>(checker.linearityViolations() +
-                            checker.structuralViolations());
+    // are proofs of ill-typing like a clone, so they travel with the linear
+    // verdict and the VM refuses them the same way.
+    *linear = checker.linearityViolations() + checker.structuralViolations();
+    *obligations = checker.obligationViolations();
+    return 0;
+}
+
+}  // namespace
+
+int eshkol_linear_check_source(const char* source, const char* source_name) {
+    size_t linear = 0, obligations = 0;
+    if (checkSource(source, source_name, &linear, &obligations) < 0) return -1;
+    return static_cast<int>(linear);
+}
+
+int eshkol_dependent_check_source(const char* source, const char* source_name) {
+    size_t linear = 0, obligations = 0;
+    if (checkSource(source, source_name, &linear, &obligations) < 0) return -1;
+    return static_cast<int>(obligations);
 }
 
 }  // extern "C"

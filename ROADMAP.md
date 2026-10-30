@@ -1039,7 +1039,13 @@ single-machine platform surface.
 
 **Focus:** The type system becomes a proof system.
 
-- [ ] Full dependent type enforcement (compile-time errors, not just warnings)
+- [x] Full dependent type enforcement (compile-time errors, not just warnings) — ADR-0042:
+      the checking direction of bidirectional checking (lambdas, applications, `let`, `define`,
+      `(: name type)` declarations, `the`), Pi and Sigma types, universe levels, length-indexed
+      vectors and `define-type` families, definitional equality by normalization; a failed
+      dependent obligation is a compile-time error in every mode, `--types=strict` makes every
+      type error one; the bytecode VM refuses the same programs. Runtime checks of indices not
+      known statically: Planned for v1.9.1
 - [ ] Refinement types (`(Refine Integer (> x 0))` with SMT solver integration)
 - [ ] Effect types (tracking `Pure`, `IO`, `State`, `Exception` at the type level)
 - [ ] Algebraic effects and handlers (structured side-effect management)

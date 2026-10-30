@@ -76,6 +76,7 @@ before 1.3.5-evolve, use their former numbers:
 | [0016](0016-ad-alt-architect.md) — Staged dense-tensor reverse-mode AD and `value_and_grad` | 0002 | [0002](0002-ad-staged-dense-kernels.md) — Dense tensor AD nodes and a staged value-and-grad kernel |
 | [0017](0017-stochastic-binary-lambda-calculus.md) — Stochastic Binary Lambda Calculus | 0011 | [0011](0011-guest-collector-adapter.md) — Hosted guest collectors over OALR regions |
 | [0018](0018-signed-curvature-stereographic-geometry.md) — Signed-curvature stereographic geometry | 0012 | [0012](0012-object-abi-staged-migration.md) — Object ABI staged migration |
+| [0042](0042-dependent-type-enforcement.md) | Dependent type enforcement — bidirectional checking over one core term language | Proposed — implemented for v1.9.0-types (stages 1-4) | 2026-10-30 | `inc/eshkol/types/type_term.h`, `lib/types/type_term.cpp`, `TypeChecker::resolveTerm`/`judgeTails` in `lib/types/type_checker.cpp`; CTest `type_term_test`, `typesystem_dependent_corpus`, `dependent_type_engine_parity_gate` |
 | [0046](0046-structural-types-rows-rank-sessions.md) | Structural types: row polymorphism, arbitrary rank and session types | Accepted — implemented on native JIT, AOT and the bytecode VM checker | 2026-10-30 | v1.9.0 |
 
 ## Status vocabulary

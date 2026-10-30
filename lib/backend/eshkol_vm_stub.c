@@ -43,6 +43,11 @@ void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn) {
     (void)fn;
 }
 
+/* The dependent-type check hook, accepted and discarded for the same reason. */
+void eshkol_vm_install_dependent_check(EshkolLinearCheckFn fn) {
+    (void)fn;
+}
+
 int eshkol_emit_eskb(const char* source, const char* output_path) {
     (void)source;
     (void)output_path;

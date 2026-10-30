@@ -122,7 +122,7 @@ TypeSyntax syntaxOf(const hott_type_expr_t* t) {
             return TypeSyntax::mkList({TypeSyntax::mkAtom("+"), syntaxOf(t->sum.left),
                                        syntaxOf(t->sum.right)});
         case HOTT_TYPE_APP: {
-            std::vector<TypeSyntax> e{TypeSyntax::mkAtom(t->app.name ? t->app.name : "?")};
+            std::vector<TypeSyntax> e{TypeSyntax::mkAtom(t->app.head ? t->app.head : "?")};
             for (uint64_t i = 0; i < t->app.num_args; ++i) {
                 e.push_back(syntaxOf(t->app.args ? t->app.args[i] : nullptr));
             }

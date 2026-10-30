@@ -625,8 +625,12 @@ TypeId TypeEnvironment::promoteForArithmetic(TypeId a, TypeId b) const {
  * is not yet implemented.
  */
 bool TypeEnvironment::areEquivalent(TypeId a, TypeId b) const {
-    // For now, just identity. Will support type aliases later.
-    return a == b;
+    // Definitional equality: both sides as core terms in normal form. Aliases
+    // and families are already expanded when an annotation is resolved
+    // (delta/beta), index arithmetic is normalized here, and a type the
+    // nominal ids express maps to that id, so equal normal forms are equal ids.
+    if (a == b) return true;
+    return terms_.definitionallyEqual(termOf(a), termOf(b)) == TermEq::Equal;
 }
 
 /**
@@ -1124,7 +1128,182 @@ TypeId TypeEnvironment::codegenReprOf(TypeId id) const {
     if (isSumType(id)) {
         return BuiltinTypes::Pair;
     }
+    // Dependent precision is checker-only, like sums: what codegen reads is
+    // the erased runtime type, so a dependent annotation never changes the
+    // generated code (ADR-0042).
+    if (isTermType(id)) {
+        return codegenReprOf(erase(id));
+    }
+    if (const PiType* pi = getFunctionType(id)) {
+        for (const auto& param : pi->params) {
+            if (isTermType(param.type)) return erase(id);
+        }
+        if (isTermType(pi->return_type)) return erase(id);
+    }
     return id;
+}
+
+// ============================================================================
+// DEPENDENT TYPES (ADR-0042)
+// ============================================================================
+
+namespace {
+
+/** The full TypeId (universe, flags) for a numeric id this environment knows. */
+TypeId fullTypeId(const TypeEnvironment& env, uint16_t id) {
+    if (const TypeNode* node = env.getTypeNode(TypeId{id, Universe::U0, 0})) return node->id;
+    if (env.getFunctionType(TypeId{id, Universe::U0, 0})) return TypeId{id, Universe::U0, 0};
+    return TypeId{id, Universe::U1, 0};
+}
+
+}  // namespace
+
+bool TypeEnvironment::isTermType(TypeId id) const {
+    return term_of_type_.count(id.id) != 0;
+}
+
+TermRef TypeEnvironment::termOf(TypeId id) const {
+    auto it = term_of_type_.find(id.id);
+    if (it != term_of_type_.end()) return it->second;
+    if (id == BuiltinTypes::TypeU0) return terms_.universe(0);
+    if (id == BuiltinTypes::TypeU1) return terms_.universe(1);
+    if (id == BuiltinTypes::TypeU2) return terms_.universe(2);
+    if (const PiType* pi = getFunctionType(id)) {
+        const PiType copy = *pi;
+        std::vector<TermRef> domains;
+        for (const auto& param : copy.params) domains.push_back(termOf(param.type));
+        return terms_.pi(std::move(domains), termOf(copy.return_type),
+                         copy.is_variadic ? kPiVariadic : 0);
+    }
+    if (auto elems = getPairElementTypes(id)) {
+        const auto pair = *elems;
+        return terms_.sigma(termOf(pair.first), termOf(pair.second));
+    }
+    if (id == BuiltinTypes::Pair) {
+        return terms_.sigma(terms_.constant(BuiltinTypes::Value.pack()),
+                            terms_.constant(BuiltinTypes::Value.pack()));
+    }
+    return terms_.constant(id.pack());
+}
+
+TypeId TypeEnvironment::typeFromTerm(TermRef term) const {
+    if (term == kNoTerm) return BuiltinTypes::Value;
+    const TermRef t = terms_.normalize(term);
+    const TermNode node = terms_.node(t);
+    switch (node.kind) {
+        case TermKind::Const:
+            return fullTypeId(*this, static_cast<uint16_t>(node.value));
+        case TermKind::Universe:
+            if (node.value == 0) return BuiltinTypes::TypeU0;
+            if (node.value == 1) return BuiltinTypes::TypeU1;
+            if (node.value == 2) return BuiltinTypes::TypeU2;
+            break;
+        case TermKind::Pi: {
+            if (terms_.hasLooseBound(t) || (node.value & kPiImplicit)) break;
+            bool dependent = false;
+            for (size_t i = 1; i < node.args.size() && !dependent; ++i) {
+                dependent = terms_.hasLooseBound(node.args[i]);
+            }
+            if (dependent) break;
+            std::vector<TypeId> params;
+            for (size_t i = 0; i + 1 < node.args.size(); ++i) {
+                params.push_back(typeFromTerm(node.args[i]));
+            }
+            return makeFunctionType(params, typeFromTerm(node.args.back()),
+                                    (node.value & kPiVariadic) != 0);
+        }
+        case TermKind::Sigma: {
+            if (terms_.hasLooseBound(t) || terms_.hasLooseBound(node.args[1])) break;
+            const TypeId car = typeFromTerm(node.args[0]);
+            const TypeId cdr = typeFromTerm(node.args[1]);
+            if (car == BuiltinTypes::Value && cdr == BuiltinTypes::Value) return BuiltinTypes::Pair;
+            return makePairType(car, cdr);
+        }
+        default:
+            break;
+    }
+    auto known = type_of_term_.find(t);
+    if (known != type_of_term_.end()) {
+        return TypeId{known->second, Universe::U0, 0};
+    }
+    if (next_term_type_id_ >= 60000) {
+        // The term range is exhausted: keep checking with the erased type.
+        return eraseTerm(t);
+    }
+    const uint16_t id = next_term_type_id_++;
+    term_of_type_[id] = t;
+    type_of_term_[t] = id;
+    return TypeId{id, Universe::U0, 0};
+}
+
+TypeId TypeEnvironment::eraseTerm(TermRef term) const {
+    const TermRef t = terms_.normalize(term);
+    const TermNode node = terms_.node(t);
+    switch (node.kind) {
+        case TermKind::Const:
+            return erase(fullTypeId(*this, static_cast<uint16_t>(node.value)));
+        case TermKind::Pi: {
+            if (node.value & kPiImplicit) return eraseTerm(node.args.back());
+            std::vector<TypeId> params;
+            for (size_t i = 0; i + 1 < node.args.size(); ++i) {
+                params.push_back(eraseTerm(node.args[i]));
+            }
+            return makeFunctionType(params, eraseTerm(node.args.back()),
+                                    (node.value & kPiVariadic) != 0);
+        }
+        case TermKind::Sigma: {
+            const TypeId car = eraseTerm(node.args[0]);
+            const TypeId cdr = eraseTerm(node.args[1]);
+            if (car == BuiltinTypes::Value && cdr == BuiltinTypes::Value) return BuiltinTypes::Pair;
+            return makePairType(car, cdr);
+        }
+        case TermKind::App:
+            if (node.name == "vector") return BuiltinTypes::Vector;
+            if (auto head = lookupType(node.name)) return *head;
+            return BuiltinTypes::Value;
+        default:
+            // Universes, index terms, variables: no runtime value is a type,
+            // and an index is never the type of a value.
+            return BuiltinTypes::Value;
+    }
+}
+
+TypeId TypeEnvironment::erase(TypeId id) const {
+    if (isTermType(id)) return eraseTerm(termOf(id));
+    if (const PiType* pi = getFunctionType(id)) {
+        const PiType copy = *pi;
+        bool changed = false;
+        std::vector<TypeId> params;
+        for (const auto& param : copy.params) {
+            params.push_back(erase(param.type));
+            changed = changed || params.back() != param.type;
+        }
+        const TypeId ret = erase(copy.return_type);
+        changed = changed || ret != copy.return_type;
+        return changed ? makeFunctionType(params, ret, copy.is_variadic) : id;
+    }
+    if (auto elems = getPairElementTypes(id)) {
+        const auto pair = *elems;
+        const TypeId car = erase(pair.first);
+        const TypeId cdr = erase(pair.second);
+        if (car == pair.first && cdr == pair.second) return id;
+        if (car == BuiltinTypes::Value && cdr == BuiltinTypes::Value) return BuiltinTypes::Pair;
+        return makePairType(car, cdr);
+    }
+    return id;
+}
+
+std::optional<uint32_t> TypeEnvironment::universeOf(TypeId id) const {
+    return terms_.universeOf(termOf(id), [this](uint32_t packed) -> uint32_t {
+        const TypeId full = fullTypeId(*this, static_cast<uint16_t>(packed & 0xFFFFu));
+        return static_cast<uint32_t>(static_cast<uint8_t>(full.level));
+    });
+}
+
+std::string TypeEnvironment::printTerm(TermRef term) const {
+    return terms_.print(term, [this](uint32_t packed) {
+        return TypeRelation(*this).print(fullTypeId(*this, static_cast<uint16_t>(packed & 0xFFFFu)));
+    });
 }
 
 } // namespace eshkol::hott

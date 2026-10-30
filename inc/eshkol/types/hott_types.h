@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include "eshkol/types/type_term.h"
 #include <optional>
 #include <memory>
 
@@ -483,6 +484,19 @@ private:
     // TypeIds packed into AST nodes and thus codegen).
     mutable uint16_t next_sum_type_id_ = 60000;  // Sum types in range 60000+
 
+    // Dependent types (ADR-0042). A type whose structure the nominal ids
+    // above cannot express -- a Pi or Sigma whose later components mention
+    // earlier binders, a length-indexed (vector A n), a universe above U2 --
+    // is an interned term of the core term language, and its TypeId is a
+    // handle into that store in the range 40000-59999. Types the nominal ids
+    // can express keep their nominal id, so typeFromTerm() and termOf() are
+    // inverse on normal forms and definitional equality coincides with TypeId
+    // equality.
+    mutable TermStore terms_;
+    mutable std::map<uint16_t, TermRef> term_of_type_;
+    mutable std::map<TermRef, uint16_t> type_of_term_;
+    mutable uint16_t next_term_type_id_ = 40000;
+
 public:
     /**
      * Construct a TypeEnvironment with all builtin types registered.
@@ -771,7 +785,44 @@ public:
      */
     TypeId codegenReprOf(TypeId id) const;
 
+    // ========== Dependent Types (ADR-0042) ==========
+
+    /** @brief The interned core term store (types and index terms). */
+    TermStore& terms() const { return terms_; }
+
+    /**
+     * @brief The TypeId of a type term, after normalization: the nominal id
+     *        when one expresses it (a non-dependent Pi is a function
+     *        signature, a non-dependent Sigma a tracked pair), otherwise a
+     *        term-backed id.
+     */
+    TypeId typeFromTerm(TermRef term) const;
+
+    /** @brief The core term of a type: the inverse of typeFromTerm() on normal forms. */
+    TermRef termOf(TypeId id) const;
+
+    /** @brief True if @p id is a term-backed (dependent) type. */
+    bool isTermType(TypeId id) const;
+
+    /**
+     * @brief Erasure: the nominal type a value of @p id is represented by at
+     *        runtime. Pi erases to its function signature, Sigma to a pair,
+     *        (vector A n) to Vector, a universe to Value; nominal types are
+     *        unchanged except that signatures and pairs are erased componentwise.
+     */
+    TypeId erase(TypeId id) const;
+
+    /** @brief The universe a type lives in, by the formation rules; nullopt for a non-type. */
+    std::optional<uint32_t> universeOf(TypeId id) const;
+
+    /** @brief Spell a type term (the printer of TypeRelation::print for term-backed types). */
+    std::string printTerm(TermRef term) const;
+
+    /** @brief Erasure of a type term that may still contain metavariables or loose binders. */
+    TypeId eraseTerm(TermRef term) const;
+
 private:
+
     /**
      * Initialize all builtin types.
      */

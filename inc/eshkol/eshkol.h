@@ -2520,8 +2520,13 @@ void eshkol_display_closure(uint64_t closure_ptr, eshkol_display_opts_t* opts);
  *
  * Selects which member of hott_type_expr_t's union is active: none for the
  * primitive types, `var_name` for HOTT_TYPE_VAR, `arrow`/`forall`/
- * `container`/`pair`/`sum`/`universe` for the corresponding compound kinds.
- * HOTT_TYPE_DEPENDENT/_PATH are reserved for future dependent-type support.
+ * `container`/`pair`/`sum`/`universe` for the corresponding compound kinds,
+ * `dependent` for the dependent function (HOTT_TYPE_DEPENDENT) and pair
+ * (HOTT_TYPE_SIGMA) telescopes, `app` for a type-family application
+ * (HOTT_TYPE_APP) and an index operator (HOTT_TYPE_INDEX_OP), and
+ * `index_value` for an integer index literal (HOTT_TYPE_INDEX_LIT).
+ * HOTT_TYPE_PATH is the identity type. New kinds are appended after the
+ * existing ones so the numbering of every earlier kind is unchanged.
  */
 typedef enum {
     HOTT_TYPE_INVALID,
@@ -2549,14 +2554,14 @@ typedef enum {
     HOTT_TYPE_VAR,          // type variable (e.g., 'a in forall)
     HOTT_TYPE_FORALL,       // (forall (a b ...) type) universal quantification
     // Advanced types (future)
-    HOTT_TYPE_DEPENDENT,    // dependent type (Pi type)
+    HOTT_TYPE_DEPENDENT,    // (Pi ((x : A) ...) B) dependent function type
     HOTT_TYPE_PATH,         // path type (identity type)
-    HOTT_TYPE_UNIVERSE,     // universe level
-    // Named type application `(name arg ...)` whose constructor is not one of
-    // the dedicated kinds above: records and rows, session protocols, channel
-    // endpoints, one-shot arrows and user type constructors such as
-    // `(st-ref s a)`. The structural type layer (ADR-0046) interprets it.
-    HOTT_TYPE_APP
+    HOTT_TYPE_UNIVERSE,     // (universe n) universe level
+    // Dependent type language (ADR-0042)
+    HOTT_TYPE_SIGMA,        // (Sigma ((x : A) ...) B) dependent pair type
+    HOTT_TYPE_APP,          // (F arg ...) type-family application; args are types or index terms
+    HOTT_TYPE_INDEX_LIT,    // integer literal in an index position, e.g. the 3 of (vector real 3)
+    HOTT_TYPE_INDEX_OP      // (+ m n), (- m n), (* m n) index arithmetic
 } hott_type_kind_t;
 
 // Forward declaration
@@ -2614,12 +2619,26 @@ typedef struct hott_type_expr {
             uint32_t level;  // Universe level (U0, U1, U2, ...)
         } universe;
 
-        // For HOTT_TYPE_APP: constructor name and its type arguments
+        // For dependent function (Pi) and dependent pair (Sigma) types: a
+        // telescope of named binders, each type able to mention the earlier
+        // names, and a body that may mention all of them.
         struct {
-            char* name;
-            struct hott_type_expr** args;
+            char** binder_names;                 // Binder names, num_binders entries
+            struct hott_type_expr** binder_types; // Binder types (domains), num_binders entries
+            uint64_t num_binders;
+            struct hott_type_expr* body;         // Codomain (Pi) or second component (Sigma)
+        } dependent;
+
+        // For type-family application (HOTT_TYPE_APP) and index operators
+        // (HOTT_TYPE_INDEX_OP): the family or operator name and its arguments.
+        struct {
+            char* head;                          // Family name ("vector", a define-type name) or operator
+            struct hott_type_expr** args;        // Arguments, num_args entries
             uint64_t num_args;
         } app;
+
+        // For HOTT_TYPE_INDEX_LIT: the literal value.
+        int64_t index_value;
     };
 } hott_type_expr_t;
 
@@ -3061,6 +3080,8 @@ typedef struct eshkol_operation {
 	           hott_type_expr_t *type_expr;      // The type expression this aliases
 	           char **type_params;               // Type parameter names (for parameterized types)
 	           uint64_t num_type_params;         // Number of type parameters
+	           hott_type_expr_t **type_param_kinds; // Declared sort per parameter, (m : integer) or
+	                                             // (a : (universe 0)); NULL array or NULL entry = undeclared
 	       } define_type_op;
 	       struct {
 	           char *path;                       // Path to file to import
@@ -3675,13 +3696,40 @@ hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* r
  */
 hott_type_expr_t* hott_make_forall_type(char** type_vars, uint64_t num_vars, hott_type_expr_t* body);
 /**
- * @brief Construct a HOTT_TYPE_APP type expression `(name args...)`.
- * @param name Constructor name (copied).
- * @param args Array of @p num_args argument type expressions (deep-copied; entries may be NULL).
+ * @brief Construct a dependent telescope type: HOTT_TYPE_DEPENDENT `(Pi ((x : A) ...) B)`
+ *        or HOTT_TYPE_SIGMA `(Sigma ((x : A) ...) B)`.
+ * @param kind HOTT_TYPE_DEPENDENT or HOTT_TYPE_SIGMA.
+ * @param names Binder names (copied).
+ * @param types Binder types (deep-copied).
+ * @param num_binders Number of binders.
+ * @param body Codomain or second component (deep-copied).
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_dependent_type(hott_type_kind_t kind, char** names,
+                                           hott_type_expr_t** types, uint64_t num_binders,
+                                           hott_type_expr_t* body);
+/**
+ * @brief Construct HOTT_TYPE_APP `(head arg ...)` or HOTT_TYPE_INDEX_OP `(op arg ...)`.
+ * @param kind HOTT_TYPE_APP or HOTT_TYPE_INDEX_OP.
+ * @param head Family or operator name (copied).
+ * @param args Arguments (deep-copied).
  * @param num_args Number of arguments.
  * @return Newly allocated type expression.
  */
-hott_type_expr_t* hott_make_app_type(const char* name, hott_type_expr_t** args, uint64_t num_args);
+hott_type_expr_t* hott_make_app_type(hott_type_kind_t kind, const char* head,
+                                     hott_type_expr_t** args, uint64_t num_args);
+/**
+ * @brief Construct HOTT_TYPE_INDEX_LIT, an integer literal in an index position.
+ * @param value The literal.
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_index_literal(int64_t value);
+/**
+ * @brief Construct HOTT_TYPE_UNIVERSE `(universe level)`.
+ * @param level Universe level.
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_universe_type(uint32_t level);
 
 // Copy and free type expressions
 /**

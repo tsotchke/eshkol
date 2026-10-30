@@ -1,0 +1,9 @@
+;; Dependent pairs (ADR-0042): the first component says 3, so the second
+;; must be a vector of length 3.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: second component of definition of 'sized': expected (vector Float64 3), got a vector of 2 elements
+
+(: sized (Sigma ((n : integer)) (vector real n)))
+(define sized (cons 3 (vector 1.0 2.0)))
+(display sized)

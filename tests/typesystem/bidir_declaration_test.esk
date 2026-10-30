@@ -1,0 +1,9 @@
+;; Declarations (ADR-0042): (: name type) is the contract the definition is
+;; checked against, and callers are checked against it.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got String
+
+(: area (-> number number))
+(define (area r) (* r r))
+(display (area "wide"))

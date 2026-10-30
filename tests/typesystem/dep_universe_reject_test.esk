@@ -1,0 +1,11 @@
+;; Universe levels (ADR-0042): Type is predicative. (universe 0) lives in
+;; (universe 1), so it is not an argument for a parameter of sort
+;; (universe 0).
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: universe inconsistency: argument 1 of Box, (universe 0), lives in (universe 1), but parameter a ranges over (universe 0)
+
+(define-type (Box (a : (universe 0))) (list a))
+
+(define (open-box (b : (Box (universe 0)))) b)
+(display (open-box '()))

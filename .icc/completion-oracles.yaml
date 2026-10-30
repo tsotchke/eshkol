@@ -2492,6 +2492,27 @@ oracles:
         action: run_v14_connection_gate
 
   # -----------------------------------------------------------------
+  # v1.9.0-types readiness -- the type system becomes a proof system
+  # (ROADMAP v1.9.0-types, ADR-0004 v1.9 rung). One criterion per rung
+  # item; the type records 0042-0046 extend this list.
+  # -----------------------------------------------------------------
+  - name: v1.9-types
+    aliases: [v1.9, v1.9.0, types]
+    requires:
+      # Dependent type enforcement (ADR-0042). Producer:
+      # scripts/run_dependent_types_gate.sh runs type_term_test,
+      # typesystem_dependent_corpus and dependent_type_engine_parity_gate;
+      # PASS only when all three ran and passed.
+      - id: v19_dependent_enforcement
+        runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_dependent_enforcement"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Dependent type enforcement (ADR-0042): bidirectional checking (the tail rule; lambdas checked against expected signatures; applications, let, define, declarations, the), Pi and Sigma types, universe levels, length-indexed vectors and define-type families, definitional equality by normalization; every positive fixture compiles under --types=strict and runs, every negative fixture is refused with its diagnostic, and the bytecode VM refuses and runs the same programs as the native engine'
+        action: ./scripts/run_dependent_types_gate.sh
+
+  # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
   # -----------------------------------------------------------------
