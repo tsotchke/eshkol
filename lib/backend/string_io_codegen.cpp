@@ -1829,92 +1829,29 @@ llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(new_str);
 }
 
-/**
- * @brief Codegen for R7RS `(string->list s)`.
- *
- * Emits an LLVM IR loop walking the string backwards from its last byte,
- * consing each byte (packed as a CHAR) onto the result so the final list
- * comes out in forward order without a separate reverse pass.
- */
+/** Codegen for R7RS string->list: decode each Unicode character once. */
 llvm::Value* StringIOCodegen::stringToList(const eshkol_operations_t* op) {
-    if (!codegen_ast_callback_ || !cons_create_callback_) {
+    if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringToList - callbacks not set");
         return tagged_.packNull();
     }
-
     if (op->call_op.num_vars != 1) {
         eshkol_arity_error_current("string->list requires exactly 1 argument");
         return nullptr;
     }
-
-    llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
-    if (!str_arg) return nullptr;
-
-    // Extract string pointer
-    llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
-    llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
-
-    // Get string length using strlen
-    llvm::Function* strlen_func = ctx_.funcs().getStrlen();
-    llvm::Value* len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
-
-    // We'll build the list backwards (from end to beginning), which produces
-    // correct order without needing reverse
-
-    llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(ctx_.context(), "strtolist_cond", parent_func);
-    llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(ctx_.context(), "strtolist_body", parent_func);
-    llvm::BasicBlock* loop_end = llvm::BasicBlock::Create(ctx_.context(), "strtolist_end", parent_func);
-
-    // Create alloca for index and result list at function entry
-    llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
-    llvm::BasicBlock& entry = parent_func->getEntryBlock();
-    ctx_.builder().SetInsertPoint(&entry, entry.begin());
-    llvm::Value* idx_ptr = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "stl_idx");
-    llvm::Value* list_ptr = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "stl_list");
-    ctx_.builder().restoreIP(saved_ip);
-
-    // Start from the end of string: idx = len - 1
-    llvm::Value* start_idx = ctx_.builder().CreateSub(len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    ctx_.builder().CreateStore(start_idx, idx_ptr);
-
-    // Start with empty list (null)
-    llvm::Value* nil_val = tagged_.packNull();
-    ctx_.builder().CreateStore(nil_val, list_ptr);
-
-    ctx_.builder().CreateBr(loop_cond);
-
-    // Loop condition: idx >= 0
-    ctx_.builder().SetInsertPoint(loop_cond);
-    llvm::Value* current_idx = ctx_.builder().CreateLoad(ctx_.int64Type(), idx_ptr);
-    llvm::Value* cond = ctx_.builder().CreateICmpSGE(current_idx, llvm::ConstantInt::get(ctx_.int64Type(), 0));
-    ctx_.builder().CreateCondBr(cond, loop_body, loop_end);
-
-    // Loop body: cons char at idx with current list
-    ctx_.builder().SetInsertPoint(loop_body);
-    llvm::Value* body_idx = ctx_.builder().CreateLoad(ctx_.int64Type(), idx_ptr);
-    llvm::Value* char_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, body_idx);
-    llvm::Value* char_byte = ctx_.builder().CreateLoad(ctx_.int8Type(), char_ptr);
-    llvm::Value* char_i64 = ctx_.builder().CreateZExt(char_byte, ctx_.int64Type());
-    llvm::Value* char_tagged = tagged_.packChar(char_i64);
-
-    // Cons this character with current list using callback
-    llvm::Value* current_list = ctx_.builder().CreateLoad(ctx_.taggedValueType(), list_ptr);
-    llvm::Value* cons_ptr_int = cons_create_callback_(char_tagged, current_list, callback_context_);
-
-    // Pack cons cell pointer as tagged value with HEAP_PTR type (consolidated)
-    llvm::Value* new_list = tagged_.packHeapPtr(
-        ctx_.builder().CreateIntToPtr(cons_ptr_int, ctx_.ptrType()));
-    ctx_.builder().CreateStore(new_list, list_ptr);
-
-    // Decrement index
-    llvm::Value* next_idx = ctx_.builder().CreateSub(body_idx, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    ctx_.builder().CreateStore(next_idx, idx_ptr);
-    ctx_.builder().CreateBr(loop_cond);
-
-    // Loop end
-    ctx_.builder().SetInsertPoint(loop_end);
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), list_ptr);
+    llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!arg) return nullptr;
+    tagged_.requireContainer(arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string->list", "string");
+    auto* function = ctx_.module().getFunction("eshkol_runtime_string_to_list");
+    if (!function) {
+        auto* type = llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false);
+        function = llvm::Function::Create(type, llvm::Function::ExternalLinkage,
+                                         "eshkol_runtime_string_to_list", &ctx_.module());
+    }
+    auto* string = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(arg), ctx_.ptrType());
+    auto* cells = ctx_.builder().CreateCall(function, {ctx_.currentArena(), string});
+    return ctx_.builder().CreateSelect(
+        ctx_.builder().CreateIsNull(cells), tagged_.packNull(), tagged_.packHeapPtr(cells));
 }
 
 /**
