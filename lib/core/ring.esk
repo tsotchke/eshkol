@@ -1340,7 +1340,7 @@
     ((pair? t)
      (let ((n (arity-of (car t))) (f (op-of (car t))))
        (if (not (and n (list? (cdr t)) (= n (length (cdr t)))))
-           (error "law-term->procedure: an operation applied to the wrong number of arguments" t))
+           (error "law-term->procedure: operation applied to this many arguments, expected this arity" t (if (list? (cdr t)) (length (cdr t)) #f) n))
        (let ((args (rc-law-compile-list op-of arity-of vars (cdr t))))
          (cond ((= n 0) (lambda (env) f))
                ((= n 1) (let ((a (car args))) (lambda (env) (f (a env)))))

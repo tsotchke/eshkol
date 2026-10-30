@@ -409,7 +409,7 @@
                  (lambda () (theory-free-model (theory-extend group-theory "groups of exponent 2"
                                                               (list (make-equation 'exponent-2 '(mul x x) '(one))))
                                                '(x)))))
-(check "an ill-formed term is refused (wrong arity)"
+(check "an ill-formed term is refused (arity mismatch)"
        (refuses? 'theory-ill-formed-term (lambda () (make-theory "bad" '((mul 2)) (list (list 'oops '(mul x) 'x))))))
 (check "a model missing an operation is refused"
        (refuses? 'theory-missing-operation (lambda () (make-model group-theory "partial" 'operations (list (cons 'one 0))))))

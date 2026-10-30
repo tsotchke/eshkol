@@ -347,7 +347,7 @@ and `theory-refusal-irritants` read them.
 
 | Kind | When |
 |---|---|
-| `theory-ill-formed-term` | a term with an unknown operation or the wrong arity |
+| `theory-ill-formed-term` | a term with an unknown operation or an arity that does not match |
 | `theory-missing-operation` | a model or interpretation without one of the operations |
 | `theory-infinite-model` | the elements of an infinite model, or a law check without samples |
 | `theory-not-a-congruence` | a quotient by a partition the operations do not respect |
