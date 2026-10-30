@@ -136,7 +136,7 @@ Buchberger. Measured on Linux x64 (JIT), Buchberger over Q is faster on small
 systems (Katsura-5 under grevlex in 4.7 s against 42 s, Katsura-4 under lex in
 5.3 s against 34 s), where the exact check over Q dominates the multimodular
 run, but its rational coefficients can grow without bound: cyclic-6 under
-grevlex did not finish in Buchberger over Q within the hour it was given, and
+grevlex did not finish in Buchberger over Q within the 2 hours it was given, and
 takes 151 s by the multimodular method (25 s over F_32003). The default
 bounds the worst case; `'method 'buchberger` remains available.
 
