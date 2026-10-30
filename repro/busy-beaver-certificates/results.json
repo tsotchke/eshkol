@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "engines": [
+    "jit",
+    "aot"
+  ],
+  "checks_per_engine": 34,
+  "bb6_scope": "12-variable polynomial embedding; 16 dense/structured powers",
+  "query_count": 18,
+  "raw_steps": 47176870,
+  "macros": 15,
+  "head": -12242,
+  "ones": 4098,
+  "tape_cells_compared": 131072,
+  "tape_sha256": "e9156eb43492e62f3024b06c5c61de91f7c25918a2d99e9a91c490a7a27a1df7",
+  "stdout_sha256": "cdaf492b63635d690241f92d43f9d20ce7659b20c4d691fbfd26f2dd1be4f7c2",
+  "reference_seconds": 0.23662904600496404,
+  "runner_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "files_sha256": {
+    "bb5_certificate.esk": "f9fda0933cdf4ae958f6896e5c19fac4406c308493cb65f04732c4463a286b3a",
+    "bb6_cost_algebra.esk": "c91a3ac621aac76fb9846982769959d8858813f4246000e289c4cbcd4de14a52",
+    "bb5_certificate_test.esk": "d17d12cea8755c2a025880a4a10e152bd2de0ac2fa147f8bd648e97291a82765",
+    "direct_reference.c": "ff35b97371a73a8d9e0f28ac5462648f4b062a6643ca27ded5cfb18ea763047e",
+    "run_gate.py": "c5b9ed93edf2c0db3d7340ea7ae3fce7b18f721e09135f4876e85267e697c545"
+  },
+  "source_sha256": "f9fda0933cdf4ae958f6896e5c19fac4406c308493cb65f04732c4463a286b3a",
+  "symbolic_sha256": "b75c7e6533c8568f1c7d42f9dacd6a7ac2c9991a1603c8e77982c6cee30be9b8",
+  "ring_sha256": "9cd82bfc8b36dc99b72145946a0b3325842077ed4f45ef62d4a3682f6937f5c8",
+  "readiness_self_test": "PASS: actual gate rejects wrong backend data",
+  "self_test_sha256": "6ab00ae641af2c4d6398bae7be907ba2d2c3a5fb16d3b5b5e7631c8e2d01427a",
+  "publication_base": "fb8a9415b3dd05bb82ebf42db2fe894240f8b4f0",
+  "publication_notes": "README/dependency notes and readiness self-test added after runtime qualification; numerical programs and evaluator bytes unchanged."
+}
